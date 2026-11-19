@@ -2439,7 +2439,8 @@ class PaperHandler(Handler):
         except NotFound:
             # gr551840: an unheld well-formed DOI queues ingest, same
             # door as the plain get below (the batch loop shares its
-            # mint budget through ``_queue_budget``).
+            # mint budget through ``_queue_budget``). An abstract view
+            # is an existence check and never queues (gr717456).
             queued = _queue_doi_ingest(self.store, str(id), budget=_queue_budget)
             if queued is not None:
                 return queued
@@ -2550,6 +2551,10 @@ class PaperHandler(Handler):
             # gr551840 (Reto ruling 2026-11-02): a well-formed DOI nobody
             # holds earns an ingest job, not a repeated error — the ack
             # names it and the retry lands on the same door.
+            # Abstract lookups are existence checks, not acquisition
+            # requests (gr717456); preserve the resolver's read-only miss.
+            if _normalise_view(view) == "abstract":
+                raise
             queued = _queue_doi_ingest(self.store, str(id))
             if queued is not None:
                 return queued
@@ -2744,6 +2749,10 @@ class PaperHandler(Handler):
         them; past the cap it asks for ``args={'confirm_bulk': True}``
         up front instead, so a legitimate large batch goes through in
         one call.
+
+        ``view='abstract'`` is a read-only existence check (gr717456):
+        it skips the ``confirm_bulk`` pre-scan and never queues, so an
+        unheld DOI reads as plain not-found.
         """
         kind = self.spec.kind
         if not ids:
@@ -2770,7 +2779,8 @@ class PaperHandler(Handler):
             # other verb (the gr501175 arg sample).
             return self._fetch_status_view([str(i) for i in ids])
         confirm_bulk = bool((args or {}).get("confirm_bulk"))
-        if not confirm_bulk:
+        abstract_only = _normalise_view(view) == "abstract"
+        if not confirm_bulk and not abstract_only:
             pending = 0
             for elem in ids:
                 try:
@@ -2812,11 +2822,16 @@ class PaperHandler(Handler):
                 blocks.append(self._batch_summary(ref))
             except NotFound:
                 # gr551840: an unheld well-formed DOI element queues its
-                # ingest job like the single-id get does — bounded per
+                # ingest job like the single-id get does (except abstract
+                # views, read-only per gr717456) — bounded per
                 # call by _BATCH_DOI_QUEUE_CAP (the review's N-paid-legs
                 # hole): past it the element reads as plain
                 # not-ingested with the explicit-put hint.
-                queued = _queue_doi_ingest(self.store, shown, budget=queue_budget)
+                queued = (
+                    None
+                    if abstract_only
+                    else _queue_doi_ingest(self.store, shown, budget=queue_budget)
+                )
                 blocks.append(
                     queued.body if queued is not None else f"{shown}  not found"
                 )

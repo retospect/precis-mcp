@@ -65,6 +65,9 @@ The queue is bounded — an ingest job can reach the paid OpenAlex fetch
 leg, so spend stays caller-controlled: at most 5 mints per batch `get`,
 a fleet-wide 50 per rolling 24h (`PRECIS_GET_DOI_QUEUE_DAILY`), and no
 queue at all for a DOI whose paper was deleted or on a read-only serve.
+`view='abstract'` on an unheld DOI never queues, single or batch, with
+or without `confirm_bulk`: it is a read-only existence check and answers
+not found. To acquire, use a plain `get` or an explicit `put`.
 Past a bound the `get` answers the plain `not ingested` text — use
 `put(kind="paper", doi=…)` to ingest explicitly regardless.
 

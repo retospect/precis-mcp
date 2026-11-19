@@ -46,7 +46,7 @@ def _seed_paper(
         provider="manual",
         authors=[{"name": "Held, P."}],
         year=2020,
-        meta={"doi": doi, "journal": "JNC"},
+        meta={"doi": doi, "journal": "JNC", "abstract": "An existing abstract."},
     )
     store.insert_ref_identifiers(ref.id, [("doi", doi, "manual")])
     store.chunks.insert_chunks(
@@ -152,6 +152,32 @@ def test_doi_status_reports_availability_without_queuing(
 
 
 class TestUnheldDoiGetQueues:
+    def test_held_abstract_still_reads(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed_paper(store, doi=DOI)
+        assert "An existing abstract." in handler.get(id=DOI, view="abstract").body
+        assert _jobs(store) == []
+
+    def test_abstract_miss_does_not_queue(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr717456: inspecting an abstract must not launch acquisition."""
+        with pytest.raises(NotFound):
+            handler.get(id=DOI, view="abstract")
+        assert _jobs(store) == []
+        assert _stub_for_doi(store, DOI) is None
+
+    @pytest.mark.parametrize("confirm_bulk", [False, True])
+    def test_batch_abstract_misses_do_not_queue(
+        self, store: Store, handler: PaperHandler, confirm_bulk: bool
+    ) -> None:
+        ids: list[str | int] = [f"10.1234/abstract-miss-{i}" for i in range(7)]
+        resp = handler.get(id=ids, view="abstract", args={"confirm_bulk": confirm_bulk})
+        assert resp.body.count("not found") == len(ids)
+        assert "confirm_bulk" not in resp.body
+        assert _jobs(store) == []
+
     def test_queues_job_and_names_it(self, store: Store, handler: PaperHandler) -> None:
         resp = handler.get(id=DOI)
         jobs = _jobs(store)
