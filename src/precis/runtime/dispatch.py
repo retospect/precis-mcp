@@ -3792,6 +3792,12 @@ class DispatchMixin(RuntimeShape):
         per-verb help-skill pointer is still appended by
         :meth:`_maybe_add_skill_hint` after this.
         """
+        if verb == "get" and self._is_id_empty(args.get("id")):
+            return [
+                "pass kind=<one of the listed options> and omit the blank id= "
+                "to open that kind's landing page",
+                "get(kind='skill', id='precis-overview') explains which kind to use",
+            ]
         if verb == "link":
             # gr518636: link(mode='add', rel='…') with no kind=/id=/target=
             # bounced on bare "missing kind=" — the refusal must name the

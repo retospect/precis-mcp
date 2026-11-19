@@ -45,10 +45,14 @@ def test_unknown_verb(runtime: PrecisRuntime) -> None:
     assert "options:" in out
 
 
-def test_missing_kind(runtime: PrecisRuntime) -> None:
-    out = runtime.dispatch("get", {})
+@pytest.mark.parametrize("args", [{}, {"id": ""}, {"id": "  "}])
+def test_missing_kind(runtime: PrecisRuntime, args: dict[str, str]) -> None:
+    out = runtime.dispatch("get", args)
     assert "[error:BadInput]" in out
     assert "missing kind" in out
+    assert "options:" in out
+    assert "pass kind=<one of the listed options>" in out
+    assert "get(kind='skill', id='precis-overview')" in out
 
 
 def test_unknown_kind(runtime: PrecisRuntime) -> None:
