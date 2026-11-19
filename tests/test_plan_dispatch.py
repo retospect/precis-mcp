@@ -9798,6 +9798,21 @@ def test_overlap_claim_survives_a_settings_sql_error(
         assert conn.execute("SELECT 1 FROM pg_temp.app_settings").fetchall() == []
 
 
+def test_overlap_claim_holds_while_another_scan_holds_the_lock(
+    store: Store,
+) -> None:
+    from precis.workers.executors._common import build_overlap_holds
+
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    with store.pool.connection() as other, other.transaction():
+        other.execute(
+            "SELECT pg_advisory_xact_lock(%s)", (pd._STARTED_SLICES_LOCK_KEY,)
+        )
+        with store.pool.connection() as conn:
+            assert waiting in build_overlap_holds(conn, [waiting])
+
+
 def test_dead_land_of_an_earlier_attempt_holds_the_rebuilt_review(
     store: Store,
 ) -> None:
@@ -9850,6 +9865,23 @@ def test_dead_land_of_an_earlier_attempt_holds_the_rebuilt_review(
         store, build, "land_slice", "failed", params={"todo_id": build, "head": head_b}
     )
     assert build not in pd._started_slices(store)
+
+
+def test_started_slices_single_flight_skips_a_concurrent_scan(store: Store) -> None:
+    build = _pending_build(store, ["src/precis/a.py"])
+    with store.pool.connection() as conn, conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (pd._STARTED_SLICES_LOCK_KEY,))
+        assert pd._started_slices(store, single_flight=True) == {}
+        # Claim and rescue callers never skip: the full scan still runs.
+        assert pd._started_slices(store)[build].state == "in pre-land review"
+    assert pd._started_slices(store, single_flight=True)[build].state == (
+        "in pre-land review"
+    )
+
+
+def test_pending_land_key_matches_the_overlap_query_literal() -> None:
+    # _started_slices and migration 0336's partial indexes hard-code it.
+    assert pd._templates.PENDING_LAND_KEY == "pending_land"
 
 
 def test_started_slices_keeps_a_running_land_and_a_pre_land_review(
