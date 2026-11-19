@@ -806,11 +806,11 @@ def test_codeless_explicit_successor_refuses_without_writes(
 ) -> None:
     store, handler = hub.live_store, MemoryHandler(hub=hub)
     old = _memory(store, "Old procedure.")
-    successor = store.insert_ref(kind="web", slug="codeless-successor", title="Web")
+    successor = store.insert_ref(kind="math", slug="codeless-successor", title="Web")
     before = _snapshot(store, old)
 
     with pytest.raises(BadInput, match="no record handle") as exc:
-        handler.delete(id=old, superseded_by=f"web:{successor.id}", dry_run=dry_run)
+        handler.delete(id=old, superseded_by=f"math:{successor.id}", dry_run=dry_run)
 
     assert "live record handle" in str(exc.value.next)
     assert _snapshot(store, old) == before
@@ -820,7 +820,7 @@ def test_codeless_explicit_successor_refuses_without_writes(
 def test_codeless_inbound_edge_is_not_a_successor(hub: Hub, live_mention: bool) -> None:
     store, handler = hub.live_store, MemoryHandler(hub=hub)
     old = _memory(store, "Old procedure.")
-    successor = store.insert_ref(kind="web", slug="codeless-successor", title="Web")
+    successor = store.insert_ref(kind="math", slug="codeless-successor", title="Web")
     store.add_link(src_ref_id=successor.id, dst_ref_id=old, relation="supersedes")
     if live_mention:
         _memory(store, f"Use me{old} for current builds.")
@@ -842,7 +842,7 @@ def test_codeless_inbound_edges_do_not_hide_coded_successors(
     store, handler = hub.live_store, MemoryHandler(hub=hub)
     old = _memory(store, "Old procedure.")
     for index in range(2):
-        web = store.insert_ref(kind="web", slug=f"codeless-{index}", title="Web")
+        web = store.insert_ref(kind="math", slug=f"codeless-{index}", title="Web")
         store.add_link(src_ref_id=web.id, dst_ref_id=old, relation="supersedes")
     successors = [_memory(store, "Current procedure.") for _ in range(coded_count)]
     for successor in successors:

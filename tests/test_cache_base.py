@@ -400,13 +400,14 @@ def test_multi_block_body_renders_concatenated(store: Store) -> None:
 
 
 def test_cite_pointer_gates_on_linkify_kinds() -> None:
-    """A linkable cache-backed kind prints a `kind:id` self-pointer; a kind
+    """A handle-coded cache kind prints a `[handle]` self-pointer; a kind
     off the autolinker allowlist prints nothing (no token that won't link)."""
     from precis.handlers._cache_base import _cite_pointer
 
+    # A handle-coded cache kind prints its bracketed universal handle.
     line = _cite_pointer("websearch", 12345)
     assert line is not None
-    assert "`websearch:12345`" in line
+    assert "`[wx12345]`" in line
     # A kind off the allowlist with no handle code gets no self-pointer
     # (it would dangle).
     assert _cite_pointer("time", 999) is None

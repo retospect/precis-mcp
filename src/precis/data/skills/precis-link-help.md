@@ -177,6 +177,14 @@ cap is rejected. The current parent shows under `## parent` in
 `get(kind='todo', id=141, view='links')`. See `precis-todo-help` for
 the full tree workflow.
 
+## Read links on cached provider answers
+
+YouTube (`yt`), web (`wb`), websearch (`wx`), perplexity-research (`rr`),
+and perplexity-reasoning (`rz`) answers carry record handles. Open a
+handle with `get(id='wx123', view='links')` for inbound and outbound
+edges, or use `extent='fisheye+1hop'` to see the linked neighbours.
+The default cached read includes a Links section when edges exist.
+
 ## Machine-written edges
 
 A write under a machine-writer context (trust origin `generated`/

@@ -1,13 +1,14 @@
 """Handlers — kind adapters.
 
-Modules implement :class:`precis.protocol.Handler`, declare verbs via
-:class:`precis.protocol.KindSpec` and register with :class:`precis.dispatch.Hub`
-at boot (contract: :mod:`precis.dispatch`). Shared shapes live in underscore-prefixed
-sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
+Handlers register their :class:`precis.protocol.KindSpec` with
+:class:`precis.dispatch.Hub` at boot. Shared adapters live in underscore-prefixed
+modules such as :mod:`precis.handlers._numeric_ref`.
 Staged (URL-backed draft) findings preserve a URL and verbatim quote
 without fetching; paper import promotes only a source-and-quote match to
 the ordinary chase (:mod:`precis.finding_drafts`).
 Hub-mint concurrency awaits production timing measurements.
+Cached record selectors preserve ref identity despite numeric slug collisions.
+Cache eyes apply injection verdicts while retaining link rings.
 Retirement parity: :mod:`precis.handlers._audited_retirement`.
 Superseded-handle resolution and restoration: :mod:`precis.handlers.paper`.
 Paper tag batches commit edits and audit events together.
@@ -50,12 +51,10 @@ forwards ``page_size=None`` when unset so the handler resolves it *after*
 Explicit ``unique_per=`` echoes into same-search continuations so a
 ``page=N+1`` hint can't flip shapes mid-walk.
 
-Child collections on routine reads are bounded, with an explicit
-full-view pointer — inline links via the shared capped-section renderer
-(:mod:`precis.handlers._capped_section`), comment timelines via the
-richer newest-in-full / one-liner policy in
-:mod:`precis.handlers._comment_timeline` (the single-``limit`` shape
-can't express it; both kinds share that one implementation).
+Routine reads cap child collections and link to the full view.
+Inline links use :mod:`precis.handlers._capped_section`. Shared comment
+timelines show the newest comment in full and summarize older rows
+(:mod:`precis.handlers._comment_timeline`).
 
 Paper ``view='measures'``: :mod:`precis.handlers._paper_measures`.
 

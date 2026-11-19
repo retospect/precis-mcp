@@ -3728,7 +3728,7 @@ class DispatchMixin(RuntimeShape):
         """Kind of the live ref a bare positive int ``id`` names, else None."""
         if isinstance(raw, bool):
             return None
-        if isinstance(raw, str) and raw.strip().isdigit():
+        if isinstance(raw, str) and raw.strip().isdecimal():
             raw = int(raw)
         if not isinstance(raw, int) or raw <= 0:
             return None
@@ -3843,7 +3843,7 @@ class DispatchMixin(RuntimeShape):
             return None
         if isinstance(raw, str):
             stripped = raw.strip()
-            if stripped.isdigit():
+            if stripped.isdecimal():
                 raw = int(stripped)
             else:
                 return self._file_shape_hint(stripped)
@@ -5748,9 +5748,35 @@ class DispatchMixin(RuntimeShape):
             return True
         handler = self.hub.handler_for(resolved.kind) if self.hub else None
         if getattr(handler, "handle_routes_by_ref_id", False) is True:
+            if verb == "get":
+                # The rewrite below turns the handle into bare ref-id
+                # digits — to the cache handler a query-shaped string.
+                # Under ``args={'literal': True}`` its stored-row guard
+                # steps aside and those digits go upstream as a fresh
+                # (possibly PAID) query — reject the contradictory pair
+                # before it can spend (review td707055, gr702962).
+                extras = args.get(_EXTRAS_KEY)
+                if bool(args.get("literal")) or (
+                    isinstance(extras, dict) and extras.get("literal")
+                ):
+                    raise BadInput(
+                        f"args={{'literal': True}} contradicts the resolved "
+                        f"handle {normalized!r} — it names stored ref "
+                        f"{resolved.ref_id}, but as a literal query its "
+                        "digits would go upstream as a fresh call",
+                        next=(
+                            f"drop literal to read {normalized}, or pass the "
+                            "query text itself with args={'literal': True}"
+                        ),
+                    )
             # A query-derived slug (wikipedia's) reads as a fresh query on
             # the cache handler; the ref id is the exact stored row (gr702974).
-            args["id"] = str(resolved.ref_id) + suffix
+            # Keep handle selectors distinct from legacy numeric slugs.
+            args["id"] = (
+                f"{resolved.kind}:{resolved.ref_id}{suffix}"
+                if suffix.startswith("~") and verb == "get"
+                else str(resolved.ref_id) + suffix
+            )
         else:
             args["id"] = resolved.public_id + suffix
         parsed = handle_registry.parse(normalized)
@@ -6336,6 +6362,17 @@ class DispatchMixin(RuntimeShape):
                 ),
             )
         args["kind"] = prefix
+        base, selector, _ = rest.partition("~")
+        handler = self.hub.handler_for(prefix) if self.hub else None
+        if (
+            verb == "get"
+            and selector
+            and base.isascii()
+            and base.isdecimal()
+            and getattr(handler, "handle_routes_by_ref_id", False) is True
+        ):
+            # An explicit ref selector must not become a bare numeric slug.
+            return
         args["id"] = rest
         # Only memory reads need nested handles (memory:meN). Other
         # kinds and writes retain literal identifiers, including conv:co123.

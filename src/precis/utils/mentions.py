@@ -94,18 +94,15 @@ BARE_PART_PATTERN = re.compile(r"(?<![A-Za-z0-9:])C\d{3,8}(?![A-Za-z0-9])")
 LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
 
 #: Codeless tools/providers whose cached refs support legacy mentions.
-#: Private non-ref data and tools without cached refs stay out.
+#: Private non-ref data and tools without cached refs stay out. The
+#: handle-coded fetch caches (web/youtube/websearch/perplexity-*/
+#: wikipedia/semanticscholar/chem) join via ``record_kinds()`` instead.
 _CODELESS_CACHE_KINDS: frozenset[str] = frozenset(
     {
         "calc",
         "math",
         "provenance",
         "random",
-        "web",
-        "youtube",
-        "websearch",
-        "perplexity-research",
-        "perplexity-reasoning",
     }
 )
 

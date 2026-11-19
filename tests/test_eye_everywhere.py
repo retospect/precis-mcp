@@ -552,7 +552,7 @@ class TestPerKind:
     def test_codeless_and_file_backed_kinds_refuse_with_a_reason(
         self, runtime_with_store: Any
     ) -> None:
-        for kind, ident in (("web", "https://example.org"), ("tag", "SPACE:repo-dev")):
+        for kind, ident in (("calc", "2+2"), ("tag", "SPACE:repo-dev")):
             out, err = _get(runtime_with_store, kind=kind, id=ident, extent="fisheye")
             assert err and "[error:Unsupported]" in out, (kind, out)
             assert "graph node" in out, (kind, out)
@@ -583,7 +583,7 @@ class TestEyeHandle:
         _ref(store, "draft", "D", slug="d-slug")
         with pytest.raises(Unsupported, match="section"):
             eye_handle(store, kind="draft", id="d-slug")
-        for kind in ("web", "calc", "python", "md", "tag"):
+        for kind in ("calc", "python", "md", "tag"):
             with pytest.raises(Unsupported):
                 eye_handle(store, kind=kind, id="x")
 

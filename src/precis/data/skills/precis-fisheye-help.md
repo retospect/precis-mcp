@@ -85,9 +85,16 @@ only at `fisheye` and up.
 | Family | Kinds | `fisheye` shows | `fisheye+1hop` adds |
 |---|---|---|---|
 | Tree | `draft`, `plan` — **section handles** `dc<id>` / `pe<id>` / `¶…` | the reading-order span under the ancestor heading | the reference ring (Cited / Cross-refs / Notes / Claims) |
-| Document | `paper`, `patent`, `datasheet`, `cfp`, `edgar` — whole handle or chunk handle | whole: the cluster map; chunk: the split within its cluster | the link neighborhood of the ref |
-| Link | everything else with a handle — `memory`, `finding`, `quest`, `todo`, `taxon`, `concept`, `component`, `structure`, `gripe`, `folder`, `job`, … | the card (title → gist → body) | the link neighborhood by ring |
+| Document | `paper`, `patent`, `datasheet`, `cfp`, `edgar`, `web`, `youtube` — whole handle or chunk handle | whole: the cluster map; chunk: the split within its cluster | the link neighborhood of the ref |
+| Link | everything else with a handle — `memory`, `finding`, `quest`, `todo`, `taxon`, `concept`, `component`, `structure`, `gripe`, `folder`, `job`, `websearch`, `perplexity-*`, … | the card (title → gist → body) | the link neighborhood by ring |
 | Skill | `skill` (`sk:<slug>` or a section `sk:<slug>~N`) | whole: the **section map** — one `~N` row per H2, never the body; section: the reading-order span | the wikilink ring — `see-also` out, `see-also-by` in |
+
+A **chunk eye** (the split within a cluster) exists only where chunks
+mint a handle — `paper`/`patent`/`datasheet`/`cfp`/`edgar` chunks do;
+`web`/`youtube` chunks don't (gr702962: their cluster-map rows print
+`<ref>~<ord>` selectors instead). Read one with a plain `get` —
+`get(kind='web', id='wb<N>~3')`; under `extent=` that selector is
+refused, because an eye focuses the *whole* ref.
 
 A skill is an H2 tree, so its eye is a tree eye (gr568475): focus one
 section with `sk:<slug>~N` and the `fisheye` rung renders the same
@@ -103,8 +110,8 @@ fetches the body (`full=true` is the deprecated spelling).
 `Unsupported`, with the reason: a **whole draft or plan** (the eye
 focuses one section — `view='toc'` lists the `dc<id>` handles); a
 **measure** (a row of a run, not a node — fish-eye its paper or quest);
-**`web`** and the other query/URL-addressed providers (`calc`, `math`,
-`youtube`, …: no stored ref, no handle); **`md`**
+the stateless compute providers (`calc`, `math`,
+`provenance`, `random`: no stored ref, no handle); **`md`**
 (file-backed, no refs row); **`tag`** (a vocabulary row). **`python`**
 has its own code eye (callers/callees/module members/tests at the same
 rungs — `precis-python-help`).

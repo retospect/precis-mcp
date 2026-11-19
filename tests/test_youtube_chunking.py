@@ -356,8 +356,8 @@ def test_dispatch_chunk_handle_rewrite_and_nc_guard(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
     """The dispatcher's chunk-handle → ``slug~ord`` rewrite, youtube
-    flavour: youtube is a codeless kind — its chunks mint no universal
-    handle, so ``<video>~N`` IS the address and a bare one
+    flavour: youtube's chunks mint no universal handle (its record code
+    is ``yt``, gr702962), so ``<video>~N`` IS the address and a bare one
     self-identifies through dispatch to that chunk. ``nc<id>`` is the
     *news* chunk code; on a youtube chunk the kind check refuses it
     rather than misrouting."""

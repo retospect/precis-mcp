@@ -51,7 +51,7 @@ GOLDEN_CODELESS = (
     "— linked (1 hop) —\n"
     "Notes & links:\n"
     "  related-to (2):\n"
-    "    websearch:characteristic-length-nanoparticles — ℓc search\n"
+    "    math:characteristic-length-nanoparticles — ℓc search\n"
     "    <B> — XPS profiling"
 )
 
@@ -385,7 +385,7 @@ def test_memory_1hop_codeless_neighbour(hub: Hub) -> None:
     store = hub.live_store
     mem = store.insert_ref(kind="memory", slug=None, title="Focus")
     cache = store.insert_ref(
-        kind="websearch", slug="characteristic-length-nanoparticles", title="ℓc search"
+        kind="math", slug="characteristic-length-nanoparticles", title="ℓc search"
     )
     paper = store.insert_ref(kind="paper", slug="wenzel16", title="XPS profiling")
     for near in (cache, paper):

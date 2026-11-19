@@ -89,6 +89,7 @@ from precis.utils.entity_courtesy import (
     entity_handles,
     safe_entity_states,
 )
+from precis.utils.inject_scan import cache_body_notice
 from precis.utils.link_tag_ops import (
     CONSIDERED_VERDICT_LABELS,
     LinkWhy,
@@ -100,6 +101,20 @@ from precis.workers.working_set import Extent
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+
+#: Fetch caches with record eyes. The verdict is stored on cache_state.
+_CACHE_EYE_KINDS = frozenset(
+    {
+        "chem",
+        "perplexity-reasoning",
+        "perplexity-research",
+        "semanticscholar",
+        "web",
+        "websearch",
+        "wikipedia",
+        "youtube",
+    }
+)
 
 #: Reading-order tree kinds — routed to the spatial fisheye.
 _TREE_KINDS: frozenset[str] = frozenset({"draft", "plan"})
@@ -118,8 +133,11 @@ _TREE_KINDS: frozenset[str] = frozenset({"draft", "plan"})
 #: ``edgar`` is here by the matching human call: a long SEC filing with
 #: section-labelled body chunks is the same shape as a patent, so an
 #: ``eg<id>`` eye gets the cluster-TOC renderer, not the link-kind note one.
+#: ``youtube`` joined for gr702962 the same way: a fetched transcript is a
+#: chunked document with no heading tree. (websearch / perplexity-* stay
+#: link-kind eyes — a search answer is a note-shaped response, not a doc.)
 _DOC_KINDS: frozenset[str] = frozenset(
-    {"paper", "patent", "web", "datasheet", "cfp", "edgar"}
+    {"paper", "patent", "web", "datasheet", "cfp", "edgar", "youtube"}
 )
 
 _SUMMARY_CAP = 300
@@ -307,8 +325,27 @@ def render_eye(
         from precis.utils.fisheye import render_fisheye
 
         return render_fisheye(store, kind=kind, handle=handle, extent=ext)
+    notice = ""
+    if kind in _CACHE_EYE_KINDS and not is_chunk:
+        cached = store.get_cache_entry_by_ref_id(kind=kind, ref_id=pk)
+        if cached is not None:
+            ref, cache = cached
+            withhold, notice = cache_body_notice(cache.meta)
+            if withhold:
+                head = _head(ref, kind, _head_chips(store, ref, kind))
+                sections = _rings(
+                    store,
+                    ref.id,
+                    kind,
+                    ext,
+                    recall=False,
+                    expand=q,
+                    ring=filt,
+                    handle=handle,
+                )
+                return "\n\n".join([head, notice, *sections])
     if kind in _DOC_KINDS:
-        return _render_doc_eye(
+        body = _render_doc_eye(
             store,
             handle,
             kind,
@@ -318,9 +355,11 @@ def render_eye(
             expand=q,
             ring=filt,
         )
-    return _render_note_eye(
-        store, handle, kind, ext, recall=recall, expand=q, ring=filt
-    )
+    else:
+        body = _render_note_eye(
+            store, handle, kind, ext, recall=recall, expand=q, ring=filt
+        )
+    return f"{notice}\n\n{body}" if notice else body
 
 
 #: The suffix that adds the similarity rung to any extent.
@@ -390,9 +429,9 @@ def _mirror_name(ref: Any) -> str:
 def _handle_with_file(kind: str, ref: Any, ref_id: int) -> str:
     """The handle, with the mirror filename beside it when the ref has one:
     ``me4641 (worker_busy_vs_starved_diagnosis.md)``. A code-less kind
-    (``handle_registry.CODELESS_KINDS``: websearch, web, perplexity-*, …)
+    (``handle_registry.CODELESS_KINDS``: calc, math, …)
     is addressed by ``<kind>:<slug>``, the form ``get`` resolves, so a memory
-    whose ring cites a websearch cache renders instead of raising
+    whose ring cites a codeless cache renders instead of raising
     (gr476896)."""
     hid = handle_registry.try_format(kind, ref_id)
     if hid is None:
@@ -885,8 +924,14 @@ def _render_skill_eye(
 
 
 def _chunk_handle(kind: str, block: Any) -> str:
-    """The block's universal ``pc<id>`` chunk handle."""
-    return handle_registry.format_handle(kind, int(block.id), chunk=True)
+    """The block's universal ``pc<id>`` chunk handle — or, for a doc kind
+    whose chunks mint no handle (``web`` / ``youtube``, gr702962: no
+    chunk codes until refresh keeps chunk ids stable), the
+    ``<ref-handle>~<ord>`` selector that drills the same block."""
+    h = handle_registry.try_format(kind, int(block.id), chunk=True)
+    if h is not None:
+        return h
+    return f"{handle_registry.format_handle(kind, int(block.ref_id))}~{block.ord}"
 
 
 def _preview_text(text: str) -> str:
@@ -912,8 +957,9 @@ def _chunk_summary(block: Any) -> str:
 
 
 def _cluster_label(kind: str, bucket: list[Any], kws: list[str]) -> str:
-    """One collapsed label line for a cluster — its lead ``pc`` handle, the span
-    size, and the keyword label. Drill it by focusing the handle."""
+    """One collapsed label line for a cluster — its lead chunk selector
+    (``pc<N>``, or ``<ref>~<ord>`` where chunks mint no handle), the span
+    size, and the keyword label."""
     lead = _chunk_handle(kind, bucket[0])
     span = f" +{len(bucket) - 1}" if len(bucket) > 1 else ""
     label = ", ".join(kws) or _chunk_summary(bucket[0]) or "…"
@@ -924,9 +970,22 @@ def _cluster_label(kind: str, bucket: list[Any], kws: list[str]) -> str:
 
 def _cluster_map(kind: str, clusters: list[tuple[list[Any], list[str]]]) -> str:
     """A whole-doc eye: the cluster map — one label row per cluster, no
-    verbatim text. Drill any cluster by focusing its ``pc`` handle."""
+    verbatim text. Drill any cluster by focusing its chunk handle; on a
+    doc kind whose chunks mint no handle (``web`` / ``youtube``,
+    gr702962) the ``<ref>~<ord>`` rows are plain-get selectors — under
+    ``extent=`` they are refused, so the header names the call that
+    works (review td707055)."""
     shown = clusters[:_MAP_CLUSTER_CAP]
-    lines = [f"— {len(clusters)} clusters (focus a pc handle to open one) —"]
+    if handle_registry.try_format(kind, 0, chunk=True) is not None:
+        drill = "focus a chunk handle to open one"
+    elif shown:
+        drill = (
+            f"read a row with get(kind={kind!r}, "
+            f"id='{_chunk_handle(kind, shown[0][0][0])}')"
+        )
+    else:
+        drill = f"read a row with get(kind={kind!r}, id='<ref>~<ord>')"
+    lines = [f"— {len(clusters)} clusters ({drill}) —"]
     lines.extend(_cluster_label(kind, bucket, kws) for bucket, kws in shown)
     if len(clusters) > len(shown):
         lines.append(f"  +{len(clusters) - len(shown)} more clusters")
@@ -970,7 +1029,10 @@ def _fisheye_split(
     for b in home_bucket[lo:hi]:
         # ``pc<N> ~<ord>`` like the ``#`` chunk-get header — the decimal
         # handle alone hides the block's ``~ord`` selector (gr520328).
-        h = f"{_chunk_handle(kind, b)} ~{b.ord}"
+        # The ``<ref>~<ord>`` fallback form already carries its ord.
+        h = _chunk_handle(kind, b)
+        if not h.endswith(f"~{b.ord}"):
+            h += f" ~{b.ord}"
         if b.ord == eye_ord:
             if ext is Extent.SUMMARY:
                 lines.append(f"▸ {h} [{b.chunk_kind}]  {_chunk_summary(b)}")
@@ -2675,10 +2737,22 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
             continue
         seen.add(rid)
         kept.append(ref)
-        gist = _cap(" ".join((block.text or "").split()), _CHUNK_SUMMARY_CAP)
+        cached = (
+            store.get_cache_entry_by_ref_id(kind=kind, ref_id=rid)
+            if kind in _CACHE_EYE_KINDS and ref.kind == kind
+            else None
+        )
+        withhold, notice = cache_body_notice(cached[1].meta if cached else None)
+        gist = (
+            ""
+            if withhold
+            else _cap(" ".join((block.text or "").split()), _CHUNK_SUMMARY_CAP)
+        )
         lines.append(
             f"  {_neighbor_label(ref, rid, chips=chips.get(rid, ''))}  ({1 - dist:.2f})"
         )
+        if notice:
+            lines.append(f"    {notice.splitlines()[0]}")
         if gist:
             lines.append(f"    {gist}")
         if len(seen) == _RECALL_K:

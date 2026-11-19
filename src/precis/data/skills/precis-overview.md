@@ -178,7 +178,9 @@ Pass `q=` (or `id=`), get text back. No agent-side slugs.
 
 Paid tools cache automatically. Pro subscribers can import a free
 web-UI answer at $0 via `put(mode='import')` — see
-`precis-perplexity-help`. See `precis-cache` for TTLs.
+`precis-perplexity-help`. See `precis-cache` for TTLs. Cached answers
+carry universal handles (`yt`/`wb`/`wx`/`rr`/`rz`, `wp`/`ss`/`ch` for
+wikipedia/chem/semanticscholar) — cite them in a memory to auto-link.
 
 ## What's the special discovery kind?
 ## How do I stumble into something I don't know to ask for?

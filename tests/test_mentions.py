@@ -66,11 +66,6 @@ def test_linkify_kinds_cover_handle_registry() -> None:
         "math",
         "provenance",
         "random",
-        "web",
-        "youtube",
-        "websearch",
-        "perplexity-research",
-        "perplexity-reasoning",
     }
 
 
