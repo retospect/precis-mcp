@@ -1217,7 +1217,8 @@ def make_cite_key(
         taken: Set / iterable of cite_keys already in the corpus that
             share the prefix. Pass the result of
             ``SELECT id_value FROM ref_identifiers WHERE
-            id_kind='cite_key' AND id_value LIKE :prefix || '%'``.
+            id_kind IN ('cite_key', 'cite_key_alias') AND
+            id_value LIKE :prefix || '%'``.
 
     Raises:
         CiteKeyOverflow: defensive only — the suffix space rolls

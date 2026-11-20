@@ -47,6 +47,10 @@ relations excluding ``pres`` also refuse. The original chunks remain on
 the tombstone, and the new presentation retains a stable cite key even
 when the paper had none.
 
+Cite-key and notice-slug allocation count aliases as occupied to preserve
+existing citations. The partial trigram index on ``ref_identifiers.id_value``
+covers both identifier kinds so these prefix probes are eligible to use it.
+
 Discovery layer (F20)
 ---------------------
 

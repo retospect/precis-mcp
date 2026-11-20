@@ -259,14 +259,13 @@ def resolve_cite_key(
     """Pick the next free ``cite_key`` for a given prefix.
 
     Probes ``ref_identifiers`` for keys starting with ``cite_key_prefix``
-    and asks :func:`precis.identity.make_cite_key` to choose the next
-    free suffix. ``cite_key_alias`` rows count as taken too (gr521515):
-    a rekeyed paper's old key is reserved — minting it afresh would
-    silently retarget every ``\\cite{<old>}`` onto the new ref.
+    and passes the occupied keys to :func:`_next_cite_key` to choose the
+    next free suffix. ``cite_key_alias`` rows reserve old keys so existing
+    ``\\cite{<old>}`` references keep resolving to the original ref (gr521515).
 
-    The probe is cheap thanks to the ``cite_key_trgm`` index on
-    ``ref_identifiers (id_value)``. The set of "taken" keys is
-    typically small (papers from the same first-author + year).
+    The kind filter matches the widened partial predicate of
+    ``ref_identifiers_cite_key_trgm_idx``, making the GIN index eligible
+    for the LIKE probe (gr732478).
     """
     if not cite_key_prefix:
         raise ValueError("cite_key_prefix must be non-empty")
@@ -278,10 +277,6 @@ def resolve_cite_key(
     rows = conn.execute(sql, (cite_key_prefix + "%",)).fetchall()
     taken = {row[0] for row in rows}
 
-    # ``make_cite_key`` re-derives the prefix from authors+year. We
-    # already have the prefix string; the cleanest path is to call
-    # the helper with the raw inputs, but since the prefix is what
-    # we have, we simulate the suffix progression here.
     return _next_cite_key(cite_key_prefix, taken)
 
 
