@@ -475,21 +475,17 @@ refuses an unknown slug with the valid list.
 
 To list or count the papers carrying a worker/enrichment stamp —
 the `refs.meta` keys a pass writes to stop re-claiming a paper
-(`context_sentence_failed`, `s2_enriched_at`, …):
+(`s2_enrich_failed`, `s2_enriched_at`, …):
 
 ```python
-search(kind="paper", args={"stamp": "context_sentence_failed"})
+search(kind="paper", args={"stamp": "s2_enrich_failed"})
 ```
 
 With no `q=` this is a paged listing — handle, truncated stamp value,
 title — with the cohort total in the headline; with `q=` it restricts
 the hits to stamped papers. `edit(kind='paper', id=…,
 args={'clear_stamp': '<key>'})` (precis-paper-ref-help) removes the
-stamp to re-open the pass. The per-paper state also reads off the card:
-`get(view='meta')` shows `context: <sentence>` plus its
-`context_sentence_ok` stamp (version + `at` = when the pass wrote it),
-else the `context_sentence_no_abstract`/`context_sentence_failed`
-stamp with version + `at`.
+stamp to re-open the pass.
 
 ## List unread papers / papers ingested since a date
 ## Which papers did a read-paper pass never close?

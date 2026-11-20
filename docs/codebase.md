@@ -185,6 +185,10 @@ queue order and model routes stay unchanged. Readiness requires matching
 artifacts. Other enrichment stages refuse targeted requests where the worker
 cannot provide a revision-specific receipt.
 
+Paper cards draw on the publisher abstract, a labelled generated abstract,
+or leading body prose. New nanopub approvals use chunk-anchored passages.
+RDF and LaTeX preserve context literals already frozen into publish rows.
+
 ## Subsystems (where the code lives)
 
 | Box | Code | One-line |

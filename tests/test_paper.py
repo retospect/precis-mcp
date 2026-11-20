@@ -492,67 +492,24 @@ class TestOverview:
         resp = handler.get()
         assert "no papers ingested" in resp.body
 
-    def test_context_sentence_state_on_the_card(
+    def test_paper_card_ignores_retired_context_stamp(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        """gr635810: the overview (and so its ``view='meta'`` alias)
-        shows the context_sentence pass state — the written sentence
-        with its ``context_sentence_ok`` stamp (when the pass wrote it),
-        else the ``no_abstract``/``failed`` stamp with version + ``at``
-        — so a cleared stamp's re-do is verifiable without prod SQL."""
         ref_id = _seed_paper(store, slug="ctxa")
         store.update_ref(
-            ref_id, meta_patch={"context_sentence": "This paper measures nitrate."}
-        )
-        body = handler.get(id="ctxa").body
-        assert "context: This paper measures nitrate." in body
-        assert "context_sentence_failed" not in body
-        assert "context_sentence_no_abstract" not in body
-        # A legacy sentence written before the ok stamp existed shows no
-        # stamp line — the card degrades, it doesn't invent a time.
-        assert "context_sentence_ok" not in body
-
-        # td652030: the success stamp the pass now writes beside the
-        # sentence renders like the failure stamps — version + ``at``.
-        store.update_ref(
-            ref_id,
-            meta_patch={"context_sentence_ok": {"v": 1, "at": "2026-11-12T04:30:00Z"}},
-        )
-        body = handler.get(id="ctxa").body
-        assert "context: This paper measures nitrate." in body
-        assert "context_sentence_ok: v1 at 2026-11-12T04:30:00.000000Z" in body
-
-        ref_id = _seed_paper(store, slug="ctxb")
-        store.update_ref(
             ref_id,
             meta_patch={
-                "context_sentence_no_abstract": {
-                    "v": 1,
-                    "at": "2026-11-11T06:03:11.123456Z",
-                }
+                "abstract": "Publisher abstract on nitrate.",
+                "context_sentence": "Legacy context about nitrate.",
+                "context_sentence_ok": {"v": 1, "at": "2026-11-12T04:30:00Z"},
+                "context_sentence_failed": True,
+                "context_sentence_no_abstract": True,
             },
         )
-        body = handler.get(id="ctxb").body
-        assert "context_sentence_no_abstract: v1 at 2026-11-11T06:03:11.123456Z" in body
-
-        store.update_ref(
-            ref_id,
-            meta_patch={
-                "context_sentence_failed": {"v": 1, "at": "2026-11-11T07:00:00Z"}
-            },
-        )
-        body = handler.get(id="ctxb").body
-        assert "context_sentence_failed: v1 at 2026-11-11T07:00:00.000000Z" in body
-        # A legacy bare ``true`` stamp reads as version 0 — the same
-        # downgrade ``_claim`` applies (gr514381).
-        store.update_ref(ref_id, meta_patch={"context_sentence_failed": True})
-        body = handler.get(id="ctxb").body
-        assert "context_sentence_failed: v0" in body
-
-        # The cohort query the card names: same key, verbatim, through
-        # the ``args={'stamp': …}`` door (gr517627).
-        body = handler.search(stamp="context_sentence_failed").body
-        assert "1 paper entry stamped 'context_sentence_failed'" in body
+        body = handler.get(id="ctxa").body
+        assert "Publisher abstract on nitrate." in body
+        assert "Legacy context about nitrate." not in body
+        assert "context_sentence" not in body
 
 
 # ---------------------------------------------------------------------------

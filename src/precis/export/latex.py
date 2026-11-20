@@ -2079,11 +2079,10 @@ def _paper_contiguity_label(
 
 
 def _frozen_context_sentences(pk: int, ctx: _Ctx) -> dict[int, str]:
-    """``{chunk_id: context_sentence}`` off the hub's live
-    ``nanopub_publish`` row's frozen grounding payload (``docs/backlog/
-    paper-context-sentence.md``) — empty when there is no publish row, or
-    its payload carries no sentence. Same degrade policy as
-    :func:`_frozen_contiguity_flags`."""
+    """Map quoted chunk IDs to context from historical publish rows.
+
+    Uses the same degrade policy as :func:`_frozen_contiguity_flags`.
+    """
     fn = getattr(ctx.store, "nanopub_publish_row", None)
     if not callable(fn):
         return {}
@@ -2101,30 +2100,15 @@ def _frozen_context_sentences(pk: int, ctx: _Ctx) -> dict[int, str]:
     return out
 
 
-def _paper_context_sentence(
-    paper_ref_id: int, handles: list[str], frozen: dict[int, str], ctx: _Ctx
-) -> str | None:
-    """The paper-context sentence for a source paper (``docs/backlog/
-    paper-context-sentence.md``) — the frozen copy off the hub's publish
-    row (:func:`_frozen_context_sentences`) keyed by any of this paper's
-    quoted ``chunk_id``s, else the live ``refs.meta['context_sentence']``.
-    ``None`` when neither is set — the caller renders no Context: line
-    (population is a deliberate backfill + lazy enqueue, not corpus-wide,
-    so an unset sentence is the common case, not an error)."""
+def _paper_context_sentence(handles: list[str], frozen: dict[int, str]) -> str | None:
+    """Find historical context by the quoted chunk IDs for this paper."""
     for h in handles:
         parsed = handle_registry.parse(h)
         if parsed is not None and parsed[0] == "paper" and parsed[1]:
             sentence = frozen.get(parsed[2])
             if sentence:
                 return sentence
-    if ctx.store is None:
-        return None
-    try:
-        ref = ctx.store.fetch_refs_by_ids([paper_ref_id]).get(paper_ref_id)
-    except Exception:  # pragma: no cover — store hiccup
-        return None
-    sentence = (getattr(ref, "meta", None) or {}).get("context_sentence")
-    return sentence if isinstance(sentence, str) and sentence.strip() else None
+    return None
 
 
 def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
@@ -2201,13 +2185,8 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
         if key:
             parts.append(f"~\\cite{{{key}}}")
         lines.append("".join(parts))
-        # Paper-context sentence (paper-context-sentence.md), roman text
-        # under the title line — visually distinct from the italic quoted
-        # passages below, so a reader never mistakes added context for a
-        # verbatim excerpt.
-        sentence = _paper_context_sentence(
-            edge.paper_ref_id, handles, frozen_context, ctx
-        )
+        # Historical context appears separately from the verbatim passages.
+        sentence = _paper_context_sentence(handles, frozen_context)
         if sentence:
             lines.append(f"Context: {_render_gap(' '.join(sentence.split()), ctx)}")
         # The full grounding passage per excerpt, in reading order — the

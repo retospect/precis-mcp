@@ -838,7 +838,7 @@ class TestUpgradeMergesIngestMeta:
         """gr514381: a bodiless ingest (no ord >= 0 chunks; its card chunk
         collides on ``(ref_id, ord)``) writes nothing but the meta fold —
         the ``updated_at`` bump is the only record that an abstract just
-        landed, and the ``context_sentence`` heal arms key on it."""
+        landed."""
         ref_id = self._seed_stub(store, {})
         before = store.fetch_refs_by_ids([ref_id])[ref_id].updated_at
 

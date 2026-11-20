@@ -494,7 +494,7 @@ the caller can route around.
 ## A worker stamped a paper as done/failed — how do I re-run it?
 
 ```python
-edit(kind="paper", id=[101, 102, 103], args={"clear_stamp": "context_sentence_no_abstract"})
+edit(kind="paper", id=[101, 102, 103], args={"clear_stamp": "s2_enriched_at"})
 ```
 
 Some worker passes stamp a converged/skip key into `refs.meta` and stop
@@ -503,8 +503,7 @@ ref or a list; the ack reports, per key, refs cleared vs already clear,
 each cleared ref getting a `metadata_edited` ref_event. `dry_run`
 previews.
 
-Only allow-listed retry stamps clear — `context_sentence_failed`,
-`context_sentence_no_abstract`, `s2_enriched_at`, `s2_enrich_failed`,
+Only allow-listed retry stamps clear — `s2_enriched_at`, `s2_enrich_failed`,
 `llm_band_failures`, `openalex` — anything else is refused naming the
 allowed set. There is no generic `refs.meta` delete door, and
 `clear_stamp` combines with no other edit field.

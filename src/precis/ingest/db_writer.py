@@ -1116,16 +1116,8 @@ def _merge_ingest_meta(
     Body-owned keys (:data:`_BODY_OWNED_META_KEYS`) are replaced. Every
     other key (abstract, journal, keywords, ...) only fills a gap: a stub's
     S2/Crossref metadata is richer than what Marker scrapes off a PDF, so
-    an existing non-empty value always wins.
-
-    The write bumps ``updated_at``: a folded ``abstract`` is content
-    arriving, and readers that key on "ref changed since T" (the
-    ``context_sentence`` heal arms, which compare ``updated_at`` and chunk
-    ``created_at`` against a stamp's ``at`` — gr514381) must see it. A
-    bodiless ingest is exactly the case no chunk ``created_at`` covers:
-    this ref's card-only ``paper.chunks`` collide on ``(ref_id, ord)`` and
-    insert nothing, so the timestamp is the ONLY signal the abstract
-    landed.
+    an existing non-empty value always wins. The write bumps ``updated_at``
+    even when an abstract arrives without new body chunks.
     """
     incoming = incoming or {}
     row = conn.execute(

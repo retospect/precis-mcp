@@ -1521,7 +1521,6 @@ def store() -> Iterator[Store]:
     from precis import settings as _settings
     from precis.budget import meter as _budget_meter
     from precis.workers import _claim as _claim_queries
-    from precis.workers import context_sentence as _context_sentence
 
     _budget_meter.bind_store(None)
     _settings.invalidate()
@@ -1550,10 +1549,6 @@ def store() -> Iterator[Store]:
     # tier), not Store — a parked floor would otherwise keep the next
     # test's sweep scanning above the TRUNCATEd corpus's ids.
     _claim_queries.invalidate_claim_frontiers()
-    # Same for context_sentence's stamped-ref set (gr514381): a 900s TTL
-    # holding last test's stamped ref_ids would shadow newly stamped refs
-    # out of the scheduled-sweep cohort.
-    _context_sentence.invalidate_stamped_ids()
     s = Store.connect(_active_dsn())
     dbname = str(conninfo_to_dict(_active_dsn()).get("dbname") or "")
     # Every pre-existing client backend, idle or not: one opened by an earlier

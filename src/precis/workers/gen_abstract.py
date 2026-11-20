@@ -16,8 +16,7 @@ Contract:
   never mistaken for the published abstract.
 * **Never from bylines/mastheads.** The input is built from body
   ``paragraph`` chunks only, dropping end-matter, front-matter furniture
-  and any paragraph that is not prose (:func:`body_input`, reusing
-  :mod:`precis.workers.context_sentence`'s guards). A body with too little
+  and any paragraph that is not prose (:func:`body_input`). A body with too little
   prose is never sent to the model — the ref is benched instead — and the
   prompt lets the model decline with :data:`NO_SUMMARY`.
 * **The publisher abstract wins.** The claim excludes any ref that has an
@@ -26,8 +25,6 @@ Contract:
   :func:`write_gen_abstract` rechecks under the ``refs`` row lock so a
   fill that lands mid-generation is never re-superseded by the pending
   write.
-* **Replaces** the retired ``context_sentence`` as the "what is this paper"
-  summary for abstract-less papers.
 
 Claim/write shape mirrors :mod:`precis.workers.card_describe`: a
 single-runner advisory lock scoped to the claim, a claim-time attempt lease
@@ -49,11 +46,6 @@ from precis.store.advisory import try_xact_advisory_lock
 from precis.utils.db_retry import retry_locked
 from precis.utils.llm.router import DispatchError
 from precis.workers import ref_lease
-from precis.workers.context_sentence import (
-    _FRONT_MATTER_RE,
-    _end_matter,
-    usable_context,
-)
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -123,6 +115,85 @@ _INSTRUCTION = (
 )
 
 
+_ABSTRACT_CHARS = 1500
+
+#: Minimum words the context block must carry BEYOND the paper's own title
+#: for a method sentence to be groundable in it, and the minimum share of
+#: those words that must be ordinary lowercase prose. A masthead (title +
+#: byline + affiliations) clears neither: it is proper nouns, initials and
+#: postcodes. Calibrated on the 841 prod grounding-source papers
+#: (2026-09-18) — the 53 with a real ``card_abstract`` chunk score 0.76 to
+#: 0.94, the first-body-chunk fallbacks have a median of 0.38, and the four
+#: mastheads that triggered gr346458 score 0.08 to 0.23. 0.45 sits in that
+#: gap, well clear of every genuine abstract in the cohort.
+_MIN_CONTEXT_WORDS = 25
+_MIN_PROSE_FRACTION = 0.45
+
+#: Markup stripped before the prose measurement — the ``<sup>`` runs around
+#: author affiliation marks otherwise read as lowercase prose words and
+#: score a byline as an abstract (observed on ref 42558, 0.08 -> 0.40).
+_TAG_RE = re.compile(r"<[^>]{1,40}>")
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
+
+
+def usable_context(title: str, abstract: str) -> bool:
+    """Check for enough ordinary prose beyond the title to ground a summary.
+
+    The word count and lowercase fraction reject mastheads and bylines
+    before model dispatch. Strip markup so affiliation tags do not count
+    as prose.
+    """
+    title_words = {w.lower() for w in _WORD_RE.findall(title or "")}
+    words = [
+        w
+        for w in _WORD_RE.findall(_TAG_RE.sub(" ", (abstract or "")[:_ABSTRACT_CHARS]))
+        if w.lower() not in title_words
+    ]
+    if len(words) < _MIN_CONTEXT_WORDS:
+        return False
+    prose = sum(1 for w in words if w.islower() and len(w) >= 2)
+    return prose / len(words) >= _MIN_PROSE_FRACTION
+
+
+_HEARSAY_ROLE_RE = re.compile(
+    r"reference|bibliograph|related.work|prior.art|background|"
+    r"state.of.the.art|acknowledg|literature.cited|funding",
+    re.IGNORECASE,
+)
+#: Citation-shaped fragments: ``1234, 56-78`` volume/page runs and ``1999)``
+#: year closers. A reference list has many per chunk, prose has ~none —
+#: the backstop for a bibliography chunk carrying no section role.
+_CITATION_RE = re.compile(
+    r"\b\d{1,4}\s*[,:]\s*\d{1,5}\s*[–-]\s*\d{1,5}\b|\b(?:19|20)\d{2}\)|\bet al\b"
+)
+
+
+def _end_matter(text: str, section_path: Any) -> bool:
+    """True for a hearsay/end-matter chunk — by its section role
+    (:data:`_HEARSAY_ROLE_RE`), or, for an un-sectioned chunk, by its
+    density of citation fragments."""
+    heading = " ".join(str(h) for h in (section_path or []))
+    if _HEARSAY_ROLE_RE.search(heading):
+        return True
+    return len(_CITATION_RE.findall(text)) >= 3
+
+
+#: Front-matter furniture a lead paragraph must not contribute — licence
+#: and copyright lines, correspondence/keywords blocks, received/accepted
+#: date lines, affiliation runs. Belt over the per-paragraph
+#: :func:`usable_context` check: a long licence paragraph could scrape
+#: the word floor, and none of it is method content (gr346458's byline
+#: cohort, generalized).
+_FRONT_MATTER_RE = re.compile(
+    r"^\W*(?:"
+    r"©|copyright|licen[cs]e|creative\s+commons|all\s+rights\s+reserved|"
+    r"correspondence|keywords?|received|accepted|revised|"
+    r"(?:department|university|institut\w*|laborator\w*)\s*(?:,|of\b)"
+    r")",
+    re.IGNORECASE,
+)
+
+
 def _section_heading(section_path: Any) -> str:
     return " ".join(str(h) for h in (section_path or []))
 
@@ -135,7 +206,7 @@ def body_input(paragraphs: list[tuple[str, Any]], title: str) -> str:
     Drops end-matter (references, acknowledgements, citation-dense runs),
     front-matter furniture (licence/correspondence/affiliation lines) and
     any paragraph that does not read as prose
-    (:func:`~precis.workers.context_sentence.usable_context`) — so a
+    (:func:`usable_context`) — so a
     byline or masthead can never reach the model. Budget: the lead of the
     body, then paragraphs under a results-bearing heading."""
     lead: list[str] = []

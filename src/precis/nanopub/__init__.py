@@ -115,16 +115,10 @@ Slices 4-5 — publish path (POST gated, CLI-only):
     the approved passages (NOT at prefill — that is the pre-edit
     candidate set); :mod:`.assemble` emits ``precis:excerptsContiguous``
     on the source node (DOI URL / SEC archive URL) for a >=2-grounding source only.
-  - *Paper context* — :mod:`precis.workers.context_sentence` writes ONE
-    neutral method/evidence sentence to ``refs.meta['context_sentence']``
-    (code-enforced word cap + claim-strength blocklist + no attribution
-    preamble, regenerate once then drop). Emitted as
-    ``precis:sourceContext``; absent is always legal — minting never
-    blocks on it.
-  Both render in the LaTeX hub footnote (``precis.export.latex``),
-  preferring the frozen publish-row copy and falling back to live data,
-  with the context sentence in roman "Context:" text against italic
-  quotes so added context can't be misread as quoted material.
+  The LaTeX hub footnote prefers the frozen contiguity flag, with a
+  live fallback. Historical publish rows that froze a paper context
+  sentence retain it for reproducible RDF and LaTeX rendering. New
+  approvals use the chunk-anchored passages as source evidence.
 - Export appendix — a draft citing a signed/anchored/published hub gets
   a "Published claim artifacts" end-matter section (frozen AIDA
   sentence + trusty URI + status) in both exporters; unminted hubs

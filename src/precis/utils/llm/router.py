@@ -278,7 +278,6 @@ _SUBSCRIPTION_BULK_WORK: frozenset[str] = frozenset(
         "llm_summarize",
         "classify",
         "inject_scan",
-        "context_sentence",
         "stub_rank",
         "paper_glossary",
         "bib_parse",

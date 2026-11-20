@@ -17,6 +17,7 @@ import pytest
 
 from precis.export import latex
 from precis.export.compile import compile_pdf, have_latexmk
+from precis.store import Store
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, mint_hub
 from precis.utils import handle_registry as _handle_registry
@@ -1714,11 +1715,11 @@ def test_footnote_prefers_frozen_contiguity_flag_over_live_recompute(store) -> N
     assert "(contiguous excerpt)" not in out
 
 
-# ── paper-context sentence (docs/backlog/paper-context-sentence.md) ────
+# ── Historical publish-row context ────
 
 
 def _single_quote_hub(
-    store, *, slug: str, title: str, year: int, meta: dict
+    store: Store, *, slug: str, title: str, year: int, meta: dict[str, str]
 ) -> tuple[int, int]:
     """A hub grounded by one paper at one passage. Returns ``(hub, paper)``."""
     hub = mint_hub(store, _HUB_CLAIM)
@@ -1744,7 +1745,7 @@ def _single_quote_hub(
     return hub, paper
 
 
-def test_footnote_renders_context_line_from_live_refs_meta(store) -> None:
+def test_footnote_ignores_live_context_and_renders_passage(store: Store) -> None:
     hub, _paper = _single_quote_hub(
         store,
         slug="latxj01",
@@ -1759,10 +1760,11 @@ def test_footnote_renders_context_line_from_live_refs_meta(store) -> None:
 
     out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
 
-    assert "Context: Computational study; DFT-calculated, no wet-lab work." in out
+    assert "Context:" not in out
+    assert "Only passage text." in out
 
 
-def test_footnote_omits_context_line_when_source_carries_none(store) -> None:
+def test_footnote_omits_context_line_when_source_carries_none(store: Store) -> None:
     hub, _paper = _single_quote_hub(
         store, slug="latxj02", title="No sentence source", year=2006, meta={}
     )
@@ -1772,23 +1774,7 @@ def test_footnote_omits_context_line_when_source_carries_none(store) -> None:
     assert "Context:" not in out
 
 
-def test_footnote_context_sentence_is_latex_escaped(store) -> None:
-    hub, _paper = _single_quote_hub(
-        store,
-        slug="latxj03",
-        title="Escaped-sentence source",
-        year=2007,
-        meta={"context_sentence": "Yield 80% & purity_check # 3 failed."},
-    )
-
-    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
-
-    assert r"Yield 80\% \& purity\_check \# 3 failed." in out
-    # The raw unescaped specials must never reach the .tex output.
-    assert "80% &" not in out
-
-
-def test_footnote_prefers_frozen_context_sentence_over_live_meta(store) -> None:
+def test_footnote_renders_and_escapes_historical_context(store: Store) -> None:
     hub, paper = _single_quote_hub(
         store,
         slug="latxj04",
@@ -1797,9 +1783,11 @@ def test_footnote_prefers_frozen_context_sentence_over_live_meta(store) -> None:
         meta={"context_sentence": "Live sentence, should not render."},
     )
     with store.pool.connection() as conn:
-        (chunk_id,) = conn.execute(
+        chunk = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id = %s", (paper,)
         ).fetchone()
+    assert chunk is not None
+    (chunk_id,) = chunk
     row = store.nanopub_create_publish_row(hub)
     assert store.nanopub_approve(
         row.id,
@@ -1808,14 +1796,17 @@ def test_footnote_prefers_frozen_context_sentence_over_live_meta(store) -> None:
         aida_uri="http://purl.org/aida/latxctxfrozen",
         grounding={
             "passages": [
-                {"chunk_id": int(chunk_id), "context_sentence": "Frozen sentence wins."}
+                {
+                    "chunk_id": int(chunk_id),
+                    "context_sentence": "Yield 80% & purity_check # 3 failed.",
+                }
             ]
         },
     )
 
     out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", _fn_ctx(store))
 
-    assert "Context: Frozen sentence wins." in out
+    assert r"Context: Yield 80\% \& purity\_check \# 3 failed." in out
     assert "Live sentence, should not render." not in out
 
 

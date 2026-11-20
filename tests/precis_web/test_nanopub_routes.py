@@ -102,12 +102,8 @@ def test_stored_conflict_visible_before_approval_without_blocking(
     from precis.taproot.canon import CanonicalClaim
     from precis.taproot.hub import mint_hub
     from precis.utils.handle_registry import format_handle
-    from precis_web import nanopub_render
 
     _stub_dedup_judge(monkeypatch)
-    monkeypatch.setattr(
-        nanopub_render, "_lazy_enqueue_context_sentences", lambda *_: None
-    )
     store = _store(runtime_with_store)
     paper, chunk, sha = _seed_paper(store)
     title = "DFT finds the anisotropy can reach a 400:1 ratio."
@@ -1442,12 +1438,8 @@ def test_coverage_panel_states_the_ledger_and_requests_a_resweep(
         pending_sweep_job_id,
     )
     from precis.workers.service_config import ALL_HOSTS, set_service_prio
-    from precis_web import nanopub_render
 
     _stub_dedup_judge(monkeypatch)
-    monkeypatch.setattr(
-        nanopub_render, "_lazy_enqueue_context_sentences", lambda *_: None
-    )
     store = _store(runtime_with_store)
     paper, chunk, sha = _seed_paper(store)
     title = "Raman spectroscopy shows the D/G ratio rises above 1.2 after annealing at 600 C."
@@ -1585,13 +1577,9 @@ def test_counter_claim_door_mints_links_and_reports_the_outcome(
 
     from precis.taproot import directed
     from precis.workers.conflict_search import CONFLICT_SEARCH_VERSION
-    from precis_web import nanopub_render
     from tests.workers._helpers import seed_chunk
 
     _stub_dedup_judge(monkeypatch)
-    monkeypatch.setattr(
-        nanopub_render, "_lazy_enqueue_context_sentences", lambda *_: None
-    )
     store = _store(runtime_with_store)
     paper, _chunk, _sha = _seed_paper(store)
     hub = _seed_hub(
@@ -1690,12 +1678,8 @@ def test_counter_claim_door_refuses_an_unconfirmed_chunk(
     counter-hub: without a disputes-verdict covered row the door
     refuses, and the form is not offered."""
     from precis.workers.conflict_search import CONFLICT_SEARCH_VERSION
-    from precis_web import nanopub_render
 
     _stub_dedup_judge(monkeypatch)
-    monkeypatch.setattr(
-        nanopub_render, "_lazy_enqueue_context_sentences", lambda *_: None
-    )
     store = _store(runtime_with_store)
     paper, chunk, _sha = _seed_paper(store)
     hub = _seed_hub(store, "A no-conflict claim.", paper, chunk)
@@ -1813,12 +1797,8 @@ def test_coverage_panel_links_the_resweep_job_and_offers_a_sweep_button(
         pending_sweep_job_id,
     )
     from precis.workers.service_config import ALL_HOSTS, set_service_prio
-    from precis_web import nanopub_render
 
     _stub_dedup_judge(monkeypatch)
-    monkeypatch.setattr(
-        nanopub_render, "_lazy_enqueue_context_sentences", lambda *_: None
-    )
     store = _store(runtime_with_store)
     paper, chunk, sha = _seed_paper(store)
     title = "Pores sized for one co-substrate gate membrane transport."

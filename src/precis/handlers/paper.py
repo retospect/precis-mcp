@@ -3184,7 +3184,7 @@ class PaperHandler(Handler):
         chunk_kind: str | list[str] | None = None,
         # ``args={'stamp': '<meta key>'}`` (gr517627): the live refs
         # carrying that ``refs.meta`` worker/enrichment stamp —
-        # ``context_sentence_failed``, ``s2_enriched_at``, … With no
+        # ``s2_enrich_failed``, ``s2_enriched_at``, … With no
         # ``q=`` this is a paged ids+count listing (verifying a stamp
         # cohort without SQL); with ``q=`` it restricts hits via the
         # include channel like ``record_type=``.
@@ -3285,7 +3285,7 @@ class PaperHandler(Handler):
         if stamp is not None and stamp_norm is None:
             raise BadInput(
                 f"args={{'stamp': …}} takes a non-empty meta key, got {stamp!r}",
-                next="search(kind='paper', args={'stamp': 'context_sentence_failed'})",
+                next="search(kind='paper', args={'stamp': 's2_enrich_failed'})",
             )
         # ``args={'min_quartile': 'Qn'}`` — hoisted ahead of the view
         # dispatch like ``stamp_norm`` so view='count' sees the same
@@ -4389,7 +4389,7 @@ class PaperHandler(Handler):
     def _resolve_stamp_scope(self, stamp: str) -> set[int]:
         """``args={'stamp': '<meta key>'}`` → the live refs of this kind
         carrying that ``refs.meta`` key — the worker/enrichment stamps
-        (``context_sentence_failed``, ``s2_enriched_at``, …; gr517627)."""
+        (``s2_enrich_failed``, ``s2_enriched_at``, …; gr517627)."""
         with self.store.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT ref_id FROM refs WHERE kind = %s "
@@ -6687,7 +6687,7 @@ class PaperHandler(Handler):
                 options=sorted(allowed),
                 next=(
                     f"edit(kind='{self.spec.kind}', id=<ref>, args="
-                    "{'clear_stamp': 'context_sentence_no_abstract'})"
+                    "{'clear_stamp': 's2_enriched_at'})"
                 ),
             )
         if id is None:
@@ -6695,7 +6695,7 @@ class PaperHandler(Handler):
                 "clear_stamp needs id= — one ref or a list of them",
                 next=(
                     f"edit(kind='{self.spec.kind}', id=[<ref>, ...], args="
-                    "{'clear_stamp': 'context_sentence_no_abstract'})"
+                    "{'clear_stamp': 's2_enriched_at'})"
                 ),
             )
         ids = list(id) if isinstance(id, list) else [id]
@@ -10316,40 +10316,8 @@ class PaperHandler(Handler):
         return lines
 
     def _overview_meta_lines(self, ref: Ref) -> list[str]:
-        """Extra one-line ``meta`` fields shown on the default overview.
-
-        A paper shows its ``context_sentence`` pass state (gr635810):
-        the written sentence with its ``context_sentence_ok`` stamp,
-        else each failure stamp — ``context_sentence_no_abstract`` /
-        ``context_sentence_failed`` — with its version + ``at``; every
-        outcome carries a timestamp so the card answers "did the pass
-        run, what did it conclude, when" without prod SQL, and a
-        cleared stamp's re-do is verifiable. Sibling kinds with typed
-        meta fields (cfp's ``deadline``/``opens_on``) override."""
-        from precis.workers.context_sentence import (
-            META_FAILED_KEY,
-            META_KEY,
-            META_NO_ABSTRACT_KEY,
-            META_OK_KEY,
-            _stamp_at,
-            _stamp_version,
-        )
-
-        meta = ref.meta or {}
-        lines: list[str] = []
-        sentence = meta.get(META_KEY)
-        if isinstance(sentence, str) and sentence.strip():
-            lines.append(f"context: {sentence}")
-        for key in (META_NO_ABSTRACT_KEY, META_FAILED_KEY, META_OK_KEY):
-            stamp = meta.get(key)
-            if stamp is None:
-                continue
-            detail = f"v{_stamp_version(stamp)}"
-            at = _stamp_at(stamp)
-            if at is not None:
-                detail += f" at {at.strftime('%Y-%m-%dT%H:%M:%S.%fZ')}"
-            lines.append(f"{key}: {detail}")
-        return lines
+        """Extra overview metadata supplied by typed paper subclasses."""
+        return []
 
     def _render_overview(self, ref: Ref) -> Response:
         meta = ref.meta or {}
