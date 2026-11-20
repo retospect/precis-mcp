@@ -180,6 +180,19 @@ _TEX_ANGSTROM_RE = re.compile(
     r"(?:\\[,;:! ]|[~${])*(?:\\r\s*\{A\}|\\(?:AA|Angstrom|angstrom))"
     r"(?![A-Za-z])\}?\$?"
 )
+#: Super/subscript runes a duplicated equation rendering glues the next
+#: rendering's number against (``…Å⁻¹0.15 eV…``). Only a rune run that
+#: actually glues a number — a recognized unit immediately before it, a
+#: digit immediately after — is spaced, never deleted (deletion would
+#: join the digits into a bogus run, ``10⁻³`` → ``103``). Spacing every
+#: rune instead detaches a mantissa from its own exponent and pairs it
+#: with whatever unit follows (``10⁻³ eV`` → ``10 eV``, ``10²³ cm⁻³`` →
+#: ``10 cm``), fabricating quantities the evidence never stated; reword's
+#: grounding canon drops runes and the ``10`` mantissa for the same
+#: reason (:data:`precis.taproot.reword._SUPERSCRIPT_DIGITS`).
+_GLUE_RUNE_RE = re.compile(
+    rf"(?<![\w])({_UNITS_RE_PART})([⁰¹²³⁴⁵⁶⁷⁸⁹⁻₀₁₂₃₄₅₆₇₈₉]+)(?=\d)"
+)
 
 #: A markdown table header cell naming its column's unit: ``[Å]`` / ``(K)``;
 #: ``T [K]/P [kPa]`` names two, the cells then read ``298/100``.
@@ -342,10 +355,13 @@ def normalize_spellings(text: str) -> str:
     form: "2,000 p.p.m." → "2000 ppm", "$1.78\\pm0.11$  Å" → "1.78 and 0.11 Å"
     (inline math unwrapped, LaTeX ``\\pm``/``\\times``/``\\%``/``^\\circ`` mapped
     to symbols, the ``±`` as a two-member list), "$\\mu$ m" / "μm" → "µm",
+    a super/subscript rune run that glues a duplicated equation rendering's
+    number to the previous copy's unit (``Å⁻¹0.15`` → ``Å 0.15``) spaced,
     and the TeX angstrom macro (``6 \\AA``, ``6\\,\\AA``) → "Å"."""
     norm = _THOUSANDS_RE.sub("", _PPM_RE.sub("ppm", text))
     norm = _TEX_MU_RE.sub("µ", norm)
     norm = norm.translate(_ZERO_WIDTH_TRANSLATION)
+    norm = _GLUE_RUNE_RE.sub(r"\1 ", norm)
     norm = _TEX_WRAP_RE.sub(r"\1", norm)
     for rx, sym in _TEX_SYMBOLS:
         norm = rx.sub(sym, norm)

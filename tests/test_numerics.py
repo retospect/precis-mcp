@@ -201,3 +201,39 @@ def test_voltage_range_with_invisible_pdf_glue(glue: str, separator: str) -> Non
     duplicate = rf"$1.2{glue}{separator}{glue}3.4$ \mathrm{{V}}"
     for text in (raw, duplicate, raw + " " + duplicate):
         assert {"1.2 V", "3.4 V"} <= set(extract_numerics_wide(text))
+
+
+def test_wide_reads_zero_width_space_separated_values() -> None:
+    """gr715966: PDF extraction leaves zero-width spaces inside a value
+    and its unit — ``0.50​ eV​ Å​⁻¹​`` still reads as ``0.50 eV``."""
+    assert "0.50 eV" in extract_numerics_wide("0.50\u200b eV\u200b Å\u200b⁻¹\u200b")
+    assert "0.50 eV" in extract_numerics_wide("0.50\u200beV Å⁻¹")
+    assert "0.15 eV" in extract_numerics_wide("0.15\ufeff eV Å⁻¹")
+
+
+def test_wide_reads_number_glued_to_a_superscript_rune() -> None:
+    """gr715966: a duplicated equation rendering glues the next copy's
+    number to the previous copy's superscript unit — ``…Å⁻¹0.15 eV…``
+    still reads ``0.15 eV``."""
+    assert "0.15 eV" in extract_numerics_wide("0.50 eV Å⁻¹0.15 eV Å⁻¹")
+    # A value that is not there still is not there.
+    assert "0.77 eV" not in extract_numerics_wide("0.50 eV Å⁻¹0.15 eV Å⁻¹")
+
+
+def test_wide_reads_duplicated_force_selection_inequalities() -> None:
+    equation = "0.15\u200b eV\u200b Å\u200b⁻¹ ≤ σ < 0.50\u200b eV\u200b Å\u200b⁻¹"
+    tokens = extract_numerics_wide(equation + equation)
+    assert {"0.15 eV", "0.50 eV"} <= set(tokens)
+    assert "0.77 eV" not in tokens
+
+
+def test_script_runes_do_not_join_numeric_digits() -> None:
+    """A mantissa's exponent stays glued to it — spacing the rune run
+    would pair the bare mantissa with the following unit and fabricate
+    a quantity the evidence never stated (``10⁻³ eV`` must not read
+    ``10 eV``; reword's grounding canon drops runes for this reason)."""
+    assert "103 eV" not in extract_numerics_wide("10⁻³ eV")
+    assert "10 eV" not in extract_numerics_wide("10⁻³ eV")
+    assert "10 eV" not in extract_numerics_wide("5×10⁻⁴ eV")
+    assert "10 cm" not in extract_numerics_wide("10²³ cm⁻³")
+    assert "10 J" not in extract_numerics_wide("10² J")

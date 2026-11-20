@@ -623,3 +623,19 @@ def test_evidence_math_dollars_and_plus_minus(world):
     assert _check("displaces one atom 1.78 Å out of plane [pa12]") == []
     assert _check("an uncertainty of 0.11 Å [pa12]") == []
     assert [m.token for m in _check("displaces 1.9 Å [pa12]")] == ["1.9 Å"]
+
+
+def test_zero_width_spaces_and_duplicated_equation_rendering(world):
+    """gr715966 (me715737): the cited inequalities carry zero-width spaces
+    and a duplicated equation rendering — ``0.50​ eV​ Å​⁻¹​0.15​ eV​ Å​⁻¹​``
+    grounds both threshold values."""
+    world[(12, None)] = (
+        "0.50\u200b eV\u200b Å\u200b⁻¹\u200b0.15\u200b eV\u200b Å\u200b⁻¹\u200b"
+    )
+    assert _check("thresholds 0.50 and 0.15 eV Å⁻¹ [pa12]") == []
+    # The same rendering glued without zero-width spaces: the second copy's
+    # number sits against the first copy's superscript unit.
+    world[(12, None)] = "0.50 eV Å⁻¹0.15 eV Å⁻¹"
+    assert _check("thresholds 0.50 and 0.15 eV Å⁻¹ [pa12]") == []
+    # A value the evidence does not carry still flags.
+    assert [m.token for m in _check("threshold 0.77 eV Å⁻¹ [pa12]")] == ["0.77 eV"]

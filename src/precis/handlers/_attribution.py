@@ -27,10 +27,14 @@ against its chunk and, failing that, the whole document: a pinpoint a few
 chunks off is a reading aid, not a mis-sourced number. A chunk range
 (``~18..28``) is checked against every chunk in it. Evidence text is read
 generously: "0.44 and 0.26 eV" grounds both numbers, and a markdown table
-whose header names the unit (``Pore aperture [Å]``) grounds its cells.
-The quantity scan skips exponents in ``10^7 cm/s``, patent reference
-numerals (``216A-N``), thousands counts (``130K molecules``) and shell
-labels (``In 5s orbitals``). A semicolon outside brackets ends a clause: "… at 9nm;
+whose header names the unit (``Pore aperture [Å]``) grounds its cells;
+zero-width spaces PDF extractors leave inside a value or unit
+(``0.50​ eV​ Å​⁻¹​``) are ignored, and a duplicated equation rendering
+gluing the next copy's number to a superscript unit (``…Å⁻¹0.15 eV…``)
+still reads "0.15 eV" (gr715966). The quantity scan skips exponents in
+``10^7 cm/s``, patent reference numerals (``216A-N``), thousands counts
+(``130K molecules``) and shell labels (``In 5s orbitals``). A semicolon
+outside brackets ends a clause: "… at 9nm;
 paper:y shows …" keeps 9 nm with the citation before the semicolon. A
 pinpoint the prose writes
 after a cite, "paper:x (chunks ~97–98: …)", scopes the evidence like
