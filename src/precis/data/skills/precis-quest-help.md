@@ -306,8 +306,8 @@ arrival too.
 get(kind="quest", id=7, view="literature", args={"since": "7d"})
 get(
     kind="quest", id=7, view="literature",
-    args={"since": "2026-11-01", "until": "2026-11-08", "kind": "paper"},
-    # args={"kind": "paper"|"finding"} narrows the serving ref's kind —
+    args={"since": "2026-11-01", "until": "2026-11-08", "kinds": "paper"},
+    # args={"kinds": "paper"|"finding"} narrows the serving ref's kind —
     # absent, the view defaults to papers AND findings; structures and
     # concepts in the quest's service are not literature arrivals
 )
@@ -318,7 +318,8 @@ ref's own `created_at`, and `found by "<query>"` — the lit-search query
 that surfaced it (the edge's `found_by` meta, else the matching
 `signal: lit-search` logbook line, else `-`). The summary counts how
 many arrivals were *newly acquired* (the ref itself minted) inside the
-window. Rows page at 100; when the window holds more, the trailer's
+window. When omitted, `until` defaults to the time of the initial read.
+Rows page at 100; when the window holds more, the trailer's
 `next:` repeats the resolved bounds plus an offset — never a silent cut:
 a page that outgrows the result budget (multibyte titles, or a bound
 context cap) drops whole rows from the tail and the `next:` offset

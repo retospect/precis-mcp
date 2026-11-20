@@ -1848,6 +1848,26 @@ class SearchMixin(RuntimeShape):
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
         )
+        created_by_ref: dict[int, str] = {}
+        if handle_hit is not None and (since is not None or until is not None):
+            # The identity lookup bypasses the store's date filter. Apply
+            # the same window before the pin can consume a pagination slot.
+            ref_id = handle_hit.ref_id
+            pin_ref = (
+                store.fetch_refs_by_ids([ref_id]).get(ref_id)
+                if ref_id is not None
+                else None
+            )
+            if (
+                pin_ref is None
+                or (since is not None and pin_ref.created_at < since)
+                or (until is not None and pin_ref.created_at > until)
+            ):
+                handle_hit = None
+            else:
+                created_by_ref[pin_ref.id] = (
+                    pin_ref.created_at.astimezone(UTC).date().isoformat()
+                )
         pin_rows = 1 if handle_hit is not None else 0
         fetch_exclude_ref_ids = exclude_ref_ids
         if handle_hit is not None and handle_hit.ref_id is not None:
@@ -1927,30 +1947,13 @@ class SearchMixin(RuntimeShape):
             )
         else:
             empty_body = f"no matches across {', '.join(kinds)} for {q!r}{date_suffix}"
-        # gr592952: a date-windowed search dates its rows — each row header
-        # ends with the ref's created date, so the window is verifiable
-        # per row instead of an unlabeled filter the caller must trust.
-        created_by_ref: dict[int, str] = {}
+        # gr592952: date each row so callers can verify the window.
         if since is not None or until is not None:
             for _b, r, _s in results:
                 rid = getattr(r, "id", None)
                 cat = getattr(r, "created_at", None)
                 if rid is not None and cat is not None:
-                    created_by_ref[int(rid)] = cat.date().isoformat()
-            if handle_hit is not None and handle_hit.ref_id is not None:
-                # The pinned identity card is fetched outside the store
-                # query (its ref is excluded from ``results`` so no window
-                # renders it twice — td609888), so date it from the ref
-                # itself: a windowed search's rows ALL carry the
-                # verifiable date, the pin included (td702287 review).
-                pin_ref = store.fetch_refs_by_ids([handle_hit.ref_id]).get(
-                    handle_hit.ref_id
-                )
-                pin_created = getattr(pin_ref, "created_at", None)
-                if pin_created is not None:
-                    created_by_ref[int(handle_hit.ref_id)] = (
-                        pin_created.date().isoformat()
-                    )
+                    created_by_ref[int(rid)] = cat.astimezone(UTC).date().isoformat()
 
         def _row_suffix(hit: Any) -> str:
             d = created_by_ref.get(hit.ref_id) if hit.ref_id is not None else None

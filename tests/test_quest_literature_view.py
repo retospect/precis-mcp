@@ -7,6 +7,7 @@ the matching lit-search logbook line, else ``-``).
 
 from __future__ import annotations
 
+import ast
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -15,6 +16,8 @@ import pytest
 
 from precis.errors import BadInput
 from precis.quest.logbook import append_entry
+from precis.runtime import PrecisRuntime
+from precis.tools import core as mcp_tools
 
 
 def _handler(store: Any) -> Any:
@@ -110,14 +113,23 @@ class TestLiteratureWindow:
         ).body
         assert f"pa{edge}" not in body
 
-    def test_kind_filter(self, store: Any) -> None:
-        h, qid = _quest(store)
+    def test_kind_filter(
+        self,
+        store: Any,
+        runtime_with_store: PrecisRuntime,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(mcp_tools, "_runtime", runtime_with_store)
+        _, qid = _quest(store)
         paper = _paper(store, "k-paper", "A paper")
         finding = store.insert_ref(kind="finding", slug=None, title="A finding")
         _serve(store, paper, qid, linked_at=T0 + timedelta(days=1))
         _serve(store, finding.id, qid, linked_at=T0 + timedelta(days=1))
 
-        body = h.get(id=qid, view="literature", args={"kind": "finding"}).body
+        body = mcp_tools.get(
+            kind="quest", id=qid, view="literature", args={"kinds": "finding"}
+        )
+        assert isinstance(body, str), body
         assert f"fi{finding.id}" in body
         assert f"pa{paper}" not in body
 
@@ -147,7 +159,7 @@ class TestLiteratureWindow:
     def test_bad_kind_refused(self, store: Any) -> None:
         h, qid = _quest(store)
         with pytest.raises(BadInput, match="kind"):
-            h.get(id=qid, view="literature", args={"kind": "todo"})
+            h.get(id=qid, view="literature", args={"kinds": "todo"})
 
     def test_newly_acquired_summary_counts_ref_created_in_window(
         self, store: Any
@@ -195,6 +207,33 @@ class TestLiteratureFoundBy:
         body = h.get(id=qid, view="literature").body
         assert 'found by "NO NH3 Pd catalyst"' in body
 
+    @pytest.mark.parametrize("location", ["prefix", "rejected", "query"])
+    def test_fallback_requires_exact_successful_handle(
+        self, store: Any, location: str
+    ) -> None:
+        h, qid = _quest(store)
+        paper = _paper(store, "legacy-false", "Unattributed paper")
+        _serve(store, paper, qid, linked_at=T0)
+        handle = f"pa{paper}"
+        text = {
+            "prefix": f'lit-search: "prefix" → linked 1 source(s): {handle}3',
+            "rejected": (
+                f'lit-search: "rejected" → linked 1 source(s): {handle}3'
+                f"; seen not linked: {handle} (no host term)"
+            ),
+            "query": f'lit-search: "about {handle}" → linked 1 source(s): {handle}3',
+        }[location]
+        append_entry(
+            store,
+            qid,
+            text=text,
+            entry_type="result",
+            by="agent",
+            extra_meta={"signal": "lit-search"},
+        )
+        body = h.get(id=qid, view="literature").body
+        assert 'found by "-"' in body
+
     def test_found_by_dash_when_nothing(self, store: Any) -> None:
         h, qid = _quest(store)
         paper = _paper(store, "plain-one", "No provenance")
@@ -210,13 +249,22 @@ class TestLiteraturePaging:
         for i, rid in enumerate(ids):
             _serve(store, rid, qid, linked_at=T0 + timedelta(minutes=i))
 
-        body = h.get(id=qid, view="literature").body
+        body = h.get(id=qid, view="literature", args={"kinds": "paper"}).body
         assert "105 linked" in body
         assert "next:" in body
         assert "'offset': 100" in body
 
-        page2 = h.get(id=qid, view="literature", args={"offset": 100}).body
-        assert "5 linked" in page2
+        next_args = ast.literal_eval(body.split("args=", 1)[1].split("})", 1)[0] + "}")
+        assert next_args["kinds"] == "paper"
+        until = datetime.fromisoformat(next_args["until"])
+        arrival = _paper(store, "pg-new", "Arrived after page one")
+        _serve(store, arrival, qid, linked_at=until + timedelta(microseconds=1))
+
+        page2 = h.get(id=qid, view="literature", args=next_args).body
+        assert "105 linked," in page2
+        assert [
+            line.split()[1] for line in page2.splitlines() if line.startswith("- ")
+        ] == [f"pa{rid}" for rid in reversed(ids[:5])]
         assert "next:" not in page2
 
     def test_newest_first_ordering(self, store: Any) -> None:

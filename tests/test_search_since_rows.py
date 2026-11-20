@@ -182,6 +182,38 @@ def test_pinned_handle_row_is_dated_in_window(
     assert m.group(1) == "2026-11-09"
 
 
+def test_out_of_window_handle_does_not_consume_a_page_slot(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    rt = runtime_with_store
+    outside = _seed_at(
+        rt, "paper", "pin-out", "Outside", "identity", "2026-11-17T00:00:00Z"
+    )
+    _seed_at(
+        rt,
+        "paper",
+        "pin-in",
+        "Inside",
+        f"reference pa{outside}",
+        "2026-11-10T00:00:00Z",
+    )
+    out = rt.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "q": f"pa{outside}",
+            "since": "2026-11-01",
+            "until": "2026-11-16",
+            "page_size": 1,
+            "mode": "lexical",
+        },
+    )
+    rows = _row_headers(out)
+    assert len(rows) == 1
+    assert "_Inside_" in out
+    assert rows[0].endswith(" · created 2026-11-10")
+
+
 def test_queryless_serves_listing_rows_are_dated_in_window(
     runtime_with_store: PrecisRuntime,
 ) -> None:

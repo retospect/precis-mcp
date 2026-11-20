@@ -29,6 +29,9 @@ cadence in :mod:`precis.workers.quest_traps` lands the score). The perpetual loo
 
 Package-level invariants (detail lives on the named module):
 
+- Literature continuations freeze the default upper bound so later arrivals
+  cannot shift page offsets.
+
 - **Environment objectives preserve missing evidence.**
   ``environment_optimizer`` evaluates one stored point without solving or
   stamping: the five eV terms, physical/trust mask and bottleneck J. Rates
