@@ -435,6 +435,22 @@ def test_ascii_x_multiplier_does_not_fire_on_handle_range() -> None:
     assert "ascii-x-multiplier" not in codes, codes
 
 
+def test_ascii_x_multiplier_exempts_slice_and_board_labels() -> None:
+    # 'Slice 1x' / 'the 2x board' name a slice or board, not a multiplier;
+    # following the audit would rename it.
+    for sentence in (
+        "Slice 1x, the exec primitive for boards.",
+        "See slice 1x for details.",
+        "The 2x board fixture was reused.",
+    ):
+        assert not any("ascii-x-multiplier" in w for w in lint_notation(sentence))
+        out, codes = normalize_notation(sentence)
+        assert "×" not in out, out
+        assert "ascii-x-multiplier" not in codes, codes
+    # A real multiplier next to those words still fires.
+    assert any("ascii-x-multiplier" in w for w in lint_notation("Slice rates rose 3x."))
+
+
 # ── 2026-08-20 numeric-value policy: range-unit-repeated ─────────────────
 
 

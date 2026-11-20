@@ -586,8 +586,10 @@ _HYPHEN_NUMERIC_RANGE_RE = re.compile(
 #: range never fires (gr694538). The trailing `\b` means a grid-style
 #: label like `2x2` never fires either (`x` is followed by another
 #: digit, so no word boundary sits between them). The digit run is
-#: captured so `normalize_notation` can rewrite only the `x`.
-_ASCII_X_MULT_RE = re.compile(r"\b(\d+)x\b")
+#: captured so `normalize_notation` can rewrite only the `x`. A slice or
+#: board label is a name, not a multiplier: `Slice 1x` (lookbehind) and
+#: `the 2x board` (lookahead) are exempt, since rewriting would rename it.
+_ASCII_X_MULT_RE = re.compile(r"(?<!(?i:slice) )\b(\d+)x\b(?!\s+(?i:board))")
 
 #: `range-unit-repeated` (2026-08-20 numeric-value policy): a unit
 #: written after BOTH endpoints of a range -- `9 GPa-12 GPa`, `9 GPa-12
