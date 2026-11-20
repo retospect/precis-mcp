@@ -90,10 +90,8 @@ trust acts retain the original model string.
    ``origin/prod`` proposes supersede by the nearest live ancestor with a
    current ``Left:``, else retire. No edits occur at detection; the
    sha-on-prod check is documented in ``precis-gardener-help``.
-   ``compact`` (gr561025) owes a per-sentence plan; ``apply_compact`` runs
-   it as one unit with a single reversal record only through
-   ``precis garden apply`` (the consumer reviews, never auto-applies);
-   ``undo_compact`` reverses it. Rules: ``precis-gardener-memory-help``.
+   ``compact`` plans preservation before retirement. Rules and reversal:
+   :func:`precis.graph.garden.apply.apply_compact`.
    ``griped`` (gr657257) is the reader-complaint queue: open
    ``project:memory`` gripes naming live memories, newest first — one
    ``rewrite`` candidate per named memory, exempt from the

@@ -106,8 +106,10 @@ The evaluator's `ask` on a memory-body candidate files one todo titled
 `OPEN:memory-review`, linked `raises-concern-about` → the memory — and
 to the gripe too when a reader complaint caused it (the complaint's
 story is the evidence; work it per [[precis-fix-memory-gripe-help]]).
-Read the `Ask:` line and detector evidence in the todo body. Older
-todos can have only a title. The evaluator's reason is also recorded
+Read the `Ask:` line and detector evidence in the todo body. Use its
+`Detector:` and `Pinned content sha:` lines to identify the finding and
+check whether it still describes the current revision. Older todos can
+have only a title. The evaluator's reason is also recorded
 on the closed ledger row. A grounding re-audit that changed a claim's
 coverage mints a `memory-review` todo on each dependent draft/quest.
 

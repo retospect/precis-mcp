@@ -1646,7 +1646,7 @@ def _restore_memory_link(
             raise MergeRefused(
                 "apply_refused",
                 "a memory link's original chunk cannot be restored",
-                next="get(kind='skill', id='precis-gardener-memory-help')",
+                next="get(kind='skill', id='precis-gardener-help')",
             )
     conn.execute(
         "DELETE FROM links WHERE link_id = %(link_id)s OR "
@@ -3029,6 +3029,17 @@ def apply_compact(
     verdict_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a reviewed per-sentence compaction plan as one undoable unit.
+
+    The detector flags expiry, 90-day-cold reads, bodies with at least
+    half history lines, or pending retire proposals. Rulings, specs and
+    memories linked to live, non-terminal todos, gripes or quests are
+    shielded from the expiry trigger alone. Retirement refuses while a
+    compact proposal is pending or current content still owes a plan.
+
+    The plan accounts for each detector sentence: keep it on the shell,
+    move it to a related node, mint an atomic child, or drop it as
+    history or restatement. Apply is explicit via ``precis garden apply``;
+    the consumer can review the plan.
 
     Edits apply on the pinned related nodes, atomic children mint under
     the shell's hub, and the shell retires through the delete door (with
