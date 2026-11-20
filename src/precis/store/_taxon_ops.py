@@ -398,8 +398,11 @@ class TaxonMixin:
     def taxon_find_by_term(self, *, slug: str, norm: str) -> list[int]:
         """Live taxon refs whose ``meta.slug`` equals ``slug``, or whose
         ``meta.norm_name`` / any alias (whitespace-collapsed, lowercased)
-        equals ``norm``. The resolver for path-form ids and the lexical leg
-        of put-time dedup. Ordered by ref id."""
+        equals ``norm``. The candidate surface for path-form ids, canon and
+        the name leg of put-time dedup: a slug is lossy (``DimeNet++``
+        slugs to ``dimenet``), so these are *candidates, not identities* —
+        callers that need identity re-filter through
+        :func:`precis.taxonomy.nodes.matches_term`. Ordered by ref id."""
         sql = """
         SELECT r.ref_id FROM refs r
          WHERE r.kind = 'taxon' AND r.retired_at IS NULL

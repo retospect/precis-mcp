@@ -1,31 +1,9 @@
-"""Bimodal skill injection — the perfect skill, or nothing.
+"""Skill discovery at planner and quest prompt assembly.
 
-Implements §2 of `me691324`:
-retrieval-as-infrastructure. Measured against prod, an agent almost never
-*decides* to search for a skill on its own (5 of ~19,853 jobs) — so the
-harness runs the first hop of skill RAG itself, at the handful of
-harness-controlled points where a prompt is assembled for a task. There is
-no cue/snippet middle tier: a sharp match against the question-shaped
-retrieval targets (``question_only`` + ``heading_only`` chunk variants,
-§1, shipped 2026-08-21) injects the WHOLE matched skill body, and anything
-short of the threshold injects nothing. An almost-right skill sitting in
-context is worse than silence — that's the "bimodal" contract this module
-exists to enforce; callers must never build a second-place/snippet tier on
-top of it.
-
-:func:`match_skill` embeds the caller's task text once and scores it
-against the skill corpus's question-shaped chunks; :func:`render_injection`
-turns a hit into the block a caller appends to its assembled prompt. Both
-degrade to a silent no-op (``None`` / never called) when no embedder is
-configured, mirroring :class:`~precis.skill_index.index.FileCorpusIndex`'s
-own "semantic unavailable → caller's existing behaviour" contract — a
-harness-controlled tick must never fail because injection couldn't run.
-
-Reuses :class:`~precis.skill_index.index.FileCorpusIndex` (same class,
-same on-disk cache namespace ``SkillHandler`` uses) rather than building a
-parallel index — a second `FileCorpusIndex` instance here shares chunking
-+ embedding logic and, when the cache dir is shared (the default), the
-same on-disk cache files.
+The task's own sentences supply bounded search legs. Only high-confidence
+question and heading hits can enter the shared section ranking. Prompts
+receive the selected section bodies and their attributed index. Autoskill
+also uses this index for its older single-skill fallback.
 """
 
 from __future__ import annotations
@@ -278,27 +256,66 @@ def match_skill(task_text: str) -> SkillMatch | None:
     return None
 
 
-def render_injection(match: SkillMatch) -> str:
-    """Render the WHOLE matched skill body, prefixed with a one-line
-    banner naming the skill and that it was auto-matched.
-
-    No truncation tier, no snippet mode — the whole point of the bimodal
-    contract (module docstring) is that a caller either gets the perfect
-    skill in full, or gets nothing from :func:`match_skill` at all."""
-    from precis.handlers.skill import _load_skill
-
-    body = _load_skill(match.slug) or ""
-    header = (
-        f"# Auto-matched skill: {match.slug}\n\n"
-        f"This skill was matched to your current task automatically "
-        f"(score {match.score:.2f}) and is injected in full below — no "
-        f"`get(kind='skill', ...)` needed.\n\n---\n\n"
+def render_task_sections(task_text: str) -> str:
+    """Discover and inject a capped set of sections for a task."""
+    if not task_text.strip() or not _enabled():
+        return ""
+    from precis.dispatch import Hub
+    from precis.handlers.skill import (
+        _FUSED_QUERIES_CAP,
+        SkillHandler,
+        _fence_fused_sections,
+        _fused_phrase_key,
+        _rank_skill_sections,
+        _render_fused_table,
+        _section_handle,
     )
-    return header + body
+    from precis.utils.sentences import split_sentences
+
+    phrasings: dict[str, str] = {}
+    for sentence in split_sentences(task_text):
+        phrase = sentence.text.strip()
+        if key := _fused_phrase_key(phrase):
+            phrasings.setdefault(key, phrase)
+        if len(phrasings) == _FUSED_QUERIES_CAP:
+            break
+    if not phrasings or (index := _get_index()) is None:
+        return ""
+
+    handler = SkillHandler(hub=Hub())
+    threshold = _threshold()
+    legs = []
+    for phrase in phrasings.values():
+        hits = index.search(
+            phrase, page_size=_search_page_size(), build_wait_s=_BUILD_WAIT_S
+        )
+        confident = [
+            hit
+            for hit in hits
+            if hit.variant in _TARGET_VARIANTS and hit.score >= threshold
+        ]
+        legs.append(
+            [
+                (key, row)
+                for key, row in handler._fused_leg_rows(
+                    phrase, mode_norm="semantic", semantic_hits=confident
+                )
+                if key[1] is not None
+            ]
+        )
+    visible_legs, _hidden = _fence_fused_sections(legs)
+    sections, overflow, _more = _rank_skill_sections(visible_legs)
+    if not sections:
+        return ""
+    bodies = [
+        handler.get(id=_section_handle(key)).body for key, _row, _sources in sections
+    ]
+    return (
+        "# Auto-matched skill sections\n\n"
+        + _render_fused_table(sections, len(phrasings), {}, overflow)
+        + "\n\n"
+        + "\n\n".join(bodies)
+    )
 
 
-__all__ = [
-    "SkillMatch",
-    "match_skill",
-    "render_injection",
-]
+__all__ = ["SkillMatch", "match_skill", "render_task_sections"]

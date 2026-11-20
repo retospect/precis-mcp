@@ -3058,6 +3058,9 @@ def _stamp_barrier_assurance(
     """Attach assurance to this barrier only, without granting strict credit."""
     if "barrier" not in measures:
         return
+    # Rows that predate the harvest-time absurd guard reach here unflagged
+    # (frontier's read-time stamp); a nonphysical magnitude is never WARN.
+    _flag_absurd_barrier(measures)
     results = pw_meta.get("results") or {}
     records = [r for r in results.get("trust") or [] if isinstance(r, dict)]
     engine = pw_meta.get("autocatpath_version")

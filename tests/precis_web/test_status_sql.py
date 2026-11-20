@@ -17,18 +17,85 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from psycopg import sql
+
 from precis.store import Tag
 from precis.workers.chunk_keywords import KEYWORDS_VERSION
 from precis_web.routes.status import (
+    _HOSTS_SQL,
     _automations,
     _background_anomalies,
     _backlog_counts,
     _health_ctx,
     _health_panel,
+    _hosts,
     _llm_ops_ctx,
     _recent_passes,
     _services_ctx,
 )
+
+
+def test_hosts_preserves_liveness_and_problem_windows(store: Any) -> None:
+    """gr732476: split aggregates retain quiet hosts and exact error counts."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (host, ts, level, message) VALUES "
+            "('maple', now(), 'INFO', 'alive'),"
+            "('maple', now() - interval '1 hour', 'WARNING', 'warn'),"
+            "('maple', now() - interval '2 hours', 'ERROR', 'error'),"
+            "('maple', now() - interval '25 hours', 'ERROR', 'old'),"
+            "('maple', now(), 'CRITICAL', 'not counted by this panel'),"
+            "('birch', now() - interval '2 days', 'INFO', 'quiet'),"
+            "('elm', now() - interval '8 days', 'ERROR', 'expired')"
+        )
+        conn.commit()
+    rows = _hosts(store)
+    by_host = {row["host"]: row for row in rows}
+    assert by_host["maple"]["problems"] == 2
+    assert by_host["maple"]["stale"] is False
+    assert by_host["birch"]["problems"] == 0
+    assert by_host["birch"]["stale"] is True
+    assert "elm" not in by_host
+    assert rows.index(by_host["maple"]) < rows.index(by_host["birch"])
+
+
+def test_hosts_has_covering_liveness_and_partial_problem_index_paths(
+    store: Any,
+) -> None:
+    """Check eligibility, not tiny-fixture cost choices, for the actual SQL.
+
+    gr735138: scan-method switches do not select a particular index. The
+    bare-ts index can beat host/ts, and host/ts can beat the partial index
+    on an empty fixture. Remove competing indexes transactionally instead
+    of asserting those cost choices. Rollback restores every index, even
+    when EXPLAIN fails; the production query and schema stay unchanged.
+    """
+
+    def plan(index: str) -> str:
+        with store.pool.connection() as conn:
+            with conn.transaction(force_rollback=True):
+                indexes = conn.execute(
+                    "SELECT indexrelid::regclass::text FROM pg_index "
+                    "WHERE indrelid = 'worker_logs'::regclass "
+                    "AND NOT indisprimary AND NOT indisunique"
+                ).fetchall()
+                for (name,) in indexes:
+                    if name != index:
+                        conn.execute(
+                            sql.SQL("DROP INDEX {}").format(sql.Identifier(name))
+                        )
+                conn.execute("SET LOCAL enable_seqscan = off")
+                conn.execute("SET LOCAL enable_bitmapscan = off")
+                conn.execute("SET LOCAL enable_indexscan = on")
+                conn.execute("SET LOCAL enable_indexonlyscan = on")
+                return "\n".join(
+                    row[0] for row in conn.execute("EXPLAIN " + _HOSTS_SQL)
+                )
+
+    liveness = plan("worker_logs_host_ts_idx")
+    assert "Index Only Scan using worker_logs_host_ts_idx" in liveness, liveness
+    problems = plan("worker_logs_level_ts_idx")
+    assert "worker_logs_level_ts_idx" in problems, problems
 
 
 def _log_runner_batch(

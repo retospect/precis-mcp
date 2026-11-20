@@ -59,15 +59,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 _NO_HANDLE_KINDS: frozenset[str] = frozenset(
     {
-        # live external fetch, no local persistent-ref row to address
-        "web",
-        "youtube",
-        "wikipedia",
-        "chem",  # identifier resolver, addressed by the name/CAS queried
-        "semanticscholar",
-        "perplexity-reasoning",
-        "perplexity-research",
-        "websearch",
         "email",  # live IMAP browse — addressed by folder/uid, never a ref
         "learning",  # private non-ref records; leN stays local to the owned store
         # stateless compute — addressed by the query/expression itself
@@ -219,14 +210,15 @@ def test_doc_kinds_diverges_from_corpus_role_only_by_known_gaps() -> None:
     pins the exact, currently-known divergence so either side growing
     silently fails here:
 
-    * ``_DOC_KINDS`` has ``web`` that ``corpus_role`` doesn't cover
-      (by design, kept).
+    * ``_DOC_KINDS`` has ``web`` and ``youtube`` that ``corpus_role``
+      doesn't cover (by design, kept — fetched caches with chunked
+      bodies and no heading tree).
     * every ``corpus_role`` doc kind is otherwise covered (``edgar`` joined
       by human call — a new doc-family kind must be added here too, or the
       second assertion flags it).
     """
     corpus_doc = kind_facts.corpus_role_kinds(_specs(), "evidence", "spec")
-    assert _DOC_KINDS - corpus_doc == frozenset({"web"})
+    assert _DOC_KINDS - corpus_doc == frozenset({"web", "youtube"})
     assert corpus_doc - _DOC_KINDS == frozenset()
 
 

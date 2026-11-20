@@ -249,19 +249,27 @@ class CanonicalClaim:
 #: this module. The strings are stored verbatim in ``refs.meta.claim_type``.
 CLAIM_TYPES: tuple[str, ...] = (
     "measurement",
+    "calculation",
     "definition",
     "capability",
     "mechanism",
     "landscape",
 )
+CLAIM_TYPE_CHOICES = "|".join(CLAIM_TYPES)
 
 #: Definitions shared verbatim by :data:`_EXTRACT_PROMPT` (mint path) and
 #: ``claim_type._PROMPT_CLASSIFY`` (backfill), so both sort the same way.
 CLAIM_TYPE_DEFINITIONS = """\
 type = the sort of claim, exactly one of:
-  measurement — a stated quantity, trend, or observed result of one study
-    under its method/regime ("…tensile strength of ~130 GPa", "…reduces the
-    binding energy from 1.5 to 0.74 eV").
+  measurement — an experimentally measured quantity, trend, or observed
+    result ("…a work function of 4.9 eV measured by photoemission").
+  calculation — a result or prediction obtained from a calculation,
+    simulation, or theoretical model ("…DFT with PBE predicts an adsorption
+    energy of −0.74 eV"; "…NEGF yields a current of 5 μA at 0.1 V").
+    Classify by how the result was obtained, even when the same quantity
+    can be measured experimentally. A value derived from experimental
+    observations (e.g. a fit to measured data) is still a measurement
+    when the claim reports the experimental result.
   definition — what a term, structure, or class is: identity, composition,
     classification ("A carbon nanobud is a fullerene covalently bonded to
     the sidewall of a nanotube").
@@ -856,7 +864,10 @@ Examples:
 For each claim you emit: give the normalized sentence, its type, plus any
 of material/method/quantity/regime it names (omit keys it doesn't name).
 material = the substance/compound the claim is about; method = the named
-technique, procedure, or instrument; quantity = a numeric measure with
+technique, procedure, or instrument. For a calculation keep the reported
+computational method and model (e.g. DFT with PBE, MD with the named force
+field) together in method, and retain them in the sentence when they qualify
+the result. Do not infer missing details. quantity = a numeric measure with
 units ("130 GPa", "450 h⁻¹", "92% yield") — never a bare description or
 label; regime = the named condition the claim holds under ("RT", "under
 UV", "homogeneous solution"). If the passage asserts nothing groundable at
@@ -878,7 +889,9 @@ Respond with EXACTLY ONE JSON object, nothing else:
   "claims": [
     {{
       "claim": "<one normalized, atomic sentence>",
-      "type": "<measurement|definition|capability|mechanism|landscape>",
+      "type": "<"""
+    + CLAIM_TYPE_CHOICES
+    + """>",
       "material": "<optional>",
       "method": "<optional>",
       "quantity": "<optional>",
@@ -1478,8 +1491,15 @@ SAME       — they state the exact same fact under the same conditions
              numeric value, or named mechanism that one claim asserts and
              the other does not — that added specificity is a narrower
              claim (see DIFFERENT).
-CONTRADICTS — they share the same scope (same material/method/regime) but
-             assert opposite conclusions.
+CONTRADICTS — they assert mutually exclusive conclusions about the same
+             material and quantity under shared conditions and with
+             comparable methods. For ranges (pressure, temperature, ...),
+             check whether both conclusions apply within the overlap.
+             Trends over adjacent intervals can coexist even if the
+             intervals share an endpoint. A claim about a trend and a
+             calculation explaining that trend can also coexist. Use
+             DIFFERENT when the regimes or methods make the claims
+             incomparable.
 DIFFERENT  — anything else: a genuinely distinct claim, a broader/narrower
              claim, a different scope, or claims about different things
              entirely (even if they sound superficially similar or share a
@@ -1489,9 +1509,10 @@ DIFFERENT  — anything else: a genuinely distinct claim, a broader/narrower
              specific formula that quantifies it are DIFFERENT, not the same
              fact stated in more detail.
 
-Default to DIFFERENT unless you are confident the claims are the SAME fact
-under the SAME conditions. A merge of two claims that are not really the
-same is the dangerous error here — when in doubt, DIFFERENT.
+When in doubt about equivalence or contradiction, use DIFFERENT.
+For example, measured negative c-axis compressibility from 0 to 0.15 GPa
+and positive c-axis compressibility explained by a calculated angle plateau
+from 0.15 to 0.6 GPa are DIFFERENT.
 
 CLAIM A: {claim_a}
 
@@ -1536,9 +1557,11 @@ def dedup_judge(a: str, b: str) -> Verdict:
     """THE crux call — is claim ``a`` the same as claim ``b``, different, or
     a contradiction? MEDIUM tier, one bounded pairwise judgment.
 
-    Merges only on genuinely the same fact + same conditions; any real
-    difference -> ``"different"``; opposite polarity at the same scope ->
-    ``"contradicts"``. Biased hard toward ``"different"`` — a dispatch
+    Returns ``"same"`` for the same fact under the same conditions.
+    ``"contradicts"`` requires mutually exclusive conclusions about the
+    same material and quantity under overlapping conditions and with
+    comparable methods. Use ``"different"`` for other pairs, including
+    trends over adjacent intervals that only share an endpoint. A dispatch
     response that is unparseable degrades to ``"different"`` at
     confidence 0.0, never a silent ``"same"``. A dispatch error is NOT a
     verdict: it returns ``verdict="error"`` (confidence 0.0) so a transient
@@ -1682,15 +1705,23 @@ SAME           — the same fact under the same conditions, differing only in
                  wording or restated detail.
 COMPONENT      — NEW CLAIM is one atomic piece of EXISTING CLAIM: the
                  existing claim is a compound that asserts NEW CLAIM
-                 together with other findings.
+                 together with other findings. The existing claim must
+                 itself state NEW CLAIM's content; sharing a dataset,
+                 calculation campaign, material or paper does not make one
+                 claim a component of the other.
 GENERALIZATION — NEW CLAIM is a broader or narrower statement of the same
                  finding (one contains the other, same subject and
                  conditions family), so that two hubs would double-count it.
 DIFFERENT      — a genuinely distinct claim, a different scope, or only
                  topically related.
 
-Default to DIFFERENT unless the overlap is clear. A different material,
-method, quantity or regime makes the claims DIFFERENT.
+Default to DIFFERENT unless the overlap is clear. If each claim could be
+true while the other is false, the claims are DIFFERENT. For example,
+reproducing an experimental peak splitting and reporting how many spectra
+were simulated are DIFFERENT, even for the same simulation campaign. If the
+existing claim asserts both the reproduction and the count, reproduction
+alone is a COMPONENT. A different material, method, quantity or regime
+makes the claims DIFFERENT.
 
 NEW CLAIM: {new}
 

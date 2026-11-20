@@ -118,6 +118,7 @@ from precis.hints import HintBus
 from precis.runtime import PrecisRuntime
 from precis.store import Migrator, Store
 from tests import _testmon_shim
+from tests._network import _no_outbound_network  # noqa: F401 (autouse fixture)
 from tests._node import require_node  # noqa: F401  (fixture for needs_node)
 from tests._repo_git import require_repo_git  # noqa: F401  (fixture for needs_repo_git)
 
@@ -754,6 +755,11 @@ def _refuse_bare_suite_on_a_slice(config: pytest.Config) -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     _refuse_bare_suite_on_a_slice(config)
+    config.addinivalue_line(
+        "markers",
+        "allow_network: explicitly permit outbound Python sockets for an integration test; "
+        "prefer injected transports. Nanopub publication remains blocked.",
+    )
     # gr558530: testmon crashes on extensionless files; no-op without testmon.
     _testmon_shim.install()
     config.addinivalue_line(
@@ -999,6 +1005,21 @@ def _reset_drain_flag() -> Iterator[None]:
     from precis import liveness
 
     liveness._DRAIN.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_live_nanopub_registry() -> Iterator[None]:
+    """Never publish or reconcile against a real registry from a test."""
+    from precis.nanopub import intro, registry
+
+    def denied(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("live nanopub registry call in a test — inject post=/fetch=")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(registry, "_default_post", denied)
+        patch.setattr(registry, "_default_lookup", denied)
+        patch.setattr(intro, "_default_post", denied)
+        yield
 
 
 @pytest.fixture(autouse=True)

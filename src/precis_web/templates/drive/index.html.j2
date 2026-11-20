@@ -682,7 +682,23 @@
      aside keeps its w-60 rail. #}
   <details :open="wide" :class="{ 'w-full': !wide }" x-cloak>
     <summary class="cursor-pointer text-sm font-medium text-info-deep" x-show="!wide">Folders</summary>
-    <aside class="shrink-0" :class="wide ? 'w-60' : 'w-full'" data-tour="drive-folders">
+    <aside class="shrink-0 space-y-3" :class="wide ? 'w-60' : 'w-full'" data-tour="drive-folders">
+    <div class="rounded-md border border-line overflow-hidden" data-drive-views>
+      <div class="px-3 py-2 bg-surface-subtle border-b border-line text-xs font-semibold text-fg-muted">
+        Saved views
+      </div>
+      <ul class="py-1 text-sm">
+        {% for v in drive_views %}
+        <li>
+          <a href="{{ v.href }}"
+             class="block px-3 py-1 {% if drive_view_active == v.key %}bg-surface-muted font-medium{% else %}hover:bg-surface-subtle{% endif %}"{% if drive_view_active == v.key %} aria-current="page"{% endif %}>{{ v.label }}</a>
+        </li>
+        {% endfor %}
+        {% for label, href in drive_view_links %}
+        <li><a href="{{ href }}" class="block px-3 py-1 hover:bg-surface-subtle">{{ label }}</a></li>
+        {% endfor %}
+      </ul>
+    </div>
     <div class="rounded-md border border-line overflow-hidden">
       <div class="px-3 py-2 bg-surface-subtle border-b border-line text-xs font-semibold text-fg-muted">
         Folders

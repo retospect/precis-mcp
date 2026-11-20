@@ -191,3 +191,7 @@ put(
 - [[precis-tex-help]] — .tex section-aware chunks
 - [[precis-python-help]] — code navigation, AST-gated edits
 - [[precis-relations]] — typed links between files and refs
+
+## Preview a deletion
+
+`delete(kind='markdown', id='doc~L1-3', dry_run=True)` previews the region and line count without writing. Omit the selector to preview deleting the whole file; a preview needs no confirmation.

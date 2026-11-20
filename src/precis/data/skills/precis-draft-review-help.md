@@ -31,7 +31,7 @@ edit(
 edit(
     kind="draft", id="nanotrans", args={"authoring": "on"}
 )  # let review personas author fixes inline
-delete(id="dc12")  # retire a chunk (un-delete restores)
+delete(id="dc12")  # retire a chunk (soft — text survives; restore = re-put)
 delete(id="dc20", mode="promote")  # remove heading, keep contents (lift to parent)
 delete(id="dc20", mode="cascade")  # delete heading AND its contents
 delete(id="nanotrans")  # ref-level id → soft-delete the WHOLE draft
@@ -75,6 +75,16 @@ destructive choice. Retired chunks drop out of the document but their
 history (and any anchor to them) survives; you cannot delete the last
 live chunk — a draft is never empty.
 
+A retired chunk still reads by its own `dc<id>`: the get marks it
+`⚠ RETIRED`, shows the stored text, names the `retired` event that
+took it out (a cascade logs it on the subtree root, so a descendant
+names its ancestor), and prints a recipe to re-`put` the text.
+Run the puts in order. Each `restored_dc…` variable stands for the
+new handle in that put's acknowledgment. Child puts use those handles
+to rebuild their original section or list. If you read a child first,
+follow the pointer to its retired parent. A cascade recipe includes only
+the chunks retired by that event.
+
 `delete` reads its granularity off the id: a chunk address (`dc<id>` /
 `¶<base58>`) retires that chunk, a **ref-level** id (the slug, or the
 numeric ref id) soft-deletes the **whole document** — ref plus every
@@ -114,7 +124,11 @@ or move them out of the block first.
 
 ## Audit the draft — hygiene checks & the gap-finder
 
-Before export, runtime flags undefined abbreviations, unresolved citations
+Before export, runtime flags undefined abbreviations, hand-written
+abbreviation definitions (`⚠ hand-written abbreviation definition(s): …` —
+a `Long form (SHORT)` in prose where `SHORT` is already a glossary term;
+export expands the first use itself, so the authored definition prints
+doubled — write the short alone), unresolved citations
 (cite grounded `[fi<id>]` hubs, not papers), and **drifted cites**: a hub's
 claim changed after the passage was written. Its old `pub_id` remains an
 alias, so the warning quotes old/new text. Rewrite the citing chunk to re-pin;

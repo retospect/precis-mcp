@@ -5,6 +5,7 @@ title: precis — the tag verb (add and remove tags)
 summary: the tag verb mechanics — atomic add/remove, axis replacement, state transitions
 answers:
   - how do I add or remove tags on a ref that already exists?
+  - how do I add the same tag to many refs?
   - how do I move a todo from open to done without leaving a stale STATUS tag?
   - what's the difference between an UPPERCASE axis tag and a lowercase open tag?
   - how do I toggle a bare flag tag like pinned?
@@ -46,6 +47,32 @@ tag(kind="memory", id=[172, 173], remove=["stale"], reason="folded into me77")
 `meta=` is a todo-only door on `tag` — an allowlisted key promotion
 ([[precis-todo-tree-help]]) — refused on every other kind. Other refs'
 meta moves through `put(meta=…)` / `edit(args={'meta': …})`.
+
+## Tag many refs in one call
+## Add the same tag to many refs at once
+## How do I add the same tag to many refs?
+
+```python
+tag(kind="todo", id=[158, 159], add=["STATUS:done"], remove=["STATUS:open"])
+tag(kind="memory", id=[172, 173], remove=["stale"], reason="folded into me77")
+tag(kind="paper", id=["pa1190", "dynamat26", 160060], add=["aixmat-2026"], reason="conference reading list")
+```
+
+`id=[...]` applies the same `add=` / `remove=` to every ref in the
+list in one transaction — one call replaces N single-id calls.
+Batch kinds include paper, todo, memory, gripe, job, alert and finding.
+Quest, orcid, conv, md, tex, python and plaintext take one id per call.
+An empty list refuses. A missing id or failed edit aborts the whole batch.
+
+Paper accepts slugs, `pa` handles and numeric ref ids in the same list.
+Omit `kind=` for a list of `pa` handles. Duplicate addresses for the same
+paper collapse to one edit. Paper has no batch-size cap. The receipt starts
+with `tagged N paper refs in one transaction` and follows with one
+acknowledgment per distinct paper. Numeric-ref batch kinds accept up to
+50 ids per call.
+
+`reason=` writes one `agent/retagged` row per affected ref, including one
+per distinct paper, on `ref_events` (`view='log'`).
 
 ## Bump a workflow STATUS atomically
 ## Move a todo from open to done in one call
@@ -102,7 +129,12 @@ put(
 
 Closed prefixes are gated per kind (e.g. `STATUS:` on workflow
 kinds, `SRC:`/`CACHE:` on provenance kinds). The matrix lives in
-`precis-tags`; the error names the offending axis.
+`precis-tags`; the error names the offending axis. Quick orientation:
+`memory`'s `SPACE:`/`MOVE:` are the only closed axes
+(`DREAM:`/`STALE:` are system-set); `web`/`perplexity-*`/`websearch`/
+`youtube` take `CACHE:`+`WATCH:`; `anki`/`conv`/`oracle`/`skill` have
+no closed axes (open tags only); `python`/`calc`/`math` don't support
+`tag` at all.
 
 ## See also
 

@@ -225,6 +225,10 @@ class GardenOutcome:
     not_checked: dict[str, str] = field(default_factory=dict)
     #: Proposals written per detector — the round-robin budget's spend.
     proposals_by_detector: dict[str, int] = field(default_factory=dict)
+    #: Grounding-handoff claims commissioned this tick (gr634487) —
+    #: minted, reused or asked; capped at
+    #: :data:`~precis.graph.garden.handoff.MAX_HANDOFFS_PER_TICK`.
+    handoffs: int = 0
     #: Scan positions for the next run (:attr:`DetectorRun.cursors`).
     cursors: dict[str, int] = field(default_factory=dict)
 
@@ -245,12 +249,15 @@ def run_garden_tick(
     cursors: dict[str, int] | None = None,
     considered_days: int = CONSIDERED_DAYS,
     propose: ProposerFn | None = None,
+    embedder: Any | None = None,
 ) -> GardenOutcome:
-    """One bounded tick. Returns the outcome; writes only reviews rows.
+    """One bounded tick writing review rows and grounding follow-up todos.
 
     ``propose=None`` uses the routed LLM proposer. A paused verdict stops
     the tick — remaining candidates are re-found next tick (dedup makes
-    that free).
+    that free). ``embedder`` (when wired) lets the grounding audit's
+    bounded conflict probe retrieve candidates; without one the probe
+    degrades to ``not_probed`` rather than spending nothing on silence.
     """
     if propose is None:
         propose = propose_llm
@@ -284,6 +291,54 @@ def run_garden_tick(
     def _one(cand: GardenCandidate) -> bool:
         """Propose one candidate; True when a proposal row was written.
         Sets ``out.paused`` on a window-scoped pause."""
+        if cand.detector == "grounding_audit":
+            from precis.graph.garden.grounding import (
+                GroundingPaused,
+                audit_candidate,
+                latest_audit,
+            )
+            from precis.graph.garden.handoff import (
+                MAX_HANDOFFS_PER_TICK,
+                commission_handoffs,
+            )
+
+            result = None
+            if cand.action == "audit":
+                try:
+                    # The audit row and its repair proposals all land in the
+                    # reviews ledger, so they spend the tick's shared budget:
+                    # repairs are capped at what remains after this audit's
+                    # own row, and the outcome counts what was actually
+                    # written (dedup may emit fewer than the cap).
+                    result = audit_candidate(
+                        store,
+                        cand,
+                        embedder=embedder,
+                        repair_limit=max_proposals - out.proposals - 1,
+                    )
+                except GroundingPaused:
+                    out.paused = True
+                    return False
+            record = latest_audit(store, cand.target_id)
+            if (
+                record is not None
+                and record.current
+                and record.target_sha == cand.payload["sha"]
+            ):
+                out.handoffs += commission_handoffs(
+                    store,
+                    cand.target_id,
+                    record,
+                    cap=MAX_HANDOFFS_PER_TICK - out.handoffs,
+                )
+            if result is None:
+                return False
+            _review_id, repairs = result
+            out.proposals += 1 + repairs
+            out.proposals_by_detector[cand.detector] = (
+                out.proposals_by_detector.get(cand.detector, 0) + 1 + repairs
+            )
+            return True
         prompt_version = (
             MEMORY_PROMPT_VERSION
             if uses_memory_policy(cand.detector, cand.evidence, cand.payload)
@@ -430,6 +485,11 @@ def run_garden_tick(
                 _one(queue.popleft())
             if not turned:
                 break
+    if out.paused or queues.get("grounding_audit"):
+        from precis.graph.garden.grounding import CURSOR_KEY
+
+        # An omitted cursor carries the saved window forward for retry.
+        out.cursors.pop(CURSOR_KEY, None)
     return out
 
 

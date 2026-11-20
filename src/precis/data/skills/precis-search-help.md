@@ -150,6 +150,9 @@ Pin it with `mode=` when you know better:
 | `'verbatim'` | Chunks whose extracted keywords contain **all** your query words. When the scan is bounded — one ref (`scope=`/ref-id set) or the `memory` corpus — chunk text containing the whole query as one substring also matches (a backstop for terms extraction never stored: stopwords, LaTeX tokens). Embedder-independent; newest chunk first. | A topical filter tighter than full-text. Each word must appear as a *distinct* term, so it's terms, not phrases (`'oxygen evolution'` = both words present, not the 2-gram). On `kind='memory'` a full-sentence query is the dedup check: a verbatim hit means the sentence already lives in some body. Empty query returns nothing. |
 | `'literal'` | Exact substring match over the chunk text itself (case-insensitive; `%`/`_` are data, not wildcards). Newest chunk first. | The "is this exact string still anywhere" hunt — a filename like `./src/app/config.py`, a flag spelling, a sha, a quoted phrase. `get(id=N, q='…')` is the same literal check scoped to one node. |
 
+`kind='skill'` refuses `mode='literal'`. Use `mode='verbatim'` there
+for a substring match.
+
 ```python
 search(kind="paper", q="MoS2 monolayer", mode="lexical")  # exact term recall
 search(q="ways to stop catalyst poisoning", mode="semantic")  # paraphrase recall
@@ -173,6 +176,15 @@ more-relevant is always first. There is no `mode='regex'` on this verb
 pattern hunt elsewhere use `'literal'` (exact substring) or `'lexical'`
 (stemmed full-text).
 
+## Find an exact hub cite in a draft
+
+Scoped `mode='verbatim'` matches substrings: `fi34984` also finds
+`fi349841`. Include the citation brackets to find the exact hub cite:
+
+```python
+search(kind='draft', scope='norr-her-survey', q='[fi34984]', mode='verbatim')
+```
+
 ## The corpus stores one spelling per quantity
 
 ASCII queries are auto-canonicalized — `40 kOhm` finds a claim written
@@ -188,7 +200,7 @@ it words the idea differently than you did. Hand `search` **several
 angles at once** and let it fuse them; a chunk that surfaces across
 phrasings rises to the top.
 
-Two top-level params, both paper-side, fused with `q` into one ranked list:
+Paper search fuses two top-level params with `q` into one ranked list:
 
 - `queries=[…]` — **rephrasings of the question** (synonyms, broader /
   narrower framings, sub-questions hiding inside it). Up to 8.
@@ -734,15 +746,29 @@ args={'title': '…'})`.
 ## Discover a skill by topic
 
 ```python
-search(kind="skill", q="how do I edit a markdown file")
-search(kind="skill", q="paginate paper search")
-search(kind="skill", q="patent prior art")
+search(kind="skill", args={"queries": [
+    "store a new memory", "search memories", "tag a thought",
+]})
 ```
 
-Natural-language queries work — phrase your query the way you'd ask
-it. Skill hits whose kind or required tool isn't available in the current
-build carry `[not configured: <why>]` so you don't follow them to no-op
-recipes; add `args={'configured_only': True}` to drop them.
+Describe your goals in your own words. Use up to five related phrasings
+after deduplication. An optional `q=` counts as the first phrasing.
+Each phrasing drops matches below a minimum relevance score before
+reciprocal rank fusion. Sections found by several phrasings rise in the
+index. Attribution such as `q1,q3` identifies the matching phrasings in
+deduplicated order, and each phrasing with a confident eligible match
+keeps its top section. If that section exceeds the per-skill cap, the
+response provides a direct read link below the table.
+
+The table shows at most three sections per skill and 20 total. Open a
+section with `get(kind='skill', id='<slug>~N')` or map the rest with
+`get(kind='skill', id='<slug>/toc')`. When the index reports more
+matches, narrow the phrasings or filter by skill family or tag. The
+fused form never paginates.
+
+For a single ordinary search, use `q=` alone. Skill hits whose kind or
+required tool is unavailable carry `[not configured: <why>]`. Pass
+`configured_only=True` in `args` to drop them.
 
 ## Find patents not yet in the local store
 ## Search EPO directly via OPS

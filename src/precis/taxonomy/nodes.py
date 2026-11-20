@@ -320,3 +320,46 @@ def validate_taxon_meta(
                 next="contract={'required_keys': ['dimension_kind']}",
             )
     return out
+
+
+def matches_term(meta: dict[str, Any], term: str) -> bool:
+    """Does ``term`` name this node — the identity check behind put-time
+    dedup and the ``exact:`` search lead.
+
+    Names and aliases compare with case and whitespace folded. A slug
+    match counts only when the symbol-preserving name comparison also
+    equals the term: slugs discard symbols (``DimeNet++`` slugs to
+    ``dimenet``), so a bare slug collision — even on a legacy row whose
+    ``norm_name`` is absent or stale — cannot establish identity.
+    :func:`resolves_term` is the looser addressing check, where a slug
+    does suffice.
+    """
+    norm = normalize_name(term)
+    if meta.get("norm_name") == norm:
+        return True
+    if any(normalize_name(str(a)) == norm for a in (meta.get("aliases") or [])):
+        return True
+    name = str(meta.get("name") or meta.get("norm_name") or "")
+    return bool(
+        meta.get("slug")
+        and meta["slug"] == slugify(term)
+        and re.sub(r"[\s_-]+", "-", normalize_name(name))
+        == re.sub(r"[\s_-]+", "-", norm)
+    )
+
+
+def resolves_term(meta: dict[str, Any], seg: str) -> bool:
+    """Does a path segment ``seg`` address this node — name, alias or slug
+    equal after case/whitespace folding.
+
+    Deliberately looser than :func:`matches_term`: ``dimenet`` still
+    addresses ``DimeNet++`` and ``c`` addresses ``C++``, so symbol-named
+    nodes keep their slug paths. When several nodes share the segment the
+    path resolver reports them as ambiguous rather than picking one.
+    """
+    norm = normalize_name(seg)
+    if meta.get("slug") and meta.get("slug") == slugify(seg):
+        return True
+    if meta.get("norm_name") == norm:
+        return True
+    return any(normalize_name(str(a)) == norm for a in (meta.get("aliases") or []))

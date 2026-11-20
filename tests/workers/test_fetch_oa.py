@@ -170,6 +170,7 @@ class TestClaimStubs:
             conn.commit()
         assert [s.ref_id for s in stubs] == [ref_id]
         assert stubs[0].doi == "10.1234/a"
+        assert stubs[0].title == "An Example Paper"
         assert stubs[0].cite_key == "smith2024example"
 
     def test_multi_identifier_does_not_raise_cardinality(self, store: Store) -> None:
@@ -1414,6 +1415,134 @@ class TestTryAcl:
         assert outcome.payload["urls"] == [
             "https://aclanthology.org/2023.acl-long.1.pdf"
         ]
+
+
+class TestTryZenodo:
+    @pytest.mark.parametrize("doi", [None, "10.1234/x", "10.5281/zenodo.12/../3"])
+    def test_non_zenodo_is_silent(
+        self, doi: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lookup = Mock()
+        monkeypatch.setattr(fetch_oa, "_zenodo_pdf_urls", lookup)
+        assert fetch_oa._try_zenodo(_stub(doi=doi), inbox_dir=tmp_path) is None
+        lookup.assert_not_called()
+
+    def test_downloads_record_pdf_before_openalex(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = Mock(spec=Store)
+        stub = _stub(doi="10.5281/zenodo.22897660")
+        resolve_arxiv = Mock(return_value=None)
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", resolve_arxiv)
+        monkeypatch.setattr(
+            fetch_oa,
+            "_zenodo_pdf_urls",
+            lambda rid: [f"https://zenodo.org/api/records/{rid}/files/p.pdf/content"],
+        )
+        openalex = Mock()
+        monkeypatch.setattr(fetch_oa, "_try_openalex", openalex)
+        download = Mock(
+            side_effect=lambda url, target, **kw: _write_synthetic_pdf(target)
+        )
+        monkeypatch.setattr(fetch_oa, "_download_pdf", download)
+
+        path = fetch_oa._run_cascade(
+            store, stub, tmp_path, email="", api_key="", wiley_token="", core_key=""
+        )
+
+        assert path is not None and path.is_file()
+        assert download.call_args.args[0] == (
+            "https://zenodo.org/api/records/22897660/files/p.pdf/content"
+        )
+        resolve_arxiv.assert_not_called()
+        openalex.assert_not_called()
+        event = store.append_event.call_args.kwargs
+        assert event["source"] == "fetcher:zenodo"
+        assert event["event"] == "fetch_ok"
+
+    def test_missing_pdf_preserves_arxiv_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = Mock()
+        calls.zenodo.return_value = []
+        calls.resolve_arxiv.return_value = "2401.12345"
+        calls.openalex.return_value = None
+        monkeypatch.setattr(fetch_oa, "_zenodo_pdf_urls", calls.zenodo)
+        monkeypatch.setattr(fetch_oa, "_resolve_arxiv_id", calls.resolve_arxiv)
+        monkeypatch.setattr(fetch_oa, "_try_openalex", calls.openalex)
+        monkeypatch.setattr(fetch_oa, "_try_europepmc", Mock(return_value=None))
+        download = Mock(
+            side_effect=lambda url, target, **kw: _write_synthetic_pdf(target)
+        )
+        monkeypatch.setattr(fetch_oa, "_download_pdf", download)
+
+        path = fetch_oa._run_cascade(
+            Mock(spec=Store),
+            _stub(doi="10.5281/zenodo.1"),
+            tmp_path,
+            email="",
+            api_key="",
+            wiley_token="",
+            core_key="",
+        )
+
+        assert path is not None and path.is_file()
+        assert [call[0] for call in calls.mock_calls] == [
+            "zenodo",
+            "resolve_arxiv",
+            "openalex",
+        ]
+        assert download.call_args.args[0] == "https://arxiv.org/pdf/2401.12345.pdf"
+
+    def test_record_without_pdf(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fetch_oa, "_zenodo_pdf_urls", lambda rid: [])
+        outcome = fetch_oa._try_zenodo(
+            _stub(doi="10.5281/zenodo.1"), inbox_dir=tmp_path
+        )
+        assert outcome is not None and outcome.event == "no_oa_version"
+
+    def test_lookup_error_is_api_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            fetch_oa, "_zenodo_pdf_urls", Mock(side_effect=ValueError("boom"))
+        )
+        outcome = fetch_oa._try_zenodo(
+            _stub(doi="10.5281/zenodo.1"), inbox_dir=tmp_path
+        )
+        assert outcome is not None and outcome.event == "api_error"
+
+    def test_lookup_uses_safe_get(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Let safe_get validate redirects from concept DOIs to the latest record."""
+        api = "https://zenodo.org/api/records/22897659"
+        client = httpx.Client()
+        requested: list[str] = []
+
+        def _fake_http_client(**kwargs: Any) -> httpx.Client:
+            assert not kwargs.get("follow_redirects")
+            return client
+
+        def _fake_safe_get(request_client: httpx.Client, url: str) -> httpx.Response:
+            assert request_client is client
+            requested.append(url)
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", url),
+                json={"files": [{"key": "paper.pdf"}, {"key": "data.csv"}]},
+            )
+
+        # call_with_backoff's provider-row resolution is DB-backed; the
+        # retry shape is covered in tests.test_http, so call through once.
+        monkeypatch.setattr(fetch_oa, "call_with_backoff", lambda fn, **_: fn())
+        monkeypatch.setattr(fetch_oa, "http_client", _fake_http_client)
+        monkeypatch.setattr(fetch_oa, "safe_get", _fake_safe_get)
+
+        urls = fetch_oa._zenodo_pdf_urls("22897659")
+
+        assert requested == [api]
+        assert urls == [f"{api}/files/paper.pdf/content"]
 
 
 class TestTryPublisher:
@@ -2702,6 +2831,9 @@ class TestTryEuropepmc:
 class TestRunCascade:
     @pytest.fixture(autouse=True)
     def _enable_oa_fetch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # These orchestration tests download synthetic magic bytes, not
+        # readable PDFs. Real PDF identity checks live in test_fetch_title_guard.
+        monkeypatch.setattr(fetch_oa, "_pdf_title_warnings", lambda *args: [])
         # run_oa_fetch_pass is env-gated (PRECIS_OA_FETCH) so the
         # fetcher only runs on one cluster host. Enable it for the
         # cascade tests; the off-by-default behaviour has its own test.

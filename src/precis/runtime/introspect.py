@@ -772,6 +772,7 @@ class IntrospectionMixin(RuntimeShape):
     _GENERIC_COUNT_ALLOWED_EXTRAS: frozenset[str] = frozenset(
         {
             "group_by",
+            "agg",
             "include_ref_ids",
             "exclude_ref_ids",
             "closed_since",
@@ -806,8 +807,10 @@ class IntrospectionMixin(RuntimeShape):
         """
         from precis.handlers._numeric_ref import (
             _COUNT_GROUP_LIMIT,
+            _count_agg_cells,
             _count_facet_label,
             _count_group_label,
+            _parse_count_aggs,
             _parse_count_facets,
             _parse_window_bound,
         )
@@ -889,6 +892,7 @@ class IntrospectionMixin(RuntimeShape):
             extras.get("closed_until"), "closed_until"
         )
         facets = _parse_count_facets(extras.get("group_by"))
+        aggs = _parse_count_aggs(extras.get("agg"), facets)
 
         total, groups = self.store.count_refs_facets(
             kind=kind,
@@ -896,6 +900,7 @@ class IntrospectionMixin(RuntimeShape):
             include_ref_ids=sorted(include) if include is not None else None,
             exclude_ref_ids=sorted(exclude) if exclude else None,
             facets=facets,
+            aggs=aggs,
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
@@ -930,8 +935,11 @@ class IntrospectionMixin(RuntimeShape):
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets))
-            for vals, n, _span in groups:
-                parts.append(f"  {_count_group_label(vals, facets)}: {int(n)}")
+            for vals, n, span in groups:
+                parts.append(
+                    f"  {_count_group_label(vals, facets)}: {int(n)}"
+                    + _count_agg_cells(aggs, span.aggregates)
+                )
             if len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(
                     f"  … (top {_COUNT_GROUP_LIMIT} groups by count — "

@@ -1,0 +1,34 @@
+# Discovery eval task for the gripe family (gr634773): phrased WITHOUT
+# skill names — the discovery condition sees only the task and the tool
+# surface. Two wording variants limit overfitting.
+family: gripe
+skill: precis-gripe-help
+tasks:
+  - id: report-misbehavior
+    variants:
+      - |
+        The verbatim search over my stored notes only ranks headings,
+        never the sections that actually match the text. Report that
+        misbehaviour in precis under surface-friction.
+      - |
+        Something's wrong: a verbatim search across the knowledge base
+        ranks a title even when the match sits deep inside a section.
+        File that in precis, tagged surface-friction.
+    expect:
+      calls:
+        - {verb: put, kind: gripe, args: {text: 're:(?is).*verbatim.*'}}
+      record: {kind: gripe}
+    forbid:
+      calls:
+        - {verb: put, kind: gripe, args: {body: 're:.+'}}   # the prose rides text=
+    fake:
+      calls:
+        - verb: put
+          kind: gripe
+          args:
+            text: "Verbatim search ranks headings only, never matching sections."
+            tags: [surface-friction]
+      record: {kind: gripe}
+      answer: >
+        put(kind='gripe', text='…', tags=['surface-friction']) — the
+        report's prose goes in text=; the title is the first line.

@@ -38,6 +38,14 @@ never collide with or read this run's rows; dry-run prompts render it
 ``0-0``. Criteria then match the minted slug with a
 ``re:<slug>-<digits>-<digits>`` pattern (and the fake declares a
 ``<slug>-0-0`` literal to match).
+
+The discovery corpus (``load_discovery_cases``) lives under
+``skill-evals/discovery/<family>.yaml``: one realistic task per domain
+family, each phrased without skill names and carrying two wording
+``variants``. Each variant loads as its own case (``<family>/<id>-v<N>``)
+so a paired supplied/discovery run holds task and wording constant. The
+file's ``skill:`` names the help skill injected in the supplied
+condition only — the discovery prompt renders no skill text and no slug.
 """
 
 from __future__ import annotations
@@ -67,12 +75,15 @@ class VerbCall:
     came back ``is_error`` or an ``[error:…]`` envelope: the call was
     attempted but its work never happened, so it cannot satisfy an
     ``expect.calls`` pattern and fails the case on its own.
+    ``result_bytes`` is the UTF-8 size of that tool result (the executed
+    runner only) — the discovery metric's read-cost unit.
     """
 
     verb: str
     kind: str | None = None
     args: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    result_bytes: int | None = None
 
     def render(self) -> str:
         parts = [f"kind={self.kind!r}"] if self.kind else []
@@ -104,6 +115,23 @@ def value_matches(expected: Any, actual: Any) -> bool:
             any(value_matches(e, a) for a in actual) for e in expected
         )
     return bool(expected == actual) or str(expected) == str(actual)
+
+
+def discovery_metrics(criterion: Criterion, transcript: Transcript) -> tuple[int, int]:
+    """``(calls, bytes)`` the agent spent before its first correct domain
+    action — the first error-free call matching an ``expect.calls``
+    pattern. The discovery condition's headline metric (gr634773): how
+    much exploration does an agent need when no skill text is supplied?
+    Errored calls count as spent exploration; the correct call itself
+    does not."""
+    calls = 0
+    bytes_ = 0
+    for call in transcript.calls:
+        if call.error is None and any(p.matches(call) for p in criterion.calls):
+            break
+        calls += 1
+        bytes_ += call.result_bytes or 0
+    return calls, bytes_
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +352,121 @@ def load_cases(
     return out
 
 
+# ── discovery corpus (gr634773) ─────────────────────────────────────
+
+
+def default_discovery_dir() -> Path:
+    """The shipped discovery corpus: skill-name-free tasks under
+    ``src/precis/data/skill-evals/discovery/<family>.yaml``."""
+    return default_cases_dir() / "discovery"
+
+
+def load_discovery_cases(
+    directory: str | Path | None = None,
+    *,
+    known_skills: Collection[str] | None = None,
+) -> list[EvalCase]:
+    """Load the discovery corpus — one realistic task per domain family,
+    each phrased WITHOUT skill names and carrying two wording ``variants``.
+
+    Each variant expands into its own :class:`EvalCase` (id
+    ``<family>/<task>-v<N>``) sharing the task's criterion and fake, so a
+    paired run holds task *and* wording constant across the two
+    conditions. The file's ``family:`` must equal its stem; its ``skill:``
+    names the help skill injected in the *supplied* condition only (the
+    discovery prompt renders neither text nor slug).
+    """
+    root = Path(directory) if directory is not None else default_discovery_dir()
+    if not root.is_dir():
+        raise BadInput(f"skill eval: discovery cases dir {root} does not exist")
+    if known_skills is None:
+        known_skills = shipped_skill_slugs()
+    out: list[EvalCase] = []
+    for path in sorted(root.glob("*.yaml")):
+        out.extend(_load_discovery_file(path, known_skills))
+    return out
+
+
+def _load_discovery_file(path: Path, known_skills: Collection[str]) -> list[EvalCase]:
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise BadInput(f"skill eval: cannot read {path}: {exc}") from exc
+    where = path.name
+    if not isinstance(raw, dict):
+        raise _bad(where, "top level must be a mapping with 'family' and 'tasks'")
+    family = raw.get("family")
+    if family != path.stem:
+        raise _bad(where, f"'family' must equal the file stem {path.stem!r}")
+    skill = raw.get("skill")
+    if not isinstance(skill, str):
+        raise _bad(where, "'skill' must name the supplied-condition help skill")
+    if skill not in known_skills:
+        raise _bad(where, f"unknown skill {skill!r}")
+    tasks = raw.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise _bad(where, "'tasks' must be a non-empty list")
+    out: list[EvalCase] = []
+    for i, item in enumerate(tasks):
+        out.extend(_load_discovery_task(item, family, skill, f"{where} task #{i}"))
+    ids = [c.case_id for c in out]
+    if len(set(ids)) != len(ids):
+        raise _bad(where, "duplicate task/variant ids")
+    return out
+
+
+def _load_discovery_task(
+    raw: Any, family: str, skill: str, where: str
+) -> list[EvalCase]:
+    if not isinstance(raw, dict):
+        raise _bad(where, "task is not a mapping")
+    tid = raw.get("id")
+    if not isinstance(tid, str) or not _SLUG_RE.match(tid):
+        raise _bad(where, "task 'id' must be a lowercase slug")
+    variants = raw.get("variants")
+    if (
+        not isinstance(variants, list)
+        or not variants
+        or not all(isinstance(v, str) and v.strip() for v in variants)
+    ):
+        raise _bad(where, "'variants' must be a non-empty list of non-empty prompts")
+    expect = raw.get("expect") or {}
+    forbid = raw.get("forbid") or {}
+    if not isinstance(expect, dict) or not isinstance(forbid, dict):
+        raise _bad(where, "'expect' and 'forbid' must be mappings")
+    forbid_text = forbid.get("text") or []
+    if not isinstance(forbid_text, list) or not all(
+        isinstance(t, str) and t for t in forbid_text
+    ):
+        raise _bad(where, "'forbid.text' must be a list of non-empty strings")
+    criterion = Criterion(
+        calls=_load_patterns(expect.get("calls"), f"{where}.expect.calls"),
+        record=_load_record(expect.get("record"), f"{where}.expect"),
+        forbid_calls=_load_patterns(forbid.get("calls"), f"{where}.forbid.calls"),
+        forbid_text=tuple(forbid_text),
+    )
+    if not criterion.calls and criterion.record is None:
+        raise _bad(where, "'expect' needs at least one of 'calls' or 'record'")
+    if "fake" not in raw:
+        raise _bad(where, "'fake' transcript is required (the corpus self-check)")
+    subtasks = raw.get("subtasks", 1)
+    if not isinstance(subtasks, int) or isinstance(subtasks, bool) or subtasks < 1:
+        raise _bad(where, "'subtasks' must be an integer >= 1")
+    fake = _load_transcript(raw["fake"], f"{where}.fake")
+    return [
+        EvalCase(
+            case_id=f"{family}/{tid}-v{n}",
+            skill=skill,
+            skills=(skill,),
+            prompt=v.strip(),
+            criterion=criterion,
+            fake=fake,
+            subtasks=subtasks,
+        )
+        for n, v in enumerate(variants, start=1)
+    ]
+
+
 __all__ = [
     "VERBS",
     "CallPattern",
@@ -332,8 +475,11 @@ __all__ = [
     "Transcript",
     "VerbCall",
     "default_cases_dir",
+    "default_discovery_dir",
+    "discovery_metrics",
     "load_case_file",
     "load_cases",
+    "load_discovery_cases",
     "shipped_skill_slugs",
     "value_matches",
 ]

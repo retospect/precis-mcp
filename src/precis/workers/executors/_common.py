@@ -16,7 +16,9 @@ import logging
 import math
 import os
 from collections.abc import Mapping
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -39,7 +41,7 @@ from precis.store._todo_sql import (
     parent_gate_exclusion_sql,
 )
 from precis.store.types import ChunkInsert, Tag
-from precis.todo import TERMINAL_TODO_STATUSES
+from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
 from precis.utils import dispatch_score as _dscore
 from precis.utils import job_footprint
 from precis.utils.llm.failure import backoff_hours as _failure_backoff_hours
@@ -1407,6 +1409,203 @@ def _service_pin_hosts_for(
     return hosts if hosts else None
 
 
+def _plan_reader(conn: Connection) -> Any:
+    """A ``store``-shaped borrower for plan_dispatch's reads: they run
+    inside the claim transaction, so earlier claims in a batch are
+    visible as holders too."""
+    return SimpleNamespace(pool=SimpleNamespace(connection=lambda: nullcontext(conn)))
+
+
+def _queued_build_plan(
+    conn: Connection, parent_ids: list[int] | None
+) -> tuple[Any | None, set[int]]:
+    """``(_Plan, wanted)`` — the in-memory plans above the queued
+    ``run_slice`` parents (every queued build's when ``parent_ids`` is
+    ``None``); ``plan`` is ``None`` when no live plan root covers them,
+    with ``wanted`` still resolved for the fallback read. One load,
+    shared by the overlap and sequencing holds — it covers only the
+    plan roots above those queued builds, not every plan subtree."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    if parent_ids is None:
+        parent_ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT DISTINCT parent_id FROM refs j"
+                " WHERE j.kind = 'job' AND j.retired_at IS NULL"
+                " AND j.parent_id IS NOT NULL"
+                " AND j.meta->>'job_type' = 'run_slice'"
+                " AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)"
+                "  WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'"
+                "  AND t.value = 'queued')"
+            ).fetchall()
+        ]
+    if not parent_ids:
+        return None, set()
+    ancestors = {
+        int(r[0])
+        for r in conn.execute(
+            "WITH RECURSIVE up(ref_id, parent_id) AS ("
+            " SELECT ref_id, parent_id FROM refs WHERE ref_id = ANY(%s)"
+            " UNION SELECT r.ref_id, r.parent_id FROM refs r"
+            "  JOIN up ON r.ref_id = up.parent_id)"
+            " SELECT ref_id FROM up",
+            (parent_ids,),
+        ).fetchall()
+    }
+    roots = [r for r in pd._candidate_roots(conn) if r in ancestors]
+    if not roots:
+        return None, set(parent_ids)
+    return pd._load(_plan_reader(conn), roots), set(parent_ids)
+
+
+def build_overlap_holds(
+    conn: Connection,
+    parent_ids: list[int] | None = None,
+    *,
+    shared: tuple[Any | None, set[int]] | None = None,
+) -> set[int]:
+    """Build todo ids held by started work, read in the claim transaction.
+
+    Reusing the planner's file and repo resolution keeps pending pre-land
+    reviews and branch diffs in the same exclusion set. The reader borrows
+    this connection without committing it, so earlier claims in a batch
+    are visible as holders too. Cheap on the claim path: no started build
+    or no queued ``run_slice`` job (or none in ``parent_ids``) returns
+    before any plan load, and the load covers only the plan roots above
+    those queued builds, not every plan subtree. ``shared`` is an
+    already-loaded :func:`_queued_build_plan` result on this conn — the
+    claim pass loads once and hands it to both hold reads (gr656970
+    review).
+    """
+    from precis.workers.job_types import plan_dispatch as pd
+
+    reader = _plan_reader(conn)
+    started = pd._started_slices(reader)
+    if not started:
+        return set()
+    plan, wanted = shared or _queued_build_plan(conn, parent_ids)
+    if plan is not None:
+        return set(
+            pd._overlap_holds(
+                plan, reader, started, [n for n in plan.todos() if n.id in wanted]
+            )
+        )
+    return set()
+
+
+def _blocked_parents_sql(conn: Connection, parent_ids: list[int]) -> set[int]:
+    """``parent_ids`` — or an ancestor of one — carrying a ``blocked-by``
+    link to a live target whose STATUS is not blocker-terminal. The
+    plain sequencing read for a build parent no loaded plan covers (the
+    land-held nuance needs the plan model, so it is the fallback only)."""
+    if not parent_ids:
+        return set()
+    rows = conn.execute(
+        f"""
+        WITH RECURSIVE up(origin, ref_id, parent_id) AS (
+            SELECT ref_id, ref_id, parent_id FROM refs
+             WHERE ref_id = ANY(%s)
+            UNION
+            SELECT up.origin, r.ref_id, r.parent_id FROM refs r
+              JOIN up ON r.ref_id = up.parent_id
+        )
+        SELECT DISTINCT origin FROM up
+         WHERE EXISTS (
+            SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
+             WHERE l.src_ref_id = up.ref_id AND l.relation = 'blocked-by'
+               AND b.retired_at IS NULL
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt
+                        JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open'
+                   ) NOT IN {blocker_terminal_sql()})
+        """,
+        (parent_ids,),
+    ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def _source_blocked_sql(conn: Connection, parent_ids: list[int]) -> set[int]:
+    """``parent_ids`` whose chain's source gripe has an open
+    ``blocked-by`` target of its own.
+
+    The source sits outside the plan: ``templates._run`` hangs it off a
+    ``related-to`` edge from the root, so neither ``plan.blocked`` nor
+    the ancestors read above reaches it — a blocker linked on the gripe
+    after the chain minted is rechecked here instead, on the parent and
+    every ancestor (gr656970 review)."""
+    if not parent_ids:
+        return set()
+    rows = conn.execute(
+        f"""
+        WITH RECURSIVE up(origin, ref_id, parent_id) AS (
+            SELECT ref_id, ref_id, parent_id FROM refs
+             WHERE ref_id = ANY(%s)
+            UNION
+            SELECT up.origin, r.ref_id, r.parent_id FROM refs r
+              JOIN up ON r.ref_id = up.parent_id
+        )
+        SELECT DISTINCT up.origin FROM up
+         JOIN links rel ON rel.src_ref_id = up.ref_id
+                      AND rel.relation = 'related-to'
+         JOIN refs g ON g.ref_id = rel.dst_ref_id
+        WHERE g.kind = 'gripe' AND g.retired_at IS NULL
+          AND EXISTS (
+             SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
+              WHERE l.src_ref_id = g.ref_id AND l.relation = 'blocked-by'
+                AND b.retired_at IS NULL
+                AND COALESCE(
+                      (SELECT t.value FROM ref_tags rt
+                        JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                      'open'
+                    ) NOT IN {blocker_terminal_sql()})
+        """,
+        (parent_ids,),
+    ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def build_blocked_holds(
+    conn: Connection,
+    parent_ids: list[int] | None = None,
+    *,
+    shared: tuple[Any | None, set[int]] | None = None,
+) -> set[int]:
+    """Queued ``run_slice`` parents a ``blocked-by`` edge still holds,
+    read in the claim transaction (gr656970 review).
+
+    Dispatch's ``_Plan.blocked`` check decides at mint time; a blocker
+    linked AFTER the job queued never passed it, so the claim re-runs
+    the same read — the build stays queued while any blocked-by target
+    on the todo or an ancestor is live, while a ``done`` blocker's
+    land is still held (the gr659981 hold dispatch applies), and while
+    the chain's source gripe — a ``related-to`` hop off the ancestor
+    chain, outside the plan model — carries an open blocked-by of its
+    own (:func:`_source_blocked_sql`). A parent no live plan covers — a
+    ``run_slice`` minted outside plan_dispatch — falls back to the
+    direct ancestors read, which lacks the land nuance but still
+    honours the edge. ``shared`` is the claim pass's already-loaded
+    :func:`_queued_build_plan` result — one load feeds both holds.
+    """
+    plan, wanted = shared or _queued_build_plan(conn, parent_ids)
+    covered = {n.id for n in plan.todos()} if plan is not None else set()
+    held = (
+        {n.id for n in plan.todos() if n.id in wanted and plan.blocked(n)}
+        if plan is not None
+        else set()
+    )
+    uncovered = wanted - covered
+    if uncovered:
+        held |= _blocked_parents_sql(conn, sorted(uncovered))
+    held |= _source_blocked_sql(conn, sorted(wanted))
+    return held
+
+
 def _claim_order_sql(
     age_step_s: float,
     class_age_s: float,
@@ -2063,6 +2262,35 @@ def claim_executor_jobs(
         reclaimed row and a freshly-queued row go through identical
         bookkeeping.
         """
+        if meta.get("job_type") == "run_slice" and status_value != RUNNING:
+            # The claim stamps no STATUS:running (dispatch does, after the
+            # batch), so a second build picked in this batch could not see
+            # the first as a holder: one fresh build per claim batch. Cheap
+            # first — it saves the lock and the overlap read below.
+            if fresh_builds:
+                return None
+            # Serialize overlap read + running stamp across hosts. A loser
+            # leaves work queued; no lease or resource reservation was made.
+            locked = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint)",
+                ("factory:build-overlap",),
+            ).fetchone()
+            if not (locked and locked[0]):
+                return None
+            parent = conn.execute(
+                "SELECT parent_id FROM refs WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+            shared = _shared_build_plan()
+            if parent and parent[0] in (
+                build_overlap_holds(conn, shared=shared)
+                # gr656970: a blocked-by edge minted after the job queued
+                # holds it here too — dispatch's check saw it once, the
+                # claim re-runs it so a late blocker still sequences,
+                # on the todo's ancestors and on the source gripe the
+                # chain is related-to.
+                | build_blocked_holds(conn, shared=shared)
+            ):
+                return None
         pin_hosts = _service_pin_hosts_for(meta, service_pinned)
         if pin_hosts is not None and default_host not in pin_hosts:
             # Placement pin (gr506045): the service's host-scoped enabled
@@ -2101,6 +2329,14 @@ def claim_executor_jobs(
             # don't leak on the reserving host. No-op for fresh queued work.
             release_job_reservation(conn, ref_id)
             meta.pop("reserved", None)
+        if meta.get("job_type") == "run_slice" and status_value != RUNNING:
+            from precis.workers.admission import launch_fits
+            from precis.workers.job_types.run_slice import _WORK_FOOTPRINTS
+
+            # Launch runs locally, even if params carry a target_node.
+            # Check the exact spawn ledger, not learned RSS or executor cap.
+            if not launch_fits(conn, default_host, _WORK_FOOTPRINTS["slice"]):
+                return None
         requires = effective_requires(meta)
         # The resource lives where the job runs: its target_node (an
         # ssh_node GPU job reserves on the GPU box, not the claimer), else
@@ -2287,6 +2523,22 @@ def claim_executor_jobs(
         return (ref_id, title, meta)
 
     claimed: list[tuple[int, str, dict[str, Any]]] = []
+    fresh_builds: list[int] = []
+    # One ``_queued_build_plan`` load per claim pass, shared by the
+    # overlap and sequencing holds — the ssh_node queue filter below and
+    # the per-job ``_finish_claim`` gate (gr656970 review: each hold used
+    # to load its own copy, so the same plan subtrees were fetched twice
+    # per pass, and twice again under the claim lock). Loaded lazily — a
+    # pass that claims no ``run_slice`` (and isn't ssh_node's) never pays
+    # for it. The load covers every queued build's parent, so
+    # ``_finish_claim`` needs no narrower read of its own.
+    _build_plan_shared: tuple[Any | None, set[int]] | None = None
+
+    def _shared_build_plan() -> tuple[Any | None, set[int]]:
+        nonlocal _build_plan_shared
+        if _build_plan_shared is None:
+            _build_plan_shared = _queued_build_plan(conn, None)
+        return _build_plan_shared
 
     # ── Reclaim-only pre-pass (starvation fix — see the docstring's
     # "Starvation-bound reclaim pre-pass") ──────────────────────────────
@@ -2609,6 +2861,22 @@ def claim_executor_jobs(
             f"CASE WHEN r.meta->>'job_type' IN {_FACTORY_TYPES_SQL} THEN 0 ELSE 1 END"
         )
         factory_order_sql = "factory_pref ASC, "
+    # Filter existing holds before LIMIT: even a queue longer than the
+    # overfetch window cannot hide an unrelated build behind held jobs.
+    if executor == "ssh_node":
+        shared = _shared_build_plan()
+        held_builds = build_overlap_holds(conn, shared=shared) | build_blocked_holds(
+            conn, shared=shared
+        )
+        if held_builds:
+            where_sql += (
+                " AND (r.meta->>'job_type' <> 'run_slice' "
+                "OR r.parent_id IS NULL OR r.parent_id <> ALL(%s))"
+            )
+            where_params = (*where_params, sorted(held_builds))
+    score_order_sql = (
+        f"COALESCE((r.meta->>'{_dscore.SCORE_META_KEY}')::float8, 0) DESC, "
+    )
     fresh_sql = f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
                q.qs AS queued_since,
@@ -2664,7 +2932,7 @@ def claim_executor_jobs(
     rows = conn.execute(
         fresh_sql.replace("@@BG_WHERE@@", "").replace(
             "@@ORDER_BY@@",
-            f"claim_rank ASC, {factory_order_sql}{share_order_sql}"
+            f"claim_rank ASC, {factory_order_sql}{score_order_sql}{share_order_sql}"
             "aged_prio ASC, q.qs ASC, r.ref_id ASC",
         ),
         (*fresh_params, fresh_limit * _CLAIM_OVERFETCH),
@@ -2805,7 +3073,7 @@ def claim_executor_jobs(
 
     def _order_key(
         r: Any,
-    ) -> tuple[float, float, float, float, float, int, Any, int]:
+    ) -> tuple[float, float, float, float, float, float, int, Any, int]:
         prio = _row_prio(r)
         age = _row_age_s(r)
         if class_rank_on and prio == 1.0:
@@ -2847,6 +3115,7 @@ def claim_executor_jobs(
             -scarcity,
             rank,
             factory,
+            -float(dict(r[2] or {}).get(_dscore.SCORE_META_KEY) or 0),
             -deficit,
             aged,
             _row_affinity(r),
@@ -2914,6 +3183,8 @@ def claim_executor_jobs(
         if claim is None:
             continue
         claimed.append(claim)
+        if job_type == "run_slice":
+            fresh_builds.append(ref_id)
         fresh_claimed += 1
         running_total += 1
         running_by_type[job_type] = running_by_type.get(job_type, 0) + 1

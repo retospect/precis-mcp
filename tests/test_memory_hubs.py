@@ -306,8 +306,10 @@ def test_thread_hints_unlinked_gotchas_of_its_hub(hub: Hub) -> None:
         for g in (dense, sparse, body_hit)
     }
     assert set(qual) == want
-    # the densest lexical match leads
-    assert _h(dense) in qual[0]
+    # best match first: td703300 length-normalises the lexical rank, so the
+    # short chunk that is exactly the query leads and a longer title that
+    # merely repeats a word no longer outranks it
+    assert [c.split("'")[3] for c in qual] == [_h(g) for g in (body_hit, sparse, dense)]
     for g in (off, partial, runbook, linked):
         assert not any(_h(g) in c for c in qual)
 
@@ -623,17 +625,22 @@ def test_hub_listing_is_capped_with_a_more_line_and_reads_hooks_in_one_query(
     monkeypatch.setattr(eye_render, "_HUB_LIST_CAP", 5)
     store, handler = hub.live_store, MemoryHandler(hub=hub)
     root = _note(handler, "Root", "x", HUB)
+    members = []
     for i in range(9):
-        _part_of(store, _note(handler, f"M{i}", f"first line {i}\nsecond"), root)
+        members.append(_note(handler, f"M{i}", f"first line {i}\nsecond"))
+        _part_of(store, members[-1], root)
 
-    seen: list[str] = []
-    orig = store.chunks.list_chunks_for_ref
+    # Every chunk read of a ref, by either store door, with the id asked for.
+    seen: list[int] = []
+    for name in ("list_chunks_for_ref", "list_chunks_for_ref_by_kind"):
 
-    def spy(*a: Any, **k: Any) -> Any:
-        seen.append("x")
-        return orig(*a, **k)
+        def spy(
+            ref_id: int, *a: Any, _orig: Any = getattr(store.chunks, name), **k: Any
+        ) -> Any:
+            seen.append(ref_id)
+            return _orig(ref_id, *a, **k)
 
-    monkeypatch.setattr(store.chunks, "list_chunks_for_ref", spy)
+        monkeypatch.setattr(store.chunks, name, spy)
     out = render_eye(store, _h(root), "fisheye+1hop")
 
     assert "  contains (9):" in out
@@ -641,7 +648,10 @@ def test_hub_listing_is_capped_with_a_more_line_and_reads_hooks_in_one_query(
     assert f"… +4 more · get(kind='memory', id='{_h(root)}'" in out
     assert "q='contains')" in out
     assert out.splitlines()[-1].startswith("search within:")
-    assert "first line" in out and seen == []  # no per-member chunk reads
+    assert "first line" in out
+    # no per-member chunk reads; the focal node's own body is read at most once
+    assert not set(seen) & set(members)
+    assert seen.count(root) <= 1
 
 
 def test_first_hop_shape_ignores_inbound_edges_from_retired_sources(hub: Hub) -> None:
@@ -798,3 +808,18 @@ def test_hub_eye_over_cap_names_the_members_continuation(
     )
     assert "… truncated" in out
     assert f"next: get(kind='memory', id={root}, view='members')" in out
+
+
+def test_members_page_size(hub: Hub) -> None:
+    handler = MemoryHandler(hub=hub)
+    root = _note(handler, "Root hub", "x", HUB)
+    members = [_note(handler, f"Member {i}") for i in range(5)]
+    for member in members:
+        _part_of(hub.live_store, member, root)
+    first = handler.get(id=root, view="members", page_size=3)
+    assert len(_member_rows(first.body)) == 3
+    assert _next_offset(first.body) == 3
+    assert "'page_size': 3" in first.body
+    second = handler.get(id=root, view="members", page_size=3, offset=3)
+    assert len(_member_rows(second.body)) == 2
+    assert not set(first.result_ids or []) & set(second.result_ids or [])

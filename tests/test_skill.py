@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from precis.config import PrecisConfig
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.skill import (
@@ -36,6 +37,7 @@ from precis.handlers.skill import (
     _list_skills,
 )
 from precis.runtime.core import PrecisRuntime
+from tests._skill_corpus import _install_corpus
 
 
 @pytest.fixture
@@ -52,6 +54,48 @@ def test_get_existing_skill(skill: SkillHandler) -> None:
     # The first H1 should match the canonical skill name.
     assert "precis-overview" in out.body or "Precis" in out.body
     assert len(out.body) > 100  # not empty
+
+
+def test_full_view_serves_complete_body_past_rev_stub(skill: SkillHandler) -> None:
+    """gr680237: the repeated full-view guess must reach the existing body door."""
+    complete = skill.get(id="precis-overview", full=True).body
+    rev = complete.rstrip().splitlines()[-1].removeprefix("skill rev ")
+    out = skill.get(id="precis-overview", view="full", have=rev)
+    note, body = out.body.split("\n", 1)
+    assert note.startswith("interpreted: view='full' read as full=True")
+    assert "extent='verbatim'" in note
+    assert body == complete
+
+
+def test_full_view_is_inert_on_section_selection(skill: SkillHandler) -> None:
+    """gr680237 review (td706444): ``full`` cannot change a ``~N``
+    section serve, so the alias is dropped silently — the read is
+    byte-identical to the plain section read with no ``interpreted:``
+    banner claiming a full body that was not served."""
+    out = skill.get(id="precis-overview~0", view="full")
+    assert out.body == skill.get(id="precis-overview~0").body
+    assert not out.body.startswith("interpreted:")
+
+
+def test_full_view_is_inert_on_toc(skill: SkillHandler) -> None:
+    """The alias is likewise dropped on ``slug/toc`` — the TOC read is
+    unchanged and carries no false full-read banner."""
+    out = skill.get(id="precis-overview/toc", view="full")
+    assert out.body == skill.get(id="precis-overview/toc").body
+    assert not out.body.startswith("interpreted:")
+
+
+def test_full_view_is_inert_on_index(skill: SkillHandler) -> None:
+    """A no-id index read drops ``view=`` like any other view."""
+    out = skill.get(view="full")
+    assert out.body == skill.get().body
+    assert not out.body.startswith("interpreted:")
+
+
+def test_unrelated_skill_view_still_refuses(skill: SkillHandler) -> None:
+    with pytest.raises(BadInput, match="unknown skill view 'build'") as caught:
+        skill.get(id="precis-overview", view="build")
+    assert caught.value.options
 
 
 def test_get_bare_kind_aliases_to_help_skill(skill: SkillHandler) -> None:
@@ -106,6 +150,21 @@ def test_registered_alias_find_in_ref(skill: SkillHandler) -> None:
     assert "Basic" in out.body
 
 
+def test_verbatim_skill_query_finds_passages() -> None:
+    hub = Hub()
+    SkillHandler(hub=hub)._register_with(hub)
+    runtime = PrecisRuntime(config=PrecisConfig(), hub=hub)
+    payload = {"kind": "skill", "id": "precis-link-help", "q": "machine"}
+
+    body, is_error = runtime.dispatch_with_status(
+        "get", {**payload, "extent": "verbatim", "__extras__": {"context": 0}}
+    )
+
+    assert is_error is False
+    assert "# find 'machine' in precis-link-help" in body
+    assert "machine-writer context" in body
+
+
 def test_registered_alias_is_noted_on_the_canonical_row(
     skill: SkillHandler,
 ) -> None:
@@ -134,22 +193,40 @@ def test_get_skill_chunk_omits_result_budget_hint(skill: SkillHandler) -> None:
     assert out.result_budget_hint is None
 
 
-def test_skill_chunk_next_lifts_a_referenced_section(skill: SkillHandler) -> None:
+_SIBLING_SLUG = "probe-help"
+#: Section ~1 names only the backticked sibling handle ``probe-help~2``.
+_SIBLING_SKILL = (
+    "---\nflavor: reference\n---\n"
+    "# Probe\nintro\n"
+    "## One\nsee `probe-help~2` for the details.\n"
+    "## Two\nthe details.\n"
+)
+
+
+def test_skill_chunk_next_lifts_a_referenced_section(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """gr626104: a lone ``~N`` serve has no "below" — a sibling-section
     handle the chunk names rides the ``Next:`` trailer as a direct call,
-    and the prose names it too (``precis-paper-help~5`` → ``~6``)."""
-    out = skill.get(id="precis-paper-help~5")
-    assert "`precis-paper-help~6`" in out.body
-    assert "get(kind='skill', id='precis-paper-help~6')" in out.body
+    and the prose names it too. A synthetic skill, so the pair doesn't
+    depend on how a shipped skill is sectioned or worded (gr735136)."""
+    _install_corpus(monkeypatch, {_SIBLING_SLUG: _SIBLING_SKILL})
+    out = skill.get(id=f"{_SIBLING_SLUG}~1")
+    assert f"`{_SIBLING_SLUG}~2`" in out.body
+    assert f"get(kind='skill', id='{_SIBLING_SLUG}~2')" in out.body
 
 
 def test_skill_chunk_next_skips_handles_inside_the_served_range(
-    skill: SkillHandler,
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A range serve already includes a self-referenced chunk — the
     trailer doesn't re-advertise it."""
-    out = skill.get(id="precis-paper-help~5..6")
-    assert "get(kind='skill', id='precis-paper-help~6')" not in out.body
+    _install_corpus(monkeypatch, {_SIBLING_SLUG: _SIBLING_SKILL})
+    out = skill.get(id=f"{_SIBLING_SLUG}~1..2")
+    # positive half: the served range carries the mention itself …
+    assert f"`{_SIBLING_SLUG}~2`" in out.body
+    # … and the Next trailer doesn't re-advertise the handle it already holds
+    assert f"get(kind='skill', id='{_SIBLING_SLUG}~2')" not in out.body
 
 
 def test_skill_result_budget_hint_recovers_oversize_read(skill: SkillHandler) -> None:

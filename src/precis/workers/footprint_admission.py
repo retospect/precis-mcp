@@ -607,6 +607,10 @@ def admission_units(
     pass (keyed reads on tiny tables, but a deep queue shouldn't re-read
     per row); it lives for one :func:`claim_executor_jobs` call.
     """
+    # Detached slices reserve their fixed launch footprint in admission.spawn.
+    # A learned claim reservation would charge their memory twice.
+    if meta.get("job_type") == "run_slice":
+        return {}
     units: dict[str, int] = {}
     key: tuple[Any, ...]
     model = effective_model(meta)

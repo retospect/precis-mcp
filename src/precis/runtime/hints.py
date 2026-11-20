@@ -31,6 +31,50 @@ _KIND_SKILL_ALIASES: dict[str, str] = {
 }
 
 
+def _is_table_request(verb: str, args: dict[str, Any], hub: Any = None) -> bool:
+    """Recognise table arguments, then resolve ambiguous chunk edits on refusal."""
+    if args.get("kind") != "draft":
+        return False
+    extras = args.get("__extras__")
+    payload = {**args, **(extras if isinstance(extras, dict) else {})}
+    if payload.get("chunk_kind") == "table" or payload.get("view") in (
+        "toon",
+        "table",
+        "stats",
+    ):
+        return True
+    if verb in {"put", "edit"} and any(
+        payload.get(key) is not None
+        for key in (
+            "table",
+            "columns",
+            "rows",
+            "footer",
+            "cell",
+            "patch",
+            "toon",
+            "base",
+            "add_column",
+            "drop_column",
+            "rename_column",
+            "move_column",
+            "move_row",
+            "drop_rows",
+            "sort",
+        )
+    ):
+        return True
+    ident = args.get("id")
+    if verb == "edit" and isinstance(ident, str) and ident.startswith(("dc", "¶")):
+        try:
+            chunk = hub.store.drafts.get_draft_chunk(ident)
+            return chunk is not None and chunk.chunk_kind == "table"
+        except Exception:
+            # Recovery hints must not mask the original refusal on a failed lookup.
+            return False
+    return False
+
+
 class HintsMixin(RuntimeShape):
     """Tag-shaped-``q=`` search tip + the per-error skill breadcrumb."""
 
@@ -123,7 +167,9 @@ class HintsMixin(RuntimeShape):
 
         live_kinds = set(self.hub.kinds) if self.hub is not None else set()
         hint: str | None = None
-        if isinstance(kind, str) and kind in live_kinds:
+        if _is_table_request(verb, args, self.hub):
+            hint = "get(kind='skill', id='precis-table-help')"
+        elif isinstance(kind, str) and kind in live_kinds:
             # ``kind='skill'`` has no ``precis-skill-help`` — skills ARE
             # the help system, so the auto-generated breadcrumb points at
             # an id the caller just failed to fetch (broad-pass R3#3:
@@ -191,6 +237,8 @@ class HintsMixin(RuntimeShape):
         call is wrapped again here so a broken graph can never surface
         as a broken error render.
         """
+        if _is_table_request(verb, args, self.hub):
+            return
         if not isinstance(err, (BadInput, Unsupported)):
             return
         kind = args.get("kind") if isinstance(args, dict) else None

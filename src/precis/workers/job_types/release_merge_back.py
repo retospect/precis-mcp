@@ -258,16 +258,20 @@ def merge_back(
     ``conflict`` (``resolver`` the minted todo, ``files``) or ``failed``
     (``why`` — the caller fails the job, the tick retries).
     ``strategy="ours"`` is the post-resolver step: ``-s ours`` records
-    the ancestry only, keeping main's tree, and needs ``resolver`` done."""
+    the ancestry only, keeping main's tree, and needs ``resolver`` done —
+    unless main already contains the release head (someone merged it by
+    hand and closed the resolver won't-do, r336): then there is nothing
+    to record and the outcome is ``noop`` whatever the resolver's state
+    (gr735669)."""
     rel = _release.release_of(store, todo_id)
     if rel is None:
         return {"state": "failed", "why": "no release recorded on the plan"}
     rn = str(rel["rN"])
     resolved: str | None = None
+    refusal: str | None = None
     if strategy == OURS:
+        # Judged after the ancestry read below, not here.
         resolved, refusal = _resolved_in(store, resolver)
-        if refusal is not None:
-            return {"state": "failed", "why": refusal}
     elif strategy is not None:
         return {"state": "failed", "why": f"unknown merge strategy {strategy!r}"}
     branch = _release.release_branch(rn)
@@ -300,6 +304,11 @@ def merge_back(
         out = {"state": "noop", "why": f"origin/main already contains {head[:12]}"}
         _record(store, todo_id, out)
         return out
+    if refusal is not None:
+        return {
+            "state": "failed",
+            "why": f"{refusal}, and origin/main does not contain {head[:12]}",
+        }
     message = merge_message(rn, resolved)
     how = ["-s", OURS] if strategy == OURS else []
     tree = root / ".claude" / "worktrees" / f"merge-back-{rn}"

@@ -21,8 +21,10 @@ modules' docstrings for the detailed rationale):
   so only one cluster node runs it per throttle window even under
   pgbouncer ``pool_mode=transaction``.
 
-Idempotent: candidate selection is ``meta->>'authors_resolved_at' IS
-NULL`` — ``enrich_paper`` stamps that key on every ref it visits
+Journal repair also claims already-enriched ISSN papers with an old resolution
+version or a receipt older than 30 days. Successful visits pin both at the
+end; registry failures leave papers claimable. Otherwise candidate selection is
+``meta->>'authors_resolved_at' IS NULL`` — ``enrich_paper`` stamps that key on every ref it visits
 (hit, miss, or error), so a second pass over the same rows selects zero
 candidates and is a no-op. One bounded exception (gr658887): a ref
 still carrying a placeholder title re-enters the claim while its
@@ -41,7 +43,7 @@ card rebuild included — has finished.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 
@@ -73,12 +75,11 @@ def _due(store: Store) -> bool:
 def _claim_batch(store: Store, *, limit: int) -> list[tuple[int, str | None]]:
     """Claimable paper refs, newest first: ``(ref_id, doi_or_none)``.
 
-    Mostly unvisited rows (``authors_resolved_at IS NULL``); the OR's
-    second leg admits the stamped-placeholder recovery class below. A
-    DOI-less ref is included (``doi`` is ``None``) — ``enrich_paper``
+    Unvisited rows, stale ISSN journal receipts, and the stamped-placeholder
+    recovery class below. A DOI-less ref is included (``doi`` is ``None``) — ``enrich_paper``
     degrades to the no-network heuristic author split for those.
 
-    The OR's second leg is the bounded placeholder recovery (gr658887):
+    The final OR leg is the bounded placeholder recovery (gr658887):
     a ref already stamped before the pass learned the front-matter title
     leg re-enters the claim while ``meta.title_recovery_v`` is below the
     current version — ``enrich_paper`` pins the version on that visit,
@@ -86,6 +87,7 @@ def _claim_batch(store: Store, *, limit: int) -> list[tuple[int, str | None]]:
     pass.
     """
     from precis.identity import PLACEHOLDER_TITLE
+    from precis.ingest.journal_record import RESOLUTION_VERSION
     from precis.ingest.paper_meta_enrich import _TITLE_RECOVERY_VERSION
 
     sql = """
@@ -97,6 +99,14 @@ def _claim_batch(store: Store, *, limit: int) -> list[tuple[int, str | None]]:
            AND r.retired_at IS NULL
            AND (
                  r.meta->>'authors_resolved_at' IS NULL
+                 OR (
+                       coalesce(r.meta->>'issn', '') <> ''
+                       AND (
+                         r.meta->>'journal_resolution_v' IS DISTINCT FROM %s
+                         OR coalesce(r.meta->>'journal_resolved_at', '')
+                            < %s
+                       )
+                   )
                  OR (
                        (r.title IS NULL OR btrim(r.title) IN ('', %s))
                        AND coalesce(
@@ -119,7 +129,14 @@ def _claim_batch(store: Store, *, limit: int) -> list[tuple[int, str | None]]:
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            sql, (PLACEHOLDER_TITLE, _TITLE_RECOVERY_VERSION, limit)
+            sql,
+            (
+                str(RESOLUTION_VERSION),
+                (datetime.now(UTC) - timedelta(days=30)).isoformat(),
+                PLACEHOLDER_TITLE,
+                _TITLE_RECOVERY_VERSION,
+                limit,
+            ),
         ).fetchall()
     return [(int(r[0]), r[1]) for r in rows]
 

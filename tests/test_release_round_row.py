@@ -226,6 +226,51 @@ def test_update_round_same_n_create_stamps_no_pass_on_a_later_state(
     assert plans_release.read_round(store) == seeded
 
 
+@pytest.mark.parametrize("state", ["abandoned", "superseded", "failed"])
+def test_update_round_create_replaces_a_dead_same_n_row_of_another_pass(
+    store: Store, state: str
+) -> None:
+    """gr714067: r1 died without shipping under pass td41 and its number
+    was minted again for td99. The cut replaces the row whole — left
+    alone it stayed ``abandoned`` through the new release's deploy and
+    confirm, and every reader saw a dead release."""
+    _seed(store, {**_fields(state=state), "pass": "td41", "abandoned_why": "x"})
+    fields = _fields(base="c" * 40)
+    fields["pass"] = "td99"
+    notes = plans_release.update_round(store, fields, create=True, now=NOW)
+    assert notes == [f"release.round: wrote r1 cut over the dead row ({state}, td41)"]
+    assert plans_release.read_round(store) == {
+        **fields,
+        "state_at": "2026-11-06T12:00:00Z",
+        "cut_at": "2026-11-06T12:00:00Z",
+    }
+
+
+@pytest.mark.parametrize(
+    ("row", "why"),
+    [
+        pytest.param({"state": "confirmed", "pass": "td41"}, "confirmed", id="shipped"),
+        pytest.param({"state": "abandoned", "pass": "td99"}, "abandoned", id="own"),
+        pytest.param(
+            {"state": "failed", "pass": "td41", "deploy": {"started_epoch": 5}},
+            "failed",
+            id="partial-rollout",
+        ),
+    ],
+)
+def test_update_round_create_leaves_a_same_n_row_that_is_not_dead(
+    store: Store, row: dict, why: str
+) -> None:
+    """A release that shipped, this pass's own row, and a ``failed`` row
+    whose rollout launched (a live partial rollout) are never replaced."""
+    seeded = _seed(store, {**_fields(), **row})
+    fields = _fields(base="c" * 40)
+    fields["pass"] = "td99"
+    notes = plans_release.update_round(store, fields, create=True, now=NOW)
+    assert f"already on record ({why})" in notes[0]
+    assert plans_release.read_round(store) == seeded
+
+
 def test_update_round_recut_moves_a_lower_n_row(store: Store) -> None:
     _seed(store, _fields(n=1, state="confirmed"))
     notes = plans_release.update_round(store, _fields(n=2), create=True, now=NOW)

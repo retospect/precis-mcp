@@ -11,14 +11,17 @@ import re
 from typing import Any, cast
 
 import pytest
+from psycopg.errors import DeadlockDetected, LockNotAvailable
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, Unsupported
+from precis.errors import BadInput, Unsupported, Upstream
 from precis.handlers.finding import FindingHandler
 from precis.identity import make_finding_paper_id, make_pub_id
+from precis.store import Store
 from precis.taproot import hub as taproot_hub
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
+from precis.utils import db_retry
 
 
 def _search(pattern: str, text: str) -> re.Match[str]:
@@ -2632,6 +2635,68 @@ class TestRetitleHub:
         assert ref.title == new_sentence
         assert self._finding_body(store, hub) == new_sentence
 
+    @pytest.mark.parametrize("rescope", [False, True])
+    def test_retitle_with_writer_attribution(self, store: Store, rescope: bool) -> None:
+        """gr715597: title attribution must pass the scope-only edit door."""
+        hub = mint_hub(
+            store, CanonicalClaim(sentence="Original claim wording.", scope={})
+        )
+        annotation = {
+            "model": "gpt-6-astra",
+            "prompt_version": "2",
+            "run_id": "test-run",
+            "why": "Add the measured method.",
+        }
+        meta: dict[str, Any] = dict(annotation)
+        if rescope:
+            meta["scope"] = {"material": "Pd/C"}
+        handler = _make_handler(store)
+        for forbidden in ("source", "claim_type"):
+            with pytest.raises(BadInput):
+                handler.edit(
+                    id=hub,
+                    title="TEM measures Pd particles.",
+                    meta={**meta, forbidden: "unsupported"},
+                )
+        handler.edit(id=hub, title="TEM measures Pd particles.", meta=meta)
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref is not None
+        assert ref.title == "TEM measures Pd particles."
+        assert self._finding_body(store, hub) == ref.title
+        assert all(ref.meta[k] == v for k, v in annotation.items())
+        assert ref.meta["scope"] == ({"material": "Pd/C"} if rescope else {})
+
+    def test_unchanged_retitle_preserves_writer_attribution(self, store: Store) -> None:
+        hub = mint_hub(
+            store, CanonicalClaim(sentence="Original claim wording.", scope={})
+        )
+        handler = _make_handler(store)
+        sentence = "TEM measures Pd particles."
+        handler.edit(id=hub, title=sentence, meta={"model": "original-writer"})
+
+        handler.edit(id=hub, title=sentence, meta={"model": "later-writer"})
+
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref is not None
+        assert ref.meta["model"] == "original-writer"
+
+    @pytest.mark.parametrize("value", [{"name": "writer"}, ["writer"], 1, None])
+    def test_retitle_rejects_non_string_writer_value(
+        self, store: Store, value: Any
+    ) -> None:
+        hub = mint_hub(
+            store, CanonicalClaim(sentence="Original claim wording.", scope={})
+        )
+        handler = _make_handler(store)
+        with pytest.raises(BadInput, match=r"meta\['model'\] must be a string"):
+            handler.edit(
+                id=hub, title="TEM measures Pd particles.", meta={"model": value}
+            )
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref is not None
+        assert ref.title == "Original claim wording."
+        assert "model" not in ref.meta
+
     def test_retitle_hub_by_pub_id(self, store) -> None:
         hub = mint_hub(
             store, CanonicalClaim(sentence="Original claim wording.", scope={})
@@ -2655,7 +2720,14 @@ class TestRetitleHub:
         h = _make_handler(store)
 
         with pytest.raises(BadInput, match="dedup/merge candidate"):
-            h.edit(id=hub, title="Second claim sentence.")
+            h.edit(
+                id=hub,
+                title="Second claim sentence.",
+                meta={"model": "gpt-6-astra"},
+            )
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref.title == "First claim sentence."
+        assert "model" not in ref.meta
 
     def test_retitle_non_hub_finding_rejected(self, store) -> None:
         """A plain chase finding has no ``edit(title=…)`` door."""
@@ -2691,6 +2763,53 @@ class TestRetitleHub:
         with pytest.raises(BadInput) as exc:
             h.edit(id=hub, title="Reworded claim sentence.")
         assert exc.value is bomb
+
+    def test_retitle_retries_through_lock_contention(self, store, monkeypatch) -> None:
+        """gr716316: a lock timeout on the retitle's own transaction retries
+        in-process — contention from a concurrent read pass must not cost
+        the caller the rename."""
+        hub = mint_hub(
+            store, CanonicalClaim(sentence="Claim under contention.", scope={})
+        )
+        real_tx = store.tx
+        attempts = {"n": 0, "contended": 0}
+
+        def contended_tx() -> Any:
+            attempts["n"] += 1
+            if attempts["contended"] < 2:
+                attempts["contended"] += 1
+                raise LockNotAvailable("could not obtain lock")
+            return real_tx()
+
+        monkeypatch.setattr(store, "tx", contended_tx)
+        monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+        h = _make_handler(store)
+        out = h.edit(id=hub, title="Claim reworded after contention.")
+        assert f"retitled claim hub fi{hub}" in out.body
+        assert attempts["contended"] == 2
+        assert attempts["n"] > attempts["contended"]
+        assert store.get_ref(kind="finding", id=hub).title == (
+            "Claim reworded after contention."
+        )
+
+    def test_retitle_lock_exhaustion_refuses_with_next(
+        self, store, monkeypatch
+    ) -> None:
+        """A lock that outlasts the retry budget refuses ``Upstream`` with a
+        ``next=`` naming the retry — not the bare psycopg error."""
+
+        def always_locked() -> Any:
+            raise LockNotAvailable("still locked")
+
+        hub = mint_hub(store, CanonicalClaim(sentence="Locked claim.", scope={}))
+        monkeypatch.setattr(store, "tx", always_locked)
+        monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+        h = _make_handler(store)
+        with pytest.raises(Upstream) as excinfo:
+            h.edit(id=hub, title="Never lands.")
+        assert excinfo.value.next is not None
+        assert "retry" in excinfo.value.next
+        assert store.get_ref(kind="finding", id=hub).title == "Locked claim."
 
 
 # ── edit(meta={'scope': …}) — rescope a TAPROOT:claim hub ────────────
@@ -2754,12 +2873,137 @@ class TestRescopeHub:
         assert "new: Pd/C reliably" in out.body
         assert len(self._pub_ids(store, hub)) == 2
 
+    def test_rescope_retries_through_lock_contention(self, store, monkeypatch) -> None:
+        """The rescope door runs the same write through
+        ``refine_claim_sentence`` and gets the same retry (gr716316)."""
+        hub = self._mint(store)
+        real_tx = store.tx
+        attempts = {"n": 0}
+
+        def contended_tx() -> Any:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise LockNotAvailable("could not obtain lock")
+            return real_tx()
+
+        monkeypatch.setattr(store, "tx", contended_tx)
+        monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+        h = _make_handler(store)
+        out = h.edit(id=hub, meta={"scope": {"material": "Pd/C"}})
+        assert f"rescoped claim hub fi{hub}" in out.body
+        assert attempts["n"] == 2
+        assert store.get_ref(kind="finding", id=hub).meta["scope"] == {
+            "material": "Pd/C"
+        }
+
     def test_empty_dict_clears_scope(self, store) -> None:
         hub = self._mint(store)
         h = _make_handler(store)
         out = h.edit(id=hub, meta={"scope": {}})
         assert store.get_ref(kind="finding", id=hub).meta["scope"] == {}
         assert "lint" not in out.body  # a deliberate clear is not nagged
+
+    def test_rescope_retry_preserves_concurrent_retitle(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr716316: replay scope intent, never the pre-retry title snapshot."""
+        hub = self._mint(store)
+        real_refine = taproot_hub.refine_claim_sentence
+        attempts = 0
+        title = "Pd/C selectively catalyzes Suzuki coupling."
+
+        def contended_refine(*a: Any, **kw: Any) -> Any:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                real_refine(store, hub, title)
+                raise LockNotAvailable("concurrent retitle committed")
+            return real_refine(*a, **kw)
+
+        monkeypatch.setattr(taproot_hub, "refine_claim_sentence", contended_refine)
+        monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+        _make_handler(store).edit(id=hub, meta={"scope": {}})
+        ref = store.get_ref(kind="finding", id=hub)
+        assert attempts == 2
+        assert ref.title == title
+        assert ref.meta["scope"] == {}
+        from precis.identity import make_taproot_hub_paper_id
+
+        assert make_pub_id(make_taproot_hub_paper_id(title, {})) in self._pub_ids(
+            store, hub
+        )
+        with store.pool.connection() as conn:
+            body = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = 0",
+                (hub,),
+            ).fetchone()
+        assert body == (title,)
+
+    def test_retitle_retry_keeps_writer_attribution(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr716316: a retried retitle forwards the writer attribution."""
+        hub = self._mint(store)
+        real_refine = taproot_hub.refine_claim_sentence
+        attempts = 0
+
+        def contended_refine(*a: Any, **kw: Any) -> Any:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise LockNotAvailable("held by a read pass")
+            return real_refine(*a, **kw)
+
+        monkeypatch.setattr(taproot_hub, "refine_claim_sentence", contended_refine)
+        monkeypatch.setattr(db_retry.time, "sleep", lambda _s: None)
+        _make_handler(store).edit(
+            id=hub, title="Retried claim.", meta={"model": "m-1", "why": "retry"}
+        )
+        ref = store.get_ref(kind="finding", id=hub)
+        assert attempts == 2
+        assert ref.title == "Retried claim."
+        assert ref.meta["model"] == "m-1"
+        assert ref.meta["why"] == "retry"
+
+    @pytest.mark.parametrize("error", [LockNotAvailable, DeadlockDetected])
+    @pytest.mark.parametrize(
+        "edit_kw", [{"meta": {"scope": {}}}, {"title": "New claim."}]
+    )
+    def test_batch_contention_aborts_without_item_retry(
+        self,
+        store: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        error: type[Exception],
+        edit_kw: dict[str, Any],
+    ) -> None:
+        """A later lock failure must roll back earlier edits without sleeping."""
+        first = self._mint(store)
+        second = self._mint(store, sentence="Another catalytic claim.")
+        before_pubs = self._pub_ids(store, first)
+        real_refine = taproot_hub.refine_claim_sentence
+        calls: list[int] = []
+
+        def contended_refine(s: Any, rid: int, *a: Any, **kw: Any) -> Any:
+            calls.append(rid)
+            if rid == second:
+                raise error("later batch item locked")
+            return real_refine(s, rid, *a, **kw)
+
+        def no_sleep(_seconds: float) -> None:
+            pytest.fail("per-item retry retained earlier batch locks")
+
+        monkeypatch.setattr(taproot_hub, "refine_claim_sentence", contended_refine)
+        monkeypatch.setattr(db_retry.time, "sleep", no_sleep)
+        with pytest.raises(Upstream, match="rolled back") as exc:
+            _make_handler(store).edit(id=[first, second], **edit_kw)
+        assert "entire atomic request" in (exc.value.next or "")
+        assert calls == [first, second]
+        assert store.get_ref(kind="finding", id=first).meta["scope"] != {}
+        assert (
+            store.get_ref(kind="finding", id=first).title
+            == "Pd/C catalyzes Suzuki coupling."
+        )
+        assert self._pub_ids(store, first) == before_pubs
 
     def test_dry_run_previews_and_writes_nothing(self, store) -> None:
         hub = self._mint(store)
@@ -3108,12 +3352,12 @@ class TestRetractionPropagation:
 
 # ── refuted lifecycle (docs/backlog/quest-dossier-dialectic.md
 #    §"Refuted lifecycle") — terminal STATUS:refuted applied via the
-#    existing tag verb, retracts-linked to the negative-ruling finding ──
+#    existing tag verb, with an outbound retracted-by link to the ruling ──
 
 
 class TestRefutedLifecycle:
     """A rejected hypothesis finding: mint the negative ruling as an
-    established finding, ``retracts``-link the hypothesis to it, tag
+    established finding, link the hypothesis to it with ``retracted-by``, tag
     the hypothesis ``STATUS:refuted``. No new transition machinery —
     the tag verb + the generic ``link(rel=...)`` door (already exercised
     for Taproot relations in ``TestLinkTaprootRouting``) are enough."""
@@ -3135,11 +3379,8 @@ class TestRefutedLifecycle:
         out = h.get(id=hyp_id)
         assert "STATUS:refuted" in out.body
 
-    def test_retracts_link_round_trips_to_ruling(self, store) -> None:
-        """``link(id=<hypothesis>, target=<ruling>, rel='retracts')``
-        writes the edge; the mirror ``retracted-by`` is readable from the
-        ruling's side (the auto-mirrored inverse relation, types.py
-        ``_RELATION_MIRROR``)."""
+    def test_retracted_by_link_round_trips_to_ruling(self, store: Any) -> None:
+        """Both relation queries find the stored hypothesis-to-ruling edge."""
         hyp_id = self._mint_finding(
             store, title="d-gate hypothesis", cite_key="paper-hyp2"
         )
@@ -3156,20 +3397,15 @@ class TestRefutedLifecycle:
             set_by="system",
             replace_prefix=True,
         )
-        h.link(id=hyp_id, target=f"fi{ruling_id}", rel="retracts")
+        h.link(id=hyp_id, target=f"fi{ruling_id}", rel="retracted-by")
         h.tag(id=hyp_id, add=["STATUS:refuted"])
 
-        with store.pool.connection() as conn:
-            forward = conn.execute(
-                "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
-                (hyp_id, ruling_id),
-            ).fetchone()
-        assert forward is not None
-        assert forward[0] == "retracts"
-
-        # The mirror relation is queryable from the ruling's inbound side.
-        out = h.get(id=ruling_id)
-        assert f"fi{hyp_id}" in out.body or str(hyp_id) in out.body
+        forward = store.links_for(hyp_id, direction="out", relation="retracted-by")
+        assert [(link.relation, link.dst_ref_id) for link in forward] == [
+            ("retracted-by", ruling_id)
+        ]
+        inverse = store.links_for(ruling_id, direction="out", relation="retracts")
+        assert inverse == forward
 
         # The hypothesis itself is now refuted and excluded from default
         # search — the do-not-repropose ledger. (The "no finding matches"
@@ -3673,3 +3909,32 @@ class TestCountView:
         self._graph(store)
         out = _make_handler(store).search(view="count", q="claim body")
         assert "# 1 finding entry" in out.body
+
+
+@pytest.mark.parametrize("status", [None, "established"])
+def test_search_view_index_lists_one_line_per_hit(
+    store: Any, status: str | None
+) -> None:
+    seed = TestSearch()
+    first = seed._seed_finding(
+        store,
+        cite_key="index-a",
+        title="first claim",
+        body="first body",
+        status="established",
+    )
+    second = seed._seed_finding(
+        store,
+        cite_key="index-b",
+        title="second claim",
+        body="second body",
+        status="established",
+    )
+    h = _make_handler(store)
+    default = h.search(status=status).body
+    out = h.search(status=status, view="index")
+    assert out.body.splitlines() == [
+        f"- second claim (fi{second}) — established",
+        f"- first claim (fi{first}) — established",
+    ]
+    assert default.index("second claim") < default.index("first claim")

@@ -88,7 +88,22 @@ def _trust(store: Store, mode: str) -> None:
 
 
 def _light(store: Store, prio: int = 1, host: str = "*") -> None:
+    # Legacy intake cases use a synthetic fleet with the same number of
+    # free executor slots as their configured lanes, and one queued job
+    # per slot. Queue-depth defaults and host caps have separate tests.
+    psettings.set_setting("factory.gripe_dispatch.queue_depth", 1, store=store)
+    store.sync_host_resource_slots("h1", {"builder": 1, "codex_bin": 1})
     with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) VALUES ('h1', now(), '{}') "
+            "ON CONFLICT (host) DO UPDATE SET ts = now()"
+        )
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES "
+            "('claim.executor_cap.ssh_node.h1', %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (str(gd.lane_capacity(store) + 1),),
+        )
         conn.execute(
             "INSERT INTO service_config (host, service, prio) "
             "VALUES (%s, 'gripe_dispatch', %s) "
@@ -234,9 +249,8 @@ def test_each_fix_class_mints_a_code_class_build(
         ).fetchall()
     # one build (code) plus the validate run_slice; nothing is docs-classed
     assert sorted(r[0] for r in rows) == ["code", "validate"]
-    # the minted chain holds a lane slot like a fix:code one (capacity
-    # count and the build's class agree)
-    assert gd.open_chain_count(store) == 1
+    # Minting a queued build consumes no running executor slot.
+    assert gd.open_chain_count(store) == 0
 
 
 def test_non_fix_classes_stay_out(store: Store, two_lanes: Any) -> None:
@@ -257,7 +271,7 @@ def test_mixed_classes_share_the_one_code_capacity(
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert res.extra["lane_capacity"] == 3 and res.extra["slots"] == 3
     assert (res.claimed, res.ok) == (3, 3)
-    assert gd.open_chain_count(store) == 3
+    assert gd.open_chain_count(store) == 0
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert res.extra["slots"] == 0 and res.claimed == 0
 
@@ -266,9 +280,9 @@ def test_pass_mints_within_free_slots_and_is_idempotent(
     store: Store, two_lanes: Any
 ) -> None:
     _light(store)
-    a = _gripe(store, "a", prio=1)
-    b = _gripe(store, "b", prio=2)
-    c = _gripe(store, "c", prio=3)
+    a = _gripe(store, "alpha", prio=1)
+    b = _gripe(store, "beta", prio=2)
+    c = _gripe(store, "gamma", prio=3)
     assert gd.open_chain_count(store) == 0
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     # capacity 3, no held slots: one fire fills every free build slot
@@ -280,10 +294,10 @@ def test_pass_mints_within_free_slots_and_is_idempotent(
     assert note.startswith(
         f"dispatch: minted gripe-fix-direct td{_roots_for(store, a)[0]}"
     )
-    assert gd.open_chain_count(store) == 3
+    assert gd.open_chain_count(store) == 0
 
     # Second fire: all three are linked (skipped) and no slot is free.
-    _gripe(store, "d", prio=1)
+    _gripe(store, "delta", prio=1)
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert (res.claimed, res.ok) == (0, 0) and res.extra["slots"] == 0
     assert len(_roots_for(store, a)) == 1  # never doubled
@@ -434,7 +448,7 @@ def test_one_tick_fills_every_free_build_slot(
     assert res.extra["slots"] == 9 and res.extra["lane_capacity"] == 9
     # equal prios → oldest first
     assert [m["gripe"] for m in res.extra["minted"]] == gripes[:9]
-    assert gd.open_chain_count(store) == 9
+    assert gd.open_chain_count(store) == 0
     # no free slot left: the next fire mints nothing more
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert (res.claimed, res.ok) == (0, 0) and res.extra["slots"] == 0
@@ -464,6 +478,7 @@ def test_landed_build_frees_the_slot_while_the_chain_runs_on(
     b = _gripe(store, "b", prio=2)
     assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
     [root] = _roots_for(store, a)
+    _queue_build(store, _build_node(store, root))
     assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # full
 
     # the build lands: its node goes done while gate/validate/review
@@ -515,10 +530,12 @@ def test_closed_chain_frees_its_slot_and_its_gripe_reenters(
     b = _gripe(store, "b", prio=5)
     assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
     [root] = _roots_for(store, a)
+    _queue_build(store, _build_node(store, root))
     assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # full
-    store.add_tag(
-        root, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
-    )
+    for node in (root, _build_node(store, root)):
+        store.add_tag(
+            node, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+        )
     assert gd.open_chain_count(store) == 0
     assert a in {c.gripe_id for c in gd.candidates(store, 10)}
     res = gd.run_gripe_dispatch_pass(store, host="h1")
@@ -568,9 +585,54 @@ def test_hand_minted_chain_counts(store: Store, two_lanes: Any) -> None:
     _light(store)
     a = _gripe(store, "a")
     mint_gripe_fix_direct(store, gripe_id=a)
-    assert gd.open_chain_count(store) == 1
+    assert gd.open_chain_count(store) == 0
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert res.claimed == 0 and len(_roots_for(store, a)) == 1
+
+
+def test_queue_depth_mints_a_bounded_buffer_from_host_capacity(
+    store: Store,
+    two_lanes: Any,
+) -> None:
+    """gr702610: N free host slots leave at least N queued builds in one fire.
+
+    Lane supply is three, but this host has two build executor slots.
+    Default depth two freezes only four of the ten eligible gripes.
+    """
+    _light(store)
+    psettings.set_setting("factory.gripe_dispatch.queue_depth", 2, store=store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE app_state SET value = '3' "
+            "WHERE key = 'claim.executor_cap.ssh_node.h1'"
+        )
+    gripes = [_gripe(store, f"buffered {i}") for i in range(10)]
+    assert gd.build_queue_supply(store) == (2, 0)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.ok == 4
+    assert gd.build_queue_supply(store) == (2, 4)
+    assert gd.open_chain_count(store) == 0
+    assert len(gd.candidates(store, 20)) == 6
+    assert not _roots_for(store, gripes[-1])
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0
+
+
+def test_queue_supply_ignores_dark_and_disabled_hosts(
+    store: Store, two_lanes: Any
+) -> None:
+    _light(store)
+    assert gd.build_queue_supply(store)[0] == 3
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE host_heartbeat SET ts = now() - interval '1 day'")
+    assert gd.build_queue_supply(store)[0] == 0
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE host_heartbeat SET ts = now()")
+        conn.execute(
+            "INSERT INTO service_config (host, service, prio) "
+            "VALUES ('h1', 'job_ssh_node', 0) "
+            "ON CONFLICT (host, service) DO UPDATE SET prio = 0"
+        )
+    assert gd.build_queue_supply(store)[0] == 0
 
 
 def test_deny_path_report_routes_to_the_coordinator(
@@ -1200,6 +1262,24 @@ def _age_node(store: Store, node: int, hours: float) -> None:
         )
 
 
+def _queue_build(store: Store, build: int) -> None:
+    """A queued ``run_slice`` job for the build node (what the dispatch
+    tick queues for a doable build), so the pass sees a full queue."""
+    from precis.workers._mint import mint_background_job
+
+    with store.tx() as conn:
+        mint_background_job(
+            store,
+            conn=conn,
+            job_type="run_slice",
+            executor="ssh_node",
+            title="run_slice",
+            params={"todo_id": build},
+            parent_id=build,
+            status="queued",
+        )
+
+
 def _park(store: Store, node: int, how: str) -> None:
     if how == "paused":
         store.add_tag(
@@ -1239,7 +1319,7 @@ def _open_tags(store: Store, ref_id: int) -> set[str]:
 
 @pytest.fixture(autouse=True)
 def _fresh_parked_cache() -> Any:
-    keys = (gd.MAX_PARKED_KEY, gd.STALL_HOURS_KEY)
+    keys = (gd.MAX_PARKED_KEY, gd.STALL_HOURS_KEY, "factory.gripe_dispatch.queue_depth")
     for k in keys:
         psettings.invalidate(k)
     yield
@@ -1258,7 +1338,7 @@ def test_parked_build_frees_its_slot(
     a = _gripe(store, "a", prio=1)
     b = _gripe(store, "b", prio=5)
     _root, build = _chain_for(store, a)
-    assert gd.open_chain_count(store) == 1  # open and doable: live
+    assert gd.open_chain_count(store) == 0  # undispatched: no running slot
     _park(store, build, how)
     assert gd.open_chain_count(store) == 0 and gd.parked_chain_count(store) == 1
     res = gd.run_gripe_dispatch_pass(store, host="h1")
@@ -1269,8 +1349,7 @@ def test_parked_build_frees_its_slot(
 def test_live_build_holds_its_slot(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A queued job, a claim, or a doable node each keep the slot, even
-    with a park tag on the node (a running build is not parked)."""
+    """Only a running job or explicit claim keeps a running slot."""
     from precis.workers._mint import mint_background_job
 
     _one_lane(monkeypatch)
@@ -1278,7 +1357,8 @@ def test_live_build_holds_its_slot(
     a = _gripe(store, "a", prio=1)
     b = _gripe(store, "b", prio=5)
     _root, build = _chain_for(store, a)
-    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # doable: full
+    _queue_build(store, build)
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # queued: target full
     _park(store, build, "waiting-for:coordinator")
     assert gd.open_chain_count(store) == 0
     with store.tx() as conn:
@@ -1290,7 +1370,7 @@ def test_live_build_holds_its_slot(
             title="run_slice",
             params={"todo_id": build},
             parent_id=build,
-            status="queued",
+            status="running",
         )
     assert gd.open_chain_count(store) == 1
     res = gd.run_gripe_dispatch_pass(store, host="h1")
@@ -1539,7 +1619,7 @@ def test_build_blocked_on_a_live_upstream_node_is_not_swept(
     old the build's own stamps are."""
     _one_lane(monkeypatch, cap=3)
     _light(store)
-    a = _gripe(store, "a")
+    a = _gripe(store, "alpha")
     root, build = _chain_for(store, a)
     up = store.insert_ref(kind="todo", slug=None, title="upstream", parent_id=root)
     store.add_tag(up.id, Tag.open(f"plan:{root}"), set_by="system")
@@ -1557,6 +1637,18 @@ def test_build_blocked_on_a_live_upstream_node_is_not_swept(
     store.add_tag(
         up.id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
     )
+    with store.pool.connection() as conn:  # its queued job ends with it
+        queued = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s",
+                (up.id,),
+            ).fetchall()
+        ]
+    for job in queued:
+        store.add_tag(
+            job, Tag.closed("STATUS", "cancelled"), set_by="system", replace_prefix=True
+        )
     _age_node(store, build, 48)
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert [z["root"] for z in res.extra["stalled"]] == [root]

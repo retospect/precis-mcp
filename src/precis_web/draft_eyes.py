@@ -55,7 +55,7 @@ _DEFAULT_NOTE_EXTENT = "fisheye+1hop"
 _DEFAULT_DOC_EXTENT = "summary"
 
 #: Doc kinds whose eye is a cluster map (see ``utils.eye_render._DOC_KINDS``).
-_DOC_KINDS = frozenset({"paper", "patent", "web", "datasheet", "cfp"})
+_DOC_KINDS = frozenset({"paper", "patent", "web", "datasheet", "cfp", "youtube"})
 
 #: Hard ceiling on eyes persisted per draft. Without it, "eye all" / "§ eye
 #: section" on a large heading writes one eye per draft chunk into the ref

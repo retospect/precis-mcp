@@ -317,6 +317,68 @@ def markup_surface(text: str) -> str:
     return re.sub(r"\s+", " ", s.replace("μ", "µ")).strip()
 
 
+#: Ingest-flattened scientific notation: a PDF text layer drops the
+#: superscript raise and leaves the exponent digits on the baseline, so
+#: ``5 × 10¹²`` extracts as ``5 × 1012`` (inline) or ``5 × 10 12``
+#: (spaced). The ``×`` admits no other reading, so the fold is safe on a
+#: literal; the bare ``10`` forms are expanded only for a literal that
+#: already holds an e-atom (:func:`sci_anchor_pattern`), so a plain
+#: 4-digit literal (a year, a catalog id) never inherits one.
+_SCI_X10_SPACED_FLAT_RE = re.compile(
+    r"(?<![\w.])(\d+(?:\.\d+)?)\s*[×·*]\s*10\s+(\d{1,4})(?![\d.])"
+)
+_SCI_X10_INLINE_FLAT_RE = re.compile(
+    r"(?<![\w.])(\d+(?:\.\d+)?)\s*[×·*]\s*10(\d{1,3})(?![\d.])"
+)
+#: An unsigned e-atom of the squashed surface (``5e12``, ``1e11``) worth
+#: expanding into the flattened prints. Signed atoms (``5e-12``) are not
+#: expanded: the signed prints (``× 10-3``, ``10-3``) already fold to the
+#: e-form on the span side.
+_SCI_E_ATOM_RE = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)e(\d{1,4})(?![\d.])")
+
+
+def sci_anchor_pattern(literal: str) -> str | None:
+    """The literal-in-span regex for a squashed literal that may carry
+    scientific notation, or ``None`` when it carries none.
+
+    A literal the paper printed with a raised exponent may sit in a
+    chunk whose text layer flattened it — ``5 × 10¹²`` extracted as
+    ``5 × 1012`` or ``5 × 10 12``, a bare ``10¹¹–10¹²`` as
+    ``1011–1012`` or ``10 11–10 12`` — while the literal itself keeps
+    the glyphs or e-form and folds to ``5e12``: a false
+    ``anchor_mismatch`` (gr715568). The pattern expands every unsigned
+    e-atom ``NeM`` into the alternation of its flattened prints
+    (``N × 10 M``, ``N × 10M``, and — for a mantissa of exactly ``1`` —
+    the bare ``10 M``/``10M``), and a literal copied from a flattened
+    chunk (``5 × 1012``) is folded to the e-form first. Plain literals
+    return ``None``: they match verbatim, with no exponent guessing.
+    """
+    folded = _SCI_X10_SPACED_FLAT_RE.sub(r"\1e\2", literal)
+    folded = _SCI_X10_INLINE_FLAT_RE.sub(r"\1e\2", folded)
+    if folded == literal and _SCI_E_ATOM_RE.search(literal) is None:
+        return None
+
+    def _atom(match: re.Match[str]) -> str:
+        mantissa, exponent = match.group(1), match.group(2)
+        forms = [
+            f"{mantissa}e{exponent}",
+            f"{mantissa} × 10 {exponent}",
+            f"{mantissa} × 10{exponent}",
+        ]
+        if mantissa == "1":
+            forms += [f"10 {exponent}", f"10{exponent}"]
+        return "(?:" + "|".join(re.escape(f) for f in forms) + ")"
+
+    out: list[str] = []
+    pos = 0
+    for match in _SCI_E_ATOM_RE.finditer(folded):
+        out.append(re.escape(folded[pos : match.start()]))
+        out.append(_atom(match))
+        pos = match.end()
+    out.append(re.escape(folded[pos:]))
+    return "".join(out)
+
+
 def markup_unit(text: str) -> str:
     """``markup_surface`` for a unit going to pint: the same fold but
     caret exponents stay (``W m^{-2}`` -> ``W m^-2``,

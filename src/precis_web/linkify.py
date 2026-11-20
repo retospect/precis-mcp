@@ -1917,11 +1917,43 @@ def render_cloze(text: str) -> Markup:
     return Markup("".join(out))
 
 
+def render_cloze_masked(text: str) -> Markup:
+    """Render an Anki cloze body as a self-quiz: every gap masked until hover.
+
+    Same escaping contract as :func:`render_cloze`. Each deletion renders as a
+    blank (the answer sits in a hidden ``.cloze-answer`` span the page CSS
+    reveals on hover/focus) and the gaps are labelled ``c1``, ``c2``, … in
+    order of appearance — the quiz numbering starts at c1 and is positional,
+    independent of the card's own ``{{cN}}`` indices. The hint, when present,
+    rides the ``title=`` tooltip. Text with no cloze deletion renders as plain
+    escaped prose.
+    """
+    out: list[str] = []
+    pos = 0
+    for gap, m in enumerate(_CLOZE_DISPLAY_RE.finditer(text or ""), start=1):
+        out.append(escape(text[pos : m.start()]))
+        _idx, answer, hint = m.group(1), m.group(2), m.group(3)
+        title = "hover to reveal"
+        if hint:
+            title += f" · hint: {escape(hint)}"
+        out.append(
+            f'<span class="cloze-mask" tabindex="0" title="{title}">'
+            f'<span class="cloze-blank" aria-hidden="true">&mdash;</span>'
+            f'<span class="cloze-answer">{escape(answer)}</span>'
+            f'<sup class="cloze-index">c{gap}</sup>'
+            f"</span>"
+        )
+        pos = m.end()
+    out.append(escape(text[pos:] if text else ""))
+    return Markup("".join(out))
+
+
 __all__ = [
     "extract_dois",
     "linkify_refs",
     "linkify_toon",
     "popover_chip",
     "render_cloze",
+    "render_cloze_masked",
     "render_markdown",
 ]

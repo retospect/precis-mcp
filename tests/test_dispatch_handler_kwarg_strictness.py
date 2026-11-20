@@ -20,7 +20,10 @@ the actual dispatch boundary, and a deliberately-tolerant handler
 from __future__ import annotations
 
 import re
+from typing import Any
 
+from precis.protocol import Handler, KindSpec
+from precis.response import Response
 from precis.runtime import PrecisRuntime
 
 
@@ -207,3 +210,65 @@ def test_patent_and_edgar_put_stubs_are_marked_tolerant() -> None:
 
     assert getattr(PatentHandler.put, TOLERATES_EXTRA_KWARGS_ATTR, False) is True
     assert getattr(EdgarHandler.put, TOLERATES_EXTRA_KWARGS_ATTR, False) is True
+
+
+# ── gr676945: the args= key gate must be MRO-aware, like the top-level ──
+# strictness gate (gr593341). The numeric-ref overrides forward their
+# ``**_kw`` to ``NumericRefHandler.search``, which declares id_min=/id_max=
+# — the list footer advertises ``args={'id_min': N, 'id_max': M}`` — so an
+# own-signature-only check refused it on memory, job, finding and quest.
+
+
+class _RangeSearchBase:
+    """Stand-in for ``NumericRefHandler``: declares the range bounds."""
+
+    def search(
+        self,
+        q: str | None = None,
+        *,
+        id_min: int | None = None,
+        id_max: int | None = None,
+        **_ignored: Any,
+    ) -> Response:
+        return Response(body=f"stub search id_min={id_min} id_max={id_max}")
+
+
+class _ForwardingRangeStub(_RangeSearchBase, Handler):
+    """A ``search`` override declaring nothing, forwarding ``**_kw`` up
+    the chain — the cooperative-inheritance shape the gate must see
+    through. ``_RangeSearchBase`` precedes ``Handler`` in the MRO so the
+    accepted-kwargs walk reaches the declaring base before ``Handler``'s
+    own (non-forwarding) ``search`` dead-end."""
+
+    spec = KindSpec(
+        kind="range-stub",
+        title="Range stub",
+        description="gr676945 args= key gate fixture",
+        supports_search=True,
+    )
+
+    def search(self, q: str | None = None, **_kw: Any) -> Response:
+        return super().search(q, **_kw)
+
+
+def test_forwarded_kwarg_accepted_in_args(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """An args= key that no layer's own signature names but a base up the
+    forwarding chain declares (id_min) passes the args= key gate and
+    reaches the handler; a key no layer accepts still refuses the same
+    way."""
+    stub = _ForwardingRangeStub()
+    stub._register_with(runtime_with_store.hub)
+
+    ok = runtime_with_store.dispatch(
+        "search", {"kind": "range-stub", "__extras__": {"id_min": 1}}
+    )
+    assert "[error" not in ok, ok
+    assert "id_min=1" in ok
+
+    bad = runtime_with_store.dispatch(
+        "search", {"kind": "range-stub", "__extras__": {"bogus": 1}}
+    )
+    assert "[error:BadInput]" in bad
+    assert "'bogus'" in bad

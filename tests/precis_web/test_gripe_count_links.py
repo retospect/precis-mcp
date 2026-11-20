@@ -18,6 +18,30 @@ from precis_web.routes.gripes import _rows
 from tests._refs import insert_gripe
 
 
+def test_detail_metadata(store: Any, client: Any, monkeypatch: Any) -> None:
+    """gr695933: show tags and both edge directions, including retired refs."""
+    from precis_web.routes import gripes
+
+    ref = insert_gripe(store, "metadata", status="triaged")
+    incoming = insert_gripe(store, "incoming title")
+    outgoing = insert_gripe(store, "outgoing title")
+    with store.tx() as conn:
+        store.add_tag(ref.id, Tag.open("project:example"), set_by="agent", conn=conn)
+        store.add_link(src_ref_id=incoming.id, dst_ref_id=ref.id, conn=conn)
+        store.add_link(src_ref_id=ref.id, dst_ref_id=outgoing.id, conn=conn)
+    monkeypatch.setattr(gripes, "get_store", lambda request: store)
+    page = client.get(f"/gripes/{ref.id}").text
+    assert "project:example" in page
+    assert "Attention: yes" in page
+    assert "Incoming links" in page and "Outgoing links" in page
+    assert "incoming title" in page and "outgoing title" in page
+    assert "related-to" in page
+    store.retire_ref(ref.id)
+    page = client.get(f"/gripes/{ref.id}").text
+    assert "Attention: no" in page
+    assert "triaged" in page
+
+
 def _seed_off_vocab_gripe(store: Any, title: str, status: str) -> int:
     """A gripe carrying an off-vocabulary STATUS — the drift the
     migration-0176 trigger now refuses, simulated with triggers bypassed

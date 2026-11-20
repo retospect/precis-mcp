@@ -99,9 +99,14 @@ every later re-resolution.
 `author=` search does, **plus** an optional bracketed ORCID iD per line
 — the row grammar `Family, Given Middle [0000-0002-1825-0097]` (the
 bracket is optional; an invalid iD is dropped silently and the name is
-kept). This always writes `source='human'` and stamps the paper's
-`human_verified_at` sign-off — a manual byline correction *is* the
-review that stamp records.
+kept). New or changed rows get `source='human'`. Rows with the same
+case-sensitive normalized name and ORCID at the same position keep their
+source tier, `verified_at`, and `person_ref_id`. Omitting
+`openalex_author_id` on a matching row preserves its stored OpenAlex link.
+Inserting a name earlier in the byline rewrites shifted rows that differ
+from the authors previously at those positions. The edit
+stamps the paper's `human_verified_at` sign-off when at least one author
+survives normalization.
 
 ## Edit paper metadata — title, venue, year, DOI
 ## Repair a stub's metadata in place — title, identifiers, venue
@@ -513,10 +518,28 @@ put(kind="paper", id="smith2023", args={"pdf_url": "https://host/paper.pdf"})
 Queues a `paper_pull` job: a worker fetches the URL (SSRF-guarded, 50 MB cap,
 `%PDF` required) and drops it in the ingest inbox with a sidecar naming this
 stub (`source='agent_url'`, `url`), so the normal ingest attaches the body.
-Refused up front for a non-paper and a complete paper (a body AND a held
-PDF — its drop would mint a duplicate rather than fold); a bodiless paper
-holding a preview PDF and a sha-less paper whose body came from markup
-(the file folds attach-only, keeping the body) are accepted. Outcome: `meta.paper_pull` (`dropped` / `failed` + `reason`). Use
+Accepted targets: a body-less stub; a sha-less paper whose body came from
+markup (the file folds attach-only, keeping the body); a bodiless paper
+holding a preview PDF; and — the gr715554 case — a paper whose body came
+from a short held preview (at most 2 pages, article entry type), taking a
+fuller public copy. Everything else refuses up front, non-papers and
+complete papers (a body AND a held PDF that is not a short article preview)
+included: a drop would mint a duplicate rather than fold.
+
+The preview replacement is hash-pinned and growth-checked (gr715554). The
+pull records `meta.pdf_preview_refetch` — `from` the held preview's sha,
+`to` the new file's, plus the `url` and `at` — and the fold replaces the
+body only when the new extraction is larger than the old one: a
+`body_replaced` ref_event journals both hashes and both chunk counts, the
+outgoing preview's PDF stays reachable as a `pdf_sha256` identifier alias
+on the ref, and the folded paper keeps the new URL as `meta.source_url`.
+A replacement whose extraction does not grow the body is declined
+(`body_replace_declined`, chunk counts in the payload) — the old body and
+preview stay. The replacing PDF must also pass the identity gate and
+exceed 2 pages, and unlike a plain stub drop its identity may not be
+`unchecked`: `preview_suspected` fires when any of that fails.
+
+Outcome: `meta.paper_pull` (`dropped` / `failed` + `reason`). Use
 it after `fetch_oa` failed and you know a legal open copy (repository, author
 page, preprint); `fetch_oa` already covers OA via DOI. Shadow libraries
 (Sci-Hub, LibGen, Z-Library, Anna's Archive and kin) are refused at put time

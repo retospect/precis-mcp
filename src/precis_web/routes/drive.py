@@ -55,6 +55,7 @@ from precis.store._stub_predicate import NO_OA_MIN_PASSES
 from precis.store._tag_filter import tag_filter_string
 from precis.workers.fetch_oa import run_oa_fetch_pass
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
+from precis_web.drive_views import DRIVE_VIEW_LINKS, DRIVE_VIEWS, active_view
 from precis_web.item_view import (
     artifact_kinds,
     display_title,
@@ -1700,6 +1701,15 @@ async def index(
         "drive/index.html.j2",
         {
             "active_tab": "drive",
+            "drive_views": DRIVE_VIEWS,
+            "drive_view_links": DRIVE_VIEW_LINKS,
+            # Match the resolved filters, not the raw URL params: a ``/kind``
+            # token or ``tag:`` qualifier in ``q`` overrides/extends the
+            # ``k=``/``tag=`` params, and the Schedules sentinel is
+            # translated back into ``tags`` for paging above — highlighting
+            # the raw params would light CAD on a page showing papers
+            # (review td703478).
+            "drive_view_active": active_view(selected_kinds, tags),
             "q": q,
             "kind_defs": list(_DEFAULT_SOURCE_KINDS),
             "artifact_kind_defs": artifact_kind_defs,

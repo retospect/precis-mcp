@@ -1,0 +1,7 @@
+{# Boost state chip — swapped in place of the boost button after an htmx
+   POST /anki/boost (gr664414), and rendered inline by /learning's
+   current-context list for a card whose meta.anki_boost_due is already set.
+   The boost stays queued until the next anki-sync tick brings the mirror
+   card's due date forward to today. #}
+<span class="text-[11px] text-fg-faint"
+      title="The next Anki sync brings this card's due date forward to today.">boost queued</span>

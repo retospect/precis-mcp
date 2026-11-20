@@ -223,6 +223,10 @@ by URL over Tailscale). Set the draft's default voice per profile
 
 ## See also
 
+For reference names in podcasts and voice chat, follow
+[[precis-word-handles-help]] §Talking by voice: name things, keep handles recoverable.
+Say the description and retain the handle once in the transcript; never read it aloud.
+
 This skill is the **craft** (how to write speakable prose + the standing
 profiles). For the **mechanism** — audio as a cross-cutting export layer, the
 `precis draft audio` CLI, per-chunk `meta.voice`/`meta.lang`, and the two-level

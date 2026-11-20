@@ -164,6 +164,39 @@ def test_wide_reads_tex_micro_with_double_space():
     assert "5 µm" in extract_numerics_wide(r"a pore of 5 \mu m width")
 
 
+def test_wide_reads_tex_angstrom_macro():
+    """gr716055: the paper prints the TeX macro; the UTF-8 ``Å`` claim grounds."""
+    for raw in (
+        r"cutoff of 6 \AA",
+        r"cutoff of 6\,\AA",
+        r"cutoff of 6~$\AA$",
+        r"cutoff of 6\,{\AA}",
+        r"cutoff of 6 \angstrom",
+    ):
+        assert "6 Å" in extract_numerics_wide(raw), raw
+    # A longer command name is not the macro.
+    assert extract_numerics_wide(r"6 \AAA") == []
+
+
 def test_wide_leaves_dollar_amounts_alone():
     assert extract_numerics_wide("costs $5 and $10 each") == []
     assert extract_numerics_wide("a $5 nm rope") == ["5 nm"]
+
+
+def test_degree_glyph_variants_normalise_to_degree_sign() -> None:
+    """gr719090: ``450 ∘C`` (ring operator) grounds a ``450 °C`` claim."""
+    from precis.utils.numerics import extract_numerics_wide, normalize_spellings
+
+    for raw in ("450 ∘C", "450∘C", "450 ˚C", "450 º C", "450 ° C", "450℃"):
+        assert "450 °C" in extract_numerics_wide(raw), raw
+    assert normalize_spellings("at 90∘ tilt") == "at 90° tilt"
+
+
+@pytest.mark.parametrize("glue", ["\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"])
+@pytest.mark.parametrize("separator", ["-", "–", "—", "to"])
+def test_voltage_range_with_invisible_pdf_glue(glue: str, separator: str) -> None:
+    """gr716214: invisible glue must not hide a shared-unit endpoint."""
+    raw = f"1.2{glue}{separator}{glue}3.4{glue} V"
+    duplicate = rf"$1.2{glue}{separator}{glue}3.4$ \mathrm{{V}}"
+    for text in (raw, duplicate, raw + " " + duplicate):
+        assert {"1.2 V", "3.4 V"} <= set(extract_numerics_wide(text))

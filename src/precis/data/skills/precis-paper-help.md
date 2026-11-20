@@ -44,9 +44,15 @@ already held — once the paper is held, `pa<id>` is its canonical address.
 DOI suffixes can contain `/`, so DOI + view needs the `view=` kwarg — the
 `id/view` path form is ambiguous.
 
+## Check whether the library holds a DOI without queuing ingest
+
+`get(kind="paper", id="<DOI or handle>", view="lookup")` checks stored
+holdings without queuing ingest or marking worker processing. It reports a
+held handle (possibly a stub) or not held. Pass `id=[...]` to check a batch.
+
 ## The DOI isn't indexed yet — how do I get the paper?
 
-`get` on a well-formed DOI that is not held queues a `paper_ingest` job
+`get` without a view on a well-formed unheld DOI queues a `paper_ingest` job
 and returns its handle — `not ingested yet; queued ingest job jo<N> for
 <doi>; retry get in a few minutes`. Repeating the `get` reuses the same
 job (any DOI spelling — bare, `doi:`, doi.org URL, any case), so polling
@@ -55,10 +61,18 @@ failure instead of requeueing. The worker verifies the DOI against
 Semantic Scholar / the DOI registries, mints the stub, and pins it to
 the open-access fetch pass — no fetch runs inside the `get` call.
 
+An explicit `view=` makes a single or batch DOI lookup read-only for
+ingest, including the default-renderer aliases `meta`, `text`, `body`,
+and `full`. An unheld DOI returns a miss. Omit the view or use
+`put(kind="paper", doi=…)` to request acquisition.
+
 The queue is bounded — an ingest job can reach the paid OpenAlex fetch
 leg, so spend stays caller-controlled: at most 5 mints per batch `get`,
 a fleet-wide 50 per rolling 24h (`PRECIS_GET_DOI_QUEUE_DAILY`), and no
-queue at all for a DOI whose paper was deleted or on a read-only serve.
+queue at all for a DOI whose paper was deleted, on a read-only serve,
+or behind a `view=` (a view is a read: an unheld DOI answers not found,
+single or batch, with or without `confirm_bulk`). To acquire, use a
+plain `get` or an explicit `put`.
 Past a bound the `get` answers the plain `not ingested` text — use
 `put(kind="paper", doi=…)` to ingest explicitly regardless.
 
@@ -229,7 +243,8 @@ stays unfindable repairs in place (`title=`, `authors=`, `doi=`, `year=`,
 See [[precis-paper-ref-help]] — identifier repair, `merge_into`,
 `redirect_to`, `retire`, the body doors (`drop_body`/`move_body_to`/
 `split_body`/`clear_abstract`), `clear_stamp`, and `put` with
-`args={'pdf_url': …}` to attach a legal open copy to a body-less stub.
+`args={'pdf_url': …}` to attach a legal open copy to a body-less stub or
+replace a short held preview with the full paper.
 No fetchable copy? A person can also hand-drop the PDF into the papers
 inbox — named `pa<id>.pdf` it folds into a body-less stub
 ([[precis-paper-ref-help]] covers the drop mechanics).
@@ -356,8 +371,8 @@ terms, narrow `scope=`, or reduce `page_size=`: `precis-search-help`.
 
 ```python
 search(kind="paper", view="count")                                  # total
-search(kind="paper", view="count", tags=["studytype:review"],
-       args={"group_by": "tag:studytype", "since": "2026-10-01"})   # filtered + facets
+search(kind="paper", view="count", tags=["STUDYTYPE:review"],
+       args={"group_by": "tag:STUDYTYPE", "since": "2026-10-01"})   # filtered + facets
 search(kind="paper", view="count", args={"group_by": "fulltext"})   # full-text vs thin-text vs card-only vs stub + passages
 search(kind="paper", view="ingest", args={"days": 14})              # landings per UTC day
 ```
@@ -579,9 +594,11 @@ well-formed pipe grid renders raw rather than being guessed at.
 `args={'match': 'sticking prefactor'}` keeps tables whose header,
 caption or row labels hold any of the words.
 
-`view='measures'` lists live outputs grouped by table (`T<n>`), then prose,
-using measure search's live-row filters. It matches the paper as subject or anchor
-owner. `view='tables'` counts unsuperseded outputs anchored in each table chunk.
+`view='measures'` lists outputs grouped by table (`T<n>`), then prose,
+with the same eligibility as default paper-scoped measure search. It
+matches the paper as subject or anchor owner and includes flagged outputs
+with their `escalated: <rule>` reasons. `view='tables'` counts unsuperseded
+outputs anchored in each table chunk.
 Read a result with `get(kind='measure', id=…)` for its table-cell anchor.
 
 ```python
@@ -591,7 +608,7 @@ get(kind="paper", id="pa40", view="tables", args={"match": "sticking"})
 get(kind="paper", id="pa40", view="measures")
 ```
 
-Views: `abstract`, `toc`, `summaries`, `tables`, `measures`, `bibtex` (`cite/bib`), `ris`
+Views: `lookup`, `abstract`, `toc`, `summaries`, `tables`, `measures`, `bibtex` (`cite/bib`), `ris`
 (`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
 `comments` (the note timeline — see Add a note to a paper),
 `ops` (full-state JSON dump — see precis-paper-ref-help), `pdf_link`
@@ -672,6 +689,7 @@ other doors (`fetch-si`, `pdf_url`, `record_type`, `restore`).
 tag(kind="paper", id="pa40", add=["topic:photocatalysis"])
 tag(kind="paper", id="pa40", add=["SRC:primary"])
 tag(kind="paper", id="pa40", remove=["topic:photocatalysis"])
+tag(kind="paper", id="pa40", remove=["quest:164903"], reason="backfill: quest retired")
 
 link(kind="paper", id="pa40", target="pa57", rel="cites")  # target is also a handle
 ```
@@ -680,6 +698,11 @@ Closed-prefix axes for paper: `SRC:`, `CACHE:`. Open tags
 (`topic:x`, ...) always allowed. Other axes (`STATUS:`, `PRIO:`, ...)
 are rejected. Tag and link operate at the paper level — chunk
 selectors and view paths are rejected.
+
+Pass `reason=` on a retag to say why — one `agent/retagged` row per
+affected paper lands on `ref_events`, visible in
+`get(kind="paper", id="pa40", view="log")`; omit it and the retag
+stays silent.
 
 ## See a paper's link graph
 ## What is this paper linked to — cites, cited-by, related-to?

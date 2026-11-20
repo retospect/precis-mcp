@@ -192,6 +192,27 @@ def pinned_host(store: Store, todo_id: int) -> str | None:
     return host or None
 
 
+#: The DB-only setting naming the host the first cut of a pass runs on
+#: (``precis.settings.REGISTRY``, gr713351).
+_CUT_HOST_KEY = "release.cut_host"
+
+
+def cut_host(store: Store) -> str | None:
+    """``release.cut_host`` resolved fresh, stripped; ``None`` when unset,
+    blank or unreadable. The first cut has no ``meta.release.host`` to pin
+    to (:func:`pinned_host`), and the cut's checkout is the deploy's — a
+    host with no private deploy overlay cannot deploy from it (gr713351).
+    A read fault answers ``None`` so the caller holds the cut."""
+    from precis import settings
+
+    try:
+        settings.invalidate(_CUT_HOST_KEY)
+        host = (settings.get_str(_CUT_HOST_KEY, store=store) or "").strip()
+    except Exception:
+        return None
+    return host or None
+
+
 def release_target_of(store: Store, todo_id: int) -> dict[str, Any] | None:
     """The pass's recorded cut — ``{sha, upto}`` on the plan root's
     ``meta.release_target``, stamped by ``release_poll`` at mint
@@ -1264,6 +1285,11 @@ def is_terminal(row: dict[str, Any]) -> bool:
     return state in _CONFIRM_TERMINAL
 
 
+#: Terminal states that prove nothing rolled out: a cut by another pass
+#: under the same number replaces such a row (:func:`update_round`,
+#: gr714067). ``confirmed`` is never replaced — that release shipped.
+_REUSABLE_TERMINAL = frozenset({"superseded", "abandoned", "failed"})
+
 #: Lifecycle ``state`` order for a job-side :func:`update_round` write:
 #: the open states rank 0, ``deploying`` 1, ``deployed`` 2, the terminal
 #: states 3 — a job-side write never lowers the rank (gr575362).
@@ -1450,10 +1476,12 @@ def update_round(
     carry them, writes ``fields`` whole when no row exists or the row is
     a lower ``n`` (a re-cut r<N+1> moves the row), and leaves a row for
     the same or a higher ``n`` alone — a same-``n`` row is the script's
-    own publish, which wins; the one exception is a same-``n`` ``cut``
+    own publish, which wins; two exceptions: a same-``n`` ``cut``
     row lacking ``pass``, where the field's ``pass`` is stamped in and
     nothing else changes, so ``release_poll``'s dropped-pass abandon can
-    still fire on it. ``create=False`` is the deploy's merge — and the
+    still fire on it, and a same-``n`` row dead without shipping
+    (:data:`_REUSABLE_TERMINAL`) under another ``pass``, which the cut
+    replaces whole (gr714067). ``create=False`` is the deploy's merge — and the
     dropped-pass abandon's: same ``n`` only, ``state`` must be a forward
     move under :data:`_ROUND_STATE_RANK`, a job-side terminal target
     (``confirmed`` / ``superseded`` / ``abandoned``) takes a rank-0 row
@@ -1504,6 +1532,18 @@ def update_round(
         if row.get("state") == "cut" and "pass" not in row and stamped:
             record_round(store, {**row, "pass": stamped})
             return [f"release.round: r{n} already on record (cut); stamped {stamped}"]
+        if (
+            row.get("state") in _REUSABLE_TERMINAL
+            and is_terminal(row)
+            and stamped
+            and row.get("pass") != stamped
+        ):
+            # gr714067: the number of a release that never shipped was
+            # minted again for another pass. No script publish is coming
+            # for the dead row's sake — leaving it would keep the row
+            # terminal through this release's whole deploy and confirm.
+            was = f"{row.get('state')}, {row.get('pass') or 'no pass'}"
+            return [f"{_create()} over the dead row ({was})"]
         return [
             f"release.round: r{n} already on record "
             f"({row.get('state', '?')}); the script's publish wins"

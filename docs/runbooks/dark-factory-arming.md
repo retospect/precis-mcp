@@ -45,7 +45,9 @@ Mint one plan; the armed `plan_dispatch` tick drives it:
 The nodes run in order: `cut` (`release_cut`: `scripts/release --cut-only`
 in the slice host's checkout, then `meta.release = {rN, sha, range, repo}`
 on the plan root) → `poll` (`ci_verdict_poll`: records check.yml's verdict
-in `release.ci_verdicts`, parked between polls while CI runs) → `gate`
+in `release.ci_verdicts`, parked between polls while CI runs; the verdict
+is `lint` plus the `gate-fast` legs, so the deploy does not wait for the
+run's soak legs and a red soak is not a red release) → `gate`
 (`tests-green` on the cut's range) and `loop` (a red verdict mints the
 `release-fix` body: `digest` (`ci_red_digest`: `scripts/ci-failed` on the
 red run, the digest posted as a `brief:` on the fix) → fix → `recut`
@@ -71,6 +73,13 @@ deploys"). Without it `release_deploy` fails with "install-from-tree: no
 overlay" and the round record is "not published: no prod DSN on this host".
 The deploy account then holds the same deploy authority as the operator.
 
+The first `release_cut` of a pass has no `meta.release.host` to pin to, and
+the cut's checkout is the deploy's, so name the host that holds the overlay:
+`put(kind='job', mode='setting', args={'key': 'release.cut_host', 'value':
+'<node>', 'reason': '...'})` (the node's `PRECIS_NODE`; DB-only). Unset, the
+tick holds the cut with a note instead of letting any `ssh_node` host claim
+it (gr713351), and `release_cut` itself refuses a checkout with no overlay.
+
 The job types also write the shared `release.round` record through the
 store (gr575362): the cut creates the row (`state: cut`, the script's own
 per-clone publish may have skipped on the slice host), the deploy merges
@@ -81,7 +90,8 @@ forward moves only, best-effort, never a job failure. This row is what
 
 The cut also clears the clone's own stale record: before `--cut-only`
 launches, `release_cut` supersedes the checkout's local `round.json`
-record when it is the one `deploying`/`deployed` record (a pinned sha,
+record when it is the one `deploying`/`deployed` record, or a `failed`
+one whose rollout launched (a pinned sha,
 no pending cut, no runtime confirm), the shared row proves prod moved
 past it (`confirmed` at the same or a later number), and no
 `release_deploy` job is live. It runs `scripts/round supersede r<N>`
@@ -91,6 +101,17 @@ then launches the cut on exit 0; a refusal fails the job with the log
 tail so the retry-cap ask still fires. Any other shape (an open
 `cut`/`gating`/`fixing`/`green` local record, a shared row that does not
 prove the release) is left alone for the ask.
+
+A `RELEASE_CUT` line is not believed on its word (gr724696):
+`scripts/release --cut-only --sha S` prints it only for a release that
+ships S — a resumed record that lacks S answers "release in flight", one
+prod moved past exits 4 naming `scripts/round supersede r<N>` — and
+`release_cut` fails the job (`stale-record`, nothing recorded) when the
+reported sha does not contain the asked one or already sits in
+origin/prod. The cut launch passes the shared row's number as
+`PRECIS_ROUND_FLOOR`, so an abandoned release's number is not minted
+again, and a cut that does reuse a dead row's number replaces the row
+(gr714067).
 
 The `approval` node is an `ask-user` todo (`meta.ask.kind = approval`,
 options `deploy r<N>` | `hold`); it shows on `/asks` once the plan exists
@@ -104,11 +125,31 @@ refuses unless the newest `answer:` names `deploy r<N>` for the cut this plan
 recorded, and the tick notes "not dispatched" each pass. To deploy later,
 add a new `answer: deploy r<N>` comment.
 
+A deploy that `scripts/deploy` refuses ahead of its reachability ping,
+before any rollout step — the backup window, a checkout with no overlay,
+the overlay sync, the rollback guard, the deploy lock — exits 75 through
+`scripts/round deploy` and `scripts/release` (gr730609). The local record
+goes back to what it was before the leg. On a first leg that is open with
+no journal: the job fails, the release takes fixes again, a retry deploys
+it, and a dropped pass's record is one `scripts/round cut --abandon` (or
+the next cut's own abandon phase) can retire. A resumed leg returns to its
+prior state and journal, so an earlier launched rollout stays a partial
+rollout. A leg adds the launch marker only when it reaches the ping.
+One thing does survive the refused leg: it had already moved
+`origin/gated` to the release head, and the record keeps that sha
+(`gated_seen` in the local `round.json`). A retry refuses when
+`origin/gated` has since been deleted or moved back; the bound belongs
+to the record, so `scripts/round cut --abandon` is what drops it.
+
 The `confirm` node (`release_confirm`, `retries: 0`, pinned to the cut's
 host like the deploy) then attests the runtime: every live worker's
 heartbeat `code_sha`, read from the store with no network, must equal the
 release sha, and when `release.health_url` is set the live web's
-`X-Precis-Boot-Sha` header must too. On pass it runs `scripts/round deploy
+`X-Precis-Boot-Sha` header must too. On pass it first waits for the pass's
+`merge_back` node to record `merged` or `noop` (up to two hours): the
+script below merges the release head into main itself and stops on a
+conflict that only the merge-back's resolver can settle. Then it runs
+`scripts/round deploy
 --confirm-runtime <sha> --runtime-evidence "<text>"` then `scripts/round
 close`, stamps the evidence on the plan root and `release.round`, and the
 release is tagged `deployed/r<N>`; a failed close still succeeds the job —
@@ -570,8 +611,13 @@ The probes, re-run every heartbeat:
   templates, and a hand-added value vanishes with it (2026-11-05, r222:
   every factory land queued "no host advertises repo_checkout", gr570787).
 - `claude_bin`: `claude` on the worker's `PATH`, or `PRECIS_CLAUDE_BIN`
-  set to a name on `PATH` or an absolute path (a launchd `PATH` often
-  misses it).
+  set to a name on `PATH` or an executable absolute path (a launchd `PATH`
+  often misses it), **and** credentials available to the worker user:
+  `CLAUDE_CODE_OAUTH_TOKEN` from the environment or vault/bootstrap lookup,
+  `.credentials.json` under `CLAUDE_CONFIG_DIR` (default `~/.claude`), or
+  the macOS `Claude Code-credentials` keychain item. Installing the CLI or
+  creating `~/.claude` alone does not advertise the token; log in as the
+  worker user first. This checks credential presence, not upstream validity.
 - `git`: `git` on the worker's `PATH`.
 
 Set the env vars in the worker's service environment and restart it; the
@@ -992,9 +1038,35 @@ Known limits:
   once only where minting cannot run (no review-fit lane, the mint
   raised), where `plan_dispatch` itself is switched
   off, or the wait can never resolve — a dead verdict, a dead root,
-  a fix that ended unlanded — and an answered ask clears that one
+  a fix that ended unlanded, a reviewer parked in rescue (an open
+  `rescue:` tag) — and an answered ask clears that one
   land. An ask closed without an `answer:` comment holds nothing:
   the next pass refiles it and the blocker names the live ask's id.
+  A land cleared on a corrective commit that is not on `release/r<N>`
+  files the same ask at once: answering it deploys the release without
+  that commit, landing the commit on the release branch clears the hold
+  without an answer. While the gate holds a deploy, the tick writes the
+  refusal as a comment on the `release_deploy` node, once per distinct
+  text (gr702442). Two kinds of commit on `release/r<N>` bring no code
+  of their own and get no review of their own (Reto 2026-11-19): a
+  commit that repeats a main commit patch for patch (a cherry-pick) is
+  judged by that main land's review, and carries it for the hold above;
+  an exact revert of a commit of the same release drops out together
+  with the commit it undoes. Both are proved on the trees, not read
+  from a subject or trailer: replaying the main commit onto the branch
+  commit's parent (or the undone commit backwards) must give the branch
+  commit's tree exactly. A revert of code prod already runs, a revert of
+  a revert, and any commit with a change of its own — an indentation
+  change included — keep their review.
+- The file-overlap hold is bounded. A started, unlanded build keeps
+  other builds that touch its files out of the claim (td603849), but
+  only for `factory.overlap_hold_max_runs` ended `run_slice` runs
+  (default 3; cancelled runs, host refusals and attempt-free failures
+  leave the hold budget intact).
+  After that it holds only while its `land_slice` is live, and a real
+  conflict with the work that went ahead rebuilds at its land. `0`
+  restores the unbounded hold. The hold writes nothing on the held job:
+  the tick's `file-overlap hold — waits on td<N>` note names the holder.
 - The session's env is an allowlist (`ENV_ALLOWLIST` in `run_slice.py`):
   no DB DSN or vault variable reaches it. It needs `PRECIS_MCP_TOKEN`
   (env or the mounted secret) to reach the precis MCP, and the claude

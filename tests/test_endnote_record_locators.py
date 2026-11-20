@@ -37,8 +37,11 @@ def test_build_record_venue_precedence_matches_bib_exporters() -> None:
     base = {"kind": "paper", "rec_number": 1, "title": "T"}
     rec = build_record({**base, "container_title": "Nature"})
     assert "<secondary-title>Nature</secondary-title>" in rec
+    # Canonical journal wins over a legacy venue string — the same
+    # journal-first precedence _resolve_source and the .bib/.docx
+    # exporters read (gr685099).
     rec = build_record({**base, "venue": "V", "journal": "J"})
-    assert "<secondary-title>V</secondary-title>" in rec
+    assert "<secondary-title>J</secondary-title>" in rec
     assert "secondary-title" not in build_record(base)
 
 

@@ -245,13 +245,16 @@ def build_serve_env(
     shared in-process pool. ``PRECIS_MCP_TOKEN`` carries the per-run
     bearer token (set after the strip, so it is the only token present);
     ``PRECIS_MCP_PROFILE`` is pinned to ``typed`` because ``--read-only``
-    refuses the command profile.
+    refuses the command profile. ``PRECIS_MCP_CREDENTIAL_CLASSES`` is pinned
+    to ``install``: the child takes its per-run token and nothing else,
+    whatever class list the parent runs under.
     """
     env = {k: v for k, v in base_env.items() if not _is_credential_env_name(k)}
     env["PRECIS_DATABASE_URL"] = ro_dsn
     env["PRECIS_MCP_DB_ROLE"] = "agent_ro"
     env["PRECIS_MCP_PROFILE"] = "typed"
     env["PRECIS_MCP_TOKEN"] = token
+    env["PRECIS_MCP_CREDENTIAL_CLASSES"] = "install"
     return env
 
 

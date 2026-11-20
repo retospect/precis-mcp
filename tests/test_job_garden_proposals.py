@@ -19,7 +19,7 @@ from precis.store.types import ChunkInsert
 from tests._skill_roots import BUILTIN_SKILLS_DIR
 
 
-def _proposal(store: Store) -> tuple[int, int]:
+def _proposal(store: Store, *, action: str = "rewrite") -> tuple[int, int]:
     """Seed one pending proposal; returns ``(review_id, ref_id)``."""
     ref = store.insert_ref(kind="memory", slug=None, title="Memory fixture")
     store.chunks.insert_chunks(
@@ -32,7 +32,7 @@ def _proposal(store: Store) -> tuple[int, int]:
     )
     candidate = GardenCandidate(
         detector="anchor_rot",
-        action="rewrite",
+        action=action,
         target_kind="ref",
         target_id=ref.id,
         title="Repair a stale anchor",
@@ -89,6 +89,27 @@ def test_proposals_view_lists_pending_and_flags_stale(
         "get", {"kind": "job", "id": "/garden/proposals"}
     )
     assert "no pending garden proposals" in body
+
+
+def test_proposals_view_filters_stale_qualify_beyond_small_scan_window(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    review_id, ref_id = _proposal(store, action="qualify")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET title = title || ' x' WHERE ref_id = %s", (ref_id,)
+        )
+    other_reviews = [_proposal(store)[0] for _ in range(4)]
+
+    request = {"kind": "job", "id": "/garden/proposals"}
+    unfiltered = runtime_with_store.dispatch("get", request)
+    assert f"review {review_id}: qualify" in unfiltered
+    filtered = runtime_with_store.dispatch(
+        "get", {**request, "__extras__": {"action": "qualify", "limit": 1}}
+    )
+    assert f"review {review_id}: qualify" in filtered
+    assert "stale: target changed" in filtered
+    assert all(f"review {other}:" not in filtered for other in other_reviews)
 
 
 def test_garden_view_reports_dark_without_service_row(

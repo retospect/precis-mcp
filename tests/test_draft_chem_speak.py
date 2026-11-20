@@ -180,3 +180,13 @@ def test_markdown_segments_applies_chem_transform():
         "Synthesized using zinc nitrate hexahydrate and calcined "
         "Mof seventy-four crystals."
     )
+
+
+def test_speak_chemistry_reads_the_json_lexicon_table() -> None:
+    """The formula table is the ``chemistry`` section of tts_lexicon.json."""
+    assert speak_chemistry("MoS2 and H2O") == "molybdenum disulfide and water"
+    # Word-boundary: a letter glued on (a substituent label) blocks the match.
+    assert speak_chemistry("the CO2R group") == "the CO2R group"
+    # Ambiguous / English-word formulas are deliberately absent.
+    assert speak_chemistry("NO") == "NO"
+    assert speak_chemistry("Fe3O4") == "Fe3O4"

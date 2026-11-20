@@ -20,6 +20,10 @@ the seven-verb surface:
   :mod:`precis.structure.pair_check`.
 - ``delete`` — soft-retire a whole design.
 
+Neighborhood reads pair live atom labels with stored fractional and minimum-image
+Cartesian coordinates, so a vacancy can target a nearby atom even across a
+periodic boundary without inferring adjacency from the explicit bond graph.
+
 The relaxer/DFT and file export are rented backends. A dispatched edit
 validates and queues an immutable scene; it writes no structure revision.
 The worker owns clean/EMT preflight, canonical cache lookup, the MLIP gate,
@@ -6431,7 +6435,9 @@ class StructureHandler(Handler):
         if not show_atoms and scene.atoms:
             head += (
                 f"\n# {t['natoms']} atoms not listed — "
-                "view='atoms' for the per-atom table; view='validate' for findings"
+                "view='atoms' for coordinates; view='validate' for findings\n"
+                "# adjacency: view='neighborhood', args={'atom': '<label>', 'radius': 3.0} "
+                "for nearby atom labels, distances and periodic images (Å)"
             )
         body = head
         if show_atoms:
@@ -6674,13 +6680,29 @@ class StructureHandler(Handler):
                     "element": n.element,
                     "dist": f"{n.distance:.3f}",
                     "image": ",".join(str(x) for x in n.image),
+                    "frac": ",".join(f"{x:.6f}" for x in scene.atoms[n.label].frac),
+                    "cart_image_A": ",".join(
+                        f"{x:.6f}"
+                        for x in scene.cell.frac_to_cart(
+                            np.asarray(scene.atoms[n.label].frac) + np.asarray(n.image)
+                        )
+                    ),
                 }
                 for n in probe.neighborhood(scene, center, radius)
             ]
             return Response(
-                body=f"# neighbourhood of {center} within {radius} Å\n"
+                body=f"# neighbourhood of {center} within {radius} Å (minimum image)\n"
+                + "# frac: stored fractional coordinates; cart_image_A: neighbor image in Å\n"
                 + render_agent_table(
-                    rows, schema=["neighbor", "element", "dist", "image"]
+                    rows,
+                    schema=[
+                        "neighbor",
+                        "element",
+                        "dist",
+                        "image",
+                        "frac",
+                        "cart_image_A",
+                    ],
                 )
             )
         if view == "bonds":

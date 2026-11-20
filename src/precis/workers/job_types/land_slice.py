@@ -334,7 +334,7 @@ from precis.workers import admission
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
 from precis.workers import slice_stacks as _slice_stacks
-from precis.workers.job_types import JobTypeSpec, _slice_park
+from precis.workers.job_types import JobTypeSpec, Reconcile, _slice_park
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -527,11 +527,20 @@ MAIN_REFUSAL_MARKS: tuple[str, ...] = (
 #: the lander's own node cannot run a gate right now. Same deferral as a
 #: main refusal (gr552214): nothing on the branch caused it, and a builder
 #: cannot change it.
+#: ``ship --onto``'s round lock is non-blocking: a release-fix land that
+#: reaches its push while a sibling's (or the release's own cut or
+#: deploy step) holds the lock dies on it with nothing pushed. The
+#: holder is seconds from done, so this wait is its own short one
+#: (:data:`RELEASE_BUSY_BACKOFF_S`, counted in ``handle.release_busy``
+#: up to :data:`MAX_RELEASE_BUSY_WAITS`) — on the half-hour main-refusal
+#: backoff the fixers of one red release, building side by side, landed
+#: half an hour apart.
+RELEASE_BUSY_MARK = "release lifecycle busy"
+RELEASE_BUSY_BACKOFF_S = 60
+MAX_RELEASE_BUSY_WAITS = 30
 HOST_REFUSAL_MARKS: tuple[str, ...] = (
-    # release-train T3 review F4: ``ship --onto``'s round lock is
-    # non-blocking — a second near-simultaneous release-fix land dies on
-    # it with nothing pushed. A wait on a sibling, not a red: defer.
-    "release lifecycle busy",
+    # release-train T3 review F4: a wait on a sibling, not a red: defer.
+    RELEASE_BUSY_MARK,
     "docker VM disk has",
     "disk probe failed:",
     # The docker CLI itself is broken for the lander's user (no compose
@@ -838,7 +847,14 @@ def land_env() -> dict[str, str]:
     ``refs/replace/*`` planted for an oracle-verified sha must never
     substitute the object a child's trusted read resolves — ship's
     fetch/merge, the drift helper's own ``rev-list``, a gate child's
-    git calls alike (review td660513, pre-land pass)."""
+    git calls alike (review td660513, pre-land pass). ``PATH`` gains the
+    worker user's ``~/.local/bin`` appended when ``uv`` is installed
+    there but missing from the inherited PATH — a non-login coder
+    service carries no shell-hook PATH (gr702644), and ship plus its
+    nested ``/usr/bin/env uv`` helpers must still resolve it; the append
+    preserves the operator's PATH precedence
+    (:func:`~precis.workers.job_types.run_slice.path_with_user_uv`, the
+    same rule ``slice_env`` gives the session itself)."""
     env = {k: os.environ[k] for k in LAND_ENV_NAMES if os.environ.get(k)}
     for name, value in os.environ.items():
         if (
@@ -848,6 +864,9 @@ def land_env() -> dict[str, str]:
         ):
             env[name] = value
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    patched = _rs.path_with_user_uv(env.get("PATH"))
+    if patched != (env.get("PATH") or os.defpath):
+        env["PATH"] = patched
     return env
 
 
@@ -890,6 +909,7 @@ def _launch(
     pass_fds: tuple[int, ...] = (),
     store: Any = None,
     work_class: str = "land",
+    pid_file: Path | None = None,
 ) -> int:
     """Start ``argv`` detached (run_slice's launcher, stdin from
     ``/dev/null``). ``pass_fds`` are fds the child inherits — the land
@@ -907,6 +927,7 @@ def _launch(
         pass_fds=pass_fds,
         store=store,
         work_class=work_class,
+        pid_file=pid_file,
     )
 
 
@@ -2804,6 +2825,7 @@ def _stamp_lock_holder(
     branch: str = "",
     subject: str = "",
     flag: str = "",
+    attempt: str = "",
 ) -> None:
     """Record the holder in the lock file — ``pid=N td=M branch=B
     flag=F subject=S`` — so the next land can tell its own
@@ -2821,6 +2843,8 @@ def _stamp_lock_holder(
         parts.append(f"branch={branch}")
     if flag:
         parts.append(f"flag={flag}")
+    if attempt:
+        parts.append(f"attempt={attempt}")
     if subject:
         parts.append(f"subject={subject.splitlines()[0]}")
     try:
@@ -2844,6 +2868,7 @@ def _lock_holder_stamp(text: str) -> dict[str, str]:
         ("td", r"\btd=(\d+)\b", head),
         ("branch", r"\bbranch=(\S+)", head),
         ("flag", r"\bflag=(--\S+)", head),
+        ("attempt", r"\battempt=([0-9a-f]{32})\b", head),
         ("subject", r"\bsubject=([^\n]*)", text),
     ):
         m = re.search(pat, where)
@@ -2999,13 +3024,22 @@ def _adopt_ship(
         or ""
     )
     scratch = tree / "scratch"
+    attempt = busy["stamp"].get("attempt")
+    launched_todo = busy["stamp"].get("td")
+    attempt_dir = (
+        _rs.ops_root() / f"td{launched_todo}" / attempt
+        if attempt and launched_todo
+        else None
+    )
+    exit_file = attempt_dir / "exit" if attempt_dir else scratch / "land_slice.exit"
+    log_file = attempt_dir / "log" if attempt_dir else scratch / "land_slice.log"
     launched = _now()
     handle: dict[str, Any] = {
         "pid": pid,
         "pgid": pid,
         "worktree": str(tree),
-        "log": str(scratch / "land_slice.log"),
-        "exit_file": str(scratch / "land_slice.exit"),
+        "log": str(log_file),
+        "exit_file": str(exit_file),
         "subject": subject,
         "flag": flag,
         "adopted": True,
@@ -3027,6 +3061,15 @@ def _adopt_ship(
         f"{tree} — its exit file lands this job's record",
     )
     return handle
+
+
+def reconcile(ctx: Any) -> Reconcile | None:
+    """Resume ship poll, including publication of a completed mirror squash.
+
+    A free flock cannot establish whether ship already ran. Only this
+    submit attempt's launch or exit record can resume poll.
+    """
+    return _rs._recover_launch(ctx)
 
 
 def _index_lock_pairs(gitdir: Path, tree: Path) -> list[tuple[Path, Path]]:
@@ -3652,7 +3695,7 @@ def _launch_ship(
                 "subject": subject,
                 "flag": flag,
             }
-            for key in ("main_refusals", "last_refusal", "gate_kills"):
+            for key in ("main_refusals", "last_refusal", "gate_kills", "release_busy"):
                 if carry is not None and key in carry:
                     parked[key] = carry[key]
             refusals = int(parked.get("main_refusals") or 0) + 1
@@ -3697,7 +3740,6 @@ def _launch_ship(
         # token fd.
         try:
             scratch.mkdir(parents=True, exist_ok=True)
-            exit_path.unlink(missing_ok=True)
             if mirror_tips is not None and mirror is not None and url is not None:
                 # The launch tips persist NEXT TO the mirror, under the
                 # main checkout's scratch — never this tree's own
@@ -3748,6 +3790,46 @@ def _launch_ship(
                 ship_env["PATH"] = (
                     str(shim) + os.pathsep + (ship_env.get("PATH") or os.defpath)
                 )
+            attempt_dir = (
+                _rs._submit_attempt_dir(ctx, todo_id) if carry is None else None
+            )
+            if attempt_dir is not None:
+                attempt_dir.mkdir(parents=True)
+                exit_path = attempt_dir / "exit"
+            else:
+                exit_path.unlink(missing_ok=True)
+            log_path = _rs._attempt_log(attempt_dir, log_path)
+            # The deadline rides the handle (gr647913): ``started_at`` + the wall
+            # — the clock stamps share the ``_now()`` seam so a worker restart's
+            # re-adoption resumes the job's own count instead of restarting the
+            # wall at the re-adopt poll.
+            launched = _now()
+            handle: dict[str, Any] = {
+                "worktree": str(tree),
+                "log": str(log_path),
+                "exit_file": str(exit_path),
+                "subject": subject,
+                "flag": flag,
+                "started_at": launched.strftime(_TS_FMT),
+                "deadline": launched.timestamp() + wall_seconds(),
+            }
+            if mirror_tips is not None:
+                # The sync's CAS basis (GitHub's tips at launch). Adopted
+                # handles rebuild without it; poll falls back to the launch
+                # record beside the mirror
+                # (:func:`factory_git_mirror.read_launch_tips`).
+                handle["factory_mirror_tips"] = mirror_tips
+            for key in (
+                "main_refusals",
+                "last_refusal",
+                "gate_kills",
+                "release_busy",
+                "fell_back_full",
+            ):
+                if carry is not None and key in carry:
+                    handle[key] = carry[key]
+            if attempt_dir is not None:
+                _rs._write_launch_record(attempt_dir / "baseline", handle)
             pid = _launch(
                 [ship_bin(tree), flag, *(("--onto", onto) if onto else ()), subject],
                 cwd=tree,
@@ -3789,6 +3871,7 @@ def _launch_ship(
                 pass_fds=tuple(fd for fd in (ship_fd,) if fd is not None),
                 store=ctx.store,
                 work_class="land",
+                pid_file=attempt_dir / "pid" if attempt_dir is not None else None,
             )
         except admission.Refused as exc:
             # The host cannot fit the gate right now — the wait shape of
@@ -3822,47 +3905,16 @@ def _launch_ship(
                 handoff=f"land FAILED: scripts/ship did not start ({exc}).",
             )
             return None
-        _stamp_lock_holder(lock_fd, pid, todo_id, branch, subject, flag)
-        # The deadline rides the handle (gr647913): ``started_at`` + the wall
-        # — the clock stamps share the ``_now()`` seam so a worker restart's
-        # re-adoption resumes the job's own count instead of restarting the
-        # wall at the re-adopt poll.
-        launched = _now()
-        handle: dict[str, Any] = {
-            "pid": pid,
-            "pgid": pid,
-            "worktree": str(tree),
-            "log": str(log_path),
-            "exit_file": str(exit_path),
-            "subject": subject,
-            "flag": flag,
-            "started_at": launched.strftime(_TS_FMT),
-            "deadline": launched.timestamp() + wall_seconds(),
-        }
-        if mirror_tips is not None:
-            # The sync's CAS basis (GitHub's tips at launch). Adopted
-            # handles rebuild without it; poll falls back to the launch
-            # record beside the mirror
-            # (:func:`factory_git_mirror.read_launch_tips`).
-            handle["factory_mirror_tips"] = mirror_tips
-        for key in (
-            "main_refusals",
-            "last_refusal",
-            "gate_kills",
-            "fell_back_full",
-        ):
-            if carry is not None and key in carry:
-                handle[key] = carry[key]
-        identity = _rs._process_identity(pid)
-        if identity is not None:
-            handle["boot_id"], handle["start_time"] = identity
-        ps_identity = (
-            _rs._darwin_process_identity(pid) if sys.platform == "darwin" else None
+        _stamp_lock_holder(
+            lock_fd,
+            pid,
+            todo_id,
+            branch,
+            subject,
+            flag,
+            attempt_dir.name if attempt_dir is not None else "",
         )
-        if ps_identity is not None:
-            # ssh_node's identity gate verifies Darwin handles through ps —
-            # without it a cancel cannot signal the ship (gr572654).
-            handle["ps_identity"] = ps_identity
+        _rs._record_launched_process(handle, pid, attempt_dir)
         return handle
     finally:
         # Our end of the land flock: the launched ship's inherited copy
@@ -5308,7 +5360,22 @@ def poll(ctx: Any, handle: Any) -> bool:
                 )
                 return False
         side = refusal_side(cross)
-        if side is not None:
+        if side is not None and RELEASE_BUSY_MARK in str(cross):
+            # Another release push holds ship's round lock: run again
+            # in a minute, on this wait's own counter.
+            waits = int(handle.get("release_busy") or 0) + 1
+            if waits <= MAX_RELEASE_BUSY_WAITS:
+                return _defer_to_main(
+                    ctx,
+                    handle,
+                    cross,
+                    waits,
+                    side=side,
+                    backoff_s=RELEASE_BUSY_BACKOFF_S,
+                    counter="release_busy",
+                )
+            reason, handoff = _blocked_handoff(branch, waits, cross, side)
+        elif side is not None:
             # Main's or the host's state, not the branch's: park and retry
             # later, up to the cap.
             refusals = int(handle.get("main_refusals") or 0) + 1
@@ -5891,6 +5958,7 @@ SPEC = JobTypeSpec(
     validate_submit=validate_submit,
     submit=submit,
     poll=poll,
+    reconcile=reconcile,
     kill=kill,
     deadline_kill_meta=DEADLINE_KILL_META,
     wall_seconds=wall_seconds,
@@ -5942,6 +6010,7 @@ __all__ = [
     "outside_diff_ids",
     "pending_gate",
     "poll",
+    "reconcile",
     "refusal_backoff_s",
     "refusal_side",
     "ship_bin",

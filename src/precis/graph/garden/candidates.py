@@ -218,12 +218,18 @@ _DETECTOR_BY_PASS = {
     # One-off host pass (gr560767): the census sync is the operator's
     # hand step, then this pass rewrites host prose to dated events.
     "host-facts": ("host_facts",),
+    # Claim-level grounding ledger (gr634485, gr634486): writes its own
+    # review rows and, for definitively ungrounded claims, repair
+    # proposals through the shared garden ledger.
+    "memory-grounding": ("grounding_audit",),
 }
 
 #: Passes ``all`` skips. Memory detectors spend proposer calls, so a job
 #: must name their pass explicitly; memory-review is independent of memory;
 #: host-facts is a one-off hand-run pass over the machine census.
-OPT_IN_PASSES: frozenset[str] = frozenset({"memory", "memory-review", "host-facts"})
+OPT_IN_PASSES: frozenset[str] = frozenset(
+    {"memory", "memory-review", "host-facts", "memory-grounding"}
+)
 
 #: Job ``params.pass`` values → detectors. ``all`` runs everything not opt-in.
 PASS_CHOICES: tuple[str, ...] = tuple(_DETECTOR_BY_PASS) + ("all",)
@@ -284,6 +290,20 @@ class GardenCandidate:
             # A census fact changing (the sync, a hand put) is new evidence
             # on the same body — a distinct proposal question.
             return f"{key}:host_facts:{self.payload.get('evidence_sha') or 'none'}"
+        if self.detector == "grounding_audit" and self.action != "audit":
+            # A grounding repair is a question about one claim span on one
+            # audited revision: repairs for different spans (or a new audit
+            # of changed content) must not collide on one memory's key.
+            span = self.payload.get("span")
+            span_key = (
+                "-".join(str(int(v)) for v in span[:2])
+                if isinstance(span, list) and len(span) >= 2
+                else "none"
+            )
+            return (
+                f"{key}:grounding_audit:"
+                f"{self.payload.get('audit_sha') or 'none'}:{span_key}"
+            )
         return key
 
 
@@ -1660,7 +1680,7 @@ _OWNER_RANK = {"section:reference": 0, "section:gotchas": 1, "section:threads": 
 
 
 def _claim_sentences(
-    body: str, title: str, *, min_words: int = 8
+    body: str, title: str, *, min_words: int = 8, include_metadata: bool = False
 ) -> Iterator[tuple[str, list[int]]]:
     """Exact sentence spans, omitting short text, headings and metadata lines.
 
@@ -1673,11 +1693,13 @@ def _claim_sentences(
     for line in body.splitlines(keepends=True):
         clean = line.strip()
         plain = re.sub(r"^[*_-]+\s*", "", clean).strip("*_ ")
-        excluded = (
-            not clean
-            or clean.startswith("#")
-            or plain == title.strip()
-            or bool(_BOILERPLATE.match(plain))
+        excluded = not clean or (
+            not include_metadata
+            and (
+                clean.startswith("#")
+                or plain == title.strip()
+                or bool(_BOILERPLATE.match(plain))
+            )
         )
         if excluded and paragraph_start is not None:
             ranges.append((paragraph_start, start))
@@ -4810,6 +4832,17 @@ def run_detectors(
                 next_cursors=nxt,
                 not_checked=unchecked,
             )
+        elif det == "grounding_audit":
+            from precis.graph.garden.grounding import grounding_audit_candidates
+
+            fn = partial(
+                grounding_audit_candidates,
+                store,
+                scan_cap=scan_cap,
+                limit=limit,
+                cursors=saved,
+                next_cursors=nxt,
+            )
         elif det == "polysemy":
             fn = partial(polysemy_candidates, store, limit=limit)
         elif det == "sibling_confusion":
@@ -4857,7 +4890,7 @@ def run_detectors(
         kept = [
             c
             for c in out.candidates
-            if c.detector in ("review_due", "griped")
+            if c.detector in ("review_due", "griped", "grounding_audit")
             or (c.target_kind, c.target_id) not in fresh
         ]
         out.skipped_considered = len(out.candidates) - len(kept)

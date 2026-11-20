@@ -6,6 +6,11 @@ The ``semanticscholar`` kind wraps Semantic Scholar's Graph API. The
 * ``get(kind='semanticscholar', id='<query>')`` — a paper *search*:
   the top-10 ranked hits for a natural-language query, as a structured
   markdown listing (same shape as perplexity-*).
+* ``get(kind='semanticscholar', id='doi:<doi>')`` or
+  ``id='arxiv:<arxiv-id>'`` — a single-paper *lookup* by identifier
+  (gr489407, gr711201): an identifier-shaped ``id`` must never
+  free-text search, which returned unrelated hits an agent read as
+  "not found".
 * ``get(kind='semanticscholar', id='refs:<paper-id>')`` — the papers
   *this* paper cites (its reference list / bibliography).
 * ``get(kind='semanticscholar', id='cites:<paper-id>')`` — the papers
@@ -188,10 +193,20 @@ _AUTHOR_COMPLETE_TITLE_FALLBACK_CAP = 200
 #: Used to auto-prefix a path id when the caller passes a naked id.
 _ARXIV_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 
-#: Bare-DOI shape — ``10.<4-9 digits>/<non-space>`` (gr489407: a DOI as
-#: query must route to the ``/paper/DOI:<doi>`` lookup, not a free-text
-#: search that returns unrelated papers).
+#: Identifier shapes that route ``get`` to a single-paper lookup instead
+#: of a topic search (gr489407: a DOI as query must hit
+#: ``/paper/DOI:<doi>``; gr711201: same for ``arxiv:<id>`` / a bare arXiv
+#: id — the old free-text fallback burned a rate-limited S2 call and
+#: returned ~10 unrelated "arXiv"-flavoured hits an agent read as
+#: "not found"). The bare-arXiv shape is :data:`_ARXIV_RE`.
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
+
+#: Canonical-key prefix of an arXiv paper lookup (gr711201) — distinct
+#: from any key a topic search is cached under, so stale rows are never
+#: served as the lookup. The double space cannot occur in a topic key
+#: (queries are whitespace-collapsed), so no legacy row — ``arxiv:<id>``,
+#: ``arxivid:<id>``, … — can share it.
+_ARXIV_LOOKUP_PREFIX = "arxivid  "
 
 _ATTRIBUTION = (
     "Source: Semantic Scholar (https://www.semanticscholar.org). "
@@ -244,8 +259,9 @@ class SemanticScholarHandler(CacheBackedHandler):
             "papers it cites, id='cites:<paper-id>' the papers citing "
             "it — each row carrying the DOI to feed a "
             "put(kind='paper', doi=…) acquisition stub. A bare DOI "
-            "(id='10.x/y' or 'doi:10.x/y', or q= a DOI) resolves that "
-            "one paper via the lookup endpoint. Or walk the "
+            "(id='10.x/y' or 'doi:10.x/y') or an arXiv id (id='arxiv:2510.25380' "
+            "or a bare '2510.25380') resolves that one paper via the "
+            "lookup endpoint. Or walk the "
             "author graph: id='authors:<paper-id>' lists that paper's "
             "authors (each with their ORCID — the key into kind='orcid' — "
             "h-index, affiliations, senior author flagged), "
@@ -271,6 +287,8 @@ class SemanticScholarHandler(CacheBackedHandler):
     attribution: ClassVar[str] = _ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
     example_query: ClassVar[str] = "carbon nanotube field-effect transistors"
+    # The ``ss<id>`` handle routes by ref id (gr702974).
+    handle_routes_by_ref_id: ClassVar[bool] = True
     #: Per-call cost — the public tier is free, partner tier charges
     #: per query but it's tiny. Record None so the dashboard doesn't
     #: invent a per-call dollar figure.
@@ -312,6 +330,16 @@ class SemanticScholarHandler(CacheBackedHandler):
                 if mode == "author" and _GET_STATE.get().complete:
                     ident = f"{ident}{_AUTHOR_COMPLETE_SUFFIX}"
                 return f"{prefix}{ident}"
+        # gr711201: an arXiv-shaped query is a paper lookup. It gets its
+        # own key namespace so a legacy ``arxiv:<id>`` row — a topic
+        # search cached before the lookup routing, junk hits and all —
+        # is never served as the lookup result.
+        if low.startswith("arxiv:"):
+            arxiv = low[6:].strip()
+            if arxiv:
+                return f"{_ARXIV_LOOKUP_PREFIX}{arxiv}"
+        elif _ARXIV_RE.match(low):
+            return f"{_ARXIV_LOOKUP_PREFIX}{low}"
         return low
 
     @staticmethod
@@ -354,6 +382,11 @@ class SemanticScholarHandler(CacheBackedHandler):
         return r  # assume a raw S2 paper hash
 
     def _slug_for(self, key: str) -> str:
+        # A lookup slug uses ``_`` — ``slug_from_text`` only emits
+        # ``[a-z0-9-]``, so no legacy topic row can hold it.
+        if key.startswith(_ARXIV_LOOKUP_PREFIX):
+            ident = re.sub(r"[^a-z0-9]+", "_", key[len(_ARXIV_LOOKUP_PREFIX) :])
+            return f"arxiv_{ident.strip('_')}"[:60]
         return slug_from_text(key, max_len=60) or "semanticscholar-query"
 
     def _recover_key(self, ref, cache):
@@ -417,7 +450,8 @@ class SemanticScholarHandler(CacheBackedHandler):
         else (graph-walk modes, the injection-withheld/suspect banners)
         defers to the base class unchanged.
 
-        Discriminator: only :meth:`_fetch_search` stamps ``meta['papers']``
+        Discriminator: only :meth:`_fetch_search` and
+        :meth:`_fetch_paper_lookup` stamp ``meta['papers']``
         — the graph-walk fetchers (`_fetch_graph` / `_fetch_paper_authors`
         / `_fetch_author_papers`) never do, so they always fall through to
         ``super()._render()``. A ``high`` injection verdict also defers to
@@ -596,57 +630,78 @@ class SemanticScholarHandler(CacheBackedHandler):
             if mode == "author":
                 return self._fetch_author_papers(key, ident)
             return self._fetch_graph(key, mode, ident)
-        # gr489407: a bare DOI (or ``doi:`` prefix) is a paper *lookup*,
-        # not a topic search — free-texting it returned junk hits.
-        if doi := self._doi_of(key):
-            return self._fetch_paper_lookup(key, doi)
+        # gr489407 / gr711201: an identifier-shaped key (a bare DOI or
+        # ``doi:`` / ``arxiv:`` prefix, or a bare arXiv id) is a paper
+        # *lookup*, not a topic search — free-texting it returned junk
+        # hits an agent read as "not found".
+        if path_id := self._lookup_path_id(key):
+            return self._fetch_paper_lookup(key, path_id)
         return self._fetch_search(key)
 
     @staticmethod
-    def _doi_of(key: str) -> str | None:
-        """The DOI a canonical key names, or None for a real query."""
+    def _lookup_path_id(key: str) -> str | None:
+        """The S2 ``/paper/{id}`` path segment a canonical key names, or
+        ``None`` for a real query (which goes to the topic search)."""
         k = key.strip()
-        if k.startswith("doi:"):
-            return k[4:] or None
-        return k if _DOI_RE.match(k) else None
+        low = k.lower()
+        if low.startswith(_ARXIV_LOOKUP_PREFIX):
+            arxiv = k[len(_ARXIV_LOOKUP_PREFIX) :].strip()
+            return f"ARXIV:{arxiv}" if arxiv else None
+        if low.startswith("doi:"):
+            doi = k[4:].strip()
+            return f"DOI:{doi}" if doi else None
+        if low.startswith("arxiv:"):
+            arxiv = k[6:].strip()
+            return f"ARXIV:{arxiv}" if arxiv else None
+        if _DOI_RE.match(k):
+            return f"DOI:{k}"
+        if _ARXIV_RE.match(k):
+            return f"ARXIV:{k}"
+        return None
 
-    def _fetch_paper_lookup(self, key: str, doi: str) -> FetchResult:
-        """Resolve one paper by DOI via ``/paper/DOI:<doi>`` (gr489407).
+    def _fetch_paper_lookup(self, key: str, path_id: str) -> FetchResult:
+        """Resolve one paper by identifier via ``/paper/{path_id}``
+        (gr489407 for DOIs, gr711201 for arXiv ids).
 
-        A 404 is a clean "not found" row, not an Upstream error — the
-        caller verifying a DOI needs that answer, not a retry hint. The
-        call rides the shared ``s2`` limiter like every S2 GET
+        A 404 is a clean "not found" row, not an ``Upstream`` error — the
+        caller verifying an identifier needs that answer, not a retry
+        hint. The call rides the shared ``s2`` limiter like every S2 GET
         (gr676917): a 429/5xx is paced and retried under it before it
         can surface as an ``Upstream``."""
-        url = f"{_S2_PAPER_BASE}/DOI:{doi}"
+        url = f"{_S2_PAPER_BASE}/{path_id}"
         resp, _attempts = self._s2_raw_get_backoff(url, {"fields": _S2_FIELDS})
         if resp.status_code == 404:
             return FetchResult(
-                title=f"S2 paper lookup: {doi}",
+                title=f"S2 paper lookup: {path_id}",
                 body_blocks=[
                     ChunkInsert(
                         ord=0,
                         text=(
-                            f"Semantic Scholar has no record for DOI {doi} "
+                            f"Semantic Scholar has no record for {path_id} "
                             "(404). Check the spelling, or try "
                             "search(kind='semanticscholar', ...) terms."
                         ),
                     )
                 ],
                 cost_usd=None,
-                meta={"key": key, "nav": "doi", "doi": doi, "result_count": 0},
+                meta={
+                    "key": key,
+                    "nav": "lookup",
+                    "path_id": path_id,
+                    "result_count": 0,
+                },
             )
         paper = self._s2_parse_response(resp)
         # Reuse the topic-search corpus-diff render: ``meta['papers']``
         # marks it so ``_render`` flags held:/stub:/NEW like a hit list.
         return FetchResult(
-            title=f"S2 paper lookup: {doi}",
+            title=f"S2 paper lookup: {path_id}",
             body_blocks=[ChunkInsert(ord=0, text=_format_paper(paper))],
             cost_usd=None,
             meta={
                 "key": key,
-                "nav": "doi",
-                "doi": doi,
+                "nav": "lookup",
+                "path_id": path_id,
                 "result_count": 1,
                 "papers": [paper],
             },
@@ -658,8 +713,9 @@ class SemanticScholarHandler(CacheBackedHandler):
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """A DOI-shaped ``q`` routes to the paper lookup (gr489407)."""
-        if q is not None and self._doi_of(" ".join(q.lower().split())):
+        """An identifier-shaped ``q`` routes to the paper lookup
+        (gr489407, gr711201)."""
+        if q is not None and self._lookup_path_id(" ".join(q.lower().split())):
             return self.get(id=q)
         return super().search(q=q, **_kw)
 

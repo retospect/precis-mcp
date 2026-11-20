@@ -818,8 +818,8 @@ def _paper_body_held(store: Store, ref_id: int) -> bool:
 
 def _resolve_cache_ref(store: Store, kind: str, ident: str) -> Any | None:
     """A live cache-backed ref addressed ``<kind>:<ref_id|slug>`` — the
-    cite form cache kinds carry (``web:<id>``), since provider kinds have
-    no universal handle (:data:`handle_registry.CODELESS_KINDS`). Digits
+    legacy cite form cache kinds carry (``web:<id>``), from before the
+    provider kinds grew universal handles (gr702962). Digits
     resolve as a ref id, anything else as the ref's slug; ``None`` when no
     live cache row matches."""
     ident = ident.strip()
@@ -864,8 +864,8 @@ def _bench_stem_hits(needle: str) -> list[str]:
 def _resolve_read_ref(store: Store, ident: str) -> Any | None:
     """Resolve a ``read`` entry's ``ref`` — any well-formed universal
     handle (``fi<id>``, ``pc<id>``, ``pa<id>``, …) that resolves live, a
-    ``web:<ref_id|slug>`` cache address (a fetched page carries no
-    universal handle — gr573684), or a ``bench:<stem>`` results-file
+    ``web:<ref_id|slug>`` cache address (the legacy cite form beside
+    the ``wb<id>`` handle — gr573684), or a ``bench:<stem>`` results-file
     address (gr618517 — a benchmark run's raw log lives on disk, not in
     the store; resolves to its ``Path``, a truthy non-ref). The reserved
     ``bench:index`` address resolves to the results dir — the run index

@@ -1680,3 +1680,19 @@ def test_claim_form_rules_carry_state_variable_conditions() -> None:
     assert "Never invent a condition" in flat
     assert "reference electrode" in " ".join(canon._EXTRACT_PROMPT.split())
     assert "at -0.5 V vs RHE in 0.5 M K₂SO₄" in " ".join(canon._EXTRACT_PROMPT.split())
+
+
+def test_dedup_judge_sends_condition_and_method_rubric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def check_prompt(request: LlmRequest) -> Any:
+        assert request.messages is not None
+        prompt = " ".join(request.messages[-1]["content"].split())
+        assert "comparable methods" in prompt
+        assert "both conclusions apply within the overlap" in prompt
+        assert "intervals share an endpoint" in prompt
+        assert "from 0.15 to 0.6 GPa are DIFFERENT" in prompt
+        return _result(data={"verdict": "different", "confidence": 0.95})
+
+    monkeypatch.setattr(canon, "route", check_prompt)
+    assert dedup_judge("claim A", "claim B")["verdict"] == "different"

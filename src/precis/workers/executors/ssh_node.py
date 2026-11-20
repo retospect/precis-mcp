@@ -95,8 +95,10 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from precis.utils import job_footprint
+from precis.workers import admission
 from precis.workers.executors._common import (
     CANCEL_REQUESTED as _CANCEL_REQUESTED,
 )
@@ -152,7 +154,12 @@ from precis.workers.executors._common import (
 # from claude_inproc (it's executor-agnostic — closures over the
 # store handle + ref_id).
 from precis.workers.executors.claude_inproc import _build_dispatch_context
-from precis.workers.job_types import JobTypeSpec, get_job_type, known_job_types
+from precis.workers.job_types import (
+    JobTypeSpec,
+    Reconcile,
+    get_job_type,
+    known_job_types,
+)
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -491,6 +498,8 @@ def _readoptable(meta: dict[str, Any], node: str | None) -> bool:
         return False
     if handle.get("not_before"):
         return True
+    if handle.get("recovered_exit"):
+        return False
     return _detached_identity_reason(handle) is None and _detached_group_alive(handle)
 
 
@@ -769,7 +778,10 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
             # are not crashes (gr541147).
             if _readoptable(meta, node):
                 _refund_readopt_attempt(store, conn, ref_id, meta)
-            if _poison_guard(store, conn, ref_id, meta):
+            pending_submit = meta.get("submit_started_at") and not meta.get(
+                "compute_handle"
+            )
+            if not pending_submit and _poison_guard(store, conn, ref_id, meta):
                 if (
                     node is not None
                     and (meta.get("params") or {}).get("target_node") == node
@@ -829,30 +841,33 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
                 ok += 1
                 continue
             if meta.get("submit_started_at"):
-                # gr191673: the prior generation died INSIDE the submit
-                # window — after committing the intent marker, before
-                # persisting the handle. The detached compute may or may
-                # not be running, and there is no handle to adopt or
-                # kill. Re-submitting is exactly the double-launch the
-                # marker exists to prevent — fail loudly instead; the
-                # event chunk is the pointer for finding the orphan.
-                _record_failure(
-                    store,
-                    ref_id,
-                    "submit outcome unknown: worker died between "
-                    "submit() and the compute_handle persist "
-                    f"(submit_started_at={meta.get('submit_started_at')})"
-                    " — a detached compute may be orphaned on the "
-                    "target node; not resubmitting (gr191673)",
-                    gripe_rollback=None,
-                    failure_class="infra",
-                )
-                # Clear the marker so a deliberate requeue can run.
+                # The prior generation died INSIDE the submit window —
+                # after committing the intent marker, before persisting
+                # the handle. gr191673 failed this loudly; gr708457 lets
+                # the job_type's ``reconcile`` hook settle it first: a
+                # provable launch is re-adopted, a provable non-launch
+                # clears the marker and falls through to a fresh submit,
+                # and only true uncertainty keeps the loud failure.
+                outcome = _reconcile_mid_submit(store, ref_id, title, meta)
+                if outcome == "adopted":
+                    ok += 1
+                    continue
+                if outcome == "failed":
+                    failed += 1
+                    continue
                 with store.pool.connection() as conn:
-                    _set_meta(conn, ref_id, submit_started_at=None)
+                    poisoned_resubmit = _poison_guard(store, conn, ref_id, meta)
                     conn.commit()
-                failed += 1
-                continue
+                if poisoned_resubmit:
+                    _release_job(_build_dispatch_context(store, ref_id, title, meta))
+                    failed += 1
+                    continue
+                meta = {
+                    **meta,
+                    "submit_started_at": None,
+                    "submit_attempt": None,
+                    "submit_host": None,
+                }
             ctx = _build_dispatch_context(store, ref_id, title, meta)
             if _run_one(ctx):
                 # Blocking dispatch cut off at its wall-clock bound: the
@@ -1596,6 +1611,151 @@ def _pin_to_submitting_node(conn: Any, ref_id: int, handle: Any) -> None:
     )
 
 
+def _persist_detached_handle(
+    conn: Any,
+    ref_id: int,
+    meta: dict[str, Any],
+    spec: JobTypeSpec | None,
+    handle: Any,
+) -> None:
+    """Persist a detached compute's handle + wall-clock deadline under
+    the row lock — the post-``submit`` write shared with the
+    mid-submit-crash reconcile's re-adoption (gr708457).
+
+    §H piece 2: stamp a wall-clock kill deadline alongside the handle —
+    see ``_deadline_epoch`` / ``_poll_one``'s docstrings for why a
+    detached submit/poll job otherwise has no termination path at all.
+    The bound is computed from a FRESH meta read under the row lock:
+    put(mode='extend') bumps params.resources.wall_seconds under the
+    same lock (td627156), so an extension committed between the claim
+    snapshot and this stamp is already priced in — and one landing after
+    bumps the stamped deadline itself."""
+    fresh = conn.execute(
+        "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE",
+        (ref_id,),
+    ).fetchone()
+    _set_meta(
+        conn,
+        ref_id,
+        compute_handle=handle,
+        deadline=_deadline_epoch(dict(fresh[0]) if fresh is not None else meta, spec),
+        submit_started_at=None,
+        submit_attempt=None,
+        submit_host=None,
+    )
+    _pin_to_submitting_node(conn, ref_id, handle)
+
+
+def _reconcile_mid_submit(
+    store: Store, ref_id: int, title: str, meta: dict[str, Any]
+) -> str:
+    """Settle a reclaimed submit-window crash (gr708457).
+
+    The row carries ``submit_started_at`` but no ``compute_handle`` —
+    the prior worker generation died inside ``submit()``. Let the
+    job_type's ``reconcile`` hook judge its own launch evidence before
+    the gripe-standing loud failure: a provable handle is re-adopted
+    (``"adopted"`` — poll resumes, the compute runs once), a provably
+    un-launched submit clears the marker (``"resubmit"`` — the caller
+    falls through to a fresh ``_run_one``), and anything else keeps the
+    loud gr191673 failure (``"failed"`` — an orphan is reported, never
+    duplicated).
+    """
+    ctx = _build_dispatch_context(store, ref_id, title, meta)
+    spec = get_job_type(str(meta.get("job_type") or ""))
+    verdict: Any = None
+    if spec is not None and spec.reconcile is not None:
+        try:
+            verdict = spec.reconcile(ctx)
+        except Exception:
+            # A reconciler that cannot answer is no reconciler — the
+            # fail-loud path below stands.
+            log.warning("ssh_node: reconcile of job %d raised", ref_id, exc_info=True)
+    if isinstance(verdict, Reconcile) and verdict.handle is not None:
+        handle = verdict.handle
+        # A recovered pid must never acquire a fresh process identity here.
+        # A completed launch can resume poll even at the attempt cap.
+        with store.pool.connection() as conn:
+            _persist_detached_handle(conn, ref_id, meta, spec, handle)
+            fresh = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+            assert fresh is not None
+            adopted = dict(fresh[0])
+            node = os.environ.get("PRECIS_NODE")
+            if _readoptable(adopted, node):
+                _refund_readopt_attempt(store, conn, ref_id, adopted)
+                if _poison_guard(store, conn, ref_id, adopted):
+                    if node is not None:
+                        _reap_detached_job(
+                            store,
+                            conn,
+                            ref_id,
+                            title,
+                            adopted,
+                            node=node,
+                            require_grace=False,
+                        )
+                    conn.commit()
+                    _release_job(ctx)
+                    return "failed"
+            _append_chunk(
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
+                f"runner: recovered detached compute after a mid-submit "
+                f"crash (compute_handle {handle!r} re-derived by "
+                "reconcile) — resuming poll, not resubmitting (gr708457)",
+                conn=conn,
+            )
+            conn.commit()
+        return "adopted"
+    if isinstance(verdict, Reconcile) and not verdict.launched:
+        # Provably no detached compute exists — the marker lied about a
+        # launch that never happened; clear it and let the caller run
+        # the submit for real.
+        with store.pool.connection() as conn:
+            _set_meta(
+                conn,
+                ref_id,
+                submit_started_at=None,
+                submit_attempt=None,
+                submit_host=None,
+            )
+            _append_chunk(
+                store,
+                ref_id,
+                _JOB_EVENT_KIND,
+                "runner: prior submit provably never launched — clearing "
+                "the intent marker and resubmitting (gr708457)",
+                conn=conn,
+            )
+            conn.commit()
+        return "resubmit"
+    # gr191673: the compute may or may not be running, and there is no
+    # handle to adopt or kill. Re-submitting is exactly the
+    # double-launch the marker exists to prevent — fail loudly instead;
+    # the event chunk is the pointer for finding the orphan.
+    _record_failure(
+        store,
+        ref_id,
+        "submit outcome unknown: worker died between "
+        "submit() and the compute_handle persist "
+        f"(submit_started_at={meta.get('submit_started_at')})"
+        " — a detached compute may be orphaned on the "
+        "target node; not resubmitting (gr191673)",
+        gripe_rollback=None,
+        failure_class="infra",
+    )
+    # Clear the marker so a deliberate requeue can run.
+    with store.pool.connection() as conn:
+        _set_meta(
+            conn, ref_id, submit_started_at=None, submit_attempt=None, submit_host=None
+        )
+        conn.commit()
+    return "failed"
+
+
 def _run_one(ctx: DispatchContext) -> bool:
     """Dispatch one claimed job — detached submit (§H piece 4, preferred)
     when the job_type exposes ``submit``/``poll``, else the legacy
@@ -1649,9 +1809,17 @@ def _run_one(ctx: DispatchContext) -> bool:
         # while the first leaked. With the marker committed first, the
         # reclaim path can tell "never submitted" (safe to run) from
         # "submit outcome unknown" (fail loudly, never blind-resubmit).
+        intent = {
+            "submit_started_at": time.time(),
+            "submit_attempt": uuid4().hex,
+            "submit_host": admission.local_host(),
+        }
         with store.pool.connection() as conn:
-            _set_meta(conn, ref_id, submit_started_at=time.time())
+            _set_meta(conn, ref_id, **intent)
+            if spec.reconcile is not None:
+                _pin_to_submitting_node(conn, ref_id, intent)
             conn.commit()
+        meta.update(intent)
         try:
             handle = spec.submit(ctx, spec)
         except BaseException:
@@ -1659,7 +1827,13 @@ def _run_one(ctx: DispatchContext) -> bool:
             # failure handler (STATUS:failed) — clear the marker so a
             # deliberate requeue isn't mistaken for a mid-submit crash.
             with store.pool.connection() as conn:
-                _set_meta(conn, ref_id, submit_started_at=None)
+                _set_meta(
+                    conn,
+                    ref_id,
+                    submit_started_at=None,
+                    submit_attempt=None,
+                    submit_host=None,
+                )
                 conn.commit()
             raise
         if isinstance(handle, dict):
@@ -1667,29 +1841,7 @@ def _run_one(ctx: DispatchContext) -> bool:
             # detached gate fails closed on an anonymous handle.
             _stamp_handle_identity(handle)
         with store.pool.connection() as conn:
-            # §H piece 2: stamp a wall-clock kill deadline alongside the
-            # handle — see ``_deadline_epoch`` / ``_poll_one``'s docstrings
-            # for why a detached submit/poll job otherwise has no
-            # termination path at all. The bound is computed from a FRESH
-            # meta read under the row lock: put(mode='extend') bumps
-            # params.resources.wall_seconds under the same lock
-            # (td627156), so an extension committed between the claim
-            # snapshot and this stamp is already priced in — and one
-            # landing after bumps the stamped deadline itself.
-            fresh = conn.execute(
-                "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE",
-                (ref_id,),
-            ).fetchone()
-            _set_meta(
-                conn,
-                ref_id,
-                compute_handle=handle,
-                deadline=_deadline_epoch(
-                    dict(fresh[0]) if fresh is not None else meta, spec
-                ),
-                submit_started_at=None,
-            )
-            _pin_to_submitting_node(conn, ref_id, handle)
+            _persist_detached_handle(conn, ref_id, meta, spec, handle)
             conn.commit()
         return False
 

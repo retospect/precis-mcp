@@ -12,6 +12,7 @@ Pins, over the real FastMCP ``call_tool`` path (not the Python functions):
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 from collections.abc import Iterator
@@ -523,12 +524,14 @@ def test_search_page_continuation_refuses_before_dispatch(
     assert "more specific terms" in out
 
 
-def test_memory_index_listing_page_arg_reaches_dispatch(
-    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("view", ["index", "reads", "toc"])
+def test_memory_listing_page_arg_reaches_dispatch(
+    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch, view: str
 ) -> None:
-    """gr538490: ``args={'page': N}`` on the q-less ``view='index'``
-    listing is a bounded enumeration cursor, not the removed ranked
-    paging — the slim gate lets it through (nested and top-level)."""
+    """gr538490/gr692939: ``args={'page': N}`` on the q-less memory
+    listings (``index``, ``reads``, ``toc``) is a bounded enumeration
+    cursor, not the removed ranked paging — the slim gate lets it
+    through (nested and top-level)."""
     seen: dict[str, Any] = {}
 
     def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
@@ -537,13 +540,38 @@ def test_memory_index_listing_page_arg_reaches_dispatch(
         return "ok"
 
     monkeypatch.setattr(tools_core, "_dispatch", capture)
-    out = _call("search", {"kind": "memory", "view": "index", "args": {"page": 2}})
+    out = _call("search", {"kind": "memory", "view": view, "args": {"page": 2}})
     assert out == "ok"
     assert seen["__extras__"]["page"] == 2
     # the top-level spelling lands in args without a deprecation note
-    out = _call("search", {"kind": "memory", "view": "index", "page": 3})
+    out = _call("search", {"kind": "memory", "view": view, "page": 3})
     assert out == "ok"
     assert seen["__extras__"]["page"] == 3
+
+
+def test_tag_toc_page_arg_reaches_dispatch_with_a_query(
+    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr692939: ``view='toc'``'s ``q=`` narrows the bounded forest
+    rather than ranking it, so a filtered toc still pages — unlike
+    ``index``/``reads`` (ranked search), toc+``q``+``args={'page': N}``
+    must reach dispatch. (Until gr702042 lands, the handler then
+    refuses the ``q`` itself with its own ``BadInput`` — a correct
+    refusal with a ``next:`` step, not the misleading no-paginate one.)"""
+    seen: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        seen.clear()
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    out = _call(
+        "search",
+        {"kind": "memory", "view": "toc", "q": "routing", "args": {"page": 2}},
+    )
+    assert out == "ok"
+    assert seen["__extras__"]["page"] == 2
 
 
 def test_count_view_page_arg_reaches_dispatch(
@@ -617,20 +645,61 @@ def test_reto_queue_page_arg_windows_end_to_end(mcp_runtime: None, hub: Hub) -> 
     assert "rows 3-3 of 3 waiting" in out.splitlines()[0], out[:300]
 
 
-def test_memory_index_listing_page_still_refused_with_a_query(
-    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("view", ["index", "reads"])
+def test_memory_listing_page_still_refused_with_a_query(
+    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch, view: str
 ) -> None:
+    """A real ``q`` turns ``index``/``reads`` into ranked search — the
+    removed-paging refusal stands (``toc`` exempts: its q narrows the
+    enumeration, see test_tag_toc_page_arg_reaches_dispatch_with_a_query)."""
+
     def unexpected(*_args: Any, **_kwargs: Any) -> str:
         raise AssertionError("page continuation reached dispatch")
 
     monkeypatch.setattr(tools_core, "_dispatch", unexpected)
     for call_args in (
-        {"kind": "memory", "view": "index", "q": "x", "args": {"page": 2}},
-        {"kind": "gripe", "view": "index", "args": {"page": 2}},
+        {"kind": "memory", "view": view, "q": "x", "args": {"page": 2}},
+        {"kind": "gripe", "view": view, "args": {"page": 2}},
         {"kind": "memory", "args": {"page": 2}},
     ):
         out = _call("search", call_args)
         assert "search no longer paginates" in out, out
+
+
+def _parse_next_call(out: str) -> tuple[str, dict[str, Any]]:
+    """Parse a footer's ``next:`` line into a replayable tool call."""
+    source = out.split("next: ", 1)[1].strip()
+    expr = ast.parse(source, mode="eval").body
+    assert isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name)
+    arguments = {
+        kw.arg: ast.literal_eval(kw.value) for kw in expr.keywords if kw.arg is not None
+    }
+    return expr.func.id, arguments
+
+
+def test_tag_toc_footer_next_call_pages_end_to_end(mcp_runtime: None, hub: Hub) -> None:
+    """gr692939 end-to-end: ``search(view='toc')``'s footer emits
+    ``args={'page': N}`` and that exact call must replay through the
+    real slim → core → dispatch path onto the next forest page — the
+    slim gate used to refuse it with "search no longer paginates",
+    which is the bug the gripe filed."""
+    from precis.handlers.memory import MemoryHandler
+
+    h = MemoryHandler(hub=hub)
+    for title in ("Spec: alpha", "Spec: other", "Spec: routing"):
+        h.put(text=f"{title} body.", title=title, tags=["spec:x", "section:index"])
+    out = _call(
+        "search",
+        {"kind": "memory", "tags": ["spec:*"], "view": "toc", "page_size": 2},
+    )
+    assert "… 1 more — next: " in out, out
+    name, arguments = _parse_next_call(out)
+    assert name == "search"
+    assert arguments["view"] == "toc"
+    second = _call(name, arguments)
+    assert "no longer paginates" not in second, second
+    assert "Spec: routing" in second, second
+    assert "Spec: alpha" not in second, second
 
 
 def test_source_search_window_args_reach_dispatch(
@@ -729,6 +798,15 @@ def test_promoted_knob_on_an_unsupported_kind_says_not_on_kind_yet(
 ) -> None:
     """The advertised verb param refuses ``not on <kind> yet`` on a
     kind that can't apply it — through the real call_tool path."""
-    out = _call("search", {"kind": "skill", "q": "x", "queries": ["y"]})
+    out = _call("search", {"kind": "memory", "q": "x", "queries": ["y"]})
     assert "[error:BadInput]" in out, out
-    assert "queries= is not on skill yet" in out, out
+    assert "queries= is not on memory yet" in out, out
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_skill_queries_pass_through_mcp(mcp_runtime: None, nested: bool) -> None:
+    args = {"queries": ["spaced repetition", "remember what I read"]}
+    payload = {"args": args} if nested else args
+    out = _call("search", {"kind": "skill", **payload})
+    assert "section matches across 2 phrasings" in out, out
+    assert "precis-anki-help~" in out, out

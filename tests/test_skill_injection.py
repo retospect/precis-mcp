@@ -1,6 +1,6 @@
 """Tests for bimodal skill injection (§2, ``docs/backlog/skill-question-
 targets-and-injection.md``): :mod:`precis.skill_index.injection`'s
-``match_skill``/``render_injection`` pair, plus the two harness-controlled
+single-skill fallback and section injection, plus the two harness-controlled
 prompt-assembly points wired to it — ``workers/planner_prompt.py`` and
 ``quest/tick.py``. ``workers/executors/claude_inproc.py`` builds no prompt
 of its own (its ``plan_tick`` path *is* ``planner_prompt.py``, already
@@ -206,14 +206,12 @@ def test_match_skill_not_lost_behind_decoy_structural_chunks(
     assert injection.match_skill(query) is None
 
 
-def test_render_injection_is_whole_skill_no_truncation() -> None:
-    match = injection.match_skill(_KNOWN_QUESTION)
-    assert match is not None
-    rendered = injection.render_injection(match)
-    assert rendered.startswith(f"# Auto-matched skill: {_KNOWN_SKILL}")
-    assert "auto" in rendered.lower() and "matched" in rendered.lower()
-    # The skill's own body content survives verbatim, not just a snippet.
-    assert "seven verbs" in rendered
+def test_task_injection_fuses_sections_across_sentences() -> None:
+    rendered = injection.render_task_sections(f"{_KNOWN_QUESTION} {_UNRELATED_TEXT}.")
+    assert "section matches across 2 phrasings" in rendered
+    assert f"{_KNOWN_SKILL}~" in rendered
+    assert "\tq1\t" in rendered
+    assert "\tq2\t" not in rendered
 
 
 # ── wiring: workers/planner_prompt.py ────────────────────────────────────
@@ -225,9 +223,7 @@ def test_planner_prompt_injects_matched_skill(
     from precis.workers.planner_prompt import build_planner_prompts
 
     marker = "MARKER-INJECTED-SKILL-BLOCK-PLANNER"
-    fake_match = injection.SkillMatch(slug=_KNOWN_SKILL, title="t", score=0.99)
-    monkeypatch.setattr(injection, "match_skill", lambda text: fake_match)
-    monkeypatch.setattr(injection, "render_injection", lambda m: marker)
+    monkeypatch.setattr(injection, "render_task_sections", lambda text: marker)
 
     todo = hub.live_store.insert_ref(kind="todo", slug=None, title="do a thing")
     prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
@@ -242,7 +238,7 @@ def test_planner_prompt_no_injection_when_no_match(
 ) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    monkeypatch.setattr(injection, "match_skill", lambda text: None)
+    monkeypatch.setattr(injection, "render_task_sections", lambda text: "")
 
     todo = hub.live_store.insert_ref(kind="todo", slug=None, title="do a thing")
     prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
@@ -258,9 +254,7 @@ def test_quest_tick_prompt_injects_matched_skill(
     from precis.quest.tick import build_tick_prompt
 
     marker = "MARKER-INJECTED-SKILL-BLOCK-QUEST"
-    fake_match = injection.SkillMatch(slug=_KNOWN_SKILL, title="t", score=0.99)
-    monkeypatch.setattr(injection, "match_skill", lambda text: fake_match)
-    monkeypatch.setattr(injection, "render_injection", lambda m: marker)
+    monkeypatch.setattr(injection, "render_task_sections", lambda text: marker)
 
     qid = _mk_quest(store, "A striving toward a catalyst")
     qref = store.get_ref(kind="quest", id=qid)
@@ -273,7 +267,7 @@ def test_quest_tick_prompt_no_injection_when_no_match(
 ) -> None:
     from precis.quest.tick import build_tick_prompt
 
-    monkeypatch.setattr(injection, "match_skill", lambda text: None)
+    monkeypatch.setattr(injection, "render_task_sections", lambda text: "")
 
     qid = _mk_quest(store, "A striving toward a catalyst")
     qref = store.get_ref(kind="quest", id=qid)
@@ -289,14 +283,14 @@ def test_quest_tick_prompt_survives_injection_failure(
     run" — but the tick call site (``_skill_injection_section``) had no
     guard of its own, unlike the planner path (safe via the prompt
     assembler's module-level try/except around each ``build``). Any
-    exception out of ``match_skill``/``render_injection`` must degrade to
+    exception out of ``render_task_sections`` must degrade to
     no injection, not abort the tick."""
     from precis.quest.tick import build_tick_prompt
 
     def _boom(text: str) -> Any:
-        raise RuntimeError("boom — simulated match_skill failure")
+        raise RuntimeError("boom — simulated section injection failure")
 
-    monkeypatch.setattr(injection, "match_skill", _boom)
+    monkeypatch.setattr(injection, "render_task_sections", _boom)
 
     qid = _mk_quest(store, "A striving toward a catalyst")
     qref = store.get_ref(kind="quest", id=qid)

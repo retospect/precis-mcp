@@ -284,7 +284,7 @@ def test_retire_has_no_env_flag(monkeypatch: Any) -> None:
 
 def test_strict_judge_parses_and_rejects_junk() -> None:
     path = "precis.workers.hub_refine.route"
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         claim="X is 5 nm.",
         scope={},
         cite_key="pa1",
@@ -299,16 +299,21 @@ def test_strict_judge_parses_and_rejects_junk() -> None:
             self.error = error
 
     with patch(path, return_value=_Res({"verdict": "PRUNE", "reason": "proxy"})):
-        v = judge_edge_strict(**kwargs)  # type: ignore[arg-type]
+        v = judge_edge_strict(**kwargs)
     assert v == StrictVerdict(verdict="PRUNE", reason="proxy")
+
+    with patch(path, return_value=_Res({"verdict": "KEEP", "same_setup": False})):
+        v = judge_edge_strict(**kwargs)
+    assert v is not None and v.verdict == "PRUNE"
+    assert v.same_setup is False
 
     # A verdict outside the enum is NOT a prune -- it is no verdict.
     with patch(path, return_value=_Res({"verdict": "MAYBE", "reason": "?"})):
-        assert judge_edge_strict(**kwargs) is None  # type: ignore[arg-type]
+        assert judge_edge_strict(**kwargs) is None
 
     # A dead dispatch is never conflated with "this edge is a proxy".
     with patch(path, return_value=_Res(error="boom")):
-        assert judge_edge_strict(**kwargs) is None  # type: ignore[arg-type]
+        assert judge_edge_strict(**kwargs) is None
 
 
 def test_intended_end_state_is_derived_not_stored() -> None:

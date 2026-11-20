@@ -10,6 +10,9 @@ pattern. Module docstrings own the detail; this one only groups them.
 The eye renderer assembles todo ``parent_id`` tree neighbours before its
 empty-hop decision: link edges alone cannot establish an empty first hop.
 
+Mention kinds derive lazily from the handle registry plus codeless caches.
+Lazy discovery avoids cycles when handle-code plugins import mention consumers.
+
 **Groups.**
 
 - *Outbound network + LLM seams.* :mod:`~precis.utils.safe_fetch` (SSRF guard —
@@ -72,6 +75,8 @@ to match the documented formula example. Full-width inputs remain valid;
 only caller-supplied formula values produce discard notes, so re-evaluating
 stored results stays quiet. ``table_data.normalize_table`` owns expansion
 and note collection for both creation and row insertion.
+Table reads render canonical cells with verbatim backslashes; stored Markdown
+keeps reversible escaping for fallback recovery without canonical metadata.
 
 Gripe provenance uses ``gripe_origin_class.classify_origin`` at intake, triage
 and operator backfill. A single deterministic rule set preserves explicit

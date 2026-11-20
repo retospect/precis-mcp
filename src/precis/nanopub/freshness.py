@@ -243,10 +243,10 @@ def format_edges(edges: list[NewerEdge], *, cap: int = _LIST_CAP) -> str:
 def grounding_stale_message(hub_ref_id: int, edges: list[NewerEdge]) -> str:
     return (
         f"{len(edges)} supporting evidence edge(s) arrived after the grounding "
-        f"froze and are not in it: {format_edges(edges)}. Either re-review "
-        f"(reopen to candidate and re-approve: `precis nanopub reopen "
-        f"fi{hub_ref_id}`, then approve) or, having read them, sign anyway "
-        "(`--accept-newer-evidence` on the CLI; the checkbox on the claim page)."
+        f"froze and are not in it: {format_edges(edges)}. Today, ask a person "
+        f"to reopen fi{hub_ref_id} to candidate and re-approve its grounding, "
+        "or to read the newer edges and sign using the claim page's "
+        "accept-newer-evidence checkbox."
     )
 
 

@@ -5,6 +5,15 @@
   .learning-days {display:grid;grid-template-rows:repeat(7,1fr);grid-auto-flow:column;gap:.35rem;min-width:34rem;}
   .learning-day {display:flex;align-items:center;justify-content:center;min-height:2rem;border:1px solid rgb(var(--border-line));border-radius:.25rem;font-size:.65rem;}
   .learning-day:focus-visible {outline:2px solid currentColor;outline-offset:2px;}
+  {# Masked cloze gaps (gr664414): the answer stays in the DOM for assistive
+     tech and hover reveal, visually replaced by a blank until hover/focus. #}
+  .cloze-mask {display:inline-flex;align-items:baseline;gap:.15rem;border-radius:.25rem;}
+  .cloze-mask:focus-visible {outline:2px solid currentColor;outline-offset:2px;}
+  .cloze-mask .cloze-blank {padding:0 .4rem;border-radius:.25rem;background:color-mix(in srgb, currentColor 25%, transparent);}
+  .cloze-mask .cloze-answer {display:none;}
+  .cloze-mask:hover .cloze-answer, .cloze-mask:focus .cloze-answer {display:inline;}
+  .cloze-mask:hover .cloze-blank, .cloze-mask:focus .cloze-blank {display:none;}
+  .cloze-mask .cloze-index {font-size:.6em;opacity:.7;margin-left:.1rem;}
 </style>
 <a href="/account" class="text-xs text-fg-faint hover:text-fg-muted">&larr; Account</a>
 <div class="mt-2 mb-4">
@@ -40,6 +49,48 @@
   <p class="mt-1 text-xs text-fg-subtle">Source: self-report{% if selected.minutes is not none %} · {{ selected.minutes }} minutes{% endif %}</p>
   {% if selected.note %}<p class="mt-2 whitespace-pre-wrap text-sm">{{ selected.note }}</p>{% endif %}
   <p class="mt-2 text-xs text-fg-faint">Recorded {{ selected.created_at }} UTC. A new check-in for this date preserves this entry in your history.</p>
+</section>
+{% endif %}
+
+{% if groups %}
+<section aria-labelledby="context-heading" class="mb-6 max-w-3xl rounded-lg border border-line bg-surface p-4">
+  <h2 id="context-heading" class="text-sm font-semibold">Current context</h2>
+  <p class="mt-1 text-xs text-fg-subtle">The cards you are learning right now, grouped by concept. Every cloze gap is masked — hover it (or tab to it) to reveal the answer. <strong>boost</strong> queues a card to come up today at the next Anki sync; <strong>drop</strong> retires it; <strong>I know this</strong> retires the whole concept.</p>
+  <ul class="mt-3 divide-y divide-line-subtle">
+    {% for g in groups %}
+    <li class="py-3">
+      <div class="flex items-start gap-2">
+        <span class="flex-1 text-sm font-medium text-fg-primary">{{ g.name }}
+          <span class="text-xs font-normal text-fg-faint">&mdash; {{ g.state }}{% if g.mastery %} &middot; mastery {{ '%.2f' | format(g.mastery) }}{% endif %}</span>
+        </span>
+        <button type="button"
+                hx-post="/anki/known" hx-vals='{"concept": "{{ g.concept_id }}"}'
+                hx-target="closest li" hx-swap="delete"
+                class="shrink-0 rounded border border-line px-2 py-0.5 text-xs text-fg-muted hover:text-danger hover:border-danger transition">I know this</button>
+      </div>
+      <ul class="ml-4 mt-1 space-y-1">
+        {% for card in g.cards %}
+        <li class="flex items-center gap-2 text-sm text-fg-secondary">
+          <span class="flex-1">{{ card.text | render_cloze_masked }}</span>
+          {% if card.boosted %}
+          {% include "anki/_boosted.html.j2" %}
+          {% else %}
+          <button type="button"
+                  hx-post="/anki/boost" hx-vals='{"card": "{{ card.id }}"}'
+                  hx-target="this" hx-swap="outerHTML"
+                  title="Bring this card's due date forward to today at the next Anki sync."
+                  class="shrink-0 text-xs text-fg-faint hover:text-info-emphasis transition">boost</button>
+          {% endif %}
+          <button type="button"
+                  hx-post="/anki/drop" hx-vals='{"card": "{{ card.id }}"}'
+                  hx-target="closest li" hx-swap="delete"
+                  class="shrink-0 text-xs text-fg-faint hover:text-danger transition">drop</button>
+        </li>
+        {% endfor %}
+      </ul>
+    </li>
+    {% endfor %}
+  </ul>
 </section>
 {% endif %}
 

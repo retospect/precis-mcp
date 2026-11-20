@@ -232,7 +232,7 @@ COMMANDS: tuple[Command, ...] = (
     _c(
         "gripe",
         "gripe",
-        "Maintain gripe origin classifications.",
+        "Maintain gripe origin-class and goal tag classifications.",
         register="add_origin_parser",
         run="run_origin",
     ),

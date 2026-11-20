@@ -1,8 +1,10 @@
 """Paper measure inventory, grouped by stored table ordinal then prose.
 
-Use the same subject-or-anchor scope and live-row eligibility as measure
+Use the same subject-or-anchor scope and eligibility as default paper-scoped
 search. Table extraction counters still count every unsuperseded output;
-this view excludes ambiguous, escalated and anchor-lost measured outputs.
+this view excludes ambiguous and anchor-lost measured outputs.
+Escalated outputs carry their flags so readers can find existing runs before
+extracting the same evidence again.
 """
 
 from __future__ import annotations

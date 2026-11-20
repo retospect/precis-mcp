@@ -1,0 +1,636 @@
+"""Profile-driven context shared by chat transports.
+
+Text tools supply hot turns, warm digests, stickies and anomaly signals.
+Profiles select identity, preferences, user notes and inner life. Discord
+retains its legacy prompt; web applies approximate local token budgets.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Protocol
+
+from precis.utils.llm.json_reply import extract_json_object
+from precis.utils.timeutil import as_utc
+
+log = logging.getLogger(__name__)
+
+
+class ToolCaller(Protocol):
+    """Minimal text tool interface shared by chat transports."""
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> str: ...
+
+
+class PreambleSettings(Protocol):
+    """Settings accepted by the legacy rendering helpers."""
+
+    @property
+    def operator_prefs(self) -> str: ...
+    @property
+    def operator_prefs_path(self) -> str: ...
+    @property
+    def sticky_max_thread(self) -> int: ...
+    @property
+    def sticky_max_global(self) -> int: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ContextProfile:
+    """Section switches and budgets; unlimited defaults preserve Discord."""
+
+    soul: bool = True
+    operator_preferences: bool = True
+    stickies: bool = True
+    inner_state: bool = True
+    thoughts: bool = True
+    dreams: bool = True
+    user_note: bool = True
+    conv_pointer: bool = True
+    last_turn_signal: bool = True
+    operator_prefs: str = ""
+    operator_prefs_path: str = ""
+    recent_turns: int = 5
+    digest_turns: int = 20
+    sticky_max_thread: int = 5
+    sticky_max_global: int = 5
+    expiry_warn_within_days: int = 3
+    thoughts_max: int = 8
+    dreams_max: int = 5
+    assistant_max_tokens: int = 0
+    max_tokens: int = 0
+    assistant_label: str = "@asa"
+    platform: str = "Discord"
+
+
+WEB_CHAT = ContextProfile(
+    assistant_label="an assistant",
+    platform="Web",
+    soul=False,
+    inner_state=False,
+    thoughts=False,
+    dreams=False,
+    recent_turns=8,
+    sticky_max_thread=3,
+    sticky_max_global=4,
+    assistant_max_tokens=1200,
+    max_tokens=12000,
+)
+
+
+async def _empty() -> str:
+    return ""
+
+
+def _clip(text: str, tokens: int, suffix: str = "\n[Context truncated]\n") -> str:
+    """Use a conservative UTF-8 byte budget, independent of model tokenizer.
+
+    Three bytes per estimated token leaves room for metadata and pointers.
+    Discord never takes this path, preserving its verbatim prompt.
+    """
+    budget = tokens * 3
+    if len(text.encode("utf-8")) <= budget:
+        return text
+    head = text.encode("utf-8")[: max(0, budget - len(suffix.encode("utf-8")))]
+    return head.decode("utf-8", errors="ignore") + suffix
+
+
+def _clamp_hot(blob: str, slug: str, tokens: int) -> str:
+    """Clamp assistant bodies using the conv renderer's chunk headings."""
+    if not tokens:
+        return blob
+    heading = re.compile(r"^(?:## )?(cc[0-9]+|~[0-9]+) \[([^\]\n]+)\]$", re.MULTILINE)
+    matches = list(heading.finditer(blob))
+    parts = [blob[: matches[0].start()]] if matches else [blob]
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(blob)
+        body = blob[match.end() : end]
+        author = match[2].split(" · ", 1)[0].lower()
+        if author in {"asa", "assistant"}:
+            handle = match[1] if match[1].startswith("cc") else slug + match[1]
+            suffix = f"\n[Full turn: `precis get(kind='conv', id='{handle}')`]\n\n"
+            body = _clip(body, tokens, suffix)
+        parts.extend((match[0], body))
+    return "".join(parts)
+
+
+async def build(
+    *,
+    precis: ToolCaller,
+    profile: ContextProfile,
+    conv_slug: str,
+    guild_name: str,
+    channel_name: str,
+    thread_name: str | None,
+    author_handle: str,
+    soul: str = "",
+    tool_hints: str = "",
+    platform: str | None = None,
+) -> str:
+    """Build the full preamble for one turn.
+
+    Returns a single string ready to be passed via
+    ``--append-system-prompt``. The body of the actual user message
+    is appended downstream by the caller.
+
+    ``platform`` names the transport in the rendered "This turn" pointer
+    (``"Discord"`` by default, so the existing caller is unchanged;
+    asa_slack passes ``"Slack"``). Everything else in this module is
+    already transport-agnostic (``guild_name``/``channel_name`` are just
+    display strings). ``author_handle`` stays intact for display; user
+    memory tags use its space-free label from ``_user_note_tag``.
+    """
+    cfg = profile
+    now = datetime.now(tz=UTC)
+
+    (
+        recent,
+        digest,
+        stickies_blob,
+        last_meta,
+        user_note,
+        inner_state,
+        inner_thoughts,
+        dreams,
+    ) = await asyncio.gather(
+        _safe(_fetch_recent(precis, conv_slug, cfg.recent_turns)),
+        _safe(
+            _fetch_digest(
+                precis,
+                conv_slug,
+                cfg.digest_turns,
+                cfg.recent_turns,
+            )
+        ),
+        _safe(_fetch_stickies(precis, conv_slug, cfg)) if cfg.stickies else _empty(),
+        _safe(_fetch_last_meta(precis, conv_slug))
+        if cfg.last_turn_signal
+        else _empty(),
+        _safe(_fetch_user_note(precis, author_handle)) if cfg.user_note else _empty(),
+        _safe(_fetch_inner_state(precis)) if cfg.inner_state else _empty(),
+        _safe(_fetch_inner_thoughts(precis, cfg.thoughts_max))
+        if cfg.thoughts
+        else _empty(),
+        _safe(_fetch_recent_dreams(precis, cfg.dreams_max)) if cfg.dreams else _empty(),
+    )
+
+    # tool_hints was a separate file pointing at MCPs; it accumulated
+    # stale "you have gripe/perplexity-sonar" lines that contradict
+    # SOUL's current "all rolled into precis" framing. SOUL is the source
+    # of truth for the tool roster now. Keep the param to avoid changing
+    # the caller signature; ignore the value.
+    _ = tool_hints
+    sections = [
+        soul.strip() if cfg.soul else "",
+        _render_operator_prefs(cfg) if cfg.operator_preferences else "",
+        _render_stickies(stickies_blob, now, cfg.expiry_warn_within_days),
+        _render_inner_life(inner_state, inner_thoughts, dreams, profile=cfg),
+        _render_user_note(user_note, author_handle) if cfg.user_note else "",
+        _render_conv_pointer(
+            conv_slug,
+            guild_name=guild_name,
+            channel_name=channel_name,
+            thread_name=thread_name,
+            author_handle=author_handle,
+            platform=platform or cfg.platform,
+            assistant_label=cfg.assistant_label,
+        )
+        if cfg.conv_pointer
+        else "",
+        _render_last_turn_signal(last_meta, now),
+        _render_digest(digest),
+        _render_recent(_clamp_hot(recent, conv_slug, cfg.assistant_max_tokens)),
+    ]
+    result = "\n\n".join(s for s in sections if s).rstrip() + "\n"
+    return _clip(result, cfg.max_tokens) if cfg.max_tokens else result
+
+
+# ── operator preferences (config-driven, deployment-specific) ───────
+
+
+def _render_operator_prefs(cfg: PreambleSettings) -> str:
+    """Inject operator-supplied preferences into the system prompt.
+
+    Keeps deployment-specific detail (operator name, timezone, tone, house
+    rules) out of the source: the operator sets ``preamble.operator_prefs``
+    (inline text) or ``preamble.operator_prefs_path`` (a file) in config.
+    The file wins when both are set. Empty → no block.
+    """
+    text = ""
+    path = (cfg.operator_prefs_path or "").strip()
+    if path:
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError as e:
+            log.warning("operator_prefs_path unreadable (%s): %s", path, e)
+    if not text.strip():
+        text = cfg.operator_prefs or ""
+    text = text.strip()
+    if not text:
+        return ""
+    return f"## Operator preferences\n\n{text}"
+
+
+# ── fetchers ──────────────────────────────────────────────────────
+
+
+async def _fetch_recent(precis: ToolCaller, slug: str, n: int) -> str:
+    if n <= 0:
+        return ""
+    # Handler-specific kwargs go through ``args=`` per precis's get()
+    # schema — its top-level signature only declares kind/id/view/q.
+    # The conv handler consumes ``recent`` / ``digest`` from extras.
+    return await precis.call_tool(
+        "get",
+        {"kind": "conv", "id": slug, "args": {"recent": n}},
+    )
+
+
+async def _fetch_digest(precis: ToolCaller, slug: str, n: int, skip_recent: int) -> str:
+    if n <= 0:
+        return ""
+    return await precis.call_tool(
+        "get",
+        {
+            "kind": "conv",
+            "id": slug,
+            "args": {"digest": n, "skip_recent": skip_recent},
+        },
+    )
+
+
+async def _fetch_stickies(
+    precis: ToolCaller, conv_slug: str, cfg: PreambleSettings
+) -> str:
+    """This thread's stickies UNION the unscoped and global stickies.
+
+    Tag filters are AND-semantics, so one multi-tag search would only
+    match memories carrying every tag. Run one search per tag (each with
+    its own cap) and join the non-empty blobs. Bare ``sticky:thread`` is
+    the pin ``precis-memory-help`` teaches; it carries no conv, so it
+    shows in every thread.
+    """
+    blobs: list[str] = []
+    for tag, cap in (
+        (f"sticky:thread:{conv_slug}", cfg.sticky_max_thread),
+        ("sticky:thread", cfg.sticky_max_thread),
+        ("sticky:global", cfg.sticky_max_global),
+    ):
+        if cap <= 0:
+            continue
+        body = await precis.call_tool(
+            "search",
+            {"kind": "memory", "tags": [tag], "page_size": cap},
+        )
+        if body.strip() and not body.startswith("no memory entries"):
+            blobs.append(body.strip())
+    return "\n\n".join(blobs)
+
+
+async def _fetch_last_meta(precis: ToolCaller, slug: str) -> str:
+    return await precis.call_tool(
+        "get",
+        {"kind": "conv", "id": slug, "view": "last-meta"},
+    )
+
+
+async def _fetch_inner_state(precis: ToolCaller) -> str:
+    """The singleton ``internal-state`` memory — asa's living self-doc.
+
+    Updated in place; surfaced verbatim. Empty when she hasn't written
+    one yet — the renderer's prompt then nudges her to start one.
+    """
+    return await precis.call_tool(
+        "search",
+        {
+            "kind": "memory",
+            "tags": ["internal-state"],
+            "page_size": 1,
+        },
+    )
+
+
+async def _fetch_inner_thoughts(precis: ToolCaller, n: int = 8) -> str:
+    """Recent ``internal-thought`` memories (asa's stream-of-consciousness).
+
+    Top N by ``updated_at`` — recently written or edited thoughts
+    surface. The ids accompany each entry so asa can act on one
+    (edit, tag, link).
+    """
+    return await precis.call_tool(
+        "search",
+        {
+            "kind": "memory",
+            "tags": ["internal-thought"],
+            "page_size": n,
+        },
+    )
+
+
+async def _fetch_recent_dreams(precis: ToolCaller, n: int = 5) -> str:
+    """Recent dream-tagged memories — what the dream worker connected
+    since asa was last awake. Surfacing them as "While I was away" lets
+    her decide which feel real (re-tag to promote) and which to leave
+    fenced.
+
+    Queries both ``DREAM:speculative`` (the SOUL-specified namespace)
+    and plain ``speculative`` (what opus has been emitting in practice).
+    precis tag filters are OR-semantics so either tag surfaces here;
+    the namespacing convergence is a downstream cleanup but doesn't
+    have to block surfacing the work.
+    """
+    return await precis.call_tool(
+        "search",
+        {
+            "kind": "memory",
+            "tags": ["DREAM:speculative", "speculative"],
+            "page_size": n,
+        },
+    )
+
+
+def _user_note_tag(author_handle: str) -> str:
+    """Keep valid handles; slug display strings just as the tag refusal suggests."""
+    tag = f"user:{author_handle}"
+    if any(ch.isspace() for ch in tag) or "<" in tag or ">" in tag:
+        slug = re.sub(r"[^A-Za-z0-9:_-]+", "-", tag).strip("-:_").lower()
+        if slug == "user":
+            digest = hashlib.sha256(author_handle.encode("utf-8")).hexdigest()[:12]
+            return f"user:{digest}"
+        return slug
+    return tag
+
+
+async def _fetch_user_note(precis: ToolCaller, author_handle: str) -> str:
+    """Memories tagged ``user:<handle>`` — the rolling profile note.
+
+    Asa updates these via ``tag(kind='memory', id=N,
+    add=['user:<handle>'])``. Shows up in every turn for that user
+    until untagged.
+
+    Side effect: if the search comes back empty, lazily mint a
+    placeholder memory so the first ID exists for Asa to edit on
+    her next turn ("she has somewhere to start"). The placeholder
+    self-documents its purpose — body text + the user tag — and
+    sets `auto_refresh_days=180` — a written time-box marker;
+    nothing decays on it today, so it records intent rather than
+    enforcing anything.
+    """
+    user_tag = _user_note_tag(author_handle)
+    body = await precis.call_tool(
+        "search",
+        {
+            "kind": "memory",
+            "tags": [user_tag],
+            "page_size": 10,
+        },
+    )
+    is_empty = not body or not body.strip() or body.strip().lower().startswith("no ")
+    if is_empty:
+        # Mint a placeholder so Asa has a starting point. Best-effort;
+        # any failure is silently swallowed (the preamble renderer
+        # already handles "no notes yet" gracefully).
+        try:
+            await precis.call_tool(
+                "put",
+                {
+                    "kind": "memory",
+                    "text": (
+                        f"Placeholder note about {author_handle}. "
+                        "Edit me as you learn durable things — "
+                        "preference, goal, area of expertise, "
+                        "ongoing project."
+                    ),
+                    "tags": [user_tag],
+                    "args": {"auto_refresh_days": 180},
+                },
+            )
+        except Exception:
+            log.exception("user-note placeholder mint failed; preamble continues")
+    return body
+
+
+# ── renderers ─────────────────────────────────────────────────────
+
+
+def _render_conv_pointer(
+    conv_slug: str,
+    *,
+    guild_name: str,
+    channel_name: str,
+    thread_name: str | None,
+    author_handle: str,
+    platform: str = "Discord",
+    assistant_label: str = "@asa",
+) -> str:
+    where = f"guild *{guild_name}* / channel *{channel_name}*"
+    if thread_name:
+        where += f" / thread *{thread_name}*"
+    return (
+        "## This turn\n\n"
+        f"You're {assistant_label} replying in {platform} — {where}. "
+        f"The user is **{author_handle}**.\n\n"
+        f"This conversation is `conv:{conv_slug}` in precis.\n"
+        f"- Read it back: `precis get(kind='conv', id='{conv_slug}/transcript')`\n"
+        f"- Search just this thread: `precis search(kind='conv', q='...', "
+        f"scope='{conv_slug}')`\n\n"
+        "Memories worth recalling are in precis. Thread-scoped memories\n"
+        f"are LINKED to this conv (or tagged `sticky:thread:{conv_slug}`); "
+        "globals are unscoped.\n"
+        "- Thread-scoped: `precis search(kind='memory', "
+        f"tags=['sticky:thread:{conv_slug}'])`\n"
+        "- Global: `precis search(kind='memory', q='...')`\n\n"
+        "Your reply auto-captures to this conv ref. You don't need to "
+        "write conv turns yourself."
+    )
+
+
+def _render_recent(blob: str) -> str:
+    if not blob.strip() or "no turns" in blob.lower():
+        return ""
+    return "## Recent turns (verbatim)\n\n" + blob.strip()
+
+
+def _render_digest(blob: str) -> str:
+    if not blob.strip() or "digest empty" in blob.lower() or "no turns" in blob.lower():
+        return ""
+    return "## Earlier turns (digest)\n\n" + blob.strip()
+
+
+def _render_stickies(blob: str, now: datetime, warn_within_days: int) -> str:
+    if not blob.strip():
+        return ""
+    # The blob is precis's search rendering — already markdown. Just
+    # frame it.
+    return "## Pinned memories\n\n" + blob.strip()
+
+
+def _render_inner_life(
+    inner_state: str,
+    inner_thoughts: str,
+    dreams: str,
+    *,
+    profile: ContextProfile | None = None,
+) -> str:
+    """Render asa's continuity-of-self block.
+
+    Three layers (state-of-self / recent thoughts / overnight dreams).
+    Each section always renders its instructional note — the only
+    difference between "has content" and "empty" is whether the body
+    is the precis blob or a "no memory yet" placeholder. SOUL's
+    "drop thoughts without being asked" rule then has a place to
+    land whether or not the surface already has writing on it.
+    """
+    parts = ["## Inner life"]
+    parts.append(
+        _render_self_section(
+            title="Current state of self",
+            blob=inner_state,
+            empty_label="*No `internal-state` memory yet.*",
+            instruction=(
+                "*Start (or update) this with what's currently true for you — "
+                "open questions, recent shifts of position, what genuinely "
+                "interests you vs. what's just tractable. "
+                "`precis put(kind='memory', text='...', "
+                "tags=['internal-state', 'user:asa'])`. "
+                "Older states aren't shown here — find them with "
+                "`precis search(kind='memory', tags=['internal-state'])`.*"
+            ),
+        )
+    )
+    parts.append(
+        _render_self_section(
+            title="Recent thoughts",
+            blob=inner_thoughts,
+            empty_label="*No `internal-thought` memories yet.*",
+            instruction=(
+                "*Drop a fragment when something feels worth noting: "
+                "`precis put(kind='memory', text='I...', "
+                "tags=['internal-thought', 'user:asa'])`. "
+                "Older fragments aren't shown here — find them with "
+                "`precis search(kind='memory', tags=['internal-thought'])`. "
+                "When you record what someone told you rather than your own "
+                "thought, add `args={'writer': {'human': '<their handle>'}}`.*"
+            ),
+        )
+    )
+    parts.append(
+        _render_self_section(
+            title="While I was away (dreams)",
+            blob=dreams,
+            empty_label="*No dreams yet — first pass scheduled.*",
+            instruction=(
+                "*If a connection above feels real, promote it by re-tagging "
+                "without the speculative qualifier. Otherwise leave it — "
+                "while it carries `DREAM:speculative` it stays out of "
+                "default `search`. "
+                "Older dreams aren't shown here — find them with "
+                "`precis search(kind='memory', tags=['DREAM:speculative'])`.*"
+            ),
+        )
+    )
+    if profile is not None:
+        parts = [parts[0]] + [
+            part
+            for part, enabled in zip(
+                parts[1:],
+                (profile.inner_state, profile.thoughts, profile.dreams),
+                strict=True,
+            )
+            if enabled
+        ]
+        if len(parts) == 1:
+            return ""
+    return "\n\n".join(parts)
+
+
+def _render_self_section(
+    *, title: str, blob: str, empty_label: str, instruction: str
+) -> str:
+    """One inner-life subsection. Always emits title + body + instruction.
+
+    Body is either the precis blob (when non-empty) or the empty
+    label. Instruction is constant so the SOUL admonition is visible
+    regardless of writing state.
+    """
+    has_content = blob and blob.strip() and not _is_empty_search(blob)
+    body = blob.strip() if has_content else empty_label
+    return f"### {title}\n\n{body}\n\n{instruction}"
+
+
+def _is_empty_search(blob: str) -> bool:
+    """precis search rendering with no hits starts with 'no '."""
+    head = blob.strip().lower().split("\n", 1)[0]
+    return head.startswith("no ")
+
+
+def _render_user_note(blob: str, author_handle: str) -> str:
+    """Render the per-user rolling notes block.
+
+    Always emits the section header so the LLM is reminded the layer
+    exists — even when empty, it prompts "I should keep notes on this
+    user as I learn things." Real content comes from precis search
+    for memories tagged ``user:<handle>``.
+    """
+    user_tag = _user_note_tag(author_handle)
+    has_content = blob and blob.strip() and not _is_empty_search(blob)
+    if has_content:
+        return (
+            f"## About the user (`{author_handle}`)\n\n"
+            f"{blob.strip()}\n\n"
+            f"*Keep these current — when you learn something durable "
+            f"about this user (preference, goal, area of expertise, "
+            f"ongoing project, what they hate), capture it: "
+            f"`precis put(kind='memory', text='…', tags=[{user_tag!r}])`.*"
+        )
+    return (
+        f"## About the user (`{author_handle}`)\n\n"
+        f"*(no notes yet on this user)*\n\n"
+        f"*Drop one when you learn something durable — preference, "
+        f"goal, area of expertise, ongoing project: "
+        f"`precis put(kind='memory', text='…', tags=[{user_tag!r}])`.*"
+    )
+
+
+def _render_last_turn_signal(blob: str, now: datetime) -> str:
+    """Surface previous-turn anomalies as a one-line preamble entry."""
+    if not blob.strip() or "no turns" in blob.lower():
+        return ""
+    # The view='last-meta' renderer returns a fenced JSON block.
+    payload = extract_json_object(blob)
+    if not payload:
+        return ""
+    stop_reason = payload.get("stop_reason")
+    if not stop_reason or stop_reason == "end_turn":
+        # Clean turn — no signal needed.
+        return ""
+    ts = payload.get("ts")
+    elapsed = ""
+    if ts:
+        then = as_utc(str(ts))
+        if then is not None:
+            mins = int((now - then).total_seconds() / 60)
+            elapsed = f", {mins} min ago"
+    bits = [f"ended: {stop_reason}{elapsed}"]
+    cache_read = payload.get("cache_read_tokens")
+    cache_create = payload.get("cache_creation_tokens")
+    if cache_read is not None and cache_create is not None:
+        if cache_read == 0:
+            bits.append(f"cache: 0 read / {cache_create} created — cold")
+    return "## Last turn\n\n" + "; ".join(bits)
+
+
+async def _safe(coro: Any) -> str:
+    """Best-effort fetch: log + swallow exceptions, return ''."""
+    try:
+        result = await coro
+        return result if isinstance(result, str) else (result or "")
+    except Exception:
+        log.exception("preamble fetch failed; section omitted")
+        return ""

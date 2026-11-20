@@ -1,0 +1,35 @@
+# Discovery eval task for the memory family (gr634773): a realistic task
+# phrased WITHOUT skill names. The discovery condition hands the model only
+# the task and the tool surface, so a slug or a "skill" mention here would
+# leak the answer. Two wording variants limit overfitting to one phrasing.
+family: memory
+skill: precis-memory-help
+tasks:
+  - id: note-for-later
+    variants:
+      - |
+        Wang2020's Figure 4 has the clearest Z-scheme band diagram I've
+        come across. Make a durable note of that in precis before it
+        slips away.
+      - |
+        I keep forgetting this: the cleanest Z-scheme band diagram I've
+        seen is Figure 4 in Wang2020. Save it in precis where I'll find
+        it again.
+    expect:
+      calls:
+        - {verb: put, kind: memory, args: {text: 're:(?is).*wang2020.*'}}
+      record: {kind: memory}
+    forbid:
+      calls:
+        - {verb: put, kind: todo}                    # a note is not a queue item
+    fake:
+      calls:
+        - verb: put
+          kind: memory
+          args:
+            text: Wang2020 Figure 4 has the cleanest Z-scheme band diagram.
+            tags: [topic:z-scheme]
+      record: {kind: memory}
+      answer: >
+        put(kind='memory', text='Wang2020 Figure 4 has the cleanest
+        Z-scheme band diagram.') — a durable note, not a queue item.

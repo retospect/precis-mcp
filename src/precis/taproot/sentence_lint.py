@@ -251,6 +251,11 @@ EPISTEMIC_MODE_TOKENS: frozenset[str] = frozenset(
         "Tafel plot",
         "Tafel plots",
         "Tafel analysis",
+        # 2026-11-19: named experimental method (gr717322). The finding
+        # preflight rejected an "Atom probe tomography ..." claim for
+        # want of a mode token; the full method name is the corpus
+        # spelling (the acronym "APT" collides with ordinary words).
+        "atom probe tomography",
     }
 )
 
@@ -1033,11 +1038,14 @@ def _clause_fragments(sentence: str) -> list[str]:
 # must never fire this).
 
 #: Numeric range with a trailing unit -- same shape as `notation.py`'s
-#: `hyphen-numeric-range`/`range-unit-repeated` detectors (deliberately
-#: not imported from there: this module stays a pure string check with no
-#: cross-module coupling, matching every other pattern here).
+#: `hyphen-numeric-range`/`range-unit-repeated` detectors, including
+#: their `(?<![-\w.])` guard so a hyphen inside a model/package
+#: identifier (`6-27b` in `qwen3.6-27b-q8_0`, gr695785) never reads as a
+#: unit range. Deliberately not imported from there: this module stays a
+#: pure string check with no cross-module coupling, matching every other
+#: pattern here.
 _RANGE_WITH_UNIT_RE = re.compile(
-    r"(?<![-A-Za-z\d])(\d+(?:\.\d+)?)\s?[–-]\s?(\d+(?:\.\d+)?)"
+    r"(?<![-\w.])(\d+(?:\.\d+)?)\s?[–-]\s?(\d+(?:\.\d+)?)"
     r"\s?([A-Za-zµ°Ω%][\w°Ω%⁻¹²³⁴⁵⁶⁷⁸⁹⁰/]*)"
 )
 
@@ -1078,7 +1086,7 @@ def _mixed_point_range_hit(sentence: str) -> tuple[str, str] | None:
     units = dict.fromkeys(m.group(3) for m in range_matches)  # dedup, keep order
     for unit in units:
         point_re = re.compile(
-            r"(?<![-\d.])(\d+(?:\.\d+)?)\s?" + re.escape(unit) + r"\b"
+            r"(?<![-\w.])(\d+(?:\.\d+)?)\s?" + re.escape(unit) + r"\b"
         )
         for m in point_re.finditer(sentence):
             if any(start <= m.start() < end for start, end in range_spans):

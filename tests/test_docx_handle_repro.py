@@ -80,6 +80,6 @@ def test_internal_token_shapes_do_not_leak(
     # An authored display surface is body prose, kept when the record drops.
     assert "the dossier" in text and "spot" in text
     # The authoring link to a live figure chunk resolves to its xref number.
-    assert "authoring xref fig. 1 end" in text
+    assert "authoring xref Figure 1 end" in text
     # Authored prose that merely looks handle-ish is untouched.
     assert "gned-finding-hub" in text

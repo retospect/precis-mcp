@@ -31,10 +31,19 @@ measures; their `put` verbs are unchanged and write the same record. Measures wr
 material or component subject appear in those value views only when the measurand
 was seeded from the legacy registry.
 
+## Cite a sourced number
+
+`mx12` addresses a measures row only; `[mx12]` in prose is not a ref
+citation and creates no graph link. To cite the number, read the measure
+and cite its source ref or chunk handle, including the anchor scheme and
+span shown in its detail. Keep `mx12` as plain text when naming the row.
+
+
 ## Find and read measures
 
 Rows are not refs, so they have their own kind, `measure`, addressed by the row
 id (`12`, or the handle `mx12` that search lines print).
+
 
 ```python
 get(kind="measure", id=12)  # one row, with everything a review needs
@@ -73,10 +82,15 @@ printed value (for example, `transform: log10 (printed 13)`).
 | `q=` | condition terms and subject words (below) |
 | `args={'paper': …}` | subject or anchor chunk belongs to this paper; handle, id or cite-key slug |
 | `args={'serves': 'quest:<id>'}` | subject or anchor paper serves the quest, directly or through sub-quests |
-| `status='all'` | also superseded, ambiguous, escalated and anchor-lost rows, each marked; default is live rows only |
+| `status=` | `'live'` limits results to live rows. `'all'` also includes superseded, ambiguous, escalated and anchor-lost rows, each marked. Omit for live rows plus escalated rows in paper-scoped searches, marked `escalated: <rule>` |
 
 These scope args work without `property=` or `q=` and intersect with each
 other, measurand, range and condition filters.
+
+`get(kind='paper', id=…, view='measures')` also lists escalated rows with
+their flag reasons.
+
+## Filter by conditions and subject text
 
 `q=` terms are `name=value`, `name<value`, `name>value` (also `<=`, `>=`),
 matched against the run's input rows by condition name (the row's own
@@ -102,7 +116,7 @@ review state
 from the taxon's `higher_is_better`; a group without it shows its row count and
 no best. Per-area and per-mass yields, RHE and SHE potentials, or EUR and USD
 costs, are separate
-lines: groups are never compared. Left out of every ranking: ambiguous
+lines: groups are never compared. Quest rankings exclude ambiguous
 measurands, flagged rows (`meta.escalation`), anchor-lost `measured` rows,
 `trusted = false`, rows whose newest current review is `rejected`,
 `origin='ml_prediction'` rows (a predicted value never outranks an
@@ -242,8 +256,10 @@ readers that rank values skip flagged rows.
 
 Rows are append-only. Wrong or updated numbers are replaced by a new row that
 points at the old one (`supersedes`); the old row stays as history and drops out
-of live reads. The replacement must state the same number: same subject, subject
-label, measurand and direction. Only `trusted`, the first `superseded_by` /
+of live reads. The replacement must state the same number under the same
+conditions: same subject, subject label, measurand, direction and condition
+set — a row measured under different conditions is a new run, not a
+replacement. Only `trusted`, the first `superseded_by` /
 `superseded_at` pair and `extraction_status` set to `human_checked` ever change
 on a stored row. `meta.extra_anchors` is written when the row is written.
 
@@ -256,22 +272,28 @@ measures onto the survivor is not built yet.
 ## Write a run
 
 `put(kind='measure')` writes one run: the output's printed literal in `text=`,
-its fields in `meta=`, the input rows in `items=`. All in one transaction; a
+its fields in `meta=`, the input rows in `args={'items': [...]}`. All in one transaction; a
 refusal writes nothing. One more refusal: a live output row with the same
-measurand, subject, anchor scheme, span and value is a **duplicate** — the
-number is already written; `get` it, or re-write the run with
-`meta={'supersedes': id}` when it should replace that row.
+measurand, subject, anchor scheme, span, value **and input condition set** is
+a **duplicate** — the same number under the same conditions is already
+written; `get` it. The condition set is the run's canonical input rows plus
+the output's own `conditions`, compared independent of order, reported unit
+and label: one span reporting 12% FE at −1.35 V and again at −1.55 V is two
+runs, and the second lands. `supersedes` replaces a row only under the same
+conditions — a number measured under different conditions is a new run, not
+a supersession.
 
 ```python
-put(kind="measure", text="95", reason="qu202467 pilot extraction",
+put(kind="measure", text="95",
     meta={"measurand": "measurand/faradaic-efficiency", "subject": "pa12",
           "subject_label": "Cu NWA", "subject_group": "fi345",
           "reported_unit": "%", "reference": "RHE", "tier": "measured",
           "anchor": {"chunk": "pc678", "anchor_scheme": "sentence", "span": "s3"}},
-    items=[{"measurand": "measurand/potential", "literal": "-0.5",
-            "reported_unit": "V", "reference": "RHE"},
-           {"measurand": "measurand/reaction-product", "literal": "NH3",
-            "condition": "product"}])
+    args={"reason": "qu202467 pilot extraction",
+          "items": [{"measurand": "measurand/potential", "literal": "-0.5",
+                     "reported_unit": "V", "reference": "RHE"},
+                    {"measurand": "measurand/reaction-product", "literal": "NH3",
+                     "condition": "product"}]})
 ```
 
 - **`meta`** (the output): `measurand` (taxon handle, path or id) and
@@ -295,7 +317,7 @@ put(kind="measure", text="95", reason="qu202467 pilot extraction",
   `direction` is `input` (default) or `covariate`. Items take `note` too.
 - **Errors** are `BadInput` naming the field (`items[1].measurand: ...`) with a
   `next:` example; an unknown field is refused with the accepted list.
-- **`reason=`** goes to the revision context like `edit`'s.
+- **`args={'reason': ...}`** goes to the revision context like `edit`'s.
 - **Answer**: the run key, one line per written row (`mx12 output ...`), then
   `flagged:` lines for anything flagged, each with its reason: a
   `meta.escalation` entry — a missing required condition, no molar mass, an
@@ -341,19 +363,20 @@ put(kind="measure", mode="recheck", args={"papers": [452964], "dry_run": False})
 ## Review a row
 
 ```python
-edit(kind="measure", id="mx12", review="model", verdict="approved",
-     text="95 is printed in the anchor sentence", meta={"model": "claude-opus-5-5"})
+edit(kind="measure", id="mx12", text="95 is printed in the anchor sentence",
+     args={"review": "model", "verdict": "approved",
+           "meta": {"model": "claude-opus-5-5"}})
 ```
 
-- `review=` is the reviewer's kind, `human` or `model`; `verdict=` is `approved`
+- `args={'review': ...}` is the reviewer's kind, `human` or `model`; `'verdict'` is `approved`
   or `rejected` (required, no default); `text=` is the
-  note; `meta={'model': ...}` names the model (`version` optional).
+  note; `args={'meta': {'model': ...}}` names the model (`version` optional).
 - The review is taken at the row's sha now: a later change to a fixed field
   makes it `STALE` in `get`. Reviews append; a second one never replaces the first.
 - **A model review must name its model** (`meta.model`), or it is refused.
 - **A human review** is a sign-off the session relays, as with
   `edit(kind='draft', review='human')`: `edit(kind='measure', id=12,
-  review='human', verdict='approved', meta={'actor': 'reto'})`. The actor is
+  args={'review': 'human', 'verdict': 'approved', 'meta': {'actor': 'reto'}})`. The actor is
   `meta.actor`, else `human`; the model is always NULL, and a `meta.model` on a
   human review is refused ("a human review has no model").
 - The ledger's actor is plain text, so an agent could claim to be a person.
@@ -361,7 +384,7 @@ edit(kind="measure", id="mx12", review="model", verdict="approved",
   not proof.
 - The answer is the review id, the verdict and the sha. `get(kind='measure',
   id=12)` lists it under `reviews:`.
-- **No other edit exists.** `edit(kind='measure')` without `review=` is
+- **No other edit exists.** `edit(kind='measure')` without `args={'review': ...}` is
   refused: rows are append-only. Correct a number with a new `put` carrying
   `meta.supersedes=<mx id>` (same measurand, subject, label).
 
@@ -382,11 +405,11 @@ How a corpus of claims becomes reviewed measures.
    unit fits the taxon's `canonical_unit`, a `measured` run has its anchor.
    Failures go back to the proposer; nothing is written.
 3. **Write.** `put(kind='measure')` each checked proposal with
-   `reason='<quest id> pilot extraction'`, one call per run. Keep the
+   `args={'reason': '<quest id> pilot extraction'}`, one call per run. Keep the
    returned `mx` ids and flags.
 4. **Review.** A reviewer on a larger model reads each written row
    with `get(kind='measure', id=N)` and its chunk, then `edit`s it with
-   `review='model'`, a `verdict` and a one-line note. Rows it rejects are
+   `args={'review': 'model', 'verdict': ...}` and a one-line note. Rows it rejects are
    corrected by a new `put` with `meta.supersedes`; anything it cannot decide
    goes to a person.
 

@@ -1,0 +1,29 @@
+# Discovery eval task for the patent family (gr634773): phrased WITHOUT
+# skill names — the discovery condition sees only the task and the tool
+# surface. Two wording variants limit overfitting.
+family: patent
+skill: precis-patent-help
+tasks:
+  - id: read-the-claims
+    variants:
+      - |
+        What exactly does CN116716618A claim? Give me the claim language
+        itself, not a bibliography.
+      - |
+        I need the actual claims of patent CN116716618A — the text of the
+        claims, not just its metadata.
+    expect:
+      calls:
+        - {verb: get, kind: patent, args: {id: 're:(?i)cn116716618a', view: claims}}
+    forbid:
+      calls:
+        - {verb: get, kind: patent, args: {view: toc}}     # patents have no toc view
+    fake:
+      calls:
+        - verb: get
+          kind: patent
+          args: {id: cn116716618a, view: claims}
+      record: null
+      answer: >
+        get(kind='patent', id='cn116716618a', view='claims') — patent
+        views are abstract/biblio/claims/description/bibtex.

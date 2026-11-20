@@ -107,8 +107,9 @@ edit(kind="finding", id="fi42", title="…reworded…", meta={"scope": {...}})
 edit(kind="finding", id="fi42", meta={"scope": {...}}, dry_run=True)   # preview
 ```
 
-`scope` is **replaced**, not merged; values must be strings; only the
-`scope` key is accepted in `meta=`. Same effects as a retitle: the
+`scope` replaces the entire scope and maps strings to strings. Supply
+`title=` to include writer attribution in `meta=` (see
+`precis-finding-help`). Same effects as a retitle: the
 `pub_id` is re-derived and the **old one kept as an alias**, a `pub_id`
 that collides with a *different* live hub raises (duplicate-hub signal —
 see "Merge duplicate hubs"), and a non-hub finding is rejected. Scope lint
@@ -121,14 +122,21 @@ mint + `refines` link, below, not a retitle.
 
 ## Claim type
 
-Every hub carries a sort, `measurement | definition | capability |
-mechanism | landscape`, set by the extractor at mint (or the backfill
-classifier) and shown on `get(kind='finding', view='evidence')` as
-`claim type: <type> (llm|human)`. `edit(kind="finding", meta={"claim_type":
-…})` is **refused**: this door cannot tell a human from an agent, so
-reclassifying is a human act — the type form on `/claim/<head>`, or
-`precis taproot classify --hub fi<N> --set <type> --apply`. A human
-choice is never overwritten by the LLM paths.
+Every hub carries a sort, `measurement | calculation | definition |
+capability | mechanism | landscape`, set by the extractor at mint (or
+the backfill classifier) and shown on `get(kind='finding',
+view='evidence')` as `claim type: <type> (llm|human)`.
+`edit(kind="finding", meta={"claim_type": …})` is **refused**: this
+door cannot tell a human from an agent, so reclassifying is a human
+act — the type form on `/claim/<head>`, or `precis taproot classify
+--hub fi<N> --set <type> --apply`. A human choice is never overwritten
+by the LLM paths.
+
+`calculation` (a result or prediction obtained from a computation —
+DFT, NEGF, MD, a named force field or theoretical model, method and
+model kept in scope) shares measurement policy: per-edge verified,
+widened, disputes-eligible, publishable. Sort by how the result was
+obtained, even when the same quantity could be measured.
 
 `landscape` (a background sentence about a whole class of systems, the
 parent specific claims `refines` from) behaves differently:

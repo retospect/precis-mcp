@@ -19,7 +19,9 @@ Spec
 {"type": "checklist_clean", "checklist": "pcb-tapeout", "target": "pcb:sensor-node"}
 ```
 
-``target`` is ``'<kind>:<slug-or-id>'``; ``checklist`` a checklist name.
+``target`` is ``'<kind>:<slug-or-id>'`` or the ref's universal handle
+(``memory:me<id>`` — a memory node has no slug); ``checklist`` a
+checklist name.
 """
 
 from __future__ import annotations
@@ -55,7 +57,15 @@ def _resolve_target(store: Store, target: str) -> tuple[int, str] | None:
     ref = store.get_ref(kind=kind, id=ident)
     if ref is None and ident.isdigit():
         ref = store.get_ref(kind=kind, id=int(ident))
-    return None if ref is None else (ref.id, ref.kind)
+    if ref is not None:
+        return (ref.id, ref.kind)
+    # Handle form (gr677471): 'memory:me<id>' — a universal handle, not a
+    # slug. The gate resolves it the same way the handler's status view
+    # does so the two never disagree on what is checked.
+    handle = store.resolve_handle(ident)
+    if handle is not None and handle.chunk_id is None and handle.kind == kind:
+        return (handle.ref_id, handle.kind)
+    return None
 
 
 def evaluate(store: Store, spec: dict[str, Any], **_kw: Any) -> bool | None:

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# scripts/skill-discovery-review — advisory bounded sampler for the skill
+# discovery condition (gr634773). Selects at most N discovery cases
+# (changed skills first, then previously failed from the retained reports,
+# then under-tested families), runs each PAIRED — supplied vs discovery,
+# same model/budget — against the scratch DB, retains the full report at
+# ~/.cache/precis/skill-discovery/<ts>.json and prints one repair brief per
+# failed pair. ADVISORY, never a scripts/ship gate: it proposes repairs,
+# it never patches or ships. Docs: docs/conventions/skill-evals.md,
+# docs/runbooks/skill-discovery-review.md.
+#
+#   scripts/skill-discovery-review                  # bounded sample (3 cases)
+#   scripts/skill-discovery-review --limit 5
+#   scripts/skill-discovery-review --rerun-nearby   # failures + same families
+#   scripts/skill-discovery-review --stamp "<note>" # record the review (resets the clock)
+#
+# A missing/unauthenticated claude or an unservable test stack skips the
+# pass (exit 0), same standing as scripts/skill-eval. Budget knobs:
+# --case-usd / --run-usd / --timeout-s / --max-turns, or the
+# PRECIS_SKILL_EVAL_* env knobs the runner already reads.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+source scripts/cadence-lib.sh
+
+cadence_init skill-discovery-review 30 docs/runbooks/skill-discovery-review.md "$@"
+
+cadence_check pass "run the bounded paired discovery sample and work the repair briefs it prints" || true
+exec uv run python -m precis.skill_eval.discovery_review "$@"

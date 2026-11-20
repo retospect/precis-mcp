@@ -304,3 +304,18 @@ def test_shared_summary_cannot_inject_new_event_lines() -> None:
     )
     assert len(summary.splitlines()) == 1
     assert "18" in summary
+
+
+def test_memory_log_page_size_aliases_limit(hub: Hub) -> None:
+    ref_id = _memory(hub.live_store)
+    ids = _events(hub.live_store, ref_id, count=5)
+    h = MemoryHandler(hub=hub)
+    out = h.get(id=ref_id, view="log", page_size=3)
+    assert out.body == h.get(id=ref_id, view="log", limit=3).body
+    assert _listed_ids(out.body) == list(reversed(ids))[:3]
+    with pytest.raises(BadInput, match="disagree"):
+        h.get(id=ref_id, view="log", page_size=3, limit=2)
+    with pytest.raises(BadInput, match="paged memory views") as error:
+        h.get(id=ref_id, page_size=3)
+    assert "offset" in str(error.value.next)
+    assert "limit" in str(error.value.next)

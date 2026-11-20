@@ -60,7 +60,7 @@ Provenance check — 250 DOIs · 2026-05-30
   metadata mismatch. Human judgement.
 - 🟡 **Correction** — corrigendum / erratum. Skim; mostly housekeeping.
 - 🟢 **Info** — clean.
-- ⚪ **Unknown DOI** — Crossref 404. Likely typo or hallucinated DOI.
+- ⚪ **Unverified DOI** — not in Crossref; may be DataCite or another agency. Check the source.
 - ⚪ **Malformed DOI** — doesn't match `10.<digits>/<suffix>`.
 
 `#N` is the 1-based position of the DOI in your input — use it to
@@ -98,7 +98,7 @@ get(kind="provenance", q="10.x/a, 10.x/b, ...", args={"transitive": True})
 
 Clean-itself papers that cite retracted sources get promoted to 🟠.
 
-## Get candidate suggestions for unknown DOIs
+## Get candidate suggestions for unverified DOIs
 
 ```python
 get(
@@ -109,7 +109,7 @@ get(
 )
 ```
 
-The 404'd DOI stays `unknown` — no auto-substitution. The report lists
+The unverified DOI (status `unknown`) stays as given — no auto-substitution. The report lists
 possible Crossref matches; verify and replace by hand.
 
 ## Decide whether "cites retracted work" matters
@@ -127,7 +127,7 @@ paragraph) and decide.
 3. Fix 🔴 first — non-negotiable.
 4. Read 🟠; decide per-citation.
 5. Skim 🟡 for substantive corrections.
-6. Resolve ⚪ — typos or hallucinated DOIs.
+6. Resolve ⚪ — confirm unverified DOIs at the source; fix typos.
 7. Re-run until clean.
 
 ## See also

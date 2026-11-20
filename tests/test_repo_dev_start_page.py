@@ -11,7 +11,7 @@ Delivery has two halves:
 - *Served*: the skill resolves through the same ``startup_skills``
   loader the cold-start banner uses, and stays an *index* — pointers to
   the memory layer, repo docs and the canonical skill owners, never an
-  inlined manual (the byte cap ratchets that shape).
+  inlined manual (the size ratchet below keeps that shape).
 - *Local*: ``docs-index`` writes ``docs/repo-dev-start-page.md`` per
   worktree — the start page and the ``soul`` conduct-layer index
   embedded verbatim from their canonical files (each rev-stamped, no
@@ -117,7 +117,7 @@ def test_start_page_stays_an_index_not_a_manual() -> None:
 def test_start_page_resolves_for_pinning() -> None:
     """Delivery rides the cold-start pin path — the page must resolve
     through the same loader the banner uses."""
-    result = startup_skills.resolve([SLUG], cap_kb=0)
+    result = startup_skills.resolve([SLUG])
     assert result.pinned == (SLUG,)
     assert not result.unknown
 

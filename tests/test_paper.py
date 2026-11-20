@@ -126,6 +126,42 @@ class TestParsePaperId:
 class TestResolveDoi:
     """``_maybe_resolve_doi`` routes DOI-form ids through meta->>'doi'."""
 
+    def test_lookup_never_queues_or_marks(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr715563: holdings checks must not acquire or schedule work."""
+        from unittest.mock import Mock
+
+        queued = Mock(side_effect=AssertionError("lookup queued ingest"))
+        active = Mock(side_effect=AssertionError("lookup marked active"))
+        cite = Mock(side_effect=AssertionError("lookup marked cite resolve"))
+        monkeypatch.setattr("precis.handlers.paper._queue_doi_ingest", queued)
+        monkeypatch.setattr("precis.workers.inbound_chase.mark_paper_active", active)
+        monkeypatch.setattr(
+            "precis.workers.cite_resolve.mark_paper_for_cite_resolve", cite
+        )
+        ref_id = _seed_paper(store, doi="10.1111/jnc.13915")
+        handler = PaperHandler(hub=Hub(store=store))
+        for address in ("10.1111/jnc.13915", "wang2020state", f"pa{ref_id}"):
+            result = handler.get(id=address, view="lookup")
+            assert f"held — pa{ref_id}" in result.body
+        assert f"held — pa{ref_id}" in handler.get(id="wang2020state/lookup").body
+        with pytest.raises(BadInput):
+            handler.get(view="lookup")
+        with pytest.raises(BadInput):
+            handler.get(id="10.1111/jnc.13915", view="lookup", q="text")
+        missing = [f"10.9999/missing{i}" for i in range(6)]
+        for address in missing:
+            result = handler.get(id=address, view="lookup")
+            assert "not held" in result.body
+            assert result.result_count == 0
+        result = handler.get(id=["10.1111/jnc.13915", *missing], view="lookup")
+        assert result.result_count == 1
+        assert result.body.count("not held") == 6
+        queued.assert_not_called()
+        active.assert_not_called()
+        cite.assert_not_called()
+
     def test_non_doi_passthrough(self, store: Store) -> None:
         # Slug-form inputs are untouched — no DB lookup, no error.
         assert _maybe_resolve_doi(store, "wang2020state") == "wang2020state"
@@ -1233,6 +1269,24 @@ class TestBatchGet:
         assert "first" in resp.body
         assert "second" in resp.body
 
+    def test_legacy_glyph_damage_warns_on_the_matching_passage(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        clean = "The study used 608 samples at 10 mA/cm2 and reported ¼ of them."
+        damaged = "The temperature was 2,000 8C and v ¼ 84:68."
+        paper = _seed_paper(
+            store, slug="legacy-glyph", title="Legacy paper", blocks=[clean, damaged]
+        )
+
+        response = handler.get(id=f"pa{paper}~0..1").body
+        assert response.count("GLYPH-DAMAGED SOURCE") == 1
+        assert response.index(clean) < response.index("GLYPH-DAMAGED SOURCE")
+        assert response.index("GLYPH-DAMAGED SOURCE") < response.index(damaged)
+
+        pc = chunk_handle(store, "legacy-glyph", ord=1)
+        assert "GLYPH-DAMAGED SOURCE" in handler.get(id=pc).body
+        assert "GLYPH-DAMAGED SOURCE" not in handler.get(id=f"pa{paper}~0").body
+
     def test_batch_empty_and_cap(self, handler: PaperHandler) -> None:
         with pytest.raises(BadInput, match="empty"):
             handler.get(id=[])
@@ -1314,22 +1368,102 @@ class TestSearch:
         assert record_handle(store, "tagged-paper") in resp.body
         assert record_handle(store, "untagged-paper") not in resp.body
 
-    def test_search_tags_only_enumerates_matching_papers(
+    def test_search_studytype_filters_computational_and_measured_papers(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        review_id = _seed_paper(
-            store, slug="review-paper", title="A review", doi="10.1/review"
+        simulated_id = _seed_paper(
+            store,
+            slug="simulated-paper",
+            title="Simulated adsorption isotherms",
+            doi="10.1/simulated",
         )
-        store.add_tag(review_id, Tag.open("studytype:review"), set_by="system")
-        other_id = _seed_paper(
-            store, slug="other-paper", title="Not a review", doi="10.1/other"
+        measured_id = _seed_paper(
+            store,
+            slug="measured-paper",
+            title="Measured adsorption isotherms",
+            doi="10.1/measured",
         )
-        store.add_tag(other_id, Tag.open("studytype:synthesis"), set_by="system")
+        store.add_tag(
+            simulated_id, Tag.closed("STUDYTYPE", "computational"), set_by="system"
+        )
+        store.add_tag(
+            measured_id,
+            Tag.closed("STUDYTYPE", "experimental-ensemble"),
+            set_by="system",
+        )
 
-        resp = handler.search(tags=["studytype:review"])
-        assert "A review" in resp.body
-        assert handle_registry.format_handle("paper", review_id) in resp.body
-        assert "Not a review" not in resp.body
+        simulated = handler.search(tags=["STUDYTYPE:computational"]).body
+        measured = handler.search(tags=["STUDYTYPE:experimental-ensemble"]).body
+        assert handle_registry.format_handle("paper", simulated_id) in simulated
+        assert handle_registry.format_handle("paper", measured_id) not in simulated
+        assert handle_registry.format_handle("paper", measured_id) in measured
+        assert handle_registry.format_handle("paper", simulated_id) not in measured
+
+    def test_search_tags_only_intersects_ids(
+        self, store: Store, runtime_with_store: PrecisRuntime
+    ) -> None:
+        tagged_handles = []
+        for slug in ("selected-alpha", "selected-beta", "outside-cohort"):
+            ref_id = _seed_paper(store, slug=slug, doi=None)
+            store.add_tag(ref_id, Tag.open("studytype:review"), set_by="system")
+            tagged_handles.append(handle_registry.format_handle("paper", ref_id))
+        untagged_id = _seed_paper(store, slug="untagged-selection", doi=None)
+        untagged = handle_registry.format_handle("paper", untagged_id)
+        selected = [*tagged_handles[:2], untagged]
+        kwargs = {"kind": "paper", "tags": ["studytype:review"]}
+
+        body = runtime_with_store.dispatch("search", {**kwargs, "ids": selected})
+        assert all(handle in body for handle in tagged_handles[:2])
+        assert tagged_handles[2] not in body
+        assert untagged not in body
+
+        first_page = runtime_with_store.dispatch(
+            "search", {**kwargs, "page_size": 1, "ids": selected}
+        )
+        assert "of 2" in first_page
+        assert f"args={{'ids': {selected!r}}}" in first_page
+        for ids in ([untagged], ["missing-paper-slug"], []):
+            empty = runtime_with_store.dispatch("search", {**kwargs, "ids": ids})
+            assert "no paper entries" in empty
+
+    def test_search_stamp_listing_intersects_ids(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr719628: the stamp door consumed only the include channel, so
+        ``args={'ids': …}`` on a stamp listing silently widened past the
+        named cohort — ids= now folds onto ``include_ref_ids`` ahead of
+        every no-q door."""
+        keep = _seed_paper(store, slug="stamp-keep", doi=None)
+        drop = _seed_paper(store, slug="stamp-drop", doi=None)
+        for ref_id in (keep, drop):
+            store.update_ref(ref_id, meta_patch={"s2_enriched_at": "2026-11-19"})
+        keep_h = handle_registry.format_handle("paper", keep)
+        drop_h = handle_registry.format_handle("paper", drop)
+
+        body = handler.search(stamp="s2_enriched_at", ids=[keep_h]).body
+        assert keep_h in body and drop_h not in body, body
+
+        empty = handler.search(stamp="s2_enriched_at", ids=["missing-paper-slug"])
+        assert "no live paper entries stamped" in empty.body
+
+    def test_search_link_scope_listing_intersects_ids(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr719628: the link-scope door had the same silent drop — a
+        linked_from listing combined with ``args={'ids': …}`` returned
+        papers outside the requested id set."""
+        keep = _seed_paper(store, slug="linked-keep", doi=None)
+        drop = _seed_paper(store, slug="linked-drop", doi=None)
+        mem = store.insert_ref(kind="memory", slug=None, title="cites both").id
+        for target in (keep, drop):
+            store.add_link(
+                src_ref_id=mem, dst_ref_id=target, relation="related-to", set_by="agent"
+            )
+        keep_h = handle_registry.format_handle("paper", keep)
+        drop_h = handle_registry.format_handle("paper", drop)
+
+        body = handler.search(linked_from="memory", ids=[keep_h]).body
+        assert keep_h in body and drop_h not in body, body
 
     def test_search_tags_only_offers_no_page_continuation(
         self, store: Store, handler: PaperHandler
@@ -2526,6 +2660,52 @@ class TestPaperEdit:
         assert rows[0]["source"] == "human"
         ref = store.fetch_refs_by_ids([ref_id])[ref_id]
         assert ref.human_verified_at is not None
+
+    def test_edit_author_case_preserves_unchanged_coauthor_row(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        orcid = "0000-0002-1825-0097"
+        person = store.insert_ref(
+            kind="orcid", slug=f"orcid:{orcid}", title="Bryan R. Goldsmith"
+        )
+        ref_id = _seed_paper(store, slug="tian2024")
+        store.set_paper_authors(
+            ref_id,
+            [
+                "ying tian",
+                {
+                    "given": "Bryan R.",
+                    "family": "Goldsmith",
+                    "orcid": orcid,
+                    "openalex_author_id": "A123",
+                },
+            ],
+            source="openalex",
+        )
+        store.verify_paper_author(ref_id, 2, source="orcid")
+        before = store.get_paper_authors(ref_id)[1]
+        assert before["person_ref_id"] == person.id
+        assert before["verified_at"] is not None
+
+        authors = ["Tian, Ying", f"Goldsmith, Bryan R. [{orcid}]"]
+        handler.edit(id=ref_id, authors=authors)
+        rows = store.get_paper_authors(ref_id)
+        assert rows[0]["given"] == "Ying"
+        assert rows[0]["family"] == "Tian"
+        assert rows[0]["source"] == "human"
+        assert rows[1] == before
+        assert store.fetch_refs_by_ids([ref_id])[ref_id].authors == [
+            {"given": "Ying", "family": "Tian"},
+            {
+                "given": "Bryan R.",
+                "family": "Goldsmith",
+                "orcid": orcid,
+                "openalex_author_id": "A123",
+            },
+        ]
+
+        handler.edit(id=ref_id, authors=authors)
+        assert store.get_paper_authors(ref_id) == rows
 
     def test_edit_dry_run_previews_journal_and_entry_type(
         self, store: Store, handler: PaperHandler

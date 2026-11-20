@@ -25,7 +25,12 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors import EXECUTOR_PROVIDES, ssh_node
 from precis.workers.executors._common import claim_executor_jobs
-from precis.workers.job_types import JobTypeSpec, get_job_type, run_slice
+from precis.workers.job_types import (
+    JobTypeSpec,
+    Reconcile,
+    get_job_type,
+    run_slice,
+)
 
 pytestmark = pytest.mark.db
 
@@ -87,6 +92,7 @@ def _spec(
     dispatch: Any = None,
     submit: Any = None,
     poll: Any = None,
+    reconcile: Any = None,
     name: str = "fake_relax",
 ) -> JobTypeSpec:
     def _run(*_a: Any, **_k: Any) -> str:
@@ -102,6 +108,7 @@ def _spec(
         dispatch=dispatch,
         submit=submit,
         poll=poll,
+        reconcile=reconcile,
     )
 
 
@@ -1031,6 +1038,140 @@ def test_reclaim_mid_submit_crash_fails_without_resubmitting(
     meta = _meta(store, rid)
     assert meta["failure_class"] == "infra"
     # Marker cleared so a deliberate requeue gets a fresh submit.
+    assert not meta.get("submit_started_at")
+
+
+@pytest.mark.parametrize("live", [True, False])
+def test_reclaim_mid_submit_crash_reconciles_handle(
+    store: Store, monkeypatch: pytest.MonkeyPatch, live: bool
+) -> None:
+    """gr708457: the same reclaimed submit-window crash, but the
+    job_type's ``reconcile`` can PROVE the dead generation's launch —
+    its launch record re-derives the exact handle. The row is re-adopted
+    like a ``compute_handle`` readopt: attempts refunded, a fresh
+    deadline stamped, the marker cleared, and the next pass polls the
+    recovered compute instead of resubmitting."""
+    monkeypatch.delenv("PRECIS_NODE", raising=False)
+    submitted: list[int] = []
+    polled: list[Any] = []
+    recovered = {"pid": 4242, "pgid": 4242, "worktree": "/t", "log": "/t/log"}
+
+    def _submit(ctx: Any, _spec: Any) -> str:  # pragma: no cover — must not run
+        submitted.append(ctx.ref_id)
+        return "second-launch"
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        return False
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(
+            submit=_submit,
+            poll=_poll,
+            reconcile=lambda ctx: Reconcile(handle=recovered),
+        ),
+    )
+    monkeypatch.setattr(ssh_node, "_detached_identity_reason", lambda h: None)
+    monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda h: live)
+    cap = ssh_node._MAX_ATTEMPTS
+    rid = _mk_running_job(
+        store, lease_offset_s=-60, attempts=cap - 1, submit_started_at=time.time()
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert submitted == []
+    assert _status(store, rid) == "running"
+    meta = _meta(store, rid)
+    assert meta["compute_handle"]["pid"] == 4242
+    assert meta["deadline"]  # a fresh bound, like a real submit's
+    assert not meta.get("submit_started_at")
+    # The reclaim's attempt bump is refunded — a found-live launch is
+    # not a crash (gr541147's rule, now for the proveable window).
+    assert meta["attempts"] == (cap - 1 if live else cap)
+    assert (meta["reclaims"][-1]["why"] == "readopt") is live
+
+    # The next pass polls the recovered handle like any in-flight job.
+    assert ssh_node.run_ssh_node_pass(store, limit=2)["claimed"] == 0
+    assert polled == [meta["compute_handle"]]
+
+
+def test_reclaim_mid_submit_crash_resubmits_when_never_launched(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr708457: when ``reconcile`` can prove the dead submit never
+    launched (``Reconcile(launched=False)`` — the launcher's own durable
+    evidence says no child exists) the intent marker lied; the row
+    clears it and submits fresh — no compute exists to double."""
+    submitted: list[int] = []
+
+    def _submit(ctx: Any, _spec: Any) -> str:
+        submitted.append(ctx.ref_id)
+        return "second-launch"
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(
+            submit=_submit,
+            poll=lambda c, h: False,
+            reconcile=lambda ctx: Reconcile(launched=False),
+        ),
+    )
+    rid = _mk_running_job(
+        store, lease_offset_s=-60, attempts=1, submit_started_at=time.time()
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert submitted == [rid]  # the fresh submit ran
+    assert _status(store, rid) == "running"
+    meta = _meta(store, rid)
+    assert meta["compute_handle"] == "second-launch"
+    assert not meta.get("submit_started_at")
+
+
+@pytest.mark.parametrize("verdict", [None, "raises"])
+def test_reclaim_mid_submit_crash_reconcile_unknown_fails(
+    store: Store, monkeypatch: pytest.MonkeyPatch, verdict: Any
+) -> None:
+    """gr708457 keeps the gr191673 contract where it belongs: a
+    reconciler that returns ``None`` — or raises — cannot prove the
+    launch either way, so the loud infrastructure failure still stands
+    and nothing is resubmitted."""
+    submitted: list[int] = []
+
+    def _submit(ctx: Any, _spec: Any) -> str:  # pragma: no cover — must not run
+        submitted.append(ctx.ref_id)
+        return "second-launch"
+
+    def _reconcile(ctx: Any) -> Any:
+        if verdict == "raises":
+            raise RuntimeError("launch record unreadable")
+        return None
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(
+            submit=_submit, poll=lambda c, h: False, reconcile=_reconcile
+        ),
+    )
+    rid = _mk_running_job(
+        store, lease_offset_s=-60, attempts=1, submit_started_at=time.time()
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 0, "failed": 1}
+    assert submitted == []
+    assert _status(store, rid) == "failed"
+    meta = _meta(store, rid)
+    assert meta["failure_class"] == "infra"
     assert not meta.get("submit_started_at")
 
 

@@ -13,17 +13,21 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from precis.errors import BadInput, Gone, NotFound
+from psycopg.errors import DeadlockDetected, LockNotAvailable
+
+from precis.errors import BadInput, Gone, NotFound, Upstream
 from precis.handlers import _finding_hypothesis
 from precis.handlers._finding_common import fetch_ref_any_kind
 from precis.handlers.plaintext import _require_find_and_text
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.response import Response
+from precis.store.pool import connection_is_pinned
 from precis.store.types import Tag
 from precis.taproot import authoring, hub
 from precis.taproot.consumer_review import render_users
 from precis.taproot.seniority import is_claim_hub
 from precis.taproot.sentence_lint import lint_scope
+from precis.utils.db_retry import retry_locked
 from precis.utils.edit_resolve import (
     EditOp,
     apply_edit,
@@ -143,13 +147,22 @@ def edit(
     write door that keeps ``refs.title``, the ``finding_body`` chunk, and
     the content-derived ``pub_id`` in sync when a hub's claim sentence is
     reworded (fixing a claim-quality issue, e.g. a dangling
-    demonstrative). A plain (non-hub) finding has no ``edit(title=…)``
+    demonstrative). The write runs under bounded lock-contention retry
+    (gr716316): a concurrent read pass holding the hub's rows past
+    ``lock_timeout`` retries in-process instead of failing the rename. A
+    pinned atomic batch instead aborts on contention so the caller can
+    retry the whole request after releasing all its locks. A
+    plain (non-hub) finding has no ``edit(title=…)``
     door — mutate its claim via a fresh ``put()``.
 
     **Rescope a hub.** ``meta={'scope': {...}}`` is the write door for a
-    claim hub's ``refs.meta.scope`` (only the ``scope`` key is accepted in
-    ``meta=`` here — any other key is a ``BadInput`` naming the accepted
-    set). Same single write door as ``title=`` — a scope edit **is** an
+    claim hub's ``refs.meta.scope``. Title edits also accept writer
+    attribution (``model``, ``prompt_version``, ``run_id``, ``why``) in
+    ``meta=``. Values must be strings. Attribution is saved atomically
+    with the title and scope edit. If the normalized title and scope are
+    both unchanged, the edit leaves attribution as is. Unsupported keys
+    raise ``BadInput``.
+    Same single write door as ``title=`` — a scope edit **is** an
     identity edit: ``scope`` is part of the content-derived ``pub_id``
     (:func:`~precis.identity.make_taproot_hub_paper_id`) and of the
     ``(sentence, scope)`` dedup key, so changing it moves the claim's
@@ -236,7 +249,22 @@ def edit(
     Only the body edit and the ``meta={'scope': …}`` door support
     ``dry_run`` (see above); every other op rejects it.
     """
-    meta_scope = _scope_from_meta(meta) if meta is not None else None
+    # Attribution accompanies a title edit; it is not a separate mutation.
+    attribution: dict[str, str] = {}
+    scope_meta = meta
+    if title is not None and meta is not None:
+        scope_meta = dict(meta)
+        for key in sorted(_WRITER_KEYS & meta.keys()):
+            value = scope_meta.pop(key)
+            if not isinstance(value, str):
+                raise BadInput(
+                    f"edit(kind='finding') meta[{key!r}] must be a string",
+                    next=f"Supply a string for meta[{key!r}] or omit the key.",
+                )
+            attribution[key] = value
+        if attribution and not scope_meta:
+            scope_meta = None
+    meta_scope = _scope_from_meta(scope_meta) if scope_meta is not None else None
     if mode not in (None, "find-replace", "replace"):
         # Dispatch's mode gate catches this for MCP callers (the wrapper
         # default 'find-replace' is exempt — it arrives on every edit()
@@ -351,7 +379,12 @@ def edit(
     if rescoping:
         assert meta_scope is not None
         return _rescope_hub(
-            store, id=id, title=title, scope=meta_scope, dry_run=bool(dry_run)
+            store,
+            id=id,
+            title=title,
+            scope=meta_scope,
+            dry_run=bool(dry_run),
+            attribution=attribution,
         )
     if title is not None:
         if dry_run:
@@ -360,7 +393,7 @@ def edit(
                 "the retitle has no preview; omit dry_run to apply",
                 next="edit(kind='finding', id='fi<N>', title='<reworded claim>')",
             )
-        return _retitle_hub(store, id=id, title=title)
+        return _retitle_hub(store, id=id, title=title, attribution=attribution)
     if sharpening:
         if dry_run:
             raise BadInput(
@@ -511,17 +544,20 @@ def edit(
     )
 
 
-#: The only ``meta=`` key the finding edit handler accepts — the hub
-#: ``scope`` write door. Anything else is a BadInput naming this set;
+#: Keys accepted by the scope parser after edit() extracts writer keys
+#: on title edits. Anything else is a BadInput naming this set;
 #: ``claim_type`` gets its own refusal pointing at the human doors
 #: (this door cannot tell a human from an agent).
 _META_KEYS = frozenset({"scope"})
+_WRITER_KEYS = frozenset({"model", "prompt_version", "run_id", "why"})
 
 
 def _scope_from_meta(meta: dict[str, Any]) -> dict[str, str]:
-    """Validate ``meta=`` for ``edit(kind='finding')`` and return the
-    ``scope`` dict. Only ``scope`` is accepted; it must be a dict of
-    str -> str (``{}`` clears it)."""
+    """Validate the scope-only metadata and return the scope dict.
+
+    ``edit()`` extracts writer keys before calling this parser on a title
+    edit. Scope maps strings to strings (``{}`` clears it).
+    """
     if "claim_type" in meta:
         raise BadInput(
             "edit(kind='finding') does not set claim_type — reclassification "
@@ -565,6 +601,7 @@ def _rescope_hub(
     title: str | None,
     scope: dict[str, str],
     dry_run: bool,
+    attribution: dict[str, str],
 ) -> Response:
     """``edit(kind='finding', meta={'scope': …}[, title=…])`` — replace a
     claim hub's scope through :func:`~precis.taproot.hub.refine_claim_sentence`
@@ -629,8 +666,13 @@ def _rescope_hub(
             )
         )
     try:
-        result = hub.refine_claim_sentence(
-            store, hub_ref_id, new_title, scope=scope, set_by="agent"
+        result = _refine_retried(
+            store,
+            hub_ref_id=hub_ref_id,
+            sentence=title,
+            scope=scope,
+            attribution=attribution,
+            what="meta={'scope': …}",
         )
     except BadInput:
         raise
@@ -684,7 +726,9 @@ def _rescope_body(
     return "\n".join(lines)
 
 
-def _retitle_hub(store: Store, *, id: int | str | None, title: str) -> Response:
+def _retitle_hub(
+    store: Store, *, id: int | str | None, title: str, attribution: dict[str, str]
+) -> Response:
     """``edit(kind='finding', title=…)`` — reword a claim hub's sentence.
 
     ``id`` must resolve to a live ``TAPROOT:claim`` hub (mirrors the
@@ -709,7 +753,14 @@ def _retitle_hub(store: Store, *, id: int | str | None, title: str) -> Response:
             ),
         )
     try:
-        result = hub.refine_claim_sentence(store, hub_ref_id, title, set_by="agent")
+        result = _refine_retried(
+            store,
+            hub_ref_id=hub_ref_id,
+            sentence=title,
+            scope=None,
+            attribution=attribution,
+            what="title=…",
+        )
     except BadInput:
         raise
     except ValueError as exc:
@@ -737,6 +788,66 @@ def _retitle_hub(store: Store, *, id: int | str | None, title: str) -> Response:
             + render_users(result["needs_review"])
         )
     )
+
+
+def _refine_retried(
+    store: Store,
+    *,
+    hub_ref_id: int,
+    sentence: str | None,
+    scope: dict[str, Any] | None,
+    attribution: dict[str, str] | None,
+    what: str,
+) -> dict[str, Any]:
+    """Run :func:`~precis.taproot.hub.refine_claim_sentence` under bounded
+    lock-contention retry (gr716316).
+
+    An interactive retitle/rescope lost its whole turn to a bare
+    ``LockNotAvailable`` when a concurrent paper-reading pass held the
+    hub's rows past ``lock_timeout`` — the write opens its own
+    ``store.tx()`` per attempt (``retry_locked``'s hard contract), so a
+    replay re-reads the row and lands cleanly once the pass releases. An
+    exhausted budget refuses ``Upstream`` naming the retry instead of
+    leaking the psycopg error to the caller. Pinned transactions get one
+    attempt: only their outer owner can release earlier items' locks.
+    """
+
+    def _do() -> dict[str, Any]:
+        return hub.refine_claim_sentence(
+            store,
+            hub_ref_id,
+            sentence,
+            scope=scope,
+            set_by="agent",
+            attribution=attribution,
+        )
+
+    # Savepoint retries retain locks acquired by earlier batch items. Let
+    # the outer owner roll back the whole request instead of sleeping with
+    # those locks held.
+    pinned = connection_is_pinned()
+    try:
+        if pinned:
+            return _do()
+        return retry_locked(_do, label=f"finding {what} fi{hub_ref_id}")
+    except (LockNotAvailable, DeadlockDetected) as exc:
+        if pinned:
+            raise Upstream(
+                f"edit(kind='finding', id='fi{hub_ref_id}', {what}) hit lock "
+                "contention inside an atomic request; no per-item retry",
+                next="retry the entire atomic request so all its locks are released first",
+            ) from exc
+        raise Upstream(
+            f"edit(kind='finding', id='fi{hub_ref_id}', {what}) exhausted its "
+            "lock-retry budget — another writer (a concurrent read pass over "
+            "the hub's paper, or a sibling session's hub edit) held its rows "
+            f"past every retry: {exc}",
+            next=(
+                f"retry edit(kind='finding', id='fi{hub_ref_id}', {what}) — "
+                "the rename is idempotent and the rows are short-held; if it "
+                "fails again, file a gripe naming the id"
+            ),
+        ) from exc
 
 
 def _sharpen_hypothesis(

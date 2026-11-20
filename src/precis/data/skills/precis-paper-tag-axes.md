@@ -4,7 +4,7 @@ family: paper
 title: precis — paper auto-tagging taxonomy
 summary: paper auto-tag taxonomy — domain, scale, dim, transport, studytype, material, property axes
 answers:
-  - how do I filter search results to papers tagged scale:nano or a similar axis?
+  - how do I filter search results to papers tagged SCALE:1nm or a similar axis?
   - which tags does ingest auto-apply to a paper?
   - how should I shape a topic: tag on a paper?
   - what chunk-level tag axes exist?
@@ -16,34 +16,41 @@ kinds: [paper]
 
 # precis-paper-tag-axes — paper auto-tagging taxonomy
 
-Ingest auto-tags every paper along a fixed set of lowercase **axes**
-(`domain:`, `scale:`, `dim:`, `transport:`, `studytype:`, `material:`,
-`property:`). Filter searches by these axes via `tags=[...]`.
+Ingest auto-tags every paper along a fixed set of closed UPPERCASE
+**axes** (`DOMAIN:`, `SCALE:`, `DIM:`, `TRANSPORT:`, `STUDYTYPE:`,
+`MATERIAL:`, `PROPERTY:`) — the namespace is the `data/axes/<id>.yaml`
+id uppercased. Filter searches by these axes via `tags=[...]`; the
+lowercase spelling (`studytype:review`) is an *open* tag the pass never
+writes and matches nothing.
 
-For closed UPPERCASE axes (`SRC:`, `CACHE:`) and the open-tag rules,
-see `precis-tags`. Paper allows `SRC:` and `CACHE:` only.
+For the other closed axes (`SRC:`, `CACHE:`) and the open-tag rules,
+see `precis-tags`.
 
 ## Filter papers by an axis value
-## Narrow search to papers tagged scale:nano
+## Narrow search to papers tagged SCALE:1nm
 ## Combine topic search with auto-tag filters
 
 ```python
-search(kind="paper", q="transport", tags=["scale:nano", "studytype:experimental"])
 search(
-    kind="paper", q="photocatalysis", tags=["domain:materials", "material:metal-oxide"]
+    kind="paper", q="transport", tags=["SCALE:1nm", "STUDYTYPE:experimental-ensemble"]
 )
-search(kind="paper", tags=["studytype:review"])  # tag-only, no q=
+search(
+    kind="paper", q="photocatalysis", tags=["DOMAIN:materials", "MATERIAL:metal-oxide"]
+)
+search(kind="paper", tags=["STUDYTYPE:review"])  # tag-only, no q=
 ```
 
 Axis tags AND together. Combine freely with `topic:`, `SRC:`, `CACHE:`.
+Facet a count by an axis with `args={'group_by': 'tag:STUDYTYPE'}` —
+the all-caps axis names the closed namespace.
 
 ## What axes get auto-applied to a paper
 ## Which tags does ingest write
 ## Auto-tagging vocabulary for papers
 
-Seven axes. `domain:` runs first; the rest gate on its value.
+Seven axes. `DOMAIN:` runs first; the rest gate on its value.
 
-### `domain:` — broad subject area  *(all papers)*
+### `DOMAIN:` — broad subject area  *(all papers)*
 
 | value | when |
 |---|---|
@@ -55,7 +62,7 @@ Seven axes. `domain:` runs first; the rest gate on its value.
 | `other` | clearly outside the four above |
 | `unknown` | can't tell from title + abstract |
 
-### `scale:` — characteristic length of the thing studied
+### `SCALE:` — characteristic length of the thing studied
 
 Gates on `domain ∈ {chemistry, physics, bio, materials, eng}`. Decade
 buckets — a value names the decade floor (half-open range). The
@@ -79,7 +86,7 @@ the crystal; thin-film transport → the film thickness.
 | `unknown` | can't tell |
 | `n-a` | no spatial scale (pure theory, method, review) |
 
-### `dim:` — geometric dimensionality
+### `DIM:` — geometric dimensionality
 
 Gates on `domain ∈ {chemistry, physics, materials, eng}`.
 
@@ -92,7 +99,7 @@ Gates on `domain ∈ {chemistry, physics, materials, eng}`.
 | `mixed` | hybrid 1d-on-2d, 0d-on-3d, etc. |
 | `n-a` | no geometric structure |
 
-### `transport:` — geometry of conductivity / current path
+### `TRANSPORT:` — geometry of conductivity / current path
 
 Gates on `domain ∈ {physics, materials, eng}` AND `property ∈
 {electrical, multi}` (the gate now *skips* non-electrical papers rather
@@ -110,7 +117,7 @@ than running them to `n-a`).
 
 ## Auto-tagging vocabulary for papers — studytype, material
 
-### `studytype:` — epistemic mode: how the paper knows  *(all papers)*
+### `STUDYTYPE:` — epistemic mode: how the paper knows  *(all papers)*
 
 | value | criterion |
 |---|---|
@@ -123,7 +130,14 @@ than running them to `n-a`).
 | `mixed` | genuinely co-equal modes |
 | `unknown` | can't tell from title + abstract |
 
-### `material:` — primary material class
+Classify by how the headline result was obtained: MD trajectories, Monte
+Carlo (incl. grand-canonical) samples and DFT predictions are
+`computational` even when they yield isotherms, spectra or averages and
+agree with published measurements; structures built or optimized in
+silico do not make a paper `synthesis`. Measurement interpreted with DFT
+stays experimental.
+
+### `MATERIAL:` — primary material class
 
 Gates on `domain ∈ {chemistry, materials, eng}`.
 
@@ -143,7 +157,7 @@ Gates on `domain ∈ {chemistry, materials, eng}`.
 | `unknown` | can't tell |
 | `n-a` | no specific material |
 
-### `property:` — primary property under study
+### `PROPERTY:` — primary property under study
 
 Gates on `domain ∈ {chemistry, physics, materials, eng}`.
 
@@ -182,7 +196,7 @@ tag(
 ```
 
 Reuse existing slugs when one fits — `search(kind='paper', tags=['topic:<guess>'])`
-to check before coining. Auto-tag axes (`scale:`, `dim:`, …) are
+to check before coining. Auto-tag axes (`SCALE:`, `DIM:`, …) are
 closed vocabularies above; don't mint new values inside those
 prefixes.
 
@@ -200,7 +214,7 @@ fine — only this curated subset feeds the dossier loop.
 ## Chunk-level axes (ADR 0047)
 
 A second family of axes tags individual **chunks**, not papers, for
-facets that vary within a document. First axis: `role:` — the
+facets that vary within a document. First axis: `ROLE:` — the
 rhetorical role of a chunk (`axes/role.yaml`). Single-select:
 
 `motivation` (why this work) · `related-work` (recaps other papers /
@@ -211,31 +225,29 @@ mean) · `limitation` · `future-work` · `data` (tables/numeric
 listings) · `boilerplate` (publisher furniture — excludable) ·
 `unknown` / `n-a` (envelope-only, never written as tags).
 
-Filter chunks the same way (`tags=` matches chunk-level tags too):
+These live on `chunk_tags`. The paper search `tags=` filter refuses
+every chunk-level axis (`ROLE:`, `ROLE3:`, `OPEN-QUESTION:`) with
+"axis not allowed on kind 'paper'" — the filter accepts ref-level axes
+plus `JUNK:` only:
 
 ```python
-search(kind="paper", q="co2 adsorption capacity", tags=["role:result"])
-search(kind="paper", q="gcmc setup", tags=["role:method"])
+search(kind="paper", q="gcmc setup", tags=["ROLE:method"])  # rejected
 ```
 
-Second chunk axis: `open-question:` (`axes/open-question.yaml`) — a
+Second chunk axis: `OPEN-QUESTION:` (`axes/open-question.yaml`) — a
 recall-biased binary flag for experiment planning: does the chunk
 name something *specific* not yet done (future direction, open
 question, untried condition, acknowledged failure, negative result)?
 Cross-cutting — leads live in `future-work`, `limitation`,
 `result`, and even `motivation` chunks. Gated on `ROLE3 ∈ {own,
 background}` (runs only after the role3 cascade; skips `furniture`, where
-no lead lives):
-
-```python
-search(kind="paper", q="mof water stability", tags=["open-question:yes"])
-```
+no lead lives).
 
 The load-bearing boundary is `result` vs `related-work`: a
 `\citequote` must land on a paper's own contribution, never on its
 summary of someone else's. Applied by the background `chunk_tag`
-pass; values are closed vocabularies — don't mint inside `role:` or
-`open-question:`.
+pass; values are closed vocabularies — don't mint inside `ROLE:` or
+`OPEN-QUESTION:`.
 
 ### `ROLE3:` — the coarse citation-grounding filter (shipped)
 
@@ -249,13 +261,10 @@ citation-grounding actually needs:
   motivation).
 - `ROLE3:furniture` — references, tables, boilerplate.
 
-```python
-search(kind="paper", q="co2 adsorption capacity", tags=["ROLE3:own"])
-```
-
-`ROLE3:own` is ~91% precision — use it to *narrow candidates*, then
-confirm with the agentic search (`search(good=True)`), not as a lone hard
-filter. Full 11-way `role:` remains an optional refinement of `own`
+`ROLE3:own` is ~91% precision — internal passes (quest claim extraction)
+read it to *narrow candidates*; it is not a lone hard filter. Confirm a
+citable passage with the deep search
+(`search(kind='paper', q='…', args={'good': True})`). Full 11-way `ROLE:` remains an optional refinement of `own`
 chunks. Design: `chunk-classifier-cascade` (git-only).
 
 ## See also

@@ -788,12 +788,15 @@ def job_row_sentence(
     meta: dict[str, Any] | None,
     status: str | None,
     blocks: list[Any] | None = None,
+    error: Any = ...,
 ) -> str:
     """Store-touching convenience for single-job renders (the MCP card):
     pulls the newest ``job_summary`` / ``job_event`` text off ``blocks``
     (``ChunkRow``-likes with ``.chunk_kind`` / ``.text``) and resolves the
     quest headline through :func:`quest_id_from_meta` plus one
     ``kind='quest'`` read. Never raises on a thin row.
+    Pass ``error=None`` when the caller already prints a separate error line;
+    omission keeps the stored error for existing callers.
     """
     meta = meta or {}
     summary = last_event = None
@@ -830,5 +833,5 @@ def job_row_sentence(
         summary=summary,
         last_event=last_event,
         quest_headline=headline,
-        error=meta.get("error"),
+        error=meta.get("error") if error is ... else error,
     )

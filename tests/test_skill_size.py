@@ -88,6 +88,10 @@ _ALLOWLIST["precis-work-help"] = (
     "over cap since 7a5c38a15 added the gripe_dispatch stall-sweep "
     "paragraph (gr687946); pending the owner's restructure"
 )
+_ALLOWLIST["precis-job-observe-help"] = (
+    "gr663858 adds worker-liveness diagnoses beside raw logs; preserve the "
+    "existing fleet-view reference pending the owner's section-access split"
+)
 
 
 #: Floor on the swept corpus — parametrization over an empty glob

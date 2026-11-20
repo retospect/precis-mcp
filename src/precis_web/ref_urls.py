@@ -1,6 +1,6 @@
 """Canonical human readers for stored refs, shared by navigation surfaces.
 
-Browse-menu membership is unrelated to detail coverage. Optional plugin refs
+Drive saved-view membership is unrelated to detail coverage. Optional plugin refs
 remain readable when their handler is unavailable. Slug readers require a
 stored slug; incomplete refs use generic detail rather than inventing a slug.
 """

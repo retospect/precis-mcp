@@ -123,6 +123,7 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
+from precis.errors import Conflict
 from precis.store.types import Tag
 from precis.workers.chase import (
     _fetch_chunks,
@@ -558,8 +559,8 @@ def _resolve_or_ingest_citer(
     general ``Store.upsert_stub_paper`` (its own docstring: "Mirrors
     the chase worker's stub path") — auto-ingests an S2-known citer
     that isn't in corpus yet without blocking on it, exactly as the
-    design doc asks. Returns ``None`` only when S2 gave us no usable
-    identifier at all (can't dedup/fetch on a bare title).
+    design doc asks. Returns ``None`` when the citer lacks a usable
+    identifier or its title conflicts with the corpus match.
     """
     identifiers: list[tuple[str, str]] = []
     doi = citing.get("doi")
@@ -587,15 +588,19 @@ def _resolve_or_ingest_citer(
     from precis.ingest.semantic_scholar import s2_stub_meta_if_present
 
     s2_meta = s2_stub_meta_if_present(citing, now=datetime.now(UTC))
-    ref_id, _created = store.upsert_stub_paper(
-        identifiers=identifiers,
-        title=title,
-        year=year_int,
-        authors=citing.get("authors"),
-        set_by="system",
-        s2_meta=s2_meta,
-        conn=conn,
-    )
+    try:
+        ref_id, _created = store.upsert_stub_paper(
+            identifiers=identifiers,
+            title=title,
+            year=year_int,
+            authors=citing.get("authors"),
+            set_by="system",
+            s2_meta=s2_meta,
+            conn=conn,
+        )
+    except Conflict as exc:
+        log.warning("inbound_chase: skipping citer: %s", exc)
+        return None
     return int(ref_id)
 
 

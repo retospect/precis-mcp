@@ -32,6 +32,7 @@ scripts/fleet-wave::_assign_batch 1
 scripts/fleet-wave::_ensure_tree 1
 scripts/fleet-wave::_launch_kimi 1
 scripts/fleet-wave::_render_batch_brief 1
+scripts/fleet-wave::_tools_call 1
 scripts/fleet-wave::cmd_land.run_ship 1
 scripts/fleet-wave::cmd_launch 1
 scripts/gripe-note::run_capped 1

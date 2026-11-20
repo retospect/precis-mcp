@@ -440,8 +440,12 @@ def test_project_export_reuses_job_type_and_separates_audience(
     assert captured["job_type"] == "draft_export"
     assert captured["params"]["include_sources"] is True
     assert captured["params"].get("audience", "dev") == (audience or "dev")
-    assert captured["idem_key"] == "draft_export:audience-draft:sources" + (
-        ":external" if audience == "external" else ""
+    # The key also separates the retraction scope and the override flag
+    # (8c3468cbd): a default stale check and a forced export are distinct jobs.
+    assert captured["idem_key"] == (
+        "draft_export:audience-draft:sources"
+        + (":external" if audience == "external" else "")
+        + ":retractions-stale:override-0"
     )
 
 

@@ -9,11 +9,37 @@ because every surface needs them: the paper and finding views, the draft
 write-path ``glyph_cite_hint``, and the measures write path, which sits
 below ingest and may not import it. ``precis.ingest.glyph_health``
 re-exports both for its ingest-side callers.
+
+Paper chunk reads also check stored passages for recognizable glyph
+substitutions so older extractions can warn without ingest-time font evidence.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+# Require surrounding syntax that makes the substitution suspicious. Bare
+# numbers, milli-units, and plain-text exponents are common in intact papers.
+_PASSAGE_DAMAGE_RE = re.compile(
+    r"(?<![\w.,])\d[\d,.]*[ \t]+8[CF]\b"
+    r"|\b[A-Za-z][ \t]+¼[ \t]+[+-]?\d+:\d+\b"
+    r"|\b(?:contact |cone |tilt )?angles? of [ \t]*\d+(?:\.\d+)?u\b"
+    r"|\b\d+8[ \t]+kQ\b"
+    r"|\bV[ \t]*/[ \t]+mm\b"
+    r"|\bV[ \t]+mm2<sup>1</sup>"
+    r"|Â±|Ã\x82±"
+)
+
+
+def passage_glyph_caveat(text: str) -> str:
+    """Warn about positive corruption signatures in a stored passage."""
+    if not _PASSAGE_DAMAGE_RE.search(text):
+        return ""
+    return (
+        "Text extraction may have substituted scientific symbols in this passage. "
+        "Check numbers and units against the PDF before quoting."
+    )
 
 
 def glyph_suspected(meta: Any) -> bool:

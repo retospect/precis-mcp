@@ -3,7 +3,9 @@
 **Advisory, never a gate.** `scripts/ship` does not run it and must not
 (`tests/test_skill_eval.py::test_skill_eval_is_not_a_ship_gate_stage`).
 Same standing as `scripts/mutate-diff`: a red result is a to-do for the
-skill author, not a blocked land.
+skill author, not a blocked land. The discovery condition and the
+paired run below are advisory in exactly the same way — a red paired
+report is a repair brief, never a blocked land.
 
 ## What it checks
 
@@ -75,6 +77,71 @@ Executed-run specifics:
   test stack that can't serve marks the run `skipped`, exit 0 — same
   standing as a missing/unauthenticated `claude`.
 
+## Paired conditions: can an agent *find* the skill? (gr634773)
+
+The supplied condition above measures whether an agent *given* the skill
+follows it. It says nothing about discoverability: whether an agent
+starting from ordinary tool descriptions can find the necessary guidance
+and still complete a realistic task. That is what the **discovery**
+condition measures, and the two run **paired** so the difference is
+attributable:
+
+- `--condition supplied` (default) injects the skill text, as above.
+- `--condition discovery` builds the executed prompt with **no skill
+  text and no skill slug** — the model starts from the tool surface
+  alone. Same task, same model, same environment, same budget.
+- `--condition paired` (executed only) runs each case under both,
+  one runner per condition with identical caps, and classifies every
+  failed pair with `precis.skill_eval.report.classify_failure`:
+
+  | class | meaning | repair points at |
+  |-------|---------|------------------|
+  | `retrieval` | passes when supplied — the agent never found the guidance | search bits / entry points for the skill |
+  | `guidance` | fails even supplied, with clean tool calls | what the skill teaches |
+  | `tool` | precis calls errored or the runner crashed | the handler / tool surface |
+  | `unattributed` | contradictory or partial evidence | nowhere — rerun first |
+
+  Neither condition failing alone proves a root cause, so the classes are
+  conservative; a pair that passes both, skips, or contradicts itself
+  stays `unattributed`.
+
+Discovery rows carry two exploration metrics —
+`discovery_calls` / `discovery_bytes`: the calls and tool-result bytes
+spent before the first error-free call matching an `expect.calls`
+pattern (the first correct domain action). A discovery pass that
+eventually succeeds after 12 calls and 40 kB of reads is a worse
+discovery outcome than one that succeeds on the first call, and the
+metric says so.
+
+```
+scripts/skill-eval --execute --condition paired   # the corpus, both conditions
+scripts/skill-eval --execute --condition discovery --cases src/precis/data/skill-evals/discovery
+```
+
+The task corpus for the discovery condition lives under
+`src/precis/data/skill-evals/discovery/<family>.yaml`: one realistic
+task per family (memory, gripe, todo, finding, quest, draft, paper,
+patent, pcb, structure), each phrased **without skill names** and
+carrying two wording `variants` — a slug in the prompt would leak the
+answer into the discovery condition, and one phrasing would let a
+sample overfit it. Each variant loads as its own case
+(`<family>/<id>-v<N>`) so a paired run holds task *and* wording
+constant. Criteria accept alternative valid paths: patterns stay broad
+on purpose, and `forbid` clauses only pin decisive detours.
+
+## The recurring sampler (`scripts/skill-discovery-review`)
+
+`docs/runbooks/skill-discovery-review.md` owns the cadence pass; the
+shape: a bounded selector (`precis.skill_eval.discovery_review.
+select_review_cases`) picks at most N cases — changed skills first, then
+previous failures from the retained reports, then the under-tested
+families — runs them paired against the scratch DB, retains the full
+report (model, skill and code revision, conditions, budgets, transcripts)
+at `~/.cache/precis/skill-discovery/<ts>.json`, and prints one repair
+brief per failure. `--rerun-nearby` reruns the failing case plus its
+whole family. It is advisory like this harness itself: it proposes
+repairs, never patches, and never gates a land.
+
 ## Running it
 
 ```
@@ -94,3 +161,8 @@ criterion that a misleading skill would fail — the spec's own test is
 red; revert, green". Run the live runner once on the new case before
 relying on the fake: the fake proves the criterion is satisfiable, the
 live run proves the skill as written satisfies it.
+
+Discovery and paired conditions default to the discovery task corpus. Use
+`--corpus supplied` to evaluate the older corpus under either condition, or
+`--corpus discovery --condition supplied` for its supplied-only baseline.
+`--cases` overrides the directory for the selected corpus format.

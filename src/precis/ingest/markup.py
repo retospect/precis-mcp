@@ -505,13 +505,22 @@ def parse_arxiv_html(
     root_el = _html_first(root, tags={"article"}, classes={"ltx_document"})
     if root_el is None:
         root_el = root
+    bib_items = _html_all(root, classes={"ltx_bibitem"})
+    _normalise_arxiv_cites(root, bib_items)
     _walk_html(root_el, [], ext.blocks)
 
-    for biblist in _html_all(root, classes={"ltx_biblist", "ltx_bibliography"}):
+    # Emit each structured entry once, with its label at the start of a
+    # block so bib_parse can recognise it. The biblist fallback covers
+    # older markup without explicit item classes.
+    for item in (
+        bib_items
+        or _html_all(root, classes={"ltx_biblist"})
+        or _html_all(root, classes={"ltx_bibliography"})
+    ):
         _emit(
             ext.blocks,
             kind="references",
-            text=_norm_ws(biblist.text_content()),
+            text=_ARXIV_JOINED_BIB_LABEL.sub(r"\1 ", _norm_ws(item.text_content())),
             section_path=[],
         )
 
@@ -526,6 +535,49 @@ def parse_arxiv_html(
 
 
 _HTML_HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+_ARXIV_BIB_LABEL = re.compile(r"\[(\d{1,4})\]")
+_ARXIV_JOINED_BIB_LABEL = re.compile(r"^(\[\d{1,4}\])(?=\S)")
+_ARXIV_CITE_GROUP = re.compile(r"\[\s*\d{1,4}(?:\s*,\s*\d{1,4})*\s*\]")
+
+
+def _normalise_arxiv_cites(root: Any, bib_items: list[Any]) -> None:
+    """Use a local citation link's target label when LaTeXML numbers drift."""
+    labels: dict[str, str] = {}
+    seen: set[str] = set()
+    for item in bib_items:
+        tag = _html_first(item, classes={"ltx_tag_bibitem"})
+        match = (
+            _ARXIV_BIB_LABEL.fullmatch(_norm_ws(tag.text_content()))
+            if tag is not None
+            else None
+        )
+        if match is None:
+            continue
+        marker = str(int(match[1]))
+        if marker in seen:
+            # The bibliography store has one namespace per paper. A
+            # second entry with this number would silently alias the first.
+            raise MarkupParseError(
+                f"arXiv HTML: ambiguous bibliography label [{marker}]",
+                fmt="arxiv_html",
+            )
+        seen.add(marker)
+        if item_id := item.get("id"):
+            labels[f"#{item_id}"] = marker
+
+    for cite in _html_all(root, classes={"ltx_cite"}):
+        printed = _norm_ws(cite.text_content())
+        if not _ARXIV_CITE_GROUP.fullmatch(printed):
+            continue
+        anchors = _html_all(cite, tags={"a"})
+        # Only convert fully linked numeric groups. In particular, two
+        # links at the ends of a range cannot identify its interior.
+        if [_norm_ws(a.text_content()) for a in anchors] != re.findall(r"\d+", printed):
+            continue
+        targets = [labels.get(a.get("href", ""), "") for a in anchors]
+        if all(targets):
+            cite.clear(keep_tail=True)
+            cite.text = f"[{', '.join(targets)}]"
 
 
 def _html_matches(el: Any, tags: set[str] | None, classes: set[str] | None) -> bool:

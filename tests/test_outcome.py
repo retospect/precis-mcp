@@ -383,6 +383,7 @@ def test_prior_picks_reads_sibling_sessions() -> None:
     ]
     assert outcome.code_session_models(store, validate.id) == (
         frozenset({"claude-sonnet-5-5"}),
+        frozenset(),
         None,
     )
 
@@ -391,7 +392,11 @@ def test_prior_picks_empty_outside_a_plan() -> None:
     store = _Store()
     lone = store.add(_Ref(9, "todo", {}))
     assert outcome.prior_picks(store, lone.id) == []
-    assert outcome.code_session_models(store, lone.id) == (frozenset(), None)
+    assert outcome.code_session_models(store, lone.id) == (
+        frozenset(),
+        frozenset(),
+        None,
+    )
 
 
 def test_code_session_models_flags_unestablishable_identity() -> None:
@@ -401,7 +406,8 @@ def test_code_session_models_flags_unestablishable_identity() -> None:
     store = _Store()
     _, build, validate = _plan(store)
     # A launched code pick whose model was never recorded — the
-    # account default: the run can never prove a different model.
+    # account default: with no adapter stamped either, the run can
+    # never prove a different model.
     store.add(
         _Ref(
             10,
@@ -412,12 +418,17 @@ def test_code_session_models_flags_unestablishable_identity() -> None:
     )
     assert outcome.code_session_models(store, validate.id) == (
         frozenset(),
+        frozenset(),
         "unrecorded",
     )
     # …but a code job that died before its submit stamped a lane ran
     # no session — it has no model to avoid.
     store.refs[10].meta = {"job_type": "run_slice"}
-    assert outcome.code_session_models(store, validate.id) == (frozenset(), None)
+    assert outcome.code_session_models(store, validate.id) == (
+        frozenset(),
+        frozenset(),
+        None,
+    )
 
     class _DeadStore(_Store):
         def recent_refs(self, kinds: Any, **kw: Any) -> Any:
@@ -426,6 +437,7 @@ def test_code_session_models_flags_unestablishable_identity() -> None:
     dead = _DeadStore()
     _, _, dead_validate = _plan(dead)
     assert outcome.code_session_models(dead, dead_validate.id) == (
+        frozenset(),
         frozenset(),
         "read",
     )
@@ -472,8 +484,10 @@ def test_code_session_models_resolves_the_unrecorded_default(
 ) -> None:
     """gr657521: a launched code pick with no recorded model ran the
     account default — the resolved default joins the avoid set so a
-    test pin to a different family proves the difference; only a
-    default the host cannot name still refuses."""
+    test pin to a different family proves the difference; a default
+    the host cannot name instead contributes the pick's adapter
+    (gr702143) — a different vendor's lane proves the difference; only
+    a session with neither model nor adapter still refuses."""
     monkeypatch.setenv("HOME", str(tmp_path))
     codex = tmp_path / ".codex"
     codex.mkdir()
@@ -494,22 +508,33 @@ def test_code_session_models_resolves_the_unrecorded_default(
     )
     assert outcome.code_session_models(store, validate.id) == (
         frozenset({"gpt-5.1-codex"}),
+        frozenset(),
         None,
     )
     # A recorded model still wins over the resolved default.
     store.refs[10].meta["model"] = "gpt-5.1-codex-mini"
     assert outcome.code_session_models(store, validate.id) == (
         frozenset({"gpt-5.1-codex-mini"}),
+        frozenset(),
         None,
     )
-    # An adapter whose default this host cannot name stays unprovable:
-    # the config file names no devin default.
+    # An adapter whose default this host cannot name is avoided BY
+    # ADAPTER (gr702143): the config file names no devin default, so
+    # the devin_tree adapter joins the unknown set instead of refusing.
     store.refs[10].meta = {
         "job_type": "run_slice",
         "lane": "devin",
         "adapter": "devin_tree",
     }
     assert outcome.code_session_models(store, validate.id) == (
+        frozenset(),
+        frozenset({"devin_tree"}),
+        None,
+    )
+    # …and stripping the adapter too restores the unprovable case.
+    store.refs[10].meta = {"job_type": "run_slice", "lane": "devin"}
+    assert outcome.code_session_models(store, validate.id) == (
+        frozenset(),
         frozenset(),
         "unrecorded",
     )
@@ -774,6 +799,216 @@ def test_diverse_pick_names_a_codex_account_default(
 
     assert _pick(frozenset({"swe-2-high"}))[:2] == (lane, "gpt-5.1-codex")
     assert _pick(frozenset({"gpt-5.1-codex"}))[:2] == (None, None)
+
+
+def test_diverse_pick_a_different_adapter_proves_the_difference() -> None:
+    """gr702143: an unrecorded code model ran on its own vendor — a
+    lane on another vendor's CLI cannot repeat it, so the pick stands
+    unnamed default and all; a lane on the SAME vendor cannot prove the
+    difference — even a concrete model on it could BE the unrecorded
+    default — and refuses."""
+    claude = _lane("claude-sub", models=("claude-haiku-5-5",))
+    codex = replace(_lane("codex"), adapter="codex_exec")  # models=()
+
+    # The claude lane's adapter is not in the unknown set: launches.
+    new_lane, model, note = outcome.diverse_model_pick(
+        None,
+        lane=claude,
+        model=None,
+        candidates=(claude, codex),
+        counts={},
+        backoffs=None,
+        paid_ok=True,
+        avoid=frozenset(),
+        model_pin=None,
+        task_class="validate",
+        unknown_adapters=frozenset({"codex_exec"}),
+    )
+    assert (new_lane, model, note) == (claude, None, None)
+
+    # The codex lane shares the vendor with the unnamed session: even
+    # a concrete model repeats nothing provably — refusal.
+    new_lane, model, note = outcome.diverse_model_pick(
+        None,
+        lane=codex,
+        model="gpt-5.1-codex-mini",
+        candidates=(codex,),
+        counts={},
+        backoffs=None,
+        paid_ok=True,
+        avoid=frozenset(),
+        model_pin=None,
+        task_class="validate",
+        unknown_adapters=frozenset({"codex_exec"}),
+    )
+    assert (new_lane, model) == (None, None)
+    assert note and "refusing the launch" in note and "codex_exec" in note
+
+
+def test_diverse_pick_hops_off_an_unknown_adapter() -> None:
+    """gr702143: the picked lane shares a vendor with the unrecorded
+    code session, but another vendor's lane is fit — the pick hops to
+    it; a same-lane model move is no proof and is never tried."""
+    codex = replace(_lane("codex"), adapter="codex_exec")  # models=()
+    claude = _lane("claude-sub", models=("claude-haiku-5-5",))
+    new_lane, model, note = outcome.diverse_model_pick(
+        None,
+        lane=codex,
+        model=None,
+        candidates=(codex, claude),
+        counts={},
+        backoffs=None,
+        paid_ok=True,
+        avoid=frozenset(),
+        model_pin=None,
+        task_class="validate",
+        unknown_adapters=frozenset({"codex_exec"}),
+    )
+    assert (new_lane, model) == (claude, "claude-haiku-5-5")
+    assert note and "re-picked lane" in note
+
+
+def test_diverse_pick_unknown_adapter_and_recorded_models_combine() -> None:
+    """The adapter fallback binds alongside the recorded avoid set: a
+    hop must land on a lane whose adapter is outside the unknown set
+    AND whose model is outside the avoid set — a codex lane with an
+    outside model is still no proof against the unrecorded codex
+    session, so it is not fit."""
+    codex = replace(
+        _lane("codex", models=("gpt-5.1-codex",), default_model="gpt-5.1-codex"),
+        adapter="codex_exec",
+    )
+    codex2 = replace(
+        _lane("codex2", models=("gpt-5.2",), default_model="gpt-5.2"),
+        adapter="codex_exec",
+    )
+    claude = _lane(
+        "claude-sub",
+        models=("claude-haiku-5-5",),
+        default_model="claude-haiku-5-5",
+    )
+    new_lane, model, note = outcome.diverse_model_pick(
+        None,
+        lane=codex,
+        model="gpt-5.1-codex",
+        candidates=(codex, codex2, claude),
+        counts={},
+        backoffs=None,
+        paid_ok=True,
+        avoid=frozenset({"claude-sonnet-5-5"}),
+        model_pin=None,
+        task_class="validate",
+        unknown_adapters=frozenset({"codex_exec"}),
+    )
+    assert (new_lane.name, model) == ("claude-sub", "claude-haiku-5-5")
+    assert note and "re-picked lane" in note
+
+
+def test_unknown_model_code_pick_proves_difference_across_vendors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702143's named case: a code pick on ``codex_exec`` with no
+    recorded model and a codex config that names no default — a test
+    pick on a ``claude_p`` lane launches, a test pick on a
+    ``codex_exec`` lane is refused."""
+    monkeypatch.setenv("HOME", str(tmp_path))  # no vendor configs at all
+    store = _Store()
+    _, build, validate = _plan(store)
+    store.add(
+        _Ref(
+            10,
+            "job",
+            {"job_type": "run_slice", "lane": "codex", "adapter": "codex_exec"},
+            parent_id=build.id,
+        )
+    )
+    avoid, unknown_adapters, unknown = outcome.code_session_models(store, validate.id)
+    assert (avoid, unknown_adapters, unknown) == (
+        frozenset(),
+        frozenset({"codex_exec"}),
+        None,
+    )
+    claude = _lane(
+        "claude-sub",
+        models=("claude-haiku-5-5", "claude-sonnet-5-5"),
+        default_model="claude-sonnet-5-5",
+    )
+    codex = replace(_lane("codex"), adapter="codex_exec")
+    # A test pick on the claude_p lane: the vendor differs, launch.
+    new_lane, model, note = outcome.diverse_model_pick(
+        None,
+        lane=claude,
+        model="claude-sonnet-5-5",
+        candidates=(claude,),
+        counts={},
+        backoffs=None,
+        paid_ok=True,
+        avoid=avoid,
+        model_pin=None,
+        task_class="validate",
+        unknown_adapters=unknown_adapters,
+    )
+    assert (new_lane, model, note) == (claude, "claude-sonnet-5-5", None)
+    # A test pick on the codex lane: same vendor, nothing provable —
+    # refuse.
+    new_lane, model, note = outcome.diverse_model_pick(
+        None,
+        lane=codex,
+        model=None,
+        candidates=(codex,),
+        counts={},
+        backoffs=None,
+        paid_ok=True,
+        avoid=avoid,
+        model_pin=None,
+        task_class="validate",
+        unknown_adapters=unknown_adapters,
+    )
+    assert (new_lane, model) == (None, None)
+    assert note and "refusing the launch" in note
+
+
+@pytest.mark.parametrize("availability", ["available", "full", "backed"])
+@pytest.mark.parametrize("avoid", [frozenset(), frozenset({"known-model"})])
+def test_unknown_model_hops_to_unnamed_different_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    availability: str,
+    avoid: frozenset[str],
+) -> None:
+    """gr702143 review: unnamed different-adapter hops launch or park;
+    a concrete model to avoid still requires a named alternative."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    devin = replace(_lane("devin"), adapter="devin_tree")
+    codex = replace(_lane("codex", cap=1), adapter="codex_exec")
+    new_lane, model, note = outcome.diverse_model_pick(
+        None,
+        lane=devin,
+        model=None,
+        candidates=(devin, codex),
+        counts={"codex": 1} if availability == "full" else {},
+        backoffs=(
+            {"codex": datetime.now(UTC) + timedelta(hours=1)}
+            if availability == "backed"
+            else None
+        ),
+        paid_ok=True,
+        avoid=avoid,
+        model_pin=None,
+        task_class="validate",
+        unknown_adapters=frozenset({"devin_tree"}),
+    )
+    assert model is None
+    assert note is not None
+    if avoid:
+        assert new_lane is None
+        assert "refusing the launch" in note
+    elif availability == "available":
+        assert new_lane is codex
+        assert "re-picked lane" in note
+    else:
+        assert new_lane is None
+        assert note.startswith(outcome.DIVERSE_BUSY_PREFIX)
 
 
 def test_diverse_pick_never_pins_a_default_the_adapter_cannot_launch(

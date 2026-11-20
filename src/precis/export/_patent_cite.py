@@ -113,6 +113,16 @@ def render_patent_citation(meta: dict[str, Any] | None, slug: str = "") -> str:
     return f"Patent No. {label}"
 
 
+def patent_number(meta: dict[str, Any] | None) -> str:
+    """A patent ref's publication number as its bibliography line prints it:
+    ``doc_number`` plus the upper-cased ``kind_code`` (``""`` without a
+    ``doc_number``)."""
+    meta = meta or {}
+    doc_number = str(meta.get("doc_number") or "").strip()
+    kind_code = str(meta.get("kind_code") or "").strip().upper()
+    return f"{doc_number}{kind_code}" if doc_number else ""
+
+
 def _first_author_surname(authors: Any) -> str:
     """Best-effort surname of the first author (a list of names or
     ``{name}`` dicts). ``""`` when nothing usable."""
@@ -173,9 +183,7 @@ def format_patent_bibliography_entry(ref: Any) -> str:
         a.get("name", "") for a in applicants if isinstance(a, dict) and a.get("name")
     )
     title = str(getattr(ref, "title", None) or "").strip()
-    doc_number = str(meta.get("doc_number") or "").strip()
-    kind_code = str(meta.get("kind_code") or "").strip().upper()
-    number = f"{doc_number}{kind_code}" if doc_number else ""
+    number = patent_number(meta)
     year = getattr(ref, "year", None)
     if not year:
         pub_date = meta.get("publication_date")

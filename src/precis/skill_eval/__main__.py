@@ -13,8 +13,13 @@ import sys
 from pathlib import Path
 
 from precis.errors import BadInput
-from precis.skill_eval.cases import load_cases
-from precis.skill_eval.report import DEFAULT_REPORT_PATH, Report, run_cases
+from precis.skill_eval.cases import load_cases, load_discovery_cases
+from precis.skill_eval.report import (
+    DEFAULT_REPORT_PATH,
+    Report,
+    classify_pairs,
+    run_cases,
+)
 from precis.skill_eval.runners import (
     ExecutedClaudeRunner,
     FakeRunner,
@@ -47,6 +52,11 @@ def main(argv: list[str] | None = None) -> int:
         "claude -p with a precis MCP bound to the eval DSN",
     )
     ap.add_argument("--cases", help="cases dir (default: the shipped corpus)")
+    ap.add_argument(
+        "--corpus",
+        choices=("supplied", "discovery"),
+        help="corpus format; defaults to discovery for discovery/paired conditions",
+    )
     ap.add_argument("--skill", action="append", help="only this skill's cases")
     ap.add_argument(
         "--diff",
@@ -80,19 +90,42 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--max-turns", type=int, help="executed: per-case turn cap (default 30)"
     )
+    ap.add_argument(
+        "--condition",
+        choices=("supplied", "discovery", "paired"),
+        default="supplied",
+        help="how prompts are built: 'supplied' injects the skill text (default); "
+        "'discovery' renders no skill text and no slug — the model starts from "
+        "the tool surface alone; 'paired' runs each case under both (executed "
+        "only) and classifies each failed pair (gr634773)",
+    )
     ns = ap.parse_args(argv)
 
     if ns.execute and ns.runner not in ("fake", "executed"):
         print("skill-eval: --execute conflicts with --runner live", file=sys.stderr)
         return 2
     runner_name = "executed" if ns.execute else ns.runner
+    if ns.condition == "paired" and runner_name != "executed":
+        print(
+            "skill-eval: --condition paired needs --runner executed",
+            file=sys.stderr,
+        )
+        return 2
 
     skills: set[str] | None = set(ns.skill) if ns.skill else None
     if ns.diff:
         touched = changed_skills(ns.diff)
         skills = touched if skills is None else skills & touched
     try:
-        cases = load_cases(ns.cases, skills=skills)
+        corpus = ns.corpus or (
+            "supplied" if ns.condition == "supplied" else "discovery"
+        )
+        if corpus == "discovery":
+            cases = load_discovery_cases(ns.cases)
+            if skills is not None:
+                cases = [case for case in cases if case.skill in skills]
+        else:
+            cases = load_cases(ns.cases, skills=skills)
     except BadInput as exc:
         print(f"skill-eval: {exc}", file=sys.stderr)
         return 2
@@ -109,39 +142,50 @@ def main(argv: list[str] | None = None) -> int:
                 case_usd=ns.case_usd,
                 run_usd=ns.run_usd,
                 timeout_s=ns.timeout_s,
+                condition=ns.condition,
             )
         else:
-            runner = FakeRunner()
+            runner = FakeRunner(condition=ns.condition)
         report = run_cases(cases, runner)
     else:
         # One corpus pass per model; case rows carry the model so the
-        # report's accuracy-by-depth table splits them (gr608716).
-        report = Report(runner="executed")
+        # report's accuracy-by-depth table splits them (gr608716). Each
+        # condition gets its own runner with the same caps: paired holds
+        # model, task, environment and budget constant across conditions
+        # (gr634773).
+        conditions: tuple[str, ...] = (
+            ("supplied", "discovery") if ns.condition == "paired" else (ns.condition,)
+        )
+        report = Report(runner="executed", condition=ns.condition)
         skips: list[str] = []
         for model in ns.model or [None]:
-            runner = ExecutedClaudeRunner(
-                dsn=ns.dsn,
-                model=model,
-                case_usd=ns.case_usd,
-                run_usd=ns.run_usd,
-                timeout_s=ns.timeout_s,
-                max_turns=ns.max_turns,
-                serve_cmd=ns.serve_cmd,
-            )
-            r = run_cases(cases, runner)
-            if r.status == "skipped":
-                skips.append(f"{model or 'default'}: {r.reason}")
-                continue
-            report.cases.extend(r.cases)
-            report.spent_usd += r.spent_usd
+            for condition in conditions:
+                runner = ExecutedClaudeRunner(
+                    dsn=ns.dsn,
+                    model=model,
+                    case_usd=ns.case_usd,
+                    run_usd=ns.run_usd,
+                    timeout_s=ns.timeout_s,
+                    max_turns=ns.max_turns,
+                    serve_cmd=ns.serve_cmd,
+                    condition=condition,
+                )
+                r = run_cases(cases, runner)
+                if r.status == "skipped":
+                    skips.append(f"{model or 'default'}/{condition}: {r.reason}")
+                    continue
+                report.cases.extend(r.cases)
+                report.spent_usd += r.spent_usd
         if skips and not report.cases:
             report.status = "skipped"
             report.reason = "; ".join(skips)
         elif skips:
             print(
-                f"skill-eval: skipped model pass(es): {'; '.join(skips)}",
+                f"skill-eval: skipped condition pass(es): {'; '.join(skips)}",
                 file=sys.stderr,
             )
+        if ns.condition == "paired" and report.cases:
+            classify_pairs(report.cases)
     path = report.write_json(ns.out)
     print(report.render_table())
     print(f"report: {path}")

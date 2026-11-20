@@ -27,10 +27,10 @@ against its chunk and, failing that, the whole document: a pinpoint a few
 chunks off is a reading aid, not a mis-sourced number. A chunk range
 (``~18..28``) is checked against every chunk in it. Evidence text is read
 generously: "0.44 and 0.26 eV" grounds both numbers, and a markdown table
-whose header names the unit (``Pore aperture [Å]``) grounds its cells. Two
-tokenizer artefacts are not claims: the exponent in ``10^7 cm/s``, a
-patent reference numeral (``216A-N``) and a thousands count (``130K
-molecules``). A semicolon outside brackets ends a clause: "… at 9nm;
+whose header names the unit (``Pore aperture [Å]``) grounds its cells.
+The quantity scan skips exponents in ``10^7 cm/s``, patent reference
+numerals (``216A-N``), thousands counts (``130K molecules``) and shell
+labels (``In 5s orbitals``). A semicolon outside brackets ends a clause: "… at 9nm;
 paper:y shows …" keeps 9 nm with the citation before the semicolon. A
 pinpoint the prose writes
 after a cite, "paper:x (chunks ~97–98: …)", scopes the evidence like
@@ -146,6 +146,13 @@ _NUMERICS_BLIND_UNITS = frozenset({"µm", "µA", "µM", "µg", "µs"})
 #: ``s`` as the unit; only the four-digit year shape is excluded.
 _DECADE_RE = re.compile(r"(?:1[89]|20)\d\ds")
 
+#: A glued shell label followed by an orbital noun, as in "In 5s orbitals".
+#: In "5s orbital period", the duration specifies the period.
+_S_ORBITAL_RE = re.compile(r"[1-9]\d*s")
+_ORBITAL_TAIL_RE = re.compile(
+    r"[^\S\n]+(?:orbitals?|projectors?)\b(?![^\S\n]+periods?\b)", re.IGNORECASE
+)
+
 #: "216A-N" (patent reference numerals A..N) is not 216 amperes: a glued
 #: single capital letter followed by ``-`` and another capital.
 _REF_NUMERAL_RE = re.compile(r"\d+[A-Z]")
@@ -254,13 +261,16 @@ def _quantities(text: str) -> list[tuple[str, int, int]]:
 def _artifact(text: str, tok: str, s: int, e: int) -> bool:
     """A digit run the tokenizer read as a quantity but which is none: the
     exponent of ``10^7 cm/s`` ("7 cm"), a patent reference numeral
-    ``216A-N`` ("216 A") or a thousands count ``130K molecules``."""
+    ``216A-N`` ("216 A"), a thousands count ``130K molecules`` or a shell
+    label ``5s`` ("5 s")."""
     if s and text[s - 1] == "^":
         return True
     del tok  # normalised ("216 A"); the glued shape is only in the text
     if _GLUED_K_RE.fullmatch(text, s, e) and not _TEMP_CUE_RE.search(
         text, max(0, s - _TEMP_CUE_CHARS), s
     ):
+        return True
+    if _S_ORBITAL_RE.fullmatch(text, s, e) and _ORBITAL_TAIL_RE.match(text, e):
         return True
     return bool(
         _REF_NUMERAL_RE.fullmatch(text, s, e) and _REF_NUMERAL_TAIL_RE.match(text, e)
@@ -276,14 +286,23 @@ def _canon_runs(text: str) -> set[str]:
     return set(_runs(text))
 
 
+# Extracted prose can wrap a value, its unit, or just its decimal point.
+_DECIMAL_POINT_EMPHASIS_RE = re.compile(r"(?<=\d)(\*{1,3}|_{1,3})\.\1(?=\d)")
+_QUANTITY_EMPHASIS_RE = re.compile(
+    r"(?<![\w\\*_])(\*{1,3}|_{1,3})(?=[^\s*_])([^\n]+?)(?<![\s\\*_])\1(?![\w*_])"
+)
+
+
 def evidence_from_text(text: str, *, has_text: bool | None = None) -> Evidence:
     """:class:`Evidence` of free text (or of numerics tokens joined by space).
 
     Read generously (this is the side that grounds, never the side that
     flags): list members share the trailing unit, table cells take their
-    header's unit."""
+    header's unit. Read emphasized values as rendered before tokenizing."""
     units: set[tuple[str, str]] = set()
     tokens: list[str] = []
+    text = _DECIMAL_POINT_EMPHASIS_RE.sub(".", text)
+    text = _QUANTITY_EMPHASIS_RE.sub(r"\2", text)
     norm = normalize_spellings(text)
     for variant in {text, norm}:
         spans = _quantities(variant)

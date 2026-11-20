@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Set
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -68,6 +68,23 @@ BARE_CONV_PATTERN = re.compile(
     r"(?!\w)"
 )
 
+#: A python symbol mention: ``python:<dotted.qualname>`` (gr702978). At
+#: least one dot is required — a bare ``python:word`` stays prose, since a
+#: python anchor's slug IS a dotted qualname (``precis.handlers.
+#: _memory_link_receipt.MentionSync``). ``python`` is already in
+#: :data:`LINKIFY_KINDS` (it is a registered record kind); what it lacked
+#: was a grammar arm long enough to capture the qualname — the generic
+#: :data:`REF_PATTERN` id stops at the first dot — and a refs row to
+#: resolve against. The write-time extraction pass below owns the
+#: ``python:`` kind outright (the REF_PATTERN pass skips ``python`` so a
+#: qualname can't double-resolve as ``python:<first-segment>``).
+PYTHON_QUALNAME_PATTERN = re.compile(
+    r"\bpython:"
+    r"(?P<qn>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)"
+    r"(?!\w)"
+)
+
+
 #: Bare paper cite_key: ``<surname><2-digit year><optional letter>``.
 #: Either a chunk suffix disambiguates a ≥2-letter key, or (no suffix)
 #: ≥3 surname letters keep ``ai99`` / ``ml22`` off prose. A trailing ``-``
@@ -90,52 +107,52 @@ BARE_PAPER_PATTERN = re.compile(
 #: :func:`extract_part_lcscs`, so either spelling resolves exactly once.
 BARE_PART_PATTERN = re.compile(r"(?<![A-Za-z0-9:])C\d{3,8}(?![A-Za-z0-9])")
 
-#: Kinds we resolve. The regex over-fires on ``noun:value`` prose
-#: (``user:asa``, ``tag:open``); emission/resolution is gated on this
-#: allowlist. Keep aligned with ``_REFS_BROWSABLE_KINDS`` in
-#: routes/refs.py.
-LINKIFY_KINDS: frozenset[str] = frozenset(
+#: Real kinds suppressed because they read as noise in prose.
+LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
+
+#: Codeless tools/providers whose cached refs support legacy mentions.
+#: Private non-ref data and tools without cached refs stay out. The
+#: handle-coded fetch caches (web/youtube/websearch/perplexity-*/
+#: wikipedia/semanticscholar/chem) join via ``record_kinds()`` instead.
+_CODELESS_CACHE_KINDS: frozenset[str] = frozenset(
     {
-        "memory",
-        "conv",
-        "gripe",
-        "pres",
-        "oracle",
-        "paper",
-        "patent",
-        "todo",
-        "job",
-        "agentlog",
-        "finding",
-        "citation",
-        "draft",
-        "anki",
-        "perplexity-research",
-        "perplexity-reasoning",
-        "web",
-        "youtube",
-        "websearch",
-        "message",
-        "math",
         "calc",
-        "skill",
+        "math",
         "provenance",
         "random",
-        # Atomistic simulation structure + its reaction-energetics pathway —
-        # both drifted from _REFS_BROWSABLE_KINDS (routes/refs.py); realigned
-        # so ``structure:NNN`` / ``pathway:NNN`` / ``[[…]]`` resolve instead
-        # of rendering literal, and the computational-evidence provenance
-        # class (routes/drafts.py) sees them as citations.
-        "structure",
-        "pathway",
     }
 )
 
-#: Real kinds we still suppress because they read as noise in prose
-#: (``tag:open`` is ambiguous with a tag namespace). Today both are
-#: absent from ``LINKIFY_KINDS`` too; this stays as the explicit
-#: opt-out lever.
-LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
+
+#: The regex over-fires on ``noun:value`` prose (``user:asa``, ``tag:open``).
+#: Derive the allowlist from record handles, including plugins, so new
+#: handle kinds work in legacy mentions and web linkification automatically.
+class _LinkifyKinds(Set[str]):
+    # Plugins can import mention consumers while their codes load. Defer
+    # discovery until use so importing this module cannot create a cycle.
+    def __iter__(self) -> Iterator[str]:
+        return iter(
+            (handle_registry.record_kinds() | _CODELESS_CACHE_KINDS) - LOW_SIGNAL_KINDS
+        )
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+    def __contains__(self, kind: object) -> bool:
+        return (
+            isinstance(kind, str)
+            and kind not in LOW_SIGNAL_KINDS
+            and (
+                kind in _CODELESS_CACHE_KINDS or kind in handle_registry.record_kinds()
+            )
+        )
+
+    @classmethod
+    def _from_iterable[T](cls, it: Iterable[T]) -> frozenset[T]:
+        return frozenset(it)
+
+
+LINKIFY_KINDS: Set[str] = _LinkifyKinds()
 
 #: Kinds whose refs are computational evidence that *sources* a claim
 #: the way a corpus paper does — a cited simulation structure
@@ -357,6 +374,10 @@ def extract_handles(body: str) -> list[Handle]:
         kind = m.group("kind")
         if kind not in LINKIFY_KINDS or kind in LOW_SIGNAL_KINDS:
             continue
+        if kind == "python":
+            # The qualname pass below owns ``python:`` — REF_PATTERN's id
+            # arm would only capture the first dotted segment here.
+            continue
         _push(kind, m.group("id"), m.group("chunk"))
     for m in BARE_CONV_PATTERN.finditer(body):
         slug, _, suffix = m.group(0).partition("~")
@@ -364,7 +385,52 @@ def extract_handles(body: str) -> list[Handle]:
     for m in BARE_PAPER_PATTERN.finditer(body):
         slug, _, suffix = m.group(0).partition("~")
         _push("paper", slug, ("~" + suffix) if suffix else None)
+    for m in PYTHON_QUALNAME_PATTERN.finditer(body):
+        _push("python", m.group("qn"), None)
     return out
+
+
+def extract_python_qualnames(body: str) -> list[str]:
+    """Every ``python:<dotted.qualname>`` mention in ``body`` —
+    deduplicated, appearance-ordered. Extraction only: whether a qualname
+    mints or resolves an anchor is the caller's call (gr702978)."""
+    if not body:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in PYTHON_QUALNAME_PATTERN.finditer(body):
+        qn = m.group("qn")
+        if qn not in seen:
+            seen.add(qn)
+            out.append(qn)
+    return out
+
+
+def mint_python_mentions(store: Any, text: str, handler: Any) -> None:
+    """Mint the lazy python anchor ref for every qualname mention that
+    resolves in the live python index (gr702978).
+
+    The note/draft autolinker doors call this before
+    :func:`resolve_link_targets` — the resolver itself never mints, so
+    read-side callers (fisheye, backfill) stay pure. ``handler`` is the
+    booted python handler (``hub.handler_for('python')``); ``None`` (kind
+    disabled, or a hub without it) mints nothing — a python mention then
+    stays unlinked, the same graceful no-op as a disabled kind. An
+    unknown qualname never mints: the handler validates it against the
+    code index and returns ``None``. Per-mention failures are logged and
+    skipped — the sync's best-effort contract.
+    """
+    ensure = getattr(store, "ensure_python_ref", None)
+    if ensure is None or handler is None:
+        return
+    for qn in extract_python_qualnames(text):
+        try:
+            anchor = handler.symbol_anchor(qn)
+            if anchor is None:
+                continue
+            ensure(qn, alias=anchor[0], file=anchor[1])
+        except Exception:
+            log.debug("mentions: python anchor mint failed for %r", qn, exc_info=True)
 
 
 def _norm_part_ident(ident: str) -> str | None:
@@ -400,11 +466,8 @@ def extract_part_lcscs(body: str) -> list[str]:
     Two spellings share the part grammar: the prefixed ``part:C…``
     handle (either ``c`` case — the writer explicitly named a part) and
     the bare uppercase token ``C<number>``. Extraction only — whether a
-    C-number mints or resolves is downstream's call. ``part:`` is
-    deliberately NOT on :data:`LINKIFY_KINDS`: keeping it out leaves
-    the web read surface (``precis_web.linkify`` /
-    ``_REFS_BROWSABLE_KINDS``) untouched while the write-time
-    autolinker still catches the handle form here.
+    C-number mints or resolves is downstream's call. Prefixed parts also
+    participate in the shared legacy mention grammar.
     """
     if not body:
         return []

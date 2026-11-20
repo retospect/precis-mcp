@@ -7,6 +7,7 @@ Hermetic: no DB, no model.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,12 +24,16 @@ from precis.skill_eval import (
     Transcript,
     VerbCall,
     check,
+    classify_failure,
+    classify_pairs,
     default_cases_dir,
     load_cases,
+    load_discovery_cases,
     run_cases,
 )
 from precis.skill_eval.__main__ import main
 from precis.skill_eval.cases import load_case_file, value_matches
+from precis.skill_eval.report import CaseResult, Report
 from precis.skill_eval.runners import (
     DEFAULT_DEV_DSN,
     DRY_RUN_TOKEN,
@@ -706,11 +711,20 @@ def test_executed_runner_reconstructs_and_spends(
         )
     )
     t = runner.run(case, "do it")
+    created_ack = "created quest qu7 (STATUS:active)."
     assert t.calls == (
         VerbCall(
-            "put", "quest", {"text": "a zinc-air battery that survives 10k cycles"}
+            "put",
+            "quest",
+            {"text": "a zinc-air battery that survives 10k cycles"},
+            result_bytes=len(created_ack.encode("utf-8")),
         ),
-        VerbCall("get", "quest", {"id": 7, "view": "tree"}),
+        VerbCall(
+            "get",
+            "quest",
+            {"id": 7, "view": "tree"},
+            result_bytes=len(b"<tree rollup>"),
+        ),
     )
     assert t.answer == "Minted qu7 and read its tree." and t.cost_usd == 0.31
     assert runner.spent_usd == pytest.approx(0.31)
@@ -1194,6 +1208,245 @@ cases:
     assert LiveClaudeRunner(call=lambda *a, **k: None, run_usd=3).run_usd == 3
 
 
+# ── discovery condition + paired runs (gr634773) ──────────────────
+
+
+def test_discovery_prompt_has_no_skill_text_or_slug() -> None:
+    case = _case(Criterion(calls=(CallPattern("get"),)))
+    texts = {"demo-skill": "# demo skill body"}
+    supplied = build_exec_prompt(case, texts)
+    discovery = build_exec_prompt(case, texts, condition="discovery")
+    assert "<skill id='demo-skill'>" in supplied
+    assert "# demo skill body" in supplied
+    # The discovery prompt renders neither the slug nor the skill text…
+    assert "demo-skill" not in discovery
+    assert "# demo" not in discovery
+    assert "skill" not in discovery.lower()
+    # …but the task itself is still there.
+    assert case.prompt in discovery
+    assert "actually call the tools" in discovery
+    runner = ExecutedClaudeRunner(
+        dsn="postgresql://localhost/precis_test_eval",
+        call=lambda *a, **k: _agent_result(),
+        condition="discovery",
+    )
+    assert runner.build_prompt(case, texts) == build_exec_prompt(
+        case, texts, run_id=runner.run_id, condition="discovery"
+    )
+    # The dry-run builder honours the condition too.
+    dry = build_prompt(case, texts, condition="discovery")
+    assert "demo-skill" not in dry and "# demo" not in dry
+    assert case.prompt.replace("{run}", DRY_RUN_TOKEN) in dry
+    with pytest.raises(ValueError, match="unknown condition"):
+        build_exec_prompt(case, texts, condition="bogus")
+
+
+def test_paired_runs_both_conditions_with_same_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--condition paired: one runner per condition, identical caps, both
+    conditions' rows in one report; --condition paired on a dry runner is
+    refused."""
+    _write(
+        tmp_path,
+        "precis-overview.yaml",
+        """\
+skill: precis-overview
+cases:
+  - id: one
+    prompt: do the thing
+    expect:
+      calls: [{verb: get, kind: paper}]
+    fake:
+      calls: [{verb: get, kind: paper, args: {id: pa1}}]
+      answer: done
+""",
+    )
+    seen: list[dict[str, Any]] = []
+
+    class StubRunner:
+        name = "executed"
+
+        def __init__(
+            self, *, model: Any = None, condition: str = "supplied", **kw: Any
+        ):
+            self.model = model
+            self.condition = condition
+            seen.append({"model": model, "condition": condition, **kw})
+
+        def run(self, case: EvalCase, prompt: str) -> Transcript:
+            assert ("<skill id=" in prompt) == (self.condition == "supplied")
+            return Transcript(calls=case.fake.calls or (VerbCall("get", "paper"),))
+
+    monkeypatch.setattr("precis.skill_eval.__main__.ExecutedClaudeRunner", StubRunner)
+    out = tmp_path / "r.json"
+    rc = main(
+        [
+            "--execute",
+            "--condition",
+            "paired",
+            "--corpus",
+            "supplied",
+            "--cases",
+            str(tmp_path),
+            "--out",
+            str(out),
+            "--case-usd",
+            "0.5",
+            "--run-usd",
+            "2.0",
+        ]
+    )
+    assert rc == 0
+    # Both conditions ran under the SAME budget, supplied first.
+    assert [(s["condition"], s["case_usd"], s["run_usd"]) for s in seen] == [
+        ("supplied", 0.5, 2.0),
+        ("discovery", 0.5, 2.0),
+    ]
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["condition"] == "paired"
+    rows = data["cases"]
+    assert {r["condition"] for r in rows} == {"supplied", "discovery"}
+    # The fake's first call matches, so discovery metrics are zero — and
+    # both conditions pass, so no failure class is stamped.
+    discovery_rows = [r for r in rows if r["condition"] == "discovery"]
+    assert all(r["discovery_calls"] == 0 for r in discovery_rows)
+    assert all(r["failure"] is None for r in rows)
+    assert "paired failures:" not in capsys.readouterr().out
+    # paired needs the executed runner.
+    assert main(["--runner", "live", "--condition", "paired"]) == 2
+    assert main(["--runner", "fake", "--condition", "paired"]) == 2
+
+
+def test_discovery_metrics_count_calls_and_bytes_before_first_correct_call() -> None:
+    crit = Criterion(calls=(CallPattern("put", "quest"),))
+    case = _case(crit)
+    transcript = Transcript(
+        calls=(
+            VerbCall("search", "quest", {"q": "x"}, result_bytes=100),
+            VerbCall("get", "quest", {"id": 7}, result_bytes=250),
+            VerbCall("put", "quest", {"text": "y"}, result_bytes=80),
+        )
+    )
+    runner = FakeRunner({case.case_id: transcript}, condition="discovery")
+    report = run_cases([case], runner, skill_text=lambda s: "# s")
+    row = report.cases[0]
+    assert report.condition == "discovery" and row.condition == "discovery"
+    assert row.discovery_calls == 2 and row.discovery_bytes == 350
+    # First call already correct → no exploration spent.
+    first_ok = FakeRunner(
+        {case.case_id: Transcript(calls=(VerbCall("put", "quest"),))},
+        condition="discovery",
+    )
+    row = run_cases([case], first_ok, skill_text=lambda s: "# s").cases[0]
+    assert row.discovery_calls == 0 and row.discovery_bytes == 0
+    # Supplied rows carry no discovery metrics.
+    supplied = FakeRunner({case.case_id: Transcript(calls=(VerbCall("put", "quest"),))})
+    row = run_cases([case], supplied, skill_text=lambda s: "# s").cases[0]
+    assert row.condition == "supplied"
+    assert row.discovery_calls is None and row.discovery_bytes is None
+
+
+def test_retrieval_vs_guidance_vs_unattributed() -> None:
+    def row(
+        status: str,
+        reasons: tuple[str, ...] = (),
+        condition: str = "supplied",
+    ) -> CaseResult:
+        return CaseResult(
+            "demo/one", "demo-skill", status, reasons, condition=condition
+        )
+
+    ok = row("pass")
+    fail_clean = row("fail", ("expected call not made: get(kind='paper')",))
+    fail_errored = row("fail", ("call errored: get(kind='paper') — boom",))
+    crashed = row("error", ("claude -p timed out after 600.0s",))
+    skipped = row("skip", ("run budget $2.00 would be exceeded",))
+    # Given the skill it PASSES → the discovery failure is retrieval.
+    assert classify_failure(ok, fail_clean) == "retrieval"
+    # Fails even supplied, clean calls on both sides → guidance.
+    assert classify_failure(fail_clean, fail_clean) == "guidance"
+    # The calls themselves errored (or the runner crashed) → tool surface.
+    assert classify_failure(fail_clean, fail_errored) == "tool"
+    assert classify_failure(crashed, fail_clean) == "tool"
+    # Contradictions, clean pairs and skips attribute nothing.
+    assert classify_failure(fail_clean, ok) == "unattributed"
+    assert classify_failure(ok, ok) == "unattributed"
+    assert classify_failure(skipped, fail_clean) == "unattributed"
+
+
+def test_classify_pairs_stamps_both_rows_and_the_table_lists_them() -> None:
+    supplied = CaseResult("demo/one", "demo-skill", "pass", condition="supplied")
+    discovery = CaseResult(
+        "demo/one",
+        "demo-skill",
+        "fail",
+        ("expected call not made: get(kind='paper')",),
+        condition="discovery",
+        discovery_calls=3,
+        discovery_bytes=4210,
+    )
+    rows = [supplied, discovery]
+    out = classify_pairs(rows)
+    assert out == {(None, "demo/one"): "retrieval"}
+    assert rows[0].failure == "retrieval" and rows[1].failure == "retrieval"
+    report = Report(runner="executed", condition="paired", cases=rows)
+    table = report.render_table()
+    assert "paired failures:" in table
+    assert "demo/one  supplied=PASS discovery=FAIL  retrieval" in table
+    assert "discovery 3 calls/4210B to first correct call" in table
+    data = report.to_dict()
+    assert data["condition"] == "paired"
+    assert data["cases"][1]["failure"] == "retrieval"
+
+
+# ── discovery corpus (gr634773) ───────────────────────────────────
+
+
+def test_discovery_tasks_name_no_skill() -> None:
+    cases = load_discovery_cases()
+    # Ten families, each mapped to its own help skill.
+    assert len({c.case_id.split("/")[0] for c in cases}) == 10
+    assert len({c.skill for c in cases}) == 10
+    for case in cases:
+        prompt = case.prompt
+        assert case.skill not in prompt  # no slug…
+        assert not re.search(r"(?i)\bskills?\b", prompt)  # …no "skill" mention…
+        assert not re.search(r"precis-[a-z0-9-]+", prompt)  # …no slug-shaped token
+        assert "-help" not in prompt
+
+
+def test_each_task_has_two_variants_and_a_fake_that_passes() -> None:
+    cases = load_discovery_cases()
+    tasks: dict[str, list[EvalCase]] = {}
+    for case in cases:
+        task_id = re.sub(r"-v\d+$", "", case.case_id)
+        tasks.setdefault(task_id, []).append(case)
+    assert len(tasks) == 10
+    for task_id, group in tasks.items():
+        assert len(group) == 2, task_id
+        assert len({c.prompt for c in group}) == 2, task_id  # distinct wordings
+        assert all(c.criterion == group[0].criterion for c in group)
+        assert all(c.fake == group[0].fake for c in group)
+        # The corpus self-check: the fake satisfies its own criterion, so
+        # the task is provably completable (alternative valid paths would
+        # also pass — the patterns stay broad on purpose).
+        verdict = check(group[0].criterion, group[0].fake)
+        assert verdict.passed, f"{task_id}: {verdict.reasons}"
+
+
+def test_discovery_corpus_is_green_under_the_fake_runner() -> None:
+    cases = load_discovery_cases()
+    runner = FakeRunner()
+    report = run_cases(cases, runner)
+    assert report.status == "ok" and not report.red
+    assert report.count("pass") == len(cases)
+    for case, rec in zip(cases, runner.recorded, strict=True):
+        assert case.prompt.replace("{run}", DRY_RUN_TOKEN) in rec.prompt
+        for slug in case.skills:
+            assert f"<skill id='{slug}'>" in rec.prompt
+
+
 # ── advisory standing ─────────────────────────────────────────────
 
 
@@ -1204,3 +1457,19 @@ def test_skill_eval_is_not_a_ship_gate_stage() -> None:
     assert wrapper.exists() and "precis.skill_eval" in wrapper.read_text(
         encoding="utf-8"
     )
+
+
+def test_cli_loads_discovery_corpus(tmp_path: Path) -> None:
+    from precis.skill_eval.__main__ import main
+
+    for explicit in (False, True):
+        out = tmp_path / f"discovery-{explicit}.json"
+        args = ["--condition", "discovery", "--out", str(out)]
+        if explicit:
+            args.extend(["--cases", "src/precis/data/skill-evals/discovery"])
+        assert main(args) == 0
+        rows = json.loads(out.read_text(encoding="utf-8"))["cases"]
+        assert {r["case_id"] for r in rows} == {
+            c.case_id for c in load_discovery_cases()
+        }
+        assert len(rows) == 20

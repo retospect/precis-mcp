@@ -35,6 +35,11 @@ ads) is stripped. Links preserved as `[text](url)`; images dropped.
 Footer carries source URL and fetch date for attribution. First call
 fetches and caches; subsequent calls hit the cache.
 
+A cached page also answers to its `wb<N>` record handle (the `cite as`
+line on any read) — `get(id="wb<N>")` re-reads the stored row for
+free, `view='links'` and `extent=` show its inbound mentions, and a
+`wb<N>~<ord>` selector reads one stored chunk.
+
 Extraction needs `trafilatura`, a core dependency — it ships with every
 install. If it's somehow missing (broken venv) the call fails with an
 actionable `[error:Unsupported] trafilatura is not installed` whose
