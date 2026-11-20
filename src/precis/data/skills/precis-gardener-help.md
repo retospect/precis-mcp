@@ -26,7 +26,9 @@ status: active
 `graph_garden` is a job_type for graph maintenance over nodes, edges and
 tags. It files proposals; a consumer step prunes dangling edges and has a
 reviewer apply or reject merges and relinks. Every accepted candidate lands
-as one row in the reviews ledger: `verdict='proposed'`, `actor='graph-garden'`.
+as one row in the reviews ledger: `verdict='proposed'`, `actor='graph-garden'`
+(except `review_due`, whose accepted changes route to a human memory-review
+todo instead — that detector has no apply door; gr732278).
 A proposal stays *current* while the target's content is unchanged; editing
 the target makes it stale by itself.
 

@@ -11,6 +11,15 @@ evidence excerpt (gr732271), and for a ``griped`` no-change the
 replay-after close of the complaint itself once no sibling fix path
 remains (gr561873).
 
+``review_due`` answers review debt, so its verdicts discharge it
+(gr732278): a no-change stamps the review itself — the
+``kg-review:<model>:<date>:ok`` consider act on the pinned sha, in the
+same transaction as the rejection row — so the memory leaves the review
+queue until its content changes, its expiry passes or the review ages,
+and an accepted change routes to a human ``memory-review`` todo instead
+of a proposal, because the detector has no apply door and an emitted
+proposal would sit pending forever.
+
 The ``max_proposals`` budget is shared round-robin across the detectors
 that produced candidates (gr504843): each gets ``max_proposals // n``
 first, and whatever a detector leaves unspent goes to the others. A
@@ -282,6 +291,69 @@ def _close_no_change_gripe(
 ProposerFn = Callable[["Store", GardenCandidate], "Verdict | None"]
 
 
+def _record_review_no_change(
+    store: Store,
+    cand: GardenCandidate,
+    verdict: Verdict,
+    prompt_version: str,
+) -> None:
+    """A ``review_due`` no-change IS the review (gr732278): record the
+    proposer's rejection row and the ``kg-review:<model>:<date>:ok``
+    consider act — expected_sha pinned to the candidate's base_sha,
+    carrying the checklist version the judge answered under — in one
+    transaction. The stamped memory leaves the review queue (it
+    re-enters on content change, expiry or age) instead of staying
+    ``never_reviewed`` behind a rejection row that only hides it until
+    the prompt version bumps. A drifted target keeps the plain
+    rejection: ``sha_changed`` re-queues it honestly.
+    """
+    from datetime import UTC, datetime
+
+    from precis.graph.garden.apply import _review_model_token
+    from precis.graph.garden.proposals import GARDEN_ACTOR
+    from precis.store.revision_context import TrustAct
+
+    base_sha = str(
+        cand.payload.get("base_sha") or cand.evidence.get("content_sha") or ""
+    )
+    with store.atomic() as conn:
+        row = conn.execute(
+            "SELECT precis_target_sha('ref', %s) FROM refs "
+            "WHERE ref_id = %s FOR UPDATE",
+            (cand.target_id, cand.target_id),
+        ).fetchone()
+        record_rejection(
+            store,
+            cand,
+            rationale=verdict.rationale,
+            prompt_version=prompt_version,
+            model=verdict.model,
+        )
+        if row is None or not base_sha or str(row[0]) != base_sha:
+            log.warning(
+                "garden: review_due no-change on me%s without a sha pin match "
+                "— rejection only",
+                cand.target_id,
+            )
+            return
+        store.record_trust_act(
+            TrustAct(
+                action="consider",
+                target_kind="ref",
+                target_id=cand.target_id,
+                expected_sha=str(row[0]),
+                reason=(
+                    f"kg-review:{_review_model_token(verdict.model)}:"
+                    f"{datetime.now(UTC):%Y-%m-%d}:ok"
+                ),
+                prompt_version=prompt_version,
+            ),
+            actor=GARDEN_ACTOR,
+            actor_type="agent",
+            model=verdict.model,
+        )
+
+
 @dataclass(slots=True)
 class GardenOutcome:
     """One tick's tallies — stamped on the job's ``meta.garden``."""
@@ -303,6 +375,11 @@ class GardenOutcome:
     #: memory-review todo and closes the key under this prompt version
     #: (gr560762).
     asked: int = 0
+    #: Accepted ``review_due`` changes routed to a human review todo —
+    #: the detector has no apply door, so an emitted proposal would sit
+    #: pending forever (gr732278). The key closes under this prompt
+    #: version like an ask.
+    routed: int = 0
     #: Rejected by the short-sibling rule before any model call
     #: (``reason='sibling_distinct_names'`` on the row; gr504843).
     rule_rejected: int = 0
@@ -512,13 +589,16 @@ def run_garden_tick(
             return False
         if not verdict.accept:
             out.rejected += 1
-            record_rejection(
-                store,
-                cand,
-                rationale=verdict.rationale,
-                prompt_version=prompt_version,
-                model=verdict.model,
-            )
+            if cand.detector == "review_due":
+                _record_review_no_change(store, cand, verdict, prompt_version)
+            else:
+                record_rejection(
+                    store,
+                    cand,
+                    rationale=verdict.rationale,
+                    prompt_version=prompt_version,
+                    model=verdict.model,
+                )
             if gid is not None:
                 _close_no_change_gripe(
                     store, cand, verdict.rationale, queues, open_gripes
@@ -533,6 +613,36 @@ def run_garden_tick(
             merged = dict(effective.payload)
             merged.update(verdict.payload_overrides)
             effective = _replace(effective, payload=merged)
+        if cand.detector == "review_due":
+            # gr732278: review_due has no apply door — an emitted proposal
+            # would sit pending forever. The human review todo is the door:
+            # it carries the accepted change, and the rejection row closes
+            # the key under this prompt version.
+            out.routed += 1
+            ask = (
+                f"the evaluator accepted a {effective.action} change: "
+                f"{verdict.rationale or 'no reason given'}. review_due has "
+                "no apply door — verify the change and carry it out by hand"
+            )
+            _file_review_todo(
+                store,
+                effective,
+                Verdict(
+                    accept=False,
+                    rationale=verdict.rationale,
+                    ask=ask,
+                    model=verdict.model,
+                ),
+            )
+            record_rejection(
+                store,
+                effective,
+                rationale=verdict.rationale,
+                prompt_version=prompt_version,
+                model=verdict.model,
+                reason="accepted_no_apply",
+            )
+            return False
         emitted = emit_proposal(
             store,
             effective,

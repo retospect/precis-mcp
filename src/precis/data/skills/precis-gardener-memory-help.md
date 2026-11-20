@@ -62,7 +62,12 @@ proposals only:
   prompt version; unversioned stamps need review; demotion invalidates a
   stamp. Reference/gotchas age after 30 days, runbooks after 60;
   workflow/rulings use `meta.review_by` until reviewed on or after that
-  date. Threads have no age review.
+  date. Threads have no age review. A no-change verdict stamps
+  `kg-review:<model>:<date>:ok` on the pinned sha (with the checklist
+  version) in the same transaction as its rejection row, so the memory
+  leaves the queue until it changes, expires or ages; an accepted change
+  routes to a human memory-review todo instead of a proposal, since the
+  detector has no apply door (gr732278).
 - Expiry defaults use section tags plus title, computed at read time from
   `updated_at`: threads/handoff/resume/"state on"/"as of" get 14 days;
   incident/campaign/date-range/"waves N-M" write-ups get 90. Ordinary
@@ -315,6 +320,9 @@ files a `memory-review` todo linked to the memory (`raises-concern-about`)
 and writes no proposal. No todo is filed while one is open, or when a done
 review already covers the same memory, detector and content SHA (each todo
 body pins `Detector:` and `Pinned content sha:`); a changed SHA asks again.
+For `review_due` the same todo is the door for an accepted change (no
+apply door — no proposal row is emitted), and a `no-change` answer stamps
+the `kg-review:<model>:<UTC date>:ok` review on the pinned sha (gr732278).
 
 ## Reviewed memory actions
 

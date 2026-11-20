@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -28,7 +29,7 @@ from precis.graph.garden.proposer import (
 from precis.graph.garden.runner import run_garden_tick
 from precis.store import Store
 from precis.store.revision_context import TrustAct, revision_context
-from precis.store.types import ChunkInsert, Tag
+from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 
 NOW = datetime(2026, 11, 4, tzinfo=UTC)
 DETECTORS = ("review_due", "title_shape", "negative_undated", "notation")
@@ -690,3 +691,111 @@ def test_notation_proposal_ops_match_fresh_detector_ops(store: Store) -> None:
     assert fresh.payload["ops"] == proposal.payload["ops"]
     assert fresh.evidence == proposal.evidence
     assert fresh.key == proposal.key
+
+
+# ── review_due verdicts discharge the debt (gr732278) ───────────────
+
+
+def test_review_due_no_change_stamps_ok_and_clears_the_queue(store: Store) -> None:
+    rid = _memory(store)
+    (unreviewed,) = cand.review_due_candidates(store, now=NOW)
+    assert unreviewed.evidence["reason"] == "never_reviewed"
+
+    def propose(_s: Store, c: cand.GardenCandidate) -> Verdict:
+        return Verdict(accept=False, rationale="stands", model="fixture")
+
+    run = run_garden_tick(store, passes=("memory-review",), propose=propose)
+    assert run.rejected >= 1
+    # The rejection row AND the ok stamp land.
+    rejections = [r for r in store.reviews_for("ref", rid) if r.verdict == "rejected"]
+    assert rejections, "no-change must still record a proposer rejection"
+    (stamp,) = [
+        a
+        for a in store.trust_acts_for("ref", rid)
+        if ((a.get("payload") or {}).get("kg_review") or {}).get("verdict") == "ok"
+    ]
+    assert stamp["expected_sha"] == unreviewed.payload["base_sha"]
+    assert (stamp.get("payload") or {}).get("prompt_version") == MEMORY_PROMPT_VERSION
+    assert (stamp["payload"]["kg_review"]) == {
+        "model": "fixture",
+        "date": f"{datetime.now(UTC):%Y-%m-%d}",
+        "verdict": "ok",
+    }
+    # The memory leaves the queue: considered at the current checklist
+    # version on the unchanged sha.
+    state = store.trust_state("ref", rid)
+    assert state is not None and state.confidence == "considered"
+    assert cand.review_due_candidates(store, now=NOW) == []
+    # The aged cycle starts from the gardener's own review (30 days for
+    # reference/gotchas, counted from the real stamp date).
+    aged = cand.review_due_candidates(store, now=datetime.now(UTC) + timedelta(days=31))
+    assert [c.target_id for c in aged] == [rid]
+    assert aged[0].evidence["reason"] == "aged"
+
+
+def test_review_due_ok_stamp_reopens_on_content_change(store: Store) -> None:
+    rid = _memory(store)
+    run_garden_tick(
+        store,
+        passes=("memory-review",),
+        propose=lambda _s, c: Verdict(accept=False, rationale="stands", model="f"),
+    )
+    assert cand.review_due_candidates(store, now=NOW) == []
+    with revision_context("fixture content edit", trust_origin="generated"):
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET title = 'The route now names another source' "
+                "WHERE ref_id = %s",
+                (rid,),
+            )
+    (changed,) = cand.review_due_candidates(store, now=NOW)
+    assert changed.target_id == rid
+    assert changed.evidence["reason"] == "sha_changed"
+
+
+def test_review_due_accept_routes_to_review_todo_without_proposal(
+    store: Store,
+) -> None:
+    rid = _memory(store)
+
+    def propose(_s: Store, c: cand.GardenCandidate) -> Verdict:
+        if c.detector != "review_due":
+            return Verdict(accept=False, rationale="not the target")
+        return Verdict(
+            accept=True,
+            action="rewrite",
+            rationale="refresh the anchor",
+            model="fixture",
+        )
+
+    run = run_garden_tick(store, passes=("memory-review",), propose=propose)
+    assert run.proposals == 0
+    assert run.routed == 1
+    assert pending_proposals(store) == []
+    from precis.utils.memory_hubs import review_todos
+
+    todos = review_todos(store, [rid])
+    assert todos, "the accepted change must land on a human review todo"
+    todo_id = int(todos[rid].split(":")[0].removeprefix("td"))
+    todo = store.fetch_refs_by_ids([todo_id])[todo_id]
+    assert todo.meta.get("llm_tier") == "opus"
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
+            (todo_id, TODO_BODY_KIND),
+        ).fetchone()
+    assert row is not None
+    body = row[0]
+    assert "accepted a rewrite change" in body
+    assert "refresh the anchor" in body
+    # The key closes under this prompt version; the next tick re-asks nothing.
+    rejections = [
+        json.loads(r.note)["garden"]
+        for r in store.reviews_for("ref", rid)
+        if r.verdict == "rejected"
+    ]
+    assert any(n.get("reason") == "accepted_no_apply" for n in rejections)
+    again = run_garden_tick(store, passes=("memory-review",), propose=propose)
+    assert again.routed == 0
+    assert again.skipped_rejected >= 1
+    assert review_todos(store, [rid])[rid].count(",") == 0

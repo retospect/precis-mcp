@@ -263,7 +263,17 @@ def _title_shape_candidate(store: Store) -> tuple[int, cand.GardenCandidate]:
     return rid, candidate
 
 
-def test_no_change_closes_the_key_under_the_prompt_version(store: Store) -> None:
+def _silence_review_due(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep review debt out of a title_shape test: a review_due no-change
+    now stamps the memory considered, which trips the freshness skip and
+    shadows the title_shape key lifecycle these tests pin (gr732278)."""
+    monkeypatch.setattr(cand, "review_due_candidates", lambda *a, **k: [])
+
+
+def test_no_change_closes_the_key_under_the_prompt_version(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _silence_review_due(monkeypatch)
     rid, candidate = _title_shape_candidate(store)
     tick = run_garden_tick(
         store,
@@ -301,7 +311,10 @@ def test_no_change_closes_the_key_under_the_prompt_version(store: Store) -> None
     assert len(store.reviews_for("ref", rid)) == before
 
 
-def test_ask_files_a_memory_review_todo_by_smell_class(store: Store) -> None:
+def test_ask_files_a_memory_review_todo_by_smell_class(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _silence_review_due(monkeypatch)
     rid, _candidate_ = _title_shape_candidate(store)
 
     def _ask(s: Store, c: cand.GardenCandidate) -> Verdict:

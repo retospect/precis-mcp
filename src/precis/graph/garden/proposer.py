@@ -282,8 +282,14 @@ Verify current truth before proposing a rewrite; preserve still-needed
 facts before suggesting retirement, or re-arm expiry for live state.
 For incident shapes, once verified, suggest a dated cause, verified fix
 and open uncertainty; never invent a fix. An unavailable source stays
-not_checked and cannot justify a finding. Reject when no change is
-supported; ask only when resolution needs a human. Preserve base_sha.
+not_checked and cannot justify a finding. Answer "no-change" when no
+change is supported — the runner then stamps the review itself, a
+kg-review:<model>:<date>:ok trust act on the pinned sha, so the memory
+leaves the review queue until its content changes, its expiry passes or
+the review ages. Ask only when resolution needs a human. An accepted
+change is never emitted as a proposal: the runner routes it to a human
+memory-review todo, since this detector has no apply door. Preserve
+base_sha.
 
 title_shape proposes a title stating the body's supported conclusion,
 about twelve words. A title_shape rewrite requires a non-empty "new_title".

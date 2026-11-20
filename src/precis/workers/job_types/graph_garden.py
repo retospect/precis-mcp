@@ -248,6 +248,9 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         "skipped_considered": outcome.skipped_considered,
         "rejected": outcome.rejected,
         "asked": outcome.asked,
+        # Accepted review_due changes routed to human review todos —
+        # the detector has no apply door (gr732278).
+        "routed": outcome.routed,
         "rule_rejected": outcome.rule_rejected,
         "llm_errors": outcome.llm_errors,
         "llm_truncated": outcome.llm_truncated,
