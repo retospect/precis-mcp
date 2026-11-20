@@ -134,6 +134,15 @@ The overlay sync preflight inside `play` and `scripts/deploy`
 fast-forwards, pushes, or refuses on divergence — treat a refuse as a
 queue to reconcile, never to bypass.
 
+## Shell session gotchas
+
+- In an interactive shell, `! cd deploy` leaves the working directory at
+  `deploy/` for later commands. From there, repo-root `scripts/` paths fail,
+  and a line starting with `cd deploy && ...` tries to enter `deploy/` again
+  and fails with “no such directory.” Run `! cd ..` to return to the repo root.
+- Ad hoc scripts in `/tmp` vanish on reboot. Ask a cluster-ops agent for
+  current host status after a reboot.
+
 ## See also
 
 - [[backup-restore-drill]] — the other hands-on prod drill.
