@@ -13,6 +13,7 @@ from typing import Any
 
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput
 from precis.ingest.dedup import merge_refs
@@ -1144,8 +1145,9 @@ def test_a_unitless_count_is_not_an_outlier(
     assert _row(store, big.output_id)["meta"].get("escalation") is None
 
 
+@pytest.mark.parametrize("reported_unit", ["1", "\t1\t"])
 def test_a_bare_one_count_is_not_an_outlier(
-    store: Store, world: dict[str, Any]
+    store: Store, world: dict[str, Any], reported_unit: str
 ) -> None:
     # gr722340: the extractor writes '1' for a unitless cell on a
     # canonical-'1' measurand — that bare token is the unitless case too.
@@ -1156,7 +1158,7 @@ def test_a_bare_one_count_is_not_an_outlier(
             actor="reader",
         )
     big = store.insert_measure(
-        MeasureSpec(count, "1132808", world["paper"], reported_unit="1"),
+        MeasureSpec(count, "1132808", world["paper"], reported_unit=reported_unit),
         actor="reader",
     )
     assert _row(store, big.output_id)["meta"].get("escalation") is None
@@ -1191,21 +1193,28 @@ class TestEscalationRepair:
     _DOOR = "SELECT set_config('precis.allow_measure_escalation_repair', 'on', true)"
 
     def _flagged(
-        self, store: Store, w: dict[str, Any], entries: list[dict[str, Any]]
+        self,
+        store: Store,
+        w: dict[str, Any],
+        entries: list[dict[str, Any]],
+        *,
+        reported_unit: str | None = None,
     ) -> int:
         run = store.insert_measure(
             MeasureSpec(
                 _taxon(store, "Count"),
                 "1132808",
                 w["paper"],
+                reported_unit=reported_unit,
                 meta={"escalation": entries},
             ),
             actor="reader",
         )
         return run.output_id
 
+    @pytest.mark.parametrize("entries", [[], [{"rule": "implausible_value"}]])
     def test_the_door_cannot_grow_an_escalation_key_on_a_clean_row(
-        self, store: Store, world: dict[str, Any]
+        self, store: Store, world: dict[str, Any], entries: list[dict[str, str]]
     ) -> None:
         # The review's regression: an escalation key — even a bare '[]' —
         # excludes a row from best_measure ('meta ? escalation'), so the
@@ -1218,9 +1227,8 @@ class TestEscalationRepair:
             conn.execute(self._DOOR)
             with pytest.raises(psycopg.errors.CheckViolation, match="append-only"):
                 conn.execute(
-                    "UPDATE measures SET meta = meta || "
-                    "'{\"escalation\": []}' WHERE id = %s",
-                    (run.output_id,),
+                    "UPDATE measures SET meta = meta || %s WHERE id = %s",
+                    (Jsonb({"escalation": entries}), run.output_id),
                 )
 
     def test_the_door_only_shrinks_the_array(
@@ -1255,6 +1263,34 @@ class TestEscalationRepair:
             )
         assert "escalation" not in _row(store, mid)["meta"]
 
+    @pytest.mark.parametrize(
+        "entries",
+        [
+            [{"rule": "implausible_value"}],
+            [{"rule": "no_molar_mass"}, {"rule": "no_molar_mass"}],
+        ],
+        ids=["partial-object", "extra-duplicate"],
+    )
+    def test_the_door_requires_exact_entries_with_multiplicity(
+        self, store: Store, world: dict[str, Any], entries: list[dict[str, str]]
+    ) -> None:
+        mid = self._flagged(
+            store,
+            world,
+            [
+                {"rule": "implausible_value", "value": 1132808},
+                {"rule": "no_molar_mass"},
+                {"rule": "glyph_suspected"},
+            ],
+        )
+        with store.pool.connection() as conn, conn.transaction():
+            conn.execute(self._DOOR)
+            with pytest.raises(psycopg.errors.CheckViolation, match="append-only"):
+                conn.execute(
+                    "UPDATE measures SET meta = meta || %s WHERE id = %s",
+                    (Jsonb({"escalation": entries}), mid),
+                )
+
     def test_the_door_keeps_the_other_entries_on_a_partial_repair(
         self, store: Store, world: dict[str, Any]
     ) -> None:
@@ -1273,14 +1309,18 @@ class TestEscalationRepair:
             )
         assert _row(store, mid)["meta"]["escalation"] == [{"rule": "no_molar_mass"}]
 
+    @pytest.mark.parametrize("reported_unit", [None, "\t1\t", "\u00a01\u3000"])
     def test_0338_repairs_the_rows_the_new_check_no_longer_flags(
-        self, store: Store, world: dict[str, Any]
+        self, store: Store, world: dict[str, Any], reported_unit: str | None
     ) -> None:
         # The migration itself is the repair path for the rows the old check
         # flagged (mx6128): replaying it lifts the implausible_value entry —
         # and the key — off a unitless row, keeps unrelated rules, and
         # leaves a spelled-unit row alone.
-        bad = self._flagged(store, world, [{"rule": "implausible_value"}])
+        bad = self._flagged(
+            store, world, [{"rule": "implausible_value"}], reported_unit=reported_unit
+        )
+        assert _row(store, bad)["reported_unit"] == reported_unit
         mixed = self._flagged(
             store,
             world,

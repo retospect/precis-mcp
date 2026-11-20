@@ -24,7 +24,8 @@
 --     trip `meta ? 'escalation'` and exclude the row, gr722340 review);
 --   * every other meta key is IS NOT DISTINCT FROM preserved;
 --   * the new array only ever loses entries — every element must be one
---     the old array held and it may not be longer — and when the last
+--     the old array held, with its original multiplicity as an upper bound,
+--     and the array must be shorter. When the last
 --     entry goes the key must be removed, never left as '[]'.
 --
 -- The repair itself runs here, in this transaction, scoped to exactly
@@ -99,19 +100,25 @@ DECLARE
         coalesce(current_setting('precis.allow_measure_escalation_repair',
                                  true), '')
             = 'on'
-        AND jsonb_typeof(OLD.meta -> 'escalation') = 'array'
         AND (OLD.meta - 'escalation')
             IS NOT DISTINCT FROM (NEW.meta - 'escalation')
-        AND (
-            NEW.meta -> 'escalation' IS NULL
-            OR (
-                jsonb_typeof(NEW.meta -> 'escalation') = 'array'
-                AND jsonb_array_length(NEW.meta -> 'escalation') > 0
+        AND CASE
+            WHEN jsonb_typeof(OLD.meta -> 'escalation') IS DISTINCT FROM 'array'
+                THEN false
+            WHEN NEW.meta -> 'escalation' IS NULL THEN true
+            WHEN jsonb_typeof(NEW.meta -> 'escalation') = 'array' THEN
+                jsonb_array_length(NEW.meta -> 'escalation') > 0
                 AND jsonb_array_length(NEW.meta -> 'escalation')
                     < jsonb_array_length(OLD.meta -> 'escalation')
-                AND (NEW.meta -> 'escalation')
-                    <@ (OLD.meta -> 'escalation')))
-    ;
+                -- EXCEPT ALL compares whole entries and consumes one old
+                -- occurrence for each occurrence in the new array.
+                AND NOT EXISTS (
+                    SELECT value FROM jsonb_array_elements(NEW.meta -> 'escalation')
+                    EXCEPT ALL
+                    SELECT value FROM jsonb_array_elements(OLD.meta -> 'escalation')
+                )
+            ELSE false
+        END;
 BEGIN
     FOR k IN
         SELECT coalesce(n.key, o.key)
@@ -124,7 +131,7 @@ BEGIN
            AND NOT (coalesce(n.key, o.key) = 'primary_link_id' AND v_link_ok)
            AND NOT (coalesce(n.key, o.key) = 'source_ref_id' AND v_src_ok)
            AND NOT (coalesce(n.key, o.key) = 'measurand_ref_id' AND v_repoint_ok)
-           AND NOT (coalesce(n.key, o.key) = 'meta' AND v_esc_ok)
+           AND NOT (coalesce(n.key, o.key) = 'meta' AND v_esc_ok IS TRUE)
     LOOP
         RAISE EXCEPTION
             'measures are append-only: column % of measure % is frozen '
@@ -171,11 +178,19 @@ UPDATE measures m
        END
  WHERE m.direction = 'output'
    AND m.superseded_by IS NULL
-   AND (m.reported_unit IS NULL OR btrim(m.reported_unit) IN ('', '1'))
-   AND jsonb_typeof(m.meta -> 'escalation') = 'array'
-   AND EXISTS (SELECT 1
+   -- Python str.strip() whitespace, independent of the database locale.
+   AND (m.reported_unit IS NULL OR btrim(
+       m.reported_unit,
+       U&'\0009\000A\000B\000C\000D\001C\001D\001E\001F\0020\0085\00A0\1680' ||
+       U&'\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A' ||
+       U&'\2028\2029\202F\205F\3000'
+   ) IN ('', '1'))
+   AND CASE WHEN jsonb_typeof(m.meta -> 'escalation') = 'array' THEN
+       EXISTS (SELECT 1
                  FROM jsonb_array_elements(m.meta -> 'escalation') e
-                WHERE e ->> 'rule' = 'implausible_value');
+                WHERE e ->> 'rule' = 'implausible_value')
+       ELSE false
+   END;
 
 COMMIT;
 
