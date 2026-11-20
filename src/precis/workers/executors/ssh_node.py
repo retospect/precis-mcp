@@ -91,12 +91,17 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import psycopg
+
+from precis.store.advisory import try_xact_advisory_lock
 from precis.utils import job_footprint
 from precis.workers import admission
 from precis.workers.executors._common import (
@@ -168,6 +173,14 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _EXECUTOR_NAME = "ssh_node"
+
+#: Advisory-lock namespace (int4, "ssnw") of a host's watch steps
+#: (:func:`_watch_lock`); the second key is ``hashtext`` of the node name.
+_WATCH_LOCK_NS = 0x73736E77
+#: How long one worker may hold the watch lock. The steps take seconds; a
+#: poll that hangs must not stop the host's other worker from watching, so
+#: past this the server drops the lock connection and the lock with it.
+_WATCH_LOCK_MAX = "900s"
 
 #: Lease floor + margin (seconds). The lease is
 #: ``max(_LEASE_FLOOR_S, max(resources.wall_seconds, type cap) +
@@ -678,19 +691,59 @@ def _reap_detached_orphans(
     return reaped
 
 
-def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
-    """Process up to ``limit`` ssh_node jobs.
+@contextmanager
+def _watch_lock(store: Store, node: str | None) -> Iterator[bool]:
+    """Whether THIS worker runs the pass's watch steps (poll, cancel,
+    orphan reap) on this tick.
 
-    Returns ``{claimed, ok, failed}`` for runner aggregation. ``claimed``
-    counts newly (re)claimed rows this tick (submit/dispatch attempts);
-    ``ok``/``failed`` cover BOTH the poll step (a handle driven to a clean
-    terminal state, or one that raised) and the claim step (a submit/
-    dispatch that succeeded/raised, or a poison-fail). Default ``limit=1``
-    because a legacy blocking ``dispatch`` still occupies the worker
-    thread for the whole run — a submit/poll-only fleet could safely
-    raise this.
-    """
-    node = os.environ.get("PRECIS_NODE")
+    Those steps act on every in-flight job pinned to the host and claim
+    nothing, and two workers on one host both run this pass — the
+    gateway's catch-all and its slices lane (gr548810). Unguarded, each
+    polled every job, so a job type's done step ran once per worker: at
+    the same time when it was slow (one ``ci_red_digest`` minted its
+    sibling fix node twice and posted every brief twice), or back to back
+    off a job list read before the other worker finished (gr741091).
+
+    One transaction-scoped advisory lock per host serialises them
+    (:func:`precis.store.advisory.try_xact_advisory_lock`: its own
+    connection, pgbouncer-safe, gone with a dead holder). The loser skips
+    the tick — the holder is doing the same work — and
+    :func:`_watch_in_flight` reads its job lists inside the lock, so a
+    later holder sees what an earlier one finished.
+
+    A lock connection that cannot be opened yields ``True``: the steps
+    then run unguarded, as they always did, because a host that stops
+    watching its jobs is the worse failure. For the same reason the lock
+    is lost after :data:`_WATCH_LOCK_MAX`: a holder stuck in one poll
+    does not keep the host's other worker out for good. A store built
+    on a ready pool has no DSN to open the lock connection with and runs
+    unguarded too."""
+    if not store.dsn:
+        yield True
+        return
+    try:
+        cm = try_xact_advisory_lock(
+            store.dsn,
+            _WATCH_LOCK_NS,
+            text_key=node or "",
+            idle_timeout=_WATCH_LOCK_MAX,
+            application_name="precis ssh_node watch",
+        )
+        held = cm.__enter__()
+    except psycopg.OperationalError as exc:
+        log.warning("ssh_node: watch lock unavailable (%s) — running unguarded", exc)
+        yield True
+        return
+    try:
+        yield held
+    finally:
+        cm.__exit__(None, None, None)
+
+
+def _watch_in_flight(store: Store, node: str | None) -> tuple[int, int]:
+    """Steps 0-0.5 of the pass, under :func:`_watch_lock`: poll the
+    in-flight detached jobs pinned to this host, drive the cancelling ones
+    to cancelled, reap orphaned computes. Returns ``(ok, failed)``."""
     ok = 0
     failed = 0
 
@@ -741,6 +794,31 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     # before claiming anything new, so freed memory/GPU is back before
     # the next submit.
     _reap_detached_orphans(store, node)
+    return ok, failed
+
+
+def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
+    """Process up to ``limit`` ssh_node jobs.
+
+    Returns ``{claimed, ok, failed}`` for runner aggregation. ``claimed``
+    counts newly (re)claimed rows this tick (submit/dispatch attempts);
+    ``ok``/``failed`` cover BOTH the poll step (a handle driven to a clean
+    terminal state, or one that raised) and the claim step (a submit/
+    dispatch that succeeded/raised, or a poison-fail). Default ``limit=1``
+    because a legacy blocking ``dispatch`` still occupies the worker
+    thread for the whole run — a submit/poll-only fleet could safely
+    raise this.
+    """
+    node = os.environ.get("PRECIS_NODE")
+    ok = 0
+    failed = 0
+
+    # 0-0.5) Watch the in-flight jobs pinned to this host — one worker per
+    # host at a time (:func:`_watch_lock`); the claim step below is
+    # arbitrated by its own row locks and always runs.
+    with _watch_lock(store, node) as held:
+        if held:
+            ok, failed = _watch_in_flight(store, node)
 
     poisoned: list[tuple[int, str, dict[str, Any]]] = []
     to_run: list[tuple[int, str, dict[str, Any]]] = []

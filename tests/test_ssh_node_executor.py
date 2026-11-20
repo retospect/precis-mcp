@@ -14,14 +14,16 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 from typing import Any
 
+import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
 from precis.dispatch import Hub
 from precis.store import Store
+from precis.store.advisory import try_xact_advisory_lock
 from precis.store.types import Tag
 from precis.workers.executors import EXECUTOR_PROVIDES, ssh_node
 from precis.workers.executors._common import claim_executor_jobs
@@ -1544,6 +1546,162 @@ def test_poll_missing_resolvable_poll_fails_infra(
     assert result == {"claimed": 0, "ok": 1, "failed": 0}
     assert _status(store, rid) == "failed"
     assert _meta(store, rid)["failure_class"] == "infra"
+
+
+# ── one worker per host watches the in-flight jobs (gr741091) ────────────
+
+
+def _counting_poll(calls: list[int]) -> Any:
+    """A poll that finishes its job, recording each call."""
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        calls.append(ctx.ref_id)
+        ctx.set_status("succeeded")
+        return True
+
+    return _poll
+
+
+def test_watch_steps_skip_while_another_worker_holds_the_hosts_lock(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two workers on one host both run this pass. The one that does not
+    hold the host's watch lock must not poll: the holder is polling the
+    same jobs, and a second done step doubles every side effect."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(poll=_counting_poll(calls), submit=lambda c, s: None),
+    )
+    monkeypatch.setenv("PRECIS_NODE", "gateway")
+    rid = _mk_running_job(
+        store, lease_offset_s=3600, compute_handle="pid-1", target_node="gateway"
+    )
+
+    assert store.dsn
+    with try_xact_advisory_lock(
+        store.dsn, ssh_node._WATCH_LOCK_NS, text_key="gateway"
+    ) as other_worker:
+        assert other_worker
+        result = ssh_node.run_ssh_node_pass(store, limit=2)
+        assert result == {"claimed": 0, "ok": 0, "failed": 0}
+        assert calls == []
+        assert _status(store, rid) == "running"
+
+    assert ssh_node.run_ssh_node_pass(store, limit=2)["ok"] == 1
+    assert calls == [rid]
+    assert _status(store, rid) == "succeeded"
+
+
+def test_watch_lock_is_per_host(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Another host's watcher polls other jobs; it must not hold this one up."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(poll=_counting_poll(calls), submit=lambda c, s: None),
+    )
+    monkeypatch.setenv("PRECIS_NODE", "gateway")
+    rid = _mk_running_job(
+        store, lease_offset_s=3600, compute_handle="pid-1", target_node="gateway"
+    )
+
+    assert store.dsn
+    with try_xact_advisory_lock(
+        store.dsn, ssh_node._WATCH_LOCK_NS, text_key="gpu-node"
+    ) as elsewhere:
+        assert elsewhere
+        assert ssh_node.run_ssh_node_pass(store, limit=2)["ok"] == 1
+    assert calls == [rid]
+
+
+def test_two_passes_at_once_run_a_done_step_once(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The r341 shape: a slow done step, and a second worker's pass that
+    starts while it runs. Unguarded, both polled the job."""
+    calls: list[int] = []
+    in_poll = Event()
+    finish = Event()
+
+    def _slow_poll(ctx: Any, handle: Any) -> bool:
+        calls.append(ctx.ref_id)
+        in_poll.set()
+        assert finish.wait(30)
+        ctx.set_status("succeeded")
+        return True
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(poll=_slow_poll, submit=lambda c, s: None),
+    )
+    monkeypatch.setenv("PRECIS_NODE", "gateway")
+    rid = _mk_running_job(
+        store, lease_offset_s=3600, compute_handle="pid-1", target_node="gateway"
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(ssh_node.run_ssh_node_pass, store, limit=2)
+        try:
+            assert in_poll.wait(30)
+            second = ssh_node.run_ssh_node_pass(store, limit=2)
+        finally:
+            finish.set()
+        assert first.result(30)["ok"] == 1
+
+    assert second == {"claimed": 0, "ok": 0, "failed": 0}
+    assert calls == [rid]
+    # A later pass reads its job list inside the lock: the job is done.
+    assert ssh_node.run_ssh_node_pass(store, limit=2)["ok"] == 0
+    assert calls == [rid]
+
+
+def test_the_job_list_is_read_inside_the_watch_lock(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Read before the lock, the list could name a job the previous holder
+    has just finished — and its done step would run a second time."""
+    monkeypatch.setenv("PRECIS_NODE", "gateway")
+    free: list[bool] = []
+    real = ssh_node._polling_jobs
+
+    def _spy(s: Store, node: str | None) -> Any:
+        assert s.dsn
+        with try_xact_advisory_lock(
+            s.dsn, ssh_node._WATCH_LOCK_NS, text_key="gateway"
+        ) as got:
+            free.append(got)
+        return real(s, node)
+
+    monkeypatch.setattr(ssh_node, "_polling_jobs", _spy)
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert free == [False]
+
+
+def test_an_unreachable_watch_lock_does_not_stop_the_watch(
+    store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A host that stops polling its jobs is worse than a rare double poll:
+    with no lock connection the steps run unguarded, as they always did."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(poll=_counting_poll(calls), submit=lambda c, s: None),
+    )
+
+    def _down(*a: Any, **kw: Any) -> Any:
+        raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr(ssh_node, "try_xact_advisory_lock", _down)
+    rid = _mk_running_job(store, lease_offset_s=3600, compute_handle="pid-1")
+
+    with caplog.at_level("WARNING", logger=ssh_node.log.name):
+        assert ssh_node.run_ssh_node_pass(store, limit=2)["ok"] == 1
+    assert calls == [rid]
+    assert "watch lock unavailable" in caplog.text
 
 
 def test_legacy_dispatch_still_works_with_deprecation_warning(
