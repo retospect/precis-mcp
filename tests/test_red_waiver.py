@@ -5,6 +5,7 @@ the git reads (a throwaway repo). Store-backed parts: ``test_red_waiver_db``."""
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -272,6 +273,73 @@ def test_parse_refuses_a_count_mismatch_or_a_missing_count() -> None:
     assert any("no pytest 'N failed' count" in p for p in W.parse_failures(nocount)[1])
     exact = DIGEST.replace("2 failed, 40 passed", "1 failed, 1 error, 40 passed")
     assert W.parse_failures(exact)[1] == []
+
+
+#: A section whose signal lines ran past ``scripts/ci-failed``'s per-job
+#: cap: the ids block, ci-failed's own ``pytest summary:`` copy of the
+#: count, then ``E`` lines up to the cut. The FAILED lines and pytest's
+#: closing ``=== N failed ===`` line are the log's last and did not fit.
+CUT_DIGEST = """\
+== gate-fast (3.13, 1) ==
+  failed ids (2):
+    tests/test_widgets.py::test_blue
+    tests/test_widgets.py::test_red[a-b]
+  pytest summary: 2 failed, 4387 passed, 17 skipped, 59 warnings in 472.14s (0:07:52)
+  E       AssertionError: assert 1 == 2
+  … 38 more signal lines
+"""
+
+
+def test_parse_reads_ci_faileds_own_copy_of_the_count() -> None:
+    """gr741066: without it every long red section read as "no count", and
+    the release digest minted a catch-all fix node for a complete id list."""
+    failures, problems = W.parse_failures(CUT_DIGEST)
+    assert problems == []
+    assert list(failures) == [
+        "tests/test_widgets.py::test_blue",
+        "tests/test_widgets.py::test_red[a-b]",
+    ]
+    # The copy is checked like the closing line: a disagreeing count is
+    # still a problem, errors still count, and a count-free line is none.
+    three = CUT_DIGEST.replace("2 failed, 4387", "3 failed, 4386")
+    assert any("summary counts 3" in p for p in W.parse_failures(three)[1])
+    with_error = CUT_DIGEST.replace("2 failed,", "1 failed, 1 error,")
+    assert W.parse_failures(with_error)[1] == []
+    green = CUT_DIGEST.replace("2 failed, 4387 passed", "4389 passed")
+    assert any("no pytest 'N failed' count" in p for p in W.parse_failures(green)[1])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="scripts/ci-failed is POSIX-only")
+def test_a_section_ci_failed_cut_at_its_cap_still_parses_complete() -> None:
+    """The two ends together: the REAL ``scripts/ci-failed`` digest of a job
+    with more signal lines than its cap, read by :func:`parse_failures`."""
+    ts = "2026-11-20T12:23:30.0000000Z"
+    job = "gate-fast (3.13, 1)\tRun pytest\t" + ts + " "
+    lines = [f"E       assert {i} == -1" for i in range(60)]
+    lines += [
+        "=========================== short test summary info ===========================",
+        "FAILED tests/test_a.py::test_x - assert 0 == -1",
+        "FAILED tests/test_a.py::test_y - assert 1 == -1",
+        "====== 2 failed, 4387 passed, 17 skipped, 59 warnings in 472.14s (0:07:52) ======",
+    ]
+    script = Path(__file__).resolve().parents[1] / "scripts" / "ci-failed"
+    # A child process: the script is dotless, which testmon cannot trace.
+    code = "import runpy, sys; print(runpy.run_path(sys.argv[1])['digest'](sys.stdin.read()))"
+    digest = subprocess.run(
+        [sys.executable, "-c", code, str(script)],
+        input="".join(job + line + "\n" for line in lines),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=60,
+    ).stdout
+    assert "more signal lines" in digest  # the cap did cut the section
+    assert "FAILED tests/test_a.py::test_x" not in digest
+    assert "pytest summary: 2 failed" in digest
+    failures, problems = W.parse_failures(digest)
+    assert problems == []
+    assert list(failures) == ["tests/test_a.py::test_x", "tests/test_a.py::test_y"]
 
 
 def test_parse_refuses_a_header_that_disagrees_with_its_ids() -> None:

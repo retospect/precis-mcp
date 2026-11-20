@@ -269,9 +269,16 @@ _MORE = re.compile(r"^\s*… \+(\d+) more")
 #: ``ci-failed``'s own summary-line shape (``_SUMMARY_ID``) plus its
 #: `` - reason`` tail, the assertion line.
 _FAILED_LINE = re.compile(r"^\s*(?:FAILED|ERROR)\s+(.+?)(?:\s+-\s+(.*))?\s*$")
-#: pytest's closing line (``=== 2 failed, 40 passed, 1 error in 3s ===``):
-#: the count the parsed ids are checked against.
-_SUMMARY_LINE = re.compile(r"^\s*=+\s*(.*\b\d+ (?:failed|errors?)\b.*?)\s*=+\s*$")
+#: pytest's closing line (``=== 2 failed, 40 passed, 1 error in 3s ===``),
+#: or ``scripts/ci-failed``'s ``pytest summary: 2 failed, …`` copy of it:
+#: the count the parsed ids are checked against. The copy is the one a long
+#: section still has — the closing line is the log's last signal line, and
+#: ci-failed's per-job line cap cuts it off once the failures' ``E`` lines
+#: fill the budget, which read as "no count" on every such red (gr741066).
+_SUMMARY_LINE = re.compile(
+    r"^\s*(?:=+\s*(.*\b\d+ (?:failed|errors?)\b.*?)\s*=+"
+    r"|pytest summary:\s*(.*\b\d+ (?:failed|errors?)\b.*?))\s*$"
+)
 _N_FAILED = re.compile(r"(\d+) failed\b")
 _N_ERRORS = re.compile(r"(\d+) errors?\b")
 #: A collection error or an aborted session: nothing ran to completion.
@@ -396,7 +403,7 @@ def _summary_count(lines: Sequence[str]) -> int | None:
         sm = _SUMMARY_LINE.match(line)
         if sm is None:
             continue
-        text = sm.group(1)
+        text = sm.group(1) or sm.group(2)
         failed = sum(int(n) for n in _N_FAILED.findall(text))
         errors = sum(int(n) for n in _N_ERRORS.findall(text))
         return failed + errors
