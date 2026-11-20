@@ -94,6 +94,7 @@ from precis.utils.gripe_order import (
     size_letter_sql,
     source_label_sql,
 )
+from precis.utils.gripe_stats import rolling_stats
 from precis_web.auth import current_user
 from precis_web.deps import (
     await_dispatch,
@@ -616,7 +617,7 @@ async def gripes(
     ``sort=`` picks the shared queue order (gr595573, default
     ``drain``) and rides along on every filter link.
 
-    Two queries at load: the grouped count and the selected rows — the
+    Three queries at load: progress, grouped count and selected rows — the
     terminal/retired cohort (thousands of rows in prod) never leaves
     the DB until its filter is picked. ``status`` takes the same
     allowlist as ``/gripes/rows``."""
@@ -634,6 +635,7 @@ async def gripes(
         "gripes/list.html.j2",
         {
             "active_tab": "gripes",
+            "progress": rolling_stats(store),
             "buttons": buttons,
             "more_filters": more_filters,
             "selected": status,

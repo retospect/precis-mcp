@@ -10,6 +10,17 @@
   </a>
 </div>
 
+<div class="mb-4 text-sm text-fg-secondary">
+  <table class="w-full">
+    <caption class="text-left font-medium">Progress · rolling UTC windows</caption>
+    <thead><tr><th scope="col">Last</th><th scope="col">Fixed</th><th scope="col">Verified</th><th scope="col">Closed as dup</th></tr></thead>
+    <tbody>{% for row in progress %}
+      <tr><th scope="row">{{ row.hours }}h</th><td>{{ row.fixed }}</td><td>{{ row.verified }}</td><td>{{ row.duplicates }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  <p class="text-xs text-fg-faint">Fixed: done or awaiting verification, timed by current status. Verified: success recorded with that closure. Reopened gripes excluded. Duplicates: closed as wontfix or retired, with a gripe successor.</p>
+</div>
+
 {# File a gripe. Collapsed by default so the queue stays the page's
    subject; open=false costs one click and keeps the triage view intact.
    The attribution line the route appends is previewed here so nobody is

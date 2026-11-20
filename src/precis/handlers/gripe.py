@@ -714,7 +714,17 @@ class GripeHandler(NumericRefHandler):
         # parked age. /done is the closure listing (gr592737): STATUS:done
         # gripes, newest-closed first, with args={'closed_since'/
         # 'closed_until'} bounding the STATUS-tag set-time window.
-        return ("recent", "open", "wontfix", "queue", "batch", "parked", "done")
+        # /stats summarizes rolling fixed, verified and duplicate counts.
+        return (
+            "recent",
+            "open",
+            "wontfix",
+            "queue",
+            "batch",
+            "parked",
+            "done",
+            "stats",
+        )
 
     paged_list_views: ClassVar[frozenset[str]] = frozenset(
         {"open", "wontfix", "parked", "done"}
@@ -2962,6 +2972,44 @@ class GripeHandler(NumericRefHandler):
     ) -> Response:
         # ``args={'page': N}`` pages the id='/open' / '/wontfix' lists; the
         # base reads it back out of the forwarded kwargs (gr497175).
+        if id == "/stats":
+            self._check_list_id_view(id, view)
+            if q is not None:
+                raise BadInput(
+                    "id='/stats' takes no q=; progress counts cover all gripes",
+                    next="get(kind='gripe', id='/stats')",
+                )
+            # One whole table on one page — every list-shaping kwarg the
+            # dispatcher admits would be silently dropped here
+            # (mcp-authoring rule 6), so refuse them the way the '/queue'
+            # and '/batch' intercept does. ``page=1`` is a tolerated no-op.
+            dropped = [
+                name
+                for name, val in (
+                    ("page", page if page not in (None, 1) else None),
+                    ("page_size", page_size),
+                    ("sort", sort),
+                    ("closed_since", closed_since),
+                    ("closed_until", closed_until),
+                    ("queue", queue),
+                    ("host", host),
+                    ("batch", batch),
+                    ("trace", trace),
+                    ("comment", comment),
+                    ("comments", comments),
+                    ("tag_prefixes", None if tag_prefixes is ... else tag_prefixes),
+                )
+                if val is not None
+            ]
+            if dropped:
+                raise BadInput(
+                    f"id='/stats' renders the whole progress table on one "
+                    f"page; it takes no {', '.join(dropped)}",
+                    next="get(kind='gripe', id='/stats')",
+                )
+            from precis.utils.gripe_stats import render_stats, rolling_stats
+
+            return Response(body=render_stats(rolling_stats(self.store)))
         if tag_prefixes is not ...:
             _kw["tag_prefixes"] = tag_prefixes
         if page is not None:

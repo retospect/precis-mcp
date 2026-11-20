@@ -87,6 +87,12 @@ and operator backfill. A single deterministic rule set preserves explicit
 classifications and leaves unknown origins empty rather than guessing from
 an agent identity.
 
+Gripe progress uses ``gripe_stats.rolling_stats`` on both surfaces. Verification
+evidence must share the current closure's transaction clock so an earlier pass
+cannot carry across a reopen; duplicate closures require a gripe successor,
+timed by the STATUS attachment on a live wontfix close or by ``retired_at``
+on a retirement.
+
 **Seams.** Most helpers are pure; the DB-touching ones (``db_log_handler``,
 ``rate_limit``, ``handle_registry``) take their connection or store from the
 caller. A generic helper wanted by two or more packages belongs here — look for

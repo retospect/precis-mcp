@@ -28,6 +28,19 @@ from precis_web.routes.gripes import (
 from tests._refs import insert_gripe
 
 
+def test_web_progress(store: Any, client: Any, monkeypatch: Any) -> None:
+    """Progress is visible alongside any filtered queue, even when empty."""
+    from precis_web.routes import gripes
+
+    monkeypatch.setattr(gripes, "get_store", lambda request: store)
+    page = client.get("/gripes?status=done")
+    assert page.status_code == 200
+    assert "Progress · rolling UTC windows" in page.text
+    assert "Closed as dup" in page.text
+    for hours in (1, 6, 12, 24):
+        assert f"{hours}h</th><td>0</td><td>0</td><td>0</td>" in page.text
+
+
 def _seed_cohort(store: Any, status: str, n: int, prefix: str) -> list[int]:
     """``n`` gripes under one STATUS in a single transaction — the
     migration-0176 commit-time trigger wants ref + tag atomic, and one

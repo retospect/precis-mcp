@@ -943,6 +943,16 @@ full vocabulary is in `precis-search-help`'s count/flow sections.
 
 ## Lifecycle reference
 
+`get(kind="gripe", id="/stats")` shows cumulative progress over the last
+1, 6, 12 and 24 hours, also displayed on the gripes web page. Fixed counts
+live gripes done or awaiting verification, timed by the current STATUS tag.
+Verified counts done gripes with a success comment written with that closure.
+Reopening removes a gripe from both counts. Closed as dup counts gripe
+successor closures — a live `STATUS:wontfix` close timed by that STATUS
+attachment, or a retirement timed by `retired_at`. These are
+current-cohort counts, independent of list
+filters; `/stats` takes neither `q=` nor a detail `view=`.
+
 | Tag                    | Meaning                                 |
 |------------------------|-----------------------------------------|
 | `STATUS:open`          | Just filed, untriaged                   |
