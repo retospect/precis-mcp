@@ -1227,7 +1227,7 @@ class TestBatchGet:
         assert "second" in resp.body
 
     def test_legacy_glyph_damage_warns_on_the_matching_passage(
-        self, store: Store, handler: PaperHandler
+        self, store: Store, handler: PaperHandler, runtime_with_store: PrecisRuntime
     ) -> None:
         clean = "The study used 608 samples at 10 mA/cm2 and reported ¼ of them."
         damaged = "The temperature was 2,000 8C and v ¼ 84:68."
@@ -1240,8 +1240,12 @@ class TestBatchGet:
         assert response.index(clean) < response.index("GLYPH-DAMAGED SOURCE")
         assert response.index("GLYPH-DAMAGED SOURCE") < response.index(damaged)
 
+        # ``pc`` handles resolve at dispatch level (the handler's
+        # ``get`` only parses slug/record forms), so read it through
+        # the runtime like a real caller does.
         pc = chunk_handle(store, "legacy-glyph", ord=1)
-        assert "GLYPH-DAMAGED SOURCE" in handler.get(id=pc).body
+        out = runtime_with_store.dispatch("get", {"kind": "paper", "id": pc})
+        assert "GLYPH-DAMAGED SOURCE" in out
         assert "GLYPH-DAMAGED SOURCE" not in handler.get(id=f"pa{paper}~0").body
 
     def test_batch_empty_and_cap(self, handler: PaperHandler) -> None:

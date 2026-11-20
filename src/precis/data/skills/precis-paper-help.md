@@ -578,15 +578,18 @@ some chunks' embedding attempts genuinely failed) — so you can poll
 and keywords. Use the keywords where the summariser has yet to write
 a gloss. The web reader's Semantic/Keyword sidebar uses the same data.
 
-Views: `lookup`, `abstract`, `toc`, `summaries`, `tables`, `measures`, `bibtex` (`cite/bib`), `ris`
-(`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
+Views: `lookup`, `abstract`, `toc`, `summaries`, `tables`, `measures`,
+`refs` (`references`), `si`, `sentences` (the last three: see Read a
+paper's own reference list), `bibtex` (`cite/bib`), `ris` (`cite/ris`),
+`endnote` (`cite/endnote`), `links`, `claims`, `authors`,
 `comments` (the note timeline — see Add a note to a paper),
 `ops` (full-state JSON dump — see precis-paper-ref-help), `pdf_link`
 (signed download URL for the held PDF — see precis-paper-ref-help). The
 `view=` kwarg and `slug/<view>` path are equivalent (except for DOIs — see
 above). All are ref-level: a `pc<id>` chunk handle takes no `view=` —
 `get(id='pc512', view='abstract')` is refused; use the paper handle
-(`pa<id>`) for every view but `'toc'`, which also scopes to `pa<id>~N..M`.
+(`pa<id>`) for every view but `'toc'` and `'sentences'`, which also scope
+to a chunk or `pc<id>` handle.
 
 ## Find and read a paper's tables and extracted measures
 
@@ -632,6 +635,41 @@ search(kind="paper", q="Z-scheme band alignment", scope="pa40", page_size=10)
 ```
 
 Same hybrid search as cross-corpus, scoped to one paper's blocks.
+
+## Read a paper's own reference list (its bibliography)
+## What papers does this one cite?
+## List the references printed at the end of a paper
+
+`view='refs'` renders the paper's OWN reference list — the bibliography
+printed at the end of the paper, not the citations pointing at it
+(that's `view='bibliography'`). Parsed rows show the real `[N]` marker,
+the entry, its resolved DOI and a held-ref handle when we hold the
+cited paper — read that one with `get(id='<pa>')` to mine its
+bibliography in turn. If no parsed entries are available, the view shows
+any raw `references` chunks. `view='references'` is the same view.
+
+```python
+get(kind="paper", id="pa40", view="refs")
+```
+
+`view='si'` lists a paper's supplementary-information records with
+their handles (cite an SI as its parent, never directly); read on an SI
+ref itself it names the parent. `view='sentences'` splits a block into
+numbered sentences for precise quoting — it needs a chunk selector
+(`pa<id>~N`/`~N..M`) or a `pc<id>` chunk handle. Sentence text comes
+back verbatim so it matches the stored block.
+
+For a citation slug, the view paths are `/lookup`, `/abstract`, `/toc`,
+`/summaries`, `/refs` (also `/references`), `/si`, `/sentences`,
+`/bibtex`, `/ris`, `/endnote`, `/cite/bib`, `/cite/bibtex`, `/cite/ris`
+and `/cite/endnote`. Use `view=` for other views or when the ID is a DOI.
+A `pc<id>` chunk handle supports scoped `toc` and `sentences` reads.
+
+```python
+get(kind="paper", id="pa40", view="si")
+get(kind="paper", id="pa40~38", view="sentences")
+get(kind="paper", id="pc512", view="sentences")  # split the chunk behind a pc handle
+```
 
 ## Cite a paper
 ## Get a BibTeX or RIS entry for a paper

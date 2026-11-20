@@ -397,6 +397,19 @@ _SUPPORTED_VIEWS = (
     # ``status`` delegates to the same fetch-state table the batch get
     # and ``search(view='status', ids=[…])`` serve (gr635828).
     "status",
+    # The paper's own reference list — ``paper_bib_entries`` rows (the
+    # bib_parse worker's parse) falling back to the raw
+    # ``chunk_kind='references'`` chunks (gr725288: ``view='refs'`` was
+    # the most-guessed unsupported view; 'bibliography' is the INBOUND
+    # citation list, these are OUTBOUND).
+    "refs",
+    # Supplementary-information records: children on a parent paper,
+    # parent pointer on an SI ref (gr725288).
+    "si",
+    # Sentence-split read of a chunk range — the only view that combines
+    # with a ``~lo..hi`` selector (gr725288). Ref-level it refuses with
+    # the selector form as its next step.
+    "sentences",
 )
 
 #: Chunk kinds that always get a figure pointer on read (gr520326).
@@ -2848,11 +2861,17 @@ class PaperHandler(Handler):
             )
 
         # Combined form: ``slug~A..B/toc`` → range-scoped TOC drill-down.
-        # Only ``view='toc'`` is valid with a chunk_spec; other views
-        # don't have a sensible "this range only" meaning yet.
+        # ``toc`` and ``sentences`` are valid with a chunk_spec; other
+        # views don't have a sensible "this range only" meaning yet.
         if chunk_spec is not None and effective_view is not None:
             if effective_view == "toc":
                 return self._render_toc(ref, scope=chunk_spec)
+            if effective_view == "sentences":
+                # Sentence granularity is a chunk-scoped read by
+                # definition — the only view that combines with a
+                # selector (gr725288: ``id='pc<id>', view='sentences'``
+                # kept dying as "unknown view" / "cannot combine").
+                return self._render_sentences(ref, chunk_spec)
             # Build the full id string first, then repr() it whole — the
             # MCP critic flagged ``id={slug!r}~{lo}..{hi}/toc`` as
             # producing ``id='slug'~38..38/toc`` (slug repr'd, suffix
@@ -10946,6 +10965,27 @@ class PaperHandler(Handler):
         if view == "bibliography":
             return self._render_bibliography(ref)
 
+        if view == "refs":
+            return self._render_refs(ref)
+
+        if view == "si":
+            return self._render_si(ref)
+
+        if view == "sentences":
+            # Ref-level 'sentences' has no sensible meaning — the view
+            # is a chunk-scoped read. The accepted-view gate routes
+            # here, so refuse with the exact combined form rather than
+            # fall into the generic unknown-view error (gr725288).
+            raise BadInput(
+                "view='sentences' addresses a chunk range, not a whole "
+                f"{self.spec.kind}",
+                next=(
+                    f"get(id='{_pa(ref)}~<N>', view='sentences') splits one "
+                    f"chunk; get(id='{_pa(ref)}~<lo>..<hi>', "
+                    "view='sentences') splits a range"
+                ),
+            )
+
         if view == "claims":
             # Taproot claim hubs THIS paper grounds — not to be confused
             # with the patent kind's ``view='claims'`` (that one is the
@@ -11195,6 +11235,236 @@ class PaperHandler(Handler):
         )
         body += render_next_section(nav)
         return Response(body=body)
+
+    def _render_refs(self, ref: Ref) -> Response:
+        """``view='refs'`` — the paper's OWN reference list.
+
+        The mirror image of ``view='bibliography'`` (which lists the
+        citation refs pointing AT this paper): ``refs`` walks OUT —
+        the entries of the bibliography printed at the end of the
+        paper. Primary read is ``paper_bib_entries`` (the ``bib_parse``
+        worker's parse: real ``[N]`` markers, extracted fields, resolved
+        DOI / held-ref identity); when no parsed entries are available,
+        the view falls back to raw ``chunk_kind='references'`` chunks.
+        Added because
+        ``view='refs'`` was the most-guessed unsupported view on
+        ``get(kind='paper')`` (gr725288).
+        """
+        slug = ref.slug or "???"
+        pa = _pa(ref)
+        entries = self.store.list_bib_entries(ref.id)
+        if entries:
+            rows: list[dict[str, str]] = []
+            for e in entries:
+                held = (
+                    handle_registry.try_format("paper", e.held_ref_id)
+                    if e.held_ref_id is not None
+                    else None
+                )
+                rows.append(
+                    {
+                        "marker": f"[{e.marker}]",
+                        "entry": _excerpt(_clean_inline_text(e.raw_text), limit=160),
+                        "doi": e.doi or "",
+                        "held": held or "",
+                    }
+                )
+            head = (
+                f"# {pa} — refs: {len(rows)} bibliography "
+                f"entr{'ies' if len(rows) != 1 else 'y'}"
+            )
+            body = (
+                head
+                + "\n\n"
+                + render_agent_table(rows, schema=["marker", "entry", "doi", "held"])
+            )
+            body += render_next_section(
+                [
+                    (
+                        f"get(id='{_pa(ref)}', view='bibliography')",
+                        "the INBOUND list — citations of this paper, not its own list",
+                    ),
+                    (
+                        "get(kind='semanticscholar', id='refs:<doi>')",
+                        "an unheld paper's reference list via the S2 graph",
+                    ),
+                ]
+            )
+            return Response(body=body, result_count=len(rows))
+
+        # Fallback: raw references chunks, rendered with their chunk
+        # handles so each entry stays addressable.
+        chunks = self.store.chunks.list_chunks_for_ref_by_kind(ref.id, "references")
+        if chunks:
+            lines = [
+                f"# {slug} — raw references ({len(chunks)} chunk"
+                f"{'s' if len(chunks) != 1 else ''})"
+            ]
+            for b in chunks:
+                lines.append("")
+                lines.append(
+                    f"# {handle_registry.chunk_head_label(ref.kind, b.id, b.ord, ref.slug)}"
+                )
+                lines.append(_render_block_body(slug, b.ord, b.text))
+            return Response(body="\n".join(lines), result_count=len(chunks))
+
+        body = f"no reference list on file for {pa}"
+        body += render_next_section(
+            [
+                (
+                    f"get(id='{_pa(ref)}', view='toc')",
+                    "the reference section may not be segmented yet — browse the tail blocks",
+                ),
+                (
+                    "get(kind='semanticscholar', id='refs:<doi>')",
+                    "the same paper's reference list via the S2 graph",
+                ),
+            ]
+        )
+        return Response(body=body, result_count=0)
+
+    def _render_si(self, ref: Ref) -> Response:
+        """``view='si'`` — the paper's supplementary-information records.
+
+        Parent side lists the live SI refs (``part-of`` edges stamped
+        ``role='supplement'``) with their handles; SI side names the
+        parent and the cite-as-parent rule. Mirrors what the default
+        overview's one-liner already summarises, as the dedicated read
+        callers kept guessing (gr725288).
+        """
+        from precis.store.si_links import supplement_children, supplement_parent
+
+        slug = ref.slug or "???"
+        if ref.pdf_role == "supplement":
+            with self.store.pool.connection() as conn:
+                parent = supplement_parent(conn, ref.id)
+            if parent is None:
+                body = f"# {slug} — SI record, no live parent on file"
+            else:
+                p = (
+                    handle_registry.try_format("paper", parent[0])
+                    or parent[1]
+                    or str(parent[0])
+                )
+                body = (
+                    f"# {slug} — supplementary information\n"
+                    f"parent: {p} — cite as {p}, never as {slug}"
+                )
+                body += render_next_section(
+                    [
+                        (
+                            f"get(id='{p}', view='si')",
+                            "the parent's own SI list",
+                        ),
+                    ]
+                )
+            return Response(body=body, result_count=1 if parent is not None else 0)
+
+        meta = ref.meta or {}
+        with self.store.pool.connection() as conn:
+            kids = supplement_children(conn, ref.id)
+        lines = [f"# {slug} — supplementary information"]
+        result_count = 0
+        if kids:
+            rows = []
+            for rid, cite_key, title in kids:
+                held = handle_registry.try_format("paper", rid)
+                rows.append(
+                    {
+                        "si": held or str(rid),
+                        "cite_key": cite_key or "",
+                        "title": _excerpt(_clean_inline_text(title), limit=100),
+                    }
+                )
+                result_count += 1
+            lines += ["", render_agent_table(rows, schema=["si", "cite_key", "title"])]
+            lines.append("")
+            lines.append("cite an SI record as its parent paper, never directly")
+        else:
+            lines.append("none ingested")
+        for item in meta.get("si_skipped") or []:
+            if isinstance(item, dict) and item.get("url"):
+                lines.append(
+                    f"supplement exists, not ingested "
+                    f"({item.get('reason') or 'non_pdf'}): {item['url']}"
+                )
+        body = "\n".join(lines)
+        if not kids:
+            body += render_next_section(
+                [
+                    (
+                        f"put(kind='paper', id='{slug}', mode='fetch-si')",
+                        "queue an SI fetch for this paper",
+                    ),
+                ]
+            )
+        return Response(body=body, result_count=result_count)
+
+    def _render_sentences(self, ref: Ref, chunk: tuple[int, int]) -> Response:
+        """``view='sentences'`` + a chunk range — sentence-split read.
+
+        Each addressed chunk rendered as its numbered sentences (the
+        abbreviation-aware ``precis.utils.sentences`` splitter — the
+        same engine the citation verifier uses), so a caller grounding a
+        claim can quote one sentence precisely instead of paraphrasing a
+        whole paragraph (gr725288). The splitter's text is rendered
+        verbatim — no ``_clean_inline_text`` pass — so a quoted sentence
+        greps back to the stored chunk bytes; cleaning would silently
+        flip ``&amp;``/inline tags and collapse the whitespace the quote
+        must preserve. Share the passage reader's glyph warnings so the
+        citation retains its source caveat.
+        """
+        from precis.utils.sentences import split_sentences
+
+        lo, hi = chunk
+        blocks = self._read_chunk_range(ref, lo, hi)
+
+        slug = ref.slug or "???"
+        lines: list[str] = [
+            f"# {slug}~{lo}..{hi} — sentences",
+            "",
+        ]
+        banner = _paper_banner(ref, store=self.store)
+        if banner:
+            lines[:0] = [banner, ""]
+        has_glyph_caveat = glyph_suspected(ref.meta)
+        total = 0
+        for b in blocks:
+            lines.append(
+                f"## {handle_registry.chunk_head_label(ref.kind, b.id, b.ord, ref.slug)}"
+            )
+            lines.extend(_passage_glyph_warning(b, has_glyph_caveat))
+            sentences = split_sentences(b.text)
+            if not sentences:
+                lines.append("(no sentences — empty block)")
+            for n, s in enumerate(sentences, start=1):
+                total += 1
+                lines.append(f"{n}. {s.text}")
+            lines.append("")
+        single = lo == hi
+        nav: list[tuple[str, str]] = []
+        if single:
+            nav.append(
+                (
+                    f"get(id='{_pa(ref)}~{lo}')",
+                    "the same block as stored chunk text",
+                )
+            )
+        else:
+            nav.append(
+                (
+                    f"get(id='{_pa(ref)}~{lo}..{hi}')",
+                    "the same range as stored chunk text",
+                )
+            )
+        nav.append(
+            (
+                f"search(kind='{ref.kind}', q='...', scope='{_pa(ref)}')",
+                "find the block a phrase lives on",
+            )
+        )
+        body = "\n".join(lines).rstrip() + render_next_section(nav)
+        return Response(body=body, result_count=total)
 
     def _render_claims(self, ref: Ref) -> Response:
         """``view='claims'`` — the Taproot claim hubs THIS paper grounds
@@ -11457,8 +11727,7 @@ class PaperHandler(Handler):
         result = check_doi(doi, store=self.store, mailto=mailto)
         return Response(body=render_single(result))
 
-    def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
-        lo, hi = chunk
+    def _read_chunk_range(self, ref: Ref, lo: int, hi: int) -> list[ChunkRow]:
         if lo == hi and lo < 0:
             # Synthetic card-variant chunk (title/authors/abstract/combined,
             # ord<0) — ``list_chunks_for_ref`` excludes ``ord<0`` by design
@@ -11475,7 +11744,11 @@ class PaperHandler(Handler):
             blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=(lo, hi))
         if not blocks:
             raise _blocks_range_not_found(self.store, ref, lo, hi)
+        return blocks
 
+    def _render_chunks(self, ref: Ref, chunk: tuple[int, int]) -> Response:
+        lo, hi = chunk
+        blocks = self._read_chunk_range(ref, lo, hi)
         # Figure-and-caption coalescing: when a single-block request
         # lands on an image-only block, fetch the next block too so the
         # caller sees the caption in the same response. Without this an
@@ -11506,11 +11779,7 @@ class PaperHandler(Handler):
             lines.append(
                 f"# {handle_registry.chunk_head_label(ref.kind, b.id, b.ord, ref.slug)}"
             )
-            if b.ord >= 0 and not has_glyph_caveat:
-                caveat = passage_glyph_caveat(b.text)
-                if caveat:
-                    lines.append(_glyph_damage_banner(caveat))
-                    lines.append("")
+            lines.extend(_passage_glyph_warning(b, has_glyph_caveat))
             lines.append(_render_block_body(ref.slug or "???", b.ord, b.text))
             lines.extend(pointers.get(b.ord, ()))
             # Citation-chunk-grounding Part 3 (the sidecar render): capped, expand-on-request
@@ -12085,6 +12354,14 @@ _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
     ("bibtex",): "bibtex",
     ("ris",): "ris",
     ("endnote",): "endnote",
+    # The gr725288 views take the path form too — the help advertises
+    # ``slug/<view>`` as equivalent to ``view=``, and callers guessing
+    # ``slug/refs`` earned a BadInput where the kwarg succeeded
+    # (``references`` mirrors the kwarg alias).
+    ("refs",): "refs",
+    ("references",): "refs",
+    ("si",): "si",
+    ("sentences",): "sentences",
 }
 
 
@@ -12270,6 +12547,14 @@ def _retraction_banner(ref: Ref) -> str | None:
 
 def _glyph_damage_banner(caveat: str) -> str:
     return f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}"
+
+
+def _passage_glyph_warning(block: ChunkRow, has_glyph_caveat: bool) -> list[str]:
+    if block.ord >= 0 and not has_glyph_caveat:
+        caveat = passage_glyph_caveat(block.text)
+        if caveat:
+            return [_glyph_damage_banner(caveat), ""]
+    return []
 
 
 def _paper_banner(ref: Ref, *, store: Store | None = None) -> str | None:
@@ -13010,6 +13295,9 @@ _VIEW_KWARG_ALIASES: dict[str, str] = {
     # chunk_kind is paper_note but the timeline machinery's vocabulary
     # is comments (gr521094).
     "notes": "comments",
+    # Callers guess 'references' for the paper's own reference list
+    # (gr725288) — same view as 'refs'.
+    "references": "refs",
 }
 
 
