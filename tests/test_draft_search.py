@@ -189,7 +189,7 @@ def test_verbatim_pred_substring_only_when_scoped() -> None:
     assert params == [["7", "nm"], "7 nm", _VERBATIM_TSV_CAP, "%7 nm%"]
 
     sql, params = _verbatim_pred(["7", "nm"], scoped=True)
-    assert sql.count("ILIKE") == 1
+    assert "plainto_tsquery" not in sql and sql.count("ILIKE") == 1
     assert params == [["7", "nm"], "%7 nm%"]
 
 
