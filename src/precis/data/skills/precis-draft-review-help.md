@@ -139,8 +139,9 @@ year or venue, each flagged with what's absent (a DOI-bearing byline gap
 shows under the author-source line instead when that line reports it, since
 the enrich pass repairs it; a human-verified or Crossref-sourced record with
 an empty byline is flagged here; software/dataset records are venue-exempt,
-including legacy records with only an entry type). The check skips volume, pages and article number
-because those locators vary by publication format. Repair on the record
+including legacy records with only an entry type). The check skips volume,
+pages and article number because those locators vary by publication format.
+Repair on the record
 with `edit(kind='paper', id=…)` — `authors=[…]` / `year=` / `journal=`, or a
 chapter's `booktitle=` + `editors=` + `publisher=`
 ([[precis-paper-ref-help]]). Start with the outline
