@@ -75,8 +75,11 @@ ENV_OBJECTIVES: tuple[tuple[str, str], ...] = (
 )
 
 #: The env objective a producer may not have written yet — optional on the
-#: env front in the non-strict split (graduation's ``strict=True`` requires
-#: both).
+#: env front in EVERY automatic split, graduation's ``strict=True``
+#: included: the ranking rule makes the fraction optional whenever
+#: automatic env ranking applies, so a converged PASS slab with a valid J
+#: and no fraction still confirms (and can graduate) instead of sinking to
+#: provisional on a worst-case placeholder (review td659951).
 _ENV_OPTIONAL: frozenset[str] = frozenset({"env_pareto_fraction"})
 
 #: The provisional reason every run-point fallback row carries: the
@@ -2565,8 +2568,10 @@ def _run_point_split(
     ``on_frontier`` marks its place on the cohort's OWN Pareto front over
     ``objectives`` — the way :func:`_provisional_split` marks a provisional
     front today, except the pool is the cohort alone (env-ranked slabs sit
-    in a different comparison). Everything else (nothing measured on the
-    run-point objectives) stays truly unevaluated.
+    in a different comparison). A member with nothing measured stays truly
+    unevaluated, but it is still a fallback row: the reason rides on its
+    ``flags['run_point_reason']`` (a plain :class:`Candidate` has no
+    reasons list) so no run-point row renders without it (review td659951).
     """
     obj_keys = [k for k, _ in objectives]
     provisional: list[ProvisionalCandidate] = []
@@ -2574,7 +2579,12 @@ def _run_point_split(
     for c in cohort:
         merged, untrusted_keys = _merge_provisional_measures(c)
         if not any(k in merged for k in obj_keys):
-            still_unevaluated.append(c)
+            still_unevaluated.append(
+                replace(
+                    c,
+                    flags={**c.flags, "run_point_reason": _RUN_POINT_REASON},
+                )
+            )
             continue
         provisional.append(
             ProvisionalCandidate(
@@ -2646,13 +2656,25 @@ def _env_footing_demotion(cands: Sequence[Candidate]) -> dict[str, Any] | None:
     ``environment_basis``/``digest``/``tpd_basis`` — so two env
     evaluations stamped under different environment bases both survive it
     and would rank against each other. Here the reference is the basis
-    held by the plurality of live env measures (no recency order exists
-    between two incompatible environment bases), ties broken by the
+    held by the plurality of live ``env_best_J`` stamps (no recency order
+    exists between two incompatible environment bases), ties broken by the
     :func:`current_network_basis` ordering and then the total
     :func:`_env_footing_key`. A stamped env measure whose basis fails
     :func:`same_network_basis` against the reference demotes exactly like
     a network-stale one — the slab then reads ``env_best_J``-less and
     falls back to the run-point cohort.
+
+    Only ``env_best_J`` stamps vote: that measure alone defines the env
+    cohort, so the reference must come from the slabs that will actually
+    rank. A slab that carries only ``env_pareto_fraction`` never enters
+    the env split, and its basis voting could out-vote a valid J — two
+    fraction-only slabs on basis B would demote the quest's only rankable
+    slab because its J sits on incompatible basis A, and the frontier
+    would revert to run-point ranking (review td659951). The optional
+    fraction is instead *validated* against the J-derived reference: a
+    fraction stamped under an incompatible basis demotes off its slab
+    (the slab keeps ranking, scored worst on that axis), never the other
+    way round.
 
     An env measure with no stamped basis demotes too — env values have
     no legacy: the stamp machinery shipped with the measures
@@ -2668,6 +2690,11 @@ def _env_footing_demotion(cands: Sequence[Candidate]) -> dict[str, Any] | None:
     env_bases = [
         b
         for c in cands
+        # Only the cohort-defining measure votes (see the docstring):
+        # fraction-only slabs never enter the env split, so their bases
+        # must not pick the reference the J stamps are then demoted
+        # against (review td659951).
+        if c.measures.get("env_best_J") is not None
         for k, b in _key_bases(c).items()
         if k in _ENV_BASIS_KEYS and k in c.measures
     ]
@@ -2728,7 +2755,6 @@ def _env_frontier(
     run_objectives: list[tuple[str, str]],
     *,
     optional: frozenset[str],
-    strict: bool,
 ) -> FrontierResult:
     """The two-cohort split for a quest that declared an environment space
     (the slab-environment-optimizer ranking rule).
@@ -2736,20 +2762,22 @@ def _env_frontier(
     The env-ranked slabs (``measures['env_best_J']`` survived
     :func:`apply_network_demotion`) are split among themselves on
     :data:`ENV_OBJECTIVES` and own the result's ``frontier``/``dominated``
-    bands; ``env_pareto_fraction`` is optional there unless ``strict``.
-    The run-point cohort is split among itself on the quest's run-point
-    objectives (:func:`_run_point_split`): its members land in
-    ``provisional`` (measured) or ``unevaluated`` (nothing measured),
-    never in the confirmed bands, and the two cohorts are never compared
-    with each other.
+    bands; ``env_pareto_fraction`` is optional there in every automatic
+    split — graduation's ``strict=True`` included, so a converged PASS
+    slab with a valid J and no fraction still confirms rather than sink
+    to provisional (review td659951). The run-point cohort is split among
+    itself on the quest's run-point objectives
+    (:func:`_run_point_split`, with the caller's ``optional`` — empty
+    under ``strict``): its members land in ``provisional`` (measured) or
+    ``unevaluated`` (nothing measured), never in the confirmed bands, and
+    the two cohorts are never compared with each other.
     """
-    env_optional = frozenset() if strict else _ENV_OPTIONAL
-    env_res = pareto_split(env_cohort, list(ENV_OBJECTIVES), optional=env_optional)
+    env_res = pareto_split(env_cohort, list(ENV_OBJECTIVES), optional=_ENV_OPTIONAL)
     env_prov, env_unev = _provisional_split(
         [*env_res.frontier, *env_res.dominated],
         env_res.unevaluated,
         list(ENV_OBJECTIVES),
-        optional=env_optional,
+        optional=_ENV_OPTIONAL,
     )
     run_prov, run_unev = _run_point_split(run_cohort, run_objectives, optional)
     return FrontierResult(
@@ -2758,7 +2786,7 @@ def _env_frontier(
         dominated=env_res.dominated,
         provisional=[*env_prov, *run_prov],
         unevaluated=[*env_unev, *run_unev],
-        optional=env_optional,
+        optional=_ENV_OPTIONAL,
         pass_frontier=env_res.pass_frontier,
         run_point_objectives=run_objectives,
     )
@@ -2986,6 +3014,12 @@ def leaderboard(
             # also flagged-only, mirroring `dup` above.
             if c.flags.get("energy_twin_of"):
                 quality = f"{quality} etwin".strip()
+            # A run-point fallback row with nothing measured yet
+            # (:func:`_run_point_split` stamps the reason on the flags —
+            # the awaiting band reads it here so the row never renders
+            # bare; provisional rows carry it in ``pc.reasons`` instead).
+            if c.flags.get("run_point_reason"):
+                quality = f"{quality} {c.flags['run_point_reason']}".strip()
             row["quality"] = quality
             if assurance_note(c):
                 row["quality"] = assurance_note(c)
@@ -3429,9 +3463,7 @@ def quest_frontier(
         env_cohort = [c for c in candidates if c.flags["rank_basis"] == "env_best"]
         run_cohort = [c for c in candidates if c.flags["rank_basis"] == "run_point"]
         if env_cohort:
-            return _env_frontier(
-                env_cohort, run_cohort, objs, optional=optional, strict=strict
-            )
+            return _env_frontier(env_cohort, run_cohort, objs, optional=optional)
     result = pareto_split(candidates, objs, optional=optional)
     provisional, still_unevaluated = _provisional_split(
         [*result.frontier, *result.dominated],
