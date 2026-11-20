@@ -2679,6 +2679,37 @@ class TestRetitleHub:
         assert stamps is not None
         assert stamps[1]["model"] == "gpt-6-astra"
 
+    @pytest.mark.parametrize(
+        "writer_args",
+        [{}, {"writer": {"model": "different-model"}}],
+        ids=["missing-writer", "conflicting-model"],
+    )
+    def test_retitle_hub_refuses_unmatched_meta_model(
+        self,
+        store: Store,
+        runtime_with_store: PrecisRuntime,
+        writer_args: dict[str, dict[str, str]],
+    ) -> None:
+        original_sentence = "Original claim wording."
+        hub = mint_hub(store, CanonicalClaim(sentence=original_sentence, scope={}))
+
+        out = runtime_with_store.dispatch(
+            "edit",
+            {
+                "kind": "finding",
+                "id": f"fi{hub}",
+                "title": "Shorter claim wording.",
+                "__extras__": writer_args,
+                "meta": {"model": "gpt-6-astra"},
+            },
+        )
+
+        assert "[error:BadInput]" in out, out
+        assert "finding title edits record the writer model" in out, out
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref is not None
+        assert ref.title == original_sentence
+
     def test_retitle_hub_collision_raises_bad_input(self, store) -> None:
         hub = mint_hub(
             store, CanonicalClaim(sentence="First claim sentence.", scope={})

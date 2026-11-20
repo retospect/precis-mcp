@@ -646,6 +646,13 @@ run's reason silently. The same annotation gates machine-written
 admission rules and which rels are human-only are in
 [[precis-link-help]] §Machine-written edges.
 
+On `edit(kind='finding', id=…, title=…)`, pass the writer as
+`args={'writer': {'model': '<model id>'}}`. A redundant `meta.model`
+is accepted only when it matches `args.writer.model`. The finding
+keeps its original `meta.model` and the revision stamp records the
+writer. A conflicting `meta.model` or one supplied without a writer
+model raises BadInput.
+
 ## See also
 
 - [[precis-citation-help]] — verifier-write side of citations
