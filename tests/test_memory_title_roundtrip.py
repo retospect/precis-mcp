@@ -55,6 +55,17 @@ def _displayed_body(handler: MemoryHandler, store: Store, ref_id: int) -> str:
     return rendered[len(header) + 2 :].split("\n\ntags: ", 1)[0]
 
 
+def _eye_body(out: str) -> str:
+    """The note text under an eye's head: the head line plus its decoration
+    lines (``under review:``, ``grounding:`` — gr634490 carries the audit
+    coverage line on every note-eye rung) are skipped, so the remainder
+    starts with the body's first line."""
+    body = out.split("\n", 1)[1]
+    while body.startswith(("under review:", "grounding:")):
+        body = body.split("\n", 1)[1]
+    return body
+
+
 def test_metadata_retitle_preserves_legacy_body_and_chunks(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
@@ -410,7 +421,7 @@ def test_eye_suppresses_the_same_stamped_echo_as_the_body_reads(
     assert _displayed_body(handler, store, ref_id) == "authored tail"
     for view in ("summary", "verbatim", "fisheye", "fisheye+1hop", "fisheye+2hop"):
         out = handler.get(id=ref_id, view=view).body
-        after_head = out.split("\n", 1)[1]
+        after_head = _eye_body(out)
         assert after_head.startswith("authored tail"), (view, out)
         assert "Old derived header" not in after_head
     ref = store.get_ref(kind="memory", id=ref_id)
@@ -428,7 +439,7 @@ def test_eye_suppresses_an_unstamped_derived_title_echo(
     )
     assert _displayed_body(handler, store, ref_id) == "Evidence and tail"
     out = handler.get(id=ref_id, view="verbatim").body
-    assert out.split("\n", 1)[1] == "Evidence and tail"
+    assert _eye_body(out) == "Evidence and tail"
 
 
 def test_eye_preserves_an_authored_first_line_matching_the_new_title(
@@ -469,7 +480,7 @@ def test_eye_stamp_binds_the_body_chunk_not_the_ord_join(
     assert _displayed_body(handler, store, ref_id) == "authored tail"
     for view in ("summary", "verbatim", "fisheye", "fisheye+1hop"):
         out = handler.get(id=ref_id, view=view).body
-        after_head = out.split("\n", 1)[1]
+        after_head = _eye_body(out)
         assert after_head.startswith("authored tail"), (view, out)
         assert "Old derived header" not in after_head
 
