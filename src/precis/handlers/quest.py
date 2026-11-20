@@ -2945,7 +2945,11 @@ class QuestHandler(NumericRefHandler):
         def render(page: list[dict[str, Any]], cols: list[str]) -> str:
             if page:
                 return render_agent_table(
-                    [{c: r.get(c) for c in cols} for r in page], schema=cols
+                    [
+                        {c: frontier_mod.leaderboard_display(r, c) for c in cols}
+                        for r in page
+                    ],
+                    schema=cols,
                 )
             if not rows:
                 return "no candidate structures serve this quest yet."
@@ -3015,6 +3019,7 @@ class QuestHandler(NumericRefHandler):
         from precis.quest import frontier as frontier_mod
         from precis.quest.results_table import (
             build_results_rows,
+            display_cell,
             fit_rows_to_budget,
             render_results_table,
             results_columns,
@@ -3059,8 +3064,11 @@ class QuestHandler(NumericRefHandler):
 
             def render(page: list[dict[str, Any]], cols: list[str]) -> str:
                 if page:
+                    # Format at render time: the rows carry stored numbers
+                    # for the lens to filter/sort/aggregate (gr592637 review).
                     return render_agent_table(
-                        [{c: r.get(c) for c in cols} for r in page], schema=cols
+                        [{c: display_cell(r, c) for c in cols} for r in page],
+                        schema=cols,
                     )
                 if spec.where == {"trusted": "yes"}:
                     return "no candidates pass the trusted filter."

@@ -139,7 +139,8 @@ def test_warning_ranks_beside_separate_pass_frontier(
     assert frontier.candidate_trusted(warning) is False
     rows, schema = frontier.leaderboard(fr)
     row = next(r for r in rows if r["design"] == warning.handle)
-    assert row["barrier"] == "≈0.5"
+    assert row["barrier"] == 0.5  # stored value; ≈ is render-time state
+    assert "barrier" in row["_untrusted"]
     assert "seeds:1-independent" in row["quality"]
     assert row["PASS+WARN"] == "★" and row["PASS-only"] == ""
     assert "PASS-only" in schema

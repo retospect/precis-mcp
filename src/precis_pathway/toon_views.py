@@ -1891,6 +1891,13 @@ _CONF_LEGEND = (
     "still be gate-blocked. See gate."
 )
 
+#: Row marker for a candidate the U lever could not shift (pre-CHE run,
+#: no n_H on its graph) — the paged compare response carries this on the
+#: row itself instead of naming every slug in the fixed header (gr592637
+#: review: an unbounded header list can exceed the response cap and deny
+#: even a one-row page).
+_UNSHIFTED_MARK = " [no n_H — unshifted]"
+
 
 def compare_toon(
     candidates: list[dict[str, Any]],
@@ -1925,8 +1932,11 @@ def compare_response(
     RATE (max step), SPAN, conf. Sorted by RATE ascending (best first).
     With ``U`` (V vs RHE) every CHE-stamped candidate is re-levered to
     that potential and the table ranks by SPAN at U instead (RATE is
-    U-independent); a candidate without ``n_H`` stays unshifted and is
-    named in the header.
+    U-independent); a candidate without ``n_H`` stays unshifted — the
+    legacy text output names it in the header, while the paged response
+    marks the row itself (``cand`` cell) and keeps only the count in the
+    header: an unbounded slug list in the fixed header could exceed the
+    response cap and deny even a one-row page (gr592637 review).
 
     ``lens_args`` + ``lens_call`` (gr592637) put the rows through the
     server-side table lens — ``where``/``sort``/``columns``/``limit``/
@@ -1975,9 +1985,10 @@ def compare_response(
         return Response(body="no computed candidates to compare.")
 
     notes: list[str] = []
+    unshifted: list[str] = []
+    paged = lens_args is not None and lens_call is not None
     if U is not None:
         levered: list[dict[str, Any]] = []
-        unshifted: list[str] = []
         for c in candidates:
             if analysis.has_potential_lever(c["graph"]):
                 levered.append({**c, "graph": analysis.at_potential(c["graph"], U)})
@@ -1987,9 +1998,19 @@ def compare_response(
         candidates = levered
         notes.append(f"# {potential_line(U)}; ranked by SPAN at U")
         if unshifted:
-            notes.append(
-                "# no n_H (pre-CHE run), shown unshifted: " + ", ".join(unshifted)
-            )
+            if paged:
+                # The paged header is fixed (outside the byte guard), so a
+                # growing slug list can exceed the response cap and deny
+                # even a one-row page — the count stays here and each
+                # unshifted row is marked in its cand cell instead.
+                notes.append(
+                    f"# {len(unshifted)} candidate(s) have no n_H (pre-CHE "
+                    "run) and stay unshifted — marked on their rows"
+                )
+            else:
+                notes.append(
+                    "# no n_H (pre-CHE run), shown unshifted: " + ", ".join(unshifted)
+                )
 
     profiles: list[dict[str, Any]] = []
     for c in candidates:
@@ -2012,10 +2033,16 @@ def compare_response(
 
     def _row_scalars(p: dict[str, Any]) -> dict[str, Any]:
         rl = p["summ"]["rate_limiting"] or {}
+        cand = _cand_cell(p["c"])
+        if str(p["c"].get("slug")) in unshifted:
+            # The U lever left this row's graph untouched (no n_H): the
+            # marker rides the row so a paged response reports it without a
+            # growing fixed header (gr592637 review).
+            cand += _UNSHIFTED_MARK
         # RATE/SPAN stay raw numbers: the lens filters/sorts/aggregates on
         # them, and ``disp`` below rounds only for display.
         return {
-            "cand": _cand_cell(p["c"]),
+            "cand": cand,
             "candidate": str(p["c"].get("candidate") or "-"),
             "gate": str(p["c"].get("gate") or "n/a"),
             "anchor": str(p["c"].get("anchor") or "n/a"),

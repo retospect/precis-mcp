@@ -157,17 +157,27 @@ class TestBands:
         assert by_sid[frontier_sid]["trusted"] == "yes"
         assert by_sid[provisional_sid]["trusted"] == "no"
         assert by_sid[awaiting_sid]["trusted"] == "-"
-        # the provisional row's barrier survives (untrusted-value backfill),
-        # marked with the same ≈ convention as the leaderboard/frontier text.
-        assert by_sid[provisional_sid]["barrier"] == "≈0.5"
-        assert by_sid[frontier_sid]["barrier"] == "0.3"
-        assert by_sid[awaiting_sid]["barrier"] == "-"
+        # the provisional row's barrier survives (untrusted-value backfill)
+        # as the STORED number — the ≈ mark is display state in the row's
+        # _untrusted list, and the lens filters/sorts/aggregates the raw
+        # values (gr592637 review).
+        assert by_sid[provisional_sid]["barrier"] == 0.5
+        assert "barrier" in by_sid[provisional_sid]["_untrusted"]
+        assert by_sid[frontier_sid]["barrier"] == 0.3
+        assert by_sid[awaiting_sid]["barrier"] is None
         # the objective measure rides its own column (gr573266: an
         # energy-rubric quest read every beaten row as "no energy value"
         # because only the barrier-family measures had columns).
-        assert by_sid[frontier_sid]["energy"] == "-1"
-        assert by_sid[beaten_sid]["energy"] == "-1"
-        assert by_sid[awaiting_sid]["energy"] == "-"
+        assert by_sid[frontier_sid]["energy"] == -1.0
+        assert by_sid[beaten_sid]["energy"] == -1.0
+        assert by_sid[awaiting_sid]["energy"] is None
+        # display formatting happens at render time: ≈ for unconfirmed,
+        # '-' for unmeasured.
+        from precis.quest.results_table import display_cell
+
+        assert display_cell(by_sid[provisional_sid], "barrier") == "≈0.5"
+        assert display_cell(by_sid[frontier_sid], "barrier") == "0.3"
+        assert display_cell(by_sid[awaiting_sid], "barrier") == "-"
 
 
 # ── dopant / site / co-adsorbate derivation ─────────────────────────────
@@ -769,15 +779,15 @@ class TestObjectiveColumns:
         fr = quest_frontier(store, qid)
         rows = build_results_rows(store, qid, fr=fr)
         by_sid = {r["ref_id"]: r for r in rows}
-        # the converged relax result is the row's objective value — %.6g,
-        # the leaderboard/frontier-summary precision, not the 3-fig measure
-        # shorthand that would collapse -132.043 to -132.
-        assert by_sid[pd]["energy"] == "-132.043"
+        # the converged relax result is the row's objective value — the
+        # STORED number; display renders it at objective precision (%g,
+        # never the 3-fig shorthand that collapses -132.043 to -132).
+        assert by_sid[pd]["energy"] == -132.04336773213768
         assert by_sid[pd]["band"] == "beaten"  # ReSub's relax is lower
-        assert by_sid[winner]["energy"] == "-137.984"
+        assert by_sid[winner]["energy"] == -137.984
         assert by_sid[winner]["band"] == "frontier"
-        # never measured → '-', not a fabricated zero
-        assert by_sid[waiting]["energy"] == "-"
+        # never measured → None, not a fabricated zero
+        assert by_sid[waiting]["energy"] is None
 
         from precis.quest.results_table import render_results_table, results_columns
 
@@ -827,7 +837,7 @@ class TestObjectiveColumns:
         fr = quest_frontier(store, qid)
         assert fr.objectives == [("log_tof", "max")]
         rows = build_results_rows(store, qid, fr=fr)
-        assert rows[0]["log_tof"] == "3.7"
+        assert rows[0]["log_tof"] == 3.7  # the stored number, not "3.7"
         body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="results").body
         assert "log_tof" in body and "3.7" in body
 
@@ -1275,6 +1285,79 @@ class TestResultsTableLens:
             args={"columns": ["handle", "dopant"], "sort": "-handle", "limit": 2},
         ).body
         assert "left out (2 candidates)" in body
+
+    def test_results_numeric_where_uses_stored_measure(self, store: Any) -> None:
+        """gr592637 review: a barrier of 0.1234 displays as 0.123, but
+        ``where={'barrier': {'max': 0.123}}`` must EXCLUDE it — the lens
+        filters the stored number, never the display rounding, and the
+        hidden-row aggregates read from the same raw values."""
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store)
+        hi = _mk_candidate(store, qid, "hi", _dopant_ops("Ag", 1))
+        _converge(store, hi)
+        store.stamp_ref_meta(hi, {"barrier": 0.1234, "barrier_trusted": True})
+        lo = _mk_candidate(store, qid, "lo", _dopant_ops("Cu", 1))
+        _converge(store, lo)
+        store.stamp_ref_meta(lo, {"barrier": 0.121, "barrier_trusted": True})
+        h_hi = handle_registry.try_format("structure", hi)
+        h_lo = handle_registry.try_format("structure", lo)
+        assert h_hi is not None and h_lo is not None
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(
+            id=qid, view="results", args={"where": {"barrier": {"max": 0.123}}}
+        ).body
+        assert h_lo in body
+        assert h_hi not in body
+        assert "min=0.1234" in body  # hidden-row aggregate, raw precision
+
+    def test_results_numeric_sort_uses_stored_measure(self, store: Any) -> None:
+        """0.1234 and 0.1235 both display as 0.123 — an explicit lens sort
+        must still order them by the stored measurement (gr592637 review)."""
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store)
+        lo = _mk_candidate(store, qid, "lo", _dopant_ops("Ag", 1))
+        _converge(store, lo)
+        store.stamp_ref_meta(lo, {"barrier": 0.1234, "barrier_trusted": True})
+        hi = _mk_candidate(store, qid, "hi", _dopant_ops("Cu", 1))
+        _converge(store, hi)
+        store.stamp_ref_meta(hi, {"barrier": 0.1235, "barrier_trusted": True})
+        h_hi = handle_registry.try_format("structure", hi)
+        h_lo = handle_registry.try_format("structure", lo)
+        assert h_hi is not None and h_lo is not None
+        body = (
+            QuestHandler(hub=Hub(store=store))
+            .get(id=qid, view="results", args={"sort": "-barrier"})
+            .body
+        )
+        assert body.index(h_hi) < body.index(h_lo)
+
+    def test_leaderboard_numeric_where_uses_stored_measure(self, store: Any) -> None:
+        """The leaderboard lens sees the same stored numbers as results —
+        no display roundings in the cells it filters and aggregates."""
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store)
+        hi = _mk_candidate(store, qid, "hi", _dopant_ops("Ag", 1))
+        _converge(store, hi)
+        store.stamp_ref_meta(hi, {"barrier": 0.1234, "barrier_trusted": True})
+        lo = _mk_candidate(store, qid, "lo", _dopant_ops("Cu", 1))
+        _converge(store, lo)
+        store.stamp_ref_meta(lo, {"barrier": 0.121, "barrier_trusted": True})
+        h_hi = handle_registry.try_format("structure", hi)
+        h_lo = handle_registry.try_format("structure", lo)
+        assert h_hi is not None and h_lo is not None
+        body = (
+            QuestHandler(hub=Hub(store=store))
+            .get(
+                id=qid, view="leaderboard", args={"where": {"barrier": {"max": 0.123}}}
+            )
+            .body
+        )
+        assert h_lo in body
+        assert h_hi not in body
+        assert "min=0.1234" in body  # the excluded row's raw aggregate
 
     def test_class_arg_refused(self) -> None:
         keys = QuestHandler.ARGS_KEYS["get"]

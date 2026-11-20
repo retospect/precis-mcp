@@ -298,8 +298,10 @@ prompt embeds. That text copy uses a 2500-token budget, adjustable with
 
 ## Page candidate tables
 
-The default results, leaderboard and frontier tables accept
-`args={'where': {'band': 'provisional'}, 'columns': ['handle'], 'limit': 10}`.
+The default results and frontier tables accept
+`args={'where': {'band': 'provisional'}, 'columns': ['handle'], 'limit': 10}`;
+the leaderboard's identity column is `design`, so the same page there is
+`args={'where': {'band': 'provisional'}, 'columns': ['design'], 'limit': 10}`.
 Filters accept a value, list of values, or inclusive `{'min': x, 'max': y}`.
 Use `sort=[['energy', 'asc']]` for explicit order or `sort='-energy'` for
 descending order. Copy the footer's `next:` call to continue with its cursor.

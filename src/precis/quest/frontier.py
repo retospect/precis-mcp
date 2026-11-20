@@ -765,18 +765,38 @@ def _contour_underlay(
     return bands, lines
 
 
+def _rate_value(measures: dict[str, float]) -> float | None:
+    """``atom_cost - log_tof`` (log10 $ per unit TOF) as the raw number when
+    both measures are present, else ``None`` (never a fabricated partial)."""
+    ac = measures.get("atom_cost")
+    lt = measures.get("log_tof")
+    if isinstance(ac, bool) or not isinstance(ac, (int, float)):
+        return None
+    if isinstance(lt, bool) or not isinstance(lt, (int, float)):
+        return None
+    return float(ac) - float(lt)
+
+
 def _rate_readout(measures: dict[str, float]) -> str | None:
     """``atom_cost - log_tof`` (log10 $ per unit TOF) when both measures are
     present, else ``None`` (never a fabricated partial). Read as: 100x more
     active (higher log_tof) buys 100x less catalyst mass for the same
     dollar spend — the single number that answers "is dear-but-active worth
-    it". Shared by :func:`leaderboard` (the ``$/rate`` column) and
-    :func:`build_frontier_scatter` (the hover tooltip)."""
-    ac = measures.get("atom_cost")
-    lt = measures.get("log_tof")
-    if not isinstance(ac, (int, float)) or not isinstance(lt, (int, float)):
+    it". The formatted read of :func:`_rate_value`; the leaderboard's
+    ``$/rate`` column carries the raw value instead (the table lens
+    aggregates it), and :func:`build_frontier_scatter` puts this string in
+    the hover tooltip."""
+    v = _rate_value(measures)
+    return None if v is None else f"{v:g}"
+
+
+def _raw_measure(v: Any) -> float | None:
+    """A measure as the stored float — never a display rounding: the table
+    lens filters, sorts and aggregates the cell values themselves
+    (gr592637 review). ``None`` when unmeasured."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
-    return f"{ac - lt:g}"
+    return float(v)
 
 
 def _extra_objective_measures(
@@ -2571,13 +2591,17 @@ def leaderboard(
     first) — or by ``sort`` ``(key, sense)`` when given (the handler's
     ``args={'sort': k}``, gr592277); a sort key outside the declared
     objectives still ranks the rows and appends its own column, so the
-    number sorted on stays visible. A provisional row shows merged
-    measures with ``≈`` on each
-    unconfirmed value and its exclusion reasons in ``quality`` — measured
-    but not confirmed, never ranked against confirmed bands. A ``$/rate``
-    column (:func:`_rate_readout`: ``atom_cost - log_tof``, log10 $ per
-    unit TOF) is computed HERE at read time, never stored, whenever a
-    candidate carries both components (``—`` otherwise). Pure over a
+    number sorted on stays visible. A provisional row carries merged
+    measures with each unconfirmed key named in its ``_untrusted`` list
+    (rendered ``≈``) and its exclusion reasons in ``quality`` — measured
+    but not confirmed, never ranked against confirmed bands. Measure cells
+    are the STORED numbers: the quest handler pages these rows through the
+    table lens (:mod:`precis.format.table_lens`), which filters, sorts and
+    aggregates on the cell values, so rounding happens only in
+    :func:`leaderboard_display` at render time (gr592637 review). A
+    ``$/rate`` column (:func:`_rate_value`: ``atom_cost - log_tof``, log10
+    $ per unit TOF) is computed HERE at read time, never stored, whenever a
+    candidate carries both components (``None`` otherwise). Pure over a
     :class:`FrontierResult`, trivially testable; the handler renders it via
     ``toon.dump``. This is the striving's authoritative leaderboard —
     autocatpath's own ``compare`` view is a compute-side diagnostic over
@@ -2625,11 +2649,17 @@ def leaderboard(
                 "band": band,
                 "trusted": _trusted_cell(c),
             }
+            # STORED numbers through the lens, display state on _untrusted:
+            # a WARN-stamped candidate's measures all render ≈ (gr592637
+            # review — filter/sort/aggregate the raw values, format at
+            # render time via :func:`leaderboard_display`).
+            approx: set[str] = (
+                set(col_keys) if c.flags.get("barrier_assurance") == "WARN" else set()
+            )
             for key in col_keys:
-                v = c.measures.get(key)
-                mark = "≈" if c.flags.get("barrier_assurance") == "WARN" else ""
-                row[key] = f"{mark}{v:g}" if isinstance(v, (int, float)) else "—"
-            row["$/rate"] = _rate_readout(c.measures) or "—"
+                row[key] = _raw_measure(c.measures.get(key))
+            row["$/rate"] = _rate_value(c.measures)
+            row["_untrusted"] = sorted(approx)
             row["graduated"] = "★" if c.ref_id in graduated else ""
             row["validity"] = _validity_text(c)
             quality = (
@@ -2670,20 +2700,13 @@ def leaderboard(
                 "band": "provisional",
                 "trusted": _trusted_cell(pc.candidate),
             }
+            approx = {key for key in col_keys if key in pc.untrusted_keys}
             for key in col_keys:
-                v = pc.measures.get(key)
-                if not isinstance(v, (int, float)):
-                    row[key] = "—"
-                elif key in pc.untrusted_keys:
-                    row[key] = f"≈{v:g}"
-                else:
-                    row[key] = f"{v:g}"
-            rate = _rate_readout(pc.measures)
-            if rate is None:
-                row["$/rate"] = "—"
-            else:
-                approx = bool(pc.untrusted_keys & {"atom_cost", "log_tof"})
-                row["$/rate"] = f"≈{rate}" if approx else rate
+                row[key] = _raw_measure(pc.measures.get(key))
+            row["$/rate"] = _rate_value(pc.measures)
+            if pc.untrusted_keys & {"atom_cost", "log_tof"}:
+                approx.add("$/rate")
+            row["_untrusted"] = sorted(approx)
             row["graduated"] = ""  # a provisional row can never graduate
             row["validity"] = _validity_text(c)
             quality = "; ".join(pc.reasons) or "unconfirmed"
@@ -2733,6 +2756,20 @@ def leaderboard(
         "quality",
     ]
     return rows, schema
+
+
+def leaderboard_display(row: Mapping[str, Any], col: str) -> Any:
+    """The agent-table display value for one :func:`leaderboard` cell: raw
+    measures formatted ``:g`` with ``≈`` when the column is in the row's
+    ``_untrusted`` list, a missing measure as ``—``. Formatting lives here
+    (render time), never in the row — the table lens filters, sorts and
+    aggregates the stored numbers (gr592637 review). Non-numeric cells pass
+    through untouched."""
+    v = row.get(col)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return v if v is not None else "—"
+    s = f"{v:g}"
+    return f"≈{s}" if col in row.get("_untrusted", ()) else s
 
 
 def _lazy_geom_hash_c(store: Store, s: Any) -> str | None:

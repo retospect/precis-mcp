@@ -118,6 +118,19 @@ def test_compare_without_lens_is_plain_dump() -> None:
     assert "pathways)" not in compare_toon(_cands(3))
 
 
-def test_compare_at_potential_names_unshifted_candidates() -> None:
+def test_compare_at_potential_marks_unshifted_rows() -> None:
+    """The paged response must not name every pre-CHE slug in the fixed
+    header — the header sits outside the byte guard, so a long list can
+    exceed the response cap and deny even a one-row page (gr592637
+    review). The header carries the count; the shown row is marked."""
     out = compare_toon(_cands(2), U=0.2, lens_args={"limit": 1}, lens_call=_call)
+    assert "2 candidate(s) have no n_H" in out
+    assert "shown unshifted: run-00, run-01" not in out
+    assert "[no n_H — unshifted]" in out  # the one shown row is marked
+
+
+def test_compare_at_potential_legacy_text_names_unshifted_candidates() -> None:
+    """The plain (non-lens) dump keeps the full unshifted list in its
+    header — unit-level readers see every slug in one place."""
+    out = compare_toon(_cands(2), U=0.2)
     assert "shown unshifted: run-00, run-01" in out
