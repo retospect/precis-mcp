@@ -5326,6 +5326,29 @@ def test_digest_posts_the_complete_table_and_keeps_evidence_room(
     assert "never skip, xfail or loosen a test" in text
 
 
+def test_the_digest_bounds_the_symbol_tail_of_the_table(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr738762: the changed-symbol list grows with the range (57 kB on
+    r340) and every session of every fix node reads it — the digest asks
+    for the table with a bounded symbol tail."""
+    asked: dict[str, Any] = {}
+
+    def _block(_store: Any, _root: Path, **kw: Any) -> str:
+        asked.update(kw)
+        return "changed files in a..b"
+
+    monkeypatch.setattr(crd._rs, "slice_root", lambda: tmp_path)
+    monkeypatch.setattr(crd._factory_git, "git_auth_env", lambda: {})
+    monkeypatch.setattr(crd._suspects, "suspects_block", _block)
+    ctx = SimpleNamespace(store=None)
+    rel = {"sha": "a" * 40, "range": "a..b"}
+    assert crd._suspects_block(ctx, rel, "log", {}) == "changed files in a..b"
+    assert asked["sym_room"] == crd._SYMBOL_ROOM
+    assert 0 < crd._SYMBOL_ROOM <= crd._DIGEST_CAP
+    assert "budget" not in asked  # no bound that could reach a file row
+
+
 # ── release_confirm (td573432) ────────────────────────────────────
 
 

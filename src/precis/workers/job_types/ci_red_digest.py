@@ -18,9 +18,10 @@ pinned to that host the same way.
   :mod:`precis.plans.red_suspects` (gr595552 — every file changed since
   the last green build with its diff stat, range commits, ledger
   handles, the failure-path flag, and the range's changed symbols per
-  the python kind's diff — complete every time: the brief is the
+  the python kind's diff — every file row every time: the brief is the
   fixer's only copy of it, so the cap bounds the failure evidence,
-  never the table), and the fix-forward rule — on every live
+  never the table; the symbol list gets :data:`_SYMBOL_ROOM`), and the
+  fix-forward rule — on every live
   ``run_slice`` todo ``blocked-by`` the digest node (none found fails the
   job). The fixer's slice session reads it through
   ``run_slice._brief_parts``. **Clusters** (release-train T1): a digest
@@ -152,6 +153,11 @@ NAME = "ci_red_digest"
 _DEFAULT_WALL_S = 10 * 60
 #: The brief's digest cap — a shard dump still lands as one comment.
 _DIGEST_CAP = 12000
+#: Room for the changed-symbol tail under the changed-files table. The
+#: table's file rows always post whole (td655162); the symbol list is the
+#: part that grows with the range — r340's was 57 kB of a 65 kB block,
+#: read by every session of every fix node (gr738762).
+_SYMBOL_ROOM = 6000
 
 _RUN_ID_RE = re.compile(r"[0-9]+")
 _PROBE_RE = re.compile(
@@ -1159,10 +1165,11 @@ def _suspects_block(
     """The ranked changed-files table of gr595552: every file the
     ``last-green..this-build`` diff touched, its diff stat, range
     commits, ledger gripes and the failure-path flag — the view the
-    ci-failed digest alone never gave the fixer. Rendered complete:
-    the brief is the fixer's only copy of it, so no budget applies
-    (td655162). Best-effort: no checkout, an unreadable range or a
-    ledger fault degrades to ``""`` and the brief posts without it."""
+    ci-failed digest alone never gave the fixer. Every file row is
+    rendered: the brief is the fixer's only copy of the table, so no
+    budget drops one (td655162). The changed-symbol tail under it gets
+    :data:`_SYMBOL_ROOM`. Best-effort: no checkout, an unreadable range
+    or a ledger fault degrades to ``""`` and the brief posts without it."""
     try:
         root = _rs.slice_root()
     except Exception:
@@ -1177,6 +1184,7 @@ def _suspects_block(
             log_text=log_text,
             rescued=rescued,
             env=_factory_git.git_auth_env(),
+            sym_room=_SYMBOL_ROOM,
         )
     except Exception:
         log.warning("%s: suspects table failed", NAME, exc_info=True)
@@ -1256,7 +1264,8 @@ def _digest_done(
         )
         return True
     # The complete table is the fixer's only copy of it (td655162
-    # review) — it posts unbudgeted; the failure evidence keeps its
+    # review) — its file rows post unbudgeted (only the symbol tail is
+    # bounded, :data:`_SYMBOL_ROOM`); the failure evidence keeps its
     # room instead: at least half the cap when the table is long,
     # everything it leaves when it is short. The digest composes AFTER
     # the table for the same reason the rescue tail is reserved:

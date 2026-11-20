@@ -326,6 +326,69 @@ def test_render_block_budget_never_drops_a_file_row_or_the_pointer() -> None:
     assert "more lines cut" in text
 
 
+def test_render_block_sym_room_bounds_the_symbol_tail_whatever_the_table() -> None:
+    """gr738762: the symbol tail gets its own room. A table longer than
+    the room still ships every file row, and the symbols kept are the
+    first-ranked rows' own."""
+    rows = [
+        S.SuspectRow(
+            f"f{i}.py",
+            1,
+            0,
+            ("c" * 40,),
+            ("gr9",),
+            i == 0,
+            tuple(
+                ChangedSymbol(f"precis.m{i}.fn{k}", f"f{i}.py", "body")
+                for k in range(8)
+            ),
+        )
+        for i in range(60)
+    ]
+    full = S.render_block(rows, "aaa..bbb")
+    text = S.render_block(rows, "aaa..bbb", sym_room=400)
+    table = text.split("\nchanged symbols", 1)[0]
+    assert all(f"f{i}.py —" in table for i in range(60))
+    assert "view='impact'" in table
+    assert len(table) > 400  # the room is not the table's
+    assert len(text) <= len(table) + 400 + 1
+    assert len(text) < len(full) // 4
+    assert "precis.m0.fn0" in text and "precis.m59.fn7" not in text
+    assert "more lines cut" in text
+    # Room to spare changes nothing; with a budget the tighter bound wins.
+    assert S.render_block(rows, "aaa..bbb", sym_room=10**6) == full
+    assert S.render_block(rows, "aaa..bbb", budget=10**6, sym_room=400) == text
+
+
+def test_a_long_symbol_detail_is_clipped() -> None:
+    """A signature change carries both whole signatures — a tool entry
+    point's is kilobytes; the row keeps the head of it."""
+    row = S.SuspectRow(
+        "src/precis/x.py",
+        1,
+        0,
+        (),
+        (),
+        True,
+        symbols=(
+            ChangedSymbol(
+                "precis.x.edit",
+                "src/precis/x.py",
+                "signature",
+                "def edit(" + "a, " * 2000,
+            ),
+            ChangedSymbol(
+                "precis.x.m", "src/precis/x.py", "signature", "m(a) -> m(a, b)"
+            ),
+        ),
+    )
+    lines = S.render_block([row], "aaa..bbb").split("\n")
+    (long,) = [line for line in lines if "precis.x.edit" in line]
+    assert long.endswith("…") and "def edit(a, a," in long
+    assert len(long) < S._SYM_DETAIL_CAP + 80
+    assert any(line.endswith(" — m(a) -> m(a, b)") for line in lines)
+
+
 def test_render_block_lists_the_changed_symbols() -> None:
     """The python kind's diff rendered as a view: each file's changed
     symbols follow the table, marked like the impact view's rows."""

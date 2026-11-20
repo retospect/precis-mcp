@@ -37,8 +37,8 @@ symbol-level diff, the same two-side snapshot index and symbol
 comparison ``view='impact'`` runs
 (:mod:`precis.handlers._python_impact`). Every changed file gets its
 full row and the pointer always ships: the brief is the fixer's only
-copy of the complete table, so a caller's ``budget`` trims the symbol
-tail, never a file row or the pointer (td655162).
+copy of the complete table, so a caller's ``budget`` or ``sym_room``
+trims the symbol tail, never a file row or the pointer (td655162).
 
 The ledger-pointer column (the touching gripe's current-state summary)
 waits on the code-anchor handle and the gripe summary block (gr595549);
@@ -70,6 +70,9 @@ log = logging.getLogger(__name__)
 #: Detailed rows of the changed-symbol view; the overflow's qualnames
 #: are listed the same way the file tail lists paths.
 _SYM_CAP = 40
+#: Longest ``detail`` one changed-symbol row prints. A signature change
+#: carries both whole signatures; one tool entry point's ran to 6 kB.
+_SYM_DETAIL_CAP = 200
 
 #: Shortest sha prefix a ledger match may name — git's abbreviation floor
 #: (``gates.MIN_SHA_LEN``, restated: a private helper's rule stays local).
@@ -570,7 +573,10 @@ def _row_line(r: SuspectRow) -> str:
 
 
 def _sym_line(r: SuspectRow, c: _impact.ChangedSymbol) -> str:
-    detail = f" — {c.detail}" if c.detail else ""
+    detail = c.detail or ""
+    if len(detail) > _SYM_DETAIL_CAP:
+        detail = detail[: _SYM_DETAIL_CAP - 1].rstrip() + "…"
+    detail = f" — {detail}" if detail else ""
     return (
         f"  {_CHANGE_MARK.get(c.change, '?')} {c.qualname}  "
         f"{c.change}  {r.path}{detail}"
@@ -589,15 +595,24 @@ def _fit(lines: list[str], budget: int | None, kept: int) -> str:
     out = lines[:kept]
     used = sum(len(line) + 1 for line in out)
     for i, line in enumerate(lines[kept:], start=kept):
-        if used + len(line) + 1 > max(0, budget - 60):
-            out.append(f"… {len(lines) - i} more lines cut (brief room)")
+        # 110: the cut line's own length, so the block stays in budget.
+        if used + len(line) + 1 > max(0, budget - 110):
+            out.append(
+                f"… {len(lines) - i} more lines cut (brief room); "
+                "`git diff <range> -- <path>` shows one file's own changes"
+            )
             break
         out.append(line)
         used += len(line) + 1
     return "\n".join(out)
 
 
-def render_block(rows: list[SuspectRow], rng: str, budget: int | None = None) -> str:
+def render_block(
+    rows: list[SuspectRow],
+    rng: str,
+    budget: int | None = None,
+    sym_room: int | None = None,
+) -> str:
     """The brief section: a header naming the range and ordering, then
     one line per changed file in rank order — ``* path — N commits
     (+a/-d) — grA, tdB`` — every file with its full detail, then the
@@ -606,7 +621,11 @@ def render_block(rows: list[SuspectRow], rng: str, budget: int | None = None) ->
     the first :data:`_SYM_CAP`, the overflow's qualnames still listed).
     ``budget`` (chars) bounds the block but can only trim the symbol
     tail: the header, every file row and the pointer always render —
-    the brief is the fixer's only copy of the complete table."""
+    the brief is the fixer's only copy of the complete table.
+    ``sym_room`` (chars) bounds the symbol tail alone, whatever the
+    table's length: rows are ranked, so the symbols it keeps are the
+    failure path's first (gr738762 — r340's 542 symbols were 57 kB of a
+    65 kB block)."""
     lines = [
         f"changed files in {rng} (ranked by suspicion — * is on the failure path):"
     ]
@@ -632,6 +651,9 @@ def render_block(rows: list[SuspectRow], rng: str, budget: int | None = None) ->
         if len(sym_rows) > _SYM_CAP:
             lines.append(f"    … +{len(sym_rows) - _SYM_CAP} more symbols:")
             lines.extend(f"    {c.qualname} ({r.path})" for r, c in sym_rows[_SYM_CAP:])
+    if sym_room is not None:
+        whole = sum(len(line) + 1 for line in lines[:kept]) + sym_room
+        budget = whole if budget is None else min(budget, whole)
     return _fit(lines, budget, kept)
 
 
@@ -645,11 +667,12 @@ def suspects_block(
     rescued: dict[str, list[str]] | None = None,
     env: dict[str, str] | None = None,
     budget: int | None = None,
+    sym_room: int | None = None,
 ) -> str:
     """The "changed files …" section of the fixer's brief; ``""`` when
     the range or the repo cannot be read — a tableless brief is the old
-    behaviour, never a failure. ``budget`` bounds only the
-    changed-symbol tail (:func:`render_block`): every file row always
+    behaviour, never a failure. ``budget`` and ``sym_room`` bound only
+    the changed-symbol tail (:func:`render_block`): every file row always
     renders — the brief is the fixer's only copy of the table."""
     rng2 = suspect_range(store, sha, rng)
     if rng2 is None:
@@ -685,7 +708,9 @@ def suspects_block(
     except Exception:
         log.warning("red_suspects: ledger read failed — no gripe column", exc_info=True)
         handles = {}
-    return render_block(rank_rows(files, on_path, handles, symbols), rng2, budget)
+    return render_block(
+        rank_rows(files, on_path, handles, symbols), rng2, budget, sym_room
+    )
 
 
 __all__ = [
