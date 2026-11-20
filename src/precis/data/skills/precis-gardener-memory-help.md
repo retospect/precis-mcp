@@ -198,6 +198,57 @@ including when evidence is unavailable or disputed. A return prompts
 re-audit of the same memory SHA as candidate input. The audit can remain
 unresolved and every suggested finding stays provisional.
 
+## Grounding coverage on reads (gr634490)
+
+Reads fold the latest row into per-claim coverage; nothing is applied and
+no trust field changes. A claim renders `supported` only while all of
+these hold: the row still binds (memory SHA, audit version, and the
+recorded prompt/policy versions — a row written under an older policy
+reads stale exactly when scheduling re-queues it), every cited source's
+pin still matches its live SHA — a changed source stales exactly the
+claims citing it, and the memory itself re-enters the audit queue as a
+dependent consumer of that source — and every cited handle actually
+pinned at audit time. An unpinned citation lands in `unresolved` with the
+handle named; a classifier-only `provisional` suggestion is unverified
+and lands in `unresolved` too — suggested support never renders as
+supported. A fresh timestamp renews nothing, and historical audit rows
+stay inspectable in the drill-down's history.
+
+- The `get(kind='memory')` footer and the fisheye header carry one line:
+  `grounding: 5 claims - 3 supported - 1 unresolved - 1 unchecked -
+  audited 2026-11-14 - current`, or `grounding: not audited`. An
+  incomplete audit (bounded scan, failed classifier, or text the reported
+  claims did not cover) renders the count as a lower bound (`5+ claims`)
+  and appends `truncated scan` — reviewed-memory and citation counts are
+  never grounding coverage.
+- `get(id=N, view='grounding')` is the drill-down: per-claim status
+  (recorded vs effective), evidence and premise handles, stale pins,
+  unpinned citations, the decisive passage verified against the live
+  body, the audit history newest first, live `disputes` edges as known
+  disputes, the exact unchecked body ranges, and — when the audit is
+  stale — the live drafts and quests linking the memory as affected
+  consumers.
+
+The audit window is need-ordered: never-audited memories first, then
+stale ones (edit, version bump, or moved source pin), both ranked by use
+— human reads plus live draft/quest dependents, most-used first. Every
+4th slot re-audits the least-recently-audited still-current memory; when
+no need candidate remains, even a sub-threshold window draws from that
+baseline queue, so a tiny corpus cannot starve it. A baseline slot the
+small-window rule sets aside is recorded as an owed debt, promoted ahead
+of the need queue on a later collection, and cleared when paid — a paid
+debt must be cleared explicitly or the saved-cursor merge resurrects it.
+
+A re-audit that changed any claim's coverage queues the drafts and
+quests that carry a dependency link to the memory, through the existing
+memory-review todo path — judged per claim, not by the memory's worst
+verdict: a source edit can invalidate one claim while another keeps the
+worst verdict unchanged. `precis garden stats` reports the same per-claim
+denominators: a partially stale audit (one moved source) keeps its
+unaffected claims' buckets, unchecked claims stay unchecked and out of
+the inspected count, and only a row that no longer binds to its content
+reads fully unresolved.
+
 ## Notation flags
 
 Memory text follows [[precis-notation-canon]]. The `memory-review` pass's

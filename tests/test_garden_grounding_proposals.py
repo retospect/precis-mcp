@@ -166,8 +166,12 @@ def test_missing_apply_door_leaves_proposal_pending(store: Store) -> None:
     assert proposal.action == "rewrite"
     assert proposal.target_id == memory_id
     # The audit row is pinned and the proposal's dedup key is pending —
-    # re-running the window neither re-audits nor re-proposes.
-    assert g.grounding_audit_candidates(store) == []
+    # re-running the window neither re-audits nor re-proposes. The current
+    # memory stays listed only as the baseline starvation-guard slot
+    # (gr634490): listing writes nothing and the pending proposal dedups.
+    remaining = g.grounding_audit_candidates(store)
+    assert [c.target_id for c in remaining] == [memory_id]
+    assert remaining[0].payload["baseline"] is True
     assert len(pending_proposals(store)) == 1
 
 

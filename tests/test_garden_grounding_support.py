@@ -576,3 +576,133 @@ def test_audit_candidate_checks_local_premise_lineage(store: Store) -> None:
     ]
     assert record.claims[2].inference_depth == 2
     assert record.coverage["lineage"]["cycles"] == [["c4", "c5"]]
+
+
+# ── gr634490: passage pins bind before the judgment and fail closed ──────
+
+
+def test_pin_passages_returns_only_pinned(store: Store) -> None:
+    """A chunk that yields no pin is not evidence the audit can bind:
+    it is dropped from the returned passages and pins nothing, so the
+    judgment never reads it."""
+    paper = store.insert_ref(kind="paper", slug="pin-source", title="Source paper")
+    (chunk,) = store.chunks.insert_chunks(paper.id, [ChunkInsert(ord=0, text="p")])
+    record = g.AuditRecord("sha", [], {}, {})
+    claim = g.ClaimRecord([0, 1], "claim", evidence=[])
+    live = PaperChunk(chunk_id=int(chunk.id), chunk_ord=0, section_path=None, text="p")
+    gone = PaperChunk(chunk_id=424242, chunk_ord=0, section_path=None, text="x")
+    pinned = g._pin_passages(store, record, claim, [live, gone])
+    assert [p.chunk_id for p in pinned] == [int(chunk.id)]
+    handle = f"pc{int(chunk.id)}"
+    assert list(record.pins) == [handle]
+    assert claim.passages == [handle]
+
+
+def test_verify_record_support_fails_closed_when_pinning_fails(
+    store: Store, monkeypatch: Any
+) -> None:
+    """A consulted passage that cannot be pinned degrades the claim to
+    unresolved — never a verdict built on evidence with no bound
+    revision."""
+    rid, _paper_id, handle = _memory_with_paper_evidence(
+        store, "The catalyst doubles the yield"
+    )
+    (candidate,) = g.grounding_audit_candidates(store)
+    assert candidate.target_id == rid
+    monkeypatch.setattr(g, "_pin_passages", lambda *_a, **_k: [])
+    result = g.audit_candidate(
+        store,
+        candidate,
+        call=_classify_call(handle),
+        verify_fn=_stub(_raw()),
+    )
+    assert result is not None
+    record = g.latest_audit(store, rid)
+    assert record is not None
+    (claim,) = [c for c in record.claims if c.kind == "empirical"]
+    assert claim.support is not None
+    assert claim.support["verdict"] == "unresolved"
+    assert claim.support["reason"] == "no candidate passage for the cited evidence"
+    assert claim.passages == []
+
+
+def test_conflict_probe_pins_before_judging_and_fails_closed(
+    store: Store, monkeypatch: Any
+) -> None:
+    """The live probe binds the candidate's revision before the verifier
+    reads it, and a candidate that cannot be pinned counts as verify
+    unavailable — never a clean no-conflict pass (gr634490)."""
+    from types import SimpleNamespace
+
+    from precis.utils.handle_registry import try_format
+
+    paper = store.insert_ref(kind="paper", slug="probe-source", title="Source paper")
+    (chunk,) = store.chunks.insert_chunks(paper.id, [ChunkInsert(ord=0, text="oppose")])
+    handle = try_format("paper", int(chunk.id), chunk=True)
+    assert handle is not None
+    memory = store.insert_ref(kind="memory", slug=None, title="Probe target")
+    store.chunks.insert_chunks(
+        memory.id,
+        [
+            ChunkInsert(
+                ord=0,
+                text=f"The catalyst doubles the yield ({handle}).",
+                meta={"chunk_kind": "memory_body"},
+            )
+        ],
+    )
+    store.add_tag(memory.id, Tag.open("section:reference"), set_by="system")
+    record = g.AuditRecord("sha", [], {}, {})
+    claim = g.ClaimRecord(
+        [0, 30],
+        "The catalyst doubles the yield",
+        kind="empirical",
+        status="provisional",
+    )
+    block = SimpleNamespace(id=int(chunk.id), ord=0, text="oppose")
+    ref_ns = SimpleNamespace(id=int(paper.id), kind="paper")
+
+    monkeypatch.setattr(
+        "precis.utils.embed_query.embed_query", lambda _e, _q: [0.1] * 8
+    )
+    monkeypatch.setattr(
+        "precis.workers.conflict_search.negate_claim", lambda *_a: {"paraphrases": []}
+    )
+    monkeypatch.setattr(
+        store.chunks,
+        "search_chunks",
+        lambda **_k: [(block, ref_ns, 0.1)],
+    )
+    monkeypatch.setattr(
+        "precis.workers.conflict_search._attach_read_first", lambda _s, _c: None
+    )
+    monkeypatch.setattr(
+        "precis.workers.conflict_search._select_for_verify",
+        lambda cands, _n: list(cands),
+    )
+
+    pinned_at_verify: list[bool] = []
+
+    def fake_verify(**_kw: Any) -> dict[str, Any]:
+        # The pin must already hold when the judgment runs.
+        pinned_at_verify.append(handle in record.pins)
+        return {"contradicts": False}
+
+    monkeypatch.setattr(
+        "precis.workers._chase_llm._verify_support_with_caveats", fake_verify
+    )
+    probe = g._run_conflict_probe(store, int(memory.id), record, claim, object())
+    assert probe.outcome == "none_found"
+    assert pinned_at_verify == [True]
+    assert claim.passages == [handle]
+
+    # The chunk dies before the probe: the candidate cannot be pinned, so
+    # the probe knows nothing — never a none_found on an unpinned passage.
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM chunks WHERE chunk_id = %s", (int(chunk.id),))
+    record2 = g.AuditRecord("sha2", [], {}, {})
+    claim2 = g.ClaimRecord([0, 30], "The catalyst doubles the yield", kind="empirical")
+    probe2 = g._run_conflict_probe(store, int(memory.id), record2, claim2, object())
+    assert probe2.outcome == "unknown"
+    assert "verify unavailable" in probe2.unknowns
+    assert pinned_at_verify == [True]  # the dead chunk was never judged

@@ -487,10 +487,24 @@ def run_garden_tick(
             if not turned:
                 break
     if out.paused or queues.get("grounding_audit"):
-        from precis.graph.garden.grounding import CURSOR_KEY
+        from precis.graph.garden.grounding import BASELINE_DUE_KEY, CURSOR_KEY
 
         # An omitted cursor carries the saved window forward for retry.
         out.cursors.pop(CURSOR_KEY, None)
+        # A baseline candidate the budget could not reach is an owed
+        # slot: the next collection promotes it ahead of need candidates
+        # so a budget-limited tick cannot starve the starvation guard
+        # (gr634490). A persisted marker for a ref outside this window
+        # already survived in out.cursors — keep the older debt; a
+        # cleared (0) marker means a debt was paid this window and a
+        # fresh one may be recorded.
+        owed = [
+            c.target_id
+            for c in queues.get("grounding_audit") or ()
+            if c.action == "audit" and c.payload.get("baseline")
+        ]
+        if owed and not out.cursors.get(BASELINE_DUE_KEY):
+            out.cursors[BASELINE_DUE_KEY] = min(owed)
     return out
 
 

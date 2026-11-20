@@ -5040,7 +5040,8 @@ class DispatchMixin(RuntimeShape):
     ) -> Response:
         """Close a single-ref ``get`` of a converted kind with its trust
         stamp and content sha (graph-node-trust-state slice 1): the sha is
-        what ``edit(mode='trust')`` names as ``expected_sha``. Best-effort:
+        what ``edit(mode='trust')`` names as ``expected_sha``. A memory also
+        carries its claim-level grounding line (gr634490). Best-effort:
         a failed lookup never fails the read."""
         if (
             type(handler).trust_origin is None
@@ -5055,6 +5056,13 @@ class DispatchMixin(RuntimeShape):
         try:
             footer = trust_footer(store, kind, ident)
             written = written_line(store, kind, ident) if footer is not None else None
+            from precis.graph.garden.grounding import grounding_line
+
+            grounding = (
+                grounding_line(store, footer.ref_id)
+                if footer is not None and kind == "memory"
+                else None
+            )
         except Exception:
             log.debug("trust line for %s %r failed", kind, ident, exc_info=True)
             return response
@@ -5077,7 +5085,10 @@ class DispatchMixin(RuntimeShape):
                 line = footer.short
         # The trust line stays last: the web lifts it off the end of the body.
         lead = f"{written}\n\n" if written else ""
-        return replace(response, body=f"{response.body.rstrip()}\n\n{lead}{line}")
+        ground = f"{grounding}\n\n" if grounding is not None else ""
+        return replace(
+            response, body=f"{response.body.rstrip()}\n\n{ground}{lead}{line}"
+        )
 
     @staticmethod
     def _nudge_writer(kind: str, verb: str, wctx: Any, response: Response) -> Response:

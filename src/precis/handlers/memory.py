@@ -46,6 +46,10 @@ Semantics (`precis-memory-help`):
                                      endpoint kind and/or direction
     - get(id=N, view='processing') — current-revision processing evidence;
                                      check before testing recall
+    - get(id=N, view='grounding')  — claim-level support/coverage
+                                     drill-down: per-claim status, cited
+                                     evidence, audit history, affected
+                                     consumers when stale (gr634490)
     - get(id='/recent')            — list recent memories
     - get(id='/toc')               — the kind's TOC: every root of the
                                      live graph, paged (gr568237); the
@@ -1031,6 +1035,11 @@ class MemoryHandler(AuditedRetirementHandler):
         rel: str | None = None,
         of_kind: str | None = None,
         direction: str | None = None,
+        # ``view='grounding'``'s audit selector (``args={'audit':
+        # <review_id>}``) renders the named prior judgment — recorded
+        # statuses, pins and the decisive passage the audit read —
+        # instead of the latest row (gr634490).
+        audit: int | str | None = None,
         # The kind TOC (``id='/toc'`` or bare ``view='toc'``) uses
         # ``page`` and ``page_size``. Node members and TOC use ``offset``
         # and ``page_size``. For log and considerations, ``page_size``
@@ -1275,6 +1284,19 @@ class MemoryHandler(AuditedRetirementHandler):
         if view == "argument" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return render_argument_view(self.store, ref)
+        if view == "grounding" and concrete:
+            # gr634490: the claim-level drill-down behind the read's
+            # ``grounding:`` line — per-claim status and evidence, the
+            # audit history, and the consumers a stale audit reaches.
+            if isinstance(id, list):
+                raise BadInput(
+                    "view='grounding' requires one memory id",
+                    next="get(kind='memory', id=N, view='grounding')",
+                )
+            from precis.handlers._memory_grounding import render_grounding_view
+
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return render_grounding_view(self.store, ref, audit_id=audit)
         if view == "considerations" and concrete:
             # gr662069 (me626852): the scope's verdict ledger — current
             # judgments, the reopen queue and the judgment history (one
@@ -1342,6 +1364,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 "body",
                 "considerations",
                 "environment",
+                "grounding",
                 "members",
                 "processing",
                 "toc",
@@ -1365,6 +1388,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 f"· {'|'.join(EYE_LADDER)}, optionally +recall (the eye) "
                 "· body (the ~body read) · members (paged part-of listing) "
                 "· toc (generated part-of tree) "
+                "· grounding (claim-level support/coverage drill-down) "
                 "· processing (before recall) "
                 "· environment (graph neighbourhood + shape smells) "
                 "· links, log, raw (generic)"
@@ -5172,6 +5196,10 @@ class MemoryHandler(AuditedRetirementHandler):
         self.store.chunks.bump_salience(
             self.store.chunks.card_chunk_ids([ref.id for _, ref, _ in hits])
         )
+        # gr634490: the session-start recall path carries the grounding
+        # chip too — a bullet that hides coverage is the complaint.
+        from precis.graph.garden.grounding import grounding_chip
+
         lines = []
         for _block, ref, _rank in hits:
             body_text = self._body_text(ref)
@@ -5187,6 +5215,7 @@ class MemoryHandler(AuditedRetirementHandler):
                     fallback_hook=first,
                     size=row_size_cell(len(body_text.encode("utf-8"))),
                 )
+                + grounding_chip(self.store, int(ref.id))
             )
         return Response(
             body="\n".join(lines),
@@ -5286,6 +5315,7 @@ class MemoryHandler(AuditedRetirementHandler):
         """
 
         from precis.cli.memory import bullet_line
+        from precis.graph.garden.grounding import grounding_chip
         from precis.utils.memory_hubs import recency_stamps
 
         normalized = Tag.normalize_filter(tags, kind=self.kind)
@@ -5331,7 +5361,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 filename=True,
                 fallback_hook=first,
                 size=row_size_cell(len(body_text.encode("utf-8"))),
-            )
+            ) + grounding_chip(self.store, int(ref.id))
             cost = len(line.encode("utf-8")) + 1
             if cur and (len(cur) >= page_size or used + cost > budget):
                 pages.append(cur)

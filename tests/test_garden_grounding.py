@@ -197,7 +197,11 @@ def test_second_run_on_unchanged_sha_writes_no_new_record(store: Store) -> None:
     assert len(candidates) == 1
     assert g.audit_candidate(store, candidates[0], call=call) is not None
     first = [r for r in store.reviews_for("ref", rid) if r.actor == g.AUDIT_ACTOR]
-    assert g.grounding_audit_candidates(store) == []
+    # The unchanged memory stays eligible as the baseline starvation-guard
+    # slot — listing it writes nothing; only an audit call does.
+    again = g.grounding_audit_candidates(store)
+    assert [c.target_id for c in again] == [rid]
+    assert again[0].payload["baseline"] is True
     second = [r for r in store.reviews_for("ref", rid) if r.actor == g.AUDIT_ACTOR]
     assert len(first) == len(second) == 1 and len(calls) == 1
     assert g.CURSOR_KEY in nxt
@@ -218,7 +222,11 @@ def test_same_sha_retries_after_classifier_recovers(
     recovered = g.latest_audit(store, rid)
     assert recovered is not None and not recovered.coverage["classifier_incomplete"]
     assert recovered.target_sha == failed.target_sha
-    assert g.grounding_audit_candidates(store) == []
+    # Recovered and current: the memory drops out of the need queue and
+    # remains only as the baseline starvation-guard slot.
+    remaining = g.grounding_audit_candidates(store)
+    assert [c.target_id for c in remaining] == [rid]
+    assert remaining[0].payload["baseline"] is True
 
 
 def test_pass_is_opt_in() -> None:
@@ -313,3 +321,324 @@ def test_router_pause_keeps_last_candidate_retryable(
     assert g.CURSOR_KEY in retry.cursors
     assert g.latest_audit(store, last) is not None
     assert calls == [first, last, last]
+
+
+def test_priority_order_and_starvation_slot(store: Store) -> None:
+    """Never-audited first, then stale (most human-authored first), and the
+    4th slot re-audits the least-recently-audited current memory."""
+    m1 = _memory(store)
+    m2 = _memory(store)
+    m3 = _memory(store)
+    m4 = _memory(store)
+    m5 = _memory(store)
+
+    def audit(rid: int) -> None:
+        (candidate,) = [
+            c for c in g.grounding_audit_candidates(store) if c.target_id == rid
+        ]
+        assert g.audit_candidate(store, candidate, call=_reply(_ok(0), _ok(1)))
+
+    # m2 and m4 are audited and still current; m3 is audited then edited
+    # (stale), with the most human reads in the stale class.
+    audit(m2)
+    audit(m4)
+    audit(m3)
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET title = 'Edited' WHERE ref_id = %s", (m3,))
+        conn.execute(
+            "INSERT INTO ref_reads (ref_id, n_agent, n_human) VALUES (%s, 0, 5) "
+            "ON CONFLICT (ref_id) DO UPDATE SET n_human = 5",
+            (m3,),
+        )
+
+    candidates = g.grounding_audit_candidates(store)
+    order = [c.target_id for c in candidates]
+    # never-audited (scan order) → stale → the 4th slot is the
+    # oldest-audited baseline (m2, audited before m4), then the rest.
+    assert order == [m1, m5, m3, m2, m4]
+    assert candidates[3].payload["baseline"] is True
+    assert candidates[0].payload.get("baseline") is False
+    assert candidates[2].payload.get("baseline") is False
+
+    # The baseline slot re-audits a current memory: the dedup skip does not
+    # apply to it, and a fresh row lands.
+    n_before = len(
+        [r for r in store.reviews_for("ref", m2) if r.actor == g.AUDIT_ACTOR]
+    )
+    assert g.audit_candidate(store, candidates[3], call=_reply(_ok(0), _ok(1)))
+    n_after = len([r for r in store.reviews_for("ref", m2) if r.actor == g.AUDIT_ACTOR])
+    assert n_after == n_before + 1
+
+    # With no need candidate left the baseline arm survives even a
+    # sub-threshold window — a lone current memory is never verified once
+    # and then starved. Need candidates still take precedence in a small
+    # window: they hold the early slots and the baseline arm yields — but
+    # the set-aside slot is returned as an owed debt, never dropped.
+    row = g._WindowRow(ref_id=m4, body=BODY, sha="sha", audited_at=None)
+    kept, owed = g._interleave_baseline([], [row])
+    assert [r.ref_id for r in kept] == [m4] and owed == []
+    need_row = g._WindowRow(ref_id=m1, body=BODY, sha="sha", audited_at=None)
+    kept, owed = g._interleave_baseline([need_row], [row])
+    assert [r.ref_id for r in kept] == [m1]
+    assert [r.ref_id for r in owed] == [m4]
+
+
+def test_baseline_slot_survives_budget_limited_ticks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The starvation guard cannot itself starve: with a one-audit tick
+    budget and need candidates that never go away (a classifier that
+    never recovers keeps them stale), an unprocessed baseline candidate
+    is owed and promoted ahead of the queue on the next tick."""
+    from precis.graph.garden.runner import run_garden_tick
+
+    healthy = _memory(store, title="Healthy")
+    stale_ids = [_memory(store, title=f"Stale {i}") for i in range(3)]
+
+    def audit(rid: int, call: g.Call | None = None) -> None:
+        (candidate,) = [
+            c for c in g.grounding_audit_candidates(store) if c.target_id == rid
+        ]
+        assert g.audit_candidate(store, candidate, call=call or _reply(_ok(0), _ok(1)))
+
+    audit(healthy)
+    # Three memories audit to classifier-incomplete rows: they stay stale
+    # need candidates on every tick, ahead of the baseline slot.
+    for rid in stale_ids:
+        audit(rid, call=lambda p: ("not json", None))
+    monkeypatch.setattr(g, "_routed_call", lambda _rid: lambda p: ("not json", None))
+    cursors: dict[str, int] = {}
+    for _ in range(4):
+        tick = run_garden_tick(
+            store, passes=("memory-grounding",), max_proposals=1, cursors=cursors
+        )
+        cursors = dict(tick.cursors)
+        n = len(
+            [r for r in store.reviews_for("ref", healthy) if r.actor == g.AUDIT_ACTOR]
+        )
+        if n >= 2:
+            break
+    # Without the owed-slot marker the three stale memories spend the
+    # whole budget every tick and the healthy memory is never re-audited.
+    assert n >= 2
+
+
+def test_small_window_baseline_debt_is_recorded_and_paid(store: Store) -> None:
+    """A baseline slot the small-window rule sets aside is recorded as an
+    owed debt (the runner can only persist what it sees), promoted ahead
+    of the need queue on the next collection, and cleared when paid — the
+    job merges saved cursors under the run's, so an absent key would
+    resurrect the debt and promote the same memory every tick (gr634490)."""
+    stale = _memory(store, title="Stale need")
+    baseline = _memory(store, title="Baseline")
+
+    def audit(rid: int) -> None:
+        (candidate,) = [
+            c for c in g.grounding_audit_candidates(store) if c.target_id == rid
+        ]
+        assert g.audit_candidate(store, candidate, call=_reply(_ok(0), _ok(1)))
+
+    audit(stale)
+    audit(baseline)
+    # The stale memory stays eligible forever: the edit left the audit row
+    # unbound, so every window carries a need candidate.
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET title = 'Edited' WHERE ref_id = %s", (stale,))
+
+    # First window: two rows, one persistent need candidate — the
+    # small-window rule yields to need and the dropped baseline slot
+    # lands in the next cursors as a debt.
+    nxt: dict[str, int] = {}
+    candidates = g.grounding_audit_candidates(store, cursors={}, next_cursors=nxt)
+    assert [c.target_id for c in candidates] == [stale]
+    assert candidates[0].payload.get("baseline") is False
+    assert nxt[g.BASELINE_DUE_KEY] == baseline
+
+    # Second collection: the owed memory overrides the yield, promotes to
+    # the head of the queue, and paying the debt clears the marker
+    # instead of leaving it to be merged back in.
+    nxt2: dict[str, int] = {}
+    candidates = g.grounding_audit_candidates(
+        store, cursors=dict(nxt), next_cursors=nxt2
+    )
+    assert candidates[0].target_id == baseline
+    assert candidates[0].payload["baseline"] is True
+    assert nxt2[g.BASELINE_DUE_KEY] == 0
+
+
+def test_moved_judgment_queues_dependency_consumers(store: Store) -> None:
+    """A stale judgment queues the drafts and quests that actually
+    depend on the memory — through the existing memory-review todo
+    path — while an arbitrary inbound link is not a consumer."""
+    from precis.utils.memory_hubs import review_todos
+
+    mid = _memory(store)
+    draft = store.insert_ref(
+        kind="draft", slug="depending-draft", title="Depending draft"
+    )
+    store.add_link(
+        src_ref_id=draft.id, dst_ref_id=mid, relation="cites", set_by="system"
+    )
+    bystander = store.insert_ref(
+        kind="draft", slug="bystander-draft", title="Bystander"
+    )
+    store.add_link(
+        src_ref_id=bystander.id,
+        dst_ref_id=mid,
+        relation="part-of",
+        set_by="system",
+    )
+    assert g.queue_affected_consumers(store, mid) == 1
+    assert review_todos(store, [int(draft.id)])
+    assert not review_todos(store, [int(bystander.id)])
+    # Dedup: an open review todo already covers the dependency.
+    assert g.queue_affected_consumers(store, mid) == 0
+
+
+@pytest.mark.parametrize("unchanged_partial", [False, True])
+def test_reaudit_invalidating_one_claim_queues_consumers(
+    store: Store, unchanged_partial: bool
+) -> None:
+    """The consumer queue fires on per-claim coverage change, not the
+    memory's worst verdict: a source edit plus a verification outage
+    invalidates one supported claim while another claim keeps the worst
+    verdict unchanged — actual dependent consumers must still be queued
+    (gr634490)."""
+    from precis.utils.memory_hubs import review_todos
+
+    paper = store.insert_ref(kind="paper", slug="source-paper", title="Source paper")
+    store.chunks.insert_chunks(
+        paper.id,
+        [ChunkInsert(ord=0, text="The ingest worker stores every body chunk.")],
+    )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s", (int(paper.id),)
+        ).fetchone()
+    assert row is not None
+    handle = f"pc{int(row[0])}"
+    body = f"{S1[: -len(' (pc1).')]} ({handle}). {S2}"
+    mid = _memory(store, body=body)
+    draft = store.insert_ref(
+        kind="draft", slug="depending-draft", title="Depending draft"
+    )
+    store.add_link(
+        src_ref_id=draft.id, dst_ref_id=mid, relation="cites", set_by="system"
+    )
+
+    def _supported(claim: g.ClaimRecord, passages: Any) -> g.RawSupport:
+        p = passages[0]
+        return g.RawSupport(
+            supported=True,
+            evidential_strength="weak" if unchanged_partial else "established",
+            passage={"chunk_id": int(p.chunk_id), "chunk_ord": 0},
+        )
+
+    def _call() -> g.Call:
+        return _reply(
+            _ok(0, quote=f"{S1[: -len(' (pc1).')]} ({handle}).", evidence=[handle]),
+            _ok(1, kind="definition", evidence=[]),
+        )
+
+    (candidate,) = [
+        c for c in g.grounding_audit_candidates(store) if c.target_id == mid
+    ]
+    assert g.audit_candidate(store, candidate, call=_call(), verify_fn=_supported)
+    prior = g.latest_audit(store, mid)
+    assert prior is not None
+    prior_worst = g._audit_worst_verdict(prior)[0]
+    # The second claim has no evidence: the worst verdict stays
+    # unresolved throughout — the old worst-verdict trigger never fired.
+    assert prior_worst == "unresolved"
+    before = g.grounding_summary(store, mid)
+    assert before.supported == (0 if unchanged_partial else 1)
+    assert before.partial == (1 if unchanged_partial else 0)
+    assert before.unresolved == 1
+
+    # The cited source changes and the re-audit's verifier is out: the
+    # citing claim loses its support while the worst verdict is unchanged.
+    store.chunks.insert_chunks(
+        paper.id,
+        [ChunkInsert(ord=1, text="The embedder stores each body chunk after.")],
+    )
+    (candidate,) = [
+        c for c in g.grounding_audit_candidates(store) if c.target_id == mid
+    ]
+    assert candidate.action == "audit" and not candidate.payload.get("baseline")
+    assert g.audit_candidate(
+        store,
+        candidate,
+        call=_call(),
+        verify_fn=_supported if unchanged_partial else lambda _c, _p: None,
+    )
+    current = g.latest_audit(store, mid)
+    assert current is not None
+    assert g._audit_worst_verdict(current)[0] == prior_worst
+    after = g.grounding_summary(store, mid)
+    assert after.supported == 0
+    if unchanged_partial:
+        assert g._consumer_view(current) == g._consumer_view(prior)
+        assert after.partial == 1
+    # And the dependent draft is queued through the review-todo path.
+    assert review_todos(store, [int(draft.id)])
+
+
+def test_priority_ranks_never_audited_by_draft_quest_use(store: Store) -> None:
+    """Use is demand for current support, not just human reads: a
+    never-audited memory that drafts and quests depend on ranks ahead of
+    an equally unread one, in both the never-audited and stale buckets."""
+    plain = _memory(store, title="Plain")
+    depended = _memory(store, title="Depended on")
+    stale_plain = _memory(store, title="Stale plain")
+    stale_depended = _memory(store, title="Stale depended")
+
+    def audit(rid: int) -> None:
+        (candidate,) = [
+            c for c in g.grounding_audit_candidates(store) if c.target_id == rid
+        ]
+        assert g.audit_candidate(store, candidate, call=_reply(_ok(0), _ok(1)))
+
+    audit(stale_plain)
+    audit(stale_depended)
+    draft = store.insert_ref(
+        kind="draft", slug="draft-consumer", title="Draft consumer"
+    )
+    store.add_link(
+        src_ref_id=draft.id, dst_ref_id=depended, relation="cites", set_by="system"
+    )
+    quest = store.insert_ref(kind="quest", slug=None, title="Quest consumer")
+    store.add_link(
+        src_ref_id=quest.id,
+        dst_ref_id=stale_depended,
+        relation="cites",
+        set_by="system",
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET title = 'Edited' WHERE ref_id = ANY(%s)",
+            ([stale_plain, stale_depended],),
+        )
+
+    order = [c.target_id for c in g.grounding_audit_candidates(store)]
+    # never-audited: the depended-on memory first …
+    assert order.index(depended) < order.index(plain)
+    # … then stale: the stale bucket ranks by use too, so the quest's
+    # dependency outranks the equally stale plain memory.
+    assert order.index(stale_depended) < order.index(stale_plain)
+    assert order.index(plain) < order.index(stale_depended)
+
+
+def test_consumer_fanout_continues_past_first_page(store: Store) -> None:
+    from precis.utils.memory_hubs import review_todos
+
+    mid = _memory(store)
+    consumers = []
+    for i in range(52):
+        draft = store.insert_ref(kind="draft", slug=None, title=f"Consumer {i}")
+        consumers.append(int(draft.id))
+        store.add_link(
+            src_ref_id=draft.id, dst_ref_id=mid, relation="cites", set_by="system"
+        )
+    assert g.queue_affected_consumers(store, mid) == 52
+    assert len(review_todos(store, consumers)) == 52
+    assert g.queue_affected_consumers(store, mid) == 0

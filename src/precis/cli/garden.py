@@ -32,7 +32,9 @@ acts:
   oldest open proposals, recorded as non-terminal ``garden-reviewer``
   rows (the proposal stays open for a human).
 * ``precis garden stats`` — the per-detector reviewer agreement rate
-  plus pending counts. Reporting only, no gate.
+  plus pending counts, and the grounding-coverage block: substantive-claim
+  denominators and scan boundaries from the audit rows (gr634490).
+  Reporting only, no gate.
 
 Non-merge proposals get ``precis garden reject <review_id>`` to retire
 them from the queue without an apply. Rejecting an ``apply_error`` hold
@@ -491,6 +493,7 @@ def _review(args: argparse.Namespace, store: Store) -> None:
 
 
 def _stats(args: argparse.Namespace, store: Store) -> None:
+    from precis.graph.garden import grounding as grounding_mod
     from precis.graph.garden.consumer import reject_reasons
     from precis.graph.garden.reviewer import agreement_stats
     from precis.graph.garden.smells import MEMORY_DETECTORS, pending_detector_counts
@@ -514,6 +517,7 @@ def _stats(args: argparse.Namespace, store: Store) -> None:
                 else ""
             )
         )
+    print(grounding_mod.grounding_stats_report(store))
 
 
 def run(args: argparse.Namespace) -> None:

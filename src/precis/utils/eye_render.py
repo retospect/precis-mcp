@@ -1292,8 +1292,16 @@ def _render_note_eye(
     lines = [_head(ref, kind, chips)]
     if kind == "todo":
         lines.append(_todo_state(store, ref))
-    if kind == "memory" and (review := _under_review(store, int(ref.id))):
-        lines.append(review)
+    if kind == "memory":
+        if review := _under_review(store, int(ref.id)):
+            lines.append(review)
+        # gr634490: the same grounding coverage line the get footer carries,
+        # so an eye read never shows a memory's claims as better supported
+        # than the ledger has them.
+        from precis.graph.garden.grounding import grounding_line
+
+        if ground := grounding_line(store, int(ref.id)):
+            lines.append(ground)
     if body:
         lines.append(body)
     block = "\n".join(lines)

@@ -28,6 +28,7 @@ from precis.workers.working_set import WorkingSet
 
 GOLDEN_MEMORY_BY_RELATION = (
     "<A> [memory] SEI thickness anomaly note\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -37,6 +38,7 @@ GOLDEN_MEMORY_BY_RELATION = (
 
 GOLDEN_AUDIT_FLAGGED = (
     "<A> [memory] Focus\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -47,6 +49,7 @@ GOLDEN_AUDIT_FLAGGED = (
 
 GOLDEN_CODELESS = (
     "<A> [memory] Focus\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -57,6 +60,7 @@ GOLDEN_CODELESS = (
 
 GOLDEN_GROUP_CAP = (
     "<A> [memory] Hub note\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -74,6 +78,7 @@ GOLDEN_GROUP_CAP = (
 
 GOLDEN_OVERFLOW_LIVE_ONLY = (
     "<A> [memory] Hub note\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -132,6 +137,7 @@ GOLDEN_COMPONENT_FRAME = (
 
 GOLDEN_SEE_ALSO_TARGET = (
     "<B> [memory] Pointed at\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -140,6 +146,7 @@ GOLDEN_SEE_ALSO_TARGET = (
 
 GOLDEN_SEE_ALSO_SOURCE = (
     "<A> [memory] Points out\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -156,6 +163,7 @@ GOLDEN_PAPER_RING = (
 
 GOLDEN_NOTE_RING = (
     "<B> [memory] XPS caveat note\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -170,6 +178,7 @@ GOLDEN_WORKING_SET = (
     "a section\n"
     "\n"
     "<A> [memory] a standalone note\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -178,6 +187,7 @@ GOLDEN_WORKING_SET = (
 
 GOLDEN_2HOP = (
     "<F> [memory] Focus note\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -191,6 +201,7 @@ GOLDEN_2HOP = (
 
 GOLDEN_2HOP_EXPAND = (
     "<F> [memory] Focus note\n"
+    "grounding: not audited\n"
     "\n"
     "— second hop: 2 paper via cites —\n"
     "  <P1> — Paper 1\n"
@@ -199,6 +210,7 @@ GOLDEN_2HOP_EXPAND = (
 
 GOLDEN_RING_KIND_NARROWED = (
     "<F> [memory] Focus\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -207,6 +219,7 @@ GOLDEN_RING_KIND_NARROWED = (
 
 GOLDEN_RING_KIND_FULL = (
     "<F> [memory] Focus\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -217,6 +230,7 @@ GOLDEN_RING_KIND_FULL = (
 
 GOLDEN_RING_SPACE = (
     "<F> [memory] Focus\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -225,6 +239,7 @@ GOLDEN_RING_SPACE = (
 
 GOLDEN_2HOP_FULL = (
     "<F> [memory] Focus\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -239,6 +254,7 @@ GOLDEN_2HOP_FULL = (
 
 GOLDEN_2HOP_KIND_NARROWED = (
     "<F> [memory] Focus\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Notes & links:\n"
@@ -279,6 +295,7 @@ GOLDEN_QUEST_GIST = (
 
 GOLDEN_ORDERING = (
     "<F> [memory] Order focus\n"
+    "grounding: not audited\n"
     "\n"
     "— linked (1 hop) —\n"
     "Roadmap:\n"

@@ -53,6 +53,35 @@ revision. Proposing and approving stay distinct: a rollup of
 certified the evidence, and no repair proposal applies automatically —
 with no apply door registered for ``grounding_audit`` every proposal
 stays pending for a human or reviewer.
+Read side (gr634490): :func:`grounding_summary` folds the latest row into
+per-claim coverage — a claim stays supported only while its row binds
+(sha, audit version AND the recorded prompt/policy versions), every
+source it cites still matches its pin, and every cited handle actually
+pinned at audit time (a citation that never resolved certifies nothing);
+a changed source stales exactly the claims citing it and unrelated
+claims keep their support. Where the pipeline recorded a rollup verdict,
+the read surfaces that verdict instead of the raw classifier status — a
+definition and a passage-verified empirical claim stay distinguishable —
+and currency checks (moved or unpinned sources) still cap the claim at
+``unresolved``. A classifier-only ``provisional`` suggestion is
+unverified and lands in ``unresolved`` too: suggested support never
+renders as supported on any read surface. A re-audit after dependency invalidation or a change to any
+claim's coverage queues the drafts and quests that actually cite the
+memory — judged per claim, not by the memory's worst verdict, so a
+source edit that invalidates one claim cannot hide behind an unchanged
+worst. The ``get`` footer and the fisheye header render one line of that
+summary; ``view='grounding'`` is the drill-down (claims with decisive
+passages checked against the live body, kept audit history, known
+``disputes`` edges, affected draft/quest consumers when stale, and the
+body ranges the audit left unchecked). The candidate window is
+need-ordered — never-audited and stale memories ranked by use (human
+reads plus draft/quest dependents) — with every 4th slot re-auditing the
+least-recently-audited current memory; with no need candidate left the
+baseline queue backfills even a sub-threshold window, so a tiny corpus
+cannot starve it. A baseline slot the small-window rule sets aside is
+recorded as an owed debt and promoted ahead of the queue on a later
+tick, and a paid debt is cleared explicitly — the job merges saved
+cursors under the run's, so an absent key would resurrect it.
 
 An ``unresolved`` claim carries ``missing_check``. The tick commissions
 its follow-up from the saved audit, within the per-tick cap. Unfinished
@@ -67,8 +96,9 @@ import json
 import logging
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import NotFound
@@ -76,11 +106,11 @@ from precis.graph.garden.apply import memory_human_hold
 from precis.graph.garden.candidates import (
     GardenCandidate,
     _claim_sentences,
-    _memory_bodies,
     _scan_window,
 )
 from precis.graph.garden.handoff import (
     CandidateReturn,
+    _priors,
     candidate_returns,
     has_pending_handoffs,
 )
@@ -99,6 +129,11 @@ AUDIT_ACTOR = "garden-grounding"
 AUDIT_VERSION = "grounding.v6"
 PROMPT_VERSION = "grounding-classify.v4"
 CURSOR_KEY = "grounding_audit:memory"
+#: Owed baseline slot: the runner stashes the id of a baseline candidate
+#: it could not reach this tick here, and the next collection promotes it
+#: to the head of the queue — a budget-limited tick cannot starve the
+#: starvation guard itself behind never-receding need candidates.
+BASELINE_DUE_KEY = "grounding_audit:baseline_due"
 
 CLAIM_KINDS: tuple[str, ...] = (
     "empirical",
@@ -119,6 +154,10 @@ CLAIM_STATUS: tuple[str, ...] = (
 MAX_CLAIMS = 60
 #: Memories audited per run — one classifier call each.
 MAX_MEMORIES_PER_RUN = 10
+#: Every Nth candidate slot re-audits the least-recently-audited memory in
+#: the window — bounded baseline coverage so an audited memory is never
+#: verified once and then never again (gr634490).
+BASELINE_EVERY = 4
 MAX_PROMPT_BODY_CHARS = 16_000
 #: Empirical/source_report claims verified against passages per memory.
 MAX_VERIFY_CLAIMS = 5
@@ -183,6 +222,13 @@ class ClaimRecord:
     #: every other status. The handoff layer reads it — no research is
     #: commissioned for a claim without one.
     missing_check: str = ""
+    #: Chunk handles of the passages the audit actually consulted —
+    #: support-verification candidates and judged conflict-probe
+    #: passages. Each is pinned in ``AuditRecord.pins`` BEFORE the judgment
+    #: reads it, so a source that moves after its passage fed a judgment
+    #: stales exactly this claim (gr634490); a passage that cannot be
+    #: pinned is dropped before the judgment — never judged unpinned.
+    passages: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -191,6 +237,26 @@ class AuditRecord:
     claims: list[ClaimRecord]
     coverage: dict[str, Any]
     versions: dict[str, str]
+    #: The cited evidence/premise handles' owning-ref content shas at audit
+    #: time, keyed by the handle as cited: a cited source changing since
+    #: then stales only the claims citing it, never the whole audit.
+    #: Separate from ``coverage["evidence_shas"]`` (the root-keyed baseline
+    #: the rollup's lineage stale check compares against): this map covers
+    #: premises too and drives the read-side per-claim currency check.
+    #: ``audit_body`` has no store, so callers with one
+    #: (:func:`write_audit`) fill this in.
+    pins: dict[str, str] = field(default_factory=dict)
+    #: The premise-memory judgments the audit bound, keyed by the cited
+    #: memory handle: ``{"review_id": <premise's audit row>, "verdict":
+    #: <worst rollup>}``. A replacement premise audit whose judgment
+    #: moved stales the dependent claim even when the premise's body is
+    #: unchanged (gr634490).
+    premise_pins: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: True when ``pins`` was sampled inside the audit (before
+    #: verification), so :func:`write_audit` must not resample — an empty
+    #: map then means "nothing resolvable at audit time", never "pin
+    #: whatever a late source became" (not serialized).
+    pins_captured: bool = False
     #: True when the stored row still matches the target now (not serialized).
     current: bool = False
     review_id: int = 0
@@ -964,6 +1030,39 @@ def collect_evidence_passages(
     return out[:max_passages]
 
 
+def _pin_passages(
+    store: Store, record: AuditRecord, claim: ClaimRecord, passages: Sequence[Any]
+) -> list[Any]:
+    """Pin each consulted passage's owning ref sha and record it on the
+    claim — BEFORE the judgment reads it (gr634490). A finding- or
+    paper-level citation alone cannot stale a claim: the passage the
+    verifier actually judged can move under an unchanged cited handle.
+    First sample wins. Returns only the passages that pinned: an
+    unpinnable chunk (gone, or no sha to bind) is not evidence the audit
+    can hold a result on — callers fail closed and never judge it.
+    """
+    ids = sorted({int(p.chunk_id) for p in passages if getattr(p, "chunk_id", None)})
+    if not ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT c.chunk_id, r.kind, precis_target_sha('ref', c.ref_id) "
+            "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
+            "WHERE c.chunk_id = ANY(%s)",
+            (ids,),
+        ).fetchall()
+    pinned: set[int] = set()
+    for chunk_id, kind, sha in rows:
+        handle = try_format(str(kind), int(chunk_id), chunk=True)
+        if handle is None or sha is None:
+            continue
+        record.pins.setdefault(handle, str(sha))
+        if handle not in claim.passages:
+            claim.passages.append(handle)
+        pinned.add(int(chunk_id))
+    return [p for p in passages if int(getattr(p, "chunk_id", 0) or 0) in pinned]
+
+
 def _verify_record_support(
     store: Store, record: AuditRecord, support_fn: SupportFn
 ) -> None:
@@ -980,6 +1079,9 @@ def _verify_record_support(
         passages = collect_evidence_passages(
             store, claim.evidence, claim_text=claim.text
         )
+        # Only passages that pinned reach the verifier: a judgment can
+        # never stay current on a passage the audit could not bind.
+        passages = _pin_passages(store, record, claim, passages)
         verdict = verify_claim_support(claim, passages, support_fn=support_fn)
         claim.support = asdict(verdict)
         counts[verdict.verdict] += 1
@@ -1155,7 +1257,7 @@ def probe_claim_conflicts(
 
 
 def _run_conflict_probe(
-    store: Store, ref_id: int, claim: ClaimRecord, embedder: Any
+    store: Store, ref_id: int, record: AuditRecord, claim: ClaimRecord, embedder: Any
 ) -> ConflictProbe:
     """The live probe seams: conflict-search's negate and caveat-verify,
     ANN retrieval over paper/patent/finding chunks via the caller's
@@ -1228,9 +1330,16 @@ def _run_conflict_probe(
         ]
 
     def verify_fn(candidate: PaperChunk) -> dict[str, Any] | None:
+        # Pin BEFORE the judgment reads the passage (gr634490): a result
+        # can never stay current after the passage it judged was replaced.
+        # A candidate that cannot be pinned is reported as unavailable —
+        # never judged, never a clean "no-conflict" pass.
+        (pinned,) = _pin_passages(store, record, claim, [candidate]) or (None,)
+        if pinned is None:
+            return None
         cand = ranked.get(candidate.chunk_id)
         try:
-            return _verify_support_with_caveats(
+            verdict = _verify_support_with_caveats(
                 claim=claim.text[:1000],
                 scope={},
                 target_cite_key=f"grounding-probe:{candidate.chunk_id}",
@@ -1240,6 +1349,7 @@ def _run_conflict_probe(
             )
         except Exception:
             return None
+        return verdict
 
     return probe_claim_conflicts(
         claim.text,
@@ -1269,7 +1379,7 @@ def _probe_record_conflicts(
         if not eligible or embedder is None or spent >= MAX_CONFLICT_PROBES:
             counts["not_probed"] += 1
             continue
-        probe = _run_conflict_probe(store, ref_id, claim, embedder)
+        probe = _run_conflict_probe(store, ref_id, record, claim, embedder)
         claim.conflict = asdict(probe)
         counts[probe.outcome] += 1
         spent += 1
@@ -1430,13 +1540,86 @@ def _self_certified(store: Store, claim: ClaimRecord) -> bool:
     return False
 
 
-def _premise_judgment(store: Store, handle: str, ref_id: int) -> Any | None:
+_VERDICT_RANK = {
+    "supported": 0,
+    "partial": 1,
+    "unresolved": 2,
+    "unsupported": 3,
+    "contradicted": 4,
+}
+
+
+def _audit_worst_verdict(prior: AuditRecord) -> tuple[str | None, int, bool]:
+    """The premise judgment an audit row carries: its worst substantive
+    rollup (``contradicted`` folds to ``unsupported``), the deepest
+    inference depth, and whether it flags source review. ``None`` when
+    the row carries no usable judgment (no rollups or an incomplete
+    scan) — missing judgment is unknown, not refuted."""
+    claims = [c for c in prior.claims if c.kind != "nonclaim"]
+    rollups = [c.rollup or "unresolved" for c in claims]
+    if (
+        not rollups
+        or prior.coverage.get("classifier_incomplete")
+        or prior.coverage.get("truncated")
+    ):
+        return None, 0, False
+    worst = max(rollups, key=lambda v: _VERDICT_RANK.get(v, 2))
+    verdict = "unsupported" if worst == "contradicted" else worst
+    return (
+        verdict,
+        max(c.inference_depth for c in claims),
+        verdict != "supported" or bool(prior.coverage.get("needs_source_review")),
+    )
+
+
+def _audit_binds(
+    store: Store, prior: AuditRecord, *, self_id: int, seen: frozenset[int]
+) -> bool:
+    """Whether the audit row still binds: target sha and version current
+    AND none of its pins moved (cited sources, consulted passages, and
+    premise judgments — transitively, so a stale premise cannot lend a
+    ``current`` judgment to its dependents). ``seen`` bounds the chain."""
+    if not prior.current:
+        return False
+    moved, _unpinned = _pin_state(
+        store,
+        prior,
+        [c for c in prior.claims if _substantive(c)],
+        self_id=self_id,
+        seen=seen,
+    )
+    return not any(moved.values())
+
+
+def _premise_judgment_state(
+    store: Store, other_id: int, *, seen: frozenset[int]
+) -> str:
+    """The premise memory's current judgment for read-side currency:
+    its worst rollup while its latest audit still binds, else
+    ``unresolved`` (missing, stale or unaudited — unknown, never a
+    demotion)."""
+    if other_id in seen or len(seen) >= CROSS_AUDIT_CYCLE_MAX_DEPTH:
+        return "unresolved"
+    prior = latest_audit(store, other_id)
+    if prior is None or not _audit_binds(store, prior, self_id=other_id, seen=seen):
+        return "unresolved"
+    verdict, _depth, _needs = _audit_worst_verdict(prior)
+    return verdict or "unresolved"
+
+
+def _premise_judgment(
+    store: Store,
+    handle: str,
+    ref_id: int,
+    pins: dict[str, dict[str, Any]] | None = None,
+) -> Any | None:
     """Resolve an external premise handle to its current claim judgment:
     another audited memory's rollup state. Returns a
     :class:`~precis.graph.garden.lineage.ClaimLineageVerdict`, or ``None``
-    for handles this resolver does not judge."""
+    for handles this resolver does not judge. When ``pins`` is supplied
+    the judgment the audit bound is recorded in it — the dependent claim
+    stales if that judgment is later replaced by a different verdict."""
     from precis.graph.garden.lineage import (
-        VERDICT_SUPPORTED,
         VERDICT_UNRESOLVED,
         ClaimLineageVerdict,
     )
@@ -1450,38 +1633,36 @@ def _premise_judgment(store: Store, handle: str, ref_id: int) -> Any | None:
             "unsupported", reasons=["premise cites the audited memory itself"]
         )
     prior = latest_audit(store, other_id)
-    if prior is None or not prior.current:
+    if prior is None or not _audit_binds(
+        store, prior, self_id=other_id, seen=frozenset({ref_id})
+    ):
+        if pins is not None:
+            pins[handle] = {
+                "review_id": prior.review_id if prior is not None else 0,
+                "verdict": VERDICT_UNRESOLVED,
+            }
         return ClaimLineageVerdict(
             VERDICT_UNRESOLVED,
             reasons=[f"premise me{other_id} has no current audit judgment"],
         )
-    rank = {
-        "supported": 0,
-        "partial": 1,
-        "unresolved": 2,
-        "unsupported": 3,
-        "contradicted": 4,
-    }
-    claims = [c for c in prior.claims if c.kind != "nonclaim"]
-    rollups = [c.rollup or "unresolved" for c in claims]
-    if (
-        not rollups
-        or prior.coverage.get("classifier_incomplete")
-        or prior.coverage.get("truncated")
-    ):
+    verdict, depth, needs = _audit_worst_verdict(prior)
+    if verdict is None:
+        if pins is not None:
+            pins[handle] = {
+                "review_id": prior.review_id,
+                "verdict": VERDICT_UNRESOLVED,
+            }
         return ClaimLineageVerdict(
             VERDICT_UNRESOLVED,
             reasons=[f"premise me{other_id} carries no rollup verdicts"],
         )
-    worst = max(rollups, key=lambda v: rank.get(v, 2))
+    if pins is not None:
+        pins[handle] = {"review_id": prior.review_id, "verdict": verdict}
     return ClaimLineageVerdict(
-        "unsupported" if worst == "contradicted" else worst,
-        reasons=[f"premise me{other_id} audit rollup: {worst}"],
-        inference_depth=max(c.inference_depth for c in claims),
-        needs_source_review=(
-            worst != VERDICT_SUPPORTED
-            or bool(prior.coverage.get("needs_source_review"))
-        ),
+        verdict,
+        reasons=[f"premise me{other_id} audit rollup: {verdict}"],
+        inference_depth=depth,
+        needs_source_review=needs,
     )
 
 
@@ -1632,6 +1813,71 @@ def _local_claim_ids(record: AuditRecord) -> dict[str, str]:
     return {quote: matches[0] for quote, matches in ids.items() if len(matches) == 1}
 
 
+def queue_affected_consumers(store: Store, ref_id: int) -> int:
+    """Drain dependent reviews in keyset pages, deduplicating open todos.
+
+    Progress within a call follows consumer IDs rather than the minted
+    count: already-reviewed consumers cannot fill every subsequent page.
+    A retry resumes safely by skipping the open reviews already minted.
+    """
+    minted = 0
+    after = 0
+    while True:
+        count, next_id = _queue_consumer_page(store, ref_id, after=after)
+        minted += count
+        if next_id is None:
+            return minted
+        after = next_id
+
+
+def _queue_consumer_page(
+    store: Store, ref_id: int, *, after: int
+) -> tuple[int, int | None]:
+    """One bounded page of live draft/quest dependency links."""
+    from precis.store.types import Tag
+    from precis.utils.memory_hubs import REVIEW_TAG, review_todos
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT r.ref_id, r.kind, left(r.title, 80) FROM links l "
+            "JOIN refs r ON r.ref_id = l.src_ref_id "
+            "WHERE l.dst_ref_id = %s AND l.relation IN ('cites', 'derived-from') "
+            "AND r.kind IN ('draft', 'quest') AND r.retired_at IS NULL "
+            "AND r.ref_id > %s ORDER BY r.ref_id LIMIT %s",
+            (ref_id, after, 25),
+        ).fetchall()
+    consumers = [(int(rid), str(kind)) for rid, kind, _title in rows]
+    if not consumers:
+        return 0, None
+    open_reviews = review_todos(store, [rid for rid, _ in consumers])
+    target = try_format("memory", ref_id) or f"me{ref_id}"
+    minted = 0
+    for rid, kind in consumers:
+        if rid in open_reviews:
+            continue
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=(
+                f"review {try_format(kind, rid) or rid}: dependency {target} re-audited"
+            )[:200],
+            meta={"llm_tier": "opus"},
+        )
+        for tag in (
+            Tag.parse_strict("STATUS:open", kind="todo"),
+            Tag.open(REVIEW_TAG),
+        ):
+            store.add_tag(ref.id, tag, set_by="system")
+        store.add_link(
+            src_ref_id=ref.id,
+            dst_ref_id=rid,
+            relation="raises-concern-about",
+            set_by="system",
+        )
+        minted += 1
+    return minted, consumers[-1][0] if len(rows) == 25 else None
+
+
 def _verify_warrants(store: Store, record: AuditRecord, call: Call) -> None:
     """Review complete premise sets separately from classification."""
     local = _local_claim_ids(record)
@@ -1741,7 +1987,9 @@ def _rollup_record(
         claims,
         resolve_source=lambda handle: _resolve_source(store, handle),
         known_cycles=_cross_audit_cycles(store, ref_id, record),
-        premise_verdict=lambda handle: _premise_judgment(store, handle, ref_id),
+        premise_verdict=lambda handle: _premise_judgment(
+            store, handle, ref_id, pins=record.premise_pins
+        ),
         source_key=lambda handle: _source_key(store, handle),
         source_sha=lambda handle: _source_sha(store, handle),
         audited_sha=_audited_evidence_shas(store, ref_id),
@@ -1866,11 +2114,57 @@ def emit_grounding_repairs(
     return emitted
 
 
+def _pin_shas(store: Store, handles: list[str]) -> dict[str, str]:
+    """Resolve cited handles to their owning ref's content sha now.
+
+    A chunk handle pins its owning ref's sha (the ref sha covers body
+    chunks; a title-only edit also re-audits the claim — the documented
+    granularity). Unresolvable handles pin nothing: they were never
+    evidence the audit could bind to.
+    """
+    owners: dict[str, int] = {}
+    for handle in handles:
+        parsed = parse(handle)
+        if parsed is None:
+            continue
+        try:
+            resolved = store.resolve_handle(handle)
+        except Exception:  # a dead pin never fails the audit write
+            continue
+        if resolved is not None:
+            owners[handle] = int(resolved.ref_id)
+    if not owners:
+        return {}
+    by_id: dict[int, str] = {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, precis_target_sha('ref', ref_id) FROM refs "
+            "WHERE ref_id = ANY(%s)",
+            (sorted(set(owners.values())),),
+        ).fetchall()
+    for rid, sha in rows:
+        if sha is not None:
+            by_id[int(rid)] = str(sha)
+    return {handle: by_id[rid] for handle, rid in owners.items() if rid in by_id}
+
+
 def write_audit(store: Store, ref_id: int, record: AuditRecord) -> int | None:
-    """Append the audit row; ``None`` when the target moved past ``target_sha``."""
+    """Append the audit row; ``None`` when the target moved past ``target_sha``.
+
+    The row pins the cited evidence/premise source shas alongside the
+    target sha, so a later source change stales exactly the claims that
+    cite it (gr634490)."""
     payload = asdict(record)
     payload.pop("current")
     payload.pop("review_id")
+    payload.pop("pins_captured")
+    if not record.pins_captured:
+        # Records built by audit_body carry no in-audit pin sample: take
+        # one at write time. An audit_candidate record pins at audit time
+        # (before verification) — resampling would rebind a source that
+        # moved mid-audit.
+        handles = sorted({h for c in record.claims for h in (*c.evidence, *c.premises)})
+        payload["pins"] = _pin_shas(store, handles)
     try:
         review = store.record_target_review(
             "ref",
@@ -1888,43 +2182,184 @@ def write_audit(store: Store, ref_id: int, record: AuditRecord) -> int | None:
     return int(review.review_id)
 
 
-def latest_audit(store: Store, ref_id: int) -> AuditRecord | None:
+def _parse_audit(rev: Any) -> AuditRecord | None:
+    """One audit review row as a record, or None when the note is not ours."""
+    if rev.actor != AUDIT_ACTOR or not rev.note:
+        return None
+    try:
+        raw = json.loads(rev.note)["grounding_audit"]
+        claims = [ClaimRecord(**c) for c in raw["claims"]]
+        coverage = dict(raw["coverage"])
+        coverage["all_grounded"] = False
+        pins = raw.get("pins") or {}
+        return AuditRecord(
+            target_sha=str(raw["target_sha"]),
+            claims=claims,
+            coverage=coverage,
+            versions=dict(raw["versions"]),
+            pins={str(h): str(s) for h, s in pins.items()},
+            premise_pins={
+                str(h): dict(p) for h, p in (raw.get("premise_pins") or {}).items()
+            },
+            review_id=int(rev.review_id),
+            current=(
+                bool(rev.current)
+                and rev.version == AUDIT_VERSION
+                and rev.content_sha == raw["target_sha"]
+                # The judgment's policy versions must match too: a row
+                # recorded under an older prompt/audit policy is stale on
+                # recall exactly when _audited re-queues it (gr634490).
+                and dict(raw.get("versions") or {}) == versions()
+            ),
+        )
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _audit_rows(store: Store, ref_id: int) -> list[tuple[Any, AuditRecord]]:
+    """Every parseable audit row of the memory, newest first."""
+    out: list[tuple[Any, AuditRecord]] = []
     for rev in store.reviews_for("ref", ref_id):
-        if rev.actor != AUDIT_ACTOR or not rev.note:
-            continue
-        try:
-            raw = json.loads(rev.note)["grounding_audit"]
-            claims = [ClaimRecord(**c) for c in raw["claims"]]
-            coverage = dict(raw["coverage"])
-            coverage["all_grounded"] = False
-            return AuditRecord(
-                target_sha=str(raw["target_sha"]),
-                claims=claims,
-                coverage=coverage,
-                versions=dict(raw["versions"]),
-                review_id=int(rev.review_id),
-                current=(
-                    bool(rev.current)
-                    and rev.version == AUDIT_VERSION
-                    and rev.content_sha == raw["target_sha"]
-                ),
-            )
-        except (ValueError, KeyError, TypeError):
-            continue
+        record = _parse_audit(rev)
+        if record is not None:
+            out.append((rev, record))
+    return out
+
+
+def latest_audit(store: Store, ref_id: int) -> AuditRecord | None:
+    rows = _audit_rows(store, ref_id)
+    return rows[0][1] if rows else None
+
+
+def audit_for_review(store: Store, ref_id: int, review_id: int) -> AuditRecord | None:
+    """One past audit act by its reviews id — the kept history lets a
+    reader inspect the prior judgment and the passage it read
+    (gr634490)."""
+    for _rev, record in _audit_rows(store, ref_id):
+        if record.review_id == int(review_id):
+            return record
     return None
 
 
 def _audited(store: Store, ref_id: int, sha: str) -> bool:
     prior = latest_audit(store, ref_id)
-    return (
-        prior is not None
-        and prior.current
-        and prior.target_sha == sha
-        and prior.versions == versions()
-        and prior.coverage.get("classifier_incomplete") is False
-        and [item["comment_id"] for item in candidate_returns(store, ref_id, sha)]
-        == [item["comment_id"] for item in prior.coverage.get("candidate_returns", [])]
+    if (
+        prior is None
+        or not prior.current
+        or prior.target_sha != sha
+        or prior.versions != versions()
+        or prior.coverage.get("classifier_incomplete") is not False
+        # New todo returns make the same SHA eligible for re-audit.
+        or [item["comment_id"] for item in candidate_returns(store, ref_id, sha)]
+        != [item["comment_id"] for item in prior.coverage.get("candidate_returns", [])]
+    ):
+        return False
+    # A moved source pin stales the claims citing it: the memory is itself
+    # a dependent consumer of its sources, so it re-enters the audit queue
+    # even though its own sha is unchanged.
+    moved, _unpinned = _pin_state(
+        store,
+        prior,
+        [c for c in prior.claims if _substantive(c)],
+        self_id=ref_id,
     )
+    return not any(moved.values())
+
+
+@dataclass(frozen=True, slots=True)
+class _WindowRow:
+    """One memory in the audit window, with its audit class for ordering."""
+
+    ref_id: int
+    body: str
+    sha: str
+    audited_at: Any = None  # latest audit row's at, None = never audited
+    stale: bool = False  # audited, but the row no longer binds (edit/version)
+    handoff: bool = False  # stale arm: audited, but handoff commissions wait
+    baseline: bool = False  # a current memory due a baseline re-audit
+    n_human: int = 0
+    n_dependents: int = 0  # live drafts/quests linking the memory
+    human_hold: bool = False
+
+
+def _grounding_window_rows(store: Store, ids: list[int]) -> list[_WindowRow]:
+    """Body, sha, read and dependent counters, latest audit stamp — one
+    snapshot. ``n_dependents`` counts live drafts/quests linking the
+    memory: dependent use is demand for current support, not just reads."""
+    if not ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, coalesce((SELECT string_agg(c.text, E'\\n' "
+            "ORDER BY c.ord, c.chunk_id) FROM chunks c WHERE c.ref_id = r.ref_id "
+            "AND c.chunk_kind = 'memory_body' AND c.ord >= 0 "
+            "AND c.retired_at IS NULL), ''), precis_target_sha('ref', r.ref_id), "
+            "coalesce(rr.n_human, 0), "
+            "(SELECT max(rv.at) FROM reviews rv WHERE rv.target_kind = 'ref' "
+            " AND rv.target_id = r.ref_id AND rv.actor = %s), "
+            "coalesce((SELECT count(*) FROM links l JOIN refs d "
+            " ON d.ref_id = l.src_ref_id WHERE l.dst_ref_id = r.ref_id "
+            " AND l.relation IN ('cites', 'derived-from') "
+            " AND d.kind IN ('draft', 'quest') AND d.retired_at IS NULL), 0) "
+            "FROM refs r LEFT JOIN ref_reads rr ON rr.ref_id = r.ref_id "
+            "WHERE r.ref_id = ANY(%s) AND r.kind = 'memory' "
+            "AND r.retired_at IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'DREAM') "
+            "ORDER BY r.ref_id",
+            (AUDIT_ACTOR, ids),
+        ).fetchall()
+    out = []
+    for rid, body, sha, n_human, audited_at, n_dependents in rows:
+        out.append(
+            _WindowRow(
+                ref_id=int(rid),
+                body=str(body),
+                sha=str(sha),
+                audited_at=audited_at,
+                n_human=int(n_human),
+                n_dependents=int(n_dependents),
+            )
+        )
+    return out
+
+
+def _use(row: _WindowRow) -> int:
+    """Demand for current support: human reads plus draft/quest dependents."""
+    return row.n_human + row.n_dependents
+
+
+def _interleave_baseline(
+    need: list[_WindowRow], baseline: list[_WindowRow]
+) -> tuple[list[_WindowRow], list[_WindowRow]]:
+    """Need-ordered rows with every 4th slot taken from the baseline queue
+    (oldest-audited first) — a bounded starvation guard. A queue that runs
+    dry backfills from the other. The baseline arm yields only to genuine
+    need candidates: when the window is smaller than
+    :data:`BASELINE_EVERY` and need candidates would take the early slots,
+    they do — but with no need candidate at all the baseline arm survives,
+    or a tiny corpus would verify each memory once and never again
+    (gr634490). Baseline rows the small-window rule sets aside are
+    returned as ``owed`` so the caller records the debt: a dropped slot
+    stays visible to the runner instead of vanishing with the window."""
+    owed: list[_WindowRow] = []
+    if need and len(need) + len(baseline) < BASELINE_EVERY:
+        owed = list(baseline)
+        baseline = []
+    out: list[_WindowRow] = []
+    ni = bi = 0
+    while ni < len(need) or bi < len(baseline):
+        for _ in range(BASELINE_EVERY - 1):
+            if ni < len(need):
+                out.append(need[ni])
+                ni += 1
+            elif bi < len(baseline):
+                out.append(baseline[bi])
+                bi += 1
+        if bi < len(baseline):
+            out.append(baseline[bi])
+            bi += 1
+    return out, owed
 
 
 def grounding_audit_candidates(
@@ -1935,36 +2370,112 @@ def grounding_audit_candidates(
     cursors: dict[str, int] | None = None,
     next_cursors: dict[str, int] | None = None,
 ) -> list[GardenCandidate]:
-    """Find the next bounded window of eligible, unaudited memory revisions."""
+    """The next bounded window of memories to audit, need-ordered.
+
+    Within the scan window: never-audited memories first, then stale ones
+    (a moved source pin stales its dependent consumers too, not only
+    edits); both buckets rank by use — human reads plus live draft/quest
+    dependents, most-used first. Every 4th slot goes to the
+    least-recently-audited still-current memory for a baseline re-audit;
+    when no need candidate remains, a window below :data:`BASELINE_EVERY`
+    still draws from the baseline queue so a tiny corpus cannot starve it.
+    The window cursor advances exactly as before, so pause/retry semantics
+    are unchanged (a paused window is re-scanned and audited rows drop out).
+    """
     size = min(limit, scan_cap, MAX_MEMORIES_PER_RUN)
     if size <= 0:
         return []
     ids, nxt = _scan_window(
         store, "memory", after=(cursors or {}).get(CURSOR_KEY, 0), size=size
     )
-    candidates = []
-    for ref_id, body, sha in _memory_bodies(store, ids):
-        if memory_human_hold(store, ref_id):
+    never: list[_WindowRow] = []
+    stale: list[_WindowRow] = []
+    baseline: list[_WindowRow] = []
+    for row in _grounding_window_rows(store, ids):
+        if memory_human_hold(store, row.ref_id):
             continue
-        action = "audit"
-        if _audited(store, ref_id, sha):
-            prior = latest_audit(store, ref_id)
-            if prior is None or not has_pending_handoffs(store, ref_id, prior):
+        if row.audited_at is None:
+            never.append(row)
+            continue
+        prior = latest_audit(store, row.ref_id)
+        if _audited(store, row.ref_id, row.sha):
+            if prior is not None and has_pending_handoffs(store, row.ref_id, prior):
+                # Audited at this version with unfinished handoff
+                # commissions: the tick commissions the follow-up, never a
+                # re-audit (a new row would re-key the pending todos).
+                stale.append(replace(row, stale=True, handoff=True))
+            elif any(
+                pr.open and pr.meta.get("outcome") != "exhausted"
+                for pr in _priors(store, row.ref_id)
+            ):
+                # Open handoff todos already cover this audit row: a
+                # baseline re-audit would mint a second todo set against
+                # the new row, so the memory leaves the window (main's
+                # handoff-resume semantics).
                 continue
-            action = "handoff"
+            else:
+                baseline.append(replace(row, baseline=True))
+            continue
+        if prior is not None and has_pending_handoffs(store, row.ref_id, prior):
+            stale.append(replace(row, stale=True, handoff=True))
+        else:
+            stale.append(replace(row, stale=True))
+    never.sort(key=lambda r: (-_use(r), r.ref_id))
+    stale.sort(key=lambda r: (-_use(r), r.audited_at, r.ref_id))
+    baseline.sort(key=lambda r: (r.audited_at, r.ref_id))
+    # An owed baseline slot promotes to the head of the queue while its
+    # memory is still in this window; when the window does not contain it
+    # the marker persists so a later window still pays the debt.
+    due = (cursors or {}).get(BASELINE_DUE_KEY) or None
+    ordered, owed = _interleave_baseline([*never, *stale], baseline)
+    if due is not None and int(due) in {r.ref_id for r in ordered}:
+        ordered.sort(key=lambda r: 0 if r.ref_id == int(due) else 1)
+    elif due is not None:
+        # The small-window rule may have set the owed memory aside; the
+        # debt overrides the yield — the owed slot is audited now, ahead
+        # of the need candidates.
+        due_row = next((r for r in owed if r.ref_id == int(due)), None)
+        if due_row is not None:
+            ordered.insert(0, due_row)
+            owed.remove(due_row)
+    paid = due is not None and int(due) in {r.ref_id for r in ordered}
+    if next_cursors is not None:
+        # The job merges the saved cursors under this run's (graph_garden),
+        # so a paid debt must be cleared explicitly — 0 is the "no debt"
+        # sentinel — or it would resurrect and promote the same memory
+        # every tick. A debt the window could not pay (ref outside it, or
+        # a baseline slot the small-window rule set aside) persists for a
+        # later window; the runner also records a baseline candidate the
+        # budget could not reach.
+        debt: int | None = None
+        if owed:
+            debt = owed[0].ref_id
+        elif paid:
+            debt = 0
+        elif due is not None:
+            debt = int(due)
+        if debt is not None:
+            next_cursors[BASELINE_DUE_KEY] = debt
+    candidates = []
+    for row in ordered:
         candidates.append(
             GardenCandidate(
                 detector="grounding_audit",
-                action=action,
+                action="handoff" if row.handoff else "audit",
                 target_kind="ref",
-                target_id=ref_id,
-                title=f"Audit me{ref_id}",
-                payload={"body": body, "sha": sha},
+                target_id=row.ref_id,
+                title=f"Audit me{row.ref_id}",
+                payload={
+                    "body": row.body,
+                    "sha": row.sha,
+                    "baseline": row.baseline,
+                    "handoff": row.handoff,
+                },
             )
         )
     if next_cursors is not None:
         next_cursors[CURSOR_KEY] = nxt
-    return candidates
+    return candidates[:size]
 
 
 def audit_candidate(
@@ -1994,7 +2505,13 @@ def audit_candidate(
     """
     ref_id = candidate.target_id
     sha = str(candidate.payload["sha"])
-    if memory_human_hold(store, ref_id) or _audited(store, ref_id, sha):
+    baseline = bool(candidate.payload.get("baseline"))
+    # A ``baseline`` candidate re-audits a memory whose current row still
+    # binds — the starvation-guard slot — so the usual ``_audited`` skip
+    # does not apply to it.
+    if memory_human_hold(store, ref_id) or (
+        not baseline and _audited(store, ref_id, sha)
+    ):
         return None
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -2035,14 +2552,35 @@ def audit_candidate(
         returns=returns,
     )
     record.coverage["candidate_links_truncated"] = len(links) > 12
+    # Pin every cited handle and the cited-evidence baseline NOW, before
+    # any judgment runs: write_audit must not resample a source that
+    # moved mid-audit, and verification below pins each consulted
+    # passage's own sha as it is read (gr634490).
+    record.pins = _pin_shas(
+        store,
+        sorted({h for c in record.claims for h in (*c.evidence, *c.premises)}),
+    )
+    record.pins_captured = True
+    record.coverage["evidence_shas"] = _record_evidence_shas(store, record)
     _verify_record_support(store, record, verify_fn or _reviewer_support)
     _probe_record_conflicts(store, ref_id, record, embedder)
     _verify_warrants(store, record, routed_call)
-    record.coverage["evidence_shas"] = _record_evidence_shas(store, record)
     if returns:
         record.coverage["candidate_returns"] = [
             {k: v for k, v in r.items() if k != "text"} for r in returns
         ]
+    prior = latest_audit(store, ref_id)
+    # What consumers of the prior row relied on, per claim — as bound at
+    # audit time. The queue trigger below compares these views, not the
+    # memory's worst verdict: a source edit can invalidate one claim while
+    # another keeps the worst verdict unchanged (gr634490).
+    prior_view = _consumer_view(prior) if prior is not None else None
+    invalidated = False
+    if prior is not None:
+        moved, _ = _pin_state(
+            store, prior, [c for c in prior.claims if _substantive(c)], self_id=ref_id
+        )
+        invalidated = not prior.current or bool(moved)
     lineage_report, rollups = _rollup_record(store, ref_id, record)
     review_id = write_audit(store, ref_id, record)
     repairs = 0
@@ -2055,31 +2593,695 @@ def audit_candidate(
         repairs = emit_grounding_repairs(
             store, ref_id, record, lineage_report, rollups, limit=limit
         )
+        # A re-audit that changed any claim's coverage queues the drafts
+        # and quests that actually cite it through the existing
+        # review-todo path (inbound links that are not dependencies do
+        # not queue).
+        if prior_view is not None and (
+            invalidated or _consumer_view(record) != prior_view
+        ):
+            queue_affected_consumers(store, ref_id)
     return None if review_id is None else (review_id, repairs)
+
+
+# ── read side: coverage summary, render line, drill-down, stats (gr634490) ──
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimView:
+    """One substantive claim of the latest audit, with its effective status.
+
+    ``status`` is the bucket the claim counts in (``supported`` /
+    ``partial`` / ``unsupported`` / ``contradicted`` / ``unresolved`` /
+    ``unchecked``). Precedence: cited sources that moved or never pinned
+    land in ``unresolved`` (currency — support does not renew by
+    timestamp and an unverifiable citation certifies nothing); then the
+    v5 pipeline's pinned ``rollup`` verdict when the audit recorded one;
+    a classifier-only ``provisional`` suggestion stays ``unresolved`` —
+    suggested support is unverified and never renders as ``supported``.
+    ``recorded`` keeps the status the audit wrote; ``stale_pins`` names
+    the cited sources that moved (empty when the claim still binds);
+    ``unpinned`` names cited handles that did not resolve at audit time.
+    """
+
+    span: tuple[int, int]
+    text: str
+    kind: str
+    status: str
+    recorded: str
+    rollup: str
+    reason: str
+    evidence: tuple[str, ...]
+    premises: tuple[str, ...]
+    stale_pins: tuple[str, ...]
+    unpinned: tuple[str, ...] = ()
+    #: The decisive passage the verifier anchored on (chunk handle), or
+    #: ``""`` when the claim was not passage-verified.
+    passage: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AuditHistoryEntry:
+    """One audit act, kept inspectable after newer rows supersede it."""
+
+    review_id: int
+    at: Any  # datetime of the reviews row
+    actor: str
+    version: str
+    prompt_version: str
+    target_sha: str
+    current: bool  # still binds: sha + version unchanged AND no pin moved
+    claims: int
+    truncated: bool
+    #: Pins of this row that moved since it was written (dependency-aware
+    #: freshness — a row labels ``stale`` here the moment a source or a
+    #: premise judgment it pinned moves, not only on edit).
+    stale_pins: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class GroundingSummary:
+    """Claim-level grounding coverage of one memory (gr634490 slice 1).
+
+    Counts partition ``claims_total`` (substantive claims — everything the
+    audit recorded except structural ``nonclaim`` spans; classifier-failed
+    spans count as unchecked claims, so an unchecked sentence can never
+    hide behind a supported one). ``claims_total`` is what the classifier
+    reported: unless assertion coverage was verified, or when the scan
+    was incomplete, the rendered line marks it a
+    lower bound (``N+ claims``) and ``unaccounted_ranges`` names the exact
+    body text the audit left unchecked. ``freshness`` is ``none`` (no
+    audit), ``stale`` (the row no longer binds — the memory was edited, the
+    audit version moved, or a cited source changed; ``stale_pins`` names
+    what moved, the memory's own handle when the edit was here) or
+    ``current``.
+    """
+
+    claims_total: int
+    supported: int
+    partial: int
+    unsupported: int
+    contradicted: int
+    unresolved: int
+    unchecked: int
+    truncated: bool
+    audited_at: Any  # datetime of the latest audit row, None when unaudited
+    freshness: str  # "current" | "stale" | "none"
+    stale_pins: tuple[str, ...]
+    claims: tuple[ClaimView, ...]
+    history: tuple[AuditHistoryEntry, ...]
+    unaccounted_ranges: tuple[tuple[int, int], ...] = ()
+
+
+def _substantive(claim: ClaimRecord) -> bool:
+    return not (claim.kind == "nonclaim" or claim.status == "not_applicable")
+
+
+def _pin_state(
+    store: Store,
+    record: AuditRecord,
+    claims: list[ClaimRecord],
+    *,
+    self_id: int = 0,
+    seen: frozenset[int] = frozenset(),
+) -> tuple[dict[int, list[str]], set[str]]:
+    """One resolution pass over everything the audit bound: cited
+    handles (evidence and premises), the passages it consulted, and the
+    premise judgments it used.
+
+    Returns ``(moved, unpinned)``: per claim id the pins that no longer
+    match — the owning ref changed or died since the audit, a consulted
+    passage's source moved, or a premise memory's judgment was replaced
+    by a different verdict — so exactly those claims lose support — and
+    the set of cited handles that were never pinned at all because they
+    did not resolve. An unpinned citation certifies nothing: the read
+    surfaces it, but it neither moves freshness (a re-audit would pin it
+    only once the handle exists) nor is it dropped silently.
+    ``seen`` bounds the premise-judgment chain (cross-audit cycles end
+    unresolved, never infinitely deep).
+    """
+    cited = sorted({h for c in claims for h in (*c.evidence, *c.premises)})
+    unpinned = {h for h in cited if h not in record.pins}
+    passages = sorted({h for c in claims for h in c.passages})
+    owners: dict[str, int] = {}
+    chunk_handles: dict[str, int] = {}
+    for handle in cited + passages:
+        if handle in owners or handle in unpinned:
+            continue
+        parsed = parse(handle)
+        if parsed is not None and parsed[1]:
+            # A chunk handle binds the passage itself: it must still be
+            # live for the pin to hold.
+            chunk_handles[handle] = int(parsed[2])
+            continue
+        try:
+            resolved = store.resolve_handle(handle)
+        except Exception:
+            resolved = None
+        owners[handle] = -1 if resolved is None else int(resolved.ref_id)
+    if chunk_handles:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT c.chunk_id, c.ref_id FROM chunks c JOIN refs r "
+                "ON r.ref_id = c.ref_id WHERE c.chunk_id = ANY(%s) "
+                "AND c.retired_at IS NULL AND r.retired_at IS NULL",
+                (sorted(chunk_handles.values()),),
+            ).fetchall()
+        live_chunks = {int(cid): int(rid) for cid, rid in rows}
+        for h, cid in chunk_handles.items():
+            owners[h] = live_chunks.get(cid, -1)
+    now: dict[int, str] = {}
+    live = {rid for rid in owners.values() if rid >= 0}
+    if live:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, precis_target_sha('ref', ref_id) FROM refs "
+                "WHERE ref_id = ANY(%s)",
+                (sorted(live),),
+            ).fetchall()
+        now = {int(rid): str(sha) for rid, sha in rows if sha is not None}
+    chain = seen if not self_id else seen | {self_id}
+    moved: dict[int, list[str]] = {}
+    for c in claims:
+        bad = [
+            h
+            for h in (*c.evidence, *c.premises, *c.passages)
+            if h in owners
+            and (owners[h] < 0 or now.get(owners[h]) != record.pins.get(h, ""))
+        ]
+        # The premise judgment the audit bound: a replacement audit whose
+        # worst verdict moved stales this claim even when the premise's
+        # own sha did not (gr634490).
+        for h in c.premises:
+            pin = record.premise_pins.get(h)
+            if pin is None or h in bad:
+                continue
+            parsed = parse(h)
+            if parsed is None or parsed[1] or parsed[0] != "memory":
+                continue
+            if _premise_judgment_state(store, int(parsed[2]), seen=chain) != pin.get(
+                "verdict"
+            ):
+                bad.append(h)
+        if bad:
+            moved[id(c)] = bad
+    return moved, unpinned
+
+
+def _effective_statuses(record: AuditRecord, base: dict[int, str]) -> dict[int, str]:
+    """``{claim index: bucket}`` — the read-side statuses after premise
+    fallout propagates to a fixpoint. A claim whose same-body premise
+    lands ``unresolved`` (a moved pin, an invalidated judgment) cannot
+    stay supported no matter where the premise sits in the body; the
+    single audit-time pass in body order cannot see a premise that
+    unresolved later in the body. Read-only: recorded rollups are
+    untouched — the display widens doubt, it never upgrades."""
+    ids = _local_claim_ids(record)
+    eff = dict(base)
+    changed = True
+    while changed:
+        changed = False
+        for i, c in enumerate(record.claims):
+            if eff.get(i) not in ("supported", "partial"):
+                continue
+            for q in c.local_premises:
+                cid = ids.get(q)
+                if cid is None:
+                    continue
+                j = int(cid[1:])
+                if j != i and eff.get(j) == "unresolved":
+                    eff[i] = "unresolved"
+                    changed = True
+                    break
+    return eff
+
+
+def _claim_buckets(
+    record: AuditRecord, moved: dict[int, list[str]], unpinned: set[str]
+) -> dict[int, str]:
+    """Read-side bucket per substantive claim — the one coverage rule the
+    summary, the stats block and the consumer queue share (gr634490).
+
+    Moved or unpinned citations cap the claim at ``unresolved`` (a citation
+    that never resolved certifies nothing); the audit's ``rollup`` verdict
+    is the bucket where one was recorded; a classifier-only ``provisional``
+    suggestion is unverified and stays ``unresolved`` — suggested support
+    never renders as supported; every other recorded status keeps its
+    bucket (``unresolved`` or ``unchecked``).
+    """
+    pos = {id(c): i for i, c in enumerate(record.claims) if _substantive(c)}
+    base: dict[int, str] = {}
+    for c in record.claims:
+        if not _substantive(c):
+            continue
+        i = pos[id(c)]
+        if moved.get(id(c)) or any(h in unpinned for h in (*c.evidence, *c.premises)):
+            base[i] = "unresolved"
+        elif c.rollup in ROLLUP_VERDICTS:
+            base[i] = c.rollup
+        elif c.status == "provisional" or c.status == "unresolved":
+            base[i] = "unresolved"
+        else:
+            base[i] = "unchecked"
+    return _effective_statuses(record, base)
+
+
+def _consumer_view(record: AuditRecord) -> tuple[tuple[str, str], ...]:
+    """The per-claim coverage a consumer of this audit relied on: read-side
+    buckets as bound at audit time (pins matched; citations that never
+    pinned stay unresolved). Sorted (text, bucket) pairs compare stably
+    across audits of the same body."""
+    subs = [c for c in record.claims if _substantive(c)]
+    unpinned = {
+        h for c in subs for h in (*c.evidence, *c.premises) if h not in record.pins
+    }
+    buckets = _claim_buckets(record, {}, unpinned)
+    pos = {id(c): i for i, c in enumerate(record.claims) if _substantive(c)}
+    return tuple(sorted((c.text, buckets[pos[id(c)]]) for c in subs))
+
+
+def grounding_summary(store: Store, ref_id: int) -> GroundingSummary:
+    """Coverage and freshness of one memory's audit, claim by claim.
+
+    Read-only: resolves cited pins against the graph now; a fresh audit
+    timestamp renews nothing — only pins that still match keep a claim
+    supported. Where the audit recorded a v5 ``rollup`` verdict that
+    verdict is the claim's bucket; currency checks still cap a claim at
+    ``unresolved``. Raises NotFound when the memory does not exist.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM refs WHERE ref_id = %s AND retired_at IS NULL", (ref_id,)
+        ).fetchone()
+    if row is None:
+        raise NotFound(f"no live memory {ref_id} to summarize grounding for")
+    rows = _audit_rows(store, ref_id)
+
+    def _row_state(record: AuditRecord) -> tuple[bool, tuple[str, ...]]:
+        """Dependency-aware freshness of one history row: binds while its
+        sha/version hold AND no pin — source, passage or premise
+        judgment — moved."""
+        moved, _unpinned = _pin_state(
+            store,
+            record,
+            [c for c in record.claims if _substantive(c)],
+            self_id=ref_id,
+        )
+        stale = tuple(dict.fromkeys(h for bad in moved.values() for h in bad))
+        return record.current and not moved, stale
+
+    history = tuple(
+        AuditHistoryEntry(
+            review_id=int(rev.review_id),
+            at=rev.at,
+            actor=str(rev.actor),
+            version=str(rev.version),
+            prompt_version=str(record.versions.get("prompt", "")),
+            target_sha=record.target_sha,
+            current=binds,
+            claims=sum(1 for c in record.claims if _substantive(c)),
+            truncated=bool(
+                record.coverage.get("claim_coverage_verified") is False
+                or (
+                    "claims_total" in record.coverage
+                    and record.coverage["claims_total"] is None
+                )
+                or record.coverage.get("truncated")
+                or record.coverage.get("classifier_incomplete")
+                or record.coverage.get("unaccounted_ranges")
+            ),
+            stale_pins=stale,
+        )
+        for rev, record in rows
+        for binds, stale in (_row_state(record),)
+    )
+    if not rows:
+        return GroundingSummary(
+            claims_total=0,
+            supported=0,
+            partial=0,
+            unsupported=0,
+            contradicted=0,
+            unresolved=0,
+            unchecked=0,
+            truncated=False,
+            audited_at=None,
+            freshness="none",
+            stale_pins=(),
+            claims=(),
+            history=(),
+        )
+    rev, record = rows[0]
+    subs = [c for c in record.claims if _substantive(c)]
+    moved, unpinned = _pin_state(store, record, subs, self_id=ref_id)
+    chunk_ids = {
+        int(c.support["passage"]["chunk_id"])
+        for c in subs
+        if c.support
+        and isinstance(c.support.get("passage"), dict)
+        and c.support["passage"].get("chunk_id")
+    }
+    passage_handles: dict[int, str] = {}
+    if chunk_ids:
+        with store.pool.connection() as conn:
+            prows = conn.execute(
+                "SELECT c.chunk_id, r.kind FROM chunks c JOIN refs r "
+                "ON r.ref_id = c.ref_id WHERE c.chunk_id = ANY(%s)",
+                (sorted(chunk_ids),),
+            ).fetchall()
+        passage_handles = {
+            int(cid): h
+            for cid, kind in prows
+            if (h := try_format(str(kind), int(cid), chunk=True))
+        }
+
+    def _passage_for(c: ClaimRecord) -> str:
+        p = c.support.get("passage") if c.support else None
+        if isinstance(p, dict) and p.get("chunk_id"):
+            cid = int(p["chunk_id"])
+            return passage_handles.get(cid, f"chunk:{cid}")
+        return ""
+
+    unaccounted = tuple(
+        (int(a), int(b)) for a, b in (record.coverage.get("unaccounted_ranges") or [])
+    )
+    incomplete = bool(
+        record.coverage.get("claim_coverage_verified") is False
+        or (
+            "claims_total" in record.coverage
+            and record.coverage["claims_total"] is None
+        )
+        or record.coverage.get("truncated")
+        or record.coverage.get("classifier_incomplete")
+        or unaccounted
+    )
+
+    def _unpinned_for(c: ClaimRecord) -> tuple[str, ...]:
+        return tuple(h for h in (*c.evidence, *c.premises) if h in unpinned)
+
+    if not record.current:
+        stale_pins: tuple[str, ...] = tuple(
+            dict.fromkeys([f"me{ref_id}", *(h for bad in moved.values() for h in bad)])
+        )
+        views = tuple(
+            ClaimView(
+                span=(c.span[0], c.span[1]),
+                text=c.text,
+                kind=c.kind,
+                status="unresolved",
+                recorded=c.status,
+                rollup=c.rollup,
+                reason=c.reason,
+                evidence=tuple(c.evidence),
+                premises=tuple(c.premises),
+                stale_pins=stale_pins,
+                unpinned=_unpinned_for(c),
+                passage=_passage_for(c),
+            )
+            for c in subs
+        )
+        return GroundingSummary(
+            claims_total=len(views),
+            supported=0,
+            partial=0,
+            unsupported=0,
+            contradicted=0,
+            unresolved=len(views),
+            unchecked=0,
+            truncated=incomplete,
+            audited_at=rev.at,
+            freshness="stale",
+            stale_pins=stale_pins,
+            claims=views,
+            history=history,
+            unaccounted_ranges=unaccounted,
+        )
+    stale_pin_set: list[str] = []
+    for bad in moved.values():
+        for handle in bad:
+            if handle not in stale_pin_set:
+                stale_pin_set.append(handle)
+    counts = {k: 0 for k in ROLLUP_VERDICTS}
+    counts["unchecked"] = 0
+    pos = {id(c): i for i, c in enumerate(record.claims) if _substantive(c)}
+    eff = _claim_buckets(record, moved, unpinned)
+    claim_views: list[ClaimView] = []
+    for c in subs:
+        status = eff[pos[id(c)]]
+        broken = _unpinned_for(c)
+        counts[status] += 1
+        claim_views.append(
+            ClaimView(
+                span=(c.span[0], c.span[1]),
+                text=c.text,
+                kind=c.kind,
+                status=status,
+                recorded=c.status,
+                rollup=c.rollup,
+                reason=c.reason,
+                evidence=tuple(c.evidence),
+                premises=tuple(c.premises),
+                stale_pins=tuple(moved.get(id(c), ())),
+                unpinned=broken,
+                passage=_passage_for(c),
+            )
+        )
+    return GroundingSummary(
+        claims_total=len(claim_views),
+        supported=counts["supported"],
+        partial=counts["partial"],
+        unsupported=counts["unsupported"],
+        contradicted=counts["contradicted"],
+        unresolved=counts["unresolved"],
+        unchecked=counts["unchecked"],
+        truncated=incomplete,
+        audited_at=rev.at,
+        freshness="stale" if stale_pin_set else "current",
+        stale_pins=tuple(stale_pin_set),
+        claims=tuple(claim_views),
+        history=history,
+        unaccounted_ranges=unaccounted,
+    )
+
+
+def summary_line(summary: GroundingSummary) -> str:
+    """The one-line footer/read chip, e.g. ``grounding: 5 claims - 3
+    supported - 1 unresolved - 1 unchecked - audited 2026-11-14 - current``.
+    Zero buckets are omitted, so an unresolved hypothesis never renders a
+    ``supported`` token. An incomplete audit — a bounded scan, a failed
+    classifier, or text the reported claims did not cover — renders the
+    count as a lower bound (``N+ claims``) and says ``truncated scan``;
+    the drill-down names the unchecked ranges."""
+    if summary.freshness == "none":
+        return "grounding: not audited"
+    parts = [
+        f"{n} {label}"
+        for n, label in (
+            (summary.supported, "supported"),
+            (summary.partial, "partial"),
+            (summary.unsupported, "unsupported"),
+            (summary.contradicted, "contradicted"),
+            (summary.unresolved, "unresolved"),
+            (summary.unchecked, "unchecked"),
+        )
+        if n
+    ]
+    plus = "+" if summary.truncated else ""
+    head = f"grounding: {summary.claims_total}{plus} claims"
+    if parts:
+        head += " - " + " - ".join(parts)
+    day = (
+        summary.audited_at.astimezone(UTC).strftime("%Y-%m-%d")
+        if summary.audited_at is not None
+        else "?"
+    )
+    line = f"{head} - audited {day} - {summary.freshness}"
+    if summary.truncated:
+        line += " - truncated scan"
+    if summary.stale_pins:
+        line += f" - stale pins: {', '.join(summary.stale_pins)}"
+    return line
+
+
+def grounding_line(store: Store, ref_id: int) -> str | None:
+    """The summary line for one memory, or None when the read must stay silent
+    (missing ref, or any lookup fault — footers are best-effort)."""
+    try:
+        return summary_line(grounding_summary(store, ref_id))
+    except Exception:
+        log.debug("grounding line for me%s failed", ref_id, exc_info=True)
+        return None
+
+
+def grounding_chip(store: Store, ref_id: int) -> str:
+    """The compact index-bullet suffix, e.g. `` · grounding 2/3 supported``
+    or `` · grounding: not audited``. Unlike the full read line it names
+    only what a bullet can carry: coverage, staleness, and the audit
+    bound — the drill-down holds the rest. Empty string on any fault:
+    recall never loses a bullet to a grounding lookup."""
+    try:
+        s = grounding_summary(store, ref_id)
+    except Exception:
+        log.debug("grounding chip for me%s failed", ref_id, exc_info=True)
+        return ""
+    if s.freshness == "none":
+        return " · grounding: not audited"
+    plus = "+" if s.truncated else ""
+    out = f" · grounding {s.supported}/{s.claims_total}{plus} supported"
+    if s.unresolved:
+        out += f", {s.unresolved} unresolved"
+    if s.unchecked:
+        out += f", {s.unchecked} unchecked"
+    if s.freshness == "stale":
+        out += ", stale"
+    return out
+
+
+def grounding_stats_report(store: Store) -> str:
+    """The ``precis garden stats`` grounding block: substantive-claim
+    denominators and scan boundaries from the audit rows — never reviewed-
+    memory or citation counts dressed up as coverage."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT target_id, review_id, at, version, content_sha, note "
+            "FROM reviews WHERE target_kind = 'ref' AND actor = %s "
+            "AND note LIKE '%%\"grounding_audit\"%%' "
+            "ORDER BY target_id, at DESC, review_id DESC",
+            (AUDIT_ACTOR,),
+        ).fetchall()
+        never = conn.execute(
+            "SELECT count(*) FROM refs r WHERE r.kind = 'memory' "
+            "AND r.retired_at IS NULL AND NOT EXISTS ("
+            "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'DREAM') "
+            "AND NOT EXISTS (SELECT 1 FROM reviews rv "
+            "WHERE rv.target_kind = 'ref' AND rv.target_id = r.ref_id "
+            "AND rv.actor = %s)",
+            (AUDIT_ACTOR,),
+        ).fetchone()
+    latest: dict[int, Any] = {}
+    for _tid, rid, _at, _ver, _sha, _note in rows:
+        latest.setdefault(int(_tid), []).append((rid, _at, _ver, _sha, _note))
+    never_audited = int(never[0]) if never is not None else 0
+    total = supported = unresolved = unchecked = 0
+    partial = unsupported_n = contradicted = 0
+    current = stale = truncated = ranges = 0
+    memories = 0
+    for tid, revs in latest.items():
+        rid, _at, ver, sha, note = revs[0]
+        rev = SimpleNamespace(
+            actor=AUDIT_ACTOR,
+            note=note,
+            current=bool(sha) and str(sha) == str(store.target_sha("ref", int(tid))),
+            version=ver,
+            content_sha=sha,
+            review_id=int(rid),
+        )
+        record = _parse_audit(rev)
+        if record is None:
+            continue
+        memories += 1
+        subs = [c for c in record.claims if _substantive(c)]
+        # The same per-claim rules as grounding_summary. When the row no
+        # longer binds to this content (edit or policy move) nothing it
+        # judged certifies support; when a cited source moved, exactly the
+        # claims citing it lose support — unaffected claims keep their
+        # bucket and unchecked claims stay unchecked (and out of the
+        # inspected count).
+        moved, unpinned = _pin_state(store, record, subs, self_id=tid)
+        binds = record.current and not any(moved.values())
+        if binds:
+            current += 1
+        else:
+            stale += 1
+        is_trunc = bool(
+            record.coverage.get("claim_coverage_verified") is False
+            or (
+                "claims_total" in record.coverage
+                and record.coverage["claims_total"] is None
+            )
+            or record.coverage.get("truncated")
+            or record.coverage.get("classifier_incomplete")
+            or record.coverage.get("unaccounted_ranges")
+        )
+        total += len(subs)
+        ranges += len(record.coverage.get("unaccounted_ranges") or [])
+        pos = {id(c): i for i, c in enumerate(record.claims) if _substantive(c)}
+        if record.current:
+            buckets = _claim_buckets(record, moved, unpinned)
+            for c in subs:
+                st = buckets[pos[id(c)]]
+                if st == "supported":
+                    supported += 1
+                elif st == "partial":
+                    partial += 1
+                elif st == "unsupported":
+                    unsupported_n += 1
+                elif st == "contradicted":
+                    contradicted += 1
+                elif st == "unchecked":
+                    unchecked += 1
+                else:
+                    unresolved += 1
+        else:
+            # The certificate is gone: every claim it carried reads
+            # unresolved, checked or not.
+            unresolved += len(subs)
+        truncated += int(is_trunc)
+    plus = "+" if truncated else ""
+    lines = [
+        f"grounding: {memories} memories audited · {never_audited} never audited",
+        f"claims: {total}{plus} substantive"
+        + (f" (lower bound — {truncated} incomplete scans)" if truncated else "")
+        + f" — {supported} supported · {partial} partial"
+        f" · {unsupported_n} unsupported · {contradicted} contradicted"
+        f" · {unresolved} unresolved · {unchecked} unchecked",
+        f"inspected: {total - unchecked} claims judged"
+        f" · unchecked scope: {unchecked} claims + {ranges} unchecked"
+        f" body range(s) across {truncated} incomplete audit(s)",
+        f"audits: {current} current · {stale} stale · {truncated} incomplete scans"
+        f" (current-supported counts re-resolve source pins; per-claim detail"
+        f" on view='grounding')",
+        f"scan bound: {MAX_CLAIMS} claims / {MAX_PROMPT_BODY_CHARS} chars per"
+        " memory — omitted text is unchecked",
+    ]
+    return "\n".join(lines)
 
 
 __all__ = [
     "AUDIT_ACTOR",
+    "BASELINE_DUE_KEY",
+    "BASELINE_EVERY",
     "CLAIM_KINDS",
     "CLAIM_STATUS",
     "CONFLICT_PROBE_BUDGET",
     "CROSS_AUDIT_CYCLE_MAX_DEPTH",
     "ROLLUP_VERDICTS",
     "SUPPORT_VERDICTS",
+    "AuditHistoryEntry",
     "AuditRecord",
     "ClaimRecord",
+    "ClaimView",
     "ConflictProbe",
+    "GroundingSummary",
     "RawSupport",
     "SupportVerdict",
     "audit_body",
+    "audit_for_review",
     "collect_evidence_passages",
     "combine_reviewer_verdicts",
     "emit_grounding_repairs",
     "extract_claim_spans",
     "grounding_audit_candidates",
+    "grounding_chip",
+    "grounding_line",
+    "grounding_stats_report",
+    "grounding_summary",
     "latest_audit",
     "probe_claim_conflicts",
+    "queue_affected_consumers",
     "rollup_claim",
+    "summary_line",
     "verify_claim_support",
     "write_audit",
 ]
