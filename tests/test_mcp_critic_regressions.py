@@ -678,18 +678,17 @@ def test_precis_tags_skill_status_count_matches_closed_vocab() -> None:
 
 
 def test_handlers_docstring_lists_every_auto_check_evaluator() -> None:
-    """gr338602 item 3b: ``precis.handlers``' module docstring named 7
-    auto_check evaluators; ``REGISTRY`` had already grown to 10
-    (placement_legal/route_complete/netlist_drc_clean, the
-    pcb-guided-place-route phase gates, were added without updating the
-    docstring). Every registered evaluator name must appear in the
-    docstring so the two can't silently drift apart again."""
-    import precis.handlers as handlers_pkg
+    """gr338602: every evaluator is documented in the owning todo module.
+
+    The package docstring delegates todo architecture to this module;
+    keep checking the complete registry after that documentation move.
+    """
+    import precis.handlers.todo as todo_module
     from precis.workers.auto_check_evaluators import REGISTRY
 
-    doc = handlers_pkg.__doc__ or ""
+    doc = todo_module.__doc__ or ""
     for name in REGISTRY:
-        assert f"``{name}``" in doc, f"{name!r} missing from handlers docstring"
+        assert f"``{name}``" in doc, f"{name!r} missing from todo module docstring"
 
 
 # ── MINOR: precis-overview no longer cites dead kinds ───────────────
