@@ -819,14 +819,11 @@ def _trailers(body: str) -> list[tuple[str, str]]:
 
 
 def _first_parent_walk(prod: str, tip: str) -> list[tuple[str, str]] | None:
-    """(sha, message) of every first-parent commit in (prod..origin/main],
+    """(sha, message) of every first-parent commit in (prod..tip],
     NEWEST first (git log's order — the guard's positions index it); None
-    when git cannot read the range (the caller holds). The symbolic ref,
-    not ``tip``: with no prod ref the range is the whole first-parent
-    line, not one commit."""
-    del tip  # the range names origin/main itself
-    tip_ref = "refs/remotes/origin/main"
-    rng = f"{prod}..{tip_ref}" if prod else tip_ref
+    when git cannot read the range (the caller holds). With no prod ref
+    the walk covers the entire first-parent line through tip."""
+    rng = f"{prod}..{tip}" if prod else tip
     out = git(
         "log",
         "--first-parent",
@@ -897,7 +894,9 @@ def _split_set_cut(s: str) -> tuple[str, str | None]:
         return s, "commit history is unreadable — refusing to cut unchecked"
     pos = {sha: i for i, (sha, _body) in enumerate(walk)}  # 0 = newest
     if s not in pos:
-        return s, None  # S at/below prod: the rollback guard refuses it
+        if prod and ancestor(s, prod):
+            return s, None  # already shipped; the rollback guard still applies
+        return s, f"{s[:9]} is outside the release history"
     sets = _change_sets(walk)
     requires = _requires(walk)
     resolved: dict[str, str | None] = {}
@@ -2625,6 +2624,7 @@ def resume(
     branch = str(rel["branch"])
     dep = rel.get("deployment") or {}
     if rel.get("cut_pending"):
+        say(f"resuming: {branch} has a pending cut — reconciling")
         base = str(rel["base"])
         safe, hold_why = _split_set_cut(base)
         if hold_why or safe != base:
@@ -2632,9 +2632,8 @@ def resume(
             return die(
                 1,
                 f"scripts/release: holding: pending cut at {base[:9]}: {why}. "
-                "Abandon the pending cut before cutting again.",
+                "Run scripts/round cut --abandon before cutting again.",
             )
-        say(f"resuming: {branch} has a pending cut — reconciling")
         if args.dry_run:
             say("would reconcile the cut, wait for CI, deploy")
             return 0

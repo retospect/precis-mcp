@@ -62,7 +62,7 @@ def test_change_set_pair_ships_together(rig: Rig) -> None:
     assert rig.origin_ref("release/r1") == d2
 
 
-def test_lone_change_set_member_holds_the_tip_cut(rig: Rig) -> None:
+def test_lone_change_set_member_holds_until_counterpart_lands(rig: Rig) -> None:
     """The review finding: a lone member is INCOMPLETE (the sibling has
     not landed) and must not be treated as a complete one-commit set."""
     _commit_trailer(rig, "src/d1.py", "d1 half", "Change-Set: pair-1")
@@ -74,6 +74,13 @@ def test_lone_change_set_member_holds_the_tip_cut(rig: Rig) -> None:
     assert "Change-Set pair-1" in refusal["line"]
     assert "1 of 2" in refusal["line"]
     assert rig.origin_ref("release/r1") == ""
+
+    d2 = _commit_trailer(rig, "src/d2.py", "d2 half", "Change-Set: pair-1")
+    _push_main(rig)
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert f"RELEASE_CUT: r1 {d2}" in out.stdout.splitlines()
+    assert rig.origin_ref("release/r1") == d2
 
 
 def test_pinned_cut_moves_below_an_incomplete_set(rig: Rig) -> None:
