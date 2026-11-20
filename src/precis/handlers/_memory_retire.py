@@ -118,7 +118,11 @@ def scan_mentions(
     ``to_tsquery`` on the stored ``tsv`` nominates candidates — exact
     whole-lexeme hits for the target record handle and its one- and
     two-leading-zero forms — so the scan is complete at any corpus size; the shared Python
-    detector predicate verifies each candidate. Aggregating all live body
+    detector predicate verifies each candidate. The predicate is the
+    bare-handle grammar on purpose: the same token class the write-time
+    sync links and the web reader autolinks (gr702966), so a mention
+    that minted an edge and one that only ever rendered as an autolink
+    block the retire identically. Aggregating all live body
     chunks preserves history-section context. Known gap: a handle glued
     inside a dotted or slashed compound token (``docs/me<N>``,
     ``me<N>.md``, a URL path) is one lexeme and is never nominated.

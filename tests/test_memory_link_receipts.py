@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers._memory_link_receipt import MentionSync
 from precis.handlers.memory import MemoryHandler
 from precis.store import Store
@@ -689,4 +690,70 @@ def test_self_mention_is_not_flagged(handler: MemoryHandler, store: Store) -> No
     receipt = handler.edit(id=source, mode="append", text=f" See [me{source}].").body
 
     assert "does not resolve" not in receipt
+    assert not store.links_for(source, direction="out")
+
+
+# ---------------------------------------------------------------------------
+# Bare-prose handles (gr702966): a handle written without brackets is the
+# same mention — it links at write, warns when dead, and still counts
+# toward the retire guard.
+# ---------------------------------------------------------------------------
+
+
+def test_uppercase_bare_handle_links_and_blocks_retirement(
+    handler: MemoryHandler, store: Store
+) -> None:
+    target = _memory(handler, "Live evidence")
+
+    receipt = handler.put(
+        text=f"Evidence ME{target} bare.", title="Bare mention fixture"
+    ).body
+
+    assert "does not resolve" not in receipt
+    source = id_of(receipt)
+    assert {link.dst_ref_id for link in store.links_for(source, direction="out")} == {
+        target
+    }
+
+    with pytest.raises(BadInput, match="live mention") as exc:
+        handler.delete(id=target)
+    assert f"Evidence ME{target} bare." in str(exc.value)
+
+
+def test_put_ack_names_unresolved_bare_handle(
+    handler: MemoryHandler, store: Store
+) -> None:
+    receipt = handler.put(
+        text=f"Evidence ties the network to {_DEAD_HANDLE.upper()}, not the hardware.",
+        title="Unresolved bare mention fixture",
+    ).body
+
+    assert (
+        f"Mention {_DEAD_HANDLE} written bare does not resolve to a live "
+        "ref; no mention edge was created for it."
+    ) in receipt
+    source = id_of(receipt)
+    assert not store.links_for(source, direction="out")
+
+
+def test_bare_mention_edit_drops_the_edge(handler: MemoryHandler, store: Store) -> None:
+    """A bare mention edited out loses its link on the next write, exactly
+    like the bracketed form."""
+    target = _memory(handler, "Old evidence")
+    source = _memory(handler, f"Evidence me{target} bare.")
+    assert {link.dst_ref_id for link in store.links_for(source, direction="out")} == {
+        target
+    }
+
+    receipt = handler.edit(
+        id=source,
+        mode="find-replace",
+        find=f"me{target} bare",
+        text="condensed",
+    ).body
+
+    assert (
+        f"- removed related-to me{source} -> me{target} (generated mention edge)"
+        in receipt
+    )
     assert not store.links_for(source, direction="out")

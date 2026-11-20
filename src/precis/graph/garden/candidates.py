@@ -599,7 +599,12 @@ _MEMORY_HANDLE = re.compile(r"\b[a-zA-Z]{2}[0-9]{1,19}\b")
 
 
 def memory_handle_mentions(body: str, handle: str) -> list[re.Match[str]]:
-    """The dangling-mention token predicate, narrowed to one record handle."""
+    """The dangling-mention token predicate, narrowed to one record handle.
+
+    Bare prose tokens count as mentions product-wide (gr702966): the
+    web reader autolinks them, the write-time sync links and warns on
+    them, and the retire guard here counts them.
+    """
     wanted = parse_handle(handle)
     return [
         m for m in _MEMORY_HANDLE.finditer(body) if parse_handle(m.group()) == wanted

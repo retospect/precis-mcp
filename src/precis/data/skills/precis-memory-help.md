@@ -686,7 +686,9 @@ put(
 
 Write the `[handle]` exactly as a `search` / `get` result printed it
 (`[me5]` a memory, `[pa5]` / `[pc10]` a paper, `[pt6]` a patent,
-`[or3]` an oracle, …). Editing a mention out drops its link on the next
+`[or3]` an oracle, …). The same handle written as a bare whole word
+(`me5` without brackets) is the same mention: it links the same and a
+dead one warns the same. Editing a mention out drops its link on the next
 write; adding one adds the link. This is the lightweight alternative to
 an explicit `link()` — reach for it when the reference lives naturally in
 the prose, and `link()` when it doesn't. See `precis-addressing-help` for

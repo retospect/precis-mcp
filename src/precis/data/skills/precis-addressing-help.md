@@ -65,9 +65,10 @@ every kind — there is no per-kind variant to learn.
 - **Flat & stable identity.** The handle names the row, not a position; unlike
   the retired `miller23~4` it does not rot when a doc is re-chunked (the
   chunk keeps its `chunk_id`).
-- **Write it inline to reference.** Inside a memory or draft body, a bare
-  `[handle]` in the prose is a reference — it auto-links the writing ref to
-  the target (`related-to`). See `precis-memory-help` / `precis-draft-help`.
+- **Write it inline to reference.** Inside a memory or draft body, a
+  `[handle]` — or the same handle as a bare whole word — in the prose is a
+  reference: it auto-links the writing ref to the target (`related-to`).
+  See `precis-memory-help` / `precis-draft-help`.
 
 - **Read once, write by handle.** After a successful exact-handle `get` in the
   same MCP session, `put`/`edit` accepts `text={'$ref': 'dc123'}`. The server

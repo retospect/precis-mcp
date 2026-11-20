@@ -42,7 +42,9 @@ Lazy discovery avoids cycles when handle-code plugins import mention consumers.
   ``draft_regex``, ``house_style``, ``wordcount``).
 - *Identity and addressing.* :mod:`~precis.utils.handle_registry` (the single
   source of universal handles), :mod:`~precis.utils.handles` (opaque draft
-  chunk handles), :mod:`~precis.utils.mentions`, :mod:`~precis.utils.slug`,
+  chunk handles), :mod:`~precis.utils.mentions` (bare prose handles accept
+  either case for autolinks and write receipts, in step with the retirement
+  guard), :mod:`~precis.utils.slug`,
   :mod:`~precis.utils.authors`, :mod:`~precis.utils.short_cite`,
   :mod:`~precis.utils.file_id` / :mod:`~precis.utils.workspace` (prose-file
   kinds under ``PRECIS_ROOT``).

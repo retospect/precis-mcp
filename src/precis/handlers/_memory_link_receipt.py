@@ -9,7 +9,10 @@ could hide. The sync also flags explicit handle mentions that resolve to
 nothing live (a ``[meN]`` bracket naming a not-yet-existing node) into its
 notices, so the write-time ack names the dead handle instead of letting a
 later mint under the same number leave the stale bracket pointing at the
-wrong node (gr570723).
+wrong node (gr570723). A handle written bare in prose (``me5`` without
+brackets) is the same mention — it links the same and warns the same
+(gr702966); the notice says "written bare" so the ack echoes the form
+the author actually typed.
 Context-local collection keeps handler instances safe for concurrent requests;
 a retry replaces its prior attempt's collector. Rendering lives here so memory
 authoring lanes need only a decorator and a preview hook in the handler.
@@ -101,17 +104,18 @@ class MentionSync:
             self.store, text, exclude_ref_id=self.ref_id
         )
         # Surface dead handles at write time (gr570723): a bracketed
-        # ``[meN]`` that never existed mints no edge and used to pass
-        # silently, so a later mint under the same number would leave the
-        # stale bracket pointing at the wrong node.
+        # ``[meN]`` or bare ``meN`` (gr702966) that never existed mints no
+        # edge and used to pass silently, so a later mint under the same
+        # number would leave the stale mention pointing at the wrong node.
         verb = "would be" if self.dry_run else "was"
-        for token in mentions.unresolved_handle_mentions(
+        for token, bracketed in mentions.unresolved_handle_mentions(
             self.store, text, exclude_ref_id=self.ref_id
         ):
+            written = f"[{token}]" if bracketed else f"{token} written bare"
             notice = (
-                f"Mention [{token}] does not resolve to a live ref; no mention "
-                f"edge {verb} created for it. Fix the handle or create the "
-                "target, then edit to re-link."
+                f"Mention {written} does not resolve to a live ref; no "
+                f"mention edge {verb} created for it. Fix the handle or "
+                "create the target, then edit to re-link."
             )
             if notice not in self.notices:
                 self.notices.append(notice)
