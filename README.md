@@ -319,7 +319,10 @@ above).
 `precis eval '<call>'` is the CLI twin: it evaluates one call string
 against the same parser (`--text` / `--text-file` for the large-body
 escape hatch) without building the multi-flag `precis tools <verb>
---flag value` form.
+--flag value` form. `--json` prints exactly one JSON object on stdout,
+`{"ok", "text", "created", "error"}`, where `created` is the handle of the
+ref a put created (`td735113`) or `null` — a script reads the new id from
+there instead of parsing the per-kind receipt.
 
 ### Environment variables
 

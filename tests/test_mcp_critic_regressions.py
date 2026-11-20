@@ -760,6 +760,7 @@ def test_tag_tool_description_documents_per_kind_gating() -> None:
     # The seven verbs moved into the shared tool registry; the
     # function FastMCP serialises into ``tools/list`` lives at
     # :mod:`precis.tools.core`. Reach for it there.
+    from precis.store.types import _CATEGORIZER_AXES, _KIND_ALLOWED_AXES
     from precis.tools.core import tag as tag_fn
 
     doc = inspect.getdoc(tag_fn) or ""
@@ -769,15 +770,22 @@ def test_tag_tool_description_documents_per_kind_gating() -> None:
     # Explicit per-kind matrix + pointer to the authoritative skill.
     assert "Per-kind closed-prefix gating" in doc
     assert "precis-tags" in doc
-    # Pin a few known-correct axis assignments so a future rework of
-    # _KIND_ALLOWED_AXES nudges the docstring too.
-    for expected in (
-        "todo",  # STATUS + PRIO
-        "memory",  # no closed axes
-        "paper",  # SRC + CACHE
-        "CACHE",  # cache-only kinds
-    ):
-        assert expected in doc, f"tag docstring must mention {expected!r}"
+    rows = {}
+    for line in doc.splitlines():
+        kinds, separator, labels = line.partition(": ")
+        if separator and set(kinds.split("/")) <= _KIND_ALLOWED_AXES.keys():
+            assert line == line.lstrip()
+            for kind in kinds.split("/"):
+                rows[kind] = set(labels.removesuffix(".").split("+"))
+
+    for kind, axes in _KIND_ALLOWED_AXES.items():
+        if axes:
+            documented = rows[kind]
+            if kind == "paper" and "categorizer axes" in documented:
+                documented = (documented - {"categorizer axes"}) | (
+                    axes & _CATEGORIZER_AXES.keys()
+                )
+            assert documented == axes, kind
 
 
 # ── MINOR-C: soft-deleted refs distinguished from never-existed ────
@@ -996,12 +1004,17 @@ def test_instructions_lead_with_skill_search_cta() -> None:
     the cold-start banner pushes agents to ``search(kind='skill', ...)``
     as the first action on a non-trivial request. Pin the CTA shape
     so future edits don't silently regress the discoverability story.
+
+    gr568491: the CTA is the multi-question form — several goal
+    phrasings in the caller's own words, one fused section index —
+    not the single-q guess-a-name spelling.
     """
     from precis import server
 
     text = server._INSTRUCTIONS
     assert "Discover:" in text
-    assert "search(kind='skill', q=" in text
+    assert "args={'queries':" in text
+    assert "own words" in text
     # Full-index pointer remains so an agent can list rather than
     # search when it doesn't have a query in mind.
     assert "get(kind='skill', id='toc')" in text

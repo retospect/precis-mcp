@@ -121,6 +121,14 @@ Measure paper/quest searches match subjects and anchor-chunk owners so
 promoting a subject does not hide its source evidence. Quest filtering
 shares the recursive inbound ``serves`` closure with measure ranking.
 
+A measure anchor's ``extraction_status`` check matches the literal on
+number boundaries after the markup fold; a duplicate math rendering of the
+same value glued to the literal (``3651±31$3651\\pm31$``) welds both copies
+into one digit run. The retry blanks only math spans that render the entire
+literal, preserving intervening math such as ``$\\times 2$``. Ordinary
+literals allow optional whitespace around non-word tokens. Adjacent word
+tokens require whitespace, and decimal points stay glued to their digits.
+
 Hybrid automatic recall uses ``_search_cut.gap_cut_distance``: best semantic
 distance plus one delta, capped at the 0.65 corpus floor. Absolute per-kind
 floors cannot account for free-text queries' distance offsets. OR-term lexical

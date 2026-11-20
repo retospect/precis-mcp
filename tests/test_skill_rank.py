@@ -38,6 +38,20 @@ def _ranked_slugs(body: str) -> list[str]:
     return out
 
 
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("add remove tags refs", {"precis-tags", "precis-tag-help"}),
+        ("typed links between refs", {"precis-link-help"}),
+    ],
+)
+def test_tool_description_lookup_ranks_relevant_skill(
+    skill: SkillHandler, query: str, expected: set[str]
+) -> None:
+    top = _ranked_slugs(skill.search(q=query).body)[:3]
+    assert expected.intersection(top), top
+
+
 def _pinned_slugs(body: str) -> list[str]:
     """Slugs whose row is a title pin, in rendered order.
 

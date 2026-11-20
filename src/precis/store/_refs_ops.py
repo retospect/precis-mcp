@@ -3874,6 +3874,61 @@ class RefsMixin:
                     return int(won.id)
                 raise
 
+    def ensure_python_ref(
+        self,
+        qualname: str,
+        *,
+        alias: str | None = None,
+        file: str | None = None,
+    ) -> int:
+        """Find-or-mint the lazy anchor ``refs(kind='python', slug=<qualname>)``.
+
+        gr702978: python symbols are file-backed — the code stays in git,
+        the anchor row exists only so notes can link a symbol and the
+        inbound edges have something to point at. Chunkless, so the
+        embed/summary cascade never sees it. The CALLER validates the
+        qualname against the live code index (``mint_python_mentions`` /
+        the python handler's ``symbol_anchor``) — an unknown qualname
+        must never mint. ``alias``/``file`` stamp where the symbol was
+        seen, so a later "gone" read can say what vanished. Race: two
+        first mentions both miss the probe and both insert; the loser's
+        ``cite_key`` claim is refused (:meth:`insert_ref`'s
+        ``Conflict``), its savepoint rolls back and it re-probes onto the
+        winner (as :meth:`ensure_skill_ref`). A retired anchor's slug is
+        reclaimed by ``insert_ref`` on re-mention, so a symbol that went
+        away and came back re-anchors cleanly.
+        """
+        with self.pool.connection() as conn:
+            hit = self.get_ref(kind="python", id=qualname)
+            if hit is not None:
+                return int(hit.id)
+            meta: dict[str, Any] = {"set_by": "system"}
+            if alias:
+                meta["alias"] = alias
+            if file:
+                meta["file"] = file
+            try:
+                with conn.transaction():
+                    ref = self.insert_ref(
+                        kind="python",
+                        slug=qualname,
+                        title=qualname,
+                        meta=meta,
+                        conn=conn,
+                    )
+                    return int(ref.id)
+            except Conflict:
+                won = self.get_ref(kind="python", id=qualname)
+                if won is not None:
+                    return int(won.id)
+                raise
+
+    def python_symbol_ref_id(self, qualname: str) -> int | None:
+        """The live anchor ref id for a python qualname — probe only,
+        never mints (the write doors mint; read-side callers stay pure)."""
+        ref = self.get_ref(kind="python", id=qualname)
+        return int(ref.id) if ref is not None else None
+
     def _open_gripe_sql(self) -> tuple[str, list[Any]]:
         """WHERE fragment (alias ``g``) for a gripe that is not yet closed."""
         frags: list[str] = []

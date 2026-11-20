@@ -561,7 +561,7 @@ def test_finding_view_evidence_shows_conjunct_grounding(store: Any) -> None:
         store, CanonicalClaim(sentence="An ungrounded conjunct.", scope={})
     )
     paper = _paper(store, title="Result paper")
-    chunk = seed_chunk(store, ref_id=paper, text="Reported result.")
+    chunk = seed_chunk(store, ref_id=paper, text="Reported result.", ord=0)
     store.add_link(
         src_ref_id=paper,
         dst_ref_id=atom,
@@ -570,7 +570,7 @@ def test_finding_view_evidence_shows_conjunct_grounding(store: Any) -> None:
     )
     store.add_link(
         src_ref_id=paper,
-        src_chunk_id=chunk,
+        src_pos=0,  # chunk endpoints are addressed by ord, resolved to chunk_id
         dst_ref_id=atom,
         relation="corroborates",
     )

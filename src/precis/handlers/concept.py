@@ -9,7 +9,10 @@ canonical ``definition``/``aliases``. On create it emits the reused
 free). Objectives are concepts, not todos (supersedes decision 7). Full design:
 me690334.
 
-``put`` text is ``"<name> — <definition>"`` (em-dash / newline separated). The
+``put`` text is ``"<name> — <definition>"``: an em dash, a whitespace-
+surrounded en dash, or a newline splits name from definition — an unspaced
+en dash inside a compound name (``Bogoliubov–de Gennes``) stays in the name.
+The
 **promotion pass** (slice 2c) writes richer nodes — aliases, provenance links,
 graph edges — directly via the store, reusing the same
 ``precis.reading.concepts`` helpers so manual and promoted nodes are identical.

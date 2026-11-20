@@ -39,9 +39,10 @@ deliberate step that turns a semantic near-match into a real edge.
 ## What does target= take?
 ## How do I point at a block of a paper, not the whole paper?
 
-A target is a universal handle, or `kind:identifier[~selector]` —
-required for file-backed kinds (`markdown`, `plaintext`, `tex`), which
-have no handle.
+A target is a universal handle or `kind:identifier[~selector]`. Among
+file-backed kinds, only the `python` and `md` indexes require slug
+addresses. Stored `markdown`, `plaintext`, and `tex` refs accept
+`md<N>`, `pl<N>`, and `tx<N>` handles, respectively.
 
 ```text
 pa5                                # a paper by handle
@@ -49,6 +50,7 @@ pc38                               # block 38 of that paper by handle
 td158                              # a todo by handle
 sk484247                           # a skill anchor by handle
 patent:ep4123456a1                 # DOCDB fetch key, kind: prefix required
+md42                               # a stored markdown file by handle
 markdown:notes/foo.md
 markdown:notes/foo.md~intro        # block in a file
 ```
@@ -121,8 +123,7 @@ put(
 )
 ```
 
-`contradicts` is adjudication-derived (claim-graph disagreement, Part 2 of
-the disputes split — spec `me693328`, not built) and
+`contradicts` is adjudication-derived (claim-graph disagreement, not built) and
 not something to file by hand between a memory and a paper — `disputes`
 is the free, non-blocking way to flag "these disagree" (`precis-relations`
 has the full split; memory↔memory `contradicts` is a separate, unaffected

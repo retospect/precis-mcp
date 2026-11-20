@@ -68,11 +68,26 @@ CheckoutWatchdog restarts the shared server onto it, so a confirm that
 only read workers could say "deployed" while every agent still saw the
 previous release. The ``release.mcp_url`` operator setting must name the
 session MCP and :func:`_mcp_evidence` reads ``precis-status``'s ``served_sha``
-through the MCP itself (the token from ``PRECIS_MCP_TOKEN``) and it must
+through the MCP itself (the bearer from ``PRECIS_MCP_TOKEN``, else the mounted secret of that name; with neither the probe reports "MCP not attested" and opens no transport) and it must
 equal the release sha: a lagging server parks the probe like a worker
 still restarting and, past the window, fails with "MCP still serves
 <sha>" — never "confirmed". Unset is a problem too ("MCP not attested"):
 an unattested MCP never confirms.
+
+**The merge-back goes first.** ``scripts/round deploy --confirm-runtime``
+retires the release: it tags ``deployed/r<N>``, merges the release head
+into main itself and deletes the branch — and exits 1 on "final forward
+merge conflicts" when a release fix and main changed the same lines.
+The pass's ``merge_back`` node, dispatched beside this one, is what can
+resolve that (a resolver slice, then an ours-merge), but it finished
+after the confirm had already failed into a human ask — r335 and r336,
+2026-11-19, each on a red that was fixed once on the release branch and
+once on main. So an attested release parks (the probe's park) until
+``meta.release.merge_back`` reads ``merged`` or ``noop``; the script's
+own forward merge then has nothing left to do. The wait is bounded by
+:data:`_MERGE_BACK_WAIT`; past it the script runs as before. The
+evidence is gathered first either way, so a deploy that did not take
+still fails at once.
 
 On ok the job runs ``scripts/round deploy --confirm-runtime <sha>
 --runtime-evidence <text>`` (phase ``confirm``), stamps the evidence on
@@ -182,6 +197,12 @@ _SERVED_SHA_RE = re.compile(r"\bserved_sha\b\W{0,4}([0-9a-f]{7,40})\b")
 #: loop in a worker pass).
 _CONFIRM_WINDOW = timedelta(minutes=10)
 _REPROBE_EVERY = timedelta(seconds=60)
+
+#: How long an attested release holds its retirement script back for the
+#: pass's merge-back (module docstring, "The merge-back goes first").
+#: Past it the script runs anyway and, on a conflict, fails as it did
+#: before the wait existed — the tick's ask goes to a human.
+_MERGE_BACK_WAIT = timedelta(hours=2)
 
 #: Timestamp shape ``release.round`` / ``release.prod_head`` and the
 #: parked handle carry (``precis.plans.release._stamp``'s, restated).
@@ -429,8 +450,9 @@ def _fetch_head(repo: str, branch: str) -> str | None:
 
 def _gate_run_verdict(repo: str, sha: str, branch: str) -> str | None:
     """Seam: ``green``/``red``/``pending`` of the newest check.yml run on
-    ``sha`` on ``branch`` (``ci_verdict_poll.verdict_of``); ``None`` when
-    GitHub is unreadable."""
+    ``sha`` on ``branch`` (``ci_verdict_poll.gate_verdict`` — the gate
+    legs decide, as they did for the deploy); ``None`` when GitHub is
+    unreadable."""
     from precis.workers.job_types import ci_verdict_poll as _cvp
 
     try:
@@ -439,7 +461,7 @@ def _gate_run_verdict(repo: str, sha: str, branch: str) -> str | None:
         return None
     if runs is None:
         return None
-    verdict, _run_id, _why = _cvp.verdict_of(runs, sha, branch)
+    verdict, _run_id, _why = _cvp.gate_verdict(repo, runs, sha, branch)
     return verdict
 
 
@@ -876,6 +898,81 @@ def _park_probe(
     return handle
 
 
+def _merge_back_settled(rel: dict[str, Any]) -> bool:
+    """The pass's merge-back put the release head on main, or had nothing
+    to put there: ``meta.release.merge_back`` reads ``merged``/``noop``."""
+    from precis.workers.job_types import release_merge_back as _mb
+
+    outcome = rel.get(_mb.MERGE_BACK_KEY)
+    return isinstance(outcome, dict) and outcome.get("state") in ("merged", "noop")
+
+
+def _merge_back_wait(
+    rel: dict[str, Any], handle: dict[str, Any] | None, now: datetime
+) -> str | None:
+    """Why the retirement script must not run yet, else ``None``: the
+    pass's merge-back is not settled (:func:`_merge_back_settled`) and
+    the wait — clocked from the parked handle's ``merge_wait_since`` —
+    is inside :data:`_MERGE_BACK_WAIT`."""
+    from precis.workers.job_types import release_merge_back as _mb
+
+    if _merge_back_settled(rel):
+        return None
+    outcome = rel.get(_mb.MERGE_BACK_KEY)
+    state = outcome.get("state") if isinstance(outcome, dict) else None
+    since = None
+    if handle is not None:
+        since = _parse_ts(handle.get("merge_wait_since"))
+    if since is not None and now - since >= _MERGE_BACK_WAIT:
+        return None
+    if state == "conflict" and isinstance(outcome, dict):
+        return (
+            "the merge-back hit a conflict and its resolver "
+            f"td{outcome.get('resolver')} has not put the release on main yet"
+        )
+    return "the merge-back has not put the release head on main yet"
+
+
+def _park_merge_back(
+    ctx: Any,
+    ev: Evidence,
+    rn: str,
+    now: datetime,
+    why: str,
+    handle: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The runtime is attested but the merge-back is not settled: park
+    like :func:`_park_probe` and look again in :data:`_REPROBE_EVERY`.
+    One ``job_event`` per distinct reason, not one per look."""
+    due = now + _REPROBE_EVERY
+    fields: dict[str, Any] = {
+        "phase": "probe",
+        "rn": rn,
+        "sha": ev.sha,
+        "not_before": due.strftime(_TS_FMT),
+        "deadline": "",
+    }
+    if handle is None:
+        handle = dict(fields)
+    else:
+        handle.update(fields)
+    handle.setdefault("merge_wait_since", now.strftime(_TS_FMT))
+    if handle.get("merge_wait_why") != why:
+        handle["merge_wait_why"] = why
+        ctx.append_chunk(
+            "job_event",
+            f"{NAME}: {rn} is attested at {str(ev.sha)[:12]}; holding "
+            f"scripts/round deploy --confirm-runtime — {why} (its own "
+            "forward merge would stop on the same conflict)",
+        )
+    ctx.set_meta(
+        compute_handle=handle,
+        compute_handle_released=False,
+        deadline=time.time() + _REPROBE_EVERY.total_seconds() + wall_seconds(),
+    )
+    return handle
+
+
 def submit(ctx: Any, spec: Any) -> Any:
     del spec
     params = dict((ctx.meta or {}).get("params") or {})
@@ -893,6 +990,9 @@ def submit(ctx: Any, spec: Any) -> Any:
     now = datetime.now(UTC)
     ev = gather_evidence(ctx.store, rel, now=now)
     if ev.ok and ev.sha is not None:
+        why = _merge_back_wait(rel, None, now)
+        if why is not None:
+            return _park_merge_back(ctx, ev, rn, now, why)
         return _launch_confirm(ctx, rn, ev)
     if ev.problems:
         _probe_failed(ctx, ev, rn, params.get("todo_id"))
@@ -924,6 +1024,17 @@ def _probe_poll(ctx: Any, handle: dict[str, Any]) -> bool:
     ev = gather_evidence(ctx.store, rel, now=now)
     if ev.ok and ev.sha is not None:
         rn = str(handle.get("rn") or rel["rN"])
+        why = _merge_back_wait(rel, handle, now)
+        if why is not None:
+            _park_merge_back(ctx, ev, rn, now, why, handle)
+            return False
+        if handle.get("merge_wait_since") and not _merge_back_settled(rel):
+            ctx.append_chunk(
+                "job_event",
+                f"{NAME}: the merge-back is still not settled after "
+                f"{int(_MERGE_BACK_WAIT.total_seconds() // 3600)} h — running "
+                "scripts/round deploy --confirm-runtime anyway",
+            )
         fresh = _launch_confirm(ctx, rn, ev)
         if fresh is None:
             return True

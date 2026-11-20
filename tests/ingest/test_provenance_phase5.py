@@ -14,7 +14,7 @@ land under the ``db`` marker in a follow-up.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from precis.handlers._provenance_report import (
     render_batch,
@@ -188,9 +188,19 @@ def _result_with_candidates() -> ProvenanceResult:
 
 
 class TestRenderCandidates:
+    @patch("precis.ingest.provenance._fetch_crossref_message", return_value=None)
+    def test_arxiv_doi_crossref_miss_is_unverified(self, mock_fetch: Mock) -> None:
+        doi = "10.48550/arxiv.1802.08219"
+        result = check_doi(doi)
+        mock_fetch.assert_called_once_with(doi, None)
+        out = render_single(result)
+        assert "**Status**: unverified" in out
+        assert "DataCite" in out
+        assert "hallucinated" not in out
+
     def test_render_single_shows_candidates(self) -> None:
         out = render_single(_result_with_candidates())
-        assert "Status**: unknown" in out
+        assert "**Status**: unverified" in out
         assert "advisory only" in out
         assert "10.5678/correct" in out
         assert "10.5678/other" in out
@@ -199,7 +209,7 @@ class TestRenderCandidates:
     def test_render_batch_default_shows_candidates(self) -> None:
         out = render_batch([_result_with_candidates()], view="default")
         # The unknown DOI section appears
-        assert "Unknown DOI (Crossref 404)" in out
+        assert "Unverified DOI (not in Crossref)" in out
         # The candidate hints are nested beneath
         assert "advisory only" in out
         assert "10.5678/correct" in out
@@ -218,7 +228,7 @@ class TestRenderCandidates:
         """When candidates list is empty, the 'advisory only' line is absent."""
         r = ProvenanceResult(doi="10.x/typo", status="unknown", input_index=1)
         out = render_batch([r], view="default")
-        assert "Unknown DOI" in out
+        assert "Unverified DOI" in out
         assert "advisory only" not in out
 
 

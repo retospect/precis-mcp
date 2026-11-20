@@ -951,11 +951,21 @@ __all__ = ["add_parser", "run"]
 
 def add_origin_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register the non-deprecated provenance maintenance command."""
-    parser = sub.add_parser("gripe", help="Maintain gripe origin classifications.")
+    parser = sub.add_parser(
+        "gripe", help="Maintain gripe origin-class and goal tag classifications."
+    )
     commands = parser.add_subparsers(dest="gripe_command", required=True)
-    backfill = commands.add_parser("origin-backfill")
+    backfill = commands.add_parser(
+        "origin-backfill",
+        help="Backfill origin-class tags; --goal runs the goal: maintenance pass.",
+    )
     backfill.add_argument("--apply", action="store_true")
     backfill.add_argument("--status", default="done")
+    backfill.add_argument(
+        "--goal",
+        action="store_true",
+        help="Stamp goal:<value> from thread:/cluster: tags instead of origin-class.",
+    )
     backfill.add_argument("--database-url", default=None)
     return parser
 
@@ -968,17 +978,27 @@ def run_origin(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
     bind_process_store(store)
     try:
-        print(origin_backfill(store, apply=args.apply, status=args.status))
+        print(
+            origin_backfill(store, apply=args.apply, status=args.status, goal=args.goal)
+        )
     finally:
         store.close()
 
 
-def origin_backfill(store: Any, *, apply: bool = False, status: str = "done") -> str:
-    """Classify live unstamped gripes under row locks; dry-run writes nothing."""
+def origin_backfill(
+    store: Any, *, apply: bool = False, status: str = "done", goal: bool = False
+) -> str:
+    """Classify live unstamped gripes under row locks; dry-run writes nothing.
+
+    ``goal=True`` runs the gr592749 pass instead: ``goal:<value>`` from
+    the thread:/cluster: glob mapping (``goal_of``); every gripe gets a
+    value — unmapped → ``other`` — so nothing is unclassifiable."""
     from precis.store.types import Tag
+    from precis.utils.gripe_goal import GOALS, goal_of
     from precis.utils.gripe_origin_class import ORIGINS, classify_origin
 
-    counts = dict.fromkeys(ORIGINS, 0)
+    axis = "goal" if goal else "origin-class"
+    counts = dict.fromkeys(GOALS if goal else ORIGINS, 0)
     unknown: list[str] = []
     with store.pool.connection() as conn, conn.transaction():
         rows = conn.execute(
@@ -999,16 +1019,22 @@ def origin_backfill(store: Any, *, apply: bool = False, status: str = "done") ->
                 value if ns in {"OPEN", "FLAG"} else f"{ns}:{value}"
                 for ns, value in pairs
             ]
-            if any(t.startswith("origin-class:") for t in tags):
+            if any(t.startswith(f"{axis}:") for t in tags):
                 continue
-            origin = classify_origin(tags, title or "", (meta or {}).get("filed_by"))
-            if origin is None:
+            value = (
+                goal_of(tags)
+                if goal
+                else classify_origin(tags, title or "", (meta or {}).get("filed_by"))
+            )
+            if value is None:
                 unknown.append(f"gr{gid}")
                 continue
-            counts[origin] += 1
+            counts[value] += 1
             if apply:
                 store.add_tag(
-                    gid, Tag.open(f"origin-class:{origin}"), set_by="system", conn=conn
+                    gid, Tag.open(f"{axis}:{value}"), set_by="system", conn=conn
                 )
     mode = "applied" if apply else "dry-run"
+    if goal:
+        return f"{mode} goal: {counts}"
     return f"{mode}: {counts}; unclassified ({len(unknown)}): {chr(32).join(unknown)}"

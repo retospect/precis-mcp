@@ -1497,7 +1497,11 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     fields (``ADDIN EN.CITE`` + ``EN.REFLIST``) — the travelling library,
     so a co-author's EndNote picks the references up; Word without the
     add-in still shows each field's cached ``[n]`` text. ``?citations=plain``
-    is the numbered ``[n]`` + References section with no fields at all.
+    is the numbered ``[n]`` + References section with no fields at all;
+    ``word`` is Word's own ``CITATION`` fields and ``zotero`` Zotero's
+    ``ADDIN ZOTERO_ITEM`` fields; an unknown value falls back to ``endnote``. ``?notes=0|1`` puts the cited passages
+    into the EndNote records (default: on for ``audience=dev``, off for
+    ``external``).
 
     ``?links=0`` drops the small ``doi`` / library-search hyperlink runs
     after each ``[n]`` marker (a submission copy); default on.
@@ -1570,8 +1574,16 @@ async def export_docx_route(request: Request, ident: str) -> Response:
             [p.slug for p in retraction_override],
         )
 
-    citations = (
-        "plain" if request.query_params.get("citations") == "plain" else "endnote"
+    from precis.export import CITATION_MODES
+
+    citations = request.query_params.get("citations", "endnote")
+    if citations not in CITATION_MODES:
+        citations = "endnote"
+    # Research notes ride in the EndNote records: on for the author copy,
+    # off for an external one unless ``?notes=1`` asks for them.
+    notes_q = request.query_params.get("notes")
+    research_notes = (
+        audience != "external" if notes_q is None else notes_q in ("1", "true", "yes")
     )
     links = _links_wanted(request)
     with_sources = request.query_params.get("sources") in ("1", "true", "yes")
@@ -1585,6 +1597,7 @@ async def export_docx_route(request: Request, ident: str) -> Response:
             ref,
             target_path=out,
             citations=citations,
+            research_notes=research_notes,
             withheld_figures=pf.withheld_handles,
             doi_links=links,
             library_links=links,

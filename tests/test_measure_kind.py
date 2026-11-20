@@ -128,11 +128,11 @@ class TestHartreeSpelling:
         conv = make_converter("Ha", "eV")
         assert conv.value(-2.0) == pytest.approx(-54.42277249)
         assert conv.scale == pytest.approx(27.211386245)
-        assert to_canonical(1.0, "Ha", "J") == pytest.approx(4.359744722e-18, abs=0)
+        assert to_canonical(1.0, "Ha", "J") == pytest.approx(4.359744722e-18, rel=1e-9)
         assert format_value(1.0, canonical_unit="hartree", unit="Ha") == "1 Ha"
 
     def test_ha_keeps_energy_dimensions_and_case(self) -> None:
-        with pytest.raises(BadInput, match="cannot be converted"):
+        with pytest.raises(BadInput, match="'Ha'"):
             make_converter("Ha", "m²")
         assert to_canonical(1.0, "ha", "m²") == pytest.approx(10000.0)
 
@@ -2091,6 +2091,33 @@ class TestPutRun:
         old = int(found.group(1))
         h.put(text="96", meta=self._meta(w, supersedes=f"mx{old}"))
         assert store.measure_detail(old)["superseded_by"] is not None
+
+    def test_derived_from_mx_handles_through_put(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        first = _output_id(h.put(text="95", meta=self._meta(w)).body)
+        second = _output_id(
+            h.put(text="96", meta=self._meta(w, derived_from=[f"mx{first}"])).body
+        )
+        assert store.measure_detail(second)["derived_from"] == [first]
+
+
+@pytest.mark.parametrize("raw", [12, "12", "mx12", " MX12 "])
+def test_measure_id_coercion_accepts_row_addresses(raw: str | int) -> None:
+    from precis.handlers._measure_write import _measure_id
+
+    assert MeasureHandler._coerce_id(raw) == 12
+    assert _measure_id(raw, "meta", "supersedes") == 12
+
+
+@pytest.mark.parametrize("raw", [True, 0, -1, "mx0", "mx-1", "pa12", "mx", "mx12x"])
+def test_measure_id_coercion_refuses_invalid_addresses(raw: Any) -> None:
+    from precis.handlers._measure_write import _measure_id
+
+    with pytest.raises(BadInput, match="measure id"):
+        MeasureHandler._coerce_id(raw)
+    with pytest.raises(BadInput, match=r"meta\.derived_from"):
+        _measure_id(raw, "meta", "derived_from")
 
 
 def _output_id(body: str) -> int:

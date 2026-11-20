@@ -56,6 +56,37 @@ from precis.errors import BadInput
 #: **not** here: it is rendered whole for the model but never exported.
 EXPORTABLE_KINDS: frozenset[str] = frozenset({"draft"})
 
+#: The Word export's "citation machinery" choices, value -> label (the
+#: export panel's dropdown text). Only the modes in
+#: :data:`IMPLEMENTED_CITATION_MODES` can be built; each later mode lands by
+#: adding its value there.
+CITATION_MODES: dict[str, str] = {
+    "endnote": "EndNote fields",
+    "word": "Word citations",
+    "zotero": "Zotero fields",
+    "plain": "plain text",
+}
+IMPLEMENTED_CITATION_MODES: tuple[str, ...] = (
+    "endnote",
+    "word",
+    "zotero",
+    "plain",
+)
+
+
+def guard_citation_mode(mode: str) -> None:
+    """Refuse an unknown ``citations`` value, or a known one not built yet."""
+    if mode not in CITATION_MODES:
+        raise BadInput(
+            f"unknown citations mode {mode!r}",
+            next="use one of " + ", ".join(IMPLEMENTED_CITATION_MODES),
+        )
+    if mode not in IMPLEMENTED_CITATION_MODES:
+        raise BadInput(
+            f"citations={mode!r} ({CITATION_MODES[mode]}) is not available yet",
+            next="use one of " + ", ".join(IMPLEMENTED_CITATION_MODES),
+        )
+
 
 def guard_exportable(ref: Any) -> None:
     """Reject an export whose target ref is not an exportable deliverable.

@@ -61,8 +61,9 @@ Todo's plan door is handled outside the declared mode gate.
 `put(kind='gripe'|'todo', id=N, text=...)` appends a comment to an existing
 one (no `args=`); older comments are shown as one-liners, `view='comments'`
 shows all. On memory, id= with link= adds the edge (a repeat says it was already linked); id= with text= refuses, use edit.
-On gripe the append takes `link=`/`rel=` and `tags=`/`untags=` in the
-same transaction — comment-then-close is one call. On todo it takes
+On gripe the append takes the `link` or `unlink` parameter with `rel=`, and
+`tags=`/`untags=`, in the same transaction. Both link fields accept a
+target of the form `kind:identifier[~selector]`. On todo the append takes
 `tags=`/`untags=` the same way (link edits stay on the `link` verb):
 `put(kind='todo', id=42, text='done — shipped',
 tags=['STATUS:done'], untags=['waiting-for:reto'])` comments, closes

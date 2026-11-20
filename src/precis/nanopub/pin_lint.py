@@ -7,9 +7,10 @@ nanobuds-paper sentence about TEM and STS measurements, cited to fi189535
 and re-pinned to pc209495, an abstract chunk that names neither — the
 re-pin silently dropped the coverage the hub's own grounding had.
 
-* **G3, pin coverage** — the sentence that holds the token (when it
-  carries several hub cites, only the pin's own span, see
-  :func:`find_pins`), run through G2's rule (:func:`precis.taproot.coverage.uncovered_terms`, via
+* **G3, pin coverage** — the prose assigned to the pin. In a sentence
+  with multiple hub, paper or patent cites, those cites bound the pin's
+  span (:func:`find_pins`). Run that prose through G2's rule
+  (:func:`precis.taproot.coverage.uncovered_terms`, via
   :func:`precis.nanopub.term_coverage.analyse`) against the pinned
   passage(s); a ``+`` pin is judged together with the hub's default
   (derived-grounding) passages. The acronym map comes from the hub's
@@ -29,17 +30,23 @@ other advisory hints) and the exporters add them to ``ExportResult.warnings``
 (:func:`export_warnings`). At **edit** only *changes* warn
 (:func:`edit_findings`): a newly added pin (G3 + G4), or an existing pin
 whose sentence changed so that a term is now uncovered that was not before.
-At **export** every pin warns.
+On table writes, the caption, header and each data row are checked
+separately. At **export** every pin is checked, with each table cell
+checked on its own. A warning from a row-level write check can therefore
+be absent at export.
 
 Known noise, left for the D3 sweep: a *negated* term ("rather than
 atomically resolved imaging") still counts as claimed, and PDF extraction
 that glues words ("ofCNT-C60CNBs") hides a term the passage does carry.
+For a claimed integer range such as ``2–3``, an exact passage token such
+as ``2e3`` counts as coverage (:func:`_with_printed_ranges`).
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -121,11 +128,12 @@ def _strip_markup(text: str) -> str:
 def sentence_bounds(
     text: str, masked: str, spans: list[tuple[int, int]], start: int, end: int
 ) -> tuple[int, int]:
-    """``(lo, hi)`` of the sentence of ``text`` holding the token at
-    ``start:end``. A token that opens its sentence — ``…measured. [fi1>pc2]
-    Next …`` — belongs to the sentence before it (also when the token
-    follows the full stop with no space, which the splitter keeps in one
-    sentence: then the sentence ends at the token)."""
+    """Return the sentence bounds for the citation run at ``start:end``.
+
+    A run immediately after a full stop belongs to the preceding sentence,
+    whether or not a space follows the stop. In that case ``hi`` is the
+    end of the run, including every citation in it.
+    """
     if not spans:
         return 0, len(text)
     idx = len(spans) - 1
@@ -134,40 +142,39 @@ def sentence_bounds(
             idx = i
             break
     if idx > 0 and not masked[spans[idx][0] : start].strip():
-        idx -= 1
+        return spans[idx - 1][0], end
     lo, hi = spans[idx]
     if start > lo and masked[start - 1] in ".!?" and end < hi:
         hi = end
     return lo, hi
 
 
-def _has_words(text: str) -> bool:
-    return re.search(r"[^\W\d_]{2,}", _strip_markup(text)) is not None
-
-
 def _pin_text(text: str, lo: int, hi: int, cites: list[tuple[int, int]], k: int) -> str:
-    """The prose a pin vouches for. ``cites`` are the hub-cite token spans
+    """The prose a pin vouches for. ``cites`` are the citation token spans
     inside the sentence ``text[lo:hi]``, ``k`` this pin's index among them.
     One cite: the whole sentence. Several: the span from the end of the
     previous cite (or the sentence start) up to and including this token —
-    and when that span has no words (``X [fi1][fi2]``), back over the
-    previous span(s) until one has; the whole sentence if none do."""
+    and when that span has no letters or digits (``X [fi1][fi2]``), back over
+    the previous span(s) until one has. A number alone can be a claim."""
     if len(cites) <= 1:
         return _strip_markup(text[lo:hi])
     starts = [lo] + [c[1] for c in cites[:-1]]
     j = k
     while j >= 0:
-        span = text[starts[j] : cites[k][1]]
-        if _has_words(span):
-            return _strip_markup(span).lstrip(" ,;:")
+        span = _strip_markup(text[starts[j] : cites[k][1]])
+        if any(char.isalnum() for char in span):
+            return span.lstrip(" ,;:")
         j -= 1
     return _strip_markup(text[lo:hi])
 
 
 def find_pins(text: str) -> list[Pin]:
-    """Every pinned hub citation in ``text``, in order, each with the prose
-    it vouches for (:func:`_pin_text`). Pins on a non-finding handle are not
-    hub pins and are skipped."""
+    """Return pinned hub citations in order, each with the prose it covers.
+
+    Hub, paper (including paper chunks) and patent cites bound each pin's
+    span (:func:`_pin_text`). A run of adjacent cites immediately after a
+    full stop attaches to the preceding sentence.
+    """
     out: list[Pin] = []
     if not text or "[fi" not in text:
         return out
@@ -176,20 +183,33 @@ def find_pins(text: str) -> list[Pin]:
         (x.char_offset, x.char_offset + len(x.text)) for x in split_sentences(masked)
     ]
     matches: list[tuple[re.Match[str], int]] = []
-    hub_cites: list[tuple[int, int]] = []
+    cites: list[tuple[int, int]] = []
     for m in mentions.BARE_BRACKET_REF_PATTERN.finditer(text):
         parsed = handle_registry.parse(m.group("bare"))
-        if parsed is None or parsed[0] != "finding" or parsed[1]:
+        if parsed is None or parsed[0] not in ("finding", "paper", "patent"):
             continue
-        hub_cites.append((m.start(), m.end()))
-        if m.group("pin"):
+        if parsed[0] == "finding" and parsed[1]:
+            continue
+        cites.append((m.start(), m.end()))
+        if parsed[0] == "finding" and m.group("pin"):
             matches.append((m, parsed[2]))
+    # A run of adjacent citations attaches as a unit, including when the
+    # sentence splitter places the run after the preceding sentence's stop.
+    bounds: dict[int, tuple[int, int]] = {}
+    i = 0
+    while i < len(cites):
+        j = i + 1
+        while j < len(cites) and not text[cites[j - 1][1] : cites[j][0]].strip():
+            j += 1
+        lo, hi = sentence_bounds(text, masked, spans, cites[i][0], cites[j - 1][1])
+        bounds.update((start, (lo, hi)) for start, _ in cites[i:j])
+        i = j
     for m, hub_ref_id in matches:
         op, handles = mentions.parse_pin_suffix(m.group("pin"))
         if op is None or not handles:
             continue
-        lo, hi = sentence_bounds(text, masked, spans, m.start(), m.end())
-        inside = [c for c in hub_cites if c[0] >= lo and c[1] <= hi]
+        lo, hi = bounds[m.start()]
+        inside = [c for c in cites if bounds[c[0]][0] == lo and c[1] <= hi]
         out.append(
             Pin(
                 token=m.group(0),
@@ -333,6 +353,25 @@ class PinContext:
 # ------------------------------------------------------------- the checks
 
 
+_RANGE_RE = re.compile(
+    r"(?<![\w.\-−])(\d+(?:\.\d+)?)\s*[–—-]\s*(\d+(?:\.\d+)?)(?!\d|\.\d)"
+)
+
+
+def _with_printed_ranges(claim: str, passage: str) -> str:
+    """Allow the observed extraction artifact '2e3' for a claim of '2–3'.
+
+    Require the whole token and both bounds. Preserve the passage text
+    for ordinary matching, since 'e' can also denote scientific notation.
+    """
+    ranges = []
+    for left, right in _RANGE_RE.findall(claim):
+        damaged = re.escape(f"{left}e{right}")
+        if re.search(rf"(?<![\w.\-−+±]){damaged}(?!\w|\.\d)", passage):
+            ranges.append(f"{left}–{right}")
+    return " ".join([passage, *ranges])
+
+
 def coverage_core(
     pin: Pin,
     *,
@@ -353,6 +392,7 @@ def coverage_core(
     if pin.op == "+":
         texts += default_texts
         grounding_refs |= default_refs
+    texts = [_with_printed_ranges(pin.sentence, text) for text in texts]
     return _drop_years(
         pin.sentence,
         term_coverage.analyse(pin.sentence, texts, chunks, abstracts, grounding_refs),
@@ -470,20 +510,27 @@ def _check_all(
 
 
 def edit_findings(
-    store: Store, new_text: str, old_text: str = "", ctx: PinContext | None = None
+    store: Store,
+    new_text: str | Iterable[str],
+    old_text: str | Iterable[str] = "",
+    ctx: PinContext | None = None,
 ) -> list[PinFinding]:
     """What this edit changed, pin-wise. A pin absent from ``old_text``
     (same hub, operator and handles) is *new*: G3 reports every uncovered
     term and G4 applies. A pin that was already there is re-checked only if
     its sentence changed, and reports only terms uncovered now that were
-    not before (G4 is not repeated). Untouched pins say nothing."""
-    new_pins = find_pins(new_text)
+    not before (G4 is not repeated). Untouched pins say nothing. An iterable
+    supplies independent prose regions, such as the rows of a table."""
+    new_regions = (new_text,) if isinstance(new_text, str) else new_text
+    new_pins = [pin for region in new_regions for pin in find_pins(region)]
     if not new_pins:
         return []
     ctx = ctx or PinContext(store)
     old_by_key: dict[tuple[int, str, tuple[str, ...]], list[Pin]] = {}
-    for p in find_pins(old_text):
-        old_by_key.setdefault(p.key, []).append(p)
+    old_regions = (old_text,) if isinstance(old_text, str) else old_text
+    for region in old_regions:
+        for p in find_pins(region):
+            old_by_key.setdefault(p.key, []).append(p)
     out: list[PinFinding] = []
     seen: set[tuple[tuple[int, str, tuple[str, ...]], str]] = set()
     for pin in new_pins:
@@ -517,7 +564,7 @@ def render_finding(finding: PinFinding) -> list[str]:
         shown = "; ".join(term_coverage.describe(i) for i in items[:_TERM_CAP])
         more = len(items) - _TERM_CAP
         lines.append(
-            f"{finding.pin.token} {len(items)} term(s) its sentence names appear "
+            f"{finding.pin.token} {len(items)} term(s) in the claim appear "
             f"in no pinned passage: {shown}{f'; +{more} more' if more > 0 else ''}. "
             "Warning only — pin a passage that carries them, or reword the sentence."
         )

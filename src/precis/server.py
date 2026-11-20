@@ -837,7 +837,8 @@ def _offload_sync(
 
 _INSTRUCTIONS = (
     "precis: verbs get/search/put/edit/delete/tag/link; kind= discriminator. "
-    "Discover: search(kind='skill', q='<goal>') | get(kind='skill', id='toc'). "
+    "Discover: search(kind='skill', args={'queries': ['<goal in your "
+    "own words>', '<rephrase it>']}) | get(kind='skill', id='toc'). "
     "Gripe: put(kind='gripe', text='<command + expected + actual>') — file "
     "the moment a call or a skill misbehaves, no asking first. "
     "Conduct: get(kind='skill', id='soul'). "
@@ -945,7 +946,6 @@ def _startup_skills_banner(runtime: PrecisRuntime) -> str:
 
     config = runtime.config
     raw = getattr(config, "startup_skills", None)
-    cap_kb = getattr(config, "startup_skills_cap_kb", 50)
     slugs = startup_skills.parse(raw)
     if not slugs:
         return ""
@@ -954,7 +954,7 @@ def _startup_skills_banner(runtime: PrecisRuntime) -> str:
         v.kind for v in verdicts.values() if not getattr(v, "loaded", True)
     )
     return startup_skills.format_banner(
-        startup_skills.resolve(slugs, cap_kb=cap_kb, unavailable_kinds=unavailable)
+        startup_skills.resolve(slugs, unavailable_kinds=unavailable)
     )
 
 
@@ -1010,8 +1010,9 @@ def _build_instructions(runtime: PrecisRuntime) -> str:
        attempted at least one kind and gated it out (prohibited,
        missing env var, init failure). Zero bytes on a clean boot.
     5. Optional ``PRECIS_STARTUP_SKILLS`` banner — pinned-skill ids,
-       plus warning lines for unknown slugs and cap truncation. Zero
-       bytes when the env var is unset and no errors occurred.
+       plus a warning line for unknown slugs. Zero bytes when the
+       env var is unset and no errors occurred. Pinning is not
+       body-size-capped: the banner prints names only (gr681315).
 
     Branches for the preamble specifically:
 
@@ -1396,7 +1397,8 @@ _COMMAND_TOOL_DESCRIPTION = (
     "body in the separate `text=` param instead of quoting it inside "
     "`command` (avoids escaping): "
     "command=\"put(kind='memory', title='...')\", text='...'. "
-    "Discover: search(kind='skill', q='<goal>') | "
+    "Discover: search(kind='skill', args={'queries': ['<goal in your "
+    "own words>', '<rephrase it>']}) | "
     "get(kind='skill', id='toc'). Build/sha/DB: "
     "get(kind='skill', id='precis-status')."
 )

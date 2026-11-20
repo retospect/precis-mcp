@@ -734,7 +734,7 @@ def find_replace_cells(
     return normalize_table(out), count
 
 
-def _cell_md(value: Scalar) -> str:
+def _cell_md(value: Scalar, *, escape_backslashes: bool = True) -> str:
     """Render one cell for a GFM table: stringify, escape pipes, and keep
     it on a single line (newlines → ``<br>``) so the row stays one line."""
     if value is None:
@@ -744,7 +744,9 @@ def _cell_md(value: Scalar) -> str:
     if value is False:
         return "false"
     text = str(value)
-    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
+    if escape_backslashes:
+        text = text.replace("\\", "\\\\")
+    return text.replace("|", "\\|").replace("\n", "<br>")
 
 
 def table_ids_line(table: dict[str, Any]) -> str | None:
@@ -781,7 +783,12 @@ def table_ids_line(table: dict[str, Any]) -> str | None:
     return "ids: " + "; ".join(parts)
 
 
-def table_to_markdown(table: dict[str, Any], *, caption: str | None = None) -> str:
+def table_to_markdown(
+    table: dict[str, Any],
+    *,
+    caption: str | None = None,
+    escape_backslashes: bool = True,
+) -> str:
     """Render a normalised ``{header, rows}`` table to a single GFM block.
 
     The result has **no internal blank line** so the ``add_chunks``
@@ -793,16 +800,24 @@ def table_to_markdown(table: dict[str, Any], *, caption: str | None = None) -> s
     of it; ``get`` renders it from ``meta.table`` at read time
     (:func:`table_ids_line`), so ids never reach the embedding or
     ``content_sha``.
+
+    Read surfaces use ``escape_backslashes=False`` to show canonical
+    LaTeX commands verbatim. Stored projections keep the default escaping
+    so the markdown fallback parser can recover literal backslash runs.
     """
     header = table["header"]
     rows = table["rows"]
     lines: list[str] = []
     if caption and caption.strip():
         lines.append(f"**{caption.strip()}**")
-    lines.append("| " + " | ".join(_cell_md(h) for h in header) + " |")
+
+    def cell(value: Scalar) -> str:
+        return _cell_md(value, escape_backslashes=escape_backslashes)
+
+    lines.append("| " + " | ".join(cell(h) for h in header) + " |")
     lines.append("| " + " | ".join("---" for _ in header) + " |")
     for row in rows:
-        lines.append("| " + " | ".join(_cell_md(c) for c in row) + " |")
+        lines.append("| " + " | ".join(cell(c) for c in row) + " |")
     return "\n".join(lines)
 
 

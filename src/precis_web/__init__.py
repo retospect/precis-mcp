@@ -4,8 +4,8 @@ FastAPI service, imports ``precis`` directly, server-side rendered (Jinja +
 HTMX + Alpine), served over the Tailscale LAN behind **HTTP Basic auth**
 (``auth.py``). :func:`create_app` (``app.py``) wires one router per page,
 error handlers, and a lifespan building the single
-:class:`precis.runtime.PrecisRuntime`. Optional install extra
-(``precis-mcp[web]``); ``precis web`` CLI subcommand imports it lazily.
+:class:`precis.runtime.PrecisRuntime`. ``precis web`` lazily imports
+the ``[web]`` extra.
 
 **Reaction ledger (`/rxn`).** Handler-computed ledgers and kept rxn records;
 readers recompute (storage/scientific rationale: `routes/rxn.py`).
@@ -77,6 +77,8 @@ ends the login's sessions, as does a password change.
 
 **Access logs / Secrets.** ``access_log.py`` masks ``t`` queries;
 ``routes/secrets.py`` provides write-only controls.
+
+Status separates liveness/problems for indexing.
 
 PCB component selection (``pcb_design.py``) uses exact instance IDs in
 same-origin Gerber targets, with a shown snapshot shared by HTML, SVG, chat

@@ -8,11 +8,13 @@ from typing import Any
 
 import pytest
 from mcp.types import CallToolResult, TextContent
+from psycopg.errors import DeadlockDetected, LockNotAvailable
 
 from precis.cli.memory import _created_id
 from precis.handlers.memory import MemoryHandler
 from precis.response import Response
 from precis.runtime import PrecisRuntime
+from precis.runtime import dispatch as runtime_dispatch
 from precis.store import Store
 from precis.tools import core as tools_core
 
@@ -141,6 +143,51 @@ def test_child_search_failure_is_isolated(runtime_with_store: PrecisRuntime) -> 
     assert [row["is_error"] for row in rows] == [False, True, False]
     assert "resolves to no live ref" in rows[1]["body"]
     assert rows[0]["body"] == rows[2]["body"]
+
+
+@pytest.mark.parametrize(
+    ("fault", "failures", "attempts", "is_error"),
+    [
+        (LockNotAvailable, 3, 4, False),
+        (LockNotAvailable, 4, 4, True),
+        (DeadlockDetected, 3, 3, True),
+    ],
+)
+def test_batch_child_lock_retry_is_bounded_and_preserves_siblings(
+    runtime_stateless: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: type[Exception],
+    failures: int,
+    attempts: int,
+    is_error: bool,
+) -> None:
+    calls: list[str] = []
+    waits: list[int] = []
+
+    def search(self: PrecisRuntime, verb: str, args: dict[str, Any]) -> Response:
+        query = args["q"]
+        calls.append(query)
+        assert args["tags"] == ["SPACE:research"]
+        if query == "ECSE" and calls.count(query) <= failures:
+            raise fault("database contention")
+        return Response(body=query)
+
+    monkeypatch.setattr(type(runtime_stateless), "_dispatch_inner_core", search)
+    monkeypatch.setattr(runtime_dispatch, "_retry_sleep", waits.append)
+    queries = ["liquid water", "ECSE", "HEA25"]
+    rows = _batch(
+        runtime_stateless,
+        [{"key": query, "q": query} for query in queries],
+        tags=["SPACE:research"],
+    )
+    assert [row["key"] for row in rows] == queries
+    assert [row["is_error"] for row in rows] == [False, is_error, False]
+    assert calls == ["liquid water", *["ECSE"] * attempts, "HEA25"]
+    assert waits == list(range(1, attempts))
+    if is_error:
+        assert f"retried {attempts - 1} times" in rows[1]["body"]
+    else:
+        assert rows[1]["body"] == "ECSE"
 
 
 def test_unknown_shared_extra_is_refused(runtime_stateless: PrecisRuntime) -> None:

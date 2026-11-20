@@ -57,8 +57,13 @@ q='<topic>')` first, then use the integer id from the hit.
 
 A node over 24 kB returns a head plus a section outline —
 `get(kind='memory', id='me<N>~<section>')` reads one `##`-headed part,
-`id='me<N>~body'` the whole body (`view='body'` is the same read;
-`view='meta'` prints the meta JSON). Batch reads take `id=[...]`,
+`id='me<N>~body'` the body prose (`view='body'` is the same read;
+`view='meta'` prints the meta JSON). A body over the result cap pages
+instead of truncating to a dead end: the cut footer names
+`get(kind='memory', id='me<N>~body', args={'offset': <chars shown>})`,
+and following those calls reassembles the whole body. Offsets count
+characters of the displayed body; an offset at the end refuses with
+the body's character count. Batch reads take `id=[...]`,
 `~<section>` ids included. `view='links'` narrows with
 `args={'rel': 'part-of'}`, `args={'of_kind': 'todo'}` or
 `args={'direction': 'out'}`.
@@ -81,6 +86,7 @@ transcript, not landed history (those live in `git log` and the docs).
 - No landed history or children lists; use the graph's links.
 - No plan label (slice/round/R-number/leg/wave) without its handle on the same line.
 - No bare commit sha older than 30 days; cite a live `path/file.py::Symbol` instead.
+- Numbers ([[precis-notation-canon]]): en dash ranges `60–90%`, no grouping `10000`.
 
 1. **Search first.** `search(kind='memory', q='<the fact>',
    scope='title')`, then plain `search(kind='memory', q='<the fact>')`.

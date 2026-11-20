@@ -152,11 +152,19 @@ def test_parse_rejects_file_backed_and_other_table_codes() -> None:
     assert hr.parse("tg42") is None
 
 
-def test_measure_handle_is_a_decimal_handle_over_measures_id() -> None:
+def test_measure_handle_is_not_a_refs_backed_decimal_handle() -> None:
     # ``measures.id``, not a ref_id: the measure handler accepts ``mx12``;
-    # resolve_handle (refs-backed) never sees one.
+    # exclude it from refs-backed parsing and mention extraction.
     assert hr.format_handle("measure", 12) == "mx12"
-    assert hr.parse("mx12") == ("measure", False, 12)
+    assert hr.parse("mx12") is None
+    assert not hr.is_well_formed("mx12")
+
+
+def test_measure_mentions_do_not_report_dead_refs() -> None:
+    from precis.utils.mentions import unresolved_handle_mentions
+
+    # No refs lookup is needed for measures-table addresses.
+    assert unresolved_handle_mentions(object(), "[mx12] [[mx12]] [value](mx12)") == []
 
 
 def test_parse_rejects_junk() -> None:

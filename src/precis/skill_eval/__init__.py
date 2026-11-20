@@ -46,6 +46,9 @@ Shape, by module:
   ``scripts/skill-discovery-review``: bounded case selection (changed
   skills, then previous failures, then under-tested families), a paired
   executed run, retained reports and one repair brief per failure.
+  Git lookups have a wall-clock bound so a stalled checkout cannot hang
+  the sampler. A failed history lookup stops selection, while unavailable
+  revision metadata is recorded as missing.
 
 Advisory like ``scripts/mutate-diff``: ``scripts/skill-eval`` is never a
 ``scripts/ship`` gate stage (``tests/test_skill_eval.py`` pins that).

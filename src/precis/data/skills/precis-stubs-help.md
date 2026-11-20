@@ -173,12 +173,14 @@ get(kind="semanticscholar", id="<title or topic>")  # search → ranked hits + D
 search(kind="semanticscholar", q="<title or topic>")  # re-query rows already cached above — no live S2 call
 ```
 
-`search(kind='semanticscholar', …)` never calls S2 — it's a
+A free-text `search(kind='semanticscholar', …)` never calls S2 — it's a
 lexical/semantic re-query over whatever `get` has already fetched and
-cached, so a topic never `get`-searched before returns nothing.
+cached, so a topic never `get`-searched before returns nothing. An
+identifier-shaped query (a DOI or arXiv id) is the exception: it is a
+paper lookup, reusing a cached one or fetching live like `get`.
 `reach=` (patent/EDGAR's local-vs-remote knob) has no effect here — it's
-silently swallowed like any unhonoured kwarg — so this *is* the
-local-cache-only leg; `get` is the only way to reach S2 live.
+silently swallowed like any unhonoured kwarg — so free-text
+`search` is the local-cache-only leg; `get` reaches S2 live for any query.
 
 The full title/byline/abstract → verified-publication ladder (when a
 plain S2 search misses or false-positives) is

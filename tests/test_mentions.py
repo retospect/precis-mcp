@@ -83,9 +83,23 @@ def test_linkify_kinds_follow_plugin_registration(
     assert mentions.extract_handles("sample:123") == [("sample", "123", None)]
 
 
-@pytest.mark.parametrize("kind", sorted(mentions.LINKIFY_KINDS))
+@pytest.mark.parametrize(
+    "kind",
+    sorted(mentions.LINKIFY_KINDS - {"python"}),
+)
 def test_extract_every_linkify_kind(kind: str) -> None:
     assert mentions.extract_handles(f"see {kind}:123~2") == [(kind, "123", "~2")]
+
+
+def test_extract_python_numeric_mention_is_dead() -> None:
+    """gr702978: python's mention grammar is qualname-based
+    (``python:<dotted.qualname>``) — the REF_PATTERN pass skips ``python``
+    so a numeric/single-segment id no longer extracts; a ``py<N>`` handle
+    is not a decimal handle (python is file-backed)."""
+    assert mentions.extract_handles("see python:123~2") == []
+    assert mentions.extract_handles("see python:pkg.mod.Sym~2") == [
+        ("python", "pkg.mod.Sym", None)
+    ]
 
 
 def test_extract_handles_structure() -> None:

@@ -155,6 +155,28 @@ def test_payload_none_when_not_a_table() -> None:
 # ── put ───────────────────────────────────────────────────────────────
 
 
+def test_table_reads_preserve_latex_backslashes(draft: DraftHandler, hub: Hub) -> None:
+    """gr720466: display canonical cells, including old escaped projections."""
+    draft.put(id="d", title="T", project=_proj(hub))
+    table = {
+        "header": [r"$\mu_B$", r"V/$\mu$m"],
+        "rows": [[r"$\mu_B$", r"V/$\mu$m"], [r"a\\b", "x|y\nz"]],
+    }
+    draft.put(id="d", chunk_kind="table", table=table)
+    chunk = _table_chunk(hub, "d")
+    stored_text = chunk.text
+    assert r"$\\mu_B$" in stored_text
+    for view in (None, "table"):
+        body = draft.get(id=chunk.dc, view=view).body
+        assert r"| $\mu_B$ | V/$\mu$m |" in body
+        assert r"$\\mu_B$" not in body
+        assert r"a\\b" in body
+        assert "x\\|y<br>z" in body
+        assert "ids: " in body
+    assert _table_chunk(hub, "d").text == stored_text
+    assert parse_markdown_table(stored_text) == {**table, "caption": None}
+
+
 def test_put_table_derives_markdown_and_stores_canonical(
     draft: DraftHandler, hub: Hub
 ) -> None:
@@ -1077,6 +1099,8 @@ def test_edit_table_recovers_caption_from_raw_latex(
     assert "\\caption" not in chunk.text  # raw LaTeX dropped by conversion
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta["table"]["header"] == ["a", "b"]
+    assert not meta.get("caption")
+    assert "**Yield thresholds**" in draft.get(id=tc.dc).body.splitlines()
 
 
 def test_edit_table_cell_edit_persists_label_through_conversion(

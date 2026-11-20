@@ -39,6 +39,7 @@ get(kind="paper", id="mao18", extent="fisheye")  # the cluster map; pc<id> rows 
 get(id="pc13234", extent="fisheye")  # a chunk, bare handle: the split within its cluster
 get(kind="draft", id="dc41", extent="fisheye+1hop")  # a section + reading order + reference ring
 get(kind="skill", id="precis-get-help", extent="verbatim")  # a skill: the body alone
+get(kind="skill", id="precis-get-help", extent="verbatim", q="find")  # search the body (find-in-ref)
 get(kind="skill", id="precis-get-help", extent="fisheye+1hop")  # a skill: the section map + its wikilink ring
 ```
 
@@ -57,7 +58,7 @@ Each rung **strictly contains** the previous one:
 |---|---|
 | `kwd` | one-line bookmark (a section: under its ancestor path) |
 | `summary` | the node's gloss (summary → keywords → first line) — alone |
-| `verbatim` | the node's full text — alone |
+| `verbatim` | the node's full text — alone (with `q=` on a skill: the matching passages, not fisheye groups) |
 | `fisheye` | verbatim center **+ the spatial neighborhood** |
 | `fisheye+1hop` | `fisheye` **+ the ring**: what it points at / what points at it, one edge out |
 | `fisheye+2hop` | `fisheye+1hop` **+ the second hop as counts** (not on draft/plan) |

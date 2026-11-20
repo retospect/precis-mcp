@@ -129,7 +129,12 @@ put(
 
 Closed prefixes are gated per kind (e.g. `STATUS:` on workflow
 kinds, `SRC:`/`CACHE:` on provenance kinds). The matrix lives in
-`precis-tags`; the error names the offending axis.
+`precis-tags`; the error names the offending axis. Quick orientation:
+`memory`'s `SPACE:`/`MOVE:` are the only closed axes
+(`DREAM:`/`STALE:` are system-set); `web`/`perplexity-*`/`websearch`/
+`youtube` take `CACHE:`+`WATCH:`; `anki`/`conv`/`oracle`/`skill` have
+no closed axes (open tags only); `python`/`calc`/`math` don't support
+`tag` at all.
 
 ## See also
 

@@ -41,9 +41,10 @@ that holds the lane's credentials with ``params.target_node``):
   ``attempt_free`` "already-on-main"; commits ahead with novel work go
   to the land — the pre-land reviewer when one gates it, else a
   ``land_slice`` mint — ``attempt_free`` "branch-ahead", and a
-  ``handoff: lander:`` or ``handoff: review: FIX|REVERT`` brief skips
-  that second arm since the branch is mid-fix by design (the reviewer's
-  reject wants the rebuild, not a route back into the same review);
+  ``handoff: lander:``, ``handoff: review: FIX|REVERT`` or the tick's
+  mechanical-red ``brief:`` (gr705291) skips that second arm since the
+  branch is mid-fix by design (the reviewer's reject wants the rebuild,
+  not a route back into the same review);
   the submit-time ``branch_tip``/``branch_ahead``
   the job records is the poll arm's evidence for the same ruling —
   writes
@@ -3407,6 +3408,20 @@ def _outranks_brief(handoff: str) -> bool:
     )
 
 
+def _wants_session(steer: str) -> bool:
+    """The newest steer asks for a session, not another land of the same
+    head: :func:`_outranks_brief`'s pair, or the tick's mechanical-red
+    ``brief:`` (gr705291). That brief is the tick's instruction to change
+    the branch (rebase, renumber, fix the named lint), posted after the
+    lander's handoff, so like that handoff it wants the rebuild."""
+    from precis.plans.templates import MECH_BRIEF_MARK
+
+    if _outranks_brief(steer):
+        return True
+    text = steer.lstrip()
+    return text.lower().startswith("brief:") and MECH_BRIEF_MARK in text
+
+
 def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
     """``(body, newest brief:/handoff: comment)`` of the todo.
 
@@ -5452,11 +5467,13 @@ def submit(ctx: Any, spec: Any) -> Any:
             )
             if tip_sha:
                 ctx.set_meta(branch_tip=tip_sha, branch_ahead=ahead_n)
-            # A handoff asking for the session skips the land route: the
-            # lander's failure brief, or the tick's pre-land review
-            # hand-back — the rejected branch wants its rebuild, not a
+            # A steer asking for the session skips the land route: the
+            # lander's failure brief, the tick's pre-land review
+            # hand-back, or the tick's mechanical-red brief that follows
+            # the lander's — the rejected branch wants its rebuild, not a
             # defer back into the same open review (gr674785 review,
-            # td675373). ``_outranks_brief`` names exactly that pair.
+            # td675373) or another land of the head that just failed
+            # (gr705291). ``_wants_session`` names those three.
             resume = (latest or "").lstrip()
             if (
                 ahead_n
@@ -5470,7 +5487,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                     f"origin/{base}",
                     lane.name,
                     other_repo=profile is not None,
-                    rebuild=_outranks_brief(resume),
+                    rebuild=_wants_session(resume),
                 )
             ):
                 return None
@@ -7049,11 +7066,12 @@ def _route_ahead_branch(
     ``attempt_free``, no attempt burned, no ladder rung spent. ``False``
     when the branch is empty, git cannot judge, the route could not be
     taken (the session's own poll then mints the land as before), or a
-    handoff asking for the session stands — the lander's failure brief
-    or the pre-land reviewer's FIX/REVERT back-to-builder (gr674785
-    review, td675373): the branch is mid-fix by design and wants the
-    rebuild the handoff asked for, not a route back into the same
-    review."""
+    steer asking for the session stands (``rebuild``) — the lander's
+    failure brief, the pre-land reviewer's FIX/REVERT back-to-builder
+    (gr674785 review, td675373), or the tick's mechanical-red ``brief:``
+    posted after the lander's handoff (gr705291): the branch is mid-fix
+    by design and wants the rebuild that steer asked for, not a route
+    back into the same review or land."""
     try:
         _fetch_main(tree, base)
         cherry = _git(["cherry", base, "HEAD"], tree)

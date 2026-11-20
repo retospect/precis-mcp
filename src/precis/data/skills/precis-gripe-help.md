@@ -921,6 +921,10 @@ search(kind="gripe", status="done",
 search(kind="gripe", view="count", status="done",
        args={"group_by": "tag:thread",
              "closed_since": "2026-11-01"})                    # closings per thread
+search(kind="gripe", view="count", status="done",
+       args={"group_by": "tag:goal",
+             "closed_since": "2026-11-01",
+             "closed_until": "2026-11-08"})                    # fixed, by goal
 ```
 
 `view='count'` + `group_by` (`state`, `meta.<key>`, `tag:<axis>`)
@@ -1009,3 +1013,18 @@ args={"group_by": "tag:origin-class"})`.
 `precis gripe origin-backfill --status done` reports counts and unclassified
 handles without writes. Review the report, then pass `--apply` to stamp
 classifiable rows. Existing classifications remain untouched.
+
+## Goal axis
+
+The open tag `goal:<value>` records what campaign the gripe serves:
+`reaction-graph` | `pathway` | `pcb` | `memory-graph` | `work-model` |
+`search-surface` | `llm-router` | `other`. The triage tick stamps it from
+the gripe's `thread:`/`cluster:` tags (ordered glob map — thread rules
+first); a hand-set `goal:` is never overwritten.
+
+Fixed-per-goal read:
+`search(kind="gripe", view="count", status="done",
+args={"group_by": "tag:goal", "closed_since": A, "closed_until": B})`.
+
+`precis gripe origin-backfill --goal` runs the same stamp as a backfill —
+dry-run by default, `--apply` writes. Existing `goal:` tags stay untouched.

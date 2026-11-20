@@ -200,16 +200,25 @@ def _chunk_display_text(chunk: Any) -> str:
     (spreadsheet-tables 1a — the stored text stays plain GFM so the ids
     never reach the embedding or ``content_sha``). A stored ``ids:``
     trailer (written while the line still lived in the text) is dropped
-    first rather than printed twice — meta is the truth."""
+    first rather than printed twice — meta is the truth. Markdown tables
+    are re-rendered from canonical cells without storage backslash escaping
+    so LaTeX commands read verbatim; raw LaTeX tables keep their source."""
     text = chunk.text or ""
     if chunk.chunk_kind != "table":
         return text
-    tbl = (chunk.meta or {}).get("table")
+    meta = chunk.meta or {}
+    tbl = meta.get("table")
     if not isinstance(tbl, dict):
         return text
     lines = text.rstrip("\n").split("\n")
     if lines[-1].startswith("ids: "):
         text = "\n".join(lines[:-1])
+    if tbl.get("header") and (parsed := parse_markdown_table(text)) is not None:
+        text = table_to_markdown(
+            tbl,
+            caption=meta.get("caption") or parsed["caption"],
+            escape_backslashes=False,
+        )
     tail = "\n".join(
         line for line in (table_ids_line(tbl), table_footer_line(tbl)) if line
     )
@@ -4676,6 +4685,11 @@ class DraftHandler(Handler):
         try:
             chunks = self.store.drafts.reading_order(ref_id)
             ord_by_chunk = self.store.drafts.chunk_ord_map(ref_id)
+            # The booted python handler validates qualname mentions against
+            # the code index before an anchor mints (gr702978); absent
+            # (kind disabled / hub without it) mentions mint nothing.
+            _hub = getattr(self, "hub", None)
+            py_handler = _hub.handler_for("python") if _hub is not None else None
             # Scoped mode: a caller that names the chunk(s) it just wrote
             # re-resolves only those; every other live chunk keeps the
             # auto-mention edges it already has (carried over below). Its
@@ -4718,6 +4732,10 @@ class DraftHandler(Handler):
                     except NotFound:
                         continue
                 explicit_part_lcscs.update(mentions.extract_explicit_part_lcscs(c.text))
+                # Mint the lazy python anchor for each qualname mention the
+                # live index resolves, so the resolve pass below sees it
+                # (resolution itself never mints). gr702978.
+                mentions.mint_python_mentions(self.store, c.text, py_handler)
                 targets = draft_markup.resolve_draft_link_targets(
                     self.store, c.text, exclude_ref_id=ref_id
                 )
@@ -4981,6 +4999,7 @@ class DraftHandler(Handler):
                 f"edit table=/caption=/regen=, not text={eval_tail}"
             )
             + _draft_lint.caption_number_hint(chunk_kind="table", caption=cap)
+            + _draft_lint.pin_hint(self.store, md, table=True)
         )
 
     @staticmethod
@@ -6011,9 +6030,13 @@ class DraftHandler(Handler):
         c = self.store.drafts.edit_text(
             handle, md, base_sha=base_sha, meta_patch=mpatch, expect_table=cas_table
         )
+        pin_hint = ""
         if c is not None:
             self._attribute_touch([c.chunk_id])
             self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
+            pin_hint = _draft_lint.pin_hint(
+                self.store, c.text or "", chunk.text or "", table=True
+            )
         if op_reply is not None:
             return Response(
                 body=self._table_op_reply(
@@ -6027,6 +6050,7 @@ class DraftHandler(Handler):
                 )
                 + label_loss_hint
                 + cap_hint
+                + pin_hint
             )
         n_rows, n_cols = len(norm["rows"]), len(norm["header"])
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
@@ -6034,6 +6058,7 @@ class DraftHandler(Handler):
             body=f"edited table {(c or chunk).dc} ({n_rows}×{n_cols}){extra}; "
             f"markdown re-derived{eval_tail}{label_loss_hint}{ctrl_note}{cap_hint}"
             f"{_landed_sha_line(c.text) if c is not None else ''}"
+            f"{pin_hint}"
         )
 
     def _table_op_reply(
@@ -6229,6 +6254,11 @@ class DraftHandler(Handler):
             "LaTeX in place — label/rules/multicolumn spans/spacing "
             f"untouched{label_loss_hint}"
             f"{_landed_sha_line(c.text) if c is not None else ''}"
+            + (
+                _draft_lint.pin_hint(self.store, c.text or "", raw, table=True)
+                if c
+                else ""
+            )
         )
 
     def _resolve_project(self, project: str | int) -> int:
@@ -6725,13 +6755,20 @@ class DraftHandler(Handler):
         """Whole-draft specificity debt, surfaced on every ``get`` — not
         just a fresh write — so a legacy/bulk-authored draft that never
         passed through an incremental ``put``/``edit`` still gets flagged.
-        Three checks, all advisory (never blocking):
+        Five checks, all advisory (never blocking):
 
         * **undefined abbreviations** — acronym-shaped tokens anywhere in
           the draft with no glossary ``term``/inline definition/silence.
           ``undefined_abbrevs`` normally scopes to one write's new text;
           passing it the whole draft surfaces everything a legacy draft
           never got hinted about.
+        * **authored abbreviation definitions** — a hand-written
+          ``long form (SHORT)`` for a glossary term, which the export's
+          own first-use expansion would print again as a second
+          definition (gr725250) — see
+          :func:`~precis.draft.lint.authored_abbrev_hint`. With
+          ``elide=True`` the line caps at 8 entries and points at
+          ``view='hygiene'`` for the rest.
         * **whole-paper citations** — ``[pa<id>]``/``[pk<id>]`` (no chunk)
           anywhere in the draft, with the ``dc<id>`` they live in so
           they're locatable.
@@ -6757,39 +6794,39 @@ class DraftHandler(Handler):
           fires on a ``candidate`` hub too, which is exactly when rewords
           happen.
 
-        A fifth, informational-only line (never a ``⚠``) scoreboards how
+        A sixth, informational-only line (never a ``⚠``) scoreboards how
         many of the draft's cited passages have a Taproot claim hub
         available to cite instead — see :meth:`_taproot_hub_scoreboard`.
 
-        A sixth line — DOI completeness/validity over the same cited
+        A seventh line — DOI completeness/validity over the same cited
         papers (gr690484), advisory
         only — see :meth:`_hygiene_doi_line`.
 
-        A seventh line — cited papers whose byline never came from
+        An eighth line — cited papers whose byline never came from
         Crossref despite carrying a DOI, advisory only — see
         :meth:`_hygiene_author_source_line`. Both share one batched
         identifier/ref fetch done here.
 
-        An eighth line — house-style violations (em-dash, bold/italic
+        A ninth line — house-style violations (em-dash, bold/italic
         markup, ``--``) in prose chunks and figure captions, with per-rule
         counts and example ``dc`` handles; advisory only — see
         :meth:`_hygiene_house_style_lines`.
 
-        A ninth line — figure chunks whose render is pending, stale or
+        A tenth line — figure chunks whose render is pending, stale or
         recorded-failed (gr592765); a broken recipe would otherwise
         surface only inside the ``draft_export`` job — see
         :meth:`_hygiene_figure_lines`.
 
-        A tenth line — figure/table captions opening with their own
+        An eleventh line — figure/table captions opening with their own
         "Figure N."/"Table N." label, which the exporters' auto-numbering
         prints doubled (gr592852) — see :meth:`_hygiene_caption_lines`.
 
-        An eleventh line — sentences that open with a known lowercase
+        A twelfth line — sentences that open with a known lowercase
         identifier (a glossary ``term`` short or a built-in), which reads
         as a typo at line start and has no emphasis rescue under house
         style (gr592934) — see :meth:`_hygiene_sentence_start_lines`.
 
-        A twelfth line — only on a draft that carries record handles an
+        A thirteenth line — only on a draft that carries record handles an
         export would link: an unset ``PRECIS_WEB_BASE_URL`` leaves every
         dev/collaborator link path-only (gr592892) — see
         :meth:`_hygiene_link_origin_lines`.
@@ -6822,6 +6859,23 @@ class DraftHandler(Handler):
                 "meta={'short': '<ABBR>'}) to define, or "
                 "edit(not_abbrev=['<ABBR>']) to silence."
             )
+
+        from precis.utils.abbreviations import find as find_abbrev_definitions
+
+        term_shorts = self.store.drafts.draft_term_shorts(ref_id)
+        authored = [
+            f"{c.dc}:{short}"
+            for c in chunks
+            if c.text and c.chunk_kind not in {"code", "term"}
+            for short in find_abbrev_definitions(c.text)
+            if short in term_shorts
+        ]
+        if authored:
+            shown_authored = authored if limit is None else authored[:limit]
+            hint = _draft_lint.authored_abbrev_hint(shown_authored).strip()
+            if limit is not None and len(authored) > limit:
+                hint += " More entries: get(kind='draft', id=<slug>, view='hygiene')."
+            out.append(hint)
 
         whole_pairs: list[tuple[Any, str]] = []
         for c in chunks:
@@ -6913,7 +6967,7 @@ class DraftHandler(Handler):
         captions only; tables, equations, code and terms are skipped. An
         all-clear line is emitted only when ``clear_line`` (the full
         ``view='hygiene'`` report), so a clean outline stays footer-free."""
-        from precis.utils.house_style import RULE_NAMES, find_style_flags
+        from precis.utils.house_style import EM_DASH_FIX, RULE_NAMES, find_style_flags
         from precis.utils.wordcount import PROSE_CHUNK_KINDS
 
         counts: dict[str, int] = {}
@@ -6940,8 +6994,8 @@ class DraftHandler(Handler):
         return [
             f"⚠ house style: {sum(counts.values())} violation(s) in "
             f"{len(examples)} chunk(s) ({per_rule}): {shown}{tail}. "
-            "Read the chunk and edit it: no em-dash (split the sentence, or "
-            "colon/comma), no **bold**/*italic*/_italic_, no `--`."
+            f"For an em-dash, {EM_DASH_FIX}. "
+            "Remove **bold**/*italic*/_italic_ markup and replace `--`."
         ]
 
     def _hygiene_sentence_start_lines(
@@ -7861,7 +7915,11 @@ class DraftHandler(Handler):
                 "header": [columns[i]["name"] for i in ci],
                 "rows": [[data[i][j] for j in ci] for i in ri],
             }
-            md = table_to_markdown(sub, caption=meta.get("caption") or None)
+            md = table_to_markdown(
+                sub,
+                caption=meta.get("caption") or None,
+                escape_backslashes=False,
+            )
             ids = table_ids_line(
                 {
                     "rowmeta": [rowmeta[i] for i in ri],

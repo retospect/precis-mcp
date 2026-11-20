@@ -264,6 +264,47 @@ def test_a_conflict_resolved_on_main_then_an_ours_merge_restores_ancestry(
     assert behind == 0 and ahead == 3 and files == ["app.py"]
 
 
+def test_a_hand_merge_makes_the_record_step_a_noop_whatever_the_resolver(
+    store: Store, rig: dict[str, Path]
+) -> None:
+    """gr735669 (r336): the coordinator merged the release into main by
+    hand and closed the resolver won't-do. The record step then refused
+    "resolver is won't-do, not done" until its retry cap. With the head
+    already on main there is nothing to record: ``noop``, nothing pushed."""
+    root = rig["root"]
+    mint = _cut(store, root)
+    head = _commit(root, "release/r7", "app.py", "release\n", "release fix")
+    _commit(root, "main", "app.py", "main\n", "main edit")
+    out = mb.merge_back(store, mint.ids["merge_back"], root)
+    assert out["state"] == "conflict"
+    ours = _ours_node(store, mint.root_id)
+    store.add_tag(
+        out["resolver"],
+        Tag.closed("STATUS", "won't-do"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    # Closed, but the head is not on main yet: still refused, and it says so.
+    early = mb.merge_back(
+        store, ours["id"], root, strategy=mb.OURS, resolver=out["resolver"]
+    )
+    assert early["state"] == "failed"
+    assert "not done" in early["why"] and "does not contain" in early["why"]
+    # The hand merge: a real merge commit that keeps main's side.
+    _g(root, "fetch", "-q", "origin")
+    _g(root, "checkout", "-q", "-B", "w", "origin/main")
+    _g(root, "merge", "-q", "--no-ff", "-s", "ours", "-m", "hand merge", head)
+    _g(root, "push", "-q", "origin", "HEAD:refs/heads/main")
+    merged = _origin(rig, "main")
+    done = mb.merge_back(
+        store, ours["id"], root, strategy=mb.OURS, resolver=out["resolver"]
+    )
+    assert done["state"] == "noop" and "already contains" in done["why"]
+    assert _origin(rig, "main") == merged
+    rel = R.release_of(store, mint.root_id)
+    assert rel is not None and rel["merge_back"]["state"] == "noop"
+
+
 def test_after_a_merge_back_alone_main_s_tree_equals_prod_s(
     store: Store, rig: dict[str, Path]
 ) -> None:

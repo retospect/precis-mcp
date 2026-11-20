@@ -4803,6 +4803,52 @@ def _host_defer_setup(
     return store, handle
 
 
+BUSY_LOG = (
+    "quick ship (--quick)\n"
+    "release lifecycle busy — a cut, deploy, abandon or release fix is "
+    "running; retry after it completes\n"
+    "\x1b[31m✖ release lifecycle busy — nothing pushed.\x1b[0m\n"
+)
+
+
+def test_poll_a_busy_release_lock_waits_a_minute_on_its_own_counter(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """Sibling release fixes build side by side and reach ``ship --onto``'s
+    push together; the one that finds the round lock held runs again a
+    minute later, not after the half-hour main-refusal backoff, and the
+    wait does not spend the main-refusal budget."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    handle["main_refusals"] = land_slice.MAX_MAIN_REFUSALS
+    _finish(handle, 1, BUSY_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    assert handle["release_busy"] == 1
+    assert handle["main_refusals"] == land_slice.MAX_MAIN_REFUSALS
+    assert handle["not_before"] == "2026-11-01T10:01:00Z"
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_event" and "host-side refusal #1" in text
+    assert "release lifecycle busy" in text
+    assert store.comments(42) == []
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_poll_a_release_lock_busy_past_its_cap_blocks_the_land(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    handle["release_busy"] = land_slice.MAX_RELEASE_BUSY_WAITS
+    _finish(handle, 1, BUSY_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.failure is not None
+
+
 def test_poll_host_refusal_defers_without_a_probe(
     seams: dict[str, Any], clock: dict[str, datetime]
 ) -> None:

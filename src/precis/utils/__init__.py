@@ -75,6 +75,8 @@ to match the documented formula example. Full-width inputs remain valid;
 only caller-supplied formula values produce discard notes, so re-evaluating
 stored results stays quiet. ``table_data.normalize_table`` owns expansion
 and note collection for both creation and row insertion.
+Table reads render canonical cells with verbatim backslashes; stored Markdown
+keeps reversible escaping for fallback recovery without canonical metadata.
 
 Gripe provenance uses ``gripe_origin_class.classify_origin`` at intake, triage
 and operator backfill. A single deterministic rule set preserves explicit

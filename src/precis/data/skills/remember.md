@@ -34,6 +34,8 @@ governs: factory
 - Name yourself on every write: `args={'writer': {'model': '<your model id>'}}`; add `'human': 'reto'` when the content is what Reto told you.
 
 Notation: follow [[precis-notation-canon]] (UTF-8 units/exponents, no TeX outside quotes or derivations); if the canon does not fit what you are writing, file a gripe linked to skill:precis-notation-canon instead of improvising.
+- ranges: en dash, unspaced, one unit after the second endpoint (`9–12 GPa`); write `to` when an endpoint is negative (`−5 to 10 °C`).
+- digit grouping: none (`4600`, not `4,600`).
 
 The graph shape (root me474312 → subject hubs → nodes, `part-of` edges, one
 type tag, gotchas `qualifies` threads) is described in the root node and in

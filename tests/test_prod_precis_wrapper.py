@@ -214,3 +214,69 @@ def test_read_only_table_is_the_single_source(tmp_path: Path) -> None:
         r = _run(clone, env, *args)
         assert r.returncode == 0, f"{pat} refused on a stale tree: {r.stderr}"
         assert "WARNING" in r.stderr, f"{pat} did not warn on a stale tree"
+
+
+def test_stale_refusal_is_also_on_stdout(tmp_path: Path) -> None:
+    """gr735228: operators drop stderr (the CLI's log lines land there), so a
+    refusal that lived only on stderr read as "no results". One stdout line
+    names it and the fix; the full explanation stays on stderr; exit stays 3."""
+    clone, env = _stale_tree_fixture(tmp_path, stale=True)
+    r = _run(clone, env, "quest", "redispatch", "1")
+    assert r.returncode == 3
+    lines = r.stdout.splitlines()
+    assert len(lines) == 1, r.stdout
+    assert lines[0].startswith("prod-precis: REFUSED")
+    assert "rebase origin/prod" in lines[0]
+    assert "REFUSED" in r.stderr and "not a descendant of origin/prod" in r.stderr
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "get(kind='todo', id='td1')",
+        "search(kind='gripe', q='x')",
+        "  \n get(kind='todo', id='td1')",
+    ],
+)
+@pytest.mark.parametrize("json_flag", [False, True])
+def test_stale_tree_eval_of_a_read_call_warns_and_runs(
+    tmp_path: Path, expr: str, json_flag: bool
+) -> None:
+    """The one rule beside the READ_ONLY table: `eval` of a single get(/search(
+    call is a read, with or without --json."""
+    clone, env = _stale_tree_fixture(tmp_path, stale=True)
+    args = ("eval", "--json", expr) if json_flag else ("eval", expr)
+    r = _run(clone, env, *args)
+    assert r.returncode == 0, r.stderr
+    assert "ran run --extra paper precis eval" in r.stdout
+    assert "REFUSED" not in r.stdout + r.stderr
+    assert "WARNING" in r.stderr and "not a descendant of origin/prod" in r.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("eval", "put(kind='todo', text='x')"),
+        ("eval", "--json", "put(kind='todo', text='x')"),
+        ("eval", "edit(kind='todo', id='td1', text='x')"),
+        ("eval", "tag(kind='todo', id='td1', add=['x'])"),
+        ("eval", "getter(kind='todo')"),
+        ("eval",),
+    ],
+)
+def test_stale_tree_eval_of_anything_else_is_refused(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
+    clone, env = _stale_tree_fixture(tmp_path, stale=True)
+    r = _run(clone, env, *args)
+    assert r.returncode == 3
+    assert r.stdout.startswith("prod-precis: REFUSED")
+    assert "ran" not in r.stdout
+
+
+def test_fresh_tree_eval_runs_silently(tmp_path: Path) -> None:
+    clone, env = _stale_tree_fixture(tmp_path, stale=False)
+    r = _run(clone, env, "eval", "put(kind='todo', text='x')")
+    assert r.returncode == 0, r.stderr
+    assert "ran run --extra paper precis eval" in r.stdout
+    assert r.stderr == ""

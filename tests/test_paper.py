@@ -126,6 +126,42 @@ class TestParsePaperId:
 class TestResolveDoi:
     """``_maybe_resolve_doi`` routes DOI-form ids through meta->>'doi'."""
 
+    def test_lookup_never_queues_or_marks(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr715563: holdings checks must not acquire or schedule work."""
+        from unittest.mock import Mock
+
+        queued = Mock(side_effect=AssertionError("lookup queued ingest"))
+        active = Mock(side_effect=AssertionError("lookup marked active"))
+        cite = Mock(side_effect=AssertionError("lookup marked cite resolve"))
+        monkeypatch.setattr("precis.handlers.paper._queue_doi_ingest", queued)
+        monkeypatch.setattr("precis.workers.inbound_chase.mark_paper_active", active)
+        monkeypatch.setattr(
+            "precis.workers.cite_resolve.mark_paper_for_cite_resolve", cite
+        )
+        ref_id = _seed_paper(store, doi="10.1111/jnc.13915")
+        handler = PaperHandler(hub=Hub(store=store))
+        for address in ("10.1111/jnc.13915", "wang2020state", f"pa{ref_id}"):
+            result = handler.get(id=address, view="lookup")
+            assert f"held — pa{ref_id}" in result.body
+        assert f"held — pa{ref_id}" in handler.get(id="wang2020state/lookup").body
+        with pytest.raises(BadInput):
+            handler.get(view="lookup")
+        with pytest.raises(BadInput):
+            handler.get(id="10.1111/jnc.13915", view="lookup", q="text")
+        missing = [f"10.9999/missing{i}" for i in range(6)]
+        for address in missing:
+            result = handler.get(id=address, view="lookup")
+            assert "not held" in result.body
+            assert result.result_count == 0
+        result = handler.get(id=["10.1111/jnc.13915", *missing], view="lookup")
+        assert result.result_count == 1
+        assert result.body.count("not held") == 6
+        queued.assert_not_called()
+        active.assert_not_called()
+        cite.assert_not_called()
+
     def test_non_doi_passthrough(self, store: Store) -> None:
         # Slug-form inputs are untouched — no DB lookup, no error.
         assert _maybe_resolve_doi(store, "wang2020state") == "wang2020state"
@@ -1362,6 +1398,72 @@ class TestSearch:
         assert handle_registry.format_handle("paper", measured_id) not in simulated
         assert handle_registry.format_handle("paper", measured_id) in measured
         assert handle_registry.format_handle("paper", simulated_id) not in measured
+
+    def test_search_tags_only_intersects_ids(
+        self, store: Store, runtime_with_store: PrecisRuntime
+    ) -> None:
+        tagged_handles = []
+        for slug in ("selected-alpha", "selected-beta", "outside-cohort"):
+            ref_id = _seed_paper(store, slug=slug, doi=None)
+            store.add_tag(ref_id, Tag.open("studytype:review"), set_by="system")
+            tagged_handles.append(handle_registry.format_handle("paper", ref_id))
+        untagged_id = _seed_paper(store, slug="untagged-selection", doi=None)
+        untagged = handle_registry.format_handle("paper", untagged_id)
+        selected = [*tagged_handles[:2], untagged]
+        kwargs = {"kind": "paper", "tags": ["studytype:review"]}
+
+        body = runtime_with_store.dispatch("search", {**kwargs, "ids": selected})
+        assert all(handle in body for handle in tagged_handles[:2])
+        assert tagged_handles[2] not in body
+        assert untagged not in body
+
+        first_page = runtime_with_store.dispatch(
+            "search", {**kwargs, "page_size": 1, "ids": selected}
+        )
+        assert "of 2" in first_page
+        assert f"args={{'ids': {selected!r}}}" in first_page
+        for ids in ([untagged], ["missing-paper-slug"], []):
+            empty = runtime_with_store.dispatch("search", {**kwargs, "ids": ids})
+            assert "no paper entries" in empty
+
+    def test_search_stamp_listing_intersects_ids(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr719628: the stamp door consumed only the include channel, so
+        ``args={'ids': …}`` on a stamp listing silently widened past the
+        named cohort — ids= now folds onto ``include_ref_ids`` ahead of
+        every no-q door."""
+        keep = _seed_paper(store, slug="stamp-keep", doi=None)
+        drop = _seed_paper(store, slug="stamp-drop", doi=None)
+        for ref_id in (keep, drop):
+            store.update_ref(ref_id, meta_patch={"s2_enriched_at": "2026-11-19"})
+        keep_h = handle_registry.format_handle("paper", keep)
+        drop_h = handle_registry.format_handle("paper", drop)
+
+        body = handler.search(stamp="s2_enriched_at", ids=[keep_h]).body
+        assert keep_h in body and drop_h not in body, body
+
+        empty = handler.search(stamp="s2_enriched_at", ids=["missing-paper-slug"])
+        assert "no live paper entries stamped" in empty.body
+
+    def test_search_link_scope_listing_intersects_ids(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr719628: the link-scope door had the same silent drop — a
+        linked_from listing combined with ``args={'ids': …}`` returned
+        papers outside the requested id set."""
+        keep = _seed_paper(store, slug="linked-keep", doi=None)
+        drop = _seed_paper(store, slug="linked-drop", doi=None)
+        mem = store.insert_ref(kind="memory", slug=None, title="cites both").id
+        for target in (keep, drop):
+            store.add_link(
+                src_ref_id=mem, dst_ref_id=target, relation="related-to", set_by="agent"
+            )
+        keep_h = handle_registry.format_handle("paper", keep)
+        drop_h = handle_registry.format_handle("paper", drop)
+
+        body = handler.search(linked_from="memory", ids=[keep_h]).body
+        assert keep_h in body and drop_h not in body, body
 
     def test_search_tags_only_offers_no_page_continuation(
         self, store: Store, handler: PaperHandler

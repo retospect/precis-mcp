@@ -161,9 +161,17 @@ Memory capture (`precis-make-memory`) and graph-gardener judgments share the
 packaged memory-help reconciliation policy. The interactive agent resolves new
 claims before writing; the gardener evaluates existing maintenance candidates
 through its reviewed apply paths. The opt-in gardener grounding pass records
-claim classifications and span coverage in SHA-pinned review rows outside the
-apply queue. Labelled memory search batches reuse ordinary
-search dispatch and preserve each query's results and errors separately.
+claim classifications, evidence judgments and premise lineage in SHA-pinned
+review rows outside the apply queue. The pass sends repair proposals through
+the existing garden ledger. It tracks unresolved checks in bounded research
+or human-review todos and reads pinned returns as candidate input on
+re-audit. Labelled memory search batches reuse ordinary search dispatch
+and preserve each query's results and errors separately.
+
+Skill discovery fuses up to five phrasings into attributed section matches.
+Planner and quest prompts use the same ranking and table after matching task
+sentences against question and heading embeddings. They include the selected
+section bodies. See `skill_index/__init__.py` for the index and prompt assembly.
 
 Explicit memory processing pins current body/header chunks in a bounded
 `embed_batch` job (`handlers/_memory_process.py::process_memory`). Its

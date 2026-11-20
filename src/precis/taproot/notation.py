@@ -224,12 +224,26 @@ _SUPERSCRIPT_TAIL_RE = re.compile(f"[{_SUPERSCRIPT_DIGITS}]+$")
 #: A letter-run following a `/` -- the candidate denominator to classify.
 _DENOMINATOR_RUN_RE = re.compile(f"/([A-Za-zµμΩ]+[{_SUPERSCRIPT_DIGITS}]*)")
 
+#: A def2 basis-set name after a method/basis solidus is nomenclature,
+#: not a unit. Inspect the complete name: the denominator scanner only
+#: captures `def`, losing the digits and hyphen that establish its meaning.
+_DEF2_BASIS_RE = re.compile(r"def2-(?:SVP|SV\(P\)|[TQ]ZVPP?D?)(?![\w-])")
+
 #: A differential-quotient denominator (`dI/dV`, `dR/dT`, ...) -- physics
 #: shorthand where `d<Symbol>` is half of a derivative, not a compound
 #: unit; the ambiguity the two-denominator rule guards against (two units
 #: bundled on one solidus) doesn't apply here, so it's a carve-out on top
 #: of the accepted-unit set rather than an entry in it.
 _DIFFERENTIAL_DENOMINATOR_RE = re.compile(r"^d[A-Z]$")
+
+#: An all-caps acronym run immediately left of a `/` (gr722272): with an
+#: all-caps run right of the slash too, the solidus joins two *named
+#: methods* (`CBMC/CFCMC`, `DFT/MD`, `MD/MC`) -- a name pair as printed,
+#: not a value over a denominator, so the two-denominator ambiguity (which
+#: factor moves under the exponent) never arises. Real units fail this on
+#: the left side: `cm²/Vs` has lowercase letters before the slash, and the
+#: accepted-denominator check above already clears `S/cm`-style pairs.
+_ACRONYM_LEFT_OF_SOLIDUS_RE = re.compile(r"(?<![A-Za-z])[A-Z]{2,}$")
 
 #: One formula unit: an element symbol, optionally followed by
 #: stoichiometric digits (`Pd`, `Ni5`).
@@ -589,8 +603,25 @@ _ASCII_X_MULT_RE = re.compile(r"\b(\d+)x\b")
 #: reading as a range endpoint. `(?P=unit)` requires an exact repeat of
 #: the first unit's text, so `9 GPa-12 kPa` (a genuine unit change, not
 #: a duplication) never fires.
+#:
+#: The leading negative lookahead (gr720667) excludes an electronic-orbital
+#: label joined to its own repeat -- `4s–4s`, `3d–3d`, `4s²–4s²`. There
+#: the digit+letter is ONE name (principal quantum number + orbital
+#: letter, optionally carrying a superscript occupancy), not a value+unit
+#: pair: the `s` is never seconds, and rewriting to `4–4 s` corrupts the
+#: chemistry. Only superscript occupancy digits may follow the letter;
+#: anything else (`4fs`, `2ps`, `s⁻¹`, `dB`) is a genuine unit whose
+#: repeated range still fires (td732122). The guard anchors to a SINGLE
+#: digit (principal quantum numbers run 1-7), so a real unspaced unit
+#: repeat on a multi-digit value (`12s-15s`) still fires; the canonically
+#: spaced seconds form (`9 s-12 s`) never reaches the guard, since a space
+#: between the value and the letter already rules out an orbital label.
+#: The second label must repeat the first verbatim (`4s–4s`); two
+#: different labels (`4s–5s`) are a genuine seconds range and still fire.
 _RANGE_UNIT_REPEATED_RE = re.compile(
-    r"(?<![-\w.])(?P<num1>\d+(?:\.\d+)?)\s?"
+    r"(?<![-\w.])"
+    r"(?!(?P<orb>\d[spdf][¹²³⁴⁵⁶⁷⁸⁹⁰]*)\s?[–-]\s?(?P=orb)(?!\w))"
+    r"(?P<num1>\d+(?:\.\d+)?)\s?"
     r"(?P<unit>[A-Za-zµ°Ω%][\w°Ω%⁻¹²³⁴⁵⁶⁷⁸⁹⁰/]*)"
     r"\s?[–-]\s?(?P<num2>\d+(?:\.\d+)?)\s?(?P=unit)\b"
 )
@@ -755,6 +786,8 @@ def lint_notation(sentence: str) -> list[str]:
         )
 
     for dm in _DENOMINATOR_RUN_RE.finditer(sentence):
+        if _DEF2_BASIS_RE.match(sentence, dm.start(1)):
+            continue
         run = dm.group(1)
         if len(run) < 2:
             continue
@@ -765,11 +798,16 @@ def lint_notation(sentence: str) -> list[str]:
             continue
         if _is_chemistry_run(stripped):
             continue
+        if stripped.isupper() and _ACRONYM_LEFT_OF_SOLIDUS_RE.search(
+            sentence[: dm.start()]
+        ):
+            continue  # '<ACRONYM>/<ACRONYM>' names two methods, not a unit
         warnings.append(
             f"two-denominator-solidus: '/{run}' found -- a solidus is fine "
             "for a single recognised unit ('mA/µm', 'S/cm') but ambiguous "
             "with two denominators ('cm²/Vs' -> 'cm² V⁻¹ s⁻¹'); a chemical "
-            "formula or Miller-index facet ('PdH/Pd(111)') is not a unit."
+            "formula or Miller-index facet ('PdH/Pd(111)') and a pair of "
+            "all-caps named methods ('CBMC/CFCMC') are not units."
         )
 
     # ── canon v2: ASCII -> UTF-8 symbol respellings ─────────────────────

@@ -528,3 +528,240 @@ class TestCadenceView:
     def test_unknown_cadence(self, jobs: JobHandler, store: Store) -> None:
         with pytest.raises(NotFound, match="no cadence"):
             jobs.get(id="/cadence/definitely-not-a-cadence")
+
+
+# ── relative since/until, sort='recent', view='parked' (gr735229, gr735226) ──
+
+
+def _titled(store: Store, title: str, job_type: str, status: str = "queued") -> int:
+    ref = store.insert_ref(
+        kind="job", slug=None, title=title, meta={"job_type": job_type}
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
+    return ref.id
+
+
+def _touch(store: Store, ref_id: int, when: datetime) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET updated_at = %s WHERE ref_id = %s", (when, ref_id)
+        )
+        conn.commit()
+
+
+def _listed_ids(body: str) -> list[int]:
+    """Job ids in the order a listing renders them (``jo<N>`` handles)."""
+    return [int(m) for m in re.findall(r"\bjo(\d+)\b", body)]
+
+
+class TestRelativeWindowAndRecentSort:
+    def test_span_since_until_window_the_listing(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        now = datetime.now(UTC)
+        old = _titled(store, "sweep alpha old", "sweep")
+        new = _titled(store, "sweep alpha new", "sweep")
+        _backdate(store, old, now - timedelta(hours=3))
+        _backdate(store, new, now - timedelta(minutes=10))
+        base = {"kind": "job", "q": "alpha", "sort": "recent", "status": "*"}
+
+        def ids(**window: str) -> list[int]:
+            body = runtime_with_store.dispatch("search", {**base, **window})
+            assert "[error" not in body, body
+            return _listed_ids(body)
+
+        assert ids(since="1h") == [new]
+        assert ids(since="30m") == [new]
+        assert ids(since="1d") == [new, old]
+        assert ids(until="1h") == [old]
+        assert ids(since="4h", until="1h") == [old]
+        assert ids(since="1w") == [new, old]
+
+    def test_span_since_reaches_the_ranked_source_search(
+        self, runtime_with_store: PrecisRuntime
+    ) -> None:
+        """A q-bearing since= with no sort= takes the source-search
+        primitive, which used to refuse '2h' (gr735229)."""
+        body = runtime_with_store.dispatch(
+            "search", {"kind": "job", "q": "zz_no_such_token_zz", "since": "2h"}
+        )
+        assert "[error" not in body, body
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            {"q": "x", "since": "soon"},  # source-search primitive
+            {"q": "x", "sort": "recent", "since": "soon"},  # job handler
+            {"since": "soon"},  # dated listing
+            {"until": "2h ago"},
+            # a span too long to represent is a refusal, not an overflow
+            {"q": "x", "since": "9999999d"},
+            {"since": "99999999999w"},
+        ],
+    )
+    def test_bad_bound_names_both_forms(
+        self, runtime_with_store: PrecisRuntime, call: dict[str, str]
+    ) -> None:
+        body = runtime_with_store.dispatch("search", {"kind": "job", **call})
+        assert "[error:BadInput]" in body, body
+        assert "an ISO date/timestamp or a span like 30m, 2h, 3d" in body, body
+
+    def test_sort_recent_is_newest_created_first(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        now = datetime.now(UTC)
+        ids = [
+            _titled(store, f"release_poll run {n}", "release_poll") for n in range(3)
+        ]
+        other = _titled(store, "release_deploy run", "release_deploy")
+        # Created oldest..newest = ids[0], ids[1], ids[2]; but ids[0] was
+        # touched last, so a last-touched order would put it first.
+        for age_h, ref_id in zip((30, 20, 10), ids):
+            _backdate(store, ref_id, now - timedelta(hours=age_h))
+        _touch(store, ids[0], now)
+        query = {"kind": "job", "q": "release_poll", "status": "*"}
+        unsorted = runtime_with_store.dispatch("search", query)
+        assert _listed_ids(unsorted)[0] == ids[0], unsorted
+        body = runtime_with_store.dispatch("search", {**query, "sort": "recent"})
+        assert _listed_ids(body) == [ids[2], ids[1], ids[0]], body
+        assert other not in _listed_ids(body), body
+        newest = runtime_with_store.dispatch(
+            "search", {**query, "sort": "recent", "page_size": 1}
+        )
+        assert _listed_ids(newest) == [ids[2]], newest
+
+    def test_sort_recent_composes_with_job_type_and_status(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        now = datetime.now(UTC)
+        done = _titled(store, "sweep a", "sweep", "succeeded")
+        failed = _titled(store, "sweep b", "sweep", "failed")
+        _backdate(store, done, now - timedelta(hours=2))
+        _backdate(store, failed, now - timedelta(hours=1))
+        body = runtime_with_store.dispatch(
+            "search",
+            {
+                "kind": "job",
+                "sort": "recent",
+                "status": "succeeded",
+                "__extras__": {"job_type": "sweep"},
+            },
+        )
+        assert _listed_ids(body) == [done], body
+
+
+def _park(
+    store: Store,
+    title: str,
+    job_type: str,
+    *,
+    wake_in: timedelta,
+    why: str | None = None,
+    parent_id: int | None = None,
+    params: dict[str, Any] | None = None,
+    lane_wait: list[str] | None = None,
+) -> int:
+    payload: dict[str, Any] = {"ts": int((datetime.now(UTC) + wake_in).timestamp())}
+    if why is not None:
+        payload["why"] = why
+    meta: dict[str, Any] = {
+        "job_type": job_type,
+        "wake_when": {"kind": "at_time", "payload": payload},
+    }
+    if params is not None:
+        meta["params"] = params
+    if lane_wait is not None:
+        meta["lane_wait"] = lane_wait
+    ref = store.insert_ref(
+        kind="job", slug=None, title=title, meta=meta, parent_id=parent_id
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", "waiting_time"), set_by="system")
+    return ref.id
+
+
+class TestParkedView:
+    def test_lists_parks_furthest_wake_first_and_flags_far_ones(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        todo = store.insert_ref(kind="todo", slug=None, title="the todo", meta={})
+        near = _park(
+            store,
+            "run_slice near",
+            "run_slice",
+            wake_in=timedelta(minutes=40),
+            why="lane-wait: run_slice: lane 'devin' is backed off",
+            parent_id=todo.id,
+            params={"lane": "devin", "target_node": "node-a"},
+            lane_wait=["devin", "codex"],
+        )
+        far = _park(store, "run_slice far", "run_slice", wake_in=timedelta(days=3))
+        far2 = _park(store, "quest_tick far", "quest_tick", wake_in=timedelta(days=9))
+        running = _titled(store, "run_slice running", "run_slice", "running")
+        queued = _titled(store, "run_slice queued", "run_slice", "queued")
+
+        body = runtime_with_store.dispatch(
+            "search", {"kind": "job", "view": "parked", "status": "*"}
+        )
+        assert "[error" not in body, body
+        assert _listed_ids(body) == [far2, far, near], body
+        assert running not in _listed_ids(body) and queued not in _listed_ids(body)
+        assert body.splitlines()[0] == "# 3 parked jobs", body
+        assert "2 parked for more than a day" in body, body
+        rows = {
+            int(m.group(1)): m.group(0) for m in re.finditer(r".*\bjo(\d+)\b.*", body)
+        }
+        assert rows[far].lstrip().startswith("!"), rows[far]
+        assert rows[far2].lstrip().startswith("!"), rows[far2]
+        assert not rows[near].lstrip().startswith("!"), rows[near]
+        # The near park shows its parent, lanes, node, wake (UTC) and stored
+        # reason; a park with no stored reason prints '-', never a guess.
+        assert f"td{todo.id}" in rows[near], rows[near]
+        assert "lane devin,codex node node-a" in rows[near], rows[near]
+        assert "lane-wait: run_slice: lane 'devin' is backed off" in rows[near]
+        wake = datetime.now(UTC) + timedelta(minutes=40)
+        assert wake.strftime("%Y-%m-%dT%H:") in rows[near], rows[near]
+        assert rows[far].rstrip().endswith("-"), rows[far]
+
+    def test_q_job_type_and_page_size_narrow_the_list(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        a = _park(store, "run_slice alpha", "run_slice", wake_in=timedelta(hours=2))
+        b = _park(store, "run_slice beta", "run_slice", wake_in=timedelta(hours=1))
+        c = _park(store, "quest_tick gamma", "quest_tick", wake_in=timedelta(hours=3))
+        by_q = runtime_with_store.dispatch(
+            "search", {"kind": "job", "view": "parked", "q": "run_slice"}
+        )
+        assert _listed_ids(by_q) == [a, b], by_q
+        by_type = runtime_with_store.dispatch(
+            "search",
+            {"kind": "job", "view": "parked", "__extras__": {"job_type": "quest_tick"}},
+        )
+        assert _listed_ids(by_type) == [c], by_type
+        paged = runtime_with_store.dispatch(
+            "search", {"kind": "job", "view": "parked", "page_size": 1}
+        )
+        assert _listed_ids(paged)[:1] == [c], paged
+        assert "page=2" in paged, paged
+
+    def test_empty_says_no_parked_jobs(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        _titled(store, "run_slice running", "run_slice", "running")
+        body = runtime_with_store.dispatch("search", {"kind": "job", "view": "parked"})
+        assert body.startswith("no parked jobs"), body
+
+    def test_unknown_view_lists_parked(self, runtime_with_store: PrecisRuntime) -> None:
+        body = runtime_with_store.dispatch(
+            "search", {"kind": "job", "q": "run_slice", "view": "bogus"}
+        )
+        assert "[error:BadInput]" in body, body
+        assert "parked" in body, body
+
+    def test_conflicting_status_or_sort_refused(
+        self, runtime_with_store: PrecisRuntime
+    ) -> None:
+        for extra in ({"status": "running"}, {"sort": "recent"}):
+            body = runtime_with_store.dispatch(
+                "search", {"kind": "job", "view": "parked", **extra}
+            )
+            assert "[error:BadInput]" in body, body

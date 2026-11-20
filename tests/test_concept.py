@@ -93,6 +93,19 @@ class TestConceptHandler:
         assert ref.meta["name"] == "renormalization"
         assert ref.meta["definition"] == ""
 
+    def test_put_preserves_compound_name_with_inner_dash(self, store: Any) -> None:
+        # gr721592: the second split_name_def caller — the concept handler
+        # must keep an en dash inside a compound name when the spaced em dash
+        # delimiter is present.
+        h = _handler(store)
+        resp = h.put(
+            text="Bogoliubov–de Gennes method — the mean-field theory of "
+            "superconductivity"
+        )
+        ref = store.get_ref(kind="concept", id=_created_id(resp))
+        assert ref.meta["name"] == "Bogoliubov–de Gennes method"
+        assert ref.meta["definition"].startswith("the mean-field theory")
+
     def test_get_renders_concept(self, store: Any) -> None:
         h = _handler(store)
         resp = h.put(text="entropy — a measure of uncertainty")

@@ -12,6 +12,12 @@ from precis.reading.concepts import split_name_def
         ("Lennard–Jones — energy", ("Lennard–Jones", "energy")),
         ("Lennard–Jones – energy", ("Lennard–Jones", "energy")),
         ("Lennard–Jones\nenergy — scale", ("Lennard–Jones", "energy — scale")),
+        # gr721592: with no spaced separator, an unspaced em dash is the
+        # delimiter even when the name holds an en dash.
+        (
+            "Bogoliubov–de Gennes method—the mean-field theory",
+            ("Bogoliubov–de Gennes method", "the mean-field theory"),
+        ),
         ("term — definition – detail", ("term", "definition – detail")),
         ("term – definition — detail", ("term", "definition — detail")),
         ("term: detail", ("term: detail", "")),

@@ -2271,6 +2271,9 @@ def test_a_deploy_refused_before_any_host_is_not_journaled(rig: Rig) -> None:
     assert "no host was touched" in out.stderr
     assert rig.deploy_log() == [f"{head} --pinned"]
     after = _rel(_round_json(rig), 1)
+    # The leg published origin/gated before the refusal; that observation
+    # is the one thing the record keeps from it.
+    assert after.pop("gated_seen") == [head] == [rig.origin_ref("gated")]
     assert after == before
     assert after["state"] == before["state"]
     assert after.get("state_at") == before.get("state_at")
@@ -2280,6 +2283,45 @@ def test_a_deploy_refused_before_any_host_is_not_journaled(rig: Rig) -> None:
     assert "never started a rollout" in out.stderr
     out = _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(head))
     assert out.returncode == 0, out.stdout + out.stderr
+
+
+@pytest.mark.parametrize("moved", ["deleted", "regressed"])
+def test_a_refused_leg_keeps_its_gated_bound_for_the_retry(
+    rig: Rig, moved: str
+) -> None:
+    """Review td731692 of gr730609: the refused leg moved `origin/gated` to
+    the release head before `scripts/deploy` exited 75. Dropping its journal
+    must not drop that observation — a `gated` deleted or moved back before
+    the retry is a refusal, not a starting point to publish from again."""
+    head = _cut(rig)
+    out = rig.round("deploy", DEPLOY_STUB_RC="75", **_verdict(head))
+    assert out.returncode == 75, out.stdout + out.stderr
+    assert rig.origin_ref("gated") == head
+    if moved == "deleted":
+        _git(rig.origin, "update-ref", "-d", "refs/heads/gated")
+        left = ""
+    else:
+        left = rig.shas["c0"]
+        _git(rig.origin, "update-ref", "refs/heads/gated", left)
+    out = rig.round("deploy", **_verdict(head))
+    assert out.returncode != 0, out.stdout + out.stderr
+    assert rig.deploy_log() == [f"{head} --pinned"]  # no second rollout launch
+    assert rig.origin_ref("gated") == left  # and nothing republished
+    assert _rel(_round_json(rig), 1)["gated_seen"] == [head]
+
+
+def test_a_damaged_gated_bound_refuses_the_retry(rig: Rig) -> None:
+    """A `gated_seen` that is not a list of shas is a refusal, never no bound."""
+    head = _cut(rig)
+    out = rig.round("deploy", DEPLOY_STUB_RC="75", **_verdict(head))
+    assert out.returncode == 75, out.stdout + out.stderr
+    path = rig.root / ".git" / "precis-round" / "round.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    _rel(data, 1)["gated_seen"] = "not a list"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    out = rig.round("deploy", **_verdict(head))
+    assert out.returncode != 0, out.stdout + out.stderr
+    assert rig.deploy_log() == [f"{head} --pinned"]
 
 
 def test_a_deploy_refused_before_any_host_can_be_abandoned(rig: Rig) -> None:

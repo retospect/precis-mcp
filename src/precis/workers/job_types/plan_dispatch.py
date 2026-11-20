@@ -250,7 +250,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    its pre-land review, or landing — stays queued until that one lands
    (td603849, widened 2026-11-15 — the ``_started_slices``/
    ``_overlap_inputs`` check; a started build's files are its stamped
-   ``meta.branch_files`` plus its brief's). "Overlaps" means the same
+   ``meta.branch_files`` plus the files its body, briefs and the lander's
+   failure handoff name — never a builder's plain ``handoff:``,
+   gr734976). "Overlaps" means the same
    repo-relative path: a brief's shorter suffix (``land_slice.py``,
    ``job_types/land_slice.py``) resolves only when exactly one of the
    started build's paths ends with it, so two builds touching different
@@ -505,6 +507,7 @@ NAME = "plan_dispatch"
 #: pass, so the job path and the worker-lane pass never mint or dispatch the
 #: same thing twice.
 TICK_LOCK_KEY: int = 0x504C414E5449434B
+_STARTED_SLICES_LOCK_KEY = 0x534C4943454F564C
 #: ``idle_in_transaction_session_timeout`` for the lock connection: longer than
 #: any tick, so a tick that overruns loses the lock (the intended failure)
 #: rather than pinning it forever.
@@ -896,14 +899,14 @@ _MECHANICAL_REDS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
         "skill-size",
         re.compile(r"\bis \d+ bytes \(cap \d+\)", re.IGNORECASE),
-        "move detail into a child skill or trim; the cap is in "
-        "tests/test_skill_size.py",
+        "move detail into a child skill or trim; the cap is in the "
+        "skill-size test (test_skill_size)",
     ),
     (
         "skill-vocab",
         re.compile(r"appears? in no skill", re.IGNORECASE),
         "mention the named registry value in the skill that owns it "
-        "(tests/test_skill_vocabulary.py)",
+        "(the skill-vocabulary test, test_skill_vocabulary)",
     ),
     (
         "conflict",
@@ -2407,7 +2410,10 @@ def _release_scope_target(store: Any, shas: list[str]) -> str | None:
     ``None`` (the corrective lands on main). The deploy gate wants a
     FIX/REVERT's corrective ON the release branch (release-train T4),
     so a corrective minted for main would hold the deploy until a human
-    answers. Any read fault reads ``None``."""
+    answers. A main commit the branch repeats patch for patch
+    (``release_poll._branch_carries``) is in the scope too: the gate
+    judges the branch's copy by that commit's review, so its corrective
+    belongs on the branch as well. Any read fault reads ``None``."""
     if not shas:
         return None
     from precis.workers.job_types import release_poll as _rp
@@ -2420,14 +2426,12 @@ def _release_scope_target(store: Any, shas: list[str]) -> str | None:
         if rel is None or _release.deploy_started(store, root) is not None:
             return None
         lands = _rp._release_lands(rel)
+        picked, _undone, _notes = _rp._branch_carries(rel, lands)
     except Exception:
         log.warning("plan_dispatch: release scope unreadable", exc_info=True)
         return None
-    for land in lands:
-        if any(
-            land.sha.startswith(s.lower()) or s.lower().startswith(land.sha)
-            for s in shas
-        ):
+    for sha in [land.sha for land in lands] + [src.sha for src in picked.values()]:
+        if any(sha.startswith(s.lower()) or s.lower().startswith(sha) for s in shas):
             return _release.release_branch(str(rel["rN"]))
     return None
 
@@ -6423,7 +6427,7 @@ def _overlap_hold_max_runs(store: Any) -> int:
     return OVERLAP_HOLD_MAX_RUNS if runs is None else max(0, runs)
 
 
-def _started_slices(store: Any) -> dict[int, _Started]:
+def _started_slices(store: Any, *, single_flight: bool = False) -> dict[int, _Started]:
     """Every build with started, unlanded work, factory-wide (td603849,
     widened 2026-11-15 from in-flight lands): a live ``land_slice`` or
     ``run_slice`` job, or a finished build held for its pre-land review
@@ -6469,8 +6473,21 @@ def _started_slices(store: Any) -> dict[int, _Started]:
     attempt-free failure or host-refused launch are no turn. Three builds that did
     not converge with their pre-land reviewers (seven runs on one) held
     30 queued builds, the oldest for 23 hours, on 2026-11-19; a real
-    conflict with the work that went ahead rebuilds at their land."""
-    with store.pool.connection() as conn:
+    conflict with the work that went ahead rebuilds at their land.
+
+    ``single_flight`` (dispatch diagnostics only, gr732475): take a
+    transaction advisory lock around the scan and return ``{}`` when
+    another scan holds it, so concurrent dispatch passes do not stack
+    copies of the query. Claim and rescue callers leave it off and
+    always run the full scan: a skipped scan there would drop real
+    overlap holds."""
+    with store.pool.connection() as conn, conn.transaction():
+        if single_flight:
+            lock = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(%s)", (_STARTED_SLICES_LOCK_KEY,)
+            ).fetchone()
+            if not lock or not lock[0]:
+                return {}
         rows = conn.execute(
             """
             WITH live AS (
@@ -6478,7 +6495,8 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                        AS landing
                   FROM refs j
                  WHERE j.kind = 'job' AND j.retired_at IS NULL
-                   AND j.meta->>'job_type' = ANY(%s)
+                   AND j.meta->>'job_type' IN ('run_slice', 'land_slice')
+                   AND j.parent_id IS NOT NULL
                    AND (j.meta->>'job_type' = 'land_slice' OR EXISTS (
                          SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                           WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
@@ -6489,32 +6507,23 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                             AND t.value = ANY(%s))
                  GROUP BY j.parent_id
             ),
-            land_dead AS (
-                SELECT DISTINCT ON (j.parent_id) j.parent_id,
-                       EXISTS (
-                         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                          WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
-                            AND t.value = ANY(%s)) AS dead,
-                       j.meta->'params'->>'head' AS job_head
-                  FROM refs j
-                 WHERE j.kind = 'job' AND j.retired_at IS NULL
-                   AND j.meta->>'job_type' = 'land_slice'
-                   AND j.parent_id IN (
-                         SELECT p.ref_id FROM refs p
-                          WHERE p.kind = 'todo' AND p.retired_at IS NULL
-                            AND jsonb_typeof(p.meta->%s) = 'object')
-                 ORDER BY j.parent_id, j.ref_id DESC
+            candidates AS (
+                SELECT parent_id AS ref_id FROM live
+                UNION
+                SELECT ref_id FROM refs
+                 WHERE kind = 'todo' AND retired_at IS NULL
+                   AND jsonb_typeof(meta->'pending_land') = 'object'
             )
             SELECT r.ref_id, COALESCE(live.landing, FALSE),
-                   (jsonb_typeof(r.meta->%s) = 'object'
+                   (jsonb_typeof(r.meta->'pending_land') = 'object'
                     AND NOT (COALESCE(land_dead.dead, FALSE)
                              AND land_dead.job_head IS NOT DISTINCT FROM
-                                 (r.meta->%s->>'head'))),
+                                 (r.meta->'pending_land'->>'head'))),
                    r.meta->%s,
                    (SELECT count(*) FROM refs j
                      WHERE j.kind = 'job' AND j.retired_at IS NULL
                        AND j.parent_id = r.ref_id
-                       AND j.meta->>'job_type' = %s
+                       AND j.meta->>'job_type' = 'run_slice'
                        AND NOT COALESCE(j.meta ? %s, FALSE)
                        AND NOT COALESCE(j.meta ? 'host_refusal', FALSE)
                        AND EXISTS (
@@ -6522,40 +6531,44 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                               WHERE rt.ref_id = j.ref_id
                                 AND t.namespace = 'STATUS'
                                 AND t.value = ANY(%s)))
-              FROM refs r
+              FROM candidates c
+              JOIN refs r ON r.ref_id = c.ref_id
               LEFT JOIN live ON live.parent_id = r.ref_id
-              LEFT JOIN land_dead ON land_dead.parent_id = r.ref_id
+              LEFT JOIN LATERAL (
+                  SELECT EXISTS (
+                             SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                              WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                                AND t.value = ANY(%s)) AS dead,
+                         j.meta->'params'->>'head' AS job_head
+                    FROM refs j
+                   WHERE j.kind = 'job' AND j.retired_at IS NULL
+                     AND j.meta->>'job_type' = 'land_slice'
+                     AND j.parent_id = r.ref_id AND j.parent_id IS NOT NULL
+                     AND jsonb_typeof(r.meta->'pending_land') = 'object'
+                   ORDER BY j.ref_id DESC LIMIT 1
+              ) land_dead ON TRUE
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND NOT COALESCE(r.meta ? 'generate', FALSE)
                AND (live.parent_id IS NOT NULL
-                    OR (jsonb_typeof(r.meta->%s) = 'object'
-                        AND NOT (COALESCE(land_dead.dead, FALSE)
-                                 AND land_dead.job_head IS NOT DISTINCT FROM
-                                     (r.meta->%s->>'head'))))
+                    OR NOT (COALESCE(land_dead.dead, FALSE)
+                            AND land_dead.job_head IS NOT DISTINCT FROM
+                                (r.meta->'pending_land'->>'head')))
                AND NOT EXISTS (
                          SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                           WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
                             AND t.value = ANY(%s))
             """,
             (
-                [DEFAULT_OP, "land_slice"],
                 sorted(_JOB_TERMINAL),
-                sorted(_JOB_TERMINAL - {"succeeded"}),
-                _templates.PENDING_LAND_KEY,
-                _templates.PENDING_LAND_KEY,
-                _templates.PENDING_LAND_KEY,
                 _templates.BRANCH_FILES_KEY,
-                DEFAULT_OP,
                 ATTEMPT_FREE_KEY,
                 sorted(_JOB_TERMINAL - {"cancelled"}),
-                _templates.PENDING_LAND_KEY,
-                _templates.PENDING_LAND_KEY,
+                sorted(_JOB_TERMINAL - {"succeeded"}),
                 sorted(_RULING_STATUSES),
             ),
         ).fetchall()
     out: dict[int, _Started] = {}
-    # Read only with a holder to judge: the claim transaction runs this
-    # on every pass, mostly over no started build at all.
+    # Read the cap only when there is a holder to judge.
     max_runs = _overlap_hold_max_runs(store) if rows else 0
     for rid, landing, pending, files, runs in rows:
         if max_runs and not landing and int(runs or 0) >= max_runs:
@@ -6674,39 +6687,19 @@ def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
     return {int(r[0]) for r in rows}
 
 
-def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
-    """``{todo id: normalised file paths}`` the todo's body chunks plus
-    its ``brief:``/``handoff:`` comments name (one path per token, as
-    written — no basename or last-two-segment keys; see
-    :func:`~precis.utils.dispatch_score.brief_files`) — one query for the
-    supplied todo ids."""
-    if not ids:
-        return {}
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT ref_id, text FROM chunks
-             WHERE ref_id = ANY(%s)
-               AND (chunk_kind = %s
-                    OR (chunk_kind = %s
-                        AND (starts_with(lower(ltrim(text)), 'brief:')
-                             OR starts_with(lower(ltrim(text)), 'handoff:'))))
-            """,
-            (ids, TODO_BODY_KIND, _COMMENT_KIND),
-        ).fetchall()
-    texts: dict[int, list[str]] = {}
-    for ref_id, text in rows:
-        texts.setdefault(int(ref_id), []).append(str(text or ""))
-    return {i: _dscore.brief_files("\n".join(texts.get(i, ()))) for i in ids}
-
-
 def _overlap_inputs(
     store: Any, ids: list[int]
 ) -> dict[int, tuple[frozenset[str], str]]:
     """Read file sets and effective land targets on the claim connection.
 
-    File matching considers every brief and handoff. Target resolution uses
-    the body and selected brief, as build and land do.
+    The file set is what the todo declares (gr734976): its body, its
+    ``brief:`` comments, the machine-written handoffs that name files to
+    fix (the lander's failure note and the pre-land hand-back,
+    :func:`~precis.workers.job_types.run_slice._outranks_brief`) and its
+    own stamped ``meta.branch_files``. A builder session's plain
+    ``handoff:`` names files it read, ran or found red, not files it
+    edits, so it contributes none. Target resolution still reads the
+    newest of every brief and handoff, as build and land do.
     """
     from precis.workers.job_types import run_slice
 
@@ -6714,7 +6707,8 @@ def _overlap_inputs(
         rows = conn.execute(
             """
             WITH inputs AS (
-                SELECT r.ref_id, r.meta->%s AS target, ARRAY(
+                SELECT r.ref_id, r.meta->%s AS target,
+                       r.meta->%s AS branch_files, ARRAY(
                     SELECT t.value
                       FROM ref_tags rt JOIN tags t USING (tag_id)
                      WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
@@ -6722,27 +6716,34 @@ def _overlap_inputs(
                 ) AS retry_tags
                   FROM refs r WHERE r.ref_id = ANY(%s)
             )
-            SELECT i.ref_id, i.target, i.retry_tags, c.ord, c.chunk_kind, c.text
+            SELECT i.ref_id, i.target, i.retry_tags, i.branch_files,
+                   c.ord, c.chunk_kind, c.text
               FROM inputs i
               LEFT JOIN chunks c ON c.ref_id = i.ref_id AND c.ord >= 0
                    AND c.chunk_kind IN (%s, %s)
              ORDER BY i.ref_id, c.ord
             """,
-            (_release.LAND_TARGET_KEY, ids, TODO_BODY_KIND, _COMMENT_KIND),
+            (
+                _release.LAND_TARGET_KEY,
+                _templates.BRANCH_FILES_KEY,
+                ids,
+                TODO_BODY_KIND,
+                _COMMENT_KIND,
+            ),
         ).fetchall()
 
     result: dict[int, tuple[frozenset[str], str]] = {}
     for rid, group in groupby(rows, key=itemgetter(0)):
         ref_rows = list(group)
-        _, target, tags, *_ = ref_rows[0]
+        _, target, tags, stamped, *_ = ref_rows[0]
         body = "\n\n".join(
             text
-            for _, _, _, _, kind, text in ref_rows
+            for _, _, _, _, _, kind, text in ref_rows
             if kind == TODO_BODY_KIND and text
         )
         briefs = [
             (ord_, text)
-            for _, _, _, ord_, kind, text in ref_rows
+            for _, _, _, _, ord_, kind, text in ref_rows
             if kind == _COMMENT_KIND
             and text
             and text.lstrip().lower().startswith(run_slice._BRIEF_PREFIXES)
@@ -6751,7 +6752,18 @@ def _overlap_inputs(
             briefs, reviewer=False, open_tags=partial(iter, tags)
         )
         meta = {_release.LAND_TARGET_KEY: target}
-        files = _dscore.brief_files("\n".join([body, *(text for _, text in briefs)]))
+        # gr734976: a builder's own ``handoff:`` is prose about files it
+        # read or found red; only briefs and the machine's file-naming
+        # handoffs, plus the stamped branch files, say what it touches.
+        declared = [
+            text
+            for _, text in briefs
+            if text.lstrip().lower().startswith("brief:")
+            or run_slice._outranks_brief(text.lstrip())
+        ]
+        if isinstance(stamped, list):
+            declared.extend(str(p) for p in stamped)
+        files = _dscore.brief_files("\n".join([body, *declared]))
         result[rid] = files, _release.land_target_of(meta, body, latest) or "main"
     return result
 
@@ -6950,6 +6962,27 @@ def _review_repo_mismatch(plan: _Plan, n: _Node) -> str | None:
     )
 
 
+def _same_red_digest(plan: _Plan, n: _Node, other: _Node | None) -> bool:
+    """``n`` and ``other`` are fix nodes of one red run: both
+    ``blocked-by`` the same ``ci_red_digest`` node (:func:`_digest_of`).
+    Their briefs all carry that run's whole digest and changed-files
+    table (``ci_red_digest._cluster_briefs``), so each names every file
+    its siblings' clusters name: the file-overlap hold read them as one
+    conflict and ran the fixers of a red release one at a time, each
+    waiting for the one before it to land. They build side by side
+    instead (Reto 2026-11-19). The lands still go one at a time: ship's
+    round lock admits one release push, and a land that finds it held
+    runs again a minute later (``land_slice.RELEASE_BUSY_MARK``); a fix
+    that conflicts with a sibling's goes back to its builder at the
+    land, like any conflicting land. Fix nodes of different iterations
+    wait on different digests and keep the hold."""
+    if other is None or other.id == n.id:
+        return False
+    mine = _digest_of(plan, n)
+    theirs = _digest_of(plan, other)
+    return mine is not None and theirs is not None and mine.id == theirs.id
+
+
 def _overlap_holds(
     plan: _Plan,
     store: Any,
@@ -6961,15 +6994,22 @@ def _overlap_holds(
     enforced inside the executor claim transaction (gr702610). Only a default-op,
     non-generator build is held; ``started`` is :func:`_started_slices`;
     a started build blocks a candidate in the same repo when a file the
-    candidate's brief names is the same repo-relative path as one the
-    started build touches (its stamped ``branch_files`` plus its own
-    brief's; :func:`~precis.utils.dispatch_score.shared_files`). A brief
+    candidate declares is the same repo-relative path as one the
+    started build touches. Each side's declared files are its body, its
+    ``brief:`` comments, the lander's failure handoff and the pre-land
+    hand-back, and its stamped ``branch_files`` (so a retry that already
+    has commits carries them); a builder's plain ``handoff:`` names files
+    it merely read and counts for neither (gr734976;
+    :func:`_overlap_inputs`,
+    :func:`~precis.utils.dispatch_score.shared_files`). A brief
     that names a file by a shorter suffix counts only when exactly one of
     the started build's paths ends with it — the same basename in two
     directories, or an ambiguous ``__init__.py``, holds nothing; a real
     conflict still rebuilds at land. Only started work holds, never
     another candidate, so two candidates never hold each other. Builds
-    hold each other only on the same land target (gr688291).
+    hold each other only on the same land target (gr688291), and the
+    fix nodes of one red digest never hold each other
+    (:func:`_same_red_digest`).
     One ``_overlap_inputs`` query for the lot; empty without a started
     build or a build candidate."""
     builds = [
@@ -7001,6 +7041,8 @@ def _overlap_holds(
             # fix's wide digest brief must not wait on unrelated main work.
             if inputs.get(hid, default)[1] != target:
                 continue
+            if _same_red_digest(plan, n, plan.nodes.get(hid)):
+                continue
             shared = _dscore.shared_files(mine, held_sets[hid])
             if hid != n.id and shared:
                 held[n.id] = (hid, shared)
@@ -7024,8 +7066,8 @@ def _step_dispatch(
         if _dispatchable(plan, n) and n.status == "open"
     ]
     # Diagnostic only: every doable node is queued. The claim transaction
-    # rechecks this map, so overlap holds never consume an executor slot.
-    started = _started_slices(w.store)
+    # checks current holders before spending an executor slot.
+    started = _started_slices(w.store, single_flight=True) if candidates else {}
     held = _overlap_holds(plan, w.store, started, candidates)
     # gr657066: governs:factory skills join the routing set — a brief
     # naming one routes to the coordinator like any deny-path text. The
@@ -7251,7 +7293,7 @@ def _step_dispatch(
                 if not (isinstance(prev, dict) and prev.get("job") == last_job):
                     w.comment(
                         n,
-                        f"brief: {brief} — mechanical red on jo{last_job}: "
+                        f"brief: {brief}{_templates.MECH_BRIEF_MARK}{last_job}: "
                         f"{line[:200]}",
                     )
                 mech_pinned = _mech_pin(plan, w, n, rungs, params, rules)

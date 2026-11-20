@@ -218,8 +218,9 @@ _DETECTOR_BY_PASS = {
     # One-off host pass (gr560767): the census sync is the operator's
     # hand step, then this pass rewrites host prose to dated events.
     "host-facts": ("host_facts",),
-    # Claim-level grounding ledger (gr634485): writes its own review rows,
-    # mints no proposal candidates.
+    # Claim-level grounding ledger (gr634485, gr634486): writes its own
+    # review rows and, for definitively ungrounded claims, repair
+    # proposals through the shared garden ledger.
     "memory-grounding": ("grounding_audit",),
 }
 
@@ -289,6 +290,20 @@ class GardenCandidate:
             # A census fact changing (the sync, a hand put) is new evidence
             # on the same body — a distinct proposal question.
             return f"{key}:host_facts:{self.payload.get('evidence_sha') or 'none'}"
+        if self.detector == "grounding_audit" and self.action != "audit":
+            # A grounding repair is a question about one claim span on one
+            # audited revision: repairs for different spans (or a new audit
+            # of changed content) must not collide on one memory's key.
+            span = self.payload.get("span")
+            span_key = (
+                "-".join(str(int(v)) for v in span[:2])
+                if isinstance(span, list) and len(span) >= 2
+                else "none"
+            )
+            return (
+                f"{key}:grounding_audit:"
+                f"{self.payload.get('audit_sha') or 'none'}:{span_key}"
+            )
         return key
 
 

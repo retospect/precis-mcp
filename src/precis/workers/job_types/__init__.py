@@ -56,6 +56,11 @@ isolated from main while holding overlapping work on the same branch.
 The overlap cap counts ended build runs that used a turn. A host refusal
 never launched a build, so it leaves the hold budget intact. The settings
 read uses a savepoint to preserve the claim transaction on read failure.
+Dispatch overlap notes use an indexed snapshot of slice jobs and stamped
+todos. The snapshot query holds a transaction advisory lock on its own
+connection only for the dispatch diagnostic pass (``single_flight``): a
+concurrent dispatch scan skips the notes. Executor claims and rescue
+always run the full scan.
 The wake runner requeues legacy year-long pinned-lane parks so submit can
 recheck the current lane breaker.
 ``run_slice`` gates code builds on the available supplied tests. Missing

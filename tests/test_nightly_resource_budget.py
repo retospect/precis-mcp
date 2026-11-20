@@ -108,7 +108,9 @@ def test_coverage_monitor_preserves_suite_result_and_reaps_child(
             (tmp_path / "suite-args.json").read_text(encoding="utf-8")
         )
         arguments = arguments[arguments.index("pytest") + 1 :]
-        assert arguments[arguments.index("-m") + 1] == "not no_cov"
+        # The map is the fast-test selector's input: the `nightly` (>=30 s)
+        # cluster is what cannot finish under the tracer (check.yml's note).
+        assert arguments[arguments.index("-m") + 1] == "not no_cov and not nightly"
         assert "--cov=src" in arguments
         assert "--cov-context=test" in arguments
         assert "--junitxml=coverage-junit.xml" in arguments

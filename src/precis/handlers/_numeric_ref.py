@@ -837,6 +837,10 @@ class NumericRefHandler(Handler):
     #: untouched — an alias is a *read* shorthand, not a stored value.
     status_aliases: ClassVar[dict[str, str]] = {}
 
+    #: Kind-owned ``view=`` spellings the unknown-view refusal lists after
+    #: the shared ``count``/``meta``/``tags`` (job: ``parked``).
+    extra_search_views: ClassVar[tuple[str, ...]] = ()
+
     #: Queryless browse order when the caller passes no ``sort=``
     #: (``'recency'`` or ``'prio'``). Gripe browses by priority.
     browse_default_sort: ClassVar[str] = "recency"
@@ -1627,7 +1631,7 @@ class NumericRefHandler(Handler):
             if view != "count":
                 raise BadInput(
                     f"unknown view {view!r} for search(kind={self.kind!r})",
-                    options=["count", "meta", "tags"],
+                    options=["count", "meta", "tags", *self.extra_search_views],
                     next=(
                         f"search(kind={self.kind!r}, view='count', "
                         "args={'group_by': 'state'}) · view='meta' "
@@ -3523,7 +3527,20 @@ class NumericRefHandler(Handler):
         # the returned order rather than re-sorting by score.
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
         for block, ref, rank in raw:
-            best_by_ref.setdefault(ref.id, (block, ref, rank))
+            representative, _ref, _rank = best_by_ref.setdefault(
+                ref.id, (block, ref, rank)
+            )
+            if rerank and block.id != representative.id:
+                # Rescue ranks refs, not chunks: the best fused chunk can
+                # be a lexical match while a sibling is semantic rank one.
+                # Keep that sibling's evidence through deduplication.
+                distance, corroborated = fold_info.get(block.id, (None, False))
+                previous, prev_corrob = fold_info.get(representative.id, (None, False))
+                distances = [d for d in (previous, distance) if d is not None]
+                fold_info[representative.id] = (
+                    min(distances) if distances else None,
+                    prev_corrob or corroborated,
+                )
         pool = list(best_by_ref.values())
         extra = 0
         if rerank:
@@ -4697,6 +4714,12 @@ class NumericRefHandler(Handler):
                         mint_part(lcsc)
                     except NotFound:
                         continue
+            # Mint the lazy python anchor for every qualname mention the
+            # live index resolves, so the resolve pass below can see it
+            # (the resolver itself never mints). gr702978.
+            hub = getattr(self, "hub", None)
+            py_handler = hub.handler_for("python") if hub is not None else None
+            mentions.mint_python_mentions(self.store, text, py_handler)
             targets = sync.resolve(text)
             for link in sync.unmentioned_removals(targets):
                 removed = self.store.remove_link(
@@ -4725,8 +4748,8 @@ class NumericRefHandler(Handler):
             # an explicit ``part:C…`` mention may also queue the BIG-tier
             # facts read, under the per-write and daily spend caps —
             # ``queue_mentioned_parts`` owns both. Skip when the mint
-            # failed (no live part ref).
-            hub = getattr(self, "hub", None)
+            # failed (no live part ref). ``hub`` was bound above for the
+            # python anchor mint.
             if lcscs and hub is not None and hasattr(self.store, "part_ref_id"):
                 from precis.pcb import datasheets
 
@@ -5147,7 +5170,11 @@ class NumericRefHandler(Handler):
         # (:data:`complete_get_view`) — the summary blocks are titles
         # only, and a bare get is not "in full" on a kind whose comments
         # live behind a view (gr572710).
-        read_call = f"get(kind={self.kind!r}, id={ref_ids[0]}"
+        # Stale batch inputs must not become single-ref drill hints (gr702040).
+        if not live:
+            return Response(body=body, result_count=len(ref_ids))
+        first_live = next(rid for rid in ref_ids if rid in live)
+        read_call = f"get(kind={self.kind!r}, id={first_live}"
         if self.complete_get_view is not None:
             read_call += f", view={self.complete_get_view!r}"
         body += render_next_section(

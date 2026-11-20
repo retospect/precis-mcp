@@ -700,10 +700,11 @@ class HubFrozenError(ValueError):
 def refine_claim_sentence(
     store: Store,
     hub_ref_id: int,
-    sentence: str,
+    sentence: str | None,
     *,
     scope: dict[str, Any] | None = None,
     set_by: str = "agent",
+    attribution: dict[str, str] | None = None,
     conn: Any = None,
 ) -> dict[str, Any]:
     """Reword a ``TAPROOT:claim`` hub's claim sentence in place. Returns a
@@ -733,6 +734,12 @@ def refine_claim_sentence(
        the new pub_id already belongs to a *different* live ref, raises
        :class:`ValueError` rather than silently merging.
 
+    ``sentence=None`` keeps the title read under the hub lock, so a
+    scope-only edit cannot undo a concurrent retitle.
+    ``attribution`` carries the title editor's writer annotation, saved
+    in the same transaction as a changed title or scope so provenance
+    cannot outlive a failed edit. An unchanged title and scope leave
+    existing attribution intact.
     ``scope=None`` keeps the hub's existing scope; ``conn`` folds the write
     into a caller's open transaction (default: own ``store.tx()``).
 
@@ -759,7 +766,7 @@ def refine_claim_sentence(
         TitleRoundTripError: the written title didn't read back equal.
     """
     stripped = sentence.strip() if sentence else ""
-    if not stripped:
+    if sentence is not None and not stripped:
         raise ValueError("refine_claim_sentence requires a non-empty sentence")
 
     def _do(c: Any) -> dict[str, Any]:
@@ -784,7 +791,7 @@ def refine_claim_sentence(
             dict(scope) if scope is not None else dict(current_meta.get("scope") or {})
         )
 
-        new_title = stripped
+        new_title = old_title if sentence is None else stripped
         if new_title == old_title and effective_scope == dict(
             current_meta.get("scope") or {}
         ):
@@ -820,14 +827,18 @@ def refine_claim_sentence(
         store.update_ref(
             hub_ref_id,
             title=new_title,
-            meta_patch={"scope": effective_scope} if scope is not None else None,
+            meta_patch={
+                **(attribution or {}),
+                **({"scope": effective_scope} if scope is not None else {}),
+            }
+            or None,
             conn=c,
         )
         _assert_title_round_trip(c, hub_ref_id, new_title, op="refine_claim_sentence")
 
         # (2) finding_body chunk — DELETE+INSERT at ord=0.
         store.chunks.replace_body_chunk(
-            hub_ref_id, stripped, chunk_kind="finding_body", source=set_by, conn=c
+            hub_ref_id, new_title, chunk_kind="finding_body", source=set_by, conn=c
         )
         from precis.workers.embed import nudge_fresh_embed
 
@@ -839,7 +850,7 @@ def refine_claim_sentence(
         c.execute("DELETE FROM chunks WHERE ref_id = %s AND ord < 0", (hub_ref_id,))
 
         # (4) pub_id — recompute, alias the old one, guard a cross-ref collision.
-        new_paper_id = make_taproot_hub_paper_id(stripped, effective_scope)
+        new_paper_id = make_taproot_hub_paper_id(new_title, effective_scope)
         new_pub_id = make_pub_id(new_paper_id)
         existing = c.execute(
             "SELECT ref_id FROM ref_identifiers "
@@ -870,7 +881,7 @@ def refine_claim_sentence(
         # already holding the new sentence is a merge candidate, logged
         # by register_sentence_id — never a silent merge here either.
         if policy_for(_hub_claim_type(hub_ref_id, conn=c)).dedup_sentence_only:
-            other = register_sentence_id(c, hub_ref_id, stripped)
+            other = register_sentence_id(c, hub_ref_id, new_title)
             if other is not None:
                 log.warning(
                     "taproot: refined hub %s now states the sentence hub %s "

@@ -71,6 +71,7 @@ from precis.utils.link_target import parse_link_target
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.secret_scan import mask_secrets
+from precis.utils.time_span import SPAN_FORMS, span_ago
 from precis.utils.timeutil import as_utc
 from precis.workers._mint import active_job_id
 from precis.workers._mint import idem_lock_key as _idem_lock_key
@@ -414,6 +415,16 @@ _JOB_WINDOW_BARE_HOURS_MAX = 8760.0
 #: age" and parses unbounded.
 _JOB_YEAR_LIKE = re.compile(r"(?:19|20|21)\d{2}")
 
+#: ``sort=`` spellings the job listing reads as "newest created first".
+_JOB_RECENT_SORTS = frozenset({"recency", "recent"})
+
+#: A park whose wake time is further out than this is flagged ``!`` in
+#: ``view='parked'`` (gr735226 — four jobs sat parked until 2027).
+_PARKED_FAR = timedelta(hours=24)
+
+#: Most parked rows ``view='parked'`` reads before sorting by wake time.
+_PARKED_ROW_CAP = 2000
+
 #: Seconds either side of ``meta.finished_at`` a ``job_event`` chunk
 #: may sit and still count as the failure's reason in
 #: ``_job_error_head``: the reason is appended in the same transaction
@@ -470,6 +481,65 @@ def _fmt_interval(seconds: int) -> str:
     if s and s % 60 == 0:
         return f"{s // 60}m"
     return f"{s}s"
+
+
+def _fmt_age(span: timedelta) -> str:
+    """``timedelta`` → ``45s`` / ``12m`` / ``3h05m`` / ``2d04h`` (never
+    negative) — how long a job has been parked."""
+    s = max(0, int(span.total_seconds()))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        return f"{s // 3600}h{s % 3600 // 60:02d}m"
+    return f"{s // 86400}d{s % 86400 // 3600:02d}h"
+
+
+def _parked_wake(meta: dict[str, Any]) -> datetime | None:
+    """The instant a parked job wakes: ``meta.wake_when.payload.ts`` of an
+    ``at_time`` wake (epoch seconds), ``None`` when absent or unreadable."""
+    wake_when = meta.get("wake_when")
+    if not isinstance(wake_when, dict) or wake_when.get("kind") != "at_time":
+        return None
+    payload = wake_when.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return datetime.fromtimestamp(float(payload["ts"]), UTC)
+    except (TypeError, KeyError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _parked_where(meta: dict[str, Any]) -> str:
+    """The lane(s) and node a park names — ``lane_wait`` (the lanes whose
+    freeing slot wakes it), else the pinned ``params.lane``, plus
+    ``params.target_node`` — ``-`` when the job stores neither."""
+    raw_params = meta.get("params")
+    params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
+    waits = meta.get("lane_wait")
+    lanes = (
+        ",".join(str(x) for x in waits)
+        if isinstance(waits, list) and waits
+        else str(params.get("lane") or "")
+    )
+    parts = [
+        f"lane {lanes}" if lanes else "",
+        f"node {n}" if (n := params.get("target_node")) else "",
+    ]
+    return " ".join(p for p in parts if p) or "-"
+
+
+def _parked_reason(meta: dict[str, Any]) -> str:
+    """The stored park reason, ``wake_when.payload.why`` — one line,
+    capped; ``-`` when none is stored (never invented)."""
+    wake_when = meta.get("wake_when")
+    payload = wake_when.get("payload") if isinstance(wake_when, dict) else None
+    why = payload.get("why") if isinstance(payload, dict) else None
+    if not isinstance(why, str) or not why.strip():
+        return "-"
+    line = _COUNT_HEAD_WS.sub(" ", why).strip()
+    return line if len(line) <= 160 else line[:159] + "…"
 
 
 # ── put(mode='setting') + id='/claim' — the ``claim.*`` app_state knobs
@@ -1062,6 +1132,7 @@ def _run_file_content(payload: Any) -> str:
 
 class JobHandler(NumericRefHandler):
     list_drop_constant_cols = ("remaining_words", "links", "age", "size")
+    extra_search_views = ("parked",)
 
     def _batch_extra_line(self, ref: Ref, tags: list[tuple[str, str]]) -> str | None:
         if not any(
@@ -6069,6 +6140,26 @@ class JobHandler(NumericRefHandler):
         since_dt = _job_window_bound(since, "since")
         until_dt = _job_window_bound(until, "until")
         group_by = _job_group_by(group_by)
+        if view == "parked":
+            return self._search_parked_route(
+                under=under,
+                depth=depth,
+                axis=axis,
+                status=status,
+                page_size=page_size,
+                page=page,
+                group_by=group_by,
+                since=since_dt,
+                until=until_dt,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+                job_type=str(job_type).strip() if job_type is not None else None,
+                kw=kw,
+            )
+        # ``sort='recency'`` (``'recent'`` reads the same) asks for the
+        # newest-created order over the whole filtered set — the job
+        # listing's job, not the ranked search's (gr735229).
+        recent = str(kw.get("sort") or "").strip().lower() in _JOB_RECENT_SORTS
         if under is not None or depth is not None or axis is not None:
             for bad in ("q", "tags", "link", "mode", "sort"):
                 v = kw.get(bad)
@@ -6139,12 +6230,13 @@ class JobHandler(NumericRefHandler):
                 id_min=id_min,
                 id_max=id_max,
             )
-        if (since_dt is not None or until_dt is not None) and view != "count":
+        if (since_dt is not None or until_dt is not None or recent) and view != "count":
             # A queryless top-level since=/until= stays on the job
             # listing path (dispatch routes a q=-bearing call to the
             # source-search primitive instead), but the base listing
             # refuses those bounds: apply them through the same filtered
-            # listing the job_type search uses. view='count' deliberately
+            # listing the job_type search uses. ``sort='recency'`` takes
+            # the same road (dispatch routes it here too — gr735229). view='count' deliberately
             # falls through to super().search — the shared count path
             # applies the bounds and id_min/id_max itself; it does NOT
             # vet the rest of kw (NumericRefHandler.search ends in
@@ -6209,6 +6301,251 @@ class JobHandler(NumericRefHandler):
             include_ref_ids=include_ref_ids,
             **kw,
         )
+
+    def _search_parked_route(
+        self,
+        *,
+        under: Any,
+        depth: Any,
+        axis: Any,
+        status: str | None,
+        page_size: int,
+        page: int,
+        group_by: Any,
+        since: datetime | None,
+        until: datetime | None,
+        exclude_ref_ids: list[int] | None,
+        include_ref_ids: list[int] | None,
+        job_type: str | None,
+        kw: dict[str, Any],
+    ) -> Response:
+        """``search(kind='job', view='parked')`` — vet what the view does not
+        apply, then list the parks (:meth:`_search_parked`). ``q=``,
+        ``tags=``, ``link=``, ``id_min=``/``id_max=``, ``since=``/``until=``
+        (the job's ``created_at``) and ``job_type=`` narrow it like the
+        plain listing; the order is the wake time's, so ``sort=`` is
+        refused rather than ignored."""
+        retry = "search(kind='job', view='parked')"
+        if under is not None or depth is not None or axis is not None:
+            raise BadInput(
+                "under=/depth=/axis= are not supported with view='parked'",
+                next="search(kind='job', under='<ref>', status='waiting_time')",
+            )
+        if group_by is not None:
+            raise BadInput(
+                "group_by= applies only to view='count'",
+                next="search(kind='job', view='count', "
+                "args={'group_by': 'meta.job_type,state'})",
+            )
+        if status is not None and str(status).strip() not in ("*", "waiting_time"):
+            raise BadInput(
+                f"view='parked' lists STATUS:waiting_time jobs; status={status!r} "
+                "contradicts it",
+                next=retry,
+            )
+        sort, mode = kw.pop("sort", None), kw.pop("mode", None)
+        if sort is not None and str(sort).strip():
+            raise BadInput(
+                f"sort={sort!r} doesn't apply to view='parked' "
+                "(rows are ordered by wake time, furthest first)",
+                next=retry,
+            )
+        if mode is not None and str(mode).strip().lower() not in ("", "lexical"):
+            raise BadInput(
+                f"mode={mode!r} has no ranked-search meaning on view='parked' — "
+                "q= is title-lexical",
+                next=retry,
+            )
+        q, tags, link = (kw.pop(k, None) for k in ("q", "tags", "link"))
+        id_min, id_max = kw.pop("id_min", None), kw.pop("id_max", None)
+        leftover = sorted(k for k, v in kw.items() if v is not None)
+        if leftover:
+            raise BadInput(
+                f"{leftover!r} not applied by view='parked' (it takes "
+                "q/tags/link/job_type/since/until/id_min/id_max only)",
+                next=retry,
+            )
+        return self._search_parked(
+            q=q,
+            tags=tags,
+            link=link,
+            job_type=job_type,
+            since=since,
+            until=until,
+            id_min=id_min,
+            id_max=id_max,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
+            page_size=page_size,
+            page=page,
+        )
+
+    def _search_parked(
+        self,
+        *,
+        q: Any,
+        tags: Any,
+        link: Any,
+        job_type: str | None,
+        since: datetime | None,
+        until: datetime | None,
+        id_min: Any,
+        id_max: Any,
+        exclude_ref_ids: list[int] | None,
+        include_ref_ids: list[int] | None,
+        page_size: int,
+        page: int,
+    ) -> Response:
+        """The jobs parked on a clock or a lane (gr735226): ``STATUS:
+        waiting_time`` rows, whose ``meta.wake_when`` carries the instant
+        the wake_runner re-queues them (``park_job_until`` and run_slice's
+        lane waits both write it). One row per job — handle, job_type,
+        parent, the lane/node the park names, wake time (UTC), how long it
+        has been parked (age of the STATUS stamp) and the stored
+        ``wake_when.payload.why``, ``-`` when none is stored. Furthest wake
+        first; a wake more than :data:`_PARKED_FAR` away is flagged ``!``
+        and counted in the header, so a job parked into next year cannot
+        hide among the 20-minute lane waits. A job with no readable wake
+        time lists last."""
+        normalized_tags = Tag.normalize_filter(
+            [*(tags if isinstance(tags, list) else []), "STATUS:waiting_time"],
+            kind=self.kind,
+        )
+        id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
+        link_ref_id: int | None = None
+        if link is not None and str(link).strip():
+            link_ref_id = parse_link_target(str(link), store=self.store).ref_id
+        clauses, params = filtered_ref_clauses(
+            kind="job",
+            tags=normalized_tags,
+            q=q,
+            q_in_chunks=self.search_body_chunks,
+            q_card_kinds=self.search_card_kinds,
+            link_ref_id=link_ref_id,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            since=since,
+            until=until,
+            meta_eq=("job_type", job_type) if job_type is not None else None,
+            id_min=id_lo,
+            id_max=id_hi,
+        )
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_REFS_COLS_ALIASED}, st.stamped_at FROM refs r "
+                "LEFT JOIN LATERAL ("
+                "  SELECT rt.created_at AS stamped_at "
+                "    FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                "   WHERE rt.ref_id = r.ref_id AND t.namespace = %s "
+                "   ORDER BY rt.created_at DESC LIMIT 1"
+                f") st ON true WHERE {' AND '.join(clauses)} "
+                "ORDER BY r.ref_id LIMIT %s",
+                [STATUS_NAMESPACE, *params, _PARKED_ROW_CAP],
+            ).fetchall()
+            parked = [(_row_to_ref(r[:_REFS_COLS_LEN]), as_utc(r[-1])) for r in rows]
+            parent_ids = sorted({r.parent_id for r, _ in parked if r.parent_id})
+            parent_kinds: dict[int, str] = {}
+            if parent_ids:
+                parent_kinds = {
+                    int(pid): str(kind)
+                    for pid, kind in conn.execute(
+                        "SELECT ref_id, kind FROM refs WHERE ref_id = ANY(%s)",
+                        (parent_ids,),
+                    ).fetchall()
+                }
+        now = datetime.now(UTC)
+        entries = [(r, stamped, _parked_wake(r.meta or {})) for r, stamped in parked]
+        entries.sort(
+            key=lambda e: (
+                e[2] is None,
+                -e[2].timestamp() if e[2] is not None else 0.0,
+                e[0].id,
+            )
+        )
+        total = len(entries)
+        far = sum(1 for e in entries if e[2] is not None and e[2] - now > _PARKED_FAR)
+        scope = f" with job_type {job_type!r}" if job_type is not None else ""
+        if not entries:
+            return Response(
+                body=f"no parked jobs{scope}"
+                + render_next_section(
+                    [
+                        (
+                            "search(kind='job', view='count', "
+                            "args={'group_by': 'meta.job_type,state'})",
+                            "every job_type by status",
+                        )
+                    ]
+                ),
+                result_count=0,
+            )
+        page = max(1, int(page))
+        page_size = max(1, min(int(page_size), 100))
+        offset = (page - 1) * page_size
+        shown = entries[offset : offset + page_size]
+        lines = [
+            f"# {total} parked job{'' if total == 1 else 's'}{scope}"
+            + (
+                f" (rows {offset + 1}-{offset + len(shown)})"
+                if total > len(shown)
+                else ""
+            )
+            + (f" (first {_PARKED_ROW_CAP} read)" if total >= _PARKED_ROW_CAP else "")
+        ]
+        if far:
+            lines.append(
+                f"{far} parked for more than a day (wake time over 24h away, marked !)"
+            )
+        from precis.format import render_agent_table
+
+        table = [
+            {
+                "flag": "!" if wake is not None and wake - now > _PARKED_FAR else "-",
+                "id": handle_registry.try_format("job", ref.id) or str(ref.id),
+                "job_type": (ref.meta or {}).get("job_type") or "-",
+                "parent": (
+                    handle_registry.try_format(
+                        parent_kinds[ref.parent_id], ref.parent_id
+                    )
+                    if ref.parent_id in parent_kinds
+                    else None
+                )
+                or "-",
+                "where": _parked_where(ref.meta or {}),
+                "wake_utc": _fmt_utc(wake),
+                "parked": _fmt_age(now - stamped) if stamped is not None else "-",
+                "reason": _parked_reason(ref.meta or {}),
+            }
+            for ref, stamped, wake in shown
+        ]
+        lines.append(
+            render_agent_table(
+                table,
+                schema=[
+                    "flag",
+                    "id",
+                    "job_type",
+                    "parent",
+                    "where",
+                    "wake_utc",
+                    "parked",
+                    "reason",
+                ],
+            )
+        )
+        if offset + len(shown) < total:
+            lines.append(
+                render_next_section(
+                    [
+                        (
+                            f"search(kind='job', view='parked', page={page + 1}, "
+                            f"page_size={page_size})",
+                            "the next parked jobs",
+                        )
+                    ]
+                )
+            )
+        return Response(body="\n".join(lines), result_count=len(shown))
 
     def _bare_listing(
         self,
@@ -6618,7 +6955,7 @@ class JobHandler(NumericRefHandler):
         if view is not None and view != "count":
             raise BadInput(
                 f"unknown view {view!r} for {label}",
-                options=["count"],
+                options=["count", "parked"],
                 next=(
                     "search(kind='job', view='count', "
                     "args={'job_type': '<type>', 'group_by': 'state'})"
@@ -6627,14 +6964,14 @@ class JobHandler(NumericRefHandler):
                     "args={'since': '<ISO>', 'group_by': 'state'})"
                 ),
             )
-        if sort is not None and str(sort).strip().lower() != "recency":
+        if sort is not None and str(sort).strip().lower() not in _JOB_RECENT_SORTS:
             raise BadInput(
                 f"sort= doesn't apply to {label} (the listing is recency-ordered)",
                 next=(
                     "search(kind='job', args={'job_type': '<type>'})"
                     if job_type is not None
                     else "drop sort=, or add q= for a ranked dated search: "
-                    "search(kind='job', q='…', sort='recency', "
+                    "search(kind='job', q='…', sort='relevance', "
                     "args={'since': '…'})"
                 ),
             )
@@ -6645,9 +6982,9 @@ class JobHandler(NumericRefHandler):
                 next=(
                     "drop mode=, or drop job_type= for the hybrid ranked path"
                     if job_type is not None
-                    else "drop mode=, or add q= for the hybrid ranked path: "
-                    "search(kind='job', q='…', mode='semantic', "
-                    "args={'since': '…'})"
+                    else "drop mode=, or take the hybrid ranked path — q= "
+                    "without sort='recent': search(kind='job', q='…', "
+                    "mode='semantic', args={'since': '…'})"
                 ),
             )
         effective_tags, status_note, excluded = self._apply_status_default(
@@ -6709,9 +7046,17 @@ class JobHandler(NumericRefHandler):
                 params,
             ).fetchall()
             total = sum(int(row[1]) for row in counts)
+            # An explicit sort='recency' is newest-created first — "the
+            # latest <type> job" (gr735229); the unsorted listing keeps
+            # its last-touched order ("what ran lately").
+            order = (
+                "r.created_at DESC, r.ref_id DESC"
+                if sort is not None
+                else "r.updated_at DESC"
+            )
             rows = conn.execute(
                 f"SELECT {_REFS_COLS_ALIASED} FROM refs r WHERE {where} "
-                "ORDER BY r.updated_at DESC LIMIT %s OFFSET %s",
+                f"ORDER BY {order} LIMIT %s OFFSET %s",
                 [*params, page_size, offset],
             ).fetchall()
         refs = [_row_to_ref(r) for r in rows]
@@ -7310,37 +7655,37 @@ def _job_group_by(group_by: Any) -> Any:
 
 
 def _job_window_bound(value: Any, field: str) -> datetime | None:
-    """``since=``/``until=`` on job search: an ISO timestamp OR an age
-    spelling — ``'24'`` / ``'6h'`` / ``'7d'`` mean "that many
-    hours/days ago", the same shorthand ``/logs`` and ``/delta``
-    already take (gr536316: the diagnosis windows agents actually
-    write). Anything else defers to :func:`_parse_window_bound`'s ISO
-    contract; a value matching neither gets a rejection naming both.
+    """``since=``/``until=`` on job search: an ISO timestamp OR a span —
+    ``'30m'`` / ``'6h'`` / ``'7d'`` / ``'1w'`` mean "that long ago", and a
+    bare ``'24'`` means 24 hours, the same shorthand ``/logs`` and
+    ``/delta`` already take (gr536316: the diagnosis windows agents
+    actually write; gr735229: minutes and weeks). Anything else defers to
+    :func:`_parse_window_bound`'s ISO contract; a value matching neither
+    gets a rejection naming both.
 
     A *bare* number is refused when it's year-shaped
     (:data:`_JOB_YEAR_LIKE`) or past
     :data:`_JOB_WINDOW_BARE_HOURS_MAX`: ``since='2026'`` is almost
     always a mistyped ISO year, not "2026 hours ago", and silently
     reading it as an age returns a wrong but plausible-looking window
-    (gr536316 fix round 1). An explicit ``h``/``d`` suffix stays
-    unbounded — the unit says the caller meant an age.
+    (gr536316 fix round 1). An explicit unit suffix stays unbounded —
+    the unit says the caller meant a span.
     """
     if value is None or isinstance(value, datetime):
         return _parse_window_bound(value, field)
     text = str(value).strip()
-    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([hd])?", text, re.IGNORECASE)
+    if (ago := span_ago(text)) is not None:
+        return ago
+    m = re.fullmatch(r"\d+(?:\.\d+)?", text)
     if m:
-        hours = float(m.group(1)) * (24 if (m.group(2) or "").lower() == "d" else 1)
-        if m.group(2) is None and (
-            hours > _JOB_WINDOW_BARE_HOURS_MAX or _JOB_YEAR_LIKE.fullmatch(m.group(1))
-        ):
-            num = m.group(1)
-            iso = f"{num}-01-01" if _JOB_YEAR_LIKE.fullmatch(num) else "2026-01-01"
+        hours = float(text)
+        if hours > _JOB_WINDOW_BARE_HOURS_MAX or _JOB_YEAR_LIKE.fullmatch(text):
+            iso = f"{text}-01-01" if _JOB_YEAR_LIKE.fullmatch(text) else "2026-01-01"
             raise BadInput(
                 f"{field}={value!r} is ambiguous — a bare number reads "
                 f"as {hours:g} hours ago; an ISO year needs a full date, "
                 "an age needs a unit suffix",
-                next=f"{field}='{num}h' (that many hours ago) · "
+                next=f"{field}='{text}h' (that many hours ago) · "
                 f"{field}='{iso}' (an ISO date)",
             )
         return datetime.now(UTC) - timedelta(hours=hours)
@@ -7348,8 +7693,8 @@ def _job_window_bound(value: Any, field: str) -> datetime | None:
         return _parse_window_bound(value, field)
     except BadInput:
         raise BadInput(
-            f"{field}={value!r} must be an ISO date/timestamp or an age in hours/days",
-            next=f"{field}='24' · {field}='7d' · {field}='2026-10-01T00:00:00Z'",
+            f"{field}={value!r} must be {SPAN_FORMS}",
+            next=f"{field}='30m' · {field}='7d' · {field}='2026-10-01T00:00:00Z'",
         ) from None
 
 

@@ -29,11 +29,10 @@ a discriminating experiment instead, ``refs.meta.artifact_type``, minted via
 ``handlers/_finding_hypothesis.py``; the widening pass excludes hypotheses,
 :func:`.canon.not_hypothesis_predicate_sql`, so it never becomes a
 confirmation engine for its own guess). Orthogonal to that artifact axis is
-the **claim type** (:mod:`.claim_type`, ``refs.meta.claim_type``: measurement
-/ definition / capability / mechanism / landscape) — a static per-type policy
-table; a *landscape* hub (the common case for a class, review material)
-dedups on sentence alone, is never widened or a ``disputes`` counterparty,
-is consensus-verified and not publishable. Design: `me694691`;
+the **claim type** (:mod:`.claim_type`, ``refs.meta.claim_type``). Calculations
+share measurement policy and retain method and model in scope. Landscape
+hubs dedup by sentence, skip widening and disputes, use consensus
+verification, and cannot be published. Design: `me694691`;
 governance: taproot evidence relations (+ the living citation pins).
 
 Unsigned claim title/scope and hypothesis-prose edits keep the hub identity
@@ -46,11 +45,8 @@ freeze boundary: a historical signed artifact on a reopened row still requires
 supersession, internal edits mint no versions, and artifact/proof bytes stay
 untouched (signed reopen/demotion alignment: the nanopub supersede slice).
 
-Three layers, one domain (glossary "finding / taproot / nanopub"):
-``finding``, the ref kind this module overlays, is owned by
-:mod:`precis.handlers.finding`; ``nanopub``, the downstream pipeline that
-freezes an approved hub into a signed nanopublication, is owned by
-:mod:`precis.nanopub`. This module owns the claim-graph layer only.
+:mod:`precis.handlers.finding` owns the underlying ref kind. Taproot owns
+the claim graph. :mod:`precis.nanopub` signs approved hubs.
 
 Extraction starts with a measured 1536-token budget and retries a truncated
 reply once at 3072. Provider ``length``/``max_tokens`` stops override even
@@ -167,6 +163,8 @@ supporters=[…])`` / ``precis taproot mint`` (:mod:`.authoring`);
 no evidence flow — ``disputes`` never blocks, free to file by anyone);
 ``precis taproot backfill`` / the ``taproot_backfill`` job (:mod:`.backfill`,
 runs on the cluster worker, never in the MCP handler).
+Title edits save writer attribution in the same transaction as the
+claim's identity change so a failed edit leaves provenance intact.
 
 Read surfaces: ``get(kind='finding', view='evidence')`` (originators/
 corroborators/contradicts tables); the default ``finding`` search cohort
