@@ -653,3 +653,101 @@ def test_blind_shared_and_job_log_fall_back_to_the_tail(tmp_path: Path) -> None:
     assert "no signal lines" in cp.stdout
     assert "actions/jobs/<id>/logs" in cp.stdout  # the next-step hint
     assert "step aborted before pytest ran" in cp.stdout  # the job-log tail
+
+
+_TWO_SHARD_RUN = {
+    "status": "completed",
+    "conclusion": "failure",
+    "jobs": [
+        {
+            "name": "gate-fast (3.13, 1)",
+            "databaseId": 555,
+            "status": "completed",
+            "conclusion": "failure",
+        },
+        {
+            "name": "gate-fast (3.13, 3)",
+            "databaseId": 777,
+            "status": "completed",
+            "conclusion": "failure",
+        },
+    ],
+}
+
+
+def test_failed_job_missing_from_the_shared_log_is_digested_per_job(
+    tmp_path: Path,
+) -> None:
+    """gr698700: the shared ``--log-failed`` stream can omit a failed
+    job ENTIRELY — no lines, no section. Without the run's jobs manifest
+    the job's failing ids silently dropped out of the digest (the
+    release-fix loop minted a fix node for one cluster and none for
+    tests/test_mode_spec_parity.py, red again a gate later). A missing
+    failed job gets the same per-job read as a blind one."""
+    env = _api_dir(
+        tmp_path,
+        {
+            "777": (
+                f"{TS} FAILED tests/test_mode_spec_parity.py::test_a - assert x\n"
+                f"{TS} FAILED tests/test_mode_spec_parity.py::test_b - assert y\n"
+                f"{TS} = 2 failed, 40 passed in 3.2s =\n"
+            ),
+        },
+    )
+    (tmp_path / "ghstate").write_text(
+        f"gate-fast (3.13, 1)\tRun pytest\t{TS} FAILED tests/test_mcp.py::t - assert z\n"
+        f"gate-fast (3.13, 1)\tRun pytest\t{TS} = 1 failed, 9 passed in 3.2s =\n",
+        encoding="utf-8",
+    )
+    env["GH_STUB_RUN"] = json.dumps(_TWO_SHARD_RUN)
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "== gate-fast (3.13, 3) ==" in cp.stdout
+    assert "failed ids (2):" in cp.stdout
+    assert "    tests/test_mode_spec_parity.py::test_a\n" in cp.stdout
+    assert "    tests/test_mode_spec_parity.py::test_b\n" in cp.stdout
+    calls = Path(env["_argv_file"]).read_text(encoding="utf-8")
+    assert "/actions/jobs/777/logs" in calls
+    assert "/actions/jobs/555/logs" not in calls  # its section was complete
+
+
+def test_missing_job_with_unreadable_log_gets_a_blind_section(
+    tmp_path: Path,
+) -> None:
+    """The hole is flagged, never hidden: a failed job missing from the
+    shared stream whose own log is also unreadable still gets a blind
+    ``== job ==`` section, so the digest's caller sees the gap instead
+    of clustering an incomplete picture."""
+    env = _api_dir(tmp_path, {})
+    (tmp_path / "ghstate").write_text(
+        f"gate-fast (3.13, 1)\tRun pytest\t{TS} FAILED tests/test_mcp.py::t - assert z\n"
+        f"gate-fast (3.13, 1)\tRun pytest\t{TS} = 1 failed, 9 passed in 3.2s =\n",
+        encoding="utf-8",
+    )
+    env["GH_STUB_RUN"] = json.dumps(_TWO_SHARD_RUN)
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "== gate-fast (3.13, 3) ==" in cp.stdout
+    tail = cp.stdout.split("== gate-fast (3.13, 3) ==", 1)[1]
+    assert "no signal lines" in tail
+    assert "(log unreadable:" in tail
+    calls = Path(env["_argv_file"]).read_text(encoding="utf-8")
+    assert "/actions/jobs/777/logs" in calls
+
+
+def test_missing_jobs_respect_the_job_prefix(tmp_path: Path) -> None:
+    """``--job-prefix`` digests only matching jobs — a missing failed
+    job outside the prefix is not read per job either."""
+    env = _api_dir(tmp_path, {})
+    (tmp_path / "ghstate").write_text(
+        f"gate-fast (3.13, 1)\tRun pytest\t{TS} FAILED tests/test_mcp.py::t - assert z\n"
+        f"gate-fast (3.13, 1)\tRun pytest\t{TS} = 1 failed, 9 passed in 3.2s =\n",
+        encoding="utf-8",
+    )
+    env["GH_STUB_RUN"] = json.dumps(_TWO_SHARD_RUN)
+    cp = _run(["223355", "--job-prefix", "gate-fast (3.13, 1)"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "== gate-fast (3.13, 1) ==" in cp.stdout
+    assert "gate-fast (3.13, 3)" not in cp.stdout
+    calls = Path(env["_argv_file"]).read_text(encoding="utf-8")
+    assert "/actions/jobs/777/logs" not in calls

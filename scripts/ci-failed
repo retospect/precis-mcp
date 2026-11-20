@@ -16,7 +16,10 @@ instead, which is where the reason lives. When the shared stream
 carries only the step header for a failed job (gr587536: the gate-fast
 shards' pytest output never reached ``--log-failed``), the job's own
 log is re-read through ``actions/jobs/<id>/logs`` and digested instead —
-a fetched log replaces the job's lines outright, signal or not.
+a fetched log replaces the job's lines outright, signal or not. A
+failed job the stream omits ENTIRELY — no lines, no section — gets the
+same per-job read (gr698700: without one its failing ids never reach
+the digest at all, and no fix node is minted for them).
 Workflow metadata also names queued/in-progress jobs stranded by a completed
 run, which have no failed-job logs and need a full rerun, and names the
 one skip that is a verdict and not a hole: a red ``failed-first`` leaves
@@ -318,18 +321,42 @@ def digest(text: str, *, lines: int = 40, tail: int = 15, job_prefix: str = "") 
 _INCOMPLETE = re.compile(r"still in progress|logs? will be available", re.IGNORECASE)
 
 
+def _job_log(jid: str) -> tuple[list[str], str]:
+    """One job's own log through ``actions/jobs/<id>/logs``, ANSI- and
+    timestamp-stripped — ``(lines, "")`` on a read, ``([], err)`` naming
+    the failure otherwise."""
+    cp = _gh_api(
+        [f"repos/{{owner}}/{{repo}}/actions/jobs/{jid}/logs"],
+        timeout=180,
+    )
+    if cp.returncode != 0:
+        detail = (cp.stderr or cp.stdout).decode("utf-8", "replace").strip()
+        return [], f"exit {cp.returncode}: {detail[:300]}"
+    lines = [
+        TS.sub("", ANSI.sub("", line), count=1)
+        for line in cp.stdout.decode("utf-8", "replace").splitlines()
+    ]
+    return lines, "" if lines else "the log read gave no lines"
+
+
 def _backfill_blind_jobs(
-    run: dict[str, Any], jobs: OrderedDict[str, list[str]]
+    run: dict[str, Any], jobs: OrderedDict[str, list[str]], job_prefix: str = ""
 ) -> OrderedDict[str, list[str]]:
     """Re-read blind jobs through ``actions/jobs/<id>/logs`` (gr587536):
     the shared ``--log-failed`` stream can carry only the step header
     where the job's own log has the FAILED lines. A fetched log replaces
     the job's lines outright — the fuller source either way; an
-    unreadable one keeps the shared stream's tail."""
+    unreadable one keeps the shared stream's tail. A failed job the
+    stream carried NO lines for gets no section at all without the
+    run's jobs manifest (gr698700: its failing ids silently dropped out
+    of the digest, and the release-fix loop minted no node for them) —
+    each gets the same per-job read, and an unreadable one still gets a
+    blind section so the digest flags the hole instead of hiding it."""
     ids = {
         str(j.get("name") or ""): str(j.get("databaseId") or j.get("id") or "")
         for j in run.get("jobs", [])
         if j.get("conclusion") == "failure"
+        and (not job_prefix or str(j.get("name") or "").startswith(job_prefix))
     }
     out: OrderedDict[str, list[str]] = OrderedDict()
     for name, entries in jobs.items():
@@ -337,18 +364,13 @@ def _backfill_blind_jobs(
         if not jid or any(SIGNAL.search(line) for line in entries):
             out[name] = entries
             continue
-        cp = _gh_api(
-            [f"repos/{{owner}}/{{repo}}/actions/jobs/{jid}/logs"],
-            timeout=180,
-        )
-        if cp.returncode != 0:
-            out[name] = entries
-            continue
-        fetched = [
-            TS.sub("", ANSI.sub("", line), count=1)
-            for line in cp.stdout.decode("utf-8", "replace").splitlines()
-        ]
+        fetched, _err = _job_log(jid)
         out[name] = fetched or entries
+    for name, jid in ids.items():
+        if not name or name in out:
+            continue
+        fetched, err = _job_log(jid)
+        out[name] = fetched or [f"(log unreadable: {err})"]
     return out
 
 
@@ -506,7 +528,7 @@ def main(argv: list[str] | None = None) -> int:
             (j, e) for j, e in jobs.items() if j.startswith(a.job_prefix)
         )
     if run is not None:
-        jobs = _backfill_blind_jobs(run, jobs)
+        jobs = _backfill_blind_jobs(run, jobs, a.job_prefix)
     print(digest_jobs(jobs, lines=a.lines, tail=a.tail, job_prefix=a.job_prefix))
     return 0 if metadata_ok else 1
 
