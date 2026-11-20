@@ -285,9 +285,10 @@ PENDING_LAND_KEY = "pending_land"
 PRELAND_DEFER_FAILED_KEY = "preland_defer_failed"
 #: ``meta.branch_files`` on a build todo: the repo paths its slice branch
 #: touched (the diff against its land base), stamped by ``run_slice`` at
-#: each clean exit. ``plan_dispatch``'s overlap hold reads it as the exact
-#: file set of a started build, where the brief only guesses.
+#: each land handoff.
 BRANCH_FILES_KEY = "branch_files"
+#: The tip covered by a complete branch_files stamp, null if incomplete.
+BRANCH_FILES_HEAD_KEY = "branch_files_head"
 #: Where the factory keeps a slice branch on origin: a hidden namespace,
 #: not ``refs/heads/``, so GitHub lists no branch and offers no "Compare
 #: & pull request" for it (Reto 2026-11-15) — landing is ship's squash,

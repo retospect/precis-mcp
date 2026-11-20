@@ -2913,23 +2913,39 @@ def test_review_target_names_followups_on_main(
 def test_stamp_branch_files_records_the_branch_diff(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A clean exit stamps the branch's real file set for plan_dispatch's
-    overlap hold; git unable to answer leaves the last stamp in place."""
     store = _Store()
     store.add_todo(7, "Build it", body="Build.")
-    seen: list[str] = []
+    head = "a" * 40
+    paths = ["src/a.py", "tests/test_a.py"]
+    rc = 0
 
-    def fake_paths(tree: Path, base: str = "origin/main") -> list[str] | None:
-        seen.append(base)
-        return ["src/a.py", "tests/test_a.py"]
+    def fake_git(args: list[str], tree: Path) -> subprocess.CompletedProcess[str]:
+        assert args == [
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            f"origin/main...{head}",
+        ]
+        return _proc("\0".join(paths) + "\0", rc=rc)
 
-    monkeypatch.setattr(run_slice, "changed_paths", fake_paths)
-    run_slice._stamp_branch_files(store, 7, tmp_path)
-    assert store.refs[7].meta["branch_files"] == ["src/a.py", "tests/test_a.py"]
-    assert seen == ["origin/main"]
-    monkeypatch.setattr(run_slice, "changed_paths", lambda tree, base="": None)
-    run_slice._stamp_branch_files(store, 7, tmp_path)
-    assert store.refs[7].meta["branch_files"] == ["src/a.py", "tests/test_a.py"]
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    monkeypatch.setattr(run_slice, "_BRANCH_FILES_CAP", 2)
+    run_slice._stamp_branch_files(store, 7, tmp_path, head)
+    assert store.refs[7].meta["branch_files"] == paths
+    assert store.refs[7].meta["branch_files_head"] == head
+
+    paths.append("tests/test_b.py")
+    run_slice._stamp_branch_files(store, 7, tmp_path, head)
+    assert store.refs[7].meta["branch_files"] == paths[:2]
+    assert store.refs[7].meta["branch_files_head"] is None
+
+    paths.pop()
+    run_slice._stamp_branch_files(store, 7, tmp_path, head)
+    rc = 1
+    run_slice._stamp_branch_files(store, 7, tmp_path, head)
+    assert store.refs[7].meta["branch_files"] == paths
+    assert store.refs[7].meta["branch_files_head"] is None
 
 
 def test_review_target_fetches_a_preland_branch_and_names_its_head(
@@ -6807,6 +6823,7 @@ def test_mint_land_params_and_idem_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(mint_mod, "mint_job_once", fake_once)
     store = _Store()
+    store.add_todo(42, "Build it")
     store.tx = lambda: _Tx()  # type: ignore[attr-defined]
     ctx = _Ctx(store, {"todo_id": 42, "target_node": "node-a"}, plan_root=40)
     assert run_slice._mint_land(ctx, 42, Path("/t/slice-td42"), "claude-sub") == 555
@@ -6865,6 +6882,7 @@ def test_mint_land_checked_param(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(mint_mod, "mint_job_once", fake_once)
     store = _Store()
+    store.add_todo(42, "Build it")
     monkeypatch.setattr(store, "tx", lambda: _Tx(), raising=False)
     ctx = _Ctx(store, {"todo_id": 42})
     run_slice._mint_land(ctx, 42, Path("/t/slice-td42"), "claude-sub", checked=True)

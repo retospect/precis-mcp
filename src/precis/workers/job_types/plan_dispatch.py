@@ -6430,6 +6430,7 @@ class _Started:
     state: str
     branch_files: tuple[str, ...]
     repo: str
+    branch_files_current: bool = False
 
 
 #: ``factory.overlap_hold_max_runs`` when unset or unreadable.
@@ -6517,7 +6518,10 @@ def _started_slices(store: Any, *, single_flight: bool = False) -> dict[int, _St
             """
             WITH live AS (
                 SELECT j.parent_id, bool_or(j.meta->>'job_type' = 'land_slice')
-                       AS landing
+                       AS landing,
+                       array_agg(DISTINCT j.meta->'params'->>'head')
+                           FILTER (WHERE j.meta->>'job_type' = 'land_slice')
+                           AS land_heads
                   FROM refs j
                  WHERE j.kind = 'job' AND j.retired_at IS NULL
                    AND j.meta->>'job_type' IN ('run_slice', 'land_slice')
@@ -6545,6 +6549,9 @@ def _started_slices(store: Any, *, single_flight: bool = False) -> dict[int, _St
                              AND land_dead.job_head IS NOT DISTINCT FROM
                                  (r.meta->'pending_land'->>'head'))),
                    r.meta->%s,
+                   r.meta->>%s,
+                   CASE WHEN live.landing THEN live.land_heads
+                        ELSE ARRAY[r.meta->'pending_land'->>'head'] END,
                    (SELECT count(*) FROM refs j
                      WHERE j.kind = 'job' AND j.retired_at IS NULL
                        AND j.parent_id = r.ref_id
@@ -6586,6 +6593,7 @@ def _started_slices(store: Any, *, single_flight: bool = False) -> dict[int, _St
             (
                 sorted(_JOB_TERMINAL),
                 _templates.BRANCH_FILES_KEY,
+                _templates.BRANCH_FILES_HEAD_KEY,
                 ATTEMPT_FREE_KEY,
                 sorted(_JOB_TERMINAL - {"cancelled"}),
                 sorted(_JOB_TERMINAL - {"succeeded"}),
@@ -6595,14 +6603,20 @@ def _started_slices(store: Any, *, single_flight: bool = False) -> dict[int, _St
     out: dict[int, _Started] = {}
     # Read the cap only when there is a holder to judge.
     max_runs = _overlap_hold_max_runs(store) if rows else 0
-    for rid, landing, pending, files, runs in rows:
+    for rid, landing, pending, files, stamp_head, land_heads, runs in rows:
         if max_runs and not landing and int(runs or 0) >= max_runs:
             continue
         state = (
             "landing" if landing else "in pre-land review" if pending else "building"
         )
         paths = tuple(str(p) for p in files) if isinstance(files, list) else ()
-        out[int(rid)] = _Started(state, paths, _lanes.DEFAULT_REPO)
+        current = (
+            bool(stamp_head)
+            and land_heads == [stamp_head]
+            and isinstance(files, list)
+            and all(isinstance(p, str) for p in files)
+        )
+        out[int(rid)] = _Started(state, paths, _lanes.DEFAULT_REPO, current)
     if not out:
         return out
     # A bare pending_land stamp under a rescue / child-failed tag (own, an
@@ -6649,6 +6663,7 @@ def _started_slices(store: Any, *, single_flight: bool = False) -> dict[int, _St
             s.state,
             s.branch_files,
             sorted(repos[rid])[0] if rid in repos else _lanes.DEFAULT_REPO,
+            s.branch_files_current,
         )
         for rid, s in out.items()
     }
@@ -7036,14 +7051,14 @@ def _same_red_digest(plan: _Plan, n: _Node, other: _Node | None) -> bool:
 
 def _held_files(s: _Started, declared: frozenset[str]) -> frozenset[str]:
     """The files a started build holds. Once it has left the build step
-    with a stamped branch — landing, or waiting for its pre-land review —
-    the branch diff is the whole answer: a file its body or a lander note
+    with a complete stamp for its landing or review tip, the branch diff
+    is the whole answer: a file its body or a lander note
     merely names is not one it edits (gr736403: a landing build with four
     branch files held 16 queued builds through two it never touched).
-    While it builds, what it declares counts too, since the diff is not
-    final."""
+    While it builds or the stamp is missing, incomplete or stale, the
+    declared files count too."""
     branch = _dscore.brief_files("\n".join(s.branch_files))
-    if branch and s.state != "building":
+    if s.branch_files_current and s.state != "building":
         return branch
     return declared | branch
 

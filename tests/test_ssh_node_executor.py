@@ -1024,8 +1024,17 @@ def test_parked_submit_gives_its_node_pin_back(
     """A submit that launches nothing (it parked the job on a lane wait and
     returned no handle) must not leave the pre-submit pin behind: the
     re-queued job would stay claimable only by this node."""
+
+    def _submit(ctx: Any, _spec: Any) -> None:
+        assert ctx.defer(None, "waiting for a lane")
+        parked = _meta(store, ctx.ref_id)
+        assert not parked.get("submit_attempt")
+        assert not parked.get("submit_started_at")
+        assert not parked.get("submit_host")
+        assert parked["params"] == {"keep": 1}
+
     monkeypatch.setattr(
-        ssh_node, "get_job_type", lambda name: _reconciling_spec(lambda c, s: None)
+        ssh_node, "get_job_type", lambda name: _reconciling_spec(_submit)
     )
     monkeypatch.setenv("PRECIS_NODE", "node-a")
     rid = _mk_job(store, params={"keep": 1})
@@ -1043,8 +1052,17 @@ def test_parked_submit_keeps_a_pin_that_predates_the_claim(
 ) -> None:
     """A pin set by dispatch (or an earlier launch) is not this call's to
     remove, even when the submit then parks."""
+
+    def _submit(ctx: Any, _spec: Any) -> None:
+        assert ctx.defer(None, "waiting for a lane")
+        parked = _meta(store, ctx.ref_id)
+        assert not parked.get("submit_attempt")
+        assert not parked.get("submit_started_at")
+        assert not parked.get("submit_host")
+        assert parked["params"] == {"keep": 1, "target_node": "node-a"}
+
     monkeypatch.setattr(
-        ssh_node, "get_job_type", lambda name: _reconciling_spec(lambda c, s: None)
+        ssh_node, "get_job_type", lambda name: _reconciling_spec(_submit)
     )
     monkeypatch.setenv("PRECIS_NODE", "node-a")
     rid = _mk_job(store, params={"keep": 1, "target_node": "node-a"})
@@ -1099,23 +1117,36 @@ def test_submit_that_raises_keeps_the_pin(
     assert not meta.get("submit_attempt")
 
 
-def test_release_submit_pin_spares_a_later_claims_attempt(
+def test_parked_submit_return_spares_a_later_claims_attempt(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The unpin matches the row's ``submit_attempt``: a later claim's
-    in-flight submit (a fresh attempt) keeps its pin."""
-    monkeypatch.setenv("PRECIS_NODE", "node-a")
-    rid = _mk_job(store, params={"target_node": "node-a"})
-    with store.pool.connection() as conn:
-        ssh_node._set_meta(conn, rid, submit_attempt="newer")
-        ssh_node._release_submit_pin(conn, rid, "older")
-        conn.commit()
-    assert _meta(store, rid)["params"] == {"target_node": "node-a"}
+    """Simulate a wake and new claim before the original submit returns."""
 
-    with store.pool.connection() as conn:
-        ssh_node._release_submit_pin(conn, rid, "newer")
-        conn.commit()
-    assert _meta(store, rid)["params"] == {}
+    def _submit(ctx: Any, _spec: Any) -> None:
+        assert ctx.defer(None, "waiting for a lane")
+        store.stamp_ref_meta(
+            ctx.ref_id,
+            {
+                "submit_attempt": "newer",
+                "submit_started_at": 10,
+                "submit_host": "another-host",
+                "params": {"target_node": "node-b"},
+            },
+        )
+
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _reconciling_spec(_submit)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    rid = _mk_job(store, params={})
+
+    ssh_node.run_ssh_node_pass(store, limit=1)
+
+    meta = _meta(store, rid)
+    assert meta["submit_attempt"] == "newer"
+    assert meta["submit_started_at"] == 10
+    assert meta["submit_host"] == "another-host"
+    assert meta["params"] == {"target_node": "node-b"}
 
 
 def test_submit_intent_marker_committed_before_launch(

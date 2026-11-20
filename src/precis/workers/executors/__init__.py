@@ -42,7 +42,9 @@ The lanes
   intent, the plugin reconciles the attempt on the submitting host before
   the crash-loop guard. Verified live adoption refunds the reclaim. A
   recovered exit resumes poll even at the cap so finishing writes can run.
-  Ambiguous evidence fails with an infrastructure diagnostic.
+  Ambiguous evidence fails with an infrastructure diagnostic. A submit
+  that parks clears its intent and temporary host pin in the park
+  transaction, before the wake runner can issue another claim.
   Seed handles record Linux boot ID and process start ticks at launch:
   a live process-group number alone can belong to an unrelated process
   after reuse. Orphan cleanup requires matching identity, excludes legacy

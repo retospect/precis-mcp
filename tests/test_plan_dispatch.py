@@ -9770,16 +9770,43 @@ def test_a_brief_that_opens_a_line_with_an_arrow_still_declares_its_file(
     assert _overlap_note(store, waiting)
 
 
-def test_a_finished_build_holds_only_its_branch_files(store: Store) -> None:
+@pytest.mark.parametrize("landing", [False, True])
+@pytest.mark.parametrize("provenance", ["current", "stale", "missing"])
+def test_a_finished_build_holds_only_current_branch_files(
+    store: Store, landing: bool, provenance: str
+) -> None:
     """gr736403: once a build waits for its pre-land review its stamped
     branch is the whole diff — a file its brief merely names holds
     nothing. While it still builds, the brief's file holds too, and a
     finished build with no stamped branch falls back to what it declares."""
     finished = _pending_build(store, ["src/precis/other.py"])
+    head = "a" * 40
+    store.stamp_ref_meta(
+        finished,
+        {
+            "pending_land": {
+                "todo_id": finished,
+                "branch": f"slice/{finished}",
+                "head": "c" * 40 if landing else head,
+            }
+        },
+    )
+    if provenance != "missing":
+        stamp_head = head if provenance == "current" else "b" * 40
+        store.stamp_ref_meta(finished, {"branch_files_head": stamp_head})
+    if landing:
+        _slice_job(
+            store,
+            finished,
+            "land_slice",
+            "queued",
+            params={"todo_id": finished, "head": head},
+        )
     _todo_comment(store, finished, f"brief: green on a full gate, see {_SHARED}")
     waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
-    assert pd._started_slices(store)[finished].state == "in pre-land review"
-    assert not _overlap_note(store, waiting)
+    state = "landing" if landing else "in pre-land review"
+    assert pd._started_slices(store)[finished].state == state
+    assert bool(_overlap_note(store, waiting)) == (provenance != "current")
 
     building = _started_outside_plans(store, ["src/precis/other.py"])
     _todo_comment(store, building, f"brief: green on a full gate, see {_SHARED}")
@@ -9795,7 +9822,12 @@ def test_a_finished_build_holds_only_its_branch_files(store: Store) -> None:
     ],
 )
 def test_held_files_follow_the_builds_state(state: str, held: set[str]) -> None:
-    started = pd._Started(state=state, branch_files=("src/precis/b.py",), repo="precis")
+    started = pd._Started(
+        state=state,
+        branch_files=("src/precis/b.py",),
+        repo="precis",
+        branch_files_current=True,
+    )
     assert pd._held_files(started, frozenset({"a.py"})) == held
 
 

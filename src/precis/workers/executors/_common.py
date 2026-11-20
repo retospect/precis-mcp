@@ -3458,6 +3458,9 @@ def park_job_until(
     ref_id: int,
     wake_at: datetime | None,
     note: str,
+    *,
+    submit_attempt: str | None = None,
+    temporary_submit_pin: bool = False,
 ) -> bool:
     """Park a running job until ``wake_at`` — the non-coordinator lane's
     Yield (gr482938): ``STATUS:waiting_time`` + ``meta.wake_when``
@@ -3486,10 +3489,12 @@ def park_job_until(
     job was waiting on (gr592789).
     """
     row = conn.execute(
-        "SELECT COALESCE((meta->>'pause_parks')::int, 0) FROM refs WHERE ref_id = %s",
-        (ref_id,),
+        "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,)
     ).fetchone()
-    parks = int(row[0]) if row and row[0] is not None else 0
+    meta = row[0] if row else {}
+    if submit_attempt is not None and meta.get("submit_attempt") != submit_attempt:
+        return False
+    parks = int(meta.get("pause_parks") or 0)
     if parks >= MAX_PAUSE_PARKS:
         return False
     at = wake_at if wake_at is not None else datetime.now(UTC) + PAUSE_BACKOFF
@@ -3506,6 +3511,17 @@ def park_job_until(
         },
         pause_parks=parks + 1,
     )
+    if submit_attempt is not None:
+        # The wake can start another submit immediately after this commit.
+        # Remove this attempt's launch intent and pin before exposing the park.
+        conn.execute(
+            "UPDATE refs SET meta = (CASE WHEN %s"
+            " AND meta->'params'->>'target_node' = %s"
+            " THEN meta #- '{params,target_node}' ELSE meta END)"
+            " - ARRAY['submit_started_at', 'submit_attempt', 'submit_host']"
+            " WHERE ref_id = %s",
+            (temporary_submit_pin, os.environ.get("PRECIS_NODE"), ref_id),
+        )
     release_job_reservation(conn, ref_id)
     set_status(store, ref_id, WAITING_TIME, conn=conn)
     return True

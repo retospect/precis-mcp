@@ -622,6 +622,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "worktree": {"type": "string"},
         # The slice's branch, slice/<id>.
         "branch": {"type": "string"},
+        # The build tip used by the overlap hold.
+        "head": {"type": "string"},
         # The lane holding the lease (released on a red land).
         "lane": {"type": "string"},
         # ssh_node's host pin: the host that holds the worktree.

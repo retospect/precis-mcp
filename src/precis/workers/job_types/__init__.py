@@ -53,6 +53,8 @@ matching the regular check gate.
 Plan dispatch and executor claims use the same brief selection as build
 and land to resolve overlap targets. This keeps brief-only release fixes
 isolated from main while holding overlapping work on the same branch.
+Finished builds can drop declared paths from the hold only when their
+complete diff stamp matches the tip handed to review or land.
 The overlap cap counts ended build runs that used a turn. A host refusal
 never launched a build, so it leaves the hold budget intact. The settings
 read uses a savepoint to preserve the claim transaction on read failure.

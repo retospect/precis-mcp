@@ -1223,25 +1223,41 @@ def _land_params(
     return params
 
 
-#: Cap on the paths :func:`_stamp_branch_files` keeps: a sweeping slice
-#: past it already overlaps nearly everything it could hold.
+#: Bound the stored overlap hints even for unusually large diffs.
 _BRANCH_FILES_CAP = 200
 
 
-def _stamp_branch_files(store: Any, todo_id: int, tree: Path) -> None:
-    """Stamp ``meta.branch_files`` — the paths the slice branch touched
-    against its land base — on a clean exit, for ``plan_dispatch``'s
-    overlap hold (:data:`~precis.plans.templates.BRANCH_FILES_KEY`). Best
-    effort: git unable to answer leaves the last stamp, and the hold falls
-    back to the brief's file guess."""
-    from precis.plans.templates import BRANCH_FILES_KEY
+def _stamp_branch_files(store: Any, todo_id: int, tree: Path, head: str | None) -> None:
+    """Record paths for a specific land tip. Incomplete or unavailable
+    diffs can supplement the brief but cannot replace it."""
+    from precis.plans.templates import BRANCH_FILES_HEAD_KEY, BRANCH_FILES_KEY
 
+    fields: dict[str, Any] = {BRANCH_FILES_HEAD_KEY: None}
+    if head:
+        try:
+            base = _land_base(store, todo_id)
+            diff = _git(
+                ["diff", "--name-only", "-z", "--no-renames", f"{base}...{head}"], tree
+            )
+            if diff.returncode == 0:
+                paths = diff.stdout.rstrip("\0").split("\0") if diff.stdout else []
+                fields[BRANCH_FILES_KEY] = paths[:_BRANCH_FILES_CAP]
+                if len(paths) <= _BRANCH_FILES_CAP:
+                    fields[BRANCH_FILES_HEAD_KEY] = head
+        except Exception:
+            log.warning("run_slice: branch_files diff for td%d failed", todo_id)
+    store.stamp_ref_meta(todo_id, fields)
+
+
+def _land_head(tree: Path, ref: str) -> str | None:
     try:
-        paths = changed_paths(tree, _land_base(store, todo_id))
-        if paths is not None:
-            store.stamp_ref_meta(todo_id, {BRANCH_FILES_KEY: paths[:_BRANCH_FILES_CAP]})
-    except Exception:
-        log.warning("run_slice: branch_files stamp for td%d failed", todo_id)
+        result = _git(["rev-parse", ref], tree)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    head = (result.stdout or "").strip()
+    return (
+        head if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", head) else None
+    )
 
 
 def _mint_land(
@@ -1259,6 +1275,10 @@ def _mint_land(
 
     meta = ctx.meta or {}
     params = _land_params(ctx, todo_id, tree, lane, checked)
+    head = _land_head(tree, "HEAD")
+    _stamp_branch_files(ctx.store, todo_id, tree, head)
+    if head:
+        params["head"] = head
     extra = {"plan_root": meta["plan_root"]} if meta.get("plan_root") else None
     # Finishing started work outranks starting new work: a queued land
     # keeps its build's files held.
@@ -1391,10 +1411,9 @@ def _defer_land_for_review(
     # added nothing; a verdict naming another head read a stale branch.
     # The preland_held stash and its re-hold carry it like the other
     # params.
-    pushed = (
-        _git(["rev-parse", f"refs/heads/{slice_branch(todo_id)}"], tree).stdout or ""
-    ).strip()
-    if re.fullmatch(r"[0-9a-f]{40}", pushed):
+    pushed = _land_head(tree, f"refs/heads/{slice_branch(todo_id)}")
+    _stamp_branch_files(ctx.store, todo_id, tree, pushed)
+    if pushed:
         params["head"] = pushed
     ctx.store.stamp_ref_meta(
         todo_id,
@@ -1695,7 +1714,7 @@ def _preland_verdict_hold(
             "attempt (gr681208)."
         )
     tip = restored
-    _stamp_branch_files(ctx.store, todo_id, tree)
+    _stamp_branch_files(ctx.store, todo_id, tree, tip)
     params = _land_params(ctx, todo_id, tree, lane, checked)
     # The restored pushed tip — the head the next verdict judges
     # (gr688058): unchanged on a second send-back, the tick's
@@ -8716,7 +8735,6 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             or not tests_ran(result)
             or (adapter.name == "devin_tree" and not worker_tests_ran)
         )
-        _stamp_branch_files(ctx.store, todo_id, tree)
         # The pre-land review (its branch push needs the credential) stays
         # precis-only: a second repo's reviewer runs after the land, in a
         # detached tree at the landed sha (td659522 step 5).
