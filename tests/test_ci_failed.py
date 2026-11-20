@@ -557,6 +557,82 @@ def test_blind_shared_log_is_backfilled_from_the_job_log(tmp_path: Path) -> None
     assert "/actions/jobs/555/logs" in calls  # then the job's own log
 
 
+#: What the shared stream carried for a red nightly pytest leg (run
+#: 44750667336): setup-step lines only, two of which match SIGNAL.
+_SETUP_ONLY_STREAM = (
+    f"gate-fast (3.13, 1)\tInitialize containers\t{TS} ##[command]/usr/bin/docker create"
+    " --health-cmd pg_isready --health-timeout 5s pgvector/pgvector:pg17\n"
+    f"gate-fast (3.13, 1)\tInstall PostgreSQL\t{TS} sudo curl -fsSL --retry 5"
+    " --retry-all-errors --connect-timeout 15 https://example.invalid/key.asc\n"
+)
+
+
+def test_sighted_stream_without_a_verdict_is_backfilled_from_the_job_log(
+    tmp_path: Path,
+) -> None:
+    """td735363: setup-step lines match SIGNAL, so the leg is not blind,
+    but they name neither a failed id nor pytest's final summary. The
+    job's own log is read and its failing ids reach the digest."""
+    env = _api_dir(
+        tmp_path,
+        {
+            "555": (
+                f"{TS} + pytest -q\n"
+                f"{TS} FAILED tests/x.py::t - AssertionError: boom\n"
+                f"{TS} ==== 1 failed, 9 passed in 3.2s ====\n"
+            ),
+        },
+    )
+    (tmp_path / "ghstate").write_text(_SETUP_ONLY_STREAM, encoding="utf-8")
+    env["GH_STUB_RUN"] = json.dumps(_COMPLETED_BLIND_RUN)
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "  failed ids (1):\n    tests/x.py::t" in cp.stdout
+    assert "pytest summary: 1 failed, 9 passed in 3.2s" in cp.stdout
+    assert "--health-timeout" not in cp.stdout  # the job log replaced the stream
+    assert "/actions/jobs/555/logs" in Path(env["_argv_file"]).read_text(
+        encoding="utf-8"
+    )
+
+
+def test_sighted_stream_keeps_its_lines_when_the_job_log_names_no_verdict(
+    tmp_path: Path,
+) -> None:
+    """A red lint job: the stream has the error lines and the job's own
+    log names no failed id and no pytest summary, so the stream's lines
+    stay; the whole job log would bury them under setup noise."""
+    env = _api_dir(
+        tmp_path,
+        {"555": f"{TS} sudo curl --retry-all-errors https://example.invalid/key.asc\n"},
+    )
+    (tmp_path / "ghstate").write_text(
+        f"gate-fast (3.13, 1)\tRun mypy\t{TS} src/a.py:3: error: Incompatible types\n",
+        encoding="utf-8",
+    )
+    env["GH_STUB_RUN"] = json.dumps(_COMPLETED_BLIND_RUN)
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "src/a.py:3: error: Incompatible types" in cp.stdout
+    assert "--retry-all-errors" not in cp.stdout
+
+
+def test_sighted_stream_names_a_failed_job_log_read(tmp_path: Path) -> None:
+    """The re-read of a sighted, verdict-less job can fail (one of 13
+    did on run 44750667336). It is tried twice, and the section then
+    opens with the failed read, so setup noise is not the whole story."""
+    env = _api_dir(tmp_path, {})
+    env["GH_STUB_API_RC"] = "1"
+    (tmp_path / "ghstate").write_text(_SETUP_ONLY_STREAM, encoding="utf-8")
+    env["GH_STUB_RUN"] = json.dumps(_COMPLETED_BLIND_RUN)
+    cp = _run(["223355"], env)
+    assert cp.returncode == 0, cp.stderr
+    assert "== gate-fast (3.13, 1) ==\n  (job log read error: exit 1:" in cp.stdout
+    assert "failing ids may be missing" in cp.stdout
+    assert "--health-timeout" in cp.stdout
+    calls = Path(env["_argv_file"]).read_text(encoding="utf-8")
+    assert calls.count("/actions/jobs/555/logs") == 2
+
+
 def test_pytest_final_summary_is_named_per_job(tmp_path: Path) -> None:
     """td650667: pytest's final ``= … in Ns =`` line is the digest's proof
     that a job's log reached the end of the run; a job without one gets

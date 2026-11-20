@@ -16,7 +16,10 @@ instead, which is where the reason lives. When the shared stream
 carries only the step header for a failed job (gr587536: the gate-fast
 shards' pytest output never reached ``--log-failed``), the job's own
 log is re-read through ``actions/jobs/<id>/logs`` and digested instead —
-a fetched log replaces the job's lines outright, signal or not. A
+a fetched log replaces the job's lines outright, signal or not. A job
+whose stream lines carry signal but no failed id and no final pytest
+summary (td735363: only its setup steps were streamed) is re-read the
+same way, and the fetched log wins only when it names one of the two. A
 failed job the stream omits ENTIRELY — no lines, no section — gets the
 same per-job read (gr698700: without one its failing ids never reach
 the digest at all, and no fix node is minted for them).
@@ -153,6 +156,14 @@ def _failed_ids(entries: list[str]) -> list[str]:
         if m and m.group(1) not in ids:
             ids.append(m.group(1))
     return ids
+
+
+def _names_a_verdict(entries: list[str]) -> bool:
+    """A failed id or pytest's final summary line: what a red pytest
+    job's lines carry when they reached the part the digest is for."""
+    return bool(_failed_ids(entries)) or any(
+        _PYTEST_SUMMARY.match(line) for line in entries
+    )
 
 
 def _matrix_skip_note(run: dict[str, Any]) -> list[str]:
@@ -324,11 +335,13 @@ _INCOMPLETE = re.compile(r"still in progress|logs? will be available", re.IGNORE
 def _job_log(jid: str) -> tuple[list[str], str]:
     """One job's own log through ``actions/jobs/<id>/logs``, ANSI- and
     timestamp-stripped — ``(lines, "")`` on a read, ``([], err)`` naming
-    the failure otherwise."""
-    cp = _gh_api(
-        [f"repos/{{owner}}/{{repo}}/actions/jobs/{jid}/logs"],
-        timeout=180,
-    )
+    the failure otherwise. A failed read is tried once more: a nightly
+    digest reads a dozen legs back to back, and one of them failed in
+    passing on run 44750667336 (td735363)."""
+    args = [f"repos/{{owner}}/{{repo}}/actions/jobs/{jid}/logs"]
+    cp = _gh_api(args, timeout=180)
+    if cp.returncode != 0:
+        cp = _gh_api(args, timeout=180)
     if cp.returncode != 0:
         detail = (cp.stderr or cp.stdout).decode("utf-8", "replace").strip()
         return [], f"exit {cp.returncode}: {detail[:300]}"
@@ -351,7 +364,16 @@ def _backfill_blind_jobs(
     run's jobs manifest (gr698700: its failing ids silently dropped out
     of the digest, and the release-fix loop minted no node for them) —
     each gets the same per-job read, and an unreadable one still gets a
-    blind section so the digest flags the hole instead of hiding it."""
+    blind section so the digest flags the hole instead of hiding it.
+
+    A job is also re-read when the stream gave it signal lines but
+    neither a failed id nor pytest's final summary (td735363: nightly
+    run 44750667336 streamed only the setup steps of 11 red pytest legs;
+    ``--health-timeout`` and ``--retry-all-errors`` in them match SIGNAL,
+    so the legs counted as sighted and printed no failing id). There the
+    fetched log replaces the stream only when it names one of the two —
+    a red lint job keeps the stream's own error lines — and a failed
+    re-read is named on the section's first line."""
     ids = {
         str(j.get("name") or ""): str(j.get("databaseId") or j.get("id") or "")
         for j in run.get("jobs", [])
@@ -361,11 +383,23 @@ def _backfill_blind_jobs(
     out: OrderedDict[str, list[str]] = OrderedDict()
     for name, entries in jobs.items():
         jid = ids.get(name)
-        if not jid or any(SIGNAL.search(line) for line in entries):
+        if not jid or _names_a_verdict(entries):
             out[name] = entries
             continue
-        fetched, _err = _job_log(jid)
-        out[name] = fetched or entries
+        fetched, err = _job_log(jid)
+        blind = not any(SIGNAL.search(line) for line in entries)
+        if fetched and (blind or _names_a_verdict(fetched)):
+            out[name] = fetched
+        elif fetched or blind:
+            out[name] = entries
+        else:
+            # Sighted, no verdict, and the re-read failed: say so first,
+            # or the setup-step noise reads as the whole story.
+            out[name] = [
+                f"(job log read error: {err}; failing ids may be missing —"
+                " re-run or use --per-job)",
+                *entries,
+            ]
     for name, jid in ids.items():
         if not name or name in out:
             continue
