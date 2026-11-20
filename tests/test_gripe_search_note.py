@@ -12,12 +12,8 @@ def test_note_names_or_fallback(hub: Hub) -> None:
         ("matching", "copper nitrate reduction"),
         ("unrelated", "bananas oranges apples"),
     ]:
-        result = handler.put(text=title, new=True)
+        result = handler.put(text=title, body=text, new=True)
         assert result.ref_id is not None
-        handler.store.chunks.insert_chunks(
-            result.ref_id,
-            [ChunkInsert(ord=0, text=text, meta={"chunk_kind": "gripe_body"})],
-        )
     loose = handler.search(q="copper nitrate missing", mode="lexical").body
     assert "q ran as ANY of its 3 words (no entry holds all of them)" in loose
     assert "loose superset" in loose
