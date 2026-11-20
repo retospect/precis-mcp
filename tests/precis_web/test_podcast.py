@@ -73,7 +73,7 @@ def test_without_a_token_the_route_trusts_only_the_gate():
     from types import SimpleNamespace
 
     import pytest
-    from fastapi import HTTPException
+    from fastapi import FastAPI, HTTPException, Request
 
     from precis_web.routes.podcast import _require_listener
 
@@ -84,16 +84,18 @@ def test_without_a_token_the_route_trusts_only_the_gate():
         def get_web_user_credentials(self, login):  # pragma: no cover
             raise AssertionError("the route must not authenticate by itself")
 
-    request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(runtime=SimpleNamespace(store=_Store()))
-        ),
-        query_params={},
-        scope={},
-        headers={"authorization": "Basic cmV0bzpwdw=="},
+    app = FastAPI()
+    app.state.runtime = SimpleNamespace(store=_Store())
+    request = Request(
+        {
+            "type": "http",
+            "app": app,
+            "query_string": b"",
+            "headers": [(b"authorization", b"Basic cmV0bzpwdw==")],
+        }
     )
     with pytest.raises(HTTPException) as err:
-        _require_listener(request, WebConfig(auth_required=True))  # type: ignore[arg-type]
+        _require_listener(request, WebConfig(auth_required=True))
     assert err.value.status_code == 401
     assert err.value.headers == {"WWW-Authenticate": 'Basic realm="precis"'}
 
