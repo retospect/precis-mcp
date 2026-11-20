@@ -2259,6 +2259,47 @@ class TestPutRun:
         )
         assert store.measure_detail(second)["derived_from"] == [first]
 
+    def test_dry_run_writes_nothing_and_previews_the_run(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        """gr727037: the flag used to be swallowed and the run wrote for
+        real — an un-removable write passed off as a preview."""
+        body = h.put(
+            text="95", meta=self._meta(w), items=self._items(), dry_run=True
+        ).body
+        assert body.startswith("dry run — nothing written")
+        assert "3 measure(s) would be written" in body
+        assert "anchor_matched" in body
+        # the product literal is not in the span: the preview flags it too
+        assert "(new) anchor_mismatch" in body and "flagged:" in body
+        assert store.search_measures(w["fe"], include_all=True).rows == []
+        assert store.search_measures(w["potential"], include_all=True).rows == []
+        # the same call without the flag still writes
+        assert (
+            "measure(s) written"
+            in h.put(text="95", meta=self._meta(w), items=self._items()).body
+        )
+
+    def test_dry_run_inside_args_is_the_same_preview(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        body = h.put(text="95", meta=self._meta(w), args={"dry_run": True}).body
+        assert "would be written" in body
+        assert store.search_measures(w["fe"], include_all=True).rows == []
+        # disagreeing spellings refuse as one argument
+        with pytest.raises(BadInput, match="disagree"):
+            h.put(text="95", meta=self._meta(w), dry_run=False, args={"dry_run": True})
+        # a recheck-only args= key on a write refuses instead of dropping
+        with pytest.raises(BadInput, match="mode='recheck'"):
+            h.put(text="95", meta=self._meta(w), args={"papers": [w["paper"]]})
+
+    def test_dry_run_still_fires_the_insert_refusals(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        h.put(text="95", meta=self._meta(w))
+        with pytest.raises(BadInput, match="duplicate of measure"):
+            h.put(text="95", meta=self._meta(w), dry_run=True)
+
 
 @pytest.mark.parametrize("raw", [12, "12", "mx12", " MX12 "])
 def test_measure_id_coercion_accepts_row_addresses(raw: str | int) -> None:

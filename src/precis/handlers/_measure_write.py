@@ -510,12 +510,20 @@ class RunParser:
         return ParsedRun(output, inputs, run_key.strip() if run_key else None, model)
 
 
-def flag_lines(rows: dict[int, dict[str, Any]]) -> list[str]:
+def flag_lines(
+    rows: dict[int, dict[str, Any]], *, label: Callable[[int], str] | None = None
+) -> list[str]:
     """One line per flagged row (id -> ``measure_detail`` dict): an escalation
-    entry, or a literal not found in its anchored span."""
+    entry, or a literal not found in its anchored span. ``label`` formats
+    the row's address — the ``mx`` handle on a real write, a placeholder
+    on a dry-run preview whose ids are rolled back."""
     out: list[str] = []
     for mid, r in rows.items():
-        mx = handle_registry.format_handle("measure", mid)
+        mx = (
+            label(mid)
+            if label is not None
+            else handle_registry.format_handle("measure", mid)
+        )
         for entry in (r.get("meta") or {}).get("escalation") or []:
             rule = entry.get("rule", "flag") if isinstance(entry, dict) else str(entry)
             detail = (
