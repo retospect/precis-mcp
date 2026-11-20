@@ -1031,6 +1031,14 @@ class MemoryHandler(AuditedRetirementHandler):
         max_bytes: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        if max_bytes is not None and not self._max_bytes_applies(id, view):
+            raise BadInput(
+                "args={'max_bytes': N} bounds a batch view= read only "
+                "(id list with view='body', 'list', 'ids', 'smells' or "
+                "'links'); this read ignores it",
+                next="get(kind='memory', id=['me1', 'me2'], view='body', "
+                "args={'max_bytes': 65536})",
+            )
         if id == "/links" or (view == "links" and _kw.get("reason") == "missing"):
             return super().get(
                 id=id,
@@ -1772,6 +1780,20 @@ class MemoryHandler(AuditedRetirementHandler):
             }
         )
         return render_agent_table(rows, schema=["section", "size", "title"])
+
+    @staticmethod
+    def _max_bytes_applies(id: Any, view: str | None) -> bool:
+        """True when ``args={'max_bytes': N}`` reaches a paging batch read.
+
+        Only an id-list ``view=`` read pages by the stated bound; the
+        ``~``-selector batch, batch ``extent=`` reads and every scalar
+        route do not, so they refuse it rather than swallow it.
+        """
+        if not isinstance(id, list):
+            return False
+        if any(isinstance(i, str) and "~" in i for i in id):
+            return False
+        return view in {"body", "list", "ids", "smells", "links"}
 
     def _get_batch(
         self,

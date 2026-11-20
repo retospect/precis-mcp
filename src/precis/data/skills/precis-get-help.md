@@ -70,11 +70,12 @@ For a larger page, pass a positive byte count up to 1 MiB (1,048,576 bytes).
 get(kind='memory', id=['me47', 'me48'], view='body', args={'max_bytes': 65536})
 ```
 
-This bound is supported on block reads for numeric-ref kinds such as
-`memory`, `gripe`, and `job`, and for `md`, `part`, and `skill`.
-The `next:` call carries the same bound. Invalid or over-ceiling values
-return a refusal with a retry hint. Batch `extent=` reads page at the
-default explicit cap and refuse `max_bytes`.
+This bound applies to batch `view=` reads of `memory`, `gripe` and `job`
+ids and to batch block reads of `md`, `part` and `skill`. It does nothing
+on a single-id read. `memory` refuses it on `~`-selector batches, batch
+`extent=` reads and single reads. The `next:` call carries the same
+bound. Invalid or over-ceiling values return a refusal with a retry hint.
+Batch `extent=` reads page at the default explicit cap.
 
 ## Render a ref with its neighbourhood and recall
 

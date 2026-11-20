@@ -225,6 +225,24 @@ def test_get_view_body_batch_maps_per_id(handler: MemoryHandler) -> None:
     assert "batch body a" in r.body and "batch body b" in r.body
 
 
+def test_max_bytes_refused_where_it_does_not_page(handler: MemoryHandler) -> None:
+    """gr676312: ``args={'max_bytes': N}`` is honoured on a batch
+    ``view='body'`` read and refused (not swallowed) on the ``~``-selector
+    batch, batch ``extent=`` and single reads."""
+    a = id_of(handler.put(text="mb a", title="ta").body)
+    b = id_of(handler.put(text="mb b", title="tb").body)
+    ok = handler.get(id=[a, b], view="body", max_bytes=65536)
+    assert f"# memory {a}~body" in ok.body and f"# memory {b}~body" in ok.body
+    for kw in (
+        {"id": [f"me{a}~body", f"me{b}~body"]},
+        {"id": [a, b], "view": "full"},
+        {"id": a},
+        {"id": a, "view": "body"},
+    ):
+        with pytest.raises(BadInput, match="max_bytes"):
+            handler.get(max_bytes=65536, **kw)
+
+
 def test_get_view_meta_renders_the_meta_view(handler: MemoryHandler) -> None:
     """gr631571: ``view='meta'`` is the shared meta view (gr613470) —
     the ref's meta dict as JSON, not the card fold."""

@@ -640,9 +640,9 @@ def batch_view_page_cap(max_bytes: int | None = None) -> int:
     N}`` on the batch get), validated by the batch handler;
     the page takes it instead of the frame cap, and the ``next:``
     continuation re-states it so the cursor keeps the acknowledgement.
-    It is accepted on the ``view=`` route only — the ``extent=`` route's
-    stray-kwarg gate refuses it, and batch extent reads page by ids at
-    this same default cap. Only whole per-id blocks go on a page — a
+    It applies to the ``view=`` route only; memory refuses it on
+    ``extent=`` and ``~``-selector batches, and batch extent reads page
+    by ids at this same default cap. Only whole per-id blocks go on a page — a
     block is never cut mid-text — and the unread tail rides the
     ``next:`` call's id list.
     """
