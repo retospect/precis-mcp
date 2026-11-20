@@ -2616,6 +2616,34 @@ def mint_release_fix(
     return _run_body(store, loop_todo_id, root, build)
 
 
+def mint_release_head_poll(store: Store, loop_todo_id: int) -> PlanMint:
+    """One ``poll`` under the release-fix loop for a release head that
+    moved after the loop closed (gr741486) — a corrective carried onto
+    ``release/r<N>`` once its last verdict was in. No digest and no fix:
+    nothing is red yet. The caller
+    (``release_poll.follow_moved_head``) reopens the loop and restamps
+    ``meta.release`` onto the head, so the loop waits for this poll like
+    for any child and then judges ``until`` on the new head: green closes
+    it, red mints the next ``release-fix`` iteration. Not a loop body —
+    it counts no iteration against the fix cap."""
+    _loop, root = _loop_context(store, loop_todo_id)
+
+    def build(m: _Minter) -> None:
+        m.node(
+            "poll",
+            "Record the CI verdict on the moved release head",
+            {**_task("ci_verdict_poll"), "retries": _POLL_RETRIES},
+            body=(
+                "The release branch moved after the fix loop closed — a "
+                "corrective was carried onto it. ci_verdict_poll reads "
+                "check.yml's run on the new head (the run that push started) "
+                "from the GitHub API and records it in release.ci_verdicts."
+            ),
+        )
+
+    return _run_body(store, loop_todo_id, root, build)
+
+
 _ITERATION_RE = re.compile(r" \(iteration (\d+)\)$")
 
 

@@ -2356,6 +2356,16 @@ def deploy_only(args: argparse.Namespace) -> int:
     ):
         rc = wait_ci(want, args)
         if rc:
+            if not dep:
+                # gr741486: the wait ended red or timed out with no deploy
+                # leg ever recorded. release_deploy reads these words and
+                # lets the release take fixes again.
+                print(
+                    f"scripts/release: {want} has no green head to deploy — "
+                    "no host was touched",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return rc
     return deploy_and_close(args, sha)
 

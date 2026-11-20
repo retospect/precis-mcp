@@ -43,6 +43,8 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     psettings.invalidate()
     monkeypatch.setattr(rp, "_in_flight", lambda *a, **kw: None)
+    # The release branch sits on the sha the plan recorded (gr741486).
+    monkeypatch.setattr(rp, "release_head", lambda store, rel: str(rel.get("sha")))
     original_get = P._get_json
 
     def get(url: str, params: dict[str, Any]) -> Any:

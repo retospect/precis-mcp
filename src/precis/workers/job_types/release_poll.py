@@ -74,7 +74,12 @@ budget is GitHub's unauthenticated 60/h per IP):
    ``release/r<N>`` after the cut — must be cleared, and every
    corrective commit a FIX/REVERT clearance rests on must be on
    ``release/r<N>``. A land on main after the cut belongs to the next
-   release and holds nothing here.
+   release and holds nothing here. While a pass is open the poll also
+   keeps it on its branch's head (:func:`follow_moved_head`, gr741486):
+   a push after the pass's last verdict — a carried corrective —
+   restamps the release, reopens the fix loop and mints one poll, so
+   the deploy waits for the new head's verdict and a red there is
+   fixed like any other.
 6. In flight on origin: ``GET .../git/matching-refs/heads/release/`` and
    ``.../git/matching-refs/tags/deployed/`` (each returns the whole
    prefix unpaginated — :data:`_HEAD_CAP` and :data:`_TAG_CAP` bound
@@ -3191,6 +3196,147 @@ def _cut_hold_ask(
     )
 
 
+def release_head(store: Any, rel: dict[str, Any]) -> str | None:
+    """The live head of ``rel``'s release branch on GitHub, ``None`` when
+    unreadable — ``ci_verdict_poll.fetch_head``, the reader the restamp
+    and the poll use, so "moved" means the same to all three. The repo
+    resolves like the deploy gate's other GitHub reads (the cut's
+    recorded repo, else ``release.repo``, else the checkout's origin).
+    Seam: tests patch it."""
+    from precis.workers.job_types import ci_verdict_poll as _cvp
+
+    rn = str(rel.get("rN") or "")
+    repo = pr_class.resolve_repo(store, str(rel.get("repo") or ""))
+    if not repo or re.fullmatch(r"r\d+", rn) is None:
+        return None
+    return _cvp.fetch_head(repo, _release.release_branch(rn))
+
+
+def _op_type(meta: dict[str, Any]) -> str:
+    """A plan node's op name — ``meta.op`` is the name or ``{type: …}``."""
+    op = meta.get("op")
+    return str(op.get("type") or "") if isinstance(op, dict) else str(op or "")
+
+
+def _head_follow_state(store: Any, root_id: int) -> tuple[int | None, str, bool]:
+    """``(loop id, loop status, polling)`` for the pass ``root_id``: its
+    ``release-fix`` loop node and whether a ``ci_verdict_poll`` node (a
+    poll or a restamp) is still open anywhere in the plan."""
+    loop_id: int | None = None
+    loop_status = "open"
+    polling = False
+    for node_id, meta, status in _release._plan_nodes(store, root_id):
+        if node_id == root_id:
+            continue
+        if _op_type(meta) == "ci_verdict_poll" and status not in _release._CLOSED:
+            polling = True
+        loop = meta.get("loop")
+        if isinstance(loop, dict) and loop.get("body") == "release-fix":
+            loop_id, loop_status = node_id, status
+    return loop_id, loop_status, polling
+
+
+def _head_follow_skips(loop_id: int | None, loop_status: str, polling: bool) -> bool:
+    """No head follow for this plan state: no ``release-fix`` loop to
+    hang the poll under, or a poll or restamp still open under an open
+    loop — that iteration reads the live head itself."""
+    return loop_id is None or (polling and loop_status not in _release._CLOSED)
+
+
+def follow_moved_head(store: Any, root_id: int, *, dry_run: bool = False) -> str | None:
+    """Put the open pass ``root_id`` back on its release branch's head
+    when the branch moved after the pass's last verdict (gr741486) — a
+    corrective carried onto ``release/r<N>`` once the fix loop had
+    closed. Returns its note, ``None`` when there is nothing to do.
+
+    The verdict the deploy gate reads is the recorded sha's
+    (``meta.release.sha``), and nothing re-reads the branch once the
+    loop is closed: r341's deploy was dispatched 18 s after such a push,
+    on the old head's green, and only the deploy script's own CI wait
+    stood between that and prod. Here the pass restamps onto the head
+    (:func:`precis.plans.release.record_head` — the ``tests-green`` gate
+    reopens over the new range, so the deploy is blocked again), the
+    loop reopens and one poll mints under it
+    (``templates.mint_release_head_poll``). The loop then judges its
+    ``until`` on the new head like after any iteration: green closes it,
+    red mints a ``release-fix`` iteration or, at the cap, closes it
+    again. No iteration is counted.
+
+    Nothing happens while a poll or restamp is still open under an open
+    loop — that iteration reads the live head itself
+    (``ci_verdict_poll``'s "superseded by") — once the deploy started
+    (the release takes no more pushes), or while the head is unreadable;
+    the plan state is read before the head, so a pass in those states
+    costs no GitHub read. A loop someone closed ``won't-do`` or
+    ``cancelled`` stays closed — they took the fixing over, and a red on
+    their push must not start fixers again: the note says so and the
+    deploy stays refused on the moved head.
+
+    One transaction under the mint lock and a row lock on the pass root:
+    two ticks at once write one poll, and the cut record and the deploy
+    start are read again inside it, so a deploy that launched meanwhile
+    (:func:`precis.plans.release.mark_deploy_started` takes the same row
+    lock) is never restamped under its feet."""
+    from precis.plans import templates
+    from precis.workers.job_types import ci_verdict_poll as _cvp
+
+    rel = _release.release_of(store, root_id)
+    if rel is None or _release.deploy_started(store, root_id) is not None:
+        return None
+    loop_id, loop_status, polling = _head_follow_state(store, root_id)
+    if _head_follow_skips(loop_id, loop_status, polling):
+        return None
+    sha = str(rel.get("sha") or "").lower()
+    head = release_head(store, rel)
+    if not sha or head is None or _same_sha(head, sha):
+        return None
+    what = f"release/{rel['rN']} moved {sha[:9]} -> {head[:9]} after its last verdict"
+    if loop_status in _release._CLOSED and loop_status != "done":
+        return (
+            f"release head: {what} — loop td{loop_id} was closed {loop_status}, "
+            "so the pass is not put back on the head and its deploy stays refused"
+        )
+    if dry_run:
+        return f"release head: {what} — would restamp and poll the new head"
+    with store.atomic() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_MINT_LOCK_KEY,))
+        conn.execute(_release._LOCK_ROOT_SQL, (root_id,))
+        rel = _release.release_of(store, root_id)
+        if (
+            rel is None
+            or not _same_sha(str(rel.get("sha") or ""), sha)
+            or _release.deploy_started(store, root_id) is not None
+        ):
+            return None  # restamped by another tick, or the deploy launched
+        loop_id, loop_status, polling = _head_follow_state(store, root_id)
+        if (
+            loop_id is None
+            or _head_follow_skips(loop_id, loop_status, polling)
+            or (loop_status in _release._CLOSED and loop_status != "done")
+        ):
+            return None
+        did: list[str] = []
+        if not polling:
+            mint = templates.mint_release_head_poll(store, loop_id)
+            did.append(f"minted poll td{mint.ids['poll']}")
+        if loop_status == "done":
+            store.add_tag(
+                loop_id,
+                Tag.closed("STATUS", "open"),
+                set_by="system",
+                replace_prefix=True,
+            )
+            did.append(f"reopened loop td{loop_id}")
+        did += _release.record_head(store, root_id, head)
+        _cvp._node_comment(
+            store,
+            loop_id,
+            f"release_poll: {what} — the loop waits for the new head's "
+            "verdict before the release deploys",
+        )
+    return f"release head: {what} — " + "; ".join(did)
+
+
 def _mint_reviewers_only(
     store: Any,
     res: PollResult,
@@ -3263,6 +3409,13 @@ def run_pass(
             except Exception:
                 log.warning("release_poll: cut-hold ask raised", exc_info=True)
                 note = "cut-hold ask raised — next tick retries"
+            if note is not None:
+                res.notes.append(note)
+            try:
+                note = follow_moved_head(store, open_id, dry_run=dry_run)
+            except Exception:
+                log.warning("release_poll: head follow raised", exc_info=True)
+                note = "release head follow raised — next tick retries"
             if note is not None:
                 res.notes.append(note)
         res.blocker = blocked
@@ -3481,8 +3634,10 @@ __all__ = [
     "conditional_requires",
     "deploy_review_blockers",
     "engine_review_blockers",
+    "follow_moved_head",
     "in_window",
     "load",
     "parse_windows",
+    "release_head",
     "run_pass",
 ]

@@ -1116,6 +1116,26 @@ def test_deploy_only_deploys_the_cut_pinned(rig: Rig) -> None:
     assert rig.deploy_log() == [f"{s} --pinned"]
 
 
+def test_deploy_only_whose_ci_wait_ends_unmet_says_no_host_was_touched(
+    rig: Rig,
+) -> None:
+    """gr741486: the release head is not green when the deploy leg starts
+    (a push after the plan's verdict) and the wait runs out. The exit is
+    2 like any CI refusal, and the script says no host was touched in the
+    words ``release_deploy.poll`` reads — if this fails the release keeps
+    its deploy-started stamp and takes no more fixes."""
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    out = _release(rig, "--deploy-only", "r1", *FAST)
+    assert out.returncode == 2, out.stdout + out.stderr
+    assert "CI not green after" in out.stderr
+    assert "release/r1 has no green head to deploy — no host was touched" in (
+        out.stderr
+    )
+    assert rig.deploy_log() == []
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "cut" and "deployment" not in rel
+
+
 @pytest.mark.parametrize("which", ["r2", "bogus"])
 def test_deploy_only_refuses_another_release_and_never_cuts(
     rig: Rig, which: str

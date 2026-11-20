@@ -265,8 +265,22 @@ class _Ctx:
             1,
             False,
         ),
+        # gr741486: the deploy script's CI wait on a moved head ended red.
+        (
+            "CI red on release/r7 at beef22222 — failing: gate-fast (3.13, 4)\n"
+            "scripts/release: release/r7 has no green head to deploy — "
+            "no host was touched",
+            2,
+            True,
+        ),
     ],
-    ids=["window-text", "rollout-failed", "exit-75-no-text", "same-text-exit-1"],
+    ids=[
+        "window-text",
+        "rollout-failed",
+        "exit-75-no-text",
+        "same-text-exit-1",
+        "ci-wait-red",
+    ],
 )
 def test_a_deploy_refused_before_any_host_clears_the_deploy_start(
     store: Store,

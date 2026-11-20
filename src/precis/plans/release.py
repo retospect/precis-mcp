@@ -454,33 +454,48 @@ def record_head(
     return notes + _follow_release(store, root, rn, sha, rng)
 
 
+#: The row lock a read-modify-write of the plan root's ``meta.release``
+#: takes (:func:`mark_deploy_started`, ``release_poll.follow_moved_head``).
+_LOCK_ROOT_SQL = "SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE"
+
+
 def mark_deploy_started(
     store: Store, todo_id: int, *, now: datetime | None = None
 ) -> str:
     """Stamp ``meta.release.deploy_started_at`` on the plan root — the
     moment ``release_deploy`` launches; from then on the release takes
-    no more fixes (:func:`deploy_started`). One note."""
-    rel = release_of(store, todo_id)
-    if rel is None:
-        return "deploy start not recorded: no cut on the plan"
+    no more fixes (:func:`deploy_started`). One note.
+
+    The stamp rewrites the whole ``release`` key, and so does a restamp
+    (:func:`record_head`): the record is read under a row lock on the
+    plan root, the lock ``release_poll.follow_moved_head`` holds while it
+    restamps, so neither write drops the other's (gr741486)."""
     root = plan_root(store, todo_id)
-    when = _stamp(now or datetime.now(UTC))
-    store.stamp_ref_meta(root, {"release": {**rel, "deploy_started_at": when}})
+    with store.atomic() as conn:
+        conn.execute(_LOCK_ROOT_SQL, (root,))
+        rel = release_of(store, todo_id)
+        if rel is None:
+            return "deploy start not recorded: no cut on the plan"
+        when = _stamp(now or datetime.now(UTC))
+        store.stamp_ref_meta(root, {"release": {**rel, "deploy_started_at": when}})
     return f"td{root}: meta.release.deploy_started_at = {when}"
 
 
 def clear_deploy_started(store: Store, todo_id: int) -> str:
     """Drop ``meta.release.deploy_started_at`` — the deploy refused
     before touching any host (release-train T3 review F5), so the
-    release takes fixes again. One note."""
-    rel = release_of(store, todo_id)
-    if rel is None or "deploy_started_at" not in rel:
-        return "deploy start: nothing to clear"
+    release takes fixes again. One note. Read and written under the
+    plan root's row lock like :func:`mark_deploy_started`."""
     root = plan_root(store, todo_id)
-    store.stamp_ref_meta(
-        root,
-        {"release": {k: v for k, v in rel.items() if k != "deploy_started_at"}},
-    )
+    with store.atomic() as conn:
+        conn.execute(_LOCK_ROOT_SQL, (root,))
+        rel = release_of(store, todo_id)
+        if rel is None or "deploy_started_at" not in rel:
+            return "deploy start: nothing to clear"
+        store.stamp_ref_meta(
+            root,
+            {"release": {k: v for k, v in rel.items() if k != "deploy_started_at"}},
+        )
     return f"td{root}: meta.release.deploy_started_at cleared (no host touched)"
 
 
@@ -621,6 +636,9 @@ def may_release(
     scan, then head afterwards. Deploy reads main fresh. Malformed windows
     hold cuts but leave the deploy script's backup guard in charge. All
     other unreadable checks refuse, including CI on the exact release head.
+    That head is the release branch's live one: a recorded sha the branch
+    has moved past refuses until the pass restamped and polled the new
+    head (gr741486).
     Reasons remain the poll's blocker lines; callers add their operation text.
     """
     from precis import settings
@@ -705,6 +723,23 @@ def may_release(
                     f"{rel['rN']} waits on its engine reviews — {'; '.join(held)}",
                 )
             sha12 = str(rel.get("sha") or "").lower()[:LANDED_SHA_LEN]
+            # gr741486: the verdict below is the recorded sha's. A push
+            # after the loop closed (a carried corrective) leaves it green
+            # on a head the release no longer has, so the branch's live
+            # head must be the recorded one; ``release_poll`` restamps
+            # and polls a moved head (``follow_moved_head``).
+            head = rp.release_head(store, rel)
+            if head is None:
+                return (
+                    False,
+                    f"release/{rel['rN']} head unreadable; next tick retries",
+                )
+            if not sha12 or not head.lower().startswith(sha12):
+                return (
+                    False,
+                    f"release/{rel['rN']} head {head[:9]} is not the recorded "
+                    f"{sha12[:9] or 'sha'} — the pass polls the new head first",
+                )
             verdict = _newest_sha_verdict(store, sha12)
             if not sha12 or verdict is None or verdict.get("verdict") != "green":
                 return (

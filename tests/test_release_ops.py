@@ -36,6 +36,7 @@ from precis.workers.job_types import plan_dispatch as pd
 from precis.workers.job_types import release_confirm as rcf
 from precis.workers.job_types import release_cut as rc
 from precis.workers.job_types import release_deploy as rd
+from precis.workers.job_types import release_poll as rpoll
 from precis.workers.job_types import run_slice as rs
 from tests._lane_rows import use_lanes
 
@@ -3518,6 +3519,281 @@ def test_a_second_red_on_the_restamped_head_digests_the_heads_run(
     assert checkout["argv"][-1] == [str(script), "41"]
 
 
+# ── gr741486: the release head moves after the loop closed ───────────
+
+
+def _green_cut(store: Store) -> T.PlanMint:
+    """A cut r7 whose first verdict is green: the gate is open and the
+    fix loop closed with no iteration — the deploy is next."""
+    mint = T.mint_release_pass(store)
+    ids = mint.ids
+    pd.run_pass(store)
+    job, _ = _only_job(store, ids["cut"])
+    R.record_cut(store, ids["cut"], "r7", SHA, RNG, repo="o/r")
+    _succeed(store, job)
+    pd.run_pass(store)
+    job, _ = _only_job(store, ids["poll"])
+    R.record_ci_verdict(store, SHA, RNG, "green", "31")
+    _succeed(store, job)
+    pd.run_pass(store)
+    pd.run_pass(store)
+    assert (_status(store, ids["gate"]), _status(store, ids["loop"])) == (
+        "done",
+        "done",
+    )
+    return mint
+
+
+def _loop_ops(store: Store, loop_id: int, skip: tuple[int, ...] = ()) -> list[str]:
+    """The op of each of the loop's children outside ``skip``, id order;
+    a restamp reads ``restamp``."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'todo' AND parent_id = %s "
+            "AND retired_at IS NULL ORDER BY ref_id",
+            (loop_id,),
+        ).fetchall()
+    return [
+        "restamp" if isinstance(meta["op"], dict) else str(meta["op"])
+        for ref_id, meta in rows
+        if int(ref_id) not in skip
+    ]
+
+
+def _carried(store: Store, mint: T.PlanMint, monkeypatch: pytest.MonkeyPatch) -> int:
+    """A corrective is pushed to release/r7 (head SHA3) after the green
+    verdict and the poll's open-pass tick follows it; returns the poll
+    it minted under the loop."""
+    monkeypatch.setattr(rpoll, "release_head", lambda store, rel: SHA3)
+    note = rpoll.follow_moved_head(store, mint.root_id)
+    assert note is not None and f"{SHA[:9]} -> {SHA3[:9]}" in note
+    (poll,) = _children_of(store, mint.ids["loop"])
+    return poll
+
+
+def _children_of(store: Store, parent: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'todo' AND parent_id = %s "
+            "AND retired_at IS NULL ORDER BY ref_id",
+            (parent,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def test_a_head_moved_after_the_green_verdict_is_restamped_and_polled(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r341: a corrective was carried onto the branch after poll#2's
+    green and the deploy was dispatched 18 s later on the old head's
+    verdict. The pass now moves onto the new head, reopens the gate and
+    the loop and polls; green there closes both again and counts no fix
+    iteration. If this fails the plan deploys on a verdict for a head
+    the release no longer has."""
+    mint = _green_cut(store)
+    ids = mint.ids
+    poll = _carried(store, mint, monkeypatch)
+    rel = _meta(store, mint.root_id)["release"]
+    assert (rel["sha"], rel["range"]) == (SHA3, RNG3)
+    assert (rel["cut_sha"], rel["cut_range"]) == (SHA, RNG)
+    want = {"kind": "tests-green", "args": {"range": RNG3}}
+    assert _meta(store, ids["gate"])["gate"] == want
+    assert _meta(store, ids["loop"])["loop"]["until"] == want
+    assert (_status(store, ids["gate"]), _status(store, ids["loop"])) == (
+        "open",
+        "open",
+    )
+    assert _loop_ops(store, ids["loop"]) == ["ci_verdict_poll"]
+    # The head is the recorded one now: a second tick writes nothing.
+    assert rpoll.follow_moved_head(store, mint.root_id) is None
+    assert _children_of(store, ids["loop"]) == [poll]
+
+    pd.run_pass(store)
+    job, meta = _only_job(store, poll)
+    target = cvp.resolve_target(store, meta["params"])
+    assert (target["sha"], target["range"]) == (SHA3, RNG3)
+    assert _status(store, ids["loop"]) == "open"  # waits for its poll
+    R.record_ci_verdict(store, SHA3, RNG3, "green", "41")
+    _succeed(store, job)
+    pd.run_pass(store)
+    res = pd.run_pass(store)
+    assert res.loops_minted == 0, res.notes
+    assert (_status(store, ids["gate"]), _status(store, ids["loop"])) == (
+        "done",
+        "done",
+    )
+    assert not _meta(store, ids["loop"])["loop"].get("count")
+
+
+def test_a_red_on_the_moved_head_mints_a_fix_iteration(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The carried corrective breaks the branch: the loop the follow
+    reopened mints release-fix iteration 1 on the new head's red run. If
+    this fails that red has no fix nodes and the pass waits on a hand."""
+    mint = _green_cut(store)
+    ids = mint.ids
+    poll = _carried(store, mint, monkeypatch)
+    pd.run_pass(store)
+    job, _ = _only_job(store, poll)
+    R.record_ci_verdict(store, SHA3, RNG3, "red", "41")
+    _succeed(store, job)
+    pd.run_pass(store)
+    res = pd.run_pass(store)
+    assert res.loops_minted == 1, res.notes
+    assert _meta(store, ids["loop"])["loop"]["count"] == 1
+    assert _loop_ops(store, ids["loop"], (poll,)) == [
+        "ci_red_digest",
+        "run_slice",
+        "restamp",
+        "ci_verdict_poll",
+    ]
+    assert _status(store, ids["gate"]) == "open"
+
+
+def test_the_head_follow_leaves_an_iteration_in_flight_alone(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A poll or restamp still open under the open loop reads the live
+    head itself; a second poll would only race it."""
+    mint, it = _red_iteration(store)
+    before = _children_of(store, mint.ids["loop"])
+    monkeypatch.setattr(rpoll, "release_head", lambda store, rel: SHA3)
+    assert rpoll.follow_moved_head(store, mint.root_id) is None
+    assert _children_of(store, mint.ids["loop"]) == before
+    assert _meta(store, mint.root_id)["release"]["sha"] == SHA
+
+
+@pytest.mark.parametrize("case", ["same", "unreadable", "started", "dry-run"])
+def test_the_head_follow_writes_nothing_without_a_moved_head_it_may_follow(
+    store: Store, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    mint = _green_cut(store)
+    ids = mint.ids
+    head = {"same": SHA, "unreadable": None}.get(case, SHA3)
+    monkeypatch.setattr(rpoll, "release_head", lambda store, rel: head)
+    if case == "started":
+        R.mark_deploy_started(store, ids["deploy"])
+    note = rpoll.follow_moved_head(store, mint.root_id, dry_run=case == "dry-run")
+    if case == "dry-run":
+        assert note is not None and "would restamp and poll" in note
+    else:
+        assert note is None
+    assert _children_of(store, ids["loop"]) == []
+    assert _status(store, ids["loop"]) == "done"
+    assert _meta(store, mint.root_id)["release"]["sha"] == SHA
+
+
+@pytest.mark.parametrize("status", ["won't-do", "cancelled"])
+def test_the_head_follow_leaves_a_loop_someone_closed_by_hand(
+    store: Store, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    """Whoever closed the fix loop won't-do or cancelled took the fixing
+    over: their push is not followed, so a red on it cannot start
+    fixers again, and the note says why the deploy stays refused."""
+    mint = _green_cut(store)
+    ids = mint.ids
+    store.add_tag(
+        ids["loop"], Tag.closed("STATUS", status), set_by="agent", replace_prefix=True
+    )
+    monkeypatch.setattr(rpoll, "release_head", lambda store, rel: SHA3)
+    note = rpoll.follow_moved_head(store, mint.root_id)
+    assert note is not None and f"was closed {status}" in note
+    assert _children_of(store, ids["loop"]) == []
+    assert _status(store, ids["loop"]) == status
+    assert _meta(store, mint.root_id)["release"]["sha"] == SHA
+
+
+def test_the_head_follow_yields_to_a_deploy_that_launched_meanwhile(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deploy stamps its start between the follow's first read and
+    its lock: the follow re-reads under the lock and restamps nothing.
+    If this fails a running deploy has its recorded sha, gate and loop
+    moved under it."""
+    mint = _green_cut(store)
+    ids = mint.ids
+
+    def head(store: Store, rel: dict[str, Any]) -> str:
+        R.mark_deploy_started(store, ids["deploy"])  # lands after the pre-check
+        return SHA3
+
+    monkeypatch.setattr(rpoll, "release_head", head)
+    assert rpoll.follow_moved_head(store, mint.root_id) is None
+    rel = _meta(store, mint.root_id)["release"]
+    assert rel["sha"] == SHA and rel["deploy_started_at"]
+    assert _children_of(store, ids["loop"]) == []
+    assert (_status(store, ids["gate"]), _status(store, ids["loop"])) == (
+        "done",
+        "done",
+    )
+
+
+def test_the_head_follow_yields_to_a_restamp_that_landed_meanwhile(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another tick restamped the plan while this one read the head: the
+    recorded sha is no longer the one this tick compared, so it writes
+    nothing — no second poll."""
+    mint = _green_cut(store)
+    ids = mint.ids
+
+    def head(store: Store, rel: dict[str, Any]) -> str:
+        R.record_head(store, mint.root_id, SHA3)
+        return SHA3
+
+    monkeypatch.setattr(rpoll, "release_head", head)
+    assert rpoll.follow_moved_head(store, mint.root_id) is None
+    assert _children_of(store, ids["loop"]) == []
+    assert _status(store, ids["loop"]) == "done"
+
+
+def test_the_deploy_start_stamp_keeps_a_restamp_written_before_it(
+    store: Store,
+) -> None:
+    """Both writers rewrite the whole ``meta.release`` key; the stamp
+    reads the record under the root's row lock, so it lands on top of a
+    restamp instead of putting the old sha back."""
+    mint = _green_cut(store)
+    R.record_head(store, mint.root_id, SHA3)
+    R.mark_deploy_started(store, mint.ids["deploy"])
+    rel = _meta(store, mint.root_id)["release"]
+    assert (rel["sha"], rel["cut_sha"]) == (SHA3, SHA)
+    assert rel["deploy_started_at"]
+    assert "cleared" in R.clear_deploy_started(store, mint.ids["deploy"])
+    rel = _meta(store, mint.root_id)["release"]
+    assert rel["sha"] == SHA3 and "deploy_started_at" not in rel
+
+
+def test_the_open_pass_tick_follows_the_head(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``release_poll.run_pass`` runs the follow for the pass that blocks
+    the next cut, and a raise there never ends the tick."""
+    mint = _green_cut(store)
+    monkeypatch.setattr(rpoll, "_mint_reviewers_only", lambda *a, **k: None)
+    seen: list[tuple[int, bool]] = []
+
+    def follow(store: Store, root_id: int, *, dry_run: bool = False) -> str:
+        seen.append((root_id, dry_run))
+        return "release head: followed"
+
+    monkeypatch.setattr(rpoll, "follow_moved_head", follow)
+    noon = datetime(2026, 11, 16, 12, tzinfo=UTC)  # outside every window
+    res = rpoll.run_pass(store, repo="o/r", now=noon)
+    assert seen == [(mint.root_id, False)]
+    assert "release head: followed" in res.notes
+    assert res.blocker == f"release-pass td{mint.root_id} is open"
+
+    def boom(*_a: Any, **_k: Any) -> str:
+        raise RuntimeError("github down")
+
+    monkeypatch.setattr(rpoll, "follow_moved_head", boom)
+    res = rpoll.run_pass(store, repo="o/r", now=noon)
+    assert "release head follow raised — next tick retries" in res.notes
+    assert res.blocker == f"release-pass td{mint.root_id} is open"
+
+
 def test_restamp_parks_on_a_hand_closed_fix_while_the_head_has_not_moved(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6308,6 +6584,9 @@ def test_an_unreviewed_land_inside_the_range_holds_the_deploy_not_the_cut(
 
     R.record_cut(store, mint.ids["cut"], "r7", a, f"{PREV}..{a[:12]}", repo="o/r")
     _in_release(a, ["scripts/ship"])
+    monkeypatch.setattr(
+        cvp, "fetch_head", lambda repo, branch: a
+    )  # the cut is the head
     _comment(store, mint.ids["approval"], "answer: deploy r7")
     refusal = rd.validate_submit(store, params={"todo_id": mint.ids["deploy"]})
     assert refusal is not None and "r7 waits on its engine reviews" in refusal

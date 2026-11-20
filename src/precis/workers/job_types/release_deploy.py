@@ -35,7 +35,10 @@ overlay, so the host recorded here is one that can deploy (gr713351).
 **Shared release policy** (gr702332). :func:`_refusal` calls
 :func:`precis.plans.release.may_release` at dispatch and launch:
 other open passes/rounds, prod/main ancestry, release reviews and a green CI
-verdict on the exact head all gate the deploy. Standing auto-deploy skips
+verdict on the exact head all gate the deploy. The exact head is the
+release branch's live one (gr741486): while the branch is past the sha the
+plan recorded, the deploy waits and ``release_poll.follow_moved_head``
+restamps the plan and polls the new head. Standing auto-deploy skips
 minting an approval ask; a manual pass still requires its answer.
 GitHub ancestry and in-flight reads fail closed: an outage holds deployment
 until a later tick can verify them. The clock is checked only at dispatch;
@@ -206,6 +209,19 @@ def submit(ctx: Any, spec: Any) -> Any:
         "job_event",
         f"{NAME}: " + _release.mark_deploy_started(ctx.store, int(params["todo_id"])),
     )
+    # gr741486: the stamp is what stops ``release_poll.follow_moved_head``.
+    # A restamp that committed between the check above and the stamp put
+    # the plan on a head with no verdict yet, and only a second read sees
+    # it: refuse then, and give the release back to the fixes.
+    reason, _rn = _refusal(ctx.store, params, running=True)
+    if reason is not None:
+        ctx.append_chunk(
+            "job_event",
+            f"{NAME}: "
+            + _release.clear_deploy_started(ctx.store, int(params["todo_id"])),
+        )
+        ctx.record_failure(reason)
+        return None
     return _rc.launch_script(ctx, NAME, ["--deploy-only", rn], env=_rc.pass_env(ctx))
 
 
@@ -291,7 +307,9 @@ def _landed(root: Path, prev: str, head: str) -> list[str]:
 
 
 #: The deploy script's own words for a refusal before any rollout (the
-#: backup-window refusal, scripts/deploy): no host moved.
+#: backup-window refusal, scripts/deploy; a CI wait that ended red or
+#: timed out before the first deploy leg, scripts/release — gr741486):
+#: no host moved.
 _NO_HOST_TOUCHED = "no host was touched"
 
 #: ``scripts/deploy``'s exit code for the same refusal — every guard ahead

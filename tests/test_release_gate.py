@@ -26,6 +26,7 @@ def policy(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "compare": {"status": "ahead", "ahead_by": 1, "behind_by": 0},
         "branch": None,
         "reviews": [],
+        "head": SHA,
         "ci": [{"sha": SHA, "verdict": "green"}],
     }
     monkeypatch.setattr(settings, "get_str", lambda *a, **kw: facts["window"])
@@ -41,6 +42,7 @@ def policy(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(rp, "_round_blocker", lambda *a, **kw: facts["round"])
     monkeypatch.setattr(rp, "_in_flight", lambda *a, **kw: facts["branch"])
     monkeypatch.setattr(rp, "deploy_review_blockers", lambda *a: facts["reviews"])
+    monkeypatch.setattr(rp, "release_head", lambda *a: facts["head"])
     return facts
 
 
@@ -100,6 +102,34 @@ def test_deploy_requires_green_on_exact_head(
     assert R.may_release(store, "deploy", todo_id=11, now=NOW) == (
         False,
         f"CI verdict is not green on {SHA[:12]}",
+    )
+
+
+def test_deploy_refuses_a_head_the_branch_moved_past(policy: dict[str, Any]) -> None:
+    """gr741486: a corrective pushed after the last verdict leaves the
+    recorded sha green and the branch on another head; if this fails the
+    deploy is dispatched on the old head's verdict (r341, 18 s after the
+    push)."""
+    moved = "b" * 40
+    policy["head"] = moved
+    store = Store.__new__(Store)
+    assert R.may_release(store, "cut", now=NOW) == (True, "")
+    assert R.may_release(store, "deploy", todo_id=11, now=NOW) == (
+        False,
+        f"release/r7 head {moved[:9]} is not the recorded {SHA[:9]} — "
+        "the pass polls the new head first",
+    )
+    # A green row on the new head does not help while the plan still
+    # records the old one: the restamp is what moves it.
+    policy["ci"] = [{"sha": moved, "verdict": "green"}]
+    assert R.may_release(store, "deploy", todo_id=11, now=NOW)[0] is False
+
+
+def test_deploy_refuses_an_unreadable_release_head(policy: dict[str, Any]) -> None:
+    policy["head"] = None
+    assert R.may_release(Store.__new__(Store), "deploy", todo_id=11, now=NOW) == (
+        False,
+        "release/r7 head unreadable; next tick retries",
     )
 
 
@@ -175,6 +205,54 @@ def test_submit_leaves_a_new_window_to_the_script(
     assert "backup window" in (rd.validate_submit(store, params={"todo_id": 11}) or "")
     assert rd.submit(ctx, None) == "launched"
     assert failures == []
+
+
+def test_submit_refuses_when_the_head_moved_as_it_stamped_the_start(
+    policy: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr741486: a push lands between the launch check and the
+    deploy-started stamp. The second read after the stamp sees it: no
+    launch, and the stamp is cleared so the release takes fixes again."""
+    from types import SimpleNamespace
+
+    from precis.workers.job_types import release_deploy as rd
+
+    store = Store.__new__(Store)
+    monkeypatch.setattr(rd, "_utcnow", lambda: NOW)
+    monkeypatch.setattr(rd._rc, "factory_refusal", lambda *a: None)
+    monkeypatch.setattr(rd._rc, "todo_refusal", lambda *a, **kw: None)
+    monkeypatch.setattr(R, "approval", lambda *a: ("r7", "approved"))
+    monkeypatch.setattr(R, "pin_refusal", lambda *a, **kw: None)
+    monkeypatch.setattr(rd._rs, "slice_root", lambda: "/checkout")
+    monkeypatch.setattr(rd._rc, "pass_env", lambda *a: {})
+    launched: list[str] = []
+    monkeypatch.setattr(
+        rd._rc, "launch_script", lambda *a, **kw: launched.append("launched")
+    )
+    stamps: list[str] = []
+
+    def start(*a: Any) -> str:
+        policy["head"] = "b" * 40  # the push lands as the stamp is written
+        stamps.append("started")
+        return "started"
+
+    def clear(*a: Any) -> str:
+        stamps.append("cleared")
+        return "cleared"
+
+    monkeypatch.setattr(R, "mark_deploy_started", start)
+    monkeypatch.setattr(R, "clear_deploy_started", clear)
+    failures: list[str] = []
+    ctx = SimpleNamespace(
+        store=store,
+        meta={"params": {"todo_id": 11}},
+        record_failure=failures.append,
+        set_meta=lambda **kw: None,
+        append_chunk=lambda *a: None,
+    )
+    assert rd.submit(ctx, None) is None
+    assert launched == [] and stamps == ["started", "cleared"]
+    assert len(failures) == 1 and "is not the recorded" in failures[0]
 
 
 def test_github_outage_holds_deploy(
