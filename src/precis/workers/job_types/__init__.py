@@ -30,6 +30,11 @@ removing body/hash/event evidence or calling a provider/model.
 
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 
+``plan_dispatch`` prefers review lanes outside every contributing builder's
+vendor. Availability drives fallback so a held or saturated lane cannot
+keep a pre-land review and its build's file-overlap hold waiting when
+another lane can run the review.
+
 Park snapshots scan every unpublished commit, because even credentials
 deleted at the tip become fetchable when history is pushed. Parked resumes
 require the recorded snapshot before cleanup; unavailable saves must resume

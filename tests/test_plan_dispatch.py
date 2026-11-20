@@ -4737,9 +4737,8 @@ def test_a_cancelled_review_on_full_lanes_logs_no_requeue_note(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """gr587772 review nit: the 're-queued' note claims a fresh job was
-    minted — a cancelled reviewer whose every fit lane outside the
-    builder's vendor is at cap parks on the lane instead, and must log
-    no re-queue note that pass."""
+    minted — a cancelled reviewer with no available lane must log no
+    re-queue note that pass."""
     use_lanes(monkeypatch)  # the real multi-lane seed table
     mint = _review_plan(store)
     build, review = mint.ids["build"], mint.ids["review"]
@@ -4747,16 +4746,14 @@ def test_a_cancelled_review_on_full_lanes_logs_no_requeue_note(
     _todo_comment(store, build, "landed: abc1234 — the fix")
     _mark_done(store, build)
     _job(store, review, status="cancelled")
-    # Fill every review-fit lane outside the builder's vendor: devin
-    # (cap 3) and codex (cap 1). Live = queued, meta.lane set.
-    for _ in range(3):
-        _job(store, mint.root_id, status="queued", lane="devin")
-    _job(store, mint.root_id, status="queued", lane="codex")
+    for name in ("devin", "codex", "claude-sub"):
+        for _ in range(seed_lane(name).cap):
+            _job(store, mint.root_id, status="queued", lane=name)
 
     res = pd.run_pass(store)
     assert res.dispatched == 0
     assert any(
-        f"td{review}: review not dispatched" in n and "at its cap" in n
+        f"td{review}: review not dispatched" in n and "no available lane" in n
         for n in res.notes
     )
     assert not any("re-queued" in n for n in res.notes)
@@ -11539,6 +11536,46 @@ def test_review_excludes_every_build_vendor_then_the_original_builder(
     ((_job_id, meta),) = _jobs_under(store, review)
     assert meta["params"]["lane"] == "claude-sub"
     assert not any("shares the builder's vendor" in n for n in res.notes)
+
+
+@pytest.mark.parametrize(
+    ("sub_state", "expected_lane"),
+    [
+        ("available", "claude-sub"),
+        ("breaker-held", "devin"),
+        ("parked", "devin"),
+        ("at cap", "devin"),
+    ],
+)
+def test_preland_review_falls_through_unavailable_lanes(
+    store: Store, monkeypatch: pytest.MonkeyPatch, sub_state: str, expected_lane: str
+) -> None:
+    """gr730165: after a Codex build and a Devin rebuild, a review can
+    run on Devin if the only independent lane cannot take it."""
+    codex, devin, sub = (seed_lane(name) for name in ("codex", "devin", "claude-sub"))
+    if sub_state == "parked":
+        sub = replace(sub, parked_reason="credential probe failed")
+    use_lanes(monkeypatch, codex, devin, sub)
+    mint = _review_plan(store, preland=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="codex", commits=["abc1234 fix(x): the fix"])
+    _job(store, build, lane="devin", commits=["abc2345 fix(x): the rebuild"])
+    store.stamp_ref_meta(
+        build, {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}}
+    )
+    _mark_done(store, build)
+    if sub_state == "breaker-held":
+        from precis.plans import lane_breaker
+
+        monkeypatch.setattr(lane_breaker, "tripped_lanes", lambda store: {sub.name})
+    elif sub_state == "at cap":
+        for _ in range(sub.cap):
+            _job(store, mint.root_id, status="queued", lane=sub.name)
+
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    ((_job_id, meta),) = _jobs_under(store, review)
+    assert meta["params"]["lane"] == expected_lane
 
 
 def test_review_counts_only_jobs_that_left_commits(

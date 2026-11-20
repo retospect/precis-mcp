@@ -270,10 +270,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    stamp's own ``head`` — a rebuild's fresh ``pending_land`` outlives the
    historical dead job (td701778). ``live_nodes`` counts a held
    candidate as not live.
-   A reviewer's ``run_slice`` is pinned to
-   ``pick_lane('review', exclude_vendor=<the builder lane's vendor>)``;
-   while no other vendor's lane is enabled that falls back to the
-   builder's lane and the action note says so. **Mint barrier**
+   A reviewer's ``run_slice`` uses :func:`_review_lane` to prefer available
+   vendors that left no commits on the build. A fallback to the original
+   builder's vendor is noted. **Mint barrier**
    (td603429): a session mints each child with one ``put`` — the row
    commits open and linkless — and adds the ``blocked-by`` links in
    later calls, so ``put`` stamps ``waiting-for:mint``
@@ -477,7 +476,7 @@ import logging
 import math
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -6479,6 +6478,17 @@ def _claim_score(plan: _Plan, n: _Node, job_type: str | None = None) -> float:
     return score
 
 
+def _review_lane_tables(
+    lane_table: tuple[_lanes.Lane, ...], vendors: tuple[str, ...]
+) -> Iterator[tuple[frozenset[str], tuple[_lanes.Lane, ...]]]:
+    """Yield distinct vendor exclusions in review preference order."""
+    exclusions = dict.fromkeys(
+        (frozenset(vendors), frozenset(vendors[:1]), frozenset())
+    )
+    for excluded in exclusions:
+        yield excluded, tuple(ln for ln in lane_table if ln.vendor not in excluded)
+
+
 def _review_lane(
     plan: _Plan,
     w: _Writer,
@@ -6487,45 +6497,31 @@ def _review_lane(
     lane_table: tuple[_lanes.Lane, ...],
 ) -> tuple[bool, str | None, dict[str, Any] | None]:
     """``(go, lane name, stamp)`` for a reviewer's ``run_slice``: a lane of
-    a vendor that did not build what it reviews; ``go=False`` when every
-    fit lane is full. ``stamp`` is the decide() shadow record for the
-    pick — ``meta.decision`` on the minted job (td572552 S4b; ``None``
+    a vendor that did not build what it reviews, when available;
+    ``go=False`` when no lane can take the review. ``stamp`` is the decide()
+    shadow record for the pick on the minted job (td572552 S4b; ``None``
     under the default legacy mode).
 
     Three steps, each a pick over a table shrunk by hand (never
     ``exclude_vendor``, whose own fallback could hand back an excluded
-    vendor): every vendor that built on the node is out; if that leaves no
-    enabled fit lane, only the original builder's vendor is out (a codex
-    build repaired by sonnet is reviewed by claude-sub, not by codex); only
-    when even that leaves nothing does the full table apply, with the note.
-    Codex-built fixes get a Claude review (Reto's yes to 27b357ee5, via
-    BUILDER 2026-11-05)."""
+    vendor): first exclude every build vendor, then only the original
+    builder's vendor, then try the full table. Advance whenever the picker
+    finds no available lane under the current exclusion (gr730165)."""
     cls = _templates.REVIEW_TASK_CLASS
     vendors = _builder_vendors(plan, n, lane_table)
-    steps: list[tuple[frozenset[str], str]] = [
-        (frozenset(vendors), "every build vendor"),
-        (frozenset(vendors[:1]), "the original builder's vendor"),
-        (frozenset(), ""),
-    ]
-    for excluded, label in steps:
-        table = tuple(ln for ln in lane_table if ln.vendor not in excluded)
-        if not any(ln.enabled and not ln.parked and ln.fits(cls) for ln in table):
-            continue  # nothing of another vendor is enabled: next step
-        lane = _lanes.pick_lane(w.store, cls, lanes=table)
+    counts = _lanes.live_lane_counts(w.store)
+    backoff = _lanes.lane_backoffs(w.store)
+    for excluded, table in _review_lane_tables(lane_table, vendors):
+        lane = _lanes.pick_lane(
+            w.store, cls, lanes=table, counts=counts, backoff=backoff
+        )
         if lane is None:
-            # Fit lanes of the allowed vendors exist but are full: wait,
-            # do not bypass the rule.
-            res.notes.append(
-                f"td{n.id}: review not dispatched — every lane fit for {cls!r} "
-                f"outside {label or 'the table'} is at its cap"
-            )
-            return False, None, None
+            continue
         if vendors and lane.vendor == vendors[0]:
             # Step three only: the original builder's own vendor reviews.
             res.notes.append(
                 f"td{n.id}: review on lane {lane.name} shares the builder's vendor "
-                f"{lane.vendor!r} (no other vendor's lane is enabled; the "
-                "cross-vendor rule holds once one is)"
+                f"{lane.vendor!r} (no other vendor has an available lane)"
             )
         stamp = _lane_decide.shadow_stamp(
             w.store,
@@ -6539,7 +6535,9 @@ def _review_lane(
             exclude_vendor=sorted(excluded) or None,
         )
         return True, lane.name, stamp
-    res.notes.append(f"td{n.id}: review not dispatched — no enabled lane fits {cls!r}")
+    res.notes.append(
+        f"td{n.id}: review not dispatched — no available lane fits {cls!r}"
+    )
     return False, None, None
 
 

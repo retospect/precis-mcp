@@ -1750,19 +1750,18 @@ def test_reviewer_with_no_lane_fit_is_rescued(
     assert "no enabled lane fits review" in comment
 
 
-def test_reviewer_parked_on_full_alternative_lane_is_held(
-    store: Store, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("builder_lane_full", [False, True])
+def test_reviewer_with_full_alternative_lane_uses_fallback_availability(
+    store: Store, monkeypatch: pytest.MonkeyPatch, builder_lane_full: bool
 ) -> None:
-    """``plan_dispatch._review_lane`` waits rather than pick the build
-    vendor's lane while another vendor's fit lane exists: a reviewer
-    waiting on a full alternative is PARKED even though the builder's
-    vendor lane sits free — an unrestricted pick saw that free lane and
-    rescued the reviewer (td575363)."""
+    """An overdue review stalls when the builder's vendor can take it.
+    Both lanes must be full for the capacity hold in this setup."""
     built = Lane("codex", "codex_exec", "s", 1, frozenset({"review"}), vendor="openai")
     alt = Lane("claude-sub", "claude_p", "s", 1, frozenset({"*"}), vendor="anthropic")
     use_lanes(monkeypatch, built, alt)
     monkeypatch.setattr(
-        "precis.plans.lanes.live_lane_counts", lambda store: {"claude-sub": 1}
+        "precis.plans.lanes.live_lane_counts",
+        lambda store: {"claude-sub": 1, "codex": int(builder_lane_full)},
     )
     root = _root(store)
     build = _node(store, root, title="build", status="done")
@@ -1784,9 +1783,13 @@ def test_reviewer_parked_on_full_alternative_lane_is_held(
 
     res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
 
-    assert res.rescued == []
-    assert _rescue_tags(store, review) == []
-    assert any("parked" in n for n in res.notes)
+    if builder_lane_full:
+        assert res.rescued == []
+        assert _rescue_tags(store, review) == []
+        assert any("parked (full: claude-sub, codex)" in n for n in res.notes)
+    else:
+        assert res.rescued == [(review, "stalled", "idle")]
+        assert _rescue_tags(store, review) == ["rescue:stalled"]
 
 
 def test_reviewer_with_free_alternative_lane_is_judged(
