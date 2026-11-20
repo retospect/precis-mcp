@@ -9,7 +9,8 @@ one ``reviews`` row (migration 0185), ``verdict='proposed'``,
 for a human or frontier-model judge. Merging, splitting, pruning, retagging
 and relinking require explicit apply — :mod:`precis.graph.garden.apply`,
 via ``precis garden apply`` or the consumer (step 5), never detectors or
-proposer. A clean pass writes no reviews, chunks or log spam.
+proposer. Clean passes write nothing; repeated timeouts alert for starvation
+(:mod:`.service`).
 
 Memory proposals pin supporting refs and edited bodies; unpinned legacy
 proposals close before paid review. Stale evidence closes with retryable rejection,

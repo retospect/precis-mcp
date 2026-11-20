@@ -655,6 +655,41 @@ def test_compact_related_includes_recall_and_restated(store: Store) -> None:
     assert keeper in candidate.evidence["related"]["restated"]
 
 
+def test_compact_related_bounded_to_firing_rows(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr732283: the window's per-ref neighbourhood work (an ANN card
+    probe plus a pending-proposal scan per ref) outruns the 60 s
+    detector deadline at scan_cap scale — it must run only for rows a
+    trigger fires on."""
+    firing = _memory(store, SHELL_BODY, meta={"expires": "2020-01-01T00:00:00+00:00"})
+    quiet = [_memory(store, "A live claim.\n") for _ in range(3)]
+    calls: dict[str, list[int]] = {}
+    real_related = cand._compact_related
+    real_dependants = cand._open_work_dependants
+
+    def spy_related(store: Store, ids: list[int]) -> Any:
+        calls["related"] = list(ids)
+        return real_related(store, ids)
+
+    def spy_dependants(store: Store, ids: list[int]) -> Any:
+        calls["dependants"] = list(ids)
+        return real_dependants(store, ids)
+
+    monkeypatch.setattr(cand, "_compact_related", spy_related)
+    monkeypatch.setattr(cand, "_open_work_dependants", spy_dependants)
+    found = {c.target_id for c in cand.compact_candidates(store)}
+    assert firing in found
+    assert set(quiet).isdisjoint(found)
+    # The neighbourhood and open-work scans may only ever see the rows a
+    # trigger fired on — the quiet fixtures are proof non-firing window
+    # rows stay out.
+    assert firing in calls["related"]
+    assert set(quiet).isdisjoint(calls["related"])
+    assert firing in calls["dependants"]
+    assert set(quiet).isdisjoint(calls["dependants"])
+
+
 def test_compact_consumer_approves_but_never_applies(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
