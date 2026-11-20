@@ -24,9 +24,10 @@ reaper).
 lsof is the script's open-lock proof on every platform, but the dev image
 ships no lsof package — so the fixture drops a minimal /proc-backed
 ``lsof`` onto PATH whenever the real binary is absent, answering the
-script's two call shapes (``-t -- <path>`` and ``-a -p <pid> -d cwd -Fn``)
-with the same results real lsof gives on Linux. No DB / MCP fixtures —
-pure git, ps and the shipped scripts.
+script's call shapes (``-F pc -- <path>``, ``-t -- <path>`` and ``-a -p <pid> -d cwd -Fn``)
+with the same results real lsof gives on Linux (the script passes ``-w``
+to keep real lsof's "can't stat() <fs>" mount-table warnings off stderr).
+No DB / MCP fixtures — pure git, ps and the shipped scripts.
 """
 
 from __future__ import annotations
@@ -55,8 +56,9 @@ REAP_WORKTREES_SRC = REPO_ROOT / "scripts" / "reap-worktrees"
 STALE_AGE_SECONDS = 1200
 
 #: A minimal, truthful lsof stand-in for the lsof-free dev image: the same
-#: answers real lsof gives for the two calls scripts/reap-index-locks
-#: makes. `-t -- <path>` prints the pid of every process holding the file
+#: answers real lsof gives for the calls scripts/reap-index-locks makes
+#: (each carries -w, which the stand-in ignores — it has no warnings to
+#: suppress). `-t -- <path>` prints the pid of every process holding the file
 #: open (matched by dev+inode — lsof's own notion of "same open file", so
 #: hardlinks/symlink paths can't fool it); `-a -p <pid> -d cwd -Fn` prints
 #: the process's cwd in -F form. Linux-only (it reads /proc), which is
@@ -85,13 +87,28 @@ def _pids_holding(path):
             except OSError:
                 continue
             if (st.st_dev, st.st_ino) == (want.st_dev, want.st_ino):
-                print(pid)
+                yield pid
                 break
 
 
+def _comm(pid):
+    try:
+        with open(os.path.join("/proc", pid, "comm")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def main(argv):
+    argv = [a for a in argv if a != "-w"]
     if argv[:2] == ["-t", "--"]:
-        _pids_holding(argv[2])
+        for pid in _pids_holding(argv[2]):
+            print(pid)
+        return 0
+    if argv[:3] == ["-F", "pc", "--"]:  # lsof -F pc -- <path>
+        for pid in _pids_holding(argv[3]):
+            print("p" + pid)
+            print("c" + _comm(pid))
         return 0
     if "-p" in argv and "-d" in argv:  # lsof -a -p <pid> -d cwd -Fn
         pid = argv[argv.index("-p") + 1]
@@ -316,6 +333,31 @@ def test_stale_worktree_lock_reports_then_applies(
         rf"reaped stale index\.lock: {re.escape(str(lock))} \(age \d+m, 0 B\)",
         result.stdout,
     ), result.stdout
+
+
+def test_lsof_warning_lines_do_not_block_the_reap(
+    lock_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """Linux lsof prints `lsof: WARNING: can't stat() ...` on stderr for
+    mounts it cannot read, on every call. That is not an unreadable answer:
+    the stale lock is still reaped."""
+    lock = _make_stale(_admin_lock(lock_repo, "A"))
+    inner = _fake_lsof_bindir(tmp_path)
+    target = str(inner / "lsof") if inner is not None else shutil.which("lsof")
+    assert target
+    wrap = tmp_path / "warn-bin"
+    wrap.mkdir()
+    shim = wrap / "lsof"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'echo "lsof: WARNING: can\'t stat() tracefs file system /sys/kernel/tracing" >&2\n'
+        f'exec "{target}" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    env = _test_env(path=f"{wrap}{os.pathsep}{os.environ['PATH']}")
+    result = _run_reaper(lock_repo["primary"], env, "--apply")
+    assert not lock.exists(), result.stdout + result.stderr
 
 
 def test_stale_primary_lock_reports_then_applies(
