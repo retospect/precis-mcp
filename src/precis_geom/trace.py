@@ -92,8 +92,10 @@ class _Frame:
     occ: int
     kind: str
     args: dict[str, Any]
-    made: dict[str, int]
-    touched: dict[str, Any]
+    #: ``None`` until the frame first ``record()``s — leaf frames (the
+    #: common case) never do; ``dump`` emits ``{}`` for a ``None``.
+    made: dict[str, int] | None
+    touched: dict[str, Any] | None
     py: types.FrameType | None
     children: list[_Frame] = field(default_factory=list)
     #: ``occ`` counts per ``qual`` across all call sites (schema 2).
@@ -113,9 +115,10 @@ class _Frame:
     #: ``dump`` emits it as the frame's optional ``step`` field.
     step: dict[str, Any] | None = None
     #: Probe records (``{"label", "count", "kind", "digest"}``) a script's
-    #: ``out.probe`` call attached to this frame (S1c, gr522026) — empty
-    #: when the frame made no probes; ``dump`` omits the key then.
-    probes: list[dict[str, Any]] = field(default_factory=list)
+    #: ``out.probe`` call attached to this frame (S1c, gr522026) — ``None``
+    #: until the frame makes its first probe (most never do — one fewer
+    #: container per frame); ``dump`` omits the key then.
+    probes: list[dict[str, Any]] | None = None
 
 
 class Tracer:
@@ -219,16 +222,18 @@ class Tracer:
     def _is_user_frame(self, f: types.FrameType) -> bool:
         return f.f_code.co_name != "<module>" and self._in_work(f)
 
-    def _site(self, f: types.FrameType) -> tuple[int, str | None]:
+    def _site(self, f: types.FrameType, lineno: int) -> tuple[int, str | None]:
         """``(line_in_def, src)`` for a call-site frame inside
         ``work_root``: the line's offset from its enclosing code object's
         ``co_firstlineno`` and the stripped source line (120-char cap).
         ``(0, None)`` for sites outside ``work_root`` — driver, harness
-        and library internals carry no re-anchor fields."""
+        and library internals carry no re-anchor fields. ``lineno`` is
+        the frame's already-read ``f_lineno`` (each ``f_lineno`` read
+        re-scans the code object's line table)."""
         if not self._in_work(f):
             return 0, None
-        src = self._line_at(f.f_code.co_filename, f.f_lineno).strip()
-        return f.f_lineno - f.f_code.co_firstlineno, (src[:120] or None)
+        src = self._line_at(f.f_code.co_filename, lineno).strip()
+        return lineno - f.f_code.co_firstlineno, (src[:120] or None)
 
     def _caller_site(self, f: types.FrameType) -> tuple[str, int] | None:
         """``(file, line)`` of the nearest call site outside the package
@@ -298,8 +303,8 @@ class Tracer:
             occ=occ,
             kind=kind,
             args=args,
-            made={},
-            touched={},
+            made=None,
+            touched=None,
             py=py,
         )
         if caller is not None:
@@ -325,6 +330,8 @@ class Tracer:
         pytest's ~25-frame stack that alone cost ~500 µs/call, past the
         overhead budget (gr647746)."""
         stack = self.stack
+        if stack[-1].py is callsite:
+            return  # the call is inside the innermost live frame — O(1)
         deeper: list[types.FrameType] = []
         while True:
             target = stack[-1].py
@@ -335,7 +342,9 @@ class Tracer:
                 f = f.f_back
             if f is not None or len(stack) == 1:
                 break  # top is live — or only the synthetic root is left
-            self._finish(stack.pop())
+            stale = stack.pop()
+            self._finish(stale)
+            stale.py = None  # dead python frame — release it + its locals
         # ``deeper`` holds the live frames below the surviving prefix top,
         # innermost first — mint user frames outermost-first so each push
         # lands under its real parent.
@@ -344,7 +353,7 @@ class Tracer:
                 caller = f.f_back
                 if caller is not None and self._in_work(caller):
                     file, line = self._file_of(caller), caller.f_lineno
-                    line_in_def, src = self._site(caller)
+                    line_in_def, src = self._site(caller, line)
                 else:
                     # Outermost user frame: the caller is the driver /
                     # harness outside /work — anchor on the callee's own
@@ -373,12 +382,13 @@ class Tracer:
         wrapper_frame: types.FrameType,
     ) -> _Frame:
         self._sync(callsite)
-        line_in_def, src = self._site(callsite)
+        line = callsite.f_lineno
+        line_in_def, src = self._site(callsite, line)
         return self._push(
             qual=qual,
             kind=kind,
             file=self._file_of(callsite),
-            line=callsite.f_lineno,
+            line=line,
             line_in_def=line_in_def,
             src=src,
             args=args,
@@ -399,6 +409,7 @@ class Tracer:
             if active is fr:
                 for done in self.stack[i:]:
                     self._finish(done)
+                    done.py = None  # dead python frame — release it + its locals
                 del self.stack[i:]
                 break
 
@@ -475,8 +486,8 @@ class Tracer:
                 "src": fr.src,
                 "kind": fr.kind,
                 "args": fr.args,
-                "made": fr.made,
-                "touched": fr.touched,
+                "made": fr.made or {},
+                "touched": fr.touched or {},
                 "dur_ms": fr.dur_ms if fr.dur_ms is not None else (now - fr.t0) * 1000,
             }
             if fr.ret is not _NO_RETURN:
@@ -509,7 +520,11 @@ class Tracer:
         shifts its lines but not its source, so a hit would otherwise
         cite the stored build's lines."""
         n0 = nodes[0]
+        if root.made is None:
+            root.made = {}
         root.made.update(n0.get("made") or {})
+        if root.touched is None:
+            root.touched = {}
         for k, v in (n0.get("touched") or {}).items():
             root.touched[k] = list(v) if isinstance(v, list) else v
         if "ret" in n0:
@@ -608,8 +623,8 @@ class Tracer:
                 "occ": fr.occ,
                 "kind": fr.kind,
                 "args": fr.args,
-                "made": fr.made,
-                "touched": fr.touched,
+                "made": fr.made or {},
+                "touched": fr.touched or {},
                 "dur_ms": duration(fr),
             }
             if fr.ret is not _NO_RETURN:
@@ -659,11 +674,13 @@ class Tracer:
                         ),
                         "dur_ms": sum(duration(c) for c in rest),
                         "returns": _fold_returns(rest),
-                        "made": _sum_counts(c.made for c in rest),
-                        "touched": _sum_counts(c.touched for c in rest),
+                        "made": _sum_counts((c.made or {}) for c in rest),
+                        "touched": _sum_counts((c.touched or {}) for c in rest),
                     }
                     if any(c.probes for c in rest):
-                        folded["probes"] = [dict(p) for c in rest for p in c.probes]
+                        folded["probes"] = [
+                            dict(p) for c in rest for p in (c.probes or ())
+                        ]
                     if grp[0].caller_file is not None:
                         folded["caller_file"] = grp[0].caller_file
                         folded["caller_line"] = grp[0].caller_line
@@ -984,6 +1001,7 @@ def stop() -> None:
     if tr is not None:
         for fr in tr.stack:
             tr._finish(fr)
+            fr.py = None
     _ACTIVE.set(None)
 
 
@@ -1001,6 +1019,7 @@ def run(
     finally:
         for fr in tr.stack:
             tr._finish(fr)
+            fr.py = None
         _ACTIVE.set(prev)
 
 
@@ -1032,8 +1051,12 @@ def record(
     if fr is None:
         return
     for k, v in (made or {}).items():
+        if fr.made is None:
+            fr.made = {}
         fr.made[k] = fr.made.get(k, 0) + int(v)
     for k, v in (touched or {}).items():
+        if fr.touched is None:
+            fr.touched = {}
         if isinstance(v, int):
             fr.touched[k] = fr.touched.get(k, 0) + v
         else:
@@ -1048,7 +1071,10 @@ def record_probe(record: dict[str, Any]) -> None:
     tr = _ACTIVE.get()
     if tr is None:
         return
-    tr.stack[-1].probes.append(dict(record))
+    fr = tr.stack[-1]
+    if fr.probes is None:
+        fr.probes = []
+    fr.probes.append(dict(record))
 
 
 def leaf_id() -> int | None:
@@ -1157,7 +1183,7 @@ def trace(
         yield
         return
     tr._sync(f)
-    line_in_def, src = tr._site(f)
+    line_in_def, src = tr._site(f, f.f_lineno)
     fr = tr._push(
         qual=name,
         kind=kind,

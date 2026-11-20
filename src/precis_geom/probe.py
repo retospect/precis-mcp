@@ -101,7 +101,7 @@ class CadProbeResolver:
             )
         for fr in _iter_frames(tr):
             if fr.key == key:
-                return dict(fr.made)
+                return dict(fr.made or {})
         raise ValueError(
             f"cad probe: frame {key!r} is not in the live trace — keys "
             "come from the run's trace.json or view='trace'"

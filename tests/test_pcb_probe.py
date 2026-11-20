@@ -147,6 +147,7 @@ def test_board_script_probe_through_ws_out(
     assert result["digest"]["kind"] == "pads"
     assert result["digest"]["ids"] == ["U3.1", "U3.2", "U3.3"]
     assert "probe u3-pads: resolves to 3 pads" in capsys.readouterr().out
+    assert tr.root.probes is not None
     (record,) = tr.root.probes
     assert record["label"] == "u3-pads"
     assert record["count"] == 3

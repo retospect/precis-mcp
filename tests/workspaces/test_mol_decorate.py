@@ -229,6 +229,7 @@ def test_decorate_counts_ride_the_trace_frame(tmp_path: Path) -> None:
         mol.decorate(ph, "element:C & every:2", "OH")
         mol.decorate(ph, "element:C & every:3", "H")  # 2 saturated, 0 placed
         first, second = [f for f in tr.root.children if f.qual == "decorate"]
+    assert first.made is not None and second.made is not None
     assert first.made["groups"] == 3 and first.made["atoms"] == 6  # O + H each
     assert first.made["decorate.site_skipped"] == 0
     assert second.made["decorate.valence"] == 2 and second.made["groups"] == 0
@@ -355,6 +356,7 @@ def test_net_cap_atoms_carry_the_cap_frame(prism: tuple, tmp_path: Path) -> None
         (frame,) = [f for f in tr.root.children if f.qual == "cap"]
     new = list(capped.scene.atoms)[len(g.scene.atoms) :]
     assert {capped.scene.atoms[la].maker for la in new} == {frame.id}
+    assert frame.made is not None
     assert frame.made["atoms"] == 144 and frame.made["bonds"] == 144
     assert all(b.maker == frame.id for b in capped.scene.bonds[-144:])
 

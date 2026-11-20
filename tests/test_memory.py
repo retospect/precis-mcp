@@ -2949,16 +2949,17 @@ def test_search_view_index_renders_handle_filename_and_hook(
     out = handler.search(q="quokka", tags=["SPACE:repo-dev"], view="index").body
     lines = out.splitlines()
     # Every row names a size — sub-kB bodies report decimal kB
-    # (gr568219, gr573411).
+    # (gr568219, gr573411). These fresh memories have no grounding audit,
+    # so the size cell is followed by the unaudited chip (gr634490).
     line_a = next(ln for ln in lines if f"me{a}" in ln)
     assert line_a.startswith(
         f"- Quokka stall (me{a}, quokka_stall.md) — restart the quokka scheduler · "
     )
-    assert re.search(r"· \d+(?:\.\d+)?kB$", line_a)
+    assert re.search(r"· \d+(?:\.\d+)?kB · grounding: not audited$", line_a)
     # no hook, no mirror filename: first body line stands in for the hook
     line_b = next(ln for ln in lines if f"me{b}" in ln)
     assert line_b.startswith(f"- Quokka native (me{b}) — Native quokka note · ")
-    assert re.search(r"· \d+(?:\.\d+)?kB$", line_b)
+    assert re.search(r"· \d+(?:\.\d+)?kB · grounding: not audited$", line_b)
     assert all(ln.startswith("- ") for ln in lines)
 
 

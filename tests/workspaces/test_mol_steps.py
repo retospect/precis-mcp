@@ -161,6 +161,7 @@ def test_decorate_and_cap_are_steps_and_a_hit_equals_the_miss(tmp_path: Path) ->
         assert (first.step or {}).get("hit") is False
         assert (second.step or {}).get("hit") is True
         # the counts ride the frame on a hit too (grafted)
+        assert first.made is not None
         assert second.made == first.made and first.made["groups"] == 3
     assert _text(d1) == _text(d2) and _text(c1) == _text(c2)
     assert d1.findings == d2.findings
