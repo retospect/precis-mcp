@@ -411,7 +411,8 @@ def test_registered_tools_scope_personal_tokens_only(
             result = refused.json()["result"]
             body = result["content"][0]["text"]
             assert result["isError"] and "[error:Denied]" in body
-            assert "get(kind='learning')" in body
+            assert "get(kind='learning', id='/activity', args={'days': 14})" in body
+            assert "put(kind='gtd', text='<the thing to capture>')" in body
             assert "get(kind='skill', id='precis-learning-help')" in body
             assert "PRIVATE_SCOPE_SENTINEL" not in body
             assert "PRIVATE_SCOPE_SENTINEL" not in caplog.text
@@ -640,8 +641,15 @@ def test_personal_token_cannot_bypass_tools_through_modalities(
                     )
                     envelope = response.json()
                     if credential == personal:
-                        assert "[error:Denied]" in envelope["error"]["message"]
-                        assert "get(kind='learning')" in envelope["error"]["message"]
+                        message = envelope["error"]["message"]
+                        assert "[error:Denied]" in message
+                        assert (
+                            "get(kind='learning', id='/activity', args={'days': 14})"
+                            in message
+                        )
+                        assert (
+                            "put(kind='gtd', text='<the thing to capture>')" in message
+                        )
                     else:
                         assert "result" in envelope and "error" not in envelope
 
