@@ -4426,6 +4426,7 @@ def _ensure_worktree(
     start_over: bool = False,
     saved_head: str | None = None,
     notes: list[str] | None = None,
+    job_id: int | None = None,
 ) -> Path:
     """Worktree ``<root>/.claude/worktrees/slice-td<id>`` on branch
     ``slice/<id>``, cut from ``origin/<base>`` — ``main``, or the
@@ -4434,7 +4435,8 @@ def _ensure_worktree(
     tree and branch (the branch stays owned by its slice until it lands or
     is abandoned) — a finished session whose commit met a held index.lock
     is salvaged first (:func:`_salvage_skipped_commit`, gr684320; ``store``
-    supplies the worker-owned stamp), then the tree is reset to a clean
+    supplies the worker-owned stamp, ``job_id`` the running submit's own
+    job that read must skip), then the tree is reset to a clean
     checkout of the branch tip (:func:`_reset_reused_worktree`); a legacy
     ``slice-td<id>`` branch is renamed first. ``fetched`` skips the
     fetch: the caller already fetched ``origin/<base>`` under the
@@ -4477,7 +4479,9 @@ def _ensure_worktree(
             )
         saved_head = parked_tip
     if tree.exists():
-        salvage_note = _salvage_skipped_commit(tree, todo_id, store=store, base=base)
+        salvage_note = _salvage_skipped_commit(
+            tree, todo_id, store=store, base=f"origin/{base}", job_id=job_id
+        )
         if salvage_note:
             log.info("run_slice: td%d salvage: %s", todo_id, salvage_note)
             if salvage_note.startswith(WORKER_COMMITTED):
@@ -5825,6 +5829,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                     todo_id,
                     *(() if base == "main" else (base,)),
                     store=store,
+                    job_id=getattr(ctx, "ref_id", None),
                     **park_kw,
                 )
             else:
@@ -5835,6 +5840,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                     base=profile.base,
                     fetched=True,
                     store=store,
+                    job_id=getattr(ctx, "ref_id", None),
                     **park_kw,
                 )
             for line in park_kw["notes"]:
@@ -6500,19 +6506,25 @@ def _reap_lock_for_commit(tree: Path, ctx: Any, todo_id: int) -> bool:
     return True
 
 
-def _skipped_commit_stamp(store: Any, todo_id: int) -> str | None:
-    """The newest job's ``commit_skipped`` stamp for this todo: the
+def _skipped_commit_stamp(
+    store: Any, todo_id: int, *, job_id: int | None = None
+) -> str | None:
+    """The previous job's ``commit_skipped`` stamp for this todo: the
     fallback message the poll recorded when the worker's commit met a
-    held ``index.lock`` (gr684320), or ``None`` when the newest job was
-    not lock-blocked. Job meta is worker-owned — a session cannot write
-    it — so this stamp, not anything in the tree, is the proof that the
-    edits it salvages were left by a session the poll saw finish."""
+    held ``index.lock`` (gr684320), or ``None`` when that job was not
+    lock-blocked. ``job_id`` is the running submit's own job — at reuse
+    time it IS the newest job row, so reading it finds no stamp and the
+    salvage never fires (review td700716). Job meta is worker-owned — a
+    session cannot write it — so this stamp, not anything in the tree,
+    is the proof that the edits it salvages were left by a session the
+    poll saw finish."""
     try:
         with store.pool.connection() as conn:
             row = conn.execute(
                 "SELECT meta FROM refs WHERE kind = 'job' AND parent_id = %s"
-                " ORDER BY ref_id DESC LIMIT 1",
-                (todo_id,),
+                + (" AND ref_id != %s" if job_id is not None else "")
+                + " ORDER BY ref_id DESC LIMIT 1",
+                (todo_id, job_id) if job_id is not None else (todo_id,),
             ).fetchone()
     except Exception:  # pragma: no cover — a store fault strands nothing
         log.warning("run_slice: skipped-commit stamp read for td%d failed", todo_id)
@@ -6524,7 +6536,12 @@ def _skipped_commit_stamp(store: Any, todo_id: int) -> str | None:
 
 
 def _salvage_skipped_commit(
-    tree: Path, todo_id: int, *, store: Any = None, base: str = "main"
+    tree: Path,
+    todo_id: int,
+    *,
+    store: Any = None,
+    base: str = "origin/main",
+    job_id: int | None = None,
 ) -> str | None:
     """gr684320: the previous session finished but its commit met a held
     ``index.lock`` — the poll stamped ``commit_skipped`` on its job and
@@ -6533,12 +6550,16 @@ def _salvage_skipped_commit(
     session's ``scratch/commit-msg.txt``, else the poll-recorded
     fallback. The stamp is revalidated before anything is committed:
     the deny-path check reruns on this tree (reuse stages it before the
-    poll's checks repeat), and a refusal is returned as a ``"salvage
-    refused"`` note — never committed, never an infra wait. ``None``
-    when there was no stamp or nothing to commit."""
+    poll's checks repeat) against ``base`` — the land target ref,
+    ``origin/main`` or a release fix's ``origin/release/r<N>``; an
+    unprefixed branch name diffs a stale or absent local ref instead
+    (review td700716) — and a refusal is returned as a ``"salvage
+    refused"`` note — never committed, never an infra wait. ``job_id``
+    is the running submit's own job, skipped on the stamp read.
+    ``None`` when there was no stamp or nothing to commit."""
     if store is None:
         return None
-    fallback = _skipped_commit_stamp(store, todo_id)
+    fallback = _skipped_commit_stamp(store, todo_id, job_id=job_id)
     if fallback is None:
         return None
     denied, _human = _deny_reason(tree, _lanes.deny_paths_for(store), base)
@@ -8587,10 +8608,11 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                     p.startswith("tests/") for p in paths
                 )
                 if test_failure is None and not preserve_verdict:
+                    commit_fallback = _session_commit_fallback(ctx.store, todo_id)
                     committed = _commit_for_session(
                         tree,
                         todo_id,
-                        fallback_message=_session_commit_fallback(ctx.store, todo_id),
+                        fallback_message=commit_fallback,
                         ctx=ctx,
                     )
                 ctx.set_meta(
@@ -8606,20 +8628,24 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                     else None
                 )
                 if paths is None or any(not p.startswith("tests/") for p in paths):
+                    # gr702644: a session that says its commit was
+                    # blocked gets the worker's commit under a
+                    # generated subject even without
+                    # scratch/commit-msg.txt; a commit that still
+                    # fails park-saves the tree on the failure path
+                    # (_slice_park.save_at_job_end). The same fallback
+                    # is stamped on a lock-skipped commit so the next
+                    # submit's salvage has a message
+                    # (:func:`_salvage_skipped_commit`, review td700716).
+                    commit_fallback = (
+                        _session_commit_fallback(ctx.store, todo_id)
+                        if _commit_blocked(result)
+                        else None
+                    )
                     committed = _commit_for_session(
                         tree,
                         todo_id,
-                        # gr702644: a session that says its commit was
-                        # blocked gets the worker's commit under a
-                        # generated subject even without
-                        # scratch/commit-msg.txt; a commit that still
-                        # fails park-saves the tree on the failure path
-                        # (_slice_park.save_at_job_end).
-                        fallback_message=(
-                            _session_commit_fallback(ctx.store, todo_id)
-                            if _commit_blocked(result)
-                            else None
-                        ),
+                        fallback_message=commit_fallback,
                         ctx=ctx,
                     )
     full_handoff = handoff

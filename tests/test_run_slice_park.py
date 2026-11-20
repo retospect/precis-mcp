@@ -166,8 +166,10 @@ def _capture_ensure(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     real = run_slice._ensure_worktree
 
     def spy(root: Path, todo_id: int, *a: Any, **kw: Any) -> Path:
-        # ``store`` and ``notes`` are plumbing, not park semantics.
-        seen.append({k: v for k, v in kw.items() if k not in ("notes", "store")})
+        # ``store``, ``job_id`` and ``notes`` are plumbing, not park semantics.
+        seen.append(
+            {k: v for k, v in kw.items() if k not in ("notes", "store", "job_id")}
+        )
         kw["notes"].append("resumed from " + "e" * 40)
         return real(root, todo_id, *a, **kw)
 
