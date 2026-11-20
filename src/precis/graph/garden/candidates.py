@@ -2052,10 +2052,13 @@ def restated_claim_candidates(
 #: before a per-sentence plan runs. ``expired`` reads the same expiry the
 #: review_due detector computes (meta.expires, else the shape default);
 #: ``cold`` is zero reads in COMPACT_COLD_DAYS on an older node
-#: (``ref_reads``, 0261); ``history`` is at least half the non-empty
-#: lines carrying a date, a sha or a landed/shipped/done marker; and
-#: ``retire_proposal`` is any undecided garden retire proposal on the
-#: node — compaction runs before that retirement may apply.
+#: (``ref_reads``, 0261). Cold alone qualifies decaying shapes (thread,
+#: snapshot, incident, campaign); standing memories retain cold evidence
+#: when history qualifies (gr732284). ``history`` is at least half the
+#: non-empty lines carrying a date, a sha or a landed/shipped/done
+#: marker; and ``retire_proposal`` is any undecided garden retire
+#: proposal on the node — compaction runs before that retirement may
+#: apply.
 COMPACT_COLD_DAYS = 90
 COMPACT_HISTORY_MIN = 0.5
 COMPACT_SENTENCE_CAP = 128
@@ -2433,9 +2436,25 @@ def compact_candidates(
                 reasons.append("expired")
                 evidence["expires"] = hit[0].isoformat()
                 evidence["expiry_source"] = hit[1]
-        if row.created_at <= checked_at - timedelta(days=COMPACT_COLD_DAYS) and (
-            row.last_read_at is None
-            or row.last_read_at <= checked_at - timedelta(days=COMPACT_COLD_DAYS)
+        nonempty = [line for line in row.body.splitlines() if line.strip()]
+        history = sum(
+            bool(
+                _DATE.search(line)
+                or _SHA_TOKEN.search(line)
+                or _HISTORY_WORD.search(line)
+            )
+            for line in nonempty
+        )
+        history_density = history / len(nonempty) if nonempty else 0.0
+        has_history = history_density >= COMPACT_HISTORY_MIN
+        decays = memory_expiry_shape(row.title, row.sections)[0] != "standing"
+        if (
+            (decays or has_history)
+            and row.created_at <= checked_at - timedelta(days=COMPACT_COLD_DAYS)
+            and (
+                row.last_read_at is None
+                or row.last_read_at <= checked_at - timedelta(days=COMPACT_COLD_DAYS)
+            )
         ):
             reasons.append("cold")
             evidence["created_at"] = row.created_at.isoformat()
@@ -2446,18 +2465,9 @@ def compact_candidates(
                 if row.last_read_at
                 else None,
             }
-        nonempty = [line for line in row.body.splitlines() if line.strip()]
-        history = sum(
-            bool(
-                _DATE.search(line)
-                or _SHA_TOKEN.search(line)
-                or _HISTORY_WORD.search(line)
-            )
-            for line in nonempty
-        )
-        if nonempty and history / len(nonempty) >= COMPACT_HISTORY_MIN:
+        if has_history:
             reasons.append("history")
-            evidence["history_density"] = round(history / len(nonempty), 3)
+            evidence["history_density"] = round(history_density, 3)
             evidence["history_lines"] = history
             evidence["nonempty_lines"] = len(nonempty)
         if row.ref_id in pending_retire:

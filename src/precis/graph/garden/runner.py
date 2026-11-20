@@ -79,6 +79,7 @@ FIRST_DETECTORS: tuple[str, ...] = ("griped",)
 #: archaeology (opus), shape smells are mechanical (sonnet).
 _ASK_LLM_TIERS = {
     "anchor_rot": "opus",
+    "compact": "opus",
     "dangling_mention": "opus",
     "entity_claim_stale": "opus",
     "griped": "opus",

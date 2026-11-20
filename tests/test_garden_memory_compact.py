@@ -169,19 +169,24 @@ def test_expired_trigger_skips_rulings_and_open_dependants(store: Store) -> None
 
 
 def test_compact_detector_cold_trigger(store: Store) -> None:
-    target = _memory(store, "A standing fact nobody reads.\n")
+    target = _memory(store, "A decaying note nobody reads.\n")
+    store.add_tag(target, Tag.open("section:threads"), set_by="system")
+    standing = _memory(store, "A standing fact nobody reads.\n")
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE refs SET created_at = now() - interval '100 days' "
-            "WHERE ref_id = %s",
-            (target,),
+            "WHERE ref_id IN (%s, %s)",
+            (target, standing),
         )
     candidate = _compact_candidate(store, target)
     assert "cold" in candidate.evidence["reasons"]
     assert candidate.evidence["reads"]["last_read_at"] is None
+    # gr732284: a standing fact is not decaying state; cold alone is no reason.
+    assert standing not in {c.target_id for c in cand.compact_candidates(store)}
 
 
-def test_compact_detector_history_trigger(store: Store) -> None:
+@pytest.mark.parametrize("cold", [False, True])
+def test_compact_detector_history_trigger(store: Store, cold: bool) -> None:
     body = (
         "2026-01-03 the migration landed.\n"
         "2026-01-05 the backfill shipped at 932364d.\n"
@@ -189,8 +194,20 @@ def test_compact_detector_history_trigger(store: Store) -> None:
         "One live claim without a date.\n"
     )
     target = _memory(store, body)
+    if cold:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET created_at = now() - interval '100 days' "
+                "WHERE ref_id = %s",
+                (target,),
+            )
     candidate = _compact_candidate(store, target)
-    assert "history" in candidate.evidence["reasons"]
+    if cold:
+        assert candidate.evidence["reasons"] == ["cold", "history"]
+        assert candidate.evidence["reads"]["last_read_at"] is None
+    else:
+        assert candidate.evidence["reasons"] == ["history"]
+        assert "reads" not in candidate.evidence
     assert candidate.evidence["history_density"] == 0.75
 
 

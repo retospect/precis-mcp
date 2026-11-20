@@ -354,8 +354,11 @@ enough.
 
 ## Compaction before retirement
 
-The `compact` detector fires on expiry, 90-day-cold reads, a half-history
-body or any pending retire proposal. Expiry is shielded, not blind: an
+The `compact` detector fires on expiry, a half-history body or any pending
+retire proposal. Read inactivity for 90 days qualifies threads, snapshots,
+incidents and campaigns on its own. For standing memories, the detector
+includes the `cold` reason and read evidence when the history threshold is
+also met. Expiry is shielded, not blind: an
 expired node tagged `ruling`, `reto-ruling` or `spec:*` (or in
 section `rulings`/`specs`), or one a
 live, non-terminal todo/gripe/quest links to — either direction — gets
