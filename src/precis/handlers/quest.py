@@ -2996,7 +2996,10 @@ class QuestHandler(NumericRefHandler):
         unconfirmed flags (:func:`precis.quest.frontier.candidate_trusted`)
         — and ``args={'sort': '<measure>'}`` orders the rows best-first by
         any carried measure on its declared objective sense, unmeasured
-        last (gr592277).
+        last (gr592277). The ``assurance`` column carries the
+        barrier-assurance verdict (``PASS``/``WARN``/``FAIL``, ``-`` when
+        unstamped) as its own filterable column, so the trusted filter
+        and the trust column stay the same tri-state.
 
         The TOON table is a table lens (:mod:`precis.format.table_lens`,
         gr592637): ``args={'where': {col: value|[set]|{'min','max'}},

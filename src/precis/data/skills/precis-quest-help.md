@@ -324,7 +324,10 @@ unmeasured last). "Which candidate is trusted AND best" is
 `args={'trusted': true, 'sort': 'barrier'}`. When the confirmed
 frontier is empty because everything measured is unconfirmed, the
 headline's per-axis counts name the ≤10 handles that DO carry it
-trusted (`barrier ×252 (trusted: st123)`).
+trusted (`barrier ×252 (trusted: st123)`). The results table's
+`assurance` column is separate: the barrier-assurance verdict
+(`PASS`/`WARN`/`FAIL`, `-` unstamped), filterable like any column
+(`args={'where': {'assurance': 'WARN'}}`).
 ## Read series and measures
 
 `view='series'` re-cuts the same rows as **controlled comparisons**: one

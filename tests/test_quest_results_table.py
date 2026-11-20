@@ -1232,6 +1232,40 @@ class TestResultsTableLens:
         for r in rows:
             assert (r["handle"] in a) == (r["handle"] in b) == (r["trusted"] == "yes")
 
+    def test_assurance_stamp_does_not_change_trusted_verdict(self, store: Any) -> None:
+        """gr592637 review: the trusted column is the candidate_trusted
+        tri-state; the assurance verdict rides its own column. A
+        PASS-stamped affirmative candidate must survive the trusted
+        filter (it used to drop out when the column read ``PASS``)."""
+        qid, sids = self._many(store, 3)
+        _converge(store, sids[0])
+        store.stamp_ref_meta(
+            sids[0],
+            {"barrier": 0.4, "barrier_trusted": True, "barrier_assurance": "PASS"},
+        )
+        _converge(store, sids[1])
+        store.stamp_ref_meta(
+            sids[1],
+            {"barrier": 0.5, "barrier_trusted": True, "barrier_assurance": "WARN"},
+        )
+        rows = build_results_rows(store, qid)
+        by_sid = {r["ref_id"]: r for r in rows}
+        assert by_sid[sids[0]]["trusted"] == "yes"
+        assert by_sid[sids[0]]["assurance"] == "PASS"
+        assert by_sid[sids[1]]["trusted"] == "yes"
+        assert by_sid[sids[1]]["assurance"] == "WARN"
+        assert by_sid[sids[2]]["assurance"] == "-"
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(id=qid, view="results", args={"trusted": True}).body
+        assert by_sid[sids[0]]["handle"] in body
+        assert by_sid[sids[1]]["handle"] in body
+        assert by_sid[sids[2]]["handle"] not in body
+        filtered = h.get(
+            id=qid, view="results", args={"where": {"assurance": "WARN"}}
+        ).body
+        assert by_sid[sids[1]]["handle"] in filtered
+        assert by_sid[sids[0]]["handle"] not in filtered
+
     def test_results_sort_columns_where(self, store: Any) -> None:
         qid, _ = self._many(store, 4)
         h = QuestHandler(hub=Hub(store=store))

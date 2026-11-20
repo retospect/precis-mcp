@@ -348,7 +348,10 @@ def apply_lens(
         lines = [f"({counts})"]
         left_out = excluded + matched_rows[:offset] + matched_rows[end:]
         if left_out:
-            aggs = [a for c in shown_cols if (a := _aggregate(left_out, c))]
+            # The aggregate domain is every declared column, not just the
+            # ones shown: columns=['handle'] must not suppress the hidden
+            # rows' numeric/trust aggregates (gr592637 review).
+            aggs = [a for c in columns if (a := _aggregate(left_out, c))]
             lines.append(f"left out ({len(left_out)} {row_unit}) — " + "; ".join(aggs))
         if next_cursor:
             lines.append(f"next: {call({**base, 'cursor': next_cursor})}")

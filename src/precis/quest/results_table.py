@@ -91,6 +91,7 @@ _COLUMNS: tuple[str, ...] = (
     "U_L",
     "P_side",
     "trusted",
+    "assurance",
     "rls",
     "blocker",
     "worst_problem",
@@ -291,16 +292,25 @@ def _rls_display(pw_meta: dict[str, Any] | None) -> str:
 
 
 def _trusted_str(candidate: Candidate) -> str:
-    """The row's trust verdict — ``yes`` / ``no`` / ``-``, the same
-    tri-state the views' ``args={'trusted': true}`` filter reads
+    """The row's trust verdict — ``yes`` / ``no`` / ``-``, exactly the
+    tri-state the views' ``args={'trusted': true}`` filter and the table
+    lens' ``where={'trusted': 'yes'}`` read
     (:func:`precis.quest.frontier.candidate_trusted`): ``no`` on any
     unconfirmed flag or stashed value, ``yes`` on an affirmative stamp
-    with none, ``-`` on no trust signal at all (gr592277)."""
+    with none, ``-`` on no trust signal at all (gr592277). The assurance
+    verdict is a separate column (:func:`_assurance_str`), never this
+    one — mixing ``PASS``/``WARN`` in here broke the lens filter
+    (gr592637 review)."""
     from precis.quest.frontier import candidate_trusted
 
-    if candidate.flags.get("barrier_assurance"):
-        return str(candidate.flags["barrier_assurance"])
     return {True: "yes", False: "no", None: "-"}[candidate_trusted(candidate)]
+
+
+def _assurance_str(candidate: Candidate) -> str:
+    """The barrier-assurance verdict — ``PASS`` / ``WARN`` / ``FAIL``, or
+    ``-`` when the candidate carries no assurance stamp (td700775)."""
+    stamp = candidate.flags.get("barrier_assurance")
+    return str(stamp) if stamp else "-"
 
 
 def _blocker_display(candidate: Candidate) -> str:
@@ -444,6 +454,7 @@ def build_results_rows(
             "U_L": _measure_str(measures, untrusted, "U_L"),
             "P_side": _measure_str(measures, untrusted, "P_side"),
             "trusted": _trusted_str(candidate),
+            "assurance": _assurance_str(candidate),
             "rls": _rls_display(pw_meta),
             "blocker": _blocker_display(candidate),
             "worst_problem": str(candidate.flags.get("worst_problem") or "-"),

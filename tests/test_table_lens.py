@@ -92,6 +92,16 @@ def test_aggregates_for_hidden_rows() -> None:
     assert "trusted:" in res.footer and "engine: v1=20, v2=10" in res.footer
 
 
+def test_aggregates_cover_columns_not_shown() -> None:
+    """gr592637 review: a projection (columns=['name']) selects the shown
+    cells, never the aggregate domain — the hidden rows' numeric and trust
+    aggregates still appear."""
+    res = _run({"columns": ["name"], "limit": 10})
+    assert res.body == "\n".join(f"c{i}" for i in range(10))
+    assert "energy: n=27" in res.footer
+    assert "no=23" in res.footer and "yes=7" in res.footer
+
+
 def test_never_cuts_row() -> None:
     rows = _rows()
     spec = parse_lens_args({"limit": 40}, columns=COLS)
