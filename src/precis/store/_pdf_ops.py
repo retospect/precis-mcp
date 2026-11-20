@@ -93,6 +93,89 @@ class PdfMixin:
 
     pool: ConnectionPool
 
+    def replace_ref_pdf(
+        self,
+        ref_id: int,
+        *,
+        old_sha: str,
+        sha: str,
+        path: str,
+        size: int,
+        pages: int,
+        source: str,
+    ) -> None:
+        """Adopt operator-supplied bytes without relabelling the old PDF.
+
+        The caller writes a separate file before this transaction. Old PDF
+        rows and identifiers remain valid aliases for their original bytes;
+        body chunks and their page coordinates remain untouched until reextract.
+        Locking the ref refuses a concurrent replacement rather than losing it.
+        """
+        from psycopg.types.json import Jsonb
+
+        from precis.errors import BadInput
+
+        with self.pool.connection() as c, c.transaction():
+            row = c.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id = %s "
+                "AND retired_at IS NULL FOR UPDATE",
+                (ref_id,),
+            ).fetchone()
+            if not row or str(row[0]).strip() != old_sha:
+                raise BadInput(
+                    "PDF changed during upload",
+                    next="reload the paper and retry Replace PDF",
+                )
+            owner = c.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind = 'pdf_sha256' AND id_value = %s",
+                (sha,),
+            ).fetchone()
+            if owner and owner[0] != ref_id:
+                raise BadInput(
+                    "uploaded PDF already belongs to another ref",
+                    next="inspect the duplicate paper before replacing this PDF",
+                )
+            c.execute(
+                "INSERT INTO pdfs "
+                "(pdf_sha256, content_hash, page_count, size_bytes, storage_path) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (pdf_sha256) DO UPDATE SET "
+                "page_count = EXCLUDED.page_count, size_bytes = EXCLUDED.size_bytes, "
+                "storage_path = EXCLUDED.storage_path",
+                (sha, sha, pages, size, path),
+            )
+            c.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES ('pdf_sha256', %s, %s, %s) ON CONFLICT DO NOTHING",
+                (sha, ref_id, source),
+            )
+            # A concurrent identifier insert must not silently adopt another
+            # ref's PDF after the initial ownership probe.
+            owner = c.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind = 'pdf_sha256' AND id_value = %s",
+                (sha,),
+            ).fetchone()
+            if owner is None or owner[0] != ref_id:
+                raise BadInput(
+                    "uploaded PDF was attached elsewhere during upload",
+                    next="reload the paper and inspect its PDF identifiers",
+                )
+            c.execute(
+                "UPDATE refs SET pdf_sha256 = %s, updated_at = now() WHERE ref_id = %s",
+                (sha, ref_id),
+            )
+            c.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload) "
+                "VALUES (%s, %s, 'pdf_replaced', %s)",
+                (
+                    ref_id,
+                    source,
+                    Jsonb({"old_sha": old_sha, "sha": sha, "bytes": size}),
+                ),
+            )
+
     # --- Step 1: authoritative storage_path -------------------------------
 
     def pdf_storage_path(

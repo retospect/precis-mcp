@@ -12,13 +12,15 @@ readers recompute (storage/scientific rationale: `routes/rxn.py`).
 
 **Ref readers.** Memory bodies render Markdown blocks through ``linkify.linkify_toon``;
 inline spans preserve single newlines so older line-oriented bodies remain
-legible. Code stays literal, including nested fences, and raw HTML is escaped.
+legible. Code stays literal; HTML is escaped.
 ``ref_urls`` is the shared native-reader map for Drive,
 handle resolution and tag pivots. Browse-menu membership cannot gate stored
 ref detail: optional kinds still render when their handler is absent. ORCID
 reads its stored identity/authored papers without upstream refresh. File kinds
 read stored chunks; calling filesystem ``get`` could retire a ref merely
 because this web process lacks its originating corpus mount.
+PDF replacements preserve identity (``routes.papers.replace_pdf``).
+
 ``/graph/{kind}/{id}.json`` (``routes/graph.py``) is ``Store.neighbourhood``
 as JSON plus ``ring_group`` buckets.
 

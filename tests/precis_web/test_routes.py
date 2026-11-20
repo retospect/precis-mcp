@@ -2610,26 +2610,80 @@ def test_paper_edit_clears_reviewed_stamp(client, runtime) -> None:
     assert ref.human_verified_by is None
 
 
-def test_paper_replace_pdf_swaps_file_bypassing_ocr(client, runtime, tmp_path) -> None:
-    """Uploading a replacement PDF overwrites the on-disk corpus file (so
-    the viewer serves good bytes) and refreshes the storage_path pointer —
-    without re-ingesting. Paper 10 (slug ``smith2024``) has no file yet, so
-    the write lands at the canonical shard ``<root>/s/smith2024.pdf``."""
-    good = b"%PDF-1.7\nreplacement body\n"
+def test_paper_replace_pdf_rehashes_and_preserves_old_file(
+    client, runtime, tmp_path
+) -> None:
+    """gr732410: replacement bytes must never be served under the old SHA."""
+    import hashlib
+
+    import fitz
+
+    old = tmp_path / "old.pdf"
+    old.write_bytes(b"old PDF bytes")
+    runtime.store.storage_paths["abc"] = str(old)
+    with fitz.open() as doc:
+        doc.new_page()
+        good = doc.tobytes()
+    sha = hashlib.sha256(good).hexdigest()
     resp = client.post(
         "/papers/10/replace-pdf",
         files={"file": ("fixed.pdf", good, "application/pdf")},
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    # Replace-pdf lives on the Meta tab — the redirect keeps the user there
-    # and flashes what the swap did (gr519746: no more silent outcome).
     loc = resp.headers["location"]
-    assert "tab=Meta" in loc and "pdf_note=" in loc
-    dest = tmp_path / "s" / "smith2024.pdf"
+    assert "tab=Meta" in loc and sha in loc and "Reextract" in loc
+    dest = tmp_path / f"{sha}.pdf"
     assert dest.read_bytes() == good
-    # pointer refreshed for the paper's sha ("abc") to the path we wrote.
-    assert ("abc", str(dest)) in runtime.store.storage_path_writes
+    assert old.read_bytes() == b"old PDF bytes"
+    assert runtime.store.storage_paths["abc"] == str(old)
+    assert runtime.store.fetch_refs_by_ids([10])[10].pdf_sha256 == sha
+    assert runtime.store.pdf_sizes[sha] == len(good)
+    assert (sha, str(dest)) in runtime.store.storage_path_writes
+
+
+def test_paper_replace_pdf_refuses_markup_destination(
+    client, runtime, tmp_path
+) -> None:
+    """gr732410: even a PDF upload cannot overwrite a recorded HTML source."""
+    old = tmp_path / "source.html"
+    old.write_text("<html>body</html>", encoding="utf-8")
+    runtime.store.storage_paths["abc"] = str(old)
+    resp = client.post(
+        "/papers/10/replace-pdf",
+        files={"file": ("fixed.pdf", b"%PDF-1.7\n", "application/pdf")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "non-.pdf" in resp.text
+    assert old.read_text(encoding="utf-8") == "<html>body</html>"
+    assert runtime.store.storage_path_writes == []
+
+
+def test_paper_reextract_pdf_uses_handler(client, runtime) -> None:
+    resp = client.post("/papers/10/reextract-pdf", follow_redirects=False)
+    assert resp.status_code == 303
+    edits = [args for verb, args in runtime.calls if verb == "edit"]
+    assert edits[-1]["id"] == "pa10"
+    assert edits[-1]["args"]["reextract"] is True
+
+
+def test_paper_reextract_pdf_surfaces_handler_refusal(client, runtime) -> None:
+    runtime.error_verbs.add("edit")
+    resp = client.post("/papers/10/reextract-pdf", follow_redirects=False)
+    assert resp.status_code == 400
+    assert "rejected by handler" in resp.text
+
+
+def test_paper_replace_pdf_rejects_unreadable_pdf(client, runtime, tmp_path) -> None:
+    resp = client.post(
+        "/papers/10/replace-pdf",
+        files={"file": ("broken.pdf", b"%PDF-1.7\nbroken", "application/pdf")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert runtime.store.storage_path_writes == []
+    assert not list(tmp_path.rglob("*.pdf"))
 
 
 def test_paper_replace_pdf_rejects_non_pdf(client, runtime, tmp_path) -> None:

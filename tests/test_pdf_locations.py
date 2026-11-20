@@ -145,3 +145,70 @@ def test_location_cascades_on_pdf_delete(store: Store) -> None:
             "SELECT count(*) FROM pdf_locations WHERE pdf_sha256 = %s", (sha,)
         ).fetchone()
     assert left is not None and left[0] == 0
+
+
+def test_replace_ref_pdf_keeps_old_identity_and_refreshes_stats(store: Store) -> None:
+    """gr732410: the pointer, identifier and PDF statistics change together."""
+    old_sha, sha = "a" * 64, "b" * 64
+    ref_id = _held_paper(
+        store, cite_key="replace", sha=old_sha, storage_path="/old.pdf"
+    )
+    store.replace_ref_pdf(
+        ref_id,
+        old_sha=old_sha,
+        sha=sha,
+        path="/new.pdf",
+        size=1234,
+        pages=7,
+        source="web:test",
+    )
+    assert store.fetch_refs_by_ids([ref_id])[ref_id].pdf_sha256 == sha
+    assert store.pdf_storage_path(old_sha) == "/old.pdf"
+    assert store.pdf_size_bytes(old_sha) == 100
+    assert store.pdf_storage_path(sha) == "/new.pdf"
+    assert store.pdf_size_bytes(sha) == 1234
+    assert store.pdf_page_count(sha) == 7
+    with store.pool.connection() as conn:
+        assert conn.execute(
+            "SELECT ref_id FROM ref_identifiers WHERE id_kind = %s AND id_value = %s",
+            ("pdf_sha256", sha),
+        ).fetchone() == (ref_id,)
+    assert store.events_for(ref_id)[-1].event == "pdf_replaced"
+
+
+def test_replace_ref_pdf_refuses_duplicate_and_stale_pointer(store: Store) -> None:
+    import pytest
+
+    from precis.errors import BadInput
+
+    old_sha, sha = "a" * 64, "b" * 64
+    ref_id = _held_paper(store, cite_key="replace", sha=old_sha)
+    other = _held_paper(store, cite_key="other", sha=sha, storage_path="/other.pdf")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value) VALUES (%s, %s, %s)",
+            (other, "pdf_sha256", sha),
+        )
+    with pytest.raises(BadInput, match="another ref"):
+        store.replace_ref_pdf(
+            ref_id,
+            old_sha=old_sha,
+            sha=sha,
+            path="/new.pdf",
+            size=1234,
+            pages=7,
+            source="web:test",
+        )
+    assert store.pdf_storage_path(sha) == "/other.pdf"
+    with pytest.raises(BadInput, match="changed during upload"):
+        store.replace_ref_pdf(
+            ref_id,
+            old_sha=sha,
+            sha="c" * 64,
+            path="/new.pdf",
+            size=1234,
+            pages=7,
+            source="web:test",
+        )
+    assert store.pdf_storage_path("c" * 64) is None
+    assert store.fetch_refs_by_ids([ref_id])[ref_id].pdf_sha256 == old_sha
