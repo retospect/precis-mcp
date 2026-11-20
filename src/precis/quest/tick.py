@@ -1419,13 +1419,13 @@ def _bench_runs_listing() -> str:
 def _skill_injection_section(stmt: str) -> str:
     """Inject high-confidence skill sections unless autoskill handles discovery."""
     try:
-        from precis.skill_index.injection import render_task_sections
+        from precis.skill_index import injection
         from precis.utils.llm import autoskill
 
         if autoskill.active():
             return ""
-        sections = render_task_sections(stmt)
-        return "\n" + sections + "\n" if sections else ""
+        block = injection.render_section_injection(injection.match_sections(stmt))
+        return "\n" + block + "\n" if block else ""
     except Exception:
         log.warning("run_quest_tick: skill injection failed", exc_info=True)
         return ""

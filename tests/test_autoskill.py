@@ -703,11 +703,28 @@ def test_wrong_dimension_embedder_is_refused(
 def _injected_sections(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
 
-    def fake_sections(text: str) -> str:
+    def fake_sections(text: str) -> injection.SectionSelection:
         calls.append(text)
-        return "# Auto-matched skill sections"
+        from precis.handlers.skill import _SkillSearchRow
 
-    monkeypatch.setattr(injection, "render_task_sections", fake_sections)
+        row = _SkillSearchRow(
+            slug="precis-overview",
+            score=1.0,
+            source="semantic",
+            section="~0 — Overview",
+            snippet="overview",
+        )
+        match = injection.SectionMatch(
+            slug="precis-overview",
+            chunk_idx=0,
+            row=row,
+            attribution="q1",
+            body="# Auto-matched skill sections",
+            winner=True,
+        )
+        return injection.SectionSelection((match,), 1)
+
+    monkeypatch.setattr(injection, "match_sections", fake_sections)
     return calls
 
 

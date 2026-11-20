@@ -1934,12 +1934,12 @@ def _m_body(ctx: AssemblyContext) -> str:
 
 def _m_skill_injection(ctx: AssemblyContext) -> str:
     """Inject high-confidence skill sections unless autoskill handles discovery."""
-    from precis.skill_index.injection import render_task_sections
+    from precis.skill_index import injection
     from precis.utils.llm import autoskill
 
     if autoskill.active():
         return ""
-    return render_task_sections(_ref_body(ctx))
+    return injection.render_section_injection(injection.match_sections(_ref_body(ctx)))
 
 
 def _m_anchor(ctx: AssemblyContext) -> str:
