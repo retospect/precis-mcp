@@ -295,7 +295,8 @@ enough.
 
 The `compact` detector fires on expiry, 90-day-cold reads, a half-history
 body or any pending retire proposal. Expiry is shielded, not blind: an
-expired node tagged `ruling` or `spec:*` (or `reto-ruling`), or one a
+expired node tagged `ruling`, `reto-ruling` or `spec:*` (or in
+section `rulings`/`specs`), or one a
 live, non-terminal todo/gripe/quest links to — either direction — gets
 no `expired` reason; when another trigger still fires, its evidence
 notes what shielded it. `review_due` has no shield — the node still owes
