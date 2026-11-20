@@ -267,7 +267,7 @@ class TestMemoryBatchEye:
             return f"BEGIN {handle}\n" + "x" * 150 + f"\nEND {handle}"
 
         monkeypatch.setattr(eye_mod, "render_eye", render)
-        monkeypatch.setattr(memory_mod, "BATCH_VIEW_PAGE_CHARS", 250)
+        monkeypatch.setattr(memory_mod, "batch_view_page_cap", lambda *a: 250)
         out, err = _get(
             runtime_with_store,
             kind="memory",
@@ -299,7 +299,7 @@ class TestMemoryBatchEye:
         is_hub: bool,
     ) -> None:
         import precis.handlers._eye as eye_mod
-        from precis.handlers._numeric_ref import BATCH_VIEW_PAGE_CHARS
+        from precis.handlers._numeric_ref import batch_view_page_cap
         from precis.handlers.memory import MemoryHandler
 
         first = _ref(store, "memory", "Oversized first eye")
@@ -308,7 +308,7 @@ class TestMemoryBatchEye:
             store.add_tag(first.id, Tag.parse("section:index"), set_by="agent")
         oversized = f"BEGIN me{first.id}\n" + "whole line " * 7 + "\n"
         oversized += ("member detail " * 6 + "\n") * 1000
-        assert len(oversized) > BATCH_VIEW_PAGE_CHARS
+        assert len(oversized) > batch_view_page_cap()
 
         def render(
             store: Any, handle: str, extent: Any, *, q: Any = None, ring: Any = None
@@ -346,7 +346,7 @@ class TestMemoryBatchEye:
             f"extent='fisheye+1hop'{selectors})"
         )
         assert out.endswith(continuation)
-        assert len(out) <= BATCH_VIEW_PAGE_CHARS + len(continuation)
+        assert len(out) <= batch_view_page_cap() + len(continuation)
         block = out.removesuffix(continuation).split("\n\n", 1)[1]
         lines = block.splitlines()
         assert lines[-1] == f"… cut — full read: {whole_read}"

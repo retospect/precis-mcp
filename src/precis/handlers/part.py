@@ -66,6 +66,7 @@ import re
 from collections.abc import Callable
 from typing import Any, ClassVar
 
+from precis._result_budget import body_bytes
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, Upstream
 from precis.format import render_agent_table
@@ -73,8 +74,8 @@ from precis.handlers._eye import is_eye_view
 from precis.handlers._links_render import render_links_section
 from precis.handlers._numeric_ref import (
     BATCH_ID_CAP,
-    BATCH_VIEW_PAGE_CHARS,
     _id_batch_next,
+    batch_view_page_cap,
 )
 from precis.pcb import catalog, jlc_api, jlc_library
 from precis.pcb._http import VendorError
@@ -282,10 +283,16 @@ class PartHandler(Handler):
         *,
         id: str | int | list[str | int] | None = None,
         view: str | None = None,
+        # ``args={'max_bytes': N}`` — the caller's stated read bound on a
+        # batch of ids (gr676312); pages the per-id blocks in ``_get_batch``
+        # at the stated size and rides the ``next:`` continuation.
+        # Declared (not swallowed by ``**_kw``) so the args= extras gate
+        # passes it.
+        max_bytes: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         if isinstance(id, (list, tuple)):
-            return self._get_batch(list(id), view=view)
+            return self._get_batch(list(id), view=view, max_bytes=max_bytes)
         if view is not None:
             if is_eye_view(view):
                 return self.eye(id=id, extent=view)
@@ -395,7 +402,9 @@ class PartHandler(Handler):
             body += "\n\n" + render_brief(facts, lcsc=lcsc)
         return Response(body=body)
 
-    def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
+    def _get_batch(
+        self, ids: list[Any], *, view: str | None, max_bytes: int | str | None = None
+    ) -> Response:
         """``get(id=[...])``: the single-id read mapped over every id, in
         the order given (gr520100).
 
@@ -405,9 +414,10 @@ class PartHandler(Handler):
         element takes the same spellings the singleton form does (``C…``
         any case, a pasted lcsc.com/jlcpcb.com URL); a miss is a one-line
         ``not found`` block, never a dropped id or an error for the whole
-        call. Whole blocks page under :data:`BATCH_VIEW_PAGE_CHARS`,
-        same as the numeric batch's view form — the unread tail is named
-        as the ``next:`` call's id list.
+        call. Whole blocks page under :func:`batch_view_page_cap` (the
+        explicit-read cap, or the caller's stated ``max_bytes`` —
+        gr676312), same as the numeric batch's view form — the unread
+        tail is named as the ``next:`` call's id list.
         """
         if not ids:
             raise BadInput(
@@ -439,17 +449,22 @@ class PartHandler(Handler):
                 blocks.append(f"{lcsc}  deleted")
         shown: list[str] = []
         used = 0
+        page_cap = batch_view_page_cap(max_bytes)
         for block in blocks:
-            if shown and used + len(block) > BATCH_VIEW_PAGE_CHARS:
+            if shown and used + body_bytes(block) > page_cap:
                 break
             shown.append(block)
-            used += len(block) + 2  # the "\n\n" join
+            used += body_bytes(block) + 2  # the "\n\n" join
         rest = lcses[len(shown) :]
         body = f"# {len(lcses)} parts (batch"
         body += f", view={view!r})\n\n" if view is not None else ")\n\n"
         body += "\n\n".join(shown)
         if rest:
             extra = f", view={view!r}" if view is not None else ""
+            if max_bytes is not None:
+                # The cursor must keep the acknowledgement or the next
+                # page would cut back to the frame cap.
+                extra += f", args={{'max_bytes': {max_bytes!r}}}"
             body += (
                 f"\n\n{len(rest)} more — next: get(kind='part', "
                 f"id=[{', '.join(repr(c) for c in rest)}]{extra})"

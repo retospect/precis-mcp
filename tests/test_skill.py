@@ -340,11 +340,18 @@ def test_get_rejects_literal_args_dict(skill: SkillHandler) -> None:
 # ── batch get (``id=[...]``, gr665340) ───────────────────────────────
 
 
-def test_get_batch_renders_one_block_per_id(skill: SkillHandler) -> None:
+def test_get_batch_renders_one_block_per_id(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The reported call: a list of ``slug~N`` ids used to be
     ``str()``-ed into one unparseable slug; now each element gets its
-    own read. Whole blocks page under BATCH_VIEW_PAGE_CHARS — the
-    unread tail is named as the ``next:`` call's id list."""
+    own read. Whole blocks page under the explicit-read cap
+    (``batch_view_page_cap``, gr676312) — the unread tail is named as
+    the ``next:`` call's id list. The cap sits far above these three
+    blocks, so the test pins it down to exercise the page."""
+    import precis.handlers._numeric_ref as numeric_ref_mod
+
+    monkeypatch.setattr(numeric_ref_mod, "batch_view_page_cap", lambda *a: 250)
     out = skill.get(
         id=[
             "precis-structure-help~15",

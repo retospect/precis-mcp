@@ -63,7 +63,12 @@ from psycopg import Connection
 from psycopg.errors import QueryCanceled
 
 from precis import slice_tokens, worktree_server
-from precis._result_budget import size_cell
+from precis._result_budget import (
+    body_bytes,
+    coerce_stated_cap,
+    explicit_read_cap,
+    size_cell,
+)
 from precis.corrected_call import retry_call
 from precis.dispatch import Hub, InitError
 from precis.errors import (
@@ -571,12 +576,44 @@ def _tag_response_body(
 #: here, so they fold to the default view (gr492994, gr492996).
 _PLAIN_LISTING_VIEWS = frozenset({"index", "ids", "list"})
 
-#: Page budget (chars) for the batch ``view=`` read (gr515524): only
-#: whole per-id blocks go on a page, so a block (a gripe's body or
-#: comment timeline) is never cut mid-text. Sized under the agent-context
-#: budget (~4 KiB) with headroom for the batch header and ``next:`` ids;
-#: a single block over budget still renders whole.
-BATCH_VIEW_PAGE_CHARS = 3500
+#: Header/join/continuation reserve (bytes) subtracted from the
+#: explicit-read cap when paging a batch read: the page must leave room
+#: for the batch header and the ``next:`` line it may append, so a full
+#: page still passes the dispatch chokepoint whole.
+_BATCH_VIEW_RESERVE_BYTES = 768
+
+
+def batch_view_page_cap(max_bytes: Any = None) -> int:
+    """Page budget (bytes) for the batch ``view=``/``extent=`` read.
+
+    Sized to the explicit-read cap, per call (gr676312): a batch id list
+    is the caller naming exactly what it wants — the acknowledgement in
+    Reto's 2026-11-14 direction ("if you ack it is big you should be
+    able to get as much as you want") — so it pages at the same cap
+    :func:`fit_result_body` applies to a single explicit read
+    (:func:`precis._result_budget.explicit_read_cap`), not under the
+    ~4 KiB agent-context fold the 3500-char value introduced for
+    (gr515524, when any batch overflow was a context-swamp risk and the
+    transport cap did not yet classify id-list reads as explicit). The
+    open-ended shapes (search, list, bare single reads) keep their own
+    budgets.
+
+    ``max_bytes`` is the caller's stated bound (``args={'max_bytes':
+    N}`` on the batch get — validated by
+    :func:`precis._result_budget.stated_read_cap` at the chokepoint, so
+    an in-process caller handing garbage gets the same ``BadInput``);
+    the page takes it instead of the frame cap, and the ``next:``
+    continuation re-states it so the cursor keeps the acknowledgement.
+    It is accepted on the ``view=`` route only — the ``extent=`` route's
+    stray-kwarg gate refuses it, and batch extent reads page by ids at
+    this same default cap. Only whole per-id blocks go on a page — a
+    block is never cut mid-text — and the unread tail rides the
+    ``next:`` call's id list.
+    """
+    base = (
+        coerce_stated_cap(max_bytes) if max_bytes is not None else explicit_read_cap()
+    )
+    return max(_BATCH_VIEW_RESERVE_BYTES * 2, base - _BATCH_VIEW_RESERVE_BYTES)
 
 
 @lru_cache(maxsize=1)
@@ -1137,6 +1174,13 @@ class NumericRefHandler(Handler):
         limit: int | str | None = None,
         cursor: str | None = None,
         tag_prefixes: Any = ...,
+        # ``args={'max_bytes': N}`` — the caller's stated read bound on a
+        # batch of ids (gr676312): pages the per-id view blocks at the
+        # stated size instead of the explicit-read cap, and rides the
+        # ``next:`` continuation. Declared (not swallowed by ``**_kw``)
+        # so the args= extras gate passes it; the dispatch chokepoint
+        # reads the same value for the fitted-body cap.
+        max_bytes: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         if (closed_since is not None or closed_until is not None) and not (
@@ -1175,7 +1219,9 @@ class NumericRefHandler(Handler):
                 ),
             )
         if isinstance(id, list):
-            return self._get_batch(id, view=view, tag_prefixes=tag_prefixes)
+            return self._get_batch(
+                id, view=view, tag_prefixes=tag_prefixes, max_bytes=max_bytes
+            )
         # `id='/recent'` and similar path views — subclasses may
         # implement custom list shapes (e.g. todo's open / done filters).
         if isinstance(id, str) and id.startswith("/"):
@@ -4900,7 +4946,12 @@ class NumericRefHandler(Handler):
     # ── batch forms (``id=[...]``) ─────────────────────────────────
 
     def _get_batch(
-        self, ids: list[Any], *, view: str | None, tag_prefixes: Any = ...
+        self,
+        ids: list[Any],
+        *,
+        view: str | None,
+        tag_prefixes: Any = ...,
+        max_bytes: int | str | None = None,
     ) -> Response:
         """``get(id=[...])``: one summary block per id, in the order given.
 
@@ -4913,7 +4964,8 @@ class NumericRefHandler(Handler):
         a one-line block, not an error for the whole call: the caller
         asked a question about N ids and gets N answers. ``view=`` maps
         the kind's own single-id view over the batch — see
-        :meth:`_get_batch_view`.
+        :meth:`_get_batch_view`; ``max_bytes`` (the caller's stated
+        bound, gr676312) pages that view form.
         """
         prefixes = self._parse_tag_prefixes(tag_prefixes)
         compact = view in {"list", "ids"}
@@ -4950,7 +5002,7 @@ class NumericRefHandler(Handler):
         if view in _BATCH_SUMMARY_VIEWS:
             view = None
         if view is not None:
-            return self._get_batch_view(ref_ids, view=view)
+            return self._get_batch_view(ref_ids, view=view, max_bytes=max_bytes)
         refs = self.store.fetch_refs_by_ids(ref_ids, include_deleted=True)
         live = [r.id for r in refs.values() if r.kind == self.kind and not r.retired_at]
         tag_rows = self.store.ref_tags_bulk(live)
@@ -5016,7 +5068,14 @@ class NumericRefHandler(Handler):
         )
         return Response(body=body, result_count=len(ref_ids))
 
-    def _get_batch_view(self, ref_ids: list[int], *, view: str, **kw: Any) -> Response:
+    def _get_batch_view(
+        self,
+        ref_ids: list[int],
+        *,
+        view: str,
+        max_bytes: int | str | None = None,
+        **kw: Any,
+    ) -> Response:
         """``get(id=[...], view='…')``: the single-id view mapped per id.
 
         Runs the kind's own ``get`` once per id, so subclass views keep
@@ -5032,11 +5091,13 @@ class NumericRefHandler(Handler):
         form. A view-level error (unknown view for the kind) raises on
         the first live id instead of stamping one refusal per id.
 
-        Pages whole blocks under :data:`BATCH_VIEW_PAGE_CHARS`
-        (gr515524): a batch whose join would overflow emits the ids that
-        fit and names the unread rest as the ``next:`` call's id list —
-        a self-describing cursor, instead of letting the result budget
-        cut a block mid-text in a fitted body.
+        Pages whole blocks under :func:`batch_view_page_cap`
+        (gr515524, resized by gr676312 to the explicit-read cap, or to
+        the caller's stated ``max_bytes`` when given): a batch whose
+        join would overflow emits the ids that fit and names the unread
+        rest as the ``next:`` call's id list — a self-describing cursor,
+        instead of letting the result budget cut a block mid-text in a
+        fitted body.
         """
         blocks: list[str] = []
         for rid in ref_ids:
@@ -5047,13 +5108,14 @@ class NumericRefHandler(Handler):
                 blocks.append(f"{handle}  not found")
             except Gone:
                 blocks.append(f"{handle}  deleted")
+        page_cap = batch_view_page_cap(max_bytes)
         shown: list[str] = []
         used = 0
         for block in blocks:
-            if shown and used + len(block) > BATCH_VIEW_PAGE_CHARS:
+            if shown and used + body_bytes(block) > page_cap:
                 break
             shown.append(block)
-            used += len(block) + 2  # the "\n\n" join
+            used += body_bytes(block) + 2  # the "\n\n" join
         rest = ref_ids[len(shown) :]
         body = (
             f"# {len(ref_ids)} {self._sense()} (batch, view={view!r})\n\n"
@@ -5063,8 +5125,12 @@ class NumericRefHandler(Handler):
             # The selectors kw carries (memory's rel/of_kind/direction,
             # gripe's comment/comments, job's file/point/frames) ride the
             # continuation as args= — dropping them would resume the
-            # batch unfiltered.
+            # batch unfiltered. So does a stated max_bytes: the cursor
+            # must keep the acknowledgement or the next page would cut
+            # back to the frame cap.
             args = {k: v for k, v in kw.items() if v is not None}
+            if max_bytes is not None:
+                args["max_bytes"] = max_bytes
             cont = f", args={args!r}" if args else ""
             body += (
                 f"\n\n{len(rest)} more — next: "

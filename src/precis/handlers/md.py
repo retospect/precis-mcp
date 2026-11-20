@@ -382,13 +382,19 @@ class MdHandler(Handler):
         id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
+        # ``args={'max_bytes': N}`` — the caller's stated read bound on a
+        # batch of ids (gr676312); pages the per-id blocks in ``_get_batch``
+        # at the stated size and rides the ``next:`` continuation.
+        # Declared (not swallowed by ``**_kw``) so the args= extras gate
+        # passes it.
+        max_bytes: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``id=[...]`` is the batch form (gr573040 — before this door a
         # list fell into ``str(id)`` and its ``'['`` head parsed as a
         # root alias, so the refusal never named the real problem).
         if isinstance(id, (list, tuple)):
-            return self._get_batch(list(id), view=view, q=q)
+            return self._get_batch(list(id), view=view, q=q, max_bytes=max_bytes)
         # find-in-ref (gr486840): ``q`` on a concrete get is the shared
         # find, never silently dropped.
         if q is not None:
@@ -450,7 +456,12 @@ class MdHandler(Handler):
         )
 
     def _get_batch(
-        self, ids: list[Any], *, view: str | None, q: str | None
+        self,
+        ids: list[Any],
+        *,
+        view: str | None,
+        q: str | None,
+        max_bytes: int | str | None = None,
     ) -> Response:
         """``get(id=[...])``: the single-id read mapped over every id, in
         the order given (gr573040).
@@ -463,16 +474,19 @@ class MdHandler(Handler):
         a root); a miss is a one-line ``not found`` block, never a
         dropped id or an error for the whole call. ``q=`` carries
         through to each element's find-in-ref. Whole blocks page under
-        :data:`BATCH_VIEW_PAGE_CHARS`, same as the numeric batch's view
-        form — the unread tail is named as the ``next:`` call's id list.
+        :func:`batch_view_page_cap` (the explicit-read cap, or the
+        caller's stated ``max_bytes`` — gr676312), same as the numeric
+        batch's view form — the unread tail is named as the ``next:``
+        call's id list.
         """
         # Lazy import: the DB-free handler keeps ``_numeric_ref`` (and its
         # psycopg/store chain) out of its module imports — paper.py's
         # convention for the same helpers.
+        from precis._result_budget import body_bytes
         from precis.handlers._numeric_ref import (
             BATCH_ID_CAP,
-            BATCH_VIEW_PAGE_CHARS,
             _id_batch_next,
+            batch_view_page_cap,
         )
 
         if not ids:
@@ -485,6 +499,10 @@ class MdHandler(Handler):
         extra = (f", view={view!r}" if view is not None else "") + (
             f", q={str(q).strip()!r}" if q is not None else ""
         )
+        if max_bytes is not None:
+            # The cursor must keep the acknowledgement or the next page
+            # would cut back to the frame cap.
+            extra += f", args={{'max_bytes': {max_bytes!r}}}"
         if len(ids) > BATCH_ID_CAP:
             raise BadInput(
                 f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
@@ -508,11 +526,12 @@ class MdHandler(Handler):
                 blocks.append(f"{a}  not found")
         shown: list[str] = []
         used = 0
+        page_cap = batch_view_page_cap(max_bytes)
         for block in blocks:
-            if shown and used + len(block) > BATCH_VIEW_PAGE_CHARS:
+            if shown and used + body_bytes(block) > page_cap:
                 break
             shown.append(block)
-            used += len(block) + 2  # the "\n\n" join
+            used += body_bytes(block) + 2  # the "\n\n" join
         rest = addr[len(shown) :]
         body = f"# {len(addr)} md ids (batch"
         if view is not None:

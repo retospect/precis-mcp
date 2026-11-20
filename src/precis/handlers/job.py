@@ -1187,6 +1187,11 @@ class JobHandler(NumericRefHandler):
         # ``/garden/proposals``'s action filter (gr681311):
         # ``args={'action': 'merge'}``. Declared for the args= gate.
         action: str | None = None,
+        # ``args={'max_bytes': N}`` — the caller's stated read bound on a
+        # batch of ids (gr676312); forwarded to the per-id view render
+        # (``_get_batch_view``) so its blocks page at the stated size.
+        # Declared so the args= extras gate passes it.
+        max_bytes: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``/logs`` takes its filters from the id's query string; a
@@ -1297,16 +1302,17 @@ class JobHandler(NumericRefHandler):
                     next="get(kind='job', id='/builds', args={'sha': '<commit>'})",
                 )
             if view in {"list", "ids"}:
-                return super().get(id=id, view=view, q=q, **_kw)
+                return super().get(id=id, view=view, q=q, max_bytes=max_bytes, **_kw)
             if view is not None:
                 return self._get_batch_view(
                     self._coerce_ids(id),
                     view=view,
+                    max_bytes=max_bytes,
                     file=file,
                     point=point,
                     frames=frames,
                 )
-            return super().get(id=id, view=view, q=q, **_kw)
+            return super().get(id=id, view=view, q=q, max_bytes=max_bytes, **_kw)
         if view == "transcript":
             ref = self._resolve_live_ref(self._coerce_id(id))
             return interpreted(self._render_transcript_view(ref), readings)

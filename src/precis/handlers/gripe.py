@@ -2927,6 +2927,11 @@ class GripeHandler(NumericRefHandler):
         # route like ``page``/``sort``.
         closed_since: str | None = None,
         closed_until: str | None = None,
+        # ``args={'max_bytes': N}`` — the caller's stated read bound on a
+        # batch of ids (gr676312); forwarded to the per-id view render
+        # (``_get_batch_view``) so its blocks page at the stated size.
+        # Declared so the args= extras gate passes it.
+        max_bytes: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``args={'page': N}`` pages the id='/open' / '/wontfix' lists; the
@@ -3024,7 +3029,9 @@ class GripeHandler(NumericRefHandler):
             if raw_view in {"list", "ids"}:
                 # Compact batch views: checked on the pre-fold view, which
                 # plain_listing_view folds to None above.
-                return super().get(id=id, view=raw_view, q=q, **_kw)
+                return super().get(
+                    id=id, view=raw_view, q=q, max_bytes=max_bytes, **_kw
+                )
             # Batch form: one summary block per id by default, or the
             # single-id view mapped over each (gr552235). The comment
             # selectors forward per id — on a bare get they mean
@@ -3035,6 +3042,7 @@ class GripeHandler(NumericRefHandler):
                     self._get_batch_view(
                         self._coerce_ids(id),
                         view="comments",
+                        max_bytes=max_bytes,
                         comment=comment,
                         comments=comments,
                     ),
@@ -3047,10 +3055,11 @@ class GripeHandler(NumericRefHandler):
                 return self._get_batch_view(
                     self._coerce_ids(id),
                     view=view,
+                    max_bytes=max_bytes,
                     comment=comment,
                     comments=comments,
                 )
-            return super().get(id=id, view=view, q=q, **_kw)
+            return super().get(id=id, view=view, q=q, max_bytes=max_bytes, **_kw)
         readings: list[str] = []
         single = id is not None and not (isinstance(id, str) and id.startswith("/"))
         if view in _VIEW_ALIASES and single and q is None:

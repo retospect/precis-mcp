@@ -387,15 +387,27 @@ def test_get_batch_view_gripe_comments_and_missing(hub: Hub) -> None:
     assert f"gr{missing}  not found" in body
 
 
-def test_get_batch_view_pages_whole_blocks(hub: Hub) -> None:
+def test_get_batch_view_pages_whole_blocks(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """gr515524: a batch view join that would overflow the fold emits the
     whole per-id blocks that fit and names the unread ids as the next
-    call — never a mid-text cut behind a more() cursor."""
+    call — never a mid-text cut behind a more() cursor. The page cap is
+    the explicit-read cap (gr676312), far above these blocks, so the
+    test pins it down to force the overflow."""
+    import precis.handlers._numeric_ref as numeric_ref_mod
+    from precis._result_budget import body_bytes
+
     handler = GripeHandler(hub=hub)
     ids = [
         id_of(handler.put(text=f"paged batch {i}\n" + "x" * 1200).body)
         for i in range(4)
     ]
+    blocks = [handler.get(id=rid, view="full").body for rid in ids]
+    header = "# 4 gripe (batch, view='full')\n\n"
+    # Two blocks fit, the third breaks the page.
+    cap = body_bytes(header) + body_bytes(blocks[0]) + 2 + body_bytes(blocks[1])
+    monkeypatch.setattr(numeric_ref_mod, "batch_view_page_cap", lambda *a: cap)
     resp = handler.get(id=_batch(*ids), view="full")
     body = resp.body
     assert body.startswith("# 4 gripe (batch, view='full')")
@@ -412,6 +424,46 @@ def test_get_batch_view_pages_whole_blocks(hub: Hub) -> None:
     assert rest.startswith("# 2 gripe (batch, view='full')")
     assert f"# gripe {ids[2]}" in rest and f"# gripe {ids[3]}" in rest
     assert "more — next:" not in rest
+
+
+def test_get_batch_view_stated_max_bytes_pages_past_frame(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr676312: a caller-stated ``args={'max_bytes': N}`` on a batch
+    view read pages the blocks at the stated size, and the ``next:``
+    cursor re-states the bound so a continuation keeps it."""
+    from precis._result_budget import body_bytes
+
+    handler = GripeHandler(hub=hub)
+    ids = [
+        id_of(handler.put(text=f"stated page {i}\n" + "y" * 3000).body)
+        for i in range(3)
+    ]
+    blocks = [handler.get(id=rid, view="full").body for rid in ids]
+    header = "# 3 gripe (batch, view='full')\n\n"
+    three = body_bytes(header) + sum(2 + body_bytes(b) for b in blocks)
+    # Frame cap sized to admit exactly one block: the rest ride the
+    # cursor without the stated bound.
+    one = body_bytes(blocks[0]) + body_bytes(blocks[1]) + 1
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", str(one + 768))
+    resp = handler.get(id=_batch(*ids), view="full")
+    assert "2 more — next:" in resp.body
+    assert f"# gripe {ids[1]}" not in resp.body
+    # A stated bound sized to admit exactly two blocks: two show, the
+    # third rides a cursor that re-states the acknowledgement.
+    resp = handler.get(id=_batch(*ids), view="full", max_bytes=three)
+    body = resp.body
+    assert f"# gripe {ids[0]}" in body and f"# gripe {ids[1]}" in body
+    assert f"# gripe {ids[2]}" not in body
+    assert (
+        f"1 more — next: get(kind='gripe', id=[{ids[2]}], "
+        f"view='full', args={{'max_bytes': {three}}})" in body
+    )
+    # Garbage refuses the same way the chokepoint refuses it.
+    from precis.errors import BadInput
+
+    with pytest.raises(BadInput, match="positive integer"):
+        handler.get(id=_batch(*ids), view="full", max_bytes="lots")
 
 
 def test_get_batch_view_unknown_view_raises(hub: Hub) -> None:

@@ -160,7 +160,12 @@ from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-from precis._result_budget import result_context_cap, row_size_cell, size_cell
+from precis._result_budget import (
+    body_bytes,
+    result_context_cap,
+    row_size_cell,
+    size_cell,
+)
 from precis.corrected_call import retry_call
 from precis.errors import (
     BadInput,
@@ -196,10 +201,10 @@ from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
     _BASE_VIEWS,
     BATCH_ID_CAP,
-    BATCH_VIEW_PAGE_CHARS,
     NumericRefHandler,
     _id_batch_next,
     _tag_names_axis,
+    batch_view_page_cap,
 )
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.handlers.plaintext import _require_find_and_text
@@ -984,6 +989,13 @@ class MemoryHandler(AuditedRetirementHandler):
         # list views (gr568237).
         page: int | str | None = None,
         page_size: int | str | None = None,
+        # ``args={'max_bytes': N}`` — the caller's stated read bound on
+        # a batch of ids (gr676312); forwarded to the per-id view render
+        # so its blocks page at the stated size, and re-stated on the
+        # ``next:`` continuation. Declared so the args= extras gate
+        # passes it; the dispatch chokepoint reads the same value for
+        # the fitted-body cap.
+        max_bytes: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         if page is not None:
@@ -1092,6 +1104,7 @@ class MemoryHandler(AuditedRetirementHandler):
             return self._get_batch_view(
                 self._coerce_ids(id),
                 view=view,
+                max_bytes=max_bytes,
                 rel=rel,
                 of_kind=of_kind,
                 direction=direction,
@@ -1116,7 +1129,7 @@ class MemoryHandler(AuditedRetirementHandler):
             return Response(body=processing_report(self.store, ref.id).render())
         if view == "smells" and concrete:
             if isinstance(id, list):
-                return self._get_batch(id, view=view)
+                return self._get_batch(id, view=view, max_bytes=max_bytes)
             return render_memory_smells(
                 self.store, self._resolve_live_ref(self._coerce_id(id))
             )
@@ -1217,7 +1230,9 @@ class MemoryHandler(AuditedRetirementHandler):
             # prose alone, not the card + link rows the fold used to
             # answer. A batch maps it per id via ``_get_batch_view``.
             if isinstance(id, list):
-                return self._get_batch_view(self._coerce_ids(id), view="body")
+                return self._get_batch_view(
+                    self._coerce_ids(id), view="body", max_bytes=max_bytes
+                )
             ref = self._resolve_live_ref(self._coerce_id(id))
             handle = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
             return interpreted(
@@ -1231,7 +1246,10 @@ class MemoryHandler(AuditedRetirementHandler):
             return interpreted(resp, [f"view={view!r} read as {shown}"])
         if isinstance(id, list) and view in {"list", "ids"}:
             return self._get_batch(
-                id, view=view, tag_prefixes=_kw.get("tag_prefixes", ...)
+                id,
+                view=view,
+                tag_prefixes=_kw.get("tag_prefixes", ...),
+                max_bytes=max_bytes,
             )
         if concrete and view is not None and view not in _BASE_VIEWS:
             legal = [
@@ -1323,17 +1341,18 @@ class MemoryHandler(AuditedRetirementHandler):
         """Bounded scalar eyes, with plain batch validation and missing-ID blocks."""
         ref_ids = self._coerce_ids(ids)
         header = f"# {len(ref_ids)} memory (batch, extent={extent!r})\n\n"
-        block_budget = BATCH_VIEW_PAGE_CHARS - len(header)
+        page_cap = batch_view_page_cap()
+        block_budget = page_cap - body_bytes(header)
         selectors = f", q={q!r}" if q is not None else ""
         if ring is not None:
             selectors += f", args={{'ring': {ring!r}}}"
         blocks: list[str] = []
-        used = len(header)
+        used = body_bytes(header)
         for rid in ref_ids:
             try:
                 resp = self.eye(id=rid, extent=extent, q=q, ring=ring)
                 block = resp.body
-                if len(block) > block_budget:
+                if body_bytes(block) > block_budget:
                     # The scalar read, not a hub's members hint: the cut text
                     # can be the body, which view='members' does not show.
                     whole_read = (
@@ -1341,9 +1360,9 @@ class MemoryHandler(AuditedRetirementHandler):
                     )
                     trailer = f"… cut — full read: {whole_read}"
                     lines: list[str] = []
-                    size = len(trailer)
+                    size = body_bytes(trailer)
                     for line in block.splitlines():
-                        size += len(line) + 1
+                        size += body_bytes(line) + 1
                         if size > block_budget:
                             break
                         lines.append(line)
@@ -1352,10 +1371,10 @@ class MemoryHandler(AuditedRetirementHandler):
                 block = f"me{rid}  not found"
             except Gone:
                 block = f"me{rid}  deleted"
-            if blocks and used + len(block) > BATCH_VIEW_PAGE_CHARS:
+            if blocks and used + body_bytes(block) > page_cap:
                 break
             blocks.append(block)
-            used += len(block) + 2
+            used += body_bytes(block) + 2
         body = header + "\n\n".join(blocks)
         rest = ref_ids[len(blocks) :]
         if rest:
@@ -1589,19 +1608,28 @@ class MemoryHandler(AuditedRetirementHandler):
         return render_agent_table(rows, schema=["section", "size", "title"])
 
     def _get_batch(
-        self, ids: list[Any], *, view: str | None, tag_prefixes: Any = ...
+        self,
+        ids: list[Any],
+        *,
+        view: str | None,
+        tag_prefixes: Any = ...,
+        max_bytes: int | str | None = None,
     ) -> Response:
         """``get(id=[...])``: each memory in full, in the order given.
 
         Same body as a single ``get``, minus a ``Next:`` trailer per memory;
         one trailer at the end points at the fisheye neighbourhood. A missing
-        or deleted id is a one-line block.
+        or deleted id is a one-line block. ``max_bytes`` (the caller's
+        stated bound, gr676312) pages the per-id view form the same way
+        the base pages it.
         """
         if view in {"list", "ids"}:
-            return super()._get_batch(ids, view=view, tag_prefixes=tag_prefixes)
+            return super()._get_batch(
+                ids, view=view, tag_prefixes=tag_prefixes, max_bytes=max_bytes
+            )
         ref_ids = self._coerce_ids(ids)
         if view is not None:
-            return self._get_batch_view(ref_ids, view=view)
+            return self._get_batch_view(ref_ids, view=view, max_bytes=max_bytes)
         blocks: list[str] = []
         for rid in ref_ids:
             handle = handle_registry.try_format(self.kind, rid) or str(rid)

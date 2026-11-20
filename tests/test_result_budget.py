@@ -888,3 +888,195 @@ def test_skill_get_over_cap_returns_head_and_sized_outline(
     assert "outline:" in body
     assert "precis-overview~0" in body
     assert "kB" in body
+
+
+# ── gr676312: batch id-list reads are explicit, with a stated-bound dial ──
+
+
+def _two_body_nodes(store: Store, words: int = 400) -> tuple[int, int]:
+    """Two memory nodes whose ~2 kB+ bodies are the gripe's repro shape."""
+    ids = []
+    for label in ("alpha", "beta"):
+        ref = store.insert_ref(kind="memory", slug=None, title=f"batch {label}")
+        store.chunks.insert_chunks(
+            ref.id,
+            [
+                ChunkInsert(
+                    ord=0,
+                    text=f"## {label}\n\n" + f"{label} prose " * words,
+                    meta={"chunk_kind": "memory_body"},
+                )
+            ],
+        )
+        ids.append(ref.id)
+    return ids[0], ids[1]
+
+
+def test_batch_id_list_classifies_explicit_before_view_and_extent() -> None:
+    """gr676312 (review td704220): the id-list check must run before the
+    view=/extent= checks, or a batch body/extent read falls back to the
+    single/extent shapes and an enabled context cap can cut the joined
+    blocks mid-page."""
+    from precis._result_budget import read_shape
+
+    assert read_shape("get", {"id": [1, 2], "view": "body"}) == "explicit"
+    assert read_shape("get", {"id": [1, 2], "view": "full"}) == "explicit"
+    assert read_shape("get", {"id": [1, 2], "extent": "fisheye"}) == "explicit"
+    assert read_shape("get", {"id": [1, 2], "view": "fisheye+1hop"}) == "explicit"
+    assert (
+        read_shape(
+            "get",
+            {"id": [1, 2], "extent": "fisheye", "__extras__": {"max_bytes": 9}},
+        )
+        == "explicit"
+    )
+    # Untouched neighbours of the reorder.
+    assert read_shape("get", {"id": 5, "view": "body"}) == "single"
+    assert read_shape("get", {"id": 5, "extent": "fisheye"}) == "extent"
+    assert read_shape("get", {"id": [1, 2]}) == "explicit"
+
+
+def test_batch_body_read_serves_both_bodies_one_call(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The gripe's call: get(kind='memory', id=[A, B], view='body') — both
+    ~2 kB+ bodies in one result, no 'more — next:' cursor."""
+    first, second = _two_body_nodes(store)
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "memory", "id": [first, second], "view": "body"}
+    )
+    assert is_error is False
+    assert "alpha prose" in body and "beta prose" in body
+    assert "more — next:" not in body
+    assert "… truncated" not in body
+
+
+def test_batch_body_read_skips_enabled_context_cap(
+    runtime_with_store: PrecisRuntime,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr676312 runtime path: with the agent-context cap enabled and
+    fold on, a batch body read over that cap still returns whole — the
+    explicit classification skips the context cap that a 'single'-shape
+    batch read used to hit, losing whole blocks and their cursor."""
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "4096")
+    first, second = _two_body_nodes(store, words=400)
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "memory", "id": [first, second], "view": "body"}, fold=True
+    )
+    assert is_error is False
+    assert "alpha prose" in body and "beta prose" in body
+    assert "more — next:" not in body
+    assert "… truncated" not in body
+    assert len(body.encode("utf-8")) > 4096
+
+
+def test_batch_body_read_stated_max_bytes_past_frame_cap(
+    runtime_with_store: PrecisRuntime,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr676312 brief step 2: a stated args={'max_bytes': N} is the
+    caller's acknowledgement past the transport cap — the batch read
+    serves as much as was asked for, and the continuation re-states the
+    bound."""
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "4096")
+    ids = []
+    for i in range(4):
+        ref = store.insert_ref(kind="memory", slug=None, title=f"stated node {i}")
+        store.chunks.insert_chunks(
+            ref.id,
+            [
+                ChunkInsert(
+                    ord=0,
+                    text=f"## node {i}\n\n" + f"stated prose {i} " * 250,
+                    meta={"chunk_kind": "memory_body"},
+                )
+            ],
+        )
+        ids.append(ref.id)
+    # Frame cap alone: the batch pre-page emits one block and names the
+    # rest on the cursor, under the chokepoint's fit.
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "memory", "id": ids, "view": "body"}, fold=True
+    )
+    assert is_error is False
+    assert "… truncated" not in body
+    assert "3 more — next:" in body
+    assert "stated prose 0" in body
+    assert "stated prose 3" not in body
+    # Stated bound: the pre-page and the explicit fit both take it.
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get",
+        {
+            "kind": "memory",
+            "id": ids,
+            "view": "body",
+            "__extras__": {"max_bytes": 24576},
+        },
+        fold=True,
+    )
+    assert is_error is False
+    assert "… truncated" not in body
+    assert "more — next:" not in body
+    for i in range(4):
+        assert f"stated prose {i}" in body
+
+
+def test_stated_max_bytes_validation_refuses_at_chokepoint(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """Garbage and over-ceiling stated bounds refuse before dispatch,
+    with a next step — never clamped silently."""
+    from precis._result_budget import MAX_STATED_BODY_BYTES
+
+    first, second = _two_body_nodes(store)
+    for bad in ("lots", 0, True, MAX_STATED_BODY_BYTES + 1):
+        body, is_error = runtime_with_store.dispatch_with_status(
+            "get",
+            {
+                "kind": "memory",
+                "id": [first, second],
+                "view": "body",
+                "__extras__": {"max_bytes": bad},
+            },
+        )
+        assert is_error is True, bad
+        if bad == MAX_STATED_BODY_BYTES + 1:
+            assert "exceeds the stated-read ceiling" in body
+        else:
+            assert "must be a positive integer" in body
+
+
+def test_fit_result_body_honours_stated_bound_for_explicit_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stated dial replaces the frame cap for explicit reads; other
+    shapes keep the frame cap (open-ended protection is the point)."""
+    monkeypatch.delenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", raising=False)
+    monkeypatch.delenv("PRECIS_MAX_BODY_BYTES", raising=False)
+    from precis._result_budget import DEFAULT_MAX_BODY_BYTES
+
+    body = "\n".join(f"row {i}" for i in range(3000))
+    assert len(body.encode("utf-8")) > DEFAULT_MAX_BODY_BYTES
+
+    def _fit(read: str, stated: int | None) -> str:
+        return fit_result_body(
+            body,
+            verb="get",
+            kind="memory",
+            context_limited=False,
+            targeted_hint=None,
+            read=read,
+            stated_max_bytes=stated,
+        )
+
+    sized = len(body.encode("utf-8"))
+    out = _fit("explicit", sized)
+    assert out == body  # the stated bound admits the whole read
+    out = _fit("explicit", 5000)
+    assert "cap stated max_bytes (5000 bytes)" in out
+    assert len(out.encode("utf-8")) <= 5000 + 200
+    out = _fit("single", sized)
+    assert "… truncated: showing" in out  # single shape ignores the dial

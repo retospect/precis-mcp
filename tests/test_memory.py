@@ -361,9 +361,13 @@ def test_get_links_batch_paged_continuation_keeps_filters(
     wide = store.insert_ref(kind="memory", slug=None, title="wide", meta={}).id
     b = store.insert_ref(kind="memory", slug=None, title="b", meta={}).id
     c = store.insert_ref(kind="memory", slug=None, title="c", meta={}).id
-    # One links-view block big enough to page: ~200 outbound part-of
-    # edges overflow BATCH_VIEW_PAGE_CHARS on their own.
-    for i in range(200):
+    # One links-view block big enough to page: enough outbound part-of
+    # edges to overflow the batch page cap (the explicit-read cap,
+    # gr676312) on their own — rows are at least ~10 bytes each.
+    from precis.handlers._numeric_ref import batch_view_page_cap
+
+    n_edges = batch_view_page_cap() // 10 + 100
+    for i in range(n_edges):
         leaf = store.insert_ref(kind="memory", slug=None, title=f"leaf {i}", meta={}).id
         store.add_link(src_ref_id=wide, dst_ref_id=leaf, relation="part-of")
     store.add_link(src_ref_id=b, dst_ref_id=wide, relation="part-of")

@@ -17,10 +17,18 @@ refusal. The context cap ``PRECIS_TOOL_RESULT_CONTEXT_BYTES`` is opt-in
 (unset or 0 = off); when set it binds the open-ended shapes below.
 
 * **explicit** — the caller named exactly what it wanted (a ``~``
-  selector, a ``/<view>`` id suffix, a list of ids). Skips the context
+  selector, a ``/<view>`` id suffix, a list of ids — with or without a
+  ``view=``/``extent=``, gr676312). Skips the context
   cap; only ``PRECIS_MAX_BODY_BYTES`` bounds it, and over that the
   leading lines fit plus a ``rest:``/``next:`` line naming what to ask
-  for next.
+  for next. An acknowledged read can state its own higher bound —
+  ``args={'max_bytes': N}``, honoured up to
+  :data:`MAX_STATED_BODY_BYTES` (:func:`stated_read_cap`) — and batch
+  block reads pre-page to the same dial
+  (:func:`precis.handlers._numeric_ref.batch_view_page_cap`), so a
+  caller that acked the size gets as much as it asked for (Reto's
+  2026-11-14 direction on gr676312), while open-ended shapes keep the
+  small default.
 * **extent** — a fisheye render: the node block first, then ring rows
   in rank order until the cap; dropped rows are named by handle.
 * **list** — a search / list view: the top rows that fit, then ``N
@@ -45,12 +53,18 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from precis.errors import ResultBudgetExceeded
+from precis.errors import BadInput, ResultBudgetExceeded
 
 #: Not a default cap any more — the size budget handlers pre-trim to, and
 #: the value opt-in context limiting is usually set to.
 DEFAULT_CONTEXT_BODY_BYTES = 4096
 DEFAULT_MAX_BODY_BYTES = 24576
+
+#: Hard ceiling for a caller-stated read bound (``args={'max_bytes': N}``,
+#: gr676312). An acknowledged read may exceed the transport cap up to
+#: this; above it the stated bound is refused with a ``next`` step rather
+#: than silently clamped — a value this large names a mistake, not a read.
+MAX_STATED_BODY_BYTES = 1_048_576
 
 #: ``id='x/<view>'`` suffixes that count as an explicit part-read (the
 #: bounded path-view grammar of skill/paper-style ids). A ``~`` selector
@@ -157,6 +171,14 @@ def read_shape(verb: str, args: dict[str, Any]) -> str:
     if verb != "get":
         return "single"
     idv = args.get("id")
+    # A batch id list is the caller naming exactly what it wants — the
+    # acknowledgement is the list itself, so it classifies explicit
+    # *before* the view=/extent= checks (gr676312): a batch body/extent
+    # read must not fall back to the single/extent shapes and their
+    # enabled-context-cap fit, which could cut the joined blocks mid-page
+    # and lose the pre-paged continuation whole.
+    if isinstance(idv, list):
+        return "explicit"
     view = args.get("view")
     extras = args.get("__extras__")
     extent = args.get("extent")
@@ -173,8 +195,6 @@ def read_shape(verb: str, args: dict[str, Any]) -> str:
         # for a view, not a bounded part of one. Over cap it gets the
         # single-ref treatment: head + the view's own targeted hint.
         return "single"
-    if isinstance(idv, list):
-        return "explicit"
     if isinstance(idv, str):
         s = idv.strip()
         if s.startswith("/"):
@@ -190,6 +210,85 @@ def read_shape(verb: str, args: dict[str, Any]) -> str:
     if idv is None:
         return "list"
     return "single"
+
+
+def explicit_read_cap() -> int:
+    """The cap that bounds an explicit read, in bytes.
+
+    ``PRECIS_MAX_BODY_BYTES`` when set, else
+    :data:`DEFAULT_MAX_BODY_BYTES`. The single source both
+    :func:`fit_result_body` (the ``read='explicit'`` branch) and the
+    batch view/eye pre-page (:func:`precis.handlers._numeric_ref.
+    batch_view_page_cap`, gr676312) read, so a batch of ids — the caller
+    naming exactly what it wants — pages at the same cap a single
+    explicit read gets, never tighter.
+    """
+    return _env_cap("PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)
+
+
+def coerce_stated_cap(value: Any) -> int:
+    """Validate one caller-stated read bound; ``BadInput`` on garbage.
+
+    Shared by :func:`stated_read_cap` (the dispatch chokepoint's read of
+    ``args=``/top-level ``max_bytes=``) and the batch pre-page
+    (:func:`precis.handlers._numeric_ref.batch_view_page_cap`), so an
+    in-process caller handing either path garbage gets the same refusal.
+    """
+    if isinstance(value, bool):
+        raise BadInput(
+            f"max_bytes= must be a positive integer, got {value!r}",
+            next="get(kind=…, id=[...], args={'max_bytes': 65536})",
+        )
+    try:
+        n_bytes = int(str(value).strip())
+    except ValueError:
+        raise BadInput(
+            f"max_bytes= must be a positive integer, got {value!r}",
+            next="get(kind=…, id=[...], args={'max_bytes': 65536})",
+        ) from None
+    if n_bytes <= 0:
+        raise BadInput(
+            f"max_bytes= must be a positive integer, got {value!r}",
+            next="get(kind=…, id=[...], args={'max_bytes': 65536})",
+        )
+    if n_bytes > MAX_STATED_BODY_BYTES:
+        raise BadInput(
+            f"max_bytes={n_bytes} exceeds the stated-read ceiling "
+            f"{MAX_STATED_BODY_BYTES} — page by ids instead",
+            next=(
+                f"get(kind=…, id=[<the rest>], view=…, "
+                f"args={{'max_bytes': {MAX_STATED_BODY_BYTES}}})"
+            ),
+        ) from None
+    return n_bytes
+
+
+def stated_read_cap(args: dict[str, Any]) -> int | None:
+    """The caller-stated read bound, in bytes — ``args={'max_bytes': N}``
+    (or a top-level ``max_bytes=``), gr676312.
+
+    Reto's 2026-11-14 direction on the gripe: "if you ack it is big you
+    should be able to get as much as you want" — a list of ids (or any
+    explicit shape) is the acknowledgement, and the stated bound is the
+    "as much as you want": the dispatch chokepoint passes it to
+    :func:`fit_result_body`, which honours it in place of the
+    ``PRECIS_MAX_BODY_BYTES`` frame cap for explicit reads, and the batch
+    pre-page reads the same value so block paging never cuts earlier
+    than the chokepoint would. Open-ended shapes (search, list, bare
+    single reads) ignore it — their protection is the point.
+
+    ``None`` when unstated; the value itself is validated by
+    :func:`coerce_stated_cap` — a bound that is not a positive integer,
+    or exceeds :data:`MAX_STATED_BODY_BYTES`, refuses with a ``next``
+    step rather than clamping silently.
+    """
+    stated = args.get("max_bytes")
+    extras = args.get("__extras__")
+    if stated is None and isinstance(extras, dict):
+        stated = extras.get("max_bytes")
+    if stated is None:
+        return None
+    return coerce_stated_cap(stated)
 
 
 def _env_cap(name: str, default: int, *, zero_disables: bool = False) -> int:
@@ -280,6 +379,7 @@ def fit_result_body(
     outline: str | Callable[[], str | None] | None = None,
     structured_fit: Callable[[int], str] | None = None,
     suffix: str = "",
+    stated_max_bytes: int | None = None,
 ) -> str:
     """Fit ``body`` to the budgets that bind this read; return the result.
 
@@ -287,6 +387,11 @@ def fit_result_body(
     the transport cap's last resort (a sub-line head under
     ``PRECIS_MAX_BODY_BYTES`` is a refusal only because there is no
     honest head to show).
+
+    ``stated_max_bytes`` is the caller's own bound (``args={'max_bytes':
+    N}``, validated by :func:`stated_read_cap` at the chokepoint); it
+    replaces the frame cap for **explicit** reads only — the
+    acknowledgement binds open-ended shapes never (gr676312).
     """
     size = len(body.encode("utf-8"))
     # Unset = no context cap: the transport cap is the only default
@@ -298,10 +403,14 @@ def fit_result_body(
         if context_limited
         else 0
     )
-    frame_cap = _env_cap("PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)
+    frame_cap = explicit_read_cap()
     if read == "explicit":
-        cap = frame_cap
-        cap_name = f"PRECIS_MAX_BODY_BYTES ({frame_cap} bytes)"
+        cap = stated_max_bytes if stated_max_bytes is not None else frame_cap
+        cap_name = (
+            f"stated max_bytes ({cap} bytes)"
+            if stated_max_bytes is not None
+            else f"PRECIS_MAX_BODY_BYTES ({frame_cap} bytes)"
+        )
     elif context_cap and size > context_cap:
         cap = context_cap
         cap_name = f"PRECIS_TOOL_RESULT_CONTEXT_BYTES ({context_cap} bytes)"
@@ -450,9 +559,12 @@ def _name_dropped(dropped: list[str]) -> tuple[str, str]:
 __all__ = [
     "DEFAULT_CONTEXT_BODY_BYTES",
     "DEFAULT_MAX_BODY_BYTES",
+    "MAX_STATED_BODY_BYTES",
     "body_bytes",
+    "explicit_read_cap",
     "fit_result_body",
     "read_shape",
     "result_context_cap",
     "size_cell",
+    "stated_read_cap",
 ]
