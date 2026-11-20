@@ -15,10 +15,12 @@ superscripts, ``·``/``⋅``, ``−``, a caret before a bare exponent) and then
 * a **mass <-> amount bridge** through a molar mass, for yield rates printed
   as ``µg h⁻¹ cm⁻²`` against a ``mol s⁻¹ m⁻²`` measurand;
 * an **energy-per-amount <-> per-particle bridge** through Avogadro's
-  number (``kJ/mol`` -> ``eV``), but only on the explicit
-  ``molar_bridge=True`` opt-in and only for ``<energy>/mol`` against an
-  ``eV``/``meV`` canonical — every other caller keeps the strict
-  dimension match;
+  number (``kJ/mol`` -> ``eV``), for a reported ``<energy>/mol`` against
+  a per-particle canonical: ``eV``/``meV`` keep the explicit
+  ``molar_bridge=True`` opt-in, but a bare ``J`` — the SI storage unit
+  for energies, per-particle exactly like ``eV`` — converts by default,
+  since a ``put(kind='measure')`` caller has no opt-in flag to pass
+  (gr726882). Every other mismatch keeps the strict dimension refusal;
 * a **leading printed power of ten** — the ``10⁻⁵/°C`` of a
   thermal-expansion table header — is a scale the value is read through,
   not part of the unit (pint refuses a scaling factor inside a unit
@@ -659,17 +661,22 @@ class NeedsMolarMass(Exception):
 
 
 #: Avogadro's number — the per-amount <-> per-particle bridge for
-#: energy units (``kJ/mol`` <-> ``eV``), a universal constant, never a
-#: molar mass.
+#: energy units (``kJ/mol`` <-> ``eV``/``J``), a universal constant,
+#: never a molar mass.
 _AVOGADRO: Final[float] = 6.02214076e23
 
 #: Canonical units the Avogadro bridge may write to — per-particle
-#: energies. The taxonomy marks no unit as per-particle, so the
-#: ``molar_bridge`` opt-in accepts only these two spellings
-#: (gr506762 subset-5d); a bare ``kJ``/``J`` canonical is a molar
-#: quantity's unit nowhere near this table convention and stays
-#: refused.
-_PER_PARTICLE_CANONICALS: Final[frozenset[str]] = frozenset({"ev", "mev"})
+#: energies. ``eV``/``meV`` are per-particle by definition; a bare
+#: ``J`` is the taxonomy's SI storage unit for an energy and is
+#: per-particle too (``eV`` is stored as ``J``), so ``kcal mol⁻¹`` on a
+#: ``J`` canonical divides by Avogadro like it would for ``eV``
+#: (gr726882). The bridge keeps the ``molar_bridge`` opt-in for
+#: ``eV``/``meV`` but fires by default for ``J``: a ``put`` caller has
+#: no opt-in to pass, and a bare-joule canonical has no other reading.
+#: A scaled spelling (``kJ``) or another dimension refuses as before —
+#: the taxonomy marks no unit as per-particle, so the set is spelled
+#: out here rather than inferred (gr506762 subset-5d).
+_AVOGADRO_CANONICALS: Final[frozenset[str]] = frozenset({"ev", "mev", "j"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -749,9 +756,13 @@ def make_converter(
     it admits ONE extra conversion — a reported unit that is exactly
     ``<energy>/mol`` (``kJ/mol``, ``kcal/mol``, ``J/mol``, nothing else in
     the unit) against an ``eV``/``meV`` canonical — through Avogadro's
-    number. Everything else keeps the strict dimension match, so
-    ``kJ/mol`` against a total-energy ``kJ`` canonical and
-    ``J/(mol K)`` against ``J/K`` still refuse.
+    number. The same ``<energy>/mol`` shape against a bare ``J``
+    canonical converts through Avogadro by DEFAULT (gr726882): ``J`` is
+    the SI storage unit for energies and is per-particle like ``eV``, and
+    the ``put(kind='measure')`` door has no opt-in flag to pass.
+    Everything else keeps the strict dimension match, so ``kJ/mol``
+    against a scaled ``kJ`` canonical and ``J/(mol K)`` against ``J/K``
+    still refuse.
 
     A leading printed power of ten on the reported unit — the
     ``10⁻⁵/°C`` of a thermal-expansion table header — is a scale the
@@ -849,6 +860,8 @@ def make_converter(
         ratio = src.dimensionality / dst.dimensionality
         mass_per_amount = ureg.get_dimensionality("[mass]/[substance]")
         energy_per_amount = ureg.get_dimensionality("[energy]/[substance]")
+        src_cf = src_text.casefold()
+        dst_cf = dst_text.casefold()
         # The ratio test alone would accept ``h⁻¹`` for a per-mass yield rate
         # (mass cancels against a basis mass), so the reported unit must name
         # the quantity being bridged: a mass unit for mass -> amount, a mole
@@ -858,19 +871,31 @@ def make_converter(
         elif ratio == 1 / mass_per_amount and _names_dimension(src_text, "[substance]"):
             bridge = "amount_to_mass"
         elif (
-            molar_bridge
-            and src.dimensionality == energy_per_amount
-            and dst_text.casefold() in _PER_PARTICLE_CANONICALS
+            src.dimensionality == energy_per_amount
+            and dst_cf in _AVOGADRO_CANONICALS
+            and (molar_bridge or dst_cf == "j")
         ):
             # kJ/mol -> eV: an energy per amount is the same energy per
             # particle through Avogadro's number — the standard
             # catalysis pair (96.485 kJ/mol = 1 eV), a constant, never
-            # a molar mass (gr506762 subset-5c). Opt-in only, and only
-            # for a reported unit that IS energy-per-amount against an
-            # eV/meV canonical — an energy-per-X against a bare energy
-            # (150 kJ/mol under kJ, J/(mol K) under J/K) refuses
-            # (subset-5d).
+            # a molar mass (gr506762 subset-5c). The bridge admits only
+            # a reported unit that IS energy-per-amount against a
+            # per-particle canonical — eV/meV on the molar_bridge
+            # opt-in, a bare J by default (gr726882: J is the SI
+            # storage unit for energies, per-particle like eV) — so an
+            # energy-per-X against a scaled energy (150 kJ/mol under
+            # kJ, J/(mol K) under J/K) refuses (subset-5d).
             bridge = "per_amount"
+        elif (
+            dst.dimensionality == energy_per_amount
+            and src_cf in _AVOGADRO_CANONICALS
+            and (molar_bridge or src_cf == "j")
+        ):
+            # the mirror: a stored per-particle energy (a J/eV/meV
+            # canonical) read back as <energy>/mol — the display path
+            # calls make_converter(canonical, target), so the canonical
+            # is src here; multiplying by Avogadro restores the /mol
+            bridge = "per_mole_out"
         else:
             raise BadInput(
                 f"unit {reported_unit!r} has no dimension match with the "
@@ -888,6 +913,8 @@ def make_converter(
             q = q * ureg.Quantity(molar_mass_g_mol, "g/mol")
         elif bridge == "per_amount":
             q = q / ureg.Quantity(_AVOGADRO, "mol^-1")
+        elif bridge == "per_mole_out":
+            q = q * ureg.Quantity(_AVOGADRO, "mol^-1")
         return q
 
     def conv(v: float) -> float:
@@ -1192,7 +1219,13 @@ def validate_display_unit(display_unit: str, canonical_unit: str | None) -> None
             next=f"display_unit={canonical_unit!r}, or drop it",
         ) from exc
     disp_unit, _, _ = _parse_unit(disp, what="display")
-    if disp_unit.dimensionality != canon_unit.dimensionality:
+    if disp_unit.dimensionality != canon_unit.dimensionality and not (
+        # a J canonical reads back as <energy>/mol through Avogadro
+        # (gr726882), the mirror make_converter's per_mole_out bridge serves
+        canon.casefold() == "j"
+        and disp_unit.dimensionality
+        == _registry().get_dimensionality("[energy]/[substance]")
+    ):
         raise BadInput(
             f"display_unit {display_unit!r} has a different dimension from "
             f"canonical_unit {canonical_unit!r}",

@@ -207,6 +207,12 @@ converted to the measurand's canonical unit.
   `mol s⁻¹ m⁻²`) converts through the molar mass of the run's `product` input
   row (its formula, e.g. `NH3`). No formula: the row is stored with no parsed
   value and flagged `no_molar_mass`.
+- An energy **per mole** against a per-particle canonical converts through
+  Avogadro's number (96.485 kJ/mol = 1 eV per particle): a `J` canonical
+  accepts `kcal mol⁻¹` and friends **by default** (`J` is the SI storage
+  unit for energies, per-particle like `eV`); `eV`/`meV` canonicals take it
+  only on the table path's opt-in. A scaled canonical (`kJ`) or a non-exact
+  shape (`J/(mol K)`) stays refused.
 - A subscript basis label on a denominator (`mg_cat⁻¹`, `mg_Fe⁻¹`) is moved into
   `normalization`. A per-atom divisor (`meV/atom`, `eV per atom`, or an
   `atom^-1` / `atom⁻¹` suffix) folds to the `atom` basis and fills

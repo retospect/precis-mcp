@@ -184,7 +184,8 @@ all three again:
   total-energy ``kJ`` canonical stored 1/N_A off, ``J/(mol K)`` under
   ``J/K`` likewise). It now fires only on the ``molar_bridge`` opt-in,
   only for a unit that IS energy-per-amount against an ``eV``/``meV``
-  canonical; the store stays strict, and each spec that needs the
+  canonical (a bare ``J`` canonical bridges by default since gr726882,
+  ``J`` being the per-particle SI storage unit); the store stays strict, and each spec that needs the
   bridge carries the opt-in as ``MeasureSpec.molar_bridge``
   (:func:`_needs_molar_bridge`);
 * a parenthesised lowercase ``a``–``f`` is a footnote marker even in a

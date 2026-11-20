@@ -98,6 +98,7 @@ def world(store: Store) -> dict[str, Any]:
     w["temperature"] = _taxon(store, "temperature", unit="K", parent=start)
     w["product"] = _taxon(store, "reaction product", parent=start)
     w["energy"] = _taxon(store, "adsorption energy", unit="eV", parent=start)
+    w["energy_j"] = _taxon(store, "relative isomer energy", unit="J", parent=start)
     return w
 
 
@@ -1404,6 +1405,26 @@ class TestRuns:
                 ),
                 actor="reader",
             )
+
+    def test_per_mol_energy_under_a_j_canonical_stores_si(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        # gr726882: a J canonical is per-particle like eV, so kcal mol⁻¹
+        # divides by Avogadro by default — put has no opt-in flag. 1.17
+        # kcal/mol is 8.13e-21 J, with the printed unit kept verbatim.
+        run = store.insert_measure(
+            MeasureSpec(
+                world["energy_j"],
+                "1.17",
+                world["paper"],
+                reported_unit="kcal mol⁻¹",
+            ),
+            actor="reader",
+        )
+        r = _row(store, run.output_id)
+        assert r["value_num"] == pytest.approx(1.17 * 4184 / 6.02214076e23, abs=0)
+        assert r["reported_unit"] == "kcal mol⁻¹"
+        assert r["meta"]["conversion"] == {"from": "kcal mol⁻¹", "to": "J"}
 
     def test_extraction_status_is_computed_from_the_span(
         self, store: Store, world: dict[str, Any]

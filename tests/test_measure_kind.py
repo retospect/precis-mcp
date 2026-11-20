@@ -265,10 +265,11 @@ class TestPutPrintedScale:
 
 
 class TestMolarBridge:
-    """gr506762 subset-5d: the Avogadro bridge is the ``molar_bridge``
-    opt-in, never ``make_converter``'s default — and even then only an
-    exact ``<energy>/mol`` reported unit against an ``eV``/``meV``
-    canonical."""
+    """gr506762 subset-5d + gr726882: the Avogadro bridge admits only an
+    exact ``<energy>/mol`` reported unit against a per-particle canonical
+    — ``eV``/``meV`` on the ``molar_bridge`` opt-in, a bare ``J`` by
+    default (it is the SI storage unit for energies, per-particle like
+    ``eV``)."""
 
     def test_kj_per_mol_to_ev_needs_the_opt_in(self) -> None:
         with pytest.raises(BadInput):
@@ -277,6 +278,35 @@ class TestMolarBridge:
         assert conv.value(96.485) == pytest.approx(1.0, abs=1e-3)
         conv = make_converter("kcal/mol", "eV", molar_bridge=True)
         assert conv.value(1.0) == pytest.approx(0.04336, rel=1e-3)
+
+    def test_kcal_per_mol_under_a_j_canonical_converts_by_default(self) -> None:
+        # gr726882: a J canonical is the SI storage unit for energies,
+        # per-particle like eV, so kcal mol⁻¹ on it divides by Avogadro
+        # with no opt-in (put(kind='measure') has no bridge flag).
+        conv = make_converter("kcal mol⁻¹", "J")
+        assert conv.value(1.17) == pytest.approx(1.17 * 4184 / 6.02214076e23, abs=0)
+        conv = make_converter("kJ/mol", "J")
+        assert conv.value(96.485) == pytest.approx(1.602e-19, rel=1e-3, abs=0)
+        # the uncertainty slope is the same constant
+        assert conv.scale == pytest.approx(1000 / 6.02214076e23, abs=0)
+
+    def test_a_j_canonical_reads_back_as_per_mol(self) -> None:
+        # the mirror: display calls make_converter(canonical, target),
+        # so a stored per-particle J value shows in kcal/mol through
+        # Avogadro the other way.
+        conv = make_converter("J", "kcal/mol")
+        assert conv.value(1.602176634e-19) == pytest.approx(96485 / 4184, rel=1e-3)
+
+    def test_kcal_per_mol_display_unit_is_valid_on_a_j_canonical(self) -> None:
+        validate_display_unit("kcal/mol", "J")
+        with pytest.raises(BadInput):
+            validate_display_unit("kcal/mol", "eV")
+
+    def test_per_mol_under_a_hartree_canonical_still_refuses(self) -> None:
+        # Ha is per-particle like eV but is not in the bridge set: no
+        # silent convention pick.
+        with pytest.raises(BadInput):
+            make_converter("kcal/mol", "Ha")
 
     def test_mol_per_energy_canonical_still_refuses(self) -> None:
         # kJ/mol under a total-energy kJ canonical is not the
