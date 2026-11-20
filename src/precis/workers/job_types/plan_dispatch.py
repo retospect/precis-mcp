@@ -1651,6 +1651,9 @@ class _Writer:
     def __init__(self, store: Any, dry_run: bool) -> None:
         self.store = store
         self.dry_run = dry_run
+        #: Comments a dry pass would have written, ``(ref_id, text)`` —
+        #: later steps of the same pass read them (gr738860).
+        self.dry_comments: list[tuple[int, str]] = []
 
     def set_status(self, n: _Node, value: str) -> None:
         n.status = value
@@ -1694,6 +1697,7 @@ class _Writer:
     def comment_id(self, ref_id: int, text: str) -> None:
         """:meth:`comment` on a todo outside the loaded plan."""
         if self.dry_run:
+            self.dry_comments.append((ref_id, text))
             return
         existing = list(self.store.chunks.list_chunks_for_ref(ref_id))
         ord_ = max((int(c.ord) for c in existing), default=0) + 1
@@ -4239,6 +4243,20 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
             sent_back = _sent_back_at(store, n, held)
             if sent_back is not None and (since is None or sent_back > since):
                 since = sent_back
+            # gr738860: the coordinator's answer to a stop is a newer
+            # brief; a verdict from before it is the rejected head's, and
+            # replaying it would restore that head and close the build
+            # before dispatch runs the rebuild on the brief.
+            from precis.workers.job_types import run_slice as _rs
+
+            brief_at = getattr(
+                _newest_brief_chunk(n, _rs._todo_chunks(store, n.id)),
+                "created_at",
+                None,
+            )
+            if isinstance(brief_at, datetime) and (since is None or brief_at > since):
+                since = brief_at
+                sent_back = max(sent_back or brief_at, brief_at)
         verdict = _verdict_comment(store, n.id, since=since)
         if (
             verdict is None
@@ -7555,7 +7573,9 @@ _HANDBACK_HEAD_RE = re.compile(
 )
 
 
-def _handback_finding(store: Any, plan: _Plan, n: _Node) -> str | None:
+def _handback_finding(
+    store: Any, plan: _Plan, n: _Node, w: _Writer | None = None
+) -> str | None:
     """The finding of the newest pre-land hand-back on ``n`` still
     waiting for its rebuild (gr738860), else ``None``: the newest comment
     starting ``handoff: review:`` that carries
@@ -7563,7 +7583,18 @@ def _handback_finding(store: Any, plan: _Plan, n: _Node) -> str | None:
     parenthetical stripped. ``None`` once a coordinator ``brief:``
     (:func:`_route_text`'s) is newer — the coordinator has spoken — or a
     builder job was created after it (a rebuild already ran on that
-    finding)."""
+    finding). A dry pass reads the hand-back it would have written
+    (``w.dry_comments``) first: the write is skipped, so the store lacks
+    it."""
+    if w is not None and w.dry_run:
+        for ref_id, text in reversed(w.dry_comments):
+            if (
+                ref_id == n.id
+                and text.lstrip().lower().startswith("handoff: review:")
+                and _templates.PRELAND_HANDBACK_MARK in text
+            ):
+                text = _HANDBACK_TAIL_RE.sub("", text.strip())
+                return _HANDBACK_HEAD_RE.sub("", text, count=1).strip() or None
     hand = next(
         (
             c
@@ -7589,6 +7620,40 @@ def _handback_finding(store: Any, plan: _Plan, n: _Node) -> str | None:
         return None
     text = _HANDBACK_TAIL_RE.sub("", str(hand.text).strip())
     return _HANDBACK_HEAD_RE.sub("", text, count=1).strip() or None
+
+
+def _as_intent(finding: str) -> str:
+    """``finding`` with every paragraph under a ``Fix:`` label, so the
+    classifier's change-intent read (``route._INTENT_START``) sees all of
+    it, not just the first paragraph (gr738860). Fenced blocks stay whole;
+    a paragraph that already opens with an intent or evidence label, a
+    quote or a heading keeps its own reading."""
+    out: list[str] = []
+    fence = ""
+    fresh = True
+    for line in finding.splitlines():
+        bare = line.strip()
+        if fence:
+            if bare.startswith(fence):
+                fence = ""
+        elif match := _route._FENCE.match(bare):
+            fence = match.group(1)
+        elif not bare:
+            fresh = True
+            out.append(line)
+            continue
+        if (
+            fresh
+            and not fence
+            and not bare.startswith((">", "#"))
+            and not _route._INTENT_START.match(bare)
+            and not _route._EVIDENCE_START.match(bare)
+            and not _route._FENCE.match(bare)
+        ):
+            line = "Fix: " + line
+        fresh = False
+        out.append(line)
+    return "\n".join(out)
 
 
 def _route_text(store: Any, n: _Node) -> tuple[str, str | None]:
@@ -8002,13 +8067,15 @@ def _step_dispatch(
                 # One ask holds the node (the ``blocked-by`` edge keeps
                 # later passes quiet) while the hand-back awaits its
                 # rebuild with no newer coordinator brief.
-                finding = _handback_finding(w.store, plan, n)
+                finding = _handback_finding(w.store, plan, n, w)
                 # The classifier reads change intent only under a ``Fix:``
                 # / ``Goal:`` / ``Want:`` label (``route._INTENT_START``);
                 # a review's finding is prose with no label, and it IS
                 # what the build must fix — judge it as that.
                 routed = (
-                    _route.coordinator_route("Fix: " + finding, node_deny, graph=False)
+                    _route.coordinator_route(
+                        _as_intent(finding), node_deny, graph=False
+                    )
                     if finding is not None
                     else None
                 )

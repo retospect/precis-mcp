@@ -16,6 +16,7 @@ import pytest
 from precis import settings as psettings
 from precis.plans import lanes as L
 from precis.plans import release as R
+from precis.plans import route as _route
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -8661,6 +8662,32 @@ def test_noop_newer_than_the_send_back_still_reholds_the_land(store: Store) -> N
             "land held for review" in c and f"td{review}" in c
             for c in _todo_comments(store, build)
         )
+
+
+def test_verdict_older_than_a_coordinator_brief_is_not_replayed(store: Store) -> None:
+    """gr738860: the coordinator's answer to a stop is a newer ``brief:``;
+    a `no-op:` from before it never re-holds or closes the build — the
+    rebuild runs on the brief."""
+    build, _ = _stashed_build(store, at=True)
+    _todo_comment(store, build, "handoff: no-op: the branch is ready as it stands")
+    _todo_comment(store, build, "brief: rebuild with the empty case covered")
+    res = pd.run_pass(store)
+    assert _status(store, build) == "open"
+    assert _meta(store, build).get("pending_land") is None
+    assert _meta(store, build).get("preland_held") is not None
+    assert res.dispatched == 1
+
+
+def test_as_intent_labels_every_paragraph() -> None:
+    """gr738860: a deny-path edit in a later unlabelled paragraph still
+    reads as change intent; fences and evidence paragraphs stay put."""
+    text = "a.py misses the case.\n\nAlso add a flag to scripts/ship."
+    assert pd._as_intent(text) == (
+        "Fix: a.py misses the case.\n\nFix: Also add a flag to scripts/ship."
+    )
+    fenced = "intro\n\n```\nx\n\ny\n```"
+    assert pd._as_intent(fenced).count("Fix:") == 1
+    assert _route.coordinator_route(pd._as_intent(text), ["scripts/ship"], graph=False)
 
 
 _DENIED_FINDING = (
