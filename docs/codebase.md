@@ -276,6 +276,8 @@ session start).
 ## Seams — where changes concentrate
 
 Handlers return `Response`; runtime appends hints and applies result budgets.
+Batch block readers pass a validated caller-stated byte cap on the response
+so paging and final fitting use the same bound.
 Indivisible content such as slides supplies `Response.budget_fit`, allowing
 the final fitter to reserve runtime suffix bytes before choosing boundaries.
 `Response.images` carries binary payloads (the figure render check's PNG);

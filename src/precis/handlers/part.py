@@ -66,7 +66,7 @@ import re
 from collections.abc import Callable
 from typing import Any, ClassVar
 
-from precis._result_budget import body_bytes
+from precis._result_budget import body_bytes, coerce_stated_cap
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, Upstream
 from precis.format import render_agent_table
@@ -439,6 +439,8 @@ class PartHandler(Handler):
             lcsc = catalog.lcsc_id(raw) or str(raw).strip().upper()
             if lcsc not in lcses:
                 lcses.append(lcsc)
+        stated_cap = coerce_stated_cap(max_bytes) if max_bytes is not None else None
+        page_cap = batch_view_page_cap(stated_cap)
         blocks: list[str] = []
         for lcsc in lcses:
             try:
@@ -449,7 +451,6 @@ class PartHandler(Handler):
                 blocks.append(f"{lcsc}  deleted")
         shown: list[str] = []
         used = 0
-        page_cap = batch_view_page_cap(max_bytes)
         for block in blocks:
             if shown and used + body_bytes(block) > page_cap:
                 break
@@ -469,7 +470,7 @@ class PartHandler(Handler):
                 f"\n\n{len(rest)} more — next: get(kind='part', "
                 f"id=[{', '.join(repr(c) for c in rest)}]{extra})"
             )
-        return Response(body=body, result_count=len(shown))
+        return Response(body=body, result_count=len(shown), stated_max_bytes=stated_cap)
 
     def _categories_view(self, id: Any) -> Response:
         """``view='categories'`` (gr519793) — JLCPCB's first/second-sort

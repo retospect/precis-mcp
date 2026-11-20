@@ -621,7 +621,7 @@ _PLAIN_LISTING_VIEWS = frozenset({"index", "ids", "list"})
 _BATCH_VIEW_RESERVE_BYTES = 768
 
 
-def batch_view_page_cap(max_bytes: Any = None) -> int:
+def batch_view_page_cap(max_bytes: int | None = None) -> int:
     """Page budget (bytes) for the batch ``view=``/``extent=`` read.
 
     Sized to the explicit-read cap, per call (gr676312): a batch id list
@@ -637,9 +637,7 @@ def batch_view_page_cap(max_bytes: Any = None) -> int:
     budgets.
 
     ``max_bytes`` is the caller's stated bound (``args={'max_bytes':
-    N}`` on the batch get — validated by
-    :func:`precis._result_budget.stated_read_cap` at the chokepoint, so
-    an in-process caller handing garbage gets the same ``BadInput``);
+    N}`` on the batch get), validated by the batch handler;
     the page takes it instead of the frame cap, and the ``next:``
     continuation re-states it so the cursor keeps the acknowledgement.
     It is accepted on the ``view=`` route only — the ``extent=`` route's
@@ -648,9 +646,7 @@ def batch_view_page_cap(max_bytes: Any = None) -> int:
     block is never cut mid-text — and the unread tail rides the
     ``next:`` call's id list.
     """
-    base = (
-        coerce_stated_cap(max_bytes) if max_bytes is not None else explicit_read_cap()
-    )
+    base = max_bytes if max_bytes is not None else explicit_read_cap()
     return max(_BATCH_VIEW_RESERVE_BYTES * 2, base - _BATCH_VIEW_RESERVE_BYTES)
 
 
@@ -5274,6 +5270,8 @@ class NumericRefHandler(Handler):
         instead of letting the result budget cut a block mid-text in a
         fitted body.
         """
+        stated_cap = coerce_stated_cap(max_bytes) if max_bytes is not None else None
+        page_cap = batch_view_page_cap(stated_cap)
         blocks: list[str] = []
         for rid in ref_ids:
             handle = handle_registry.try_format(self.kind, rid) or str(rid)
@@ -5283,7 +5281,6 @@ class NumericRefHandler(Handler):
                 blocks.append(f"{handle}  not found")
             except Gone:
                 blocks.append(f"{handle}  deleted")
-        page_cap = batch_view_page_cap(max_bytes)
         shown: list[str] = []
         used = 0
         for block in blocks:
@@ -5312,7 +5309,7 @@ class NumericRefHandler(Handler):
                 f"get(kind={self.kind!r}, "
                 f"id=[{', '.join(str(i) for i in rest)}], view={view!r}{cont})"
             )
-        return Response(body=body, result_count=len(shown))
+        return Response(body=body, result_count=len(shown), stated_max_bytes=stated_cap)
 
     def _tag_batch(self, ids: list[Any], **kw: Any) -> Response:
         """``tag(id=[...])``: the same edit on every id, all or nothing.

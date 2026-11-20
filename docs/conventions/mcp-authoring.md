@@ -59,6 +59,12 @@ never a cursor to page through (`src/precis/_result_budget.py`,
 `PRECIS_TOOL_RESULT_CONTEXT_BYTES`. A handler that wants paging exposes
 `page_size=`/`offset=` and says `N of M` in its header.
 
+A `get` with an ID list is an explicit read and bypasses the context cap.
+Batch block readers page at `PRECIS_MAX_BODY_BYTES` by default. Supported
+handlers can validate `args={'max_bytes': N}` up to 1 MiB and pass the
+bound through `Response.stated_max_bytes`. A batch `next:` call carries
+the unread IDs and the same bound.
+
 ## Tool annotations
 
 The seven verbs carry MCP `ToolAnnotations` only where the hint is true

@@ -1954,7 +1954,6 @@ class DispatchMixin(RuntimeShape):
             fit_result_body,
             read_shape,
             result_context_cap,
-            stated_read_cap,
         )
 
         # Trim pasted list-row tails off the address kwargs before
@@ -1964,12 +1963,6 @@ class DispatchMixin(RuntimeShape):
         # Classified before dispatch — _invoke_handler pops extent=/ring=
         # from args, and the shape is a property of the caller's spelling.
         shape = read_shape(verb, args)
-        # The caller's own read bound (``args={'max_bytes': N}``) — read
-        # on the caller's spelling and validated inside the dispatch try
-        # so a garbage bound refuses the way any other dispatch refusal
-        # does (rendered body, is_error=True), not as an escape. Only get
-        # takes it; the eye route refuses it as a stray (batch extent
-        # reads page by ids at the explicit cap).
         extras = args.get(_EXTRAS_KEY)
         # ``batch`` is a verb-level search param (gr568808): top-level or
         # nested in ``args=`` (``_dispatch_inner`` hoists it either way —
@@ -1980,7 +1973,6 @@ class DispatchMixin(RuntimeShape):
         )
         with self.hub.request_scope(verb=verb):
             try:
-                stated = stated_read_cap(args) if verb == "get" else None
                 # Slice scope (td575705 G1): a slice bearer writes only what
                 # its role's grant covers. Runs before the verb check so an
                 # unknown verb logs would-refuse too; reads always pass. In
@@ -2047,7 +2039,7 @@ class DispatchMixin(RuntimeShape):
                         outline=response.budget_outline,
                         structured_fit=response.budget_fit,
                         suffix=body[len(response.body) :],
-                        stated_max_bytes=stated,
+                        stated_max_bytes=response.stated_max_bytes,
                     )
                 budget_fitted = body != rendered
                 if (

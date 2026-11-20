@@ -57,6 +57,25 @@ or `view='ids'` (bare handles). Both return one line per distinct ID in caller
 order; missing, deleted or other-kind rows get a one-line status. Other batch
 views keep the 50-ID cap. `args={'tag_prefixes': 'thread,fix'}` overrides list chips.
 
+## Read a batch of bodies
+
+An ID list acknowledges a larger reply and skips the optional context cap.
+Batch body pages use the explicit-read cap (24 KiB by default), with room
+reserved for the header and the `next:` call. Follow that call to read the
+remaining IDs.
+
+For a larger page, pass a positive byte count up to 1 MiB (1,048,576 bytes).
+
+```python
+get(kind='memory', id=['me47', 'me48'], view='body', args={'max_bytes': 65536})
+```
+
+This bound is supported on block reads for numeric-ref kinds such as
+`memory`, `gripe`, and `job`, and for `md`, `part`, and `skill`.
+The `next:` call carries the same bound. Invalid or over-ceiling values
+return a refusal with a retry hint. Batch `extent=` reads page at the
+default explicit cap and refuse `max_bytes`.
+
 ## Render a ref with its neighbourhood and recall
 
 For a newly written or edited memory, check
@@ -265,8 +284,8 @@ file `~<block>` / `~L42-58`, paper `~A..B`). A get returns the body whole up to
 section index (one row per H2 with its `~N` handle) and `extent='verbatim'` keeps the body
 reachable (`full=true` is the deprecated spelling); `extent='verbatim'` plus `q=` on a skill
 returns the matching passages (`args={'context': N}` honoured). Over that cap a body returns the head that fits plus an outline and the targeted `next:`/`rest:` call for
-the remainder — a `~` selector (`slug~N`, `me<id>~<section>`) or a list of
-ids reads its part in full, up to the same 24 kB. `q=` does not combine with `view=`, a list
+the remainder. A `~` selector (`slug~N`, `me<id>~<section>`) reads its part
+in full up to the same cap. `q=` does not combine with `view=`, a list
 (`id='/recent'`, `id=[…]`) or a missing `id` — and a kind that can't
 honour `q` refuses it; it is never silently ignored. To rank refs by
 content instead, use `search(kind=…, q=…)`.

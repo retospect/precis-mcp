@@ -482,7 +482,7 @@ class MdHandler(Handler):
         # Lazy import: the DB-free handler keeps ``_numeric_ref`` (and its
         # psycopg/store chain) out of its module imports — paper.py's
         # convention for the same helpers.
-        from precis._result_budget import body_bytes
+        from precis._result_budget import body_bytes, coerce_stated_cap
         from precis.handlers._numeric_ref import (
             BATCH_ID_CAP,
             _id_batch_next,
@@ -518,6 +518,8 @@ class MdHandler(Handler):
             a = str(raw)
             if a not in addr:
                 addr.append(a)
+        stated_cap = coerce_stated_cap(max_bytes) if max_bytes is not None else None
+        page_cap = batch_view_page_cap(stated_cap)
         blocks: list[str] = []
         for a in addr:
             try:
@@ -526,7 +528,6 @@ class MdHandler(Handler):
                 blocks.append(f"{a}  not found")
         shown: list[str] = []
         used = 0
-        page_cap = batch_view_page_cap(max_bytes)
         for block in blocks:
             if shown and used + body_bytes(block) > page_cap:
                 break
@@ -544,7 +545,7 @@ class MdHandler(Handler):
                 f"\n\n{len(rest)} more — next: get(kind='md', "
                 f"id=[{', '.join(repr(a) for a in rest)}]{extra})"
             )
-        return Response(body=body, result_count=len(shown))
+        return Response(body=body, result_count=len(shown), stated_max_bytes=stated_cap)
 
     # ── search ─────────────────────────────────────────────────────
 

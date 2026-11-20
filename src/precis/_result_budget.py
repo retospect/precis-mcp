@@ -21,9 +21,9 @@ refusal. The context cap ``PRECIS_TOOL_RESULT_CONTEXT_BYTES`` is opt-in
   ``view=``/``extent=``, gr676312). Skips the context
   cap; only ``PRECIS_MAX_BODY_BYTES`` bounds it, and over that the
   leading lines fit plus a ``rest:``/``next:`` line naming what to ask
-  for next. An acknowledged read can state its own higher bound —
+  for next. Supported batch reads can state their own higher bound —
   ``args={'max_bytes': N}``, honoured up to
-  :data:`MAX_STATED_BODY_BYTES` (:func:`stated_read_cap`) — and batch
+  :data:`MAX_STATED_BODY_BYTES` (:func:`coerce_stated_cap`) — and batch
   block reads pre-page to the same dial
   (:func:`precis.handlers._numeric_ref.batch_view_page_cap`), so a
   caller that acked the size gets as much as it asked for (Reto's
@@ -227,13 +227,7 @@ def explicit_read_cap() -> int:
 
 
 def coerce_stated_cap(value: Any) -> int:
-    """Validate one caller-stated read bound; ``BadInput`` on garbage.
-
-    Shared by :func:`stated_read_cap` (the dispatch chokepoint's read of
-    ``args=``/top-level ``max_bytes=``) and the batch pre-page
-    (:func:`precis.handlers._numeric_ref.batch_view_page_cap`), so an
-    in-process caller handing either path garbage gets the same refusal.
-    """
+    """Validate a batch reader's stated byte bound before rendering its blocks."""
     if isinstance(value, bool):
         raise BadInput(
             f"max_bytes= must be a positive integer, got {value!r}",
@@ -261,34 +255,6 @@ def coerce_stated_cap(value: Any) -> int:
             ),
         ) from None
     return n_bytes
-
-
-def stated_read_cap(args: dict[str, Any]) -> int | None:
-    """The caller-stated read bound, in bytes — ``args={'max_bytes': N}``
-    (or a top-level ``max_bytes=``), gr676312.
-
-    Reto's 2026-11-14 direction on the gripe: "if you ack it is big you
-    should be able to get as much as you want" — a list of ids (or any
-    explicit shape) is the acknowledgement, and the stated bound is the
-    "as much as you want": the dispatch chokepoint passes it to
-    :func:`fit_result_body`, which honours it in place of the
-    ``PRECIS_MAX_BODY_BYTES`` frame cap for explicit reads, and the batch
-    pre-page reads the same value so block paging never cuts earlier
-    than the chokepoint would. Open-ended shapes (search, list, bare
-    single reads) ignore it — their protection is the point.
-
-    ``None`` when unstated; the value itself is validated by
-    :func:`coerce_stated_cap` — a bound that is not a positive integer,
-    or exceeds :data:`MAX_STATED_BODY_BYTES`, refuses with a ``next``
-    step rather than clamping silently.
-    """
-    stated = args.get("max_bytes")
-    extras = args.get("__extras__")
-    if stated is None and isinstance(extras, dict):
-        stated = extras.get("max_bytes")
-    if stated is None:
-        return None
-    return coerce_stated_cap(stated)
 
 
 def _env_cap(name: str, default: int, *, zero_disables: bool = False) -> int:
@@ -389,7 +355,7 @@ def fit_result_body(
     honest head to show).
 
     ``stated_max_bytes`` is the caller's own bound (``args={'max_bytes':
-    N}``, validated by :func:`stated_read_cap` at the chokepoint); it
+    N}``, validated by the batch handler); it
     replaces the frame cap for **explicit** reads only — the
     acknowledgement binds open-ended shapes never (gr676312).
     """
@@ -566,5 +532,4 @@ __all__ = [
     "read_shape",
     "result_context_cap",
     "size_cell",
-    "stated_read_cap",
 ]

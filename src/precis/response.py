@@ -93,6 +93,9 @@ class Response:
     #: a search that surfaces memories records WHICH ones, not just how
     #: many. ``None`` where the response doesn't enumerate a result
     #: set. Set it where the ids are already in hand — never an extra
-    #: query for the ledger's sake. Last so positional construction is
-    #: unaffected.
+    #: query for the ledger's sake.
     result_ids: list[int] | None = None
+
+    #: Validated UTF-8 byte cap for an explicit batch read. The handler
+    #: uses the same cap for paging and passes it to the runtime fitter.
+    stated_max_bytes: int | None = None

@@ -41,6 +41,8 @@ Structured ``Response.budget_fit`` callbacks preserve indivisible units
 such as slides: the final fitter reserves runtime hint/cost bytes before
 asking the handler to fit content. Runtime alone applies the optional
 context cap, respecting ``fold=False`` and explicit part reads.
+Batch handlers pass a validated caller-stated cap on the response so the
+page and final fitter share a bound while kind-specific options stay local.
 
 Read-scope handle redirects recheck the resolved kind against the sandbox
 allowlist before rewriting dispatch arguments: the server's earlier gate

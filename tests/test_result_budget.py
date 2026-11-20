@@ -845,7 +845,11 @@ def test_perplexity_research_get_over_cap_returns_head_not_error(
     monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "300")
     body, is_error = runtime_with_store.dispatch_with_status(
         "get",
-        {"kind": "perplexity-research", "id": "landscape of test answers"},
+        {
+            "kind": "perplexity-research",
+            "id": "landscape of test answers",
+            "__extras__": {"max_bytes": 2 * 1024 * 1024},
+        },
         fold=True,
     )
     assert is_error is False
@@ -1024,10 +1028,10 @@ def test_batch_body_read_stated_max_bytes_past_frame_cap(
         assert f"stated prose {i}" in body
 
 
-def test_stated_max_bytes_validation_refuses_at_chokepoint(
+def test_stated_max_bytes_validation_refuses_on_batch_reads(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
-    """Garbage and over-ceiling stated bounds refuse before dispatch,
+    """Garbage and over-ceiling stated bounds refuse before rendering,
     with a next step — never clamped silently."""
     from precis._result_budget import MAX_STATED_BODY_BYTES
 

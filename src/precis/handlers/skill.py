@@ -2089,7 +2089,7 @@ class SkillHandler(Handler):
         # Lazy import: the store-free handler keeps ``_numeric_ref``
         # (and its psycopg/store chain) out of its module imports —
         # md.py's convention for the same helpers.
-        from precis._result_budget import body_bytes
+        from precis._result_budget import body_bytes, coerce_stated_cap
         from precis.handlers._numeric_ref import (
             BATCH_ID_CAP,
             _id_batch_next,
@@ -2125,6 +2125,8 @@ class SkillHandler(Handler):
             a = str(raw).strip()
             if a not in addr:
                 addr.append(a)
+        stated_cap = coerce_stated_cap(max_bytes) if max_bytes is not None else None
+        page_cap = batch_view_page_cap(stated_cap)
         blocks: list[str] = []
         for a in addr:
             try:
@@ -2133,7 +2135,6 @@ class SkillHandler(Handler):
                 blocks.append(f"{a}  not found")
         shown: list[str] = []
         used = 0
-        page_cap = batch_view_page_cap(max_bytes)
         for block in blocks:
             if shown and used + body_bytes(block) > page_cap:
                 break
@@ -2151,7 +2152,7 @@ class SkillHandler(Handler):
                 f"\n\n{len(rest)} more — next: get(kind='skill', "
                 f"id=[{', '.join(repr(a) for a in rest)}]{extra})"
             )
-        return Response(body=body, result_count=len(shown))
+        return Response(body=body, result_count=len(shown), stated_max_bytes=stated_cap)
 
     def _render_serve_stub(self, slug: str, text: str, rev: str) -> Response:
         """Stub for a ``have=<rev>`` get() of an unchanged skill (gr477798).
