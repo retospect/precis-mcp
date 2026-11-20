@@ -161,15 +161,35 @@ class TestConventionsFindingsToMemory:
             )
             conn.commit()
 
-        mod.run(store, apply=True)
+        try:
+            mod.run(store, apply=True)
 
-        with store.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT ref_id, kind FROM chunk_embeddings WHERE chunk_id = %s",
-                (cid,),
-            ).fetchone()
-        assert row is not None
-        assert (int(row[0]), str(row[1])) == (a, "memory")
+            with store.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT ref_id, kind FROM chunk_embeddings WHERE chunk_id = %s",
+                    (cid,),
+                ).fetchone()
+            assert row is not None
+            assert (int(row[0]), str(row[1])) == (a, "memory")
+        finally:
+            # The committed NOT VALID gate is shared-DB DDL state, not
+            # transactional: restore the validated CHECK a fresh test DB
+            # starts with, or every later pending_post_steps probe in this
+            # worker sees prod's collapsed "N of M per-kind partial HNSW
+            # indexes" summary instead of naming each missing index
+            # (tests/test_zero_scan_index_drop.py). The DELETE drops the
+            # straggler if the apply died before filling it — VALIDATE
+            # cannot pass over a NULL row, and the fixture TRUNCATE wipes
+            # data anyway; only the constraint state must be put back.
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "DELETE FROM chunk_embeddings WHERE ref_id IS NULL OR kind IS NULL"
+                )
+                conn.execute(
+                    "ALTER TABLE chunk_embeddings "
+                    "VALIDATE CONSTRAINT chunk_embeddings_ref_kind_filled"
+                )
+                conn.commit()
 
 
 # ── _taproot_review_orphans_rehome ────────────────────────────────────
