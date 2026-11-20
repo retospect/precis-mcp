@@ -458,7 +458,7 @@ search(kind="memory", q="", tags=["pinned"])
 ```
 
 ```python
-search(kind="gripe", tags=["STATUS:open", "PRIO:high"])
+search(kind="gripe", tags=["STATUS:open"], args={"sort": "prio"})
 ```
 
 AND semantics — `tags=['A', 'B']` matches refs carrying *both* tags.
@@ -466,11 +466,17 @@ Closed-vocab axes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`) are kind-gated;
 open tags (`topic:`, `project:`, `pinned`, ...) are universal. See
 `precis-tags` for the axis matrix.
 
+On todo, gripe and quest, a `PRIO:<value>` write sets the `prio` column.
+A positive `PRIO:<value>` tag filter matches nothing. A negated priority
+tag filter excludes nothing by priority. Use
+`args={'sort': 'prio'}` on a queryless workflow browse to put the hottest
+items first (lower values are hotter), as in the example above.
+
 Prefix an entry with `!` to **exclude** refs carrying that tag —
 `tags=['!card:experiment']` drops every ref tagged `card:experiment`.
 Negations compose with the positive entries and `q=`: positives AND,
-negations subtract (`tags=['topic:x', '!PRIO:high']` = `topic:x` refs
-that aren't high-priority). A bare `'!'` is refused with a next step.
+negations subtract (`tags=['topic:x', '!STATUS:done']` = `topic:x` refs
+that aren't done). A bare `'!'` is refused with a next step.
 
 ### Enumerating a tag ≠ searching within it — a counting trap
 

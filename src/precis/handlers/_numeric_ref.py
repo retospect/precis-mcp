@@ -437,6 +437,12 @@ def _count_group_label(
     )
 
 
+#: Kinds whose queryless browse takes ``sort=`` — the workflow kinds
+#: whose ``PRIO:`` write spelling translates to the ``refs.prio`` column
+#: (``_prio_tag.split_prio``). A ``PRIO:*`` tag *filter* matches nothing
+#: on them; the empty listing names the column sort instead (gr676981).
+_BROWSE_SORT_KINDS = frozenset({"gripe", "todo", "quest"})
+
 # Browse lifecycle follows each kind's actual vocabulary; dormant quests stay live.
 _BROWSE_TERMINALS: dict[str, tuple[str, ...]] = {
     "todo": ("STATUS:done", "STATUS:won't-do", "STATUS:abandoned"),
@@ -1556,7 +1562,7 @@ class NumericRefHandler(Handler):
             sort = sort.strip().lower()
             browse_sorts = {"prio", "recency"} | self.EXTRA_SORTS
             if (
-                self.kind not in {"gripe", "todo", "quest"}
+                self.kind not in _BROWSE_SORT_KINDS
                 or (q and q.strip())
                 or sort not in browse_sorts
             ):
@@ -2800,16 +2806,17 @@ class NumericRefHandler(Handler):
         closed_values: list[str] | None = None,
         row_tag_prefixes: tuple[str, ...] | None = None,
     ) -> Response:
-        """Recency-ordered list of refs matching ``tags``, no ranking.
+        """List refs matching ``tags`` in the requested browse order.
 
         Reached when ``search(kind=K, tags=[...])`` is called without
         ``q=`` — the right shape for "show me everything I tagged X".
-        Always emits a ``Next:`` trailer pointing at the ranked search
-        path for callers who realize they wanted ranking. ``note`` is an
-        optional one-liner (e.g. the implicit-status-default hint) shown
-        under the header.
+        Next normally offers ranked search. If a positive ``PRIO:``
+        filter leaves a workflow listing empty, the suggestions use the
+        remaining tags and label the priority sort as a fresh browse
+        with default scope. ``note`` is an optional one-liner (e.g. the
+        implicit-status-default hint) shown under the header.
 
-        ``offset``/``page`` (1-based) window the recency-ordered list —
+        ``offset``/``page`` (1-based) window the ordered list —
         threaded from ``search()``'s ``page=`` so ``page=2`` actually
         advances past page 1's rows instead of silently re-showing them
         (gripe gr204291: ``page=`` was accepted but dropped on the floor
@@ -2890,11 +2897,33 @@ class NumericRefHandler(Handler):
                     f"recent {self._sense()} entries (no tag filter)",
                 )
             ]
-            if tags:
+            # gr676981: a positive ``PRIO:*`` pin can never match — writes
+            # translate to ``refs.prio`` and strip from the tag set — so an
+            # empty listing drops it from the suggested filter and names the
+            # real door, the column sort, keeping the other tags as scope.
+            prio_pin = self.kind in _BROWSE_SORT_KINDS and any(
+                t.startswith("PRIO:") for t in tags
+            )
+            kept = [
+                t for t in tags if not (prio_pin and t.startswith(("PRIO:", "!PRIO:")))
+            ]
+            if kept:
                 nav.append(
                     (
-                        f"search(kind={self.kind!r}, q='topic', tags={tags!r})",
-                        "rank within the tagged set",
+                        f"search(kind={self.kind!r}, q='topic', tags={kept!r})",
+                        "start a fresh ranked search with the remaining tags"
+                        if prio_pin
+                        else "rank within the tagged set",
+                    )
+                )
+            if prio_pin:
+                tag_arg = f"tags={kept!r}, " if kept else ""
+                nav.append(
+                    (
+                        f"search(kind={self.kind!r}, {tag_arg}args={{'sort': 'prio'}})",
+                        "PRIO: writes set the prio column. Start a fresh browse "
+                        "with default scope and any remaining tags, sorted by "
+                        "prio (lower = hotter).",
                     )
                 )
             body += render_next_section(nav)

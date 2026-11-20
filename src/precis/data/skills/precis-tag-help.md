@@ -87,11 +87,14 @@ tag(
 )
 ```
 
-`PRIO:` and `prio=` are one axis on every kind (todo, gripe, quest,
-job): an integer 1..10, **lower = hotter**, any value allowed. The names
-`urgent`/`high`/`normal`/`low` are aliases for 1/3/5/8; `PRIO:4` and
-`prio=4` are as valid as `PRIO:high`. The value is stored in the `prio`
-column, not as a tag row.
+`PRIO:` and `prio=` are one axis on the workflow kinds (todo, gripe,
+quest): an integer 1..10, **lower = hotter**, any value allowed. The
+names `urgent`/`high`/`normal`/`low` are aliases for 1/3/5/8; `PRIO:4`
+and `prio=4` are as valid as `PRIO:high`. The value is stored in the
+`prio` column, not as a tag row — so a `tags=['PRIO:...']` search
+filter matches nothing; read it back with `args={'sort': 'prio'}` on a
+queryless workflow-kind search. Job takes `prio=` (the same column)
+but refuses a `PRIO:` tag; memory has no priority axis.
 
 Pair `add=` + `remove=` in one call to flip state cleanly. With
 closed UPPERCASE prefixes the explicit `remove=` is belt-and-braces

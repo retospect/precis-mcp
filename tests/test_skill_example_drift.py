@@ -529,6 +529,64 @@ def test_iter_calls_live_reads_multiline_tails() -> None:
     ]
 
 
+#: Tag spellings banned inside a ``search`` example's ``tags=[...]`` —
+#: filter entries that can never match. gr676981: a ``PRIO:*`` write
+#: translates to the ``refs.prio`` column and is stripped from the
+#: stored tag set, so a positive PRIO filter matches nothing on the
+#: workflow kinds that accept it. The priority browse uses
+#: ``args={'sort': 'prio'}``.
+_BANNED_SEARCH_TAG_FILTERS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"^\s*(?:!\s*)?PRIO:"),
+        "PRIO: is the refs.prio column, not a stored tag — "
+        "sort with args={'sort': 'prio'}, don't filter on it",
+    ),
+)
+
+
+def _tags_list_nodes(call: ast.Call) -> Iterator[ast.AST]:
+    """The element nodes of a ``tags=[...]`` literal — the top-level
+    kwarg and the same key nested under ``args={...}`` (both reach the
+    same filter door at dispatch)."""
+    kw = _kwargs(call)
+    if kw is None:
+        return
+    nodes = [kw["tags"]] if "tags" in kw else []
+    args_node = kw.get("args")
+    if isinstance(args_node, ast.Dict):
+        for k, v in zip(args_node.keys, args_node.values, strict=False):
+            if isinstance(k, ast.Constant) and k.value == "tags":
+                nodes.append(v)
+    for node in nodes:
+        if isinstance(node, (ast.List, ast.Tuple)):
+            yield from node.elts
+
+
+def test_search_examples_never_filter_on_column_axes() -> None:
+    """Banned-pattern sweep: no ``search`` example may carry a ``tags=``
+    entry an agent can wait on forever (gr676981 — ``PRIO:*`` lives on
+    the ``prio`` column, never as a tag row)."""
+    findings: list[str] = []
+    for path in skill_files():
+        text = path.read_text(encoding="utf-8")
+        if _is_aspirational(text):
+            continue
+        for verb, call, line in _iter_calls(text):
+            if verb != "search":
+                continue
+            for elt in _tags_list_nodes(call):
+                v = _literal(elt)
+                if not isinstance(v, str):
+                    continue
+                for pat, why in _BANNED_SEARCH_TAG_FILTERS:
+                    if pat.search(v):
+                        findings.append(f"{path.name}:{line}: tags entry {v!r} — {why}")
+    assert not findings, (
+        "skill search examples filter on a tag axis nothing stores "
+        f"({len(findings)} finding(s)):\n" + "\n".join(findings)
+    )
+
+
 def test_skill_examples_survive_the_verb_gates(full_hub: Hub) -> None:
     """Every literal ``verb(kind='K', …)`` example in a shipped skill
     must name args the live dispatcher accepts."""

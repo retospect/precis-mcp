@@ -106,9 +106,9 @@ Todo receipts offer start-work only for open, unhalted refs.
 not a HintBus tip, because hints dedupe and cap
 (:mod:`precis.handlers._interpret`).
 
-Queryless gripe/todo/quest browse — recency and priority sorts, live-row
-lifecycle defaults, terminal-tag exclusion with exact hidden counts —
-runs on the shared list/count path in :mod:`precis.handlers._numeric_ref`.
+Queryless workflow sorts, live defaults and exact terminal counts share
+:mod:`precis.handlers._numeric_ref`. Empty ``PRIO:`` results suggest a fresh
+priority browse because only resolved filters reach the renderer.
 
 The todo tree
 =============

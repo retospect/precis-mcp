@@ -105,8 +105,8 @@ search(kind="memory", q="kwargs vs modes", tags=["confidence-strong"])
 `urgent` filter raises the bare-flag-collision error.
 
 Prefix an entry with `!` to exclude instead of require —
-`tags=['topic:x', '!PRIO:high']` matches `topic:x` refs that are not
-high-priority, and `tags=['!card:experiment']` alone lists everything
+`tags=['topic:x', '!STATUS:done']` matches `topic:x` refs that are not
+done, and `tags=['!card:experiment']` alone lists everything
 *without* that tag. Negations compose with the positive entries (AND)
 and with `q=`; a bare `'!'` is refused.
 
@@ -319,6 +319,10 @@ allowed axes and suggests the lowercase form.)
 put(kind='todo', text='...', tags=['urgent'])
 [error:BadInput] bare flag 'urgent' collides with closed value 'PRIO:urgent'
   next: use tags=['PRIO:urgent'] instead of tags=['urgent']
+  # that retry is right for put/tag on todo/gripe/quest (it sets the prio
+  # column); as a search filter `PRIO:urgent` matches nothing — browse
+  # with search(kind='todo', args={'sort': 'prio'}) (lower = hotter) and
+  # keep the other tags, e.g. tags=['STATUS:open']
 
 tag(kind='todo', id=40, add=['STATUS:bogus'])
 [error:BadInput] invalid STATUS value for kind 'todo': 'bogus'
