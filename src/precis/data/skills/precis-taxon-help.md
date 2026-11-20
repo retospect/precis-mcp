@@ -126,6 +126,12 @@ A link is refused, writing nothing, when:
 
 ## Read the hierarchy
 
+`get(kind="taxon", id=["measurand/temperature", "tn12"])` accepts mixed
+paths, handles and numeric ids in caller order. The default gives summaries;
+`view="list"` gives titles and `view="ids"` gives handles (up to 300 ids).
+Per-node views such as `path` and `facets` read up to 50 ids;
+facet `sort` and `cross` selectors apply to every node and continuation.
+
 `get(kind="taxon", id="tn12")` adds one line of direct parents
 (`specialises: tn3 rate [composition]`) and a child count.
 `get(kind="taxon", id="tn12", view="path")` prints one chain per route up to a

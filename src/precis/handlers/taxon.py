@@ -134,6 +134,8 @@ _UNIT_KEYS: frozenset[str] = frozenset({"canonical_unit", "display_unit"})
 
 class TaxonHandler(NumericRefHandler):
     owns_under = True
+    #: ``get(id=[...])`` takes a list of node refs, paths included (gr714645).
+    batch_ids: ClassVar[bool] = True
 
     #: Agent-authored assertions (graph-node-trust-state slice 1).
     trust_origin: ClassVar[str | None] = "generated"
@@ -962,9 +964,23 @@ class TaxonHandler(NumericRefHandler):
                 "days= applies to get(kind='taxon', id='/coverage') only",
                 next="get(kind='taxon', id='/coverage', args={'days': 30})",
             )
+        if isinstance(id, list) and view != "children":
+            id = [self._resolve_spec(i) if isinstance(i, str) else i for i in id]
+            if view == "facets":
+                return self._get_batch_view(
+                    self._coerce_ids(id, view=view),
+                    view=view,
+                    sort=sort,
+                    cross=cross,
+                    **_kw,
+                )
         if isinstance(id, str) and not id.startswith("/"):
             id = self._resolve_spec(id)
-        concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
+        concrete = (
+            id is not None
+            and not isinstance(id, list)
+            and not (isinstance(id, str) and id.startswith("/"))
+        )
         if (sort is not None or cross is not None) and view != "facets":
             raise BadInput(
                 "sort=/cross= only apply with view='facets'",

@@ -2763,3 +2763,55 @@ def test_coverage_list_id_refuses_view_kwarg(store: Any) -> None:
     assert exc.value.options == ["recent", "unrooted", "unmapped", "coverage"]
     # The plain-listing spellings still fold to the listing (gr492994).
     h.get(id="/coverage", view="index")
+
+
+class TestTaxonGetIdList:
+    @pytest.mark.parametrize("view", ["list", "ids", "index", "path", "raw"])
+    def test_batch_views_accept_mixed_references(self, store: Any, view: str) -> None:
+        h = _handler(store)
+        root = _mk(store, "batchv root")
+        leaf = _mk(store, "batchv leaf", under=root)
+        other = _mk(store, "batchv other")
+        body = h.get(id=["batchv-root/batchv-leaf", f"tn{root}", other], view=view).body
+        if view in {"list", "ids", "index"}:
+            assert body.index(f"tn{leaf}") < body.index(f"tn{root}")
+            assert body.index(f"tn{root}") < body.index(f"tn{other}")
+        else:
+            assert h.get(id=leaf, view=view).body in body
+            assert h.get(id=root, view=view).body in body
+            assert h.get(id=other, view=view).body in body
+
+    def test_batch_facets_preserves_selectors(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h = _handler(store)
+        root = _mk(store, "batchf root")
+        leaf = _mk(store, "batchf leaf", under=root)
+        calls: list[tuple[int, Any, Any]] = []
+
+        def render(store: Any, node: int, label: str, *, sort: Any, cross: Any) -> str:
+            calls.append((node, sort, cross))
+            return label
+
+        monkeypatch.setattr("precis.taxonomy.facets.render_facets", render)
+        monkeypatch.setattr("precis.handlers._numeric_ref.BATCH_VIEW_PAGE_CHARS", 1)
+        body = h.get(
+            id=["batchf-root/batchf-leaf", f"tn{root}"],
+            view="facets",
+            sort="gap",
+            cross=["method", "object"],
+        ).body
+        assert calls == [
+            (leaf, "gap", ["method", "object"]),
+            (root, "gap", ["method", "object"]),
+        ]
+        assert f"tn{leaf}" in body
+        assert f"id=[{root}], view='facets'" in body
+        assert "args={'sort': 'gap', 'cross': ['method', 'object']}" in body
+
+    def test_get_takes_a_list_of_paths_and_handles(self, store: Any) -> None:
+        h = _handler(store)
+        root = _mk(store, "listq root")
+        leaf = _mk(store, "listq leaf", under=root)
+        body = h.get(id=["listq-root/listq-leaf", f"tn{root}"]).body
+        assert f"tn{leaf}" in body and f"tn{root}" in body
