@@ -93,7 +93,7 @@ def test_without_a_token_the_route_trusts_only_the_gate():
         headers={"authorization": "Basic cmV0bzpwdw=="},
     )
     with pytest.raises(HTTPException) as err:
-        _require_listener(request, WebConfig(auth_required=True))  # type: ignore[arg-type]
+        _require_listener(request, WebConfig(auth_required=True))
     assert err.value.status_code == 401
     assert err.value.headers == {"WWW-Authenticate": 'Basic realm="precis"'}
 
