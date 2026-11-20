@@ -406,6 +406,7 @@ _SUPPORTED_VIEWS = (
     "ops",
     "pdf_link",
     "tables",
+    "figures",
     "measures",
     "page_image",
     "comments",
@@ -2813,22 +2814,40 @@ class PaperHandler(Handler):
         if effective_view is not None:
             accepted = self.accepted_views(id=ref)
             if effective_view not in accepted:
-                # Reserved views: ``fig/<N>`` is advertised in
-                # ``precis-paper-help`` as a future-reserved
-                # affordance. Surface a dedicated "reserved" error so
-                # a caller who has read the help skill knows the
-                # shape is right but the build is early — distinct
-                # from a typo against the canonical enum.
+                # Figure family: ``view='figures'`` serves the
+                # figure-caption index (td733057); 'fig'/'figure' are
+                # the singular aliases agents guess at, and ``fig/<N>``
+                # is the reserved affordance the help skill advertises.
+                # Name the working caption index rather than letting
+                # either shape fall into the raw enum error below.
+                if effective_view in ("fig", "figure"):
+                    from precis.errors import Unsupported
+
+                    raise Unsupported(
+                        f"figure view {effective_view!r} not implemented "
+                        f"for kind='paper'",
+                        options=accepted,
+                        next=(
+                            "use view='figures' for the figure-caption "
+                            "index (one row per figure with its pc and "
+                            "~ord handles). Figure binaries aren't "
+                            "served - read the caption chunk by handle. "
+                            "See the 'Figures' section of "
+                            "precis-paper-help."
+                        ),
+                    )
                 if effective_view.startswith("fig/"):
                     from precis.errors import Unsupported
 
                     raise Unsupported(
                         f"paper view {effective_view!r} is a reserved "
-                        f"affordance — the help advertises fig/<N> but "
-                        f"the build does not yet implement it",
+                        f"affordance — fig/<N> is not served and "
+                        f"the build does not implement it",
                         next=(
-                            "get(kind='skill', id='precis-paper-help') for "
-                            "the current view enum"
+                            "until figure-binary serving is wired, use "
+                            "view='figures' for the caption index and "
+                            "read the caption chunk by its pc handle; "
+                            "see precis-paper-help"
                         ),
                     )
                 from precis.errors import Unsupported
@@ -11136,6 +11155,11 @@ class PaperHandler(Handler):
 
             return render_tables_view(self.store, ref, args=args)
 
+        if view == "figures":
+            from precis.handlers._paper_tables import render_figures_view
+
+            return render_figures_view(self.store, ref)
+
         if view == "comments":
             return self._render_comments_view(ref, args)
 
@@ -11216,46 +11240,6 @@ class PaperHandler(Handler):
             # (gr635828: callers kept guessing the door on a single id).
             return self._fetch_status_view([_pa(ref)])
 
-        # The MCP critic flagged ``view='figures'`` as a silent
-        # failure — the agent had no signal that figure retrieval
-        # is unsupported. Surface a sharper hint pointing at the
-        # caption-only figure workflow documented in
-        # precis-paper-help so the agent doesn't keep retrying.
-        # (Critic MAJOR #4.)
-        if view in ("figures", "fig", "figure"):
-            raise Unsupported(
-                f"figure view {view!r} not implemented for kind='paper'",
-                options=list(_SUPPORTED_VIEWS),
-                next=(
-                    "figure binaries aren't served - figures live as legend "
-                    "blocks inside the body. Find the figure number via "
-                    "view='toc', then read the legend block "
-                    "(e.g. 'Figure 3. …' on a ~N block). See the "
-                    "'Figures' section of precis-paper-help."
-                ),
-            )
-        # ``view='fig/<N>'`` is documented in precis-paper-help as a
-        # reserved-for-future affordance.  Without a dedicated branch
-        # it falls into the generic "unknown view" error below,
-        # which makes a caller who *has* read the help skill assume
-        # the docs are wrong rather than the build being early.
-        # Surface the reservation explicitly so the caller knows to
-        # use the caption-only workaround until figure-binary
-        # serving is wired.  (MCP critic MINOR — fig/<N> documented
-        # but unrecognised view path returns the same enum as a
-        # typo.)
-        if view.startswith("fig/"):
-            raise Unsupported(
-                f"view={view!r} is reserved for a future build",
-                options=list(_SUPPORTED_VIEWS),
-                next=(
-                    "view='fig/<N>' is documented in precis-paper-help as "
-                    "reserved - figure-binary serving isn't wired yet.  "
-                    "Until then, find the figure number via view='toc' "
-                    "and read the legend block on the matching ~N "
-                    "(e.g. 'Figure 3. …')."
-                ),
-            )
         raise Unsupported(
             f"unknown view {view!r} for kind='paper'",
             options=list(_SUPPORTED_VIEWS),
@@ -12451,6 +12435,7 @@ _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
     ("cite", "endnote"): "endnote",
     ("abstract",): "abstract",
     ("toc",): "toc",
+    ("figures",): "figures",
     # Chunk-scoped like ``toc``: ``slug~N/sentences`` is the path form of
     # ``get(id='slug~N', view='sentences')`` (gr716229). On a bare slug it
     # parses fine and the ref-level check refuses it with the
@@ -13379,17 +13364,19 @@ def _parse_paper_id(
         if view is None:
             # Specific hint for the figure family — the MCP critic
             # flagged ``slug/fig/N`` as failing silently with a
-            # generic "unknown view" error. Surface the caption-only
-            # workflow so the agent stops retrying. (Critic MAJOR #4.)
-            if parts and parts[0] in ("fig", "figure", "figures"):
+            # generic "unknown view" error. ``slug/figures`` resolves
+            # via _VIEW_PATH_ALIASES above; only the singular aliases
+            # land here. Point them at the caption index. (Critic
+            # MAJOR #4.)
+            if parts and parts[0] in ("fig", "figure"):
                 raise BadInput(
                     f"figure view path {raw!r} not implemented",
                     options=list(_SUPPORTED_VIEWS),
                     next=(
-                        "figure binaries aren't served - figures live as "
-                        "legend blocks inside the body. Use view='toc' to "
-                        "locate the figure number, then read the legend "
-                        "block. See 'Figures' in precis-paper-help."
+                        "use view='figures' (or id='<slug>/figures') for "
+                        "the figure-caption index. Figure binaries aren't "
+                        "served - read the caption chunk by handle. See "
+                        "'Figures' in precis-paper-help."
                     ),
                 )
             raise BadInput(

@@ -59,6 +59,10 @@ multi-query search inherits the same ranking through its lexical legs.
 Taxon lexical legs fetch chunks by ref first so an OR retry over common
 terms only tests taxon chunks.
 
+Figure indexes use the printed table label to exclude table captions
+because legacy ingest shares the standalone caption kind across figures
+and tables. A standalone figure caption can survive without a figure block.
+
 Drive date ordering uses existing ref timestamps: ``recent_refs(created=True)``
 orders browse by creation; cross-kind chunk search accepts ``created`` and
 ``modified`` alongside legacy ``recency``. Explicit new names avoid changing

@@ -388,3 +388,47 @@ def render_tables_view(
         ]
     )
     return Response(body=body, result_count=shown_groups)
+
+
+#: Characters of a figure caption shown per line of ``view='figures'``.
+_FIGURE_CAPTION_CAP = 300
+
+
+def render_figures_view(store: Store, ref: Ref) -> Response:
+    """``view='figures'`` — the figure-caption index: one line per
+    figure or qualifying standalone caption in ord order, the sibling of
+    ``view='tables'``."""
+    figures = store.chunks.figure_chunks_for_ref(ref.id)
+    pa = _pa(ref)
+    if not figures:
+        body = f"no figures in {pa}"
+        body += render_next_section(
+            [
+                (
+                    f"get(id='{pa}', view='chunks')",
+                    "chunk counts by kind — the paper may hold no body or no figures",
+                ),
+            ]
+        )
+        return Response(body=body)
+    n = len(figures)
+    lines = [f"# {pa} — {n} figure{'s' if n != 1 else ''}", ""]
+    for cid, ord_, _kind, text in figures:
+        cap = " ".join(text.split())
+        if len(cap) > _FIGURE_CAPTION_CAP:
+            cap = cap[: _FIGURE_CAPTION_CAP - 1] + "…"
+        lines.append(f"{_chunk_handle(ref.kind, cid)} {pa}~{ord_}: {cap}")
+    body = "\n".join(lines)
+    body += render_next_section(
+        [
+            (
+                f"get(id='{pa}', view='tables')",
+                "parsed table grids",
+            ),
+            (
+                f"get(id='{pa}', view='chunks')",
+                "chunk counts by kind",
+            ),
+        ]
+    )
+    return Response(body=body, result_count=n)

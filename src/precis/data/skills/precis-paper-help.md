@@ -578,7 +578,7 @@ some chunks' embedding attempts genuinely failed) — so you can poll
 and keywords. Use the keywords where the summariser has yet to write
 a gloss. The web reader's Semantic/Keyword sidebar uses the same data.
 
-Views: `lookup`, `abstract`, `toc`, `summaries`, `tables`, `measures`,
+Views: `lookup`, `abstract`, `toc`, `summaries`, `tables`, `figures`, `measures`,
 `refs` (`references`), `si`, `sentences` (the last three: see Read a
 paper's own reference list), `bibtex` (`cite/bib`), `ris` (`cite/ris`),
 `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
@@ -685,7 +685,7 @@ back verbatim so it matches the stored block, numbered `s<N>` by the
 anchor splitter (see the measure-anchor read above).
 
 For a citation slug, the view paths are `/lookup`, `/abstract`, `/toc`,
-`/summaries`, `/refs` (also `/references`), `/si`, `/sentences`,
+`/summaries`, `/figures`, `/refs` (also `/references`), `/si`, `/sentences`,
 `/bibtex`, `/ris`, `/endnote`, `/cite/bib`, `/cite/bibtex`, `/cite/ris`
 and `/cite/endnote`. Use `view=` for other views or when the ID is a DOI.
 A `pc<id>` chunk handle supports scoped `toc` and `sentences` reads.
@@ -709,6 +709,10 @@ get(kind="paper", id="pa40", view="endnote")
 ## Cite a figure (caption only — no image binaries)
 ## Reference a figure by its legend
 ## How do I cite Figure 3 of this paper?
+
+`get(kind='paper', id='pa40', view='figures')` lists figure chunks and
+standalone caption chunks without a leading numbered table label such as
+`Table 1` or `Table S2`. Each row gives the `pc` and `~ord` handles.
 
 Image files aren't served. The figure block holds a markdown image
 marker; the legend is on the next block.

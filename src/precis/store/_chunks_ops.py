@@ -3983,6 +3983,25 @@ class ChunkStore:
                 with_embedding=False,
             )
 
+    def figure_chunks_for_ref(self, ref_id: int) -> list[tuple[int, int, str, str]]:
+        """One read for ``get(view='figures')``: the ref's live body
+        figure chunks and standalone captions without a table label, in ord order,
+        as ``(chunk_id, ord, chunk_kind, text)``."""
+        table_label = r"^[[:space:]*_]*table[[:space:]]+(s?[0-9]+[a-z]?|[ivxlcdm]+)(?![[:alnum:]])"
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.chunk_id, c.ord, c.chunk_kind, c.text
+                  FROM chunks c
+                 WHERE c.ref_id = %s AND c.retired_at IS NULL AND c.ord >= 0
+                   AND (c.chunk_kind = 'figure'
+                        OR (c.chunk_kind = 'caption' AND COALESCE(c.text, '') !~* %s))
+                 ORDER BY c.ord
+                """,
+                (ref_id, table_label),
+            ).fetchall()
+        return [(int(r[0]), int(r[1]), str(r[2]), str(r[3] or "")) for r in rows]
+
     def table_chunks_for_ref(
         self, ref_id: int, *, neighbour_window: int = 2
     ) -> tuple[list[tuple[int, int, str, list[str]]], list[tuple[int, int, str]]]:

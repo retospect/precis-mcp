@@ -13,7 +13,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
-from precis.errors import BadInput
+from precis.errors import BadInput, Unsupported
 from precis.extract.proposals import VocabEntry
 from precis.extract.recipes import expand_recipe
 from precis.extract.tables import parse_table
@@ -760,3 +760,87 @@ def test_recipe_outputs_reach_paper_views_and_runtime(
     assert (
         "measures: 1 extracted" in _handler(store).get(id=paper.id, view="tables").body
     )
+
+
+def test_figures_view_lists_caption_chunks(store: Store) -> None:
+    ref = store.insert_ref(kind="paper", slug="figlist07", title="figlist07")
+    specs = [
+        ("figure", "Figure 1. Measured signal."),
+        ("caption", "Table 1. sticking prefactors and rates."),
+        ("table", _GRID_A),
+        ("caption", "Fig. 2. Predicted signal."),
+        ("caption", "**TABLE S2** Supplemental rates."),
+        ("caption", "Predicted signal by temperature."),
+    ]
+    chunks = store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(ord=i, text=text, meta={"chunk_kind": kind})
+            for i, (kind, text) in enumerate(specs)
+        ],
+    )
+    pa = handle_registry.format_handle("paper", ref.id)
+
+    response = _handler(store).get(id=pa, view="figures")
+
+    assert response.result_count == 3
+    assert response.body.splitlines()[:5] == [
+        f"# {pa} — 3 figures",
+        "",
+        *(f"pc{chunks[i].id} {pa}~{i}: {specs[i][1]}" for i in (0, 3, 5)),
+    ]
+    assert "sticking prefactors and rates" not in response.body
+    assert "Supplemental rates" not in response.body
+
+
+def test_figures_view_none_points_at_chunks_view(store: Store) -> None:
+    ref = store.insert_ref(kind="paper", slug="orfignone7", title="orfignone7")
+    store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text="all prose")])
+    pa = handle_registry.format_handle("paper", ref.id)
+
+    out = _handler(store).get(id=pa, view="figures").body
+
+    assert f"no figures in {pa}" in out
+
+
+def test_figures_view_path_alias_resolves(store: Store) -> None:
+    """``id='<slug>/figures'`` must resolve to the same view as the
+    ``view='figures'`` kwarg — the kwarg and ``slug/<view>`` path are
+    documented as equivalent in precis-paper-help."""
+    ref = store.insert_ref(kind="paper", slug="figpath09", title="figpath09")
+    store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(
+                ord=0,
+                text="Figure 1. Measured signal.",
+                meta={"chunk_kind": "figure"},
+            )
+        ],
+    )
+    pa = handle_registry.format_handle("paper", ref.id)
+
+    by_path = _handler(store).get(id="figpath09/figures")
+    by_kwarg = _handler(store).get(id=pa, view="figures")
+
+    assert by_path.body == by_kwarg.body
+    assert f"# {pa} — 1 figure" in by_path.body
+
+
+def test_figure_aliases_point_at_figures_view(store: Store) -> None:
+    """The singular 'fig'/'figure' aliases are NOT views; their refusal
+    must name the working ``view='figures'`` caption index rather than
+    steering the caller at view='toc' (td733057 review). The kwarg
+    form is refused by the per-kind view enum gate; the id-path form
+    by ``_parse_paper_id``."""
+    ref = store.insert_ref(kind="paper", slug="figalias7", title="figalias7")
+    handler = _handler(store)
+
+    for view in ("fig", "figure"):
+        with pytest.raises(Unsupported) as exc_info:
+            handler.get(id="figalias7", view=view)
+        assert "view='figures'" in (exc_info.value.next or "")
+
+    with pytest.raises(BadInput) as exc_path:
+        handler.get(id="figalias7/fig")
+    assert "view='figures'" in (exc_path.value.next or "")
