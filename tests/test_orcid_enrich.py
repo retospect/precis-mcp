@@ -298,9 +298,11 @@ class TestDeadRecords:
 
 
 class TestCrossCheck:
-    def test_matching_doi_verifies_and_overwrites_names(
+    def test_matching_doi_verifies_and_keeps_printed_names(
         self, store: Store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """gr732612: verification stamps the row (verified_at, source) but
+        never rewrites the printed byline from the ORCID profile name."""
         _stub_credentials(monkeypatch, present=True)
         paper_id = _paper(
             store,
@@ -326,13 +328,49 @@ class TestCrossCheck:
         assert len(rows) == 1
         row = rows[0]
         assert row["verified_at"] is not None
-        assert row["given"] == "Jane"
-        assert row["family"] == "Doe"
+        assert row["given"] == "B."
+        assert row["family"] == "Old"
         assert row["source"] == "orcid"
 
         links = store.links_for(node_id, direction="out", relation="authored")
         edge = next(link for link in links if link.dst_ref_id == paper_id)
         assert edge.meta.get("verified") is True
+
+    def test_one_word_profile_name_does_not_rename_byline(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr732612's pa714283 case: the ORCID profile holds a one-word
+        name ("Jedeok"), the printed byline is "Jedeok Kim" — verification
+        must not drop the surname."""
+        _stub_credentials(monkeypatch, present=True)
+        paper_id = _paper(
+            store,
+            slug="p1b",
+            doi="10.1/a1",
+            authors=[{"given": "Jedeok", "family": "Kim", "orcid": _VALID_ID}],
+            source="crossref",
+        )
+        node_id = _orcid_node(store)
+        store.add_link(
+            src_ref_id=node_id,
+            dst_ref_id=paper_id,
+            relation="authored",
+            set_by="system",
+            meta={},
+        )
+        record = _record(
+            name="Jedeok",
+            given="Jedeok",
+            family="",
+            works=[{"doi": "10.1/a1", "title": "T", "year": 2008, "url": ""}],
+        )
+        run_once(store, fetch_fn=lambda _oid: record, sleep_fn=lambda _s: None)
+
+        row = store.get_paper_authors(paper_id)[0]
+        assert row["verified_at"] is not None
+        assert row["given"] == "Jedeok"
+        assert row["family"] == "Kim"
+        assert row["source"] == "orcid"
 
     def test_human_row_keeps_names_but_gets_verified(
         self, store: Store, monkeypatch: pytest.MonkeyPatch

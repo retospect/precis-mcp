@@ -453,7 +453,10 @@ def enter_rescue(
 # overrunning (a queued job only once its ``(job_type, executor)``
 # queue stops draining — a still-moving queue is a wait, gr625325), a
 # sha-in-prod gate that never opens, a root closed under
-# an open node, a land's post-land write that never landed (recoverable
+# an open node — a stale non-terminal job left under it is cleared
+# ``STATUS:cancelled`` outright instead of rescued, linked onto the
+# same signature gripe (gr730548) — a land's post-land write that
+# never landed (recoverable
 # when the build's ``landed:`` comment names the sha — the pass fills
 # the gate itself first, gr576154, but never a ``landed:`` comment older
 # than the REVERT handoff a review REVERT leaves on the build, td626034)
@@ -847,6 +850,35 @@ def _node_signals(
     return ts, label, lines
 
 
+def _job_signals(
+    j: Any, rows: dict[int, tuple[Any, ...]]
+) -> tuple[datetime, str, list[str]]:
+    """``(newest ts, its label, the log lines)`` for a job judged on its
+    own — the ``_node_signals`` per-job signal set: created, STATUS
+    stamp, newest comment, newest event, session-log mtime and park
+    relaunch instant (:func:`_job_parked_until`)."""
+    jrow = rows.get(j.id)
+    signals: list[tuple[str, datetime]] = [
+        ("job created", jrow[0] if jrow is not None else j.created_at)
+    ]
+    if jrow is not None:
+        if jrow[1] is not None:
+            signals.append(("status set", jrow[1]))
+        if jrow[2] is not None:
+            signals.append(("newest comment", jrow[2]))
+        if jrow[3] is not None:
+            signals.append(("newest event", jrow[3]))
+    log_at = _job_log_at(j)
+    if log_at is not None:
+        signals.append(("log mtime", log_at))
+    parked_at = _job_parked_until(j)
+    if parked_at is not None:
+        signals.append(("parked until", parked_at))
+    label, ts = max(signals, key=lambda s: s[1])
+    lines = [f"signals for jo{j.id}:"] + [f"- {lbl}: {_iso(t)}" for lbl, t in signals]
+    return ts, label, lines
+
+
 def _queue_moved_at(store: Store, job_type: str, executor: str) -> datetime | None:
     """When the queue ``(job_type, executor)`` last drained — the newest
     durable CLAIM stamp of a same-cohort job: ``meta.last_claimed_at``
@@ -922,55 +954,51 @@ def _lane_verdict(
     store: Store, now: datetime, plan: Any, n: Any, params: dict[str, Any]
 ) -> str | None:
     """``None`` to judge normally; the ``error_line`` for a no-fit stall;
-    ``"parked …"`` when the fit lanes are full or backed off (the live jobs
-    on them are judged by their own deadlines).
+    ``"parked …"`` when all enabled fit lanes are unavailable (the live
+    jobs on them are judged by their own deadlines).
 
     A reviewer without a lane pin is judged on the pick
     ``plan_dispatch._review_lane`` would make — the same three tables,
     shrunk first by every build vendor, then by the original builder's
-    alone, then the full table — so a reviewer waiting on a full
-    alternative-vendor lane stays held instead of being rescued on a
-    free lane of the builder's vendor the dispatcher would never use.
+    alone, then the full table. Each unsuccessful pick advances to the
+    next table. A silent reviewer with an available fallback lane is
+    subject to the normal stall deadline.
     """
     from precis.plans import lanes as _lanes
     from precis.workers.job_types import plan_dispatch as pd
 
     lane_table = _lanes.load_lanes(store)
     task_class = str(n.meta.get("task_class") or "code")
-    tables: list[tuple[tuple[Any, ...], str]] = [(lane_table, "")]
+    vendors: tuple[str, ...] = ()
     if pd._is_reviewer(n) and "lane" not in params:
         task_class = REVIEW_TASK_CLASS
         vendors = pd._builder_vendors(plan, n, lane_table)
-        exclude_all = frozenset(vendors)
-        exclude_first = frozenset(vendors[:1])
-        tables = [
-            (
-                tuple(ln for ln in lane_table if ln.vendor not in exclude_all),
-                "every build vendor",
-            ),
-            (
-                tuple(ln for ln in lane_table if ln.vendor not in exclude_first),
-                "the original builder's vendor",
-            ),
-            (lane_table, ""),
-        ]
-    for table, label in tables:
-        fit = [ln for ln in table if ln.enabled and ln.fits(task_class)]
-        if not fit:
-            continue  # nothing enabled in this step's table: next step
-        if _lanes.pick_lane(store, task_class, lanes=table) is not None:
+    fit = [ln for ln in lane_table if ln.enabled and ln.fits(task_class)]
+    if not fit:
+        return f"no enabled lane fits {task_class}"
+    counts = _lanes.live_lane_counts(store)
+    backoffs = _lanes.lane_backoffs(store, now)
+    for _, table in pd._review_lane_tables(lane_table, vendors):
+        if (
+            _lanes.pick_lane(
+                store, task_class, lanes=table, counts=counts, backoff=backoffs
+            )
+            is not None
+        ):
             return None
-        counts = _lanes.live_lane_counts(store)
-        backoffs = _lanes.lane_backoffs(store, now)
-        full = [ln.name for ln in fit if counts.get(ln.name, 0) >= ln.cap]
-        backed = [ln.name for ln in fit if ln.name in backoffs]
-        why = ", ".join(
-            [f"full: {', '.join(sorted(full))}" if full else ""]
-            + [f"backed off: {', '.join(sorted(backed))}" if backed else ""]
-        ).strip(", ")
-        scope = f" outside {label}" if label else ""
-        return f"parked ({why or 'fit lanes busy'}{scope})"
-    return f"no enabled lane fits {task_class}"
+    full = sorted(ln.name for ln in fit if counts.get(ln.name, 0) >= ln.cap)
+    backed = sorted(ln.name for ln in fit if ln.name in backoffs)
+    parked = sorted(ln.name for ln in fit if ln.parked)
+    reasons = [
+        f"{reason}: {', '.join(names)}"
+        for reason, names in (
+            ("full", full),
+            ("backed off", backed),
+            ("parked", parked),
+        )
+        if names
+    ]
+    return f"parked ({', '.join(reasons) or 'fit lanes busy'})"
 
 
 #: How long past a dispatcher hold's end (free backoff, a transient
@@ -1414,6 +1442,100 @@ def _evidence(
     )
 
 
+def _clear_dead_root_job(
+    store: Store,
+    res: StallResult,
+    j: Any,
+    cls: str,
+    root: int,
+    ev: RescueEvidence,
+) -> None:
+    """Terminalize a stale non-terminal job under a closed plan root —
+    the ``terminal-root`` clear (gr730548): the root it would report to
+    is done, so the job's result has no consumer, and nothing else
+    reaps it — its executor's self-healing reclaim only fires where a
+    claim can reach, and the dead-root closes merely defer on it. The
+    signature is ``enter_rescue``'s minus the ``rescue:`` tag a job
+    never reads back: the signature gripe is found-or-filed under the
+    same advisory lock and the job linked onto it (the dedupe a rescued
+    todo gets — same class, same error line, one gripe), then the job
+    ends ``STATUS:cancelled`` — the plan closed under it, this is no
+    task failure — with the evidence as a ``job_event``, ``meta.error``
+    naming the cause, and the reservation released (the sweeper's
+    transition shape)."""
+    if res.dry_run:
+        res.would_rescue.append((j.id, cls, "idle"))
+        res.notes.append(f"jo{j.id}: would clear dead-root job ({cls}, stage idle)")
+        return
+    from precis.workers.executors._common import release_job_reservation
+    from precis.workers.job_types import plan_dispatch as pd
+
+    bound = BOUNDS[cls]
+    key, sig = _sig_key(cls, ev)
+    handle = handle_registry.format_handle("job", j.id)
+    with store.atomic() as conn:
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SIG_LOCK_KEY,))
+        # Recheck under the lock: a racer that already terminalized the
+        # row — an executor's final write, a claim finishing — wins.
+        status = next(
+            (
+                str(t.value)
+                for t in store.tags_for(j.id, conn=conn)
+                if t.prefix == "STATUS"
+            ),
+            "queued",
+        )
+        if status in pd._JOB_TERMINAL:
+            res.notes.append(f"jo{j.id}: STATUS {status} under the lock; not cleared")
+            return
+        found = _live_sig_gripe(conn, sig)
+        gripe_created = found is None
+        gripe_id = (
+            _file_sig_gripe(store, conn, cls, key, sig, handle, ev, bound)
+            if found is None
+            else int(found)
+        )
+        store.add_tag(
+            j.id,
+            Tag.closed("STATUS", "cancelled"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        _comment(store, conn, j.id, "job_event", _evidence_comment(cls, ev))
+        store.add_link(
+            src_ref_id=j.id,
+            dst_ref_id=gripe_id,
+            relation="related-to",
+            set_by="system",
+            conn=conn,
+        )
+        store.stamp_ref_meta(
+            j.id,
+            {
+                "error": (
+                    f"factory_rescue: cancelled — plan root td{root} is closed; "
+                    "a dead root's child has no consumer and no reaper"
+                )
+            },
+            conn=conn,
+        )
+        store.append_event(
+            j.id,
+            source="factory_rescue",
+            event="dead-root-job-cleared",
+            payload={"root": root, "cls": cls, "gripe": gripe_id},
+            conn=conn,
+        )
+        release_job_reservation(conn, j.id)
+        if not gripe_created:
+            _comment(
+                store, conn, gripe_id, "gripe_comment", f"rescue: {cls} — {handle}"
+            )
+    res.rescued.append((j.id, cls, "idle"))
+    res.notes.append(f"jo{j.id}: cleared ({cls}, stage idle, gripe gr{gripe_id})")
+
+
 def _judge_node(
     store: Store, now: datetime, plan: Any, n: Any, is_gate: bool, res: StallResult
 ) -> None:
@@ -1800,7 +1922,16 @@ def _judge_terminal_roots(
     STATUS stamp, so a root dead seconds over a node idle for days is a
     new orphan, not an old stall — the dead-root reapers (the dispatch
     sweep, the orphan close) work inside that grace before a rescue
-    files."""
+    files.
+
+    The same subtree's stale non-terminal JOBS are cleared, not rescued
+    (gr730548): a job under a dead root has no consumer and no reaper —
+    the executor's own reclaim only fires where a claim can reach, and
+    the dead-root closes only defer on it — so a signal-dead one ends
+    ``STATUS:cancelled`` on the spot, linked onto the signature gripe a
+    rescued todo joins. A job still signalling is left to land."""
+    from precis.workers.job_types import plan_dispatch as pd
+
     with store.pool.connection() as conn:
         roots = _terminal_root_ids(conn)
         term_at = _terminal_root_stamps(conn, roots)
@@ -1823,10 +1954,21 @@ def _judge_terminal_roots(
             and n.status not in TERMINAL_TODO_STATUSES
             and n.id not in plan.nodes
         ]
+        dead_jobs = [
+            n
+            for n in mini.nodes.values()
+            if n.kind == "job"
+            and n.status not in pd._JOB_TERMINAL
+            and n.id not in plan.nodes
+        ]
         rows = _signal_rows(
-            store, [n.id for n in judged] + [j.id for n in judged for j in mini.jobs(n)]
+            store,
+            [n.id for n in judged]
+            + [j.id for n in judged for j in mini.jobs(n)]
+            + [j.id for j in dead_jobs],
         )
         closed_at = term_at.get(root)
+        deadline = STAGE_DEADLINES["idle"]
         for n in judged:
             held = _held_in_plan(mini, n)
             if held is not None:
@@ -1838,7 +1980,6 @@ def _judge_terminal_roots(
                 f"root td{root} STATUS {rn.status if rn else '?'}"
                 + (f" at {_iso(closed_at)}" if closed_at is not None else "")
             )
-            deadline = STAGE_DEADLINES["idle"]
             if now - newest <= deadline:
                 continue
             if closed_at is not None and now - closed_at <= deadline:
@@ -1864,6 +2005,33 @@ def _judge_terminal_roots(
                 head_sha=head_sha,
             )
             _rescue(store, res, n.id, "terminal-root", "idle", ev)
+        for j in dead_jobs:
+            held = _held_in_plan(mini, j)
+            if held is not None:
+                res.held += 1
+                continue
+            newest, label, lines = _job_signals(j, rows)
+            lines.append(
+                f"root td{root} STATUS {rn.status if rn else '?'}"
+                + (f" at {_iso(closed_at)}" if closed_at is not None else "")
+            )
+            if now - newest <= deadline:
+                continue
+            if closed_at is not None and now - closed_at <= deadline:
+                continue
+            ev = _evidence(
+                j,
+                "terminal-root",
+                "idle",
+                j,
+                newest,
+                label,
+                lines,
+                deadline,
+                now,
+                "plan root is closed under an open node",
+            )
+            _clear_dead_root_job(store, res, j, "terminal-root", root, ev)
 
 
 def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallResult:

@@ -795,6 +795,17 @@ def test_put_mode_plan_refuses_free_text(handler: TodoHandler) -> None:
         handler.put(mode="plan", template="release-pass", text="hello")
 
 
+def test_put_mode_plan_seed_refusal_explains_both_routes(handler: TodoHandler) -> None:
+    """gr731924: a seed-style call must expose templates and the plain door."""
+    with pytest.raises(BadInput) as exc:
+        handler.put(mode="plan", text="Build the spec", link="me731878", rel="plan-of")
+    message = str(exc.value)
+    for name in TEMPLATES:
+        assert name in message
+    assert "omit mode" in message
+    assert "precis-todo-help" in message
+
+
 # --- parented put: llm_tier default ----------------------------------------
 
 

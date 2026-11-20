@@ -49,6 +49,61 @@ DRY_RUNS_ESCALATE = 36
 #: mint interval at the same 12-runs-a-day cadence.
 COOL_RUNS = 84
 
+#: Repeated partial ticks must surface even though the job succeeds.
+DETECTOR_SKIP_ALERT_AFTER = 3
+
+
+def detector_skip_streaks(
+    store: Store,
+    *,
+    detectors: list[str],
+    skipped: list[str],
+    not_checked: dict[str, str],
+    job_id: int = 0,
+) -> dict[str, int]:
+    """Carry per-detector streaks through unrelated passes and gate skips.
+
+    Job metadata is durable across worker restarts. Only an attempted scan
+    changes its detector's counter; unavailable evidence is not recovery.
+    Alerts deduplicate per detector and close only on a completed scan.
+    """
+    from precis.alerts import raise_alert, resolve_alert_by_fingerprint
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'garden'->'detector_skip_streaks' FROM refs "
+            "WHERE kind = 'job' AND retired_at IS NULL "
+            "AND meta->>'job_type' = %s "
+            "AND ref_id <> %s "
+            "AND jsonb_typeof(meta->'garden'->'detector_skip_streaks') = 'object' "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (JOB_TYPE, job_id),
+        ).fetchone()
+    streaks = dict(row[0]) if row else {}
+    for detector in detectors:
+        if detector in not_checked and detector not in skipped:
+            continue
+        count = int(streaks.get(detector, 0)) + 1 if detector in skipped else 0
+        streaks[detector] = count
+        if count >= DETECTOR_SKIP_ALERT_AFTER:
+            raise_alert(
+                store,
+                source="graph_garden:detector_timeout",
+                fingerprint=detector,
+                title=f"Gardener detector {detector} repeatedly timed out",
+                detail=f"Skipped on {count} consecutive attempted runs. "
+                "Inspect detector queries and scan bounds before increasing the deadline.",
+            )
+        elif count == 0:
+            resolve_alert_by_fingerprint(
+                store,
+                source="graph_garden:detector_timeout",
+                fingerprint=detector,
+                resolved_by="graph_garden: detector completed",
+            )
+    return streaks
+
+
 #: STATUS values that settle a run as evidence for the streak — anything
 #: else (queued/running/waiting_*) is in-flight and counts neither way.
 _FINISHED_STATUSES = frozenset({"succeeded", "failed"})

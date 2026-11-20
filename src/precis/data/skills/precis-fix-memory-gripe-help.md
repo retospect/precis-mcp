@@ -39,12 +39,7 @@ status: active
 | Same referent, true at different times | Verify both dates. The entity ref carries current state; each memory keeps its dated event and the entity handle. | None, or `supersedes` when the older node is pure history. |
 | Different referents (Joe's dog, Brenda's dog) | Put the referent in each note's title and first line, and its handle in the body. Copy no facts from the sibling. | Mention note → referent; `related-to` between siblings with `meta.why='same question, different referent'`. |
 | Unclear, not contradictory | Rewrite to the standard of done below. A grab-bag of claims needs a split, preserving every still-true claim. | None required. |
-| Undecidable | Record what was checked. Mark both `AUDIT:contested` when that value is registered, then ask through a `memory-review` todo linked to the gripe. | `contradicts` between the two memories so both fisheyes show the dispute. |
-
-`AUDIT:contested` is not currently a registered value. Report this missing
-vocabulary in the handoff; keep the dispute explicit in the edge and review
-todo, and leave the gripe open. Do not invent a substitute tag or silently
-close it.
+| Undecidable | Record what was checked, then ask through a `memory-review` todo linked to the gripe. Leave the gripe open; do not close it or invent a tag. | `contradicts` between the two memories so both fisheyes show the dispute. |
 
 ## The memory-body checklist
 

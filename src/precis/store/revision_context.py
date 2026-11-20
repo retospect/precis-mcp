@@ -126,6 +126,9 @@ class TrustAct:
     relation of the new row it binds to (the first such row the transaction
     inserts). ``op_id`` makes a retry a replay: the same op_id and payload
     records nothing new; a changed payload is refused.
+    ``prompt_version`` stamps the checklist version a ``kg-review`` act
+    answers under — the review_due detector only counts a stamp carrying
+    the current memory checklist version as a current review.
     """
 
     action: TrustAction
@@ -139,6 +142,7 @@ class TrustAct:
     carry_from: int | None = None
     kg_review: dict[str, str] | None = None
     op_id: str = ""
+    prompt_version: str | None = None
 
     def __post_init__(self) -> None:
         if self.action not in TRUST_ACTIONS:

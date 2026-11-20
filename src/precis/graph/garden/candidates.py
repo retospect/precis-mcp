@@ -2125,6 +2125,22 @@ def _compact_rows(store: Store, ids: list[int]) -> list[_CompactRow]:
     ]
 
 
+def _resolved_proposal_ids(conn: Any) -> set[int]:
+    """Review ids a garden decision row resolves — the set form of the
+    correlated ``NOT EXISTS … note ~ 'resolves'`` the proposal scans
+    used. That shape re-scanned ``reviews`` once per pending row in the
+    window (gr732283); one LIKE-filtered pass plus a Python anti-join is
+    equivalent and bounded."""
+    return {
+        int(resolved)
+        for (resolved,) in conn.execute(
+            "SELECT substring(note from '\"resolves\": (\\d+)') FROM reviews "
+            "WHERE note LIKE '%\"resolves\"%'"
+        ).fetchall()
+        if resolved is not None
+    }
+
+
 def _pending_retire_proposals(store: Store, ids: list[int]) -> dict[int, list[int]]:
     """Undecided garden retire proposals per memory: the compact-first trigger."""
     if not ids:
@@ -2133,13 +2149,14 @@ def _pending_retire_proposals(store: Store, ids: list[int]) -> dict[int, list[in
         rows = conn.execute(
             "SELECT p.target_id, p.review_id FROM reviews p "
             "WHERE p.target_kind = 'ref' AND p.target_id = ANY(%s) "
-            "AND p.verdict = 'proposed' AND p.note LIKE %s AND p.note LIKE %s "
-            "AND NOT EXISTS (SELECT 1 FROM reviews d WHERE d.note LIKE %s "
-            "AND d.note ~ ('\"resolves\": ' || p.review_id || '[^0-9]'))",
-            (ids, '%"garden"%', '%"action": "retire"%', '%"resolves"%'),
+            "AND p.verdict = 'proposed' AND p.note LIKE %s AND p.note LIKE %s",
+            (ids, '%"garden"%', '%"action": "retire"%'),
         ).fetchall()
+        resolved = _resolved_proposal_ids(conn) if rows else set()
     out: dict[int, list[int]] = {}
     for target_id, review_id in rows:
+        if int(review_id) in resolved:
+            continue
         out.setdefault(int(target_id), []).append(int(review_id))
     return out
 
@@ -2202,19 +2219,23 @@ def _compact_related(store: Store, ids: list[int]) -> dict[int, dict[str, list[i
         # Undecided restated_claim proposals pair a restating memory with
         # the keeper holding its claim — either side is a named match.
         restated_rows = conn.execute(
-            "SELECT p.target_id, p.note::jsonb #>> '{garden,payload,keeper}' "
-            "FROM reviews p WHERE p.verdict = 'proposed' "
+            "SELECT p.target_id, p.note::jsonb #>> '{garden,payload,keeper}', "
+            "p.review_id FROM reviews p WHERE p.verdict = 'proposed' "
             "AND p.note LIKE %(det)s AND (p.target_id = ANY(%(ids)s) OR "
-            "p.note::jsonb #>> '{garden,payload,keeper}' = ANY(%(keepers)s)) "
-            "AND NOT EXISTS (SELECT 1 FROM reviews d WHERE d.note LIKE "
-            "%(res)s AND d.note ~ ('\"resolves\": ' || p.review_id || '[^0-9]'))",
+            "p.note::jsonb #>> '{garden,payload,keeper}' = ANY(%(keepers)s))",
             {
                 "det": '%"detector": "restated_claim"%',
                 "ids": ids,
                 "keepers": [f"me{i}" for i in ids],
-                "res": '%"resolves"%',
             },
         ).fetchall()
+        if restated_rows:
+            resolved = _resolved_proposal_ids(conn)
+            restated_rows = [
+                (target_id, keeper)
+                for target_id, keeper, review_id in restated_rows
+                if int(review_id) not in resolved
+            ]
         partners = {int(t) for t, _ in restated_rows}
         for _t, keeper_raw in restated_rows:
             parsed = parse_handle(str(keeper_raw or ""))
@@ -2376,6 +2397,14 @@ def compact_candidates(
     ``expired`` reason; when another trigger still fires, the evidence
     notes what shielded it. ``review_due`` has no such shield — an expired
     shielded node still owes its review.
+
+    Bounds (gr732283): the triggers are evaluated before any per-ref
+    neighbourhood work. ``_compact_related`` costs an ANN card probe per
+    ref plus a pending-proposal scan — run over the whole ``scan_cap``
+    window it outruns ``DETECTOR_DEADLINE_S`` and the detector is
+    skipped, so it is built only for the rows a trigger fires on (at
+    most ``limit``). ``_open_work_dependants`` bounds the same way: only
+    expired rows consult the shield list.
     """
     if limit <= 0 or scan_cap <= 0:
         return []
@@ -2385,28 +2414,25 @@ def compact_candidates(
     )
     rows = _compact_rows(store, window)
     pending_retire = _pending_retire_proposals(store, [row.ref_id for row in rows])
-    dependants = _open_work_dependants(store, [row.ref_id for row in rows])
-    related = _compact_related(store, [row.ref_id for row in rows])
-    shas = _ref_shas(
-        store,
-        sorted(
-            {rid for rel in related.values() for ids in rel.values() for rid in ids}
-        ),
-    )
     checked_at = now or datetime.now(UTC)
-    out: list[GardenCandidate] = []
+    expired: dict[int, tuple[datetime, str | None]] = {}
+    for row in rows:
+        expires, expiry_source = _compact_expiry(row)
+        if expires is not None and expires <= checked_at:
+            expired[row.ref_id] = (expires, expiry_source)
+    dependants = _open_work_dependants(store, sorted(expired))
+    firing: list[tuple[_CompactRow, list[str], dict[str, Any]]] = []
     for row in rows:
         reasons: list[str] = []
         evidence: dict[str, Any] = {"content_sha": row.sha}
-        expires, expiry_source = _compact_expiry(row)
-        if expires is not None and expires <= checked_at:
+        if (hit := expired.get(row.ref_id)) is not None:
             shields = _expiry_shields(row, dependants)
             if shields:
                 evidence["expiry_shielded_by"] = shields
             else:
                 reasons.append("expired")
-                evidence["expires"] = expires.isoformat()
-                evidence["expiry_source"] = expiry_source
+                evidence["expires"] = hit[0].isoformat()
+                evidence["expiry_source"] = hit[1]
         if row.created_at <= checked_at - timedelta(days=COMPACT_COLD_DAYS) and (
             row.last_read_at is None
             or row.last_read_at <= checked_at - timedelta(days=COMPACT_COLD_DAYS)
@@ -2440,6 +2466,19 @@ def compact_candidates(
         if not reasons:
             continue
         evidence["reasons"] = reasons
+        firing.append((row, reasons, evidence))
+        if len(firing) >= limit:
+            nxt = row.ref_id
+            break
+    related = _compact_related(store, [row.ref_id for row, _, _ in firing])
+    shas = _ref_shas(
+        store,
+        sorted(
+            {rid for rel in related.values() for ids in rel.values() for rid in ids}
+        ),
+    )
+    out: list[GardenCandidate] = []
+    for row, reasons, evidence in firing:
         sentences, capped = _compact_sentences(row.body)
         evidence["sentences"] = sentences
         evidence["sentences_capped"] = capped
@@ -2464,9 +2503,6 @@ def compact_candidates(
                 },
             )
         )
-        if len(out) >= limit:
-            nxt = row.ref_id
-            break
     if next_cursors is not None:
         next_cursors[key] = nxt
     return out

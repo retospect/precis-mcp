@@ -1059,9 +1059,79 @@ class TestDispatchGlue:
         ctx = self._Ctx(store, {"pass": "tag-sweep"})
         _dispatch(ctx, SPEC)
         assert ctx.meta["garden"]["skipped_detectors"] == ["untagged"]
+        assert ctx.meta["garden"]["detector_skip_streaks"]["untagged"] == 1
         (kind, text) = ctx.events[0]
         assert kind == "job_summary" and "untagged" in text
         assert ctx.failure is None
+
+
+def test_detector_timeout_alert_streak_and_recovery(store: Store) -> None:
+    """gr732283: successful partial jobs must not hide repeated timeouts."""
+    from precis.alerts import list_open_alerts
+    from precis.graph.garden.service import detector_skip_streaks
+
+    def tick(
+        detectors: list[str],
+        skipped: list[str],
+        not_checked: dict[str, str] | None = None,
+    ) -> dict[str, int]:
+        streaks = detector_skip_streaks(
+            store, detectors=detectors, skipped=skipped, not_checked=not_checked or {}
+        )
+        _ref(
+            store,
+            "job",
+            "garden tick",
+            meta={
+                "job_type": "graph_garden",
+                "garden": {"detector_skip_streaks": streaks},
+            },
+        )
+        return streaks
+
+    def alerts() -> list[dict[str, Any]]:
+        return [
+            alert
+            for alert in list_open_alerts(store)
+            if alert["source"] == "graph_garden:detector_timeout"
+        ]
+
+    assert tick(["compact"], ["compact"])["compact"] == 1
+    assert not alerts()
+    assert tick(["compact"], ["compact"])["compact"] == 2
+    assert not alerts()
+    _seed_garden_job(store, proposals=0, status="succeeded", skipped="cooled")
+    assert tick(["untagged"], [])["compact"] == 2
+    assert tick(["compact"], [], {"compact": "unavailable"})["compact"] == 2
+    assert tick(["compact"], ["compact"])["compact"] == 3
+    assert len(alerts()) == 1
+    assert tick(["compact"], ["compact"])["compact"] == 4
+    assert len(alerts()) == 1
+    current = _ref(
+        store,
+        "job",
+        "resumed garden tick",
+        meta={
+            "job_type": "graph_garden",
+            "garden": {"detector_skip_streaks": {"compact": 5}},
+        },
+    )
+    # Re-running a deferred job must not count its own previous attempt.
+    assert (
+        detector_skip_streaks(
+            store,
+            detectors=["compact"],
+            skipped=["compact"],
+            not_checked={},
+            job_id=current,
+        )["compact"]
+        == 5
+    )
+    store.retire_ref(current)
+    assert tick(["untagged"], [])["compact"] == 4
+    assert len(alerts()) == 1
+    assert tick(["compact"], [])["compact"] == 0
+    assert not alerts()
 
 
 # ── the recurring todo is the cadence (precis-recurring-help) ───────────

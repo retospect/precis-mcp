@@ -5,9 +5,20 @@ collect candidates (bounded), skip keys already pending or already
 rejected, ask the proposer, emit accepted proposals and record rejected
 ones (so the next run does not re-ask; gr506046). The only writes are
 ``reviews`` rows — plus, for an evaluator ``ask`` on a memory-body
-candidate, one ``memory-review`` todo pointing at the memory (gr560762),
-and for a ``griped`` no-change the replay-after close of the complaint
-itself once no sibling fix path remains (gr561873).
+candidate, one ``memory-review`` todo pointing at the memory (gr560762)
+whose body carries the ask reason, detector, pinned sha and a bounded
+evidence excerpt (gr732271), and for a ``griped`` no-change the
+replay-after close of the complaint itself once no sibling fix path
+remains (gr561873).
+
+``review_due`` answers review debt, so its verdicts discharge it
+(gr732278): a no-change stamps the review itself — the
+``kg-review:<model>:<date>:ok`` consider act on the pinned sha, in the
+same transaction as the rejection row — so the memory leaves the review
+queue until its content changes, its expiry passes or the review ages,
+and an accepted change routes to a human ``memory-review`` todo instead
+of a proposal, because the detector has no apply door and an emitted
+proposal would sit pending forever.
 
 The ``max_proposals`` budget is shared round-robin across the detectors
 that produced candidates (gr504843): each gets ``max_proposals // n``
@@ -23,6 +34,7 @@ Verdict``. Default :func:`propose_llm` (one routed call per candidate).
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import deque
 from collections.abc import Callable
@@ -104,12 +116,85 @@ def _gripe_review_filed(store: Store, memory_id: int, gripe_id: int) -> bool:
     return row is not None
 
 
+def _completed_review_filed(
+    store: Store, memory_id: int, detector: str, sha: str
+) -> bool:
+    """A completed review at the same pin already settled this detector's ask."""
+    from precis.store.types import TODO_BODY_KIND
+    from precis.utils.memory_hubs import REVIEW_TAG
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM links l JOIN refs t ON t.ref_id = l.src_ref_id "
+            "WHERE l.dst_ref_id = %s AND l.relation = 'raises-concern-about' "
+            "AND t.kind = 'todo' AND t.retired_at IS NULL "
+            "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags g "
+            "ON g.tag_id = rt.tag_id WHERE rt.ref_id = t.ref_id "
+            "AND g.namespace = 'OPEN' AND g.value = %s) "
+            "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags g "
+            "ON g.tag_id = rt.tag_id WHERE rt.ref_id = t.ref_id "
+            "AND g.namespace = 'STATUS' AND g.value = 'done') "
+            "AND EXISTS (SELECT 1 FROM chunks c WHERE c.ref_id = t.ref_id "
+            "AND c.chunk_kind = %s AND strpos(c.text, %s) > 0) "
+            "LIMIT 1",
+            (
+                memory_id,
+                REVIEW_TAG,
+                TODO_BODY_KIND,
+                f"\n{_review_pin(detector, sha)}\n",
+            ),
+        ).fetchone()
+    return row is not None
+
+
+def _review_pin(detector: str, sha: str) -> str:
+    return f"Detector: {detector}\nPinned content sha: {sha}"
+
+
+#: Bound on the detector-evidence JSON excerpt a review todo's body
+#: carries — enough to name the failed anchors, retired handles or
+#: compact sentences the worker starts from (gr732271).
+_ASK_EVIDENCE_CHARS = 2000
+
+
+def _review_todo_body(cand: GardenCandidate, verdict: Verdict, sha: str | None) -> str:
+    """The review todo's details body: the evaluator's ask reason, the
+    detector and the content sha it pinned, a bounded evidence excerpt
+    and the pointer to the work-the-todo skill section (gr732271)."""
+    evidence = json.dumps(
+        cand.evidence, ensure_ascii=False, sort_keys=True, default=str
+    )
+    if len(evidence) > _ASK_EVIDENCE_CHARS:
+        evidence = evidence[:_ASK_EVIDENCE_CHARS].rstrip() + "…"
+    lines = [
+        f"The garden evaluator's ask needs a human on memory me{cand.target_id}.",
+        "",
+        f"Ask: {verdict.ask}",
+        _review_pin(cand.detector, sha) if sha else f"Detector: {cand.detector}",
+    ]
+    gripe = cand.payload.get("gripe")
+    if isinstance(gripe, int):
+        lines.append(f"Filing gripe: gr{gripe}")
+    lines += [
+        "",
+        f"Detector evidence (bounded): {evidence}",
+        "",
+        "Brief: get(kind='skill', id='precis-memory-help'), section "
+        '"Working a memory-review todo".',
+    ]
+    return "\n".join(lines)
+
+
 def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> None:
     """File the evaluator's ask: one ``memory-review`` todo pointing at
-    the memory, deduped on an already-open review todo (the key's
+    the memory, deduped on an already-open review todo or a completed
+    review for this detector and content pin (the key's
     rejection row stops the re-ask; the todo tracks the human follow-up).
+    The minted body carries the ask reason, detector, pinned sha and a
+    bounded evidence excerpt so the worker does not re-derive the
+    question from the bare title (gr732271).
     """
-    from precis.store.types import Tag
+    from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
     from precis.utils.memory_hubs import REVIEW_TAG, review_todos
 
     if review_todos(store, [cand.target_id]):
@@ -117,12 +202,29 @@ def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> 
     gripe = cand.payload.get("gripe") if cand.detector == "griped" else None
     if isinstance(gripe, int) and _gripe_review_filed(store, cand.target_id, gripe):
         return
+    sha = cand.payload.get("base_sha") or cand.evidence.get("content_sha")
+    if (
+        isinstance(sha, str)
+        and sha
+        and _completed_review_filed(store, cand.target_id, cand.detector, sha)
+    ):
+        return
     title = f"review memory me{cand.target_id}: {cand.title}"[:200]
     ref = store.insert_ref(
         kind="todo",
         slug=None,
         title=title,
         meta={"llm_tier": _ASK_LLM_TIERS.get(cand.detector, "opus")},
+    )
+    store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(
+                ord=0,
+                text=_review_todo_body(cand, verdict, sha),
+                meta={"chunk_kind": TODO_BODY_KIND},
+            )
+        ],
     )
     for tag in (Tag.parse_strict("STATUS:open", kind="todo"), Tag.open(REVIEW_TAG)):
         store.add_tag(ref.id, tag, set_by="system")
@@ -189,6 +291,69 @@ def _close_no_change_gripe(
 ProposerFn = Callable[["Store", GardenCandidate], "Verdict | None"]
 
 
+def _record_review_no_change(
+    store: Store,
+    cand: GardenCandidate,
+    verdict: Verdict,
+    prompt_version: str,
+) -> None:
+    """A ``review_due`` no-change IS the review (gr732278): record the
+    proposer's rejection row and the ``kg-review:<model>:<date>:ok``
+    consider act — expected_sha pinned to the candidate's base_sha,
+    carrying the checklist version the judge answered under — in one
+    transaction. The stamped memory leaves the review queue (it
+    re-enters on content change, expiry or age) instead of staying
+    ``never_reviewed`` behind a rejection row that only hides it until
+    the prompt version bumps. A drifted target keeps the plain
+    rejection: ``sha_changed`` re-queues it honestly.
+    """
+    from datetime import UTC, datetime
+
+    from precis.graph.garden.apply import _review_model_token
+    from precis.graph.garden.proposals import GARDEN_ACTOR
+    from precis.store.revision_context import TrustAct
+
+    base_sha = str(
+        cand.payload.get("base_sha") or cand.evidence.get("content_sha") or ""
+    )
+    with store.atomic() as conn:
+        row = conn.execute(
+            "SELECT precis_target_sha('ref', %s) FROM refs "
+            "WHERE ref_id = %s FOR UPDATE",
+            (cand.target_id, cand.target_id),
+        ).fetchone()
+        record_rejection(
+            store,
+            cand,
+            rationale=verdict.rationale,
+            prompt_version=prompt_version,
+            model=verdict.model,
+        )
+        if row is None or not base_sha or str(row[0]) != base_sha:
+            log.warning(
+                "garden: review_due no-change on me%s without a sha pin match "
+                "— rejection only",
+                cand.target_id,
+            )
+            return
+        store.record_trust_act(
+            TrustAct(
+                action="consider",
+                target_kind="ref",
+                target_id=cand.target_id,
+                expected_sha=str(row[0]),
+                reason=(
+                    f"kg-review:{_review_model_token(verdict.model)}:"
+                    f"{datetime.now(UTC):%Y-%m-%d}:ok"
+                ),
+                prompt_version=prompt_version,
+            ),
+            actor=GARDEN_ACTOR,
+            actor_type="agent",
+            model=verdict.model,
+        )
+
+
 @dataclass(slots=True)
 class GardenOutcome:
     """One tick's tallies — stamped on the job's ``meta.garden``."""
@@ -210,6 +375,11 @@ class GardenOutcome:
     #: memory-review todo and closes the key under this prompt version
     #: (gr560762).
     asked: int = 0
+    #: Accepted ``review_due`` changes routed to a human review todo —
+    #: the detector has no apply door, so an emitted proposal would sit
+    #: pending forever (gr732278). The key closes under this prompt
+    #: version like an ask.
+    routed: int = 0
     #: Rejected by the short-sibling rule before any model call
     #: (``reason='sibling_distinct_names'`` on the row; gr504843).
     rule_rejected: int = 0
@@ -419,13 +589,16 @@ def run_garden_tick(
             return False
         if not verdict.accept:
             out.rejected += 1
-            record_rejection(
-                store,
-                cand,
-                rationale=verdict.rationale,
-                prompt_version=prompt_version,
-                model=verdict.model,
-            )
+            if cand.detector == "review_due":
+                _record_review_no_change(store, cand, verdict, prompt_version)
+            else:
+                record_rejection(
+                    store,
+                    cand,
+                    rationale=verdict.rationale,
+                    prompt_version=prompt_version,
+                    model=verdict.model,
+                )
             if gid is not None:
                 _close_no_change_gripe(
                     store, cand, verdict.rationale, queues, open_gripes
@@ -440,6 +613,36 @@ def run_garden_tick(
             merged = dict(effective.payload)
             merged.update(verdict.payload_overrides)
             effective = _replace(effective, payload=merged)
+        if cand.detector == "review_due":
+            # gr732278: review_due has no apply door — an emitted proposal
+            # would sit pending forever. The human review todo is the door:
+            # it carries the accepted change, and the rejection row closes
+            # the key under this prompt version.
+            out.routed += 1
+            ask = (
+                f"the evaluator accepted a {effective.action} change: "
+                f"{verdict.rationale or 'no reason given'}. review_due has "
+                "no apply door — verify the change and carry it out by hand"
+            )
+            _file_review_todo(
+                store,
+                effective,
+                Verdict(
+                    accept=False,
+                    rationale=verdict.rationale,
+                    ask=ask,
+                    model=verdict.model,
+                ),
+            )
+            record_rejection(
+                store,
+                effective,
+                rationale=verdict.rationale,
+                prompt_version=prompt_version,
+                model=verdict.model,
+                reason="accepted_no_apply",
+            )
+            return False
         emitted = emit_proposal(
             store,
             effective,

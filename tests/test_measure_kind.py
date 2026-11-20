@@ -91,6 +91,27 @@ class TestDisplay:
         assert format_value(3.0, canonical_unit=None) == "3"
         assert format_value(0.5, canonical_unit="1/s") == "0.5 1/s"
 
+    def test_a_dimensionless_display_unit_scales_a_unitless_stored_number(
+        self,
+    ) -> None:
+        # gr728612: a fraction on a measurand with no canonical unit reads
+        # through a dimensionless display unit — x100 for % — never an
+        # unscaled '%' suffix on the stored number.
+        assert format_value(0.001, canonical_unit=None, display_unit="%") == "0.1 %"
+        nums, label = display_numbers([0.001], canonical_unit=None, display_unit="%")
+        assert nums == pytest.approx([0.1]) and label == "%"
+
+    def test_a_non_dimensionless_display_unit_on_a_unitless_row_is_dropped(
+        self,
+    ) -> None:
+        # it must not print the stored number with a unit it does not carry
+        assert format_value(3.0, canonical_unit=None, display_unit="m") == "3"
+
+    def test_an_explicit_unit_on_a_unitless_row_scales_or_refuses(self) -> None:
+        assert format_value(0.001, canonical_unit=None, unit="%") == "0.1 %"
+        with pytest.raises(BadInput):
+            format_value(3.0, canonical_unit=None, unit="m")
+
     def test_a_wrong_kind_of_explicit_unit_is_refused_naming_both(self) -> None:
         with pytest.raises(BadInput, match="'V'.*'m'|'m'.*'V'"):
             format_value(1.4e-10, canonical_unit="m", unit="V")
@@ -632,7 +653,7 @@ class TestBestMeasure:
             "-0.5",
             unit="V",
             tier="asserted",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
         )
         store.record_target_review(
             "measure", run.output_id, actor="checker", verdict="rejected"
@@ -836,7 +857,7 @@ class TestBestMeasure:
             "-0.97",
             unit="V",
             tier="measured",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
         )
         with store.pool.connection() as conn:
             conn.execute(
@@ -956,7 +977,7 @@ class TestSearchMeasures:
             "1.4",
             unit="Å",
             subject=subject,
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
         )
         direct = _put(store, w, "bond", "2", unit="Å", subject=w["paper2"])
         _put(store, w, "bond", "3", unit="Å", subject=w["stray"])
@@ -1218,6 +1239,65 @@ class TestSearchHandler:
         assert "0.14 nm" in nm and "1.4 Å" not in nm
         # the output never reads 0.00000000014 m
         assert "e-10" not in out and "0.0000" not in out
+
+    def test_unitless_fraction_on_a_canonical_less_measurand_scales(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        # gr728612: apparent-quantum-efficiency shape — a fraction measurand
+        # with no canonical unit but display '%'. The stored number is the
+        # fraction: the display scales it (0.001 -> '0.1 %', never an
+        # unscaled '0.001 %') and a range bound in '%' converts to the
+        # stored fraction.
+        aqe = _taxon(
+            store, "Apparent quantum efficiency", display="%", parent=w["start"]
+        )
+        run = store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=aqe,
+                literal="0.001",
+                subject_ref_id=w["paper"],
+                reported_unit=None,
+                subject="PhotoCathode",
+            ),
+            [],
+            actor="reader",
+            model="m1",
+        )
+        body = h.get(id=run.output_id).body
+        assert "value: 0.1 %   SI: 0.001" in body
+        out = h.search(property=str(aqe), min=0.05, unit="%").body
+        assert f"mx{run.output_id} " in out and "0.1 %" in out
+        # no unit=: the bound reads in the taxon's display unit, same result
+        same = h.search(property=str(aqe), min=0.05).body
+        assert f"mx{run.output_id} " in same
+        # a bound above the value in '%' leaves it out
+        assert h.search(property=str(aqe), min=1, unit="%").body.startswith(
+            "no measures match"
+        )
+        # a unit that does not scale a unitless number is refused
+        with pytest.raises(BadInput, match="no canonical unit"):
+            h.search(property=str(aqe), min=1, unit="m")
+
+    @pytest.mark.parametrize("unit", ["g/mol", "mol/g"])
+    def test_a_molar_mass_unit_on_a_canonical_less_measurand_refuses_cleanly(
+        self,
+        store: Store,
+        w: dict[str, Any],
+        h: MeasureHandler,
+        unit: str,
+    ) -> None:
+        # gr728612 review: g/mol against dimensionless takes the molar-mass
+        # bridge and raised NeedsMolarMass, escaping search unhandled; the
+        # no-canonical-unit BadInput must catch it like any other mismatch.
+        aqe = _taxon(
+            store, "Apparent quantum efficiency", display="%", parent=w["start"]
+        )
+        with pytest.raises(BadInput, match="no canonical unit"):
+            h.search(property=str(aqe), min=1, unit=unit)
+        # the same unit as the taxon's own display unit (no unit= given)
+        other = _taxon(store, "Molar mass disguised", display=unit, parent=w["start"])
+        with pytest.raises(BadInput, match="no canonical unit"):
+            h.search(property=str(other), min=1)
 
     def test_property_resolves_like_taxon_addresses(
         self, store: Store, w: dict[str, Any], h: MeasureHandler
@@ -1543,7 +1623,7 @@ class TestDispatchSurface:
             reference="RHE",
             tier="measured",
             source_attribution="own_work",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
             conds=(
                 _cond(w, "product", "NH3", label="product"),
                 _cond(w, "potential", "-0.5", unit="V", ref="RHE"),
@@ -1577,7 +1657,7 @@ class TestGetRow:
             reference="RHE",
             tier="measured",
             source_attribution="own_work",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
             conds=(
                 _cond(w, "product", "NH3", label="product"),
                 _cond(w, "potential", "-0.5", unit="V", ref="RHE"),
@@ -1593,7 +1673,7 @@ class TestGetRow:
             "bond",
             "1.4",
             unit="Å",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
             meta={
                 "table": {
                     "chunk": w["chunk"],
@@ -1640,7 +1720,7 @@ class TestGetRow:
             "bond",
             "1.4",
             unit="Å",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
             meta={"transform": "log10", **extra_meta},
         )
         lines = h.get(id=run.output_id).body.splitlines()
@@ -1671,7 +1751,7 @@ class TestGetRow:
         assert "tier: measured · origin: — · attribution: own_work" in out
         assert "extraction: anchor_matched" in out
         assert (
-            f"anchor: pa{w['paper']} Deep paper · pc{w['chunk']} · sentence: s1" in out
+            f"anchor: pa{w['paper']} Deep paper · pc{w['chunk']} · sentence: s0" in out
         )
         assert "reviews:\n  (none)" in out and "supersession: none" in out
         assert "written: " in out and out.count("Z") >= 1
@@ -1929,7 +2009,7 @@ class TestPutRun:
             "anchor": {
                 "chunk": f"pc{w['chunk']}",
                 "anchor_scheme": "sentence",
-                "span": "s1",
+                "span": "s0",
             },
         }
         meta.update(over)
@@ -2042,6 +2122,40 @@ class TestPutRun:
             h.put(text="  ", meta=self._meta(w))
         with pytest.raises(BadInput, match="append-only"):
             h.put(text="95", meta=self._meta(w), id=3)
+
+    def test_an_unknown_anchor_scheme_is_refused_naming_the_field(
+        self, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        """gr728422: 'list' used to pass and stamp anchor_matched on the
+        whole chunk; the scheme is refused by name now."""
+        with pytest.raises(BadInput, match=r"meta\.anchor\.anchor_scheme"):
+            h.put(
+                text="95",
+                meta=self._meta(
+                    w,
+                    anchor={
+                        "chunk": f"pc{w['chunk']}",
+                        "anchor_scheme": "list",
+                        "span": "x",
+                    },
+                ),
+            )
+
+    def test_an_unreadable_anchor_span_is_refused_naming_the_field(
+        self, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        with pytest.raises(BadInput, match=r"meta\.anchor\.span"):
+            h.put(
+                text="95",
+                meta=self._meta(
+                    w,
+                    anchor={
+                        "chunk": f"pc{w['chunk']}",
+                        "anchor_scheme": "sentence",
+                        "span": "x",
+                    },
+                ),
+            )
 
     def test_measured_without_an_anchor_is_refused(
         self, store: Store, w: dict[str, Any], h: MeasureHandler
@@ -2258,6 +2372,47 @@ class TestPutRun:
             h.put(text="96", meta=self._meta(w, derived_from=[f"mx{first}"])).body
         )
         assert store.measure_detail(second)["derived_from"] == [first]
+
+    def test_dry_run_writes_nothing_and_previews_the_run(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        """gr727037: the flag used to be swallowed and the run wrote for
+        real — an un-removable write passed off as a preview."""
+        body = h.put(
+            text="95", meta=self._meta(w), items=self._items(), dry_run=True
+        ).body
+        assert body.startswith("dry run — nothing written")
+        assert "3 measure(s) would be written" in body
+        assert "anchor_matched" in body
+        # the product literal is not in the span: the preview flags it too
+        assert "(new) anchor_mismatch" in body and "flagged:" in body
+        assert store.search_measures(w["fe"], include_all=True).rows == []
+        assert store.search_measures(w["potential"], include_all=True).rows == []
+        # the same call without the flag still writes
+        assert (
+            "measure(s) written"
+            in h.put(text="95", meta=self._meta(w), items=self._items()).body
+        )
+
+    def test_dry_run_inside_args_is_the_same_preview(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        body = h.put(text="95", meta=self._meta(w), args={"dry_run": True}).body
+        assert "would be written" in body
+        assert store.search_measures(w["fe"], include_all=True).rows == []
+        # disagreeing spellings refuse as one argument
+        with pytest.raises(BadInput, match="disagree"):
+            h.put(text="95", meta=self._meta(w), dry_run=False, args={"dry_run": True})
+        # a recheck-only args= key on a write refuses instead of dropping
+        with pytest.raises(BadInput, match="mode='recheck'"):
+            h.put(text="95", meta=self._meta(w), args={"papers": [w["paper"]]})
+
+    def test_dry_run_still_fires_the_insert_refusals(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        h.put(text="95", meta=self._meta(w))
+        with pytest.raises(BadInput, match="duplicate of measure"):
+            h.put(text="95", meta=self._meta(w), dry_run=True)
 
 
 @pytest.mark.parametrize("raw", [12, "12", "mx12", " MX12 "])

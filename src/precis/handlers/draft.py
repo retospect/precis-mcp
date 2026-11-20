@@ -91,7 +91,7 @@ from precis.store._draft_ops import (
     own_content_sha,
 )
 from precis.utils import draft_regex, handle_registry
-from precis.utils.authors import to_author_dicts
+from precis.utils.authors import author_names, to_author_dicts
 from precis.utils.edit_resolve import format_unified_diff, normalize_dry_run
 from precis.utils.embed_query import query_vec_for
 from precis.utils.link_tag_ops import (
@@ -6903,6 +6903,9 @@ class DraftHandler(Handler):
           visible rather than filtering them out, so this is the
           cite-time backstop — a writer sees the signal without leaving
           the draft.
+        * **one-word byline authors** — a cited ``paper`` whose byline
+          holds a single-token author name (gr732612); this cite-time
+          line is the only signal — see :meth:`_hygiene_mononym_line`.
         * **drifted cites** — a ``cites`` edge whose pinned hub version
           (``cited_pub_id``/``cited_title``, ``handlers/draft.py::
           sync_draft_links``) no longer matches the hub's live version —
@@ -7070,6 +7073,11 @@ class DraftHandler(Handler):
             )
             if completeness_line:
                 out.append(completeness_line)
+            mononym_line = self._hygiene_mononym_line(
+                distinct_ids, refs_by_id, limit=limit
+            )
+            if mononym_line:
+                out.append(mononym_line)
 
         out.extend(self._hygiene_house_style_lines(chunks, clear_line=not elide))
 
@@ -7820,6 +7828,61 @@ class DraftHandler(Handler):
             f"⚠ {len(incomplete)} cited paper(s) lack author/year/venue on "
             f"their record: {shown}{tail}. Repair with edit(kind='paper', id=<slug>, "
             "authors=[...], year=…, journal=… / booktitle=…, publisher=…)."
+        )
+
+    def _hygiene_mononym_line(
+        self,
+        ref_ids: list[int],
+        refs_by_id: dict[int, Any],
+        *,
+        limit: int | None,
+    ) -> str:
+        """One advisory line: cited papers whose byline holds a one-word
+        author name (gr732612). A reference list must follow the printed
+        article, so a single-token name usually means the surname was
+        lost — the pre-fix ORCID cross-check pasted a one-word profile
+        name over the byline (pa714283's "Jedeok"), and a lookup tier or
+        hand edit can store one too — though a genuinely mononymic
+        byline is possible, so this warns for a human check rather than
+        repairing. This cite-time line is the only signal — a per-paper
+        alert raised by the cross-check was removed for having no
+        resolution path once the byline was corrected (and for firing on
+        genuine mononyms), so a record damaged before the orcid_enrich
+        fix — or a mononym written by a non-ORCID writer — surfaces here.
+        Names each flagged author. Non-``paper`` kinds are
+        out of scope (patent inventor fields differ). Same shared
+        batched lookups and elide-with-a-pointer convention as
+        :meth:`_hygiene_doi_line`. Empty string when every cited byline
+        is multi-word."""
+        flagged: list[str] = []
+        for rid in ref_ids:
+            ref = refs_by_id.get(rid)
+            if ref is None or getattr(ref, "kind", None) != "paper":
+                continue
+            mononyms = [
+                n
+                for n in author_names(getattr(ref, "authors", None))
+                if len(n.split()) == 1
+            ]
+            if mononyms:
+                slug = getattr(ref, "slug", None) or f"pa{rid}"
+                flagged.append(f"{slug} ({', '.join(mononyms)})")
+        if not flagged:
+            return ""
+        shown = ", ".join(flagged if limit is None else flagged[:limit])
+        tail = (
+            f" (+{len(flagged) - limit} more — see "
+            "get(kind='draft', id=<slug>, view='hygiene') for the full list)"
+            if limit is not None and len(flagged) > limit
+            else ""
+        )
+        return (
+            f"⚠ {len(flagged)} cited paper(s) have a one-word author name: "
+            f"{shown}{tail}. A byline must follow the printed article — a "
+            "lost surname (e.g. a mononymic ORCID profile written over the "
+            'printed name, gr732612) prints as "…; Jedeok; …" in the '
+            "bibliography. Check the record against the article and repair "
+            "with edit(kind='paper', id=<slug>, authors=[…])."
         )
 
     def _work_lines(self, ref_id: int) -> list[str]:

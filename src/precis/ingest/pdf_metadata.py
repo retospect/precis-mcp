@@ -57,6 +57,7 @@ from precis.ingest.lookup import (
     lookup_doi,
 )
 from precis.ingest.pdf_sidecar import (
+    _DOI_SICI_TAIL,
     candidate_title_from_text,
     extract_doi_from_filename,
     extract_pdf_meta,
@@ -156,12 +157,23 @@ def _normalize_doi(doi: str) -> str:
     return doi
 
 
+#: DOI-suffix shape for metadata-field scans, mirroring pdf_sidecar's
+#: ``_DOI_SUFFIX``: ``<``/``>`` stay excluded (XMP/HTML furniture) except
+#: inside the shared SICI tail (``<page::AID-code>3.0.CO;2-X``,
+#: gr731174). The scan variant also excludes ``,`` because exiftool
+#: fields carry comma-separated value lists.
+_DOI_METADATA_SUFFIX = r"(?:[^\s<>\"}]+|" + _DOI_SICI_TAIL + r")+"
+_DOI_METADATA_SCAN_SUFFIX = r"(?:[^\s<>\"},]+|" + _DOI_SICI_TAIL + r")+"
+
+
 def _is_valid_doi_format(doi: str) -> bool:
     """Check if string looks like a valid DOI format."""
     if not doi:
         return False
-    # DOI pattern: 10.{registrant}/{suffix}
-    return bool(re.match(r"^10\.\d{4,}/[^\s<>\"}]+$", doi))
+    # DOI pattern: 10.{registrant}/{suffix} — the suffix's only
+    # legitimate ``<…>`` is the SICI tail (``<page::AID-code>3.0.CO;2-X``,
+    # gr731174), which the ``<`` exclusion would otherwise reject.
+    return bool(re.match(rf"^10\.\d{{4,}}/{_DOI_METADATA_SUFFIX}$", doi))
 
 
 def _read_existing_pdf_metadata(pdf_path: Path) -> dict[str, Any]:
@@ -225,7 +237,11 @@ def _extract_doi_candidates(pdf_path: Path) -> list[DoiCandidate]:
         val = existing.get(field_name, "")
         if val and isinstance(val, str):
             # Look for DOI pattern
-            match = re.search(r"(?:doi:)?(10\.\d{4,}/[^\s<>\"},]+)", val, re.I)
+            match = re.search(
+                r"(?:doi:)?(10\.\d{4,}/" + _DOI_METADATA_SCAN_SUFFIX + r")",
+                val,
+                re.I,
+            )
             if match:
                 doi = _normalize_doi(match.group(1))
                 if _is_valid_doi_format(doi):

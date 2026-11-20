@@ -149,8 +149,8 @@ cases:
       Gripe gr46: Goal: determine the import policy. Route: recall -> me109
       says allow; policy hub -> me110 says deny. Both claim the same scope
       and date; neither cited source settles it. Read both, then comment on
-      gr46 with the shape and proposed next step. AUDIT:contested is not
-      registered, and no apply door is available. Do not close the gripe.
+      gr46 with the shape and proposed next step. No apply door is
+      available. Do not close the gripe.
     expect:
       calls:
         - {verb: get, kind: memory, args: {id: me109, view: fisheye+1hop}}
@@ -159,11 +159,11 @@ cases:
           kind: gripe
           args:
             id: gr46
-            text: 're:(?is).*undecidable.*contradicts.*AUDIT:contested.*not registered.*memory-review.*gr46.*'
+            text: 're:(?is).*undecidable.*contradicts.*memory-review.*gr46.*'
     forbid:
       calls:
         - {verb: edit, kind: memory}
-        - {verb: tag, kind: memory, args: {add: [AUDIT:contested]}}
+        - {verb: tag, kind: memory}
         - {verb: tag, kind: gripe}
         - {verb: put, kind: gripe, args: {tags: [STATUS:fixed]}}
         - {verb: put, kind: gripe, args: {tags: [STATUS:done]}}
@@ -177,9 +177,7 @@ cases:
             id: gr46
             text: >-
               Undecidable: propose contradicts between me109 and me110 so
-              both fisheyes show the dispute. AUDIT:contested is not
-              registered; report that missing value, do not invent one.
-              Ask through a memory-review todo linked to gr46, naming both
-              memories and the sources checked. Keep the gripe open; await
+              both fisheyes show the dispute. Ask through a memory-review todo linked to gr46,
+              naming both memories and the sources checked. Keep the gripe open; await
               the sha-pinned undoable ledger apply door.
       answer: Ask with the evidence inspected; do not silently close.

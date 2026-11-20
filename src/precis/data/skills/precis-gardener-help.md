@@ -26,13 +26,26 @@ status: active
 `graph_garden` is a job_type for graph maintenance over nodes, edges and
 tags. It files proposals; a consumer step prunes dangling edges and has a
 reviewer apply or reject merges and relinks. Every accepted candidate lands
-as one row in the reviews ledger: `verdict='proposed'`, `actor='graph-garden'`.
+as one row in the reviews ledger: `verdict='proposed'`, `actor='graph-garden'`
+(except `review_due`, whose accepted changes route to a human memory-review
+todo instead — that detector has no apply door; gr732278).
 A proposal stays *current* while the target's content is unchanged; editing
 the target makes it stale by itself.
 
 Memory judgments share [[precis-memory-help]] §"Memory reconciliation policy"
 with [[precis-make-memory]]. Memory detectors and reviewed memory actions:
 [[precis-gardener-memory-help]].
+
+## Investigate repeated detector timeouts
+
+A partial `graph_garden` job can succeed while a detector times out.
+Inspect `meta.garden.skipped_detectors` and `detector_skip_streaks` on the
+job. After three consecutive attempted timeouts, the warning alert
+`graph_garden:detector_timeout/<detector>` opens. Repeated timeouts refresh
+that alert; a completed scan resets the counter and resolves it. Unrelated
+passes, dark/cooled runs and unavailable evidence preserve the counter.
+Inspect the named detector's queries and scan bounds before increasing
+its deadline.
 
 ## What it proposes
 

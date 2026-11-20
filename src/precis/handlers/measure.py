@@ -27,7 +27,10 @@ verbs are listed below.
   anchor}, items=[<input rows>])`` — writes one run through ``insert_measure``
   and answers with the run's ``mx`` handles plus anything flagged
   (:mod:`precis.handlers._measure_write` lists the fields). ``reason=`` reaches
-  the revision context in dispatch.
+  the revision context in dispatch. ``dry_run=True`` (top-level or inside
+  ``args=``) previews instead: the insert runs inside one transaction that
+  rolls back, so the answer is the real write's rows and flags with nothing
+  persisted (gr727037).
 * ``edit(kind='measure', id=N, review='human'|'model', verdict='approved'|
   'rejected', text=<note>, meta={'model': ...})`` — one ledger review at the
   row's sha now. No other edit exists: a correction is a new ``put`` with
@@ -47,7 +50,13 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _measure_render as render
 from precis.handlers._eye import is_eye_view
-from precis.handlers._measure_write import RunParser, coerce_measure_id, flag_lines
+from precis.handlers._measure_write import (
+    ParsedRun,
+    RunParser,
+    coerce_measure_id,
+    flag_lines,
+)
+from precis.handlers._put_preview import DRY_RUN_HEADER
 from precis.protocol import ArgsSpec, Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
 from precis.store._measures_ops import ANY_YEAR, ConditionFilter
@@ -56,12 +65,15 @@ from precis.store.revision_context import current_revision_context
 from precis.taxonomy.measure_units import (
     MINUS_CHARS,
     MINUS_FOLD,
+    NeedsMolarMass,
     format_number,
     is_unit,
+    make_converter,
     to_canonical,
 )
 from precis.taxonomy.money import MoneyTables, row_currency, split_currency
 from precis.utils import handle_registry
+from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.slug_ref import resolve_live_slug_ref
 
@@ -127,6 +139,41 @@ def _utc(when: datetime | None) -> str:
     if when is None:
         return "?"
     return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%MZ")
+
+
+class _DryRun(Exception):
+    """Control-flow sentinel: aborts the preview transaction after its
+    reads, so ``Store.atomic`` rolls the insert back."""
+
+
+def _recheck_dry(value: Any) -> bool:
+    """The recheck ``dry_run`` flag's truth: only an explicit boolean
+    False or the string "false" applies — every other value (None, 0,
+    "") keeps the dry run (subset-4b: ``bool(0)`` applied silently)."""
+    if isinstance(value, str):
+        return value.strip().lower() != "false"
+    if not isinstance(value, bool):
+        return True
+    return value
+
+
+def _write_dry(flag: Any, nested: Any) -> str | None:
+    """``dry_run`` as one argument across the two spellings (gr727037).
+
+    The slim verb folds a top-level ``dry_run=`` into ``args=``, so both
+    reach the handler; a write used to read neither and silently wrote
+    the run. Agreeing values collapse to the preview mode; a truth
+    disagreement refuses, mirroring
+    :func:`precis.runtime.dispatch._fold_get_dry_run`."""
+    top = normalize_dry_run(flag)
+    deep = normalize_dry_run(nested)
+    if flag is not None and nested is not None and (top is None) != (deep is None):
+        raise BadInput(
+            f"dry_run={flag!r} and args={{'dry_run': {nested!r}}} disagree — "
+            "the preview flag is one argument",
+            next="pass dry_run=True once — top-level or inside args=",
+        )
+    return top if top is not None else deep
 
 
 class MeasureHandler(Handler):
@@ -414,10 +461,18 @@ class MeasureHandler(Handler):
         id: str | int | None = None,
         mode: str | None = None,
         args: dict[str, Any] | None = None,
+        dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Write one run: the output (``text`` + ``meta``) and its input rows
         (``items``), tied by one ``run_key``, in one transaction.
+
+        ``dry_run=True`` previews the write instead: the run inserts
+        inside :meth:`Store.atomic` and the scope rolls back, so the
+        answer is the real write's rows, extraction status and flags —
+        nothing persists (gr727037). The slim verb folds a top-level
+        ``dry_run=`` into ``args={'dry_run': True}``; both spellings
+        preview, and disagreeing ones refuse.
 
         ``put(kind='measure', mode='recheck', args={'papers': [<id>…]})``
         is the extraction-guard recheck door (gr506762 subset-4): the
@@ -448,6 +503,20 @@ class MeasureHandler(Handler):
                 )
             from precis.extract import recheck as _recheck
 
+            # A top-level ``dry_run=`` is the same flag the args= spelling
+            # carries (gr727037): fold it in, refusing a disagreement.
+            if "dry_run" in extras:
+                if dry_run is not None and _recheck_dry(dry_run) != _recheck_dry(
+                    extras["dry_run"]
+                ):
+                    raise BadInput(
+                        f"dry_run={dry_run!r} and args={{'dry_run': "
+                        f"{extras['dry_run']!r}}} disagree — the preview flag "
+                        "is one argument",
+                        next="pass dry_run= once, top-level or inside args=",
+                    )
+            elif dry_run is not None:
+                extras = {**extras, "dry_run": dry_run}
             raw_papers = extras.get("papers")
             if not isinstance(raw_papers, (list, tuple)) or not raw_papers:
                 raise BadInput(
@@ -455,14 +524,7 @@ class MeasureHandler(Handler):
                     next="put(kind='measure', mode='recheck', "
                     "args={'papers': ['pa452964']})",
                 )
-            dry_run = extras.get("dry_run", True)
-            # Only an explicit boolean False or the string "false"
-            # applies — None, 0, "" and every other value keep the dry
-            # run (subset-4b: bool(0) would have applied silently).
-            if isinstance(dry_run, str):
-                dry_run = dry_run.strip().lower() != "false"
-            elif not isinstance(dry_run, bool):
-                dry_run = True
+            dry = _recheck_dry(extras.get("dry_run", True))
             detail = extras.get("detail", False)
             if isinstance(detail, str):
                 detail = detail.strip().lower() in {"true", "1", "yes"}
@@ -478,16 +540,14 @@ class MeasureHandler(Handler):
                     return default
                 return v if v > 0 else default
 
-            result = _recheck.measure_recheck(
-                self.store, list(raw_papers), dry_run=bool(dry_run)
-            )
+            result = _recheck.measure_recheck(self.store, list(raw_papers), dry_run=dry)
             lines = _recheck.recheck_lines(
                 result,
                 detail=bool(detail),
                 page=_page_arg(extras.get("page"), 1),
                 page_size=_page_arg(extras.get("page_size"), 50),
             )
-            if result["refused"] and dry_run:
+            if result["refused"] and dry:
                 lines.append(
                     "dry run — nothing changed; re-run with "
                     "args={'dry_run': False} to record rejected reviews"
@@ -506,12 +566,24 @@ class MeasureHandler(Handler):
                 next="to correct a row, put the corrected number with "
                 "meta={'supersedes': <mx id>, ...} (same measurand, subject and label)",
             )
+        extras = args or {}
+        preview = _write_dry(dry_run, extras.get("dry_run"))
+        rest = sorted(set(extras) - {"dry_run"})
+        if rest:
+            raise BadInput(
+                f"args= keys {rest} belong to mode='recheck'; a run write "
+                "takes only args={'dry_run': ...}",
+                next="put(kind='measure', mode='recheck', args={'papers': "
+                "[<id>, …]}) for the recheck door",
+            )
         parsed = RunParser(self.store, lambda spec: self._taxon(spec)[0]).run(
             text, meta, items
         )
         ctx = current_revision_context()
         actor = (ctx.actor if ctx else None) or current_background_actor() or "agent"
         model = parsed.model or (ctx.model if ctx else None)
+        if preview is not None:
+            return self._put_dry_run(parsed, actor=actor, model=model)
         run = self.store.insert_measure(
             parsed.output,
             parsed.inputs,
@@ -544,6 +616,60 @@ class MeasureHandler(Handler):
                 f"no price year on {', '.join(no_year)}: shown as reported, "
                 "not converted; pass price_year= when the source states it"
             )
+        return Response(body="\n".join(lines))
+
+    def _put_dry_run(
+        self, parsed: ParsedRun, *, actor: str, model: str | None
+    ) -> Response:
+        """The ``dry_run`` preview: the run inserts inside
+        :meth:`Store.atomic` — whose pinned connection lets the detail
+        reads see the uncommitted rows — then the sentinel exception
+        rolls the whole scope back. Every refusal and flag of the real
+        write shows; no row persists (they are un-removable, so a
+        preview must leave none — gr727037)."""
+        details: dict[int, dict[str, Any]] = {}
+        try:
+            with self.store.atomic():
+                run = self.store.insert_measure(
+                    parsed.output,
+                    parsed.inputs,
+                    actor=actor,
+                    model=model,
+                    run_key=parsed.run_key,
+                )
+                details = {
+                    mid: self.store.measure_detail(mid)
+                    for mid in (run.output_id, *run.input_ids)
+                }
+                raise _DryRun
+        except _DryRun:
+            pass
+        lines = [
+            DRY_RUN_HEADER,
+            f"run {parsed.run_key or 'run:<new>'}: {len(details)} measure(s) "
+            "would be written",
+        ]
+        for r in details.values():
+            lines.append(
+                f"(new) {r['direction']} {render.subject_label(r)}: "
+                f"{r['measurand']} {render.value_text(r)} [{r['literal']}] "
+                f"{r['extraction_status']}"
+            )
+        flagged = flag_lines(details, label=lambda _mid: "(new)")
+        if flagged:
+            lines.append("flagged:")
+            lines.extend(f"  {line}" for line in flagged)
+        no_year = sum(
+            1
+            for r in details.values()
+            if (cur := row_currency(r))[0] is not None and cur[1] is None
+        )
+        if no_year:
+            lines.append(
+                f"no price year on {no_year} row(s): shown as reported, "
+                "not converted; pass price_year= when the source states it"
+            )
+        lines.append("re-run without dry_run to write")
         return Response(body="\n".join(lines))
 
     # ── edit: one ledger review ──────────────────────────────────────
@@ -842,13 +968,30 @@ class MeasureHandler(Handler):
     def _to_si(
         bound: float | None, unit: str | None, taxon_meta: dict[str, Any]
     ) -> float | None:
-        """A bound as SI: in ``unit``, else the taxon's display unit, else SI."""
+        """A bound as SI: in ``unit``, else the taxon's display unit, else SI.
+
+        A measurand with no canonical unit stores unitless numbers (a
+        fraction, a count), so a bound in its display unit converts from
+        dimensionless — mirroring the display path's scaling (gr728612):
+        ``min=0.1`` with ``unit='%'`` (or display ``%``) reaches stored
+        fractions as ``0.001``."""
         if bound is None:
             return None
         use = (unit or "").strip() or taxon_meta.get("display_unit")
         if not use:
             return float(bound)
-        return to_canonical(float(bound), use, taxon_meta.get("canonical_unit"))
+        canon = (taxon_meta.get("canonical_unit") or "").strip()
+        if not canon:
+            try:
+                return make_converter(use, "1").value(float(bound))
+            except (BadInput, NeedsMolarMass) as exc:
+                raise BadInput(
+                    f"unit {use!r} cannot be applied: this measurand has no "
+                    "canonical unit and the stored numbers are unitless, so "
+                    "the unit does not scale them",
+                    next="drop the unit=, or set the taxon's canonical_unit",
+                ) from exc
+        return to_canonical(float(bound), use, canon)
 
     @staticmethod
     def _header(

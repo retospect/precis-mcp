@@ -1134,6 +1134,12 @@ class FakeStore(_FakeStoreBase):
         this fake)."""
         return self.pdf_sizes.get(pdf_sha256)
 
+    def replace_ref_pdf(self, ref_id, *, old_sha, sha, path, size, pages, source):
+        self.storage_paths[sha] = path
+        self.pdf_sizes[sha] = size
+        self.fetch_refs_by_ids([ref_id])[ref_id].pdf_sha256 = sha
+        self.storage_path_writes.append((sha, path))
+
     def set_pdf_storage_path(self, pdf_sha256, path, *, conn=None):
         """Record + reflect a storage_path correction (the /rename path)."""
         if not pdf_sha256 or not path:

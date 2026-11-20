@@ -2278,6 +2278,21 @@ def _review_wait_asks(store: Store) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
+def _gate_unreadable_asks(store: Store) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t USING (tag_id)
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN' AND t.value = 'release-gate-unreadable'
+             ORDER BY r.ref_id
+            """
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def _slicer_child(store: Store) -> tuple[int, int]:
     """A slicer todo and one child slice — the reviewer's ``from`` names
     the slicer; the land job names the child."""
@@ -3215,7 +3230,71 @@ def test_engine_review_gate_unreadable_fails_closed(
     assert res.minted is None
     assert res.blocker is not None and "unreadable" in res.blocker
     assert "fail closed" in res.blocker
+    assert "db gone" in res.blocker  # gr730612: the first error line rides along
     assert calls == []  # the gate fails closed before any GitHub read
+
+
+def test_gate_unreadable_blocker_carries_the_underlying_error(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr730612: the fail-closed line names the ref and git's message —
+    the first line of the underlying error, not just its type, and never
+    the error's later lines."""
+    calls = _fake_github(monkeypatch)
+
+    def boom() -> Any:
+        raise RuntimeError(
+            "git fetch origin release/r7: couldn't find remote ref\n"
+            "The second line must not leak into the blocker."
+        )
+
+    monkeypatch.setattr(rp, "_git_lands", boom)
+    res = rp.run_pass(store, repo=REPO, now=NOW)
+    assert res.minted is None
+    assert res.blocker is not None
+    assert (
+        "engine review gate unreadable (RuntimeError): "
+        "git fetch origin release/r7: couldn't find remote ref" in res.blocker
+    )
+    assert "second line" not in res.blocker.lower()
+    assert calls == []
+
+
+def test_gate_unreadable_files_one_ask_then_resets_on_a_readable_pass(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr730612: three consecutive unreadable passes file ONE ask naming
+    the gate and the error. Further ticks name the filed ask until a
+    readable pass clears the streak."""
+    _fake_github(monkeypatch)
+
+    def boom() -> Any:
+        raise RuntimeError("git fetch origin release/r7: no such ref")
+
+    monkeypatch.setattr(rp, "_git_lands", boom)
+    for i in range(1, 5):
+        lines, _notes = _gate(store)
+        assert "engine review gate unreadable" in lines
+        assert len(_gate_unreadable_asks(store)) == (1 if i >= 3 else 0), i
+    (ask_id,) = _gate_unreadable_asks(store)
+    assert {"ask-user", "showstopper", "release-gate-unreadable"} <= _tags(
+        store, ask_id
+    )
+    body = _ask_body(store, ask_id)
+    assert "git fetch origin release/r7" in body
+    assert "3" in body
+    # the next unreadable tick dedupes, it does not file a second ask
+    _lines, notes = _gate(store)
+    assert len(_gate_unreadable_asks(store)) == 1
+    assert any(f"outage ask already filed as td{ask_id}" in n for n in notes)
+    # a readable pass clears the streak: two more unreadable ticks ask nothing
+    monkeypatch.setattr(rp, "_git_lands", lambda: (list(_GIT_LANDS), _GIT_PIN[0]))
+    assert _gate(store)[0] == ""
+    monkeypatch.setattr(rp, "_git_lands", boom)
+    for _ in range(2):
+        lines, _notes = _gate(store)
+        assert "engine review gate unreadable" in lines
+    assert len(_gate_unreadable_asks(store)) == 1
 
 
 # ── the cut range comes from git, not jobs (gr597625) ─────────────
@@ -3480,6 +3559,53 @@ def test_an_open_pass_dry_run_mints_nothing(
     assert res.blocker is not None and "is open" in res.blocker
     assert rp._reviewer_rows(store) == []
     assert any("would mint" in n for n in res.notes)
+
+
+def test_open_pass_escalates_missing_release_ref_with_healthy_main(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mint = T.mint_release_pass(store)
+    R.record_cut(store, mint.ids["cut"], "r7", "c" * 40, "9" * 12 + ".." + "c" * 12)
+    _fake_github(monkeypatch)
+    missing = True
+    error = "git fetch origin release/r7: couldn't find remote ref"
+
+    def release_lands(rel: dict[str, Any]) -> list[rp._GitLand]:
+        assert rel["rN"] == "r7"
+        if missing:
+            raise RuntimeError(error)
+        return []
+
+    monkeypatch.setattr(rp, "_release_lands", release_lands)
+
+    def tick(*, dry_run: bool = False) -> None:
+        res = rp.run_pass(store, repo=REPO, now=NOW, dry_run=dry_run)
+        assert res.blocker == f"release-pass td{mint.root_id} is open"
+        assert any(error in note for note in res.notes) == missing
+
+    tick()
+    tick(dry_run=True)
+    tick()
+    assert _gate_unreadable_asks(store) == []
+    missing = False
+    tick(dry_run=True)
+    missing = True
+    tick()
+    (first_ask,) = _gate_unreadable_asks(store)
+    assert error in _ask_body(store, first_ask)
+    tick()
+    assert _gate_unreadable_asks(store) == [first_ask]
+
+    missing = False
+    tick()
+    missing = True
+    tick()
+    tick()
+    assert _gate_unreadable_asks(store) == [first_ask]
+    tick()
+    original, second_ask = _gate_unreadable_asks(store)
+    assert original == first_ask
+    assert error in _ask_body(store, second_ask)
 
 
 def _fix_chain(

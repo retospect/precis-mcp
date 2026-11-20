@@ -2373,6 +2373,11 @@ def _close_pr(store: Any, number: int, todo_id: int, sha: str) -> str:
 # ── Detached protocol ──────────────────────────────────────────────
 
 
+class _MirrorRefreshError(RuntimeError):
+    """The factory git mirror could not be refreshed from origin — infra,
+    so the land ends attempt-free (gr730461)."""
+
+
 def _fail(
     ctx: Any,
     todo_id: int,
@@ -3914,16 +3919,24 @@ def _launch_ship(
                     raise RuntimeError(
                         "the factory checkout names no trusted origin url"
                     )
-                mirror_tips = _factory_git_mirror.populate(
-                    mirror,
-                    _factory_git_mirror.cache_dir(root),
-                    url,
-                    onto,
-                    env=_factory_git.git_auth_env(base=land_env()),
-                )
+                populate_why: list[str] = []
+                try:
+                    mirror_tips = _factory_git_mirror.populate(
+                        mirror,
+                        _factory_git_mirror.cache_dir(root),
+                        url,
+                        onto,
+                        env=_factory_git.git_auth_env(base=land_env()),
+                        why=populate_why,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    raise _MirrorRefreshError(
+                        "mirror refresh: " + _factory_git_mirror.refresh_error(exc)
+                    ) from None
                 if mirror_tips is None:
-                    raise RuntimeError(
+                    raise _MirrorRefreshError(
                         "the factory git mirror could not be refreshed from origin"
+                        + (f" ({populate_why[-1]})" if populate_why else "")
                     )
             except Exception as exc:
                 log.warning(
@@ -3937,6 +3950,13 @@ def _launch_ship(
                     params.get("lane"),
                     f"ship launch failed: {exc}",
                     handoff=f"land FAILED: scripts/ship did not start ({exc}).",
+                    # A mirror refresh failure is infra (network), not the
+                    # work: re-mint the land attempt-free (gr730461).
+                    attempt_free=(
+                        "mirror-refresh"
+                        if isinstance(exc, _MirrorRefreshError)
+                        else None
+                    ),
                 )
                 return None
         else:

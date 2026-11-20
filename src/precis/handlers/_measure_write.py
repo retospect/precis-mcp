@@ -27,7 +27,10 @@ A row dict (the output's ``meta``, or one entry of ``items``) holds:
   ``meta.note``; written at insert only, since ``meta`` is frozen after);
 * ``anchor`` = ``{chunk, anchor_scheme, span}`` (an input inherits the
   output's), ``extra_anchors`` (a list of the same), ``supersedes`` (a measure
-  id or ``mx`` handle), ``derived_from`` (a list of the same);
+  id or ``mx`` handle), ``derived_from`` (a list of the same) —
+  ``anchor_scheme`` is one of ``sentence`` / ``sentence_range`` /
+  ``numeric_atom`` / ``offsets``; any other scheme, or a span the scheme's
+  grammar cannot read, is refused naming the field (gr728422);
 * ``computed_source`` — a computed-evidence contract dict
   (:mod:`precis.computed_sources`, gr564183) pinning the row's number to a
   producer's exact frozen output bytes, field selector, unit and method.
@@ -52,7 +55,12 @@ from typing import Any
 from precis import computed_sources
 from precis.errors import BadInput
 from precis.store import Store
-from precis.store._measures_ops import MeasureAnchor, MeasureSpec
+from precis.store._measures_ops import (
+    ANCHOR_SCHEMES,
+    MeasureAnchor,
+    MeasureSpec,
+    _span_claim,
+)
 from precis.taxonomy.measure_units import MINUS_FOLD
 from precis.utils import handle_registry
 
@@ -240,7 +248,18 @@ class RunParser:
         scheme = raw["anchor_scheme"]
         if not isinstance(scheme, str):
             raise _bad(where, f"{field}.anchor_scheme", "must be a string")
-        return MeasureAnchor(paper, chunk_id, scheme, raw["span"])
+        if scheme not in ANCHOR_SCHEMES:
+            raise _bad(
+                where,
+                f"{field}.anchor_scheme",
+                f"{scheme!r} is not one of {', '.join(ANCHOR_SCHEMES)}",
+            )
+        anchor = MeasureAnchor(paper, chunk_id, scheme, raw["span"])
+        try:
+            _span_claim(anchor)
+        except BadInput as err:
+            raise _bad(where, f"{field}.span", str(err)) from err
+        return anchor
 
     def _source_agreement(
         self, raw: dict[str, Any], source: dict[str, Any], where: str, literal: str
@@ -510,12 +529,20 @@ class RunParser:
         return ParsedRun(output, inputs, run_key.strip() if run_key else None, model)
 
 
-def flag_lines(rows: dict[int, dict[str, Any]]) -> list[str]:
+def flag_lines(
+    rows: dict[int, dict[str, Any]], *, label: Callable[[int], str] | None = None
+) -> list[str]:
     """One line per flagged row (id -> ``measure_detail`` dict): an escalation
-    entry, or a literal not found in its anchored span."""
+    entry, or a literal not found in its anchored span. ``label`` formats
+    the row's address — the ``mx`` handle on a real write, a placeholder
+    on a dry-run preview whose ids are rolled back."""
     out: list[str] = []
     for mid, r in rows.items():
-        mx = handle_registry.format_handle("measure", mid)
+        mx = (
+            label(mid)
+            if label is not None
+            else handle_registry.format_handle("measure", mid)
+        )
         for entry in (r.get("meta") or {}).get("escalation") or []:
             rule = entry.get("rule", "flag") if isinstance(entry, dict) else str(entry)
             detail = (

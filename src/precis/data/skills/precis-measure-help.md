@@ -138,6 +138,17 @@ prefix, so 1.4e-10 m reads `140 pm`, never `0.00000000014 m`.
 
 - A fraction (canonical unit `1`) shows bare (`0.95`); `95 %` appears only when
   the taxon's `display_unit` is `%` (or you pass `unit='%'`).
+- A measurand with **no canonical unit** stores unitless numbers (a fraction,
+  a count). A dimensionless `display_unit` or `unit=` scales the stored number:
+  `0.001` shows as `0.1 %`, never unscaled as `0.001 %`; a display unit that
+  does not scale a unitless number is dropped rather than printed unscaled,
+  and an explicit `unit=` that does not fit is refused (or falls back to bare
+  in the render path).
+- `min=`/`max=` on `search` convert from the display unit to the stored
+  number, so `unit='%' bounds reach stored fractions (`min=0.1` with `%` is
+  `0.001` stored); a non-scaling unit refuses with a `next` step. A fraction
+  measurand should carry `canonical_unit` `1` anyway — then `%` is accepted as
+  a reported unit on write.
 - pH (and pOH, pKa, dB) is a scale: never prefixed, never converted.
 - Affine units convert as absolute values: 298.15 K with display `°C` is
   `25 °C`. A temperature difference is its own measurand.
@@ -262,9 +273,14 @@ are listed in `meta.extra_anchors` as `{link_id, anchor_scheme, span}`.
 - `tier='measured'` is **refused** without an anchor on a paper chunk, and refused
   when `source_attribution='cited_work'` (a restated number is `asserted`).
 - `extraction_status` is `anchor_matched` when the literal occurs in the span's
-  text, `anchor_mismatch` when it does not (flagged, never refused),
-  `unverified` with no anchor. Raw offsets test the slice; other schemes test the
-  whole chunk.
+  text, `anchor_mismatch` when it does not or when the span names nothing in
+  the chunk (flagged, never refused), `unverified` with no anchor. The span is
+  resolved under its scheme — an offsets slice, the named sentence(s), or a
+  numeric atom's containing sentence — so a wrong `s<N>` flags, not matches.
+  An `anchor_scheme` outside `sentence` / `sentence_range` / `numeric_atom` /
+  `offsets`, or a span that scheme's grammar cannot read, is refused.
+  Positional sentence, range, and atom IDs must name the selected chunk.
+  A sentence range with either endpoint outside the chunk flags `anchor_mismatch`.
 - A sentence span is `s<N>` naming the chunk's N-th sentence under the anchor
   splitter, numbered from `s0`. Read a chunk's sentence ids before writing:
   `get(kind='paper', id='pc<id>', view='sentences')` (or

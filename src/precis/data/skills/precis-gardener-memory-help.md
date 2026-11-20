@@ -111,7 +111,7 @@ Read the `Ask:` line and detector evidence in the todo body. Use its
 check whether it still describes the current revision. Older todos can
 have only a title. The evaluator's reason is also recorded
 on the closed ledger row. A grounding re-audit that changed a claim's
-coverage mints a `memory-review` todo on each dependent draft/quest.
+coverage queues review of the drafts and quests that cite the memory.
 
 Work it per [[precis-memory-help]] "Working a memory-review todo":
 verify against the repo and cited evidence, repair through the ledger
@@ -123,6 +123,11 @@ SHA. For a complaint, any review todo linked to both the memory and
 the complaint already answers the ask.
 
 ## Close a review
+
+For `review_due` the todo is also the door for an accepted change: the
+detector has no apply door, so no proposal row is written. A `no-change`
+answer stamps `kg-review:<model>:<date>:ok` for you and the memory leaves
+the queue until it changes, expires or ages.
 
 A current review stamp clears stamp-related `review_due` debt. If the
 flag reports expiry, preserve still-needed claims before proposing

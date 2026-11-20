@@ -201,6 +201,48 @@ def test_ask_verdict_files_a_gripe_linked_review_todo(store: Store) -> None:
     dsts = {int(l.dst_ref_id) for l in store.links_for(todos[0].id, direction="out")}
     assert dsts >= {loser, gid}
     assert "done" not in {v for _ns, v in store.ref_tags_bulk([gid]).get(gid, [])}
+    # gr732271: the minted body carries the ask reason, detector, pinned
+    # sha, evidence excerpt and the work-the-todo pointer.
+    (body,) = [
+        b.text
+        for b in store.chunks.list_chunks_for_ref(todos[0].id)
+        if b.chunk_kind == "todo_body"
+    ]
+    assert "Ask: undecidable, needs a human" in body
+    assert "Detector: griped" in body
+    assert f"Pinned content sha: {candidate.payload['base_sha']}" in body
+    assert f"Filing gripe: gr{gid}" in body
+    assert '"Working a memory-review todo"' in body
+
+
+def test_review_todo_body_bounds_the_evidence_excerpt(store: Store) -> None:
+    """gr732271: detector evidence lands as a bounded excerpt, whatever
+    its size."""
+    mem = _memory(store, "A claim needing a human review.")
+    candidate = cand.GardenCandidate(
+        detector="anchor_rot",
+        action="rewrite",
+        target_kind="ref",
+        target_id=mem,
+        title="me names missing anchors",
+        evidence={"anchors": [{"anchor": "x" * 5000}], "content_sha": "abc123"},
+        payload={"base_sha": "abc123"},
+    )
+    runner._file_review_todo(
+        store, candidate, Verdict(accept=False, ask="check the anchor")
+    )
+    (todo,) = store.list_refs(kind="todo", tags=["memory-review"], limit=10)
+    (body,) = [
+        b.text
+        for b in store.chunks.list_chunks_for_ref(todo.id)
+        if b.chunk_kind == "todo_body"
+    ]
+    assert "Ask: check the anchor" in body
+    assert "Detector: anchor_rot" in body
+    assert "Pinned content sha: abc123" in body
+    assert "Filing gripe" not in body
+    assert "x" * 5000 not in body
+    assert len(body) < 4000
 
 
 def test_closed_review_todo_blocks_a_repeat_mint(store: Store) -> None:

@@ -2885,6 +2885,40 @@ def test_mirrored_launch_stamps_mirror_mode_on_the_todo(
     assert (tmp_path / "scratch" / "factory-mirror" / "td42.tips.json").exists()
 
 
+@pytest.mark.parametrize("raised", [False, True])
+def test_mirror_refresh_failure_is_attempt_free_and_names_the_step(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, raised: bool
+) -> None:
+    """gr730461: a populate that cannot refresh the mirror is infra — the
+    land is re-minted attempt-free and the failure names the step."""
+    monkeypatch.setattr(
+        land_slice._factory_git, "factory_git_token", lambda: "tok-factory"
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+
+    def refuse(*a: Any, why: list[str], **k: Any) -> None:
+        if raised:
+            raise OSError("fetch rc=128: could not resolve host")
+        why.append("fetch rc=128: could not resolve host (after 3 tries)")
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "populate", refuse)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert "fetch rc=128" in (ctx.failure or "")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert ctx.meta_set["red_class"] == "mirror-refresh"
+    assert seams["launch"] == []
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags
+    assert not any(tag.startswith("attempt:") for tag in tags)
+
+
 def test_mirrored_launch_fails_when_the_todo_stamp_cannot_be_written(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

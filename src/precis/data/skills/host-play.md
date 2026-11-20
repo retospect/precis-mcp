@@ -78,12 +78,23 @@ is the cheap path.
 ## autocatpath needs its wheels passed explicitly
 
 `44-autocatpath.yml` installs a private CUDA wheel stack. Pass the wheel
-path explicitly with `-e autocatpath_wheel=<path>` (and the xtb wheel
-where the topology uses it) and `--limit` the GPU nodes — the play's
-targeting follows the topology map, so an unlimited run touches every
-capable host at once. Build the wheel from the commit the lockfile pins,
-not from main. After it lands, verify the worker drop-in and the unit
-restart it notifies.
+path explicitly with `-e autocatpath_wheel=<path>` and, where the
+topology runs the xtb relax rung, the tblite backend wheel too with
+`-e tblite_wheel=<path>` (PyPI ships no linux-aarch64 tblite wheel, so
+`scripts/build-tblite-wheel` builds it from the versioned PyPI sdist).
+`--limit` the GPU nodes — the play's targeting follows the topology
+map, so an unlimited run touches every capable host at once. Build the
+autocatpath wheel from the commit the lockfile pins, not from main.
+After it lands, verify the worker drop-in and the unit restart it
+notifies.
+
+A missing tblite wheel is not a silent skip: the inventory overlay sets
+`tblite_required: true` for topologies that pin xtb jobs to these hosts,
+and the play then fails outright on any such Linux host whose wheelhouse
+holds no `tblite-*.whl` — every xtb job there would fail as infra. The
+check is Linux-only; macOS kind-surface hosts take tblite from PyPI.
+Push the wheel with the same play (`-e tblite_wheel=<path>`) before
+re-running.
 
 ## macOS hosts — groups, handlers, plists
 
@@ -133,6 +144,15 @@ to the gateway. When you edit it:
 The overlay sync preflight inside `play` and `scripts/deploy`
 fast-forwards, pushes, or refuses on divergence — treat a refuse as a
 queue to reconcile, never to bypass.
+
+## Shell session gotchas
+
+- In an interactive shell, `! cd deploy` leaves the working directory at
+  `deploy/` for later commands. From there, repo-root `scripts/` paths fail,
+  and a line starting with `cd deploy && ...` tries to enter `deploy/` again
+  and fails with “no such directory.” Run `! cd ..` to return to the repo root.
+- Ad hoc scripts in `/tmp` vanish on reboot. Ask a cluster-ops agent for
+  current host status after a reboot.
 
 ## See also
 

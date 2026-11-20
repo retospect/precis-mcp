@@ -180,19 +180,18 @@ def test_sentences_view_via_path_form(store: Store) -> None:
     assert "s1: Fig. 3 shows the corresponding Arrhenius plot." in resp.body
 
 
-def test_sentences_view_lead_names_whole_chunk_write_check(
+def test_sentences_view_lead_names_resolved_write_check(
     store: Store,
 ) -> None:
-    """The lead must not imply the write receipt re-checks the selected
-    sentence — ``_measures_ops._span_text`` falls back to the whole
-    chunk for ``s<N>`` anchors, so this read is the only span-level
-    check."""
+    """The lead must not promise a whole-chunk check: since gr728422
+    ``_measures_ops._span_text`` resolves ``s<N>`` against this very
+    numbering, so a wrong index reads ``anchor_mismatch``."""
     ref_id, _chunk_ids = _seed_paper(store, slug="sview08")
     pa = handle_registry.format_handle("paper", ref_id)
 
     resp = _handler(store).get(id=f"{pa}~0", view="sentences")
 
-    assert "whole chunk" in resp.body
+    assert "resolves sN" in resp.body and "whole chunk" not in resp.body
 
 
 def test_sentences_view_cut_continuation_keeps_the_view(

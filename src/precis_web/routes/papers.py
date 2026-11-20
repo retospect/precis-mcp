@@ -1764,37 +1764,34 @@ def _replace_pdf_redirect(ref_id: int, note: str) -> RedirectResponse:
     return RedirectResponse(url=f"/papers/{ref_id}?{query}", status_code=303)
 
 
+@router.post("/{ref_id}/reextract-pdf", response_model=None)
+async def reextract_pdf(request: Request, ref_id: int) -> Response:
+    """Offer the existing identity-checked body repair after a PDF swap."""
+    body, is_error = await await_dispatch(
+        request,
+        "edit",
+        {
+            "kind": "paper",
+            "id": f"pa{ref_id}",
+            "args": {"reextract": True, "reason": "web Replace PDF body repair"},
+        },
+    )
+    if is_error:
+        return _paper_error(request, "Reextract PDF", body, 400)
+    return _replace_pdf_redirect(ref_id, body)
+
+
 @router.post("/{ref_id}/replace-pdf", response_model=None)
 async def replace_pdf(
     request: Request,
     ref_id: int,
     file: UploadFile = File(...),
 ) -> Response:
-    """Handle an operator PDF upload — two different repairs under one button.
+    """Replace held PDF bytes under their actual hash, preserving the body.
 
-    * **Ref holds a ``pdf_sha256``** — a straight file swap, **without**
-      re-ingesting or re-OCRing. Some stored PDFs are corrupted (the bytes
-      won't render) even though the text chunks + metadata extracted at
-      ingest are fine; swapping the bytes under the held sha is the repair
-      (the viewer and ``corpus_reconcile`` resolve by path/existence, never
-      by re-hashing). Writes to the file's currently-resolved location when
-      it has one, else the canonical ``corpus_pdf_dest`` under the primary
-      corpus root, atomically (sibling temp + ``os.replace``), and refreshes
-      the authoritative ``storage_path`` pointer so the resolver prefers the
-      path just written. ``pdf_sha256`` stays as-is — the swap is a bypass.
-      Needs a cite_key to name the corpus file.
-    * **Ref has no ``pdf_sha256``** (a stub, or a ``drop_body``/
-      ``pdf_cleared`` survivor — gr519746) — there is no ``pdfs`` row to
-      repoint, so the swap silently did nothing. The upload instead goes
-      through the feat-a2 attach lane: bytes stage under
-      ``$PRECIS_UPLOAD_STAGING/<ref_id>-<sha>.pdf`` (OUTSIDE the watched
-      inbox — never write there directly), a ``paper_pull`` job is queued
-      with ``upload_sha``, and the worker runs the same ``check_pdf``
-      identity gate + sidecar + inbox drop as an agent upload. The ingest
-      fold then lands the ``pdfs`` row, ``refs.pdf_sha256``, the
-      ``pdf_uploaded`` ref_event and, for a bodiless stub, the extracted
-      body — attach-only when a markup body already exists. A
-      ``pdf_upload_staged`` ref_event journals the web half immediately.
+    Held files are never overwritten: old SHA links must keep serving their
+    original bytes. A separate file precedes the atomic database repoint.
+    Sha-less uploads use the identity-checked paper_pull attach lane.
     """
     from precis.ingest import pdf_upload
     from precis.workers.job_types import paper_pull
@@ -1825,6 +1822,12 @@ async def replace_pdf(
     cfg = get_web_config(request)
 
     if sha:
+        recorded = store.pdf_storage_path(sha)
+        if recorded and not recorded.lower().endswith(".pdf"):
+            raise BadInput(
+                "refusing non-.pdf destination — repair the stored PDF path "
+                "before replacing it."
+            )
         cite_key = ref.slug or ""
         if not cite_key:
             raise BadInput(
@@ -1834,21 +1837,51 @@ async def replace_pdf(
         dest = _resolve_pdf_for_ref(store, cfg.corpus_dirs, ref)
         if dest is None:
             dest = corpus_pdf_dest(cite_key, cfg.corpus_dirs[0])
+        if dest.suffix.lower() != ".pdf":
+            raise BadInput(
+                f"refusing non-.pdf destination {dest.name} — "
+                "repair the stored PDF path before replacing it."
+            )
+        import tempfile
+        from pathlib import Path
+
+        import fitz
+
+        try:
+            with fitz.open(stream=data, filetype="pdf") as doc:
+                pages = doc.page_count
+                if doc.is_encrypted or pages < 1:
+                    raise ValueError("PDF is encrypted or empty")
+        except Exception as exc:
+            raise BadInput(
+                "uploaded PDF cannot be read — choose an unencrypted, valid PDF."
+            ) from exc
+        upload_sha = hashlib.sha256(data).hexdigest()
+        # A hash-specific sibling preserves both old bytes and old SHA URLs.
+        dest = dest.with_name(f"{upload_sha}.pdf")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic swap: write a sibling temp then os.replace, so a viewer
-        # never sees a half-written file (and a failed write leaves the
-        # old bytes).
-        tmp = dest.with_name(dest.name + ".upload.tmp")
-        tmp.write_bytes(data)
-        os.replace(tmp, dest)
-        # Keep pdf_sha256 as-is (bypass), but point the authoritative
-        # resolver at the path we just wrote so it never re-guesses a
-        # stale shard.
-        store.set_pdf_storage_path(sha, str(dest))
+        with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as upload_file:
+            tmp = Path(upload_file.name)
+            upload_file.write(data)
+        try:
+            os.replace(tmp, dest)
+            await asyncio.to_thread(
+                store.replace_ref_pdf,
+                ref_id,
+                old_sha=sha,
+                sha=upload_sha,
+                path=str(dest),
+                size=len(data),
+                pages=pages,
+                source=cfg.source,
+            )
+        finally:
+            tmp.unlink(missing_ok=True)
         return _replace_pdf_redirect(
             ref_id,
-            f"PDF bytes swapped at {dest.name} — the held sha is unchanged; "
-            "chunks, embeddings and metadata were left alone.",
+            f"PDF replaced (sha256 {upload_sha}, {len(data)} bytes, {pages} pages). "
+            "Body and metadata kept. If the old PDF was the wrong paper, "
+            "use Reextract body to rebuild the text from this PDF.",
         )
 
     # Sha-less ref: stage the bytes and queue the attach job. Staging is a

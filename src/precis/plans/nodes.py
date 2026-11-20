@@ -35,6 +35,9 @@ from typing import Any, Literal, NotRequired, TypedDict
 
 NodeKind = Literal["task", "phase", "gate", "loop", "generator"]
 
+#: The dispatcher-owned current wait, with its reason and UTC since time.
+DISPATCH_HOLD_KEY = "dispatch_hold"
+
 #: The meta keys this module owns -- the todo handler's edit allowlist
 #: widens by exactly these.
 PLAN_KEYS: tuple[str, ...] = ("op", "gate", "loop", "generate", "auto_close")

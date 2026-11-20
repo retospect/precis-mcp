@@ -512,7 +512,10 @@ What it judges: a dispatchable node (or a `sha-in-prod` gate) whose newest
 signal — its tags, comments, events or child jobs — is older than its
 stage deadline: idle 20 min (also: cancelled newest job → `cancelled`;
 pending-sha gate whose build already landed → `post-land-write`; a node
-under a root closed terminal → `terminal-root`; no enabled lane fits the
+under a root closed terminal → `terminal-root` — and a signal-dead
+non-terminal *job* left under that closed root is cleared
+`STATUS:cancelled` outright, linked onto the same signature gripe,
+rather than rescued (gr730548); no enabled lane fits the
 node's class), queued 30 min, build 5 h, land 6 h, review 45 min, gate
 72 h. A hold is not a stall: `waiting-for:`, `halt`, paused, an open ask,
 `rescue:` or a live `blocked-by` target exempt a node; a lane-parked node
@@ -867,7 +870,9 @@ comment marks a charged attempt: a red gate, a merge conflict, a deny-path
 hit or a version change. The todo reopens with `attempt:<n>` and the branch
 stays for the next build. These are attempt-free and the land is minted
 again: a raced or unverifiable push, a gate that was killed or died without
-an exit code, a setup failure with no dependency file in the diff, a repo
+an exit code, a setup failure with no dependency file in the diff, a
+factory git mirror refresh that still fails after its retries
+(`mirror-refresh`; the cause is in the failure reason), a repo
 closed or a todo retagged during the gate, and the wall deadline.
 
 The lander never force-pushes, opens a pull request, resolves a gripe,

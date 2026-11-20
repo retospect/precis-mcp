@@ -104,6 +104,15 @@ def _nursery(
 
 ALERT_RULES: tuple[AlertRule, ...] = (
     AlertRule(
+        "graph_garden:detector_timeout",
+        "{detector}",
+        "Gardener detector repeatedly exceeds its deadline.",
+        "warn",
+        "graph_garden",
+        triage="Inspect detector queries and scan bounds.",
+        budget="3 consecutive attempted runs",
+    ),
+    AlertRule(
         "local-first:escalation",
         "{op}",
         "Local-first escalation rate exceeds 40% of helper calls.",

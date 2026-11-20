@@ -92,10 +92,15 @@ Scholar has no API). A paper-level Scholar lookup (DOI-keyed when a DOI
 is on file, else title) follows the table.
 
 **Tier ladder** (a write only ever raises the paper toward a more
-authoritative source): `orcid` (ORCID's own record) >
-`crossref`/`openalex`/`s2` (publisher/index metadata) > `pdf`/`legacy`
+authoritative source): `orcid` (the ORCID cross-check — verifies the row
+and stamps its source, but never rewrites the printed byline; the
+profile name stays on the `kind='orcid'` node) > `crossref`/`openalex`/`s2`
+(publisher/index metadata) > `pdf`/`legacy`
 (scraped from the PDF) — but `human` (a manual `edit`) always wins over
-every later re-resolution.
+every later re-resolution. An author with a one-word name on a cited
+paper is flagged by the draft hygiene line (`⚠ … one-word author name`,
+[[precis-draft-review-help]]) — check the printed article before citing
+it.
 
 `edit(kind='paper', authors=[…])` accepts the same tolerant name shapes
 `author=` search does, **plus** an optional bracketed ORCID iD per line

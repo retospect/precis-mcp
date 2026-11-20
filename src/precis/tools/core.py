@@ -2070,7 +2070,7 @@ def put(
     # precis-job-help): force=True wakes a quota/pause park too. Declared
     # at the verb level (the gr262482 pattern) for the same reason.
     force: bool | None = None,
-    # todo plan mint (put(kind='todo', mode='plan'), see precis-plan-help):
+    # todo plan mint (put(kind='todo', mode='plan'), see precis-todo-help):
     # template= names the plan template, gripe_id=/section=/board= are its
     # arguments, lane= the optional build-lane pin of the gripe-fix forms,
     # iterations=/after=/context= the route-loop's, repo=/slices=/glue=/bump=
@@ -2939,17 +2939,13 @@ def delete(
 ) -> str:
     """Delete a ref or addressed region.
 
-    Numeric-ref kinds soft-delete (memory, todo, gripe, finding, alert,
-    citation, quest, job, anki, ...) — hidden from list/search,
-    recoverable. Design kinds use their own delete doors.
+    Numeric refs soft-delete and remain recoverable.
 
     File kinds with selector in `id=` (markdown, plaintext, tex,
     python): delete the addressed chunk/symbol/line range.
     For markdown/plaintext/tex, no selector plus
     `args={'confirm': 'delete-file-<slug>'}` removes the file and retires
-    its ref; `dry_run=True` previews, `reason=` records why on the
-    retired ref's 'deleted' event (a file with no ingested ref has no
-    event to record it on — the ack says so).
+    its ref. Use `dry_run=True` to preview and `reason=` to audit ref retirement.
     Use `edit(mode='find-replace', find='…', text='')` to delete a matched
     span. To empty a markdown/plaintext/tex file, pass its complete
     `/raw` source, including any final newline, as `find=` and omit the
@@ -2957,10 +2953,7 @@ def delete(
     ranges, the `range:` line's `sha=`) pins the delete to the read's
     content; it refuses if the lines changed.
 
-    Cache-backed / read-only kinds (calc, math, web, youtube,
-    websearch, patent): Unsupported. Paper takes only
-    `args={'comment': K}`. Other kinds (skill, conv, tag, ...) take
-    their own door or refuse as Unsupported.
+    Cache-backed kinds refuse deletion. Paper accepts only `args={'comment': K}`.
 
     Full reference: get(kind='skill', id='precis-delete-help').
     """
@@ -3207,7 +3200,9 @@ _PUT_HELP: dict[str, str] = {
     "rerun/neb/md/analyze/trust; machine sync. Numeric-ref kinds "
     "mostly omit mode=. Exceptions: gripe create/comment (confirm id= selection); "
     "job retry/retarget/setting/wake/extend/garden-reject; memory process; "
-    "measure recheck; fleet report; todo plan (outside the declared gate).",
+    "measure recheck; fleet report; todo plan requires args={'template': '<name>', ...} "
+    "without title/text/tags/link. Template catalog: precis-todo-help. "
+    "For a spec-linked todo with custom text/link, omit mode.",
     "id": "Target ref. Omit to create on numeric-ref kinds.",
     "text": "Content for create.",
     "tags": "Tags to add.",

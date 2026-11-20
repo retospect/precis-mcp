@@ -1214,9 +1214,28 @@ and its log, then verify against the repo through the python kind
 (`get(kind='python', id='main::<qualname>')`, `search(kind='python',
 mode='pattern', q=…)`) and the other precis kinds. For a linked memory gripe,
 follow [[precis-fix-memory-gripe-help]]: classify the disagreement and replay
-the routes around a sha-pinned, undoable repair. Without evidence, ask;
-never silently discard a still-true claim. Settled → add what you changed to the todo and mark it
-`STATUS:done`. Still unsettled → append your findings to the todo body, then
+the routes around a sha-pinned, undoable repair. Ask for evidence when the
+claim cannot be verified and preserve still-true claims.
+
+When the review is settled:
+
+1. Check `get(kind='memory', id=N, view='links')` for an earlier closed
+   `memory-review` todo on the same memory. Read its findings and note
+   any relevant prior review in your closing comment.
+2. If the claim checked out unchanged, record the review:
+   `edit(kind='memory', id=N, mode='trust', args={'trust': {'confidence':
+   'considered', 'reason': 'kg-review:<model>:<YYYY-MM-DD>:ok',
+   'expected_sha': '<sha from the trust line>'}})`.
+   Use your reviewing model, the UTC review date and the SHA of the
+   content you checked. For a repair, verify the updated content and use
+   its SHA with the `fixed` verdict. The structured reason is what
+   review-due and fresh-review checks read.
+3. Once the stamp succeeds, summarize what you checked, the evidence and
+   any change you made. Use
+   `put(kind='todo', id=<this todo>, text=<review comment>, tags=['STATUS:done'])`
+   to record the comment and close the todo.
+
+Still unsettled → append your findings to the todo body, then
 `tag(kind='todo', id=<this todo>, add=['waiting-for:reto'])` — that puts it on
 Reto's queue (`precis-user-queue-help`) and takes it out of planner dispatch.
 

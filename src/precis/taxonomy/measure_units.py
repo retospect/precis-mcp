@@ -1280,12 +1280,29 @@ def display_numbers(
     match raises), the taxon's ``display_unit`` (a stale one that no longer
     matches falls back), else the canonical unit with an automatic prefix. The
     label is ``''`` for a bare number. All values share one unit, chosen from
-    the largest, so an interval never mixes prefixes."""
+    the largest, so an interval never mixes prefixes. With no canonical unit
+    the stored number is unitless: a display unit that reads dimensionless
+    (``%``) scales it, anything else is dropped rather than printed unscaled
+    (gr728612)."""
     canon = _clean(canonical_unit)
     explicit = _clean(unit)
     target = explicit or _clean(display_unit)
     if canon is None:
-        return list(values), target or ""
+        # a measurand with no canonical unit stores unitless numbers (a
+        # fraction, a count): a display unit that reads dimensionless scales
+        # them (0.001 with display '%' prints '0.1 %', never an unscaled
+        # '0.001 %' — gr728612); one that does not is dropped, not printed
+        # unscaled. An explicit unit= request keeps the refusal.
+        if target is None:
+            return list(values), ""
+        try:
+            conv = make_converter("1", target)
+        except BadInput:
+            if explicit is not None:
+                raise
+            return list(values), ""
+        label = "" if pint_unit_text(target)[0] == "1" else target
+        return [conv.value(v) for v in values], label
     if target is not None and _same_unit(target, canon):
         return list(values), _canon_label(canon) or (target if target != "1" else "")
     if target is not None:

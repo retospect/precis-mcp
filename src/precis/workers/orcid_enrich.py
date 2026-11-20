@@ -21,9 +21,18 @@ is the gentle background sweep that drains that backlog on its own:
   now linked to, old or new), tests the paper's DOI against the fresh
   record's works DOIs. A match stamps the matching ``paper_authors`` row
   (matched by ``orcid``) ``verified_at`` and — unless that row already
-  carries ``source='human'`` — overwrites its names from the ORCID
-  record and sets ``source='orcid'``. No match leaves the row untouched
-  and stamps the edge ``meta.orcid_unconfirmed = true`` instead.
+  carries ``source='human'`` — sets ``source='orcid'``. The printed
+  byline is never rewritten: an ORCID profile name can be a later name,
+  another script, or a nickname, and a one-word profile drops the
+  surname outright (gr732612 — pa714283 exported "Eunjoo Yoo; Jedeok;
+  …" after the pass renamed the byline from the profile). The profile
+  name already lives on the ``kind='orcid'`` node. A one-word verified
+  name is a hygiene line at cite time, not an alert here:
+  ``handlers/draft.py::_hygiene_mononym_line`` flags it when the paper is
+  cited (a persistent per-paper alert had no resolution path once the
+  byline was corrected, and fired for genuine mononyms — review
+  td742042). No match leaves the row untouched and stamps the edge
+  ``meta.orcid_unconfirmed = true`` instead.
 
 Same two guards as ``paper_reconcile``/``openalex_enrich`` (see those
 modules' docstrings for the detailed rationale):
@@ -77,7 +86,6 @@ from precis.handlers.orcid import enqueue_authored_works, store_orcid_record
 from precis.identity import normalize_doi
 from precis.ingest import orcid as orcid_api
 from precis.store import Store
-from precis.utils.authors import split_middle
 from precis.utils.deadline import call_with_deadline
 from precis.utils.env import env_float, env_int
 from precis.workers import _throttle
@@ -332,10 +340,6 @@ def _cross_check_node(
     paper_ref_ids = [e.dst_ref_id for e in edges]
     dois_by_ref = store.dois_for_refs(paper_ref_ids)
 
-    record_given = record.get("given") or ""
-    record_family = record.get("family") or ""
-    given, middle = split_middle(record_given)
-
     for edge in edges:
         paper_ref_id = edge.dst_ref_id
         doi = normalize_doi(dois_by_ref.get(paper_ref_id))
@@ -356,14 +360,11 @@ def _cross_check_node(
             if row.get("source") == "human":
                 store.verify_paper_author(paper_ref_id, row["position"])
             else:
-                store.verify_paper_author(
-                    paper_ref_id,
-                    row["position"],
-                    given=given,
-                    middle=middle,
-                    family=record_family,
-                    source="orcid",
-                )
+                # gr732612: verification stamps the row, it never rewrites
+                # the printed byline. The ORCID profile name stays on the
+                # kind='orcid' node; pasting it here dropped surnames
+                # (one-word profiles) and even case ("EunJoo" → "Eunjoo").
+                store.verify_paper_author(paper_ref_id, row["position"], source="orcid")
 
 
 def run_once(

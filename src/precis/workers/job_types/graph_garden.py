@@ -38,7 +38,10 @@ cap (gr504896) — plus
 ``skipped`` on a gate-skipped
 run; a tick that proposes nothing writes no chunks — "zero proposals
 and zero log entries" for a clean graph. A tick that skipped a detector
-on its deadline writes one summary naming it.
+on its deadline writes one summary naming it. ``detector_skip_streaks``
+persists consecutive attempted timeouts per detector; three raise a warning
+alert, and a completed scan resets the streak and resolves that alert.
+Unrelated passes, gate skips and unavailable evidence preserve the streak.
 """
 
 from __future__ import annotations
@@ -207,8 +210,9 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
             return default
         return tuple(str(x) for x in raw)
 
+    from precis.graph.garden.candidates import detectors_for
     from precis.graph.garden.proposer import propose_llm
-    from precis.graph.garden.service import saved_cursors
+    from precis.graph.garden.service import detector_skip_streaks, saved_cursors
 
     prev_cursors = saved_cursors(ctx.store)
     embedder = _try_build_embedder(ctx.store)
@@ -230,6 +234,13 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         embedder=embedder,
     )
     garden: dict[str, Any] = {
+        "detector_skip_streaks": detector_skip_streaks(
+            ctx.store,
+            detectors=detectors_for(passes),
+            skipped=outcome.skipped_detectors,
+            not_checked=outcome.not_checked,
+            job_id=ctx.ref_id,
+        ),
         "candidates": outcome.candidates,
         "proposals": outcome.proposals,
         "skipped_pending": outcome.skipped_pending,
@@ -237,6 +248,9 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         "skipped_considered": outcome.skipped_considered,
         "rejected": outcome.rejected,
         "asked": outcome.asked,
+        # Accepted review_due changes routed to human review todos —
+        # the detector has no apply door (gr732278).
+        "routed": outcome.routed,
         "rule_rejected": outcome.rule_rejected,
         "llm_errors": outcome.llm_errors,
         "llm_truncated": outcome.llm_truncated,

@@ -102,6 +102,40 @@ class TestDOIExtraction:
         text = "Available as 10.53469/jrse.2026.08(03).19 online."
         assert _extract_doi("", text, {}) == "10.53469/jrse.2026.08(03).19"
 
+    def test_sici_doi_extracted_verbatim(self):
+        """gr731174: Wiley SICI-style DOIs embed ``<page::AID-code>
+        3.0.CO;2-X`` — the ``<`` exclusion truncated them before the
+        check digit, minting a DOI that cannot match its stub."""
+        text = (
+            "DOI: 10.1002/1521-3773(20011217)40:24<4624::AID-ANIE4624>"
+            "3.0.CO;2-L Received"
+        )
+        assert _extract_doi("", text, {}) == (
+            "10.1002/1521-3773(20011217)40:24<4624::AID-ANIE4624>3.0.CO;2-L"
+        )
+
+    def test_sici_doi_with_sici_prefix_extracted(self):
+        text = (
+            "10.1002/(SICI)1521-3765(19980615)4:6<1016::AID-CHEM1016>3.0.CO;2-B online."
+        )
+        assert _extract_doi("", text, {}) == (
+            "10.1002/(SICI)1521-3765(19980615)4:6<1016::AID-CHEM1016>3.0.CO;2-B"
+        )
+
+    def test_sici_ams_single_colon_form_extracted(self):
+        """AMS SICI DOIs use one colon, not Wiley's two."""
+        text = "10.1175/1520-0469(2001)058<0788:ACSD>2.0.CO;2 online."
+        assert _extract_doi("", text, {}) == (
+            "10.1175/1520-0469(2001)058<0788:ACSD>2.0.CO;2"
+        )
+
+    def test_non_sici_angle_bracket_still_truncates(self):
+        """``<`` not followed by the SICI ``<digits:…>`` shape still ends
+        the match — XMP/HTML tags glued after a DOI stay outside it."""
+        assert _extract_doi("", "10.1234/foo<abc:bar>", {}) == "10.1234/foo"
+        xmp = "<dc:identifier>doi:10.1038/xmp-doi</dc:identifier>"
+        assert _extract_doi(xmp, "", {}) == "10.1038/xmp-doi"
+
     def test_prose_paren_around_doi_still_closed(self):
         """``(doi:10.x/yy)`` — the ``)`` closing the prose parenthetical is
         typesetting, not identifier; unbalanced inside the match, it
@@ -528,6 +562,17 @@ class TestExtractDOIFromFilename:
         assert (
             extract_doi_from_filename("10.1038_s41560-021-00973-9.pdf")
             == "10.1038/s41560-021-00973-9"
+        )
+
+    def test_doi_as_filename_scientific_net(self):
+        """gr731174 / pa718070: Trans Tech DOIs embed the publisher URL
+        (``10.4028/www.scientific.net/…``), so a filename save turns
+        BOTH slashes into underscores. The generic pattern guesses
+        ``10.4028/www.scientific.net_ddf…`` — a 404 the cascade cannot
+        tell from a wrong guess."""
+        assert (
+            extract_doi_from_filename("10.4028_www.scientific.net_ddf.289-292.609.pdf")
+            == "10.4028/www.scientific.net/ddf.289-292.609"
         )
 
     def test_doi_as_filename_no_underscore_no_match(self):
