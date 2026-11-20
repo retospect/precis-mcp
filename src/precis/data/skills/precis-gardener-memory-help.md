@@ -312,7 +312,9 @@ reason), `qualify` (a caveat line, or a `qualifies` edge from a named
 gotcha), `supersede` (by a named live node), `retire`, `no-change` (with
 why), or `ask` — the only fallback when the fact needs a human. An `ask`
 files a `memory-review` todo linked to the memory (`raises-concern-about`)
-and writes no proposal.
+and writes no proposal. No todo is filed while one is open, or when a done
+review already covers the same memory, detector and content SHA (each todo
+body pins `Detector:` and `Pinned content sha:`); a changed SHA asks again.
 
 ## Reviewed memory actions
 
