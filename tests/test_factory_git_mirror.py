@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -122,6 +123,11 @@ def test_read_launch_tips_present_but_unreadable_is_not_absent(
 # ── populate ───────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(fgm.time, "sleep", lambda _s: None)
+
+
 def _populate_run(
     calls: list,
     *,
@@ -129,7 +135,7 @@ def _populate_run(
     fetched: dict[str, str] | None = None,
     fetch_rc: int = 0,
     real_init: bool = False,
-) -> object:
+) -> Callable[..., subprocess.CompletedProcess[str]]:
     """A fake git seam for one populate: the oracle ls-remote, the ops-repo
     fetches, the tmp→mirror push, rev-parse tips. ``fetched`` is what the
     ops repo ends up holding — set it different from ``oracle`` to model a
@@ -185,7 +191,12 @@ def test_populate_creates_per_launch_mirror_and_returns_oracle_tips(
     # in the mirror or any slice tree; the mirror got the refs by a LOCAL
     # tmp→mirror push
     subs = [_sub(a) for a, _c, _e in calls]
-    assert subs.index("ls-remote") < subs.index("fetch")
+    gh_fetch_at = next(
+        i
+        for i, (a, _c, _e) in enumerate(calls)
+        if _sub(a) == "fetch" and "github.com" in " ".join(a)
+    )
+    assert subs.index("ls-remote") < gh_fetch_at
     github_fetch = next(
         (a, c)
         for a, c, _e in calls
@@ -282,6 +293,52 @@ def test_populate_refuses_when_the_fetch_fails(
         )
         is None
     )
+
+
+def test_populate_retries_a_transient_fetch_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    inner = _populate_run([])
+    github_fetches = {"n": 0}
+
+    def flaky(args: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        if _sub(args) == "fetch" and "https://x" in args:
+            github_fetches["n"] += 1
+            if github_fetches["n"] == 1:
+                return _proc(rc=128)
+        return inner(args, **kw)
+
+    monkeypatch.setattr(fgm, "_run", flaky)
+    why: list[str] = []
+    tips = fgm.populate(
+        tmp_path / "m.git",
+        tmp_path / "c.git",
+        "https://x",
+        None,
+        env={"PATH": "/x"},
+        why=why,
+    )
+    assert tips == TIPS
+    assert github_fetches["n"] == 2
+    assert why == []
+
+
+def test_populate_names_the_failing_step_when_every_try_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(fgm, "_run", _populate_run([], fetch_rc=128))
+    why: list[str] = []
+    tips = fgm.populate(
+        tmp_path / "m.git",
+        tmp_path / "c.git",
+        "https://x",
+        None,
+        env={"PATH": "/x"},
+        why=why,
+    )
+    assert tips is None
+    assert len(why) == 1
+    assert "fetch rc=128" in why[0] and "after 3 tries" in why[0]
 
 
 def test_populate_drops_the_ops_repo(
@@ -1750,3 +1807,123 @@ def test_fetch_source_mirror_keeps_the_token_out_of_argv_and_the_mirror(
             assert not _inside(cwd, mirror), args
             if "-C" in args:
                 assert not _inside(Path(args[args.index("-C") + 1]), mirror), args
+
+
+@pytest.mark.parametrize("step", ["init", "push", "rev-parse", "fetch"])
+@pytest.mark.parametrize("timeout", [False, True])
+def test_populate_handles_raised_refresh_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, step: str, timeout: bool
+) -> None:
+    inner = _populate_run([])
+
+    def fail(args: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        if _sub(args) == step:
+            if timeout:
+                raise subprocess.TimeoutExpired(args, 1, stderr=b"connection lost")
+            raise OSError("connection lost")
+        return inner(args, **kw)
+
+    monkeypatch.setattr(fgm, "_run", fail)
+    why: list[str] = []
+    assert (
+        fgm.populate(
+            tmp_path / "m.git", tmp_path / "c.git", "https://x", None, env={}, why=why
+        )
+        is None
+    )
+    assert step in why[-1]
+    assert "connection lost" in why[-1]
+
+
+def test_populate_cache_priming_exception_is_best_effort(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    inner = _populate_run([])
+
+    def fail(args: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        if _sub(args) == "fetch" and "https://x" not in args:
+            raise subprocess.TimeoutExpired(args, 1, stderr=b"cache unavailable")
+        return inner(args, **kw)
+
+    monkeypatch.setattr(fgm, "_run", fail)
+    assert (
+        fgm.populate(tmp_path / "m.git", tmp_path / "c.git", "https://x", None, env={})
+        == TIPS
+    )
+
+
+@pytest.mark.parametrize("ops_init", [False, True])
+def test_populate_init_failure_retains_stderr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ops_init: bool
+) -> None:
+    inner = _populate_run([])
+
+    def fail(args: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        if _sub(args) == "init" and (
+            not ops_init or Path(args[-1]).name.startswith("ops-")
+        ):
+            return subprocess.CompletedProcess(args, 128, "", "permission denied")
+        return inner(args, **kw)
+
+    monkeypatch.setattr(fgm, "_run", fail)
+    why: list[str] = []
+    assert (
+        fgm.populate(
+            tmp_path / "m.git", tmp_path / "c.git", "https://x", None, env={}, why=why
+        )
+        is None
+    )
+    assert ("ops init" if ops_init else "bare init") in why[-1]
+    assert "permission denied" in why[-1]
+
+
+@pytest.mark.parametrize("step", ["ls-remote", "fetch"])
+def test_populate_timeout_preserves_sanitized_stderr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, step: str
+) -> None:
+    inner = _populate_run([])
+    token = "ghp_" + "a" * 36
+
+    def fail(args: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        if _sub(args) == step and "https://x" in args:
+            raise subprocess.TimeoutExpired(
+                args, 1, stderr=f"connection lost {token}".encode()
+            )
+        return inner(args, **kw)
+
+    monkeypatch.setattr(fgm, "_run", fail)
+    why: list[str] = []
+    assert (
+        fgm.populate(
+            tmp_path / "m.git", tmp_path / "c.git", "https://x", None, env={}, why=why
+        )
+        is None
+    )
+    assert step in why[-1] and "connection lost" in why[-1]
+    assert token not in why[-1]
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_populate_final_tip_exception_is_a_refresh_refusal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, timeout: bool
+) -> None:
+    inner = _populate_run([])
+    mirror = tmp_path / "m.git"
+
+    def fail(args: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        if _sub(args) == "rev-parse" and kw["cwd"] == mirror:
+            if timeout:
+                raise subprocess.TimeoutExpired(
+                    args, 1, stderr=b"x" * 400 + b"tip unreadable"
+                )
+            raise OSError("tip unreadable")
+        return inner(args, **kw)
+
+    monkeypatch.setattr(fgm, "_run", fail)
+    why: list[str] = []
+    assert (
+        fgm.populate(mirror, tmp_path / "c.git", "https://x", None, env={}, why=why)
+        is None
+    )
+    assert "rev-parse" in why[-1] and "tip unreadable" in why[-1]
+    assert list(tmp_path.glob("ops-*")) == []

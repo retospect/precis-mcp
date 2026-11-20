@@ -90,15 +90,20 @@ re-squashes it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git as _factory_git
+
+log = logging.getLogger(__name__)
 
 #: The mirror root under the main checkout's ``scratch/``: one
 #: ``<launch>.git`` per launch plus the shared ``cache.git`` object store.
@@ -242,6 +247,40 @@ def _run(
     )
 
 
+class _RefreshFailure(OSError):
+    """An already sanitized git step failure; preserve its step when wrapping."""
+
+
+def refresh_error(exc: OSError | subprocess.TimeoutExpired) -> str:
+    """Sanitized diagnostic for a refresh syscall, including timeout stderr."""
+    if isinstance(exc, _RefreshFailure):
+        return str(exc)
+    stderr = getattr(exc, "stderr", "") or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    detail = stderr or (
+        f"timed out after {exc.timeout}s"
+        if isinstance(exc, subprocess.TimeoutExpired)
+        else str(exc)
+    )
+    return f"{type(exc).__name__}: {mask_secrets(detail)[-300:]}".replace("\n", " | ")
+
+
+def _refresh_run(
+    args: list[str], *, cwd: Path, env: Mapping[str, str], timeout: float
+) -> subprocess.CompletedProcess[str]:
+    """Retain the git step when a refresh process cannot complete."""
+    try:
+        return _run(args, cwd=cwd, env=env, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # Never include argv: transport URLs may contain credentials.
+        step = next(
+            (s for s in ("init", "config", "fetch", "push", "rev-parse") if s in args),
+            "git",
+        )
+        raise _RefreshFailure(f"{step}: {refresh_error(exc)}") from None
+
+
 def trusted_env(env: Mapping[str, str]) -> dict[str, str]:
     """``env`` plus the file-config kill set for credential-bearing git:
     ``GIT_CONFIG_NOSYSTEM`` and ``GIT_CONFIG_GLOBAL=/dev/null`` — a
@@ -290,29 +329,42 @@ def local_env(env: Mapping[str, str]) -> dict[str, str]:
     return trusted_env(out)
 
 
-def _init_bare(path: Path, *, env: Mapping[str, str]) -> bool:
+def _init_bare(
+    path: Path, *, env: Mapping[str, str], why: list[str] | None = None
+) -> bool:
     """``git init --bare`` (idempotent) plus ``gc.auto 0``: objects a
     later force-refresh unrefs must stay readable for a recovering
     sync's explicit shas."""
     if not (path / "HEAD").exists():
-        cp = _run(
+        cp = _refresh_run(
             ["git", *TRUSTED_ARGS, "init", "--bare", str(path)],
             cwd=path.parent,
             env=trusted_env(env),
             timeout=30.0,
         )
         if cp.returncode != 0:
+            if why is not None:
+                why.append(f"bare init rc={cp.returncode}: {_tail(cp)}")
             return False
-    _run(
+    cp = _refresh_run(
         ["git", *TRUSTED_ARGS, "-C", str(path), "config", "gc.auto", "0"],
         cwd=path,
         env=trusted_env(env),
         timeout=30.0,
     )
+    if cp.returncode != 0:
+        if why is not None:
+            why.append(f"bare config rc={cp.returncode}: {_tail(cp)}")
+        return False
     return True
 
 
-def _ops_repo(parent: Path, *object_dirs: Path, env: Mapping[str, str]) -> Path | None:
+def _ops_repo(
+    parent: Path,
+    *object_dirs: Path,
+    env: Mapping[str, str],
+    why: list[str] | None = None,
+) -> Path | None:
     """A fresh bare repo for credential-bearing git: a random-named
     gitdir the lander just created (own config, empty hooks, hooks off
     per-call via :data:`TRUSTED_ARGS` anyway), with ``object_dirs``
@@ -323,15 +375,23 @@ def _ops_repo(parent: Path, *object_dirs: Path, env: Mapping[str, str]) -> Path 
     try:
         parent.mkdir(parents=True, exist_ok=True)
         ops = Path(tempfile.mkdtemp(prefix="ops-", dir=str(parent)))
-    except OSError:
+    except OSError as exc:
+        if why is not None:
+            why.append(f"ops mkdir: {refresh_error(exc)}")
         return None
-    init = _run(
-        ["git", *TRUSTED_ARGS, "init", "--bare", str(ops)],
-        cwd=parent,
-        env=trusted_env(env),
-        timeout=30.0,
-    )
+    try:
+        init = _refresh_run(
+            ["git", *TRUSTED_ARGS, "init", "--bare", str(ops)],
+            cwd=parent,
+            env=trusted_env(env),
+            timeout=30.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _drop_ops(ops)
+        raise
     if init.returncode != 0:
+        if why is not None:
+            why.append(f"ops init rc={init.returncode}: {_tail(init)}")
         _drop_ops(ops)
         return None
     alternates = [str(d) for d in object_dirs if (d / "..").exists() or d.exists()]
@@ -341,7 +401,9 @@ def _ops_repo(parent: Path, *object_dirs: Path, env: Mapping[str, str]) -> Path 
         (info / "alternates").write_text(
             "".join(f"{d}\n" for d in alternates), encoding="utf-8"
         )
-    except OSError:
+    except OSError as exc:
+        if why is not None:
+            why.append(f"ops alternates: {refresh_error(exc)}")
         _drop_ops(ops)
         return None
     return ops
@@ -374,15 +436,21 @@ def github_url(root: Path, *, env: Mapping[str, str]) -> str | None:
     return url
 
 
-def _tip(repo: Path, ref: str, *, env: Mapping[str, str]) -> str | None:
-    cp = _run(
+def _tip(
+    repo: Path, ref: str, *, env: Mapping[str, str], why: list[str] | None = None
+) -> str | None:
+    cp = _refresh_run(
         ["git", *TRUSTED_ARGS, "-C", str(repo), "rev-parse", f"refs/heads/{ref}"],
         cwd=repo,
         env=trusted_env(env),
         timeout=30.0,
     )
     sha = (cp.stdout or "").strip()
-    return sha if cp.returncode == 0 and _SHA_RE.fullmatch(sha) else None
+    if cp.returncode == 0 and _SHA_RE.fullmatch(sha):
+        return sha
+    if why is not None:
+        why.append(f"rev-parse {ref} rc={cp.returncode}: {_tail(cp)}")
+    return None
 
 
 def ls_remote(
@@ -391,13 +459,15 @@ def ls_remote(
     *,
     env: Mapping[str, str],
     namespace: str = "refs/heads/",
+    why: list[str] | None = None,
 ) -> dict[str, str] | None:
     """The oracle: ``git ls-remote`` from a non-repo cwd under
     :func:`trusted_env`, so no on-disk config can redirect it — the
     answer is what GitHub actually serves. ``{ref: sha}`` with ``ref``
     relative to ``namespace`` (branches by default; the factory's hidden
     slice refs pass ``refs/factory/``), ``None`` when GitHub cannot be
-    read (a refused compare is always safe)."""
+    read (a refused compare is always safe). A failure reason (token-free
+    stderr tail) is appended to ``why`` when given."""
     try:
         cp = _run(
             [
@@ -411,9 +481,13 @@ def ls_remote(
             env=trusted_env(env),
             timeout=60.0,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if why is not None:
+            why.append(f"ls-remote {refresh_error(exc)}")
         return None
     if cp.returncode != 0:
+        if why is not None:
+            why.append(f"ls-remote rc={cp.returncode}: {_tail(cp)}")
         return None
     out: dict[str, str] = {}
     for line in (cp.stdout or "").splitlines():
@@ -427,6 +501,58 @@ def ls_remote(
     return out
 
 
+#: Tries for the GitHub-facing steps of :func:`populate` (oracle read +
+#: fetch + tip check), and the sleep before each retry — a transient
+#: network blip must not fail a land.
+POPULATE_TRIES = 3
+POPULATE_BACKOFF_S: tuple[float, ...] = (2.0, 5.0)
+
+
+def _tail(cp: subprocess.CompletedProcess[str]) -> str:
+    """Token-free last bytes of a git call's stderr, for a failure reason."""
+    text = mask_secrets((cp.stderr or "").strip())
+    return text[-300:].replace("\n", " | ")
+
+
+def _network_step(
+    ops: Path,
+    url: str,
+    refs: tuple[str, ...],
+    refspecs: list[str],
+    *,
+    env: Mapping[str, str],
+    local: Mapping[str, str],
+) -> tuple[dict[str, str] | None, str]:
+    """One try of oracle read + GitHub fetch + tip check: ``(oracle,
+    "")`` on success, else ``(None, reason)``."""
+    why: list[str] = []
+    oracle = ls_remote(url, refs, env=env, why=why)
+    if oracle is None:
+        return None, why[-1] if why else "ls-remote failed"
+    if any(oracle.get(r) is None for r in refs):
+        return None, "ls-remote oracle missing a land ref"
+    try:
+        cp = _run(
+            ["git", *TRUSTED_ARGS, "-C", str(ops), "fetch", "--quiet", url, *refspecs],
+            cwd=ops,
+            env=trusted_env(env),
+            timeout=POPULATE_TIMEOUT_S,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"fetch {refresh_error(exc)}"
+    if cp.returncode != 0:
+        return None, f"fetch rc={cp.returncode}: {_tail(cp)}"
+    for ref in refs:
+        if _tip(ops, ref, env=local, why=why) != oracle[ref]:
+            reason = (
+                why[-1]
+                if why
+                else f"fetched tip of {ref} differs from the ls-remote oracle"
+            )
+            return None, reason
+    return oracle, ""
+
+
 def populate(
     mirror: Path,
     cache: Path,
@@ -434,6 +560,27 @@ def populate(
     onto: str | None,
     *,
     env: Mapping[str, str],
+    why: list[str] | None = None,
+) -> dict[str, str] | None:
+    """Refresh failures are infrastructure refusals, including raised local IO errors."""
+    try:
+        return _populate(mirror, cache, url, onto, env=env, why=why)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        reason = f"mirror refresh: {refresh_error(exc)}"
+        log.warning("factory mirror populate refused: %s", reason)
+        if why is not None:
+            why.append(reason)
+        return None
+
+
+def _populate(
+    mirror: Path,
+    cache: Path,
+    url: str,
+    onto: str | None,
+    *,
+    env: Mapping[str, str],
+    why: list[str] | None = None,
 ) -> dict[str, str] | None:
     """Refresh THIS launch's mirror from GitHub under the factory
     credential and return the launch tips — ``{ref: sha}`` as GitHub
@@ -443,14 +590,25 @@ def populate(
     so only the delta crosses the wire), the fetched tips are compared
     against the :func:`ls_remote` oracle — a config redirect or a
     tampered fetch source is refused, never launched on — then pushed
-    into ``mirror`` over an unauthenticated local transport. ``None``
-    when the fetch cannot be made to stick or does not verify."""
+    into ``mirror`` over an unauthenticated local transport. The network
+    steps (oracle + fetch + compare, the oracle re-read each try) are
+    tried :data:`POPULATE_TRIES` times with a short backoff. ``None``
+    when the fetch cannot be made to stick or does not verify; the
+    failing step and a token-free git stderr tail are appended to
+    ``why`` (when given) and logged."""
+
+    def refuse(reason: str) -> dict[str, str] | None:
+        log.warning("factory mirror populate refused: %s", reason)
+        if why is not None:
+            why.append(reason)
+        return None
+
     refs = land_refs(onto)
     parent = mirror.parent
     try:
         parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return None
+    except OSError as exc:
+        return refuse(f"mkdir: {refresh_error(exc)}")
     # ``env`` may carry the credential; only the GitHub-facing calls get
     # it. Everything local — the bare inits, the cache priming fetch
     # (whose spawned upload-pack reads the cache's writable config), the
@@ -458,35 +616,20 @@ def populate(
     # planted hook/filter meets the token (review td660513).
     local = local_env(env)
     for repo in (cache, mirror):
-        if not _init_bare(repo, env=local):
-            return None
-    ops = _ops_repo(parent, cache / "objects", env=local)
+        details: list[str] = []
+        if not _init_bare(repo, env=local, why=details):
+            return refuse(
+                details[-1] if details else f"bare init of {repo.name} failed"
+            )
+    details = []
+    ops = _ops_repo(parent, cache / "objects", env=local, why=details)
     if ops is None:
-        return None
+        return refuse(details[-1] if details else "ops repo could not be created")
     try:
-        oracle = ls_remote(url, refs, env=env)
-        if oracle is None or any(oracle.get(r) is None for r in refs):
-            return None
         # Prime haves from the cache (local, best-effort) so the GitHub
         # fetch negotiates only the delta.
-        _run(
-            [
-                "git",
-                *TRUSTED_ARGS,
-                "-C",
-                str(ops),
-                "fetch",
-                "--quiet",
-                str(cache),
-                "+refs/heads/*:refs/heads/*",
-            ],
-            cwd=ops,
-            env=local,
-            timeout=60.0,
-        )
-        refspecs = [f"+refs/heads/{r}:refs/heads/{r}" for r in refs]
         try:
-            cp = _run(
+            _refresh_run(
                 [
                     "git",
                     *TRUSTED_ARGS,
@@ -494,21 +637,37 @@ def populate(
                     str(ops),
                     "fetch",
                     "--quiet",
-                    url,
-                    *refspecs,
+                    str(cache),
+                    "+refs/heads/*:refs/heads/*",
                 ],
                 cwd=ops,
-                env=trusted_env(env),
-                timeout=POPULATE_TIMEOUT_S,
+                env=local,
+                timeout=60.0,
             )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        if cp.returncode != 0:
-            return None
-        for ref in refs:
-            if _tip(ops, ref, env=local) != oracle[ref]:
-                return None
-        push = _run(
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log.warning("factory mirror cache priming failed: %s", refresh_error(exc))
+        refspecs = [f"+refs/heads/{r}:refs/heads/{r}" for r in refs]
+        oracle: dict[str, str] | None = None
+        reason = ""
+        for attempt in range(POPULATE_TRIES):
+            if attempt:
+                time.sleep(
+                    POPULATE_BACKOFF_S[min(attempt - 1, len(POPULATE_BACKOFF_S) - 1)]
+                )
+            oracle, reason = _network_step(
+                ops, url, refs, refspecs, env=env, local=local
+            )
+            if oracle is not None:
+                break
+            log.warning(
+                "factory mirror populate try %d/%d: %s",
+                attempt + 1,
+                POPULATE_TRIES,
+                reason,
+            )
+        if oracle is None:
+            return refuse(f"{reason} (after {POPULATE_TRIES} tries)")
+        push = _refresh_run(
             [
                 "git",
                 *TRUSTED_ARGS,
@@ -524,14 +683,21 @@ def populate(
             timeout=120.0,
         )
         if push.returncode != 0:
-            return None
+            return refuse(
+                f"local push to the mirror rc={push.returncode}: {_tail(push)}"
+            )
     finally:
         _drop_ops(ops)
     tips: dict[str, str] = {}
     for ref in refs:
-        sha = _tip(mirror, ref, env=local)
+        details = []
+        sha = _tip(mirror, ref, env=local, why=details)
         if sha is None or sha != oracle[ref]:
-            return None
+            return refuse(
+                details[-1]
+                if details
+                else f"mirror tip of {ref} does not match the oracle"
+            )
         tips[ref] = sha
     return tips
 

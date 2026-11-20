@@ -867,7 +867,9 @@ comment marks a charged attempt: a red gate, a merge conflict, a deny-path
 hit or a version change. The todo reopens with `attempt:<n>` and the branch
 stays for the next build. These are attempt-free and the land is minted
 again: a raced or unverifiable push, a gate that was killed or died without
-an exit code, a setup failure with no dependency file in the diff, a repo
+an exit code, a setup failure with no dependency file in the diff, a
+factory git mirror refresh that still fails after its retries
+(`mirror-refresh`; the cause is in the failure reason), a repo
 closed or a todo retagged during the gate, and the wall deadline.
 
 The lander never force-pushes, opens a pull request, resolves a gripe,
