@@ -137,6 +137,8 @@ The detached executor records a submit intent before launching either job.
 Recovery uses launch evidence from that attempt and host to resume poll,
 including a ship that finished before publishing its mirror squash.
 Plan dispatch queues every doable node with its score and release band.
+A pre-land review job's score floors at `FINISH_FIRST_SCORE`, so the review
+of a finished build is claimed ahead of fresh builds.
 Host executor claims enforce capacity and skip file overlaps with started,
 unlanded builds; gripe intake bounds minting by queued builds per free
 executor slot (`factory.gripe_dispatch.queue_depth`, default 2).

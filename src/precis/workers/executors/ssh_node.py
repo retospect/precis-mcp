@@ -1590,7 +1590,7 @@ def _poll_one(ctx: DispatchContext) -> bool:
     return terminal
 
 
-def _pin_to_submitting_node(conn: Any, ref_id: int, handle: Any) -> None:
+def _pin_to_submitting_node(conn: Any, ref_id: int, handle: Any) -> bool:
     """Pin an un-pinned job to the node that just launched its compute.
 
     The handle names a process and a scratch dir on THIS host, so only this
@@ -1598,16 +1598,52 @@ def _pin_to_submitting_node(conn: Any, ref_id: int, handle: Any) -> None:
     worker never selects it (a NULL pin is claimable by any node but polled
     by none) and any node can reclaim it: 542535/542536 finished in two
     minutes and failed on the crash-loop guard three hours later, results
-    uncollected. A node-less worker polls the NULL pin and needs nothing."""
+    uncollected. A node-less worker polls the NULL pin and needs nothing.
+
+    Returns True only when THIS call set the pin: an already-pinned job or
+    a node-less worker returns False, so the caller knows whether the pin
+    is its own to give back (:func:`_release_submit_pin`)."""
     node = os.environ.get("PRECIS_NODE")
     if node is None or handle is None:
-        return
-    conn.execute(
+        return False
+    cur = conn.execute(
         "UPDATE refs SET meta = meta || jsonb_build_object('params',"
         "  COALESCE(meta->'params', '{}'::jsonb)"
         "  || jsonb_build_object('target_node', %s::text))"
         " WHERE ref_id = %s AND meta->'params'->>'target_node' IS NULL",
         (node, ref_id),
+    )
+    return cur.rowcount > 0
+
+
+def _release_submit_pin(conn: Any, ref_id: int, attempt: str) -> None:
+    """Take back the pin :func:`_pin_to_submitting_node` set for a submit
+    that launched nothing.
+
+    A job type with ``reconcile`` is pinned BEFORE ``submit`` runs so a
+    crash mid-submit is reconciled by the same host (td727815). A submit
+    that parks the job (lane back-off, lane full) launches no compute and
+    leaves nothing to reconcile, so the pin must not outlive it: the
+    re-queued job would stay claimable only by this node, even when this
+    node cannot run its lane at all.
+
+    Only removes the pin while the row still carries THIS call's
+    ``submit_attempt`` and the pin still names this node — a later claim's
+    in-flight submit (a fresh attempt) keeps its pin. A job the submit
+    drove terminal keeps it: nothing claims that row again, and a re-mint
+    that copies its params (a land that failed attempt-free) must stay on
+    the host that holds its worktree."""
+    node = os.environ.get("PRECIS_NODE")
+    if node is None:
+        return
+    conn.execute(
+        "UPDATE refs SET meta = meta #- '{params,target_node}'"
+        " WHERE ref_id = %s AND meta->>'submit_attempt' = %s"
+        " AND meta->'params'->>'target_node' = %s"
+        " AND NOT EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)"
+        "  WHERE rt.ref_id = refs.ref_id AND t.namespace = 'STATUS'"
+        "  AND t.value = ANY(%s))",
+        (ref_id, attempt, node, list(_TERMINAL)),
     )
 
 
@@ -1809,15 +1845,17 @@ def _run_one(ctx: DispatchContext) -> bool:
         # while the first leaked. With the marker committed first, the
         # reclaim path can tell "never submitted" (safe to run) from
         # "submit outcome unknown" (fail loudly, never blind-resubmit).
+        attempt = uuid4().hex
         intent = {
             "submit_started_at": time.time(),
-            "submit_attempt": uuid4().hex,
+            "submit_attempt": attempt,
             "submit_host": admission.local_host(),
         }
+        pinned_here = False
         with store.pool.connection() as conn:
             _set_meta(conn, ref_id, **intent)
             if spec.reconcile is not None:
-                _pin_to_submitting_node(conn, ref_id, intent)
+                pinned_here = _pin_to_submitting_node(conn, ref_id, intent)
             conn.commit()
         meta.update(intent)
         try:
@@ -1841,6 +1879,11 @@ def _run_one(ctx: DispatchContext) -> bool:
             # detached gate fails closed on an anonymous handle.
             _stamp_handle_identity(handle)
         with store.pool.connection() as conn:
+            if handle is None and pinned_here:
+                # Nothing was launched: give the pre-submit pin back if
+                # the submit parked the job, before the persist below
+                # clears the attempt it is matched on.
+                _release_submit_pin(conn, ref_id, attempt)
             _persist_detached_handle(conn, ref_id, meta, spec, handle)
             conn.commit()
         return False

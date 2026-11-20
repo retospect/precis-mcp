@@ -126,6 +126,7 @@ src/precis/workers/gripe_triage.py::_post_board 1
 src/precis/workers/heartbeat.py::_temp_from_cmd 1
 src/precis/workers/heartbeat.py::_temp_from_macos_smc 1
 src/precis/workers/heartbeat.py::collect_worker_units 2
+src/precis/workers/job_types/_slice_adapters.py::devin_auth_status 1
 src/precis/workers/job_types/boundary_probe.py::_container_present 1
 src/precis/workers/job_types/boundary_probe.py::_rm_container 1
 src/precis/workers/job_types/boundary_probe.py::_rm_tagged 2
@@ -136,7 +137,6 @@ src/precis/workers/job_types/land_slice.py::_selector_stdout 1
 src/precis/workers/job_types/lane_health.py::_probe_claude_p 1
 src/precis/workers/job_types/lane_health.py::_probe_codex_exec 1
 src/precis/workers/job_types/pr_action.py::_gh 1
-src/precis/workers/job_types/run_slice.py::_devin_auth_status 1
 src/precis/workers/job_types/run_slice.py::_devin_model_prices 1
 src/precis/workers/job_types/run_slice.py::_run 1
 src/precis/workers/job_types/struct_relax.py::_container_still_present 1

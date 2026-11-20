@@ -97,6 +97,11 @@ OVERLAP_DEMOTE = 0.01
 #: rung is worth a human nudge.
 RECOMMEND_URGENT = 16.0
 RECOMMEND_HIGH = 8.0
+#: Floor on the stamped score of a pre-land review job — the same value
+#: as :data:`RECOMMEND_URGENT`: above every ordinary build score, below
+#: :data:`RELEASE_SCORE`, so only an urgent-or-higher build outranks a
+#: review of work already built.
+FINISH_FIRST_SCORE = 16.0
 
 
 def prio_multiplier(prio: int | None) -> float:
@@ -335,6 +340,7 @@ __all__ = [
     "DISPATCH_META_KEY",
     "FACTORY_MULT",
     "FACTORY_TAGS",
+    "FINISH_FIRST_SCORE",
     "OVERLAP_DEMOTE",
     "RELEASE_CLAIM_BAND",
     "RELEASE_SCORE",

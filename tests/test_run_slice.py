@@ -468,6 +468,12 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
 
     monkeypatch.setattr(capability_probe, "claude_auth_present", lambda: True)
     monkeypatch.setattr(capability_probe, "codex_login_present", lambda: True)
+    monkeypatch.setattr(capability_probe, "devin_login_present", lambda: True)
+    # A preflight no-login finding writes the process-wide login cache;
+    # monkeypatch restores it, so no test leaks it to the next.
+    from precis.workers.job_types import _slice_adapters
+
+    monkeypatch.setattr(_slice_adapters, "_devin_login_cache", None)
     monkeypatch.setattr(
         run_slice,
         "adapter_bin_present",
@@ -2425,13 +2431,20 @@ def test_submit_pick_filters_lanes_to_host_bins(
     assert ctx2.failure is None
 
 
-@pytest.mark.parametrize("adapter", ["claude_p", "codex_exec"])
+_ADAPTER_LOGIN_PROBES = {
+    "claude_p": "claude_auth_present",
+    "codex_exec": "codex_login_present",
+    "devin_tree": "devin_login_present",
+}
+
+
+@pytest.mark.parametrize("adapter", list(_ADAPTER_LOGIN_PROBES))
 def test_adapter_readiness_requires_login(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, adapter: str
 ) -> None:
     from precis.workers import capability_probe
 
-    probe = "claude_auth_present" if adapter == "claude_p" else "codex_login_present"
+    probe = _ADAPTER_LOGIN_PROBES[adapter]
     monkeypatch.setattr(capability_probe, probe, lambda: False)
     assert run_slice._adapter_ready(adapter) is False
     monkeypatch.setattr(capability_probe, probe, lambda: True)
@@ -9251,6 +9264,30 @@ def test_devin_preflight_refuses_an_unreadable_auth_status(
     assert seams["launch"] == []
 
 
+def test_devin_preflight_no_login_stops_this_host_advertising_the_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preflight that finds no login flips the probe's cached answer to
+    False at once, so the host stops picking the lane (and advertising
+    ``devin_bin``) instead of refusing again a TTL later."""
+    from precis.workers.job_types import _slice_adapters
+
+    # The real probe: the binary resolves, ``auth status`` reads logged in.
+    monkeypatch.setattr(_slice_adapters, "_devin_login_cache", None)
+    monkeypatch.setattr(_slice_adapters, "adapter_bin_present", lambda name: True)
+    monkeypatch.setattr(
+        _slice_adapters, "devin_auth_status", lambda b: _proc("Logged in\n")
+    )
+    assert _slice_adapters.devin_login_present() is True
+    monkeypatch.setattr(run_slice, "_devin_bin_ok", lambda b: True)
+    monkeypatch.setattr(
+        run_slice, "_devin_auth_status", lambda b: _proc("Not logged in\n", rc=1)
+    )
+    with pytest.raises(run_slice._HostRefusal, match="devin auth login"):
+        run_slice._devin_preflight(Path("/unused"))
+    assert _slice_adapters.devin_login_present() is False
+
+
 def test_devin_auth_status_maps_a_timeout_to_rc_124(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -9267,7 +9304,9 @@ def test_devin_auth_status_maps_a_timeout_to_rc_124(
         TimeoutExpired=subprocess.TimeoutExpired,
         CompletedProcess=subprocess.CompletedProcess,
     )
-    monkeypatch.setattr(run_slice, "subprocess", stub)
+    from precis.workers.job_types import _slice_adapters
+
+    monkeypatch.setattr(_slice_adapters, "subprocess", stub)
     proc = run_slice._devin_auth_status("/vendor/devin")
     assert proc.returncode == 124
 

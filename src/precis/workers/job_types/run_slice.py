@@ -301,10 +301,13 @@ from precis.workers.job_types._slice_adapters import (
     adapter_bin,
     adapter_bin_present,
     deny_settings,
+    devin_auth_status,
     devin_bin,
     devin_model_rate,
+    devin_status_logged_in,
     get_adapter,
     kimi_bin,
+    note_devin_logged_out,
     parse_devin_model_prices,
 )
 from precis.workers.job_types._slice_adapters import (
@@ -4316,23 +4319,9 @@ def _devin_bin_ok(bin: str) -> bool:
 
 
 def _devin_auth_status(bin: str) -> subprocess.CompletedProcess[str]:
-    """``<bin> auth status``; never raises on a non-zero exit — a missing
-    or crashing binary answers rc 127, a hang answers rc 124."""
-    try:
-        return subprocess.run(
-            [bin, "auth", "status"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=15,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            [bin], 124, stdout="", stderr="auth status timed out"
-        )
-    except OSError as e:
-        return subprocess.CompletedProcess([bin], 127, stdout="", stderr=str(e))
+    """``<bin> auth status`` (:func:`_slice_adapters.devin_auth_status`) —
+    this module's seam for the preflight and lane_health."""
+    return devin_auth_status(bin)
 
 
 def _devin_model_prices() -> dict[str, tuple[float, float, float]] | None:
@@ -4419,8 +4408,8 @@ def _devin_preflight(under: Path) -> None:
             "point PRECIS_DEVIN_BIN at it"
         )
     status = _devin_auth_status(binary)
-    out = f"{status.stdout}\n{status.stderr}".lower()
-    if status.returncode != 0 or "not logged in" in out or "logged in" not in out:
+    if not devin_status_logged_in(status):
+        note_devin_logged_out()
         detail = (status.stdout or status.stderr).strip().splitlines()
         tail = f" ({detail[-1].strip()[:200]})" if detail else ""
         raise _HostRefusal(
@@ -4786,6 +4775,8 @@ def _adapter_ready(adapter: str) -> bool:
         return capability_probe.codex_login_present()
     if adapter == "claude_p":
         return capability_probe.claude_auth_present()
+    if adapter == "devin_tree":
+        return capability_probe.devin_login_present()
     return True
 
 

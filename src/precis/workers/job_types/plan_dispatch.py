@@ -5870,6 +5870,19 @@ def _effective_score(plan: _Plan, n: _Node) -> float:
     return score * _dscore.SHOWSTOPPER_MULT if show else score
 
 
+def _claim_score(plan: _Plan, n: _Node) -> float:
+    """The score stamped on ``n``'s job for the executor's claim order.
+
+    A finished build waiting for its pre-land review holds the files it
+    touched, so the review is claimed ahead of fresh builds: a pre-land
+    reviewer floors at :data:`~precis.utils.dispatch_score.FINISH_FIRST_SCORE`.
+    Everything else keeps :func:`_effective_score`."""
+    score = _effective_score(plan, n)
+    if _is_reviewer(n) and n.meta.get(_templates.PRELAND_REVIEW_KEY) is True:
+        return max(score, _dscore.FINISH_FIRST_SCORE)
+    return score
+
+
 def _review_lane(
     plan: _Plan,
     w: _Writer,
@@ -6687,6 +6700,31 @@ def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
     return {int(r[0]) for r in rows}
 
 
+#: ``scripts/ship`` narrates its own steps on lines led by one of these
+#: marks (``▶ rebuilding Tailwind CSS``, ``→ src/precis_web/static/
+#: tailwind.css``, ``⚠ deploy lag …``).
+_SHIP_NARRATION_MARKS = ("▶", "→", "⚠")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _without_ship_narration(text: str) -> str:
+    """A lander handoff minus the lines ``scripts/ship`` wrote about its
+    own steps. The handoff quotes the gate's output before the verdict,
+    and every land rebuilds the stylesheet, so ``→ …/tailwind.css`` made
+    each build with a failed land declare that file and wait on every
+    other one (gr736403). Any other comment is returned as written: a
+    brief may open a line with an arrow."""
+    from precis.workers.job_types import run_slice
+
+    if not text.lstrip().lower().startswith(run_slice._LANDER_HANDOFF_PREFIX):
+        return text
+    return "\n".join(
+        line
+        for line in text.splitlines()
+        if not _ANSI_RE.sub("", line).lstrip().startswith(_SHIP_NARRATION_MARKS)
+    )
+
+
 def _overlap_inputs(
     store: Any, ids: list[int]
 ) -> dict[int, tuple[frozenset[str], str]]:
@@ -6694,7 +6732,8 @@ def _overlap_inputs(
 
     The file set is what the todo declares (gr734976): its body, its
     ``brief:`` comments, the machine-written handoffs that name files to
-    fix (the lander's failure note and the pre-land hand-back,
+    fix (the lander's failure note without ship's own narration,
+    :func:`_without_ship_narration`, and the pre-land hand-back,
     :func:`~precis.workers.job_types.run_slice._outranks_brief`) and its
     own stamped ``meta.branch_files``. A builder session's plain
     ``handoff:`` names files it read, ran or found red, not files it
@@ -6756,7 +6795,7 @@ def _overlap_inputs(
         # read or found red; only briefs and the machine's file-naming
         # handoffs, plus the stamped branch files, say what it touches.
         declared = [
-            text
+            _without_ship_narration(text)
             for _, text in briefs
             if text.lstrip().lower().startswith("brief:")
             or run_slice._outranks_brief(text.lstrip())
@@ -6983,6 +7022,20 @@ def _same_red_digest(plan: _Plan, n: _Node, other: _Node | None) -> bool:
     return mine is not None and theirs is not None and mine.id == theirs.id
 
 
+def _held_files(s: _Started, declared: frozenset[str]) -> frozenset[str]:
+    """The files a started build holds. Once it has left the build step
+    with a stamped branch — landing, or waiting for its pre-land review —
+    the branch diff is the whole answer: a file its body or a lander note
+    merely names is not one it edits (gr736403: a landing build with four
+    branch files held 16 queued builds through two it never touched).
+    While it builds, what it declares counts too, since the diff is not
+    final."""
+    branch = _dscore.brief_files("\n".join(s.branch_files))
+    if branch and s.state != "building":
+        return branch
+    return declared | branch
+
+
 def _overlap_holds(
     plan: _Plan,
     store: Any,
@@ -7023,8 +7076,7 @@ def _overlap_holds(
     default: tuple[frozenset[str], str] = (frozenset(), "main")
     held: dict[int, tuple[int, frozenset[str]]] = {}
     held_sets = {
-        i: inputs.get(i, default)[0] | _dscore.brief_files("\n".join(s.branch_files))
-        for i, s in started.items()
+        i: _held_files(s, inputs.get(i, default)[0]) for i, s in started.items()
     }
     for n in builds:
         mine, target = inputs.get(n.id, default)
@@ -7382,7 +7434,7 @@ def _step_dispatch(
                 # (td572552 S4b) — run_slice.submit nests it under its
                 # own submit record.
                 meta_extra={
-                    _dscore.SCORE_META_KEY: _effective_score(plan, n),
+                    _dscore.SCORE_META_KEY: _claim_score(plan, n),
                     **(
                         {"decision": decision_stamp}
                         if decision_stamp is not None

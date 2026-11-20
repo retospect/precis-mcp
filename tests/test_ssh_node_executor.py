@@ -982,6 +982,142 @@ def test_submit_on_a_node_less_worker_stays_unpinned(
     assert [row[0] for row in ssh_node._polling_jobs(store, None)] == [rid]
 
 
+def _reconciling_spec(submit: Any) -> JobTypeSpec:
+    """A detached job_type with a ``reconcile`` hook — the shape that is
+    pinned to the claiming node BEFORE ``submit`` runs (td727815)."""
+    return _spec(
+        submit=submit,
+        poll=lambda c, h: False,
+        reconcile=lambda ctx: Reconcile(launched=False),
+    )
+
+
+def test_submit_in_flight_is_pinned_and_a_handle_keeps_the_pin(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reconcile-capable submit is pinned while it runs (so a mid-submit
+    crash is reconciled by the same host); one that returns a handle keeps
+    the pin for the poll."""
+    seen_at_submit: list[Any] = []
+
+    def _submit(ctx: Any, _spec: Any) -> str:
+        seen_at_submit.append(_meta(store, ctx.ref_id)["params"].get("target_node"))
+        return "pid-9"
+
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _reconciling_spec(_submit)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    rid = _mk_job(store, params={"keep": 1})
+
+    ssh_node.run_ssh_node_pass(store, limit=1)
+
+    assert seen_at_submit == ["node-a"]
+    meta = _meta(store, rid)
+    assert meta["params"] == {"keep": 1, "target_node": "node-a"}
+    assert meta["compute_handle"] == "pid-9"
+
+
+def test_parked_submit_gives_its_node_pin_back(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A submit that launches nothing (it parked the job on a lane wait and
+    returned no handle) must not leave the pre-submit pin behind: the
+    re-queued job would stay claimable only by this node."""
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _reconciling_spec(lambda c, s: None)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    rid = _mk_job(store, params={"keep": 1})
+
+    ssh_node.run_ssh_node_pass(store, limit=1)
+
+    meta = _meta(store, rid)
+    assert meta["params"] == {"keep": 1}
+    assert not meta.get("submit_attempt")
+    assert not meta.get("compute_handle")
+
+
+def test_parked_submit_keeps_a_pin_that_predates_the_claim(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pin set by dispatch (or an earlier launch) is not this call's to
+    remove, even when the submit then parks."""
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _reconciling_spec(lambda c, s: None)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    rid = _mk_job(store, params={"keep": 1, "target_node": "node-a"})
+
+    ssh_node.run_ssh_node_pass(store, limit=1)
+
+    assert _meta(store, rid)["params"] == {"keep": 1, "target_node": "node-a"}
+
+
+def test_submit_that_fails_the_job_keeps_the_pin(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a parked job gives the pin back. A submit that drove the job
+    terminal and returned no handle keeps it: nothing claims that row
+    again, and a re-mint that copies its params (a land that failed
+    attempt-free) must stay on the host that holds its worktree."""
+
+    def _submit(ctx: Any, _spec: Any) -> None:
+        ssh_node._set_status(store, ctx.ref_id, "failed")
+
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _reconciling_spec(_submit)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    rid = _mk_job(store, params={"keep": 1})
+
+    ssh_node.run_ssh_node_pass(store, limit=1)
+
+    assert _status(store, rid) == "failed"
+    assert _meta(store, rid)["params"] == {"keep": 1, "target_node": "node-a"}
+
+
+def test_submit_that_raises_keeps_the_pin(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A submit that raises fails the job in the pass loop; the pin stays
+    on the failed row, as for any other terminal outcome."""
+
+    def _submit(ctx: Any, _spec: Any) -> str:
+        raise RuntimeError("launch blew up")
+
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _reconciling_spec(_submit)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    rid = _mk_job(store, params={"keep": 1})
+
+    ssh_node.run_ssh_node_pass(store, limit=1)
+
+    meta = _meta(store, rid)
+    assert meta["params"] == {"keep": 1, "target_node": "node-a"}
+    assert not meta.get("submit_attempt")
+
+
+def test_release_submit_pin_spares_a_later_claims_attempt(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unpin matches the row's ``submit_attempt``: a later claim's
+    in-flight submit (a fresh attempt) keeps its pin."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    rid = _mk_job(store, params={"target_node": "node-a"})
+    with store.pool.connection() as conn:
+        ssh_node._set_meta(conn, rid, submit_attempt="newer")
+        ssh_node._release_submit_pin(conn, rid, "older")
+        conn.commit()
+    assert _meta(store, rid)["params"] == {"target_node": "node-a"}
+
+    with store.pool.connection() as conn:
+        ssh_node._release_submit_pin(conn, rid, "newer")
+        conn.commit()
+    assert _meta(store, rid)["params"] == {}
+
+
 def test_submit_intent_marker_committed_before_launch(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

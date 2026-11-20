@@ -9306,6 +9306,54 @@ def test_dispatch_queues_overlapping_build_with_score_and_release_band(
     assert waiting.ids["task"] not in pd.live_nodes(store, [waiting.root_id])
 
 
+def _scored_review_plan(store: Store, score: float, *, preland: bool) -> T.PlanMint:
+    """A build <- review plan whose root is stamped ``score``, the build
+    done and landed-pending so the next pass mints the review job."""
+    mint = _review_plan(store, preland=preland)
+    store.stamp_ref_meta(mint.root_id, {"dispatch_score": score})
+    return mint
+
+
+def _mint_review(store: Store, mint: T.PlanMint) -> dict[str, Any]:
+    """Mint the review job of ``mint`` (build done first); its meta."""
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    pd.run_pass(store)
+    ((_, meta),) = _jobs_under(store, review)
+    return meta
+
+
+def test_preland_review_job_is_floored_to_finish_first_score(store: Store) -> None:
+    """A finished build holds its files until its review runs, so the
+    review job's stamped score floors at ``FINISH_FIRST_SCORE``."""
+    mint = _scored_review_plan(store, 2.3, preland=True)
+    meta = _mint_review(store, mint)
+    assert meta["dispatch_score"] == 16.0
+
+
+def test_preland_review_job_above_the_floor_keeps_its_score(store: Store) -> None:
+    mint = _scored_review_plan(store, 42.0, preland=True)
+    meta = _mint_review(store, mint)
+    assert meta["dispatch_score"] == 42.0
+
+
+def test_build_job_of_a_preland_plan_keeps_the_plan_score(store: Store) -> None:
+    mint = _scored_review_plan(store, 2.3, preland=True)
+    pd.run_pass(store)
+    ((_, meta),) = _jobs_under(store, mint.ids["build"])
+    assert meta["dispatch_score"] == 2.3
+
+
+def test_reviewer_without_the_preland_marker_keeps_the_plan_score(
+    store: Store,
+) -> None:
+    mint = _scored_review_plan(store, 2.3, preland=False)
+    meta = _mint_review(store, mint)
+    assert meta["dispatch_score"] == 2.3
+
+
 def test_file_overlap_hold_waits_for_the_inflight_land(store: Store) -> None:
     """td603849: a run_slice whose brief names the same file an
     in-flight land's brief names is held until that land finishes."""
@@ -9622,6 +9670,86 @@ def test_file_overlap_hold_reads_the_landers_conflict_handoff(store: Store) -> N
         "handoff: lander: land FAILED: Auto-merging "
         f"{_SHARED}\nCONFLICT (content): Merge conflict in {_SHARED}",
     )
+    assert _overlap_note(store, waiting)
+
+
+_SHIP_NARRATION = (
+    "handoff: lander: land FAILED on slice/7: ✖ rebase conflict onto origin/main\n\n"
+    "The gate's output before the verdict:\n"
+    "⚠ deploy lag: oldest undeployed commit is 8h old — see docs/runbooks/deploy.md\n"
+    "▶ rebuilding Tailwind CSS (static production build)\n"
+    "\x1b[36m→ src/precis_web/static/tailwind.css\x1b[0m\n"
+    "▶ syncing origin/main\n"
+)
+
+
+def test_file_overlap_hold_ignores_ships_own_narration_in_a_lander_handoff(
+    store: Store,
+) -> None:
+    """gr736403: every lander failure handoff quotes ship's step lines,
+    and every land rebuilds the stylesheet — two builds whose lands
+    failed do not wait on each other through ``tailwind.css``. A file
+    the quoted gate output names outside ship's own lines still holds."""
+    blocker = _started_outside_plans(store, ["src/precis/other.py"])
+    _todo_comment(store, blocker, _SHIP_NARRATION)
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(store, waiting, _SHIP_NARRATION)
+
+    assert not _overlap_note(store, waiting)
+    _todo_comment(
+        store,
+        waiting,
+        _SHIP_NARRATION + "CONFLICT (content): Merge conflict in src/precis/other.py",
+    )
+    assert _overlap_note(store, waiting)
+
+
+def test_a_brief_that_opens_a_line_with_an_arrow_still_declares_its_file(
+    store: Store,
+) -> None:
+    """Only the lander's handoff carries ship's narration: an arrow line
+    in a ``brief:`` is an instruction and names its file."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(store, waiting, f"brief: two steps\n→ {_SHARED}: fix the read")
+    assert _overlap_note(store, waiting)
+
+
+def test_a_finished_build_holds_only_its_branch_files(store: Store) -> None:
+    """gr736403: once a build waits for its pre-land review its stamped
+    branch is the whole diff — a file its brief merely names holds
+    nothing. While it still builds, the brief's file holds too, and a
+    finished build with no stamped branch falls back to what it declares."""
+    finished = _pending_build(store, ["src/precis/other.py"])
+    _todo_comment(store, finished, f"brief: green on a full gate, see {_SHARED}")
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    assert pd._started_slices(store)[finished].state == "in pre-land review"
+    assert not _overlap_note(store, waiting)
+
+    building = _started_outside_plans(store, ["src/precis/other.py"])
+    _todo_comment(store, building, f"brief: green on a full gate, see {_SHARED}")
+    assert _overlap_note(store, waiting)
+
+
+@pytest.mark.parametrize(
+    ("state", "held"),
+    [
+        ("landing", {"b.py"}),
+        ("in pre-land review", {"b.py"}),
+        ("building", {"a.py", "b.py"}),
+    ],
+)
+def test_held_files_follow_the_builds_state(state: str, held: set[str]) -> None:
+    started = pd._Started(state=state, branch_files=("src/precis/b.py",), repo="precis")
+    assert pd._held_files(started, frozenset({"a.py"})) == held
+
+
+def test_a_finished_build_without_branch_files_holds_what_it_declares(
+    store: Store,
+) -> None:
+    finished = _pending_build(store, [])
+    _todo_comment(store, finished, f"brief: rework {_SHARED}")
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
     assert _overlap_note(store, waiting)
 
 
