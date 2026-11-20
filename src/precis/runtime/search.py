@@ -78,6 +78,8 @@ from precis.store._chunks_ops import (
     ANN_STATEMENT_TIMEOUT_MS,
 )
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
+from precis.store._tag_filter import _parse_tag_string
+from precis.store._tags_ops import _tag_to_namespace_value
 from precis.store.types import Tag
 from precis.utils import handle_registry, search_trace
 from precis.utils.search_merge import (
@@ -3744,8 +3746,12 @@ class SearchMixin(RuntimeShape):
         Runs after every stream is collected: resolves ``ref_id`` (via
         ``slug`` when needed), fetches the ref-level tag set, keeps only
         hits whose tags superset the required ones. Compares on the
-        canonical string form so a flag ``workspace`` and an open tag
-        ``workspace`` match equivalently.
+        ``(namespace, value)`` rows each filter spelling expands to —
+        ``_parse_tag_string``, the same expansion the SQL leg applies
+        in ``build_tag_filter`` — so a flag ``workspace`` and an open
+        tag ``workspace``, or a stored ``STUDYTYPE:x`` axis row and the
+        documented lowercase ``studytype:x`` spelling (gr718845), match
+        equivalently.
 
         Cost: one extra ``tags_for`` DB hit per surviving hit —
         acceptable since tag filters are rare in cross-kind search and
@@ -3771,7 +3777,14 @@ class SearchMixin(RuntimeShape):
                 # hit.
                 continue
             tags_have = self.hub.store.tags_for(ref_id)
-            have_strings = {str(t) for t in tags_have}
-            if required.issubset(have_strings) and excluded.isdisjoint(have_strings):
+            # ``_tag_to_namespace_value`` is the canonical Tag → stored
+            # (namespace, value) projection — the same namespaces
+            # ``_parse_tag_string`` emits for a filter spelling.
+            have = {_tag_to_namespace_value(t) for t in tags_have}
+            if all(
+                any(pair in have for pair in _parse_tag_string(t)) for t in required
+            ) and not any(
+                pair in have for t in excluded for pair in _parse_tag_string(t)
+            ):
                 kept.append(hit)
         return kept

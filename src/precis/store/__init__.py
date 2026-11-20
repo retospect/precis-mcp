@@ -24,6 +24,11 @@ numeric JSON values. Repeated join rows from tag facets therefore cannot
 weight a ref's contribution, and absent or non-numeric JSON values leave
 the member count intact while reducing the numeric sample size.
 
+Lowercase paper facet filters match both the classifier's uppercase axis and
+literal tags with the same spelling, preserving existing manually tagged refs.
+The alias list follows the documented paper facets independently of the
+classifier registry, which also contains chunk and bookkeeping axes.
+
 Typing the seam: functions that need only a sliver of the Store take a
 role protocol from :mod:`precis.store.protocols` (import-light, no
 cycles) instead of ``Store`` or ``Any``. ``Hub.store`` is typed

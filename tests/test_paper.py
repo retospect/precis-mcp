@@ -1465,6 +1465,94 @@ class TestSearch:
         body = handler.search(linked_from="memory", ids=[keep_h]).body
         assert keep_h in body and drop_h not in body, body
 
+    def test_search_tags_only_lowercase_axis_matches_stored_uppercase(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr718845: ``precis-paper-tag-axes`` documents the lowercase
+        ``tags=['studytype:conceptual']`` filter while the axis pass
+        stores the closed ``STUDYTYPE:conceptual`` row — the documented
+        spelling must retrieve the ingested facet."""
+        tagged_id = _seed_paper(
+            store, slug="conceptual-paper", title="A conceptual", doi="10.1/c"
+        )
+        store.add_tag(tagged_id, Tag.closed("STUDYTYPE", "conceptual"), set_by="system")
+        other_id = _seed_paper(
+            store, slug="review-paper-uc", title="A review", doi="10.1/r2"
+        )
+        store.add_tag(other_id, Tag.closed("STUDYTYPE", "review"), set_by="system")
+
+        resp = handler.search(tags=["studytype:conceptual"])
+        assert "A conceptual" in resp.body
+        assert "A review" not in resp.body
+
+        by_title = handler.search(title="A conceptual", tags=["studytype:conceptual"])
+        assert handle_registry.format_handle("paper", tagged_id) in by_title.body
+
+    def test_search_tags_only_axis_alias_matches_both_stored_spellings(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr718845: a ref carrying the axis row AND the literal
+        open-string tag still counts the filter tag once — the AND is
+        over input tags, not matched ``(namespace, value)`` rows."""
+        both_id = _seed_paper(
+            store, slug="both-paper", title="Both spellings", doi="10.1/both"
+        )
+        store.add_tag(both_id, Tag.closed("STUDYTYPE", "review"), set_by="system")
+        store.add_tag(both_id, Tag.open("studytype:review"), set_by="agent")
+        open_id = _seed_paper(
+            store, slug="open-paper", title="Open only", doi="10.1/open"
+        )
+        store.add_tag(open_id, Tag.open("studytype:review"), set_by="agent")
+
+        resp = handler.search(tags=["studytype:review"])
+        assert "Both spellings" in resp.body
+        assert "Open only" in resp.body
+
+    def test_search_tags_only_negated_axis_excludes_both_spellings(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """``!studytype:review`` excludes the closed-axis row the same
+        way the ``STUDYTYPE:review`` spelling would."""
+        tagged_id = _seed_paper(
+            store, slug="excluded-paper", title="Excluded review", doi="10.1/ex"
+        )
+        store.add_tag(tagged_id, Tag.closed("STUDYTYPE", "review"), set_by="system")
+        kept_id = _seed_paper(
+            store, slug="kept-paper", title="Kept paper", doi="10.1/keep"
+        )
+        store.add_tag(kept_id, Tag.open("topic-filler"), set_by="agent")
+
+        resp = handler.search(tags=["!studytype:review"])
+        assert "Excluded review" not in resp.body
+        assert "Kept paper" in resp.body
+
+    def test_search_lowercase_junk_filter_stays_open_tag(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """td731629 review: ``junk:junk`` is NOT a facet alias — the
+        lowercase spelling stays an open-tag filter and the default
+        ``JUNK:junk`` exclusion still applies (``_junk_exclude``). A
+        paper stamped with the closed verdict stays hidden instead of
+        feeding a self-contradicting positive-plus-exclusion filter."""
+        junked_id = _seed_paper(
+            store, slug="junked-paper", title="Junked paper", doi="10.1/junk"
+        )
+        store.add_tag(junked_id, Tag.closed("JUNK", "junk"), set_by="system")
+        open_id = _seed_paper(
+            store, slug="open-junk-paper", title="Open junk tag", doi="10.1/oj"
+        )
+        store.add_tag(open_id, Tag.open("junk:junk"), set_by="agent")
+
+        resp = handler.search(tags=["junk:junk"])
+        assert "Open junk tag" in resp.body
+        assert "Junked paper" not in resp.body
+
+        # The audit view still needs the uppercase pin — that spelling
+        # lifts the default exclusion.
+        resp = handler.search(tags=["JUNK:junk"])
+        assert "Junked paper" in resp.body
+        assert "Open junk tag" not in resp.body
+
     def test_search_tags_only_offers_no_page_continuation(
         self, store: Store, handler: PaperHandler
     ) -> None:
