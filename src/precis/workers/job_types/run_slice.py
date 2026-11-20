@@ -29,9 +29,18 @@ that holds the lane's credentials with ``params.target_node``):
   ``origin/main`` under the checkout root (:func:`slice_root`) — a reused
   tree is reset to a clean checkout of its branch tip first
   (:func:`_reset_reused_worktree`, gr571311), after a dead git's stale
-  ``index.lock`` there is reaped by land_slice's keep-on-doubt rule; a
-  live one is waited out briefly, then fails the submit
-  ``attempt_free`` (:func:`_clear_slice_index_lock`, gr650484, gr662077)
+  ``index.lock`` there is reaped by land_slice's keep-on-doubt rule (only
+  *git* holders keep a lock); a live one is waited out briefly, then
+  fails the submit ``attempt_free``, and one still held past
+  :func:`index_lock_hard_s` has its git holders killed and is removed
+  (:func:`_clear_slice_index_lock`, gr650484, gr662077, gr684320 — every
+  reap leaves job meta ``index_lock_reaped`` and a todo comment). A
+  finished session whose commit met a held lock fails the poll
+  attempt-free "index-lock" — never "no commit", whatever the branch
+  holds — and the next submit commits its edits before the reset
+  (:func:`_salvage_skipped_commit`, authorized by the poll's own
+  ``commit_skipped`` job stamp and revalidated against the deny paths;
+  the reset is withheld if that fails)
   — a reused branch holding commits ahead of ``origin/<base>`` is
   judged before the brief is written (:func:`_route_ahead_branch`,
   gr674785 — td665126 burned all five rungs re-finding a fix a sibling
@@ -459,6 +468,15 @@ _TESTS_MARKER_RE = re.compile(r"\btests:\s*(\w+)", re.IGNORECASE)
 #: and the land runs checked (gr573563). The "worker commit
 #: skipped/failed" notes deliberately do not start with it.
 WORKER_COMMITTED = "worker committed"
+
+#: Prefix of the ``_commit_for_session`` note when ``git add`` met a
+#: held ``index.lock`` the judge could not clear (gr684320): the session's
+#: edits are intact, so the poll fails attempt-free rather than reading
+#: "no commit", and the next submit commits them
+#: (:func:`_salvage_skipped_commit`) — the stamp that authorizes the
+#: salvage rides the job's own meta (``commit_skipped``), never a file
+#: in the session-writable tree.
+COMMIT_SKIPPED_LOCK = "worker commit skipped: index-lock"
 
 #: Parent-env names the session inherits; everything else is dropped, so
 #: no ``PRECIS_DB_*``/``PG*``/``DATABASE_URL`` DSN and no vault variable
@@ -3788,7 +3806,289 @@ class _IndexLockWait(RuntimeError):
     the build's failure. Submit gives the lease back with
     ``meta.attempt_free = "index-lock"``, so no ``attempt:<n>`` and no
     ladder rung is spent on it; the tick backs off a sustained run of
-    identical waits instead of re-minting every pass (gr662077)."""
+    identical waits instead of re-minting every pass (gr662077).
+    ``attempt_free`` is ``"index-lock"`` unless the exception says
+    ``"index-lock-stuck"`` (a forced reap that could not clear it);
+    ``meta`` rides to the job (``index_lock = {age_s, why}``)."""
+
+    attempt_free = "index-lock"
+
+    def __init__(
+        self,
+        msg: str,
+        *,
+        attempt_free: str = "index-lock",
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(msg)
+        self.attempt_free = attempt_free
+        self.meta = meta or {}
+
+
+#: Age at which a lock land_slice still calls live is reaped anyway at
+#: reuse (gr684320 D2): ``PRECIS_LAND_INDEX_LOCK_HARD_S``.
+INDEX_LOCK_HARD_S = 1800
+
+
+def index_lock_hard_s() -> float:
+    try:
+        return float(
+            os.environ.get("PRECIS_LAND_INDEX_LOCK_HARD_S") or INDEX_LOCK_HARD_S
+        )
+    except ValueError:
+        return float(INDEX_LOCK_HARD_S)
+
+
+def _etime_s(etime: str) -> int | None:
+    """``ps etime`` (``[[DD-]HH:]MM:SS``) in seconds; ``None`` unparseable."""
+    m = re.fullmatch(r"(?:(\d+)-)?(?:(\d{1,2}):)?(\d{1,2}):(\d{2})", etime.strip())
+    if m is None:
+        return None
+    days, hours, minutes, seconds = (int(g) if g else 0 for g in m.groups())
+    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
+
+
+def _git_pid_cmd(pid: int) -> str | None:
+    """The pid's current command line: ``""`` when the pid is gone,
+    ``None`` when ps cannot answer (a None never authorizes a signal —
+    the holder's identity stays uncertain, keep-on-doubt)."""
+    try:
+        cp = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = [ln for ln in cp.stdout.splitlines() if ln.strip()]
+    return lines[0].strip() if lines else ""
+
+
+def _tree_git_procs(
+    lock: Path, tree: Path, age_s: int
+) -> list[tuple[int, str, str]] | None:
+    """This user's git/git-* processes that can own a lock ``age_s``
+    seconds old: holding ``lock`` open or with their cwd in ``tree``,
+    AND started before the lock did (their ``etime`` covers its age — a
+    git started later cannot be the writer, never signal it). ``None``
+    when the inspection cannot answer (lsof/ps failed, an etime
+    unparseable): the caller keeps the lock on doubt. ``(pid, etime,
+    command)`` triples otherwise."""
+    from precis.workers.job_types import land_slice as _ls
+
+    held_list = _ls._lock_holders(lock)
+    if held_list is None:
+        return None
+    try:
+        cp = subprocess.run(
+            ["ps", "-U", str(os.getuid()), "-o", "pid=,etime=,command="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if cp.returncode != 0:
+        return None
+    held = {p for p, c in held_list if _ls._is_git_comm(c)}
+    root = os.path.realpath(tree)
+    out: list[tuple[int, str, str]] = []
+    for ln in cp.stdout.splitlines():
+        parts = ln.split(None, 2)
+        if len(parts) != 3 or not parts[0].isdigit():
+            continue
+        pid, etime, command = parts
+        exe = command.split(None, 1)[0]
+        if not _ls._is_git_comm(exe):
+            continue
+        up = _etime_s(etime)
+        if up is None or up < age_s:
+            continue
+        cwd = _ls._proc_cwd(pid)
+        real = os.path.realpath(cwd) if cwd else ""
+        if pid in held or real == root or real.startswith(root + os.sep):
+            out.append((int(pid), etime, command[:300]))
+    return out
+
+
+def _kill_git_procs(procs: list[tuple[int, str, str]]) -> bool:
+    """SIGTERM, 5 s, SIGKILL — git processes only (D3), each pid's
+    identity re-read before every signal (a recycled pid is never
+    signalled on the old identity's say-so). ``True`` only when every
+    pid is confirmed gone; ``False`` on any uncertainty — the caller
+    keeps the lock."""
+    from precis.workers.job_types import land_slice as _ls
+
+    def _state(pid: int, cmd: str) -> bool | None:
+        """``True`` still the same git, ``False`` gone or no longer git,
+        ``None`` cannot tell."""
+        cur = _git_pid_cmd(pid)
+        if cur is None:
+            return None
+        if cur == "":
+            return False
+        return _ls._is_git_comm(cur)
+
+    def _reap(pending: dict[int, str]) -> bool | None:
+        """Drop every pid confirmed gone; ``True`` all gone, ``False``
+        some alive, ``None`` an answer failed."""
+        alive = False
+        for pid, cmd in list(pending.items()):
+            st = _state(pid, cmd)
+            if st is None:
+                return None
+            if st:
+                alive = True
+            else:
+                del pending[pid]
+        return not alive
+
+    pending = {pid: cmd for pid, _e, cmd in procs}
+    for pid, cmd in list(pending.items()):
+        st = _state(pid, cmd)
+        if st is None:
+            return False
+        if st:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        done = _reap(pending)
+        if done is None:
+            return False
+        if done:
+            return True
+        time.sleep(0.2)
+    for pid, cmd in list(pending.items()):
+        st = _state(pid, cmd)
+        if st is None:
+            return False
+        if st:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        done = _reap(pending)
+        if done is None:
+            return False
+        if done:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _record_reap(
+    ctx: Any,
+    lock: Path,
+    st: os.stat_result,
+    *,
+    why: str,
+    forced: bool,
+    holders: list[str],
+    todo_id: int | None = None,
+) -> None:
+    """Every reap of a slice tree's ``index.lock`` — stale, forced or at
+    commit time — leaves job meta ``index_lock_reaped`` (the dispatcher
+    counts these per node: a lock that keeps re-forming escalates) and a
+    comment on the slice todo (gr684320)."""
+    age = int(time.time() - st.st_mtime)
+    ctx.set_meta(
+        index_lock_reaped={
+            "age_s": age,
+            "size": st.st_size,
+            "why": why,
+            "forced": forced,
+            "holders": holders,
+        }
+    )
+    if todo_id is None:
+        try:
+            todo_id = int((ctx.meta.get("params") or {}).get("todo_id") or 0)
+        except (AttributeError, TypeError, ValueError):
+            todo_id = 0
+    if todo_id and ctx.store is not None:
+        _append_comment(
+            ctx.store,
+            todo_id,
+            f"index.lock reaped (gr684320): age {age}s, size {st.st_size}, "
+            f"{'forced, ' if forced else ''}kept as '{why}', holders killed: "
+            f"{holders or 'none'}",
+        )
+
+
+def _forced_reap_index_lock(
+    ctx: Any, lock: Path, tree: Path, st: os.stat_result, why: str
+) -> bool:
+    """gr684320 slice 2 — the lock is past :func:`index_lock_hard_s` and
+    still "live": kill the git holders, then reap with the identity
+    check. Records a job_event and :func:`_record_reap`. Only the reuse
+    path (:func:`_clear_slice_index_lock`) may force: the submit holds
+    the lease and is about to ``checkout -f``.
+
+    Fail-safe throughout (review td700716): the tree's linked gitdir is
+    verified to own ``lock`` before anything is signalled or unlinked; a
+    holder is only signalled when its elapsed time covers the lock's age
+    and its identity is re-confirmed before every signal and its exit
+    after SIGKILL. Any uncertainty (gitdir unverifiable, lsof/ps
+    failed, exit unconfirmed) keeps the lock — ``False`` and the caller
+    waits it out plain. Raises :class:`_IndexLockWait` with
+    ``attempt_free="index-lock-stuck"`` only when the holders were
+    confirmed dead yet the very same lock file survived the reap."""
+    from precis.workers.job_types import land_slice as _ls
+
+    age = int(time.time() - st.st_mtime)
+    gitdir = _ls._worktree_gitdir(tree)
+    if gitdir is None or os.path.realpath(gitdir / "index.lock") != os.path.realpath(
+        lock
+    ):
+        return False
+    procs = _tree_git_procs(lock, tree, age)
+    if procs is None:
+        return False
+    if procs and not _kill_git_procs(procs):
+        log.warning(
+            "run_slice: forced reap of %s held — a git holder's exit "
+            "stayed unconfirmed (pids %s)",
+            lock,
+            [p for p, _e, _c in procs],
+        )
+        return False
+    holders = [f"{pid} {etime} {cmd}" for pid, etime, cmd in procs]
+    if not _ls._reap_index_lock(ctx, lock, st, who=NAME):
+        try:
+            now = lock.stat()
+        except OSError:
+            return True  # gone — a sibling reaper got it
+        if (
+            now.st_dev == st.st_dev
+            and now.st_ino == st.st_ino
+            and now.st_mtime_ns == st.st_mtime_ns
+        ):
+            # The holders are confirmed dead and the judged file itself
+            # could not be unlinked — nothing a wait changes.
+            raise _IndexLockWait(
+                f"index.lock {lock} survived its holders' kill and the "
+                f"reap (age {age}s, kept as '{why}')",
+                attempt_free="index-lock-stuck",
+                meta={"age_s": age, "why": why},
+            )
+        return False  # replaced under us — a live writer's, wait it out
+    ctx.append_chunk(
+        "job_event",
+        f"{NAME}: forced reap of index.lock {lock} (age {age}s, why {why}, "
+        f"killed {len(procs)} git)",
+    )
+    _record_reap(ctx, lock, st, why=why, forced=True, holders=holders)
+    return True
 
 
 def _git_or_raise(args: list[str], tree: Path) -> None:
@@ -3814,8 +4114,16 @@ def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
     :func:`land_slice.index_lock_wait_s` wait first (gr662077): the
     previous attempt's own git often still holds the lock when the retry
     lands, and finishing it beats bouncing back to the tick — only a
-    lock still held past the wait raises :class:`_IndexLockWait`. No
-    tree yet, or no gitdir git will name: nothing to clear."""
+    lock still held past the wait raises :class:`_IndexLockWait`. Past
+    :func:`index_lock_hard_s` a lock still judged live is forced (D2:
+    this slice tree's own lock, at reuse only): its git holders —
+    identified by elapsed time and re-confirmed per signal — are
+    signalled, the lock removed; any uncertainty keeps the lock as a
+    plain wait, and only a lock that survives its dead holders raises
+    the ``"index-lock-stuck"`` wait (:func:`_forced_reap_index_lock`).
+    Every reap, stale or forced, records
+    :func:`_record_reap`. No tree yet, or no gitdir git will name:
+    nothing to clear."""
     if not tree.exists():
         return
     # land_slice imports this module at load time; the lazy import keeps
@@ -3831,20 +4139,44 @@ def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
         state, judged = _ls._index_lock_state(lock, tree)
         if state == "absent":
             return
+        _s, _j, why, ignored = _ls._index_lock_judge(lock, tree)
         if (
             state == "stale"
             and judged is not None
             and _ls._reap_index_lock(ctx, lock, judged, who=NAME)
         ):
+            _record_reap(
+                ctx,
+                lock,
+                judged,
+                why="stale",
+                forced=False,
+                holders=[f"{pid} {cmd}" for pid, cmd in ignored],
+            )
             return
+        if judged is not None and time.time() - judged.st_mtime >= index_lock_hard_s():
+            # D2: this slice tree's own lock, past the hard cap, at reuse.
+            # _forced_reap_index_lock raises the "index-lock-stuck" wait
+            # itself when the holders died yet the lock survived; a False
+            # means the inspection stayed uncertain — a plain wait, the
+            # next retry re-judges.
+            if _forced_reap_index_lock(ctx, lock, tree, judged, why or state):
+                return
+            raise _IndexLockWait(
+                f"index.lock {lock} could not be safely judged or reaped "
+                f"after {index_lock_hard_s():.0f}s (kept as '{why or state}')",
+                meta={"age_s": int(time.time() - judged.st_mtime), "why": why},
+            )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            age = int(time.time() - judged.st_mtime) if judged is not None else 0
             raise _IndexLockWait(
                 f"index.lock {lock} was still held after "
-                f"{_ls.index_lock_wait_s():.0f}s — a live git owns the "
-                "checkout, it is younger than "
+                f"{_ls.index_lock_wait_s():.0f}s — kept as '{why}' (age "
+                f"{age}s); a live git owns the checkout, it is younger than "
                 f"{_ls.index_lock_stale_s():.0f}s, or its holder cannot be "
-                "ruled out; the reuse checkout waits for it"
+                "ruled out; the reuse checkout waits for it",
+                meta={"age_s": age, "why": why},
             )
         time.sleep(min(1.0, remaining))
 
@@ -4089,6 +4421,7 @@ def _ensure_worktree(
     base: str = "main",
     *,
     fetched: bool = False,
+    store: Any = None,
     keep_wip: bool = False,
     start_over: bool = False,
     saved_head: str | None = None,
@@ -4099,10 +4432,13 @@ def _ensure_worktree(
     ``release/r<N>`` a release fix lands on (``meta.land_target``,
     release-train T1). A retry reuses an existing
     tree and branch (the branch stays owned by its slice until it lands or
-    is abandoned) — reset to a clean checkout of the branch tip first
-    (:func:`_reset_reused_worktree`); a legacy ``slice-td<id>`` branch is
-    renamed first. ``fetched`` skips the fetch: the caller already fetched
-    ``origin/<base>`` under the credential (:func:`_prepare_repo`).
+    is abandoned) — a finished session whose commit met a held index.lock
+    is salvaged first (:func:`_salvage_skipped_commit`, gr684320; ``store``
+    supplies the worker-owned stamp), then the tree is reset to a clean
+    checkout of the branch tip (:func:`_reset_reused_worktree`); a legacy
+    ``slice-td<id>`` branch is renamed first. ``fetched`` skips the
+    fetch: the caller already fetched ``origin/<base>`` under the
+    credential (:func:`_prepare_repo`).
 
     **Park = save, resume anywhere** (:mod:`._slice_park`): with no local
     tree the slice's pushed ``refs/factory/slice/<id>`` is fetched, and
@@ -4141,6 +4477,24 @@ def _ensure_worktree(
             )
         saved_head = parked_tip
     if tree.exists():
+        salvage_note = _salvage_skipped_commit(tree, todo_id, store=store, base=base)
+        if salvage_note:
+            log.info("run_slice: td%d salvage: %s", todo_id, salvage_note)
+            if salvage_note.startswith(WORKER_COMMITTED):
+                pass  # the finished edits are on the branch — reset freely
+            elif salvage_note.startswith("salvage refused"):
+                # A deny-path hit is the session's violation, not infra:
+                # a real failure (an attempt, the normal failure routing)
+                # — and the tree stays un-reset for the record.
+                raise RuntimeError(f"td{todo_id}: {salvage_note}")
+            else:
+                # The finished edits are not on the branch: resetting
+                # would drop them. An infra wait, the tree stays as is.
+                raise _IndexLockWait(
+                    f"td{todo_id}: finished edits could not be committed "
+                    f"before reuse ({salvage_note}); the reset is withheld",
+                    meta={"why": "salvage-failed"},
+                )
         _reset_reused_worktree(tree, branch)
         if keep_wip and not start_over:
             moved = _slice_park.apply_saved_wip(root, tree, todo_id, saved_head)
@@ -5470,12 +5824,18 @@ def submit(ctx: Any, spec: Any) -> Any:
                     slice_root(),
                     todo_id,
                     *(() if base == "main" else (base,)),
+                    store=store,
                     **park_kw,
                 )
             else:
                 assert repo_root is not None
                 tree = _ensure_worktree(
-                    repo_root, todo_id, base=profile.base, fetched=True, **park_kw
+                    repo_root,
+                    todo_id,
+                    base=profile.base,
+                    fetched=True,
+                    store=store,
+                    **park_kw,
                 )
             for line in park_kw["notes"]:
                 ctx.append_chunk("job_event", f"run_slice: td{todo_id} {line}")
@@ -5736,7 +6096,9 @@ def submit(ctx: Any, spec: Any) -> Any:
         _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         unclaim_todo(ctx.store, todo_id, lane.name)
-        ctx.set_meta(**{ATTEMPT_FREE_KEY: "index-lock"})
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: exc.attempt_free})
+        if exc.meta:
+            ctx.set_meta(index_lock=exc.meta)
         ctx.record_failure(f"run_slice: {exc}")
         return None
     except admission.Refused as exc:
@@ -6092,6 +6454,100 @@ def _commit_message(tree: Path, todo_id: int) -> str | None:
     return "\n".join([subject, *body]).strip() + "\n"
 
 
+class _NullCtx:
+    """A job sink for reaps that run outside a job context."""
+
+    meta: dict[str, Any] = {}
+    store: Any = None
+
+    def append_chunk(self, kind: str, text: str) -> None:
+        log.info("run_slice: %s: %s", kind, text)
+
+    def set_meta(self, **meta: Any) -> None:
+        log.info("run_slice: meta %s", meta)
+
+
+def _reap_lock_for_commit(tree: Path, ctx: Any, todo_id: int) -> bool:
+    """Reap the slice tree's ``index.lock`` at commit time when the
+    keep-on-doubt judge calls it stale; ``True`` when it is gone. Never
+    signals a process: forcing a held lock belongs to the next submit's
+    reuse (:func:`_clear_slice_index_lock`, D2) — a still-held lock here
+    leaves the edits in the tree for :func:`_salvage_skipped_commit`
+    instead."""
+    from precis.workers.job_types import land_slice as _ls
+
+    gitdir = _ls._worktree_gitdir(tree)
+    if gitdir is None:
+        return False
+    lock = gitdir / "index.lock"
+    state, judged = _ls._index_lock_state(lock, tree)
+    ignored = _ls._index_lock_judge(lock, tree)[3]
+    if state == "absent":
+        return True
+    if state != "stale" or judged is None:
+        return False
+    if not _ls._reap_index_lock(ctx, lock, judged, who=NAME):
+        return False
+    _record_reap(
+        ctx,
+        lock,
+        judged,
+        why="stale",
+        forced=False,
+        holders=[f"{pid} {cmd}" for pid, cmd in ignored],
+        todo_id=todo_id,
+    )
+    return True
+
+
+def _skipped_commit_stamp(store: Any, todo_id: int) -> str | None:
+    """The newest job's ``commit_skipped`` stamp for this todo: the
+    fallback message the poll recorded when the worker's commit met a
+    held ``index.lock`` (gr684320), or ``None`` when the newest job was
+    not lock-blocked. Job meta is worker-owned — a session cannot write
+    it — so this stamp, not anything in the tree, is the proof that the
+    edits it salvages were left by a session the poll saw finish."""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta FROM refs WHERE kind = 'job' AND parent_id = %s"
+                " ORDER BY ref_id DESC LIMIT 1",
+                (todo_id,),
+            ).fetchone()
+    except Exception:  # pragma: no cover — a store fault strands nothing
+        log.warning("run_slice: skipped-commit stamp read for td%d failed", todo_id)
+        return None
+    meta = row[0] if row else None
+    if not isinstance(meta, dict) or meta.get("commit_skipped") != "index-lock":
+        return None
+    return str(meta.get("commit_skipped_msg") or "")
+
+
+def _salvage_skipped_commit(
+    tree: Path, todo_id: int, *, store: Any = None, base: str = "main"
+) -> str | None:
+    """gr684320: the previous session finished but its commit met a held
+    ``index.lock`` — the poll stamped ``commit_skipped`` on its job and
+    the edits are still in the tree; commit them before
+    :func:`_reset_reused_worktree` would drop them. The message is the
+    session's ``scratch/commit-msg.txt``, else the poll-recorded
+    fallback. The stamp is revalidated before anything is committed:
+    the deny-path check reruns on this tree (reuse stages it before the
+    poll's checks repeat), and a refusal is returned as a ``"salvage
+    refused"`` note — never committed, never an infra wait. ``None``
+    when there was no stamp or nothing to commit."""
+    if store is None:
+        return None
+    fallback = _skipped_commit_stamp(store, todo_id)
+    if fallback is None:
+        return None
+    denied, _human = _deny_reason(tree, _lanes.deny_paths_for(store), base)
+    if denied:
+        return f"salvage refused: {denied}"
+    note = _commit_for_session(tree, todo_id, fallback_message=fallback or None)
+    return note
+
+
 def _session_commit_fallback(store: Any, todo_id: int) -> str:
     """The worker-generated conventional subject
     :func:`_commit_for_session` uses when the session left no
@@ -6139,7 +6595,11 @@ def _commit_blocked(result: str | None) -> bool:
 
 
 def _commit_for_session(
-    tree: Path, todo_id: int, *, fallback_message: str | None = None
+    tree: Path,
+    todo_id: int,
+    *,
+    fallback_message: str | None = None,
+    ctx: Any = None,
 ) -> str | None:
     """Commit the working tree a clean session left uncommitted, with its
     ``scratch/commit-msg.txt``. Returns a note for the summary, or ``None``
@@ -6162,6 +6622,16 @@ def _commit_for_session(
         return None
     # scratch/ is gitignored on main, so the message file never rides along.
     add = _git(["add", "-A"], tree)
+    if add.returncode != 0 and "index.lock" in add.stderr:
+        # gr684320: the lock is the tree's, not the session's failure —
+        # judge it, reap a stale one and add again. A lock still held
+        # leaves the edits in the tree: the poll stamps commit_skipped
+        # on the job and the next submit salvages them
+        # (:func:`_salvage_skipped_commit`).
+        if _reap_lock_for_commit(tree, ctx if ctx is not None else _NullCtx(), todo_id):
+            add = _git(["add", "-A"], tree)
+        if add.returncode != 0 and "index.lock" in add.stderr:
+            return f"{COMMIT_SKIPPED_LOCK} ({add.stderr.strip()[:200]})"
     if add.returncode != 0:
         return f"worker commit skipped: git add failed ({add.stderr.strip()[:200]})"
     staged = _git(["diff", "--cached", "--quiet"], tree)
@@ -8075,6 +8545,7 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         handoff = f"attempt FAILED, {budget_note}.\n\n{handoff}".strip()
 
     committed = None
+    commit_fallback: str | None = None
     test_failure = None
     worker_tests_ran = False
     verdict = generator_verdict(result)
@@ -8120,6 +8591,7 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                         tree,
                         todo_id,
                         fallback_message=_session_commit_fallback(ctx.store, todo_id),
+                        ctx=ctx,
                     )
                 ctx.set_meta(
                     acceptance_tests={
@@ -8148,8 +8620,12 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                             if _commit_blocked(result)
                             else None
                         ),
+                        ctx=ctx,
                     )
     full_handoff = handoff
+    commit_lock_blocked = committed is not None and committed.startswith(
+        COMMIT_SKIPPED_LOCK
+    )
     if unscrubbed:
         # The raw result may quote a key the poll cannot name — the todo
         # gets the withheld comment instead of any session text (review
@@ -8364,6 +8840,30 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             _discarded_writeback(ctx.store, todo_id, terminal)
         except Exception:  # pragma: no cover — the job outcome still lands
             log.warning("run_slice: discarded-run comment on td%d failed", todo_id)
+    elif commit_lock_blocked:
+        # gr684320: the session's leftover edits met a held index.lock —
+        # the edits are intact in the tree, the next submit's reuse
+        # salvages them (:func:`_salvage_skipped_commit`). An infra wait,
+        # not "no commit": no land mints on a tree whose finished work
+        # never reached the branch (a branch with commits ahead is not
+        # exempt — its uncommitted edits would read as nothing), no
+        # verdict close either, and the lease goes back unburned
+        # (``unclaim_todo`` below) so no ladder rung is spent on it.
+        land = False
+        stamp: dict[str, Any] = {
+            ATTEMPT_FREE_KEY: "index-lock",
+            "commit_skipped": "index-lock",
+        }
+        if commit_fallback:
+            # The message the salvage commits with when the session left
+            # no scratch/commit-msg.txt — recorded worker-side.
+            stamp["commit_skipped_msg"] = commit_fallback
+        ctx.set_meta(**stamp)
+        nothing = (
+            "the worker's commit met a held index.lock — the session's "
+            "edits stay in the tree for the next submit's salvage (gr684320)"
+        )
+        summary.append(f"Land: none — {nothing}.")
     elif land and not commits and gate_ok:
         # A ``moot:`` claim on a CODE task must verify before it may
         # close the plan (td584381 S1d): first line or anywhere in the
@@ -8920,7 +9420,14 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         )
     attempt = None
     try:
-        attempt = release_todo(ctx.store, todo_id, str(lane) if lane else None)
+        if commit_lock_blocked:
+            # gr684320: a lock-blocked commit is an infra wait — the
+            # lease goes back clean, like the submit-side lock wait;
+            # ``release_todo`` would burn an ``attempt:<n>`` the
+            # dispatcher reads as the ladder floor.
+            unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
+        else:
+            attempt = release_todo(ctx.store, todo_id, str(lane) if lane else None)
     except Exception:  # pragma: no cover — defensive; the job still fails
         log.warning("run_slice: lease release on td%d failed", todo_id, exc_info=True)
     tail = log_text[-_TAIL_CAP:].strip()
@@ -8940,6 +9447,8 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
     )
     if attempt is not None:
         lease_note = f"todo td{todo_id} back to open, attempt:{attempt}"
+    elif commit_lock_blocked and _terminal_status(ctx.store, todo_id) is None:
+        lease_note = f"todo td{todo_id} back to open (no attempt: index-lock)"
     elif (standing := _terminal_status(ctx.store, todo_id)) is not None:
         lease_note = f"todo td{todo_id} stays STATUS:{standing} (result discarded)"
     else:

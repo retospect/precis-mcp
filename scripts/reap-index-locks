@@ -33,9 +33,14 @@ missed reap is the status quo while a wrong reap races a live writer:
   2. mtime older than STALE_SECONDS — a 0-byte lock a live git still wants
      is filled within a second of creation, so old-and-empty can only be a
      killed writer's;
-  3. no live process holds it open — lsof on macOS and Linux; lsof missing
-     means nothing can be proven, so candidates are REPORTED as kept,
-     never reaped;
+  3. no live *git* process holds it open — lsof on macOS and Linux (found
+     on PATH, else /usr/sbin or /usr/bin: a worker's PATH may lack the
+     former); a non-git holder (the Colima VM's file share keeps handles
+     of locks no git owns) never keeps a lock. lsof missing means nothing
+     can be proven, so candidates are REPORTED as kept, never reaped.
+     This sweep never kills anything; the hard-cap kill of a git that
+     holds a slice tree's lock past 30 min is run_slice's, at reuse
+     (gr684320);
   4. no git process has its cwd inside that worktree — `ps` for this user's
      git/git-* processes, cwd read via /proc/<pid>/cwd with an lsof
      fallback (the same read scripts/lib/session-lock.sh's
@@ -111,13 +116,36 @@ def _stale(lock, now):
     return age if age >= STALE_SECONDS else None
 
 
+def _lsof_bin():
+    """lsof from PATH, else the system dirs a worker's PATH may lack."""
+    found = shutil.which("lsof")
+    if found:
+        return found
+    fallbacks = os.environ.get("PRECIS_REAP_LSOF_FALLBACKS")
+    for cand in (
+        fallbacks.split(os.pathsep) if fallbacks else ("/usr/sbin/lsof", "/usr/bin/lsof")
+    ):
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
 def _held_open(lock):
-    """True: a live process holds it open; False: provably none; None: can't
-    tell (lsof error) — the caller keeps on either non-False."""
-    r = _run(["lsof", "-t", "--", lock])
+    """True: a live git holds it open; False: provably none; None: can't
+    tell (lsof error) — the caller keeps on either non-False. A non-git
+    holder (the Colima VM's file share) never keeps a lock."""
+    lsof = _lsof_bin()
+    if lsof is None:
+        return None
+    r = _run([lsof, "-F", "pc", "--", lock])
     if r.stderr.strip():
         return None
-    return bool(r.stdout.strip())
+    comms = [ln[1:] for ln in r.stdout.splitlines() if ln.startswith("c")]
+    for comm in comms:
+        base = os.path.basename(comm)
+        if base == "git" or base.startswith("git-"):
+            return True
+    return False
 
 
 def _pid_gone(pid):
@@ -167,7 +195,7 @@ def _proc_cwd(pid):
         return os.readlink(f"/proc/{pid}/cwd")
     except OSError:
         pass
-    r = _run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"])
+    r = _run([_lsof_bin() or "lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"])
     for ln in r.stdout.splitlines():
         if ln.startswith("n"):
             return ln[1:]
@@ -259,7 +287,7 @@ def main(argv):
     # sweep can't prove anything, so it reports and keeps every candidate —
     # printed even under --for-hook: with no lsof the sweep can never act
     # again, and silence would hide that permanently.
-    if shutil.which("lsof") is None:
+    if _lsof_bin() is None:
         names = ", ".join(n for n, *_ in stale)
         print(
             f"reap-index-locks: lsof not found — {len(stale)} stale "
