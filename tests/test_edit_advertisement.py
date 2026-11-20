@@ -97,18 +97,29 @@ def test_edit_docstring_has_no_hedges() -> None:
 
 def test_delete_docstring_lists_both_delete_idioms() -> None:
     """The ``delete`` tool docstring must point span-delete callers at
-    ``edit(mode='find-replace', text='')`` — not only at the whole-file
-    ``edit(mode='replace', text='')`` recipe."""
+    ``edit(mode='find-replace', find='…', text='')`` and whole-file
+    clearers at find-replace over the file's complete ``/raw`` source.
+    td740048 retired the selector-less ``edit(mode='replace',
+    text='')`` whole-file recipe: ``PlaintextHandler._put_replace``
+    refuses a selector-less ``replace`` as BadInput by design, so
+    advertising it sent callers into a retry loop."""
     doc = delete_tool.__doc__ or ""
-    assert "mode='replace', text=''" in doc, (
-        "delete() docstring must mention the whole-file clear recipe "
-        "(`edit(mode='replace', text='')`)"
-    )
     assert "mode='find-replace'" in doc and "text=''" in doc, (
         "delete() docstring must mention the span-delete recipe "
         "(`edit(mode='find-replace', find='…', text='')`) — otherwise "
         "callers reach for the wrong verb when they want to drop one "
         "line from a file"
+    )
+    assert "mode='replace', text=''" not in doc, (
+        "delete() docstring must not advertise the selector-less "
+        "`edit(mode='replace', text='')` whole-file recipe — "
+        "PlaintextHandler._put_replace refuses it as BadInput "
+        "(td740048); advertising it sends callers into a retry loop"
+    )
+    assert "/raw" in doc and "find=" in doc, (
+        "delete() docstring must mention the whole-file clear recipe "
+        "(pass the file's complete `/raw` source as `find=` with "
+        "`text=''`, no selector)"
     )
 
 
