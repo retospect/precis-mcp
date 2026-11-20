@@ -378,3 +378,31 @@ def test_cross_kind_search_leaves_todo_and_taxon_own_under_alone(
     for kind in ("todo", "taxon"):
         a = {"kind": kind, "under": "x", "depth": 1}
         assert tree.rt._resolve_under(a) == (None, None) and a["under"] == "x"
+
+
+def test_bounded_index_listing_reaches_past_5000(
+    runtime: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Make the oldest row land just beyond the former SQL limit.
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "INSERT INTO refs (kind, title, updated_at) "
+            "SELECT 'memory', 'Range row ' || n, now() + n * interval '1 second' "
+            "FROM generate_series(1, 5002) AS n RETURNING ref_id"
+        ).fetchall()
+    ids = sorted(int(row[0]) for row in rows)
+    handler = MemoryHandler(hub=runtime.hub)
+    monkeypatch.setattr(handler, "_body_text", lambda ref: "")
+    monkeypatch.setattr(
+        "precis.graph.garden.grounding.grounding_chip", lambda store, ref_id: ""
+    )
+    monkeypatch.setattr("precis.handlers.memory.result_context_cap", lambda: 1_000_000)
+    first = handler.search(view="index", id_min=ids[0], id_max=ids[-2], page_size=5000)
+    assert first.result_ids == list(reversed(ids[1:-1]))
+    assert "1 more — next:" in first.body
+    assert f"'id_min': {ids[0]}, 'id_max': {ids[-2]}" in first.body
+    last = handler.search(
+        view="index", id_min=ids[0], id_max=ids[-2], page_size=5000, page=2
+    )
+    assert last.result_ids == [ids[0]]
+    assert "more — next:" not in last.body

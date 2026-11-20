@@ -394,3 +394,61 @@ def test_scope_bad_value_lists_title_body_handle(
     assert error and "unknown scope" in body
     assert "title" in body and "body" in body
     assert "a memory handle (alias of under=)" in body
+
+
+def test_search_id_range_bounds_hits(runtime_with_store: PrecisRuntime) -> None:
+    """gr725290: ``id_min``/``id_max`` bound a memory search by ref id."""
+    rt = runtime_with_store
+    lo = _note(rt, "Idrangeword alpha", "SPACE:personal")
+    hi = _note(rt, "Idrangeword beta", "SPACE:personal")
+    base = {"kind": "memory", "q": "Idrangeword", "tags": ["SPACE:personal"]}
+    body, err = rt.dispatch_with_status(
+        "search", {**base, "__extras__": {"id_min": hi, "id_max": hi}}
+    )
+    assert not err, body
+    assert f"me{hi}" in body or f"memory {hi}" in body
+    assert f"me{lo}" not in body and f"memory {lo}" not in body
+    body, err = rt.dispatch_with_status(
+        "search", {**base, "__extras__": {"id_max": lo - 1}}
+    )
+    assert not err, body
+    assert f"me{lo}" not in body and f"memory {hi}" not in body
+
+    body, err = rt.dispatch_with_status(
+        "search", {**base, "view": "count", "__extras__": {"id_min": str(hi)}}
+    )
+    assert not err and "# 1 memory entry" in body
+
+
+@pytest.mark.parametrize(
+    ("bounds", "message"),
+    [
+        ({"id_min": "oops"}, "id_min= must be an integer"),
+        ({"id_max": 1.5}, "id_max= must be an integer"),
+        ({"id_min": 5, "id_max": 4}, "is greater than"),
+    ],
+)
+def test_search_id_range_rejects_invalid_bounds(
+    runtime_with_store: PrecisRuntime, bounds: dict[str, object], message: str
+) -> None:
+    body, error = runtime_with_store.dispatch_with_status(
+        "search", {"kind": "memory", "view": "index", "__extras__": bounds}
+    )
+    assert error and "BadInput" in body and message in body
+
+
+def test_broad_ranked_memory_range_points_to_index(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("precis.handlers._numeric_ref._ID_RANGE_HITS_CAP", 1)
+    rt = runtime_with_store
+    lo = _note(rt, "Range cap alpha", "SPACE:personal")
+    hi = _note(rt, "Range cap beta", "SPACE:personal")
+    base = {"kind": "memory", "__extras__": {"id_min": lo, "id_max": hi}}
+    for view in (None, "index"):
+        body, error = rt.dispatch_with_status(
+            "search", {**base, "q": "range", "view": view}
+        )
+        assert error and "too many" in body and "view='index'" in body
+    body, error = rt.dispatch_with_status("search", {**base, "view": "index"})
+    assert not error and "Range cap alpha" in body and "Range cap beta" in body

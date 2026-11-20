@@ -271,11 +271,13 @@ def _parse_id_range(
         if value is None:
             return None
         try:
+            if isinstance(value, bool) or not isinstance(value, (int, str)):
+                raise ValueError
             return int(value)
-        except (TypeError, ValueError):
+        except ValueError:
             raise BadInput(
                 f"{name}= must be an integer id, got {value!r}",
-                next=(f"search(kind={kind!r}, args={{{name}: <id>}})"),
+                next=f"search(kind={kind!r}, args={{{name!r}: <id>}})",
             ) from None
 
     lo, hi = _bound(id_min, "id_min"), _bound(id_max, "id_max")
@@ -2703,12 +2705,13 @@ class NumericRefHandler(Handler):
         """
         count = self.store.count_refs(kind=self.kind, id_min=id_lo, id_max=id_hi)
         if count > _ID_RANGE_HITS_CAP:
+            listing_view = "index" if self.kind == "memory" else "ids"
             raise BadInput(
                 f"the id range covers {count} {self._sense()} entries — "
                 "too many to bound a ranked search",
                 next=(
                     f"narrow the range, or enumerate it: "
-                    f"search(kind={self.kind!r}, view='ids', "
+                    f"search(kind={self.kind!r}, view={listing_view!r}, "
                     "args={'id_min': …, 'id_max': …})"
                 ),
             )

@@ -203,6 +203,7 @@ from precis.handlers._numeric_ref import (
     BATCH_VIEW_PAGE_CHARS,
     NumericRefHandler,
     _id_batch_next,
+    _parse_id_range,
     _tag_names_axis,
 )
 from precis.handlers._tag_redirect import redirect_long_tag_values
@@ -4632,6 +4633,8 @@ class MemoryHandler(AuditedRetirementHandler):
         space: str | None = None,
         min_chars: int | None = None,
         min_reads: int | None = None,
+        id_min: int | str | None = None,
+        id_max: int | str | None = None,
         **kw: Any,
     ) -> Response:
         """Memory search. An unscoped query whose hits cluster in one hub or
@@ -4640,6 +4643,10 @@ class MemoryHandler(AuditedRetirementHandler):
         is the dispatcher's generic part-of scope). The parameters are spelled
         out because dispatch routes by this signature: it follows cooperative
         superclass forwarding, not the private ``_search_inner`` helper.
+
+        ``args={'id_min': N, 'id_max': M}`` sets inclusive ref ID bounds.
+        Either bound can be omitted. For ranges beyond the ranked search
+        limit, omit ``q`` and page through ``view='index'``.
 
         ``view='rulings'`` lists the nodes tagged ``ruling`` grouped by
         status (:func:`~precis.utils.memory_rulings.render_rulings`);
@@ -4656,12 +4663,17 @@ class MemoryHandler(AuditedRetirementHandler):
                 "group_by= only applies to view='count'",
                 next="search(kind='memory', view='count', args={'group_by': 'tag:SPACE'})",
             )
-        # gr572723 (C4): a domain-bound connection defaults memory search
-        # to the domain's SPACE: set — never by section:/topic:, so
-        # rulings, gotchas and runbooks stay reachable for every role in
-        # the space. A caller-supplied SPACE: tag (either polarity) or
-        # the reads view's space= wins. Fisheye and get by handle are
-        # untouched.
+        id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
+        # Ordinary search and counts take bounds directly. The ranked index
+        # and specialized views share the include-ID filter with subtree scope.
+        if (
+            view not in (None, "count")
+            and (view != "index" or (fold_match_all_q(q) or "").strip())
+            and (id_lo is not None or id_hi is not None)
+        ):
+            include_ref_ids = self._include_ids_in_range(
+                include_ref_ids, id_lo=id_lo, id_hi=id_hi
+            )
         domain = self._domain_space_default(tags, space)
         caller_tags = list(tags or [])
         caller_include = include_ref_ids
@@ -4885,6 +4897,8 @@ class MemoryHandler(AuditedRetirementHandler):
             scope=scope,
             under=under,
             depth=depth,
+            id_min=id_lo,
+            id_max=id_hi,
             **kw,
         )
         if q and q.strip():
@@ -4907,6 +4921,8 @@ class MemoryHandler(AuditedRetirementHandler):
             exclude_ref_ids=exclude_ref_ids,
             before=(caller_tags, caller_include),
             after=(tags, include_ref_ids),
+            id_min=id_lo,
+            id_max=id_hi,
         )
 
     def _domain_space_default(
@@ -4955,6 +4971,8 @@ class MemoryHandler(AuditedRetirementHandler):
         before: tuple[list[str] | None, list[int] | None],
         after: tuple[list[str] | None, list[int] | None],
         count: Callable[[list[str] | None, list[int] | None], int] | None = None,
+        id_min: int | None = None,
+        id_max: int | None = None,
     ) -> Response:
         """Append the gr572723 footer: name the door when the domain's
         default ``SPACE:`` filter dropped hits. ``before``/``after`` are
@@ -4974,6 +4992,13 @@ class MemoryHandler(AuditedRetirementHandler):
                 total = count(before_tags, before_ids)
                 kept = count(after_tags, after_ids)
             elif (folded := fold_match_all_q(q)) and folded.strip():
+                if id_min is not None or id_max is not None:
+                    before_ids = self._include_ids_in_range(
+                        before_ids, id_lo=id_min, id_hi=id_max
+                    )
+                    after_ids = self._include_ids_in_range(
+                        after_ids, id_lo=id_min, id_hi=id_max
+                    )
                 total = self.store.chunks.count_chunks_lexical(
                     q=folded,
                     kind=self.kind,
@@ -4994,12 +5019,16 @@ class MemoryHandler(AuditedRetirementHandler):
                 total = self.store.count_refs(
                     kind=self.kind,
                     tags=Tag.normalize_filter(before_tags, kind=self.kind),
+                    id_min=id_min,
+                    id_max=id_max,
                     include_ref_ids=before_ids,
                     exclude_ref_ids=exclude_ref_ids,
                 )
                 kept = self.store.count_refs(
                     kind=self.kind,
                     tags=Tag.normalize_filter(after_tags, kind=self.kind),
+                    id_min=id_min,
+                    id_max=id_max,
                     include_ref_ids=after_ids,
                     exclude_ref_ids=exclude_ref_ids,
                 )
@@ -5074,6 +5103,8 @@ class MemoryHandler(AuditedRetirementHandler):
         scope: str | None = None,
         under: str | int | None = None,
         depth: int | str | None = None,
+        id_min: int | None = None,
+        id_max: int | None = None,
         **_kw: Any,
     ) -> Response:
         """Body-chunk search; ``view='index'`` renders hits as index bullets.
@@ -5123,6 +5154,8 @@ class MemoryHandler(AuditedRetirementHandler):
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 chunk_scope=chunk_scope,
+                id_min=id_min,
+                id_max=id_max,
                 **_kw,
             )
         if view != "index":
@@ -5163,6 +5196,8 @@ class MemoryHandler(AuditedRetirementHandler):
                 include_ref_ids,
                 under=under,
                 depth=depth,
+                id_min=id_min,
+                id_max=id_max,
             )
         from precis.cli.memory import bullet_line
 
@@ -5302,6 +5337,8 @@ class MemoryHandler(AuditedRetirementHandler):
         include_ref_ids: list[int] | None = None,
         under: str | int | None = None,
         depth: int | str | None = None,
+        id_min: int | None = None,
+        id_max: int | None = None,
     ) -> Response:
         """``view='index'`` without ``q=``: the tag-filtered memories as index
         bullets, most recently touched first (``GREATEST(last_viewed_at,
@@ -5319,13 +5356,16 @@ class MemoryHandler(AuditedRetirementHandler):
         from precis.utils.memory_hubs import recency_stamps
 
         normalized = Tag.normalize_filter(tags, kind=self.kind)
-        refs = self.store.list_refs(kind=self.kind, tags=normalized, limit=5000)
-        if include_ref_ids is not None:
-            keep = set(include_ref_ids)
-            refs = [r for r in refs if r.id in keep]
-        if exclude_ref_ids:
-            drop = set(exclude_ref_ids)
-            refs = [r for r in refs if r.id not in drop]
+        # Bounded sweeps page the complete SQL-filtered range in recency order.
+        refs = self.store.list_refs(
+            kind=self.kind,
+            tags=normalized,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            id_min=id_min,
+            id_max=id_max,
+            limit=None if id_min is not None or id_max is not None else 5000,
+        )
         if not refs:
             tag_suffix = f" tagged {normalized}" if normalized else ""
             return Response(
@@ -5333,7 +5373,9 @@ class MemoryHandler(AuditedRetirementHandler):
             )
         stamps = recency_stamps(self.store, [r.id for r in refs])
         oldest = datetime.min.replace(tzinfo=UTC)
-        refs = sorted(refs, key=lambda r: stamps.get(r.id) or oldest, reverse=True)
+        refs = sorted(
+            refs, key=lambda r: (stamps.get(r.id) or oldest, r.id), reverse=True
+        )
         try:
             page = max(int(page or 1), 1)
             page_size = max(int(page_size or 1), 1)
@@ -5383,6 +5425,10 @@ class MemoryHandler(AuditedRetirementHandler):
         more = len(refs) - shown
         if more > 0:
             args_echo = [f"'page': {page + 1}", f"'page_size': {page_size}"]
+            if id_min is not None:
+                args_echo.append(f"'id_min': {id_min}")
+            if id_max is not None:
+                args_echo.append(f"'id_max': {id_max}")
             if under is not None:
                 args_echo.append(f"'under': {under!r}")
                 if depth is not None:

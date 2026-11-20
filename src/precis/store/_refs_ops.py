@@ -4307,10 +4307,12 @@ class RefsMixin:
         closed_before: datetime | None = None,
         closed_values: Iterable[str] | None = None,
         order_by: str = "updated_desc",
-        limit: int = 50,
+        limit: int | None = 50,
         offset: int = 0,
     ) -> list[Ref]:
         """Paginated list of live refs, filter by kind/provider/tags.
+
+        Pass ``limit=None`` to list all matching rows after the offset.
 
         ``kind`` is one kind or a list of them (``r.kind = ANY(…)``) —
         the source-search primitive's filtered listing passes its whole
