@@ -35,6 +35,58 @@ def _call(a: dict[str, Any]) -> str:
     return f"get(kind='pathway', id='pw1', view='compare', args={a!r})"
 
 
+def _cand_ea(slug: str, ea: float) -> dict[str, Any]:
+    """A candidate whose rate-limiting barrier is exactly ``ea`` (both route
+    steps) — distinct raw RATEs that may round to the same 2-dp display."""
+    meta = _meta(_results(_records([0]), [0]))
+    graph = meta["graph"]
+    for link in graph["links"]:
+        link["barrier"] = ea
+    root, target = analysis.roots(graph, meta["results"])
+    return {
+        "slug": slug,
+        "ref_id": 1000 + abs(hash(slug)) % 1000,
+        "lever": "Pd",
+        "graph": graph,
+        "root": root,
+        "target": target,
+    }
+
+
+def test_compare_numeric_where_uses_raw_measurements() -> None:
+    """0.121 and 0.124 both display as 0.12, but where={'RATE': {'max':
+    0.122}} must keep 0.121 and drop 0.124 (gr592637 review)."""
+    out = compare_toon(
+        [
+            _cand_ea("run-lo", 0.121),
+            _cand_ea("run-hi", 0.124),
+            _cand_ea("run-far", 0.5),
+        ],
+        lens_args={"where": {"RATE": {"max": 0.122}}},
+        lens_call=_call,
+    )
+    assert "(1–1 of 1 pathways matching where (3 total))" in out
+    assert "run-lo" in out
+    assert "run-hi" not in out
+    assert "run-far" not in out
+
+
+def test_compare_numeric_sort_uses_raw_measurements() -> None:
+    """``sort='-RATE'`` orders by the raw barrier — 0.124 ahead of 0.121 —
+    even though both render as 0.12."""
+    out = compare_toon(
+        [
+            _cand_ea("run-far", 0.5),
+            _cand_ea("run-lo", 0.121),
+            _cand_ea("run-hi", 0.124),
+        ],
+        lens_args={"sort": "-RATE", "columns": ["cand", "RATE"]},
+        lens_call=_call,
+    )
+    body = out.split("left out")[0]
+    assert body.index("run-far") < body.index("run-hi") < body.index("run-lo")
+
+
 def test_compare_limit_and_cursor() -> None:
     cands = _cands(12)
     first = compare_toon(cands, lens_args={"limit": 5}, lens_call=_call)

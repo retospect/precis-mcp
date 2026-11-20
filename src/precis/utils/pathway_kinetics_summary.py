@@ -180,6 +180,44 @@ def _page_arg(args: dict[str, Any], name: str, default: int, maximum: int) -> in
     return value
 
 
+def _expand_basis_prefix(
+    args: dict[str, Any], classified: list[tuple[int, dict[str, str]]]
+) -> dict[str, Any]:
+    """Make the displayed environment-basis selector executable in ``where``.
+
+    The axis/summary/class views display :func:`_label`'s 12-character
+    prefix, but the row lens matches values verbatim against the FULL stored
+    hash — copying the displayed prefix into ``where`` selected nothing
+    (gr592637 review). Expand a string condition to the full stored hashes
+    it prefixes: one match collapses to the scalar, several become a set
+    (the lens' list semantics), none passes through so the refusal/footer
+    machinery reports it. ``not recorded``/``no v2 solve`` are exact classes
+    and never prefix-expand.
+    """
+    where = args.get("where")
+    if not isinstance(where, dict):
+        return args
+    cond = where.get("environment_basis")
+    if not isinstance(cond, str) or cond in {_MISSING, _NO_V2}:
+        return args
+    fulls = sorted(
+        {
+            classes["environment_basis"]
+            for _, classes in classified
+            if classes["environment_basis"] not in {_MISSING, _NO_V2}
+        }
+    )
+    matches = [basis for basis in fulls if basis.startswith(cond)]
+    if not matches:
+        return args
+    out = dict(args)
+    out["where"] = {
+        **where,
+        "environment_basis": matches[0] if len(matches) == 1 else matches,
+    }
+    return out
+
+
 def _label(axis: str, value: str) -> str:
     if axis == "environment_basis" and value not in {_MISSING, _NO_V2}:
         return value[:12]
@@ -256,7 +294,7 @@ def kinetics_summary_response(
     )
     if row_lens:
         schema = ["pathway", *_VALUES]
-        spec = parse_lens_args(args, columns=schema)
+        spec = parse_lens_args(_expand_basis_prefix(args, classified), columns=schema)
         return lens_response(
             [{"pathway": f"pw{ref_id}", **classes} for ref_id, classes in classified],
             spec,
@@ -369,7 +407,9 @@ def kinetics_summary_response(
         "kinetics_trusted reads the pathway's stored verdict only; job verdicts cannot be tied reliably to the current solve.",
         "Environment basis shows 12 characters of the stored v1 hash; "
         + (
-            "select the full value via where (see columns=['environment_basis'])."
+            "where accepts that displayed prefix or a full stored hash "
+            "(a prefix matches every hash sharing it; "
+            "columns=['environment_basis'] recovers the full hashes)."
             if quest_id is not None
             else "class accepts the full hash or prefix (all matches)."
         ),

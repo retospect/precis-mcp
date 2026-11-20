@@ -2841,11 +2841,13 @@ class QuestHandler(NumericRefHandler):
         One row per candidate design (identity · objective vector · Pareto band ·
         graduation flag), sorted best-first per band — by the primary
         objective, or by ``args={'sort': '<measure>'}`` on its declared
-        sense (gr592277). ``args={'trusted': true}`` keeps only candidates
-        carrying an affirmative trust verdict. This is the LLM-legible
-        counterpart of ``view='frontier'`` (which is the banded human summary);
-        both render the same :func:`quest_frontier`, so there is no second
-        ranking to drift.
+        sense (gr592277). ``args={'trusted': true}`` is the
+        ``where={'trusted': 'yes'}`` alias routed through the table lens
+        (gr592637): the rows stay unfiltered, so the footer keeps the
+        unfiltered total and the excluded rows' ``trusted`` histogram. This
+        is the LLM-legible counterpart of ``view='frontier'`` (which is the
+        banded human summary); both render the same
+        :func:`quest_frontier`, so there is no second ranking to drift.
         """
         from precis.format import render_agent_table
         from precis.quest import frontier as frontier_mod
@@ -2858,14 +2860,13 @@ class QuestHandler(NumericRefHandler):
             or raw_fr.provisional
             or raw_fr.unevaluated
         )
-        fr = _shape_fr(raw_fr, trusted=trusted, sort=None)
+        # The lens expresses args={'trusted': true} as where={'trusted':
+        # 'yes'} (same rows) — the rows are NOT pre-filtered, so a trusted
+        # page keeps the unfiltered total and the excluded rows' aggregates
+        # in its footer (gr592637 review).
+        fr = _shape_fr(raw_fr, trusted=False, sort=None)
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
         obj_line = _objective_line(raw_fr, ref.meta or {})
-        empty_note = ""
-        if not had_candidates:
-            empty_note = "no candidate structures serve this quest yet.\n"
-        elif not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
-            empty_note = "no candidates pass the trusted filter.\n"
         graduated = {
             c.ref_id
             for c in (*fr.frontier, *fr.dominated, *fr.unevaluated)
@@ -2884,15 +2885,33 @@ class QuestHandler(NumericRefHandler):
         proto_block = "\n".join(protocol) + "\n" if protocol else ""
         note = _view_args_line(trusted=trusted, sort=sort_spec)
         filter_block = note + "\n" if note else ""
+        spec = parse_lens_args(
+            _lens_args(args, lens_sort),
+            columns=schema,
+            where_alias={"trusted": "yes"} if trusted else None,
+        )
+
+        def render(page: list[dict[str, Any]], cols: list[str]) -> str:
+            if page:
+                return render_agent_table(
+                    [{c: r.get(c) for c in cols} for r in page], schema=cols
+                )
+            if not rows:
+                return "no candidate structures serve this quest yet."
+            if spec.where == {"trusted": "yes"}:
+                return "no candidates pass the trusted filter."
+            return "no rows match."
+
+        empty_note = ""
+        if not had_candidates:
+            empty_note = "no candidate structures serve this quest yet.\n"
         return lens_response(
             rows,
-            parse_lens_args(_lens_args(args, lens_sort), columns=schema),
+            spec,
             columns=schema,
-            render=lambda rs, cs: render_agent_table(
-                [{c: r.get(c) for c in cs} for r in rs], schema=cs
-            ),
+            render=render,
             call=_lens_call(
-                ref.id, "leaderboard", trusted=trusted, sort=sort if sort_spec else None
+                ref.id, "leaderboard", trusted=False, sort=sort if sort_spec else None
             ),
             row_unit="designs",
             header=(

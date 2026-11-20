@@ -277,7 +277,16 @@ def _aggregate(rows: Sequence[Mapping[str, Any]], col: str) -> str | None:
     hist = Counter(str(v) if v not in (None, "") else "—" for v in vals)
     # Identifier and free-text columns only need a populated-cell count.
     if (
-        col not in {"name", "handle", "cand", "candidate", "pathway", "blocker"}
+        col
+        not in {
+            "name",
+            "handle",
+            "design",
+            "cand",
+            "candidate",
+            "pathway",
+            "blocker",
+        }
         and len(hist) <= _ENUM_MAX
         and all(len(key) <= 80 for key in hist)
     ):

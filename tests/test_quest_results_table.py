@@ -470,18 +470,7 @@ class TestBudgetTruncation:
     def test_truncation_keeps_newest_ten(self, store: Any) -> None:
         qid = _mk_quest(store)
         sids = [
-            _mk_candidate(
-                store,
-                qid,
-                f"Zn n={i}",
-                [
-                    {
-                        "op": "add_atom",
-                        "element": "Zn",
-                        "frac": [0.05 + 0.04 * (i % 20), 0.05 + 0.04 * (i // 20), 0.45],
-                    }
-                ],
-            )
+            _mk_candidate(store, qid, f"Zn n={i}", _dopant_ops("Zn", i + 1))
             for i in range(15)
         ]
         rows = build_results_rows(store, qid)
@@ -504,18 +493,7 @@ class TestViewBudget:
     def _fifteen(self, store: Any) -> tuple[int, list[int]]:
         qid = _mk_quest(store)
         sids = [
-            _mk_candidate(
-                store,
-                qid,
-                f"Zn n={i}",
-                [
-                    {
-                        "op": "add_atom",
-                        "element": "Zn",
-                        "frac": [0.05 + 0.04 * (i % 20), 0.05 + 0.04 * (i // 20), 0.45],
-                    }
-                ],
-            )
+            _mk_candidate(store, qid, f"Zn n={i}", _dopant_ops("Zn", i + 1))
             for i in range(15)
         ]
         return qid, sids
@@ -1076,6 +1054,26 @@ class TestTrustedSortViews:
             assert good_h in body, view
             assert bad_h not in body, view
 
+    def test_leaderboard_trusted_alias_equals_where(self, store: Any) -> None:
+        """``args={'trusted': true}`` and ``where={'trusted': 'yes'}`` return
+        the same rows, and the trusted page's footer keeps the unfiltered
+        total plus the excluded rows' ``trusted`` histogram (gr592637)."""
+        qid, sids = self._mixed_quest(store)
+        h = QuestHandler(hub=Hub(store=store))
+        handles = {name: self._handle(sid) for name, sid in sids.items()}
+        body = h.get(id=qid, view="leaderboard", args={"trusted": True}).body
+        via_where = h.get(
+            id=qid, view="leaderboard", args={"where": {"trusted": "yes"}}
+        ).body
+        for name, handle in handles.items():
+            wanted = name == "good"
+            assert (handle in body) == wanted
+            assert (handle in via_where) == wanted
+        # the footer keeps the unfiltered total and the excluded rows'
+        # aggregates instead of the pre-filtered emptiness
+        assert "of 1 designs matching where (3 total)" in body
+        assert "trusted: no=1" in body
+
     def test_all_filtered_out_says_why(self, store: Any) -> None:
         qid = _mk_quest(store)
         sid = _mk_candidate(store, qid, "Cu bad", _dopant_ops("Cu", 1))
@@ -1174,6 +1172,10 @@ class TestTrustedSortViews:
 class TestResultsTableLens:
     def _many(self, store: Any, n: int = 300) -> tuple[int, list[int]]:
         qid = _mk_quest(store)
+        # The adatom z drifts by 0.001 per candidate so periodic-symmetry
+        # canonicalization never folds two grid positions onto one
+        # structure (ensure_candidate retires symmetry twins) — the fixture
+        # really needs n rows.
         sids = [
             _mk_candidate(
                 store,
@@ -1183,7 +1185,11 @@ class TestResultsTableLens:
                     {
                         "op": "add_atom",
                         "element": "Zn",
-                        "frac": [0.05 + 0.04 * (i % 20), 0.05 + 0.04 * (i // 20), 0.45],
+                        "frac": [
+                            0.05 + 0.04 * (i % 20),
+                            0.05 + 0.04 * (i // 20),
+                            0.45 + 0.001 * i,
+                        ],
                     }
                 ],
             )
@@ -1255,7 +1261,14 @@ class TestFrontierTableLens:
                     {
                         "op": "add_atom",
                         "element": "Cu",
-                        "frac": [0.05 + 0.04 * (i % 20), 0.05 + 0.04 * (i // 20), 0.45],
+                        # z drifts by 0.001 per candidate so symmetry
+                        # canonicalization never retires a grid twin — all
+                        # 284 candidates must exist (see _many above).
+                        "frac": [
+                            0.05 + 0.04 * (i % 20),
+                            0.05 + 0.04 * (i // 20),
+                            0.45 + 0.001 * i,
+                        ],
                     }
                 ],
             )

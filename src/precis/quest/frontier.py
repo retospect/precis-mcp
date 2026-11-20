@@ -2442,8 +2442,11 @@ def leaderboard(
     """Rows + TOON schema for the **by-total** design leaderboard (§7.3).
 
     One row per candidate design: identity, objective vector, its Pareto
-    ``band`` (``frontier``/``dominated``/``provisional``/``awaiting``), and
-    a graduation flag. Ordered frontier → dominated → provisional →
+    ``band`` (``frontier``/``dominated``/``provisional``/``awaiting``), the
+    tri-state trust verdict (``trusted``: ``yes``/``no``/``-``, the
+    ``args={'trusted': true}``/``where={'trusted': 'yes'}`` filter column —
+    gr592637), and a graduation flag. Ordered frontier → dominated →
+    provisional →
     awaiting, sorted within each band by the primary objective (best
     first) — or by ``sort`` ``(key, sense)`` when given (the handler's
     ``args={'sort': k}``, gr592277); a sort key outside the declared
@@ -2487,6 +2490,11 @@ def leaderboard(
         trust = v.get("trust")
         return f"{term} ({trust})" if trust else term
 
+    def _trusted_cell(c: Candidate) -> str:
+        # The results table's own convention (results_table._trusted_str) —
+        # provisional rows are judged on their wrapped candidate.
+        return {True: "yes", False: "no", None: "-"}[candidate_trusted(c)]
+
     def _rows(cands: list[Candidate], band: str) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for c in sorted(cands, key=_sort_key):
@@ -2495,6 +2503,7 @@ def leaderboard(
                 "name": c.name,
                 "tier": TIER_GLYPH.get(str(c.flags.get("tier")), ""),
                 "band": band,
+                "trusted": _trusted_cell(c),
             }
             for key in col_keys:
                 v = c.measures.get(key)
@@ -2536,6 +2545,7 @@ def leaderboard(
                 "name": c.name,
                 "tier": TIER_GLYPH.get(str(c.flags.get("tier")), ""),
                 "band": "provisional",
+                "trusted": _trusted_cell(pc.candidate),
             }
             for key in col_keys:
                 v = pc.measures.get(key)
@@ -2582,6 +2592,7 @@ def leaderboard(
         *col_keys,
         "$/rate",
         "band",
+        "trusted",
         "graduated",
         *validity_col,
         "quality",

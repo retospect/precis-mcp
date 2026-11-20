@@ -2,8 +2,11 @@
 
 Uses precis's own ``format.toon`` serialiser (braced ``{col⇥col}`` header,
 TAB-separated homogeneous rows) so pathway output reads exactly like ``search``.
-Numbers are pre-formatted to strings (2 dp) — TOON renders floats via ``repr``
-otherwise, which spends tokens on ``0.7400000001``.
+Numbers are pre-formatted to strings (2 dp) in the per-pathway tables — TOON
+renders floats via ``repr`` otherwise, which spends tokens on
+``0.7400000001``. The compare table is the exception: its rows keep raw
+numbers so the table lens filters/sorts/aggregates on measurements, and the
+2-dp formatting moves into the display map at render time.
 
 Imports precis, so this module is handler-side (not part of the precis-free
 ``runner``/``analysis``/``text_views`` set).
@@ -14,7 +17,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from precis.format import toon
@@ -1917,17 +1920,39 @@ def compare_response(
     ``cursor`` — with a footer naming the matched count, the left-out
     aggregates and the exact next call; both ``None`` keeps the plain dump
     (unit-level compares). ``sort`` there names a column (``-RATE``); the
-    default order stays RATE (SPAN at ``U``) best-first."""
+    default order stays RATE (SPAN at ``U``) best-first.
+
+    Rows carry the RAW measurements — filtering, sorting and aggregation
+    run on the numbers, never on the 2-dp display strings (a ``where`` like
+    ``{'RATE': {'max': 0.122}}`` must see 0.121 and 0.124, not two 0.12s);
+    rounding happens only in the display map at render time."""
     legends = "\n".join((_GATE_LEGEND, _ANCHOR_LEGEND, _CONF_LEGEND))
 
-    def _table(rows: list[dict[str, Any]], schema: list[str], header: str) -> Response:
+    def _display(
+        rows: list[dict[str, Any]],
+        cols: list[str],
+        disp: Mapping[str, Callable[[Any], Any]],
+    ) -> list[dict[str, Any]]:
+        return [
+            {c: (disp[c](r.get(c)) if c in disp else r.get(c)) for c in cols}
+            for r in rows
+        ]
+
+    def _table(
+        rows: list[dict[str, Any]],
+        schema: list[str],
+        header: str,
+        disp: Mapping[str, Callable[[Any], Any]],
+    ) -> Response:
         if lens_args is None or lens_call is None:
-            return Response(body=f"{header}{toon.dump(rows, schema=schema)}\n{legends}")
+            return Response(
+                body=f"{header}{toon.dump(_display(rows, schema, disp), schema=schema)}\n{legends}"
+            )
         return lens_response(
             rows,
             parse_lens_args(lens_args, columns=schema),
             columns=schema,
-            render=lambda rs, cs: toon.dump(rs, schema=cs),
+            render=lambda rs, cs: toon.dump(_display(rs, cs, disp), schema=cs),
             call=lens_call,
             header=f"{header}{legends}\n",
             row_unit="pathways",
@@ -1974,16 +1999,25 @@ def compare_response(
 
     def _row_scalars(p: dict[str, Any]) -> dict[str, Any]:
         rl = p["summ"]["rate_limiting"] or {}
+        # RATE/SPAN stay raw numbers: the lens filters/sorts/aggregates on
+        # them, and ``disp`` below rounds only for display.
         return {
             "cand": _cand_cell(p["c"]),
             "candidate": str(p["c"].get("candidate") or "-"),
             "gate": str(p["c"].get("gate") or "n/a"),
             "anchor": str(p["c"].get("anchor") or "n/a"),
             "lever": p["c"].get("lever", ""),
-            "RATE": _ea_or_na(rl.get("ea")),
-            "SPAN": _b(p["summ"]["span"]) or "n/a",
+            "RATE": rl.get("ea"),
+            "SPAN": p["summ"]["span"],
             "conf": _conf(rl.get("low_confidence"), known=rl.get("ea") is not None),
         }
+
+    #: Display formatting per numeric column — applied at render time only,
+    #: never to the values the lens sorts/filters/aggregates (gr592637 review).
+    _scalar_disp: dict[str, Callable[[Any], Any]] = {
+        "RATE": _ea_or_na,
+        "SPAN": lambda v: _b(v) or "n/a",
+    }
 
     def _sort_key(p: dict[str, Any]) -> tuple[bool, float]:
         # numeric, not on the 2-dp strings: "10.00" < "9.00" lexically.
@@ -2003,6 +2037,7 @@ def compare_response(
             rows,
             ["cand", "candidate", "gate", "anchor", "lever", "RATE", "SPAN", "conf"],
             prefix + note,
+            _scalar_disp,
         )
 
     # aligned: build interleaved columns from the shared coordinate.
@@ -2017,13 +2052,14 @@ def compare_response(
     schema = ["cand", "candidate", "gate", "anchor", *col_names, "RATE", "SPAN", "conf"]
 
     rows = []
+    disp: dict[str, Callable[[Any], Any]] = dict(_scalar_disp)
     for p in profiles:
         row = _row_scalars(p)
         for col, name in zip(p["cols"], col_names):
-            row[name] = (
-                _e(col["value"]) if col["kind"] == "state" else _ea_or_na(col["value"])
-            )
+            # Raw values through the lens; the display map rounds at render.
+            row[name] = col["value"]
+            disp[name] = _e if col["kind"] == "state" else _ea_or_na
         rows.append(row)
 
     head = "# ‡ = step barrier Eₐ; state cols = rel eV vs root.  " + "  ".join(legend)
-    return _table(rows, schema, f"{prefix}{head}\n")
+    return _table(rows, schema, f"{prefix}{head}\n", disp)

@@ -521,6 +521,58 @@ def test_quest_membership_and_handler_scope(store: Store) -> None:
     assert "'offset': 1" in axis_page
 
 
+def test_quest_where_accepts_displayed_basis_prefix(store: Store) -> None:
+    """The axis/summary views display 12-character environment-basis
+    prefixes; a quest row-lens where with that displayed prefix must select
+    the row (gr592637 review), and a full stored hash selects exactly its
+    own row."""
+    from precis.dispatch import Hub
+    from precis.handlers.quest import QuestHandler
+
+    quest = store.insert_ref(kind="quest", slug=None, title="kinetics quest")
+    candidate = store.insert_ref(
+        kind="structure", slug="summary-candidate", title="candidate"
+    )
+    store.add_link(src_ref_id=candidate.id, dst_ref_id=quest.id, relation="serves")
+    basis = sha256(b"basis-1").hexdigest()
+    other = sha256(b"basis-2").hexdigest()
+    first = _pathway(
+        store,
+        {
+            "candidate_ref": candidate.id,
+            "results": {
+                "kinetics_v2": {"tof_mf": 1},
+                "kinetics": {"environment_basis": basis},
+            },
+        },
+    )
+    second = _pathway(
+        store,
+        {
+            "candidate_ref": candidate.id,
+            "results": {
+                "kinetics_v2": {"tof_mf": 1},
+                "kinetics": {"environment_basis": other},
+            },
+        },
+    )
+    handler = QuestHandler(hub=Hub(store=store))
+    body = handler.get(
+        id=quest.id,
+        view="kinetics-summary",
+        args={"where": {"environment_basis": basis[:12]}, "columns": ["pathway"]},
+    ).body
+    assert f"pw{first}" in body
+    assert f"pw{second}" not in body
+    full = handler.get(
+        id=quest.id,
+        view="kinetics-summary",
+        args={"where": {"environment_basis": basis}, "columns": ["pathway"]},
+    ).body
+    assert f"pw{first}" in full
+    assert f"pw{second}" not in full
+
+
 def test_pathway_handler_population_view_and_id_refusal(store: Store) -> None:
     from types import SimpleNamespace
 
