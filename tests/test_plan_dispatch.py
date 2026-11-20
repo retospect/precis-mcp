@@ -7579,6 +7579,29 @@ def test_review_land_records_tests_not_run(store: Store) -> None:
     )
 
 
+def test_review_fix_asks_the_release_scope_with_the_reviewed_todo(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr741488: the FIX mint hands the release-scope read the reviewed
+    todo as well as its landed sha and stamps the branch it answers; if
+    this fails the corrective for a hand-carried land goes to main and
+    the release waits on a carry ask."""
+    seen: list[tuple[list[str], list[int]]] = []
+
+    def scope(_store: Any, shas: list[str], todos: Any = ()) -> str:
+        seen.append((list(shas), list(todos)))
+        return "release/r7"
+
+    monkeypatch.setattr(pd, "_release_scope_target", scope)
+    mint = _reviewed(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    assert seen and all(call == (["abc1234"], [build]) for call in seen)
+    (fix,) = [c for c in _children(store, mint.root_id) if c not in (build, review)]
+    assert _meta(store, fix)["land_target"] == "release/r7"
+    assert "land target: release/r7" in _body_text(store, fix)
+
+
 def test_review_fix_mints_one_fix_task_under_the_root(store: Store) -> None:
     mint = _reviewed(store, "review: FIX — a.py misses the empty case")
     build, review = mint.ids["build"], mint.ids["review"]

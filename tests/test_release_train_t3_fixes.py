@@ -86,6 +86,77 @@ def test_a_corrective_for_a_main_commit_the_branch_repeats_targets_its_branch(
     assert pd._release_scope_target(store, [m[:12]]) is None
 
 
+_ENGINE = ("src/precis/plans/release.py",)
+
+
+def _named(
+    monkeypatch: pytest.MonkeyPatch,
+    root: int,
+    *,
+    paths: tuple[str, ...] = _ENGINE,
+    branch_only: bool = True,
+    undone: bool = False,
+) -> None:
+    """The release's scope is one commit, ``a…``, whose subject names
+    td4242 and which repeats no main commit patch for patch."""
+    land = release_poll._GitLand(
+        sha="a" * 40,
+        subject="fix(factory): salvage finds its stamp (td4242)",
+        committed_at=None,
+        paths=paths,
+        branch_only=branch_only,
+    )
+    monkeypatch.setattr(release_poll, "_open_pass_id", lambda store: root)
+    monkeypatch.setattr(release_poll, "_release_lands", lambda rel: [land])
+    monkeypatch.setattr(
+        release_poll,
+        "_branch_carries",
+        lambda rel, lands: ({}, {land.sha} if undone else set(), []),
+    )
+
+
+def test_a_fix_for_a_todo_the_branch_copy_names_targets_its_branch(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr741488: a hand carry with a fix-up folded in repeats no main
+    patch, but the gate judges it as the todo its subject names — so that
+    todo's FIX holds the deploy and its corrective belongs on the branch."""
+    mint = _cut(store)
+    _named(monkeypatch, mint.root_id)
+    main_sha = "b" * 12
+    assert pd._release_scope_target(store, [main_sha], [4242]) == "release/r7"
+    assert pd._release_scope_target(store, [], [4242]) == "release/r7"
+    # Control: the main sha alone is outside the release, and so is a
+    # todo no commit of it names.
+    assert pd._release_scope_target(store, [main_sha]) is None
+    assert pd._release_scope_target(store, [main_sha], [4243]) is None
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"paths": ("docs/notes.md",)},  # no engine path: not a gate unit
+        {"branch_only": False},  # in the cut range: the sha rule decides
+        {"undone": True},  # reverted on the branch: the release ships neither
+    ],
+)
+def test_the_todo_link_is_the_gates_unit_only(
+    store: Store, monkeypatch: pytest.MonkeyPatch, scope: dict[str, Any]
+) -> None:
+    mint = _cut(store)
+    _named(monkeypatch, mint.root_id, **scope)
+    assert pd._release_scope_target(store, ["b" * 12], [4242]) is None
+
+
+def test_a_started_deploy_keeps_a_named_todos_corrective_on_main(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mint = _cut(store)
+    _named(monkeypatch, mint.root_id)
+    R.mark_deploy_started(store, mint.ids["deploy"])
+    assert pd._release_scope_target(store, ["b" * 12], [4242]) is None
+
+
 def test_a_started_deploy_sends_the_corrective_to_main(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

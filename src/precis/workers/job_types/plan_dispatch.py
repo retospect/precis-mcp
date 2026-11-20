@@ -477,6 +477,7 @@ import logging
 import math
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -2465,7 +2466,9 @@ def _reviewed_shas(store: Any, plan: _Plan, n: _Node) -> list[str]:
     return shas
 
 
-def _release_scope_target(store: Any, shas: list[str]) -> str | None:
+def _release_scope_target(
+    store: Any, shas: list[str], todos: Sequence[int] = ()
+) -> str | None:
     """``release/r<N>`` when one of ``shas`` is inside the open release's
     scope — its cut range or a commit on the release branch
     (``release_poll._release_lands``, the deploy gate's own scope) —
@@ -2476,8 +2479,18 @@ def _release_scope_target(store: Any, shas: list[str]) -> str | None:
     answers. A main commit the branch repeats patch for patch
     (``release_poll._branch_carries``) is in the scope too: the gate
     judges the branch's copy by that commit's review, so its corrective
-    belongs on the branch as well. Any read fault reads ``None``."""
-    if not shas:
+    belongs on the branch as well.
+
+    ``todos`` — the reviewed todos, passed for a FIX only — adds the
+    gate's other link (gr741488): an engine commit only the branch has
+    whose subject's trailing handle list names one of them
+    (``release_poll._land_tds``) is that todo's unit at the gate even
+    when it is no patch-for-patch copy, a hand carry with a fix-up
+    folded in. Its FIX holds the deploy on the corrective, so the
+    corrective goes to the branch. A REVERT keeps the sha rule: it
+    reverts the named commit, which that branch copy is not. Any read
+    fault reads ``None``."""
+    if not shas and not todos:
         return None
     from precis.workers.job_types import release_poll as _rp
 
@@ -2489,13 +2502,22 @@ def _release_scope_target(store: Any, shas: list[str]) -> str | None:
         if rel is None or _release.deploy_started(store, root) is not None:
             return None
         lands = _rp._release_lands(rel)
-        picked, _undone, _notes = _rp._branch_carries(rel, lands)
+        picked, undone, _notes = _rp._branch_carries(rel, lands)
     except Exception:
         log.warning("plan_dispatch: release scope unreadable", exc_info=True)
         return None
+    branch = _release.release_branch(str(rel["rN"]))
     for sha in [land.sha for land in lands] + [src.sha for src in picked.values()]:
         if any(sha.startswith(s.lower()) or s.lower().startswith(sha) for s in shas):
-            return _release.release_branch(str(rel["rN"]))
+            return branch
+    wanted = set(todos)
+    for land in lands:
+        if not wanted or not land.branch_only or land.sha in undone:
+            continue
+        if _lanes.engine_hits(land.paths) and wanted.intersection(
+            _rp._land_tds(land.subject)
+        ):
+            return branch
     return None
 
 
@@ -2597,7 +2619,11 @@ def _review_fix(
     target = (
         None
         if repo is not None
-        else _release_scope_target(store, _reviewed_shas(store, plan, n))
+        else _release_scope_target(
+            store,
+            _reviewed_shas(store, plan, n),
+            [t.id for t in _review_targets(plan, n)],
+        )
     )
     if repo is not None:
         body = (
