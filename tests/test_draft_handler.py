@@ -2542,6 +2542,54 @@ def test_hygiene_completeness_byline_with_doi_not_double_flagged(
     assert "lack author/year/venue" not in draft.get(id="nt").body
 
 
+def test_hygiene_completeness_flags_verified_empty_byline_with_doi(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """review td732177: a DOI-bearing record with an empty byline is
+    exempt from the author-source line once human-verified — the
+    completeness line must still name its authors leg, else the record
+    carries no author warning at all."""
+    paper = hub.live_store.insert_ref(
+        kind="paper",
+        slug="verifiedempty2020",
+        title="Verified, empty byline",
+        year=2020,
+        meta={"journal": "Nature"},
+    )
+    hub.live_store.insert_ref_identifiers(
+        paper.id, [("doi", "10.1/verifiedempty", "manual")]
+    )
+    hub.live_store.set_human_verified(paper.id, by="reto")
+    _cite_paper(draft, hub, paper.id)
+
+    out = draft.get(id="nt").body
+    assert "verifiedempty2020 (no authors)" in out
+    assert "authors not yet Crossref-resolved" not in out
+
+
+def test_hygiene_completeness_flags_crossref_empty_byline_with_doi(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """review td732177: same hole on the Crossref side — a
+    Crossref-stamped record with an empty byline is exempt from the
+    author-source line, so the completeness line owns the warning."""
+    paper = hub.live_store.insert_ref(
+        kind="paper",
+        slug="crossrefempty2020",
+        title="Crossref-stamped, empty byline",
+        year=2020,
+        meta={"journal": "Nature", "authors_source": "crossref"},
+    )
+    hub.live_store.insert_ref_identifiers(
+        paper.id, [("doi", "10.1/crossrefempty", "manual")]
+    )
+    _cite_paper(draft, hub, paper.id)
+
+    out = draft.get(id="nt").body
+    assert "crossrefempty2020 (no authors)" in out
+    assert "authors not yet Crossref-resolved" not in out
+
+
 @pytest.mark.parametrize("type_key", ["record_type", "entry_type"])
 @pytest.mark.parametrize("record_type", ["software", "dataset"])
 def test_hygiene_completeness_record_cite_exempt_from_venue(

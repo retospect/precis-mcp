@@ -7693,6 +7693,24 @@ class DraftHandler(Handler):
         marker = "ℹ" if line.startswith("all ") else "⚠"
         return f"{marker} DOI: {line}."
 
+    @staticmethod
+    def _hygiene_author_source_stale(ref: Any, doi: str | None) -> bool:
+        """True when :meth:`_hygiene_author_source_line` would flag this
+        ref: a DOI on file (the enrich pass can repair the byline from
+        it), paper kind, not human-verified, and the byline not already
+        Crossref-sourced. The record-completeness line defers its author
+        leg only for refs this predicate passes — otherwise a DOI-bearing
+        record exempt from the source line (human-verified or
+        Crossref-stamped) with an empty byline carries no author warning
+        at all (review td732177)."""
+        if not doi:
+            return False
+        if ref is None or getattr(ref, "kind", None) != "paper":
+            return False
+        if getattr(ref, "human_verified_at", None) is not None:
+            return False
+        return ((getattr(ref, "meta", None) or {}).get("authors_source")) != "crossref"
+
     def _hygiene_author_source_line(
         self,
         ref_ids: list[int],
@@ -7718,14 +7736,10 @@ class DraftHandler(Handler):
         """
         stale: list[str] = []
         for rid in ref_ids:
-            if not (identifiers.get(rid) or {}).get("doi"):
-                continue
             ref = refs_by_id.get(rid)
-            if ref is None or getattr(ref, "kind", None) != "paper":
-                continue
-            if getattr(ref, "human_verified_at", None) is not None:
-                continue
-            if ((getattr(ref, "meta", None) or {}).get("authors_source")) == "crossref":
+            if not self._hygiene_author_source_stale(
+                ref, (identifiers.get(rid) or {}).get("doi")
+            ):
                 continue
             stale.append(getattr(ref, "slug", None) or f"pa{rid}")
         if not stale:
@@ -7755,10 +7769,12 @@ class DraftHandler(Handler):
         """One advisory line: cited papers whose record cannot print a
         full reference — no authors, no year, or no venue (gr725252).
         The author-source line above owns the DOI-bearing byline case
-        (repairable by the enrich pass), so a byline counts here only
-        when no DOI names a repair path — pa714353 (Haddon 1993, title
-        only, no DOI) slipped past every check and printed as a bare
-        title. Typed whole-record cites (software/dataset, gr514384)
+        (repairable by the enrich pass) only where it reports the ref
+        (the shared :meth:`_hygiene_author_source_stale` predicate): a
+        human-verified or Crossref-stamped record with an empty byline
+        is not repairable that way, so it counts here — pa714353 (Haddon
+        1993, title only, no DOI) slipped past every check and printed as
+        a bare title. Typed whole-record cites (software/dataset, gr514384)
         and legacy DataCite records typed only by entry_type are exempt
         from the venue leg: they have no venue by design. This check
         deliberately omits volume, pages and article number because
@@ -7772,9 +7788,10 @@ class DraftHandler(Handler):
             if ref is None or getattr(ref, "kind", None) != "paper":
                 continue
             missing: list[str] = []
-            if not getattr(ref, "authors", None) and not (
-                identifiers.get(rid) or {}
-            ).get("doi"):
+            author_deferred = self._hygiene_author_source_stale(
+                ref, (identifiers.get(rid) or {}).get("doi")
+            )
+            if not getattr(ref, "authors", None) and not author_deferred:
                 missing.append("authors")
             if getattr(ref, "year", None) is None:
                 missing.append("year")
