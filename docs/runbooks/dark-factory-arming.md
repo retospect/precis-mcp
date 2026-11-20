@@ -311,6 +311,58 @@ pass's plan root.
     scripts/prod-precis settings set release.fix_mode owner
     scripts/prod-precis settings set release.fix_mode clusters
 
+### Carrying a corrective commit (release.auto_carry)
+
+The deploy gate holds a release whose engine land was cleared by a FIX or
+REVERT until the corrective commit is on `release/r<N>`. A corrective that
+landed on main after the cut is not on the branch. `release.auto_carry`
+(bool, default on, DB-only; an unknown value or a failed read reads off)
+lets the factory put it there itself (gr741489):
+
+- `release_poll`'s open-pass tick mints one carry node under the pass
+  root for every corrective the release still misses. The node is a
+  `release_confirm` job in `carry` mode, so the tick pins it to the host
+  and checkout the cut ran in. The pass shows it as a `carry` row.
+- The job fetches `origin/main` and the release head, cherry-picks the
+  commits with `git cherry-pick -x` in main's order inside a throwaway
+  worktree, and proves each pick an exact copy of its source — the same
+  tree proof the gate uses for a carried commit. It then pushes a plain
+  fast-forward. No existing worktree is touched and nothing is forced.
+- The corrective shas are the `landed:` records of the fix todos the
+  reviews named, and only a commit on `origin/main` is picked. The
+  branch copy is judged by the main land's review, as a hand pick is:
+  no review hold is removed, and an engine commit nobody reviewed keeps
+  its own hold.
+- One carry of a release runs at a time (a per-release advisory lock; a
+  second entry does nothing), in a worktree named for the run. The last
+  look — the switch, the deploy start, the gate once more — and the push
+  share the pass root's row lock, the one the deploy's start stamp
+  takes, so a deploy cannot start between the look and the push.
+- After the push the job puts the pass on the new head at once
+  (`release_poll.follow_moved_head`): the head's CI verdict is polled
+  before the deploy, and a red there goes to the fix loop.
+- Nothing is pushed on a conflict, on a pick that is not an exact copy (a
+  rename git followed, a merge commit) or on a git failure. The outcome is
+  recorded on the node (`meta.release_carry.outcome`) and the carry ask
+  files with the reason. The carry is not tried again until the release
+  head moves.
+- A fetch or a push that did not answer is tried again on the next tick,
+  three times on one release head; then the ask files. So does a release
+  head that moved under the push in three carries. The job itself ends
+  `succeeded` either way: the node's outcome is the record.
+- A carry node still open after 30 minutes stops holding the ask back.
+- Never after the release's deploy started, and never for a hold whose
+  carry ask was answered: an answer ships the release without the commit.
+- A carry node never keeps the pass open. One that has nothing left to
+  do — the deploy started, or the gate stopped waiting for its commits
+  while it sat undispatched — is closed `won't-do` by the same tick.
+
+Off, the carry ask files at once and a person carries the commit or
+answers the ask.
+
+    scripts/prod-precis settings set release.auto_carry false
+    scripts/prod-precis settings set release.auto_carry true
+
 ### Stuck watchdog
 
 The same `release_poll` pass also watches the live `release.round`
@@ -1074,9 +1126,13 @@ Known limits:
   land. An ask closed without an `answer:` comment holds nothing:
   the next pass refiles it and the blocker names the live ask's id.
   A land cleared on a corrective commit that is not on `release/r<N>`
-  files the same ask at once: answering it deploys the release without
-  that commit, landing the commit on the release branch clears the hold
-  without an answer. While the gate holds a deploy, the tick writes the
+  holds the deploy too. The factory first carries the commit onto the
+  branch itself (§Carrying a corrective commit); the same ask files only
+  when that cannot be done, or at once with `release.auto_carry` off.
+  Answering it deploys the release without that commit; the commit on
+  the release branch clears the hold without an answer — a docs- or
+  test-only one included, which is no review unit but still counts as
+  carried. While the gate holds a deploy, the tick writes the
   refusal as a comment on the `release_deploy` node, once per distinct
   text (gr702442). Two kinds of commit on `release/r<N>` bring no code
   of their own and get no review of their own (Reto 2026-11-19): a

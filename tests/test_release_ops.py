@@ -6079,6 +6079,65 @@ def test_confirm_holds_the_retirement_until_the_merge_back_settles(
     assert checkout["argv"][-1][:4] == [str(script), "deploy", "--confirm-runtime", SHA]
 
 
+def test_the_tick_runs_a_carry_node_on_the_cut_host_and_closes_it(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr741489: the carry node is a ``release_confirm`` job in ``carry``
+    mode — pinned like every release op to the host and checkout the cut
+    ran in, routed to ``release_carry`` and never to the runtime probe,
+    and closed by the tick once its job succeeded."""
+    from precis.workers.job_types import release_carry as rcarry
+
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = _cut(store, host="node-a", checkout=str(checkout["root"]))
+    node = T.mint_release_carry(store, mint.root_id, "r7", ["b" * 12], "a" * 40)
+    pd.run_pass(store)
+    job, meta = _only_job(store, node)
+    assert (meta["job_type"], meta["executor"]) == ("release_confirm", "ssh_node")
+    params = {"carry": True, "todo_id": node, "target_node": "node-a"}
+    assert meta["params"] == params
+    # Any other host is refused at dispatch.
+    refusal = rcf.validate_submit(store, params={**params, "target_node": "node-b"})
+    assert refusal is not None and "node-a" in refusal
+
+    seen: list[tuple[int, Path]] = []
+
+    def carry(store: Any, todo_id: int, root: Path) -> dict[str, Any]:
+        seen.append((todo_id, root))
+        return {"state": "carried", "pushed": "c" * 40, "picked": {"b" * 12: "c" * 40}}
+
+    monkeypatch.setattr(rcarry, "carry", carry)
+    ctx = Ctx(store, params)
+    assert rcf.submit(ctx, None) is None
+    assert seen == [(node, checkout["root"])]
+    assert ctx.status == "succeeded" and ctx.failures == []
+    assert ctx.stamped["release_carry"]["state"] == "carried"
+    assert "picked bbbbbbbbbbbb as cccccccccccc" in ctx.chunks[-1][1]
+    assert checkout["argv"] == []  # no script: not the confirm, not the probe
+
+    _succeed(store, job)
+    pd.run_pass(store)
+    assert _status(store, node) == "done"
+    # An outcome that pushed nothing still ends the job: the gate reads it.
+    monkeypatch.setattr(
+        rcarry, "carry", lambda *a: {"state": "conflict", "why": "does not apply"}
+    )
+    ctx = Ctx(store, params)
+    assert rcf.submit(ctx, None) is None
+    assert ctx.status == "succeeded" and "the carry ask files" in ctx.chunks[-1][1]
+    # So does a fault: release_poll retries the carry, never the node's
+    # retry cap — its ask would hold the pass open.
+    monkeypatch.setattr(
+        rcarry,
+        "carry",
+        lambda *a: {"state": "failed", "why": "origin/main did not fetch"},
+    )
+    ctx = Ctx(store, params)
+    assert rcf.submit(ctx, None) is None
+    assert ctx.status == "succeeded" and ctx.failures == []
+    assert "the next release_poll tick tries again" in ctx.chunks[-1][1]
+
+
 def test_confirm_stops_waiting_for_a_merge_back_that_never_settles(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

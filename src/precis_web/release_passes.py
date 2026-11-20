@@ -136,6 +136,15 @@ def _role(meta: dict[str, Any]) -> str | None:
     if (
         name == "release_confirm"
         and isinstance(op, dict)
+        and (op.get("params") or {}).get("carry")
+    ):
+        # gr741489: release_confirm's carry mode — a corrective commit
+        # picked onto the release branch before the deploy. No pipeline
+        # step of its own, and never the confirm step.
+        return None
+    if (
+        name == "release_confirm"
+        and isinstance(op, dict)
         and (op.get("params") or {}).get("merge_back")
     ):
         # release-train T3: release_confirm's merge_back mode.

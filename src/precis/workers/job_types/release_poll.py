@@ -74,7 +74,18 @@ budget is GitHub's unauthenticated 60/h per IP):
    ``release/r<N>`` after the cut — must be cleared, and every
    corrective commit a FIX/REVERT clearance rests on must be on
    ``release/r<N>``. A land on main after the cut belongs to the next
-   release and holds nothing here. While a pass is open the poll also
+   release and holds nothing here. A corrective that landed on main
+   after the cut is carried by the factory itself (gr741489,
+   :mod:`precis.workers.job_types.release_carry`): the open-pass tick
+   mints one carry node under the pass root — a ``release_confirm`` job
+   in ``carry`` mode that cherry-picks the missing commits onto the
+   branch — and the carry ask files only when that cannot be done (a
+   conflict, a pick that is not an exact copy, a carry still open after
+   :data:`release_carry.CARRY_WAIT_AFTER`), with the reason. With
+   ``release.auto_carry`` off, or once the deploy started, the ask files
+   at once. The same tick closes a carry node that has nothing left to
+   do, so one the plan tick never dispatched cannot hold the pass open.
+   While a pass is open the poll also
    keeps it on its branch's head (:func:`follow_moved_head`, gr741486):
    a push after the pass's last verdict — a carried corrective —
    restamps the release, reopens the fix loop and mints one poll, so
@@ -1717,7 +1728,12 @@ def _branch_carries(
     the candidate; the proof is the tree (:func:`_replays_as`): replaying
     the main commit onto the branch commit's parent, or the undone
     commit backwards onto it, must give the branch commit's tree byte
-    for byte. Only engine-touching branch commits are looked at; any git
+    for byte. Reverts are paired for engine-touching branch commits
+    only. A cherry-pick is found for any branch commit: one that touches
+    no engine path is no gate unit either way, but the main commit it
+    repeats may be the corrective a cleared FIX rests on, and the carry
+    hold must see that the branch has it (gr741489 — a test-only
+    corrective picked onto the branch used to keep its hold). Any git
     failure returns nothing, so every commit keeps its own review.
     Seam: tests patch it."""
     from precis.plans import lanes as _lanes
@@ -1726,10 +1742,9 @@ def _branch_carries(
     picked: dict[str, _GitLand] = {}
     undone: set[str] = set()
     notes: list[str] = []
-    fixes = [
-        land for land in lands if land.branch_only and _lanes.engine_hits(land.paths)
-    ]
-    if not fixes:
+    branch = [land for land in lands if land.branch_only]
+    fixes = [land for land in branch if _lanes.engine_hits(land.paths)]
+    if not branch:
         return picked, undone, notes
     try:
         rn = str(rel.get("rN") or "")
@@ -1771,7 +1786,8 @@ def _branch_carries(
             pid = own.get(land.sha)
             if pid:
                 live.setdefault(pid, []).append(land.sha)
-        rest = [land for land in fixes if land.sha not in undone]
+        engine = {land.sha for land in fixes}
+        rest = [land for land in branch if land.sha not in undone]
         if not rest:
             return picked, undone, notes
         main_ids = _patch_ids(
@@ -1799,7 +1815,12 @@ def _branch_carries(
             picked[land.sha] = source
             notes.append(
                 f"engine review: {rn} {land.sha[:12]} repeats main's "
-                f"{source.sha[:12]} patch for patch — judged by that land's review"
+                f"{source.sha[:12]} patch for patch — "
+                + (
+                    "judged by that land's review"
+                    if land.sha in engine
+                    else "no engine path, so no unit: the release carries that commit"
+                )
             )
     except Exception:
         log.info("release_poll: branch carry read failed", exc_info=True)
@@ -2261,6 +2282,7 @@ def _file_review_wait_ask(
     reason: str | None = None,
     carry: str | None = None,
     corrective: list[str] | None = None,
+    auto_carry: str | None = None,
 ) -> tuple[str, int | None]:
     """The review-wait ask: one OPEN ``ask-user`` ruling todo per gate
     unit (a landed todo, or a sha-keyed hand land), deduped by its
@@ -2280,6 +2302,8 @@ def _file_review_wait_ask(
     under tests/ or docs/ (:func:`_corrective_note`, gr735222) — r336's
     deploy waited 3.6 h on an ask whose answer was "a test-only rewrite".
     The ask still needs its answer; the text only makes it a quick one.
+    ``auto_carry`` is why the factory did not put the corrective on the
+    branch itself (gr741489, :func:`_settle_carries`); the ask says so.
 
     Returns ``(note, ask_id)`` — the live ask's todo id (filed or
     deduped) so the blocker can name it, ``None`` on dry-run/factory-off.
@@ -2314,6 +2338,11 @@ def _file_review_wait_ask(
             touches += (
                 "Every path it touches is under tests/ or docs/ — a "
                 "test-only corrective: no runtime file changes. "
+            )
+        if auto_carry:
+            touches += (
+                "The factory did not carry it onto the release branch "
+                f"itself: {auto_carry}. "
             )
         body = (
             f"The engine-review gate (td574937 E1) holds the deploy of "
@@ -2721,6 +2750,135 @@ def _corrective_note(missing: list[str]) -> tuple[str, bool]:
     return "; ".join(parts), test_only and bool(parts)
 
 
+def _scanned_head(rel: dict[str, Any]) -> str | None:
+    """The head of ``rel``'s release branch as the gate's scan resolved it
+    — the remote-tracking ref :func:`_release_lands` just fetched — or
+    ``None`` when it cannot be read. Not :func:`release_head`, GitHub's
+    live answer: the carry is judged against the commits this scan saw
+    (a pick pushed since is "not seen yet", never "still missing"), and
+    it costs no GitHub read. Seam: tests patch it."""
+    from precis.workers.job_types import run_slice as _rs
+
+    rn = str(rel.get("rN") or "")
+    if not re.fullmatch(r"r\d+", rn):
+        return None
+    try:
+        proc = _rs._git(
+            [
+                *_GIT_SAFE,
+                "rev-parse",
+                "--verify",
+                "-q",
+                f"refs/remotes/origin/release/{rn}^{{commit}}",
+            ],
+            _rs.slice_root(),
+        )
+    except Exception:
+        log.info("release_poll: release head read failed", exc_info=True)
+        return None
+    sha = proc.stdout.strip().lower() if proc.returncode == 0 else ""
+    return sha or None
+
+
+def _settle_carries(
+    store: Any,
+    rel: dict[str, Any],
+    carries: list[tuple[_GateLand, list[str]]],
+    *,
+    now: datetime,
+    dry_run: bool,
+    blocked: str | None,
+) -> list[str]:
+    """The carry holds of one release-scoped gate read, settled together
+    (gr741489): the factory carries the missing corrective commits onto
+    ``release/r<N>`` itself — one carry node for all of them
+    (:func:`precis.workers.job_types.release_carry.settle`) — and the
+    carry ask files only for a hold the automatic carry cannot clear,
+    saying why. With ``release.auto_carry`` off, the deploy started or no
+    open pass for the release, every hold files its ask at once, as
+    before. A fault in the carry never swallows an ask: it files with the
+    fault as its reason. Returns the notes."""
+    from precis.workers.job_types import release_carry as _carry
+
+    rn = rel.get("rN")
+    notes: list[str] = []
+    reasons: dict[tuple[str, ...], str | None]
+    try:
+        settled = _carry.settle(
+            store,
+            rel,
+            [missing for _unit, missing in carries],
+            head=_scanned_head(rel),
+            now=now,
+            dry_run=dry_run,
+            blocked=blocked,
+        )
+        notes, reasons = list(settled.notes), settled.reasons
+    except Exception as exc:
+        log.warning("release_poll: automatic carry raised", exc_info=True)
+        fault = f"the automatic carry raised {type(exc).__name__}"
+        reasons = {tuple(missing): fault for _unit, missing in carries}
+    for unit, missing in carries:
+        why = reasons.get(tuple(missing), "")
+        if why is None:
+            continue  # the factory is carrying it: nobody is asked yet
+        note, _filed = _file_review_wait_ask(
+            store,
+            _carry_ask_key(unit, missing, rn),
+            land=unit.land,
+            dry_run=dry_run,
+            carry=_carry_line(unit, missing, rn),
+            corrective=missing,
+            auto_carry=why or None,
+        )
+        notes.append(note)
+    return notes
+
+
+def _sweep_carries(
+    store: Any,
+    rel: dict[str, Any],
+    carries: list[tuple[_GateLand, list[str]]],
+    *,
+    now: datetime,
+    dry_run: bool,
+) -> list[str]:
+    """Close the carry nodes of ``rel``'s release that have nothing left
+    to do (:func:`precis.workers.job_types.release_carry.sweep`) — the
+    deploy started, or the gate stopped waiting for their commits — so a
+    carry the tick never dispatched cannot keep the pass open. ``carries``
+    is what this read still waits for. Housekeeping: a fault is a note."""
+    from precis.workers.job_types import release_carry as _carry
+
+    wanted = [sha for _unit, missing in carries for sha in missing]
+    try:
+        return _carry.sweep(store, rel, wanted, now=now, dry_run=dry_run)
+    except Exception as exc:
+        log.warning("release_poll: carry sweep raised", exc_info=True)
+        return [f"engine review: carry sweep raised {type(exc).__name__}"]
+
+
+def carry_wanted(store: Any, rel: dict[str, Any]) -> tuple[list[str], str | None]:
+    """``(shas, fatal)`` — the corrective commits (12 chars) the release
+    ``rel``'s deploy still waits to see on ``release/r<N>``, each once,
+    in gate order: the carry holds whose ask is unanswered (an answer
+    waives the carry). ``fatal`` is the gate's fail-closed line when it
+    cannot be read. The carry job reads this right before it picks
+    (:func:`precis.workers.job_types.release_carry.carry`)."""
+    verdicts, _notes, fatal, _pin, scanned = _engine_verdicts(store, rel=rel)
+    if fatal is not None:
+        return [], fatal
+    rn = rel.get("rN")
+    out: list[str] = []
+    for v in verdicts or ():
+        missing = _carry_missing(v, scanned)
+        if missing and not _answered_wait_ask(
+            store, _carry_ask_key(v.unit, missing, rn)
+        ):
+            out.extend(sha for sha in missing if sha not in out)
+    return out, None
+
+
 def _engine_verdicts(
     store: Any,
     *,
@@ -2748,7 +2906,11 @@ def _engine_verdicts(
     corrective commit(s) (:func:`_carry_ask_key`, td730820), so
     answering it waives only that release's carry of that commit — the
     plain per-unit key would clear the same land's hold on every
-    release and on main. Being a cleared FIX/REVERT's recorded
+    release and on main. That ask is the last resort: the holds of a
+    release are settled together after the scan
+    (:func:`_settle_carries`, gr741489), where the factory first
+    carries the missing commits onto the branch itself and asks only
+    for a hold it cannot clear. Being a cleared FIX/REVERT's recorded
     corrective commit while no covering
     reviewer reached a verdict (:func:`_chain_corrective`, gr611217)
     also clears a unit; no covering reviewer
@@ -2791,6 +2953,7 @@ def _engine_verdicts(
         by_sha: dict[str, list[tuple[int, dict[str, Any]]]] = {}
         by_task: dict[int, list[tuple[int, dict[str, Any]]]] = {}
         carried: set[tuple[str, int]] = set()  # (corrective sha, fix task)
+        carries: list[tuple[_GateLand, list[str]]] = []  # unanswered carry holds
         for rid, meta in _reviewer_rows(store):
             review = meta.get("review")
             task = review.get("task") if isinstance(review, dict) else None
@@ -2971,15 +3134,10 @@ def _engine_verdicts(
                     store, _carry_ask_key(unit, missing, rn)
                 )
                 if file_asks and missing and not answered_carry:
-                    note, _filed = _file_review_wait_ask(
-                        store,
-                        _carry_ask_key(unit, missing, rn),
-                        land=unit.land,
-                        dry_run=dry_run,
-                        carry=_carry_line(unit, missing, rn),
-                        corrective=missing,
-                    )
-                    notes.append(note)
+                    # gr741489: judged after the scan, all holds at once —
+                    # the factory carries what it can before anyone is
+                    # asked (:func:`_settle_carries`).
+                    carries.append((unit, missing))
                 verdicts.append(verdict)
                 continue
             pick = waiting or hopeless
@@ -3018,6 +3176,19 @@ def _engine_verdicts(
                 line = f"{line} — the open ask is td{ask_id}"
             verdict.line = line
             verdicts.append(verdict)
+        if carries and rel is not None:
+            notes.extend(
+                _settle_carries(
+                    store,
+                    rel,
+                    carries,
+                    now=now,
+                    dry_run=dry_run,
+                    blocked=factory_reason,
+                )
+            )
+        if file_asks and rel is not None:
+            notes.extend(_sweep_carries(store, rel, carries, now=now, dry_run=dry_run))
     except Exception as exc:
         log.warning("release_poll: engine review gate unreadable", exc_info=True)
         return (
@@ -3074,6 +3245,8 @@ def deploy_review_blockers(store: Any, todo_id: int) -> list[str]:
         return [fatal]
     rn = rel.get("rN")
     lines = [v.line for v in verdicts or () if not v.cleared]
+    carrying: int | None = None
+    carrying_read = False
     for v in verdicts or ():
         missing = _carry_missing(v, scanned)
         # td730820: the waiver is scoped to the release and the
@@ -3086,8 +3259,27 @@ def deploy_review_blockers(store: Any, todo_id: int) -> list[str]:
             ask_id = _open_wait_ask_id(store, _carry_ask_key(v.unit, missing, rn))
             if ask_id is not None:
                 line = f"{line} — the open ask is td{ask_id}"
+            else:
+                # gr741489: no ask yet because the factory is carrying
+                # the commit itself — say so, the line still holds.
+                if not carrying_read:
+                    carrying, carrying_read = _open_carry(store, rel), True
+                if carrying is not None:
+                    line = f"{line} — the factory is carrying it: td{carrying}"
             lines.append(line)
     return lines
+
+
+def _open_carry(store: Any, rel: dict[str, Any]) -> int | None:
+    """The open carry node of ``rel``'s release, else ``None`` — a read
+    for a blocker line's wording, so any fault reads ``None``."""
+    from precis.workers.job_types import release_carry as _carry
+
+    try:
+        return _carry.open_carry(store, rel)
+    except Exception:
+        log.info("release_poll: open carry read failed", exc_info=True)
+        return None
 
 
 def _commit_shas(cmp_: Any) -> list[str]:
@@ -3631,6 +3823,7 @@ __all__ = [
     "WINDOWS_SETTING",
     "PollResult",
     "branch_in_flight",
+    "carry_wanted",
     "conditional_requires",
     "deploy_review_blockers",
     "engine_review_blockers",

@@ -51,6 +51,7 @@ release loop (td570415) runs the stages below unattended through
 | Cut | `release_cut` | retry cap exhausted → a human ask |
 | Gate | `ci_verdict_poll`; a red verdict runs `ci_red_digest` → fix → `release_cut` recut, at most 2 automatic loops | the second red files a ruling ask; a third fix is a human call |
 | Approval | manual `approval` ask when `release.auto_deploy` is off | a human answers `deploy r<N>` or `hold`; armed passes mint no approval node |
+| Carry (only when the gate holds the release on a corrective commit that is on main but not on `release/r<N>`) | `release_confirm` in `carry` mode, minted by `release_poll` | the factory cherry-picks the commit onto the branch; a conflict, or a pick that is not an exact copy, pushes nothing and files the carry ask with the reason; `release.auto_carry` off files the ask at once |
 | Deploy | `release_deploy`, gated by `may_release(deploy)` | window, in-flight releases, prod/main ancestry, engine reviews and exact-head green CI must clear; GitHub outages hold deployment; retry cap exhausted → a human ask |
 | Confirm | `release_confirm`: mechanical runtime attestation | a mismatch or gap fails the job and asks a human; there is no rollback |
 | Stuck watchdog (any stage) | `release_poll`'s pass | files one ruling ask per `(round, stage)` once `release.stage_deadlines` is exceeded — observation only; answering it executes nothing |

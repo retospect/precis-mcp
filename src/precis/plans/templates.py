@@ -1097,6 +1097,50 @@ def mint_merge_back_resolver(
     return ids["resolve"], ids["merge_back"]
 
 
+def mint_release_carry(
+    store: Store, plan_root: int, rn: str, shas: list[str], head: str
+) -> int:
+    """Mint the carry node of release ``rn`` under the release pass's
+    root (gr741489, :mod:`precis.workers.job_types.release_carry`): a
+    ``release_confirm`` job in ``carry`` mode that cherry-picks the
+    corrective commits ``shas`` from main onto ``release/<rn>`` and
+    pushes the result as a fast-forward. ``meta.release_carry`` records
+    what it was minted for — the release, the shas and ``head``, the
+    release head the gate saw — which is what ``release_poll`` dedupes
+    on and reads the outcome from. Nothing is blocked-by the node: the
+    deploy waits on the gate's own carry hold, which clears once the
+    picks are on the branch. Returns its id; the caller serializes the
+    one-open-carry check and this mint under an advisory lock."""
+    listed = ", ".join(shas)
+
+    def build(m: _Minter) -> None:
+        op: dict[str, Any] = {"type": "release_confirm", "params": {"carry": True}}
+        cid = m.node(
+            "carry",
+            f"Carry {listed} onto release/{rn}",
+            {
+                "op": op,
+                "release_carry": {"rN": rn, "shas": list(shas), "head": head},
+            },
+            body=(
+                f"release_confirm (carry mode): the deploy gate holds "
+                f"release/{rn} until the corrective commit(s) {listed} — "
+                "landed on main after the cut — are on the release branch. "
+                "This job cherry-picks them (`git cherry-pick -x`, main's "
+                "order) in a throwaway worktree off the fetched release "
+                "head, proves each pick an exact copy of its source and "
+                "pushes a plain fast-forward. A conflict or a failed proof "
+                "pushes nothing: the outcome is recorded on this node and "
+                "the gate files its carry ask with the reason. The new "
+                "head then gets its own CI verdict before the deploy."
+            ),
+        )
+        op["params"]["todo_id"] = cid
+        m.store.stamp_ref_meta(cid, {"op": op}, conn=m.conn)
+
+    return _run_body(store, plan_root, plan_root, build).ids["carry"]
+
+
 def mint_reviewer(
     store: Store, plan_root: int, target_id: int, *, repo: str | None = None
 ) -> int:

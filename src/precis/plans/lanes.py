@@ -146,6 +146,8 @@ FACTORY_DENY_WRITE_PATHS: tuple[str, ...] = (
     "src/precis/workers/job_types/release_poll.py",
     "src/precis/workers/job_types/release_deploy.py",
     "src/precis/workers/job_types/release_confirm.py",
+    # pushes onto release/r<N> under the factory credential (gr741489)
+    "src/precis/workers/job_types/release_carry.py",
     "src/precis/workers/job_types/land_slice.py",
     "scripts/release",
     # fires a CI rerun (a write) — denied like scripts/release

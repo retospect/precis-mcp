@@ -63,6 +63,7 @@ _REGISTRY_FLOOR: dict[str, tuple[str, ...]] = {
         "src/precis/workers/job_types/release_poll.py",
         "src/precis/workers/job_types/release_deploy.py",
         "src/precis/workers/job_types/release_confirm.py",
+        "src/precis/workers/job_types/release_carry.py",
         "src/precis/workers/job_types/land_slice.py",
         "scripts/release",
         "scripts/ci-rerun",

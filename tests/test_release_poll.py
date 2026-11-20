@@ -31,6 +31,8 @@ from precis.store.types import ChunkInsert, Tag
 from precis.utils import http as _http
 from precis.workers import factory_git as _fg
 from precis.workers.job_types import plan_dispatch as pd
+from precis.workers.job_types import release_carry as rc
+from precis.workers.job_types import release_confirm as confirm
 from precis.workers.job_types import release_poll as rp
 from precis.workers.job_types import run_slice as rs
 from tests._lane_rows import use_lanes
@@ -3617,13 +3619,23 @@ def test_a_running_reviewer_on_the_corrective_holds_it(
 
 
 def _carry_release(
-    store: Store, *, fix_on_branch: bool, rn: str = "r7", land: bool = True
+    store: Store,
+    *,
+    fix_on_branch: bool,
+    rn: str = "r7",
+    land: bool = True,
+    auto_carry: bool = False,
 ) -> tuple[int, int]:
     """A cut ``rn`` whose branch carries engine land td42, cleared by a
     FIX reviewer whose fix todo landed ``b``; ``b`` rides the branch
     only with ``fix_on_branch``. ``land=False`` skips appending the
-    shared td42 land (a second release reusing the first's). Returns
-    ``(deploy id, fix todo id)``."""
+    shared td42 land (a second release reusing the first's).
+    ``release.auto_carry`` is switched off unless ``auto_carry``: the
+    tests of the carry ask pin what the gate does without the automatic
+    carry (gr741489). Returns ``(deploy id, fix todo id)``."""
+    psettings.set_setting(
+        "release.auto_carry", "true" if auto_carry else "false", store=store
+    )
     mint = T.mint_release_pass(store)
     R.record_cut(store, mint.ids["cut"], rn, "c" * 40, "9" * 12 + ".." + "c" * 12)
     a, b = "a" * 40, "b" * 40
@@ -3786,6 +3798,428 @@ def test_a_carried_corrective_files_no_ask(
     rp._engine_verdicts(store, rel=rel, now=NOW, file_asks=True)
     assert _review_wait_asks(store) == []
     assert rp.deploy_review_blockers(store, deploy) == []
+
+
+# ── the automatic carry (gr741489) ──────────────────────────────────
+#
+# With ``release.auto_carry`` on, a carry hold mints a carry node under
+# the pass root instead of filing its ask; the ask files only once the
+# carry cannot be done. The git half is tests/test_release_carry.py.
+
+_HEAD_1 = "1" * 40
+_HEAD_2 = "2" * 40
+_FIX_B = "b" * 12
+
+
+def _auto_carry(
+    store: Store, monkeypatch: pytest.MonkeyPatch, head: str = _HEAD_1
+) -> tuple[int, dict[str, Any], list[str]]:
+    """A release holding td42's land on corrective ``b`` with the
+    automatic carry on; ``(deploy id, release, [release head])`` — the
+    one-element list is what the gate reads as the branch head."""
+    deploy, _fix = _carry_release(store, fix_on_branch=False, auto_carry=True)
+    heads = [head]
+    monkeypatch.setattr(rp, "_scanned_head", lambda rel: heads[0])
+    rel = R.release_of(store, deploy)
+    assert rel is not None
+    return deploy, rel, heads
+
+
+def _tick(store: Store, rel: dict[str, Any], **kw: Any) -> list[str]:
+    kw.setdefault("now", datetime.now(UTC))
+    _v, notes, fatal, _pin, _scanned = rp._engine_verdicts(
+        store, rel=rel, file_asks=True, **kw
+    )
+    assert fatal is None, fatal
+    return notes
+
+
+def _carry_nodes(store: Store, deploy: int) -> list[Any]:
+    return rc.carry_nodes(store, R.plan_root(store, deploy), "r7")
+
+
+def _end_carry(store: Store, node: Any, outcome: dict[str, Any]) -> None:
+    """Record ``outcome`` on the carry node and close it, as its job and
+    the plan tick would."""
+    ref = store.get_ref(kind="todo", id=node.id)
+    assert ref is not None
+    spec = dict(ref.meta[rc.CARRY_KEY])
+    store.stamp_ref_meta(node.id, {rc.CARRY_KEY: {**spec, "outcome": outcome}})
+    store.add_tag(
+        node.id, Tag.closed("STATUS", "done"), set_by="agent", replace_prefix=True
+    )
+
+
+def test_a_carry_hold_mints_one_carry_node_and_asks_nobody(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    notes = _tick(store, rel)
+    assert _review_wait_asks(store) == []
+    [node] = _carry_nodes(store, deploy)
+    assert node.shas == (_FIX_B,) and node.head == _HEAD_1 and not node.closed
+    assert any(f"minted td{node.id} to carry {_FIX_B}" in n for n in notes)
+    ref = store.get_ref(kind="todo", id=node.id)
+    assert ref is not None and ref.parent_id == R.plan_root(store, deploy)
+    op = ref.meta["op"]
+    assert op["type"] == "release_confirm"
+    assert op["params"] == {"carry": True, "todo_id": node.id}
+    assert pd._params_problem(confirm.PARAMS_SCHEMA, op["params"]) is None
+    assert f"plan:{R.plan_root(store, deploy)}" in _tags(store, node.id)
+    # The next tick finds the carry in flight: no second node, no ask.
+    notes = _tick(store, rel)
+    assert [n.id for n in _carry_nodes(store, deploy)] == [node.id]
+    assert _review_wait_asks(store) == []
+    assert any(f"td{node.id} is carrying" in n for n in notes)
+    # The deploy still holds, and its line names who is at it.
+    [line] = rp.deploy_review_blockers(store, deploy)
+    assert rp._CARRY_MARK in line
+    assert line.endswith(f"the factory is carrying it: td{node.id}")
+
+
+def test_a_failed_carry_files_the_ask_with_its_reason_and_is_not_repeated(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel, heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: ("src/precis/gate.py",))
+    _tick(store, rel)
+    [node] = _carry_nodes(store, deploy)
+    _end_carry(
+        store,
+        node,
+        {"state": "conflict", "why": "bbbbbbbbbbbb does not apply", "base": _HEAD_1},
+    )
+    _tick(store, rel)
+    [ask] = _review_wait_asks(store)
+    body = _todo_text(store, ask)
+    assert (
+        "The factory did not carry it onto the release branch itself: the "
+        f"automatic carry failed — td{node.id}: bbbbbbbbbbbb does not apply. "
+    ) in body
+    assert rp._CARRY_MARK in body
+    # Same head: no second try, however many ticks pass.
+    _tick(store, rel)
+    assert [n.id for n in _carry_nodes(store, deploy)] == [node.id]
+    assert _review_wait_asks(store) == [ask]
+    # The release head moved (a fix landed): one more try.
+    heads[0] = _HEAD_2
+    _tick(store, rel)
+    first, second = _carry_nodes(store, deploy)
+    assert first.id == node.id and second.head == _HEAD_2 and not second.closed
+
+
+def test_an_answered_carry_ask_ends_the_automatic_carry(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An answer waives the carry: the release ships without the commit,
+    so no later tick may put it on the branch."""
+    deploy, rel, heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    _tick(store, rel)
+    [node] = _carry_nodes(store, deploy)
+    _end_carry(store, node, {"state": "refused", "why": "no", "base": _HEAD_1})
+    _tick(store, rel)
+    [ask] = _review_wait_asks(store)
+    _todo_comment(store, ask, "answer: acknowledged")
+    heads[0] = _HEAD_2
+    _tick(store, rel)
+    assert [n.id for n in _carry_nodes(store, deploy)] == [node.id]
+    assert rp.deploy_review_blockers(store, deploy) == []
+    assert rp.carry_wanted(store, rel) == ([], None)
+
+
+def test_a_carry_the_gate_does_not_see_asks_and_is_never_repeated(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel, heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    _tick(store, rel)
+    [node] = _carry_nodes(store, deploy)
+    _end_carry(
+        store,
+        node,
+        {
+            "state": "carried",
+            "base": _HEAD_1,
+            "pushed": _HEAD_2,
+            "picked": {_FIX_B: _HEAD_2},
+        },
+    )
+    # This tick's scan predates the push: wait, ask nobody, mint nothing.
+    _tick(store, rel)
+    assert _review_wait_asks(store) == []
+    assert len(_carry_nodes(store, deploy)) == 1
+    # The scan saw the pushed head and the hold still stands.
+    heads[0] = _HEAD_2
+    _tick(store, rel)
+    [ask] = _review_wait_asks(store)
+    assert f"td{node.id}: it pushed the pick as {_HEAD_2[:12]}, yet the gate" in (
+        _todo_text(store, ask)
+    )
+    heads[0] = "3" * 40
+    _tick(store, rel)
+    assert len(_carry_nodes(store, deploy)) == 1
+
+
+def test_a_carry_that_lost_the_race_for_the_head_is_minted_again(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    _tick(store, rel)
+    [node] = _carry_nodes(store, deploy)
+    _end_carry(store, node, {"state": "moved", "why": "moved", "base": _HEAD_1})
+    _tick(store, rel)
+    assert len(_carry_nodes(store, deploy)) == 2
+    assert _review_wait_asks(store) == []
+
+
+def test_a_head_that_keeps_moving_under_the_carry_asks_after_three(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every lost race moves the head, so "not on the same head" never
+    stops it: the moved carries are counted per release."""
+    deploy, rel, heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    for n in (1, 2, 3):
+        heads[0] = str(n) * 40
+        _tick(store, rel)
+        nodes = _carry_nodes(store, deploy)
+        assert len(nodes) == n and _review_wait_asks(store) == []
+        _end_carry(store, nodes[-1], {"state": "moved", "why": "moved"})
+    heads[0] = "4" * 40
+    _tick(store, rel)
+    assert len(_carry_nodes(store, deploy)) == 3
+    [ask] = _review_wait_asks(store)
+    assert "release/r7 moved under the push in 3 carries" in _todo_text(store, ask)
+
+
+def test_a_carry_job_that_left_no_outcome_is_tried_again_then_asks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The job found another run holding the release's lock, or died: the
+    node closed with nothing recorded. That is no verdict on the commit."""
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    for n in (1, 2, 3):
+        _tick(store, rel)
+        nodes = _carry_nodes(store, deploy)
+        assert len(nodes) == n and _review_wait_asks(store) == []
+        store.add_tag(
+            nodes[-1].id,
+            Tag.closed("STATUS", "done"),
+            set_by="agent",
+            replace_prefix=True,
+        )
+    _tick(store, rel)
+    assert len(_carry_nodes(store, deploy)) == 3
+    [ask] = _review_wait_asks(store)
+    assert "closed done with no recorded outcome (3 tries)" in _todo_text(store, ask)
+
+
+def test_a_faulted_carry_is_tried_a_few_times_then_asks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fetch that did not answer says nothing about the commit: the
+    next tick mints the carry again, three times on one head."""
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    fault = {"state": "failed", "why": "origin/main did not fetch"}
+    for n in (1, 2, 3):
+        _tick(store, rel)
+        nodes = _carry_nodes(store, deploy)
+        assert len(nodes) == n and _review_wait_asks(store) == []
+        _end_carry(store, nodes[-1], fault)
+    _tick(store, rel)
+    assert len(_carry_nodes(store, deploy)) == 3
+    [ask] = _review_wait_asks(store)
+    assert "origin/main did not fetch (3 tries)" in _todo_text(store, ask)
+
+
+def _is_open(store: Store, node_id: int) -> bool:
+    return rp._status_of(store, node_id) == "open"
+
+
+def test_a_stuck_carry_node_is_closed_once_the_deploy_started(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An open carry node would hold the pass root open after the release
+    shipped, and with it the next release."""
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    _tick(store, rel)
+    [node] = _carry_nodes(store, deploy)
+    R.mark_deploy_started(store, deploy)
+    started = R.release_of(store, deploy)
+    assert started is not None
+    notes = _tick(store, started)
+    assert rp._status_of(store, node.id) == "won't-do"
+    assert any(f"closed carry td{node.id}" in n for n in notes)
+    assert "deploy started" in _todo_text(store, node.id)
+    assert len(_carry_nodes(store, deploy)) == 1
+
+
+def test_a_stuck_carry_node_nobody_waits_for_is_closed(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The node was never dispatched; the ask filed and was answered. The
+    gate waits for nothing, so the node closes — but not while its
+    commit is still wanted, and not before it is overdue."""
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    _tick(store, rel)
+    [node] = _carry_nodes(store, deploy)
+    late = datetime.now(UTC) + rc.CARRY_WAIT_AFTER + timedelta(minutes=5)
+    _tick(store, rel, now=late)  # overdue: the ask files, the node stays
+    [ask] = _review_wait_asks(store)
+    assert _is_open(store, node.id)
+    _todo_comment(store, ask, "answer: acknowledged")
+    _tick(store, rel)  # answered, but a fresh look: not overdue by this clock
+    assert _is_open(store, node.id)
+    _tick(store, rel, now=late)
+    assert rp._status_of(store, node.id) == "won't-do"
+    assert rp.deploy_review_blockers(store, deploy) == []
+
+
+def test_a_carry_node_that_never_finishes_stops_holding_the_ask_back(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702442's lesson: a hold with nobody asked is bounded."""
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    _tick(store, rel)
+    [node] = _carry_nodes(store, deploy)
+    late = datetime.now(UTC) + rc.CARRY_WAIT_AFTER + timedelta(minutes=5)
+    _tick(store, rel, now=late)
+    [ask] = _review_wait_asks(store)
+    assert f"the automatic carry td{node.id} has not finished after" in (
+        _todo_text(store, ask)
+    )
+    assert len(_carry_nodes(store, deploy)) == 1
+
+
+def test_no_carry_is_minted_once_the_deploy_started(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    R.mark_deploy_started(store, deploy)
+    started = R.release_of(store, deploy)
+    assert started is not None
+    _tick(store, started)
+    assert _carry_nodes(store, deploy) == []
+    [ask] = _review_wait_asks(store)
+    assert "did not carry" not in _todo_text(store, ask)
+
+
+def test_with_auto_carry_off_the_ask_files_at_once_as_before(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, _fix = _carry_release(store, fix_on_branch=False)
+    monkeypatch.setattr(rp, "_scanned_head", lambda rel: _HEAD_1)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    rel = R.release_of(store, deploy)
+    assert rel is not None
+    _tick(store, rel)
+    assert _carry_nodes(store, deploy) == []
+    [ask] = _review_wait_asks(store)
+    assert "did not carry" not in _todo_text(store, ask)
+    [line] = rp.deploy_review_blockers(store, deploy)
+    assert line.endswith(f"the open ask is td{ask}")
+
+
+def test_a_dry_run_mints_no_carry_and_files_no_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    notes = _tick(store, rel, dry_run=True)
+    assert _carry_nodes(store, deploy) == [] and _review_wait_asks(store) == []
+    assert any(f"would carry {_FIX_B} onto release/r7" in n for n in notes)
+
+
+def test_a_switched_off_plan_tick_asks_instead_of_minting_a_carry(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A carry node nobody dispatches would hold the ask back for nothing."""
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    monkeypatch.setattr(pd, "read_only_reason", lambda store: "plan_dispatch is off")
+    _tick(store, rel)
+    assert _carry_nodes(store, deploy) == []
+    [ask] = _review_wait_asks(store)
+    assert "the automatic carry is not running (plan_dispatch is off)" in (
+        _todo_text(store, ask)
+    )
+
+
+def test_an_unreadable_release_head_asks_instead_of_minting_a_carry(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, _fix = _carry_release(store, fix_on_branch=False, auto_carry=True)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+    rel = R.release_of(store, deploy)
+    assert rel is not None
+    # The autouse git stub fails every call: no head.
+    assert rp._scanned_head(rel) is None
+    _tick(store, rel)
+    assert _carry_nodes(store, deploy) == []
+    [ask] = _review_wait_asks(store)
+    assert "could not read release/r7's head" in _todo_text(store, ask)
+
+
+def test_two_carry_holds_share_one_carry_node(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    other = "d" * 40
+    _REL_LANDS.append(
+        rp._GitLand(
+            sha="e" * 40,
+            subject="fix(gate): another land (td43)",
+            committed_at=NOW,
+            paths=("scripts/ship",),
+        )
+    )
+    fix2 = int(store.insert_ref(kind="todo", slug=None, title="fix 2", meta=None).id)
+    _landed_comment(store, fix2, sha=other)
+    _reviewer(store, 43, status="done", review={"verdict": "FIX", "task": fix2})
+    assert rp.carry_wanted(store, rel) == ([_FIX_B, other[:12]], None)
+    _tick(store, rel)
+    [node] = _carry_nodes(store, deploy)
+    assert node.shas == (_FIX_B, other[:12])
+    assert _review_wait_asks(store) == []
+
+
+def test_a_fault_in_the_carry_never_swallows_the_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy, rel, _heads = _auto_carry(store, monkeypatch)
+    monkeypatch.setattr(rp, "_commit_paths", lambda sha: None)
+
+    def boom(*a: Any, **kw: Any) -> Any:
+        raise RuntimeError("settle fell over")
+
+    monkeypatch.setattr(rc, "settle", boom)
+    _tick(store, rel)
+    [ask] = _review_wait_asks(store)
+    assert "the automatic carry raised RuntimeError" in _todo_text(store, ask)
+    assert _carry_nodes(store, deploy) == []
+
+
+def test_auto_carry_reads_off_on_a_bad_value_or_a_failed_read(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    psettings.clear_setting("release.auto_carry", store=store)
+    assert rc.enabled(store) is True  # unset: the registry default
+    psettings.set_setting("release.auto_carry", "false", store=store)
+    assert rc.enabled(store) is False
+    psettings.set_setting("release.auto_carry", "perhaps", store=store)
+    assert rc.enabled(store) is False
+
+    def unreadable(store: Any, key: str) -> Any:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(psettings, "_db_read_strict", unreadable)
+    assert rc.enabled(store) is False
 
 
 def test_an_open_round_still_mints_engine_reviewers(
@@ -4238,6 +4672,25 @@ def test_a_cherry_pick_of_a_main_commit_is_picked(
     assert undone == set()
     assert len(notes) == 1
     assert f"{x[:12]} repeats main's {repo.shas['M'][:12]} patch" in notes[0]
+
+
+def test_a_cherry_pick_that_touches_no_engine_path_still_counts_as_carried(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr741489: a docs- or test-only corrective picked onto the branch
+    is no gate unit, but the carry hold must see the release has it."""
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    n = repo.git("rev-parse", "refs/remotes/origin/main")  # the docs commit
+    repo.git("cherry-pick", n)
+    x = repo.head()
+    picked, undone, notes, lands = _carries(repo, rel)
+    assert {k: v.sha for k, v in picked.items()} == {x: n}
+    assert undone == set()
+    assert len(notes) == 1 and "no engine path, so no unit" in notes[0]
+    _REL_LANDS.extend(lands)
+    units, _pin, scanned, _notes = rp._gate_lands(store, rel)
+    assert n in scanned and x in scanned
+    assert not [u for u in units if u.sha12 in (n[:12], x[:12])]
 
 
 def test_a_cherry_pick_onto_a_file_both_sides_changed_elsewhere_is_picked(

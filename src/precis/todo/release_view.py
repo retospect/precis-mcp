@@ -74,6 +74,7 @@ _STATE_WORD = {
     "confirm": "confirming the runtime",
     "merge-back": "merging back into main",
     "resolve": "resolving the merge-back conflict",
+    "carry": "carrying a corrective commit onto the release branch",
 }
 
 
@@ -204,6 +205,10 @@ def _role(meta: dict[str, Any]) -> str:
     if op == "ci_verdict_poll":
         return "restamp" if params.get("restamp") else "poll"
     if op == "release_confirm":
+        if params.get("carry"):
+            # ``templates.mint_release_carry`` (gr741489): a corrective
+            # commit cherry-picked onto the release branch, before deploy.
+            return "carry"
         return "merge-back" if params.get("merge_back") else "confirm"
     if meta.get("merge_back_resolver"):
         # ``templates.mint_merge_back_resolver``: a run_slice off main, not

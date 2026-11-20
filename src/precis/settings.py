@@ -721,6 +721,22 @@ REGISTRY: dict[str, SettingSpec] = {
             "a failed read reads as 'clusters'.",
         ),
         SettingSpec(
+            key="release.auto_carry",
+            type="bool",
+            env_var=None,
+            default=True,
+            doc="DB-only. The automatic carry (gr741489, "
+            "precis.workers.job_types.release_carry). On (default): when "
+            "the deploy gate holds an open release on a corrective commit "
+            "that landed on main after the cut, the factory cherry-picks "
+            "it onto release/r<N> itself — a plain pick proven an exact "
+            "copy, pushed as a fast-forward, never after the deploy "
+            "started — and the carry ask files only when that cannot be "
+            "done (a conflict, a failed proof). Off: the carry ask files "
+            "at once, as before. An unrecognised value or a failed read "
+            "reads as off.",
+        ),
+        SettingSpec(
             key="cluster.gateway_host",
             type="str",
             env_var="PRECIS_GATEWAY_HOST",

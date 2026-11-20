@@ -94,6 +94,13 @@ own forward merge then has nothing left to do. The wait is bounded by
 evidence is gathered first either way, so a deploy that did not take
 still fails at once.
 
+**The carry mode** (gr741489). ``params.carry`` runs none of the above:
+like the merge-back it borrows this job type's host pin and claim band.
+The node — minted by ``release_poll`` while the release is still open,
+before any deploy — cherry-picks the corrective commits the deploy gate
+is holding the release for onto ``release/r<N>``
+(:mod:`precis.workers.job_types.release_carry`).
+
 On ok the job runs ``scripts/round deploy --confirm-runtime <sha>
 --runtime-evidence <text>`` (phase ``confirm``), stamps the evidence on
 the plan root and ``release.round``
@@ -155,6 +162,10 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # once the resolver todo named by ``resolver`` landed the content.
         "strategy": {"type": "string", "enum": ["ours"]},
         "resolver": {"type": "integer"},
+        # A carry node (gr741489): cherry-pick the corrective commits its
+        # meta names onto release/r<N> instead of attesting the runtime
+        # (precis.workers.job_types.release_carry).
+        "carry": {"type": "boolean"},
         "resources": {
             "type": "object",
             "properties": {"wall_seconds": {"type": "integer"}},
@@ -1055,6 +1066,12 @@ def submit(ctx: Any, spec: Any) -> Any:
         from precis.workers.job_types import release_merge_back as _mb
 
         _mb.run(ctx, params)
+        return None
+    if params.get("carry"):
+        # gr741489: the carry mode — synchronous, terminal.
+        from precis.workers.job_types import release_carry as _carry
+
+        _carry.run(ctx, params)
         return None
     rel = _release.release_of(ctx.store, int(params["todo_id"])) or {}
     now = datetime.now(UTC)
