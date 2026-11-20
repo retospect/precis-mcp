@@ -123,7 +123,9 @@ def _lsof_bin():
         return found
     fallbacks = os.environ.get("PRECIS_REAP_LSOF_FALLBACKS")
     for cand in (
-        fallbacks.split(os.pathsep) if fallbacks else ("/usr/sbin/lsof", "/usr/bin/lsof")
+        fallbacks.split(os.pathsep)
+        if fallbacks
+        else ("/usr/sbin/lsof", "/usr/bin/lsof")
     ):
         if os.path.exists(cand):
             return cand
@@ -133,11 +135,15 @@ def _lsof_bin():
 def _held_open(lock):
     """True: a live git holds it open; False: provably none; None: can't
     tell (lsof error) — the caller keeps on either non-False. A non-git
-    holder (the Colima VM's file share) never keeps a lock."""
+    holder (the Colima VM's file share) never keeps a lock. -w suppresses
+    lsof's harmless "can't stat() <fs>" mount-table warnings (docker
+    overlay/fuse mounts make them constant on CI and dev hosts), and the
+    filter below still ignores any warning line that reaches stderr — only
+    non-warning stderr means the answer is unreadable."""
     lsof = _lsof_bin()
     if lsof is None:
         return None
-    r = _run([lsof, "-F", "pc", "--", lock])
+    r = _run([lsof, "-w", "-F", "pc", "--", lock])
     # Linux lsof warns on stderr about mounts it cannot stat (FUSE, tracefs)
     # on every call; only a non-warning line means the answer is unreadable.
     errs = [
@@ -202,7 +208,7 @@ def _proc_cwd(pid):
         return os.readlink(f"/proc/{pid}/cwd")
     except OSError:
         pass
-    r = _run([_lsof_bin() or "lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"])
+    r = _run([_lsof_bin() or "lsof", "-w", "-a", "-p", pid, "-d", "cwd", "-Fn"])
     for ln in r.stdout.splitlines():
         if ln.startswith("n"):
             return ln[1:]
