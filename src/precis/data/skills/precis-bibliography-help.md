@@ -8,6 +8,7 @@ answers:
   - what does each column in a bibliography listing mean?
   - what's the difference between the bibliography (kind='citation') and an inline [fi<id>] cite?
   - how do I find citations across all papers, not just one?
+  - does an empty bibliography mean the paper has no reference list?
 applies-to: get (kind='paper', view='bibliography')
 status: active
 tags: [verbs]
@@ -59,6 +60,11 @@ ci67	Operating window: −0.3 to −0.5 V vs RHE	pc14	0.88	"the device sustained
 
 One row per citation, oldest first. Empty for a paper nothing has
 cited yet — that's the normal state for a freshly-ingested paper.
+"Empty" means no verifier citations and no citing drafts — it says
+nothing about the paper's *own* reference list, which is a different
+read: `get(kind='paper', id='pa312', view='references')` renders the
+published `[N]` entries (or the stored references chunks while the
+parse hasn't landed).
 
 ## What each column means
 

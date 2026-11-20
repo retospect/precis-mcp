@@ -14,6 +14,7 @@ answers:
   - how do I search inside one paper for a passage?
   - how do I get a paper whose DOI isn't indexed yet?
   - how do I resolve a journal/volume/page/year citation to a paper?
+  - how do I read a paper's own reference list?
 applies-to: get/search/tag/link (kind='paper')
 status: active
 tags: [addressing, workflow]
@@ -595,6 +596,7 @@ get(kind="paper", id="pa40", view="measures")
 
 Views: `abstract`, `toc`, `summaries`, `tables`, `measures`, `bibtex` (`cite/bib`), `ris`
 (`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
+`references`,
 `comments` (the note timeline — see Add a note to a paper),
 `ops` (full-state JSON dump — see precis-paper-ref-help), `pdf_link`
 (signed download URL for the held PDF — see precis-paper-ref-help). The
@@ -602,6 +604,25 @@ Views: `abstract`, `toc`, `summaries`, `tables`, `measures`, `bibtex` (`cite/bib
 above). All are ref-level: a `pc<id>` chunk handle takes no `view=` —
 `get(id='pc512', view='abstract')` is refused; use the paper handle
 (`pa<id>`) for every view but `'toc'`, which also scopes to `pa<id>~N..M`.
+
+## Read the paper's own reference list
+## What numbered references does this paper cite?
+
+```python
+get(kind="paper", id="pa40", view="references")
+```
+
+Renders the paper's published reference list with its source numbering —
+one `[N] <raw text>` line per parsed entry, ordered by marker (synthetic
+OpenAlex candidates, which carry negative markers, are filtered out).
+While no parsed rows are stored yet the view falls back to the stored
+references chunks, headlined `(source chunks)` with `pa<id>~<ord>`
+selectors; with neither it answers "No reference entries found in the
+stored paper." To walk the citation graph beyond what's held, the S2
+`refs:` hop below is the next step. Not to be confused with
+`view='bibliography'` — that lists verifier citations *of* this paper
+([[precis-bibliography-help]]), and an empty bibliography says nothing
+about this list.
 
 ## Find a passage in a paper I have
 ## Locate where a topic comes up in a specific paper
