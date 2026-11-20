@@ -9354,6 +9354,61 @@ def test_reviewer_without_the_preland_marker_keeps_the_plan_score(
     assert meta["dispatch_score"] == 2.3
 
 
+def _held_land_meta(store: Store, mint: T.PlanMint) -> dict[str, Any]:
+    """Drive ``mint`` to a ``review: LAND`` verdict; the held land's meta."""
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(
+        build, {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}}
+    )
+    _mark_done(store, build)
+    pd.run_pass(store)
+    ((review_job, _),) = _jobs_under(store, review)
+    _set_job_status(store, review_job, "succeeded")
+    _todo_comment(store, review, "review: LAND")
+    pd.run_pass(store)
+    (meta,) = [
+        m for _jid, m in _jobs_under(store, build) if m.get("job_type") == "land_slice"
+    ]
+    return meta
+
+
+def test_held_land_job_is_floored_to_finish_first_score(store: Store) -> None:
+    """The land a ``review: LAND`` verdict releases keeps the build's files
+    held until it runs, so it floors at ``FINISH_FIRST_SCORE`` too."""
+    meta = _held_land_meta(store, _scored_review_plan(store, 2.3, preland=True))
+    assert meta["dispatch_score"] == 16.0
+
+
+def test_held_land_job_above_the_floor_keeps_the_plan_score(store: Store) -> None:
+    meta = _held_land_meta(store, _scored_review_plan(store, 42.0, preland=True))
+    assert meta["dispatch_score"] == 42.0
+
+
+@pytest.mark.parametrize(("score", "want"), [(2.3, 16.0), (42.0, 42.0)])
+def test_reland_job_floors_at_finish_first_score(
+    store: Store, score: float, want: float
+) -> None:
+    """The infra-red re-land floors at ``FINISH_FIRST_SCORE`` and keeps a
+    plan score above it."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(mint.root_id, {"dispatch_score": score})
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        params={"todo_id": task, "branch": f"slice/{task}"},
+        meta={"attempt_free": "infra-land", "red_class": "gate infrastructure"},
+    )
+    pd.run_pass(store)
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["job_type"] == "land_slice"
+    assert meta["dispatch_score"] == want
+
+
 def test_file_overlap_hold_waits_for_the_inflight_land(store: Store) -> None:
     """td603849: a run_slice whose brief names the same file an
     in-flight land's brief names is held until that land finishes."""

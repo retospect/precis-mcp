@@ -6820,8 +6820,34 @@ def test_mint_land_params_and_idem_key(monkeypatch: pytest.MonkeyPatch) -> None:
         "lane": "claude-sub",
         "target_node": "node-a",
     }
-    assert kw["meta_extra"] == {"plan_root": 40}
+    assert kw["meta_extra"] == {"plan_root": 40, "dispatch_score": 16.0}
     assert kw["conn"] == "conn"
+
+
+@pytest.mark.parametrize(
+    ("own", "want"), [(2.3, 16.0), (42.0, 42.0), (None, 16.0)], ids=str
+)
+def test_mint_land_score_is_the_builds_floored_at_finish_first(
+    monkeypatch: pytest.MonkeyPatch, own: float | None, want: float
+) -> None:
+    """A land finishes started work: it claims at the build's own
+    ``dispatch_score`` floored at ``FINISH_FIRST_SCORE`` (16.0), 0 when the
+    build carries none."""
+    import precis.workers._mint as mint_mod
+
+    minted: list[dict[str, Any]] = []
+
+    def fake_once(store: Any, **kw: Any) -> tuple[int, bool]:
+        minted.append(kw)
+        return 555, False
+
+    monkeypatch.setattr(mint_mod, "mint_job_once", fake_once)
+    store = _Store()
+    monkeypatch.setattr(store, "tx", lambda: _Tx(), raising=False)
+    meta = {} if own is None else {"dispatch_score": own}
+    ctx = _Ctx(store, {"todo_id": 42}, **meta)
+    run_slice._mint_land(ctx, 42, Path("/t/slice-td42"), "claude-sub")
+    assert minted[0]["meta_extra"]["dispatch_score"] == want
 
 
 def test_mint_land_checked_param(monkeypatch: pytest.MonkeyPatch) -> None:

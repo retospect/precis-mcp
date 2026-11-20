@@ -284,7 +284,13 @@ from precis.utils.dispatch_score import (
     CLAIM_BAND_META_KEY as _CLAIM_BAND_KEY,
 )
 from precis.utils.dispatch_score import (
+    FINISH_FIRST_SCORE as _FINISH_FIRST_SCORE,
+)
+from precis.utils.dispatch_score import (
     RELEASE_CLAIM_BAND as _RELEASE_CLAIM_BAND,
+)
+from precis.utils.dispatch_score import (
+    SCORE_META_KEY as _SCORE_KEY,
 )
 from precis.workers import admission
 from precis.workers import factory_git as _factory_git
@@ -1243,7 +1249,9 @@ def _mint_land(
 ) -> int:
     """Mint the ``land_slice`` job for the slice (idem key
     ``land_slice:td<id>``, a child of the todo, pinned to this run's host so
-    the claimant holds the worktree). ``checked`` sets
+    the claimant holds the worktree), stamped with this build's own
+    ``dispatch_score`` floored at ``FINISH_FIRST_SCORE`` so the land
+    claims ahead of fresh builds. ``checked`` sets
     ``params["checked"]`` — what ``land_slice.ship_flag`` reads as
     ``--checked`` when the builder's test evidence is missing (gr573563).
     Returns its id."""
@@ -1252,6 +1260,10 @@ def _mint_land(
     meta = ctx.meta or {}
     params = _land_params(ctx, todo_id, tree, lane, checked)
     extra = {"plan_root": meta["plan_root"]} if meta.get("plan_root") else None
+    # Finishing started work outranks starting new work: a queued land
+    # keeps its build's files held.
+    own = float(meta.get(_SCORE_KEY) or 0.0)
+    extra = {**(extra or {}), _SCORE_KEY: max(own, _FINISH_FIRST_SCORE)}
     if meta.get(_CLAIM_BAND_KEY) == _RELEASE_CLAIM_BAND:
         # The waiver gripe's land claims in the same band as its build.
         extra = {**(extra or {}), _CLAIM_BAND_KEY: _RELEASE_CLAIM_BAND}

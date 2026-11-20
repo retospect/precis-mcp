@@ -3043,7 +3043,7 @@ def _close_dead_chain(
 
 
 def _mint_preland_land(
-    store: Any, w: _Writer, res: PassResult, n: _Node, t: _Node
+    store: Any, plan: _Plan, w: _Writer, res: PassResult, n: _Node, t: _Node
 ) -> int:
     """The pre-land LAND (gr570506): mint the ``land_slice`` the build's
     clean exit held back — the params ``run_slice`` stamped in
@@ -3054,11 +3054,20 @@ def _mint_preland_land(
     is in flight, and the stamp ``land_slice`` reads to admit a closed
     todo. The caller gates this on the verdict's judged head: a LAND
     naming a head other than the stamp's must not mint — it read a
-    different commit than the held land ships (td730820). Returns the
-    job id."""
+    different commit than the held land ships (td730820). The land is
+    stamped with the build's :func:`_claim_score`, floored so it claims
+    ahead of fresh builds. Returns the job id."""
     params = dict(t.meta[_templates.PENDING_LAND_KEY])
     job_id = _mint_job(
-        store, t, "land_slice", "ssh_node", params, idem_key=f"land_slice:td{t.id}"
+        store,
+        t,
+        "land_slice",
+        "ssh_node",
+        params,
+        idem_key=f"land_slice:td{t.id}",
+        meta_extra={
+            _dscore.SCORE_META_KEY: _claim_score(plan, t, job_type="land_slice")
+        },
     )
     w.comment(
         t,
@@ -3578,7 +3587,7 @@ def _step_reviews(
                 if judged and pushed and not any(_same_sha(h, pushed) for h in judged):
                     stale_reads.append((t, judged, pushed))
                 else:
-                    _mint_preland_land(store, w, res, n, t)
+                    _mint_preland_land(store, plan, w, res, n, t)
             if stale_reads:
                 # td730820: the verdict named a head the held stamp does
                 # not hold — it read a different commit than the mint
@@ -5870,15 +5879,18 @@ def _effective_score(plan: _Plan, n: _Node) -> float:
     return score * _dscore.SHOWSTOPPER_MULT if show else score
 
 
-def _claim_score(plan: _Plan, n: _Node) -> float:
+def _claim_score(plan: _Plan, n: _Node, job_type: str | None = None) -> float:
     """The score stamped on ``n``'s job for the executor's claim order.
 
-    A finished build waiting for its pre-land review holds the files it
-    touched, so the review is claimed ahead of fresh builds: a pre-land
-    reviewer floors at :data:`~precis.utils.dispatch_score.FINISH_FIRST_SCORE`.
-    Everything else keeps :func:`_effective_score`."""
+    A finished build waiting for its pre-land review or its land holds
+    the files it touched, so both are claimed ahead of fresh builds: a
+    pre-land reviewer and any ``land_slice`` job (``job_type``) floor at
+    :data:`~precis.utils.dispatch_score.FINISH_FIRST_SCORE`. Everything
+    else keeps :func:`_effective_score`."""
     score = _effective_score(plan, n)
-    if _is_reviewer(n) and n.meta.get(_templates.PRELAND_REVIEW_KEY) is True:
+    if job_type == "land_slice" or (
+        _is_reviewer(n) and n.meta.get(_templates.PRELAND_REVIEW_KEY) is True
+    ):
         return max(score, _dscore.FINISH_FIRST_SCORE)
     return score
 
@@ -7434,7 +7446,7 @@ def _step_dispatch(
                 # (td572552 S4b) — run_slice.submit nests it under its
                 # own submit record.
                 meta_extra={
-                    _dscore.SCORE_META_KEY: _claim_score(plan, n),
+                    _dscore.SCORE_META_KEY: _claim_score(plan, n, job_type=job_type),
                     **(
                         {"decision": decision_stamp}
                         if decision_stamp is not None
