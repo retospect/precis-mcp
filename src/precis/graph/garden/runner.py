@@ -5,9 +5,11 @@ collect candidates (bounded), skip keys already pending or already
 rejected, ask the proposer, emit accepted proposals and record rejected
 ones (so the next run does not re-ask; gr506046). The only writes are
 ``reviews`` rows — plus, for an evaluator ``ask`` on a memory-body
-candidate, one ``memory-review`` todo pointing at the memory (gr560762),
-and for a ``griped`` no-change the replay-after close of the complaint
-itself once no sibling fix path remains (gr561873).
+candidate, one ``memory-review`` todo pointing at the memory (gr560762)
+whose body carries the ask reason, detector, pinned sha and a bounded
+evidence excerpt (gr732271), and for a ``griped`` no-change the
+replay-after close of the complaint itself once no sibling fix path
+remains (gr561873).
 
 The ``max_proposals`` budget is shared round-robin across the detectors
 that produced candidates (gr504843): each gets ``max_proposals // n``
@@ -23,6 +25,7 @@ Verdict``. Default :func:`propose_llm` (one routed call per candidate).
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import deque
 from collections.abc import Callable
@@ -104,12 +107,52 @@ def _gripe_review_filed(store: Store, memory_id: int, gripe_id: int) -> bool:
     return row is not None
 
 
+#: Bound on the detector-evidence JSON excerpt a review todo's body
+#: carries — enough to name the failed anchors, retired handles or
+#: compact sentences the worker starts from (gr732271).
+_ASK_EVIDENCE_CHARS = 2000
+
+
+def _review_todo_body(cand: GardenCandidate, verdict: Verdict) -> str:
+    """The review todo's details body: the evaluator's ask reason, the
+    detector and the content sha it pinned, a bounded evidence excerpt
+    and the pointer to the work-the-todo skill section (gr732271)."""
+    sha = cand.payload.get("base_sha") or cand.evidence.get("content_sha")
+    evidence = json.dumps(
+        cand.evidence, ensure_ascii=False, sort_keys=True, default=str
+    )
+    if len(evidence) > _ASK_EVIDENCE_CHARS:
+        evidence = evidence[:_ASK_EVIDENCE_CHARS].rstrip() + "…"
+    lines = [
+        f"The garden evaluator's ask needs a human on memory me{cand.target_id}.",
+        "",
+        f"Ask: {verdict.ask}",
+        f"Detector: {cand.detector}",
+    ]
+    if sha:
+        lines.append(f"Pinned content sha: {sha}")
+    gripe = cand.payload.get("gripe")
+    if isinstance(gripe, int):
+        lines.append(f"Filing gripe: gr{gripe}")
+    lines += [
+        "",
+        f"Detector evidence (bounded): {evidence}",
+        "",
+        "Brief: get(kind='skill', id='precis-memory-help'), section "
+        '"Working a memory-review todo".',
+    ]
+    return "\n".join(lines)
+
+
 def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> None:
     """File the evaluator's ask: one ``memory-review`` todo pointing at
     the memory, deduped on an already-open review todo (the key's
     rejection row stops the re-ask; the todo tracks the human follow-up).
+    The minted body carries the ask reason, detector, pinned sha and a
+    bounded evidence excerpt so the worker does not re-derive the
+    question from the bare title (gr732271).
     """
-    from precis.store.types import Tag
+    from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
     from precis.utils.memory_hubs import REVIEW_TAG, review_todos
 
     if review_todos(store, [cand.target_id]):
@@ -123,6 +166,16 @@ def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> 
         slug=None,
         title=title,
         meta={"llm_tier": _ASK_LLM_TIERS.get(cand.detector, "opus")},
+    )
+    store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(
+                ord=0,
+                text=_review_todo_body(cand, verdict),
+                meta={"chunk_kind": TODO_BODY_KIND},
+            )
+        ],
     )
     for tag in (Tag.parse_strict("STATUS:open", kind="todo"), Tag.open(REVIEW_TAG)):
         store.add_tag(ref.id, tag, set_by="system")
