@@ -4,6 +4,7 @@
         [--judge-endpoint-url <url> --judge-model <id>] [--pack N]
     precis mesh usefulness [--database-url DSN | --prod]
     precis mesh retest <dumpA> <dumpB> [--campaign norr-her-meta]
+    precis mesh grounding [--criteria F] [--cases F] [--repairs] [--json]
 
 ``eval`` runs a frozen mesh-eval set against any OpenAI-compatible
 endpoint (a local vLLM/llama-swap bench or a hosted arm) and prints the
@@ -11,6 +12,9 @@ per-lane accuracy + Wilson CI, judged acceptance, reviewer cost, and the
 two bars. ``usefulness`` prints the mesh-health metrics read-only.
 ``retest`` recomputes the frontier's folded-key test-retest between two
 taxonomy discovery dumps — the auto-apply bar's reference leg.
+``grounding`` replays the grounding-auditor false-approval corpus (gr634496):
+per-category and per-stage tables with Wilson intervals; pass/fail only
+when ``--criteria`` names owner-set limits. No model call, no database.
 ``loop clusters|stats`` is the kg-mesh-loop slice 1 surface: the SQL
 cluster selector and the per-quest coverage metrics, read-only.
 """
@@ -121,6 +125,25 @@ def add_parser(subparsers: Any) -> None:
     )
     rc.add_argument("before", metavar="BEFORE", help="Report JSON before the pass.")
     rc.add_argument("after", metavar="AFTER", help="Report JSON after the pass.")
+
+    gr = sub.add_parser(
+        "grounding",
+        help="Grounding-auditor false-approval eval: replay the held-out "
+        "corpus, print per-category and per-stage tables (Wilson 95%). "
+        "Report only unless --criteria is given. No model, no DB.",
+    )
+    gr.add_argument(
+        "--criteria",
+        default=None,
+        metavar="JSON",
+        help="Owner-written limits; pass/fail (exit 1) only with this flag. "
+        "Null values are not judged.",
+    )
+    gr.add_argument("--cases", default=None, metavar="JSONL", help="Corpus override.")
+    gr.add_argument(
+        "--repairs", action="store_true", help="Add the repair-proposal suite."
+    )
+    gr.add_argument("--json", action="store_true", help="Emit JSON, not tables.")
 
     lp = sub.add_parser(
         "loop",
@@ -326,6 +349,41 @@ def _prod_ro_dsn() -> str:
     return ro
 
 
+def _cmd_grounding(args: argparse.Namespace) -> None:
+    from precis.mesh_eval.grounding import (
+        build_report,
+        evaluate_criteria,
+        format_report,
+        load_cases,
+        load_criteria,
+        run_case,
+        score_repairs,
+    )
+
+    cases = load_cases(args.cases)
+    runs = [run_case(c) for c in cases]
+    report = build_report(runs)
+    repairs = score_repairs(runs) if args.repairs else None
+    rows = None
+    if args.criteria:
+        rows = evaluate_criteria(report, load_criteria(args.criteria))
+    if args.json:
+        out: dict[str, Any] = report.to_json()
+        if rows is not None:
+            out["criteria"] = rows
+        if repairs is not None:
+            out["repairs"] = {
+                "claims": repairs.claims,
+                "correct": [repairs.correct.k, repairs.correct.n],
+                "rows": repairs.rows,
+            }
+        print(json.dumps(out, indent=1, ensure_ascii=False))
+    else:
+        print(format_report(report, criteria_rows=rows, repairs=repairs))
+    if rows and not all(r["passed"] for r in rows):
+        raise SystemExit(1)
+
+
 def _cmd_usefulness(args: argparse.Namespace) -> None:
     from precis.mesh_eval.usefulness import collect_usefulness, format_usefulness
 
@@ -518,6 +576,8 @@ def _cmd_retest(args: argparse.Namespace) -> None:
 def run(args: argparse.Namespace) -> None:
     if args.mesh_cmd == "eval":
         _cmd_eval(args)
+    elif args.mesh_cmd == "grounding":
+        _cmd_grounding(args)
     elif args.mesh_cmd == "usefulness":
         _cmd_usefulness(args)
     elif args.mesh_cmd == "retest":

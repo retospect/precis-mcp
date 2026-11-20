@@ -37,6 +37,12 @@ Layout:
   arms, ``search`` vs the quest's ``fisheye+1hop`` render — recall@10 and
   tokens-to-first-gold, with a keep/no-effect before/after compare.
 
+- :mod:`.grounding` — the grounding-auditor false-approval eval
+  (gr634496): a replay corpus with adjudicated gold, a DB-free runner over
+  the production audit pipeline, and scorers that attribute each miss to
+  extraction / retrieval / verification / policy (``precis mesh
+  grounding``; protocol in ``docs/conventions/grounding-eval.md``).
+
 Two bars (``local-mesh-upkeep.md`` §1, Reto 2026-10-03): **auto-apply**
 needs agreement with gold at or above the frontier's own test-retest on
 the same set *and* a clean human-holdout read — categorise and link-add

@@ -1880,6 +1880,25 @@ def _queue_consumer_page(
 
 def _verify_warrants(store: Store, record: AuditRecord, call: Call) -> None:
     """Review complete premise sets separately from classification."""
+
+    def external(memory_id: int) -> str | None:
+        prior = latest_audit(store, memory_id)
+        if prior is None or not prior.current:
+            return None
+        return "\n".join(c.text for c in prior.claims if c.rollup)
+
+    review_warrants(record, call, external_premise=external)
+
+
+def review_warrants(
+    record: AuditRecord,
+    call: Call,
+    *,
+    external_premise: Callable[[int], str | None],
+) -> None:
+    """The store-free warrant review: ``external_premise`` supplies the
+    current audited text of a cited memory (``None`` = no current
+    judgment, so the claim's warrant stays unresolved)."""
     local = _local_claim_ids(record)
     local_claims = {f"c{i}": claim for i, claim in enumerate(record.claims)}
     spent = 0
@@ -1898,9 +1917,9 @@ def _verify_warrants(store: Store, record: AuditRecord, call: Call) -> None:
             parsed = parse(handle)
             if parsed is None or parsed[1] or parsed[0] != "memory":
                 continue
-            prior = latest_audit(store, parsed[2])
-            if prior is not None and prior.current:
-                premises.append("\n".join(c.text for c in prior.claims if c.rollup))
+            text = external_premise(parsed[2])
+            if text is not None:
+                premises.append(text)
         if len(premises) != len(claim.local_premises) + len(claim.premises):
             continue
         spent += 1
@@ -1944,6 +1963,35 @@ def _rollup_record(
     judged. Evidence handles compare
     by root ref for independence; source shas enter stale detection
     against the previous audit's pinned baseline."""
+    return rollup_with(
+        record,
+        is_self_certified=lambda c: _self_certified(store, c),
+        resolve_source=lambda handle: _resolve_source(store, handle),
+        known_cycles=_cross_audit_cycles(store, ref_id, record),
+        premise_verdict=lambda handle: _premise_judgment(
+            store, handle, ref_id, pins=record.premise_pins
+        ),
+        source_key=lambda handle: _source_key(store, handle),
+        source_sha=lambda handle: _source_sha(store, handle),
+        audited_sha=_audited_evidence_shas(store, ref_id),
+    )
+
+
+def rollup_with(
+    record: AuditRecord,
+    *,
+    is_self_certified: Callable[[ClaimRecord], bool],
+    resolve_source: Callable[[str], bool],
+    known_cycles: Any,
+    premise_verdict: Callable[[str], Any],
+    source_key: Callable[[str], str],
+    source_sha: Callable[[str], str | None],
+    audited_sha: dict[str, str],
+) -> tuple[Any, dict[str, tuple[str, str]]]:
+    """The store-free rollup policy behind :func:`_rollup_record`: every
+    store read is an injected resolver, so the grounding eval harness
+    (:mod:`precis.mesh_eval.grounding`) exercises the production policy
+    without a database."""
     from precis.graph.garden.lineage import LineageClaim, analyze_lineage
 
     local = _local_claim_ids(record)
@@ -1951,7 +1999,7 @@ def _rollup_record(
         (
             SupportVerdict(**c.support) if c.support is not None else None,
             ConflictProbe(**c.conflict) if c.conflict is not None else None,
-            _self_certified(store, c),
+            is_self_certified(c),
         )
         for c in record.claims
     ]
@@ -1985,14 +2033,12 @@ def _rollup_record(
         )
     report = analyze_lineage(
         claims,
-        resolve_source=lambda handle: _resolve_source(store, handle),
-        known_cycles=_cross_audit_cycles(store, ref_id, record),
-        premise_verdict=lambda handle: _premise_judgment(
-            store, handle, ref_id, pins=record.premise_pins
-        ),
-        source_key=lambda handle: _source_key(store, handle),
-        source_sha=lambda handle: _source_sha(store, handle),
-        audited_sha=_audited_evidence_shas(store, ref_id),
+        resolve_source=resolve_source,
+        known_cycles=known_cycles,
+        premise_verdict=premise_verdict,
+        source_key=source_key,
+        source_sha=source_sha,
+        audited_sha=audited_sha,
     )
     counts: dict[str, int] = {v: 0 for v in ROLLUP_VERDICTS}
     counts["out_of_scope"] = 0
@@ -2032,6 +2078,24 @@ def _rollup_record(
     return report, rollups
 
 
+def repair_action(
+    claim: ClaimRecord, verdict: str, unresolved_premise: bool
+) -> str | None:
+    """The repair a rolled-up claim earns: ``rewrite`` / ``qualify`` /
+    ``ask`` or ``None`` — the policy :func:`emit_grounding_repairs`
+    applies, exposed so the eval scores repairs apart from judgments."""
+    support = SupportVerdict(**claim.support) if claim.support is not None else None
+    if verdict in ("unsupported", "contradicted"):
+        return "rewrite"
+    if verdict == "partial" and (
+        claim.warrant == "partial" or (support is not None and support.flags)
+    ):
+        return "qualify"
+    if verdict == "unresolved" and unresolved_premise:
+        return "ask"
+    return None
+
+
 def emit_grounding_repairs(
     store: Store,
     ref_id: int,
@@ -2064,17 +2128,10 @@ def emit_grounding_repairs(
             break
         cid = f"c{i}"
         verdict, reason = rollups.get(cid, (claim.rollup, ""))
-        support = SupportVerdict(**claim.support) if claim.support is not None else None
         lineage_verdict = lineage_report.verdicts.get(cid)
-        action: str | None = None
-        if verdict in ("unsupported", "contradicted"):
-            action = "rewrite"
-        elif verdict == "partial" and (
-            claim.warrant == "partial" or (support is not None and support.flags)
-        ):
-            action = "qualify"
-        elif verdict == "unresolved" and cid in lineage_report.unresolved_premises:
-            action = "ask"
+        action = repair_action(
+            claim, verdict, cid in lineage_report.unresolved_premises
+        )
         if action is None:
             continue
         text = claim.text[:200]
