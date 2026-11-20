@@ -1348,6 +1348,7 @@ class TestGetRow:
             value_form="lower_bound",
         )
         out = h.get(id=run.output_id).body
+        # Without literal evidence of inclusivity, preserve the strict default.
         assert "value: > 1.4 Å" in out and "SI: > 1.4e-10 m" in out
 
     def test_the_si_line_keeps_bounds_intervals_and_error(

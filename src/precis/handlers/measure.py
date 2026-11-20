@@ -352,12 +352,7 @@ class MeasureHandler(Handler):
         if low is not None and high is not None:
             text = f"{low:.6g}–{high:.6g}"
         elif num is not None:
-            prefix = {
-                "upper_bound": "< ",
-                "lower_bound": "> ",
-                "approximate_point": "~",
-            }.get(form or "", "")
-            text = prefix + f"{num:.6g}"
+            text = render.bound_sign(r) + f"{num:.6g}"
             if r.get("value_err") is not None:
                 text += f" ± {r['value_err']:.6g}"
         else:
