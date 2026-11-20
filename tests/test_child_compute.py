@@ -6,6 +6,7 @@ returns."""
 from __future__ import annotations
 
 import os
+import sys
 import time
 from typing import Any
 
@@ -18,6 +19,10 @@ from precis.workers.child_compute import (
 )
 from tests import _child_compute_targets as targets
 from tests import rlimit_lowerable
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only process groups and signals"
+)
 
 
 def _gone(pid: int, timeout_s: float = 5.0) -> bool:
