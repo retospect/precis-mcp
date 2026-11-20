@@ -56,16 +56,16 @@ def rolling_stats(store: Store, *, now: datetime | None = None) -> list[dict[str
             SELECT hours,
               count(DISTINCT ref_id) FILTER (WHERE retired_at IS NULL
                 AND state IN ('done', 'verify', 'auto_verify', 'user_verify')
-                AND state_at >= %s - hours * interval '1 hour' AND state_at <= %s),
+                AND state_at >= %s::timestamptz - hours * interval '1 hour' AND state_at <= %s),
               count(DISTINCT ref_id) FILTER (WHERE retired_at IS NULL
                 AND state = 'done' AND verified
-                AND state_at >= %s - hours * interval '1 hour' AND state_at <= %s),
+                AND state_at >= %s::timestamptz - hours * interval '1 hour' AND state_at <= %s),
               count(DISTINCT ref_id) FILTER (WHERE duplicate AND (
                 (retired_at IS NOT NULL
-                  AND retired_at >= %s - hours * interval '1 hour'
+                  AND retired_at >= %s::timestamptz - hours * interval '1 hour'
                   AND retired_at <= %s)
                 OR (retired_at IS NULL AND state = 'wontfix'
-                  AND state_at >= %s - hours * interval '1 hour'
+                  AND state_at >= %s::timestamptz - hours * interval '1 hour'
                   AND state_at <= %s)
               ))
             FROM (VALUES (1), (6), (12), (24)) AS windows(hours)

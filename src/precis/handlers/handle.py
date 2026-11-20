@@ -13,9 +13,10 @@ session's word-handle switch (:mod:`precis.word_handle_session`) — while
 on, search and list rows gain a ``word`` column so a voice agent can
 speak each row without a lookup per id.
 
-Word maps are computed in code (no LLM, free); only the pair-collision
-probe touches the store, and a stateless runtime simply can't see
-clashes — the pair is still the best spoken form there.
+Word maps are computed in code (no LLM, free). Pair-collision probes use
+the store; candidate pages also read stored body lengths in one batch so
+their size column needs no per-row query or body rendering. A stateless
+runtime cannot see clashes — the pair is still the best spoken form there.
 
 A descriptive ``q`` plus ``args={'kind': 'paper'|'gripe'|'todo'|'memory'}``
 (not a word handle) runs hybrid search and returns up to five

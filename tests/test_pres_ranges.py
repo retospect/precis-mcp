@@ -26,10 +26,10 @@ def _register_budget_deck(runtime: PrecisRuntime, texts: list[str]) -> None:
         for i, text in enumerate(texts)
     ]
 
-    def get_ref(*, kind: str, id: str | int) -> SimpleNamespace:
+    def get_ref(*, kind: str, id: str | int) -> SimpleNamespace | None:
         assert kind == "pres"
-        assert id in (123, "deck")
-        return ref
+        # Literal handle-shaped slugs are probed before numeric handles.
+        return ref if id in (123, "deck") else None
 
     def list_chunks_for_ref(
         ref_id: int, *, pos_range: tuple[int, int] | None = None

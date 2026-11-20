@@ -6,6 +6,7 @@ returns."""
 from __future__ import annotations
 
 import os
+import sys
 import time
 from typing import Any
 
@@ -18,6 +19,10 @@ from precis.workers.child_compute import (
 )
 from tests import _child_compute_targets as targets
 from tests import rlimit_lowerable
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only process groups and signals"
+)
 
 
 def _gone(pid: int, timeout_s: float = 5.0) -> bool:
@@ -93,7 +98,9 @@ def test_sigterm_ignoring_child_is_sigkilled() -> None:
     assert _gone(ready[0])
 
 
-@pytest.mark.skipif(os.name != "posix", reason="rlimits are POSIX-only")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.name != "posix", reason="rlimits are POSIX-only"
+)
 def test_child_applies_the_mem_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     """gr595537: the spawn-started compute child applies the
     ``PRECIS_JOB_MEM_LIMIT`` cap in-process — a spawn child has no

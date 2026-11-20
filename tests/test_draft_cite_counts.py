@@ -26,9 +26,9 @@ def test_finding_counts_split_by_heading(
         at={"into": nested.dc},
     )
     [retired] = store.drafts.add_chunks(
-        ref_id=ref.id, chunk_kind="paragraph", text="[fi12]", at={"into": section.dc}
+        ref_id=ref.id, chunk_kind="heading", text="[fi12]", at={"into": section.dc}
     )
-    store.drafts.retire_chunk(retired.dc)
+    store.drafts.retire_chunk(retired.handle)
     store.drafts.add_chunks(
         ref_id=ref.id, chunk_kind="paragraph", text="[fi12] [fi123]"
     )

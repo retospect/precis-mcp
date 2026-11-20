@@ -191,7 +191,9 @@ def test_render_batches_body_and_neighbour_entity_lookup(
     assert {f"mh{machine}", f"gr{gripe}"} <= set(calls[0])
     if view is not None:
         assert f"td{todo}" in calls[0]
-        row = next(line for line in out.splitlines() if f"related-to: td{todo}" in line)
+        # The two prose handles also create related-to links on put.
+        related = out.split("  related-to (3):\n", 1)[1].splitlines()[:3]
+        row = next(line for line in related if line.startswith(f"    td{todo} — "))
         assert "STATUS:open" in row
 
 
@@ -274,7 +276,8 @@ def test_courtesy_failure_preserves_memory_read(
     assert "— referenced entities —" not in out
     assert "entity courtesy read failed" in caplog.text
     if view == "fisheye+1hop":
-        assert f"related-to: me{intermediate}" in out
+        related = out.split("  related-to (2):\n", 1)[1].splitlines()[:2]
+        assert any(line.startswith(f"    me{intermediate} — ") for line in related)
     elif view == "fisheye+2hop":
         assert "— second hop" in out
         assert f"mh{machine}" in out

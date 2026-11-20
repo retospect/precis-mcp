@@ -178,13 +178,15 @@ def test_verbatim_finds_every_literal_occurrence(draft: DraftHandler, hub: Hub) 
 
 
 def test_verbatim_pred_substring_only_when_scoped() -> None:
-    """gr518172 ruling: the chunks table has no trigram index, so the
-    ILIKE fallback is scoped-only and matches the phrase as one substring."""
-    from precis.store._chunks_ops import _verbatim_pred
+    """Direct substring scans require scope; global scans cap TSV candidates."""
+    from precis.store._chunks_ops import _VERBATIM_TSV_CAP, _verbatim_pred
 
     sql, params = _verbatim_pred(["7", "nm"])
-    assert "ILIKE" not in sql
-    assert params == [["7", "nm"]]
+    assert "c.text ILIKE" not in sql
+    assert "candidate.text ILIKE" in sql
+    assert "ORDER BY ch.chunk_id DESC" in sql
+    assert sql.index("LIMIT %s") < sql.index("candidate.text ILIKE")
+    assert params == [["7", "nm"], "7 nm", _VERBATIM_TSV_CAP, "%7 nm%"]
 
     sql, params = _verbatim_pred(["7", "nm"], scoped=True)
     assert sql.count("ILIKE") == 1
