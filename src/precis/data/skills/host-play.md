@@ -40,6 +40,9 @@ safety story:
 - Running from the main checkout instead of the pinned prod one would
   push main's `uv.lock` as the hosts' constraints file — hosts get the
   packages main picked, not the versions prod pins.
+- Roles that pip-install precis fail the play when the install requires
+  a ref and that ref is unset or empty. For example, `44-autocatpath.yml`
+  fails without `precis_worker_git_ref`.
 - The wrapper runs the overlay sync preflight first; when it refuses on
   drift, reconcile the overlay rather than overriding.
 
