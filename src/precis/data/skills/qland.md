@@ -29,7 +29,7 @@ pytest run at the release gate (Reto 2026-10-30: "Don't even bother with
 python checks, we'll do it all as a batch in the release branch"). The
 **pre-qland lint** (ruff autofix · the secret-tree scan, kept because the
 repo is public · the fast guards — skill vocabulary, render, type-ignore
-ratchet, next-literal ratchet, ruff scripts-excludes, scripts-use-uv — ~30 s, no test DB) runs before the squash-merge and no fleet gate slot, so it never queues behind a sibling's suite.
+ratchet, next-literal ratchet, ruff scripts-excludes, scripts-use-uv, the posix-only guard and the other catch-ranked pins — about 2 min on an idle VM, longer under load, no test DB) runs before the squash-merge and no fleet gate slot, so it never queues behind a sibling's suite.
 Do NOT run ruff, mypy or tests yourself beforehand: the ship does ruff for
 you, mypy, import contracts and pytest run at the release gate, and running the suite is the congestion this command exists to
 avoid. If the pre-qland lint goes red, fix it — it does not get deferred,

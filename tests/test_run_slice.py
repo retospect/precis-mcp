@@ -1599,7 +1599,10 @@ def test_land_lint_steps_cover_every_quick_guard() -> None:
     ship_paths = {p.split("::")[0].strip("'") for p in _pytest_paths(quick)}
     assert "tests/test_skill_vocabulary.py" in ship_paths
     assert "tests/test_skill_ingest.py" in ship_paths
-    ran = {p for s in run_slice._LAND_LINT_STEPS for p in _pytest_paths(s)}
+    # the builder names a mixed file's guards by node id, as the land does
+    ran = {
+        p.split("::")[0] for s in run_slice._LAND_LINT_STEPS for p in _pytest_paths(s)
+    }
     assert ship_paths <= ran, sorted(ship_paths - ran)
     assert "tests/test_skill_size.py" in ran
 

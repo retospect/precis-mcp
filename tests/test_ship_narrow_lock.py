@@ -1625,6 +1625,9 @@ def test_quick_lint_runs_the_fast_guards() -> None:
         "tests/test_docs_docstring_lint.py",
         "tests/test_paper_text_gate.py",
     } <= set(targets)
+    # The release-lane guard that refused ten r339 fix lands (gr738762):
+    # main pays it at land time, so the release branch is not cut red on it.
+    assert "tests/test_posix_only_guards.py" in targets
     assert "test_mode_spec_parity" not in ship
     db_fixtures = {"store", "hub", "full_hub", "runtime_with_store", "fresh_db"}
     for target in targets:

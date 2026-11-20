@@ -2819,15 +2819,24 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # One maintained list for every plain quick land, including docs-only
         # changes (gr576324). Keep this literal so the factory parity test can
         # verify that builders run every selected file before handing off.
-        # Qualifies: DB-free, no network, reads only the repo tree (temporary
-        # synthetic fixtures are fine), under ~10 s each. Measure the complete
-        # set with scripts/test and keep its wall time <60 s. Mixed suites
+        # Qualifies: DB-free, no network, reads only the committed tree (the
+        # warm gate gets `git archive HEAD`: no .git, no generated or ignored
+        # file; temporary synthetic fixtures are fine). Mixed suites
         # contribute explicit node IDs so DB fixtures cannot enter this lane.
         # finish_mint, skill prose and text-io encoding joined after each
         # reddened main through a quick land on 2026-11-12. The colour,
         # launch-admission (python and bash), docstring-lint and paper-text
         # ratchets joined with them (each under ~3 s).
-        QUICK_GUARDS='uv run pytest -q -n0 -p no:cacheprovider -rfE -- tests/test_skill_vocabulary.py::test_allowlist_entries_are_real_and_reasoned tests/test_skill_ingest.py::test_scan_oversized_chunk_becomes_failure tests/test_skill_ingest.py::test_scan_multiple_oversized_chunks_reported_in_one_pass tests/test_skill_ingest.py::test_scan_oversized_chunk_under_custom_budget tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_ingest.py::test_builtin_corpus_scans_clean_without_plugin_roots tests/test_ruff_scripts_excludes.py tests/test_scripts_use_uv.py tests/test_skill_corpus.py::test_skills_use_seven_verb_surface tests/test_skill_size.py::test_allowlist_is_shrink_only tests/test_plan_dispatch.py::test_every_factory_mint_site_calls_finish_mint tests/test_skill_prose.py tests/test_text_io_encoding.py tests/test_type_ignore_ratchet.py tests/precis_web/test_colour_ratchet.py tests/test_launch_admission_ratchet.py tests/test_bash_launch_admission.py tests/test_docs_docstring_lint.py tests/test_paper_text_gate.py'
+        # From tests/test_posix_only_guards.py on, the list is the catch
+        # ledger's pick (td735364, ruling on gr738762): a repo-rule pin that
+        # reddened a ci or release run in two or more separate episodes over
+        # 2026-10-01..2026-11-19, at 10 s or less — up to 30 s with five or
+        # more episodes. Over 30 s, or DB-backed, stays at the release gate.
+        # Measure the whole set with `scripts/test --fast -n0 <targets>` on an
+        # idle Docker VM and keep it under 3 min (2026-11-20: 49 s before the
+        # pick, 2 min 15 s with it). The set is serial, so load stretches it:
+        # 3 min 28 s the same day while another guard run shared the VM.
+        QUICK_GUARDS='uv run pytest -q -n0 -p no:cacheprovider -rfE -- tests/test_skill_vocabulary.py::test_allowlist_entries_are_real_and_reasoned tests/test_skill_ingest.py::test_scan_oversized_chunk_becomes_failure tests/test_skill_ingest.py::test_scan_multiple_oversized_chunks_reported_in_one_pass tests/test_skill_ingest.py::test_scan_oversized_chunk_under_custom_budget tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_ingest.py::test_builtin_corpus_scans_clean_without_plugin_roots tests/test_ruff_scripts_excludes.py tests/test_scripts_use_uv.py tests/test_skill_corpus.py::test_skills_use_seven_verb_surface tests/test_skill_size.py::test_allowlist_is_shrink_only tests/test_plan_dispatch.py::test_every_factory_mint_site_calls_finish_mint tests/test_skill_prose.py tests/test_text_io_encoding.py tests/test_type_ignore_ratchet.py tests/precis_web/test_colour_ratchet.py tests/test_launch_admission_ratchet.py tests/test_bash_launch_admission.py tests/test_docs_docstring_lint.py tests/test_paper_text_gate.py tests/test_posix_only_guards.py tests/test_skill_size.py::test_skill_file_under_size_cap tests/test_outbound_timeout_ratchet.py::test_no_new_unbounded_waits tests/test_dispatch_args_keys.py::test_verb_body_reads_only_declared_keys tests/test_dispatch_args_keys.py::test_every_args_passthrough_verb_declares_its_keys tests/test_dispatch_args_keys.py::test_se_get_keys_are_union_of_view_args tests/test_convention_home_paths.py tests/test_pcb_dead_exports.py::test_public_function_has_a_production_caller_or_is_known_unwired tests/test_pcb_dead_exports.py::test_public_method_or_property_has_a_production_caller_or_is_known_unwired tests/test_pcb_dead_exports.py::test_known_unwired_list_has_no_stale_entries tests/test_token_budget.py tests/test_baseline_seed_tables.py::test_every_seeded_table_is_classified tests/test_convention_raw_sql_companion.py tests/test_docs_thread_navigation.py tests/test_next_literal_ratchet.py tests/precis_web/test_template_hints.py tests/test_mcp_raise_next_ratchet.py tests/test_size_ratchet.py::test_new_fetchable_tables_carry_size_or_are_exempt tests/test_convention_skill_style.py tests/test_render_dry_guard.py tests/test_scheduler_budget_gate.py::test_exactly_the_llm_cadences_are_marked_spending tests/workspaces/test_workspace_help.py::test_manifest_key_list_matches_the_vet tests/test_bash32_gotchas.py tests/test_doc_pointers.py tests/test_env_config_policy.py::test_no_new_raw_reads_of_tier1_config_vars tests/test_gate_fast.py::test_every_marked_function_is_listed_in_nightly_tests tests/test_schema_baseline.py::test_baseline_lag_bounded'
         if [[ "${PRECIS_QLAND_LINT:-1}" == 0 ]]; then
             say "quick ship — pre-qland lint OFF (PRECIS_QLAND_LINT=0)"
         else

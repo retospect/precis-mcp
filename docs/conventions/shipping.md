@@ -324,9 +324,16 @@ pytest run at the release gate (Reto 2026-10-30: "Don't even bother with python 
 we'll do it all as a batch in the release branch"). The secret scan
 (`tests/test_deploy_tree_no_secrets.py`) stays because the repo is public and
 a qland push publishes at once; the guards joined after r229-r231 each went
-red on a guard `--quick` had skipped (gr573555) — ~22 s without the test
-stack. `--checked` and `--release` keep mypy, import contracts and the
-hygiene tests in their lint.
+red on a guard `--quick` had skipped (gr573555). Since 2026-11-20 the list
+also holds the repo-rule pins the catch ledger ranks highest (posix-only
+guard, skill size cap, outbound-timeout ratchet and others; ruling on
+gr738762), so main stops shipping reds that only the release lane found.
+The admission rule and the budget sit above `QUICK_GUARDS` in
+`scripts/ship`: DB-free, two or more catch episodes, 10 s or less (30 s
+with five or more episodes), whole set under 3 min on an idle Docker VM —
+2 min 15 s measured, 3 min 28 s while another guard run shared the VM; no
+test stack. `--checked` and `--release` keep mypy, import contracts and
+the hygiene tests in their lint.
 
 `scripts/ship --quick`: refuse a dirty tree → sync → **drift guard** (warns when
 main's last all-green shard matrix is 24h old, refuses at 48h — a burst that

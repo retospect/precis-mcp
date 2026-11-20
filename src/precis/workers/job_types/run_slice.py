@@ -2770,7 +2770,10 @@ def _drop_review_tree(handle: dict[str, Any]) -> None:
 #: (``CODE_HYGIENE``; otherwise only the release gate runs it).
 #: ``test_land_lint_steps_cover_every_quick_guard`` pins each
 #: ``QUICK_GUARDS`` file to these steps (gr610185: builders landed skill
-#: edits past the 4000-char H2 cap and cycled land → red). ``_PRELAND_STEPS``
+#: edits past the 4000-char H2 cap and cycled land → red). The last pytest
+#: step is the catch-ranked pins the land gained from the release lane
+#: (td735364): whole files where every test is a DB-free guard, node ids
+#: where the file also holds DB or slow tests. ``_PRELAND_STEPS``
 #: are checks the lander makes later or in its lock (squawk on a new
 #: migration, a conflict with a moved ``origin/main``): run here, the
 #: builder gets the finding, not the lander.
@@ -2797,6 +2800,27 @@ _SHIP_LINT_STEPS: tuple[str, ...] = (
     " -k test_skills_use_seven_verb_surface",
     "uv run pytest -q -n0 -p no:cacheprovider tests/test_plan_dispatch.py"
     " -k test_every_factory_mint_site_calls_finish_mint",
+    "uv run pytest -q -n0 -p no:cacheprovider -rfE"
+    " tests/test_posix_only_guards.py tests/test_convention_home_paths.py"
+    " tests/test_token_budget.py tests/test_convention_raw_sql_companion.py"
+    " tests/test_docs_thread_navigation.py"
+    " tests/precis_web/test_template_hints.py"
+    " tests/test_convention_skill_style.py"
+    " tests/test_bash32_gotchas.py tests/test_doc_pointers.py"
+    " tests/test_env_config_policy.py::test_no_new_raw_reads_of_tier1_config_vars"
+    " tests/test_outbound_timeout_ratchet.py::test_no_new_unbounded_waits"
+    " tests/test_dispatch_args_keys.py::test_verb_body_reads_only_declared_keys"
+    " tests/test_dispatch_args_keys.py::test_every_args_passthrough_verb_declares_its_keys"
+    " tests/test_dispatch_args_keys.py::test_se_get_keys_are_union_of_view_args"
+    " tests/test_pcb_dead_exports.py::test_public_function_has_a_production_caller_or_is_known_unwired"
+    " tests/test_pcb_dead_exports.py::test_public_method_or_property_has_a_production_caller_or_is_known_unwired"
+    " tests/test_pcb_dead_exports.py::test_known_unwired_list_has_no_stale_entries"
+    " tests/test_baseline_seed_tables.py::test_every_seeded_table_is_classified"
+    " tests/test_size_ratchet.py::test_new_fetchable_tables_carry_size_or_are_exempt"
+    " tests/test_scheduler_budget_gate.py::test_exactly_the_llm_cadences_are_marked_spending"
+    " tests/workspaces/test_workspace_help.py::test_manifest_key_list_matches_the_vet"
+    " tests/test_gate_fast.py::test_every_marked_function_is_listed_in_nightly_tests"
+    " tests/test_schema_baseline.py::test_baseline_lag_bounded",
 )
 
 #: Squawk on the NEW migration files only (``scripts/ship``'s
