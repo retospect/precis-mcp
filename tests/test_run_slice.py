@@ -6860,6 +6860,9 @@ def test_mint_land_score_is_the_builds_floored_at_finish_first(
 
     monkeypatch.setattr(mint_mod, "mint_job_once", fake_once)
     store = _Store()
+    # td736592 made _mint_land stamp the branch files on the todo, so the
+    # fake store needs the ref — same seeding as the sibling mint tests.
+    store.add_todo(42, "Build it")
     monkeypatch.setattr(store, "tx", lambda: _Tx(), raising=False)
     meta = {} if own is None else {"dispatch_score": own}
     ctx = _Ctx(store, {"todo_id": 42}, **meta)

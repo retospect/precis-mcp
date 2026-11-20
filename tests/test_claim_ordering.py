@@ -90,12 +90,15 @@ def _queue_job(
 
 
 def _claim_order(
-    store: Store, executor: str, *, reserve_host_id: str | None = None
+    store: Store, executor: str, *, reserve_host_id: str | None = None, limit: int = 50
 ) -> list[int]:
     """The ref_ids the claim would lock, in order (rolled back — no side effects)."""
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
-            conn, executor=executor, limit=50, reserve_host_id=reserve_host_id
+            conn,
+            executor=executor,
+            limit=limit,
+            reserve_host_id=reserve_host_id,
         )
         conn.rollback()
     return [r[0] for r in rows]
@@ -131,6 +134,52 @@ def test_dispatch_score_orders_before_fifo_and_preserves_release_band(
         extra_meta={"dispatch_score": 2, "claim_band": "release"},
     )
     assert _claim_order(store, executor) == [release, high, low]
+
+
+def test_unstamped_land_floors_above_a_scored_fresh_build(store: Store) -> None:
+    """td736734 review of 8d0cd009: the score stamp floors NEW
+    ``land_slice`` mints at ``FINISH_FIRST_SCORE``, but a land already
+    queued when the stamp shipped (a direct land, a review-released land,
+    an infrastructure retry) carries no ``dispatch_score`` — it must not
+    read as 0 and lose to a fresh build's stamped plan score while its
+    build's files stay held. It floors at the same ``FINISH_FIRST_SCORE``
+    a stamped land carries."""
+    executor = "unstamped_land_test"
+    # run_slice declares placement {repo_checkout, builder, git} and
+    # land_slice {repo_checkout, git} — the claim host must advertise them.
+    _advertise(store, "h1", {"repo_checkout": 1, "builder": 1, "git": 1})
+    build = _queue_job(
+        store,
+        executor=executor,
+        prio=5,
+        job_type="run_slice",
+        extra_meta={"dispatch_score": 2.3},
+    )
+    land = _queue_job(store, executor=executor, prio=5, job_type="land_slice")
+    assert _claim_order(store, executor, reserve_host_id="h1") == [land, build]
+
+
+def test_unstamped_land_stays_in_the_overfetch_window(store: Store) -> None:
+    """The floor must live in the SQL pre-LIMIT order too, not only the
+    Python re-rank: with a one-slot claim and a full overfetch window of
+    scored fresh builds, an unstamped land ranked at 0 would fall out of
+    the window and never reach the re-rank. Floored at 16 it leads the
+    window and is claimed."""
+    executor = "unstamped_land_window_test"
+    _advertise(store, "h1", {"repo_checkout": 1, "builder": 1, "git": 1})
+    land = _queue_job(store, executor=executor, prio=5, job_type="land_slice")
+    for _ in range(4):
+        _queue_job(
+            store,
+            executor=executor,
+            prio=5,
+            job_type="run_slice",
+            extra_meta={"dispatch_score": 10.0},
+        )
+    assert _claim_order(store, executor, reserve_host_id="h1", limit=1) == [land]
+    # A stamped land above the decoys' score keeps it, as before.
+    store.stamp_ref_meta(land, {"dispatch_score": 100.0})
+    assert _claim_order(store, executor, reserve_host_id="h1", limit=1) == [land]
 
 
 def test_claim_skips_overlap_and_takes_unrelated_build(store: Store) -> None:

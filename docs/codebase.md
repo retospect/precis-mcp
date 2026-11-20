@@ -139,7 +139,9 @@ including a ship that finished before publishing its mirror squash.
 Plan dispatch queues every doable node with its score and release band.
 A pre-land review job's and every `land_slice` job's score floors at
 `FINISH_FIRST_SCORE`, so the review and the land of a finished build are
-claimed ahead of fresh builds.
+claimed ahead of fresh builds; at the host claim an already-queued land
+without the stamp floors at the same value, so pre-rollout lands keep
+their place.
 Host executor claims enforce capacity and skip file overlaps with started,
 unlanded builds; gripe intake bounds minting by queued builds per free
 executor slot (`factory.gripe_dispatch.queue_depth`, default 2).
