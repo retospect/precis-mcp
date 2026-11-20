@@ -4636,6 +4636,21 @@ class DispatchMixin(RuntimeShape):
                     )
                     if scope_takers:
                         hint = " — kinds accepting scope=: " + ", ".join(scope_takers)
+                if not hint and verb == "link" and "note" in unknown_top:
+                    from precis.handlers._numeric_ref import NumericRefHandler
+
+                    note_takers = sorted(
+                        k
+                        for k, h in self.hub.handlers.items()
+                        if "note"
+                        in _handler_accepted_kwargs(cast(type[Handler], type(h)), verb)
+                        and (
+                            type(h).link is not NumericRefHandler.link
+                            or getattr(h, "link_meta", False)
+                        )
+                    )
+                    if note_takers:
+                        hint = " — kinds accepting note=: " + ", ".join(note_takers)
                 if not hint and verb == "search":
                     # gr568808: a verb-level search knob on a kind that
                     # can't apply it refuses "not on <kind> yet" —

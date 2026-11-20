@@ -328,12 +328,12 @@ Relation = Literal[
     # 0187_measures.sql.
     "quantifies",
     "quantified-by",
-    # BOM consolidation nudge — migration 0205. `kept-distinct` (part ref ↔
-    # part ref): the human's standing answer to the nudge — these two parts
-    # look mergeable but stay separate on purpose; `links.meta.reason`
+    # Reviewed non-duplicate pairs — migrations 0205 and 0333. `kept-distinct`
+    # applies to any two refs (including findings) reviewed as possible
+    # duplicates but deliberately kept separate; `links.meta.reason`
     # carries the why. SYMMETRIC, no inverse — read via
     # `links_for(direction='both')`. Keep in sync with the `relations`
-    # seed in 0205_bom_consolidation_roles.sql.
+    # description in 0333_kept_distinct_reviewed_pairs.sql.
     "kept-distinct",
     # Part-selection memory → part/component, migration 0259. No inverse;
     # rejects requires links.meta.reason so the rejected candidate stays useful.

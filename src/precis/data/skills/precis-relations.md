@@ -34,6 +34,7 @@ and target grammar live in `precis-link-help`.
 | `rel=` | Inverse | Use for |
 |---|---|---|
 | `related-to` (default) | self | Symmetric "see also"; no stronger claim fits. |
+| `kept-distinct` | self | Two refs reviewed as possible duplicates but deliberately kept separate (findings included). Record why in `reason=` on kinds that accept edge metadata. |
 | `cites` | `cited-by` | A references B (paper → paper, memory → paper, etc.). |
 | `supports` | `supported-by` | A provides evidence for B. |
 | `disputes` | (none) | A appears to conflict with B — free to file, never blocks. The open-question edge for claim-graph disagreement (memory-vs-memory too). |
@@ -53,6 +54,7 @@ and target grammar live in `precis-link-help`.
 | `part-of` | membership: node → its `section:index` hub, or a detail node → its summary node. Exactly one per node — hand-written. |
 | `qualifies` | a `section:gotchas` node → the `section:threads` node it applies to (the thread reads `qualified-by`). |
 | `supersedes` | new node → the old it replaces, then `delete` the old — the edge is the record, never prose alone. |
+| `kept-distinct` | reviewed non-duplicate pair: both nodes stay separate on purpose; record the distinction in `reason=`. Unlike `related-to`, this records a completed duplicate review. |
 | `derived-from` | a distilled note → its source (perplexity cache, paper, thread). |
 | `related-to` | the default "see also" — but prefer a `[handle]` mention in the body, which materialises the same edge. |
 
