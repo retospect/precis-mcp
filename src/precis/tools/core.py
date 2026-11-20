@@ -568,7 +568,7 @@ def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
             if helps
             else f"{kinds} calls and whoami"
         )
-        calls = "; ".join(entry.next_hint for entry in entries)
+        calls = "; ".join(entry.permit_hint or entry.next_hint for entry in entries)
         reads = "; ".join(
             f"get(kind='skill', id='{entry.help_skill}')" for entry in published
         )

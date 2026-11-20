@@ -39,6 +39,12 @@ class PrivateKind:
     handler: str
     #: The recovery hint every private refusal carries.
     next_hint: str
+    #: The call the personal-scope refusal names as this kind's permitted
+    #: door; ``None`` advertises ``next_hint``. Differs from the recovery
+    #: hint when the door is generic but the recovery must stay bounded —
+    #: learning's door is ``get(kind='learning')`` while its recovery keeps
+    #: the day-bounded activity read.
+    permit_hint: str | None = None
     #: The rendered-response cap this kind's private dispatch enforces;
     #: the default keeps every private reply one small tool message.
     max_body_bytes: int = 3500
@@ -60,6 +66,7 @@ PRIVATE_KINDS: dict[str, PrivateKind] = {
         oauth_scope="learning",
         handler="precis.handlers.learning:LearningHandler",
         next_hint="get(kind='learning', id='/activity', args={'days': 14})",
+        permit_hint="get(kind='learning')",
     ),
     "gtd": PrivateKind(
         kind="gtd",
