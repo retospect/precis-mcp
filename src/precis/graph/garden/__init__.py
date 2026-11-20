@@ -146,14 +146,11 @@ judgment. See :mod:`precis.graph.garden.grounding` for budgets and repairs.
 Unresolved checks get one bounded handoff todo; returned candidate
 evidence only reopens re-audit.
 
-**Memory reconciliation.** Memory candidates (including ``dup_pair``)
-and interactive ``precis-make-memory`` share packaged memory-help
-policy (:mod:`precis.utils.memory_reconcile`) across proposer, consumer
-and sampled reviewers; its digest versions only memory proposer
-rejections, keeping identity/conflict/preservation judgments consistent
-without detector interpretation or broader apply doors. Sampled reviews
-read bounded body excerpts; merge repointing never synthesizes loser's
-unique claims into the winner.
+**Memory reconciliation.** Garden judges and ``precis-make-memory`` share
+packaged policy (:mod:`precis.utils.memory_reconcile`). Memory proposer
+rejections use a version bumped for policy changes, so wording edits
+preserve prior decisions. Sampled reviews use bounded excerpts. Merge
+repointing never transfers unique claims.
 
 **Scheduling.** ``graph_garden`` job_type (``job_inproc`` executor) runs one
 bounded pass per tick. ``params.pass`` selects detectors

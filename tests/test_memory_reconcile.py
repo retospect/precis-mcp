@@ -28,7 +28,7 @@ from precis.utils.llm.router import LlmRequest, LlmResult, Tier
 
 #: sha256[:12] of the pinned policy + checklist prose at the current
 #: MEMORY_POLICY_VERSION; see test_pinned_policy_prose_digest_matches_tripwire.
-_PINNED_POLICY_PROSE_DIGEST = "6d0b4e903f61"
+_PINNED_POLICY_PROSE_DIGEST = "135fbf58996f"
 
 
 def _memory(store: Store, title: str, body: str) -> int:
