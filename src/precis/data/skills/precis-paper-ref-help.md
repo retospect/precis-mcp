@@ -5,6 +5,7 @@ title: precis — repair and maintain paper refs
 summary: the doors that fix a paper record — title/venue/year/DOI metadata edits, bylines, identifiers, merging a duplicate pair, re-pointing a merged stub, body ops (drop_body / split_body / move_body_to / reextract), retiring an unwanted paper, re-arming a worker stamp (clear_stamp), attaching a legal PDF; finding and reading papers is precis-paper-help
 answers:
   - how do I edit a paper's title, venue, year, DOI or other metadata?
+  - a chapter record prints "In: <series>" — how do I add its book title, editors and publisher?
   - how do I fix a wrong or missing author on a paper?
   - how do I re-extract, re-ingest or refetch a paper's PDF body?
   - how do I split or move a ref's body onto another paper (split_body / move_body_to / drop_body)?
@@ -48,6 +49,7 @@ share the same `refs` machinery.
 |---|---|
 | fix a wrong/missing author | `edit(id=…, authors=["Family, Given [iD]"])` |
 | repair stub metadata | `edit(id=…, title=/doi=/arxiv=/year=/journal=/entry_type=/abstract=/volume=/issue=/pages=/url=)` |
+| put a chapter in its book | `edit(id=…, booktitle=/editors=/publisher=)` — `journal=` stays the series name |
 | remove one wrong identifier row | `args={'drop_identifier': {'scheme': 'pubmed', 'value': '…'}, 'reason': …}` |
 | re-home one identifier row | `args={'move_identifier_to': {'scheme': '…', 'value': '…', 'to': '<ref>'}, 'reason': …}` |
 | clear a wrong byline or year | `args={'clear': ['authors','year'], 'reason': …}` — what `authors=[]`/`year=` can't spell |
@@ -150,7 +152,13 @@ reason). A
 mis-filed record's year and venue repair the same way — `year=2007`,
 `journal='Nature Nanotechnology'` (also `entry_type=`, `abstract=`,
 and the locator fields `volume=`/`issue=`/`pages=`/`url=` — the BibTeX
-export reads them, so don't stuff them into the `journal=` string).
+export reads them, so don't stuff them into the `journal=` string). A
+book chapter's *container* is three more fields —
+`booktitle='IUTAM Symposium on …'` carries the book the chapter sits in
+(`journal=` keeps the series or venue name — the exports print "In:
+<booktitle>", not the series), `editors=` takes the same name shapes
+`authors=` does (an explicit `editors=[]` is a refusal, like
+`authors=[]`), and `publisher=` is the book's publisher.
 
 ## Re-key a paper's cite_key — aliases and auto re-mints
 

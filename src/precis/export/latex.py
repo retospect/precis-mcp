@@ -3048,7 +3048,13 @@ DATASHEET_SUBTYPE_LABELS = {
 
 
 # Crossref ``type`` (stored as ``meta.entry_type``) -> biblatex entry type for a
-# paper. Missing / unrecognised types fall back to ``article``.
+# paper. Missing / unrecognised types fall back to ``article``. The DataCite
+# record types share the same meta key (doi_registry writes
+# ``entry_type='software'``/``'dataset'`` alongside ``meta.record_type``, and
+# records minted before record_type existed may carry the entry_type alone) —
+# they map to themselves so a legacy Zenodo software record still exports
+# ``@software`` / an EndNote Computer Program instead of falling through to
+# ``article`` (gr725252).
 _CROSSREF_BIBLATEX = {
     "book": "book",
     "monograph": "book",
@@ -3061,6 +3067,8 @@ _CROSSREF_BIBLATEX = {
     "report": "report",
     "dissertation": "thesis",
     "posted-content": "online",
+    "software": "software",
+    "dataset": "dataset",
 }
 
 
@@ -3208,9 +3216,11 @@ def build_bib(
                 fields.append(f"  addendum = {{{_tex_url(lib_link, library_label)}}}")
         entry_type = entry_type_by_slug[slug]
         record_rt = record_type_of(pref.meta) if pref.kind == "paper" else ""
-        if record_rt:
+        if record_rt or entry_type in ("software", "dataset"):
             # Whole-record cite (gr514384): genre fields — version /
-            # publisher / doi / url — and never a journaltitle. Under a
+            # publisher / doi / url — and never a journaltitle. The
+            # entry_type-only condition covers a legacy DataCite record
+            # typed before ``record_type`` existed (gr725252). Under a
             # style lacking the record types (the @misc downgrade in
             # ``record_bib_type``) a ``note`` carries the genre label.
             meta = pref.meta or {}

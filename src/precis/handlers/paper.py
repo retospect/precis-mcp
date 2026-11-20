@@ -6145,6 +6145,9 @@ class PaperHandler(Handler):
         arxiv: str | None = None,
         journal: str | None = None,
         entry_type: str | None = None,
+        booktitle: str | None = None,
+        editors: Any = None,
+        publisher: str | None = None,
         volume: str | int | float | None = None,
         issue: str | int | float | None = None,
         pages: str | int | float | None = None,
@@ -6216,7 +6219,14 @@ class PaperHandler(Handler):
         ``issue`` / ``pages`` / ``url`` merge the same way, under the
         meta keys the exporters already read (``volume`` / ``number``
         for ``issue=`` / ``pages`` / ``url`` — the enricher's spelling,
-        gr515469); ``doi`` / ``arxiv`` replace this ref's alias
+        gr515469); ``booktitle`` / ``editors`` / ``publisher`` are the
+        chapter/book fields (gr725252): ``booktitle=`` lands as
+        ``meta.container_title``, ``publisher=`` as ``meta.publisher``
+        and ``editors=`` (any tolerated authors shape, canonicalised
+        like ``authors=``) as ``meta.editors`` — the keys the .bib and
+        Word exporters read for an ``incollection`` entry, so a book
+        chapter can carry its book; ``doi`` / ``arxiv`` replace this
+        ref's alias
         via :meth:`Store.set_ref_identifier` — except ``doi=''`` /
         ``arxiv=''`` (an explicit *empty string*, not the omitted-field
         ``None`` default), which instead **clears** that identifier via
@@ -6255,6 +6265,9 @@ class PaperHandler(Handler):
                         arxiv,
                         journal,
                         entry_type,
+                        booktitle,
+                        editors,
+                        publisher,
                         volume,
                         issue,
                         pages,
@@ -6317,6 +6330,9 @@ class PaperHandler(Handler):
                         arxiv,
                         journal,
                         entry_type,
+                        booktitle,
+                        editors,
+                        publisher,
                         volume,
                         issue,
                         pages,
@@ -6493,12 +6509,41 @@ class PaperHandler(Handler):
                 f"id='{handle_registry.format_handle(self.spec.kind, ref_id)}', "
                 "args={'clear': ['authors'], 'reason': '<why>'})",
             )
+        # Same blank-is-keep rule for the chapter editors list (gr725252):
+        # an explicit empty editors= is a refusal, not a silent no-op.
+        if editors is not None and not editors:
+            raise BadInput(
+                "editors=<empty> does not clear the editors list — blank "
+                "fields keep the stored value",
+                next="omit editors= to leave the list, or pass the "
+                "corrected 'Family, Given' names",
+            )
+        new_editors = normalize_authors(editors) if editors else None
+        if editors and not new_editors:
+            raise BadInput(
+                "editors= contains no usable editor names (each entry was "
+                "junk-guarded: an email, a heading, an over-long string)",
+                next="pass names as 'Family, Given M.' lines or "
+                "{given, family} dicts; omit editors= to leave the list",
+            )
         extra_changes = self._edit_args(ref_id, args, dry=bool(dry_mode))
         if supplement_of is not None and str(supplement_of).strip():
             if any(
                 v is not None
-                for v in (title, year, authors, abstract, doi, arxiv, journal)
-            ) or any(v is not None for v in (entry_type, volume, issue, pages, url)):
+                for v in (
+                    title,
+                    year,
+                    authors,
+                    abstract,
+                    doi,
+                    arxiv,
+                    journal,
+                    entry_type,
+                    booktitle,
+                    editors,
+                    publisher,
+                )
+            ) or any(v is not None for v in (volume, issue, pages, url)):
                 raise BadInput(
                     "supplement_of= cannot be combined with other edit fields",
                     next="make the supplement_of= call alone, then edit the rest",
@@ -6527,6 +6572,15 @@ class PaperHandler(Handler):
             meta_patch["abstract"] = abstract.strip()
         if isinstance(journal, str) and journal.strip():
             meta_patch["journal"] = journal.strip()
+        if isinstance(booktitle, str) and booktitle.strip():
+            # The chapter's *book* title, under the key the exporters
+            # read (gr725252) — distinct from journal=, which stays the
+            # series/venue name.
+            meta_patch["container_title"] = booktitle.strip()
+        if isinstance(publisher, str) and publisher.strip():
+            meta_patch["publisher"] = publisher.strip()
+        if new_editors:
+            meta_patch["editors"] = new_editors
         if entry_type is not None:
             et = str(entry_type).strip().lower()
             if et:
@@ -6608,6 +6662,7 @@ class PaperHandler(Handler):
                     new_title=new_title,
                     year=year,
                     new_authors=new_authors,
+                    new_editors=new_editors,
                     meta_patch=meta_patch,
                     doi=doi if has_doi else None,
                     arxiv=arxiv if has_arxiv else None,
@@ -10161,6 +10216,7 @@ class PaperHandler(Handler):
         meta_patch: dict[str, Any],
         doi: str | None,
         arxiv: str | None,
+        new_editors: list[dict[str, Any]] | None = None,
         doi_clear: bool = False,
         arxiv_clear: bool = False,
     ) -> Response:
@@ -10254,6 +10310,16 @@ class PaperHandler(Handler):
             if meta_key in meta_patch:
                 old_val = (old.meta or {}).get(meta_key) or "(none)"
                 lines.append(f"{meta_key}: {old_val!r} → {meta_patch[meta_key]!r}")
+        for meta_key, label in (
+            ("container_title", "booktitle"),
+            ("publisher", "publisher"),
+        ):
+            if meta_key in meta_patch:
+                old_val = (old.meta or {}).get(meta_key) or "(none)"
+                lines.append(f"{label}: {old_val!r} → {meta_patch[meta_key]!r}")
+        if new_editors:
+            old_n = len((old.meta or {}).get("editors") or [])
+            lines.append(f"editors: {old_n} → {len(new_editors)}")
         if doi:
             lines.append(f"doi: {old_ids.get('doi', '(none)')!r} → {doi!r}")
         elif doi_clear:

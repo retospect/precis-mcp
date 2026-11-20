@@ -296,6 +296,14 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
     number = _clean_inline_text(str(meta.get("number") or ""))
     pages = _clean_inline_text(str(meta.get("pages") or ""))
     url = _clean_inline_text(str(meta.get("url") or ""))
+    # Chapter fields (gr725252): the book a chapter sits in — the same
+    # ``meta`` keys the draft .bib / Word exporters read.
+    booktitle = _clean_inline_text(str(meta.get("container_title") or ""))
+    editors = [
+        _clean_inline_text(a)
+        for a in _author_names(meta.get("editors"), order="sortable")
+    ]
+    editors = [e for e in editors if e]
     entry_type = str(meta.get("entry_type") or "").strip().lower()
     # Whole-record cite (gr514384): ``meta.record_type`` wins over a
     # stale/absent ``entry_type`` — a record typed by hand carries only
@@ -331,6 +339,19 @@ def _render_citation(ref: Ref, *, style: str, doi: str | None = None) -> str:
             lines.append(f"  year = {{{year}}},")
         if bx_journal and not record_rt:
             lines.append(f"  journal = {{{bx_journal}}},")
+        if booktitle and not record_rt:
+            lines.append(f"  booktitle = {{{_latex_escape(booktitle)}}},")
+        if editors and not record_rt:
+            lines.append(
+                f"  editor = {{{' and '.join(_latex_escape(e) for e in editors)}}},"
+            )
+        if (
+            publisher
+            and not record_rt
+            and export_type
+            and export_type["bibtex"] in ("book", "incollection", "inbook")
+        ):
+            lines.append(f"  publisher = {{{_latex_escape(publisher)}}},")
         for bib_key, value in (
             ("volume", volume),
             ("number", number),

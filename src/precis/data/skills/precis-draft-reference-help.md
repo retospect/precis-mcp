@@ -44,7 +44,7 @@ one chunk cannot fit, increase the named byte budgets and retry the exact call.
 | `get(id='dc<id>', view='fisheye')` | verbatim center + graduated neighborhood |
 | `get(id='dc<id>', view='fisheye+1hop')` | fisheye + cited/cross-ref/note ring |
 | `get(id=<scope>, view='toc')` | heading skeleton (whole draft, or one heading's subtree) |
-| `get(id=<scope>, view='hygiene')` | undefined-abbrev + unresolved-citation lists, full, plus house-style counts |
+| `get(id=<scope>, view='hygiene')` | full lists of abbreviation, citation and record gaps, plus house-style counts |
 | `get(id=<scope>, view='backfill')` | uncited-but-relevant papers, gap-finder |
 | `get(id=<scope>, view='wordcount')` | per-section word counts vs targets |
 | `get(id='dc<id>', view='history')` | the chunk's edit events, newest first, with prior text (`args={'page_size':N}`, ≤500) |

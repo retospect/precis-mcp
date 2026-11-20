@@ -110,3 +110,26 @@ def test_record_decodes_entities_and_cleans_research_notes() -> None:
     )
     assert "<title>Ni &amp; Co C2</title>" in rec
     assert "<research-notes>A C20 cage with E_g of 1 eV (see).</research-notes>" in rec
+
+
+def test_record_carries_publisher_and_editors() -> None:
+    """gr725252: a chapter's book publisher and editors ride in the
+    record (``<publisher>``, ``<secondary-authors>`` alongside the
+    chapter authors) so EndNote can print them; absent fields stay
+    absent."""
+    rec = build_record(
+        _source(
+            bib_type="incollection",
+            publisher="Springer",
+            editors=[{"given": "T.", "family": "Chow"}],
+        )
+    )
+    assert "<publisher>Springer</publisher>" in rec
+    assert (
+        "<contributors>"
+        "<authors><author>Smith, J</author></authors>"
+        "<secondary-authors><author>Chow, T.</author></secondary-authors>"
+        "</contributors>" in rec
+    )
+    assert "<publisher>" not in build_record(_source())
+    assert "secondary-authors" not in build_record(_source())

@@ -1233,6 +1233,112 @@ def test_resolve_source_record_bib_type() -> None:
     assert source["bib_type"] == "dataset"
 
 
+def test_resolve_source_legacy_software_entry_type() -> None:
+    """gr725252: a Zenodo software record typed before ``record_type``
+    existed (``entry_type='software'`` only) still resolves to the
+    ``software`` bib_type — the EndNote field gets ref-type Computer
+    Program, not Journal Article."""
+    from types import SimpleNamespace
+
+    from precis.export.docx import _resolve_source
+
+    store = _RefStore(
+        {
+            ("paper", "precismcp"): SimpleNamespace(
+                id=496283,
+                slug="precismcp",
+                kind="paper",
+                title="precis-mcp",
+                authors=[{"name": "Stamm, Reto"}],
+                year=2026,
+                meta={"entry_type": "software", "publisher": "Zenodo"},
+            )
+        }
+    )
+    source = _resolve_source(store, "precismcp")
+    assert source is not None
+    assert source["bib_type"] == "software"
+    assert source["publisher"] == "Zenodo"
+
+
+def test_resolve_source_chapter_container_title_wins() -> None:
+    """gr725252: for a chapter the *book* title (``container_title``)
+    is the venue — a series name stored in ``meta.journal`` (pa692's
+    "IUTAM Bookseries") must not win over it. Publisher and editors
+    ride along for the record."""
+    from types import SimpleNamespace
+
+    from precis.export.docx import _resolve_source
+
+    store = _RefStore(
+        {
+            ("paper", "baowan2009"): SimpleNamespace(
+                id=692,
+                slug="baowan2009",
+                kind="paper",
+                title="Continuum modeling of nanomaterials",
+                authors=[{"given": "Baowan", "family": "Wang"}],
+                year=2009,
+                meta={
+                    "entry_type": "book-chapter",
+                    "journal": "IUTAM Bookseries",
+                    "container_title": (
+                        "IUTAM Symposium on Modelling Nanomaterials and Nanosystems"
+                    ),
+                    "publisher": "Springer",
+                    "editors": [{"given": "Wang", "family": "Tse"}],
+                },
+            )
+        }
+    )
+    source = _resolve_source(store, "baowan2009")
+    assert source is not None
+    assert source["bib_type"] == "incollection"
+    assert (
+        source["journal"]
+        == "IUTAM Symposium on Modelling Nanomaterials and Nanosystems"
+    )
+    assert source["journal"] != "IUTAM Bookseries"
+    assert source["publisher"] == "Springer"
+    assert source["editors"] == [{"given": "Wang", "family": "Tse"}]
+
+
+def test_format_reference_chapter_line_prints_book_editors_publisher() -> None:
+    """gr725252: the Word reference line prints the chapter's book
+    title, its editors and the publisher — not just the series."""
+    from types import SimpleNamespace
+
+    from precis.export.docx import _format_reference
+
+    store = _RefStore(
+        {
+            ("paper", "baowan2009"): SimpleNamespace(
+                id=692,
+                slug="baowan2009",
+                kind="paper",
+                title="Continuum modeling of nanomaterials",
+                authors=[{"given": "Baowan", "family": "Wang"}],
+                year=2009,
+                meta={
+                    "entry_type": "book-chapter",
+                    "journal": "IUTAM Bookseries",
+                    "container_title": (
+                        "IUTAM Symposium on Modelling Nanomaterials and Nanosystems"
+                    ),
+                    "publisher": "Springer",
+                    "editors": [{"given": "Tse", "family": "Chow"}],
+                    "pages": "1-10",
+                },
+            )
+        }
+    )
+    line = _format_reference(store, "baowan2009", [])
+    assert "In: IUTAM Symposium on Modelling Nanomaterials and Nanosystems" in line
+    assert "edited by Tse Chow" in line
+    assert "Springer" in line
+    assert "1-10" in line
+
+
 # ── Taproot claim-hub finding handle (Phase 1 — living citations reach
 # draft export): a [fi<id>] finding handle that resolves to a
 # TAPROOT:claim hub cites its *derived* establishes originator(s) via the

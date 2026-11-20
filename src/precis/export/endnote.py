@@ -145,8 +145,12 @@ def _plain_note(text: str) -> str:
 def build_record(source: dict[str, Any], notes: str | None = None) -> str:
     """One EndNote ``<record>…</record>`` from a resolved source dict
     (``kind``, ``tag``, ``rec_number`` = the corpus ref id, ``bib_type``,
-    ``authors``, ``title``, ``year``, ``journal``, ``volume``, ``number``,
-    ``pages``, ``doi``, ``url``). Absent fields are omitted.
+    ``authors``, ``editors``, ``title``, ``year``, ``journal``, ``volume``,
+    ``number``, ``pages``, ``publisher``, ``doi``, ``url``). Absent fields
+    are omitted. ``editors`` (a chapter's book editors, gr725252) ride as
+    ``<secondary-authors>`` inside ``<contributors>``; ``publisher`` as
+    ``<publisher>`` — both standard EndNote XML elements, emitted only
+    when the source dict carries them.
 
     ``notes`` (the cited passage from a ``pc<id>`` chunk citation) is embedded
     as ``<research-notes>`` — EndNote's *Research Notes* field — so the author
@@ -171,15 +175,24 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
         f'<ref-type name="{esc(name)}">{code}</ref-type>',
     ]
     authors = _author_list(source.get("authors"))
+    editors = _author_list(source.get("editors"))
+    contributors = ""
     if authors:
         inner = "".join(f"<author>{esc(a)}</author>" for a in authors)
-        parts.append(f"<contributors><authors>{inner}</authors></contributors>")
+        contributors = f"<authors>{inner}</authors>"
+    if editors:
+        inner = "".join(f"<author>{esc(a)}</author>" for a in editors)
+        contributors += f"<secondary-authors>{inner}</secondary-authors>"
+    if contributors:
+        parts.append(f"<contributors>{contributors}</contributors>")
     titles = [f"<title>{esc(_strip_markup(source.get('title')))}</title>"]
     if venue:
         titles.append(f"<secondary-title>{esc(venue)}</secondary-title>")
     parts.append("<titles>" + "".join(titles) + "</titles>")
     if venue:
         parts.append(f"<periodical><full-title>{esc(venue)}</full-title></periodical>")
+    if source.get("publisher"):
+        parts.append(f"<publisher>{esc(source['publisher'])}</publisher>")
     if source.get("pages"):
         parts.append(f"<pages>{esc(source['pages'])}</pages>")
     if source.get("volume"):

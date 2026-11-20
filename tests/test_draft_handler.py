@@ -2487,6 +2487,113 @@ def test_hygiene_authors_line_needs_a_doi(draft: DraftHandler, hub: Hub) -> None
     assert "authors not yet Crossref-resolved" not in draft.get(id="nt").body
 
 
+def test_hygiene_flags_title_only_record_without_doi(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr725252: a cited paper whose record carries only a title (no
+    authors, year or venue) and no DOI prints as a bare reference — the
+    completeness line names it and its missing fields."""
+    paper = hub.live_store.insert_ref(
+        kind="paper", slug="haddon1993", title="Chemistry of the Fullerenes"
+    )
+    _cite_paper(draft, hub, paper.id)
+
+    out = draft.get(id="nt").body
+    assert "lack author/year/venue on their record" in out
+    assert "haddon1993 (no authors/year/venue)" in out
+
+
+def test_hygiene_completeness_line_silent_when_record_complete(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A cited paper with authors, year and venue gets no completeness
+    warning."""
+    paper = hub.live_store.insert_ref(
+        kind="paper",
+        slug="full2020",
+        title="Full",
+        authors=[{"given": "A. K.", "family": "Geim"}],
+        year=2020,
+        meta={"journal": "Nature"},
+    )
+    _cite_paper(draft, hub, paper.id)
+
+    assert "lack author/year/venue" not in draft.get(id="nt").body
+
+
+def test_hygiene_completeness_byline_with_doi_not_double_flagged(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A DOI-bearing paper with no byline is the author-source line's
+    case (the enrich pass repairs it) — the completeness line must not
+    name its authors leg again."""
+    paper = hub.live_store.insert_ref(
+        kind="paper",
+        slug="doiauthors2020",
+        title="DOI but no byline",
+        year=2020,
+        meta={"journal": "Nature"},
+    )
+    hub.live_store.insert_ref_identifiers(
+        paper.id, [("doi", "10.1/doiauthors", "manual")]
+    )
+    _cite_paper(draft, hub, paper.id)
+
+    assert "lack author/year/venue" not in draft.get(id="nt").body
+
+
+@pytest.mark.parametrize("type_key", ["record_type", "entry_type"])
+@pytest.mark.parametrize("record_type", ["software", "dataset"])
+def test_hygiene_completeness_record_cite_exempt_from_venue(
+    draft: DraftHandler, hub: Hub, type_key: str, record_type: str
+) -> None:
+    """A typed whole-record cite (software/dataset) has no venue by
+    design — the venue leg must not flag it; with authors + year the
+    record is complete."""
+    paper = hub.live_store.insert_ref(
+        kind="paper",
+        slug="precismcp2026",
+        title="precis-mcp",
+        authors=[{"name": "Stamm, Reto"}],
+        year=2026,
+        meta={type_key: record_type, "publisher": "Zenodo"},
+    )
+    _cite_paper(draft, hub, paper.id)
+
+    assert "lack author/year/venue" not in draft.get(id="nt").body
+
+
+def test_hygiene_completeness_flags_partial_record(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Only the missing fields are named — a paper with authors and a
+    venue but no year prints ``(no year)``."""
+    paper = hub.live_store.insert_ref(
+        kind="paper",
+        slug="noyear2020",
+        title="No year",
+        authors=[{"name": "A.K. Geim"}],
+        meta={"journal": "Nature"},
+    )
+    _cite_paper(draft, hub, paper.id)
+
+    out = draft.get(id="nt").body
+    assert "noyear2020 (no year)" in out
+
+
+def test_hygiene_view_lists_incomplete_records_unelided(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr192827 item 9 shape: view='hygiene' renders the completeness
+    list in full (no ``+N more`` tail)."""
+    paper = hub.live_store.insert_ref(kind="paper", slug="bare2024", title="Bare")
+    _cite_paper(draft, hub, paper.id)
+
+    out = draft.get(id="nt", view="hygiene").body
+    assert "bare2024 (no authors/year/venue)" in out
+    assert "more — see" not in out
+
+
 def test_hygiene_view_returns_full_lists_unelided(
     draft: DraftHandler, hub: Hub
 ) -> None:

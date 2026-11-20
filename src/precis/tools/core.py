@@ -2567,6 +2567,14 @@ def edit(
     issue: str | None = None,
     pages: str | None = None,
     url: str | None = None,
+    # paper/cfp chapter fields (gr725252): booktitle= / editors= /
+    # publisher= write meta.container_title / meta.editors /
+    # meta.publisher — the book a chapter sits in, the keys the .bib
+    # and Word exporters read. Declared at the verb level so strict-
+    # schema MCP clients don't strip them.
+    booktitle: str | None = None,
+    editors: list[str | dict[str, Any]] | str | None = None,
+    publisher: str | None = None,
     # paper/cfp: supplement_of=<parent slug | paN> declares this record a
     # supplement (SI) of that parent; made alone, no other edit fields.
     supplement_of: str | None = None,
@@ -2812,6 +2820,9 @@ def edit(
         "issue": issue,
         "pages": pages,
         "url": url,
+        "booktitle": booktitle,
+        "editors": editors,
+        "publisher": publisher,
         "supplement_of": supplement_of,
         "hook": hook,
         "find": find,

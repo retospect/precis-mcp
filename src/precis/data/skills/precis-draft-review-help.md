@@ -133,7 +133,16 @@ doubled — write the short alone), unresolved citations
 claim changed after the passage was written. Its old `pub_id` remains an
 alias, so the warning quotes old/new text. Rewrite the citing chunk to re-pin;
 other edits do not clear it. Drift blocks export; pre-version-pin cites are
-unknown, not drift. No bibliography footer is needed. Start with the outline
+unknown, not drift. No bibliography footer is needed. The same view names
+cited papers whose *record* can't print a full reference — missing authors,
+year or venue, each flagged with what's absent (a DOI-bearing byline gap
+shows under the author-source line instead, since the enrich pass repairs
+it; software/dataset records are venue-exempt, including legacy records
+with only an entry type). The check skips volume, pages and article number
+because those locators vary by publication format. Repair on the record
+with `edit(kind='paper', id=…)` — `authors=[…]` / `year=` / `journal=`, or a
+chapter's `booktitle=` + `editors=` + `publisher=`
+([[precis-paper-ref-help]]). Start with the outline
 (`get(kind='draft', id=…)`); its hygiene footer shows up to 8 items per list.
 For complete lists without the body, use
 `get(kind='draft', id=…, view='hygiene')`.

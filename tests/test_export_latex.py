@@ -2215,6 +2215,44 @@ def test_record_bib_type_truth_table() -> None:
     assert latex.record_bib_type(None) == ""
 
 
+def test_paper_bib_type_software_entry_type() -> None:
+    """gr725252: a legacy DataCite record typed ``entry_type='software'``
+    before ``record_type`` existed maps to the software biblatex type,
+    not ``article``."""
+    assert latex.paper_bib_type({"entry_type": "software"}) == "software"
+    assert latex.paper_bib_type({"entry_type": "dataset"}) == "dataset"
+    assert latex.paper_bib_type({"entry_type": "journal-article"}) == "article"
+    assert latex.paper_bib_type({}) == "article"
+
+
+def test_build_bib_legacy_software_entry_type() -> None:
+    """gr725252: a pre-record_type Zenodo software release (entry_type
+    only) exports ``@software`` with its genre fields — never
+    ``@article`` with a ``journaltitle={Zenodo}``."""
+    store = _BibStore(
+        {
+            ("paper", "precismcp"): _bibref(
+                1,
+                "precismcp",
+                "paper",
+                title="precis-mcp",
+                authors=[{"name": "Stamm, Reto"}],
+                year=2026,
+                meta={
+                    "entry_type": "software",
+                    "publisher": "Zenodo",
+                    "version": "1.2.3",
+                },
+            )
+        }
+    )
+    bib = latex.build_bib(store, ["precismcp"], [])
+    assert bib.startswith("@software{precismcp,")
+    assert "version = {1.2.3}" in bib
+    assert "publisher = {Zenodo}" in bib
+    assert "journaltitle" not in bib
+
+
 def test_build_bib_unresolved_slug_stubs_with_warning() -> None:
     """A slug that matches no paper/patent/datasheet still degrades to a
     compile-safe stub + a warning."""

@@ -7065,6 +7065,11 @@ class DraftHandler(Handler):
             )
             if authors_line:
                 out.append(authors_line)
+            completeness_line = self._hygiene_record_completeness_line(
+                distinct_ids, identifiers, refs_by_id, limit=limit
+            )
+            if completeness_line:
+                out.append(completeness_line)
 
         out.extend(self._hygiene_house_style_lines(chunks, clear_line=not elide))
 
@@ -7737,6 +7742,67 @@ class DraftHandler(Handler):
             f"Crossref-resolved: {shown}{tail}. Bylines may be inconsistent "
             "(jammed/missing initials); the paper-meta enrich pass repairs "
             "them from the DOI — no draft edit needed."
+        )
+
+    def _hygiene_record_completeness_line(
+        self,
+        ref_ids: list[int],
+        identifiers: dict[int, dict[str, str]],
+        refs_by_id: dict[int, Any],
+        *,
+        limit: int | None,
+    ) -> str:
+        """One advisory line: cited papers whose record cannot print a
+        full reference — no authors, no year, or no venue (gr725252).
+        The author-source line above owns the DOI-bearing byline case
+        (repairable by the enrich pass), so a byline counts here only
+        when no DOI names a repair path — pa714353 (Haddon 1993, title
+        only, no DOI) slipped past every check and printed as a bare
+        title. Typed whole-record cites (software/dataset, gr514384)
+        and legacy DataCite records typed only by entry_type are exempt
+        from the venue leg: they have no venue by design. This check
+        deliberately omits volume, pages and article number because
+        those locators vary by publication format.
+        Same shared batched lookups and elide-with-a-pointer convention
+        as :meth:`_hygiene_doi_line`. Empty string when every cited
+        record is complete."""
+        incomplete: list[str] = []
+        for rid in ref_ids:
+            ref = refs_by_id.get(rid)
+            if ref is None or getattr(ref, "kind", None) != "paper":
+                continue
+            missing: list[str] = []
+            if not getattr(ref, "authors", None) and not (
+                identifiers.get(rid) or {}
+            ).get("doi"):
+                missing.append("authors")
+            if getattr(ref, "year", None) is None:
+                missing.append("year")
+            meta = getattr(ref, "meta", None) or {}
+            whole_record = record_type_of(meta) or meta.get("entry_type") in (
+                "software",
+                "dataset",
+            )
+            if not whole_record and not (
+                meta.get("journal") or meta.get("venue") or meta.get("container_title")
+            ):
+                missing.append("venue")
+            if missing:
+                slug = getattr(ref, "slug", None) or f"pa{rid}"
+                incomplete.append(f"{slug} (no {'/'.join(missing)})")
+        if not incomplete:
+            return ""
+        shown = ", ".join(incomplete if limit is None else incomplete[:limit])
+        tail = (
+            f" (+{len(incomplete) - limit} more — see "
+            "get(kind='draft', id=<slug>, view='hygiene') for the full list)"
+            if limit is not None and len(incomplete) > limit
+            else ""
+        )
+        return (
+            f"⚠ {len(incomplete)} cited paper(s) lack author/year/venue on "
+            f"their record: {shown}{tail}. Repair with edit(kind='paper', id=<slug>, "
+            "authors=[...], year=…, journal=… / booktitle=…, publisher=…)."
         )
 
     def _work_lines(self, ref_id: int) -> list[str]:

@@ -2672,19 +2672,24 @@ def _resolve_source(store: RefLookupStore, slug: str) -> dict[str, Any] | None:
         if doi
         else (f"https://arxiv.org/abs/{arxiv}" if arxiv else None)
     )
+    bib_type = (
+        record_bib_type(meta) or paper_bib_type(meta) if pref.kind == "paper" else ""
+    )
+    # Canonical venue, with the chapter/proceedings container first: for
+    # an incollection/inproceedings the *book* title is the secondary
+    # title (a series name stored in meta.journal — pa692's "IUTAM
+    # Bookseries" — must not win over it; gr725252).
+    if bib_type in ("incollection", "inproceedings", "inbook"):
+        venue = meta.get("container_title") or meta.get("journal") or meta.get("venue")
+    else:
+        venue = meta.get("journal") or meta.get("venue") or meta.get("container_title")
     return {
         "kind": pref.kind,
         "tag": slug,
         "rec_number": pref.id,
-        "bib_type": (
-            # A typed whole-record cite (gr514384) takes its genre entry
-            # type — EndNote ref-type Computer Program / Dataset — over
-            # the Crossref entry_type mapping.
-            record_bib_type(meta) or paper_bib_type(meta)
-            if pref.kind == "paper"
-            else ""
-        ),
+        "bib_type": bib_type,
         "authors": pref.authors,
+        "editors": meta.get("editors"),
         "title": pref.title or slug,
         # The title and venue with their markup, as Zotero's CSL fields take it.
         "title_csl": csl_markup(_bib_markup_runs(pref.title or slug)),
@@ -3129,6 +3134,9 @@ def _venue_runs(meta: dict[str, Any], entry_type: str) -> list[_RefRun]:
         if entry_type != "book" and booktitle:
             out.append((" In: ", none))
             out += [(t, st | ital) for t, st in _bib_markup_runs(booktitle)]
+        editors = _plain_authors(meta.get("editors"))
+        if editors:
+            out.append((f"{', ' if out else ''}edited by {editors}", none))
         parts = [field("publisher")]
         if entry_type != "book":
             # A chapter in a numbered series volume ("In: IUTAM Bookseries,

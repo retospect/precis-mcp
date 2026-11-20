@@ -2858,6 +2858,87 @@ class TestPaperEdit:
             handler.edit(id=ref_id, volume=junk)
         assert ref.meta["volume"] == "12"
 
+    def test_edit_persists_chapter_fields(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr725252: ``booktitle=`` / ``editors=`` / ``publisher=`` merge
+        into the meta keys the exporters read (``container_title`` /
+        ``editors`` / ``publisher``) — a chapter record can carry its
+        book. ``editors=`` takes the same shapes as ``authors=`` and is
+        canonicalised the same way."""
+        ref_id = _seed_paper(store, slug="baowan2009ch")
+        handler.edit(
+            id=ref_id,
+            booktitle="IUTAM Symposium on Modelling Nanomaterials and Nanosystems",
+            editors=["Wang, Baowan", {"given": "J. A.", "family": "Smith"}],
+            publisher="Springer",
+        )
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert (
+            ref.meta["container_title"]
+            == "IUTAM Symposium on Modelling Nanomaterials and Nanosystems"
+        )
+        assert ref.meta["editors"] == [
+            {"given": "Baowan", "family": "Wang"},
+            {"given": "J. A.", "family": "Smith"},
+        ]
+        assert ref.meta["publisher"] == "Springer"
+
+    def test_edit_chapter_fields_reach_bibtex(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The bibtex view prints the chapter fields an edit just wrote."""
+        ref_id = _seed_paper(store, slug="baowan2009bib")
+        handler.edit(
+            id=ref_id,
+            entry_type="book-chapter",
+            booktitle="IUTAM Symposium on Modelling Nanomaterials and Nanosystems",
+            editors=["Wang, Baowan"],
+            publisher="Springer",
+            pages="1-10",
+        )
+        bib = handler.get(id=ref_id, view="bibtex").body
+        assert (
+            "booktitle = {IUTAM Symposium on Modelling Nanomaterials and Nanosystems}"
+            in bib
+        )
+        assert "editor = {Wang, Baowan}" in bib
+        assert "publisher = {Springer}" in bib
+
+    def test_edit_dry_run_previews_chapter_fields(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref_id = _seed_paper(store, slug="baowan2009dry")
+        resp = handler.edit(
+            id=ref_id,
+            booktitle="IUTAM Symposium on Modelling Nanomaterials and Nanosystems",
+            editors=["Wang, Baowan"],
+            publisher="Springer",
+            dry_run=True,
+        )
+        assert (
+            "booktitle: '(none)' → 'IUTAM Symposium on Modelling "
+            "Nanomaterials and Nanosystems'" in resp.body
+        )
+        assert "editors: 0 → 1" in resp.body
+        assert "publisher: '(none)' → 'Springer'" in resp.body
+        # Dry run writes nothing.
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert "container_title" not in ref.meta
+
+    def test_edit_editors_blank_or_junk_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr548255's blank-is-keep rule extends to ``editors=``; an
+        all-junk list is refused like ``authors=``."""
+        ref_id = _seed_paper(store, slug="baowan2009blank")
+        with pytest.raises(BadInput, match="editors=<empty>"):
+            handler.edit(id=ref_id, editors=[])
+        with pytest.raises(BadInput, match="no usable editor names"):
+            handler.edit(id=ref_id, editors=["this is not a name at all ok"])
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert "editors" not in ref.meta
+
 
 # ---------------------------------------------------------------------------
 # edit() — DOI-edit metadata-clobber guard (gr180189)
