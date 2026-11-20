@@ -26,6 +26,8 @@ one control, ticked N times and scored on the frontier gate +
 ask-vs-propose leg, gr593141 — the weekly ``quest_traps``
 cadence lands the score). The perpetual loop is the
 ``quest_tick`` coordinator job (``precis.workers.job_types.quest_tick``).
+`failure_class` (gr593138) splits untrusted barrier stamps:
+mechanical auto-requeues under caps, science routes to the agent.
 
 Package-level invariants (detail lives on the named module):
 
@@ -70,7 +72,7 @@ Package-level invariants (detail lives on the named module):
   (``kinetics_trusted``) remain independent guards. Diagnostic values stay
   visible through ``frontier.ProvisionalCandidate`` in tick/text/web views.
   Seeded pathway runs record ``requested_seeds`` at dispatch and accumulate
-  ``executed_seeds`` only after child launch, including later failures.
+  ``executed_seeds`` only after child launch.
   Trust verdicts show both lists and flag dispatch mismatches, while the
   independent-seed gate still uses actual trust records: starting a child
   does not prove usable independent evidence. Historical launch lists stay
@@ -142,36 +144,34 @@ Package-level invariants (detail lives on the named module):
 - **Window/Shapley measures stamp wherever the anchors exist.**
   ``window_objectives`` (SPSO slice 6) turns the resting map + staircase
   routes into measures (window area/fraction, Shapley Σφ²/IPR, ridge
-  churn, the HER margin) on every candidate that carries a coverage scan
-  — the scan is the paid measurement. Declaring a key in
-  ``rubric_objectives`` promotes it to a Pareto axis and the logbook; an
-  unflagged quest's frontier and logbook stay as before. ``precis_pathway``
-  is reached lazily via ``importlib`` (the boundary's dynamic form): a
-  missing plugin or a not-yet-landed sibling module degrades to notes,
+  churn, the HER margin) on every candidate carrying a coverage scan
+  (the paid measurement). Declaring a key in
+  ``rubric_objectives`` promotes it to a Pareto axis and the logbook;
+  unflagged quests stay as before. ``precis_pathway``
+  loads lazily via ``importlib``: a
+  missing plugin degrades to notes,
   never a crash. Anchor-scan placement is **propose-only**: ranked
   proposals go on the logbook; the dispatcher mints.
 - **Engine deploys re-score.** The autocatpath content key folds an
   engine-version token, so new results never dedupe onto stale jobs;
   ``compute.redispatch_candidates``/``reset_compute`` are the CLIs.
   Evidence minted on an older token demotes to a *named* blocker —
-  ``engine:stale`` (or ``engine:unknown`` when a trusted edge carries no
-  stamp) in ``barrier_seed_blocker``/``barrier_blocked_by``, never a
-  silent flip — and self-heals: the harvest re-queues a stale-trusted
-  struct_neb edge on the current engine
-  (``StructureHandler.enqueue_stale_neb_rerun`` through the
-  ``_dispatch_neb`` mint under the recomputed cache key, daily-capped),
-  while an autocatpath pathway re-measures through the restale lane —
-  and only when the quest opted into the tier ladder with
-  ``fidelity_restale_cap`` > 0, for candidates in the frontier or the
-  top provisional band. ``fidelity_restale_cap=0`` is a wider hold than
-  the restale pass: it stops every automatic pathway re-mint on the
-  quest — promotes, repair re-dispatches, the loop reconciler's
-  wrongful-kill arm and the tick's ``reruns`` entries
-  (``compute._automatic_rerun_hold``, gr543908) — while the deliberate
-  doors (``request_rerun``, ``redispatch_candidates``) stay open.
-  ``view='trust'``'s "engine staleness
-  (precis)" row answers ``engine:stale`` exactly when the harvest does;
-  an unstamped engine reads ``not-run``.
+  ``engine:stale``/``engine:unknown`` (an unstamped trusted edge) in
+  ``barrier_seed_blocker``/``barrier_blocked_by``, never a silent flip —
+  and self-heals: the harvest re-queues a stale-trusted
+  struct_neb edge on the current engine (daily-capped,
+  ``StructureHandler.enqueue_stale_neb_rerun``), while an
+  autocatpath pathway re-measures through the restale lane —
+  for opted-in frontier and top provisional candidates.
+  ``fidelity_restale_cap=0`` holds automatic restale, promotion, repair,
+  wrongful-kill reconciliation and tick reruns (gr543908). Operators can
+  still use ``request_rerun`` and ``redispatch_candidates``. Mechanical
+  stamps and classified infra/timeout failures retry on the pinned
+  engine with either hold setting (gr593138), subject to a cooldown,
+  ``fidelity_mechanical_retry_cap``, and
+  ``fidelity_mechanical_gpu_h_budget`` at 1.5 GPU-h per seed. A fresh science
+  verdict vetoes failed-job redispatch, including amnesties, and routes
+  the blocker to the quest agent. ``view='trust'`` matches harvest staleness.
 - **One proposal in flight (WIP=1).** ``tick.max_proposals_per_tick``
   (``PRECIS_QUEST_MAX_PROPOSALS``, default 1) caps dispatch/tick; extras
   stay ``hypothesis`` leads until the in-flight one's sims land.
