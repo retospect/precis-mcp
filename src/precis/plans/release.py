@@ -749,9 +749,16 @@ def may_release(
     except pr_class.GitHubUnreadable as exc:
         return False, f"GitHub unreadable ({exc}); nothing minted, next tick retries"
     except Exception as exc:
+        # gr730612: carry the first line of the underlying error (the ref
+        # and git's message) — a type-only line hid a missing release
+        # branch for two days of ticks.
+        text = str(exc).strip()
+        detail = text.splitlines()[0].strip()[:200] if text else ""
+        suffix = f": {detail}" if detail else ""
         return (
             False,
-            f"release gate unreadable ({type(exc).__name__}); next tick retries",
+            f"release gate unreadable ({type(exc).__name__}){suffix}; "
+            "next tick retries",
         )
     return True, ""
 

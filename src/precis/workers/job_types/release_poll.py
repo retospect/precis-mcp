@@ -175,6 +175,21 @@ _STUCK_LOCK_KEY = 0x72656C5F7374756B
 #: The dedupe tag on the stuck ask — one per ``(round, stage)``, ever.
 _STUCK_TAG_PREFIX = "release-stuck"
 
+#: Worker state keyed by main or the release ref being scanned (gr730612).
+_GATE_UNREADABLE_STATE_PREFIX = "release.gate_unreadable:"
+
+#: Consecutive unreadable passes at which ONE ask files (gr730612) — the
+#: poll ticks about every 10 minutes, so 3 marks roughly half an hour of
+#: a gate nobody can see into.
+_GATE_UNREADABLE_ASK_AFTER = 3
+
+#: The common tag on unreadable-gate asks, one per scoped outage.
+_GATE_UNREADABLE_TAG = "release-gate-unreadable"
+
+#: ``pg_advisory_xact_lock`` key (the "rel_gate" bytes) serializing the
+#: unreadable-gate state changes and ask mint.
+_GATE_UNREADABLE_LOCK_KEY = 0x72656C5F67617465
+
 #: Leg activity may hold a stage's clock at most this many marks: a leg
 #: re-queued forever without progressing still files at 3x the stage's
 #: deadline (:func:`watch_stuck`; td584381 S1c ruling).
@@ -2884,6 +2899,130 @@ def carry_wanted(store: Any, rel: dict[str, Any]) -> tuple[list[str], str | None
     return out, None
 
 
+def _first_error_line(exc: BaseException) -> str:
+    """The exception message's first line, bounded to what a blocker line
+    can carry — the ref and git's own message a gate-read failure raises
+    with (gr730612: the generic type-only line hid which fetch failed for
+    two days of ticks)."""
+    text = str(exc).strip()
+    return text.splitlines()[0].strip()[:200] if text else ""
+
+
+def _file_gate_unreadable_ask(
+    store: Any, conn: Any, *, scope: str, detail: str, streak: int
+) -> int:
+    """Mint the ask in the same transaction that records it for this outage."""
+    title = (
+        f"the engine-review gate for {scope} has been unreadable for {streak} "
+        "release_poll ticks — act on it, or is this a false alarm?"
+    )
+    context = (
+        f"engine-review gate for {scope} unreadable for {streak} consecutive release_poll "
+        f"ticks: {detail}; the gate fails closed so the release train waits; "
+        "answering executes nothing"
+    )[:600]
+    meta: dict[str, Any] = {
+        "ask": {
+            "kind": "ruling",
+            "options": ["acknowledged", "false alarm"],
+            "blocks": "nothing",
+            "context": context,
+        }
+    }
+    check_ask_meta(meta)
+    body = (
+        f"The engine-review gate for {scope} has failed to read for {streak} consecutive "
+        "release_poll ticks; the line it reports is:\n\n"
+        f"    {detail}\n\n"
+        "The gate fails closed, so the release train waits while the poll "
+        "cannot read it and retries every tick. The usual cause is a ref "
+        "the gate points at missing on origin — a release branch never "
+        "pushed or deleted while an open pass still names it (2026-11-18/19: "
+        "~100 ticks of 'engine review gate unreadable (RuntimeError)' while "
+        "the open pass pointed at a branch origin did not have).\n\n"
+        "Hand verbs that apply (a human's call, in the coordinator's "
+        "checkout): restore or recreate the named ref, or "
+        "`scripts/round cut --abandon` a round whose release branch is "
+        "gone. Answering this ask executes nothing — 'acknowledged' and "
+        "'false alarm' both just close it; a readable gate is what clears "
+        "the hold."
+    )
+    ref = store.insert_ref(kind="todo", slug=None, title=title, meta=meta, conn=conn)
+    store.add_tag(
+        ref.id,
+        Tag.closed("STATUS", "open"),
+        set_by="system",
+        replace_prefix=True,
+        conn=conn,
+    )
+    for value in ("ask-user", "showstopper", _GATE_UNREADABLE_TAG):
+        store.add_tag(ref.id, Tag.open(value), set_by="system", conn=conn)
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+        conn=conn,
+    )
+    finish_mint(store, ref.id, conn=conn)
+    return int(ref.id)
+
+
+def _gate_unreadable_tick(
+    store: Any, *, scope: str, detail: str, dry_run: bool
+) -> str | None:
+    """Count failures for this scope and mint at most one ask before recovery."""
+    from precis.workers.job_types import run_slice
+
+    key = _GATE_UNREADABLE_STATE_PREFIX + scope
+    note = None
+    with store.atomic() as conn:
+        if not dry_run:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s)", (_GATE_UNREADABLE_LOCK_KEY,)
+            )
+        row = conn.execute(
+            "SELECT value FROM app_state WHERE key = %s", (key,)
+        ).fetchone()
+        streak, ask_id = json.loads(row[0]) if row is not None else (0, None)
+        if ask_id is not None:
+            return f"engine gate for {scope}: outage ask already filed as td{ask_id}"
+
+        streak += 1
+        if streak >= _GATE_UNREADABLE_ASK_AFTER:
+            if dry_run or run_slice.factory_off():
+                note = (
+                    f"engine gate for {scope}: would file {_GATE_UNREADABLE_TAG} "
+                    f"after {streak} unreadable ticks"
+                )
+            else:
+                ask_id = _file_gate_unreadable_ask(
+                    store, conn, scope=scope, detail=detail, streak=streak
+                )
+                note = f"engine gate for {scope}: filed {_GATE_UNREADABLE_TAG} as td{ask_id}"
+        if dry_run:
+            return note
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+            (key, json.dumps([streak, ask_id])),
+        )
+    return note
+
+
+def _gate_read_reset(store: Any, *, scope: str) -> None:
+    """Re-arm this scope after a readable scan. Healthy scopes have no row."""
+    key = _GATE_UNREADABLE_STATE_PREFIX + scope
+    try:
+        if store.get_setting(key) is None:
+            return
+        with store.atomic() as conn:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s)", (_GATE_UNREADABLE_LOCK_KEY,)
+            )
+            conn.execute("DELETE FROM app_state WHERE key = %s", (key,))
+    except Exception:
+        log.warning("release_poll: gate unreadable streak reset raised", exc_info=True)
+
+
 def _engine_verdicts(
     store: Any,
     *,
@@ -2936,11 +3075,17 @@ def _engine_verdicts(
     lines name the live ask's id.
     ``file_asks`` limits the mint-and-ask writes to the pass
     (``release_deploy`` asks for nothing). Any exception anywhere returns
-    a single fail-closed blocker.
+    a single fail-closed blocker carrying the first line of the
+    underlying error (gr730612 — the ref and git's message, not just the
+    type); on the mint-and-ask pass the failure also advances the
+    streak for main or the release ref, which at :data:`_GATE_UNREADABLE_ASK_AFTER`
+    consecutive passes files the one :data:`_GATE_UNREADABLE_TAG` ask,
+    and a readable pass clears it.
     """
     from precis.plans import lanes as _lanes
     from precis.workers.job_types import plan_dispatch as _plan_dispatch
 
+    scope = "main" if rel is None else f"release/{rel.get('rN') or '?'}"
     now = now or datetime.now(UTC)
     notes: list[str] = []
     verdicts: list[_LandVerdict] = []
@@ -3196,14 +3341,31 @@ def _engine_verdicts(
             notes.extend(_sweep_carries(store, rel, carries, now=now, dry_run=dry_run))
     except Exception as exc:
         log.warning("release_poll: engine review gate unreadable", exc_info=True)
+        detail = _first_error_line(exc)
+        if file_asks:
+            # gr730612: a gate that stays unreadable files ONE ask naming
+            # it — the generic type-only line hid a missing release branch
+            # for two days of ticks.
+            try:
+                gate_note = _gate_unreadable_tick(
+                    store, scope=scope, detail=detail, dry_run=dry_run
+                )
+            except Exception:
+                log.warning("release_poll: unreadable-gate ask raised", exc_info=True)
+                gate_note = None
+            if gate_note is not None:
+                notes.append(gate_note)
+        suffix = f": {detail}" if detail else ""
         return (
             None,
             notes,
-            f"engine review gate unreadable ({type(exc).__name__}); "
+            f"engine review gate unreadable ({type(exc).__name__}){suffix}; "
             "next: retry next tick — fail closed",
             None,
             [],
         )
+    if file_asks and not dry_run:
+        _gate_read_reset(store, scope=scope)
     return verdicts, notes, None, pin, scanned
 
 

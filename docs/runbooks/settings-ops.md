@@ -66,6 +66,13 @@ KV surface (`live_config`, `dream_throttle`, `health_digest` markers, …)
 budget-cap keys that motivated `app_settings` in the first place are
 promoted into `REGISTRY`.
 
+The release poll keeps engine-review read failures in `app_state` under
+`release.gate_unreadable:<scope>`, where scope is `main` or `release/r<N>`.
+Each row counts consecutive failures until it records an ask ID for that
+outage. The third failure files one `release-gate-unreadable` ask when
+factory minting is enabled. A readable scan clears its scope's row and
+re-arms escalation. Dry runs leave the rows untouched.
+
 ## Registering a new key
 
 ```python

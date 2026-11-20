@@ -143,6 +143,28 @@ def test_only_deploy_waits_on_reviews(policy: dict[str, Any]) -> None:
     )
 
 
+def test_release_gate_unreadable_names_the_underlying_error(
+    policy: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr730612: the generic 'release gate unreadable' reason carries the
+    first line of the underlying error — the ref and git's message — not
+    just the exception type, and never the error's later lines."""
+
+    def boom(store: Store, todo_id: int) -> list[str]:
+        raise RuntimeError(
+            "git fetch origin release/r7: couldn't find remote ref\n"
+            "the second line must not leak"
+        )
+
+    monkeypatch.setattr(rp, "deploy_review_blockers", boom)
+    ok, reason = R.may_release(Store.__new__(Store), "deploy", todo_id=11, now=NOW)
+    assert ok is False
+    assert reason == (
+        "release gate unreadable (RuntimeError): "
+        "git fetch origin release/r7: couldn't find remote ref; next tick retries"
+    )
+
+
 def test_deploy_excludes_only_its_own_pass_and_branch(
     policy: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
