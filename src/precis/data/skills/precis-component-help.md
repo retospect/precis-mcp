@@ -250,7 +250,7 @@ thread straight into plastic, ST2.9–ST6.3), `iso-4026` (set screw),
 
 These are **standards data, not a supplier catalog**: no price, no lead
 time, and `component_series.py` itself never reaches a network. Two things
-do speak to availability, and they are different kinds of fact:
+speak to availability, different kinds of fact:
 
 - every size row carries a curated **`stocking` tier** (`universal` ·
   `common` · `specialty`) — a house judgement that ranks M4×12 above
@@ -258,7 +258,7 @@ do speak to availability, and they are different kinds of fact:
 - `get(kind='component', id=<slug>, view='stock')` shows that tier **and**
   asks a supplier for a live in-stock number, when one is configured
   (fasteners use family words plus a compact size, e.g. `socket head cap screw M4X12`; a Digi-Key
-  hit counts as the match only if its description carries the series' head-form words, otherwise
+  hit counts only if its description carries the series' head-form words, else
   it is shown labelled `[near match, not ...]`; hand-entered
   rows use their MPN when no designation is recorded)
   (`precis.supply`; Digi-Key, Farnell and Mouser — configure supplier
@@ -266,20 +266,29 @@ do speak to availability, and they are different kinds of fact:
   says which one is missing rather than showing the tier alone — a
   missing key and a part nobody stocks must not read alike.
 
+## Supplier search — Digi-Key navigation and caveats
+
 Supplier navigation: `get(kind='component', view='supplier-categories')`
 lists dated Digi-Key roots; `id=<category id>` walks children/counts and
-leaf parameter IDs; `q='M4'` narrows names/value labels. This is separate
+leaf parameter IDs; `q='M4'` narrows names/value labels — separate
 from the local `categories` registry. Filter a stock read with
 `args={'category_id':572,'parameters':{'<parameter id>':['<value id>']}}`;
-copy IDs from the returned options. Known screw series try, in order: (1) a
+copy IDs from the options. Known screw series try, in order: (1) a
 parametric search on the metric thread/length filters with the family words
-(sent as `ParameterFilterRequest` only - Digi-Key rejects it next to a
-top-level category on a parent category such as 572, and that 400 just falls
-through); (2) keyword `<family> M4X12` in the category; (3) keyword
-`<family> M4`, keeping hits whose description contains `M4X12`, else the hits
+(sent as `ParameterFilterRequest` only — Digi-Key 400s it beside a
+top-level category on a parent such as 572, and that just falls through); (2) keyword
+`<family> M4X12` in the category; (3) keyword
+`<family> M4`, keeping hits whose description contains `M4X12`, else hits
 labelled `[near match, not M4X12]`. All are keyword confidence. Nut series
-search by keyword (`hex nut M4`) with no category. Quote descriptions/confidence remain
-visible; filters do not establish grade/finish equivalence.
+search by keyword (`hex nut M4`) with no category — and with **no
+head-form check**: unlike screws, a nut/washer keyword hit is not verified
+against the series, so `hex nut M4` can come back a nyloc (`iso-7040`),
+not plain steel (`iso-4032`); read its description first. A
+**zero-hit search is not proof of absence**: the metric fastener catalogue
+thins above M5 (`src/precis/supply/digikey.py` docstring) — 0 hits up
+there may mean only "not in this catalogue". Quote
+descriptions/confidence remain visible; filters do not establish
+grade/finish equivalence.
 
 The dimension specs a mint writes (`outer_diameter`, `inner_diameter`,
 `wall_thickness`, `thickness`, `width`, `height`, `across_flats`,
