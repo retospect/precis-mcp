@@ -1,7 +1,7 @@
 ---
 id: precis-gardener-memory-help
 family: memory
-title: precis — the graph gardener's memory detectors
+title: precis — review memory flags and proposals
 summary: what a memory flag, pending proposal or memory-review todo means, which detectors file them, what to do when you meet one, and how to close a review
 answers:
   - which memory detectors does the gardener run?
@@ -19,13 +19,10 @@ status: active
 
 # precis-gardener-memory-help — memory flags and reviews
 
-The gardener's memory passes file proposals and review todos over live
-memories. A proposal is pending evidence, not truth; none of it applies
-itself and there is no MCP apply or undo — each flag waits on a reader's
-edit, a review stamp or a human apply. Proposals, the pending queue and
-the reject door: [[precis-gardener-help]]. Every memory detector reads
-DREAM memories as duplicate/merge-only and never proposes a rewrite for
-them.
+The gardener's memory passes surface potential problems in live memories.
+Verify the evidence before acting. MCP exposes the proposal queue and
+rejection. Applying or undoing a proposal uses operator tools described in
+[[precis-gardener-help]].
 
 ## Where you meet a flag
 
@@ -71,9 +68,10 @@ carry.
   section changed since the memory's last touch), `title_shape` (a
   slug/path title, an over-long title, a dated snapshot on a thread
   node).
-- `host-facts` — a one-off hand-run: a sentence asserting a census
-  machine's current state belongs on its `machine` ref as a dated
-  event ([[precis-machine-help]]).
+- `host-facts` — a one-off manual pass flags current-state claims about
+  census machines. Put verified current state on the `machine` ref and
+  keep the dated event and machine handle in the memory
+  ([[precis-machine-help]]).
 - `memory-grounding` — an audit, not a smell pass: pins each claim to
   its cited passages, writes one audit row per memory revision, and
   mints repair proposals for ungrounded claims.
@@ -86,9 +84,10 @@ sections the evaluator read.
 
 - Right → fix the memory yourself with an anchored
   `edit(kind='memory', …)`: state current truth with a live anchor and
-  a date, preserving still-true claims. The edit moves the target's
-  SHA, so the pinned proposal goes stale and closes by itself. A
-  `trust_origin='human'` node is a hold: ask, don't edit.
+  a date, preserving still-true claims. The edit makes the pinned proposal
+  stale, and the row can stay pending. Automatic stale closure requires
+  an eligible proposal and an enabled consumer. Ask before editing a
+  `trust_origin='human'` node.
 - Wrong → reject the row:
   `put(kind='job', mode='garden-reject', args={'review_id': <id>,
   'reason': '<why>'})` — decided while the target is unchanged;
@@ -107,26 +106,33 @@ The evaluator's `ask` on a memory-body candidate files one todo titled
 `OPEN:memory-review`, linked `raises-concern-about` → the memory — and
 to the gripe too when a reader complaint caused it (the complaint's
 story is the evidence; work it per [[precis-fix-memory-gripe-help]]).
-The evaluator's stated reason is recorded on the ask's closed ledger
-row, not on the todo. A grounding re-audit that changed a claim's
+Read the `Ask:` line and detector evidence in the todo body. Older
+todos can have only a title. The evaluator's reason is also recorded
+on the closed ledger row. A grounding re-audit that changed a claim's
 coverage mints a `memory-review` todo on each dependent draft/quest.
 
 Work it per [[precis-memory-help]] "Working a memory-review todo":
 verify against the repo and cited evidence, repair through the ledger
 or an anchored edit, comment what changed and close `STATUS:done`;
 unsettled goes to `waiting-for:reto` ([[precis-user-queue-help]]). An
-open review todo dedupes a repeat ask on the same memory; for a
-complaint, any review todo — closed included — already answers it.
+open review todo suppresses repeat asks on the same memory. A done
+review suppresses a repeat for the same memory, detector and content
+SHA. For a complaint, any review todo linked to both the memory and
+the complaint already answers the ask.
 
 ## Close a review
 
-A `review_due` flag — and review debt generally — clears on a current
-review stamp, not on the edit alone:
+A current review stamp clears stamp-related `review_due` debt. If the
+flag reports expiry, preserve still-needed claims before proposing
+retirement, or renew the expiry after verifying that the memory is still
+current. The expiry flag persists until you address the expiry.
+
+Record the completed review on the current memory revision.
 
 ```python
 edit(kind='memory', id='me<N>', mode='trust', args={'trust': {
     'confidence': 'considered',
-    'reason': 'kg-review:<model>:<YYYY-MM-DD>:ok|fixed',
+    'reason': 'kg-review:<model>:<YYYY-MM-DD>:ok',
     'expected_sha': '<sha from the trust line>'}})
 ```
 
