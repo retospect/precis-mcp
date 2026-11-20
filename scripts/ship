@@ -128,7 +128,9 @@
 #                                        # deploy. B is the newer of the tree's
 #                                        # merge-bases with origin/main and the
 #                                        # release, so a tree cut from either applies
-#                                        # exactly its own change. Implies --release.
+#                                        # exactly its own change. Implies --release,
+#                                        # but its lint is the --quick set, not
+#                                        # --release's full one (gr738762).
 #         scripts/ship --release --allow-migration "…"   # coordinator: let a release fix
 #                                        # carry a migration or safe_fetch.py change
 #                                        # (squawk runs first; a number collision against
@@ -2850,8 +2852,21 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
                 fi
             fi
             setup_gate_infra
+            # A land may only be refused for a check the lane before it also
+            # ran. An --onto land (the factory's release fix) therefore pays
+            # the quick set, exactly as the --quick lands on main that made
+            # the release branch did (Reto 2026-11-20, gr738762): r339 was cut
+            # with one posix-guard red that --quick does not run, and the
+            # full set here then refused ten of its fixes for that one file.
+            # The push's check.yml run stays the release's full check. A hand
+            # --release (no --onto) also forwards into main, so it keeps the
+            # full set, as does --checked.
+            FULL_LINT=0
+            if [[ "$CHECKED" == 1 || ( "$RELEASE" == 1 && -z "$ONTO" ) ]]; then
+                FULL_LINT=1
+            fi
             if [[ "$DOCS_ONLY" == 1 ]]; then
-                if [[ "$CHECKED" == 1 || "$RELEASE" == 1 ]]; then
+                if [[ "$FULL_LINT" == 1 ]]; then
                     say "pre-qland lint (docs/config-only: doc-pointer · skill-prose · secret-scan · vocab · paper-text tests) — ${GATE_MODE} gate, no gate slot"
                     QLAND_CMD="$HYGIENE"
                 else
@@ -2864,7 +2879,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
                 # and the rest of the
                 # hygiene batch (~5:45) are the slow legs; the release
                 # gate (check.yml lint job + full pytest) runs them.
-                # --checked and --release keep all of them.
+                # --checked and a hand --release keep all of them (FULL_LINT).
                 QLAND_MYPY=""
                 QLAND_TAIL="$SECRET_SCAN && $QUICK_GUARDS"
                 QLAND_WHAT="ruff autofix · secret-scan · fast DB-free guards; full mypy, import contracts and the other tests run at the release gate"
@@ -2873,8 +2888,11 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
                 # list is computed here (the warm gate has no .git); the helper
                 # reports only errors in these files, so a pre-existing red in
                 # an imported module never blocks an unrelated land. Opt out:
-                # PRECIS_SHIP_QUICK_MYPY=0.
-                if [[ "$CHECKED" != 1 && "$RELEASE" != 1 && "${PRECIS_SHIP_QUICK_MYPY:-1}" != 0 ]]; then
+                # PRECIS_SHIP_QUICK_MYPY=0. An --onto land's own files are the
+                # ones since B (the preflight's merge-base), not since main's.
+                if [[ "$FULL_LINT" != 1 && "${PRECIS_SHIP_QUICK_MYPY:-1}" != 0 ]]; then
+                    qm_base="${RELEASE_B:-}"
+                    [[ -n "$ONTO" && -n "$qm_base" ]] || qm_base="$(git merge-base origin/main HEAD)"
                     qm_files=""
                     while IFS= read -r f; do
                         [[ -n "$f" && -f "$f" ]] || continue
@@ -2885,13 +2903,13 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
                         # Inlined into a `sh -c` string: anything but plain path chars is skipped, not quoted.
                         [[ "$f" =~ ^[A-Za-z0-9_./+-]+$ ]] || continue
                         qm_files="$qm_files $f"
-                    done <<< "$(git diff --name-only --diff-filter=AMR "$(git merge-base origin/main HEAD)" HEAD)"
+                    done <<< "$(git diff --name-only --diff-filter=AMR "$qm_base" HEAD)"
                     if [[ -n "$qm_files" ]]; then
                         QLAND_MYPY="uv run python scripts/lib/mypy_changed.py${qm_files} && "
                         QLAND_WHAT="ruff autofix · secret-scan · mypy on the changed files · fast DB-free guards; full mypy, import contracts and the other tests run at the release gate"
                     fi
                 fi
-                if [[ "$CHECKED" == 1 || "$RELEASE" == 1 ]]; then
+                if [[ "$FULL_LINT" == 1 ]]; then
                     QLAND_MYPY="uv run mypy src tests && "
                     QLAND_TAIL="uv run lint-imports && $HYGIENE $CODE_HYGIENE"
                     QLAND_WHAT="ruff autofix · mypy · import contracts · hygiene tests: type-ignore ratchet, posix/encoding/extra-only guards, docs, secret-scan"

@@ -1593,13 +1593,24 @@ def test_quick_lint_is_ruff_secret_scan_and_fast_guards() -> None:
     assert "lint-imports" not in m.group(1) and "mypy" not in m.group(1)
     # Docs-only quick lands pay the same guards as code lands (gr576324).
     assert 'QLAND_CMD="$SECRET_SCAN && $QUICK_GUARDS"' in ship
-    # --checked / --release keep mypy, import contracts and the full batch
+    # --checked / a hand --release keep mypy, import contracts and the full
+    # batch. An --onto land (the factory's release fix) does not: a land is
+    # refused only for a check the lane before it ran, and the lands that
+    # made the release branch were --quick (Reto 2026-11-20, gr738762).
     assert re.search(
-        r'if \[\[ "\$CHECKED" == 1 \|\| "\$RELEASE" == 1 \]\]; then\s+'
+        r'FULL_LINT=0\s+if \[\[ "\$CHECKED" == 1 \|\| '
+        r'\( "\$RELEASE" == 1 && -z "\$ONTO" \) \]\]; then\s+FULL_LINT=1',
+        ship,
+    )
+    assert re.search(
+        r'if \[\[ "\$FULL_LINT" == 1 \]\]; then\s+'
         r'QLAND_MYPY="uv run mypy src tests && "\s+'
         r'QLAND_TAIL="uv run lint-imports && \$HYGIENE \$CODE_HYGIENE"',
         ship,
     )
+    # No lint branch reads $RELEASE on its own any more.
+    lint = ship[ship.index("FULL_LINT=0") : ship.index("QLAND_LINT_RAN=1")]
+    assert '"$RELEASE" == 1 ]]' not in lint and '"$RELEASE" != 1' not in lint
     # the release gate still type-checks and checks import contracts
     check = (REPO / ".github/workflows/check.yml").read_text(encoding="utf-8")
     assert "mypy src tests" in check

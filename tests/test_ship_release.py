@@ -921,6 +921,34 @@ def test_onto_lands_on_the_release_branch_and_leaves_main_alone(
     _no_pin_no_gated_move(rr, wt)
 
 
+def _lint_line(out: str) -> str:
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
+    m = re.search(r"^.*pre-qland lint \(.*$", plain, re.M)
+    assert m, plain[-2000:]
+    return m.group(0)
+
+
+def test_onto_runs_the_quick_lint_and_a_hand_release_the_full_one(
+    rr: ReleaseRig,
+) -> None:
+    """gr738762 (Reto 2026-11-20): a land is refused only for a check the
+    lane before it ran. The release branch is made of --quick lands, so
+    the factory's --onto fix pays the quick set — r339's ten fixes were
+    refused for one guard red only the full set runs. A hand --release
+    also forwards into main and keeps the full set."""
+    wt = rr.worktree("lint-rel", {"app.py": _app(l1="L1")})
+    full = _lint_line(_finish(*rr.ship(wt, "--release", sleep=1)))
+    assert "fast DB-free guards" not in full, full
+    assert "import contracts" in full or "doc-pointer" in full, full
+
+    rr.g(rr.primary, "fetch", "-q", "origin")
+    _no_round_record(rr)
+    wt = rr.worktree_from("lint-onto", f"origin/{REL}", {"app.py": _app(l2="L2")})
+    quick = _lint_line(_finish(*rr.ship(wt, "--onto", REL, sleep=1)))
+    assert "fast DB-free guards" in quick, quick
+    assert "import contracts ·" not in quick and "doc-pointer" not in quick, quick
+
+
 def test_onto_from_a_main_tree_applies_only_its_own_change(rr: ReleaseRig) -> None:
     """A fix tree cut from main after main moved past the cut: B is its
     merge-base with main, so the release gets the fix and not main's work."""
