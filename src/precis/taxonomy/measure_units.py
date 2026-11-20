@@ -4,7 +4,7 @@ printed unit, convert it to a measurand's canonical unit, compute a molar mass.
 No DB, no I/O. Unit text goes through the census normaliser
 (:func:`precis.taxonomy.census._normalize_unit_candidate`: Unicode
 superscripts, ``·``/``⋅``, ``−``, a caret before a bare exponent) and then
-``pint``. Three things are added here:
+``pint``. Added here:
 
 * a **basis label** on a unit token — ``mg_cat⁻¹`` (per catalyst mass),
   ``mg_Fe⁻¹`` (per metal mass) — is stripped before pint sees it and returned
@@ -19,6 +19,12 @@ superscripts, ``·``/``⋅``, ``−``, a caret before a bare exponent) and then
   ``molar_bridge=True`` opt-in and only for ``<energy>/mol`` against an
   ``eV``/``meV`` canonical — every other caller keeps the strict
   dimension match;
+* a **leading printed power of ten** — the ``10⁻⁵/°C`` of a
+  thermal-expansion table header — is a scale the value is read through,
+  not part of the unit (pint refuses a scaling factor inside a unit
+  expression): :func:`make_converter` strips it, folds it into the
+  conversion, and the row's literal and reported unit stay as printed
+  (gr719630);
 * a refusal naming both units when no dimension match exists.
 
 **Store SI, convert at the edges.** The display half (:func:`display_numbers`,
@@ -45,6 +51,7 @@ label.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -526,6 +533,41 @@ _SQ_CUBED_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![A-Za-zµ])(cm|mm|dm|km|nm|µm|pm|in|ft|yd|mi|m)(\d+)(?!\d)"
 )
 
+#: A leading power of ten on a printed unit — the ``10⁻⁵/°C`` of a
+#: thermal-expansion table header — is a scale the value is read through,
+#: not part of the unit (gr719630). Pint refuses a scaling factor inside a
+#: unit expression, so :func:`_strip_power_of_ten` pulls it off and
+#: :func:`make_converter` folds it into the conversion. The census
+#: normaliser has already folded superscripts to carets and ``×`` to ``x``
+#: when this runs; the lookahead keeps the exponent glued to a following
+#: separator (``10^-5/°C``, ``10^-5 °C^-1``) so a unit word can never lose
+#: its own leading digits.
+_POWER_OF_TEN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:[×x]\s*)?10\s*(?:\^|\*\*)\s*\(?\s*(?P<exp>[+-]?\d+(?:\.\d+)?)\s*\)?(?=\s|$|/)"
+)
+
+
+def _strip_power_of_ten(unit_text: str) -> tuple[float, str]:
+    """``(scale, unit)`` — a leading printed power of ten split off the
+    unit: ``10^-5/°C`` -> ``(1e-5, '1/°C')``, ``x10^3 m`` -> ``(1e3, 'm')``.
+    ``(1.0, unit_text)`` when there is no scale. A bare ``10^-5`` (no unit
+    after the scale) reads as ``(1e-5, '1')``. An exponent too big to be a
+    printed scale — ``10^400`` overflows, ``10^-400`` underflows to zero —
+    leaves the text untouched so pint refuses it with its usual error."""
+    m = _POWER_OF_TEN_RE.match(unit_text)
+    if m is None:
+        return 1.0, unit_text
+    try:
+        power = 10.0 ** float(m.group("exp"))
+    except OverflowError:
+        return 1.0, unit_text
+    if power == 0.0 or not math.isfinite(power):
+        return 1.0, unit_text
+    rest = unit_text[m.end() :].strip()
+    if rest.startswith("/"):
+        rest = "1" + rest
+    return power, rest or "1"
+
 
 #: A per-atom basis spelled as a divisor — 'meV/atom', 'eV atom^-1',
 #: 'kJ per atom' — is a count basis pint has no unit for; it folds to the
@@ -709,35 +751,99 @@ def make_converter(
     the unit) against an ``eV``/``meV`` canonical — through Avogadro's
     number. Everything else keeps the strict dimension match, so
     ``kJ/mol`` against a total-energy ``kJ`` canonical and
-    ``J/(mol K)`` against ``J/K`` still refuse."""
+    ``J/(mol K)`` against ``J/K`` still refuse.
+
+    A leading printed power of ten on the reported unit — the
+    ``10⁻⁵/°C`` of a thermal-expansion table header — is a scale the
+    value is read through, folded into the conversion (gr719630): literal
+    ``∼1.3`` with ``reported_unit='10⁻⁵/°C'`` stores 1.3e-5 K⁻¹, while the
+    row's literal and reported unit stay exactly as printed.
+    ``put(kind='measure')`` stores ``reported_unit`` verbatim, so the
+    printed form must convert, not be re-stated by the caller. The same
+    spelling on the canonical unit of a taxon without an ``si_vector``
+    (``canonical_unit='10⁻⁵/K'``) converts the other way: the scale
+    ratio is what converts, and the scale on an affine unit (``10^2 °C``)
+    multiplies the reading before the offset conversion runs. The
+    combined scale must itself stay representable: each printed factor
+    is checked alone, but their ratio can still underflow to zero
+    (``10⁻²⁰⁰/K`` against a ``10²⁰⁰/K`` canonical) or overflow to
+    infinity, which would silently zero the value and its uncertainty
+    or store an infinite slope — so it refuses, naming both units
+    (td733068 review on gr719630)."""
     ureg = _registry()
     src_text, label, gas = _pint_unit_ex(reported_unit)
     dst_text, _, _ = _pint_unit_ex(canonical_unit)
     if src_text == dst_text:
-        # same unit once normalised: no pint needed (USD, count, a ``%``)
+        # same unit once normalised, scale spelling included: no pint
+        # needed (USD, count, a ``%``) and '10⁻⁵/K' -> '10⁻⁵/K' is
+        # identity, not a conversion
         return Conversion(value=lambda v: v, scale=1.0, label=label, gas=gas)
+    src_power, src_text = _strip_power_of_ten(src_text)
+    dst_power, dst_text = _strip_power_of_ten(dst_text)
     if is_log_unit(src_text) or is_log_unit(dst_text):
         raise BadInput(
             f"unit {reported_unit!r} cannot be converted to {canonical_unit!r}: "
             "pH and dB are logarithmic scales, so only the identical unit is accepted",
             next="state the number in the measurand's own scale",
         )
+    power = src_power / dst_power
+    if power == 0.0 or not math.isfinite(power):
+        # each factor parsed alone, but their ratio underflowed to zero
+        # or overflowed to infinity: the value and its uncertainty would
+        # be silently zeroed, or the slope stored infinite (td733068
+        # review on gr719630)
+        raise BadInput(
+            f"unit {reported_unit!r} cannot be converted to the measurand's "
+            f"canonical unit {canonical_unit!r}: the printed scales combine "
+            f"to a factor of {power:g}, which is not representable, so the "
+            "value would be lost",
+            next="state the number in the canonical unit's own scale",
+        )
+    if src_text == dst_text:
+        # the same unit under the printed scales — the ratio converts
+        if power == 1.0:
+            return Conversion(value=lambda v: v, scale=1.0, label=label, gas=gas)
+        return Conversion(
+            value=lambda v: power * v,
+            scale=power,
+            label=label,
+            gas=gas,
+        )
     src_cur = split_currency(src_text)
     dst_cur = split_currency(dst_text)
     if src_cur.currency is not None or dst_cur.currency is not None:
-        return _money_converter(
+        base = _money_converter(
             reported_unit, canonical_unit, src_cur, dst_cur, label, gas
         )
+        if power == 1.0:
+            return base
+        # a currency figure read through a printed scale keeps the scale:
+        # 'x10^3 USD/t' is thousands of dollars per tonne
+        err_fn = base.error
+        return Conversion(
+            value=lambda v: power * base.value(v),
+            scale=power * base.scale,
+            label=base.label,
+            error=(lambda e: power * err_fn(e)) if err_fn else None,
+            gas=base.gas,
+        )
     try:
-        dst, _, _ = _parse_unit(canonical_unit, what="canonical")
-    except BadInput as exc:
+        dst = ureg.Unit(dst_text)
+    except _PARSE_ERRORS as exc:
         raise BadInput(
             f"unit {reported_unit!r} cannot be converted to the measurand's "
             f"canonical unit {canonical_unit!r}: that is not a unit pint can "
             "convert, so only the identical unit is accepted",
             next="state the number in the canonical unit, or leave reported_unit empty",
         ) from exc
-    src, label, gas = _parse_unit(reported_unit, what="reported", delta=delta)
+    try:
+        src = ureg.Unit(_delta_unit_text(src_text) if delta else src_text)
+    except _PARSE_ERRORS as exc:
+        raise BadInput(
+            f"reported unit {reported_unit!r} is not a unit pint can parse",
+            next="state the unit as printed, e.g. 'µg h⁻¹ cm⁻²'; a basis label goes "
+            "after an underscore: 'mg_cat⁻¹'",
+        ) from exc
     bridge: str | None = None
     if src.dimensionality != dst.dimensionality:
         ratio = src.dimensionality / dst.dimensionality
@@ -775,17 +881,37 @@ def make_converter(
     if bridge in ("mass_to_amount", "amount_to_mass") and molar_mass_g_mol is None:
         raise NeedsMolarMass(bridge)
 
-    def conv(v: float) -> float:
-        q = ureg.Quantity(v, src)
+    def _map(q: pint.Quantity) -> pint.Quantity:
         if bridge == "mass_to_amount":
             q = q / ureg.Quantity(molar_mass_g_mol, "g/mol")
         elif bridge == "amount_to_mass":
             q = q * ureg.Quantity(molar_mass_g_mol, "g/mol")
         elif bridge == "per_amount":
             q = q / ureg.Quantity(_AVOGADRO, "mol^-1")
-        return float(q.to(dst).magnitude)
+        return q
 
-    return Conversion(value=conv, scale=conv(1.0) - conv(0.0), label=label, gas=gas)
+    def conv(v: float) -> float:
+        # the scale multiplies the reading BEFORE the conversion: an
+        # affine offset (°C -> K) is part of the unit, not of the scale
+        q = _map(ureg.Quantity(src_power * v, src))
+        return float(q.to(dst).magnitude) / dst_power
+
+    # The uncertainty slope is a difference, not a point: an affine unit's
+    # offset (°C -> K adds 273.15) dwarfs a small printed scale, so
+    # conv(1.0) - conv(0.0) rounds to 0 for '10^-14 °C' and the stored
+    # uncertainty went silently to zero (td733068 review on gr719630).
+    # A unit DIFFERENCE is a delta quantity — no offset — that converts
+    # straight into the target unit's own delta form.
+    slope = (
+        float(
+            _map(ureg.Quantity(src_power, src) - ureg.Quantity(0.0, src))
+            .to((ureg.Quantity(1.0, dst) - ureg.Quantity(0.0, dst)).units)
+            .magnitude
+        )
+        / dst_power
+    )
+
+    return Conversion(value=conv, scale=slope, label=label, gas=gas)
 
 
 def _money_converter(

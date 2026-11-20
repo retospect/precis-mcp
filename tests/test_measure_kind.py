@@ -137,6 +137,133 @@ class TestHartreeSpelling:
         assert to_canonical(1.0, "ha", "m²") == pytest.approx(10000.0)
 
 
+class TestPrintedPowerOfTen:
+    """gr719630: a leading printed power of ten (``10⁻⁵/°C``) is a scale the
+    value is read through, not part of the unit — pint refuses a scaling
+    factor inside a unit expression, so make_converter strips it and folds
+    it into the conversion."""
+
+    def test_the_gripe_case_converts_to_per_kelvin(self) -> None:
+        conv = make_converter("10⁻⁵/°C", "1/K")
+        assert conv.value(1.3) == pytest.approx(1.3e-5)
+        assert conv.scale == pytest.approx(1e-5)
+        assert to_canonical(1.3, "10⁻⁵/°C", "1/K") == pytest.approx(1.3e-5)
+
+    def test_the_printed_spellings_all_read(self) -> None:
+        for printed in ("10^-5 /°C", "x10⁻⁵/°C", "×10⁻⁵/°C", "10⁻⁵ °C⁻¹"):
+            conv = make_converter(printed, "1/K")
+            assert conv.value(1.3) == pytest.approx(1.3e-5), printed
+
+    def test_a_bare_scale_reads_as_dimensionless(self) -> None:
+        conv = make_converter("10⁻⁵", "1")
+        assert conv.value(2.0) == pytest.approx(2e-5)
+
+    def test_unscaled_units_are_untouched(self) -> None:
+        assert make_converter("1/°C", "1/K").value(1.3) == pytest.approx(1.3)
+        assert make_converter("mm", "m").value(2.0) == pytest.approx(0.002)
+
+    def test_the_dimension_match_still_refuses_naming_both(self) -> None:
+        with pytest.raises(BadInput, match="'10⁻⁵/°C'.*'m'"):
+            make_converter("10⁻⁵/°C", "m")
+
+    def test_a_basis_label_on_a_scaled_unit_survives(self) -> None:
+        conv = make_converter("10^-3 mg_cat⁻¹", "kg⁻¹")
+        # 2e-3 per mg is 2e-3 × 1e6 per kg — the scale and the unit both land
+        assert conv.value(2.0) == pytest.approx(2000.0)
+        assert conv.label == "cat"
+
+    def test_a_scaled_currency_keeps_the_scale(self) -> None:
+        conv = make_converter("x10^3 USD/t", "USD/t")
+        assert conv.value(2.0) == pytest.approx(2000.0)
+        assert conv.scale == pytest.approx(1000.0)
+
+    def test_a_scaled_canonical_spelling_keeps_identity(self) -> None:
+        # td733068: '10⁻⁵/K' is a legal canonical_unit on a taxon without
+        # an si_vector — reported and canonical spelled the same way is
+        # identity, not a pint parse of the scale.
+        conv = make_converter("10⁻⁵/K", "10⁻⁵/K")
+        assert conv.value(1.3) == pytest.approx(1.3)
+        assert conv.scale == pytest.approx(1.0)
+
+    def test_a_plain_report_converts_into_a_scaled_canonical(self) -> None:
+        # the canonical '10⁻⁵/K' stores multiples of 1e-5/K
+        conv = make_converter("1/K", "10⁻⁵/K")
+        assert conv.value(1.3e-5) == pytest.approx(1.3)
+        conv = make_converter("10⁻³/K", "10⁻⁵/K")
+        assert conv.value(1.3) == pytest.approx(130.0)
+
+    def test_an_underflowing_scale_is_refused_not_zeroed(self) -> None:
+        # td733068: 10^-400 underflows to 0.0 — accepting it would zero
+        # every value and uncertainty, so the text is left for pint to
+        # refuse.
+        with pytest.raises(BadInput):
+            make_converter("10^-400/°C", "1/K")
+
+    def test_an_unrepresentable_scale_ratio_is_refused(self) -> None:
+        # td733068 review: each factor passes _strip_power_of_ten alone,
+        # but 1e-200 / 1e200 underflows the ratio to 0.0 (silently
+        # zeroing the reading and its uncertainty) and the reverse
+        # overflows it to an infinite slope.
+        with pytest.raises(BadInput, match="not representable"):
+            make_converter("10^-200/K", "10^200/K")
+        with pytest.raises(BadInput, match="not representable"):
+            make_converter("10^200/K", "10^-200/K")
+
+    def test_the_scale_multiplies_an_affine_reading_not_its_kelvin(self) -> None:
+        # td733068: 1.3 in units of 10^2 °C is 130 °C = 403.15 K — the
+        # scale applies to the reading before pint's offset conversion,
+        # never to the converted magnitude (27445 K was the bug).
+        conv = make_converter("10^2 °C", "K")
+        assert conv.value(1.3) == pytest.approx(403.15)
+        assert conv.scale == pytest.approx(100.0)
+        # and the delta path: a scaled temperature DIFFERENCE is plain
+        assert make_converter("10^2 °C", "K", delta=True).value(1.3) == pytest.approx(
+            130.0
+        )
+
+    def test_the_uncertainty_slope_ignores_the_affine_offset(self) -> None:
+        # td733068 review on gr719630: the slope was conv(1.0) - conv(0.0)
+        # — for '10^-14 °C' both points round to 273.15 K, so a stored
+        # uncertainty went silently to zero. The slope is a delta
+        # quantity: the offset is never evaluated.
+        conv = make_converter("10^-14 °C", "K")
+        assert conv.scale == pytest.approx(1e-14, abs=0.0)
+        # mirrored: a scaled Kelvin reading under a °C canonical loses
+        # the same way on the old formula (both points ~ -273.15)
+        assert make_converter("10^-14 K", "°C").scale == pytest.approx(1e-14, abs=0.0)
+        # and the affine slope itself still folds the scale: a '10^2 °C'
+        # uncertainty is 100 K
+        assert make_converter("10^2 °C", "K").scale == pytest.approx(100.0)
+
+    def test_a_scale_on_a_logarithmic_unit_is_refused(self) -> None:
+        # td733068: '10^2 pH' stripped to 'pH' must not pass as a scaled
+        # identity — pH never converts and never takes a prefix.
+        with pytest.raises(BadInput, match="logarithmic"):
+            make_converter("10^2 pH", "pH")
+        with pytest.raises(BadInput, match="logarithmic"):
+            make_converter("pH", "10^2 pH")
+        assert make_converter("pH", "pH").value(7.0) == pytest.approx(7.0)
+
+
+class TestPutPrintedScale:
+    """The put path stores the literal and reported_unit verbatim and the
+    canonical value folded through the printed scale (gr719630)."""
+
+    def test_put_keeps_the_printing_and_stores_si(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        w["alpha"] = _taxon(
+            store, "thermal expansion coefficient", unit="1/K", parent=w["start"]
+        )
+        run = _put(store, w, "alpha", "∼1.3", unit="10⁻⁵/°C", value_err=0.1)
+        row = store.measure_detail(run.output_id)
+        assert row["literal"] == "∼1.3"
+        assert row["reported_unit"] == "10⁻⁵/°C"
+        assert row["value_num"] == pytest.approx(1.3e-5)
+        assert row["value_err"] == pytest.approx(1e-6)
+        assert row["meta"]["conversion"] == {"from": "10⁻⁵/°C", "to": "1/K"}
+
+
 class TestMolarBridge:
     """gr506762 subset-5d: the Avogadro bridge is the ``molar_bridge``
     opt-in, never ``make_converter``'s default — and even then only an

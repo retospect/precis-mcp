@@ -175,7 +175,7 @@ assumption). Only `context` rows satisfy a measurand's required conditions.
 | `literal` | the exact printed string, always kept (`9.6 ± 1.7`, `<1`, `550–575`, `Cordierite`) |
 | `value_num` / `value_low` / `value_high` / `value_err` / `value_text` / `value_bool` | the parsed reading. **Stored** in the measurand's canonical (SI) unit; **on a write** you give them in the REPORTED unit, the same unit as `reported_unit` and the `literal`, and put converts them (literal `500`, `reported_unit` `mV`, optional `value_num` 500 stores 0.5 V; `value_num` 0.5 with `mV` would store 0.0005 V) |
 | `value_form` | `point`, `approximate_point`, `upper_bound`, `lower_bound`, `interval`, `categorical`, `boolean`, `not_established` |
-| `reported_unit` | the unit as printed; required for a number on a measurand with a canonical unit (a table-recipe row names the canonical unit); NULL only for a unitless measurand and for older rows |
+| `reported_unit` | the unit as printed — a table's `10⁻⁵/°C` scale spelling included — stored verbatim; required for a number on a measurand with a canonical unit (a table-recipe row names the canonical unit); NULL only for a unitless measurand and for older rows |
 | `reference` | the reference state (RHE, SHE, Ag/AgCl, ...), never folded into the unit |
 | `normalization` | the basis (per catalyst mass, per geometric area, per ECSA); never compare across different bases |
 | `subject` / `subject_group` | the paper-local sample label ("Cu NWA") and its group (the claim handle) |
@@ -211,6 +211,16 @@ converted to the measurand's canonical unit.
   `normalization`. A per-atom divisor (`meV/atom`, `eV per atom`, or an
   `atom^-1` / `atom⁻¹` suffix) folds to the `atom` basis and fills
   `normalization` with `per atom` when unset.
+- A **leading printed power of ten** is a scale the value is read through,
+  folded into the conversion — `10⁻⁵/°C`, `x10^3 USD/t`, `10^-5 °C⁻¹` all
+  read (the `10⁻⁵`, `×10⁻⁵`, `10^-5`, `10**-5` spellings after the
+  normaliser's folds). The `literal` and `reported_unit` are stored
+  verbatim and the value lands scaled in the canonical unit: `∼1.3` in
+  `10⁻⁵/°C` stores `1.3e-5` on a `1/K` measurand. The same spelling on a
+  taxon's `canonical_unit` (`10⁻⁵/K`) stores multiples of that scale. A
+  scale that is not representable — `10^-400` underflows, or the
+  reported/canonical scale ratio overflows — is **refused** rather than
+  silently zeroing the value and its uncertainty.
 - A **currency unit** carries an ISO 4217 code (`USD`, `EUR`, `GBP`, `JPY`,
   ... — every code the ECB euro reference rates quote, plus EUR) or one of
   the symbols `$`/`US$`/`€`/`£` (mapped to USD/USD/EUR/GBP; `¥`, `A$` and
@@ -220,8 +230,11 @@ converted to the measurand's canonical unit.
   4-digit price
   year sits next to the code: `EUR2015/t`, `EUR 2015`, `EUR(2015)`,
   `2015 EUR`; or pass `price_year=` in meta. Only 1900–2100 reads as a
-  year — `1000 USD/yr` is a scale factor and is refused; state the plain
-  unit with the number already scaled. A year in both places that
+  year — `1000 USD/yr` is a bare factor inside the unit and is refused;
+  state the plain unit with the number already scaled. A printed power of
+  ten is different: `x10^3 USD/t` (a table's `×10³ USD/t` header) is the
+  scale the column reads through, accepted and folded into the value. A
+  year in both places that
   disagrees is refused; a year on a non-currency figure is refused; a
   currency measurand whose `reported_unit` carries no token is refused with
   `reported_unit='EUR2015/t'` as the hint. No year is accepted — the answer
