@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Install (or remove) the pin-prod-follow scheduler entry for the CURRENT user.
+# Run once, as the OWNER of the prod checkout, from the main checkout. Prints
+# the commands; --apply runs them. macOS: a launchd agent rendered from
+# deploy/host-ops/pin-prod-follow.plist.tmpl; elsewhere: a crontab line.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF2'
+usage: pin-prod-follow-install [--apply] [--uninstall]
+
+Without --apply only prints the commands. --uninstall prints/performs removal.
+The checkout is resolved by `pin-prod-follow --print-checkout` (PROD_CHECKOUT
+overrides). PIN_PROD_FOLLOW_LOG sets the log (default
+~/Library/Logs/pin-prod-follow.log on macOS, ~/.cache/pin-prod-follow.log else).
+EOF2
+}
+
+APPLY=0 UNINSTALL=0
+for a in "$@"; do
+  case "$a" in
+    --help|-h) usage; exit 0 ;;
+    --apply) APPLY=1 ;;
+    --uninstall) UNINSTALL=1 ;;
+    *) echo "unknown flag $a (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT="$REPO/scripts/host-ops/pin-prod-follow"
+TMPL="$REPO/deploy/host-ops/pin-prod-follow.plist.tmpl"
+PROD_CHECKOUT="$("$SCRIPT" --print-checkout)"
+LABEL="com.precis.pin-prod-follow"
+
+# The scheduler entry names this copy of the script by path. A linked worktree
+# is reaped when its task ends, which would leave the entry pointing at nothing.
+if [[ "$APPLY" == 1 && "$UNINSTALL" == 0 ]]; then
+  _gd="$(git -C "$REPO" rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
+  _cd="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$_gd" && "$_gd" != "$_cd" ]]; then
+    echo "refusing --apply from a linked worktree ($REPO): run it from the main checkout" >&2
+    exit 2
+  fi
+fi
+
+# run <cmd...>: print the command; execute it only with --apply.
+run() { printf '+'; printf ' %q' "$@"; printf '\n'; if [[ "$APPLY" == 1 ]]; then "$@"; fi; }
+# run_ok: same, but a failure is fine (nothing loaded yet / nothing to remove).
+run_ok() { run "$@" || true; }
+
+if [[ "$(uname -s)" == Darwin ]]; then
+  LOG="${PIN_PROD_FOLLOW_LOG:-$HOME/Library/Logs/pin-prod-follow.log}"
+  PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+  DOMAIN="gui/$(id -u)"
+  if [[ "$UNINSTALL" == 1 ]]; then
+    run_ok launchctl bootout "$DOMAIN/$LABEL"
+    run rm -f "$PLIST"
+  else
+    run mkdir -p "$HOME/Library/LaunchAgents" "$(dirname "$LOG")"
+    printf '+ sed (@LABEL@ @REPO@ @PROD_CHECKOUT@ @LOG@) %s > %s\n' "$TMPL" "$PLIST"
+    if [[ "$APPLY" == 1 ]]; then
+      sed -e "s|@LABEL@|$LABEL|g" -e "s|@REPO@|$REPO|g" \
+          -e "s|@PROD_CHECKOUT@|$PROD_CHECKOUT|g" -e "s|@LOG@|$LOG|g" \
+          "$TMPL" > "$PLIST"
+    fi
+    run_ok launchctl bootout "$DOMAIN/$LABEL"
+    run launchctl bootstrap "$DOMAIN" "$PLIST"
+  fi
+else
+  LOG="${PIN_PROD_FOLLOW_LOG:-$HOME/.cache/pin-prod-follow.log}"
+  LINE="* * * * * PROD_CHECKOUT='$PROD_CHECKOUT' '$SCRIPT' >>'$LOG' 2>&1 # $LABEL"
+  echo "crontab line: $LINE"
+  if [[ "$APPLY" == 1 ]]; then
+    mkdir -p "$(dirname "$LOG")"
+    { crontab -l 2>/dev/null | grep -vF "# $LABEL" || true; [[ "$UNINSTALL" == 1 ]] || echo "$LINE"; } | crontab -
+  fi
+fi

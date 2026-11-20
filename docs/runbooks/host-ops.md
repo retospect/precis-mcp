@@ -29,6 +29,31 @@ Allow line pending Reto in `.claude/settings.json`, next to
 | `play` | The pinned-checkout ansible wrapper: refuses unless `PROD_CHECKOUT` (same `<main-checkout>-prod` derivation / `PRECIS_PROD_CHECKOUT` override as pin-prod) is exactly `origin/prod` (after a fetch), clean, and contains the host-lanes commit `932364d0a` (`HOST_LANES_SHA` env overrides the gate sha). <!-- sha-gate: allow — a gate value the play wrapper checks, not a freshness stamp --> Then runs `ansible-playbook -i <overlay hosts.yml> --vault-password-file deploy/.vault-pass -e precis_{worker,web,embedder}_git_ref=<prod sha> "$@"` from `$PROD_CHECKOUT/deploy` — the SHA_ARGS pin is what keeps a playbook from installing `main` (the 2026-10-15 local-serving-node venv break came from a run out of the main checkout). |
 | `nas-hostkey-check` | ssh-keyscan the NAS (`nas_host`:`nas_ssh_port` from the overlay) and compare the offered ed25519/ecdsa host-key SHA256 fingerprints to the `nas_hostkey_sha256_*` overlay pins. rc 0 = every pinned type prints `OK`; `MISMATCH`/`MISSING`/unreachable exits 1. A scanned type with no pin prints `UNPINNED <type> SHA256:…` — the line to copy into the overlay. |
 
+## Keeping the served checkout on origin/prod
+
+The shared MCP server serves from the prod checkout and restarts when that
+checkout's HEAD moves. The factory deploys as a different OS user that cannot
+write the checkout, and the launcher's `follow_prod` runs only when a session
+starts, so a release did not reach the server until someone ran `pin-prod`
+(gr685985). `pin-prod-follow` is a one-shot that the checkout's OWNER runs every
+minute: it fetches `origin prod` and, if that is a strict descendant of HEAD and
+the tracked tree is clean, detaches HEAD there and prints
+`pin-prod-follow: <checkout> <old12> -> <new12>`; silent when equal. The
+checkout is `PROD_CHECKOUT`, else `PRECIS_MCP_SRC`, else the launcher's
+`<main>-prod`, else pin-prod's derivation (`--print-checkout` shows it).
+
+Install it once, as the user that owns the prod checkout, from the main
+checkout (prints the commands; `--apply` runs them; `--uninstall` removes):
+
+    scripts/host-ops/pin-prod-follow-install --apply
+
+macOS gets a launchd agent rendered from `deploy/host-ops/pin-prod-follow.plist.tmpl`
+(60 s, log in the user's Library/Logs directory); other hosts get a crontab line.
+
+Exit codes: 0 moved or already equal; 2 no checkout; 3 dirty tracked files
+(unchanged); 4 `origin/prod` is not a descendant of HEAD (unchanged); 5 fetch
+failed (retried next minute). A rollback stays a deliberate manual `pin-prod`.
+
 ## Hand-running a play
 
 `scripts/deploy` renders only `redeploy-precis.yml`; every other play is

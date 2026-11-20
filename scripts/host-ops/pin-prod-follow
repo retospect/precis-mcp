@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Keep the prod checkout on origin/prod, forward only (gr685985).
+#
+# The shared MCP server serves from the prod checkout and restarts when that
+# checkout's HEAD moves (src/precis/install_watchdog.py). The factory deploys as
+# another OS user that cannot write the checkout, and the launcher's own
+# follow_prod (deploy/mcp-http/precis-mcp-http-ensure.sh) runs only when a
+# session starts, so nothing moved it overnight. This one-shot is run every
+# minute by the checkout OWNER's scheduler (pin-prod-follow-install): no
+# cross-user write, no sudo. A rollback stays a deliberate manual pin-prod.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF2'
+usage: pin-prod-follow [--dry-run | --print-checkout]
+
+Fetch origin/prod in the prod checkout; if it is a strict descendant of HEAD and
+the tracked tree is clean, detach HEAD there and print one line
+("pin-prod-follow: <checkout> <old12> -> <new12>"). Silent when already equal.
+--dry-run fetches but changes no checkout state. --print-checkout prints the
+resolved checkout and exits.
+Exit: 0 ok/no-op; 2 usage or no checkout; 3 dirty tracked files; 4 origin/prod
+is not a descendant of HEAD (backward/sideways: use pin-prod by hand); 5 fetch
+failed.
+Checkout, first match: PROD_CHECKOUT; PRECIS_MCP_SRC (what the launcher
+serves); <main>-prod where <main> is the path in
+${PRECIS_MCP_HTTP_STATE:-~/.cache/precis-mcp-http}/main-checkout; else pin-prod's
+derivation (PRECIS_PROD_CHECKOUT, <main-checkout>-prod; MAIN_CHECKOUT).
+EOF2
+}
+
+MODE=run
+case "${1:-}" in
+  --help|-h) usage; exit 0 ;;
+  --dry-run) MODE=dry ;;
+  --print-checkout) MODE=print ;;
+  "") ;;
+  *) echo "unknown flag $1 (try --help)" >&2; exit 2 ;;
+esac
+
+# The checkout this script lives in may be the one being moved: keep every
+# command inside a function and exit before bash reads past it.
+resolve_checkout() {
+  local repo common marker
+  if [[ -n "${PROD_CHECKOUT:-}" ]]; then
+    printf '%s\n' "$PROD_CHECKOUT"; return 0
+  fi
+  # Same answer as the launcher's resolve_src_repo, so the two cannot follow
+  # different clones: an explicit PRECIS_MCP_SRC wins, then the recorded main
+  # checkout's -prod sibling.
+  if [[ -n "${PRECIS_MCP_SRC:-}" ]]; then
+    printf '%s\n' "$PRECIS_MCP_SRC"; return 0
+  fi
+  marker="${PRECIS_MCP_HTTP_STATE:-$HOME/.cache/precis-mcp-http}/main-checkout"
+  if [[ -z "${PRECIS_MCP_REPO:-}" && -f "$marker" ]]; then
+    PRECIS_MCP_REPO="$(tr -d '[:space:]' < "$marker")"
+  fi
+  if [[ -n "${PRECIS_MCP_REPO:-}" && -e "${PRECIS_MCP_REPO}-prod/.git" ]]; then
+    printf '%s\n' "${PRECIS_MCP_REPO}-prod"; return 0
+  fi
+  repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  if [[ -z "${MAIN_CHECKOUT:-}" ]]; then
+    common="$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    MAIN_CHECKOUT="$(dirname "${common:-$repo/.git}")"
+  fi
+  # shellcheck source=scripts/lib/env-pointers.sh
+  . "${repo}/scripts/lib/env-pointers.sh"
+  env_prod_checkout_dir "$MAIN_CHECKOUT" || true
+}
+
+main() {
+  local checkout dirty old new
+  checkout="$(resolve_checkout)"
+  [[ -d "$checkout/.git" || -f "$checkout/.git" ]] || {
+    echo "no prod checkout at ${checkout:-<unresolved>} (set PROD_CHECKOUT)" >&2; return 2; }
+  if [[ "$MODE" == print ]]; then
+    printf '%s\n' "$checkout"; return 0
+  fi
+
+  # Bounded network call: git's own low-speed abort plus an ssh connect bound
+  # (macOS ships no `timeout`); never prompt, this runs unattended.
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=20}" \
+    git -C "$checkout" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 \
+      fetch -q origin prod 2>/dev/null || {
+    echo "pin-prod-follow: fetch of origin prod failed in $checkout" >&2; return 5; }
+
+  old="$(git -C "$checkout" rev-parse HEAD)"
+  new="$(git -C "$checkout" rev-parse origin/prod)"
+  [[ "$old" != "$new" ]] || return 0
+
+  dirty="$(git -C "$checkout" --no-optional-locks status --porcelain --untracked-files=no | wc -l | tr -d ' ')"
+  if [[ "$dirty" != 0 ]]; then
+    echo "pin-prod-follow: $checkout has $dirty dirty tracked file(s); not moving" >&2; return 3
+  fi
+  git -C "$checkout" merge-base --is-ancestor "$old" "$new" || {
+    echo "pin-prod-follow: origin/prod ${new:0:12} is not a descendant of HEAD ${old:0:12} in $checkout; not moving (use pin-prod)" >&2; return 4; }
+
+  if [[ "$MODE" == dry ]]; then
+    echo "pin-prod-follow: dry-run: would move $checkout ${old:0:12} -> ${new:0:12}"
+    return 0
+  fi
+  git -C "$checkout" checkout -q --detach origin/prod
+  echo "pin-prod-follow: $checkout ${old:0:12} -> ${new:0:12}"
+}
+
+main
+exit $?
