@@ -21,7 +21,13 @@ log = logging.getLogger(__name__)
 # ingest), while a ``)`` closing prose around the DOI
 # (``(doi:10.x/yy)``) or glued text after it (``10.x/yy)Received``) is
 # typesetting and must stay outside the match.
-_DOI_SUFFIX = r"(?:[^\s<\"}()]|\([^\s<\"}()]+\))+"
+#: SICI tail — the one ``<…>`` legitimate inside a DOI suffix: Wiley
+#: SICI-style DOIs embed ``<page::AID-code>3.0.CO;2-X`` (gr731174; the
+#: AMS sibling form is ``<page:CODE>2.0.CO;2``). Requiring ``<`` +
+#: digits + ``:`` keeps XMP/HTML tags glued after a DOI outside the
+#: match — ``<`` stays excluded from the plain suffix on purpose.
+_DOI_SICI_TAIL = r"<\d+:[^<>\s\"}()]+>"
+_DOI_SUFFIX = r"(?:[^\s<\"}()]|\([^\s<\"}()]+\)|" + _DOI_SICI_TAIL + r")+"
 DOI_REGEX = re.compile(rf"10\.\d{{4,}}/{_DOI_SUFFIX}")
 
 # Prefixed-DOI: the publisher's own "this article's DOI is X" typographic
@@ -645,6 +651,16 @@ _FILENAME_DOI_PATTERNS: list[tuple[re.Pattern[str], Callable[[re.Match[str]], st
             re.IGNORECASE,
         ),
         lambda m: f"10.1103/{m.group(1)}",
+    ),
+    # Trans Tech Publications (Scientific.Net). DOI form:
+    # 10.4028/www.scientific.net/<code>.<vol>.<page> — the DOI itself
+    # embeds the publisher URL, so a filename save replaces BOTH slashes
+    # with ``_`` and the generic pattern below would guess
+    # ``10.4028/www.scientific.net_ddf…`` (pa718070).
+    # Example filename: 10.4028_www.scientific.net_ddf.289-292.609.pdf
+    (
+        re.compile(r"^(10\.4028)_www\.scientific\.net_([\w.\-]+)$", re.IGNORECASE),
+        lambda m: f"{m.group(1)}/www.scientific.net/{m.group(2)}",
     ),
     # Generic "DOI as filename" — common when a user saves a PDF with the
     # DOI in the filename, replacing the ``/`` with ``_`` because the

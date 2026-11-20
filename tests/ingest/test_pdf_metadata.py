@@ -62,6 +62,10 @@ class TestDoiValidation:
         assert _is_valid_doi_format("10.1234/jacs.2023.001")
         assert _is_valid_doi_format("10.1038/nature12345")
         assert _is_valid_doi_format("10.1234/very-long-suffix-with.dots-and-dashes")
+        # gr731174: SICI tail is a legitimate ``<…>`` inside a suffix.
+        assert _is_valid_doi_format(
+            "10.1002/1521-3773(20011217)40:24<4624::aid-anie4624>3.0.co;2-l"
+        )
 
     def test_invalid_doi_formats(self):
         assert not _is_valid_doi_format("not-a-doi")
