@@ -283,6 +283,50 @@ class TestPureHelpers:
         with pytest.raises(BadInput, match="dimension_kind"):
             validate_taxon_meta({"dimension_kind": "volume"})
 
+    def test_explicitly_distinguished(self) -> None:
+        from precis.taxonomy.nodes import explicitly_distinguished
+
+        train = {
+            "name": "training-set classification accuracy",
+            "excludes": ["held-out test performance → tn711338"],
+        }
+        test = {"name": "held-out test accuracy", "aliases": ["test accuracy"]}
+        assert explicitly_distinguished(train, test, b_handle="tn711338")
+        # …and the reverse direction: the test node's excludes name the put.
+        test_exc = {
+            "name": "held-out test accuracy",
+            "excludes": ["the training-set classification accuracy is in-sample only"],
+        }
+        assert explicitly_distinguished(train, test_exc)
+        # No boundary entries, or entries that name nobody: not distinguished.
+        assert not explicitly_distinguished(train, {"name": "held-out test accuracy"})
+        vague = {"name": "x", "excludes": ["unrelated near-miss → tn999999"]}
+        assert not explicitly_distinguished(train, vague)
+        # Short aliases cannot match inside unrelated words.
+        assert not explicitly_distinguished(
+            {"excludes": ["et"]},
+            {"name": "wet etching", "aliases": ["et"]},
+        )
+
+    def test_explicit_distinction_requires_a_whole_handle(self) -> None:
+        from precis.taxonomy.nodes import explicitly_distinguished
+
+        proposed = {"excludes": ["excludes tn711338"]}
+        candidate = {"name": "held-out test accuracy"}
+        assert not explicitly_distinguished(proposed, candidate, b_handle="tn71133")
+        assert explicitly_distinguished(proposed, candidate, b_handle="tn711338")
+
+    def test_explicit_distinction_requires_a_whole_name_or_alias(self) -> None:
+        from precis.taxonomy.nodes import explicitly_distinguished
+
+        candidate = {"name": "carbon concentration", "aliases": ["carb", "C(%)"]}
+        assert not explicitly_distinguished({"excludes": ["carbon"]}, candidate)
+        assert not explicitly_distinguished(
+            {"excludes": ["carbon concentrations"]}, candidate
+        )
+        assert explicitly_distinguished({"includes": ["see (CARB)."]}, candidate)
+        assert explicitly_distinguished({"excludes": ["see C(%)."]}, candidate)
+
     def test_instance_of_relation_registered_with_inverse(self, store: Any) -> None:
         from tests.workers._helpers import seed_ref
 
@@ -1481,6 +1525,151 @@ class TestSiblingRefusal:
         assert lexical_overlap("alpha beta gamma", "alpha beta gamma") == 1.0
         assert lexical_overlap("alpha beta gamma", "delta epsilon zeta") == 0.0
         assert lexical_overlap("", "alpha") == 0.0
+
+
+class TestBoundaryDistinction:
+    """gr720773: an includes/excludes entry naming the near node lifts the
+    mint-time refusal — a cosine near-miss cannot see that one side
+    explicitly excludes the other (training-set fit vs held-out test
+    performance blocked at distances 0.17/0.20)."""
+
+    PARA = TestSiblingRefusal.PARA
+    NEAR_TEXT = (
+        "bdist scanning tip device — an instrument that senses "
+        "surface forces with a sharp tip on a flexible beam"
+    )
+
+    def _rig(self, store: Any, monkeypatch: Any) -> tuple[Any, int, dict[str, int]]:
+        """Parent + near-sibling fixture, an embedder-backed handler, and a
+        vector leg that reports the current ``near`` node at the gripe's
+        distance (0.17) on every query — sibling leg and all-taxa dedup leg
+        alike. ``near['id']`` is mutable so a test can retarget it."""
+        from precis.dispatch import Hub
+        from precis.embedder import MockEmbedder
+        from precis.handlers import taxon as taxon_mod
+
+        root = _mk(store, "bdist technique")
+        afm = _mk(store, "bdist probe microscope", definition=self.PARA, under=root)
+        h = taxon_mod.TaxonHandler(
+            hub=Hub(store=store, embedder=MockEmbedder(dim=store.embedding_dim()))
+        )
+        near = {"id": afm}
+
+        def fake_semantic(**kw: Any) -> list[Any]:
+            ref = store.get_ref(kind="taxon", id=near["id"])
+            scope = kw.get("include_ref_ids")
+            return (
+                [] if scope is not None and ref.id not in scope else [(None, ref, 0.17)]
+            )
+
+        monkeypatch.setattr(store.chunks, "search_chunks_semantic", fake_semantic)
+        return h, root, near
+
+    def test_excludes_by_handle_lifts_sibling_refusal(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        h, root, near = self._rig(store, monkeypatch)
+        rid = _created_id(
+            h.put(
+                text=self.NEAR_TEXT,
+                link=f"taxon:{root}",
+                rel="specialises",
+                meta={
+                    "excludes": [
+                        f"surface-force sensing on test samples → tn{near['id']}"
+                    ]
+                },
+            )
+        )
+        assert store.get_ref(kind="taxon", id=rid) is not None
+
+    def test_excludes_by_name_lifts_sibling_refusal(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        h, root, _near = self._rig(store, monkeypatch)
+        rid = _created_id(
+            h.put(
+                text=self.NEAR_TEXT,
+                link=f"taxon:{root}",
+                rel="specialises",
+                meta={
+                    "excludes": [
+                        "the bdist probe microscope measures test samples; "
+                        "this one does not"
+                    ]
+                },
+            )
+        )
+        assert store.get_ref(kind="taxon", id=rid) is not None
+
+    def test_sibling_excluding_the_put_lifts_refusal(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        h, root, near = self._rig(store, monkeypatch)
+        # The stored sibling's excludes name the incoming node.
+        sweep = _mk(
+            store,
+            "bdist calibration sweep",
+            definition=self.PARA,
+            under=root,
+            meta={"excludes": ["the bdist scanning tip device is in-sample only"]},
+        )
+        near["id"] = sweep
+        rid = _created_id(
+            h.put(
+                text=self.NEAR_TEXT,
+                link=f"taxon:{root}",
+                rel="specialises",
+            )
+        )
+        assert store.get_ref(kind="taxon", id=rid) is not None
+
+    def test_unrelated_boundary_text_still_refuses(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        h, root, _afm = self._rig(store, monkeypatch)
+        with pytest.raises(BadInput, match="reads like an existing sibling"):
+            h.put(
+                text=self.NEAR_TEXT,
+                link=f"taxon:{root}",
+                rel="specialises",
+                meta={"excludes": ["an unrelated near-miss → tn999999"]},
+            )
+
+    def test_same_name_still_refused_even_when_excluded(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # The boundary lift applies to the embedding leg only: an exact
+        # name or alias hit is a duplicate ("use the existing node").
+        h, root, near = self._rig(store, monkeypatch)
+        name = store.get_ref(kind="taxon", id=near["id"]).meta["name"]
+        with pytest.raises(BadInput, match="same name/alias"):
+            h.put(
+                text=f"{name} — reworded but named the same",
+                link=f"taxon:{root}",
+                rel="specialises",
+                meta={"excludes": [f"not the same term → tn{near['id']}"]},
+            )
+
+    def test_dedup_leg_also_honours_boundary(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # No link=/rel=: the sibling check does not run; the all-taxa
+        # embedding dedup is the only gate, and it honours the boundary too.
+        h, _root, near = self._rig(store, monkeypatch)
+        with pytest.raises(BadInput, match="looks like an existing node"):
+            h.put(text=self.NEAR_TEXT)
+        rid = _created_id(
+            h.put(
+                text=self.NEAR_TEXT,
+                meta={
+                    "excludes": [
+                        f"surface-force sensing on test samples → tn{near['id']}"
+                    ]
+                },
+            )
+        )
+        assert store.get_ref(kind="taxon", id=rid) is not None
 
 
 class TestTaxonEdit:

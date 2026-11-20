@@ -62,6 +62,7 @@ from precis.taxonomy.nodes import (
     EDITABLE_KEYS,
     STATUS_PROPOSED,
     dimension_clash,
+    explicitly_distinguished,
     initial_taxon_meta,
     matches_term,
     mirror_namespace,
@@ -460,6 +461,7 @@ class TaxonHandler(NumericRefHandler):
                     reasons.setdefault(rid, f"same name/alias as {term!r}")
         # Embedding leg: degrades to lexical-only on a missing or failing
         # embedder (query_vec_for) or a failing vector query.
+        name_hits = set(reasons)
         card = self._card_text_for(text, meta)
         embedder = getattr(self.hub, "embedder", None) if embedding else None
         vec = query_vec_for(embedder, card, None)
@@ -480,13 +482,27 @@ class TaxonHandler(NumericRefHandler):
                     hit.id, f"embedding neighbour, cosine distance {dist:.2f}"
                 )
         keep: list[int] = []
+        a_handle = (
+            handle_registry.format_handle(self.kind, exclude) if exclude else None
+        )
         for rid in reasons:
             if rid == exclude:
                 continue
             ref = self.store.get_ref(kind=self.kind, id=rid)
             if ref is None or mirror_namespace(ref.meta or {}) != ns:
                 continue
-            if not _dimension_clash(meta, ref.meta or {}):
+            if not _dimension_clash(meta, ref.meta or {}) and (
+                rid in name_hits
+                or not explicitly_distinguished(
+                    meta,
+                    ref.meta or {},
+                    a_handle=a_handle,
+                    b_handle=handle_registry.format_handle(self.kind, rid),
+                )
+            ):
+                # An exact identity hit is a duplicate even when the
+                # put excludes the node; a boundary-named embedding neighbour
+                # is a deliberate distinction, not a duplicate (gr720773).
                 keep.append(rid)
         if not keep:
             return
@@ -497,7 +513,8 @@ class TaxonHandler(NumericRefHandler):
             next=(
                 "use the existing node, or repeat the put with dedup=False to "
                 "mint a distinct one anyway (a different dimension_kind/"
-                "si_vector also avoids this check)"
+                "si_vector also avoids this check). For a distinct embedding "
+                "neighbour, name it by handle, name or alias in meta.excludes."
             ),
         )
 
@@ -515,7 +532,10 @@ class TaxonHandler(NumericRefHandler):
         """Nearest-sibling refusal: a node minted with ``link=<parent>``,
         ``rel='specialises'`` is compared with that parent's existing
         children; one whose definition card is too similar is refused with
-        its handle + path. The create-time link carries no ``meta.axis``, so
+        its handle + path. A sibling named in the put's ``includes``/
+        ``excludes`` (or naming the put there) is explicitly distinguished
+        and never refuses (gr720773). The create-time link carries no
+        ``meta.axis``, so
         every child of the parent is compared (an axis-blind superset of
         "same axis"); ``dedup=False`` overrides. Embedding leg when an
         embedder answers (siblings not yet embedded are simply not seen);
@@ -578,12 +598,21 @@ class TaxonHandler(NumericRefHandler):
                 if score >= SIBLING_MIN_OVERLAP:
                     reasons[sid] = f"word overlap {score:.2f}"
         ns = mirror_namespace(meta)
+        a_handle = (
+            handle_registry.format_handle(self.kind, exclude) if exclude else None
+        )
         keep = [
             r
             for r in reasons
             if (ref := refs.get(r)) is not None
             and mirror_namespace(ref.meta or {}) == ns
             and not _dimension_clash(meta, ref.meta or {})
+            and not explicitly_distinguished(
+                meta,
+                ref.meta or {},
+                a_handle=a_handle,
+                b_handle=handle_registry.format_handle(self.kind, r),
+            )
         ]
         if not keep:
             return
@@ -594,8 +623,8 @@ class TaxonHandler(NumericRefHandler):
             f"{handle} {name}:\n" + "\n".join(lines[:_DEDUP_SHOW]),
             next=(
                 "use the sibling (or add your wording as its alias); if it is "
-                "truly distinct, sharpen the definition to name the sibling it "
-                "excludes, or repeat the put with dedup=False"
+                "truly distinct, name the sibling by handle, name or alias in "
+                "meta.excludes, or repeat the put with dedup=False"
             ),
         )
 

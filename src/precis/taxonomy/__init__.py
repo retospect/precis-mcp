@@ -63,6 +63,11 @@ Boundary examples (``includes`` / ``excludes``) render on get but stay
 out of the searchable card: near-miss names must not attract sibling
 queries.
 
+Dedup uses a boundary entry that names the other node to distinguish near
+matches. The boundary supplies scope that card similarity misses, such as
+the distinction between training and held-out test accuracy (gr720773).
+Exact identity checks still apply.
+
 **No writes.** Stages emit files under the campaign scratch directory. The
 `taxon` node and `measures` row writers arrive as a thin adapter once
 `measures-substrate.md` ships; until then nothing is

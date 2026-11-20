@@ -65,9 +65,11 @@ like one of them: the refusal lists each sibling's handle, path and the reason
 embedder is down). The create-time link carries no axis, so every child of the
 parent is compared. A near sibling gets this refusal, not the duplicate one
 above; only an exact name/alias match under the same parent reads as a
-duplicate. The cutoffs are uncalibrated first guesses. Use the
-sibling, or sharpen your definition so it names the sibling it excludes
-(`Excludes: ...`), or `dedup=False` once you are sure they differ.
+duplicate. To mint a distinct near match, name the existing node by its
+whole handle, name or alias in a `meta.excludes` entry. For example,
+`meta={"excludes": ["held-out test accuracy (tn711338)"]}` distinguishes
+training-set accuracy. A named boundary in either node's `includes` or
+`excludes` clears the near match. Exact identity checks still apply.
 
 ## meta keys
 

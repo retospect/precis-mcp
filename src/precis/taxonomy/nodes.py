@@ -155,6 +155,51 @@ def dimension_clash(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return ka == "si" and a.get("si_vector") != b.get("si_vector")
 
 
+def _boundary_entries(meta: dict[str, Any]) -> list[str]:
+    """Every ``includes``/``excludes`` entry, as strings (other shapes are
+    refused by :func:`validate_taxon_meta` before a node is stored)."""
+    out: list[str] = []
+    for key in BOUNDARY_KEYS:
+        for entry in meta.get(key) or []:
+            out.append(str(entry))
+    return out
+
+
+def explicitly_distinguished(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    *,
+    a_handle: str | None = None,
+    b_handle: str | None = None,
+) -> bool:
+    """True when a boundary entry (``includes``/``excludes``) on either side
+    names the other — an explicit writer-made distinction that must not read
+    as a duplicate. An embedding near-miss between "classification accuracy
+    on the training set" and "classification accuracy on held-out test
+    samples" is exactly the pair the boundary keys exist for: cosine
+    similarity cannot see that one ``excludes`` the other (gr720773).
+
+    A side names the other by a whole handle (``tn<id>``) or a whole
+    normalized name/alias of at least four characters. Word boundaries
+    keep partial handles and words from clearing an unrelated candidate.
+    """
+    for meta, other, handle in ((a, b, b_handle), (b, a, a_handle)):
+        entries = [normalize_name(e) for e in _boundary_entries(meta)]
+        if not entries:
+            continue
+        names = [other.get("name") or "", *(other.get("aliases") or [])]
+        terms = [
+            name for value in names if len(name := normalize_name(str(value))) >= 4
+        ]
+        if handle:
+            terms.append(handle.lower())
+        for term in terms:
+            pattern = re.compile(rf"(?<!\w){re.escape(term)}(?!\w)")
+            if any(pattern.search(entry) for entry in entries):
+                return True
+    return False
+
+
 def mirror_namespace(meta: dict[str, Any]) -> str | None:
     """The ``file_mirror.namespace`` of a file-mirrored node, else ``None``.
 
