@@ -14682,7 +14682,9 @@ def test_salvage_commits_with_the_stored_fallback_message(
     tree = _tree_with_finished_edits(tmp_path, message=False)
     monkeypatch.setattr(land_slice, "_worktree_gitdir", lambda t: t / ".git")
     monkeypatch.setattr(
-        run_slice, "_skipped_commit_stamp", lambda store, todo_id: "fix(x): y (td1)\n"
+        run_slice,
+        "_skipped_commit_stamp",
+        lambda store, todo_id, **_kw: "fix(x): y (td1)\n",
     )
     monkeypatch.setattr(
         run_slice, "_deny_reason", lambda tree, deny, base="origin/main": (None, [])
@@ -14708,7 +14710,9 @@ def test_salvage_ignores_a_tree_without_the_worker_stamp(
     ``commit_skipped`` on the newest job the tree is not committed at
     all — reuse resets it as any other dirty tree would be."""
     tree = _tree_with_finished_edits(tmp_path)
-    monkeypatch.setattr(run_slice, "_skipped_commit_stamp", lambda store, todo_id: None)
+    monkeypatch.setattr(
+        run_slice, "_skipped_commit_stamp", lambda store, todo_id, **_kw: None
+    )
 
     note = run_slice._salvage_skipped_commit(tree, 1, store=_Store())
 
@@ -14731,7 +14735,9 @@ def test_salvage_refuses_a_deny_path_hit(
     caller routes it as a real failure, not an infra wait."""
     tree = _tree_with_finished_edits(tmp_path)
     monkeypatch.setattr(
-        run_slice, "_skipped_commit_stamp", lambda store, todo_id: "fix(x): y (td1)\n"
+        run_slice,
+        "_skipped_commit_stamp",
+        lambda store, todo_id, **_kw: "fix(x): y (td1)\n",
     )
     monkeypatch.setattr(
         run_slice,
@@ -14775,6 +14781,135 @@ def test_ensure_worktree_withholds_the_reset_when_salvage_fails(
         run_slice._ensure_worktree(root, 7)
 
     assert exc.value.attempt_free == "index-lock" and reset == []
+
+
+def _job_pool_store(metas: dict[int, dict[str, Any]]) -> Any:
+    """A store stand-in for :func:`run_slice._skipped_commit_stamp`:
+    ``.pool.connection()`` answers the job-meta query from ``metas``
+    (job ref_id → meta, all parented to the queried todo)."""
+
+    class _Cur:
+        def __init__(self, row: Any) -> None:
+            self._row = row
+
+        def fetchone(self) -> Any:
+            return self._row
+
+    class _Conn:
+        def __enter__(self) -> _Conn:
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+        def execute(self, _sql: str, params: tuple[Any, ...]) -> _Cur:
+            exclude = params[1] if len(params) > 1 else None
+            newest = max((r for r in metas if r != exclude), default=None)
+            return _Cur((metas[newest],) if newest is not None else None)
+
+    return types.SimpleNamespace(pool=types.SimpleNamespace(connection=_Conn))
+
+
+def test_skipped_commit_stamp_reads_the_job_before_this_submit() -> None:
+    """td739684 (review td700716): at reuse the newest job row is the
+    running submit itself — read unfiltered it finds no ``commit_skipped``
+    and the salvage never fires. ``job_id`` skips it so the stamp comes
+    from the job this submit retries."""
+    store = _job_pool_store(
+        {
+            901: {
+                "commit_skipped": "index-lock",
+                "commit_skipped_msg": "fix(x): y (td7)\n",
+            },
+            902: {},  # the running submit
+        }
+    )
+
+    assert run_slice._skipped_commit_stamp(store, 7, job_id=902) == "fix(x): y (td7)\n"
+    # The un-excluded read sees the running submit and finds nothing —
+    # the bug this param fixes.
+    assert run_slice._skipped_commit_stamp(store, 7) is None
+
+
+def test_ensure_worktree_salvage_uses_the_origin_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td739684 (review td700716): the deny revalidation diffs against
+    the same origin ref the poll used — an unprefixed ``release/r<N>``
+    names no local ref at all, and a bare ``main`` a stale local
+    branch. ``job_id`` rides along so the stamp read skips the running
+    submit."""
+    root = tmp_path / "root"
+    tree = root / ".claude" / "worktrees" / "slice-td7"
+    tree.mkdir(parents=True)
+    monkeypatch.setattr(run_slice, "_adopt_legacy_branch", lambda r, t: None)
+    seen: dict[str, Any] = {}
+
+    def _salvage(_t: Path, _i: int, **kw: Any) -> None:
+        seen.update(kw)
+        return None
+
+    monkeypatch.setattr(run_slice, "_salvage_skipped_commit", _salvage)
+    monkeypatch.setattr(run_slice, "_reset_reused_worktree", lambda t, b: None)
+
+    run_slice._ensure_worktree(root, 7, "release/r7", job_id=902)
+
+    assert seen["base"] == "origin/release/r7"
+    assert seen["job_id"] == 902
+
+
+def test_salvage_deny_revalidation_diffs_the_origin_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prefixed base reaches :func:`run_slice._deny_reason` — the
+    check re-runs against ``origin/<base>``, never a local branch."""
+    tree = _tree_with_finished_edits(tmp_path)
+    monkeypatch.setattr(
+        run_slice,
+        "_skipped_commit_stamp",
+        lambda store, todo_id, **_kw: "fix(x): y (td1)\n",
+    )
+    seen: list[str] = []
+
+    def _deny(_t: Path, _deny_paths: Any, base: str = "origin/main") -> Any:
+        seen.append(base)
+        return None, []
+
+    monkeypatch.setattr(run_slice, "_deny_reason", _deny)
+
+    note = run_slice._salvage_skipped_commit(
+        tree, 1, store=_Store(), base="origin/release/r7"
+    )
+
+    assert seen == ["origin/release/r7"]
+    assert note is not None and note.startswith(run_slice.WORKER_COMMITTED)
+
+
+def test_kimi_poll_lock_blocked_commit_stamps_the_fallback_message(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td739684 (review td700716): a lock-skipped worker commit records
+    the fallback message it would have used (``commit_skipped_msg``) so
+    the next submit's salvage can commit a session that left no
+    ``scratch/commit-msg.txt`` — never assigned, the stamped message was
+    missing and the salvage silently dropped the edits."""
+    note = f"{run_slice.COMMIT_SKIPPED_LOCK} (Unable to create '.git/index.lock')"
+    monkeypatch.setattr(run_slice, "_commit_for_session", lambda *_a, **_k: note)
+    store = _Store()
+    store.add_todo(42, "Build")
+    ctx, handle = _kimi_lane_submit(store, seams, monkeypatch)
+    assert handle is not None
+    _finish(
+        handle,
+        0,
+        '{"role":"assistant","content":"Commit blocked by read-only `.git`"}\n',
+    )
+    pctx = _poll_ctx(store, ctx)
+
+    assert run_slice.poll(pctx, handle) is True
+
+    assert pctx.meta_set["commit_skipped"] == "index-lock"
+    assert pctx.meta_set["commit_skipped_msg"].startswith("fix(slice):")
 
 
 # ── skill-editor lane (gr657065) ──────────────────────────────────────
