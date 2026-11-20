@@ -87,10 +87,14 @@ restart it notifies.
 
 ## macOS hosts — groups, handlers, plists
 
-- There is no `root` group on macOS. `ansible.builtin.file` without an
-  explicit `group` makes new files inherit the parent directory's group —
-  on a shared ops directory that can be `staff`, not the service account.
-  Set `group:` deliberately wherever the ownership matters.
+- There is no `root` group on macOS; the root-equivalent group is
+  `wheel`, so an explicit `group: root` task fails outright, not just
+  silently mis-owns the file. `ansible.builtin.file` without an explicit
+  `group` makes new files inherit the parent directory's group — on a
+  shared ops directory that can be `staff`, not the service account. Set
+  `group:` deliberately wherever the ownership matters, keyed on
+  `os_family == 'darwin'` to resolve to `wheel`, as
+  `deploy/roles/db_exporters/tasks/main.yml` does.
 - Same-named Darwin and Linux handlers in one role silently skip the
   second: ansible runs only the first handler matching a notified name,
   so the Linux restart never fired (gr494656). The enforced shape is
