@@ -6,6 +6,9 @@ Adsorbate stars share the literal-star decision with Word and house-style
 lint. LaTeX emits remaining prose stars with an explicit centered-star
 command so automatic notation and author-escaped stars use the same glyph;
 protected math and code keep their original star syntax.
+Draft lint and both exporters share the same math plausibility check.
+Its numeric arithmetic exception requires a binary operator so a price
+followed by a parenthesized year still gets the currency check.
 PDF exports allow five minutes by default for large drafts and their
 bibliography/glossary passes (gr684953); ``PRECIS_LATEXMK_TIMEOUT_S`` or
 an explicit compile timeout can override that budget.

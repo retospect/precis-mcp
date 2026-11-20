@@ -320,6 +320,14 @@ def _math_braces_balanced(span: str) -> bool:
     return depth == 0
 
 
+#: Restrict the arithmetic exception to an operand-shaped body containing
+#: an explicit binary operator. Parentheses alone also occur in numeric
+#: currency prose (e.g. ``$10 (2025) $12 (2026)``). The operand-shaped ends
+#: exclude ranges whose closing dollar cuts off the second operand.
+_MATH_ARITHMETIC = re.compile(r"[+-]?[\d(][\d\s()+*/.-]*[\d)]")
+_MATH_BINARY_OPERATOR = re.compile(r"[\d)]\s*[+*/-]\s*[+-]?[\d.(]")
+
+
 def _math_plausible(span: str) -> bool:
     """Is a ``$…$`` candidate actually math — or a mispairing of two
     currency/stray dollars? LLM-authored prose mixes ``$10–50 per
@@ -329,7 +337,9 @@ def _math_plausible(span: str) -> bool:
     "Display math should end with $$" fatals downstream. A span that is
     long, or wordy without a single mathy character, is not math — its
     dollars fall through to the escaper and render as the literal ``$``
-    the author meant."""
+    the author meant. A numeric arithmetic span such as ``$(6 - 9)$``
+    can bypass the whitespace heuristic when it has an explicit
+    binary operator between operands."""
     body = span.strip("$")
     if len(body) > 120:
         return False
@@ -338,6 +348,9 @@ def _math_plausible(span: str) -> bool:
         # alternation glues two stray author dollars around real spans
         # ($$2^30$ ($∼$$) — verbatim passthrough would emit an unpaired $.
         return False
+    stripped = body.strip()
+    if _MATH_ARITHMETIC.fullmatch(stripped) and _MATH_BINARY_OPERATOR.search(stripped):
+        return True
     return not (body.count(" ") >= 2 and not re.search(r"[\\^_={}<>≈±×·]", body))
 
 

@@ -378,6 +378,20 @@ def test_lint_math_spans_mirrors_the_demotion_predicates() -> None:
     assert "…" in c and len(c) < 200
 
 
+def test_numeric_arithmetic_and_currency_years() -> None:
+    arithmetic = "The differences are $(6 - 9)$ and $(6 - 6) = 0$."
+    assert latex.lint_math_spans(arithmetic) == []
+    rendered, _ = _inline(arithmetic)
+    assert "$(6 - 9)$" in rendered
+    assert "$(6 - 6) = 0$" in rendered
+
+    prices = "$10 (2025) $12 (2026)"
+    (warning,) = latex.lint_math_spans(prices)
+    assert "prose/currency" in warning
+    rendered, _ = _inline(prices)
+    assert rendered == r"\$10 (2025) \$12 (2026)"
+
+
 def test_standalone_equation_detection() -> None:
     # Exactly one $$…$$ span filling the whole (stripped) chunk text.
     assert latex._standalone_equation("$$E = mc^2$$") == ("E = mc^2", False)
