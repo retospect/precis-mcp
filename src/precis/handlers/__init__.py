@@ -58,6 +58,11 @@ comment in full and summarize older rows (:mod:`precis.handlers._comment_timelin
 
 Paper ``view='measures'``: :mod:`precis.handlers._paper_measures`.
 
+Paper ``view='sentences'`` reuses the anchor splitter. It fits pages after
+runtime reserves suffix bytes so the continuation names the first unseen
+span. Marked excerpts keep oversized sentences from stalling the walk
+(:mod:`precis.handlers._paper_sentences`).
+
 Paper ``view="lookup"`` bypasses acquisition and processing marks. Held
 records can be stubs.
 

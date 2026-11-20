@@ -215,7 +215,7 @@ def test_pcb_sources_through_sandbox_read_gate(
     async def get(kind: str, id: str) -> CallToolResult:
         assert kind == "datasheet"
         reads.append(("get", id))
-        ref, chunk, view = _parse_paper_id(id, "datasheet")
+        ref, chunk, view, _sw = _parse_paper_id(id, "datasheet")
         assert view is None
         # A retired datasheet handle can redirect to another kind: get
         # succeeds, but the kind-scoped status below must reject it.

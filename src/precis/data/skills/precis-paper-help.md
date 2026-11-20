@@ -586,10 +586,12 @@ paper's own reference list), `bibtex` (`cite/bib`), `ris` (`cite/ris`),
 `ops` (full-state JSON dump — see precis-paper-ref-help), `pdf_link`
 (signed download URL for the held PDF — see precis-paper-ref-help). The
 `view=` kwarg and `slug/<view>` path are equivalent (except for DOIs — see
-above). All are ref-level: a `pc<id>` chunk handle takes no `view=` —
+above). All are ref-level except `sentences`, which is chunk-scoped: a
+`pc<id>` chunk handle takes no other `view=` —
 `get(id='pc512', view='abstract')` is refused; use the paper handle
-(`pa<id>`) for every view but `'toc'` and `'sentences'`, which also scope
-to a chunk or `pc<id>` handle.
+(`pa<id>`) for every view but `'toc'` (which also scopes to
+`pa<id>~N..M`) and `'sentences'` (which needs the chunk —
+`id='pc512'` or `pa<id>~N`).
 
 ## Find and read a paper's tables and extracted measures
 
@@ -625,6 +627,28 @@ get(kind="paper", id="pa40", view="tables", args={"match": "sticking"})
 get(kind="paper", id="pa40", view="measures")
 ```
 
+## Number a chunk's sentences for a measure anchor
+## Verify a sentence-span anchor before writing a measure
+## Which sentence is 's3' on this chunk?
+
+`view='sentences'` is the chunk-scoped numbered-sentence read, built for
+verifying a measure anchor before writing it: `get(id='pc512',
+view='sentences')` (or `get(id='pa40~63', view='sentences')`, the path
+form `get(id='pa40~63/sentences')`, or a `~A..B` range) renders the
+block split into sentence spans by the anchor
+splitter, one `s<N>: …` line per span, numbered from `s0` per chunk.
+The path form routes without `kind=` too — `get(id='pc512/sentences')`
+self-identifies. The `s<N>` you see is the `span` a measure anchor
+names — `anchor={'chunk': 'pc512', 'anchor_scheme': 'sentence', 'span': 's2'}`.
+On the paper handle alone it refuses and names the chunk-addressed call —
+sentence spans are per-chunk. When a page reaches the response budget,
+follow the printed `rest: get(id='pa40~63/sentences/s40..80')` window to
+continue with the original numbering. Use `s40..` to read from s40 to
+the end of the chunk. If one sentence exceeds the page budget, the read
+marks it as an excerpt and continues with the following sentence. Verify
+a literal beyond the excerpt against the stored chunk text.
+Recipe and write path: `precis-measure-help` §Evidence.
+
 ## Find a passage in a paper I have
 ## Locate where a topic comes up in a specific paper
 ## Where does this paper discuss X?
@@ -657,7 +681,8 @@ their handles (cite an SI as its parent, never directly); read on an SI
 ref itself it names the parent. `view='sentences'` splits a block into
 numbered sentences for precise quoting — it needs a chunk selector
 (`pa<id>~N`/`~N..M`) or a `pc<id>` chunk handle. Sentence text comes
-back verbatim so it matches the stored block.
+back verbatim so it matches the stored block, numbered `s<N>` by the
+anchor splitter (see the measure-anchor read above).
 
 For a citation slug, the view paths are `/lookup`, `/abstract`, `/toc`,
 `/summaries`, `/refs` (also `/references`), `/si`, `/sentences`,

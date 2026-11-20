@@ -5847,6 +5847,27 @@ class DispatchMixin(RuntimeShape):
                     )
                     self.store.emit_hint(chunk_owner_hint(ident, owner))
                     return True
+                # A view path on a chunk handle (``pc512/sentences``) is a
+                # chunk-scoped read of the OWNING kind, not a further
+                # selector on the chunk — route it as
+                # ``<public_id>~<ord>/view`` so the handler's combined
+                # form renders it (gr716229). Without this the kindless
+                # single and batch reads of that shape declined here and
+                # died in bare-slug inference. Kinds that don't understand
+                # ``~ord`` grammar never reach this branch (the supports
+                # check above); an unsupported view still refuses
+                # honestly in the handler with its options list.
+                if (
+                    suffix.startswith("/")
+                    and resolved.chunk_ord is not None
+                    and verb != "delete"
+                    and self._kind_supports_chunk_selectors(
+                        resolved.kind, resolved.public_id, resolved.ref_id
+                    )
+                ):
+                    args["kind"] = resolved.kind
+                    args["id"] = f"{resolved.public_id}~{resolved.chunk_ord}{suffix}"
+                    return True
                 return False
             args["kind"] = resolved.kind
             args["id"] = f"{resolved.public_id}~{resolved.chunk_ord}"
@@ -6327,9 +6348,19 @@ class DispatchMixin(RuntimeShape):
         s = raw.strip()
         if not s:
             return None
+
+        def strip_punctuation(ident: str) -> str:
+            head = ident.strip(_ID_PUNCT_TAIL)
+            # Two trailing dots are part of an open-ended sentence window.
+            if ident.rstrip(_ID_PUNCT_TAIL.replace(".", "")).endswith(
+                ".."
+            ) and re.search(r"/sentences/s[0-9]+$", head):
+                return head + ".."
+            return head
+
         m = re.search(r"\s", s)
         if m is not None:
-            head = s[: m.start()].strip(_ID_PUNCT_TAIL)
+            head = strip_punctuation(s[: m.start()])
             if (
                 head
                 and self._id_junk_tail(s[m.start() :])
@@ -6337,7 +6368,7 @@ class DispatchMixin(RuntimeShape):
             ):
                 return head
             return None
-        head = s.strip(_ID_PUNCT_TAIL)
+        head = strip_punctuation(s)
         if head and head != s and self._id_junk_head_ok(head, kind):
             return head
         return None

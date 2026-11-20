@@ -29,44 +29,44 @@ from tests.hintcheck import assert_hints_round_trip, extract_hints
 
 class TestParsePaperId:
     def test_plain_slug(self) -> None:
-        assert _parse_paper_id("wang2020state") == ("wang2020state", None, None)
+        assert _parse_paper_id("wang2020state") == ("wang2020state", None, None, None)
 
     def test_chunk_single(self) -> None:
-        slug, rng, view = _parse_paper_id("wang2020state~38")
+        slug, rng, view, _sw = _parse_paper_id("wang2020state~38")
         assert slug == "wang2020state"
         assert rng == (38, 38)
         assert view is None
 
     def test_chunk_range(self) -> None:
-        slug, rng, view = _parse_paper_id("wang2020state~38..42")
+        slug, rng, view, _sw = _parse_paper_id("wang2020state~38..42")
         assert slug == "wang2020state"
         assert rng == (38, 42)
         assert view is None
 
     def test_view_path_cite_bib(self) -> None:
-        slug, rng, view = _parse_paper_id("wang2020state/cite/bib")
+        slug, rng, view, _sw = _parse_paper_id("wang2020state/cite/bib")
         assert slug == "wang2020state"
         assert rng is None
         assert view == "bibtex"
 
     def test_view_path_abstract(self) -> None:
-        _, _, view = _parse_paper_id("wang2020state/abstract")
+        _, _, view, _ = _parse_paper_id("wang2020state/abstract")
         assert view == "abstract"
 
     def test_view_path_toc(self) -> None:
-        _, _, view = _parse_paper_id("wang2020state/toc")
+        _, _, view, _ = _parse_paper_id("wang2020state/toc")
         assert view == "toc"
 
     def test_range_with_view_combo(self) -> None:
         """Phase 3.5: ``slug~A..B/toc`` is the drill-down form."""
-        slug, rng, view = _parse_paper_id("wang2020state~46..105/toc")
+        slug, rng, view, _sw = _parse_paper_id("wang2020state~46..105/toc")
         assert slug == "wang2020state"
         assert rng == (46, 105)
         assert view == "toc"
 
     def test_single_chunk_with_view_combo(self) -> None:
         """``slug~38/toc`` is also legal (TOC scoped to a single block)."""
-        slug, rng, view = _parse_paper_id("wang2020state~38/toc")
+        slug, rng, view, _sw = _parse_paper_id("wang2020state~38/toc")
         assert rng == (38, 38)
         assert view == "toc"
 
@@ -87,7 +87,7 @@ class TestParsePaperId:
         """gr334152: a card-variant chunk's ord (``-1``) must parse — a
         search-emitted ``pc<id>`` handle for one round-trips through
         ``slug~-1`` (see ``dispatch._maybe_infer_kind_from_handle``)."""
-        slug, rng, view = _parse_paper_id("wang2020state~-1")
+        slug, rng, view, _sw = _parse_paper_id("wang2020state~-1")
         assert slug == "wang2020state"
         assert rng == (-1, -1)
         assert view is None
@@ -95,6 +95,23 @@ class TestParsePaperId:
     def test_inverted_range_rejected(self) -> None:
         with pytest.raises(BadInput, match="empty chunk range"):
             _parse_paper_id("wang2020state~5..3")
+
+    def test_sentences_window_combo(self) -> None:
+        """gr716229: ``slug~38/sentences/s40..80`` is the resumable
+        numbered read — window parsed separately, chunk-local indices."""
+        slug, rng, view, sw = _parse_paper_id("wang2020state~38/sentences/s40..80")
+        assert slug == "wang2020state"
+        assert rng == (38, 38)
+        assert view == "sentences"
+        assert sw == (40, 80)
+        _, _, _, open_sw = _parse_paper_id("wang2020state~38/sentences/s40..")
+        assert open_sw == (40, None)
+
+    def test_sentences_window_rejected_on_other_views(self) -> None:
+        with pytest.raises(BadInput):
+            _parse_paper_id("wang2020state~38/toc/s40..80")
+        with pytest.raises(BadInput):
+            _parse_paper_id("wang2020state~38/sentences/s80..40")
 
     def test_unknown_view_path(self) -> None:
         with pytest.raises(BadInput):

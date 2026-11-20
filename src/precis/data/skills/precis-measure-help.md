@@ -259,6 +259,16 @@ are listed in `meta.extra_anchors` as `{link_id, anchor_scheme, span}`.
   text, `anchor_mismatch` when it does not (flagged, never refused),
   `unverified` with no anchor. Raw offsets test the slice; other schemes test the
   whole chunk.
+- A sentence span is `s<N>` naming the chunk's N-th sentence under the anchor
+  splitter, numbered from `s0`. Read a chunk's sentence ids before writing:
+  `get(kind='paper', id='pc<id>', view='sentences')` (or
+  `get(id='<pa>~<ord>', view='sentences')`) renders the block as numbered
+  `s0: …`, `s1: …` lines — pick the `s<N>` whose text prints your literal,
+  then write `anchor={'chunk': 'pc<id>', 'anchor_scheme': 'sentence',
+  'span': 's<N>'}`. Follow a fitted page's
+  `rest: get(id='<pa>~<ord>/sentences/s<K>..<M>')` to continue with the
+  same numbering. If the response marks a sentence as an excerpt, verify
+  any literal beyond the excerpt against the stored chunk text.
 
 ## Flags
 

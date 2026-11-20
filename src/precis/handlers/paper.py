@@ -47,6 +47,8 @@ v2:
     wang2020state/abstract     — view shortcut path
     wang2020state/toc          — view shortcut path
     wang2020state~38..42/toc   — TOC scoped to a range (drill-down, phase 3.5)
+    wang2020state~38/sentences — the chunk's sentences numbered s0, s1, …
+    wang2020state~38/sentences/s40..80 — resumable span window (budget cut)
 """
 
 from __future__ import annotations
@@ -65,9 +67,17 @@ from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 import psycopg
 
 from precis import settings
+from precis._result_budget import body_bytes
 from precis._result_budget import size_cell as _size_cell
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, Gone, NotFound, Unsupported, Upstream
+from precis.errors import (
+    BadInput,
+    Gone,
+    NotFound,
+    ResultBudgetExceeded,
+    Unsupported,
+    Upstream,
+)
 from precis.format import render_agent_table
 from precis.handlers import _comment_timeline as tl
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
@@ -385,6 +395,14 @@ _SUPPORTED_VIEWS = (
     "claims",
     "authors",
     "chunks",
+    # ``sentences`` is the chunk-scoped numbered-sentence read (gr716229):
+    # it renders a ``~N`` / ``~A..B`` selection (a ``pc<id>`` chunk handle
+    # rewrites to ``<slug>~<ord>``) with sentence spans numbered s0, s1, …
+    # under the anchor splitter, so a measure anchor's ``span: 'sN'`` is
+    # verifiable before the run is written. The only view that combines
+    # with a ``~lo..hi`` selector (gr725288). Ref-level it refuses with
+    # the selector form as its next step.
+    "sentences",
     "ops",
     "pdf_link",
     "tables",
@@ -406,10 +424,6 @@ _SUPPORTED_VIEWS = (
     # Supplementary-information records: children on a parent paper,
     # parent pointer on an SI ref (gr725288).
     "si",
-    # Sentence-split read of a chunk range — the only view that combines
-    # with a ``~lo..hi`` selector (gr725288). Ref-level it refuses with
-    # the selector form as its next step.
-    "sentences",
 )
 
 #: Chunk kinds that always get a figure pointer on read (gr520326).
@@ -2625,10 +2639,10 @@ class PaperHandler(Handler):
             if queued is not None:
                 return queued
             raise
-        slug, chunk_spec, path_view = _parse_paper_id(raw_id, self.spec.kind)
-        if path_view is not None:
+        slug, chunk_spec, path_view, s_window = _parse_paper_id(raw_id, self.spec.kind)
+        if path_view is not None or s_window is not None:
             raise BadInput(
-                f"q= (find-in-ref) doesn't combine with a /{path_view} path",
+                f"q= (find-in-ref) doesn't combine with a /{path_view or 'sentences'} path",
                 next=f"get(kind='{self.spec.kind}', id='{slug}', q={str(q).strip()!r})",
             )
         ref = resolve_live_slug_ref(
@@ -2689,7 +2703,7 @@ class PaperHandler(Handler):
             if isinstance(id, list):
                 return self._get_batch(id, view=view, args=args)
             try:
-                _, slug, _, _ = self._resolve_batch_element(id)
+                _, slug, _, _, _ = self._resolve_batch_element(id)
                 ref = resolve_live_slug_ref(
                     self.store,
                     kind=self.spec.kind,
@@ -2740,7 +2754,7 @@ class PaperHandler(Handler):
                 return queued
             raise
         kind = self.spec.kind
-        slug, chunk_spec, path_view = _parse_paper_id(raw_id, kind)
+        slug, chunk_spec, path_view, s_window = _parse_paper_id(raw_id, kind)
 
         if chunk_spec is None and _normalise_view(path_view or view) == "retired":
             # Opt-in tombstone read (gr548660): resolve the row WITHOUT
@@ -2861,17 +2875,21 @@ class PaperHandler(Handler):
             )
 
         # Combined form: ``slug~A..B/toc`` → range-scoped TOC drill-down.
-        # ``toc`` and ``sentences`` are valid with a chunk_spec; other
-        # views don't have a sensible "this range only" meaning yet.
+        # ``toc`` and ``sentences`` are the views with a sensible
+        # "this range only" meaning; anything else with a chunk_spec is
+        # refused below.
         if chunk_spec is not None and effective_view is not None:
             if effective_view == "toc":
                 return self._render_toc(ref, scope=chunk_spec)
             if effective_view == "sentences":
-                # Sentence granularity is a chunk-scoped read by
-                # definition — the only view that combines with a
-                # selector (gr725288: ``id='pc<id>', view='sentences'``
-                # kept dying as "unknown view" / "cannot combine").
-                return self._render_sentences(ref, chunk_spec)
+                # gr716229: the numbered-sentence read IS the chunk-scoped
+                # view — its whole purpose is numbering one block's
+                # sentences so a measure span like 's3' can be checked
+                # against the exact text it names before writing (the
+                # gr725288 "split this range" read is the same view). A
+                # trailing ``/sA..B`` window resumes the read inside one
+                # oversized chunk (the renderer's budget cut emits it).
+                return self._render_sentences_view(ref, chunk_spec, s_window)
             # Build the full id string first, then repr() it whole — the
             # MCP critic flagged ``id={slug!r}~{lo}..{hi}/toc`` as
             # producing ``id='slug'~38..38/toc`` (slug repr'd, suffix
@@ -2886,7 +2904,7 @@ class PaperHandler(Handler):
                 next=(
                     f"the view is ref-level — drop the selector: "
                     f"get(id='{_pa(ref)}', view={effective_view!r}); "
-                    f"or keep the range with view='toc': "
+                    f"or keep the range with view='toc' or 'sentences': "
                     f"get(id='{recovery_id}')"
                 ),
             )
@@ -2995,14 +3013,16 @@ class PaperHandler(Handler):
                         f"{pending} in this one call"
                     )
                 )
-        blocks: list[str] = []
+        blocks: list[Response] = []
         queue_budget = [len(ids) if confirm_bulk else _BATCH_DOI_QUEUE_CAP]
         for elem in ids:
             shown = str(elem)
             try:
-                raw, slug, chunk_spec, path_view = self._resolve_batch_element(elem)
+                raw, slug, chunk_spec, path_view, _s_win = self._resolve_batch_element(
+                    elem
+                )
                 if view is not None or chunk_spec is not None or path_view is not None:
-                    blocks.append(self.get(id=raw, view=view).body)
+                    blocks.append(self.get(id=raw, view=view))
                     continue
                 ref = resolve_live_slug_ref(
                     self.store,
@@ -3010,7 +3030,7 @@ class PaperHandler(Handler):
                     id=slug,
                     next_hint=f"search(kind='{kind}', q='...') to find existing",
                 )
-                blocks.append(self._batch_summary(ref))
+                blocks.append(Response(body=self._batch_summary(ref)))
             except NotFound:
                 # gr551840: an unheld well-formed DOI element queues its
                 # ingest job like the single-id get does (except abstract
@@ -3024,12 +3044,14 @@ class PaperHandler(Handler):
                     self.store, shown, budget=queue_budget, queue=queues
                 )
                 blocks.append(
-                    queued.body if queued is not None else f"{shown}  not found"
+                    queued
+                    if queued is not None
+                    else Response(body=f"{shown}  not found")
                 )
             except Gone:
-                blocks.append(f"{shown}  deleted")
-        body = f"# {len(ids)} {kind}s (batch)\n\n" + "\n\n".join(blocks)
-        body += render_next_section(
+                blocks.append(Response(body=f"{shown}  deleted"))
+        header = f"# {len(ids)} {kind}s (batch)\n\n"
+        trailer = render_next_section(
             [
                 (
                     f"get(kind='{kind}', id={ids[0]!r})",
@@ -3041,7 +3063,36 @@ class PaperHandler(Handler):
                 ),
             ]
         )
-        return Response(body=body, result_count=len(ids))
+        body = header + "\n\n".join(block.body for block in blocks) + trailer
+        if not any(block.budget_fit is not None for block in blocks):
+            return Response(body=body, result_count=len(ids))
+
+        def fit(cap: int) -> str:
+            # Keep each child's continuation intact. The batch heading and
+            # separators are mandatory; individual reads retain navigation.
+            available = cap - body_bytes(header) - 2 * (len(blocks) - 1)
+            available -= sum(body_bytes(b.body) for b in blocks if b.budget_fit is None)
+            structured = [b for b in blocks if b.budget_fit is not None]
+            # Small children use only their actual size, leaving the rest to
+            # the larger ones irrespective of their position in the batch.
+            pages: dict[int, str] = {}
+            try:
+                for remaining, block in enumerate(
+                    sorted(structured, key=lambda b: body_bytes(b.body))
+                ):
+                    budget = available // (len(structured) - remaining)
+                    assert block.budget_fit is not None
+                    page = block.budget_fit(budget)
+                    pages[id(block)] = page
+                    available -= body_bytes(page)
+            except ResultBudgetExceeded as exc:
+                raise ResultBudgetExceeded(
+                    "the batch budget cannot fit a sentence page for every item",
+                    next="read the batch items individually with the same selectors",
+                ) from exc
+            return header + "\n\n".join(pages.get(id(b), b.body) for b in blocks)
+
+        return Response(body=body, result_count=len(ids), budget_fit=fit)
 
     def _rewrite_chunk_handle(self, raw: str | int) -> str | int:
         """A bare ``pc<id>`` chunk handle → ``<slug>~<ord>``.
@@ -3049,13 +3100,17 @@ class PaperHandler(Handler):
         Dispatch rewrites a chunk handle before the handler sees it
         (``_maybe_infer_kind_from_handle``); a direct ``get(id='pc…')``
         on the handler must read the same chunk, as the batch path
-        already does in :meth:`_resolve_batch_element`. Anything that is
-        not a live paper chunk handle comes back unchanged.
+        already does in :meth:`_resolve_batch_element`. A trailing view
+        path (``pc512/sentences``) reattaches to the rewritten selector
+        — the same selector the slug form takes. Anything that is not
+        a live paper chunk handle comes back unchanged.
         """
         # A ``~`` selector (table row/col) is not a bare handle — leave it.
         if not isinstance(raw, str) or "~" in raw:
             return raw
-        normalized = handle_registry.normalize(raw.strip())
+        mm = re.match(r"^([a-zA-Z]{2}\d+)(/.*)$", raw.strip())
+        base, suffix = (mm.group(1), mm.group(2)) if mm else (raw, "")
+        normalized = handle_registry.normalize(base)
         if not handle_registry.is_well_formed(normalized):
             return raw
         resolved = self.store.resolve_handle(normalized)
@@ -3066,12 +3121,14 @@ class PaperHandler(Handler):
             or resolved.chunk_ord is None
         ):
             return raw
-        return f"{resolved.public_id}~{resolved.chunk_ord}"
+        return f"{resolved.public_id}~{resolved.chunk_ord}{suffix}"
 
     def _resolve_batch_element(
         self, elem: Any
-    ) -> tuple[str, str, tuple[int, int] | None, str | None]:
-        """One ``id=[...]`` element → ``(raw, slug, chunk_spec, path_view)``.
+    ) -> tuple[
+        str, str, tuple[int, int] | None, str | None, tuple[int, int | None] | None
+    ]:
+        """One ``id=[...]`` element → ``(raw, slug, chunk_spec, path_view, s_window)``.
 
         Universal handles self-identify: a ``pa<id>`` record handle
         rewrites to the slug, a ``pc<id>`` chunk handle to
@@ -3098,13 +3155,20 @@ class PaperHandler(Handler):
                 if resolved.chunk_id is not None:
                     if resolved.chunk_ord is not None:
                         raw = f"{resolved.public_id}~{resolved.chunk_ord}"
+                        if suffix.startswith("/"):
+                            # A view path on a chunk handle
+                            # (``pc512/sentences``) is a selector the
+                            # single read honours too — reattach it so
+                            # the batch renders the view instead of raw
+                            # chunk text (gr716229 review).
+                            raw += suffix
                     # ``chunk_ord=None`` falls through — the raw handle
                     # parses as a slug below and NotFound's cleanly.
                 else:
                     raw = resolved.public_id + suffix
         raw = _maybe_resolve_doi(self.store, raw)
-        slug, chunk_spec, path_view = _parse_paper_id(raw, kind)
-        return raw, slug, chunk_spec, path_view
+        slug, chunk_spec, path_view, s_window = _parse_paper_id(raw, kind)
+        return raw, slug, chunk_spec, path_view, s_window
 
     def _batch_summary(self, ref: Ref) -> str:
         """The compact per-ref block for ``get(id=[...])``: handle +
@@ -6027,7 +6091,7 @@ class PaperHandler(Handler):
                     ref.id if ref is not None and ref.kind == self.spec.kind else None
                 )
             raw = _maybe_resolve_doi(self.store, str(id))
-            slug, _chunk_sel, _path_view = _parse_paper_id(raw, self.spec.kind)
+            slug, _chunk_sel, _path_view, _s_win = _parse_paper_id(raw, self.spec.kind)
             ref = self.store.get_ref(kind=self.spec.kind, id=slug, include_deleted=True)
             return ref.id if ref is not None else None
         except (BadInput, Gone, NotFound):
@@ -6780,7 +6844,7 @@ class PaperHandler(Handler):
         if isinstance(id, int):
             ref_id = id
         else:
-            slug, sel, path_view = _parse_paper_id(str(id).strip(), kind)
+            slug, sel, path_view, _s_win = _parse_paper_id(str(id).strip(), kind)
             reject_chunk_or_path_view(
                 kind=kind, slug=slug, sel=sel, path_view=path_view
             )
@@ -6822,7 +6886,7 @@ class PaperHandler(Handler):
         if ref is None or ref.retired_at is not None or isinstance(id, int):
             return ref
         kind = self.spec.kind
-        slug, sel, path_view = _parse_paper_id(str(id).strip(), kind)
+        slug, sel, path_view, _s_win = _parse_paper_id(str(id).strip(), kind)
         if sel is not None or path_view is not None:
             return ref
         parsed = handle_registry.parse(slug)
@@ -10971,21 +11035,6 @@ class PaperHandler(Handler):
         if view == "si":
             return self._render_si(ref)
 
-        if view == "sentences":
-            # Ref-level 'sentences' has no sensible meaning — the view
-            # is a chunk-scoped read. The accepted-view gate routes
-            # here, so refuse with the exact combined form rather than
-            # fall into the generic unknown-view error (gr725288).
-            raise BadInput(
-                "view='sentences' addresses a chunk range, not a whole "
-                f"{self.spec.kind}",
-                next=(
-                    f"get(id='{_pa(ref)}~<N>', view='sentences') splits one "
-                    f"chunk; get(id='{_pa(ref)}~<lo>..<hi>', "
-                    "view='sentences') splits a range"
-                ),
-            )
-
         if view == "claims":
             # Taproot claim hubs THIS paper grounds — not to be confused
             # with the patent kind's ``view='claims'`` (that one is the
@@ -10998,6 +11047,23 @@ class PaperHandler(Handler):
 
         if view == "chunks":
             return self._render_chunk_stats(ref)
+
+        if view == "sentences":
+            # Ref-level: sentence spans are per-chunk, and the view exists
+            # to verify a measure anchor on a specific chunk (gr716229) —
+            # refuse and name the chunk-addressed form instead of
+            # silently numbering the whole body into one huge read.
+            raise BadInput(
+                "view='sentences' is chunk-scoped — it numbers the "
+                "sentences of one block so a measure span like 's3' can "
+                "be checked before writing",
+                next=(
+                    f"get(id='{_pa(ref)}~<ord>', view='sentences') over "
+                    "the block the number prints on, or "
+                    "get(id='pc<id>', view='sentences') on a chunk handle "
+                    "from search"
+                ),
+            )
 
         if view == "tables":
             from precis.handlers._paper_tables import render_tables_view
@@ -11399,72 +11465,6 @@ class PaperHandler(Handler):
                 ]
             )
         return Response(body=body, result_count=result_count)
-
-    def _render_sentences(self, ref: Ref, chunk: tuple[int, int]) -> Response:
-        """``view='sentences'`` + a chunk range — sentence-split read.
-
-        Each addressed chunk rendered as its numbered sentences (the
-        abbreviation-aware ``precis.utils.sentences`` splitter — the
-        same engine the citation verifier uses), so a caller grounding a
-        claim can quote one sentence precisely instead of paraphrasing a
-        whole paragraph (gr725288). The splitter's text is rendered
-        verbatim — no ``_clean_inline_text`` pass — so a quoted sentence
-        greps back to the stored chunk bytes; cleaning would silently
-        flip ``&amp;``/inline tags and collapse the whitespace the quote
-        must preserve. Share the passage reader's glyph warnings so the
-        citation retains its source caveat.
-        """
-        from precis.utils.sentences import split_sentences
-
-        lo, hi = chunk
-        blocks = self._read_chunk_range(ref, lo, hi)
-
-        slug = ref.slug or "???"
-        lines: list[str] = [
-            f"# {slug}~{lo}..{hi} — sentences",
-            "",
-        ]
-        banner = _paper_banner(ref, store=self.store)
-        if banner:
-            lines[:0] = [banner, ""]
-        has_glyph_caveat = glyph_suspected(ref.meta)
-        total = 0
-        for b in blocks:
-            lines.append(
-                f"## {handle_registry.chunk_head_label(ref.kind, b.id, b.ord, ref.slug)}"
-            )
-            lines.extend(_passage_glyph_warning(b, has_glyph_caveat))
-            sentences = split_sentences(b.text)
-            if not sentences:
-                lines.append("(no sentences — empty block)")
-            for n, s in enumerate(sentences, start=1):
-                total += 1
-                lines.append(f"{n}. {s.text}")
-            lines.append("")
-        single = lo == hi
-        nav: list[tuple[str, str]] = []
-        if single:
-            nav.append(
-                (
-                    f"get(id='{_pa(ref)}~{lo}')",
-                    "the same block as stored chunk text",
-                )
-            )
-        else:
-            nav.append(
-                (
-                    f"get(id='{_pa(ref)}~{lo}..{hi}')",
-                    "the same range as stored chunk text",
-                )
-            )
-        nav.append(
-            (
-                f"search(kind='{ref.kind}', q='...', scope='{_pa(ref)}')",
-                "find the block a phrase lives on",
-            )
-        )
-        body = "\n".join(lines).rstrip() + render_next_section(nav)
-        return Response(body=body, result_count=total)
 
     def _render_claims(self, ref: Ref) -> Response:
         """``view='claims'`` — the Taproot claim hubs THIS paper grounds
@@ -11943,6 +11943,37 @@ class PaperHandler(Handler):
         body = "\n".join(lines).rstrip() + trailer
         return Response(body=body)
 
+    def _render_sentences_view(
+        self,
+        ref: Ref,
+        chunk: tuple[int, int],
+        s_window: tuple[int, int | None] | None = None,
+    ) -> Response:
+        """``view='sentences'`` — the numbered-sentence read of the
+        ``~N`` / ``~A..B`` selection (gr716229, gr725288). Block fetch is
+        :meth:`_read_chunk_range` (the single exact-ord card fetch routes
+        around the ``ord < 0`` exclusion); the render lives in
+        :mod:`precis.handlers._paper_sentences`. ``s_window`` is the
+        chunk-local span window of the resumable ``/sA..B`` form. The
+        banner and glyph warnings ride along so a sentence quoted from
+        this read keeps its source caveats (gr725288)."""
+        from precis.handlers._paper_sentences import render_sentences_view
+
+        lo, hi = chunk
+        blocks = self._read_chunk_range(ref, lo, hi)
+        banner = _paper_banner(ref, store=self.store)
+        caveat = glyph_suspected(ref.meta)
+        warnings = {b.id: _passage_glyph_warning(b, caveat) for b in blocks}
+        return render_sentences_view(
+            ref,
+            blocks,
+            lo=lo,
+            hi=hi,
+            s_window=s_window,
+            banner=banner,
+            glyph_warnings=warnings,
+        )
+
     def accepted_views(self, *, id: Any = None) -> list[str]:
         # F3: single source of truth for paper views. Was previously
         # a hand-curated subset that contradicted ``_SUPPORTED_VIEWS``
@@ -12332,6 +12363,10 @@ class PaperHandler(Handler):
 # selector; the rest of the string is parsed as a path of `view/sub`
 # segments.
 _SLUG_RE = re.compile(r"^([a-z0-9][a-z0-9\-]*)(.*)$")
+#: Chunk-local span window on the resumable sentences read
+#: (``slug~38/sentences/s40..80``): ``s40``, ``s40..80`` or the
+#: open-ended ``s40..``. See :func:`_parse_sentence_window`.
+_SENTENCE_WINDOW_RE = re.compile(r"s(\d+)(\.\.(\d*))?")
 
 # The one DOI pattern lives in ``precis.store._identifiers_ops``
 # (gr516333 — ``_paper_search`` imports it lazily from there). DOI-form
@@ -12350,6 +12385,11 @@ _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
     ("cite", "endnote"): "endnote",
     ("abstract",): "abstract",
     ("toc",): "toc",
+    # Chunk-scoped like ``toc``: ``slug~N/sentences`` is the path form of
+    # ``get(id='slug~N', view='sentences')`` (gr716229). On a bare slug it
+    # parses fine and the ref-level check refuses it with the
+    # chunk-addressed call.
+    ("sentences",): "sentences",
     ("summaries",): "summaries",
     ("bibtex",): "bibtex",
     ("ris",): "ris",
@@ -12361,7 +12401,6 @@ _VIEW_PATH_ALIASES: dict[tuple[str, ...], str] = {
     ("refs",): "refs",
     ("references",): "refs",
     ("si",): "si",
-    ("sentences",): "sentences",
 }
 
 
@@ -12679,7 +12718,7 @@ def resolve_paper_slug(
             )
         return ref.slug or str(ref_id), ref_id
     raw_id = _maybe_resolve_doi(store, str(id))
-    slug, chunk_spec, path_view = _parse_paper_id(raw_id, kind)
+    slug, chunk_spec, path_view, _s_win = _parse_paper_id(raw_id, kind)
     reject_chunk_or_path_view(
         kind=kind,
         slug=slug,
@@ -13147,11 +13186,34 @@ def _retire_cite_pattern(conn: Any, ref: Ref) -> str:
     return "|".join(alts)
 
 
+def _parse_sentence_window(seg: str) -> tuple[int, int | None] | None:
+    """Chunk-local span window for the resumable sentences read.
+
+    ``s40`` → ``(40, 40)``; ``s40..80`` → ``(40, 80)``; ``s40..`` →
+    ``(40, None)`` (open end). The numbering is the chunk-local ``s<N>``
+    the anchor machinery uses, so a windowed read keeps the original
+    indices (``s40..80`` prints ``s40:``, ``s41:``, …, never renumbered).
+    ``None`` when ``seg`` isn't a window."""
+    m = _SENTENCE_WINDOW_RE.fullmatch(seg)
+    if m is None:
+        return None
+    lo = int(m.group(1))
+    if m.group(2) is None:
+        return (lo, lo)
+    hi = m.group(3)
+    if hi == "":
+        return (lo, None)
+    hi_n = int(hi)
+    if hi_n < lo:
+        return None
+    return (lo, hi_n)
+
+
 def _parse_paper_id(
     raw: str,
     kind: str = "paper",
-) -> tuple[str, tuple[int, int] | None, str | None]:
-    """Return (slug, chunk_range, view).
+) -> tuple[str, tuple[int, int] | None, str | None, tuple[int, int | None] | None]:
+    """Return (slug, chunk_range, view, sentence_window).
 
     ``kind`` is the caller-requested kind (``paper`` / ``cfp`` / …) so the
     error messages echo what the caller asked for rather than the internal
@@ -13159,9 +13221,14 @@ def _parse_paper_id(
 
     ``slug`` is mandatory. Both ``chunk_range`` and ``view`` may be set
     when the id carries both — e.g. ``slug~46..105/toc`` is the
-    drill-down form (TOC scoped to that block range). For plain chunk
-    selectors (``slug~38``) view is ``None``; for plain view paths
-    (``slug/cite/bib``) chunk_range is ``None``.
+    drill-down form (TOC scoped to that block range) and
+    ``slug~38/sentences`` is the chunk-scoped numbered-sentence read.
+    For plain chunk selectors (``slug~38``) view is ``None``; for plain
+    view paths (``slug/cite/bib``) chunk_range is ``None``.
+    ``sentence_window`` is set only on the sentences view's resumable
+    form, ``slug~38/sentences/s40..80`` (gr716229): it selects chunk-local
+    span indices and is returned separately so range-scoped views keep
+    their three-part shape at every other call site.
     """
     # Friendly redirect for the cross-kind list-view shape. Numeric
     # kinds (memory, todo, ...) accept ``id='/recent'`` for their
@@ -13211,7 +13278,7 @@ def _parse_paper_id(
         )
 
     if not rest:
-        return slug, None, None
+        return slug, None, None, None
 
     chunk_range: tuple[int, int] | None = None
     if rest.startswith("~"):
@@ -13227,12 +13294,22 @@ def _parse_paper_id(
         chunk_range = parse_block_selector(sel, raw=raw)
 
         if not rest_after_sel:
-            return slug, chunk_range, None
+            return slug, chunk_range, None, None
         rest = rest_after_sel
 
     if rest.startswith("/"):
         parts = tuple(rest[1:].split("/"))
         view = _VIEW_PATH_ALIASES.get(parts)
+        if view is None and len(parts) == 2:
+            # The resumable sentence read: ``slug~38/sentences/s40..80``
+            # resumes the numbered read at chunk-local span s40 (gr716229).
+            # The renderer's PRECIS_MAX_BODY_BYTES cut emits exactly this
+            # form; numbering stays chunk-local, so a window never
+            # renumbers. Only the sentences view takes a window.
+            base = _VIEW_PATH_ALIASES.get(parts[:1])
+            window = _parse_sentence_window(parts[1])
+            if base == "sentences" and window is not None:
+                return slug, chunk_range, "sentences", window
         if view is None:
             # Specific hint for the figure family — the MCP critic
             # flagged ``slug/fig/N`` as failing silently with a
@@ -13254,7 +13331,7 @@ def _parse_paper_id(
                 options=list(_SUPPORTED_VIEWS),
                 next="see precis-paper-help for the supported view paths",
             )
-        return slug, chunk_range, view
+        return slug, chunk_range, view, None
 
     raise BadInput(
         f"unparseable paper id: {raw!r}",

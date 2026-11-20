@@ -251,29 +251,35 @@ def _seed_prose_paper(store: Store, *, slug: str) -> tuple[int, list[int]]:
 
 
 def test_sentences_view_splits_a_single_chunk(store: Store) -> None:
-    _seed_prose_paper(store, slug="sentsingle07")
+    """Unified with gr716229: the s<N> numbering is the anchor
+    splitter's, 0-based per chunk — the id a measure anchor's
+    ``span: 'sN'`` names."""
+    paper, _chunk_ids = _seed_prose_paper(store, slug="sentsingle07")
+    pa = handle_registry.format_handle("paper", paper)
 
     resp = _handler(store).get(id="sentsingle07~0", view="sentences")
 
     assert resp.result_count == 2
     out = resp.body
-    assert out.startswith("# sentsingle07~0..0 — sentences")
-    assert "1. The rate doubled under load." in out
-    assert "2. The yield held." in out
+    assert out.startswith(f"# {pa} — sentences ~0")
+    assert "s0: The rate doubled under load." in out
+    assert "s1: The yield held." in out
 
 
 def test_sentences_view_splits_a_range(store: Store) -> None:
-    _paper, chunk_ids = _seed_prose_paper(store, slug="sentrange07")
+    paper, chunk_ids = _seed_prose_paper(store, slug="sentrange07")
+    pa = handle_registry.format_handle("paper", paper)
 
     resp = _handler(store).get(id="sentrange07~0..1", view="sentences")
 
     assert resp.result_count == 4
     out = resp.body
-    assert out.startswith("# sentrange07~0..1 — sentences")
+    assert out.startswith(f"# {pa} — sentences ~0..1")
     for cid in chunk_ids:
         assert f"pc{cid}" in out
-    assert "1. The rate doubled under load." in out
-    assert "2. It has two parts." in out
+    # Numbering restarts per chunk — span ids are chunk-local.
+    assert "s0: The rate doubled under load." in out
+    assert "s1: It has two parts." in out
 
 
 def test_sentences_view_refuses_ref_level_with_selector_form(
@@ -282,7 +288,7 @@ def test_sentences_view_refuses_ref_level_with_selector_form(
     paper, _chunk_ids = _seed_prose_paper(store, slug="sentreflevel07")
     pa = handle_registry.format_handle("paper", paper)
 
-    with pytest.raises(BadInput, match="chunk range"):
+    with pytest.raises(BadInput, match="chunk-scoped"):
         _handler(store).get(id=pa, view="sentences")
 
 
@@ -311,7 +317,7 @@ def test_sentences_view_preserves_stored_text_verbatim(store: Store) -> None:
     out = _handler(store).get(id="sentraw07~0", view="sentences").body
 
     assert "The <i>in&nbsp;vitro</i>  yield doubled." in out
-    assert "2. It held." in out
+    assert "s1: It held." in out
 
 
 def test_sentences_view_path_form(store: Store) -> None:
@@ -323,7 +329,7 @@ def test_sentences_view_path_form(store: Store) -> None:
     via_path = h.get(id="sentspath07~0/sentences").body
     via_kwarg = h.get(id="sentspath07~0", view="sentences").body
     assert via_path == via_kwarg
-    assert "1. The rate doubled under load." in via_path
+    assert "s0: The rate doubled under load." in via_path
 
 
 def test_sentences_view_reaches_through_runtime_dispatch(
@@ -337,7 +343,7 @@ def test_sentences_view_reaches_through_runtime_dispatch(
         "get",
         {"kind": "paper", "id": "sentdisp07~0", "view": "sentences"},
     )
-    assert "1. The rate doubled under load." in out
+    assert "s0: The rate doubled under load." in out
     assert "[error:" not in out
 
 
@@ -367,8 +373,8 @@ def test_sentences_view_pc_handle_reaches_through_runtime_dispatch(
         "get",
         {"kind": "paper", "id": f"pc{block.id}", "view": "sentences"},
     )
-    assert "1. The rate doubled under load." in out
-    assert "2. The yield held." in out
+    assert "s0: The rate doubled under load." in out
+    assert "s1: The yield held." in out
     assert "[error:" not in out
 
 

@@ -113,7 +113,7 @@ def test_selector_matches_paper(selector: str) -> None:
     slug, selected, view = _parse_pres_id(raw)
     if isinstance(selected, int):
         selected = (selected, selected)
-    assert (slug, selected, view) == _parse_paper_id(raw)
+    assert (slug, selected, view, None) == _parse_paper_id(raw)
 
 
 @pytest.mark.parametrize("selector", ["5..3", "-1..2", "1..", "x", "1,2", ""])
