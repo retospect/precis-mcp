@@ -52,7 +52,8 @@ class TestDenied:
     def test_denies(self, cmd: str) -> None:
         reason = evaluate(cmd)
         assert reason is not None, cmd
-        assert "pipefail" in reason
+        # The advice is the unpiped single-command form (gr676936).
+        assert ".scratch/" in reason and "unpiped" in reason
 
     def test_reason_names_the_script(self) -> None:
         assert "scripts/deploy" in (evaluate("scripts/deploy | tail") or "")
