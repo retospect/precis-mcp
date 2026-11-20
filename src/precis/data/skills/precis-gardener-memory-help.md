@@ -294,7 +294,12 @@ enough.
 ## Compaction before retirement
 
 The `compact` detector fires on expiry, 90-day-cold reads, a half-history
-body or any pending retire proposal. The evaluator's plan accounts for every
+body or any pending retire proposal. Expiry is shielded, not blind: an
+expired node tagged `ruling` or `spec:*` (or `reto-ruling`), or one a
+live, non-terminal todo/gripe/quest links to — either direction — gets
+no `expired` reason; when another trigger still fires, its evidence
+notes what shielded it. `review_due` has no shield — the node still owes
+its review. The evaluator's plan accounts for every
 detector sentence: keep on a kept shell, move into a related node (hub
 family, qualifies targets, `+recall` neighbours, restated_claim matches),
 mint an atomic child, or drop only as `history`/`restatement`. Both

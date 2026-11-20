@@ -1065,6 +1065,68 @@ def test_meta_expires_rejects_unparseable(handler: MemoryHandler) -> None:
         handler.put(text="body", meta={"expires": "whenever"})
 
 
+def test_get_and_put_ack_show_expiry(handler: MemoryHandler, store: Store) -> None:
+    """The create ack and the single-ref read end with the same computed
+    expiry line — writer-set TTL or shape default; standing nodes get none
+    (gr676320)."""
+    ack = handler.put(text="transient note body", meta={"expires": "2030-12-01"})
+    assert "expires: 2030-12-01 (set by writer)" in ack.body
+    memory_id = id_of(ack.body)
+    linked_id = id_of(handler.put(text="a linked fact").body)
+    store.add_link(src_ref_id=memory_id, dst_ref_id=linked_id, relation="related-to")
+    got = handler.get(id=memory_id).body
+    assert "Links" in got
+    assert got.rstrip().endswith("expires: 2030-12-01 (set by writer)")
+
+    ack2 = handler.put(text="thread body text", tags=["section:threads"])
+    thread = store.fetch_refs_by_ids([id_of(ack2.body)])[id_of(ack2.body)]
+    expected = (thread.updated_at + timedelta(days=14)).strftime("%Y-%m-%d")
+    line2 = f"expires: {expected} (default: thread 14d from last edit)"
+    assert line2 in ack2.body
+    assert handler.get(id=id_of(ack2.body)).body.rstrip().endswith(line2)
+
+    ack3 = handler.put(text="a durable standing fact")
+    assert "expires:" not in ack3.body
+    assert "expires:" not in handler.get(id=id_of(ack3.body)).body
+
+
+@pytest.mark.parametrize("meta", [{}, {"expires": "2020-01-01"}])
+def test_dream_expiry_is_hidden(
+    handler: MemoryHandler, store: Store, meta: dict[str, str]
+) -> None:
+    ack = handler.put(
+        text="a speculative thread",
+        tags=["DREAM:speculative", "section:threads"],
+        meta=meta,
+    )
+    mid = id_of(ack.body)
+    assert "expires:" not in ack.body
+    assert "expires:" not in handler.get(id=mid).body
+    table = handler._render_hits_table([store.fetch_refs_by_ids([mid])[mid]])
+    assert "exp" not in table.splitlines()[0]
+
+
+def test_hits_table_marks_expiry_and_expired(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The list view's ``exp`` column shows the date, or ``EXPIRED`` past
+    it, and disappears entirely when no hit carries an expiry."""
+    fresh = id_of(
+        handler.put(text="fresh transient", meta={"expires": "2030-12-01"}).body
+    )
+    stale = id_of(
+        handler.put(text="stale transient", meta={"expires": "2020-01-01"}).body
+    )
+    standing = id_of(handler.put(text="a durable standing fact").body)
+    refs = store.fetch_refs_by_ids([fresh, stale, standing])
+    table = handler._render_hits_table([refs[fresh], refs[stale], refs[standing]])
+    assert "2030-12-01" in table
+    assert "EXPIRED" in table
+
+    table_none = handler._render_hits_table([refs[standing]])
+    assert "exp" not in table_none.splitlines()[0]
+
+
 @pytest.mark.parametrize(
     "bad",
     [

@@ -1448,7 +1448,12 @@ class NumericRefHandler(Handler):
         body += self._render_links_section(
             ref, limit=DEFAULT_LINK_ROW_CAP, priority=True
         )
+        body += self._render_one_footer(ref, tags)
         return Response(body=body, result_count=1)
+
+    def _render_one_footer(self, ref: Ref, tags: list[Tag]) -> str:
+        """Kind-specific footer after the links on a default single-ref read."""
+        return ""
 
     def _event_log_source(self) -> str | None:
         """Subsystem to filter ``view='log'`` to, or ``None`` for all.

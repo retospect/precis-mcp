@@ -135,6 +135,22 @@ and `meta={'hook': 'one line — status + resume point'}` (writable meta
 keys: `hook`, `type`, `expires`; the node type is the `section:<slug>`
 tag, never `meta['type']`).
 
+## Expiry
+
+Set `meta={'expires': '21d'}` on a transient note to give it an explicit
+TTL. The writer may also use an ISO date. Shape defaults run from the
+last edit and give threads, handoffs, resumes and snapshots 14 days and
+incidents and campaigns 90 days. Standing notes need an explicit expiry.
+DREAM notes are excluded from these expiry displays and garden detectors.
+
+Default `get` reads and create acknowledgments show the expiry date and
+its source. The list's `exp` column shows the date or `EXPIRED` once past.
+Expiry can trigger a garden compact proposal. Rulings, specs,
+`reto-ruling` notes and notes linked to an open todo, gripe or quest
+skip that trigger and remain eligible for review. A reviewer approves a
+compaction plan before manual apply moves retained claims, repoints
+links and retires the source when the plan calls for it.
+
 ## Notation in memory text
 
 Notation: follow [[precis-notation-canon]] (UTF-8 units/exponents, no TeX outside quotes or derivations); if the canon does not fit what you are writing, file a gripe linked to skill:precis-notation-canon instead of improvising.

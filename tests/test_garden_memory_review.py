@@ -111,6 +111,38 @@ def test_expiry_shape_table(
     assert cand.memory_expiry_shape(title, sections) == expected
 
 
+def test_effective_expiry_prefers_meta_over_shape_and_none_for_standing(
+    store: Store,
+) -> None:
+    """The shared rule: meta.expires wins, the shape default runs from the
+    last edit, standing nodes have none — and review_due's evidence keeps
+    its exact shape on top of the shared computation (gr676320)."""
+    from precis.utils.memory_threads import effective_expiry
+
+    updated = NOW - timedelta(days=3)
+    instant, source = effective_expiry(
+        "Fleet wave", frozenset({"threads"}), {"expires": "2026-12-01"}, updated
+    )
+    assert instant == datetime(2026, 12, 1, tzinfo=UTC)
+    assert source == "meta.expires"
+    instant, source = effective_expiry(
+        "Fleet wave", frozenset({"threads"}), {}, updated
+    )
+    assert instant == updated + timedelta(days=14)
+    assert source == "shape"
+    assert effective_expiry(
+        "A standing fact remains useful", frozenset({"reference"}), {}, updated
+    ) == (None, None)
+
+    rid = _memory(store, meta={"expires": "2020-01-01"})
+    (candidate,) = [
+        c for c in cand.review_due_candidates(store, now=NOW) if c.target_id == rid
+    ]
+    assert candidate.evidence["reason"] == "expired"
+    assert candidate.evidence["expiry_source"] == "meta.expires"
+    assert candidate.evidence["expires"] == "2020-01-01T00:00:00+00:00"
+
+
 def test_memory_review_requires_explicit_opt_in() -> None:
     from precis.workers.job_types.graph_garden import PARAMS_SCHEMA
 

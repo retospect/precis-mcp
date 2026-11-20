@@ -757,6 +757,26 @@ def _ruling_ack(meta: dict[str, Any]) -> str:
     return f"\nruling meta: {stamped}" if stamped else ""
 
 
+def _expiry_line(ref: Ref, tags: list[Tag]) -> str | None:
+    """The ``expires: …`` line a single-ref view/create ack ends with.
+
+    The same shared rule the garden's detectors use
+    (:func:`precis.utils.memory_threads.expiry_line`) — the read surface
+    and the sweep must never compute different instants (gr676320).
+    Standing nodes without expiry and DREAM nodes have no footer.
+    """
+    from precis.utils.memory_threads import expiry_line
+
+    if any(t.prefix == "DREAM" for t in tags):
+        return None
+    sections = frozenset(
+        t.value[len("section:") :]
+        for t in tags
+        if t.namespace == "open" and t.value.startswith("section:")
+    )
+    return expiry_line(ref.title or "", sections, ref.meta or {}, ref.updated_at)
+
+
 class MemoryHandler(AuditedRetirementHandler):
     #: Agent-authored assertions (graph-node-trust-state slice 1).
     trust_origin: ClassVar[str | None] = "generated"
@@ -2687,6 +2707,23 @@ class MemoryHandler(AuditedRetirementHandler):
             *super()._create_ack_next_hints(ref_id),
         ]
 
+    def _render_create_ack(self, ref_id: int) -> Response:
+        """Create ack + the same ``expires: …`` line a ``get`` ends with.
+
+        The ack names the node's TTL at birth — a writer-set
+        ``meta={'expires': '21d'}`` and a shape default (a fresh
+        ``section:threads`` node's 14 days) both read identically here and
+        on ``get`` (gr676320).
+        """
+        resp = super()._render_create_ack(ref_id)
+        ref = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
+        if ref is None:
+            return resp
+        expiry = _expiry_line(ref, self.store.tags_for(ref_id))
+        if expiry:
+            resp = replace(resp, body=resp.body + f"\n{expiry}")
+        return resp
+
     # ── edit: in-place body rewrite (+ optional title) ──────────────
 
     @link_effect_receipt
@@ -4450,6 +4487,10 @@ class MemoryHandler(AuditedRetirementHandler):
                 )
         return "\n".join(out)
 
+    def _render_one_footer(self, ref: Ref, tags: list[Tag]) -> str:
+        expiry = _expiry_line(ref, tags)
+        return f"\n\n{expiry}" if expiry else ""
+
     def _render_hits_table(
         self, refs: list[Ref], *, row_tag_prefixes: tuple[str, ...] | None = None
     ) -> str:
@@ -4457,13 +4498,17 @@ class MemoryHandler(AuditedRetirementHandler):
         as the summary and count the body words hidden behind the id.
 
         Body-word counts come from one batched query over the ``memory_body``
-        chunks (no N+1) rather than the base class's first-line split.
+        chunks (no N+1) rather than the base class's first-line split. An
+        ``exp`` column marks each hit's shared-rule expiry — the date, or
+        ``EXPIRED`` when past (gr676320) — and appears only when at least
+        one hit carries one.
         """
 
         from precis import word_handle_session
         from precis.format import render_agent_table
         from precis.handle_words import to_words2
         from precis.utils import handle_registry
+        from precis.utils.memory_threads import effective_expiry
 
         if not refs:
             return ""
@@ -4473,6 +4518,37 @@ class MemoryHandler(AuditedRetirementHandler):
         sizes = self.store.chunks.body_byte_counts(ref_ids)
         now = datetime.now(UTC)
         words_on = word_handle_session.enabled()
+        with self.store.pool.connection() as conn:
+            expiry_tag_rows = conn.execute(
+                "SELECT rt.ref_id, t.namespace, t.value "
+                "FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "WHERE rt.ref_id = ANY(%s) AND (t.namespace = 'DREAM' OR "
+                "(t.namespace = 'OPEN' AND starts_with(t.value, 'section:')))",
+                (ref_ids,),
+            ).fetchall()
+        sections_by_ref: dict[int, set[str]] = {}
+        dream_ids: set[int] = set()
+        for rid, namespace, value in expiry_tag_rows:
+            if namespace == "DREAM":
+                dream_ids.add(int(rid))
+            else:
+                sections_by_ref.setdefault(int(rid), set()).add(
+                    value.removeprefix("section:")
+                )
+        exp_cells: dict[int, str] = {}
+        for r in refs:
+            if r.id in dream_ids:
+                continue
+            expires, _src = effective_expiry(
+                r.title or "",
+                frozenset(sections_by_ref.get(r.id, set())),
+                r.meta or {},
+                r.updated_at,
+            )
+            if expires is not None:
+                exp_cells[r.id] = (
+                    "EXPIRED" if expires <= now else expires.strftime("%Y-%m-%d")
+                )
         rows: list[dict[str, str]] = []
         for r in refs:
             age_days = max(0, (now - r.updated_at).days)
@@ -4498,6 +4574,10 @@ class MemoryHandler(AuditedRetirementHandler):
             "age",
             "size [kB] (default 1kB)",
         ]
+        if exp_cells:
+            for row, r in zip(rows, refs, strict=True):
+                row["exp"] = exp_cells.get(r.id, "")
+            schema.insert(len(schema) - 1, "exp")
         return render_agent_table(rows, schema=schema)
 
     # ── search: body-chunk search + cross-kind hits come from the base

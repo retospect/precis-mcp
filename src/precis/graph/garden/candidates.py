@@ -68,12 +68,20 @@ from precis.graph.garden._drift_repo import RepoDriftResolver
 from precis.reading.concepts import normalize_name
 from precis.store._mappers import _coerce_vector
 from precis.taxonomy.nodes import dimension_clash
-from precis.todo import TERMINAL_TODO_STATUSES
+from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
 from precis.utils.deadline import DeadlineExceeded, call_with_deadline, deadline_at
 from precis.utils.handle_registry import parse as parse_handle
 from precis.utils.handle_registry import try_format
 from precis.utils.lexical import content_words, lexical_overlap
-from precis.utils.memory_threads import INDEX_TAG, THREADS_TAG, first_left, left_is_done
+from precis.utils.memory_threads import (
+    CAMPAIGN_RANGE_TITLE,
+    INDEX_TAG,
+    THREADS_TAG,
+    effective_expiry,
+    first_left,
+    left_is_done,
+    memory_expiry_shape,
+)
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -1285,14 +1293,6 @@ _DATE = re.compile(
     r"Nov(?:ember)?|Dec(?:ember)?)\s+\d{4})(?!\d)",
     re.IGNORECASE,
 )
-_SNAPSHOT_TITLE = re.compile(
-    r"\b(?:handoff|resume|state\s+(?:on|as\s+of)|as\s+of)\b", re.I
-)
-_CAMPAIGN_RANGE_TITLE = re.compile(
-    r"\bwaves?\s+\d+\s*[-–—]\s*\d+\b|"
-    r"\b\d{4}-\d{2}-\d{2}\s*(?:[-–—]|to|through)\s*(?:\d{4}-)?\d{2}-\d{2}\b",
-    re.I,
-)
 _ABSENCE = re.compile(
     r"\b(?:no\s+[`*_\"']*\w+|none|not\s+yet|does\s+not\s+exist)\b", re.I
 )
@@ -1301,31 +1301,6 @@ _PATH_TITLE = re.compile(
     r"(?:^|\s)(?:[~./\\]|[A-Za-z]:[\\/])?"
     r"[\w.~-]+(?:[/\\][\w.~-]+)+(?:::[\w.]+|#[\w-]+)?|^\S+\.(?:md|py|sh|json|ya?ml|txt)$"
 )
-
-
-def memory_expiry_shape(title: str, sections: frozenset[str]) -> tuple[str, int | None]:
-    """Classify expiry from section tags and title alone (gr560763).
-
-    An operational title overrides a standing section: a handoff filed as
-    reference still expires. Incident/campaign write-ups keep 90 days;
-    ordinary reference, gotchas and runbooks have no default expiry.
-    DREAM exclusion belongs to the reader, before this helper is called.
-    """
-    if "threads" in sections:
-        return "thread", 14
-    if sections & {"handoff", "resume"} or _SNAPSHOT_TITLE.search(title):
-        return "snapshot", 14
-    if sections & {"incident", "incidents"} or re.search(
-        r"\b(?:incident|post[- ]?mortem)\b", title, re.I
-    ):
-        return "incident", 90
-    if (
-        sections & {"campaign", "campaigns"}
-        or re.search(r"\bcampaign\b", title, re.I)
-        or _CAMPAIGN_RANGE_TITLE.search(title)
-    ):
-        return "campaign", 90
-    return "standing", None
 
 
 def _review_date(raw: Any) -> datetime | None:
@@ -1409,15 +1384,13 @@ def _memory_review_rows(store: Store, ids: list[int]) -> list[_ReviewMemory]:
 def _review_due_candidate(row: _ReviewMemory, now: datetime) -> GardenCandidate | None:
     from precis.graph.garden.proposer import MEMORY_PROMPT_VERSION
 
-    shape, days = memory_expiry_shape(row.title, row.sections)
+    shape, _days = memory_expiry_shape(row.title, row.sections)
     unchecked: list[str] = []
-    expires: datetime | None = None
-    if "expires" in row.meta:
-        expires = _review_date(row.meta["expires"])
-        if row.meta["expires"] is not None and expires is None:
-            unchecked.append("meta.expires")
-    elif days is not None:
-        expires = row.updated_at + timedelta(days=days)
+    expires, _expiry_source = effective_expiry(
+        row.title, row.sections, row.meta, row.updated_at
+    )
+    if "expires" in row.meta and row.meta["expires"] is not None and expires is None:
+        unchecked.append("meta.expires")
     review_by = _review_date(row.meta.get("review_by"))
     if row.meta.get("review_by") is not None and review_by is None:
         unchecked.append("meta.review_by")
@@ -1584,7 +1557,7 @@ def title_shape_candidates(
         if len(row.title.split()) > 16:
             reasons.append("too_many_words")
         if "threads" in row.sections and (
-            _DATE.search(row.title) or _CAMPAIGN_RANGE_TITLE.search(row.title)
+            _DATE.search(row.title) or CAMPAIGN_RANGE_TITLE.search(row.title)
         ):
             reasons.append("dated_snapshot")
         if not reasons:
@@ -2099,6 +2072,7 @@ class _CompactRow:
     sha: str
     meta: dict[str, Any]
     sections: frozenset[str]
+    open_tags: frozenset[str]
     updated_at: datetime
     created_at: datetime
     n_agent: int
@@ -2120,6 +2094,8 @@ def _compact_rows(store: Store, ids: list[int]) -> list[_CompactRow]:
             "FROM ref_tags rt JOIN tags t USING (tag_id) "
             "WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
             "AND starts_with(t.value, 'section:')), "
+            "ARRAY(SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'), "
             "r.updated_at, r.created_at, coalesce(rr.n_agent, 0), "
             "coalesce(rr.n_human, 0), "
             "greatest(rr.last_agent_at, rr.last_human_at) "
@@ -2138,13 +2114,14 @@ def _compact_rows(store: Store, ids: list[int]) -> list[_CompactRow]:
             sha,
             meta or {},
             frozenset(sections),
+            frozenset(open_tags),
             updated,
             created,
             int(na),
             int(nh),
             last,
         )
-        for rid, title, body, sha, meta, sections, updated, created, na, nh, last in rows
+        for rid, title, body, sha, meta, sections, open_tags, updated, created, na, nh, last in rows
     ]
 
 
@@ -2306,12 +2283,75 @@ def _compact_sentences(body: str) -> tuple[list[dict[str, Any]], bool]:
 
 def _compact_expiry(row: _CompactRow) -> tuple[datetime | None, str | None]:
     """The expiry instant and whether meta.expires or the shape supplied it."""
-    if "expires" in row.meta:
-        return _review_date(row.meta["expires"]), "meta.expires"
-    _shape, days = memory_expiry_shape(row.title, row.sections)
-    if days is None:
-        return None, None
-    return row.updated_at + timedelta(days=days), "shape"
+    return effective_expiry(row.title, row.sections, row.meta, row.updated_at)
+
+
+#: Open tags that make an expired node somebody's standing record, not
+#: salvageable scratch: rulings stay until absorbed/archived, specs until
+#: built (gr676320).
+_EXPIRY_STANDING_TAGS = frozenset({"ruling", "reto-ruling"})
+
+#: Section tags with the same standing force as :data:`_EXPIRY_STANDING_TAGS`.
+_EXPIRY_STANDING_SECTIONS = frozenset({"rulings", "specs"})
+
+
+def _expiry_shields(
+    row: _CompactRow, open_dependants: dict[int, list[str]]
+) -> list[str]:
+    """Why an expired node's ``expired`` trigger must not fire (gr676320).
+
+    Rulings, specs and ``reto-ruling`` nodes are standing records whose
+    retirement is a human decision, and a node an open todo/gripe/quest
+    still leans on is mid-work — compacting it would break the live link.
+    The returned strings name the shield so the evidence can note it.
+    """
+    shields = [f"tag:{tag}" for tag in sorted(row.open_tags & _EXPIRY_STANDING_TAGS)]
+    if any(t.startswith("spec:") for t in row.open_tags):
+        shields.append("tag:spec:*")
+    shields.extend(
+        f"section:{section}"
+        for section in sorted(row.sections & _EXPIRY_STANDING_SECTIONS)
+    )
+    shields.extend(open_dependants.get(row.ref_id, []))
+    return shields
+
+
+def _open_work_dependants(store: Store, ids: list[int]) -> dict[int, list[str]]:
+    """Live, non-terminal todo/gripe/quest handles linked to each memory.
+
+    Either link direction counts — a task the node points at and a task
+    pointing at the node both mean the node is mid-work. Terminal STATUS
+    values are the cross-kind union in
+    :data:`precis.todo.BLOCKER_TERMINAL_STATUSES` (todo done/won't-do/
+    auto-timeout, gripe wontfix, quest abandoned).
+    """
+    if not ids:
+        return {}
+    terminals = sorted(BLOCKER_TERMINAL_STATUSES)
+    sql = (
+        "SELECT m.ref_id, w.ref_id, w.kind FROM links l "
+        "JOIN refs m ON m.ref_id = l.{m_col} AND m.kind = 'memory' "
+        "JOIN refs w ON w.ref_id = l.{w_col} "
+        "WHERE l.{m_col} = ANY(%s) AND w.kind IN ('todo', 'gripe', 'quest') "
+        "AND w.retired_at IS NULL AND NOT EXISTS ("
+        "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+        "WHERE rt.ref_id = w.ref_id AND t.namespace = 'STATUS' "
+        "AND t.value = ANY(%s))"
+    )
+    out: dict[int, list[str]] = {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            sql.format(m_col="dst_ref_id", w_col="src_ref_id")
+            + " UNION "
+            + sql.format(m_col="src_ref_id", w_col="dst_ref_id"),
+            (ids, terminals, ids, terminals),
+        ).fetchall()
+    for mem_id, work_id, kind in rows:
+        handle = try_format(kind, int(work_id)) or f"{kind}:{int(work_id)}"
+        out.setdefault(int(mem_id), []).append(f"open {handle}")
+    for handles in out.values():
+        handles.sort()
+    return out
 
 
 def compact_candidates(
@@ -2329,6 +2369,13 @@ def compact_candidates(
     door is ``apply_compact`` behind the memory apply gate. Evidence pins
     only what recomputes identically: mutable figures (read counters) ride
     along only for the trigger that fired on them.
+
+    The ``expired`` trigger is shielded, not deleted (gr676320): a ruling,
+    spec or ``reto-ruling`` node is a standing record, and a node an open
+    todo/gripe/quest leans on is mid-work. A shielded node gets no
+    ``expired`` reason; when another trigger still fires, the evidence
+    notes what shielded it. ``review_due`` has no such shield — an expired
+    shielded node still owes its review.
     """
     if limit <= 0 or scan_cap <= 0:
         return []
@@ -2338,6 +2385,7 @@ def compact_candidates(
     )
     rows = _compact_rows(store, window)
     pending_retire = _pending_retire_proposals(store, [row.ref_id for row in rows])
+    dependants = _open_work_dependants(store, [row.ref_id for row in rows])
     related = _compact_related(store, [row.ref_id for row in rows])
     shas = _ref_shas(
         store,
@@ -2352,9 +2400,13 @@ def compact_candidates(
         evidence: dict[str, Any] = {"content_sha": row.sha}
         expires, expiry_source = _compact_expiry(row)
         if expires is not None and expires <= checked_at:
-            reasons.append("expired")
-            evidence["expires"] = expires.isoformat()
-            evidence["expiry_source"] = expiry_source
+            shields = _expiry_shields(row, dependants)
+            if shields:
+                evidence["expiry_shielded_by"] = shields
+            else:
+                reasons.append("expired")
+                evidence["expires"] = expires.isoformat()
+                evidence["expiry_source"] = expiry_source
         if row.created_at <= checked_at - timedelta(days=COMPACT_COLD_DAYS) and (
             row.last_read_at is None
             or row.last_read_at <= checked_at - timedelta(days=COMPACT_COLD_DAYS)
@@ -2448,7 +2500,7 @@ def _grab_bag_title_reasons(title: str) -> list[str]:
             ("slash", "/" in title),
             (
                 "campaign_or_dated",
-                _CAMPAIGN_RANGE_TITLE.search(title) or _DATE.search(title),
+                CAMPAIGN_RANGE_TITLE.search(title) or _DATE.search(title),
             ),
         )
         if hit
