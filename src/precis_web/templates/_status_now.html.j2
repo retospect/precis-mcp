@@ -127,6 +127,21 @@
   {% endif %}
 </section>
 
+{% if dispatch_holds %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Plan dispatch holds</h2>
+  <ul class="rounded-lg border border-line bg-surface divide-y divide-line-subtle">
+    {% for hold in dispatch_holds %}
+    <li class="px-4 py-2 text-sm">
+      <a href="/todo?focus={{ hold.ref_id }}" class="text-fg-secondary hover:underline">td{{ hold.ref_id }} {{ hold.title }}</a>
+      <time class="ml-2 text-xs text-fg-faint" datetime="{{ hold.since }}">since {{ hold.since | abs_ts }}</time>
+      <p class="text-fg-subtle break-words">{{ hold.reason }}</p>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 {# ── platform upkeep — one collapsed line per upkeep job type ───── #}
 {% if jobs.upkeep %}
 <section class="mb-6">

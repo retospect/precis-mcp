@@ -4,8 +4,8 @@ a release pass (gr735230).
 The release owner used to rebuild the picture from ``view='tree'``, job
 counts and git. Everything here is a read of what the pass already
 stored: no git, no network, no recompute of the engine-review gate (that
-scan reads GitHub; the deploy's own refusal comment is its stored
-answer). Where a fact is not in the store the line says ``unknown``.
+scan reads GitHub; the deploy's stored hold is its ``meta.dispatch_hold``
+stamp). Where a fact is not in the store the line says ``unknown``.
 
 * **Header** — ``meta.release`` on the pass root (number, cut and head
   sha, the host the cut ran on, else the ``release.cut_host`` pin) and a
@@ -20,9 +20,9 @@ answer). Where a fact is not in the store the line says ``unknown``.
 * **Nodes** — one line per pass node in pass order (the fix loop's
   iterations after the gate), newest job and its age; a held node adds
   an indented ``held:`` line with the stored reason: ``release_deploy``'s
-  refusal comment (the review units it waits on keyed ``td<id>`` /
-  ``sha:<sha12>``), ``release_cut``'s ``cut_refusal_logged``, a blocked
-  node's newest comment, or the open ask it waits on.
+  ``meta.dispatch_hold`` stamp (the review units it waits on keyed
+  ``td<id>`` / ``sha:<sha12>``), ``release_cut``'s ``cut_refusal_logged``,
+  a blocked node's newest comment, or the open ask it waits on.
 * **asks** — every open ask under the pass, linked by ``blocked-by`` from
   a pass node, or a ``release-review-wait:<key>`` ask of a unit the
   deploy's refusal names — who must answer and the options stored on it.
@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 from precis.errors import BadInput
 from precis.plans import release as _release
 from precis.plans.gates import read_ci_verdicts, read_prod_head
+from precis.plans.nodes import DISPATCH_HOLD_KEY
 from precis.response import Response
 from precis.todo import TERMINAL_TODO_STATUSES, views
 from precis.todo.blocked import open_blocked_by
@@ -461,22 +462,20 @@ def _wait_asks(store: Store, key: str, rn: str) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
-def _refusal(store: Store, node: _Node) -> tuple[str, datetime | None] | None:
-    """The stored reason a held node carries, with when it was written:
-    the deploy's newest dispatch-refusal comment (it clears
-    ``meta.deploy_refusal_seen`` when it dispatches), or the cut's
-    ``cut_refusal_logged``."""
+def _refusal(node: _Node) -> tuple[str, datetime | None] | None:
+    """The stored reason a held node carries, with since when: the
+    deploy's ``meta.dispatch_hold`` stamp — the dispatcher rewrites it
+    each tick the hold persists, with the reason and its UTC since time
+    (a dispatch clears it) — or the cut's ``cut_refusal_logged``."""
     if node.role == "cut":
         note = node.meta.get("cut_refusal_logged")
         return (str(note), None) if note else None
-    if node.role != "deploy" or not node.meta.get("deploy_refusal_seen"):
+    if node.role != "deploy":
         return None
-    for c in _comments(store, node.id):
-        text = str(c.text).strip()
-        if text.startswith("plan_dispatch:") and "not dispatched" in text:
-            return text, _when(c.created_at)
-    seen = node.meta["deploy_refusal_seen"]
-    return (str(seen[-1]), None) if isinstance(seen, list) and seen else None
+    hold = node.meta.get(DISPATCH_HOLD_KEY)
+    if not isinstance(hold, dict) or not hold.get("reason"):
+        return None
+    return str(hold["reason"]), _when(hold.get("since"))
 
 
 def _units_line(
@@ -498,6 +497,10 @@ def _units_line(
 
 
 def _held_reason(text: str) -> str:
+    """First line of a stored hold reason, without the internal
+    ``plan_dispatch:`` / ``plan_dispatch: td<N>:`` comment prefix the
+    dispatcher writes (a ``meta.dispatch_hold`` reason never carries it,
+    so stripping here is safe for both sources)."""
     line = text.split("\n", 1)[0].strip()
     line = re.sub(r"^plan_dispatch:\s*(?:td\d+:\s*)?", "", line)
     return _clip(line, _HELD_CAP)
@@ -573,7 +576,7 @@ def render_release(
     for n in nodes:
         if n.closed:
             continue
-        stored = _refusal(store, n)
+        stored = _refusal(n)
         active = n.job is not None and n.job_status not in _JOB_TERMINAL
         if stored is not None and not active:
             text, at = stored
@@ -692,7 +695,7 @@ def _state(
         at = refused_at.get(nxt.id)
         since = f" since {_clock(at, now)}" if at else ""
         why = held[nxt.id][0].removeprefix("held: ")
-        if nxt.role == "deploy" and nxt.meta.get("deploy_refusal_seen"):
+        if nxt.role == "deploy" and nxt.meta.get(DISPATCH_HOLD_KEY):
             return f"deploy HELD{since}"
         return f"{nxt.role} HELD{since} — {_clip(why, 90)}"
     word = _STATE_WORD.get(nxt.role, nxt.role)
@@ -702,8 +705,9 @@ def _state(
     if nxt.role == "deploy":
         if job is None:
             return "deploy not dispatched yet"
-        # A dispatch clears the stored refusal, so a deploy whose job ended
-        # with the node still open reads from the job, never as undispatched.
+        # A dispatch clears the stored hold stamp, so a deploy whose job
+        # ended with the node still open reads from the job, never as
+        # undispatched.
         if ended:
             return f"deploy job {last}; the deploy node is still open"
         return "deploying"

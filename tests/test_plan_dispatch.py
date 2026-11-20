@@ -4757,6 +4757,9 @@ def test_a_cancelled_review_on_full_lanes_logs_no_requeue_note(
         for n in res.notes
     )
     assert not any("re-queued" in n for n in res.notes)
+    # td741763: full lanes fall through to the next exclusion, so the
+    # stamped hold names the exhausted table, not a single lane's cap.
+    assert "no available lane" in _meta(store, review)["dispatch_hold"]["reason"]
 
 
 def test_answered_ask_rearms_despite_jobs_run_in_between(store: Store) -> None:
@@ -10523,6 +10526,29 @@ def test_file_overlap_hold_waits_for_a_live_build_and_lifts_when_it_ends(
     assert not any("file-overlap hold" in n for n in res.notes)
 
 
+def test_dispatch_hold_follows_a_queued_build(store: Store) -> None:
+    building = _file_plan(store, "Rebuild src/precis/workers/run_slice.py")
+    running = _slice_job(store, building.ids["task"], "run_slice", "running")
+    waiting = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    task = waiting.ids["task"]
+    start = datetime.now(UTC)
+
+    pd.run_pass(store, now=start)
+    hold = _meta(store, task)["dispatch_hold"]
+    assert f"file-overlap hold — waits on td{building.ids['task']}" in hold["reason"]
+    assert hold["since"] == pd._iso(start)
+    assert len(_jobs_under(store, task)) == 1
+
+    with store.pool.connection() as conn, conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (pd._STARTED_SLICES_LOCK_KEY,))
+        pd.run_pass(store, now=start + timedelta(minutes=1))
+    assert _meta(store, task)["dispatch_hold"] == hold
+
+    _set_job_status(store, running, "failed")
+    pd.run_pass(store, now=start + timedelta(minutes=2))
+    assert _meta(store, task).get("dispatch_hold") is None
+
+
 def test_file_overlap_hold_reads_a_held_builds_branch_files(store: Store) -> None:
     """A finished build held for its pre-land review (``pending_land``) is
     started work: its stamped ``branch_files`` — the real diff — hold a
@@ -11254,12 +11280,12 @@ def test_started_slices_single_flight_skips_a_concurrent_scan(store: Store) -> N
     build = _pending_build(store, ["src/precis/a.py"])
     with store.pool.connection() as conn, conn.transaction():
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (pd._STARTED_SLICES_LOCK_KEY,))
-        assert pd._started_slices(store, single_flight=True) == {}
+        assert pd._started_slices(store, single_flight=True) is None
         # Claim and rescue callers never skip: the full scan still runs.
         assert pd._started_slices(store)[build].state == "in pre-land review"
-    assert pd._started_slices(store, single_flight=True)[build].state == (
-        "in pre-land review"
-    )
+    started = pd._started_slices(store, single_flight=True)
+    assert started is not None
+    assert started[build].state == "in pre-land review"
 
 
 def test_pending_land_key_matches_the_overlap_query_literal() -> None:
@@ -12180,17 +12206,9 @@ def test_a_dry_run_logs_no_cut_refusal(store: Store) -> None:
 # ── gr702442: a refused deploy is visible on its node ───────────────
 
 
-def _refusal_comments(store: Store, todo: int) -> list[str]:
-    return [t for t in _comment_texts(store, todo) if t.startswith("plan_dispatch: td")]
-
-
-def test_a_release_deploy_refusal_is_commented_once_per_text(
+def test_dispatch_hold_tracks_release_refusal_changes(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The engine-review gate held r316's deploy nine hours with nothing
-    on the node saying why: each new refusal text is ONE comment, a
-    flap between two texts comments each once, and a ``release_cut``
-    refusal still writes no comment."""
     from precis.workers.job_types import release_cut as rc
     from precis.workers.job_types import release_deploy as rd
 
@@ -12201,49 +12219,46 @@ def test_a_release_deploy_refusal_is_commented_once_per_text(
 
     mint = T._run(store, None, build)
     deploy, cut = mint.ids["deploy"], mint.ids["cut"]
-    why = ["first hold"]
-    monkeypatch.setattr(rd, "_refusal", lambda store, params: (why[0], None))
+    why: str | None = "first hold"
+    monkeypatch.setattr(rd, "_refusal", lambda store, params: (why, None))
     monkeypatch.setattr(rc, "_cut_target", lambda store, todo_id: (None, "cut hold"))
     psettings.set_setting("release.cut_host", "deploy-host", store=store)
-    ctx = SimpleNamespace(
-        store=store,
-        meta={"params": {}},
-        set_meta=lambda **kw: None,
-        append_chunk=lambda kind, text: None,
-    )
-    note = f"td{deploy}: release_deploy not dispatched — first hold"
-    pd._dispatch(ctx, pd.SPEC)
-    assert _refusal_comments(store, deploy) == [f"plan_dispatch: {note}"]
-    assert _comment_texts(store, cut) == []  # release_cut: still no comment
-    pd._dispatch(ctx, pd.SPEC)
-    assert len(_refusal_comments(store, deploy)) == 1  # same text, no repeat
-    why[0] = "second hold"
-    pd._dispatch(ctx, pd.SPEC)
-    why[0] = "first hold"
-    pd._dispatch(ctx, pd.SPEC)  # flaps back: already commented
-    assert len(_refusal_comments(store, deploy)) == 2
-    assert len(_meta(store, deploy)[pd.DEPLOY_REFUSAL_SEEN_KEY]) == 2
+    key = "dispatch_hold"
+    start = datetime.now(UTC)
 
+    pd.run_pass(store, dry_run=True, now=start)
+    assert key not in _meta(store, deploy)
+    assert key not in _meta(store, cut)
 
-def test_a_deploy_refusal_seen_list_is_capped_cleared_and_dry_run_silent(
-    store: Store,
-) -> None:
-    ref = store.insert_ref(kind="todo", slug=None, title="deploy", meta=None)
-    node: Any = SimpleNamespace(id=int(ref.id), meta={})
-    dry = pd.PassResult(dry_run=True)
-    pd._comment_deploy_refusal(pd._Writer(store, True), dry, node, "td1: held")
-    assert dry.logged == [] and node.meta == {}
-    assert _comment_texts(store, int(ref.id)) == []
-    res = pd.PassResult(dry_run=False)
-    w = pd._Writer(store, False)
-    for i in range(10):
-        pd._comment_deploy_refusal(w, res, node, f"td1: held {i}")
-    seen = _meta(store, int(ref.id))[pd.DEPLOY_REFUSAL_SEEN_KEY]
-    assert seen == [f"td1: held {i}" for i in range(2, 10)]  # newest 8
-    assert res.logged == [f"td1: held {i}" for i in range(10)]
-    assert len(_comment_texts(store, int(ref.id))) == 10
-    pd._comment_deploy_refusal(w, res, node, None)  # a dispatch clears it
-    assert not _meta(store, int(ref.id)).get(pd.DEPLOY_REFUSAL_SEEN_KEY)
+    res = pd.run_pass(store, now=start)
+    first = {
+        "reason": "release_deploy not dispatched — first hold",
+        "since": pd._iso(start),
+    }
+    assert _meta(store, deploy)[key] == first
+    assert _meta(store, cut)[key]["since"] == pd._iso(start)
+    assert any(f"td{cut}: release_cut not dispatched" in line for line in res.logged)
+
+    pd.run_pass(store, now=start + timedelta(minutes=1))
+    assert _meta(store, deploy)[key] == first
+    why = "second hold"
+    changed = start + timedelta(minutes=2)
+    pd.run_pass(store, now=changed)
+    assert _meta(store, deploy)[key] == {
+        "reason": "release_deploy not dispatched — second hold",
+        "since": pd._iso(changed),
+    }
+    why = "first hold"
+    returned = start + timedelta(minutes=3)
+    pd.run_pass(store, now=returned)
+    assert _meta(store, deploy)[key] == {**first, "since": pd._iso(returned)}
+    assert _comment_texts(store, deploy) == []
+    assert _comment_texts(store, cut) == []
+
+    why = None
+    pd.run_pass(store, now=start + timedelta(minutes=4))
+    assert _jobs_under(store, deploy)
+    assert _meta(store, deploy).get(key) is None
 
 
 # ── gr713351: the first cut is pinned to release.cut_host ───────────

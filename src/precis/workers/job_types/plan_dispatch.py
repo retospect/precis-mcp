@@ -482,7 +482,7 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from itertools import groupby
 from operator import itemgetter
-from typing import Any
+from typing import Any, Literal, overload
 
 from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert
@@ -495,6 +495,7 @@ from precis.plans import route as _route
 from precis.plans import templates as _templates
 from precis.plans.logbook import log_plan_event
 from precis.plans.nodes import (
+    DISPATCH_HOLD_KEY,
     MINT_HOLD_TAG,
     MOOT_TAG,
     any_verdict,
@@ -1600,6 +1601,13 @@ class PassResult:
     #: Notes the tick job also records as ``job_result`` lines — a
     #: ``release_cut`` refusal, once per change (gr651885).
     logged: list[str] = field(default_factory=list)
+
+    #: The current dispatch impediment per node, before summary truncation.
+    dispatch_holds: dict[int, str] = field(default_factory=dict, init=False, repr=False)
+
+    def dispatch_hold(self, n: _Node, reason: str) -> None:
+        self.dispatch_holds[n.id] = reason
+        self.notes.append(f"td{n.id}: {reason}")
 
     def counts(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -6535,9 +6543,7 @@ def _review_lane(
             exclude_vendor=sorted(excluded) or None,
         )
         return True, lane.name, stamp
-    res.notes.append(
-        f"td{n.id}: review not dispatched — no available lane fits {cls!r}"
-    )
+    res.dispatch_hold(n, f"review not dispatched — no available lane fits {cls!r}")
     return False, None, None
 
 
@@ -7151,7 +7157,21 @@ def _overlap_hold_max_runs(store: Any) -> int:
     return OVERLAP_HOLD_MAX_RUNS if runs is None else max(0, runs)
 
 
-def _started_slices(store: Any, *, single_flight: bool = False) -> dict[int, _Started]:
+@overload
+def _started_slices(
+    store: Any, *, single_flight: Literal[False] = False
+) -> dict[int, _Started]: ...
+
+
+@overload
+def _started_slices(
+    store: Any, *, single_flight: Literal[True]
+) -> dict[int, _Started] | None: ...
+
+
+def _started_slices(
+    store: Any, *, single_flight: bool = False
+) -> dict[int, _Started] | None:
     """Every build with started, unlanded work, factory-wide (td603849,
     widened 2026-11-15 from in-flight lands): a live ``land_slice`` or
     ``run_slice`` job, or a finished build held for its pre-land review
@@ -7200,7 +7220,7 @@ def _started_slices(store: Any, *, single_flight: bool = False) -> dict[int, _St
     conflict with the work that went ahead rebuilds at their land.
 
     ``single_flight`` (dispatch diagnostics only, gr732475): take a
-    transaction advisory lock around the scan and return ``{}`` when
+    transaction advisory lock around the scan and return ``None`` when
     another scan holds it, so concurrent dispatch passes do not stack
     copies of the query. Claim and rescue callers leave it off and
     always run the full scan: a skipped scan there would drop real
@@ -7211,7 +7231,7 @@ def _started_slices(store: Any, *, single_flight: bool = False) -> dict[int, _St
                 "SELECT pg_try_advisory_xact_lock(%s)", (_STARTED_SLICES_LOCK_KEY,)
             ).fetchone()
             if not lock or not lock[0]:
-                return {}
+                return None
         rows = conn.execute(
             """
             WITH live AS (
@@ -7796,43 +7816,6 @@ def _log_cut_refusal(w: _Writer, res: PassResult, n: _Node, note: str | None) ->
         log.info("plan_dispatch: %s", note)
 
 
-#: The release_deploy node's refusal texts already commented since it
-#: last dispatched (:func:`_comment_deploy_refusal`).
-DEPLOY_REFUSAL_SEEN_KEY = "deploy_refusal_seen"
-
-#: How many refusal texts :data:`DEPLOY_REFUSAL_SEEN_KEY` keeps.
-_DEPLOY_REFUSAL_SEEN_CAP = 8
-
-
-def _comment_deploy_refusal(
-    w: _Writer, res: PassResult, n: _Node, note: str | None
-) -> None:
-    """Write a ``release_deploy`` node's dispatch refusal as ONE comment
-    the first time its text is seen (gr702442): the engine-review gate
-    held r316's deploy for nine hours and nothing on the node said why.
-    Unlike :func:`_log_cut_refusal` this leaves a comment, so the texts
-    already written are kept in ``meta.deploy_refusal_seen`` (newest
-    :data:`_DEPLOY_REFUSAL_SEEN_CAP`) — a refusal that flaps between two
-    texts comments each once, not every tick. A dispatch (``note``
-    ``None``) clears the key so the next hold comments afresh. A dry run
-    writes nothing."""
-    if w.dry_run:
-        return
-    seen = [str(s) for s in (n.meta.get(DEPLOY_REFUSAL_SEEN_KEY) or [])]
-    if note is None:
-        if seen:
-            w.stamp_meta(n, {DEPLOY_REFUSAL_SEEN_KEY: None})
-        return
-    if note in seen:
-        return
-    w.comment(n, f"plan_dispatch: {note}")
-    w.stamp_meta(
-        n, {DEPLOY_REFUSAL_SEEN_KEY: [*seen, note][-_DEPLOY_REFUSAL_SEEN_CAP:]}
-    )
-    res.logged.append(note)
-    log.info("plan_dispatch: %s", note)
-
-
 def _review_repo_mismatch(plan: _Plan, n: _Node) -> str | None:
     """Why the reviewer ``n`` must not dispatch: the repo it resolves to
     (:func:`_node_repos`, none = the default) is not the repo its review
@@ -7972,32 +7955,45 @@ def _step_dispatch(
     # Diagnostic only: every doable node is queued. The claim transaction
     # checks current holders before spending an executor slot.
     started = _started_slices(w.store, single_flight=True) if candidates else {}
-    held = _overlap_holds(plan, w.store, started, candidates)
+    waiting = [
+        n
+        for n in candidates
+        if not (_excluded(plan, n) or _claims(n))
+        and not any(j.status == "running" for j in plan.jobs(n))
+    ]
+    held = _overlap_holds(plan, w.store, started, waiting) if started else {}
     # gr657066: governs:factory skills join the routing set — a brief
-    # naming one routes to the coordinator like any deny-path text. The
-    # filesystem variant failing open is fine here (the run/land gates
-    # re-resolve at the base and fail closed).
+    # naming one routes to the coordinator like any deny-path text.
     deny = _lanes.deny_paths_for(w.store) + _governs.governed_skill_paths()
-    for n in candidates:
-        if _excluded(plan, n) or _claims(n) or plan.live_job(n):
-            continue
-        if n.id in held:
+    for n in waiting:
+        if (
+            started is not None
+            and n.id in held
+            and not (plan.blocked(n) or plan.paused(n))
+        ):
             res.held += 1
             hid, shared = held[n.id]
             named = sorted(p for p in shared if "/" in p) or sorted(shared)
-            res.notes.append(
-                f"td{n.id}: file-overlap hold — waits on td{hid} "
-                f"({started[hid].state}): both touch "
+            res.dispatch_hold(
+                n,
+                f"file-overlap hold — waits on td{hid} ({started[hid].state}): both touch "
                 f"{', '.join(f'`{p}`' for p in named[:3])}"
-                f"{' …' if len(named) > 3 else ''}; claims once td{hid} "
-                "is on main"
+                f"{' …' if len(named) > 3 else ''}; claims once td{hid} is on main",
             )
+        if started is None and not (plan.blocked(n) or plan.paused(n)):
+            # A skipped scan cannot tell whether a queued hold cleared.
+            previous = n.meta.get(DISPATCH_HOLD_KEY)
+            reason = previous.get("reason") if isinstance(previous, dict) else None
+            if isinstance(reason, str) and reason.startswith("file-overlap hold —"):
+                res.dispatch_holds[n.id] = reason
+        if plan.live_job(n):
+            continue
         # td659522 step 0: every op on a node tagged for another repo is
         # skipped before any routing, escalation or ask — the builder,
         # reviewer and lander all assume a precis worktree.
         repo_problem = _lanes.repo_refusal(_node_repos(plan, n), w.store)
         if repo_problem is not None:
-            res.notes.append(f"td{n.id}: not dispatched — {repo_problem}")
+            res.dispatch_hold(n, f"not dispatched — {repo_problem}")
             continue
         if _is_reviewer(n):
             # td659522 step 5: a reviewer runs in the repo its target landed
@@ -8008,7 +8004,7 @@ def _step_dispatch(
                 continue
             mismatch = _review_repo_mismatch(plan, n)
             if mismatch is not None:
-                res.notes.append(f"td{n.id}: not dispatched — {mismatch}")
+                res.dispatch_hold(n, f"not dispatched — {mismatch}")
                 continue
         job_type, params = _resolve_op(n)
         # td659522 step 1: a build in another repo carries it on the job;
@@ -8036,10 +8032,11 @@ def _step_dispatch(
             # (precis releases go through release_cut).
             tagged = _node_repos(plan, n)
             if not tagged or tagged[0] == _lanes.DEFAULT_REPO:
-                res.notes.append(
-                    f"td{n.id}: {REPO_RELEASE_OP} not dispatched — no "
+                res.dispatch_hold(
+                    n,
+                    f"{REPO_RELEASE_OP} not dispatched — no "
                     "second-repo repo: tag; precis releases go through "
-                    "release_cut"
+                    "release_cut",
                 )
                 continue
             params["repo"] = tagged[0]
@@ -8049,13 +8046,11 @@ def _step_dispatch(
             # the repo it pins; it builds in precis (no ``repo`` param).
             params, pin_problem = _pin_params(plan, n, params)
             if pin_problem is not None:
-                res.notes.append(
-                    f"td{n.id}: {PIN_BUMP_OP} not dispatched — {pin_problem}"
-                )
+                res.dispatch_hold(n, f"{PIN_BUMP_OP} not dispatched — {pin_problem}")
                 continue
             if _pin_awaits_land(plan, n):
-                res.notes.append(
-                    f"td{n.id}: {PIN_BUMP_OP} succeeded; waiting for its land_slice"
+                res.dispatch_hold(
+                    n, f"{PIN_BUMP_OP} succeeded; waiting for its land_slice"
                 )
                 continue
             # td659522 F7: after a land the next job is the gate image wait;
@@ -8149,8 +8144,8 @@ def _step_dispatch(
                 # already have fired — so a blind re-run is never safe
                 # (gr587772). The rescue tick's ``cancelled`` class owns
                 # the node.
-                res.notes.append(
-                    f"td{n.id}: newest job:{newest.id} was cancelled; not redispatched"
+                res.dispatch_hold(
+                    n, f"newest job:{newest.id} was cancelled; not redispatched"
                 )
                 continue
             # gr587772: every guard above already passed, so the cancel
@@ -8176,9 +8171,10 @@ def _step_dispatch(
             _reason, run = _free_run(plan, n)
             ready = free_backoff_ready_at(newest.created_at, run)
             if ready is not None and ready > now:
-                res.notes.append(
-                    f"td{n.id}: held — '{free_reason}' free failure "
-                    f"x{run} in a row; next dispatch at {_iso(ready)}"
+                res.dispatch_hold(
+                    n,
+                    f"held — '{free_reason}' free failure "
+                    f"x{run} in a row; next dispatch at {_iso(ready)}",
                 )
                 continue
             res.notes.append(f"td{n.id}: re-queued after {free_reason}, not an attempt")
@@ -8218,10 +8214,11 @@ def _step_dispatch(
                 }
                 if repeats > MECH_RETRY_CAP:
                     w.stamp_meta(n, {MECH_RETRIES_KEY: {**stamp, "exhausted": True}})
-                    res.notes.append(
-                        f"td{n.id}: mechanical red '{slug}' back for repeat "
+                    res.dispatch_hold(
+                        n,
+                        f"mechanical red '{slug}' back for repeat "
                         f"{repeats} — the brief budget is spent; parked "
-                        "for the cap ask"
+                        "for the cap ask",
                     )
                     continue
                 prev = n.meta.get(MECH_RETRIES_KEY)
@@ -8249,12 +8246,14 @@ def _step_dispatch(
                 )
         if job_type == DEFAULT_OP and not mech_pinned:
             go, climbed, esc_stamp = _escalate(w, plan, n, params, lane_table, rules)
+            if not go:
+                reason = climbed or "no eligible retry lane"
+                res.dispatch_hold(n, reason.removeprefix(f"td{n.id}: "))
+                continue
             if climbed:
                 res.notes.append(climbed)
             if esc_stamp is not None:
                 decision_stamp = esc_stamp
-            if not go:
-                continue
         if (
             job_type
             in (
@@ -8284,26 +8283,22 @@ def _step_dispatch(
                         "'value': '<host>', 'reason': '...'})"
                     )
                     _log_cut_refusal(w, res, n, no_host)
-                    res.notes.append(no_host)
+                    res.dispatch_hold(n, no_host.removeprefix(f"td{n.id}: "))
                     continue
             if host:
                 params["target_node"] = host
         spec = get_job_type(job_type)
         if spec is None:
-            res.notes.append(
-                f"td{n.id}: meta.op job_type {job_type!r} is not registered"
-            )
+            res.dispatch_hold(n, f"meta.op job_type {job_type!r} is not registered")
             continue
         problem = _params_problem(spec.params_schema, params)
         if problem is None and not w.dry_run and spec.validate_submit is not None:
             problem = spec.validate_submit(w.store, gripe_id=None, params=params)
-        note = f"td{n.id}: {job_type} not dispatched — {problem}" if problem else None
+        refusal = f"{job_type} not dispatched — {problem}" if problem else None
         if job_type == "release_cut":
-            _log_cut_refusal(w, res, n, note)
-        elif job_type == "release_deploy":
-            _comment_deploy_refusal(w, res, n, note)
-        if note:
-            res.notes.append(note)
+            _log_cut_refusal(w, res, n, f"td{n.id}: {refusal}" if refusal else None)
+        if refusal:
+            res.dispatch_hold(n, refusal)
             continue
         executor = _pick_executor(spec.compatible_executors)
         if w.dry_run:
@@ -8340,6 +8335,27 @@ def _step_dispatch(
                 f"td{n.id}: dispatched {job_type} job:{job_id} on {executor}"
             )
         res.dispatched += 1
+
+    _stamp_dispatch_holds(plan, w, res, now)
+
+
+def _stamp_dispatch_holds(
+    plan: _Plan, w: _Writer, res: PassResult, now: datetime
+) -> None:
+    if w.dry_run:
+        return
+    for n in plan.todos():
+        reason = res.dispatch_holds.get(n.id)
+        previous = n.meta.get(DISPATCH_HOLD_KEY)
+        if reason is None:
+            if previous is not None:
+                w.stamp_meta(n, {DISPATCH_HOLD_KEY: None})
+        elif not (
+            isinstance(previous, dict)
+            and previous.get("reason") == reason
+            and previous.get("since")
+        ):
+            w.stamp_meta(n, {DISPATCH_HOLD_KEY: {"reason": reason, "since": _iso(now)}})
 
 
 # ── (5) hygiene ────────────────────────────────────────────────────

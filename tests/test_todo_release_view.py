@@ -140,14 +140,16 @@ def test_held_deploy_names_the_stored_reason_and_the_review_ask(store: Store) ->
         "release-review-wait:sha:abcdef012345",
         options=["acknowledged", "false alarm"],
     )
-    refusal = (
-        f"plan_dispatch: td{ids['deploy']}: release_deploy not dispatched — "
+    reason = (
+        "release_deploy not dispatched — "
         "release_deploy: r7 waits on its engine reviews — engine review td900 on "
         "the td901 land is open; the release waits — next: let td900 finish; "
         "engine land abcdef012345 has no reviewer; the release waits"
     )
-    _comment(store, ids["deploy"], refusal)
-    store.stamp_ref_meta(ids["deploy"], {"deploy_refusal_seen": [refusal]})
+    store.stamp_ref_meta(
+        ids["deploy"],
+        {"dispatch_hold": {"reason": reason, "since": NOW.isoformat()}},
+    )
 
     body = _body(store, mint.root_id)
     assert "state: deploy HELD since" in body
@@ -175,6 +177,28 @@ def test_a_held_node_with_nothing_stored_says_so(store: Store) -> None:
     body = _body(store, mint.root_id)
     assert f"td{mint.ids['poll']}" in body
     assert "held: no reason stored" in body
+
+
+def test_a_blocked_nodes_comment_drops_the_plan_dispatch_prefix(
+    store: Store,
+) -> None:
+    """Comments the dispatcher writes carry ``plan_dispatch:`` (and
+    ``td<N>:``) prefixes; the held line renders the reason, not them."""
+    mint = _cut_pass(store)
+    ids = mint.ids
+    _status(store, ids["poll"], "blocked")
+    _comment(store, ids["poll"], "plan_dispatch: blocked — the gate failed")
+    _status(store, ids["gate"], "blocked")
+    _comment(
+        store,
+        ids["gate"],
+        f"plan_dispatch: td{ids['gate']}: fix td55 is held waiting-for:brief",
+    )
+
+    body = _body(store, mint.root_id)
+    assert "held: blocked — the gate failed" in body
+    assert "held: fix td55 is held waiting-for:brief" in body
+    assert not any("plan_dispatch" in ln for ln in body.splitlines())
 
 
 def test_deploy_waits_on_an_answerable_approval_ask(store: Store) -> None:
@@ -371,13 +395,15 @@ def test_triage_routed_asks_still_list_with_who_answers(store: Store) -> None:
         f"release-review-wait:td901:carry:r8:{'b' * 12}",
         options=["acknowledged", "false alarm"],
     )
-    refusal = (
-        f"plan_dispatch: td{ids['deploy']}: release_deploy not dispatched — "
+    reason = (
+        "release_deploy not dispatched — "
         "engine land td901 is cleared on a corrective commit "
         f"({'b' * 12}) that is not on release/r7"
     )
-    _comment(store, ids["deploy"], refusal)
-    store.stamp_ref_meta(ids["deploy"], {"deploy_refusal_seen": [refusal]})
+    store.stamp_ref_meta(
+        ids["deploy"],
+        {"dispatch_hold": {"reason": reason, "since": NOW.isoformat()}},
+    )
 
     body = _body(store, mint.root_id)
     asks = body.split("asks:")[1]

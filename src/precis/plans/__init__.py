@@ -42,6 +42,11 @@ Modules (each lands as its own slice under td540836):
 The dispatcher tick lives with the other job types
 (``precis.workers.job_types``), not here: this package holds the plan
 model and its pure evaluators, the worker side holds the pass.
+The tick stores the current dispatch hold on the todo as
+``meta.dispatch_hold = {reason, since}``, so operators can inspect it
+independently of the tick summary. Identical reasons keep their first
+observed UTC time. File overlap can hold a queued job at claim time,
+so the tick checks queued builds as well as unminted candidates.
 
 A task class without an enabled lane is a configuration gap, not capacity
 pressure: dispatch blocks the node on one coordinator ask before minting a

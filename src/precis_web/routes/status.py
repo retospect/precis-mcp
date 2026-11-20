@@ -26,7 +26,9 @@ from fastapi.responses import HTMLResponse
 
 from precis import health_checks
 from precis.alerts import STATE_OPEN, STATE_RESOLVED
+from precis.plans.nodes import DISPATCH_HOLD_KEY
 from precis.store._body_predicate import has_body_sql
+from precis.todo import TERMINAL_TODO_STATUSES
 from precis.workers.executors._common import (
     CLAIMABLE,
     RUNNING,
@@ -971,6 +973,32 @@ def _now_jobs(store: Store) -> dict[str, Any]:
     }
 
 
+def _now_dispatch_holds(store: Store) -> list[dict[str, Any]]:
+    """Current todo-level dispatch holds, including work with no job yet."""
+    with _connect(store) as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title, hold.stamp->>'reason', hold.stamp->>'since'
+              FROM refs r
+             CROSS JOIN LATERAL (SELECT r.meta->%s AS stamp) hold
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND hold.stamp->>'reason' IS NOT NULL
+               AND hold.stamp->>'since' IS NOT NULL
+               AND NOT EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                    WHERE rt.ref_id = r.ref_id AND t.namespace = %s
+                      AND t.value = ANY(%s)
+               )
+             ORDER BY hold.stamp->>'since', r.ref_id
+            """,
+            (DISPATCH_HOLD_KEY, STATUS_NAMESPACE, sorted(TERMINAL_TODO_STATUSES)),
+        ).fetchall()
+    return [
+        {"ref_id": ref_id, "title": title, "reason": reason, "since": since}
+        for ref_id, title, reason, since in rows
+    ]
+
+
 def _now_alerts(store: Store) -> dict[str, Any]:
     """Active alerts first, then a short dimmed tail of recently-resolved
     ones — reuses ``/alerts``'s own row-shaping helper (:func:`_alert_rows`)
@@ -1014,6 +1042,7 @@ def _now_ctx(store: Store) -> dict[str, Any]:
     return {
         "now_hosts": _safe(lambda: _now_hosts(store)) or [],
         "jobs": jobs,
+        "dispatch_holds": _safe(lambda: _now_dispatch_holds(store)) or [],
         "alerts": alerts,
     }
 

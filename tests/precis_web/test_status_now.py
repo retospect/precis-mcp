@@ -15,7 +15,12 @@ import precis_web.routes.status as status_module
 from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.store import Tag
 from precis.workers.executors._common import append_chunk
-from precis_web.routes.status import _now_alerts, _now_hosts, _now_jobs
+from precis_web.routes.status import (
+    _now_alerts,
+    _now_dispatch_holds,
+    _now_hosts,
+    _now_jobs,
+)
 
 
 def _set_status(store: Any, ref_id: int, value: str) -> None:
@@ -281,6 +286,19 @@ def test_now_jobs_upkeep_collapses_into_one_line(store: Any) -> None:
     assert "3 queued" in line["sentence"]
     assert line["ref_id"] in ids
     assert jobs["queued_count"] == 3
+
+
+def test_now_dispatch_holds_include_todos_without_jobs(store: Any) -> None:
+    stamp = {"reason": "release_deploy not dispatched", "since": "2026-11-20T12:00:00Z"}
+    ref = store.insert_ref(
+        kind="todo", slug=None, title="Deploy", meta={"dispatch_hold": stamp}
+    )
+    assert _now_dispatch_holds(store) == [
+        {"ref_id": ref.id, "title": "Deploy", **stamp}
+    ]
+
+    _set_status(store, ref.id, "done")
+    assert _now_dispatch_holds(store) == []
 
 
 def test_now_alerts_active_first_then_resolved(store: Any) -> None:
