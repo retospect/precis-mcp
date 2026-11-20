@@ -187,23 +187,29 @@ verb refuses to wipe a whole file by accident. Use `edit` with
 ## Delete a single matched span (one citation, one line)
 ## Cut one occurrence of a string from a file
 
-`delete` operates on whole chunks / line ranges / symbols. For
-arbitrary spans inside a chunk, use `edit(mode='find-replace',
-text='')` — anchored find-replace recipe: [[precis-edit-help]].
+For the supported `delete` selectors, see [[precis-edit-help]].
+For an arbitrary span inside a chunk,
+use `edit(mode='find-replace', find=…, text='')` — anchored
+find-replace recipe: [[precis-edit-help]].
 
 ## Why can't I delete a paper or a cached tool answer?
 
 ```python
-delete(kind="paper", id="<slug>")  # raises Unsupported
+delete(kind="paper", id="<slug>")  # raises BadInput
 delete(kind="web", id="<url>")  # raises Unsupported
 ```
 
-Papers, patents, and cache-backed kinds (`calc`, `math`, `web`,
-`youtube`, `websearch`, `perplexity-reasoning`, `perplexity-research`) reject `delete`. Cache
-entries expire on TTL; to re-fetch one now, pass `args={'refresh': True}`
-on the `get` ([[precis-cache]]). To
-remove an ingested paper, work at the SQL layer or re-fetch by id
-to overwrite the local copy.
+`delete(kind='paper', …)` refuses as `BadInput`, not `Unsupported` —
+the paper itself is never deleted, but two doors exist. Retire a
+phantom stub with
+`edit(kind='paper', id=<slug>, args={'retire': True, 'reason': '<why>'})`,
+and hide one of its notes with
+`delete(kind='paper', id=<slug>, args={'comment': <K>})` (see
+[[precis-paper-help]]). Patents refuse `delete` as `Unsupported`, and
+so do the cache-backed kinds (`calc`, `math`, `web`,
+`youtube`, `websearch`, `perplexity-reasoning`, `perplexity-research`).
+Cache entries expire on TTL; to re-fetch one now, pass
+`args={'refresh': True}` on the `get` ([[precis-cache]]).
 
 ## Undo a delete
 ## I deleted the wrong thing — can I get it back?
