@@ -69,7 +69,9 @@ Lazy discovery avoids cycles when handle-code plugins import mention consumers.
   :mod:`~precis.utils.utc_logging`, :mod:`~precis.utils.env`.
 - *Process plumbing.* :mod:`~precis.utils.db_log_handler` (centralised worker
   logs), :mod:`~precis.utils.db_retry`, :mod:`~precis.utils.load_gate`,
-  :mod:`~precis.utils.container_limits`, :mod:`~precis.utils.optional_deps`
+  :mod:`~precis.utils.container_limits` (rlimit refusals are returned to the
+  spawn caller so the pre-exec path avoids logging locks),
+  :mod:`~precis.utils.optional_deps`
   (lazy-import guards for extras).
 
 Table rows may omit all formula cells, mapping inputs in data-column order
