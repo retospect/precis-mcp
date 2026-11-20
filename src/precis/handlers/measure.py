@@ -65,8 +65,10 @@ from precis.store.revision_context import current_revision_context
 from precis.taxonomy.measure_units import (
     MINUS_CHARS,
     MINUS_FOLD,
+    NeedsMolarMass,
     format_number,
     is_unit,
+    make_converter,
     to_canonical,
 )
 from precis.taxonomy.money import MoneyTables, row_currency, split_currency
@@ -966,13 +968,30 @@ class MeasureHandler(Handler):
     def _to_si(
         bound: float | None, unit: str | None, taxon_meta: dict[str, Any]
     ) -> float | None:
-        """A bound as SI: in ``unit``, else the taxon's display unit, else SI."""
+        """A bound as SI: in ``unit``, else the taxon's display unit, else SI.
+
+        A measurand with no canonical unit stores unitless numbers (a
+        fraction, a count), so a bound in its display unit converts from
+        dimensionless — mirroring the display path's scaling (gr728612):
+        ``min=0.1`` with ``unit='%'`` (or display ``%``) reaches stored
+        fractions as ``0.001``."""
         if bound is None:
             return None
         use = (unit or "").strip() or taxon_meta.get("display_unit")
         if not use:
             return float(bound)
-        return to_canonical(float(bound), use, taxon_meta.get("canonical_unit"))
+        canon = (taxon_meta.get("canonical_unit") or "").strip()
+        if not canon:
+            try:
+                return make_converter(use, "1").value(float(bound))
+            except (BadInput, NeedsMolarMass) as exc:
+                raise BadInput(
+                    f"unit {use!r} cannot be applied: this measurand has no "
+                    "canonical unit and the stored numbers are unitless, so "
+                    "the unit does not scale them",
+                    next="drop the unit=, or set the taxon's canonical_unit",
+                ) from exc
+        return to_canonical(float(bound), use, canon)
 
     @staticmethod
     def _header(

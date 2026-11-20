@@ -138,6 +138,17 @@ prefix, so 1.4e-10 m reads `140 pm`, never `0.00000000014 m`.
 
 - A fraction (canonical unit `1`) shows bare (`0.95`); `95 %` appears only when
   the taxon's `display_unit` is `%` (or you pass `unit='%'`).
+- A measurand with **no canonical unit** stores unitless numbers (a fraction,
+  a count). A dimensionless `display_unit` or `unit=` scales the stored number:
+  `0.001` shows as `0.1 %`, never unscaled as `0.001 %`; a display unit that
+  does not scale a unitless number is dropped rather than printed unscaled,
+  and an explicit `unit=` that does not fit is refused (or falls back to bare
+  in the render path).
+- `min=`/`max=` on `search` convert from the display unit to the stored
+  number, so `unit='%' bounds reach stored fractions (`min=0.1` with `%` is
+  `0.001` stored); a non-scaling unit refuses with a `next` step. A fraction
+  measurand should carry `canonical_unit` `1` anyway — then `%` is accepted as
+  a reported unit on write.
 - pH (and pOH, pKa, dB) is a scale: never prefixed, never converted.
 - Affine units convert as absolute values: 298.15 K with display `°C` is
   `25 °C`. A temperature difference is its own measurand.
