@@ -149,6 +149,7 @@ the measurand fields `get` alone does not show:
 ```python
 get(kind="taxon", view="meta", id=["tn465823", "tn465824"])
 get(kind="taxon", view="meta", args={"under": "measurand"})   # every descendant
+get(kind="taxon", id="measurand", view="children")           # direct children only
 ```
 
 An id list caps at 50; `under=` walks the same descendant set
@@ -213,6 +214,8 @@ search(kind="taxon", under="tn12", q="calorimetry")
 most N hops (default unbounded). Without `q=` the set is listed by depth,
 then name, with each node's first definition sentence; with `q=` the ranked
 hits are cut to that set. `axis=`/`depth=` without `under=` are refused.
+Search accepts at most `page_size=100`. Use the children view above to
+list direct children with their metadata.
 
 On every other kind `under=` selects instances: `search(kind="finding",
 under="technique/afm", q="tip radius")` returns only findings with an

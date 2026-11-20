@@ -151,6 +151,7 @@ class TaxonHandler(NumericRefHandler):
             "in meta=; a likely duplicate is refused unless dedup=False). Nodes "
             "form a DAG via link(rel='specialises', meta={'axis': …}); "
             "get(view='path') shows the chains up to the start nodes; "
+            "get(view='children', id=…) lists direct children; "
             "search(q=) matches name and definition, search(under=, axis=, "
             "depth=) lists descendants. Ids: 42, tn42, or a path "
             "'measurand/temperature'. See me693578."
@@ -910,7 +911,8 @@ class TaxonHandler(NumericRefHandler):
         […]}``) / ``view='meta'`` (one row per node — id, name, slug,
         display_unit, required_conditions, axis — over a single node, an
         ``id=[…]`` list, or every descendant of ``under=``) on a concrete
-        node; ``id='/coverage'`` (the review-window stamp coverage by
+        node; ``view='children'`` (the same columns over one parent's direct
+        children); ``id='/coverage'`` (the review-window stamp coverage by
         kind); otherwise the generic numeric-ref get."""
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
@@ -939,6 +941,13 @@ class TaxonHandler(NumericRefHandler):
                 "sort=/cross= only apply with view='facets'",
                 next="get(kind='taxon', id='tn12', view='facets', args={'sort': 'recent'})",
             )
+        if view == "children":
+            if id is None or isinstance(id, list):
+                raise BadInput(
+                    "view='children' needs one parent id",
+                    next="get(kind='taxon', id='measurand', view='children')",
+                )
+            return self._render_meta_inventory(id=None, under=id, direct=True)
         if concrete and view == "path":
             return self._render_path_view(self._resolve_live_ref(self._coerce_id(id)))
         if concrete and view == "facets":
@@ -954,10 +963,11 @@ class TaxonHandler(NumericRefHandler):
         if concrete and view is not None and view not in _BASE_VIEWS:
             raise Unsupported(
                 f"unknown view {view!r} for kind='taxon'",
-                options=["path", "facets", *_BASE_VIEWS],
+                options=["path", "facets", "children", *_BASE_VIEWS],
                 next=(
                     "view='path' (chains up to the start nodes) "
                     "· view='facets' (counts per axis of the instances beneath) "
+                    "· view='children' (meta table over direct children) "
                     "· links, log, raw (generic)"
                 ),
             )
@@ -1071,13 +1081,16 @@ class TaxonHandler(NumericRefHandler):
             out += ["", f"{total - len(chains)} more chain(s) cut (limit {limit})"]
         return Response(body="\n".join(out))
 
-    def _render_meta_inventory(self, *, id: Any, under: str | int | None) -> Response:
+    def _render_meta_inventory(
+        self, *, id: Any, under: str | int | None, direct: bool = False
+    ) -> Response:
         """``view='meta'`` — one row per node: handle, name, slug,
         ``display_unit``, ``required_conditions`` and the axis of its
         ``specialises`` edge to its (first) parent — the measurand
         card-fields that used to need prod-psql (gr503059). Bulk via
         ``id=[…]`` (cap :data:`_META_VIEW_CAP`) or every descendant of
-        ``under=`` (the same set ``search(under=)`` walks)."""
+        ``under=`` (the same set ``search(under=)`` walks). The children view
+        limits that walk to one hop and retains the axis of each edge."""
         from precis.format import render_agent_table
 
         ids: list[int]
@@ -1086,7 +1099,9 @@ class TaxonHandler(NumericRefHandler):
         if under is not None:
             root = self._resolve_live_ref(self._resolve_spec(under))
             seen: dict[int, str | None] = {}
-            for rid, _depth, ax in self.store.taxon_descendants(root.id):
+            for rid, _depth, ax in self.store.taxon_descendants(
+                root.id, max_depth=1 if direct else None
+            ):
                 seen.setdefault(rid, ax)
             ids = list(seen)
             axes = seen
@@ -1137,7 +1152,8 @@ class TaxonHandler(NumericRefHandler):
                     "axis": axes.get(rid) or "",
                 }
             )
-        head = f"# {len(rows)} taxon meta{scope}"
+        label = "direct children" if direct else "taxon meta"
+        head = f"# {len(rows)} {label}{scope}"
         return Response(
             body=head
             + "\n\n"
