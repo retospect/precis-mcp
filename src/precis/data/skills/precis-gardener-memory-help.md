@@ -2,358 +2,161 @@
 id: precis-gardener-memory-help
 family: memory
 title: precis — the graph gardener's memory detectors
-summary: what the gardener's memory checks flag (anchor rot, restated claims, review debt, titles, undated absence, source drift, entity state, host facts), the actions a reviewer may take, and notation flags
+summary: what a memory flag, pending proposal or memory-review todo means, which detectors file them, what to do when you meet one, and how to close a review
 answers:
-  - how does the gardener check memory anchors?
-  - how does the gardener detect restated memory claims?
-  - how does the gardener detect changed memory sources and entity state?
-  - what do the memory and memory-review checks flag?
-  - how do I audit memory claim coverage?
-  - what does a reviewed memory supersede or retire do?
+  - which memory detectors does the gardener run?
+  - what does a garden proposal on a memory mean?
+  - what do I do with a memory-review todo?
+  - how do I close a memory review or clear review debt?
+  - what does the AUDIT:notation tag on a memory mean?
+  - what does the grounding line on a memory read mean?
   - how do I fix a memory flagged AUDIT:notation?
-applies-to: get/search (kind='memory'/'job'), reviews ledger
+applies-to: get/search (kind='memory'/'job'), memory-review todos
 tags: [workflow]
 kinds: [memory, job]
 status: active
 ---
 
-# precis-gardener-memory-help — memory detectors
+# precis-gardener-memory-help — memory flags and reviews
 
-Gardener proposals and the review ledger: [[precis-gardener-help]]. Every
-memory detector reads DREAM memories as duplicate/merge-only and never
-proposes a rewrite for them.
+The gardener's memory passes file proposals and review todos over live
+memories. A proposal is pending evidence, not truth; none of it applies
+itself and there is no MCP apply or undo — each flag waits on a reader's
+edit, a review stamp or a human apply. Proposals, the pending queue and
+the reject door: [[precis-gardener-help]]. Every memory detector reads
+DREAM memories as duplicate/merge-only and never proposes a rewrite for
+them.
 
-## Memory anchor checks
+## Where you meet a flag
 
-`anchor_rot` checks Python file/symbol anchors and dotted qualnames,
-scripts/docs paths, Markdown sections and fragments, and mixed
-letter-and-digit commit SHAs of at least seven characters, against the
-committed `main`. Every proposal pins the memory's SHA and the main commit,
-names each failed anchor, and records the lookups tried. Working-tree edits
-do not affect that evidence.
+- A pending proposal — `get(kind='job', id='/garden/proposals')` lists
+  the queue; `get(kind='memory', id='me<N>', view='smells')` groups one
+  memory's open proposals plus the last 30 days of decisions by
+  detector, with evidence ([[precis-memory-help]] "Read garden
+  proposals"). `not_checked` entries in that evidence record what the
+  detector could not verify — a limit, never proof of a fault.
+- An `OPEN:memory-review` todo linked `raises-concern-about` → a memory
+  — the evaluator's `ask`, a reader complaint needing judgement, or a
+  dependency re-audit.
+- An `AUDIT:notation` tag on the memory itself — write-path lint caught
+  a canon break; `search(kind='memory', tags=['AUDIT:notation'])`
+  lists them.
+- The `grounding:` line in the `get(kind='memory')` footer and the
+  fisheye header — the audit's per-claim coverage, or
+  `grounding: not audited`.
 
-Each memory checks at most 20 anchors. Anchors that cannot be verified are
-recorded `not_checked`, never as rot evidence; a body with only unverifiable
-anchors produces no proposal. The evaluator distinguishes rename, removal
-and already-recorded history; a live SHA proves existence, not that the
-surrounding claim is current.
+## Which detectors run
 
-## Restated memory claims
+The memory passes are opt-in: a `graph_garden` job must name the pass —
+`all` skips them and nothing schedules one by itself. Names here are
+the detector each proposal's evidence and the `view='smells'` grouping
+carry.
 
-`restated_claim` compares sentences across live memories inside one
-`section:index` hub's `part-of` subtree. Title/heading lines, `Source:`,
-`Left:`, `Meta:` and sentences shorter than eight words are excluded.
-Whole-body duplicates are merge candidates instead. Both spans and both
-node SHAs are pinned. The evaluator checks identical meaning, scope, time
-and polarity, then proposes one keeper: reference before gotcha before
-thread, lower ref id for ties. The `rewrite` replaces only the redundant
-sentence with `See me<keeper>.`; surrounding facts remain. These proposals
-are never applied automatically. The scan is bounded: not every sentence
-pair in a large hub is compared.
+- `memory` — `dangling_mention` (a handle naming a retired ref),
+  `thread_shape` (a thread node whose `Left:` is missing or done),
+  `anchor_rot` (a cited path/symbol/section/commit no longer resolves
+  on main), `compact` (an expired or stale node owes a keep/move/drop
+  plan before retirement), `grab_bag` (one memory carrying many
+  independent claims — a split candidate), `griped` (open
+  `project:memory` complaints, newest first).
+- `memory-review` — proposal-only; nothing applies these:
+  `entity_claim_stale` (a state sentence about an entity or machine no
+  longer matches its recorded state), `negative_undated` ("no X exists"
+  with no date on that line), `notation` (the first authored-prose span
+  breaking [[precis-notation-canon]] — quotes, code and math are
+  skipped), `restated_claim` (a sentence repeating a claim another
+  memory in the same hub already states — the rewrite points at the
+  keeper), `review_due` (an expired shape, or a stale, missing or
+  demoted review stamp), `source_drift` (a `Source:` line or cited docs
+  section changed since the memory's last touch), `title_shape` (a
+  slug/path title, an over-long title, a dated snapshot on a thread
+  node).
+- `host-facts` — a one-off hand-run: a sentence asserting a census
+  machine's current state belongs on its `machine` ref as a dated
+  event ([[precis-machine-help]]).
+- `memory-grounding` — an audit, not a smell pass: pins each claim to
+  its cited passages, writes one audit row per memory revision, and
+  mints repair proposals for ungrounded claims.
 
-## Memory review checks
+## Answer a proposal
 
-Four read-only detectors pin evidence to the memory's content SHA and emit
-proposals only:
+Verify the flagged claim against the memory, its evidence and the repo,
+through the checklist of [[precis-fix-memory-gripe-help]] — the same
+sections the evaluator read.
 
-- `review_due` flags expired, never-reviewed, SHA-changed,
-  checklist-version-changed, then aged memories. A current review is a
-  `kg-review` trust act with matching `expected_sha` and the current
-  prompt version; unversioned stamps need review; demotion invalidates a
-  stamp. Reference/gotchas age after 30 days, runbooks after 60;
-  workflow/rulings use `meta.review_by` until reviewed on or after that
-  date. Threads have no age review.
-- Expiry defaults use section tags plus title, computed at read time from
-  `updated_at`: threads/handoff/resume/"state on"/"as of" get 14 days;
-  incident/campaign/date-range/"waves N-M" write-ups get 90. Ordinary
-  reference/gotchas/runbooks have no expiry. `meta.expires` overrides the
-  default (null disables it); malformed dates are `not_checked`. Expiry
-  never deletes or retires. Incident candidates suggest condensing to a
-  dated cause, verified fix and open uncertainty, never inventing a fix.
-- `title_shape` flags slug/path titles, titles over sixteen words, and
-  dated snapshots on thread nodes. A replacement must state the body's
-  supported conclusion.
-- `negative_undated` flags absence wording ("no X exists") without a date on
-  that line. No search has verified the claim; `not_checked` records that
-  limit.
-- `notation` flags the first authored-prose span that breaks
-  [[precis-notation-canon]] — one anchored fix per memory per pass,
-  skipping quoted spans, code spans and `$$…$$`/multi-line math (the
-  `Notation flags` section below). The evaluator supplies the
-  canon-correct replacement for the flagged token or asks for human review
-  on TeX residue and verbatim LaTeX sections. The detector skips
-  `formula-ascii-subscript`.
+- Right → fix the memory yourself with an anchored
+  `edit(kind='memory', …)`: state current truth with a live anchor and
+  a date, preserving still-true claims. The edit moves the target's
+  SHA, so the pinned proposal goes stale and closes by itself. A
+  `trust_origin='human'` node is a hold: ask, don't edit.
+- Wrong → reject the row:
+  `put(kind='job', mode='garden-reject', args={'review_id': <id>,
+  'reason': '<why>'})` — decided while the target is unchanged;
+  rejecting an `apply_error`/`unresolved` hold instead re-opens the
+  key.
+- A supersede/retire proposal asks whether still-true claims and needed
+  figures already live on the survivor — "preserve them later" is not
+  an answer.
+- Unsure → file a `memory-review` todo rather than acting on
+  suspicion.
 
-`restated_claim`, `source_drift` and `entity_claim_stale` belong to the same
-review group.
+## Work a memory-review todo
 
-## Claim-level grounding audit
+The evaluator's `ask` on a memory-body candidate files one todo titled
+`review memory me<N>: <the detector's finding>`, tagged
+`OPEN:memory-review`, linked `raises-concern-about` → the memory — and
+to the gripe too when a reader complaint caused it (the complaint's
+story is the evidence; work it per [[precis-fix-memory-gripe-help]]).
+The evaluator's stated reason is recorded on the ask's closed ledger
+row, not on the todo. A grounding re-audit that changed a claim's
+coverage mints a `memory-review` todo on each dependent draft/quest.
 
-Run an audit tick when the gardener is enabled and outside cooling.
-Like every hand-submitted job it needs a parent — the todo it runs for:
+Work it per [[precis-memory-help]] "Working a memory-review todo":
+verify against the repo and cited evidence, repair through the ledger
+or an anchored edit, comment what changed and close `STATUS:done`;
+unsettled goes to `waiting-for:reto` ([[precis-user-queue-help]]). An
+open review todo dedupes a repeat ask on the same memory; for a
+complaint, any review todo — closed included — already answers it.
+
+## Close a review
+
+A `review_due` flag — and review debt generally — clears on a current
+review stamp, not on the edit alone:
 
 ```python
-put(kind='job', parent_id=<todo ref id>,
-    args={'job_type': 'graph_garden',
-    'params': {'pass': 'memory-grounding'}})
+edit(kind='memory', id='me<N>', mode='trust', args={'trust': {
+    'confidence': 'considered',
+    'reason': 'kg-review:<model>:<YYYY-MM-DD>:ok|fixed',
+    'expected_sha': '<sha from the trust line>'}})
 ```
 
-`memory-grounding` is opt-in and excluded from `all`. Audit-only jobs skip
-the proposal consumer. The audit skips DREAMs and human-origin holds.
-A tick scans up to ten memories within the shared proposal budget — the
-audit row and its repair proposals all spend `max_proposals`, and repairs
-are capped at what the budget still holds.
-Each memory gets one classifier call with
-at most 60 body spans, 16,000 span characters, and 12 candidate citation
-links. A router pause defers the tick with its audit window available for retry.
-Failed or incomplete classifier replies leave the same SHA eligible on a later scan.
+`ok` = checked, nothing changed; `fixed` = you edited first. The
+stamp's UTC date decides freshness (a backdated review stays old); a
+content edit or a demote re-opens the debt. Mechanics and the plain
+`considered` act: [[precis-edit-help]] "Record a trust act".
 
-The review ledger stores a `proposed` row per audited memory revision with
-actor `garden-grounding`, version `grounding.v6`, content SHA and a
-`grounding_audit` note. The
-row is audit-only and outside the pending action queue —
-`get(kind='job', id='/garden/proposals')` intentionally excludes it. Read
-it back with `precis.graph.garden.grounding.latest_audit(store, ref_id)`
-in Python, or on prod:
+An `AUDIT:notation` tag clears differently: fix the flagged span with
+an anchored `edit` — the write path re-lints the body and a clean
+result drops the tag. Keep quoted spans, code spans and `$$…$$` math
+byte-identical; when the canon does not fit the text, file a gripe
+instead of forcing it.
 
-```
-scripts/prod-psql --ro "SELECT review_id, content_sha, at
-  FROM reviews WHERE actor = 'garden-grounding'
-    AND target_kind = 'ref' AND target_id = <memory ref_id>
-  ORDER BY review_id DESC LIMIT 5"
-```
+## The grounding line
 
-Each claim gives body offsets, subject, scope, kind, evidence or
-premises, and term flags. The classifier records meaning and existence
-as distinct claims. Chat — a `chat:`/`conv:` reference or a `co`/`cc`/`ag`
-handle — can support attribution or a decision, never an empirical claim.
-Read `classifier_reported_claims` / `inspected` as anchored-entry counts,
-`provisional` as suggested support awaiting verification, `unresolved` as
-claims with open support or term questions, and `spans_unchecked` /
-`unaccounted_ranges` (with `truncated`, `spans_omitted_by_limit`,
-`candidate_links_truncated`) for exactly which text the bounds left
-unchecked. Exact claim totals and unchecked claim counts stay null — a
-classifier can miss assertions even inside an excerpt. `all_grounded`
-stays false in this audit-only pass.
+The footer reads `grounding: <n> claims - <s> supported - <u>
+unresolved - <c> unchecked - audited <date> - current|stale`, or
+`grounding: not audited`; a bounded scan renders `<n>+` plus
+`truncated scan`. `stale` means the memory, a cited source or the audit
+itself moved since the pinned row — nothing is applied and no trust
+state changes. `view='grounding'` is the drill-down: per-claim status,
+evidence and premise handles, stale pins, unchecked spans and the
+audit history.
 
-## Grounding verdicts, budgets and repairs
-
-Evidence-bound judgments: for empirical / source_report claims with
-resolvable citations, the shared contextual evidence reviewer verifies the
-claim against the cited passages (batched, at most 5 claims and 8 passages
-per memory) and records `claim.support` — source fidelity separate from
-evidential strength, study type, caveats, quantity/condition checks and
-the identity of the passage the judgment anchored at. A faithful report of
-a weak or simulated paper is never `supported`; a claim that outruns its
-passage is `partial` (single-hop overreach); a passage that merely
-restates another work's result is flagged as source copying; a reviewer
-outage is `unresolved`, never `unsupported`. Definitions and decisions
-never support existence.
-
-Premise lineage (`rollup`, with `lineage` counts) then rolls each claim up
-to `supported` / `partial` / `unsupported` / `contradicted` / `unresolved`.
-Exact assertion quotes identify premises within the same memory. Missing
-or ambiguous quotes remain unresolved. External memory premises use their
-current audit judgments. Other citation handles without a premise judgment
-remain unresolved. A supported inference needs a separate warrant judgment
-and support for every necessary premise. The audit records
-`inference_depth` as inference steps and flags deep derivations for review.
-Local cycles and cross-memory cycles detected within four audit hops ground
-nothing. Evidence handles compare by root ref, so two chunks of one paper
-count as one source. `stale_sources` lists evidence whose SHA moved since
-the previous audit pinned it in `evidence_shas`. A stale source caps the
-claim at `partial` and sets `needs_source_review`.
-
-Passage-verified `supported` empirical claims get a bounded conflict probe
-(`conflict`, at most 2 claims per memory, 6 verify calls each, ranked by
-the conflict sweep's `read_first`/distance selection): `contradicted`,
-`none_found`, `unknown`, or `not_probed` (no embedder wired, ineligible claim or
-probe budget spent). `none_found` records scope (method version,
-kinds, queries, UTC date), the checked passages' identities and unknowns —
-never proof of support, and never reported after a retrieval or verify
-outage (those are `unknown`).
-
-Pending repairs: `rollup` of `unsupported`/`contradicted` mints a `rewrite`
-proposal, `partial` with verifier flags or a partial warrant mints `qualify`, and `unresolved`
-with unresolvable premises mints `ask` — at most 3 per memory, each pinned
-to its claim span and the audited revision (`payload.audit_sha`), through
-the shared garden ledger with no apply door registered. They stay pending
-for a human or reviewer; a rollup of `supported` is withheld (capped
-`partial`) when the pipeline itself supplied or certified the evidence
-(audit or garden-ledger actor on the evidence ref's reviews or revisions).
-
-An `unresolved` claim carries `missing_check`. The coordinator can
-commission three handoffs per tick and resumes deferred or failed writes
-from the saved audit. It reuses a research todo when its claim, source
-and check pins match. A new `grounding-handoff` todo records the exact
-question, pins, stopping condition and return destination. Three
-cumulative audit attempts exhaust the research handoff. Ambiguous terms,
-identity or authority questions, and substantive decisions go to an
-`ask-user` todo.
-
-Return research through an ordinary todo comment starting with
-`candidate-evidence:`. Report each completed check on a line starting
-with `Checks performed:`. Close the research todo when work ends,
-including when evidence is unavailable or disputed. A return prompts
-re-audit of the same memory SHA as candidate input. The audit can remain
-unresolved and every suggested finding stays provisional.
-
-## Grounding coverage on reads (gr634490)
-
-Reads fold the latest row into per-claim coverage; nothing is applied and
-no trust field changes. A claim renders `supported` only while all of
-these hold: the row still binds (memory SHA, audit version, and the
-recorded prompt/policy versions — a row written under an older policy
-reads stale exactly when scheduling re-queues it), every cited source's
-pin still matches its live SHA — a changed source stales exactly the
-claims citing it, and the memory itself re-enters the audit queue as a
-dependent consumer of that source — and every cited handle actually
-pinned at audit time. An unpinned citation lands in `unresolved` with the
-handle named; a classifier-only `provisional` suggestion is unverified
-and lands in `unresolved` too — suggested support never renders as
-supported. A fresh timestamp renews nothing, and historical audit rows
-stay inspectable in the drill-down's history.
-
-- The `get(kind='memory')` footer and the fisheye header carry one line:
-  `grounding: 5 claims - 3 supported - 1 unresolved - 1 unchecked -
-  audited 2026-11-14 - current`, or `grounding: not audited`. An
-  incomplete audit (bounded scan, failed classifier, or text the reported
-  claims did not cover) renders the count as a lower bound (`5+ claims`)
-  and appends `truncated scan` — reviewed-memory and citation counts are
-  never grounding coverage.
-- `get(id=N, view='grounding')` is the drill-down: per-claim status
-  (recorded vs effective), evidence and premise handles, stale pins,
-  unpinned citations, the decisive passage verified against the live
-  body, the audit history newest first, live `disputes` edges as known
-  disputes, the exact unchecked body ranges, and — when the audit is
-  stale — the live drafts and quests linking the memory as affected
-  consumers.
-
-The audit window is need-ordered: never-audited memories first, then
-stale ones (edit, version bump, or moved source pin), both ranked by use
-— human reads plus live draft/quest dependents, most-used first. Every
-4th slot re-audits the least-recently-audited still-current memory; when
-no need candidate remains, even a sub-threshold window draws from that
-baseline queue, so a tiny corpus cannot starve it. A baseline slot the
-small-window rule sets aside is recorded as an owed debt, promoted ahead
-of the need queue on a later collection, and cleared when paid — a paid
-debt must be cleared explicitly or the saved-cursor merge resurrects it.
-
-A re-audit that changed any claim's coverage queues the drafts and
-quests that carry a dependency link to the memory, through the existing
-memory-review todo path — judged per claim, not by the memory's worst
-verdict: a source edit can invalidate one claim while another keeps the
-worst verdict unchanged. `precis garden stats` reports the same per-claim
-denominators: a partially stale audit (one moved source) keeps its
-unaffected claims' buckets, unchecked claims stay unchecked and out of
-the inspected count, and only a row that no longer binds to its content
-reads fully unresolved.
-
-## Notation flags
-
-Memory text follows [[precis-notation-canon]]. The `memory-review` pass's
-`notation` detector (above) surfaces existing violations: one anchored
-proposal per memory per pass, fixing one spot at a time. The writer-side
-flag is the system-owned `AUDIT:notation` tag that `put`/`edit(kind=
-'memory')` set on a title/body that breaks the canon.
-`search(kind='memory', tags=['AUDIT:notation'])` lists the flagged nodes.
-Apply a reviewed correction at the flagged spot with
-`edit(kind='memory', id='me…', find='<old>', text='<new>')`. Keep quoted
-spans, code spans and `$$…$$`/multi-line derivations byte-identical.
-A clean rewrite clears the tag. File a gripe if the canon does not fit
-the text.
-
-## Memory source and entity checks
-
-`source_drift` compares a `Source:` line or `cites` edge's `docs/... §
-heading` section before the memory's last touch with committed main.
-Evidence carries both section-content SHAs, the two commit pins, and an
-excerpt of the new section, including its child blocks.
-
-`entity_claim_stale` checks entity handles in state sentences (`is retired`,
-`is the only`, `runs`, `has no`, `is live`). It compares recorded content,
-machine role or STATUS changes after the memory touch. Stored entities need
-recorded history: many kinds do not retain revisions, and a newer timestamp
-alone does not establish a change. A missing prior SHA, role or STATUS is
-`not_checked`, never evidence of staleness.
-
-Each memory checks at most 20 matches. A candidate pins the memory's SHA and
-its source evidence; missing-history entries accompany verified changes in
-`not_checked`. Unverifiable-only bodies produce no proposal. The evaluator
-compares the claim with the new text and rejects unchanged meaning or dated
-history. Both detectors propose rewrites only.
-
-## Host facts
-
-`host_facts` scans live memory bodies for sentences naming a machine in the
-census with a state verb and neither an ISO date nor a machine handle:
-current-state claims. The one-fact-one-ref rule: a host's current
-role/status lives on the `machine` ref ([[precis-machine-help]]); a memory
-keeps dated events plus the `ma_<host>` handle. A hostname matches as a
-whole word, and a sentence already carrying a machine handle or an ISO date
-is a dated event, not a current-state claim. One proposal per memory carries
-anchored rewrite ops (`text=null`; the evaluator writes the dated-event-plus-
-handle replacement, verified against the machine ref's current role fact)
-and, for each host whose memory is newer than the ref's fact, the
-`put(kind='machine', id='<host>', args={'role': …})` that moves the verified
-fact onto the ref — the reviewer fills the role from the verified current
-truth, never from the stale sentence.
-
-## The memory-body evaluator
-
-Memory-body candidates are judged as bodies, not structural pairs. The
-evaluator reads the target node's `fisheye+1hop`, the detector's evidence,
-and the memory-body checklist of [[precis-fix-memory-gripe-help]] — the
-per-type checks, the disagreement shapes and the standard of done, the same
-sections the hand repair path reads.
-
-It answers with exactly one action: `rewrite` (anchored find/text ops plus
-reason), `qualify` (a caveat line, or a `qualifies` edge from a named
-gotcha), `supersede` (by a named live node), `retire`, `no-change` (with
-why), or `ask` — the only fallback when the fact needs a human. An `ask`
-files a `memory-review` todo linked to the memory (`raises-concern-about`)
-and writes no proposal.
-
-## Reviewed memory actions
-
-Before a memory action applies, the proposal must still be pending and
-current, the node's pinned SHA must hold, and the detector predicate must
-still hold. A stale proposal closes and a fresh detector run may replace
-it. `md:` successors are refused. A `trust_origin='human'` or currently
-`considered` node is held for a human, including when protection changed
-after review. Unresolved rewrite ops (`text=null`) get no reviewer call.
-The `memory-review` detectors stay proposal-only.
-
-A `dangling_mention` rewrite whose every op is a bare handle swap onto a
-verified duplicate successor (a merge-made redirect whose resolved
-successor is the tombstone's recorded merge winner, or a `supersedes` edge
-to a node with the same normalised title) applies without review.
-
-An approved rewrite applies anchored edits with
-`reason='garden:<detector>:<proposal id>'`, recording the
-`kg-review:<model>:<UTC date>:fixed` trust stamp. Each applied `find` and
-`span` must match a freshly detected op; the model supplies replacement
-text. Link removals are refused because no rewrite detector justifies them.
-
-An approved supersede writes the winner → loser `supersedes` edge, retires
-the loser and stamps `meta.superseded_by` so ordinary `get` redirects to
-the survivor. Retire uses the existing memory delete door. Both actions
-require review that still-true claims and needed figures are already
-preserved elsewhere; a payload instruction to preserve them later is not
-enough.
-
-## Compaction before retirement
-
-The `compact` detector fires on expiry, 90-day-cold reads, a half-history
-body or any pending retire proposal. Expiry is shielded, not blind: an
-expired node tagged `ruling`, `reto-ruling` or `spec:*` (or in
-section `rulings`/`specs`), or one a
-live, non-terminal todo/gripe/quest links to — either direction — gets
-no `expired` reason; when another trigger still fires, its evidence
-notes what shielded it. `review_due` has no shield — the node still owes
-its review. The evaluator's plan accounts for every
-detector sentence: keep on a kept shell, move into a related node (hub
-family, qualifies targets, `+recall` neighbours, restated_claim matches),
-mint an atomic child, or drop only as `history`/`restatement`. Both
-retirement doors refuse while a compact proposal is pending or while the
-detector fires on content no applied compaction covers.
+Unsupported or contradicted claims mint repair proposals into the same
+pending queue; unresolved ones mint bounded `grounding-handoff`
+research todos — return the named check as a todo comment starting
+`candidate-evidence:` with one `Checks performed:` line per completed
+check, then close the todo; the return prompts re-audit of the same
+revision. Term, identity and authority questions mint `ask-user` todos
+on the owner's queue. Suggested findings stay provisional — an audit
+may remain unresolved.
