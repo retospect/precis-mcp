@@ -37,7 +37,10 @@ missed reap is the status quo while a wrong reap races a live writer:
      on PATH, else /usr/sbin or /usr/bin: a worker's PATH may lack the
      former); a non-git holder (the Colima VM's file share keeps handles
      of locks no git owns) never keeps a lock. lsof missing means nothing
-     can be proven, so candidates are REPORTED as kept, never reaped.
+     can be proven, so candidates are REPORTED as kept, never reaped. Its
+     stderr filesystem-scan WARNINGs (unstatable pseudo mounts — every
+     container runner has them) do NOT count as failure: the answer is
+     read from stdout, and only a non-WARNING stderr line fails closed.
      This sweep never kills anything; the hard-cap kill of a git that
      holds a slice tree's lock past 30 min is run_slice's, at reuse
      (gr684320);
@@ -62,6 +65,7 @@ PRECIS_NO_AUTOREAP=1 → no-op, same as the sibling reapers.
 
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -132,6 +136,20 @@ def _lsof_bin():
     return None
 
 
+#: lsof's filesystem-scan noise: on any host with pseudo/unstatable
+#: filesystems (tracefs, fuse, overlay, nsfs — every container runner) it
+#: prints one WARNING stanza per such mount to stderr while still answering
+#: the query on stdout. Only stderr lines OUTSIDE this noise mean lsof
+#: failed (e.g. "lsof: status error on <path>").
+_LSOF_NOISE = re.compile(r"^(?:lsof: WARNING:|\s+Output information may be incomplete\.)")
+
+
+def _lsof_fatal_stderr(stderr):
+    """The stderr lines that say lsof could not answer — anything left
+    after its WARNING noise is filtered out."""
+    return [ln for ln in stderr.splitlines() if ln.strip() and not _LSOF_NOISE.match(ln)]
+
+
 def _held_open(lock):
     """True: a live git holds it open; False: provably none; None: can't
     tell (lsof error) — the caller keeps on either non-False. A non-git
@@ -144,14 +162,7 @@ def _held_open(lock):
     if lsof is None:
         return None
     r = _run([lsof, "-w", "-F", "pc", "--", lock])
-    # Linux lsof warns on stderr about mounts it cannot stat (FUSE, tracefs)
-    # on every call; only a non-warning line means the answer is unreadable.
-    errs = [
-        ln
-        for ln in r.stderr.splitlines()
-        if ln.strip() and not ln.startswith("lsof: WARNING")
-    ]
-    if errs:
+    if _lsof_fatal_stderr(r.stderr):
         return None
     comms = [ln[1:] for ln in r.stdout.splitlines() if ln.startswith("c")]
     for comm in comms:
