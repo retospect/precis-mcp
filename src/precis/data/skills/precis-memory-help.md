@@ -422,7 +422,7 @@ get(kind="memory", id="me4641", extent="fisheye+1hop+recall")  # on the best hit
 `view='index'` prints each hit as an index bullet, one per line:
 `- <Title> (me4641, <filename>) — <hook>`. The filename appears when the
 memory mirrors a topic file; the hook is `meta.hook`, else the body's first
-line. `q=` is required. The second call opens the hit with its linked
+line. Without `q=` it lists the tag-filtered memories, recent first. The second call opens the hit with its linked
 neighbours and the nearest unlinked memories in the same `SPACE:`
 (`precis-fisheye-help`). `view='index'` applies the same recall cut as
 the write-section round-trip check: semantic-only hits past a
@@ -435,6 +435,17 @@ memory search takes `view='reads'`, `view='rulings'`, `view='smells'` and
 `view='shape'`
 (below); any other
 `view=` is refused.
+
+## Bound a memory search to an ID range
+
+```python
+search(kind='memory', view='index', args={'id_min': 741000, 'id_max': 741999})
+search(kind='memory', q='<topic>', args={'id_min': 741000})
+```
+
+`id_min`/`id_max` are inclusive and either may be omitted. A ranked `q=`
+search over a range with more than the ranked cap of memories is refused;
+omit `q=` and page `view='index'` to enumerate the whole range.
 
 ## Rank memories by reads or body size
 
