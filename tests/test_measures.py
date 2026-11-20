@@ -151,6 +151,16 @@ def _update(store: Store, sql: str, params: tuple[Any, ...]) -> None:
         conn.execute(sql, params)
 
 
+def _run_migration(name: str) -> None:
+    from precis.store.migrate import _execute_dump_sql
+    from tests.conftest import _active_dsn
+
+    sql = (MIGRATIONS_DIR / name).read_text(encoding="utf-8")
+    with psycopg.connect(_active_dsn(), autocommit=True) as conn:
+        with conn.cursor() as cur:
+            _execute_dump_sql(cur, sql)
+
+
 # ── AC 1: compatibility views over measures ────────────────────────────────
 
 
@@ -1169,6 +1179,130 @@ def test_a_spelled_unit_ratio_keeps_the_outlier_check(
     )
     (esc,) = _row(store, outlier.output_id)["meta"]["escalation"]
     assert esc["rule"] == "implausible_value"
+
+
+class TestEscalationRepair:
+    """gr722340 repair path: migration 0338's shrink-only door in
+    ``precis_measures_frozen`` plus the surgical repair it runs. The door
+    opens under transaction-local
+    ``precis.allow_measure_escalation_repair`` and only lets
+    ``meta.escalation`` lose entries off an array that is already there."""
+
+    _DOOR = "SELECT set_config('precis.allow_measure_escalation_repair', 'on', true)"
+
+    def _flagged(
+        self, store: Store, w: dict[str, Any], entries: list[dict[str, Any]]
+    ) -> int:
+        run = store.insert_measure(
+            MeasureSpec(
+                _taxon(store, "Count"),
+                "1132808",
+                w["paper"],
+                meta={"escalation": entries},
+            ),
+            actor="reader",
+        )
+        return run.output_id
+
+    def test_the_door_cannot_grow_an_escalation_key_on_a_clean_row(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        # The review's regression: an escalation key — even a bare '[]' —
+        # excludes a row from best_measure ('meta ? escalation'), so the
+        # door requires an existing array before it accepts any repair.
+        count = _taxon(store, "Count")
+        run = store.insert_measure(
+            MeasureSpec(count, "1132808", world["paper"]), actor="reader"
+        )
+        with store.pool.connection() as conn, conn.transaction():
+            conn.execute(self._DOOR)
+            with pytest.raises(psycopg.errors.CheckViolation, match="append-only"):
+                conn.execute(
+                    "UPDATE measures SET meta = meta || "
+                    "'{\"escalation\": []}' WHERE id = %s",
+                    (run.output_id,),
+                )
+
+    def test_the_door_only_shrinks_the_array(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        mid = self._flagged(
+            store, world, [{"rule": "implausible_value", "value": 1132808}]
+        )
+        refused = (
+            # a new entry appended
+            '\'{"escalation": [{"rule": "implausible_value"},'
+            ' {"rule": "needs_review"}]}\'',
+            # an emptied array left behind as '[]' — still excluded
+            "'{\"escalation\": []}'",
+            # an entry rewritten, other meta keys touched
+            '\'{"escalation": [{"rule": "needs_review"}], "note": "x"}\'',
+        )
+        for meta in refused:
+            with store.pool.connection() as conn, conn.transaction():
+                conn.execute(self._DOOR)
+                with pytest.raises(psycopg.errors.CheckViolation, match="append-only"):
+                    conn.execute(
+                        f"UPDATE measures SET meta = {meta}::jsonb WHERE id = %s",
+                        (mid,),
+                    )
+        # the one allowed change: drop the entry and, with it, the key
+        with store.pool.connection() as conn, conn.transaction():
+            conn.execute(self._DOOR)
+            conn.execute(
+                "UPDATE measures SET meta = meta - 'escalation' WHERE id = %s",
+                (mid,),
+            )
+        assert "escalation" not in _row(store, mid)["meta"]
+
+    def test_the_door_keeps_the_other_entries_on_a_partial_repair(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        mid = self._flagged(
+            store,
+            world,
+            [{"rule": "implausible_value"}, {"rule": "no_molar_mass"}],
+        )
+        with store.pool.connection() as conn, conn.transaction():
+            conn.execute(self._DOOR)
+            conn.execute(
+                "UPDATE measures SET meta = "
+                '\'{"escalation": [{"rule": "no_molar_mass"}]}\'::jsonb '
+                "WHERE id = %s",
+                (mid,),
+            )
+        assert _row(store, mid)["meta"]["escalation"] == [{"rule": "no_molar_mass"}]
+
+    def test_0338_repairs_the_rows_the_new_check_no_longer_flags(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        # The migration itself is the repair path for the rows the old check
+        # flagged (mx6128): replaying it lifts the implausible_value entry —
+        # and the key — off a unitless row, keeps unrelated rules, and
+        # leaves a spelled-unit row alone.
+        bad = self._flagged(store, world, [{"rule": "implausible_value"}])
+        mixed = self._flagged(
+            store,
+            world,
+            [{"rule": "implausible_value"}, {"rule": "no_molar_mass"}],
+        )
+        yield_tax = _taxon(store, "reaction yield", unit="1", parent=world["start"])
+        spelled = store.insert_measure(
+            MeasureSpec(
+                yield_tax,
+                "900000",
+                world["paper"],
+                reported_unit="%",
+                meta={"escalation": [{"rule": "implausible_value"}]},
+            ),
+            actor="reader",
+        ).output_id
+        _run_migration("0338_measures_escalation_repair.sql")
+        assert "escalation" not in _row(store, bad)["meta"]
+        assert _row(store, mixed)["meta"]["escalation"] == [{"rule": "no_molar_mass"}]
+        assert _row(store, spelled)["meta"]["escalation"] == [
+            {"rule": "implausible_value"}
+        ]
 
 
 def test_a_thin_distribution_flags_nothing(store: Store, world: dict[str, Any]) -> None:

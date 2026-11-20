@@ -83,6 +83,20 @@ the trigger). Live and superseded rows move together so the merge guard
 counts zero. Reviews on the moved rows refuse the run — the measure sha
 covers ``measurand_ref_id``, a re-point stales them.
 
+**Escalation-repair door (0338).** A wrong ``meta.escalation`` entry
+excludes a live row from reads (``meta ? 'escalation'``) but ``meta`` is
+frozen, so a flag written by an older check could never be lifted.
+Migration 0338 opens the door in the trigger — under transaction-local
+``precis.allow_measure_escalation_repair``, ``meta`` may change only by
+shrinking an escalation array that is already there: entries may drop,
+never be added or rewritten, the last one going drops the key (a leftover
+``'[]'`` still trips the ``?`` test), and a clean row cannot grow the key
+at all. The migration itself used it once, surgically: every
+``implausible_value`` entry on a live output row whose ``reported_unit``
+is unitless (NULL, blank, ``'1'`` — the set the check now skips,
+gr722340). The sha does not cover ``meta``, so the repair stales no
+review.
+
 **Legacy taxa.** A taxon seeded from a legacy registry (``meta.legacy_source``)
 has a ``measure_unit_compat`` row: the unit the registry kept (``legacy_unit``),
 its SI unit and the linear map. A ``reported_unit`` equal to the legacy unit
