@@ -38,7 +38,9 @@ Snapshot schema (contract with the export side — do not deviate)::
 from __future__ import annotations
 
 import io
+import math
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any
@@ -104,20 +106,102 @@ def _fig_to_png(fig: Figure) -> bytes:
 # Pareto (quest) figure
 # --------------------------------------------------------------------------
 
+_PARETO_LABEL_MODES = ("handles", "names", "none")
 
-def render_pareto_png(scatter: FrontierScatter, *, title: str | None = None) -> bytes:
+
+def _validate_pareto_args(
+    *, trusted_only: Any, top_n: Any, label: Any
+) -> tuple[bool, int | None, str]:
+    if not isinstance(trusted_only, bool):
+        raise ValueError(f"trusted_only must be a boolean, got {trusted_only!r}")
+    if top_n is not None and (
+        isinstance(top_n, bool) or not isinstance(top_n, int) or top_n < 1
+    ):
+        raise ValueError(f"top_n must be a positive integer, got {top_n!r}")
+    if label not in _PARETO_LABEL_MODES:
+        raise ValueError(f"label must be one of {list(_PARETO_LABEL_MODES)}")
+    return trusted_only, top_n, label
+
+
+def _rank_by_frontier_distance(
+    points: list[dict[str, Any]],
+    objectives: list[tuple[str, str]],
+    scatter: FrontierScatter,
+    x_measure: str,
+    y_measure: str,
+) -> list[dict[str, Any]]:
+    """Points ordered by closeness to the Pareto frontier — frontier members
+    first (distance 0), then dominated/provisional points by their
+    axis-normalized distance to the nearest frontier member. When the
+    frontier is EMPTY (everything measured is unconfirmed — the case the
+    gripe's "these candidates are closest" report needs), distance falls back
+    to the utopia corner (each axis's best value per its declared sense), so
+    the top-N are the candidates nearest the ideal point."""
+    span_x = max(float(scatter.x_max) - float(scatter.x_min), 1e-12)
+    span_y = max(float(scatter.y_max) - float(scatter.y_min), 1e-12)
+    frontier_pts = [p for p in points if p["band"] == "confirmed" and p["on_frontier"]]
+    senses = dict(objectives)
+    if frontier_pts:
+        targets = [(float(f["x"]), float(f["y"])) for f in frontier_pts]
+    else:
+        vals_x = [float(p["x"]) for p in points]
+        vals_y = [float(p["y"]) for p in points]
+        targets = [
+            (
+                max(vals_x) if senses.get(x_measure) == "max" else min(vals_x),
+                max(vals_y) if senses.get(y_measure) == "max" else min(vals_y),
+            )
+        ]
+
+    def _distance(p: dict[str, Any]) -> float:
+        px, py = float(p["x"]), float(p["y"])
+        return min(
+            math.hypot((px - tx) / span_x, (py - ty) / span_y) for tx, ty in targets
+        )
+
+    return sorted(points, key=_distance)
+
+
+def _trim_scatter_top_n(
+    scatter: FrontierScatter | None,
+    objectives: list[tuple[str, str]],
+    top_n: int | None,
+    x_measure: str,
+    y_measure: str,
+) -> FrontierScatter | None:
+    """A scatter reduced to the ``top_n`` points closest to the frontier
+    (see :func:`_rank_by_frontier_distance`); ``None``/no-op pass through."""
+    if scatter is None or top_n is None:
+        return scatter
+    return replace(
+        scatter,
+        points=_rank_by_frontier_distance(
+            scatter.points, objectives, scatter, x_measure, y_measure
+        )[:top_n],
+    )
+
+
+def render_pareto_png(
+    scatter: FrontierScatter,
+    *,
+    title: str | None = None,
+    label: str = "none",
+) -> bytes:
     """Render a :class:`~precis.quest.frontier.FrontierScatter` to PNG bytes.
 
     Marker grammar mirrors the web scatter exactly: ``*`` (large) on the
     frontier, ``o`` (small) off it; filled when converged and trusted,
     hollow (white face, coloured edge) otherwise; colour by band (confirmed
-    blue / provisional orange / grey when not converged).
+    blue / provisional orange / grey when not converged). ``label``
+    annotates every point with its handle or name (``'none'`` stays bare).
     """
-    fig = _pareto_figure(scatter, title=title)
+    fig = _pareto_figure(scatter, title=title, label=label)
     return _fig_to_png(fig)
 
 
-def _pareto_figure(scatter: FrontierScatter, *, title: str | None = None) -> Figure:
+def _pareto_figure(
+    scatter: FrontierScatter, *, title: str | None = None, label: str = "none"
+) -> Figure:
     """The :class:`matplotlib.figure.Figure` :func:`render_pareto_png`
     rasterizes — split out so a caller (or a test) can inspect the ``Axes``
     (e.g. its axis labels) without round-tripping through PNG bytes."""
@@ -149,6 +233,15 @@ def _pareto_figure(scatter: FrontierScatter, *, title: str | None = None) -> Fig
             linewidths=1.5,
             zorder=3,
         )
+        if label != "none":
+            ax.annotate(
+                str(p["handle"] if label == "handles" else p["name"]),
+                (p["x"], p["y"]),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=6,
+                zorder=4,
+            )
         if p.get("assurance") == "WARN":
             ax.annotate(
                 "≈ " + str(p.get("assurance_note", "WARN")),
@@ -218,7 +311,15 @@ def _pareto_figure(scatter: FrontierScatter, *, title: str | None = None) -> Fig
 
 
 def build_pareto_snapshot(
-    store: Store, quest_ref: Any, fr: FrontierResult
+    store: Store,
+    quest_ref: Any,
+    fr: FrontierResult,
+    *,
+    x: str | None = None,
+    y: str | None = None,
+    trusted_only: bool = False,
+    top_n: int | None = None,
+    label: str = "none",
 ) -> dict[str, Any]:
     """The data-package snapshot for a quest's Pareto figure.
 
@@ -228,23 +329,32 @@ def build_pareto_snapshot(
     the PNG. ``fr`` (a :class:`~precis.quest.frontier.FrontierResult`) is
     passed in rather than recomputed — see :func:`quest_pareto_figure` for
     the convenience wrapper that calls :func:`~precis.quest.frontier.
-    quest_frontier` once and builds both artifacts from it. The axis pair
-    is the quest's own :func:`~precis.quest.frontier.plot_axes_for` pick
-    (its first two declared ``rubric_objectives`` when it declares >= 2,
-    else the hub-v2 fallback) — kept in sync with the web scatter and the
-    PNG's marker grammar, not a fixed ``barrier``/``energy`` pair anymore.
+    quest_frontier` once and builds both artifacts from it. The axis pair is
+    an explicit ``x=``/``y=`` over the quest's resolved rubric objectives
+    when given, else the quest's own :func:`~precis.quest.frontier.
+    plot_axes_for` pick (its first two declared ``rubric_objectives`` when
+    it declares >= 2, else the hub-v2 fallback) — kept in sync with the web
+    scatter and the PNG's marker grammar, not a fixed ``barrier``/``energy``
+    pair anymore. ``trusted_only`` drops provisional points; ``top_n`` keeps
+    only the points closest to the frontier
+    (:func:`_rank_by_frontier_distance`); ``label`` is recorded in ``params``
+    for export-time reproduction.
     """
     from precis.utils import handle_registry
 
     from . import frontier as frontier_mod
 
-    objectives = frontier_mod._objectives_for(store, quest_ref.id)
-    x_measure, y_measure, _x_label, _y_label = frontier_mod.plot_axes_for(
-        getattr(quest_ref, "meta", None), objectives
+    trusted_only, top_n, label = _validate_pareto_args(
+        trusted_only=trusted_only, top_n=top_n, label=label
     )
+    objectives = fr.objectives
+    x_measure, y_measure, _x_label, _y_label = frontier_mod.pareto_axes(
+        getattr(quest_ref, "meta", None), objectives, x, y
+    )
+    provisional = [] if trusted_only else fr.provisional
     scatter = frontier_mod.build_frontier_scatter(
         [*fr.frontier, *fr.dominated],
-        provisional=fr.provisional,
+        provisional=provisional,
         frontier_ref_ids={c.ref_id for c in fr.frontier},
         x_measure=x_measure,
         y_measure=y_measure,
@@ -252,10 +362,11 @@ def build_pareto_snapshot(
         y_label=_y_label,
         objectives=objectives,
     )
+    scatter = _trim_scatter_top_n(scatter, objectives, top_n, x_measure, y_measure)
     points = scatter.points if scatter is not None else []
 
     candidates_by_id = {c.ref_id: c for c in (*fr.frontier, *fr.dominated)}
-    provisional_by_id = {pc.candidate.ref_id: pc for pc in fr.provisional}
+    provisional_by_id = {pc.candidate.ref_id: pc for pc in provisional}
 
     extra_axis_keys = [
         k for k in (x_measure, y_measure) if k not in ("barrier", "energy")
@@ -330,29 +441,61 @@ def build_pareto_snapshot(
             "objectives": [{"key": k, "sense": s} for k, s in objectives],
             "x_measure": x_measure,
             "y_measure": y_measure,
+            "x": x,
+            "y": y,
+            "trusted_only": trusted_only,
+            "top_n": top_n,
+            "label": label,
         },
         "columns": columns,
         "rows": rows,
     }
 
 
-def quest_pareto_figure(store: Store, quest_ref: Any) -> tuple[bytes, dict[str, Any]]:
+def quest_pareto_figure(
+    store: Store,
+    quest_ref: Any,
+    *,
+    x: str | None = None,
+    y: str | None = None,
+    trusted_only: bool = False,
+    top_n: int | None = None,
+    label: str = "none",
+    frontier: FrontierResult | None = None,
+) -> tuple[bytes, dict[str, Any]]:
     """Convenience: one :func:`~precis.quest.frontier.quest_frontier` call,
     both the PNG and its data-package snapshot.
 
+    ``x``/``y`` pick any two of the quest's rubric objective keys as the
+    plotted axes (default: the quest's own :func:`~precis.quest.frontier.
+    plot_axes_for` pick); ``trusted_only`` drops provisional points;
+    ``top_n`` keeps the points closest to the frontier; ``label``
+    (``'handles'``/``'names'``/``'none'``) annotates the points. The args
+    ride in ``snapshot['params']`` so an export can reproduce the figure. A
+    precomputed ``frontier`` lets a caller key the cache against the same data.
+
     Raises :class:`ValueError` when fewer than two candidates are
     plottable (mirrors :func:`~precis.quest.frontier.build_frontier_scatter`'s
-    own ``None`` guard — a figure with no shape isn't worth minting)."""
+    own ``None`` guard — a figure with no shape isn't worth minting), and
+    for a bad axis/argument (a ``ValueError`` naming the objective keys)."""
     from . import frontier as frontier_mod
 
-    fr = frontier_mod.quest_frontier(store, quest_ref.id)
-    objectives = frontier_mod._objectives_for(store, quest_ref.id)
-    x_measure, y_measure, x_label, y_label = frontier_mod.plot_axes_for(
-        getattr(quest_ref, "meta", None), objectives
+    trusted_only, top_n, label = _validate_pareto_args(
+        trusted_only=trusted_only, top_n=top_n, label=label
     )
+    fr = (
+        frontier
+        if frontier is not None
+        else frontier_mod.quest_frontier(store, quest_ref.id)
+    )
+    objectives = fr.objectives
+    x_measure, y_measure, x_label, y_label = frontier_mod.pareto_axes(
+        getattr(quest_ref, "meta", None), objectives, x, y
+    )
+    provisional = [] if trusted_only else fr.provisional
     scatter = frontier_mod.build_frontier_scatter(
         [*fr.frontier, *fr.dominated],
-        provisional=fr.provisional,
+        provisional=provisional,
         frontier_ref_ids={c.ref_id for c in fr.frontier},
         x_measure=x_measure,
         y_measure=y_measure,
@@ -360,13 +503,23 @@ def quest_pareto_figure(store: Store, quest_ref: Any) -> tuple[bytes, dict[str, 
         y_label=y_label,
         objectives=objectives,
     )
+    scatter = _trim_scatter_top_n(scatter, objectives, top_n, x_measure, y_measure)
     if scatter is None:
         raise ValueError(
             f"quest {quest_ref.id}: fewer than 2 plottable candidates — "
             "not enough data for a Pareto figure yet"
         )
-    png = render_pareto_png(scatter, title=quest_ref.title)
-    snapshot = build_pareto_snapshot(store, quest_ref, fr)
+    png = render_pareto_png(scatter, title=quest_ref.title, label=label)
+    snapshot = build_pareto_snapshot(
+        store,
+        quest_ref,
+        fr,
+        x=x,
+        y=y,
+        trusted_only=trusted_only,
+        top_n=top_n,
+        label=label,
+    )
     return png, snapshot
 
 

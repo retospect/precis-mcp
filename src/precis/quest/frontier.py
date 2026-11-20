@@ -456,6 +456,37 @@ def viridis_color(t: float) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+def pareto_axes(
+    quest_meta: dict[str, Any] | None,
+    objectives: list[tuple[str, str]],
+    x: str | None,
+    y: str | None,
+) -> tuple[str, str, str, str]:
+    """``(x_key, y_key, x_label, y_label)`` — an explicit ``x=``/``y=`` pair
+    honored over :func:`~precis.quest.frontier.plot_axes_for`'s quest-default
+    pick. Both or neither must be given; each must be one of the quest's
+    resolved rubric objective keys (a ``ValueError`` naming the keys
+    otherwise)."""
+    if x is None and y is None:
+        return plot_axes_for(quest_meta, objectives)
+    keys = [k for k, _s in objectives]
+    if x is None or y is None:
+        raise ValueError(
+            f"x and y must be passed together (got x={x!r}, y={y!r}); "
+            f"rubric objective keys: {keys}"
+        )
+    bad = sorted({str(a) for a in (x, y) if a not in keys})
+    if bad:
+        raise ValueError(
+            f"unknown objective axis(es) {bad}; rubric objective keys: {keys}"
+        )
+    if x == y:
+        raise ValueError(
+            f"x and y must be different axes, both were {x!r}; rubric objective keys: {keys}"
+        )
+    return x, y, axis_label_for(x), axis_label_for(y)
+
+
 def plot_axes_for(
     quest_meta: dict[str, Any] | None, objectives: list[tuple[str, str]]
 ) -> tuple[str, str, str, str]:

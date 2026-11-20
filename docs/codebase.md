@@ -265,6 +265,9 @@ Draft pathway figures store a lazy recipe in `meta.render`; export and web
 refresh share `src/precis/render/figure.py::render_figure_chunk`. Selection
 options live in `precis.utils.pathway_figure`, and the quest renderer freezes
 stored energies and kinetics alongside the PNG without running a solve.
+Draft quest-frontier figures use the same lazy dispatch. Their cache key
+includes the serving candidates' frontier data, and the renderer uses the
+same frontier result for the PNG and its frozen snapshot.
 
 ## Package map
 

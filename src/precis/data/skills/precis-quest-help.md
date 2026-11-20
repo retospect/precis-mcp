@@ -333,6 +333,17 @@ reports its row count and no best. Rows that are ambiguous, flagged
 (`meta.escalation`), anchor-lost or distrusted are left out — never compared
 across groups. See `precis-measure-help`.
 
+## Embed a frontier in a draft
+
+Add a draft figure with `meta={"view": {"source": "quest:<id>#frontier"}}`
+and a caption in `text`. Use the quest handle for `<id>`. Supply `x` and
+`y` together to plot two distinct rubric objective keys, or use the
+default axes. Set `trusted_only=True` to hide provisional candidates,
+`top_n` to a positive count to keep the closest points to the frontier,
+and `label` to `handles`, `names`, or `none`. The draft renders the PNG
+on demand from the quest's stored measurements. See
+`precis-draft-rich-content-help` for the full figure call.
+
 ## Read a quest's numbers — Pourbaix maps and staircase points
 
 `view='pourbaix'` is the resting-state surface-Pourbaix validity map per

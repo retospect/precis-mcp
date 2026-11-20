@@ -4095,7 +4095,7 @@ async def refresh_figure_data_package(
             "Figure not found", f"no figure chunk {handle!r} in this draft", 404
         )
     recipe = store.drafts.figure_render_recipe(chunk.chunk_id)
-    if recipe is not None and recipe.get("kind") == "pathway_profile":
+    if recipe is not None and recipe.get("kind") in ("pathway_profile", "quest_pareto"):
         from precis.render.figure import render_figure_chunk
 
         outcome = await asyncio.to_thread(render_figure_chunk, store, chunk.chunk_id)

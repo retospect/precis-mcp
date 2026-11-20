@@ -2883,7 +2883,8 @@ class DraftHandler(Handler):
             "put(kind='draft', id='…', chunk_kind='figure', text='Fig 1. …', "
             "meta={'view': {'source': 'structure:<slug>', "
             "'camera': {'azimuth_deg': 30, 'elevation_deg': 15}}})  "
-            "or meta={'view': {'source': 'se:<design>', 'block': '<block>'}}"
+            "or meta={'view': {'source': 'se:<design>', 'block': '<block>'}}  "
+            "or meta={'view': {'source': 'quest:<id>#frontier'}}"
         )
         if caption is None or not str(caption).strip():
             raise BadInput("a figure requires text= (the caption)", next=nxt)
@@ -2899,6 +2900,18 @@ class DraftHandler(Handler):
             meta=meta,
         )
         self.store.drafts.set_render_recipe(chunk.chunk_id, recipe)
+        if recipe.get("kind") == "quest_pareto":
+            from precis.render.figure import resolve_quest_ref
+
+            quest = resolve_quest_ref(self.store, recipe["source"]["handle"])
+            assert quest is not None
+            self.store.add_link(
+                src_ref_id=ref_id,
+                src_pos=self.store.drafts.chunk_ord_map(ref_id)[chunk.chunk_id],
+                dst_ref_id=quest.id,
+                relation="derived-from",
+                set_by="agent",
+            )
         if recipe.get("kind") == "pathway_profile":
             source_ref = self.store.get_ref(kind="pathway", id=recipe["source"]["slug"])
             assert source_ref is not None
@@ -2914,7 +2927,7 @@ class DraftHandler(Handler):
     def _validated_view_recipe(
         self, view: Any, *, nxt: str
     ) -> tuple[dict[str, Any], str]:
-        """Validate a structure-view payload into its canonical
+        """Validate a view payload into its canonical
         ``meta.render`` recipe — shared by the figure put
         (:meth:`_add_view_figure`, ``meta={'view': …}``) and the recipe
         edit (:meth:`_edit_figure_recipe`, ``args={'view': …}`` /
@@ -2927,6 +2940,31 @@ class DraftHandler(Handler):
             raise BadInput("meta['view'] must be an object", next=nxt)
         kind, _, src_slug = str(view.get("source") or "").partition(":")
         src_slug = src_slug.strip()
+        if kind == "quest":
+            from precis.quest.frontier import _objectives_for, pareto_axes
+            from precis.render.figure import quest_recipe, resolve_quest_ref
+
+            try:
+                recipe = quest_recipe(src_slug, view)
+            except ValueError as exc:
+                raise BadInput(str(exc), next=nxt) from exc
+            quest = resolve_quest_ref(self.store, recipe["source"]["handle"])
+            if quest is None:
+                raise NotFound(
+                    f"quest {src_slug!r} not found",
+                    next="search(kind='quest', q='<topic>') then use a live "
+                    "quest handle (qu<id>)",
+                )
+            try:
+                pareto_axes(
+                    quest.meta,
+                    _objectives_for(self.store, quest.id),
+                    recipe["x"],
+                    recipe["y"],
+                )
+            except ValueError as exc:
+                raise BadInput(str(exc), next=nxt) from exc
+            return recipe, f"quest:{src_slug}"
         if kind == "pathway":
             from precis.render.figure import pathway_recipe
 
@@ -2942,7 +2980,8 @@ class DraftHandler(Handler):
             return recipe, f"pathway:{src_slug}"
         if kind not in ("structure", "se") or not src_slug:
             raise BadInput(
-                "meta['view']['source'] must be 'structure:<slug>' or 'se:<design>'",
+                "meta['view']['source'] must be 'structure:<slug>', 'se:<design>', "
+                "'pathway:<slug>' or 'quest:<id>#frontier'",
                 next=nxt,
             )
         se_block: tuple[str, str] | None = None
@@ -3206,7 +3245,8 @@ class DraftHandler(Handler):
                     "edit(kind='draft', id='dc<id>', args={'view': "
                     "{'source': 'structure:<slug>', 'camera': {'azimuth_deg': "
                     "30, 'elevation_deg': 15}}})  or args={'view': {'source': "
-                    "'se:<design>', 'block': '<block>'}}"
+                    "'se:<design>', 'block': '<block>'}}  or args={'view': "
+                    "{'source': 'quest:<id>#frontier'}}"
                 ),
             )
             with self.store.drafts.tx() as conn:

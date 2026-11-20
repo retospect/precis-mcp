@@ -32,7 +32,7 @@ import io
 import logging
 import re
 from collections.abc import Callable, Iterable, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from functools import cached_property, wraps
 from typing import TYPE_CHECKING, Any
@@ -3131,10 +3131,11 @@ class DraftStore(_AbbrevMixin):
         fields: dict[str, Any],
         *,
         drop: tuple[str, ...] = (),
+        conn: psycopg.Connection | None = None,
     ) -> None:
         """Merge ``fields`` into ``meta.render`` (after removing ``drop``
         keys) — view-figure stamps: cached_key / source_version / failed."""
-        with self.tx() as conn:
+        with nullcontext(conn) if conn is not None else self.tx() as conn:
             conn.execute(
                 "UPDATE chunks SET meta = jsonb_set(meta, '{render}', "
                 "((meta->'render') - %s::text[]) || %s::jsonb, true) "

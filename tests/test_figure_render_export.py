@@ -87,6 +87,125 @@ def test_pathway_source_renders_lazily(
         )
 
 
+def _created_quest_id(resp: Any) -> int:
+    import re
+
+    m = re.search(r"\bqu(\d+)\b", resp.body)
+    assert m is not None, f"no quest handle in ack: {resp.body!r}"
+    return int(m.group(1))
+
+
+def test_quest_frontier_source_renders_lazily(hub: Hub) -> None:
+    from precis.errors import BadInput, NotFound
+    from precis.handlers.quest import QuestHandler
+    from precis.render.figure import ensure_rendered, needs_render
+
+    store = hub.live_store
+    qid = _created_quest_id(QuestHandler(hub=hub).put(text="A catalyst quest"))
+    store.stamp_ref_meta(
+        qid,
+        {
+            "rubric_objectives": [
+                {"key": "energy", "sense": "min"},
+                {"key": "cost", "sense": "min"},
+            ]
+        },
+    )
+    candidates = []
+    for i in range(3):
+        candidate = store.insert_ref(
+            kind="structure",
+            slug=f"candidate-{i}",
+            title=f"Candidate {i}",
+            meta={"cost": float(i + 1), "geom_hash_c": f"test-{i}"},
+        )
+        candidates.append(candidate)
+        store.structure_record_run(
+            candidate.id,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=1,
+            max_disp=0.0,
+            energy=-float(i + 1),
+        )
+        if i < 2:
+            store.add_link(src_ref_id=candidate.id, dst_ref_id=qid, relation="serves")
+
+    _ref, old = _pending_figure(hub, _GOOD_SRC)
+    handler = DraftHandler(hub=hub)
+    view = {
+        "source": f"quest:qu{qid}#frontier",
+        "x": "cost",
+        "y": "energy",
+        "top_n": 2,
+        "label": "handles",
+    }
+    handler.put(
+        id="g",
+        chunk_kind="figure",
+        text="Quest frontier figure",
+        meta={"view": view},
+        at={"last": True},
+    )
+    fig = next(
+        c
+        for c in store.drafts.reading_order(old.ref_id)
+        if c.chunk_kind == "figure" and c.chunk_id != old.chunk_id
+    )
+    assert fig.meta["figure"]["render_pending"]
+    assert fig.meta["render"]["kind"] == "quest_pareto"
+
+    assert ensure_rendered(store, fig) is None
+    fresh = store.drafts.get_draft_chunk(fig.dc)
+    assert fresh is not None
+    assert not needs_render(store, fresh)
+    blob = store.drafts.get_chunk_blob(fig.handle)
+    assert (
+        blob is not None
+        and blob[0].startswith(b"\x89PNG")
+        and blob[0] != _PLACEHOLDER_PNG
+    )
+    snapshot = fresh.meta["figure"]["data_package"]
+    assert snapshot["source"]["kind"] == "quest"
+    assert snapshot["params"]["x_measure"] == "cost"
+    assert snapshot["params"]["label"] == "handles"
+    assert len(snapshot["rows"]) == 2
+    links = store.links_for(fig.ref_id, direction="out", relation="derived-from")
+    assert any(
+        link.dst_ref_id == qid and link.src_chunk_id == fig.chunk_id for link in links
+    )
+
+    store.add_link(src_ref_id=candidates[2].id, dst_ref_id=qid, relation="serves")
+    assert needs_render(store, fresh)
+    store.remove_link(src_ref_id=candidates[2].id, dst_ref_id=qid, relation="serves")
+    assert not needs_render(store, fresh)
+    store.stamp_ref_meta(candidates[0].id, {"cost": 0.5})
+    assert needs_render(store, fresh)
+    assert ensure_rendered(store, fresh) is None
+    refreshed = store.drafts.get_draft_chunk(fig.dc)
+    assert refreshed is not None and not needs_render(store, refreshed)
+    assert {r["cost"] for r in refreshed.meta["figure"]["data_package"]["rows"]} == {
+        0.5,
+        2.0,
+    }
+
+    with pytest.raises(BadInput, match="rubric objective keys"):
+        handler.put(
+            id="g",
+            chunk_kind="figure",
+            text="Invalid axis",
+            meta={"view": {**view, "x": "missing"}},
+        )
+    with pytest.raises(NotFound):
+        handler.put(
+            id="g",
+            chunk_kind="figure",
+            text="Missing",
+            meta={"view": {"source": "quest:qu99999999#frontier"}},
+        )
+
+
 def _pending_figure(hub: Hub, src: str):
     pid = int(
         TodoHandler(hub=hub)
