@@ -1785,7 +1785,10 @@ class MemoryHandler(AuditedRetirementHandler):
         On create with ``link=``, ``meta=`` also accepts ``model``,
         ``prompt_version``, ``run_id``, ``why``, and ``evidence``.
         These five keys are stored only on the created edge. The call
-        rejects them when ``link=`` is omitted.
+        rejects them when ``link=`` is omitted. A ``dry_run=True``
+        preview names the accepted keys on an ``edge annotation`` line
+        (the preview resolves the link target but does not run the
+        edge-admission gate).
 
         ``args={'scratch_for': 'td<N>'}`` stamps the task-scratch pair —
         ``SPACE:scratch`` + ``scratch-for:td<N>`` — in one call
@@ -1914,7 +1917,12 @@ class MemoryHandler(AuditedRetirementHandler):
                 id=None, mode=mode, untags=untags, unlink=unlink, rel=rel, link=link
             )
             return self._put_dry_run(
-                text=text, tags=tags, link=link, rel=rel, put_meta=create_meta
+                text=text,
+                tags=tags,
+                link=link,
+                rel=rel,
+                put_meta=create_meta,
+                link_meta=link_meta,
             )
 
         base_put = super().put  # zero-arg super() can't see self inside create()
@@ -2247,10 +2255,14 @@ class MemoryHandler(AuditedRetirementHandler):
         link: str | None,
         rel: str | None,
         put_meta: dict[str, Any],
+        link_meta: dict[str, Any] | None = None,
     ) -> Response:
         """The ``put(dry_run=True)`` preview (gr548271): the create path's
         validation and its ack's ``Next:`` rows, computed from the draft;
-        nothing is written."""
+        nothing is written. ``link_meta`` (the edge annotation ``put``
+        splits off ``meta=`` for a create-time ``link=``) is echoed on an
+        ``edge annotation`` line — the preview resolves the link target
+        but does not run the edge-admission gate."""
         from precis.handlers import _put_preview
         from precis.utils.link_tag_ops import guard_taxon_hierarchy, validate_relation
 
@@ -2307,6 +2319,10 @@ class MemoryHandler(AuditedRetirementHandler):
             *draft_link_hints(self, draft),
             *_roundtrip_rows(title, NEW_MEMORY),
         ]
+        edge_note = None
+        if link_meta:
+            keys = ", ".join(sorted(str(k) for k in link_meta))
+            edge_note = f"edge annotation (rides link=): {keys}"
         space = next((v for v in sorted(values) if v.startswith("SPACE:")), None)
         dups = _put_preview.nearest_duplicates(
             self, f"{title}\n{text}", kind=self.kind, space=space
@@ -2317,6 +2333,7 @@ class MemoryHandler(AuditedRetirementHandler):
             space=space,
             next_rows=rows,
             rule=_put_preview.kind_rule(text),
+            edge_note=edge_note,
         )
         shape = self._shape_audit(
             title=title,

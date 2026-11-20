@@ -116,7 +116,7 @@ transcript, not landed history (those live in `git log` and the docs).
 
 | edge you write | where it shows (`fisheye+1hop`) |
 |---|---|
-| `part-of` → hub / summary | `Parts:` on both ends; on the `section:index` hub every member lists under `contains:`, one line each |
+| `part-of` → hub / summary | `Parts:` on both ends; on the `section:index` hub every member lists under `contains:` |
 | `qualifies` gotcha → thread | `Argument:` on both ends |
 | `[handle]` mention in the body | `related-to` under `Notes & links` on the target's eye (8-cap) |
 | `cites` / `derived-from` | `Notes & links` / `Argument` |
@@ -126,8 +126,9 @@ memories plus findings — a `research` memory's paper neighbours never
 appear as recall. Repo-dev nodes take
 `tags=['SPACE:repo-dev', 'section:threads|runbooks|gotchas|workflow|reference']`
 and `meta={'hook': 'one line — status + resume point'}` (writable meta
-keys: `hook`, `type`, `expires`; the node type is the `section:<slug>`
-tag, never `meta['type']`).
+keys: `hook`, `type`, `expires`, `order`; the node type is the
+`section:<slug>` tag, never `meta['type']`). With `link=`, a create takes
+the writer annotation — see below.
 
 ## Notation in memory text
 

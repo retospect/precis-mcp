@@ -196,7 +196,9 @@ plain agent `link` call) is gated at the link admission itself:
 
 The same annotation rides `put(kind='finding', meta=…)` when a writer
 mints the claim itself — [[precis-finding-help]] §the writer
-annotation.
+annotation — and `put(kind='memory', text=…, link=…, rel=…, meta=…)`
+when the writer mints the memory together with its edge
+([[precis-put-help]] §link= on creation).
 
 ## See also
 

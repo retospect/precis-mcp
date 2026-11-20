@@ -144,8 +144,8 @@ All relations except `related-to` and `see-also` auto-mirror: writing
 `cites` from A→B makes A→B queryable as `cited-by` from B's side
 without a second `link()`. `rejected-after` / `selects` / `rejects` / `considered` and
 `cited-in` / `corroborates` / `superseded-in` /
-`off-topic-for` are the exception among the *non*-`related-to`/`see-also`
-set — asymmetric with NO inverse (like `see-also`): a paper's disposition
+`off-topic-for` are asymmetric exceptions (no inverse, like `see-also`):
+a paper's disposition
 toward a dossier reads from the dossier side via `get(kind='draft',
 id=<dossier-slug>, view='integration')`, not a mirrored `link()` read.
 
@@ -286,9 +286,7 @@ link(kind="memory", id=42, target="pa5", rel="see-also")
 
 `see-also` is asymmetric with **no** inverse. Use for "while reading A,
 you might want B" hints that don't fit `related-to`, `cites`, or any
-evidential edge. (The four `cited-in`/`corroborates`/`superseded-in`/
-`off-topic-for` integration-disposition relations, below, are the same
-shape — no inverse — but a different semantic.)
+evidential edge.
 
 ## Record a paper's disposition toward a topic dossier
 ## Mark a paper as woven-in / corroborating / superseded / rejected
@@ -336,7 +334,10 @@ endpoints past the `+recall` distance floor (a nearer pair is one RAG
 already co-retrieves, so the edge adds nothing). `explains` stays claim
 hub → claim hub via `taproot.hub.link_claims` and carries no evidence
 pins itself. A plain agent `link` call carries no model identity and is
-untouched.
+untouched. A create-time `link=` carries the same annotation via
+`meta=` in one call (`put(kind='memory', …, link='pc<N>',
+rel='derived-from', meta={…})`) — it lands on the created edge, not the
+node ([[precis-memory-help]]).
 
 ## See also
 

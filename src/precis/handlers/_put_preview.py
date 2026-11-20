@@ -115,9 +115,12 @@ def render_preview(
     space: str | None,
     next_rows: list[tuple[str, str]],
     rule: tuple[str, str] | None = None,
+    edge_note: str | None = None,
 ) -> Response:
     """The dry-run ack: header, proposed kind (memory only), the
-    near-duplicate retain line, the duplicate list, then ``Next:``."""
+    near-duplicate retain line, the duplicate list, then ``Next:``.
+    ``edge_note`` (memory puts only) names the annotation a create-time
+    ``link=`` will carry onto the created edge."""
 
     def h(rid: int) -> str:
         return handle_registry.try_format(kind, rid) or f"{kind}:{rid}"
@@ -125,6 +128,8 @@ def render_preview(
     lines = [DRY_RUN_HEADER]
     if rule is not None:
         lines.append(f"kind: {rule[0]} (rule: {rule[1]})")
+    if edge_note:
+        lines.append(edge_note)
     where = f" in {space}" if space else ""
     if dups is None:
         lines.append("nearest duplicates: not checked (no embedder)")

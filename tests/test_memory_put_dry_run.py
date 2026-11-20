@@ -168,6 +168,37 @@ def test_dry_run_part_of_link_counts_as_placed(hub: Hub) -> None:
     assert "rel='part-of')" not in out
 
 
+def test_dry_run_previews_the_edge_annotation(hub: Hub) -> None:
+    """gr715265 follow-up: ``link_meta`` is not dropped on the dry path —
+    the preview names the annotation the created edge will carry."""
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    target = _created_id(handler.put(text="target", title="Target", tags=[SPACE_TAG]))
+    before = _counts(store)
+
+    out = handler.put(
+        text="the setup note distils the conditions",
+        title="Setup note",
+        tags=[SPACE_TAG],
+        link=_h("memory", target),
+        rel="derived-from",
+        meta={
+            "hook": "one-line index text",
+            "model": "test-model",
+            "prompt_version": "v1",
+            "run_id": "run-1",
+            "why": "the note distils the target",
+            "evidence": ["pc1"],
+        },
+        dry_run=True,
+    ).body
+
+    assert (
+        "edge annotation (rides link=): evidence, model, prompt_version, "
+        "run_id, why" in out
+    )
+    assert _counts(store) == before
+
+
 def test_dry_run_flags_a_same_prefix_thread(hub: Hub) -> None:
     handler = MemoryHandler(hub=hub)
     peer = _created_id(
