@@ -69,6 +69,7 @@ def _make_jinja_env() -> jinja2.Environment:
         linkify_refs,
         linkify_toon,
         render_cloze,
+        render_cloze_masked,
         render_markdown,
     )
     from precis_web.timefmt import (
@@ -85,6 +86,9 @@ def _make_jinja_env() -> jinja2.Environment:
     # Anki cloze bodies ({{c1::answer::hint}}) render as highlighted
     # deletions instead of raw markup on the ref detail page.
     env.filters["render_cloze"] = render_cloze
+    # The masked variant (gr664414): every gap hidden until hover — the
+    # /learning current-context list quizzes instead of displaying answers.
+    env.filters["render_cloze_masked"] = render_cloze_masked
     # Like linkify_refs, but renders tab-separated runs (TOON ``Next:``
     # blocks, tab-delimited oracle shares) as aligned HTML tables so the
     # tabularity is visible instead of collapsing on <pre> tab-stops.

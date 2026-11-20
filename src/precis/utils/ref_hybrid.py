@@ -33,6 +33,10 @@ Three legs, fused by reciprocal rank:
    preserving for a query (``6-311++G**`` is a Pople basis set, not markup),
    and an extra leg can only fail to contribute.
 
+The raw-query block leg reports its OR fallback through call-local
+``lexical_info_out`` so scope notes disclose loose matching. The notation
+leg does not overwrite that signal: its terms differ from the displayed query.
+
 Only the ASCII→canon direction is covered, because that is the direction an
 agent types. The reverse (a ``kΩ`` query against a not-yet-normalized ``kOhm``
 row) is left to the semantic leg; a symmetric folded index is a separate,
@@ -96,6 +100,7 @@ def _block_leg(
     exclude_ref_ids: list[int] | None = None,
     include_ref_ids: list[int] | None = None,
     card_kinds: tuple[str, ...] | None = None,
+    lexical_info_out: dict[str, bool] | None = None,
 ) -> list[Ref]:
     """Block-level hits collapsed to one ref each, best rank first.
 
@@ -126,6 +131,7 @@ def _block_leg(
         exclude_ref_ids=exclude_ref_ids,
         include_ref_ids=include_ref_ids,
         card_kinds=card_kinds,
+        lexical_info_out=lexical_info_out,
     )
     # ``search_chunks`` returns blocks most-relevant first in every mode, but
     # the score's direction differs (semantic is a cosine distance, lower is
@@ -153,6 +159,7 @@ def fused_ref_hits(
     include_ref_ids: list[int] | None = None,
     card_kinds: tuple[str, ...] | None = None,
     query_vec: list[float] | None = None,
+    lexical_info_out: dict[str, bool] | None = None,
 ) -> list[Ref]:
     """Hybrid ref-level search: title lexical + block hybrid + notation leg.
 
@@ -187,6 +194,8 @@ def fused_ref_hits(
     change: ``query_vec_for`` already returns ``None`` for it above, which
     keeps every leg lexical-only exactly as before.
     """
+    if lexical_info_out is not None:
+        lexical_info_out["or_fallback"] = False
     if not (q and q.strip()):
         return []
 
@@ -244,6 +253,7 @@ def fused_ref_hits(
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             card_kinds=card_kinds,
+            lexical_info_out=lexical_info_out,
         )
     )
 

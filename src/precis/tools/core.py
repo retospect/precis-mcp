@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import inspect
 import json
 import logging
 import threading
@@ -30,6 +31,7 @@ from precis import principal, serve_ledger
 from precis.handlers._interpret import PREFIX as _INTERPRETED_PREFIX
 from precis.private_kinds import private_kind_of
 from precis.runtime.handle_deref import TEXT_PAYLOAD_MAX_BYTES
+from precis.store.types import _CATEGORIZER_AXES, _KIND_ALLOWED_AXES
 from precis.user_context import current_principal, user_actor_scope
 
 if TYPE_CHECKING:
@@ -1168,14 +1170,13 @@ def get(
                 and (id == "/traces" or id.startswith("/traces?"))
             )
             # view='logbook' (gr592279) reads args['q'] as its in-window
-            # text filter — the one documented args= key that shares a
-            # name with an explicit kwarg. Top-level q= on get() stays
+            # text filter. Top-level q= on get() stays
             # find-in-ref's door, so the two never collide inside the
             # handler — but a call passing both is ambiguous and refuses.
             logbook_q = kind == "quest" and view == "logbook"
             reserved = (
                 ("id", "view", "q")
-                if trace_filters
+                if trace_filters or kind == "handle"
                 else ("kind", "id", "view")
                 if logbook_q
                 else ("kind", "id", "view", "q")
@@ -1448,6 +1449,9 @@ def search(
     per-hit rows — `scope=` implies it, and `per_paper=` caps hits per
     paper there); `queries=`/`answers=` (HyDE) fuse legs; `good=True`
     queues a deep search; `title=`/`author=` by byline.
+    skill: `queries=` (≤5 phrasings, one intent) fuses section rows by
+    rank with per-query attribution — never a page; memory `batch=`
+    stays its labelled envelope.
     finding: `trust='verified'|'signed'|'disputed'|'any'`; `status=`.
     `uncited=<draft>` drops already-cited sources. se: `wants=` ranked
     library search (never a filter); `compose=` proposer over it.
@@ -1540,7 +1544,11 @@ def search(
                 BadInput(
                     f"page_size={page_size} exceeds maximum {_SEARCH_PAGE_SIZE_MAX}",
                     next=(
-                        f"narrow with scope= or refine q=; "
+                        f"retry with page_size={_SEARCH_PAGE_SIZE_MAX}; "
+                        "use args={'under': '<taxon>', 'depth': 1, 'axis': '<axis>'} "
+                        "to narrow descendants, or refine q="
+                        if kind == "taxon"
+                        else f"narrow with scope= or refine q=; "
                         f"max page_size is {_SEARCH_PAGE_SIZE_MAX}"
                     ),
                 )
@@ -2102,6 +2110,13 @@ def put(
     # position). Declared at the verb level (the gr262482 pattern) so
     # strict-schema MCP clients don't strip it.
     terms: list[dict[str, Any]] | None = None,
+    # draft chunk batch: put(kind='draft', id=<slug>, chunks=[{'text': …,
+    # 'chunk_kind': …, 'meta': {…}, 'at': {…}}, ...]) writes many chunks of
+    # any kind in one transaction (≤50; a rejected entry rolls the call
+    # back and names chunks[i]). Verb-level chunk_kind=/meta=/at= are
+    # per-batch defaults. Declared at the verb level (gr262482 pattern).
+    # Keep entries raw so the draft handler can report indexed shape errors.
+    chunks: list[Any] | None = None,
     # draft data/table chunk (chunk_kind='table'): canonical data
     # in table={header,rows}; the markdown text is derived. caption= is the
     # legend; regen= records how the data was produced (provenance, inert).
@@ -2295,16 +2310,11 @@ def put(
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
-    put(kind='gripe'|'todo', id=N, text=...) appends a comment — todo takes
-    only `text=`/`tags=`/`untags=` (link edits stay on `link`); gripe also
-    takes `link=`/`unlink=`/`rel=` same call. Omit `id=` to mint — required
-    fields are per kind (precis-put-help). `mode=`: file kinds 'create';
-    paid-import kinds 'import'; numeric-ref kinds omit it. `text=`/`body=`
-    alias a kind's single prose field (finding says `body=`; both at once
-    errors); `todo` declares both — `text=` title, `body=` details, either or
-    both. `tags=`/`untags=` add/remove; `link=`/`unlink=` use
-    `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
-    `text={'$ref': '<handle>'}` = that handle's body (needs a recent exact `get`).
+    Omit `id=` to mint a numeric ref. `mode=` and required fields vary by
+    kind. Use `tags=` or `link=` to annotate on create.
+    For gripe or todo, `id=` with `text=` appends a comment and can update
+    tags in the same call. Gripe comments can also update links.
+    `text={'$ref': '<handle>'}` reuses the body after a recent exact `get`.
 
     Full reference: get(kind='skill', id='precis-put-help').
     """
@@ -2415,6 +2425,7 @@ def put(
                 "until": until,
                 "scratch_for": scratch_for,
                 "terms": terms,
+                "chunks": chunks,
                 "table": table,
                 "caption": caption,
                 "regen": regen,
@@ -2590,7 +2601,7 @@ def edit(
     # is_abbrev= is the inverse — un-silences them.
     not_abbrev: list[str] | None = None,
     is_abbrev: list[str] | None = None,
-    # draft regex substitute (see precis-draft-help "Search a draft"):
+    # Draft regex substitute (see precis-draft-reference-help "Regex find and substitute"):
     # sub={'find':…,'replace':…,'flags':…} (or a 's/find/replace/'
     # string) rewrites every match across the id= scope (a draft slug or a
     # dc<id> section/chunk). Previews by default; apply=True commits.
@@ -2622,6 +2633,10 @@ def edit(
     # which Kokoro voice + language phonemizer speaks this chunk on export.
     voice: str | None = None,
     lang: str | None = None,
+    # draft document language (see precis-draft-help "Document metadata"):
+    # language='en-GB' sets the draft-level tag the Word export writes into
+    # w:lang / dc:language; '' clears it (gr725247).
+    language: str | None = None,
     # draft data/table chunk (chunk_kind='table'): replace the
     # canonical data (table={header,rows}) / legend (caption=) / provenance
     # (regen=); the markdown text re-derives. Field-level edits (the shipped
@@ -2756,15 +2771,15 @@ def edit(
     `append` / `replace` need `text=`.
     `replace` with `id='slug~selector'` rewrites one chunk.
 
-    `mode=` defaults to `find-replace`; kinds excluding it refuse with
-    options. todo uses `text=`/`body=`, memory also takes
-    `ops=[{find,text,...}]`; quest needs `mode='replace'`; draft takes
-    `'replace-content'`; paper, structure ignore it.
+    todo: `mode='replace', body=...` updates details; `text=` updates title.
+    quest needs explicit `mode='replace'`. memory accepts `ops=`.
+    Draft `replace-content` rewrites a block; `insert` edits around an anchor
+    within a chunk. To add an adjacent paragraph, use draft `put` with
+    `args={'at': {'before': 'dc<id>'}}` (or `after`).
 
-    Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
-    / `nth=`. `base_sha=` (python `~L`: the read's `sha=`) refuses a stale
-    edit. `dry_run=True` previews; `reason=` why.
-    `text={'$ref': '<handle>'}` = its body (needs a recent exact `get`).
+    Anchors: `before=`, `after=`, `match=`, `nth=`. `base_sha=` guards
+    against stale edits. `dry_run=True` previews; `reason=` records why.
+    `text={'$ref': '<handle>'}` uses the body from a recent exact `get`.
 
     Full reference: get(kind='skill', id='precis-edit-help').
     """
@@ -2815,6 +2830,7 @@ def edit(
         "permission": permission,
         "voice": voice,
         "lang": lang,
+        "language": language,
         "table": table,
         "caption": caption,
         "regen": regen,
@@ -2890,8 +2906,8 @@ def delete(
     # numeric-ref kinds: why it goes — a 'deleted' ref_events row so a
     # later get()'s Gone names the survivor ('merged into meNNN').
     reason: str | None = None,
-    # memory: preview prose mentions, name any-kind successor, or explicitly
-    # leave successor-less mentions for the gardener. Other kinds are unchanged.
+    # memory/finding: preview memory prose mentions, name any-kind successor,
+    # or explicitly leave successor-less mentions for the gardener.
     dry_run: bool | None = None,
     superseded_by: str | None = None,
     force: bool | None = None,
@@ -2949,7 +2965,7 @@ def delete(
 def tag(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
-    # A list is the batch form (gripe/alert/todo): the same edit on every
+    # A list is the batch form (e.g. paper/gripe/alert/todo): the same edit on every
     # id in one transaction.
     id: str | int | list[str | int] | None = None,
     add: list[str] | None = None,
@@ -2968,7 +2984,7 @@ def tag(
     # verb-level story as meta= above — the handlers took ``prio=`` all
     # along but it never reached the MCP schema or the dispatch payload.
     prio: int | None = None,
-    # numeric-ref kinds (gr504803): why the tag change — recorded as an
+    # paper and numeric-ref kinds: why the tag change — recorded as an
     # ``agent/retagged`` ref_events row per affected ref (view='log'),
     # so a mass fold/cleanup says why. Same handler-declared door as
     # delete()'s reason= (gr503546); kinds whose tag doesn't declare it
@@ -2980,26 +2996,21 @@ def tag(
 ) -> str:
     """Add and/or remove tags on an existing ref (atomic).
 
-    Closed UPPERCASE prefixes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`)
-    replace within the prefix on add; flag tags toggle; open tags
-    are free-form. Bad axis on a kind raises
+    An added closed UPPERCASE tag replaces the value for its prefix.
+    Flags toggle. Open tags are free-form. A disallowed axis raises
     `[error:BadInput] axis not allowed on kind 'K'`.
 
     Per-kind closed-prefix gating (summary):
-    todo: STATUS+PRIO+AUDIT. gripe: STATUS+PRIO.
-    finding: unrestricted. job: STATUS (lifecycle subsets).
-    memory: SPACE+MOVE (DREAM/STALE are system-set).
-    anki/conv: none. paper: SRC+CACHE+DREAM+categorizer axes; patent: SRC+CACHE.
-    web/perplexity-*/websearch/youtube: CACHE+WATCH.
-    oracle/skill: none. python/calc/math: tag unsupported.
+    {kind_allowed_axes}
+    finding: unrestricted. python/calc/math: tag unsupported.
+    Prefix ownership still applies to axes listed here.
 
-    `meta=` (todo only): promotes an allowlisted key (e.g. `llm_tier`)
-    onto the ref's meta dict — see precis-todo-tree-help.
-    `prio=` (todo/gripe/quest/job): priority column, 1..10, lower=hotter.
+    `meta=` (todo only) promotes allowlisted keys such as `llm_tier`.
+    `prio=` (todo/gripe/quest/job) sets priority (1..10, lower=hotter).
 
-    Full reference: get(kind='skill', id='precis-tag-help'), or
-    search(kind='skill', q='classifying refs') for a topical lookup.
-    `precis-tags` is the authoritative axis matrix.
+    get(kind='skill', id='precis-tag-help') for recipes or
+    search(kind='skill', q='add remove tags refs') for discovery.
+    `precis-tags` has the full axis matrix.
     """
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
@@ -3019,6 +3030,29 @@ def tag(
         )
     finally:
         serve_ledger.unbind(token)
+
+
+def _tag_axis_summary() -> str:
+    """Group matching sets and abbreviate paper's categorizer axes to fit tools/list."""
+    groups: dict[str, list[str]] = {}
+    for kind, axes in sorted(_KIND_ALLOWED_AXES.items()):
+        if not axes:
+            continue
+        categorizer_axes = (
+            axes.intersection(_CATEGORIZER_AXES) if kind == "paper" else set()
+        )
+        labels = sorted(axes - categorizer_axes)
+        if categorizer_axes:
+            labels.append("categorizer axes")
+        groups.setdefault("+".join(labels), []).append(kind)
+    return "\n".join(f"{'/'.join(kinds)}: {axes}." for axes, kinds in groups.items())
+
+
+# Normalize the template before expanding it on both Python 3.12 and 3.13.
+tag.__doc__ = (inspect.getdoc(tag) or "").replace(
+    "{kind_allowed_axes}",
+    _tag_axis_summary(),
+)
 
 
 def link(
@@ -3055,19 +3089,19 @@ def link(
 ) -> str:
     """Add or remove a typed link between two refs.
 
-    `target=` uses canonical `kind:identifier[~selector]` form
-    (kind prefix required). A bare handle (`pa5`, `td158`) works
-    wherever the kind is self-identifying; the `kind:` form is
-    required for file-backed kinds (markdown/plaintext/tex), which
-    have no handle — get/edit/delete take that same handle in `id=`.
+    `target=` accepts a universal handle (`pa5`, `td158`) or
+    `kind:identifier[~selector]`. For file-backed targets, only the
+    `python` and `md` indexes require slug addressing with a kind
+    prefix. Stored `markdown`, `plaintext`, and `tex` refs accept
+    `md<N>`, `pl<N>`, and `tx<N>` handles, respectively.
     `mode='add'` (default) creates;
     `mode='remove'` with `rel=` removes one (target, rel) pair,
     without `rel=` removes every link to the target. `rel=` defaults
     to `related-to` on add.
 
     Full reference: get(kind='skill', id='precis-link-help'), or
-    search(kind='skill', q='connecting refs') for a topical lookup.
-    `precis-relations` lists every rel (cites, blocks, ...).
+    search(kind='skill', q='typed links between refs') for a topical lookup.
+    `precis-relations` lists the rels agents write by hand (cites, blocks, ...).
     """
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
@@ -3144,8 +3178,11 @@ _PUT_HELP: dict[str, str] = {
     "kind": "Which kind to write to.",
     "mode": "File kinds (markdown/plaintext/tex/python): 'create' (only). "
     "Paid-cache kinds (websearch/perplexity-reasoning/perplexity-research): "
-    "'import' registers a free web-UI answer. Numeric-ref kinds "
-    "(memory/todo/gripe/...): omit — an explicit mode= is rejected.",
+    "'import' registers a free web-UI answer. paper 'fetch-si'; structure "
+    "rerun/neb/md/analyze/trust; machine sync. Numeric-ref kinds "
+    "mostly omit mode=. Exceptions: gripe create/comment (confirm id= selection); "
+    "job retry/retarget/setting/wake/extend/garden-reject; memory process; "
+    "measure recheck; fleet report; todo plan (outside the declared gate).",
     "id": "Target ref. Omit to create on numeric-ref kinds.",
     "text": "Content for create.",
     "tags": "Tags to add.",
@@ -3159,12 +3196,13 @@ _EDIT_HELP: dict[str, str] = {
     "kind": "Which kind to edit.",
     "id": "Existing ref id, optionally with selector for region edits.",
     "mode": "File kinds (markdown/plaintext/tex/python): 'find-replace' "
-    "(default) | 'append' | 'insert' | 'replace'. todo/quest: "
-    "'replace' only — the default 'find-replace' is rejected there; "
-    "memory: 'replace' | 'find-replace' | 'insert' | 'append' — or "
-    "ops=[{find,text,...}] for several anchored ops in one call. "
-    "Most other kinds don't branch on mode= (silently ignored) or don't "
-    "support edit at all.",
+    "(default) | 'append' | 'insert' | 'replace'. todo: "
+    "replace/find-replace/insert/delete/gate; quest: replace (explicit)/pause/resume; "
+    "memory: replace/find-replace/insert/append/delete — or "
+    "ops=[{find,text,...}] for several anchored ops in one call; "
+    "finding: replace/find-replace; fleet/learning: replace. "
+    "Draft: replace-content or insert (requires find=, text= and where=); "
+    "paper/structure ignore mode=.",
     "text": "Replacement / inserted content. Required for every mode "
     "except 'reorder'. Pass text='' on find-replace to delete "
     "the matched span.",

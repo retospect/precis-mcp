@@ -18,17 +18,23 @@ must not grow a callout.
 
 gr244679 (fresh 2026-09-14 user report) sharpened the bar: the callout
 alone made the *answer* legible but left the promoted row itself
-unreadable. Two follow-on fixes, both pinned here:
+unreadable. Two follow-on fixes answered that on the promotion path,
+and both survive on ``PaperHandler.search_hits`` (the cross-kind
+merge) and the bare-DOI short-circuit:
 
 1. Representative-block selection (``_representative_block_for_ref``)
    prefers the paper's ``card_combined`` card (title+authors+abstract,
    ``ord=-1``) over the ``pos=0`` chunk, since publisher PDFs routinely
    put copyright/permissions boilerplate first.
-2. The promoted row itself now renders the paper's own (``pa``) handle
-   plus a one-line citation — not a chunk handle (``pc<id>``) plus that
-   chunk's keywords — so a title-shaped query returns the paper as a
-   legible row, not chunk soup, regardless of what the representative
-   block's raw text happens to be.
+2. A promoted row renders the paper's own (``pa``) handle plus a
+   one-line citation — not a chunk handle (``pc<id>``) plus that
+   chunk's keywords.
+
+gr681157 then removed row promotion from this ``search`` table path
+altogether: a promoted record row consumed a chunk slot on the
+fixed-size page and dropped the ref's other hits. On this path the
+``pa`` handle now names the paper only in the ``Title match —``
+callout; the table keeps every ranked chunk/pc row.
 """
 
 from __future__ import annotations
@@ -74,7 +80,8 @@ def _handler(store: Store, embedder: MockEmbedder) -> PaperHandler:
 
 def test_title_query_names_the_paper_record(store: Store) -> None:
     """The exact-title query surfaces the paper's own ``pa`` handle and
-    citation, even though the block that got promoted is boilerplate."""
+    citation in the callout, even though the paper's only chunk is
+    boilerplate the stripped query never matches."""
     e = MockEmbedder(dim=1024)
     rid = _seed(
         store,
@@ -100,8 +107,9 @@ def test_title_query_names_the_paper_record(store: Store) -> None:
     resp = _handler(store, e).search(q="attention is all you need", page_size=5)
     assert "Title match" in resp.body
     # gr460035: the "paste any handle above" Next: example must name a
-    # handle the table actually shows — not the promoted record row's
-    # hidden representative-card chunk.
+    # handle the table actually shows. Title records live only in the
+    # callout since gr681157 — a Next: example naming a pa handle would
+    # point at a record no table row shows.
     m = re.search(r"get\(id='([^']+)'\)", resp.body)
     if m:
         table = resp.body.split("Next:", 1)[0]
@@ -202,14 +210,14 @@ def test_representative_block_falls_back_to_pos0_without_card(store: Store) -> N
 
 
 def test_title_match_row_renders_paper_record_not_chunk_soup(store: Store) -> None:
-    """gr244679 fix bar item 2: the promoted row itself — not just the
-    callout above it — must be legible. A row injected by the title
-    introducer now renders the paper's own (``pa``) handle and a
-    one-line citation, rather than a chunk handle (``pc<id>``) plus
-    that chunk's keywords — even when the representative block is the
-    paper's boilerplate ``pos=0`` permissions chunk (no card seeded), a
-    title-shaped query must still return something recognisable as the
-    paper, as a row."""
+    """gr681157's contract for the ``search`` table path: a
+    title-matched record names itself only in the ``Title match —``
+    callout — never as a table row. The response carries the paper's
+    own (``pa``) handle and a one-line citation, no table row shows a
+    chunk handle (``pc<id>``) plus that chunk's keywords for the
+    paper's blocks, and the boilerplate text of a ``pos=0`` chunk
+    never leaks into the response — even when that boilerplate block
+    is the paper's only chunk."""
     e = MockEmbedder(dim=1024)
     rid = _seed(
         store,
@@ -227,8 +235,8 @@ def test_title_match_row_renders_paper_record_not_chunk_soup(store: Store) -> No
     pa_handle = handle_registry.format_handle("paper", rid)
     assert pa_handle in resp.body
     # No chunk handle for this ref's boilerplate block leaked into the
-    # response — the row addresses the paper record, not one of its
-    # chunks.
+    # response — the record names itself in the callout, not through
+    # one of its chunks.
     assert "google hereby grants permission" not in resp.body.lower()
     # The row reads as a citation, not raw block text.
     assert "Vaswani" in resp.body

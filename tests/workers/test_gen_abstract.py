@@ -205,3 +205,10 @@ def test_fill_mid_generation_supersedes_the_pending_write(store: Any) -> None:
     assert r["ok"] == 0
     assert r["skipped"] == 1
     assert _gen(store, ref_id) == []
+
+
+def test_gen_abstract_imports_without_retired_worker() -> None:
+    from importlib import import_module, util
+
+    assert util.find_spec("precis.workers.context_sentence") is None
+    assert callable(import_module("precis.workers.gen_abstract").body_input)

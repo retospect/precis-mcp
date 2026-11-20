@@ -96,6 +96,13 @@ while MCP keeps `Authorization: Bearer` only. Dispatch re-judges the allow-list
 on the final kind after every rewrite: converted `pa<id>` handles and a
 retired memory's successor (`md`, `python`, another kind) alike.
 
+A network MCP gate accepts five bearer classes: `install`, `slice`,
+`personal`, `capability` and `oauth`. `PRECIS_MCP_CREDENTIAL_CLASSES`
+(`mcp_identity.credential_classes`) narrows them per deployment; unset means
+all. A refused class gets the same 401 as a wrong token with no lookup, and the
+web account page stops offering to mint the personal and capability classes the
+deployment would refuse.
+
 Exact-handle write substitution uses one-hour ``read_receipts`` keyed on the
 authenticated credential, surviving transport restarts. Unauthenticated MCP
 receipts and hint suppression remain in process memory. Opt-in
@@ -126,6 +133,23 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 Headless slice jobs delegate vendor launch/output protocols to
 `workers/job_types/_slice_adapters.py`; `run_slice` owns leases, credentials
 and the branch check before handing work to the lander.
+The detached executor records a submit intent before launching either job.
+Recovery uses launch evidence from that attempt and host to resume poll,
+including a ship that finished before publishing its mirror squash.
+Plan dispatch queues every doable node with its score and release band.
+A pre-land review job's and every `land_slice` job's score floors at
+`FINISH_FIRST_SCORE`, so the review and the land of a finished build are
+claimed ahead of fresh builds; at the host claim an already-queued land
+without the stamp floors at the same value, so pre-rollout lands keep
+their place.
+Host executor claims enforce capacity and skip file overlaps with started,
+unlanded builds; gripe intake bounds minting by queued builds per free
+executor slot (`factory.gripe_dispatch.queue_depth`, default 2).
+`reports.weekly` collects factory tables for the deterministic `weekly_report`
+job. It shares gripe closure clocks with the flow view and replaces direct
+draft-section table children atomically, preserving authored prose. Its weekly
+scheduler cadence is opt-in; Git history requires a configured checkout.
+
 Builder drift reports schedule ``task_class='skill'`` children after land;
 their live-tool checks run on MCP lanes with writes confined to skills and
 skill evals. Skill ``rulings:`` metadata exposes provenance through the
@@ -141,8 +165,18 @@ cohort (`workers/halt_policy.py`, `workers/halt_recovery.py`).
 Memory capture (`precis-make-memory`) and graph-gardener judgments share the
 packaged memory-help reconciliation policy. The interactive agent resolves new
 claims before writing; the gardener evaluates existing maintenance candidates
-through its reviewed apply paths. Labelled memory search batches reuse ordinary
-search dispatch and preserve each query's results and errors separately.
+through its reviewed apply paths. The opt-in gardener grounding pass records
+claim classifications, evidence judgments and premise lineage in SHA-pinned
+review rows outside the apply queue. The pass sends repair proposals through
+the existing garden ledger. It tracks unresolved checks in bounded research
+or human-review todos and reads pinned returns as candidate input on
+re-audit. Labelled memory search batches reuse ordinary search dispatch
+and preserve each query's results and errors separately.
+
+Skill discovery fuses up to five phrasings into attributed section matches.
+Planner and quest prompts use the same ranking and table after matching task
+sentences against question and heading embeddings. They include the selected
+section bodies. See `skill_index/__init__.py` for the index and prompt assembly.
 
 Explicit memory processing pins current body/header chunks in a bounded
 `embed_batch` job (`handlers/_memory_process.py::process_memory`). Its
@@ -150,6 +184,10 @@ opt-in worker claim path shares chunk leases with bulk embedding; default
 queue order and model routes stay unchanged. Readiness requires matching
 artifacts. Other enrichment stages refuse targeted requests where the worker
 cannot provide a revision-specific receipt.
+
+Paper cards draw on the publisher abstract, a labelled generated abstract,
+or leading body prose. New nanopub approvals use chunk-anchored passages.
+RDF and LaTeX preserve context literals already frozen into publish rows.
 
 ## Subsystems (where the code lives)
 
@@ -216,6 +254,12 @@ stream, reply off the aggregated `LlmResult`), while a concrete claude id
 driving the live Discord progress indicator). Slack's is one blocking
 `dispatch()` call.
 
+Shared context lives in `src/precis/chat/context.py::build`, behind a
+`ToolCaller` protocol and section/budget profiles. The bridge adapter
+`src/asa_bot/preamble.py::build` preserves its existing prompt; `WEB_CHAT`
+omits soul and inner life and bounds hot turns and the complete prompt.
+Core imports neither frontend, so web callers can reuse context independently.
+
 The `/rxn` web form dispatches the rxn energetics handler and renders its
 tables through the shared reader. Explicit keep stores equation inputs and
 an archival ledger in an `rxn` ref; `/refs/rxn/<id>` derives the live ledger
@@ -228,6 +272,9 @@ Draft pathway figures store a lazy recipe in `meta.render`; export and web
 refresh share `src/precis/render/figure.py::render_figure_chunk`. Selection
 options live in `precis.utils.pathway_figure`, and the quest renderer freezes
 stored energies and kinetics alongside the PNG without running a solve.
+Draft quest-frontier figures use the same lazy dispatch. Their cache key
+includes the serving candidates' frontier data, and the renderer uses the
+same frontier result for the PNG and its frozen snapshot.
 
 ## Package map
 
@@ -256,6 +303,11 @@ Most work lands at one of these. Each has a convention that bites:
   at release time (`scripts/bump`), never hand-edit it.
 - **Add a worker pass** → register on the derived queue; don't call
   `fill_embeddings` from the ingest path (workers own it).
+- **Journal names** → `ingest/journal_record.py` caches Crossref journal
+  records by ISSN in `app_state`; metadata enrichment materializes the title
+  in `meta.journal`. The worker repairs old papers and refreshes every 30 days;
+  substantive name disagreements create deduplicated review todos. Citation
+  exporters prefer that journal over a provider's raw `meta.venue`.
 - **Mutate chunk text** → DELETE + INSERT, never UPDATE (cascade).
 - **Ingest needs worker-side follow-up** → `precis.ingest` may not
   import `precis.workers` (import-linter contract), so an ingest path

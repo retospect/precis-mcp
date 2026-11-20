@@ -58,6 +58,48 @@ def test_a_failed_end_saves_the_work_before_the_tick_sees_it(
     )
 
 
+def test_a_blocked_commit_the_worker_cannot_finish_still_park_saves(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702644: the worker's own commit of a blocked session tree can
+    fail too — the dirty tree still park-saves like every failed run, so
+    a parked resume keeps the wip instead of relaunching empty."""
+    saved: list[tuple[Path, int, str, str]] = []
+
+    def save(tree: Path, todo_id: int, reason: str, *, base: str, **_k: Any) -> Any:
+        saved.append((tree, todo_id, reason, base))
+        return dict(_RECORD)
+
+    monkeypatch.setattr(_slice_park, "save_work", save)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["porcelain"] = " M a.py\n"
+    seams["staged"] = True
+    seams["commit_rc"] = 1
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {
+                "is_error": False,
+                "result": "Commit blocked by read-only `.git`.\ntests: ran",
+            }
+        ),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    # The blocked report reached the worker commit first (fallback subject).
+    assert ["add", "-A"] in [a for a, _cwd in seams["git"]]
+    assert any(a[:1] == ["commit"] for a, _cwd in seams["git"])
+    [(tree, todo_id, reason, base)] = saved
+    assert (str(tree), todo_id, base) == (handle["worktree"], 42, "origin/main")
+    assert "nothing to land" in reason
+    assert pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    assert pctx.meta_set["saved"] == _RECORD
+
+
 def test_a_clean_end_that_lands_saves_nothing(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -152,6 +152,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 "generation reclaimed this job; stopping without a terminal status",
             )
             return
+        # Operator cancel (STATUS:cancel_requested) lands at the next chunk
+        # boundary; done_chunk_ids already checkpoints what finished (gr720454).
+        if ctx.is_cancel_requested():
+            ctx.append_chunk(
+                "job_event",
+                f"cancel requested — stopping after {n_scanned} chunk(s)",
+            )
+            ctx.set_status("cancelled")
+            return
         n_scanned += 1
         try:
             result = apply_chunk(

@@ -199,6 +199,26 @@ the solver. Kinetics stays at its recorded environment when `U` shifts the
 profile; the two condition tables can differ. See `precis-pathway-help` for
 decluttered text views and kinetics reads.
 
+## Figure from a quest frontier
+
+```python
+put(kind="draft", id="<draft>", chunk_kind="figure",
+    text="Candidate frontier across two objectives.",
+    meta={"view": {"source": "quest:<id>#frontier",
+                   "x": "barrier", "y": "energy",
+                   "trusted_only": False, "top_n": 12, "label": "handles"}})
+```
+
+Use the quest handle for `<id>`. Give `x` and `y` together as two distinct
+rubric objective keys, or omit both to use the quest's default axes.
+`trusted_only=True` hides provisional candidates. `top_n` is an optional
+positive integer that keeps the points closest to the frontier.
+`label` accepts `handles`, `names`, or `none` (default).
+
+The first export or figure view renders the PNG and freezes its plotted
+data for export. The draft figure links back to the quest and refreshes
+when its frontier inputs change.
+
 ## Code blocks
 
 A `chunk_kind='code'` chunk holds a **verbatim code payload** — an exact
@@ -273,7 +293,11 @@ be the table (a stray prose line refuses — put prose in its own
 paragraph chunk), `text=` never rides with `table=`/`columns=`/`rows=`/
 `footer=` (one data source per write; the legend is `caption=`), and
 `text=` is a *create* input only — on `edit` it's still rejected, use
-the edit forms below.
+the edit forms below. The create reply names the cells whose stored
+value no longer prints back as the literal sent (up to five) —
+`row 1 zip: '02134' stored as 2134` — so a silent coercion is visible
+at write time; send `table=` rows as JSON strings to keep a literal
+verbatim.
 
 Editing: change the data, not the rendered text (`text=` is rejected on a
 table chunk); the four forms are `table={'header':…, 'rows':…}` (whole
@@ -408,7 +432,11 @@ them; the
 reply notes how many rows a footer skipped as empty/non-numeric. `edit`
 accepts `footer=` by itself to set or replace the spec (`footer={}`
 clears it) — it still counts as the edit's one selector, so it can't ride
-with `table=`/`cell=`/`find=`/`sub=`. Read the results on the `footer:`
+with `table=`/`cell=`/`find=`/`sub=`. The write reply shows the footer
+line before → after — `before: sum(line_cost)=17.0` /
+`after: mean(line_cost)=5.67; count(item)=3` — with the `hash:` and the
+table grid; `dry_run=True` previews exactly that reply (never a "no
+change") and writes nothing. Read the results on the `footer:`
 line under the grid, next to `ids:`.
 
 **`view='stats'`**: `get(kind='draft', id='dc<id>', view='stats')` reports

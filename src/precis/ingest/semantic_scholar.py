@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from datetime import datetime
@@ -9,8 +10,11 @@ from typing import Any
 
 from semanticscholar import SemanticScholar
 
+from precis.identity import normalize_arxiv, normalize_doi
 from precis.utils import rate_limit
 from precis.utils.http import _status_of, call_with_backoff
+
+log = logging.getLogger(__name__)
 
 
 def _client(api_key: str = "") -> SemanticScholar:
@@ -292,6 +296,11 @@ def get_paper_by_id(
     faults — caching an outage as a miss would keep the id "unresolvable"
     for an hour after recovery (gr483930). A ``Paper`` record with no
     ``paperId`` (S2's odd ``{}`` body on some misses) counts as not-found.
+    So does a prefixed ``arxiv:``/``doi:`` request whose resolved record
+    does not echo the id in ``externalIds`` — S2 occasionally binds an id
+    to a neighbouring cluster's record, and the record's own external ids
+    are the only trustworthy evidence it answers for the id asked
+    (gr710828's family).
     """
     from semanticscholar.SemanticScholarException import ObjectNotFoundException
 
@@ -316,8 +325,48 @@ def get_paper_by_id(
     if paper is not None and not getattr(paper, "paperId", None):
         paper = None
     out = _normalize(paper) if paper else None
+    if out is not None and not _requested_id_echoes(paper_id, out):
+        log.info(
+            "S2 id lookup %r resolved to a record that does not carry it "
+            "(paperId=%r) — treating as not-found",
+            paper_id,
+            out.get("s2_id"),
+        )
+        out = None
     _cache_put(key, out)
     return dict(out) if out is not None else None
+
+
+def _requested_id_echoes(requested: str, resolved: dict[str, Any]) -> bool:
+    """Echo check on an ``arxiv:``/``doi:``-prefixed single-id lookup.
+
+    A ``PREFIX:value`` request must come back a record that carries that
+    id in ``externalIds`` — the same match :func:`get_papers_batch`
+    already enforces via :func:`_id_keys_for_paper`, and the ingest
+    lane's ``fetch_paper_by_arxiv`` carries its own copy of the guard
+    (a fuzzy ``arxiv:<id>`` lookup once bound an unrelated 2019 paper
+    to 2405.20258). Values are compared normalised — ``v3`` version
+    suffixes and DOI case fold away.
+
+    Every other request shape passes: a bare S2 paperId (the id IS the
+    record's own), ``CorpusId:``/``MAG:``/… (present but niche), and
+    ``pmid:``/``pmcid:``/``URL:`` (request-side spellings that
+    ``externalIds`` names differently — ``PubMed``/``PubMedCentral`` —
+    so a raw key compare would produce false misses).
+    """
+    low = requested.strip().lower()
+    if low.startswith("arxiv:"):
+        want = normalize_arxiv(requested.strip()[len("arxiv:") :])
+        got = normalize_arxiv(resolved.get("arxiv_id"))
+    elif low.startswith("doi:"):
+        want = normalize_doi(requested.strip()[len("doi:") :])
+        got = normalize_doi(resolved.get("doi"))
+    else:
+        return True
+    if want is None:
+        # A malformed value — nothing to judge by; let the record stand.
+        return True
+    return got is not None and got.lower() == want.lower()
 
 
 def _get_with_retry(sch: SemanticScholar, paper_id: str) -> Any:

@@ -269,6 +269,10 @@ class _PerplexityBase(CacheBackedHandler):
     #: block handle used to mint a new ~$0.02–$0.50 row).
     tilde_id_is_address: ClassVar[bool] = True
 
+    #: The ``wx``/``rz``/``rr`` handle routes by ref id (gr702962): a slug
+    #: misses ``_canonical_key`` and would fire a fresh PAID Sonar call.
+    handle_routes_by_ref_id: ClassVar[bool] = True
+
     # ── inherited from CacheBackedHandler (subclasses override) ──────
     provider: ClassVar[str] = "perplexity"
     corpus_slug: ClassVar[str] = "default"
@@ -1144,7 +1148,7 @@ class WebsearchHandler(_PerplexityBase):
         is_numeric=False,
         id_required=False,
         modes=("import",),
-        views=("body",),
+        views=("body", "links"),
         # gr533135 / gr534654: a long report over the context result
         # budget refuses whole-body reads — the base's ``slug~N..M``
         # chunk-range read is the targeted recovery the refusal names.
@@ -1182,7 +1186,7 @@ class ThinkHandler(_PerplexityBase):
         is_numeric=False,
         id_required=False,
         modes=("import",),
-        views=("body",),
+        views=("body", "links"),
         supports_chunk_selectors=True,
     )
 
@@ -1226,7 +1230,7 @@ class ResearchHandler(_PerplexityBase):
         is_numeric=False,
         id_required=False,
         modes=("import",),
-        views=("body",),
+        views=("body", "links"),
         supports_chunk_selectors=True,
     )
 

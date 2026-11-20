@@ -21,6 +21,12 @@ Self-service controls:
   ``read`` default); the ``feed`` scope doubles as the podcast ``?t=``
   credential. Same rules as the personal tokens — digest-only, shown
   once, owner-scoped mint and revoke.
+* Both token sections follow ``PRECIS_MCP_CREDENTIAL_CLASSES``
+  (``app.state.mcp_credential_classes``): where ``personal`` / ``capability``
+  is not accepted the mint route is a 404 and the form is not rendered;
+  existing rows stay listed and revocable, and with none the section is
+  omitted. The podcast link mints feed-scoped capability rows through its
+  own route and is unaffected in every mode.
 * **Profile** — full name, email, and ORCID iD. The first two are
   display-only; the iD is not. A nanopub signature is attributed to an
   ORCID, never to a login (:func:`precis.nanopub.keys.load_profile`
@@ -60,18 +66,25 @@ the worse outcome.
 Nothing here has to tell the gate about the change: its cache stores the
 ``password_hash`` each entry was verified against and re-reads the row
 every request, so writing a new hash retires every entry that referenced
-the old one. That has to hold for ``precis users passwd`` too, which
-runs in another process entirely — see
-:class:`precis_web.auth.CredentialCache`.
+the old one. The session cookie works the same way: it carries a tag of
+the ``password_hash`` and is refused once the row's tag differs. That
+has to hold for ``precis users passwd`` too, which runs in another
+process entirely — see :class:`precis_web.auth.CredentialCache` and
+:func:`precis_web.auth.password_tag`. What a password change does *not*
+revoke (app connections, MCP tokens, the podcast link) is said on the
+page after the change.
 
 **Current password is required to change it.** Browsers cache Basic
 credentials for the life of the tab, so "you're already authenticated"
 is a weak claim about who is at the keyboard. Re-typing it is the only
 thing standing between an unlocked laptop and a stolen account.
 
-**Signing out is a 401, not a cookie delete.** There is no session to
-end: the credential lives in the browser, which re-sends it on every
-request until it decides to forget. The one lever a server has is to
+**Signing out is a 401 plus a server-side mark.** The Basic credential
+lives in the browser, which re-sends it on every request until it
+decides to forget; the session cookie is the part the server can end,
+and :func:`logout` does (``SessionTokens.sign_out`` voids every cookie
+issued for the login so far, so a copy kept elsewhere stops working
+too). For the Basic half the one lever a server has is to
 answer with a fresh challenge, which is what :func:`logout` does — a
 401 carrying ``WWW-Authenticate`` under a realm the cached credential
 was never accepted for. Every mainstream browser responds by dropping
@@ -85,6 +98,7 @@ of this route.
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from typing import Any
 
@@ -94,6 +108,8 @@ from starlette.responses import Response
 
 from precis.errors import BadInput, Denied, Upstream
 from precis.mcp_identity import (
+    CREDENTIAL_CLASSES_ENV,
+    credential_classes,
     list_capability_tokens,
     list_user_tokens,
     mint_capability_token,
@@ -145,6 +161,24 @@ def _require_self(request: Request) -> WebUser:
             headers={"Cache-Control": "no-store"},
         )
     return user
+
+
+def _accepts(request: Request, name: str) -> bool:
+    """Whether this deployment's MCP gate accepts credential class ``name``."""
+    classes = getattr(request.app.state, "mcp_credential_classes", None)
+    if classes is None:
+        classes = credential_classes(os.environ.get(CREDENTIAL_CLASSES_ENV))
+    return name in classes
+
+
+def _require_class(request: Request, name: str) -> None:
+    """404 a mint route whose credential class the MCP gate would refuse."""
+    if not _accepts(request, name):
+        raise HTTPException(
+            status_code=404,
+            detail=f"this deployment does not accept {name} MCP tokens",
+            headers={"Cache-Control": "no-store"},
+        )
 
 
 def _require_token_owner(request: Request) -> WebUser:
@@ -216,6 +250,11 @@ def _render(
         store = get_store(request)
         mcp_tokens = list_user_tokens(store, user.id)
         cap_tokens = list_capability_tokens(store, user.id)
+        if not _accepts(request, "capability"):
+            # The podcast link is a feed-only row and still works; its own
+            # section manages it, so it does not belong under the notice
+            # that these tokens are refused.
+            cap_tokens = [t for t in cap_tokens if tuple(t.scopes) != ("feed",)]
         remarkable_paired = user_remarkable_configured(store, user.login)
         # Presence, not reveal: ANKI_PASSWORD:<login> is class infra (0285,
         # precis_system-only) — this role can't decrypt it, and must not.
@@ -249,6 +288,8 @@ def _render(
             "poster_roles": poster_roles,
             "mcp_tokens": mcp_tokens,
             "cap_tokens": cap_tokens,
+            "accepts_personal": _accepts(request, "personal"),
+            "accepts_capability": _accepts(request, "capability"),
             # Returned by the mint POSTs only; no URL, vault or persistence.
             "new_mcp_token": new_mcp_token,
             "new_cap_token": new_cap_token,
@@ -274,7 +315,11 @@ async def index(request: Request, changed: str = "", saved: str = "") -> HTMLRes
     user = current_user(request)
     notice = ""
     if changed:
-        notice = "Password changed — this page loaded with the new one."
+        notice = (
+            "Password changed — this page loaded with the new one. "
+            "App connections, MCP tokens and the podcast link were not "
+            "revoked by the password change; review them on this page."
+        )
     elif saved:
         notice = "Saved."
     if user is None:
@@ -285,6 +330,7 @@ async def index(request: Request, changed: str = "", saved: str = "") -> HTMLRes
 @router.post("/mcp-tokens", response_class=HTMLResponse)
 def create_mcp_token(request: Request, label: str = Form("")) -> HTMLResponse:
     """Show a newly minted personal credential exactly once, with no cache."""
+    _require_class(request, "personal")
     user = _require_token_owner(request)
     try:
         _token_id, raw = mint_user_token(get_store(request), user.id, label)
@@ -326,6 +372,7 @@ def create_capability_token(
     request: Request, label: str = Form(""), scopes: str = Form("")
 ) -> HTMLResponse:
     """Mint a per-consumer credential; show its plaintext exactly once."""
+    _require_class(request, "capability")
     user = _require_token_owner(request)
     try:
         parsed = parse_capability_scopes(scopes)
@@ -475,6 +522,12 @@ async def logout(request: Request) -> Response:
     user = current_user(request)
     if user is not None:
         log.info("account: sign-out challenge issued for %s", user.login)
+        # Server-side half of the sign-out: a copy of the cookie kept
+        # elsewhere (or one a browser ignores the deletion of) must stop
+        # verifying too, not just disappear from this browser's jar.
+        sessions = getattr(request.app.state, "session_tokens", None)
+        if sessions is not None:
+            sessions.sign_out(user.login)
     return templates.TemplateResponse(
         request,
         "account/logout.html.j2",

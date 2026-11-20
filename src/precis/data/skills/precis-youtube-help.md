@@ -63,7 +63,17 @@ get(kind="youtube", id="https://www.youtube.com/shorts/dQw4w9WgXcQ")
 get(kind="youtube", id="https://www.youtube.com/embed/dQw4w9WgXcQ")
 ```
 
-All forms collapse to the same cache row keyed on the video ID.
+All forms collapse to the same cache row keyed on the video ID. A
+cached video also answers to its `yt<N>` record handle (printed on the
+`cite as` line of any read) — the handle routes by ref id, so
+`view='toc'` and `view='languages'` accept it too, and
+`view='links'`/`extent=` show the ref's inbound mentions.
+
+A record handle takes precedence over a bare video ID, even when the
+handle has 11 characters: `yt123456789` names cached ref `123456789`.
+To read the video whose ID is also `yt123456789`, use its URL,
+`https://youtu.be/yt123456789`. This keeps citations, links and fisheyes
+focused on the stored ref while preserving access to the video.
 
 ## Fetch in a specific language
 

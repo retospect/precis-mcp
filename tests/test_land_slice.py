@@ -32,6 +32,7 @@ from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.executors import ssh_node
 from precis.workers.job_types import (
+    Reconcile,
     get_job_type,
     known_job_types,
     land_slice,
@@ -1017,6 +1018,36 @@ def test_land_env_scrubs_credentials_keeps_knobs(
     assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
     for leaked in ("tok-a", "tok-b", "sk-live", "ghp_x"):
         assert leaked not in env.values()
+
+
+@pytest.mark.parametrize("existing_uv", [False, True])
+def test_land_env_finds_user_uv_without_replacing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_uv: bool
+) -> None:
+    """gr702644: non-login land services must reach uv in nested helpers."""
+    home = tmp_path / "coder"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    installed = local_bin / "uv"
+    installed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    installed.chmod(0o755)
+    service_bin = tmp_path / "service-bin"
+    service_bin.mkdir()
+    if existing_uv:
+        configured = service_bin / "uv"
+        configured.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        configured.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(service_bin))
+    env = land_slice.land_env()
+    expected = str(service_bin)
+    if not existing_uv:
+        expected += os.pathsep + str(local_bin)
+    assert env["PATH"] == expected
+    result = subprocess.run(
+        ["/usr/bin/env", "uv"], env=env, check=False, capture_output=True
+    )
+    assert result.returncode == 0
 
 
 def test_submit_ship_env_is_allowlist_not_whole_worker_env(
@@ -4772,6 +4803,52 @@ def _host_defer_setup(
     return store, handle
 
 
+BUSY_LOG = (
+    "quick ship (--quick)\n"
+    "release lifecycle busy — a cut, deploy, abandon or release fix is "
+    "running; retry after it completes\n"
+    "\x1b[31m✖ release lifecycle busy — nothing pushed.\x1b[0m\n"
+)
+
+
+def test_poll_a_busy_release_lock_waits_a_minute_on_its_own_counter(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """Sibling release fixes build side by side and reach ``ship --onto``'s
+    push together; the one that finds the round lock held runs again a
+    minute later, not after the half-hour main-refusal backoff, and the
+    wait does not spend the main-refusal budget."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    handle["main_refusals"] = land_slice.MAX_MAIN_REFUSALS
+    _finish(handle, 1, BUSY_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    assert handle["release_busy"] == 1
+    assert handle["main_refusals"] == land_slice.MAX_MAIN_REFUSALS
+    assert handle["not_before"] == "2026-11-01T10:01:00Z"
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_event" and "host-side refusal #1" in text
+    assert "release lifecycle busy" in text
+    assert store.comments(42) == []
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_poll_a_release_lock_busy_past_its_cap_blocks_the_land(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    handle["release_busy"] = land_slice.MAX_RELEASE_BUSY_WAITS
+    _finish(handle, 1, BUSY_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.failure is not None
+
+
 def test_poll_host_refusal_defers_without_a_probe(
     seams: dict[str, Any], clock: dict[str, datetime]
 ) -> None:
@@ -5374,12 +5451,37 @@ def test_kill_pushes_the_slice_branch_to_origin(
         return "ok"
 
     monkeypatch.setattr(land_slice, "_push_branch", fake_push)
+    # The fake ship pgid (5151) is a real id on the runner: never signal it.
+    monkeypatch.setattr(land_slice._rs, "_signal_group", lambda pgid, sig: None)
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     _ctx, handle = _submit(store, seams)
     ctx = _Ctx(store, _params(seams))
     land_slice.kill(ctx, handle)
     assert pushed == [(str(seams["tree"]), "slice/42")]
+
+
+def test_kill_skips_a_pgid_owned_by_another_user(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reused pgid owned by another user (EPERM) is skipped, not raised:
+    the branch push still runs (r331's red gate, a real 5151 on the runner)."""
+    pushed: list[str] = []
+
+    def eperm(pgid: int, sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    def fake_push(tree: Path, branch: str) -> str:
+        pushed.append(branch)
+        return "ok"
+
+    monkeypatch.setattr(land_slice, "_push_branch", fake_push)
+    monkeypatch.setattr(land_slice._rs, "_signal_group", eperm)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    land_slice.kill(_Ctx(store, _params(seams)), handle)
+    assert pushed == ["slice/42"]
 
 
 # ── outside-diff reds verified before charging (gr573347 b) ────────
@@ -7511,3 +7613,65 @@ def test_land_mints_skill_edit_job(monkeypatch: pytest.MonkeyPatch) -> None:
         empty = _MintStore(marker)
         assert land_slice._mint_skill_edit(empty, 42, sha) == note
         assert empty.minted == []
+
+
+def test_reconcile_completed_ship_resumes_mirror_publication(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen = _patch_sync_seams(monkeypatch)
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx = _Ctx(store, _params(seams))
+    ctx.meta.update(
+        submit_attempt="a" * 32,
+        submit_host=run_slice.admission.local_host(),
+        submit_started_at=1.0,
+    )
+    tips = {"main": "f" * 40, "prod": "0" * 40}
+    handle = land_slice.submit(ctx, None)
+    assert handle is not None
+    attempt = run_slice.run_dir(42) / ("a" * 32)
+    assert Path(handle["exit_file"]) == attempt / "exit"
+
+    # Simulate death before even the full handle record. The completed
+    # wrapper left its PID and exit code, and the mirror is awaiting poll.
+    (attempt / "handle").unlink()
+    baseline = json.loads((attempt / "baseline").read_text(encoding="utf-8"))
+    run_slice._write_launch_record(
+        attempt / "baseline", {**baseline, "factory_mirror_tips": tips}
+    )
+    (attempt / "pid").write_text(str(handle["pid"]), encoding="utf-8")
+    _finish(handle, 0, GREEN_LOG)
+    assert land_slice._ship_busy(Path(seams["tree"]), 42, "slice/42") is None
+
+    verdict = land_slice.reconcile(ctx)
+
+    assert isinstance(verdict, Reconcile)
+    assert land_slice.poll(ctx, verdict.handle) is True
+    assert ctx.status == "succeeded"
+    [(_mirror, _cache, _url, got_tips, _expect)] = seen["sync"]
+    assert got_tips == tips
+    assert len(seams["launch"]) == 1
+
+
+def test_reconcile_free_lock_without_current_evidence_is_unknown(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    store = _Store()
+    store.add_todo(42)
+    ctx = _Ctx(store, _params(seams))
+    ctx.meta.update(
+        submit_attempt="a" * 32,
+        submit_host=run_slice.admission.local_host(),
+        submit_started_at=1.0,
+    )
+
+    assert land_slice._ship_busy(Path(seams["tree"]), 42, "slice/42") is None
+    assert land_slice.reconcile(ctx) is None
+    assert seams["launch"] == []

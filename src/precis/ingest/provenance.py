@@ -751,9 +751,9 @@ def _next_notice_seq(store: Store, parent_slug: str, relation: LinkRelation) -> 
     """Return the next 1-based sequence number for a notice family.
 
     Probes ``ref_identifiers`` for existing ``<parent>-<letter><n>``
-    slugs and returns ``max(n) + 1`` (or ``1`` if none exist). Cheap —
-    the LIKE pattern hits the ``ref_identifiers`` PK and the result
-    set is small in practice (one or two notices per paper).
+    slugs and returns ``max(n) + 1`` (or ``1`` if none exist). The kind
+    filter makes the LIKE probe eligible for the partial GIN index
+    ``ref_identifiers_cite_key_trgm_idx`` (gr732478).
     """
     letter = _NOTICE_LETTER[relation]
     prefix = f"{parent_slug}-{letter}"

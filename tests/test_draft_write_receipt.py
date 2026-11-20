@@ -32,7 +32,7 @@ def test_committed_text_keeps_receipt_when_hints_lose_connection(
     monkeypatch.setattr(lint, hint, disconnected)
     text = "Revised prose."
     if operation == "put":
-        response = handler.put(id=ref.slug, text=text)
+        response = handler.put(id=ref.slug, chunk_kind="paragraph", text=text)
     elif operation == "find":
         response = handler.edit(id=chunk.dc, find="Original", text="Revised")
     elif operation == "replace-content":
@@ -64,7 +64,7 @@ def test_failed_mutation_still_raises(
 
     monkeypatch.setattr(store.drafts, "add_chunks", disconnected)
     with pytest.raises(OperationalError, match="connection is closed"):
-        handler.put(id=ref.slug, text="New prose.")
+        handler.put(id=ref.slug, chunk_kind="paragraph", text="New prose.")
     assert [c.text for c in store.drafts.reading_order(ref.id)] == ["Receipt"]
 
 

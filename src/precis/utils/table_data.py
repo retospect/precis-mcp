@@ -58,8 +58,10 @@ _ID_FULL_RE = re.compile(rf"^(?:{TABLE_ID_PATTERN})$")
 _SEL_FULL_RE = re.compile(rf"^(?:{TABLE_SEL_PATTERN})$")
 
 #: ``meta.table.columns`` entries may carry these keys (only ``name`` is
-#: required; ``formula``/``from``/``role``/``key`` land semantics in later
-#: slices — the schema accepts and preserves them now).
+#: required; ``formula``/``key`` have live semantics, ``role`` is
+#: accepted-and-preserved for a later slice, and ``from`` — a pulled
+#: column — refuses at write until slice 3a's resolver lands: accepting
+#: it minted an empty column nothing could fill (gr685370)).
 _COLUMN_KEYS = frozenset(
     {"id", "pos", "name", "type", "unit", "formula", "from", "role", "key", "align"}
 )
@@ -119,8 +121,9 @@ def fresh_table_id(used: Iterable[str], *, avoid: Iterable[str] = ()) -> str:
 
 def _normalize_column(col: Any, i: int) -> dict[str, Any]:
     """Validate one caller-supplied ``columns`` entry (an ``{id?, pos?,
-    name, type?, unit?, formula?, from?, role?, key?, align?}`` dict);
-    returns a shallow copy with only known keys."""
+    name, type?, unit?, formula?, role?, key?, align?}`` dict —
+    ``from``/pulled columns refuse, they aren't built yet); returns a
+    shallow copy with only known keys."""
     nxt = "columns=[{'name': 'gap_eV', 'type': 'number', 'unit': 'eV'}]"
     if not isinstance(col, dict):
         raise BadInput(f"table.columns[{i}] must be an object", next=nxt)
@@ -129,6 +132,12 @@ def _normalize_column(col: Any, i: int) -> dict[str, Any]:
         raise BadInput(
             f"table.columns[{i}] has unknown key(s) {sorted(unknown)}",
             next=f"allowed: {sorted(_COLUMN_KEYS)}",
+        )
+    if col.get("from") is not None:
+        raise BadInput(
+            f"table.columns[{i}].from — pulled columns are not available yet",
+            next="drop the 'from' key — a plain column fills via "
+            "patch=/cell=; a stored one drops with drop_column='<id|name>'",
         )
     name = col.get("name")
     if not isinstance(name, str) or not name:
@@ -146,11 +155,11 @@ def _normalize_column(col: Any, i: int) -> dict[str, Any]:
             f"{sorted(_COLUMN_ALIGNS)}",
             next=nxt,
         )
-    for k in ("id", "pos", "unit", "formula", "from", "role"):
+    for k in ("id", "pos", "unit", "formula", "role"):
         v = col.get(k)
         if v is not None and not isinstance(v, str):
             raise BadInput(f"table.columns[{i}].{k} must be a string", next=nxt)
-    for k in ("name", "id", "pos", "unit", "formula", "from", "role"):
+    for k in ("name", "id", "pos", "unit", "formula", "role"):
         v = col.get(k)
         if isinstance(v, str) and TABLE_CTRL_RE.search(v):
             raise BadInput(
@@ -245,9 +254,10 @@ def normalize_table(obj: Any, *, notes: list[str] | None = None) -> dict[str, An
 
     The canonical shape is ``{header, rows, columns, rowmeta}``:
 
-    - ``columns`` — ``[{id, pos, name, type?, unit?, formula?, from?,
-      role?, key?, align?}]``, the column schema; ``name`` is unique per
-      table so a column may be named by id or name.
+    - ``columns`` — ``[{id, pos, name, type?, unit?, formula?, role?,
+      key?, align?}]``, the column schema; ``name`` is unique per
+      table so a column may be named by id or name. A ``from`` key
+      (pulled column) refuses — pulls aren't built yet.
     - ``rowmeta`` — ``[{id, pos}]``, parallel to ``rows`` (row identity +
       order live here, cells in ``rows``).
     - ``header`` — the derived column-name list kept for back-compat
@@ -724,7 +734,7 @@ def find_replace_cells(
     return normalize_table(out), count
 
 
-def _cell_md(value: Scalar) -> str:
+def _cell_md(value: Scalar, *, escape_backslashes: bool = True) -> str:
     """Render one cell for a GFM table: stringify, escape pipes, and keep
     it on a single line (newlines → ``<br>``) so the row stays one line."""
     if value is None:
@@ -734,7 +744,9 @@ def _cell_md(value: Scalar) -> str:
     if value is False:
         return "false"
     text = str(value)
-    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
+    if escape_backslashes:
+        text = text.replace("\\", "\\\\")
+    return text.replace("|", "\\|").replace("\n", "<br>")
 
 
 def table_ids_line(table: dict[str, Any]) -> str | None:
@@ -771,7 +783,12 @@ def table_ids_line(table: dict[str, Any]) -> str | None:
     return "ids: " + "; ".join(parts)
 
 
-def table_to_markdown(table: dict[str, Any], *, caption: str | None = None) -> str:
+def table_to_markdown(
+    table: dict[str, Any],
+    *,
+    caption: str | None = None,
+    escape_backslashes: bool = True,
+) -> str:
     """Render a normalised ``{header, rows}`` table to a single GFM block.
 
     The result has **no internal blank line** so the ``add_chunks``
@@ -783,16 +800,24 @@ def table_to_markdown(table: dict[str, Any], *, caption: str | None = None) -> s
     of it; ``get`` renders it from ``meta.table`` at read time
     (:func:`table_ids_line`), so ids never reach the embedding or
     ``content_sha``.
+
+    Read surfaces use ``escape_backslashes=False`` to show canonical
+    LaTeX commands verbatim. Stored projections keep the default escaping
+    so the markdown fallback parser can recover literal backslash runs.
     """
     header = table["header"]
     rows = table["rows"]
     lines: list[str] = []
     if caption and caption.strip():
         lines.append(f"**{caption.strip()}**")
-    lines.append("| " + " | ".join(_cell_md(h) for h in header) + " |")
+
+    def cell(value: Scalar) -> str:
+        return _cell_md(value, escape_backslashes=escape_backslashes)
+
+    lines.append("| " + " | ".join(cell(h) for h in header) + " |")
     lines.append("| " + " | ".join("---" for _ in header) + " |")
     for row in rows:
-        lines.append("| " + " | ".join(_cell_md(c) for c in row) + " |")
+        lines.append("| " + " | ".join(cell(c) for c in row) + " |")
     return "\n".join(lines)
 
 

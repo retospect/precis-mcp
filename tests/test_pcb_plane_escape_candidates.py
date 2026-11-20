@@ -159,8 +159,6 @@ def test_continuation_rechecks_mutated_and_distinct_dynamic_indexes() -> None:
     assert planter.point(2, 0.225, 0.1, k, dyn) == changed[0]
     other = CopperIndex([])
     assert list(planter.points(2, 0.225, 0.1, k, other)) == original
-    assert planter._dyn_refs[id(dyn)] is dyn
-    assert planter._dyn_refs[id(other)] is other
 
 
 def test_a_later_portals_established_success_precedes_new_alternatives() -> None:

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -76,7 +76,11 @@ from precis.store._tag_filter import (
 )
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import gripe_order, handle_registry
-from precis.utils.authors import author_row_from_entry, entry_from_author_row
+from precis.utils.authors import (
+    author_row_from_entry,
+    entry_from_author_row,
+    normalize_authors,
+)
 from precis.utils.canon import lexical_q
 from precis.utils.title_views import title_plain_sql
 
@@ -273,6 +277,7 @@ class FacetSpan(NamedTuple):
     max_ref_id: int
     min_created: Any
     max_created: Any
+    aggregates: tuple[tuple[float | None, int], ...] = ()
 
 
 def _paper_author_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -349,7 +354,7 @@ def project_paper_authors(
     conn: Connection, ref_id: int, authors: Any, *, source: str
 ) -> list[dict[str, Any]]:
     """The one write choke point for a paper's byline table + jsonb
-    projection (precis.utils.authors module docstring): DELETE+INSERT
+    projection (precis.utils.authors module docstring): replace
     ``paper_authors`` from *authors* (any ``refs.authors``-shaped input —
     a list of dict/str entries, or a semicolon-packed string, same
     tolerance as :func:`~precis.utils.authors.normalize_authors`), then
@@ -372,6 +377,9 @@ def project_paper_authors(
 
     Caller owns the transaction (no commit here).
     """
+    # Lock the parent before reading or writing its byline, in the same
+    # order as update_paper_fields and verify_paper_author.
+    conn.execute("SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,))
     existing = _fetch_paper_author_rows(conn, ref_id)
     if source != "human" and any(r["source"] == "human" for r in existing):
         # The caller (``update_paper_fields``) may already have written
@@ -387,13 +395,31 @@ def project_paper_authors(
     else:
         raw_entries = []
 
+    existing_by_position = {r["position"]: r for r in existing}
+    kept_positions: list[int] = []
     rows: list[dict[str, Any]] = []
+    position = 0
     for entry in raw_entries:
-        row = author_row_from_entry(entry, len(rows) + 1, source=source)
-        if row is not None:
+        row = author_row_from_entry(entry, position + 1, source=source)
+        if row is None:
+            continue
+        position += 1
+        old = existing_by_position.get(position)
+        if (
+            source == "human"
+            and old is not None
+            and normalize_authors([entry_from_author_row(old)])
+            == normalize_authors([entry_from_author_row(row)])
+            and row["openalex_author_id"] in (None, old["openalex_author_id"])
+        ):
+            kept_positions.append(position)
+        else:
             rows.append(row)
 
-    conn.execute("DELETE FROM paper_authors WHERE ref_id = %s", (ref_id,))
+    conn.execute(
+        "DELETE FROM paper_authors WHERE ref_id = %s AND position <> ALL(%s)",
+        (ref_id, kept_positions),
+    )
     for row in rows:
         person_ref_id: int | None = None
         if row["orcid"]:
@@ -1036,11 +1062,19 @@ class RefsMixin:
         Mirrors ``workers/chase._resolve_or_create_stub`` but takes
         explicit identifier pairs so the gated dream ``acquire`` tool can
         reuse it (gr690614, §Acquire).
+
+        Raises:
+            Conflict: An identifier or twin DOI matches a row whose title
+                conflicts with the requested title. The guard abstains on
+                placeholders and refuses only when both titles have at least
+                four distinct content tokens and share none.
         """
         from precis.identity import (
             PLACEHOLDER_TITLE,
             _byline_key_word,
             _title_key_word,
+            doi_twins,
+            is_placeholder_title,
             make_cite_key,
             normalize_doi,
         )
@@ -1056,15 +1090,64 @@ class RefsMixin:
             if _val:
                 norm.append((_k, _val))
 
+        def check_title(ref_id: int, held_title: str | None) -> None:
+            # An identifier is strong evidence, but cannot make a corrupt
+            # corpus row the requested work (gr710296). Abstain on sparse
+            # titles and placeholders; refuse only disjoint, substantial
+            # titles, leaving repair to an operator rather than rewriting
+            # the existing paper's body, links or identity here.
+            from precis.utils.title_merge import content_tokens
+
+            if is_placeholder_title(title) or is_placeholder_title(held_title):
+                return
+            wanted = content_tokens(title or "")
+            held = content_tokens(held_title or "")
+            if min(len(wanted), len(held)) >= 4 and wanted.isdisjoint(held):
+                raise Conflict(
+                    f"paper identifier/title conflict on pa{ref_id}: "
+                    f"requested {title!r}; stored {held_title!r}",
+                    next=(
+                        f"inspect get(kind='paper', id='pa{ref_id}') and its "
+                        "identifiers; repair the mismatched identity before retrying"
+                    ),
+                )
+
         def _do(c: Connection) -> tuple[int, bool]:
             for id_kind, id_value in norm:
                 row = c.execute(
-                    "SELECT ref_id FROM ref_identifiers "
-                    "WHERE id_kind = %s AND id_value = %s",
+                    "SELECT r.ref_id, r.title FROM ref_identifiers ri "
+                    "JOIN refs r ON r.ref_id = ri.ref_id "
+                    "WHERE ri.id_kind = %s AND ri.id_value = %s",
                     (id_kind, id_value),
                 ).fetchone()
                 if row is not None:
+                    check_title(int(row[0]), row[1])
                     return int(row[0]), False
+
+            # Twin DOIs (Wiley anie/ange): one work, two DOIs. A hit
+            # collapses onto the twin's ref and registers the requested
+            # DOI there as a second doi row.
+            for id_kind, id_value in norm:
+                if id_kind != "doi":
+                    continue
+                for twin in doi_twins(id_value):
+                    row = c.execute(
+                        "SELECT pi.ref_id, r.title FROM ref_identifiers pi "
+                        "JOIN refs r ON r.ref_id = pi.ref_id "
+                        "WHERE pi.id_kind = 'doi' AND pi.id_value = %s "
+                        "AND r.retired_at IS NULL "
+                        "ORDER BY pi.ref_id LIMIT 1",
+                        (twin,),
+                    ).fetchone()
+                    if row is not None:
+                        check_title(int(row[0]), row[1])
+                        c.execute(
+                            "INSERT INTO ref_identifiers "
+                            "(id_kind, id_value, ref_id, source) "
+                            "VALUES ('doi', %s, %s, %s) ON CONFLICT DO NOTHING",
+                            (id_value, row[0], set_by),
+                        )
+                        return int(row[0]), False
 
             # Title-only fuzzy guard (dup-of-held prevention). With no
             # external identifier to collapse on, a stub for a paper we
@@ -2097,6 +2180,127 @@ class RefsMixin:
             rows = conn.execute(sql, (ids,)).fetchall()
         return {r[0]: _row_to_ref(r) for r in rows}
 
+    def _residue_clauses(
+        self,
+        residue: int,
+        *,
+        modulus: int,
+        kind: str | None,
+        exclude_id: int | None,
+        kinds: Sequence[str] | None = None,
+        spaces: Sequence[str] | None = None,
+        viewer: object = None,
+    ) -> tuple[str, list[Any]]:
+        """Shared WHERE clauses for the two residue probes below.
+
+        The caller's read scope rides along (gr674040 review): ``kinds``
+        fences the kinds its domain serves, ``spaces`` keeps only memory
+        in a served ``SPACE:``, and ``viewer`` owner-scopes profiles
+        (:func:`precis.profiles.visible_sql`) — a probe must not name or
+        count a ref the caller could not read.
+        """
+        from precis import profiles
+
+        sql = "FROM refs WHERE ref_id %% %s = %s AND retired_at IS NULL "
+        params: list[Any] = [modulus, residue]
+        if kind is not None:
+            sql += "AND kind = %s "
+            params.append(kind)
+        if kinds is not None:
+            sql += "AND kind = ANY(%s) "
+            params.append(list(kinds))
+        if spaces is not None:
+            sql += (
+                "AND (kind <> 'memory' OR ref_id IN ("
+                "SELECT rt.ref_id FROM ref_tags rt JOIN tags t "
+                "ON t.tag_id = rt.tag_id WHERE t.namespace = 'SPACE' "
+                "AND t.value = ANY(%s) "
+                "AND (rt.expires_at IS NULL OR rt.expires_at > now()))) "
+            )
+            params.append(list(spaces))
+        frag, frag_params = profiles.visible_sql(
+            "refs", profiles.resolve_viewer(cast("Store", self), viewer)
+        )
+        sql += f"AND {frag} "
+        params.extend(frag_params)
+        if exclude_id is not None:
+            sql += "AND ref_id != %s "
+            params.append(exclude_id)
+        return sql, params
+
+    def refs_sharing_id_residue(
+        self,
+        residue: int,
+        *,
+        modulus: int,
+        kind: str | None = None,
+        exclude_id: int | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        kinds: Sequence[str] | None = None,
+        spaces: Sequence[str] | None = None,
+        viewer: object = None,
+    ) -> list[Ref]:
+        """One page of live refs with ``ref_id % modulus == residue``,
+        newest first.
+
+        The two-word spoken handle names ``ref_id % 16384`` — this is the
+        collision probe ``kind='handle'`` runs to tell a safe short form
+        from a clashing one and to list a pair's candidates (gr674040).
+        ``kind=`` narrows the candidate list; the clash probe calls with
+        none because a pair collides across kinds. ``exclude_id=`` drops
+        the asking ref itself (the clash note lists *other* sharers).
+        ``limit``/``offset`` page the list — pair it with
+        :meth:`count_refs_sharing_id_residue`, never report the page size
+        as the total. A modulo predicate can't use an index; at
+        handle-call frequency the scan is fine.
+        """
+        tail, params = self._residue_clauses(
+            residue,
+            modulus=modulus,
+            kind=kind,
+            exclude_id=exclude_id,
+            kinds=kinds,
+            spaces=spaces,
+            viewer=viewer,
+        )
+        sql = (
+            f"SELECT {_REFS_COLS} {tail}"
+            "ORDER BY created_at DESC, ref_id DESC LIMIT %s OFFSET %s"
+        )
+        params.extend([limit, offset])
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_ref(r) for r in rows]
+
+    def count_refs_sharing_id_residue(
+        self,
+        residue: int,
+        *,
+        modulus: int,
+        kind: str | None = None,
+        exclude_id: int | None = None,
+        kinds: Sequence[str] | None = None,
+        spaces: Sequence[str] | None = None,
+        viewer: object = None,
+    ) -> int:
+        """Total live refs matching :meth:`refs_sharing_id_residue`'s
+        filters — the accurate count a truncated page can't carry
+        (gr674040 review: a silent LIMIT of 20 reported truncated
+        candidates as the complete set)."""
+        tail, params = self._residue_clauses(
+            residue,
+            modulus=modulus,
+            kind=kind,
+            exclude_id=exclude_id,
+            kinds=kinds,
+            spaces=spaces,
+            viewer=viewer,
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(f"SELECT count(*) {tail}", params).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def set_prio(
         self,
         ref_id: int,
@@ -2509,11 +2713,12 @@ class RefsMixin:
 
         No-ops (returns ``[]``) when the ref isn't a live ``kind='paper'``
         — non-paper kinds (draft/patent/datasheet/...) keep ``authors``
-        jsonb-only, as scoped. Otherwise DELETE+INSERTs ``paper_authors``
+        jsonb-only, as scoped. Otherwise replaces ``paper_authors``
         from *authors* (any ``refs.authors``-shaped input — see
         :func:`~precis.utils.authors.normalize_authors`'s tolerance),
         regenerates ``refs.authors`` jsonb from the rows just written,
-        and logs a ``ref_events`` ``authors_set`` row.
+        and logs a ``ref_events`` ``authors_set`` row. Human edits retain
+        unchanged rows at their existing positions.
 
         **Human guard**: a paper already carrying any ``source='human'``
         row is left untouched by a subsequent non-human write (returns
@@ -2573,6 +2778,7 @@ class RefsMixin:
         """
 
         def _do(c: Connection) -> None:
+            c.execute("SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,))
             sets = ["verified_at = now()", "updated_at = now()"]
             params: list[Any] = []
             if given is not None:
@@ -3789,6 +3995,61 @@ class RefsMixin:
                     return int(won.id)
                 raise
 
+    def ensure_python_ref(
+        self,
+        qualname: str,
+        *,
+        alias: str | None = None,
+        file: str | None = None,
+    ) -> int:
+        """Find-or-mint the lazy anchor ``refs(kind='python', slug=<qualname>)``.
+
+        gr702978: python symbols are file-backed — the code stays in git,
+        the anchor row exists only so notes can link a symbol and the
+        inbound edges have something to point at. Chunkless, so the
+        embed/summary cascade never sees it. The CALLER validates the
+        qualname against the live code index (``mint_python_mentions`` /
+        the python handler's ``symbol_anchor``) — an unknown qualname
+        must never mint. ``alias``/``file`` stamp where the symbol was
+        seen, so a later "gone" read can say what vanished. Race: two
+        first mentions both miss the probe and both insert; the loser's
+        ``cite_key`` claim is refused (:meth:`insert_ref`'s
+        ``Conflict``), its savepoint rolls back and it re-probes onto the
+        winner (as :meth:`ensure_skill_ref`). A retired anchor's slug is
+        reclaimed by ``insert_ref`` on re-mention, so a symbol that went
+        away and came back re-anchors cleanly.
+        """
+        with self.pool.connection() as conn:
+            hit = self.get_ref(kind="python", id=qualname)
+            if hit is not None:
+                return int(hit.id)
+            meta: dict[str, Any] = {"set_by": "system"}
+            if alias:
+                meta["alias"] = alias
+            if file:
+                meta["file"] = file
+            try:
+                with conn.transaction():
+                    ref = self.insert_ref(
+                        kind="python",
+                        slug=qualname,
+                        title=qualname,
+                        meta=meta,
+                        conn=conn,
+                    )
+                    return int(ref.id)
+            except Conflict:
+                won = self.get_ref(kind="python", id=qualname)
+                if won is not None:
+                    return int(won.id)
+                raise
+
+    def python_symbol_ref_id(self, qualname: str) -> int | None:
+        """The live anchor ref id for a python qualname — probe only,
+        never mints (the write doors mint; read-side callers stay pure)."""
+        ref = self.get_ref(kind="python", id=qualname)
+        return int(ref.id) if ref is not None else None
+
     def _open_gripe_sql(self) -> tuple[str, list[Any]]:
         """WHERE fragment (alias ``g``) for a gripe that is not yet closed."""
         frags: list[str] = []
@@ -4922,6 +5183,7 @@ class RefsMixin:
         include_ref_ids: list[int] | None = None,
         exclude_ref_ids: list[int] | None = None,
         facets: list[tuple[str, str]] | None = None,
+        aggs: list[tuple[str, str]] | None = None,
         group_limit: int = 200,
         since: Any = None,
         until: Any = None,
@@ -5093,6 +5355,40 @@ class RefsMixin:
                     f"GROUP BY {ordinals} "
                     f"ORDER BY {n + 1} DESC, {ordinals} LIMIT %s"
                 )
+                if aggs:
+                    # A tag join can repeat a ref within one group. Deduplicate
+                    # group membership before aggregating, preserving equal
+                    # numeric values from different refs.
+                    facet_cols = [f"facet_{i}" for i in range(n)]
+                    projected = [
+                        f"{expr} AS {col}"
+                        for expr, col in zip(select_exprs, facet_cols, strict=True)
+                    ]
+                    aggregates: list[str] = []
+                    for i, (fn, path) in enumerate(aggs):
+                        col = f"value_{i}"
+                        projected.append(
+                            "CASE WHEN jsonb_typeof(r.meta #> %s::text[]) = 'number' "
+                            f"THEN (r.meta #>> %s::text[])::float END AS {col}"
+                        )
+                        keys = path.split(".")
+                        select_params.extend((keys, keys))
+                        sql_fn = {
+                            "avg": "AVG",
+                            "sum": "SUM",
+                            "min": "MIN",
+                            "max": "MAX",
+                        }[fn]
+                        aggregates.extend((f"{sql_fn}({col})", f"COUNT({col})"))
+                    sql = (
+                        f"SELECT {', '.join(facet_cols)}, COUNT(*), "
+                        "min(ref_id), max(ref_id), min(created_at), max(created_at), "
+                        f"{', '.join(aggregates)} FROM ("
+                        f"SELECT DISTINCT {', '.join(projected)}, r.ref_id, r.created_at "
+                        f"FROM refs r {' '.join(joins)} WHERE {where}"
+                        f") members GROUP BY {ordinals} "
+                        f"ORDER BY {n + 1} DESC, {ordinals} LIMIT %s"
+                    )
                 # Bind order follows textual %s order: SELECT exprs,
                 # JOIN subqueries, WHERE clauses, then the LIMIT.
                 rows = conn.execute(
@@ -5102,7 +5398,15 @@ class RefsMixin:
                     (
                         tuple(r[:n]),
                         int(r[n]),
-                        FacetSpan(int(r[n + 1]), int(r[n + 2]), r[n + 3], r[n + 4]),
+                        FacetSpan(
+                            int(r[n + 1]),
+                            int(r[n + 2]),
+                            r[n + 3],
+                            r[n + 4],
+                            tuple(
+                                (r[i], int(r[i + 1])) for i in range(n + 5, len(r), 2)
+                            ),
+                        ),
                     )
                     for r in rows
                 ]

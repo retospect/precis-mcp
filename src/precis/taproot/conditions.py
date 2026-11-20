@@ -45,6 +45,10 @@ Decisions:
 - **A galvanostatic or device claim** (current density, cell voltage,
   MEA, electrolyzer, battery) satisfies the potential requirement. A bare
   "V" with no reference electrode is its own missing item, ``reference``.
+- **Vacuum field emission is not an electrochemical measurement**
+  (gr713709): its current density (mA cm⁻²), bare threshold-field "V" and
+  "emission" wording must not route it into ``ec-measurement`` — there is
+  no electrolyte to state.
 - **Computed STH / band-edge claims are not photo-rate**: a computed
   quantity has no lamp.
 - **Photocatalytic H₂ evolution and nitrate-reduction rates** must name the
@@ -187,6 +191,15 @@ _EC = re.compile(
 _EC_QUANT = re.compile(
     r"Faradaic|(?-i:\bFE\b)|yield|partial current|current density|mA ?cm|"
     r"onset|overpotential|\d+(\.\d+)?\s*%|selectivity|mmol|µmol|μmol|mg ?h",
+    _I,
+)
+#: Vacuum field emission (gr713709): a cathode electron emission measured in
+#: vacuum — there is no electrolyte to state. Its signature is the method
+#: wording or the "threshold field" unit V/µm, which the ec-measurement
+#: trigger would otherwise match via the current density or the bare "V".
+_FIELD_EMISSION = re.compile(
+    r"field[- ]emission|electron emission|threshold (electric )?field|"
+    r"V\s*/\s*[µμ]m",
     _I,
 )
 _POT_REF = re.compile(r"vs\.? ?(RHE|SHE|NHE|Ag/AgCl|SCE|Hg/HgO)|\bRHE\b", _I)
@@ -407,7 +420,7 @@ PROFILES: tuple[ConditionProfile, ...] = (
         family="ec-measurement",
         trigger=_EC,
         requires=(_EC_QUANT,),
-        excludes=(_DFT,),
+        excludes=(_DFT, _FIELD_EMISSION),
         groups=(
             ConditionGroup(
                 "potential",

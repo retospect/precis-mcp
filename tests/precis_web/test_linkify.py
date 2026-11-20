@@ -1091,6 +1091,50 @@ def test_render_cloze_no_deletion_is_plain_escaped_text() -> None:
     assert str(render_cloze("no cloze here <b>")) == "no cloze here &lt;b&gt;"
 
 
+# ── render_cloze_masked: every gap masked until hover (gr664414) ─────────
+# The /learning current-context list quizzes instead of displaying answers:
+# the answer stays in the DOM (a hidden .cloze-answer span the page CSS
+# reveals on hover/focus), the blank shows a visible label instead.
+
+
+def test_render_cloze_masked_hides_answer_under_a_labeled_blank() -> None:
+    from precis_web.linkify import render_cloze_masked
+
+    out = str(render_cloze_masked("Paris is the {{c1::capital}} of France."))
+    assert "{{" not in out and "}}" not in out
+    assert 'class="cloze-mask"' in out
+    assert 'class="cloze-blank"' in out
+    assert 'class="cloze-answer">capital</span>' in out  # present, CSS-hidden
+    assert ">c1</sup>" in out
+
+
+def test_render_cloze_masked_numbers_gaps_from_c1_positionally() -> None:
+    """Quiz labels start at c1 in order of appearance — the card's own
+    ``{{cN}}`` indices (here c3/c7) never surface in the masked view."""
+    from precis_web.linkify import render_cloze_masked
+
+    out = str(render_cloze_masked("{{c3::alpha}} pairs with {{c7::omega}}"))
+    assert ">c1</sup>" in out and ">c2</sup>" in out
+    assert "c3" not in out and "c7" not in out
+    assert 'class="cloze-answer">alpha</span>' in out
+
+
+def test_render_cloze_masked_carries_hint_and_escapes() -> None:
+    from precis_web.linkify import render_cloze_masked
+
+    out = str(render_cloze_masked("<b>x</b> {{c1::a <i>b</i>::say it}}"))
+    assert "<b>x</b>" not in out
+    assert "&lt;b&gt;x&lt;/b&gt;" in out
+    assert "<i>" not in out  # the answer is escaped too
+    assert "hint: say it" in out  # hint rides the title tooltip
+
+
+def test_render_cloze_masked_no_deletion_is_plain_escaped_text() -> None:
+    from precis_web.linkify import render_cloze_masked
+
+    assert str(render_cloze_masked("no cloze <b>")) == "no cloze &lt;b&gt;"
+
+
 # ── Taproot claim-hub cites (the `claims` side-channel) ─────────────────
 # A hub cite head (`fi<id>` / a 6-char pub_id) in the `claims` set renders a
 # violet claim anchor; a head not in the set keeps its prior rendering, so

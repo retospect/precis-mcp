@@ -98,8 +98,16 @@ put(kind="memory", tags=["SPACE:research", "paper-setup"],
          "sampling: 4x4x1 Γ-centred k-mesh; forces < 0.02 eV/Å [pc<b>]\n"
          "model: 4-layer slab, bottom two fixed, 15 Å vacuum [pc<b>]",
     link="pc<a>", rel="derived-from",
+    meta={"model": "<your model id>", "prompt_version": "<prompt version>",
+          "run_id": "<run id>",
+          "why": "<one sentence a reader can't get from the pin>",
+          "evidence": ["pc<a>"]},
     args={"writer": {"model": "<your model id>"}})
-link(kind="memory", id="me<setup>", target="pc<b>", rel="derived-from")
+link(kind="memory", id="me<setup>", target="pc<b>", rel="derived-from",
+     meta={"model": "<your model id>", "prompt_version": "<prompt version>",
+           "run_id": "<run id>",
+           "why": "<one sentence a reader can't get from the pin>",
+           "evidence": ["pc<b>"]})
 ```
 
 Write only what the paper states, at its precision; a parameter it does
@@ -110,8 +118,12 @@ worth the read: the main text often omits the one that matters.
 legend whose numbers depend on this setup:
 
 ```python
-link(kind="memory", id="me<setup>", target="pc<result>", rel="qualifies")
+link(kind="memory", id="me<setup>", target="pc<result>", rel="qualifies",
+     reason="<method, code, functional or parameters that scope this result>")
 ```
+
+Keep `qualifies`; the reason states which setup conditions apply to this
+result, rather than a generic caveat or a copy of the setup note's title.
 
 A reader who lands on "ΔG = −0.42 eV" and opens
 `get(id='pc<result>', extent='fisheye+1hop')` sees `qualified-by
@@ -176,14 +188,15 @@ states a number gets one measure run, unless step 1's
 with the hub as its group and the setup's conditions as input rows:
 
 ```python
-put(kind="measure", text="-0.42", reason="read-paper pa<id>",
+put(kind="measure", text="-0.42",
     meta={"measurand": "<taxon path, from search(kind='taxon')>",
           "subject": "pa<id>", "subject_label": "<material/site>",
           "subject_group": "fi<hub>", "reported_unit": "eV",
           "tier": "computed", "model": "<your model id>",
           "anchor": {"chunk": "pc<result>", "anchor_scheme": "sentence", "span": "s2"}},
-    items=[{"measurand": "<condition taxon>", "literal": "<value>",
-            "condition": "<label>"}])
+    args={"reason": "read-paper pa<id>",
+          "items": [{"measurand": "<condition taxon>", "literal": "<value>",
+                     "condition": "<label>"}]})
 ```
 
 One run per value and condition set ("95% at −0.5 V and 61% at −0.9 V"
@@ -262,15 +275,18 @@ duplicate; cite the hub instead.
 ## Step 5 — mesh extras
 ## The cheap edges that make the paper reachable
 
-- **Facet tags** — `material:`, `domain:`, `studytype:` per
+- **Facet tags** — `MATERIAL:`, `DOMAIN:`, `STUDYTYPE:` per
   `get(kind='skill', id='precis-paper-tag-axes')`. These reach the paper
   from queries no phrasing ranks.
 - **Cited primaries** — for each key comparison the paper draws against
   prior work, resolve the cited paper
   (`get(kind='skill', id='precis-cite-resolve-help')`). A review, or a
   result the paper attributes to someone else, yields the primary's DOI:
-  stub it (`put(kind='paper', doi=…)`) rather than grounding a hub on the
-  secondhand passage.
+  use `put(kind='paper', args={'doi': '<primary DOI>', 'context_ref_id':
+  'pa<source>', 'reason': 'cited primary'})`. `pa<source>` is the paper
+  being read. The context records which paper prompted the stub request
+  and gives approval review the source handle for any per-paper count.
+  Ground the hub on the primary passage once it is available.
 - **Quests** — a hub that serves an open quest attaches to it
   (`get(kind='skill', id='precis-quest-help')`).
 - **Cross-paper inference** — this paper's A plus another's B suggesting
@@ -302,7 +318,9 @@ to the caller, with each hub labelled new or existing.
   gardener proposal; the typed edges above need a chunk pin in
   `meta.evidence` and the `meta.{model,prompt_version,run_id,why}`
   annotation (`get(kind='skill', id='precis-relations')`, machine-written
-  edges).
+  edges). On an inline
+  `put(link=…, rel='derived-from', meta={…})` those five keys land on the
+  edge, not the node; `link(…, meta={…})` takes them the same way.
 - **Write nothing to the body.** Body chunks are the paper; notes,
   memories, hubs and links are the reading.
 - **Caps keep approvals cheap.** Every hub and every new memory is a

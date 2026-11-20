@@ -548,6 +548,50 @@ def test_skill_examples_survive_the_verb_gates(full_hub: Hub) -> None:
     )
 
 
+# ── banned example shapes (gr676973) ────────────────────────────────
+#
+# The gate emulation above catches args a live dispatch refuses today;
+# it cannot catch a *reverted skill*: a future edit that teaches a call
+# shape the handlers refuse again. This registry is the pin for the
+# gr676973 fix — each entry is a substring that must never reappear in
+# the named skill. ``precis-edit-help`` scoped ``mode='delete'`` to
+# memory/todo (file kinds refuse it — their working form is
+# ``mode='find-replace', find=…, text=''``) and ``precis-delete-help``
+# demoted the paper delete from ``Unsupported`` to ``BadInput`` with a
+# retire path; either shape creeping back in fails here.
+
+#: ``(skill file → banned substrings)`` — the old, refused call shapes
+#: gr676973 removed, pinned against regression.
+_BANNED_SKILL_STRINGS: dict[str, tuple[str, ...]] = {
+    "precis-edit-help.md": (
+        "edit(kind='markdown', mode='delete'",
+        'edit(kind="markdown", mode="delete"',
+    ),
+    "precis-delete-help.md": (
+        'delete(kind="paper", id="<slug>")  # raises Unsupported',
+    ),
+}
+
+
+def test_skill_examples_banned_call_shapes() -> None:
+    """The call shapes gr676973 removed from the edit/delete skills must
+    not reappear: a file kind's ``edit`` has no ``mode='delete'``, and a
+    paper delete is ``BadInput`` (with its retire path), never
+    ``Unsupported``."""
+    findings: list[str] = []
+    for path in skill_files():
+        needles = _BANNED_SKILL_STRINGS.get(path.name)
+        if not needles:
+            continue
+        text = path.read_text(encoding="utf-8")
+        findings.extend(
+            f"{path.name}: banned shape reappeared: {needle!r}"
+            for needle in needles
+            if needle in text
+        )
+    assert not findings, "\n".join(findings)
+
+
 # ---------------------------------------------------------------------------
 # Live-dispatch pass (nightly)
 #

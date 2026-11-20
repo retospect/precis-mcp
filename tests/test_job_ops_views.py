@@ -684,3 +684,102 @@ def test_settings_empty_tables_render_cleanly(jobs: JobHandler) -> None:
     assert resp.body.startswith("# settings")
     assert "## app_settings" in resp.body
     assert "## service_config" in resp.body
+
+
+def test_logs_line_drops_duplicated_prefix(jobs: JobHandler, store: Store) -> None:
+    tag = uuid4().hex[:8]
+    now = datetime.now(UTC)
+    formatted = f"2026-11-14 11:02:33,512 WARNING precis.workers.runner: dup {tag}"
+    plain = f"plain {tag} message"
+    with store.pool.connection() as conn:
+        for msg in (formatted, plain):
+            conn.execute(
+                "INSERT INTO worker_logs (ts, host, process, pass, level, message) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (now, f"h{tag}", "precis-worker", "runner", "WARNING", msg),
+            )
+        conn.commit()
+    body = jobs.get(id=f"/logs?host=h{tag}").body
+    assert f"WARNING dup {tag}" in body
+    assert "2026-11-14 11:02:33,512" not in body
+    assert f"WARNING {plain}" in body
+
+
+def test_count_groups_by_lane_and_model(jobs: JobHandler, store: Store) -> None:
+    tag = f"test:{uuid4().hex}"
+    for lane, model, state in (
+        ("codex", "model-a", "succeeded"),
+        ("codex", "model-b", "succeeded"),
+        ("claude", "model-a", "failed"),
+    ):
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="rollup fixture",
+            meta={"lane": lane, "model": model, "job_type": "run_slice"},
+        )
+        store.add_tag(ref.id, Tag.open(tag), set_by="system")
+        store.add_tag(ref.id, Tag.closed("STATUS", state), set_by="system")
+    body = jobs.search(
+        view="count",
+        job_type="run_slice",
+        group_by="meta.lane,meta.model,state",
+        tags=[tag],
+        status="*",
+    ).body
+    assert "codex | model-a | STATUS:succeeded: 1" in body
+    assert "codex | model-b | STATUS:succeeded: 1" in body
+    assert "claude | model-a | STATUS:failed: 1" in body
+
+
+def test_logs_minutes_payload_counts(jobs: JobHandler, store: Store) -> None:
+    from psycopg.types.json import Jsonb
+
+    from precis.errors import BadInput
+
+    host = f"h{uuid4().hex}"
+    now = datetime.now(UTC)
+    fake_token = "a1Xb2Yc3Zd4Ue5Vf6Wg7Hi8J"
+    with store.pool.connection() as conn:
+        for age, worker, level, payload in (
+            (
+                1,
+                "dispatch",
+                "WARNING",
+                {"note": f"Bearer {fake_token}", "text": "x" * 400},
+            ),
+            (2, "runner", "ERROR", None),
+            (29, "dispatch", "WARNING", None),
+            (31, "excluded", "ERROR", None),
+        ):
+            conn.execute(
+                "INSERT INTO worker_logs (ts, host, pass, level, message, payload) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    now - timedelta(minutes=age),
+                    host,
+                    worker,
+                    level,
+                    worker,
+                    Jsonb(payload) if payload else None,
+                ),
+            )
+
+    body = jobs.get(
+        id=f"/logs?host={host}&since=30m&counts=1&payload=1&page_size=1"
+    ).body
+    assert "since=30m" in body
+    assert "level: ERROR 1 · WARNING 2" in body
+    assert "handler: dispatch 2 · runner 1" in body
+    assert "1 rows shown of 3 matching" in body
+    assert fake_token not in body
+    payload_text = body.split("payload=", 1)[1].splitlines()[0]
+    assert "<redacted:" in payload_text
+    assert len(payload_text) == 300
+    assert payload_text.endswith("…")
+    assert "excluded" not in body
+    plain = jobs.get(id=f"/logs?host={host}&since=30m").body
+    assert "payload=" not in plain
+    assert "level:" not in plain
+    with pytest.raises(BadInput, match="at least one minute"):
+        jobs.get(id="/logs?since=0m")

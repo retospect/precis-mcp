@@ -20,6 +20,9 @@ Returned tokens are *normalized for matching*, not for display:
   actually says.
 * Whitespace between number and unit collapses to a single space
   (``"1.523eV"`` → ``"1.523 eV"`` for index uniformity).
+
+Wide readings remove invisible PDF glue before parsing shared-unit ranges,
+so both endpoints can ground a citation. Raw span offsets remain unchanged.
 """
 
 from __future__ import annotations
@@ -158,10 +161,25 @@ _TEX_SYMBOLS = (
     (re.compile(r"\\approx(?![A-Za-z])"), "≈"),
     (re.compile(r"\\%"), "%"),
 )
+#: Degree glyph variants PDF extractors emit: ring operator ``∘`` (U+2218),
+#: ring above ``˚`` (U+02DA), ordinal ``º`` (U+00BA), and the one-glyph ``℃``/``℉``;
+#: all read as ``°`` (``450 ∘C`` / ``450 ° C`` -> ``450 °C``).
+_DEGREE_UNIT_RE = re.compile(r"(?<=\d)\s*[°∘˚º]\s*(?=[CF](?!\w))")
+_DEGREE_LONE_RE = re.compile(r"(?<=\d)\s*[∘˚º](?![\w])")
+_DEGREE_LIGATURE_RE = re.compile(r"\s*([℃℉])")
 _PLUS_MINUS_RE = re.compile(r"\s*(?:±|\+/-|\+−|\+-)\s*")
 #: PDF micro: ``$\mu$ m`` / ``\mu m`` / Greek ``μm`` all read as ``µm`` (U+00B5).
 _TEX_MU_RE = re.compile(r"\$?\\mu\$?\s*(?=[mAMgs]\b)")
-
+#: PDF TeX angstrom: ``6 \AA`` / ``6\,\AA`` / ``6~$\AA$`` / ``6\,{\AA}``
+#: read as ``6 Å`` (gr716055: a correctly-cited ``6 Å`` cutoff printed with
+#: the TeX macro flagged ungrounded against the UTF-8 spelling). The leading
+#: group eats only TeX spacing (``\,``/``\;``/``~``/math dollars/braces),
+#: never plain whitespace, so ``6 \AA`` keeps its separating space; a letter
+#: right after the macro name means a different command and is left alone.
+_TEX_ANGSTROM_RE = re.compile(
+    r"(?:\\[,;:! ]|[~${])*(?:\\r\s*\{A\}|\\(?:AA|Angstrom|angstrom))"
+    r"(?![A-Za-z])\}?\$?"
+)
 
 #: A markdown table header cell naming its column's unit: ``[Å]`` / ``(K)``;
 #: ``T [K]/P [kPa]`` names two, the cells then read ``298/100``.
@@ -217,7 +235,8 @@ def _list_heads(text: str, spans: list[tuple[str, int, int]]) -> list[str]:
 def _table_quantities(text: str) -> list[str]:
     """Cells of a markdown table paired with the unit their header names:
     header ``Pore aperture [Å]`` over cell ``2.6`` yields "2.6 Å"; header
-    ``T [K]/P [kPa]`` over ``298/100`` yields "298 K" and "100 kPa"."""
+    ``T [K]/P [kPa]`` over ``298/100`` yields "298 K" and "100 kPa". A unit in the row label
+    (``Cutoff [Å]``) covers the row's cells under unit-less headers."""
     out: list[str] = []
     header: list[list[str]] | None = None
     for line in text.splitlines():
@@ -231,7 +250,11 @@ def _table_quantities(text: str) -> list[str]:
             continue
         if all(re.fullmatch(r":?-{2,}:?", c) for c in cells if c):
             continue
-        for units, cell in zip(header, cells, strict=False):
+        row_units = _HEADER_UNIT_RE.findall(cells[0]) if cells else []
+        for i, (units, cell) in enumerate(zip(header, cells, strict=False)):
+            if not units and i and len(row_units) == 1:
+                # The unit sits in the row label ("Cutoff [Å] | 10.0 | 12.0").
+                units = row_units
             if not units:
                 continue
             parts = cell.split("/") if len(units) > 1 else [cell]
@@ -309,17 +332,28 @@ def _unwrap_math(m: re.Match[str]) -> str:
     return inner.strip()
 
 
+#: Invisible PDF glue can split a range, decimal, or number/unit pair.
+#: Remove it only in the normalized reading; raw span offsets stay intact.
+_ZERO_WIDTH_TRANSLATION = str.maketrans("", "", "\u200b\u200c\u200d\u2060\ufeff")
+
+
 def normalize_spellings(text: str) -> str:
     """PDF number spellings the tokenizer misses, rewritten to the plain
     form: "2,000 p.p.m." → "2000 ppm", "$1.78\\pm0.11$  Å" → "1.78 and 0.11 Å"
     (inline math unwrapped, LaTeX ``\\pm``/``\\times``/``\\%``/``^\\circ`` mapped
-    to symbols, the ``±`` as a two-member list), "$\\mu$ m" / "μm" → "µm"."""
+    to symbols, the ``±`` as a two-member list), "$\\mu$ m" / "μm" → "µm",
+    and the TeX angstrom macro (``6 \\AA``, ``6\\,\\AA``) → "Å"."""
     norm = _THOUSANDS_RE.sub("", _PPM_RE.sub("ppm", text))
     norm = _TEX_MU_RE.sub("µ", norm)
+    norm = norm.translate(_ZERO_WIDTH_TRANSLATION)
     norm = _TEX_WRAP_RE.sub(r"\1", norm)
     for rx, sym in _TEX_SYMBOLS:
         norm = rx.sub(sym, norm)
     norm = _MATH_INLINE_RE.sub(_unwrap_math, norm)
+    norm = _TEX_ANGSTROM_RE.sub("Å", norm)
+    norm = _DEGREE_LIGATURE_RE.sub(lambda m: "°C" if m.group(1) == "℃" else "°F", norm)
+    norm = _DEGREE_UNIT_RE.sub("°", norm)
+    norm = _DEGREE_LONE_RE.sub("°", norm)
     norm = _PLUS_MINUS_RE.sub(" and ", norm)
     return norm.replace("μ", "µ")  # Greek mu (U+03BC) → micro sign (U+00B5)
 

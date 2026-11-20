@@ -2333,8 +2333,9 @@ def _merge_into_doi_owner(
 ) -> TitleRepairOutcome | None:
     """Fold a junk stub into the live paper already holding its DOI (gr658635).
 
-    A registry hit whose DOI another live paper owns means the stub is a
-    duplicate the ingest failed to link: writing the DOI would collide, so
+    A registry hit whose DOI another live paper owns — or whose Wiley
+    anie/ange twin DOI (``identity.doi_twins``) it owns — means the stub is
+    a duplicate the ingest failed to link: writing the DOI would collide, so
     the true fix is ``merge_into`` the owner. Gated like that door — the
     registry title must corroborate the owner's title/year/byline under the
     same floors (``_DOI_OWNER_MERGE_SIM`` / ``_DOI_OWNER_MERGE_UNKNOWN_YEAR_SIM``)
@@ -2360,7 +2361,15 @@ def _merge_into_doi_owner(
     doi = getattr(res, "doi", None)
     if not doi:
         return None
+    from precis.identity import doi_twins
+
     owner_id = store.find_ref_by_identifier("doi", str(doi), kind="paper")
+    if owner_id is None or owner_id == ref.id:
+        owner_id = None
+        for twin in doi_twins(str(doi)):
+            owner_id = store.find_ref_by_identifier("doi", twin, kind="paper")
+            if owner_id is not None:
+                break
     if owner_id is None or owner_id == ref.id:
         return None
     owner = store.fetch_refs_by_ids([owner_id]).get(owner_id)

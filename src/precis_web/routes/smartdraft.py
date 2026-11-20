@@ -346,6 +346,7 @@ async def reader(
         {
             "active_tab": "smartdraft",
             "ident": ident,
+            "citation_modes": _citation_mode_options(),
             "ref": _ref_view(ref),
             "view": view,
             "relevance": rel_on,
@@ -569,6 +570,16 @@ async def blocks(
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
         },
     )
+
+
+def _citation_mode_options() -> list[tuple[str, str]]:
+    """The export panel's citation-machinery choices: ``(value, label)`` for
+    each mode the Word export can build."""
+    from precis.export import CITATION_MODES, IMPLEMENTED_CITATION_MODES
+
+    return [
+        (m, t) for m, t in CITATION_MODES.items() if m in IMPLEMENTED_CITATION_MODES
+    ]
 
 
 def _hub_and_citation_stats(

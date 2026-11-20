@@ -123,6 +123,40 @@ def test_a_pin_in_a_multi_cite_sentence_vouches_for_its_own_span() -> None:
     ]
 
 
+def test_number_only_clause_and_direct_cite_boundaries() -> None:
+    text = "TEM [fi5>pc1], 2–3 [fi6>pc2], STM [pc4], and STS [fi7>pc3]."
+    assert [p.sentence for p in pin_lint.find_pins(text)] == ["TEM", "2–3", "and STS"]
+
+
+def test_multiple_pins_after_a_full_stop_attach_to_the_previous_sentence() -> None:
+    pins = pin_lint.find_pins("TEM shows it. [fi5>pc1] [fi6>pc2] STS shows more.")
+    assert [pin.sentence for pin in pins] == ["TEM shows it.", "TEM shows it."]
+
+
+@pytest.mark.parametrize(
+    ("passage", "missing"),
+    [
+        ("The interval is 2–3.", set()),
+        ("The interval is 2e3.", set()),
+        ("The interval is 2e30.", {"3"}),
+        ("The interval is 12e3.", {"2", "3"}),
+    ],
+)
+def test_pin_coverage_matches_a_printed_range(passage: str, missing: set[str]) -> None:
+    (pin,) = pin_lint.find_pins("The interval is 2–3 [fi5>pc1].")
+    items = pin_lint.coverage_core(
+        pin,
+        pinned_texts=[passage],
+        pinned_refs={1},
+        default_texts=[],
+        default_refs=set(),
+        frozen_refs=set(),
+        chunks=[],
+        abstracts={},
+    )
+    assert {item.term.text for item in items} == missing
+
+
 def test_a_multi_cite_sentence_with_no_words_falls_back_to_the_whole_sentence() -> None:
     (pin,) = pin_lint.find_pins("[fi5][fi6>pc1]")
     assert pin.sentence == ""
@@ -299,6 +333,28 @@ def test_put_and_edit_responses_carry_the_warning_once(hub: Hub) -> None:
     # Re-saving the same text, with only trailing prose added, stays quiet.
     r2 = draft.edit(id=dc, text=bad + " More prose follows.")
     assert "⚠ pin:" not in r2.body
+
+
+def test_table_edit_lints_each_row_and_only_warns_on_changes(hub: Hub) -> None:
+    w = _world(hub.live_store)
+    draft, slug = _draft(hub)
+    pin = f"[{w['fi']}>{w['default']}]"
+    header = ["Method", "Source"]
+    added = draft.put(
+        id=slug,
+        chunk_kind="table",
+        table={"header": header, "rows": [["HITP", ""], ["TEM", pin]]},
+        at={"last": True},
+    )
+    assert "⚠ pin:" not in added.body
+    dc = added.body.split()[2]
+
+    table = {"header": header, "rows": [["HITP", ""], ["TEM and DFT", pin]]}
+    edited = draft.edit(id=dc, table=table)
+    (warning,) = [line for line in edited.body.splitlines() if "⚠ pin:" in line]
+    assert "DFT" in warning
+    assert "HITP" not in warning
+    assert "⚠ pin:" not in draft.edit(id=dc, table=table).body
 
 
 def test_export_warns_on_every_pin_docx_and_latex(hub: Hub, tmp_path: Path) -> None:

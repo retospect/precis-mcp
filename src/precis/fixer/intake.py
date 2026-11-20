@@ -9,10 +9,12 @@ Three risky small bits flagged at design time live here:
   takes no new spec files and holds only
   ``se-protein-interface-first.md`` (``status: draft``), the one file
   deliberately left behind. The fixer never learned to read plan
-  todos, which makes this glob the third file-bound consumer the
-  transfer left running — recorded on ``gr696034`` alongside
-  ``spec_landed`` and ``scripts/fleet-wave``. The glob stays only to
-  serve that residual file under its documented convention: a file
+  todos; its two sibling file-bound consumers from the same transfer
+  went graph-aware under ``gr696034`` — the ``spec_landed`` park
+  condition now takes a spec-root/plan-todo handle and
+  ``scripts/fleet-wave`` claims the plan root todo's lease — while
+  this glob stays file-bound on purpose: it serves only that residual
+  file under its documented convention: a file
   under ``docs/backlog/*.md`` with a YAML-ish front-matter block is
   *pickable* only when ``status: ready`` (a human ran ``/ready`` in
   tandem, both keys turned). ``README.md``/``TEMPLATE.md`` and any

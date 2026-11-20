@@ -34,7 +34,9 @@ Mixin assumes the concrete Store provides ``self.pool``.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -981,6 +983,194 @@ class LinksMixin:
     """v2 link insert / remove / read with inverse-relation rewrite."""
 
     pool: ConnectionPool
+
+    def links_missing_reason(
+        self,
+        *,
+        relations: list[str] | None = None,
+        include_structural: bool = False,
+        src_kind: str | None = None,
+        dst_kind: str | None = None,
+        focus_ref_id: int | None = None,
+        direction: str = "both",
+        space: str | None = None,
+        under: int | None = None,
+        endpoint: str = "src",
+        cursor: str | None = None,
+        limit: int = 25,
+        count_only: bool = False,
+    ) -> dict[str, Any]:
+        """Read missing rationales without touching suspect fingerprints.
+
+        Stored edge IDs (not offsets) survive backfills and deletions. This
+        is a live scan: newly committed higher IDs appear on later pages;
+        lower IDs committed late require a fresh scan. Cursors bind filters,
+        not row revisions, and remain usable after their edge is removed.
+        Space/subtree constraints apply to the selected stored endpoint.
+        Non-string reason payloads are unsupported review states, not missing.
+        """
+        restart = "get(kind='memory', id='/links')"
+        if direction not in ("out", "in", "both") or endpoint not in (
+            "src",
+            "dst",
+            "either",
+        ):
+            raise BadInput("invalid direction or endpoint", next=restart)
+        if not 1 <= limit <= 100:
+            raise BadInput("limit must be 1..100", next=restart)
+        if focus_ref_id is None and direction != "both":
+            raise BadInput("direction requires a focus ref", next=restart)
+        # Passive spellings select the same stored edge, never an inverse copy.
+        rels = (
+            sorted({canonical_relation(r) or r for r in relations})
+            if relations is not None
+            else None
+        )
+        signature = hashlib.sha256(
+            json.dumps(
+                [
+                    rels,
+                    include_structural,
+                    src_kind,
+                    dst_kind,
+                    focus_ref_id,
+                    direction,
+                    space,
+                    under,
+                    endpoint,
+                ],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()[:16]
+        after = 0
+        if cursor is not None:
+            match = (
+                re.fullmatch(r"missing:([0-9a-f]{16}):([0-9]{1,19})", cursor)
+                if isinstance(cursor, str)
+                else None
+            )
+            if (
+                match is None
+                or match[1] != signature
+                or int(match[2]) > 9223372036854775807
+            ):
+                raise BadInput("malformed or stale missing-reason cursor", next=restart)
+            after = int(match[2])
+        clauses = ["l.relation <> 'considered'"]
+        params: list[Any] = []
+        for key in ("reason", "why"):
+            clauses.append(
+                f"(l.meta->'{key}' IS NULL OR l.meta->'{key}' = 'null'::jsonb "
+                f"OR (jsonb_typeof(l.meta->'{key}') = 'string' "
+                f"AND l.meta->>'{key}' !~ '[^[:space:]]'))"
+            )
+        if not include_structural:
+            from precis.store.types import _INVERSE_RELATIONS
+            from precis.taproot.eligibility import STRUCTURAL_RELATIONS
+
+            structural = STRUCTURAL_RELATIONS | {
+                inverse
+                for relation, inverse in _INVERSE_RELATIONS.items()
+                if relation in STRUCTURAL_RELATIONS
+            }
+            clauses += [
+                "NOT (l.relation = ANY(%s))",
+                "NOT (l.set_by = 'system' AND (l.meta ? 'via' OR l.meta ? 'why'))",
+            ]
+            params.append(sorted(structural))
+        if rels is not None:
+            clauses.append("l.relation = ANY(%s)")
+            params.append(rels)
+        for alias, kind in (("s", src_kind), ("d", dst_kind)):
+            if kind is not None:
+                clauses.append(f"{alias}.kind = %s")
+                params.append(kind)
+        if focus_ref_id is not None:
+            sides = (
+                ["src"]
+                if direction == "out"
+                else ["dst"]
+                if direction == "in"
+                else ["src", "dst"]
+            )
+            clauses.append(
+                "(" + " OR ".join(f"l.{side}_ref_id = %s" for side in sides) + ")"
+            )
+            params.extend([focus_ref_id] * len(sides))
+        sides = ["src", "dst"] if endpoint == "either" else [endpoint]
+        endpoint_predicates: list[str] = []
+        endpoint_params: list[Any] = []
+        if space is not None:
+            endpoint_predicates.append(
+                "EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "WHERE rt.ref_id = l.{side}_ref_id AND t.namespace = 'SPACE' AND t.value = %s)"
+            )
+            endpoint_params.append(space)
+        if under is not None:
+            endpoint_predicates.append(
+                "l.{side}_ref_id IN (WITH RECURSIVE subtree(id) AS "
+                "(SELECT %s::bigint UNION SELECT x.src_ref_id FROM links x "
+                "JOIN subtree p ON x.dst_ref_id = p.id WHERE x.relation = 'part-of') "
+                "SELECT id FROM subtree)"
+            )
+            endpoint_params.append(under)
+        if endpoint_predicates:
+            clauses.append(
+                "("
+                + " OR ".join(
+                    "("
+                    + " AND ".join(p.format(side=side) for p in endpoint_predicates)
+                    + ")"
+                    for side in sides
+                )
+                + ")"
+            )
+            params.extend(endpoint_params * len(sides))
+        base = (
+            " FROM links l JOIN refs s ON s.ref_id = l.src_ref_id JOIN refs d ON d.ref_id = l.dst_ref_id WHERE "
+            + " AND ".join(clauses)
+        )
+        with self.pool.connection() as conn:
+            total_row = conn.execute("SELECT count(*)" + base, params).fetchone()
+            total = int(total_row[0]) if total_row else 0
+            if count_only:
+                return {"rows": [], "total": total, "next_cursor": None, "done": True}
+            records = conn.execute(
+                "SELECT l.link_id, l.src_ref_id, s.kind, l.dst_ref_id, d.kind, "
+                "l.relation, l.src_chunk_id, l.dst_chunk_id, l.set_by, "
+                "precis_link_sha_of(l), left(s.title, 120), left(d.title, 120)"
+                + base
+                + " AND l.link_id > %s ORDER BY l.link_id LIMIT %s",
+                [*params, after, limit + 1],
+            ).fetchall()
+        keys = (
+            "link_id",
+            "src",
+            "src_kind",
+            "dst",
+            "dst_kind",
+            "relation",
+            "src_chunk_id",
+            "dst_chunk_id",
+            "set_by",
+            "rev",
+            "src_title",
+            "dst_title",
+        )
+        rows = [
+            dict(zip(keys, row, strict=True), reason_state="missing")
+            for row in records[:limit]
+        ]
+        done = len(records) <= limit
+        return {
+            "rows": rows,
+            "total": total,
+            "done": done,
+            "next_cursor": None
+            if done
+            else f"missing:{signature}:{rows[-1]['link_id']}",
+        }
+
     # Provided by ArgumentGraphMixin. Called after a retraction / concern
     # edge is added or removed so the argument-graph STALE: flag stays a
     # pure function of current graph reachability.

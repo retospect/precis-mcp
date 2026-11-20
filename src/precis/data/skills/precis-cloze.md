@@ -56,6 +56,8 @@ it. Refuse when the "concept" is:
   the source merely mentions in passing (a *"World Heritage Site"* named inside
   a dedication; an invented acronym like *"ESB"*). Not the subject you're
   learning.
+- **Common vocabulary** — a word any educated reader already knows. Add
+  vocabulary cards only for genuinely complex or domain-specific terms.
 - **So generic the definition is its own answer** — if every cloze you can
   imagine just echoes words already printed on the card, there's no fact under
   it.
@@ -83,6 +85,11 @@ cards split your reviews and corrode the schedule.
 Each card tests **one** idea-cluster — an etymology, a mechanism, a definition, a
 cultural contrast, a usage. Not two. If you're tempted to cram, make a second
 card.
+
+Definitional clozes of one concept share **one** combined card, not several
+near-copies: fold *"X is {{c1::a}}"* and *"X is {{c2::b}}"* into one cloze
+set. When the answer is one item of a long list, don't cloze a single item;
+use the terse shape `{{c1::Topic}} includes {{c2::item1}} {{c3::item2}}`.
 
 If the same answer text appears more than once in the sentence, cloze
 **every** occurrence under the **same** cN. An unclozed repeat leaks the

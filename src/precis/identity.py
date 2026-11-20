@@ -840,6 +840,26 @@ def normalize_doi(s: str | None) -> str | None:
     return lower or None
 
 
+_WILEY_TWIN_RE = re.compile(r"^(10\.1002/)(anie|ange)\.(.+)$")
+
+
+def doi_twins(doi: str | None) -> list[str]:
+    """Twin DOIs of one Angewandte work: ``anie.<x>`` <-> ``ange.<x>``.
+
+    Wiley mints the English and German editions under two DOIs for the
+    same work (short ``anie.5660280`` and long forms alike). Every other
+    DOI returns ``[]``. Input is normalised first; output is lowercase.
+    """
+    norm = normalize_doi(doi)
+    if not norm:
+        return []
+    m = _WILEY_TWIN_RE.match(norm)
+    if m is None:
+        return []
+    other = "ange" if m.group(2) == "anie" else "anie"
+    return [f"{m.group(1)}{other}.{m.group(3)}"]
+
+
 #: Closing bracket → its opener, for :func:`clean_doi`'s unmatched-
 #: closer strip.
 _DOI_CLOSERS = {")": "(", "]": "[", "}": "{", ">": "<"}
@@ -1197,7 +1217,8 @@ def make_cite_key(
         taken: Set / iterable of cite_keys already in the corpus that
             share the prefix. Pass the result of
             ``SELECT id_value FROM ref_identifiers WHERE
-            id_kind='cite_key' AND id_value LIKE :prefix || '%'``.
+            id_kind IN ('cite_key', 'cite_key_alias') AND
+            id_value LIKE :prefix || '%'``.
 
     Raises:
         CiteKeyOverflow: defensive only — the suffix space rolls

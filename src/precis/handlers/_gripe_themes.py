@@ -15,7 +15,9 @@ Two guards keep a weak or off-scope match from poisoning a theme
 then have absorbed unrelated '+1's). Minting a keeper needs
 :func:`keeper_mint_match` — :data:`KEEPER_MINT_MIN_HITS` distinct
 pattern hits, or one hit inside the title line, since the title is the
-claim; a lone incidental hit can still merge into a *live* keeper. And
+claim. Merging uses the same bar and only accepts short filings (at most
+1500 characters) without a spec: line: specified defects need their own
+gripe. And
 a filing already carrying ``thread:<slug>`` only ever joins a keeper
 inside that same thread — the keeper lookup is scoped to refs carrying
 the thread tag, so a foreign-thread theme can neither absorb the

@@ -1,0 +1,25 @@
+{% extends "base.html.j2" %}
+{% block title %}LLM pools{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-1">LLM pools</h1>
+<p class="text-sm text-fg-subtle mb-4">Stored allowance reports and current scheduler pacing. Unknown means the ledger lacks enough data; stale reports may understate usage. Window share is shown for rolling windows with a known length. <a href="/llm/chain" class="text-success-strong hover:underline">Routing chains</a></p>
+{% if pools %}
+<div class="overflow-x-auto">
+<table class="w-full text-sm text-left">
+  <thead><tr>{% for title in ['Account', 'Pool', 'Credit left', 'Window left', 'Resets / expires (UTC)', 'Pacing'] %}<th class="p-2 border-b border-line">{{ title }}</th>{% endfor %}</tr></thead>
+  <tbody>
+  {% for pool in pools %}
+    <tr>
+      <td class="p-2">{{ pool.account }}</td>
+      <td class="p-2">{{ pool.pool_key }}{% if pool.stale %} <span class="text-fg-subtle">(stale)</span>{% endif %}</td>
+      <td class="p-2">{% if pool.credit_left_pct is not none %}{{ '%.0f'|format(pool.credit_left_pct) }}%{% else %}unknown{% endif %}</td>
+      <td class="p-2">{% if pool.window_left_pct is not none %}{{ '%.0f'|format(pool.window_left_pct) }}%{% else %}unknown{% endif %}</td>
+      <td class="p-2">{% if pool.resets_at %}<div>Resets {{ pool.resets_at }}</div>{% endif %}{% if pool.expires_at %}<div>Expires {{ pool.expires_at }}</div>{% endif %}{% if pool.relative %}<div>{{ pool.relative }}</div>{% elif not pool.resets_at and not pool.expires_at %}unknown{% endif %}</td>
+      <td class="p-2"><strong>{{ pool.pacing_state }}</strong><div>{{ pool.why }}</div>{% if pool.retry_at %}<div>Retry {{ pool.retry_at }}</div>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p>No pools recorded.</p>{% endif %}
+{% endblock %}

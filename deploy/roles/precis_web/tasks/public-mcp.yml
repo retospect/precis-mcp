@@ -13,6 +13,13 @@
       - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('path') == '/mcp'
       - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('query') == ''
       - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('fragment') == ''
+      # A typo (or a blank, which the daemon reads as "all classes") fails
+      # here, before any plist is rendered.
+      - precis_mcp_public_credential_classes is string
+      - (precis_mcp_public_credential_classes | lower | replace(',', ' ')).split() | length > 0
+      - (precis_mcp_public_credential_classes | lower | replace(',', ' ')).split() | reject('in', ['install', 'slice', 'personal', 'capability', 'oauth']) | list | length == 0
+      # This role publishes an OAuth endpoint; the checks below expect its challenge.
+      - "'oauth' in (precis_mcp_public_credential_classes | lower | replace(',', ' ')).split()"
       - precis_mcp_public_port | int != precis_web_port | int
       - precis_mcp_public_https_port | int in [443, 8443, 10000]
       # Funnel enables exposure per host:port, so shared paths cannot differ.
@@ -21,7 +28,10 @@
         ((precis_mcp_public_funnel | bool == precis_web_funnel | bool) and
          (precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('netloc')
           == precis_web_podcast_base_url | urlsplit('hostname')))
-    fail_msg: Configure the canonical public HTTPS issuer/resource in the private inventory before enabling MCP.
+    fail_msg: >-
+      Configure the canonical public HTTPS issuer/resource in the private
+      inventory before enabling MCP, and list oauth (plus only install, slice,
+      personal or capability) in precis_mcp_public_credential_classes.
 
 - name: Ensure the dedicated MCP secret directory
   ansible.builtin.file:
@@ -60,6 +70,7 @@
   become: true
   become_user: deploy
   no_log: true
+  when: "'install' in (precis_mcp_public_credential_classes | lower | replace(',', ' ')).split()"
 
 - name: Enforce dedicated token ownership and mode
   ansible.builtin.file:
@@ -69,6 +80,7 @@
     group: staff
     mode: "0600"
   no_log: true
+  when: "'install' in (precis_mcp_public_credential_classes | lower | replace(',', ' ')).split()"
 
 - name: Ensure the public MCP log is writable
   ansible.builtin.file:
@@ -141,42 +153,103 @@
     that:
       - "'resource_metadata=' in _precis_mcp_public_challenge.www_authenticate | default('')"
 
-- name: Persist the public MCP HTTPS mapping
-  ansible.builtin.command:
-    argv:
-      - tailscale
-      - "{{ 'funnel' if precis_mcp_public_funnel | bool else 'serve' }}"
-      - --bg
-      - --yes
-      - "--https={{ precis_mcp_public_https_port }}"
-      - "--set-path={{ item }}"
-      # Funnel strips the mount before proxying. Repeat it in the target.
-      - "http://127.0.0.1:{{ precis_mcp_public_port }}{{ '' if item == '/' else item }}"
-  loop: >-
-    {{ ['/mcp', '/.well-known/oauth-protected-resource/mcp']
-       if precis_mcp_public_https_port | int == 443 else ['/'] }}
-  async: 60
-  poll: 5
-  changed_when: false
+# Without the install class nothing reads the token: drop any copy a previous
+# deploy left behind rather than keep an unused infrastructure credential.
+# Only once the daemon answers under the new plist: a respawn on the old one
+# would still want the file.
+- name: Remove the infrastructure token when install is not accepted
+  ansible.builtin.file:
+    path: "{{ precis_mcp_public_secrets_dir }}/PRECIS_MCP_TOKEN"
+    state: absent
+  when: "'install' not in (precis_mcp_public_credential_classes | lower | replace(',', ' ')).split()"
 
-- name: Read the persistent Tailscale mappings
-  ansible.builtin.command: tailscale funnel status --json
-  register: _precis_mcp_public_ts_status
-  changed_when: false
-
-- name: Verify the exact MCP mapping and preserve the web mapping
-  ansible.builtin.assert:
-    that:
-      - >-
-        _precis_mcp_ts_config.Web[_precis_mcp_ts_host].Handlers[item].Proxy
-        == 'http://127.0.0.1:' ~ (precis_mcp_public_port | string) ~ ('' if item == '/' else item)
-      - (_precis_mcp_ts_config.AllowFunnel | default({})).get(_precis_mcp_ts_host, false) | bool == precis_mcp_public_funnel | bool
-      - _precis_mcp_ts_config.Web[_precis_web_ts_host].Handlers['/'].Proxy == 'http://127.0.0.1:' ~ (precis_web_port | string)
-      - (_precis_mcp_ts_config.AllowFunnel | default({})).get(_precis_web_ts_host, false) | bool == precis_web_funnel | bool
-  loop: >-
-    {{ ['/mcp', '/.well-known/oauth-protected-resource/mcp']
-       if precis_mcp_public_https_port | int == 443 else ['/'] }}
+# The role owns the complete MCP mapping on the tailnet node, not just the
+# entries it declares: a gateway moved from a dedicated port to 443 once kept
+# the retired port public. The block vars are lazy, so they follow whichever
+# status document was read last. Only handlers proxying to this daemon's
+# loopback port are ever candidates; the web mapping is never touched.
+- name: Converge the public MCP Tailscale mapping
   vars:
     _precis_mcp_ts_config: "{{ _precis_mcp_public_ts_status.stdout | from_json }}"
     _precis_mcp_ts_host: "{{ precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE | urlsplit('hostname') }}:{{ precis_mcp_public_https_port }}"
     _precis_web_ts_host: "{{ precis_web_podcast_base_url | urlsplit('hostname') }}:443"
+    _precis_mcp_loopback: "http://127.0.0.1:{{ precis_mcp_public_port }}"
+    _precis_mcp_mounts: >-
+      {{ ['/mcp', '/.well-known/oauth-protected-resource/mcp']
+         if precis_mcp_public_https_port | int == 443 else ['/'] }}
+    # [{hostport, port, mount}] for every handler that proxies to the MCP
+    # loopback port (exact port, not a prefix of a longer one) but is not a
+    # declared mapping. A hand-made mapping may spell the host `localhost`.
+    _precis_mcp_stale: >-
+      {%- set found = namespace(out=[]) -%}
+      {%- for hostport, site in (_precis_mcp_ts_config.Web | default({})).items() -%}
+      {%- for mount, handler in (site.Handlers | default({})).items() -%}
+      {%- set proxy = handler.Proxy | default('') | replace('http://localhost:', 'http://127.0.0.1:') -%}
+      {%- if (proxy == _precis_mcp_loopback or proxy.startswith(_precis_mcp_loopback ~ '/'))
+             and not (hostport == _precis_mcp_ts_host and mount in _precis_mcp_mounts) -%}
+      {%- set found.out = found.out + [{'hostport': hostport, 'port': hostport.rsplit(':', 1)[1], 'mount': mount}] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ found.out }}
+  block:
+    - name: Persist the public MCP HTTPS mapping
+      ansible.builtin.command:
+        argv:
+          - tailscale
+          - "{{ 'funnel' if precis_mcp_public_funnel | bool else 'serve' }}"
+          - --bg
+          - --yes
+          - "--https={{ precis_mcp_public_https_port }}"
+          - "--set-path={{ item }}"
+          # Funnel strips the mount before proxying. Repeat it in the target.
+          - "http://127.0.0.1:{{ precis_mcp_public_port }}{{ '' if item == '/' else item }}"
+      loop: "{{ _precis_mcp_mounts }}"
+      async: 60
+      poll: 5
+      changed_when: false
+
+    - name: Read the persistent Tailscale mappings
+      ansible.builtin.command: tailscale funnel status --json
+      register: _precis_mcp_public_ts_status
+      changed_when: false
+
+    - name: Remove stale public MCP mappings from retired ports or mounts
+      ansible.builtin.command:
+        argv:
+          - tailscale
+          - "{{ 'funnel' if precis_mcp_public_funnel | bool else 'serve' }}"
+          - "--https={{ item.port }}"
+          - "--set-path={{ item.mount }}"
+          - "off"
+      loop: "{{ _precis_mcp_stale }}"
+      async: 60
+      poll: 5
+      changed_when: true
+
+    - name: Re-read the persistent Tailscale mappings
+      ansible.builtin.command: tailscale funnel status --json
+      register: _precis_mcp_public_ts_status
+      changed_when: false
+
+    - name: Verify no undeclared handler proxies to the MCP listener
+      ansible.builtin.assert:
+        that:
+          - _precis_mcp_stale | length == 0
+        fail_msg: >-
+          A Tailscale mapping to the public MCP listener remains outside the
+          declared set: {{ _precis_mcp_stale }}. Remove it by hand on the
+          gateway with `tailscale funnel --https=<port> --set-path=<mount> off`
+          (`serve` if the mapping is tailnet-only).
+
+    - name: Verify the exact MCP mapping and preserve the web mapping
+      ansible.builtin.assert:
+        that:
+          - >-
+            _precis_mcp_ts_config.Web[_precis_mcp_ts_host].Handlers[item].Proxy
+            == _precis_mcp_loopback ~ ('' if item == '/' else item)
+          - (_precis_mcp_ts_config.AllowFunnel | default({})).get(_precis_mcp_ts_host, false) | bool == precis_mcp_public_funnel | bool
+          - _precis_mcp_ts_config.Web[_precis_web_ts_host].Handlers['/'].Proxy == 'http://127.0.0.1:' ~ (precis_web_port | string)
+          - (_precis_mcp_ts_config.AllowFunnel | default({})).get(_precis_web_ts_host, false) | bool == precis_web_funnel | bool
+      loop: "{{ _precis_mcp_mounts }}"
+

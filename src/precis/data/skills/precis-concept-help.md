@@ -33,8 +33,9 @@ put(kind="concept", text="overpotential — the extra voltage beyond equilibrium
 put(kind="concept", text="activity — the thermodynamic effective concentration", dry_run=True)
 ```
 
-`text` is `<name> — <definition>` (em-dash, en-dash or a newline; a
-colon does not split). The name is canonical — `meta.name`, with a
+`text` is `<name> — <definition>`: an em-dash, a whitespace-surrounded
+en-dash or a newline splits the two (an unspaced `Lennard–Jones` en-dash
+stays in the name); a colon does not split. The name is canonical — `meta.name`, with a
 lowercased whitespace-collapsed `meta.norm_name` as the dedup anchor —
 and the definition is the searchable card: name + definition + aliases
 embed as one text, so retrieval is definition-anchored, not

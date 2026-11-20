@@ -65,6 +65,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from weakref import WeakKeyDictionary
 
 import numpy as np
 import shapely
@@ -2663,15 +2664,19 @@ class _ViaPlanter:
         # (net, edge, r_site, clearance) -> statically-surviving points
         # for that net — the re-judge runs once per pair, attempts share it
         self._net_free: dict[tuple[int, int, float, float], np.ndarray] = {}
-        # (id(dyn), dyn._version, net, edge, r_site, clearance, lo, hi, drill)
-        # -> plantable points — the dyn index is per view, shared by that
-        # net's retry attempts; the version key is the index's mutation
-        # count, so a grow loop adding its own vias mid-attempt re-judges
-        self._pts: dict[
-            tuple[int, int, int, int, float, float, float, float, float],
-            np.ndarray,
+        # Retry indices own their cached verdicts only while alive. Keeping
+        # them pinned for an entire build retains every abandoned grow and
+        # its STRtree; only the current mutation version can be reused.
+        self._pts: WeakKeyDictionary[
+            CopperIndex,
+            tuple[
+                int,
+                dict[tuple[int, int, float, float, float, float, float], np.ndarray],
+            ],
+        ] = WeakKeyDictionary()
+        self._static_pts: dict[
+            tuple[int, int, float, float, float, float, float], np.ndarray
         ] = {}
-        self._dyn_refs: dict[int, CopperIndex] = {}  # pins ids against reuse
         # (r_site, clearance) -> (edges a pad could block, edges an env
         # body could block): the tree's reach bound, so an edge outside
         # both skips the per-point index queries entirely
@@ -2962,16 +2967,14 @@ class _ViaPlanter:
             return
         # Zero is the stored via convention for the emitted default drill.
         drill_mm = float(drill_mm or self.default_drill_mm)
-        # one verdict per (dynamic index STATE, net, edge): a net's
-        # attempts all read the same dyn object, so retries are dict
-        # hits — but _grow_net adds this net's own vias to its index
-        # between branches, so the key must carry the mutation version,
-        # not just the object
+        cache = self._static_pts
         if dyn is not None:
-            self._dyn_refs[id(dyn)] = dyn
+            state = self._pts.get(dyn)
+            if state is None or state[0] != dyn._version:
+                state = (dyn._version, {})
+                self._pts[dyn] = state
+            cache = state[1]
         key = (
-            id(dyn),
-            dyn._version if dyn is not None else 0,
             net,
             int(e),
             r_site,
@@ -2980,8 +2983,8 @@ class _ViaPlanter:
             hi,
             drill_mm,
         )
-        if key in self._pts:
-            free = self._pts[key]
+        if key in cache:
+            free = cache[key]
         else:
             free = self.static_survivors(e, net, r_site, clearance)
             if len(free) and self.hole_ix._tree is not None:
@@ -2998,7 +3001,7 @@ class _ViaPlanter:
                 free = free[(tp >= lo - 1e-9) & (tp <= hi + 1e-9)]
             if dyn is not None and len(free):
                 free = free[~self._dynamic_blocked(free, r_site, clearance, net, dyn)]
-            self._pts[key] = free
+            cache[key] = free
         for xy in free:
             x, y = float(xy[0]), float(xy[1])
             yield x, y, _edge_param_at(ctx, e, (x, y))

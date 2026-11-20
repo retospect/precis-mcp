@@ -49,7 +49,10 @@ def test_converted_datasheet_target_is_gated_before_rewrite(
         scope, "current_scope", lambda: "read" if read_only else "write"
     )
     runtime = object.__new__(PrecisRuntime)
-    runtime.hub = cast(Any, SimpleNamespace(store=ConvertedStore(target)))
+    runtime.hub = cast(
+        Any,
+        SimpleNamespace(store=ConvertedStore(target), handler_for=lambda kind: None),
+    )
     args: dict[str, Any] = {"kind": "datasheet", "id": "da1~7"}
 
     # The serving gate accepted the caller's kind before dispatch resolves

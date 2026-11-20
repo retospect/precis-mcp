@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlparse
 
-from fastapi import APIRouter, Form, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from precis.handlers._citations_view import draft_fetch_ref_ids
@@ -55,6 +55,8 @@ from precis.store._stub_predicate import NO_OA_MIN_PASSES
 from precis.store._tag_filter import tag_filter_string
 from precis.workers.fetch_oa import run_oa_fetch_pass
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
+from precis_web.drive_tree import _TREE_EDGES, build_tree
+from precis_web.drive_views import DRIVE_VIEW_LINKS, DRIVE_VIEWS, active_view
 from precis_web.item_view import (
     artifact_kinds,
     display_title,
@@ -925,6 +927,8 @@ async def index(
     queue: str = "",
     focus: str = "",
     serves: str = "",
+    layout: str = "",
+    rel: str = "",
     page: int = 1,
     submitted: str = "",
     requeued: int = 0,
@@ -988,6 +992,24 @@ async def index(
     (``POST /drive/fetch-next-batch``), which runs an actual bounded
     ``fetch_oa`` pass in-request rather than just reordering the queue.
 
+    ``layout=tree&rel=<name>`` (gr664408) renders the filtered rows as a
+    nested ``<ul>`` instead of the flat list: each row hangs under every
+    parent the named edge source (``precis_web.drive_tree._TREE_EDGES`` —
+    ``serves`` links, ``parent_id``) gives it, roots are rows whose
+    parents the filter cut. Pagination applies to **roots**: the page
+    fetches the whole filtered set (the browse path exactly — one count
+    query then the full read; the search path bounded by live refs of the
+    selected kinds), builds the forest once, and ``page`` steps through its top
+    level — each root rides with its filtered descendants, so a branch
+    never splits across pages and totals count top-level nodes, not
+    flat rows. In tree mode the default top-level ``unfiled_only``
+    yields like it does for a focus/serves scope — hiding
+    ``parent_id``-carrying children would empty the very hierarchy the
+    layout exists to show. An unknown ``layout``/``rel`` is a 400
+    naming the valid set. The doable queue keeps its already-paginated
+    leaves and pager state; tree mode never slices that page again.
+    A stray ``rel`` without ``layout=tree`` is inert.
+
     Discover (``task=discover``, also a cookie-free bare landing) defaults
     to created order across folders and content/work kinds including findings.
     ``sort=created|modified`` keeps timestamp meaning consistent with and
@@ -1027,6 +1049,26 @@ async def index(
     _user = current_user(request)
     viewer = _user.login if _user is not None else None
     q = (q or "").strip()
+
+    # layout=tree&rel=<rel> (gr664408): nest the filtered rows under a
+    # named edge source instead of the flat list. Unknown values are a
+    # 400 naming the valid set — the preset links pin exact spellings,
+    # and a silent fallthrough to flat would hide a typo'd deep link.
+    layout = (layout or "").strip().lower()
+    if layout not in ("", "flat", "tree"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown layout {layout!r} — one of: flat, tree",
+        )
+    rel = (rel or "").strip().lower()
+    if layout == "tree" and rel not in _TREE_EDGES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown rel {rel!r} — layout=tree takes one of: "
+                + ", ".join(sorted(_TREE_EDGES))
+            ),
+        )
 
     # A query that *is* an identifier (a lone record or chunk handle, or a
     # DOI whole or as a unique prefix) goes straight to that item's page
@@ -1328,6 +1370,7 @@ async def index(
         *kind_buckets["derived"],
         "concept",
     ]
+    queue_page = False
     result_total: int | None = None
     # Whether ``result_total`` is exact (the browse path — a plain filtered
     # count) or a ≈lexical approximation (the fused-search path). Gates the
@@ -1353,8 +1396,9 @@ async def index(
             since=since_dt,
             until=until_dt,
             tags=tags,
-            offset=offset,
+            offset=0 if layout == "tree" else offset,
             tag_kinds=tag_row_kinds,
+            fetch_all=layout == "tree",
         )
         if ambiguous_ids and offset == 0:
             # An ambiguous DOI prefix: list the matching papers first.
@@ -1371,33 +1415,34 @@ async def index(
             )
             seen = {r["id"] for r in first}
             rows = [*first, *(r for r in rows if r.get("id") not in seen)]
-        # Total-match count for the "showing N of ~K" header — a lexical
-        # approximation (the fused semantic+lexical ranking that actually
-        # populates ``rows`` has no cheap exact total), but it's the
-        # difference between finding 5 of 50 and 5 of 50,000. Skip the
-        # query when no kind is selected — it can only match nothing (``q``
-        # is already guaranteed non-blank by the outer ``if q:``).
-        if ref_kinds:
-            result_total = await asyncio.to_thread(
-                store.chunks.count_chunks_lexical,
-                q=q,
-                kinds=ref_kinds,
-                tags=tags,
-                distinct_refs=True,
-                since=since_dt,
-                until=until_dt,
-            )
-        else:
-            result_total = 0
-        # Floor to what's actually on the page: the fused ranking can surface
-        # semantic-only hits the lexical count misses, so without this the
-        # header could read the absurd "showing 30 of ~5".
-        # (store is untyped Any, so mypy can't see
-        # ``store.chunks.count_chunks_lexical``'s `-> int` — nor, for the
-        # same reason, that it lives on the composed ChunkStore rather than
-        # on Store; both branches above always set an int, never None.)
-        assert isinstance(result_total, int)
-        result_total = max(result_total, offset + len(rows))
+        if layout != "tree":
+            # Total-match count for the "showing N of ~K" header — a lexical
+            # approximation (the fused semantic+lexical ranking that actually
+            # populates ``rows`` has no cheap exact total), but it's the
+            # difference between finding 5 of 50 and 5 of 50,000. Skip the
+            # query when no kind is selected — it can only match nothing (``q``
+            # is already guaranteed non-blank by the outer ``if q:``).
+            if ref_kinds:
+                result_total = await asyncio.to_thread(
+                    store.chunks.count_chunks_lexical,
+                    q=q,
+                    kinds=ref_kinds,
+                    tags=tags,
+                    distinct_refs=True,
+                    since=since_dt,
+                    until=until_dt,
+                )
+            else:
+                result_total = 0
+            # Floor to what's actually on the page: the fused ranking can surface
+            # semantic-only hits the lexical count misses, so without this the
+            # header could read the absurd "showing 30 of ~5".
+            # (store is untyped Any, so mypy can't see
+            # ``store.chunks.count_chunks_lexical``'s `-> int` — nor, for the
+            # same reason, that it lives on the composed ChunkStore rather than
+            # on Store; both branches above always set an int, never None.)
+            assert isinstance(result_total, int)
+            result_total = max(result_total, offset + len(rows))
     else:
         # The default top level hides anything filed into a folder — a
         # folder's contents live only inside it (still findable via search,
@@ -1408,12 +1453,15 @@ async def index(
         # A focus/serves subtree scope *is* the filing — hiding
         # ``parent_id``-carrying children would empty it, so
         # ``unfiled_only`` yields to an active scope the way a folder
-        # selection does.
+        # selection does. Tree mode yields the same way (gr664408):
+        # ``layout=tree&rel=parent`` needs the children on the page to
+        # nest them.
         unfiled_only = (
             folder_id is None
             and not show_deleted
             and not folder_any
             and scope_ids is None
+            and layout != "tree"
         )
         if queue == "doable" and "todo" in ref_kinds and not show_deleted:
             # The todo preset (gr664410): the doable leaf rotation in its
@@ -1424,6 +1472,7 @@ async def index(
             # queue before pagination. Its total is the same cheap
             # ``offset + len + next`` estimate the search path uses (no
             # exact count for a ranking query).
+            queue_page = True
             recent, has_next = await asyncio.to_thread(
                 _doable_queue_rows,
                 store,
@@ -1455,34 +1504,41 @@ async def index(
                 downloadable_first=(state == "stub"),
                 viewer=viewer,
                 tag_kinds=tag_row_kinds,
+                fetch_all=layout == "tree",
             )
-            # Exact total for the browse "showing N of K" header + last-page
-            # jump — the no-query list is a plain filtered ``refs`` query, so
-            # unlike the fused-search path this count is exact, not a ≈lexical
-            # approximation. Deliberately *not* floored to ``offset + len(recent)``
-            # (the search path does that to correct lexical *under*counting): here
-            # the count is already exact, and on a stale/overshoot ``page=`` — a
-            # bookmarked deep page of a set that has since shrunk — that floor
-            # would clobber the true total up to the empty page's offset ("0 of
-            # 30" for a set of 10). The honest count stands; the pager below hides
-            # the "of Y" once you're past the real last page. ``unfiled_only`` is
-            # threaded through so the denominator counts the same filed-hiding set
-            # the page shows.
-            result_total = await asyncio.to_thread(
-                store.count_recent_refs,
-                ref_kinds,
-                tags=tags,
-                has_pdf=has_pdf,
-                has_chunks=has_chunks,
-                has_schedule=has_schedule,
-                has_external_id=has_external_id,
-                no_oa=no_oa,
-                parent_id=folder_id,
-                unfiled_only=unfiled_only,
-                ref_ids=ref_id_scope,
-                deleted=show_deleted,
-                viewer=viewer,
-            )
+            if layout == "tree":
+                # Root pagination (below) owns the total, and the
+                # fetch-all already ran the same count for its bound —
+                # skip the flat recount.
+                result_total = None
+            else:
+                # Exact total for the browse "showing N of K" header + last-page
+                # jump — the no-query list is a plain filtered ``refs`` query, so
+                # unlike the fused-search path this count is exact, not a ≈lexical
+                # approximation. Deliberately *not* floored to ``offset + len(recent)``
+                # (the search path does that to correct lexical *under*counting): here
+                # the count is already exact, and on a stale/overshoot ``page=`` — a
+                # bookmarked deep page of a set that has since shrunk — that floor
+                # would clobber the true total up to the empty page's offset ("0 of
+                # 30" for a set of 10). The honest count stands; the pager below hides
+                # the "of Y" once you're past the real last page. ``unfiled_only`` is
+                # threaded through so the denominator counts the same filed-hiding set
+                # the page shows.
+                result_total = await asyncio.to_thread(
+                    store.count_recent_refs,
+                    ref_kinds,
+                    tags=tags,
+                    has_pdf=has_pdf,
+                    has_chunks=has_chunks,
+                    has_schedule=has_schedule,
+                    has_external_id=has_external_id,
+                    no_oa=no_oa,
+                    parent_id=folder_id,
+                    unfiled_only=unfiled_only,
+                    ref_ids=ref_id_scope,
+                    deleted=show_deleted,
+                    viewer=viewer,
+                )
             total_exact = True
 
     # Mixed selection (``tag`` plus ref kinds): a compact "matching
@@ -1520,6 +1576,39 @@ async def index(
             for action in tag_row["actions"]:
                 action["fields"]["back"] = return_to
 
+    # The tree layout (gr664408): the same filtered rows, nested under
+    # the named edge source — the registry's ``{child: [parents]}`` map
+    # plus ``build_tree``'s root/DAG/cycle rules. Pagination applies to
+    # **roots**: the fetch above returned the whole filtered set (the
+    # browse and search paths using live-ref counts), so the forest is
+    # built once and ``page`` steps
+    # through its top level — a page is ``_PAGE_SIZE`` top-level nodes
+    # with their filtered descendants, so a branch can't split across
+    # pages and a child never promotes to root because its parent fell
+    # on another page. Totals count top-level nodes, not flat rows.
+    tree: list[dict[str, Any]] | None = None
+    if layout == "tree":
+        listed = rows if q else recent
+        row_ids = [r["id"] for r in listed if isinstance(r.get("id"), int)]
+        forest = build_tree(
+            listed, await asyncio.to_thread(_TREE_EDGES[rel], store, row_ids)
+        )
+        if queue_page:
+            # The queue source already paginated its leaves. Preserve its
+            # rows, estimated total and next-page probe without slicing again.
+            tree = forest
+        elif row_ids:
+            tree = forest[offset : offset + _PAGE_SIZE]
+            result_total = len(forest)
+            has_next = len(forest) > offset + _PAGE_SIZE
+            total_exact = not q
+        else:
+            # Id-less rows only (a ``k=tag`` tree): every row is already
+            # its own root, so the flat page the row source applied IS
+            # the root page — the forest renders whole and the flat
+            # pager state stands.
+            tree = forest
+
     # Pager links preserve every filter, only ``page`` changes. ``submitted``
     # rides along only when this request was one: paging a deep-linked scope
     # must not start writing the kind cookie halfway through (the explicit
@@ -1546,6 +1635,9 @@ async def index(
         _pager_params.append(("focus", focus))
     if serves:
         _pager_params.append(("serves", serves))
+    if layout == "tree":
+        _pager_params.append(("layout", "tree"))
+        _pager_params.append(("rel", rel))
     if scope:
         # Round-trips the active Mine/Sources/Machine highlight across
         # pagination — ``k=`` (appended below) already carries the real
@@ -1604,6 +1696,7 @@ async def index(
         ("queue", queue, "Queue: doable"),
         ("focus", focus, f"Todo subtree #{focus}"),
         ("serves", serves, f"Serves {serves}"),
+        ("layout", "tree" if layout == "tree" else "", f"Tree by {rel}"),
     ):
         if (
             value
@@ -1700,6 +1793,15 @@ async def index(
         "drive/index.html.j2",
         {
             "active_tab": "drive",
+            "drive_views": DRIVE_VIEWS,
+            "drive_view_links": DRIVE_VIEW_LINKS,
+            # Match the resolved filters, not the raw URL params: a ``/kind``
+            # token or ``tag:`` qualifier in ``q`` overrides/extends the
+            # ``k=``/``tag=`` params, and the Schedules sentinel is
+            # translated back into ``tags`` for paging above — highlighting
+            # the raw params would light CAD on a page showing papers
+            # (review td703478).
+            "drive_view_active": active_view(selected_kinds, tags),
             "q": q,
             "kind_defs": list(_DEFAULT_SOURCE_KINDS),
             "artifact_kind_defs": artifact_kind_defs,
@@ -1738,6 +1840,9 @@ async def index(
             "queue": queue,
             "focus": focus,
             "serves": serves,
+            "layout": layout,
+            "rel": rel,
+            "tree": tree,
             "folder_options": await asyncio.to_thread(_folder_options, store),
             "folders": flat,
             "current": current,

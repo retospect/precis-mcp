@@ -8,8 +8,8 @@ find (author / institution hosts). Steps:
    a live ``paper`` the ingest fold can still take — ``pdf_sha256 IS NULL``
    (in-place promote, or attach-only onto a markup-built body) or bodiless
    with a held preview — mirroring ``precis.ingest.add._valid_fold_stub``.
-   A complete ref (body AND a held PDF) refuses: its drop would mint a
-   duplicate.
+   A short held article preview also qualifies for hash-pinned replacement;
+   other complete refs refuse to prevent duplicate ingestion.
 2. **Fetch** through ``safe_stream`` (an agent-supplied URL is external
    input), capped at 50 MB, ``%PDF`` magic required — the same bounded
    download ``datasheet_pull`` uses.
@@ -186,7 +186,42 @@ def validate(store: Store, params: dict[str, Any]) -> None:
         )
 
 
-def target_problem(store: Store, ref_id: int) -> str | None:
+def preview_sha(store: Store, ref_id: int) -> str | None:
+    """Held short article eligible for a longer, identity-checked copy."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT r.pdf_sha256, p.page_count, coalesce(r.meta->>'entry_type', '') "
+            "FROM refs r JOIN pdfs p USING (pdf_sha256) WHERE r.ref_id = %s",
+            (ref_id,),
+        ).fetchone()
+    if row and 0 < row[1] <= 2 and row[2].lower() not in _NON_ARTICLE_TYPES:
+        return str(row[0]).strip()
+    return None
+
+
+def _clear_preview_pin(store: Store, ref_id: int) -> None:
+    """Best-effort removal of a ``pdf_preview_refetch`` pin whose drop failed.
+
+    Swallows store errors: the caller is already propagating the drop's
+    failure, which is the exception worth keeping.
+    """
+    try:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta - 'pdf_preview_refetch', "
+                "updated_at = now() WHERE ref_id = %s",
+                (ref_id,),
+            )
+    except Exception:
+        log.warning(
+            "paper_pull: could not clear stale pdf_preview_refetch on ref %s",
+            ref_id,
+        )
+
+
+def target_problem(
+    store: Store, ref_id: int, *, allow_preview: bool = False
+) -> str | None:
     """Why ``ref_id`` cannot take a pulled PDF, else ``None``. Shared by the
     put (immediate refusal) and the job (state may have moved).
 
@@ -196,8 +231,8 @@ def target_problem(store: Store, ref_id: int) -> str | None:
     for a ref that already has a body (e.g. markup-ingested full text), folds
     attach-only and keeps its chunks (gr519746, the web upload repair case)
     — or while bodiless (a held preview gets re-pointed, 5d95cb2fc/gr465474).
-    Only a *complete* ref (body AND a held PDF) refuses: a drop would mint a
-    duplicate ref instead of folding."""
+    Complete refs refuse unless the URL path explicitly allows a short
+    held article preview; that path pins both PDF hashes for ingest."""
     with store.pool.connection() as conn:
         row = conn.execute(
             f"SELECT r.kind, {has_body_sql('r')}, r.pdf_sha256 IS NOT NULL "
@@ -209,7 +244,7 @@ def target_problem(store: Store, ref_id: int) -> str | None:
     kind, has_body, has_pdf = row
     if kind != "paper":
         return f"is a {kind}, not a paper"
-    if has_body and has_pdf:
+    if has_body and has_pdf and not (allow_preview and preview_sha(store, ref_id)):
         return (
             "already has a body and a held PDF — a pulled file can't fold "
             "onto a complete ref"
@@ -318,6 +353,11 @@ def pull(
     ``$PRECIS_UPLOAD_STAGING/<ref_id>-<sha>.pdf`` an agent PUT through
     the signed-upload route. ``reason`` is the caller's audit string,
     journaled into the upload leg's ``pdf_uploaded`` ref_event.
+
+    A preview replacement's ``meta.pdf_preview_refetch`` pin is written
+    before the drop; a failed drop clears it, so a stale pin can only
+    outlive a file that reached the inbox and then failed to fold — where
+    it stays harmless until the same ``to`` hash returns.
     """
     from precis.workers.fetch_oa import _sanitise
 
@@ -326,7 +366,7 @@ def pull(
             raise _dl._Failed(
                 "bad_source", "paper_pull takes exactly one of url / upload_sha"
             )
-        problem = target_problem(store, ref_id)
+        problem = target_problem(store, ref_id, allow_preview=url is not None)
         if problem is not None:
             raise _dl._Failed("bad_target", f"ref {ref_id} {problem}")
         inbox = _inbox()
@@ -370,24 +410,54 @@ def pull(
                 raise _dl._Failed("bad_source", "paper_pull needs url or upload_sha")
             title, doi, etype, has_body = _stub_facts(store, ref_id)
             checks = check_pdf(staged, title=title, doi=doi, entry_type=etype)
-            write_sidecar(
-                staged,
-                ref_id=ref_id,
-                identifiers={"cite_key": cite_key},
-                source=(
-                    pdf_upload.UPLOAD_SIDECAR_SOURCE
-                    if upload_sha is not None
-                    else SIDECAR_SOURCE
-                ),
-                url=final_url,
-                # A bodied target takes the file attach-only — skipping the
-                # Marker run whose chunks the fold would discard anyway
-                # (gr519746's repair case: markup body + cleared PDF).
-                printable_only=has_body,
-            )
-            # Sidecar first, PDF last: the watcher keys off the ``.pdf``.
-            os.replace(sidecar_path(staged), sidecar_path(target))
-            os.replace(staged, target)
+            problem = target_problem(store, ref_id, allow_preview=url is not None)
+            if problem is not None:
+                raise _dl._Failed("bad_target", f"ref {ref_id} {problem}")
+            old_sha = preview_sha(store, ref_id) if has_body and url else None
+            if old_sha is not None:
+                if checks["identity"] == "unchecked" or checks["pages"] <= 2:
+                    raise _dl._Failed(
+                        "preview_suspected",
+                        "replacement needs identity and more than two pages",
+                    )
+                store.update_ref(
+                    ref_id,
+                    meta_patch={
+                        "pdf_preview_refetch": {
+                            "from": old_sha,
+                            "to": sha,
+                            "url": final_url,
+                            "at": now_iso(),
+                        }
+                    },
+                )
+            try:
+                write_sidecar(
+                    staged,
+                    ref_id=ref_id,
+                    identifiers={"cite_key": cite_key},
+                    source=(
+                        pdf_upload.UPLOAD_SIDECAR_SOURCE
+                        if upload_sha is not None
+                        else SIDECAR_SOURCE
+                    ),
+                    url=final_url,
+                    # A bodied target takes the file attach-only — skipping
+                    # the Marker run whose chunks the fold would discard
+                    # anyway (gr519746's repair case: markup body + cleared
+                    # PDF).
+                    printable_only=has_body and old_sha is None,
+                )
+                # Sidecar first, PDF last: the watcher keys off the ``.pdf``.
+                os.replace(sidecar_path(staged), sidecar_path(target))
+                os.replace(staged, target)
+            except OSError:
+                # The pin (written above) outlived its drop — clear it so a
+                # later unrelated file with the same hash cannot claim the
+                # replacement.
+                if old_sha is not None:
+                    _clear_preview_pin(store, ref_id)
+                raise
         finally:
             staged.unlink(missing_ok=True)
         record: dict[str, Any] = {

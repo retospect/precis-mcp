@@ -36,7 +36,9 @@ to every kind that supports them.
 | `tag`    | Add or remove tags (`add=[...]`, `remove=[...]`). |
 | `link`   | Add or remove a cross-link (`target=`, `rel=`). |
 
-For `get`/`put`/`edit`/`delete`/`tag`/`link`, `kind=` is required.
+For `get`, `kind=` is optional when `id=` self-identifies (handle,
+bare ref id, slug, DOI, `kind:id`); otherwise required. For
+`put`/`edit`/`delete`/`tag`/`link`, `kind=` is required.
 For `search`, `kind=` is optional — omitted means cross-kind fan-out.
 
 **A precis web path is a handle, not a page to fetch.** If a user gives
@@ -90,7 +92,7 @@ name/path.
 | `markdown` | `notes--meeting` | A `.md` file under `PRECIS_ROOT`; where `PRECIS_ROOTS` mounts it, `skills/<slug>` is the read-only mirror of a skill file (tag `mirror:skills`, `part-of` its parent skill) | `PRECIS_ROOT`, `PRECIS_ROOTS` |
 | `plaintext` | `notes--log` | A `.txt` / `.log` file under `PRECIS_ROOT` | `PRECIS_ROOT` |
 | `tex` | `chapters--intro` | A `.tex` file (section-aware blocks + `/toc`) | `PRECIS_ROOT` |
-| `draft` | `dr3` | Editable, chunk-native document — the living source of a project's write-up; exports to LaTeX/PDF/Word. See `precis-draft-help`. | store |
+| `draft` | `dr3` | Editable, chunk-native document — the living source of a project's write-up; exports to LaTeX/PDF/Word. Data tables support formulas and totals: see `precis-table-help`. See `precis-draft-help`. | store |
 | `plan` | `po3` | A thread's reasoning outline — hierarchical todo-list + notes, never exported. One per project (`plan-of` link). See `precis-plan-help`. | store |
 ## The ref kinds, continued — designs
 
@@ -161,7 +163,7 @@ Pass `q=` (or `id=`), get text back. No agent-side slugs.
 | Kind | What | Example `q=` | Cost |
 |---|---|---|---|
 | `calc` | Local SymPy: exact arithmetic, calculus (integrals/derivatives/ODEs), solve, linear algebra; trig with explicit angle units (`sin(30 deg)`); **+ local unit conversion** (`3 ft to m`, disambiguates ton/gallon/oz). See `precis-calc-help`. | `2+3*4` · `1 ton to kg` | free |
-| `handle` | Spoken word handle for a numeric id (3 common words), both directions; on request only. See `precis-handle-help`. | `648264` · `amber brave dog` | free |
+| `handle` | Spoken word handle for a numeric id (2 words; 3 on a clash), both directions + multi-id; `put(text='on')` gives search/list rows a `word` column for the session. See `precis-word-handles-help` and `precis-handle-help`. | `648264` · `brave dog` | free |
 | `time` | Local clock: now in UTC + server local + epoch; parse ISO/RFC 2822/epoch/`in 3 hours`/`next monday`; `args={'to': 'Asia/Tokyo'}` converts, `args={'format': ...}` renders. See `precis-time-help`. | `in 3 hours` · `1791556200` | free |
 | `math` | Wolfram Alpha: facts, world data | `population of Ireland` | paid |
 | `youtube` | Transcript fetch | `dQw4w9WgXcQ` | free |
@@ -176,7 +178,9 @@ Pass `q=` (or `id=`), get text back. No agent-side slugs.
 
 Paid tools cache automatically. Pro subscribers can import a free
 web-UI answer at $0 via `put(mode='import')` — see
-`precis-perplexity-help`. See `precis-cache` for TTLs.
+`precis-perplexity-help`. See `precis-cache` for TTLs. Cached answers
+carry universal handles (`yt`/`wb`/`wx`/`rr`/`rz`, `wp`/`ss`/`ch` for
+wikipedia/chem/semanticscholar) — cite them in a memory to auto-link.
 
 ## What's the special discovery kind?
 ## How do I stumble into something I don't know to ask for?

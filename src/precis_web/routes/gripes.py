@@ -53,6 +53,8 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
   A recorded agentlog can resolve a model after the run finishes; interactive
   models remain unknown unless the client declared one. Trust uses the same
   stamp as the MCP get footer.
+  Tags and directed links remain visible after retirement so the resolution
+  trail stays inspectable; attention uses the list's existing cohort.
 * ``POST /gripes/{id}/status`` — ``tag`` verb, closed ``STATUS:`` axis
   (replace-on-add, no explicit remove — see ``precis.handlers.gripe``).
   htmx re-renders just the status fragment; no-JS redirects back.
@@ -99,6 +101,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
+from precis_web.ref_urls import ref_url
 from precis_web.timefmt import ago as _ago
 
 if TYPE_CHECKING:
@@ -846,6 +849,33 @@ async def detail(request: Request, id: int) -> HTMLResponse:
 
     tags = store.tags_for(ref.id)
     status = _status_of(tags)
+    links = store.links_for(ref.id)
+    neighbours = store.fetch_refs_by_ids(
+        list({link.src_ref_id for link in links} | {link.dst_ref_id for link in links}),
+        include_deleted=True,
+    )
+    link_groups: dict[str, list[dict[str, Any]]] = {"Incoming": [], "Outgoing": []}
+    for link in links:
+        for direction, endpoint in (
+            ("Incoming", link.src_ref_id),
+            ("Outgoing", link.dst_ref_id),
+        ):
+            if (direction == "Incoming" and link.dst_ref_id != ref.id) or (
+                direction == "Outgoing" and link.src_ref_id != ref.id
+            ):
+                continue
+            neighbour = neighbours.get(endpoint)
+            link_groups[direction].append(
+                {
+                    "relation": link.relation,
+                    "title": first_line(neighbour.title or "")
+                    if neighbour
+                    else str(endpoint),
+                    "url": ref_url(neighbour.kind, endpoint, neighbour.slug)
+                    if neighbour
+                    else None,
+                }
+            )
     origin = _filing_origin(store, getattr(ref, "meta", None), tags)
     try:
         footer = trust_footer(store, "gripe", ref.id)
@@ -877,6 +907,10 @@ async def detail(request: Request, id: int) -> HTMLResponse:
             "body": body_text,
             "comments": comments,
             "status": status,
+            "tags": sorted(str(tag) for tag in tags),
+            "attention": status in BADGE_STATUSES
+            and getattr(ref, "retired_at", None) is None,
+            "link_groups": link_groups,
             "status_values": STATUS_VALUES,
             "status_badge": _status_badge(status),
             "retired": getattr(ref, "retired_at", None) is not None,
@@ -952,6 +986,7 @@ async def set_status(request: Request, id: int, value: str = Form(...)) -> Respo
             "status": value,
             "status_values": STATUS_VALUES,
             "status_badge": _status_badge(value),
+            "attention": value in BADGE_STATUSES,
         },
     )
 

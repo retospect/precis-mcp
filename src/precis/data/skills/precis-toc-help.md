@@ -87,9 +87,9 @@ the exact remaining range to ask for next.
 ## Browse the skill catalogue — id='toc'
 
 `get(kind='skill', id='toc')` lists every skill grouped by purpose.
-It opens with a **Categories** menu — each row's `open` column is a
-paste-ready drill that re-serves only that group's table, so you
-never drain the whole listing to reach one group:
+Each row's `open` column in the **Categories** menu gives the `args=`
+value as an assignment, such as `args={'category': 'drafting'}`. Copy
+that assignment into the call to open only that group's table.
 
 ```python
 get(kind="skill", id="toc", args={"category": "drafting"})  # one group only

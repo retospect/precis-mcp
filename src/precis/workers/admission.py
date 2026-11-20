@@ -8,7 +8,8 @@ synchronous heavy call. S2 (gr657245) routes the builder-editable launch
 sites (the run_slice/land_slice/dep_check/lane_health/boundary_probe
 detached launcher, the codex/claude subprocess runners, the moot test
 probe) through them; the release and gate tooling and the claim path are
-deliberately still outside (S3 / Reto's patch).
+deliberately still outside (S3 / Reto's patch). Fresh run_slice claims use
+:func:`launch_fits` as a preflight only; spawn retains hold ownership.
 
 **Lock order.** Every multi-row writer of ``resource_slots`` (this
 reserve, the heartbeat's capability and capacity syncs, release) touches
@@ -251,8 +252,12 @@ def local_host() -> str:
 #: The detached child's wrapping shell: argv rides as positional args,
 #: stdin from ``$RS_IN``, output to ``$RS_LOG``, the exit code to
 #: ``$RS_EXIT`` — so a restarted worker, no longer the parent, still
-#: reads the verdict from the file.
-_SPAWN_SCRIPT = '"$@" < "$RS_IN" > "$RS_LOG" 2>&1; echo $? > "$RS_EXIT"'
+#: reads the verdict from the file. Its first act writes its own pid to
+#: ``$RS_PID``: a caller that dies before persisting the returned handle
+#: leaves the child's own launch proof on disk (gr708457).
+_SPAWN_SCRIPT = (
+    'echo $$ > "$RS_PID"; "$@" < "$RS_IN" > "$RS_LOG" 2>&1; echo $? > "$RS_EXIT"'
+)
 
 #: Ceiling on the babysit's renewal cadence (half the default TTL): a
 #: long-running launch re-checks the child at least this often.
@@ -281,6 +286,20 @@ def _host_offers(conn: Connection, host: str, footprint: Footprint) -> bool:
         ).fetchone()
         is not None
     )
+
+
+def launch_fits(conn: Connection, host: str, footprint: Footprint) -> bool:
+    """Check spawn capacity without retaining a second reservation.
+
+    A successful probe refunds immediately; spawn owns the detached hold.
+    A race after commit is handled by run_slice’s attempt-free lane wait.
+    No advertised rows means unheld, matching the launch fallback.
+    """
+    requirements = footprint.requirements()
+    if _ops.reserve_resource_slots(conn, host, requirements):
+        _ops.release_resource_slots(conn, host, requirements)
+        return True
+    return not _host_offers(conn, host, footprint)
 
 
 def _try_admit(
@@ -407,8 +426,9 @@ def spawn(
     stdin: str | Path | None = None,
     log_path: str | Path,
     exit_file: str | Path,
+    pid_file: str | Path | None = None,
     pass_fds: Sequence[int] = (),
-    preexec_fn: Callable[[], None] | None = None,
+    preexec_fn: Callable[[], object] | None = None,
     popen: Callable[..., Any] | None = None,
 ) -> int:
     """The one admitted detached launcher (gr657245).
@@ -428,8 +448,12 @@ def spawn(
     release) or the TTL backstop, never refunded early by the launching
     worker's restart. A :func:`popen` failure releases the just-admitted
     holds before the error propagates — no hold leaks to its TTL for a
-    child that never started (review td702053). Returns the process group
-    pid. ``popen`` is the test seam for the fake child.
+    child that never started (review td702053). ``pid_file`` is where the
+    child's *first* act writes its own pid — launch proof that survives
+    a caller dead between ``spawn`` returning and the caller persisting
+    the handle it built (gr708457); ``None`` writes it to ``/dev/null``.
+    Returns the process group pid. ``popen`` is the test seam for the
+    fake child.
     """
     popen = subprocess.Popen if popen is None else popen
     adm = _try_admit(store, host, footprint, holder, detached=True)
@@ -438,11 +462,18 @@ def spawn(
         "RS_IN": str(stdin) if stdin is not None else os.devnull,
         "RS_LOG": str(log_path),
         "RS_EXIT": str(exit_file),
+        "RS_PID": str(pid_file) if pid_file is not None else os.devnull,
     }
     # Fixed script; argv rides as positional args, never interpolated.
     try:
         proc = popen(
-            ["/bin/sh", "-c", _SPAWN_SCRIPT, "admitted", *argv],
+            [
+                "/bin/sh",
+                "-c",
+                _SPAWN_SCRIPT,
+                str(pid_file) if pid_file else "admitted",
+                *argv,
+            ],
             cwd=str(cwd) if cwd is not None else None,
             env=full_env,
             stdin=subprocess.DEVNULL,
@@ -509,6 +540,7 @@ __all__ = [
     "Refused",
     "admit",
     "hold",
+    "launch_fits",
     "local_host",
     "release",
     "spawn",

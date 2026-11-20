@@ -71,10 +71,12 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from psycopg import Connection
 
+from precis.plans.lanes import BREAKER_HOLD, LANE_PARK_WHY, RUN_SLICE
 from precis.utils.env import env_float
 from precis.workers.executors._common import (
     CANCEL_REQUESTED as _CANCEL_REQUESTED,
@@ -257,7 +259,11 @@ def _wake_children_deadline_exceeded(
 
 
 def _wake_at_time(conn: Connection, *, limit: int) -> list[int]:
-    """Find ``waiting_time`` rows whose ``ts`` is in the past."""
+    """Find due timers and legacy pinned-lane parks that stored the breaker
+    sentinel as a deadline. Submit rechecks the current lane state on wake.
+    Compare the deadline to the original park time so old parks stay
+    recognizable as their remaining delay shrinks.
+    """
     rows = conn.execute(
         """
         SELECT r.ref_id
@@ -271,13 +277,28 @@ def _wake_at_time(conn: Connection, *, limit: int) -> list[int]:
                     AND t.value = %s
                )
            AND r.meta->'wake_when'->>'kind' = 'at_time'
-           AND (r.meta->'wake_when'->'payload'->>'ts')::bigint
-               <= extract(epoch from now())::bigint
+           AND (
+               (r.meta->'wake_when'->'payload'->>'ts')::bigint
+                   <= extract(epoch from now())::bigint
+               OR (
+                   r.meta->>'job_type' = %s
+                   AND r.meta->'wake_when'->'payload'->>'why' LIKE %s
+                   AND (r.meta->'wake_when'->'payload'->>'ts')::bigint
+                       >= (r.meta->>'lane_park_at')::bigint + %s
+               )
+           )
          ORDER BY r.ref_id
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
-        (_STATUS_NAMESPACE, _WAITING_TIME, limit),
+        (
+            _STATUS_NAMESPACE,
+            _WAITING_TIME,
+            RUN_SLICE,
+            f"{LANE_PARK_WHY}run_slice: lane % pinned by params.lane is backed off until % after a host refusal",
+            int((BREAKER_HOLD - timedelta(days=1)).total_seconds()),
+            limit,
+        ),
     ).fetchall()
     return [int(r[0]) for r in rows]
 

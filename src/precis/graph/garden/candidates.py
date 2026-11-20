@@ -5,8 +5,8 @@ Python scoring, returning :class:`GardenCandidate` rows the proposer turns
 into review-ledger proposals (or drops). No LLM calls, no writes — a
 candidate is evidence, never a verdict.
 
-The opt-in ``memory-review`` pass adds review debt, title shape and undated
-absence signals. Expiry defaults are computed on read, using updated_at
+The opt-in ``memory-review`` pass adds review debt, title shape, undated
+absence and notation-canon signals. Expiry defaults are computed on read, using updated_at
 plus the title/section shape's lifetime; put-side metadata and acknowledgements
 are outside this pass. Incident suggestions retain only a verified dated
 cause, fix and open uncertainty. No expiry authorizes retirement.
@@ -210,6 +210,7 @@ _DETECTOR_BY_PASS = {
     "memory-review": (
         "entity_claim_stale",
         "negative_undated",
+        "notation",
         "restated_claim",
         "review_due",
         "source_drift",
@@ -218,12 +219,18 @@ _DETECTOR_BY_PASS = {
     # One-off host pass (gr560767): the census sync is the operator's
     # hand step, then this pass rewrites host prose to dated events.
     "host-facts": ("host_facts",),
+    # Claim-level grounding ledger (gr634485, gr634486): writes its own
+    # review rows and, for definitively ungrounded claims, repair
+    # proposals through the shared garden ledger.
+    "memory-grounding": ("grounding_audit",),
 }
 
 #: Passes ``all`` skips. Memory detectors spend proposer calls, so a job
 #: must name their pass explicitly; memory-review is independent of memory;
 #: host-facts is a one-off hand-run pass over the machine census.
-OPT_IN_PASSES: frozenset[str] = frozenset({"memory", "memory-review", "host-facts"})
+OPT_IN_PASSES: frozenset[str] = frozenset(
+    {"memory", "memory-review", "host-facts", "memory-grounding"}
+)
 
 #: Job ``params.pass`` values → detectors. ``all`` runs everything not opt-in.
 PASS_CHOICES: tuple[str, ...] = tuple(_DETECTOR_BY_PASS) + ("all",)
@@ -273,6 +280,18 @@ class GardenCandidate:
                     str(v or "none") for v in generation
                 )
             return f"{key}:{self.detector}"
+        if self.detector == "notation":
+            # One anchored fix per (memory, code, token): applying the
+            # proposed edit changes the body, so the next pass re-detects
+            # the following hit as a different key instead of re-asking
+            # the settled question on the changed text.
+            hits = self.evidence.get("hits")
+            if isinstance(hits, list) and hits and isinstance(hits[0], dict):
+                first = hits[0]
+                token = str(first.get("token") or "")
+                digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+                return f"{key}:notation:{first.get('code')}:{digest}"
+            return f"{key}:notation"
         if self.detector in {"source_drift", "entity_claim_stale"}:
             return f"{key}:{self.detector}:{self.payload['evidence_sha']}"
         if self.detector == "griped":
@@ -284,6 +303,20 @@ class GardenCandidate:
             # A census fact changing (the sync, a hand put) is new evidence
             # on the same body — a distinct proposal question.
             return f"{key}:host_facts:{self.payload.get('evidence_sha') or 'none'}"
+        if self.detector == "grounding_audit" and self.action != "audit":
+            # A grounding repair is a question about one claim span on one
+            # audited revision: repairs for different spans (or a new audit
+            # of changed content) must not collide on one memory's key.
+            span = self.payload.get("span")
+            span_key = (
+                "-".join(str(int(v)) for v in span[:2])
+                if isinstance(span, list) and len(span) >= 2
+                else "none"
+            )
+            return (
+                f"{key}:grounding_audit:"
+                f"{self.payload.get('audit_sha') or 'none'}:{span_key}"
+            )
         return key
 
 
@@ -579,7 +612,12 @@ _MEMORY_HANDLE = re.compile(r"\b[a-zA-Z]{2}[0-9]{1,19}\b")
 
 
 def memory_handle_mentions(body: str, handle: str) -> list[re.Match[str]]:
-    """The dangling-mention token predicate, narrowed to one record handle."""
+    """The dangling-mention token predicate, narrowed to one record handle.
+
+    Bare prose tokens count as mentions product-wide (gr702966): the
+    web reader autolinks them, the write-time sync links and warns on
+    them, and the retire guard here counts them.
+    """
     wanted = parse_handle(handle)
     return [
         m for m in _MEMORY_HANDLE.finditer(body) if parse_handle(m.group()) == wanted
@@ -1647,6 +1685,79 @@ def negative_undated_candidates(
     return out
 
 
+#: Bound on the notation detector's evidence hits per memory — the same
+#: "name at most five" bar as the title's evidence list.
+NOTATION_MATCH_CAP = 5
+
+
+def notation_candidates(
+    store: Store,
+    *,
+    scan_cap: int = 2000,
+    limit: int = 50,
+    cursors: dict[str, int] | None = None,
+    next_cursors: dict[str, int] | None = None,
+) -> list[GardenCandidate]:
+    """Propose one anchored precis-notation-canon fix per memory per pass.
+
+    Flags authored-prose spans — outside quotes, code and math — that break
+    the memory notation canon (gr662596), via
+    :func:`precis.taproot.notation.lint_authored_notation_spans`; DREAMs and
+    memories with no token-anchored hit are skipped. The candidate carries
+    the first hit's anchored op (``text=None``: the evaluator supplies the
+    canon-correct replacement) and up to :data:`NOTATION_MATCH_CAP` evidence
+    hits with spans. One fix per pass: the key is suffixed with the hit's
+    code and token hash, so applying it re-opens the next violation as a new
+    question on the changed body. ``formula-ascii-subscript`` is never
+    flagged (the detector excludes it; see the notation module). Dispatcher
+    deadline; proposal-only, like the other memory-review detectors.
+    """
+    if limit <= 0 or scan_cap <= 0:
+        return []
+    from precis.taproot.notation import lint_authored_notation_spans
+
+    key = "notation:memory"
+    window, nxt = _scan_window(
+        store, "memory", after=(cursors or {}).get(key, 0), size=scan_cap
+    )
+    out: list[GardenCandidate] = []
+    for rid, body, sha in _memory_bodies(store, window):
+        hits = [h for h in lint_authored_notation_spans(body) if h[1] is not None]
+        if not hits:
+            continue
+        code, token, start, end = hits[0]
+        out.append(
+            GardenCandidate(
+                detector="notation",
+                action="rewrite",
+                target_kind="ref",
+                target_id=rid,
+                title=f"me{rid} breaks precis-notation-canon ({code}: {token})",
+                evidence={
+                    "hits": [
+                        {"code": c, "token": t, "span": [s, e]}
+                        for c, t, s, e in hits[:NOTATION_MATCH_CAP]
+                    ],
+                    "content_sha": sha,
+                },
+                payload={
+                    "base_sha": sha,
+                    "ops": [
+                        {"find": body[start:end], "text": None, "span": [start, end]}
+                    ],
+                    "match_cap": NOTATION_MATCH_CAP,
+                    "matches_capped": len(hits) > NOTATION_MATCH_CAP,
+                },
+            )
+        )
+        if len(out) >= limit:
+            nxt = rid
+            break
+    if next_cursors is not None:
+        next_cursors[key] = nxt
+    return out
+
+
 RESTATED_SENTENCE_CAP = 128
 RESTATED_NODE_SENTENCE_CAP = 20
 RESTATED_MATCH_CAP = 20
@@ -1660,7 +1771,7 @@ _OWNER_RANK = {"section:reference": 0, "section:gotchas": 1, "section:threads": 
 
 
 def _claim_sentences(
-    body: str, title: str, *, min_words: int = 8
+    body: str, title: str, *, min_words: int = 8, include_metadata: bool = False
 ) -> Iterator[tuple[str, list[int]]]:
     """Exact sentence spans, omitting short text, headings and metadata lines.
 
@@ -1673,11 +1784,13 @@ def _claim_sentences(
     for line in body.splitlines(keepends=True):
         clean = line.strip()
         plain = re.sub(r"^[*_-]+\s*", "", clean).strip("*_ ")
-        excluded = (
-            not clean
-            or clean.startswith("#")
-            or plain == title.strip()
-            or bool(_BOILERPLATE.match(plain))
+        excluded = not clean or (
+            not include_metadata
+            and (
+                clean.startswith("#")
+                or plain == title.strip()
+                or bool(_BOILERPLATE.match(plain))
+            )
         )
         if excluded and paragraph_start is not None:
             ranges.append((paragraph_start, start))
@@ -4772,6 +4885,7 @@ def run_detectors(
             "griped",
             "host_facts",
             "negative_undated",
+            "notation",
             "review_due",
             "source_drift",
             "thread_shape",
@@ -4786,6 +4900,7 @@ def run_detectors(
                     "griped": griped_candidates,
                     "host_facts": host_facts_candidates,
                     "negative_undated": negative_undated_candidates,
+                    "notation": notation_candidates,
                     "review_due": review_due_candidates,
                     "source_drift": source_drift_candidates,
                     "thread_shape": thread_shape_candidates,
@@ -4809,6 +4924,17 @@ def run_detectors(
                 cursors=saved,
                 next_cursors=nxt,
                 not_checked=unchecked,
+            )
+        elif det == "grounding_audit":
+            from precis.graph.garden.grounding import grounding_audit_candidates
+
+            fn = partial(
+                grounding_audit_candidates,
+                store,
+                scan_cap=scan_cap,
+                limit=limit,
+                cursors=saved,
+                next_cursors=nxt,
             )
         elif det == "polysemy":
             fn = partial(polysemy_candidates, store, limit=limit)
@@ -4857,7 +4983,7 @@ def run_detectors(
         kept = [
             c
             for c in out.candidates
-            if c.detector in ("review_due", "griped")
+            if c.detector in ("review_due", "griped", "grounding_audit")
             or (c.target_kind, c.target_id) not in fresh
         ]
         out.skipped_considered = len(out.candidates) - len(kept)
@@ -4901,6 +5027,7 @@ __all__ = [
     "host_facts_candidates",
     "memory_expiry_shape",
     "negative_undated_candidates",
+    "notation_candidates",
     "orphan_taxon_candidates",
     "paper_identity_candidates",
     "polysemy_candidates",

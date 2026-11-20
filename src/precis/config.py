@@ -289,18 +289,6 @@ class PrecisConfig(BaseSettings):
     ``precis-startup-skills-help`` for the full discovery model.
     """
 
-    startup_skills_cap_kb: int = 50
-    """Cap on the total resolved-body size of pinned startup skills.
-
-    Defensive guard against operator misconfiguration (pinning the
-    entire skill corpus inflates context for every connecting agent).
-    Skills whose cumulative body bytes would exceed the cap are
-    dropped from the tail with a banner notice. Set to ``0`` to
-    disable the cap (not recommended — leaves the budget unbounded).
-
-    Set via ``PRECIS_STARTUP_SKILLS_CAP_KB`` in the env.
-    """
-
     default_tags: str | None = None
     """Comma-separated list of session-context tags to merge on
     ``put`` for note-like kinds.

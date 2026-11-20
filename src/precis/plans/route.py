@@ -1,7 +1,7 @@
 """Mint-time coordinator routing for the dark factory (gr645163).
 
 Ruling (Reto 2026-11-12, "escalate to next model"): work no builder lane
-may write — a brief naming a deny path, or a fix that is prod-graph only
+may write — a declared deny-path write, or a fix that is prod-graph only
 — skips the builders entirely and becomes one coordinator ask with the
 brief attached, instead of burning a build that can't land and stalling
 until the coordinator lands it by hand (td643078/gr626879, td638980).
@@ -20,68 +20,16 @@ Two signals:
 
 - ``deny-path named`` — a path-shaped token in the text matches the
   resolved deny set (:func:`precis.plans.lanes.deny_paths_for`,
-  ``STRICT_DENY`` by default) AND counts as write intent (gr685970):
-  the match sits on a spec write-target line (``Seam:``/``Anchors:``/
-  ``Files:``/``File set:``/``Targets:``), in the same sentence as an
-  edit verb (``edit``/``change``/``write``/``touch``/``rename``/…,
-  :data:`_WRITE_VERBS`), or heads its sentence as the defect's subject
-  with a defective or demanded predicate (``scripts/round open refuses
-  the next cut``, ``scripts/ship cannot land a branch``,
-  ``scripts/test accepts --foo`` — a gripe about the path IS the edit
-  request, gr639737; a passive demand like ``scripts/release cannot be
-  indexed`` names the actor's limitation, not the edit). A bare mention
-  — a path cited as an example or mechanism, a test-fixture path, or a
-  line under ``Out of scope`` — never routes: mention-only reports
-  stalled four valid gripes on ``hold:no-dispatch``. Case folds like
-  the lane's own write check
-  (``human_only_hits``: the slice hosts' filesystems fold case). Two
-  narrowings (td647606): a brief with a ``File set:`` line is judged on
-  that write set alone, and a harness path run as a command
-  (``scripts/test tests/x.py``, ``scripts/test --typecheck``) is not a
-  write target. For structured reports, only explicit ``Goal:``, ``Fix:``,
-  ``Missing:``, ``Want:`` or ``Expected:`` paragraphs (also Markdown
-  headings) name change intent. They end at a blank line after content,
-  an evidence label (``Symptom``, ``Route``, ``Evidence``, ``Seen``), or
-  another heading; quoted lines and fences labelled ``log``, ``console``
-  or ``output`` do not count. Other code fences retain possible edit
-  targets. Without
-  an intent marker the whole report is judged as before. A declared
-  write set still takes precedence. This avoids treating a deny path
-  in symptom evidence as the requested edit (gr645561). A mention is
-  discounted, not counted, when it is negated or cited (gr653037): a
-  negation or citation cue (``no``/``not``/``never``/``without``…,
-  ``cross-checked``/``matches``/``cf.``/``related:``…) within three
-  words before it in its clause, ``cross-checked`` right after it, or a
-  ``Related:``/``Evidence:``/``See also:``/``Cross-checked:`` paragraph
-  around it. Paragraphs that are routing notes — the dispatchers'
-  ``dispatch:``/``plan_dispatch:`` stamps, a ``Coordinator note`` —
-  and a quoted ``names deny path …`` reason are stripped with the
-  boilerplate; hidden comments never reach here (the callers drop them:
-  ``templates.gripe_report_texts``, ``plan_dispatch._route_text``).
-  Three more non-targets (gr663138, gr658931):
-
-  - A harness path run as a command, wider than the flag/test-path form:
-    ``scripts/test on tests/x.py``, a path after a run verb within three
-    words (``run``/``ran``/``re-run``/``execute``…, ``never ran
-    `scripts/ship```), a clause that opens with a run verb (``run the
-    tests through that tree's own scripts/test``) unless an edit verb
-    follows it, and a parenthetical list after one (``commands to run
-    (`scripts/test`, `scripts/ship`)``). ``Goal: scripts/test accepts
-    --foo`` has no such cue and still routes.
-  - A rescue report's evidence: from a ``log tail:`` label (or a ``---
-    log tail ---`` rule) to the next ``## `` heading or the end, plus
-    its ``rescue class:``/``signature key:``/``first node:``/``job:``/
-    ``step:``/``branch:``/``head:`` lines when the text is a rescue
-    report. Like a ``log`` fence, they record what the dead run did.
-    Real intent lines elsewhere in the report still classify.
-  - A slice checkout location: a path through ``.claude/worktrees/<tree>``
-    is where the work runs, not what it changes. It is judged by the
-    repo-relative remainder after ``<tree>/`` — none, no hit; ``scripts/
-    release``, still a hit. (This is the router only: the write gates
-    keep ``.claude/**`` fully denied.)
-
-  The ``dispatch: routes to the coordinator`` comment and the ask quote
-  the matched sentence so the reviewer sees why the route fired.
+  ``STRICT_DENY`` by default) AND sits in a declared write set:
+  ``File set:``, ``Files:``, ``Seam:``, ``Anchors:`` or ``Targets:``
+  lines and their lists, or a ``Want:``, ``Fix:`` or ``Goal:`` paragraph
+  carrying an edit verb on that path (gr702295). Quoted lines and fences
+  labelled ``log``, ``console`` or ``output`` never declare writes.
+  Unstructured prose and a path heading a defect sentence do not route.
+  The diff's deny-path gate remains authoritative; this pre-filter only
+  saves builds with explicitly declared forbidden writes. A declared
+  ``File set:`` takes precedence within its document. Body and newest
+  brief retain independent scopes. The route reason quotes the match.
 - ``graph-only`` — every non-empty token is a well-formed graph handle
   (``td<id>``/``gr<id>``/``me<id>``/…), bare punctuation, graph
   vocabulary or grammar glue, and at least one handle appears. A
@@ -240,7 +188,7 @@ _FILE_SET = re.compile(r"^\s*File set:(.*?)(?:\n\s*\n|\Z)", re.MULTILINE | re.DO
 
 #: Explicit report labels, optionally formatted as Markdown headings/bold.
 _INTENT_START = re.compile(
-    r"^(?:#{1,6}\s+)?\*{0,2}(?:Goal|Fix|Missing|Want|Expected)\b"
+    r"^(?:#{1,6}\s+)?\*{0,2}(?:Goal|Fix|Want)\b"
     r"\*{0,2}[ \t]*(?::\*{0,2}[ \t]*|$)",
     re.IGNORECASE,
 )
@@ -256,11 +204,6 @@ _CITATION_LABELS = (
 _EVIDENCE_START = re.compile(
     rf"^(?:#{{1,6}}\s+)?\*{{0,2}}(?:Symptom|Route|Seen|{_CITATION_LABELS})\b"
     r"(?:[ \t]*\([^)]*\))?\*{0,2}[ \t]*(?::|$)",
-    re.IGNORECASE,
-)
-_CITATION_START = re.compile(
-    rf"^(?:#{{1,6}}\s+)?\*{{0,2}}(?:{_CITATION_LABELS})\b"
-    r"(?:[ \t]*\([^)]*\))?\*{0,2}[ \t]*(?::\*{0,2}[ \t]*|$)",
     re.IGNORECASE,
 )
 _FENCE = re.compile(r"^(`{3,}|~{3,})")
@@ -646,144 +589,6 @@ _SENTENCE_BREAK = re.compile(
     re.IGNORECASE,
 )
 
-#: What may precede a sentence-initial path: a bullet or number, a
-#: ``Label:`` field name (``Symptom: scripts/ship cannot …``) and
-#: determiners — after those the path is the sentence's subject.
-_SUBJECT_HEAD = re.compile(
-    r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?"
-    r"(?:[A-Za-z][\w' -]{0,40}:\s+)?"
-    r"(?:(?:the|a|an|this|that|these|those|its|their|our|his|her)\s+)*"
-    r"[`'\"*_]*$",
-    re.IGNORECASE,
-)
-
-#: The predicates that make a sentence-initial deny path a requested
-#: fix (gr685970): the path's own action is defective
-#: (``scripts/round open refuses the next cut``), or the sentence asks a
-#: capability of it (``scripts/test accepts --foo``,
-#: ``scripts/ship should refuse a dirty tree``) or denies it one
-#: (``scripts/ship cannot land a branch``). A passive demand —
-#: ``scripts/release cannot be indexed`` — names the actor's
-#: limitation, not an edit of the path.
-_DEFECT_VERBS = frozenset(
-    [
-        "refuse",
-        "refuses",
-        "fail",
-        "fails",
-        "failed",
-        "failing",
-        "crash",
-        "crashes",
-        "crashed",
-        "hang",
-        "hangs",
-        "hung",
-        "break",
-        "breaks",
-        "broke",
-        "misread",
-        "misreads",
-        "drop",
-        "drops",
-        "reject",
-        "rejects",
-        "swallow",
-        "swallows",
-        "swallowed",
-        "mangle",
-        "mangles",
-        "mangled",
-        "truncate",
-        "truncates",
-        "corrupt",
-        "corrupts",
-        "overwrite",
-        "overwrites",
-        "die",
-        "dies",
-        "panic",
-        "panics",
-        "panicked",
-        "error",
-        "errors",
-        "exit",
-        "exits",
-        "loop",
-        "loops",
-        "leak",
-        "leaks",
-        "lose",
-        "loses",
-        "skip",
-        "skips",
-        "ignore",
-        "ignores",
-        "misfire",
-        "misfires",
-        "stall",
-        "stalls",
-        "stalled",
-        "regress",
-        "regresses",
-        "eat",
-        "eats",
-        "misbehave",
-        "misbehaves",
-        "duplicate",
-        "duplicates",
-        "garble",
-        "garbles",
-    ]
-)
-_DEMAND_WORDS = frozenset(
-    [
-        "should",
-        "must",
-        "ought",
-        "need",
-        "needs",
-        "want",
-        "wants",
-        "cannot",
-        "can't",
-        "couldn't",
-        "won't",
-        "doesn't",
-        "don't",
-        "didn't",
-        "never",
-        "expect",
-        "expects",
-        "expected",
-        "lack",
-        "lacks",
-        "miss",
-        "misses",
-        "accept",
-        "accepts",
-        "support",
-        "supports",
-        "handle",
-        "handles",
-        "take",
-        "takes",
-        "allow",
-        "allows",
-    ]
-)
-#: After a demand word these mark the passive — the actor is elsewhere.
-_PASSIVE_WORDS = frozenset(["be", "been", "being", "get", "getting", "gotten"])
-_DEFECT_ADJ = frozenset(
-    ["broken", "buggy", "stale", "wrong", "dead", "flaky", "busted"]
-)
-_COPULA = frozenset(
-    ["is", "are", "was", "were", "seems", "looks", "stays", "remains", "keeps"]
-)
-#: Negative copulas — a demanded capability phrased as its absence
-#: (``scripts/ship isn't landing``).
-_NEG_COPULA = frozenset(["isn't", "aren't", "wasn't", "weren't"])
-
 #: Leading path segments of a test-fixture tree (gr685970): under one a
 #: deny-looking suffix (``tests/fixtures/deploy/inventory-x/hosts.yml``)
 #: is fixture data, not the denied file — the ``*/glob`` fallback does
@@ -802,31 +607,6 @@ def _sentence_span(text: str, start: int, end: int) -> tuple[int, int]:
         ss = m.end()
     nxt = _SENTENCE_BREAK.search(text, end)
     return ss, nxt.start() if nxt is not None else len(text)
-
-
-def _demanded_or_defective(tail: list[str]) -> bool:
-    """True when the words after a sentence-initial path predicate a
-    defect or a demanded/denied capability of it (:data:`_DEFECT_VERBS`,
-    :data:`_DEMAND_WORDS`, copula + :data:`_DEFECT_ADJ`) — and False for
-    a passive demand (``cannot be indexed``: the actor is elsewhere)."""
-    for i, w in enumerate(tail[:8]):
-        if w in _DEFECT_VERBS:
-            return True
-        if w in _DEMAND_WORDS:
-            if tail[i + 1 : i + 2] and tail[i + 1] in _PASSIVE_WORDS:
-                continue
-            return True
-        if w in _NEG_COPULA:
-            # ``X isn't indexed`` — a participle after a negative copula
-            # is the passive (the actor is elsewhere); ``X isn't
-            # landing`` is X failing on its own.
-            nxt = tail[i + 1 : i + 2]
-            if nxt and (nxt[0] in _PASSIVE_WORDS or nxt[0].endswith(("ed", "en"))):
-                continue
-            return True
-        if w in _COPULA and any(a in _DEFECT_ADJ for a in tail[i + 1 : i + 3]):
-            return True
-    return False
 
 
 #: The previous sentence's last words merge into a wrapped instruction's
@@ -896,8 +676,7 @@ def _write_intent(text: str, start: int, end: int, span: tuple[int, int]) -> boo
     write target (gr685970): on a spec write-target line or a list one
     introduces (:data:`_WRITE_LINE`, :func:`_in_write_list`), in its
     sentence with an edit verb (:data:`_WRITE_VERBS`, wrap continuations
-    merged by :func:`_continuation_head`), or heading the sentence as
-    the defect's subject (:func:`_demanded_or_defective`)."""
+    merged by :func:`_continuation_head`)."""
     ss, se = span
     ls = text.rfind("\n", 0, start) + 1
     le = text.find("\n", end)
@@ -924,9 +703,7 @@ def _write_intent(text: str, start: int, end: int, span: tuple[int, int]) -> boo
     for m in _FIX_LOCATION.finditer(text[ss:se]):
         if "not" not in m.group(0).lower().split() and m.end() <= start - ss:
             return True
-    if not _SUBJECT_HEAD.match(text[ss:start]):
-        return False
-    return _demanded_or_defective(_cue_words(text[end:se]))
+    return False
 
 
 def deny_path_hit(
@@ -1000,34 +777,17 @@ def graph_only(text: str) -> bool:
 
 
 def _change_intent(text: str) -> str:
-    """Select labelled intent paragraphs, or retain unstructured text
-    minus its citation paragraphs (:data:`_CITATION_START`, gr653037).
+    """Select explicit intent paragraphs, excluding citation and log evidence.
 
     Only deny-path matching uses this selection; graph-only classification
     must still account for every word in the report.
     """
     out: list[str] = []
-    rest: list[str] = []
-    found = active = awaiting_content = cited = cite_waiting = False
+    active = awaiting_content = False
     fence = ""
     log_fence = False
     for raw in text.splitlines():
         line = raw.strip()
-        if not fence:
-            if match := _CITATION_START.match(line):
-                cited, cite_waiting = True, not line[match.end() :].strip()
-            elif not line:
-                cited = cited and cite_waiting
-            elif (
-                _INTENT_START.match(line)
-                or _EVIDENCE_START.match(line)
-                or line.startswith("#")
-            ):
-                cited = False
-            else:
-                cite_waiting = False
-        if not cited:
-            rest.append(raw)
         if fence:
             if line.startswith(fence) and not line[len(fence) :].strip(fence[0]):
                 fence = ""
@@ -1046,7 +806,7 @@ def _change_intent(text: str) -> str:
             }
             continue
         if match := _INTENT_START.match(line):
-            found = active = True
+            active = True
             content = line[match.end() :]
             awaiting_content = not content.strip()
             out.append(content)
@@ -1058,7 +818,47 @@ def _change_intent(text: str) -> str:
         elif active:
             out.append(line)
             awaiting_content = False
-    return "\n".join(out if found else rest)
+    return "\n".join(out)
+
+
+def _write_set_lines(text: str) -> str:
+    """Select declared targets and lists, excluding quoted and fenced evidence."""
+    out: list[str] = []
+    fence = ""
+    log_fence = False
+    active = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if fence:
+            if line.startswith(fence) and not line[len(fence) :].strip(fence[0]):
+                fence = ""
+            elif not log_fence:
+                if _WRITE_LINE.match(line):
+                    active = True
+                if active:
+                    out.append(raw)
+            continue
+        if match := _FENCE.match(line):
+            fence = match.group(1)
+            log_fence = line[match.end() :].strip().lower() in {
+                "log",
+                "console",
+                "output",
+            }
+            continue
+        if line.startswith(">"):
+            continue
+        if _WRITE_LINE.match(line):
+            active = True
+            out.append(raw)
+        elif active and (
+            re.match(r"^\s*(?:[-*+]|\d+[.)])\s", raw) or raw[:1].isspace()
+        ):
+            out.append(raw)
+        else:
+            active = False
+            out.append("")
+    return "\n".join(out)
 
 
 def coordinator_route(
@@ -1076,17 +876,13 @@ def coordinator_route(
     ]
     deny = tuple(deny_paths)
     for body in parts:
-        file_set = _FILE_SET.search(body)
-        # Strip invocations before selecting paragraphs: selection must not make
-        # a target path and a later test path look like one command invocation.
-        judged = (
-            file_set.group(1)
-            if file_set
-            else _change_intent(_RUN_LIST.sub(" ", _RUN_INVOCATION.sub(" ", body)))
-        )
-        # A declared write set is intent by definition; other text wants
-        # an edit cue (gr685970).
-        hit = deny_path_hit(judged, deny, write_intent=file_set is None)
+        declared = _write_set_lines(body)
+        file_set = _FILE_SET.search(declared)
+        judged = file_set.group(1) if file_set else declared
+        hit = deny_path_hit(judged, deny, write_intent=False)
+        if hit is None and not file_set:
+            intent = _change_intent(_RUN_LIST.sub(" ", _RUN_INVOCATION.sub(" ", body)))
+            hit = deny_path_hit(intent, deny)
         if hit is not None:
             token, glob, sentence = hit
             quote = sentence.replace('"', "'")[:160]

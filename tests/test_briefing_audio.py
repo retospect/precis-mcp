@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -227,3 +227,39 @@ def test_has_pending_briefing_gates_on_marker_and_presence(monkeypatch):
     assert has_pending_briefing(store, now=_NOW) is False
     monkeypatch.setattr(store, "ref", None)  # nothing at all
     assert has_pending_briefing(store, now=_NOW) is False
+
+
+def test_run_briefing_audio_passes_personal_lexicon(tmp_path, monkeypatch):
+    """The personal pronunciation lexicon reaches the narration (gr690184)."""
+    import json
+
+    lex = tmp_path / "lex.json"
+    lex.write_text(json.dumps({"Rates": "Raytes"}), encoding="utf-8")
+    monkeypatch.setenv("PRECIS_LEXICON_FILE", str(lex))
+    store, synth = _store(), _FakeSynth()
+    run_briefing_audio(
+        store, synth=synth, podcast_dir=tmp_path, now=_NOW, encode=_fake_encode
+    )
+    assert synth.calls[1] == "Raytes held steady."
+
+
+def test_news_lead_in_passes_personal_lexicon(monkeypatch):
+    """The news wire is narrated with the personal lexicon too (gr690184)."""
+    from types import SimpleNamespace
+
+    from precis.draft import narrate
+    from precis.reading import briefing_cast
+    from precis.workers.cast_audio import _news_lead_in
+
+    seen: dict[str, Any] = {}
+
+    def _fake_segments(text, **kw):
+        seen.update(kw)
+        return []
+
+    monkeypatch.setattr(narrate, "load_personal_lexicon", lambda: {"a": "b"})
+    monkeypatch.setattr(narrate, "markdown_segments", _fake_segments)
+    monkeypatch.setattr(briefing_cast, "_news_brief_text", lambda s, i: "body")
+    store = SimpleNamespace(get_ref=lambda **kw: SimpleNamespace(id=7))
+    _news_lead_in(cast(Any, store), [], date_tag="d", voice="v", default_lang="en")
+    assert seen["lexicon"] == {"a": "b"}

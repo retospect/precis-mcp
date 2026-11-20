@@ -54,12 +54,15 @@ bar.
    ```python
    get(kind="semanticscholar", id="<title or topic>")      # ranked hits + DOIs
    get(kind="semanticscholar", id="doi:<candidate DOI>")   # one record to compare
+   get(kind="semanticscholar", id="arxiv:<arXiv id>")      # byline of an arXiv-only preprint
    ```
 
-   Only `get` reaches S2 live; `search(kind='semanticscholar', …)`
-   re-queries rows `get` already cached. The `doi:` lookup is the
-   non-queuing way to check a candidate DOI exists and pull its
-   byline/abstract. S2's public tier paces calls at ~1/s; a configured
+   Free-text `get` reaches S2 live; a free-text
+   `search(kind='semanticscholar', …)` re-queries rows `get` already
+   cached, but an identifier-shaped query (a DOI or arXiv id) is a
+   lookup like `get`: it reuses a cached lookup or fetches live. The `doi:`/`arxiv:` lookup is the non-queuing way
+   to check a candidate exists and pull its byline/abstract; a 404 is
+   a clean "no record" row. S2's public tier paces calls at ~1/s; a configured
    key lifts it. A 429 that outlives its retries raises — that is a
    provider fault, not a miss (record provider-blocked).
 
@@ -123,11 +126,11 @@ bar.
    ```
 
 **Queue last.** `put(kind='paper', doi='<verified DOI>')` (or
-`arxiv=`/`title=`; an unheld-DOI `get(kind='paper', id='<DOI>')` queues
-the same bounded ingest) only *after* the candidate clears the
-identity bar — every one of these mints a stub the `fetch_oa` worker
-spends budget chasing. Queueing first inverts verification: a false
-positive burns a fetch slot and lands a wrong "paper we need".
+`arxiv=`/`title=`) only *after* the candidate clears the identity bar.
+A single or batch paper `get` without a view can queue bounded ingest
+for unheld DOIs. Supplying `view=` disables that queueing, including
+with `meta`, `text`, `body`, or `full`. Queueing before verification
+can burn a fetch slot and leave a stub for the wrong paper.
 
 ## Which providers are native, and what when one can't answer?
 

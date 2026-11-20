@@ -11,6 +11,8 @@ writing through them unchanged).
 *input* rows (``direction='input'`` — set temperature, potential, product),
 tied by one ``run_key``, in one transaction. "FE 95% at -0.5 V and 61% at
 -0.9 V" is two runs: the caller calls it twice.
+Inputs are inserted first so duplicate detection compares canonical condition
+values, independent of input order, reported units and presentation labels.
 
 **Evidence edge.** A row with an ``anchor`` points (``primary_link_id``) at a
 ``quantifies`` link written through ``add_link``: paper (``src_chunk_id`` = the
@@ -52,8 +54,8 @@ is NOT NULL): the caller mints a ``reaction product`` taxon and labels the row
 
 **Refusals.** ``tier='measured'`` without an anchor whose chunk is set;
 ``tier='measured'`` with ``source_attribution='cited_work'``; a live output
-row that repeats another's measurand, anchor scheme, span and value (one
-chunk value extracted under two findings is one measure, not two) — unless
+row that repeats another's measurand, anchor scheme, span, value and conditions
+(one chunk value extracted under two findings is one measure, not two) — unless
 the matched row's newest current review is ``rejected``: a judged-wrong
 reading must not hold its span against a fixed extractor, so the new row
 lands and supersedes it when it states the same subject label (gr639356);
@@ -150,7 +152,7 @@ from precis.taxonomy.money import (
 )
 from precis.taxonomy.nodes import slugify
 from precis.utils.glyph_health import glyph_suspected
-from precis.utils.text import markup_surface
+from precis.utils.text import markup_surface, sci_anchor_pattern
 
 log = logging.getLogger(__name__)
 
@@ -405,12 +407,12 @@ _PAPER_SCOPE_SQL = (
     f"AND sl.meta->>'role' = '{SI_PDF_ROLE}' AND sr.pdf_role = '{SI_PDF_ROLE}'"
     "))))"
 )
-_LIVE_MEASURE_SQL = (
+_PAPER_INVENTORY_SQL = (
     "m.superseded_by IS NULL AND "
     "m.measurand_status IS DISTINCT FROM 'ambiguous' AND "
-    "NOT (m.meta ? 'escalation') AND "
     "NOT (coalesce(m.tier = 'measured', false) AND m.primary_link_id IS NULL)"
 )
+_LIVE_MEASURE_SQL = f"{_PAPER_INVENTORY_SQL} AND NOT (m.meta ? 'escalation')"
 #: A row's numeric extent as SQL: a point is [v, v], an interval [low, high], an
 #: upper bound ``<x`` runs from -inf to x and a lower bound from x to +inf.
 _LO_SQL = (
@@ -605,19 +607,88 @@ def _squash(text: str) -> str:
     return " ".join(t.split()).casefold()
 
 
+#: Math-mode spans a source may print *glued* to the same value in unicode
+#: ("3651±31$3651\pm31$"): markup-folded they weld into one digit run and
+#: every copy is digit-bounded, so the boundary lookarounds reject the real
+#: occurrence (gr715556).
+_MATH_SPAN_RE = re.compile(r"\$\$.*?\$\$|\$[^$]+\$|\\\(.+?\\\)|\\\[.+?\\\]", re.DOTALL)
+
+
+def _literal_pattern(lit: str) -> str:
+    """``lit`` (already squashed) as a boundary-checked pattern: gaps around
+    non-word characters are ``\\s*``-flexible so "3651±31" meets a spaced
+    "3651 ± 31" print. Two word tokens require whitespace. Digit runs keep
+    the "not part of a longer number"
+    lookarounds ("5" and "95" are not in "1950"). A decimal point between
+    digits stays glued to them: "1.5" must never meet a spaced "1. 5" print
+    (gr715556 review)."""
+    tokens = re.findall(r"\w+|[^\w\s]", lit)
+
+    def glued_decimal(idx: int) -> bool:
+        return (
+            tokens[idx] == "."
+            and 0 < idx < len(tokens) - 1
+            and tokens[idx - 1][-1].isdigit()
+            and tokens[idx + 1][0].isdigit()
+        )
+
+    parts: list[str] = []
+    for i, tok in enumerate(tokens):
+        if i:
+            if glued_decimal(i) or glued_decimal(i - 1):
+                gap = ""
+            elif re.match(r"\w", tokens[i - 1]) and re.match(r"\w", tok):
+                gap = r"\s+"
+            else:
+                gap = r"\s*"
+            parts.append(gap)
+        parts.append(re.escape(tok))
+    body = "".join(parts)
+    if lit[0].isdigit():
+        body = r"(?<!\d)(?<!\d\.)" + body
+    if lit[-1].isdigit():
+        body += r"(?!\d)(?!\.\d)"
+    return body
+
+
 def _literal_in(span_text: str, literal: str) -> bool:
     """Does the literal occur in the span text, on number boundaries? A digit
     run must not be preceded by a digit (or ``digit.``) nor followed by a digit
-    (or ``.digit``): "5" and "95" are not in "1950"."""
+    (or ``.digit``): "5" and "95" are not in "1950".
+
+    Ordinary literals allow optional whitespace around punctuation. Word
+    tokens require a separator, and decimal points stay joined to their digits.
+
+    A scientific literal also matches the ingest-flattened prints of its
+    exponents — the PDF text layer drops the superscript raise, so
+    ``5 × 10¹²`` extracts as ``5 × 1012`` or ``5 × 10 12`` — via
+    :func:`precis.utils.text.sci_anchor_pattern` (gr715568).
+
+    On a miss, retry after blanking only math spans that render the entire
+    literal. This separates copies welded into one digit run by markup folding
+    ("3651±31$3651\\pm31$", gr715556) and preserves intervening math such as
+    ``$\\times 2$`` in "3651 $\\times 2$ ± 31"."""
     lit = _squash(literal)
     if not lit:
         return False
-    pattern = re.escape(lit)
-    if lit[0].isdigit():
-        pattern = r"(?<!\d)(?<!\d\.)" + pattern
-    if lit[-1].isdigit():
-        pattern += r"(?!\d)(?!\.\d)"
-    return re.search(pattern, _squash(span_text)) is not None
+    sci = sci_anchor_pattern(lit)
+    if sci is not None:
+        pattern = sci
+        if lit[0].isdigit():
+            pattern = r"(?<!\d)(?<!\d\.)" + pattern
+        if lit[-1].isdigit():
+            pattern += r"(?!\d)(?!\.\d)"
+    else:
+        pattern = _literal_pattern(lit)
+    if re.search(pattern, _squash(span_text)) is not None:
+        return True
+
+    def blank_duplicate(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        return " " if re.fullmatch(pattern, _squash(raw)) else raw
+
+    stripped = _MATH_SPAN_RE.sub(blank_duplicate, span_text)
+    return stripped != span_text and re.search(pattern, _squash(stripped)) is not None
 
 
 def _span_text(chunk_text: str, span: Any) -> str:
@@ -837,9 +908,9 @@ class MeasuresMixin:
             )
             required = self._required_conditions(c, output.measurand_ref_id)
             have: set[str] = set()
-            for key in output.conditions or {}:
-                if isinstance(key, str) and key.strip():
-                    have.add(slugify(key))
+            for condition_key in output.conditions or {}:
+                if isinstance(condition_key, str) and condition_key.strip():
+                    have.add(slugify(condition_key))
             for spec in inputs:
                 if (spec.role or "context") == "context":
                     have |= self._condition_names(spec, taxa[spec.measurand_ref_id])
@@ -854,18 +925,6 @@ class MeasuresMixin:
             ]
             product = self._product_formula(inputs, taxa)
 
-            out_id = self._insert_one(
-                c,
-                output,
-                taxa[output.measurand_ref_id],
-                direction="output",
-                run_key=key,
-                actor=actor,
-                model=model,
-                link_set_by=link_set_by,
-                flags=run_flags,
-                product=product,
-            )
             in_ids = tuple(
                 self._insert_one(
                     c,
@@ -880,6 +939,18 @@ class MeasuresMixin:
                     product=None,
                 )
                 for spec in inputs
+            )
+            out_id = self._insert_one(
+                c,
+                output,
+                taxa[output.measurand_ref_id],
+                direction="output",
+                run_key=key,
+                actor=actor,
+                model=model,
+                link_set_by=link_set_by,
+                flags=run_flags,
+                product=product,
             )
         return MeasureRun(run_key=key, output_id=out_id, input_ids=in_ids)
 
@@ -899,12 +970,14 @@ class MeasuresMixin:
         spec: MeasureSpec,
         anchor: MeasureAnchor,
         values: tuple[Any, ...],
+        run_key: str,
+        output_conditions: dict[str, Any],
     ) -> list[int]:
         """One chunk value extracted under two findings is one measure, not
         two (the pilot's mx212/mx218 pair): a live output row with the same
         measurand, subject, anchor scheme and span, and the same literal or
-        parsed value is refused, naming the row. The same span's number about
-        a *different* subject ref is a different claim and lands; a
+        parsed value and condition set is refused, naming the row. The same
+        span's number about a *different* subject ref is a different claim and lands; a
         supersession of that row is not a duplicate. A match whose newest
         current review is ``rejected`` does not block either (gr639356): the
         reading was already judged wrong, so it yields the span — the write
@@ -918,7 +991,8 @@ class MeasuresMixin:
             "       (SELECT r.verdict FROM reviews r "
             "        WHERE r.target_kind = 'measure' AND r.target_id = m.id "
             "          AND r.content_sha = precis_target_sha('measure', m.id) "
-            "        ORDER BY r.at DESC, r.review_id DESC LIMIT 1) "
+            "        ORDER BY r.at DESC, r.review_id DESC LIMIT 1), "
+            "       m.run_key, m.conditions "
             "FROM measures m JOIN links l ON l.link_id = m.primary_link_id "
             "WHERE m.direction = 'output' AND m.superseded_by IS NULL "
             "  AND m.measurand_ref_id = %s AND m.subject_ref_id = %s "
@@ -936,8 +1010,30 @@ class MeasuresMixin:
         lit = _squash(spec.literal)
         has_value = any(v is not None for v in values)
         supersede: list[int] = []
+
+        def conditions(key: str) -> list[tuple[Any, ...]]:
+            return list(
+                c.execute(
+                    "SELECT measurand_ref_id, subject_ref_id, direction, role, "
+                    "value_num, value_low, value_high, value_text, value_bool, "
+                    "reference, normalization, conditions, "
+                    "CASE WHEN value_num IS NULL AND value_low IS NULL "
+                    "AND value_high IS NULL AND value_text IS NULL "
+                    "AND value_bool IS NULL THEN literal END FROM measures "
+                    "WHERE run_key = %s AND direction <> 'output' "
+                    "AND superseded_by IS NULL "
+                    "ORDER BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13",
+                    (key,),
+                ).fetchall()
+            )
+
+        incoming_conditions = conditions(run_key)
         for row in rows:
             if spec.supersedes is not None and int(row[0]) == spec.supersedes:
+                continue
+            if (row[10] or {}) != output_conditions or conditions(
+                row[9]
+            ) != incoming_conditions:
                 continue
             if _squash(row[1] or "") == lit or (
                 has_value and (row[2], row[3], row[4], row[5], row[6]) == values
@@ -1326,7 +1422,7 @@ class MeasuresMixin:
         superseded_rejected: list[int] = []
         if direction == "output" and anchor is not None:
             superseded_rejected = self._refuse_duplicate_output(
-                c, spec, anchor, (num, low, high, text, flag)
+                c, spec, anchor, (num, low, high, text, flag), run_key, conditions
             )
 
         # evidence edge + computed extraction status
@@ -2084,13 +2180,12 @@ class MeasuresMixin:
         return {int(r[0]) for r in rows}
 
     def measures_for_paper(self, paper_ref_id: int) -> list[dict[str, Any]]:
-        """Every live output about or anchored in this paper.
+        """Current outputs about or anchored in this paper.
 
-        Reuse search's live-row eligibility so the paper view does not
-        present ambiguous, escalated or anchor-lost measured outputs.
+        Share the paper search inventory, including escalated outputs.
         """
         rows = self._measure_rows(
-            f"m.direction = 'output' AND {_LIVE_MEASURE_SQL} AND {_PAPER_SCOPE_SQL}",
+            f"m.direction = 'output' AND {_PAPER_INVENTORY_SQL} AND {_PAPER_SCOPE_SQL}",
             {"paper": paper_ref_id},
         )
         by_run = self._conditions_by_run([r["run_key"] for r in rows])
@@ -2122,6 +2217,7 @@ class MeasuresMixin:
         paper_ref_id: int | None = None,
         serving_ref_id: int | None = None,
         include_all: bool = False,
+        include_escalated: bool = False,
         scan_cap: int = 5000,
         bound_currency: tuple[str, int | None] | None = None,
     ) -> MeasureSearch:
@@ -2134,6 +2230,7 @@ class MeasuresMixin:
         left out (only ``measured`` drops its claim with the link — see
         :meth:`best_measure`; other tiers stay, marked ``anchor_lost``).
         Scans at most ``scan_cap`` candidate rows (``truncated`` says so).
+        With ``include_escalated``, keep otherwise eligible flagged outputs.
 
         Paper and quest scopes match either the subject or the anchoring
         chunk's paper, so promoting a subject keeps its source discoverable.
@@ -2151,7 +2248,9 @@ class MeasuresMixin:
         where = ["m.direction = 'output'"]
         params: dict[str, Any] = {"cap": scan_cap + 1}
         if not include_all:
-            where.append(_LIVE_MEASURE_SQL)
+            where.append(
+                _PAPER_INVENTORY_SQL if include_escalated else _LIVE_MEASURE_SQL
+            )
         if measurand is not None:
             where.append("m.measurand_ref_id = ANY(%(cover)s)")
             params["cover"] = self._measurand_cover(measurand)

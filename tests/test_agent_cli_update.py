@@ -9,6 +9,7 @@ without touching a real CLI.
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -27,7 +28,9 @@ WRAPPER = REPO / "scripts" / "agent-cli-update"
 
 
 def _load(path: Path, name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, path)
+    spec = importlib.util.spec_from_file_location(
+        name, path, loader=importlib.machinery.SourceFileLoader(name, str(path))
+    )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
@@ -361,6 +364,165 @@ def test_no_prompt_skips_the_headless_smoke() -> None:
     cfg = _config({"claude": "2.1.0"}, only=["claude"], smoke_prompt=False)
     [row] = tool.update(cfg, host.run, host.find)
     assert row["action"] == "updated"
+
+
+@pytest.mark.parametrize(
+    ("cli", "message", "command"),
+    [
+        ("claude", "Not logged in · Please run /login", "claude /login"),
+        (
+            "kimi",
+            "No model configured. Run `kimi` and use /login",
+            "kimi (then /login)",
+        ),
+        ("codex", "Please run `codex login`", "codex login"),
+    ],
+)
+@pytest.mark.parametrize("prompt_rc", [0, 1])
+def test_missing_login_keeps_verified_install_and_reports_user(
+    cli: str,
+    message: str,
+    command: str,
+    prompt_rc: int,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    host = FakeHost({cli: "2.0.0"})
+
+    def run(
+        argv: list[str], timeout: float, *, stdout_only: bool = False
+    ) -> tuple[int, str]:
+        if argv[0] == f"/bin/{cli}" and argv[1] != "--version":
+            return prompt_rc, message
+        return host.run(argv, timeout, stdout_only=stdout_only)
+
+    cfg = json.dumps(_config({cli: "2.1.0"}, only=[cli]))
+    assert tool.main(["update", "--config-json", cfg], run, host.find) == 2
+    out = capsys.readouterr().out
+    [row] = json.loads(out.rsplit("AGENT_CLI_JSON ", 1)[1])["rows"]
+    assert row["action"] == "updated-needs-login" and row["ok"] is True
+    assert host.versions[cli] == "2.1.0"
+    assert "installed, needs login" in out and command in out
+    assert f"as user {tool.pwd.getpwuid(os.geteuid()).pw_name}" in out
+    assert "ALERT" not in out
+    assert len([c for c in host.calls if c[:2] == ["npm", "install"]]) == 1
+
+
+def test_version_failure_cannot_be_masked_by_login_text() -> None:
+    host = FakeHost({"claude": "2.0.0"})
+
+    def run(
+        argv: list[str], timeout: float, *, stdout_only: bool = False
+    ) -> tuple[int, str]:
+        if argv == ["/bin/claude", "--version"] and host.versions["claude"] == "2.1.0":
+            return 1, "Not logged in · Please run /login"
+        return host.run(argv, timeout, stdout_only=stdout_only)
+
+    [row] = tool.update(_config({"claude": "2.1.0"}, only=["claude"]), run, host.find)
+    assert row["action"] == "rolled-back" and row["ok"] is False
+    assert host.versions["claude"] == "2.0.0"
+    assert not any(c[1] == "-p" for c in host.calls)
+
+
+def test_codex_smoke_skips_git_trust_check() -> None:
+    host = FakeHost({"codex": "2.0.0"})
+    tool.update(_config({"codex": "2.1.0"}, only=["codex"]), host.run, host.find)
+    assert any(
+        c[:3] == ["/bin/codex", "exec", "--skip-git-repo-check"] for c in host.calls
+    )
+
+
+def test_unknown_cli_has_generic_login_hint() -> None:
+    cfg = {
+        "bin": "other",
+        "pin": "2.1.0",
+        "min": "",
+        "install": "other update",
+        "smoke": ["-p", "OK"],
+    }
+    versions = iter(["2.0.0", "2.1.0", "2.1.0"])
+
+    def run(
+        argv: list[str], timeout: float, *, stdout_only: bool = False
+    ) -> tuple[int, str]:
+        if argv[1] == "--version":
+            return 0, next(versions)
+        return (1, "No model configured") if argv[1] == "-p" else (0, "installed")
+
+    row = tool.update_one(
+        "other",
+        cfg,
+        explicit=True,
+        smoke_prompt=True,
+        run=run,
+        find=lambda name: "/bin/other",
+    )
+    assert row["ok"] and "other (then /login)" in row["detail"]
+
+
+def test_broken_binary_takes_precedence_over_needs_login(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    host = FakeHost({"claude": "2.0.0", "kimi": "2.0.0"}, bad_prompt={"kimi"})
+
+    def run(
+        argv: list[str], timeout: float, *, stdout_only: bool = False
+    ) -> tuple[int, str]:
+        if argv[0] == "/bin/claude" and argv[1] == "-p":
+            return 1, "Not logged in"
+        return host.run(argv, timeout, stdout_only=stdout_only)
+
+    cfg = json.dumps(
+        _config({"claude": "2.1.0", "kimi": "2.1.0"}, only=["claude", "kimi"])
+    )
+    assert tool.main(["update", "--config-json", cfg], run, host.find) == 1
+    out = capsys.readouterr().out
+    assert "installed, needs login" in out and "ALERT kimi: rolled-back" in out
+    assert host.versions == {"claude": "2.1.0", "kimi": "2.0.0"}
+
+
+@pytest.mark.parametrize(
+    ("mode", "rc", "failed"),
+    [
+        ("update", 2, False),
+        ("update", 1, True),
+        ("report", 1, True),
+        ("report", 2, True),
+        ("update", 0, False),
+    ],
+)
+def test_role_to_wrapper_exit_contract(
+    mode: str,
+    rc: int,
+    failed: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jinja2 import Environment
+
+    task = next(
+        t
+        for t in _role_tasks()
+        if "ansible.builtin.fail" in t and "agent_cli_out.rc" in t.get("when", "")
+    )
+    assert (
+        bool(
+            Environment().compile_expression(task["when"])(
+                agent_cli_out={"rc": rc}, agent_cli_effective_mode=mode
+            )
+        )
+        is failed
+    )
+    wrapper = _load(WRAPPER, "agent_cli_wrapper_contract")
+    # Ansible fails a play with rc 2; an accepted needs-login row leaves rc 0.
+    play_rc = 2 if failed else 0
+    monkeypatch.setattr(
+        wrapper.subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(a, play_rc),
+    )
+    assert (
+        wrapper.main(["--host", "maple", *(["--apply"] if mode == "update" else [])])
+        == play_rc
+    )
 
 
 def test_restoring_the_previous_pin_rolls_back_by_pin() -> None:

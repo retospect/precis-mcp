@@ -495,6 +495,44 @@ def test_each_logout_challenge_is_a_different_realm() -> None:
     assert first.headers["www-authenticate"] != second.headers["www-authenticate"]
 
 
+def test_a_password_change_kills_the_session_cookie() -> None:
+    """gr730562: the cookie carries a tag of the password hash, so a
+    change retires it; the notice names what the change did not touch."""
+    from precis_web.auth import SESSION_COOKIE
+
+    store = FakeStore()
+    client = _client(store)
+    assert client.get("/account", headers=_auth(GOOD)).status_code == 200
+    assert SESSION_COOKIE in client.cookies
+    assert client.get("/account").status_code == 200  # the cookie alone signs in
+
+    assert _change(client, GOOD, NEW).status_code == 303
+
+    # The cookie was minted under the old password: refused without Basic.
+    assert client.get("/account").status_code == 401
+    page = client.get("/account?changed=1", headers=_auth(NEW))
+    assert page.status_code == 200
+    assert "not revoked by the password change" in page.text
+    assert "MCP tokens" in page.text and "podcast link" in page.text
+    # The new sign-in re-minted a cookie that works.
+    assert client.get("/account").status_code == 200
+
+
+def test_logout_voids_the_cookie_server_side() -> None:
+    from precis_web.auth import SESSION_COOKIE
+
+    client = _client(FakeStore())
+    assert client.get("/account", headers=_auth()).status_code == 200
+    kept = client.cookies.get(SESSION_COOKIE)
+    assert kept
+    assert client.post("/account/logout", headers=_auth()).status_code == 401
+    # Replaying a copy of the pre-sign-out cookie gets nothing.
+    client.cookies.clear()
+    client.cookies.set(SESSION_COOKIE, kept)
+    assert client.get("/account").status_code == 401
+    assert client.get("/account", headers=_auth()).status_code == 200
+
+
 def test_logout_is_not_a_get() -> None:
     # A link would be followed by prefetchers; only the button signs out.
     client = _client(FakeStore())
@@ -1004,3 +1042,151 @@ def test_profile_shows_a_taken_discord_id_as_a_banner_not_a_500(
 def test_the_page_has_a_discord_user_id_field() -> None:
     r = _client(FakeStore()).get("/account", headers=_auth())
     assert 'name="discord_user_id"' in r.text
+
+
+# ── MCP credential classes (PRECIS_MCP_CREDENTIAL_CLASSES) ───────────
+
+_PERSONAL_FORM = 'action="/account/mcp-tokens"'
+_CAPABILITY_FORM = 'action="/account/capability-tokens"'
+
+
+def test_default_mode_offers_every_mint_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_MCP_CREDENTIAL_CLASSES", raising=False)
+    client = _client(FakeStore())
+    body = client.get("/account", headers=_auth()).text
+    assert _PERSONAL_FORM in body and _CAPABILITY_FORM in body
+    assert "Personal MCP tokens" in body and "Client capability tokens" in body
+    assert "does not accept these tokens" not in body
+    assert client.app.state.mcp_credential_classes == frozenset(  # type: ignore[attr-defined]
+        {"install", "slice", "personal", "capability", "oauth"}
+    )
+
+
+def test_an_invalid_class_list_fails_app_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", "oauth,bearer")
+    with pytest.raises(ValueError, match="PRECIS_MCP_CREDENTIAL_CLASSES"):
+        _client(FakeStore())
+
+
+def test_oauth_only_removes_both_token_sections_and_404s_the_mint_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", "oauth")
+    client = _client(FakeStore())
+    body = client.get("/account", headers=_auth()).text
+    assert _PERSONAL_FORM not in body and _CAPABILITY_FORM not in body
+    assert "Personal MCP tokens" not in body
+    assert "Client capability tokens" not in body
+    assert "Private podcast link" in body
+    for path, data in (
+        ("/account/mcp-tokens", {"label": "laptop"}),
+        ("/account/capability-tokens", {"label": "chat", "scopes": "read"}),
+    ):
+        refused = client.post(path, data=data, headers=_auth())
+        assert refused.status_code == 404
+        assert refused.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    ("classes", "personal", "capability"),
+    [("oauth,personal", True, False), ("oauth capability", False, True)],
+)
+def test_each_mint_form_follows_its_own_class(
+    monkeypatch: pytest.MonkeyPatch, classes: str, personal: bool, capability: bool
+) -> None:
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", classes)
+    client = _client(FakeStore())
+    body = client.get("/account", headers=_auth()).text
+    assert (_PERSONAL_FORM in body) is personal
+    assert (_CAPABILITY_FORM in body) is capability
+    # The accepted class's route is exercised against the real store elsewhere.
+    refused = (
+        ("/account/capability-tokens", {"label": "x", "scopes": "read"})
+        if personal
+        else ("/account/mcp-tokens", {"label": "x"})
+    )
+    assert client.post(refused[0], data=refused[1], headers=_auth()).status_code == 404
+
+
+def test_oauth_only_keeps_existing_rows_listed_and_revocable(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.mcp_identity import (
+        list_capability_tokens,
+        list_user_tokens,
+        mint_capability_token,
+        mint_user_token,
+        resolve_capability_token,
+        resolve_user_token,
+    )
+
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", "oauth")
+    alice = store.create_web_user(
+        login="alice", abbrev="al", password=hash_password(GOOD)
+    )
+    _, personal_raw = mint_user_token(store, alice.id, "Old laptop")
+    _, cap_raw = mint_capability_token(store, alice.id, "Old connector", ("read",))
+    app = create_app(
+        runtime=SimpleNamespace(store=store),
+        web_config=WebConfig(corpus_dir=None, auth_required=True),
+    )
+    with TestClient(app) as client:
+        auth = _auth(login="alice")
+        body = client.get("/account", headers=auth).text
+        assert "Personal MCP tokens" in body and "Old laptop" in body
+        assert "Client capability tokens" in body and "Old connector" in body
+        assert body.count("does not accept these tokens") == 2
+        assert 'action="/account/mcp-tokens/revoke"' in body
+        assert 'action="/account/capability-tokens/revoke"' in body
+        assert _PERSONAL_FORM not in body and _CAPABILITY_FORM not in body
+        for path, rows in (
+            ("/account/mcp-tokens/revoke", list_user_tokens(store, alice.id)),
+            (
+                "/account/capability-tokens/revoke",
+                list_capability_tokens(store, alice.id),
+            ),
+        ):
+            revoked = client.post(
+                path,
+                data={"token_id": str(rows[0].id)},
+                headers=auth,
+                follow_redirects=False,
+            )
+            assert revoked.status_code == 303
+        assert resolve_user_token(store, personal_raw) is None
+        assert resolve_capability_token(store, cap_raw) is None
+        # Revoked rows still list, so the sections stay until the rows go.
+        assert "Old laptop" in client.get("/account", headers=auth).text
+
+
+def test_oauth_only_feed_link_mints_and_serves_through_a_capability_row(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Feed tokens are capability-table rows with scope ``feed``: refusing
+    the ``capability`` class for MCP must not touch the podcast link."""
+    from precis.mcp_identity import list_capability_tokens
+
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", "oauth")
+    alice = store.create_web_user(
+        login="alice", abbrev="al", password=hash_password(GOOD)
+    )
+    app = create_app(
+        runtime=SimpleNamespace(store=store),
+        web_config=WebConfig(corpus_dir=None, auth_required=True),
+    )
+    with TestClient(app) as client:
+        auth = _auth(login="alice")
+        minted = client.post(
+            "/account/feed-token", data={"action": "rotate"}, headers=auth
+        )
+        assert minted.status_code == 200
+        token = minted.text.split("/podcast/feed.xml?t=")[1].split('"')[0]
+        assert client.get(f"/podcast/feed.xml?t={token}").status_code == 200
+        rows = list_capability_tokens(store, alice.id)
+        assert [r.scopes for r in rows] == [("feed",)]
+        body = client.get("/account", headers=auth).text
+        assert f"/podcast/feed.xml?t={token}" in body
+        assert _CAPABILITY_FORM not in body
+        # The working podcast row is not listed under the refused-token notice.
+        assert "Client capability tokens" not in body
+        assert "does not accept these tokens" not in body

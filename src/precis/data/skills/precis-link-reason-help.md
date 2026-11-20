@@ -20,7 +20,12 @@ scope: write
 
 `link(..., reason='…')` stores `links.meta.reason`. Every link surface
 (Links table, `view='links'`, the eye's ring rows) appends
-` — <reason>` to the row.
+` — <reason>` to the row. On `kind='finding'` the same kwarg also
+answers to `note=` — an alias, nothing more: it must agree with
+`reason=`/`meta['reason']` when several spellings arrive together and
+is refused on `mode='remove'`. (`kind='structure'`'s own `note=` is a
+different thing — a provenance `meta.note`, not `meta.reason`.) Other
+kinds still reject `note=` — write `reason=`.
 
 ## What do I write in reason=?
 ## What is a reason for?
@@ -88,6 +93,38 @@ to. Verdict rules, ledger and `novel_for`:
 | Direction reversed | wrong: `"A gets its data from B"` on `A supports B` | the reason on A→B says what A gives B: `"A's rates constrain B's barrier"` |
 | Candidate does not fit | `considered`, `"bulk only; question asks about surfaces"`, depth `abstract` | negative scope, not a `disputes` |
 | Endpoint changed | row shows `· suspect` | re-read the target, then re-link with a fresh reason |
+
+## Backfill missing reasons
+
+`get(kind='memory', id='/links', args={'limit': 25})` scans the corpus.
+For one numeric ref or paper, use `view='links', args={'reason': 'missing'}`.
+Use `count=True` in args for a read-only count without endpoint bodies.
+Follow the exact next call until `complete`. Cursors use stored edge IDs:
+backfilling earlier rows does not skip later rows. Higher IDs committed
+mid-scan appear on later pages; late commits with lower IDs require a new
+scan. A changed filter invalidates the cursor; restart from page one.
+
+Args: `relation` (or `rel`), `src_kind`, `dst_kind`, `direction`
+(`out`/`in`/`both`, requires a focus), `include_structural`, `space`,
+`under` (memory handle), and `endpoint` (`src` default, `dst`, `either`).
+Kinds and space/subtree filters refer to stored endpoints, even when a
+relation is requested by its inverse spelling. `under` includes the root
+and incoming `part-of` descendants. Space matches a `SPACE:` tag exactly.
+Structural relations and system provenance edges are excluded by default;
+`include_structural=True` opts them in for inspection, not reason backfill.
+
+Each row identifies the physical edge and both chunk IDs (null means whole
+ref), with its current revision hash, missing state and bounded titles.
+Parallel scopes remain separate; inverse views refer to the same stored ID.
+Blank/null/absent reasons match. Nonblank legacy `why`, reviewed-obvious
+periods, considered verdicts and unsupported reason payloads do not match.
+Stale judgments belong to separate review, never a missing-reason backfill.
+Reading this queue does not refresh suspect fingerprints.
+
+Read both endpoints and evidence before recording a present-day rationale
+with `link(..., reason='…')` or `reason='.'`. Retain evidence, UTC review
+date and actor in edge metadata. Never invent original intent. Leave an
+unresolved edge missing; do not fill system provenance edges.
 
 ## See also
 

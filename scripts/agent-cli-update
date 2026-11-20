@@ -9,7 +9,12 @@ runs the read-only report (installed version vs pin vs vendor minimum, with an
 ALERT per host behind its pin) and changes nothing. ``--apply`` installs each
 CLI's pin with the vendor's own installer, smokes it (``--version`` plus one
 headless prompt; ``--no-prompt`` drops the prompt) and reinstalls the previous
-version when the smoke fails, exiting non-zero.
+version when the smoke fails, exiting non-zero. A recognized missing login or
+model keeps the binary when --version passes and reports installed, needs login
+with the command and target user. The host updater exits 2 for that outcome;
+the role accepts it as success and displays the report. This wrapper returns
+Ansible’s exit code: 0 includes needs-login updates; broken installs fail the
+play and return non-zero. No authentication files are read or copied.
 
 The same update installs/repairs ~/.local/bin/agent-start on each target,
 pointing at committed launcher code in its stable primary checkout. The

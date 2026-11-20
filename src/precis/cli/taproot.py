@@ -352,8 +352,8 @@ def add_parser(subparsers: Any) -> None:
 
     cl = tsub.add_parser(
         "classify",
-        help="Sort claim hubs into a claim_type (measurement / definition / "
-        "capability / mechanism / landscape; refs.meta.claim_type). Without "
+        help=f"Sort claim hubs into a claim_type ({', '.join(CLAIM_TYPES)}; "
+        "refs.meta.claim_type). Without "
         "--set: the LLM backfill over hubs that have no type yet. DRY-RUN BY "
         "DEFAULT: the LLM calls run (budget-metered) but nothing is written "
         "unless --apply. The LLM path NEVER overwrites a human "

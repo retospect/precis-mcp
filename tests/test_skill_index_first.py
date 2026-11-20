@@ -103,6 +103,26 @@ def test_full_true_over_threshold_serves_body(
     assert _DEEP_2 in out
 
 
+def test_full_view_batch_serves_full_body_per_element(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr680237 review (td706444): ``id=[...], view='full'`` used to
+    drop ``full`` — the interception recursed with ``view=None`` and
+    ``_get_batch`` forwarded only ``view``/``q``, so every element got
+    its index-first serve under a false ``interpreted:`` banner. The
+    alias now resolves per element: the shown block is the complete
+    body, and the paged tail re-issues the same spelling."""
+    _install_corpus(monkeypatch, {"a": _big_md(), "b": _big_md()})
+    out = skill.get(id=["a", "b"], view="full").body
+    assert out.startswith("# 2 skill ids (batch, view='full')")
+    assert "sections (index)" not in out
+    assert _DEEP_0 in out
+    assert _DEEP_2 in out
+    assert out.count("interpreted: view='full' read as full=True") == 1
+    # The unread tail names the same spelling, not the dropped alias.
+    assert "id=['b'], view='full'" in out
+
+
 def test_under_threshold_serves_verbatim(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:

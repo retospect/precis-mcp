@@ -145,7 +145,13 @@ def _wire_get_fake(monkeypatch: pytest.MonkeyPatch, fake: _GetFakeSch) -> None:
 def test_get_paper_by_id_propagate_returns_meta_on_hit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paper = SimpleNamespace(paperId="P1", title="Real Paper")
+    # externalIds echoes the requested DOI — the shape a real
+    # DOI-resolved S2 record always has (gr710828's echo guard).
+    paper = SimpleNamespace(
+        paperId="P1",
+        title="Real Paper",
+        externalIds={"DOI": "10.1038/nature10352"},
+    )
     fake = _GetFakeSch(result=paper)
     _wire_get_fake(monkeypatch, fake)
     out = s2mod.get_paper_by_id("doi:10.1038/nature10352", propagate=True)
@@ -205,3 +211,100 @@ def test_get_paper_by_id_empty_paper_counts_as_not_found(
     fake = _GetFakeSch(result=SimpleNamespace(paperId=None))
     _wire_get_fake(monkeypatch, fake)
     assert s2mod.get_paper_by_id("doi:10.1/x", propagate=True) is None
+
+
+# ── id echo: the record must carry the id it was asked for (gr710828) ──
+
+
+def test_get_paper_by_id_arxiv_echoed_id_returns_meta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record whose externalIds carries the requested arXiv id resolves
+    normally — any prefix casing (``arxiv:``/``ARXIV:``/``arXiv:``)."""
+    paper = SimpleNamespace(
+        paperId="P9",
+        title="A Unified Approach to Interpreting Model Predictions",
+        externalIds={"ArXiv": "1705.07874"},
+    )
+    fake = _GetFakeSch(result=paper)
+    _wire_get_fake(monkeypatch, fake)
+    for req in ("arxiv:1705.07874", "ARXIV:1705.07874", "arXiv:1705.07874"):
+        out = s2mod.get_paper_by_id(req, propagate=True)
+        assert out is not None and out["arxiv_id"] == "1705.07874"
+    assert fake.calls == 1  # second/third reads hit the TTL cache
+
+
+def test_get_paper_by_id_arxiv_mismatch_counts_as_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The resolved record carries a DIFFERENT arXiv id — S2 bound the
+    request onto the wrong cluster. Counted as not-found (and cached
+    like one), never returned as an answer."""
+    paper = SimpleNamespace(
+        paperId="K1",
+        title="Unrelated record",
+        externalIds={"ArXiv": "1901.00001", "DOI": "10.9/other"},
+    )
+    fake = _GetFakeSch(result=paper)
+    _wire_get_fake(monkeypatch, fake)
+    assert s2mod.get_paper_by_id("arxiv:1705.07874", propagate=True) is None
+    assert s2mod.get_paper_by_id("arxiv:1705.07874", propagate=True) is None
+    assert fake.calls == 1
+
+
+def test_get_paper_by_id_arxiv_missing_external_id_counts_as_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record with no ArXiv externalId at all cannot vouch for an
+    arxiv: request either."""
+    paper = SimpleNamespace(
+        paperId="K2", title="DOI-only record", externalIds={"DOI": "10.9/x"}
+    )
+    fake = _GetFakeSch(result=paper)
+    _wire_get_fake(monkeypatch, fake)
+    assert s2mod.get_paper_by_id("arxiv:1705.07874", propagate=True) is None
+
+
+def test_get_paper_by_id_doi_echo_normalises_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DOI case folds on both sides — a request's lowercase form still
+    echoes a record carrying the publisher's uppercase spelling."""
+    paper = SimpleNamespace(
+        paperId="P2",
+        title="ACL paper",
+        externalIds={"DOI": "10.18653/v1/N18-3011"},
+    )
+    fake = _GetFakeSch(result=paper)
+    _wire_get_fake(monkeypatch, fake)
+    out = s2mod.get_paper_by_id("doi:10.18653/v1/n18-3011", propagate=True)
+    assert out is not None and out["s2_id"] == "P2"
+
+
+def test_get_paper_by_id_doi_mismatch_counts_as_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paper = SimpleNamespace(
+        paperId="K3",
+        title="Different work",
+        externalIds={"DOI": "10.9/something-else"},
+    )
+    fake = _GetFakeSch(result=paper)
+    _wire_get_fake(monkeypatch, fake)
+    assert s2mod.get_paper_by_id("doi:10.1038/nature10352", propagate=True) is None
+
+
+def test_get_paper_by_id_bare_s2_id_skips_echo_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unprefixed request names the record's own paperId — nothing to
+    echo; the record stands even with a foreign-looking cluster."""
+    paper = SimpleNamespace(
+        paperId="AbC123",
+        title="A paper",
+        externalIds={"DOI": "10.9/any"},
+    )
+    fake = _GetFakeSch(result=paper)
+    _wire_get_fake(monkeypatch, fake)
+    out = s2mod.get_paper_by_id("abc123", propagate=True)
+    assert out is not None and out["s2_id"] == "AbC123"

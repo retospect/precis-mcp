@@ -40,7 +40,8 @@ instead. It lets the app read and update only your own learning activity and
 settings. It does not grant access to another person's activity.
 
 Connections also have access to the OAuth and learning help documents. The
-older manually copied personal MCP tokens remain restricted to learning.
+older manually copied personal MCP tokens remain restricted to learning, and
+only work where your deployment accepts them (see the last section).
 
 ## Review or disconnect apps
 
@@ -55,6 +56,14 @@ connection or disable the account, the app cannot renew it. Reconnecting makes
 a new row; it does not reactivate the old one.
 
 ## Capability tokens for other clients
+
+Capability tokens and personal MCP tokens work only where the deployment
+accepts those credential classes. The default public endpoint accepts OAuth
+connections only: it refuses both, and **Account** offers no way to mint them
+(tokens already minted stay listed so you can revoke them). Your podcast
+subscribe link is a separate credential and is not affected. If this page's
+sections are missing from your **Account**, connect through the OAuth
+instructions above.
 
 OAuth is the recommended path for a claude.ai chat connector. Where a client
 can present a static bearer but cannot complete the OAuth sign-in — or where

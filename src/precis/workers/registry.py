@@ -1218,35 +1218,9 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
-        # precis.workers.context_sentence (docs/backlog/
-        # paper-context-sentence.md): one neutral method/evidence-type
-        # sentence per grounding-source paper, written to
-        # refs.meta['context_sentence'] and surfaced on the nanopub
-        # artifact (precis:sourceContext) + the LaTeX hub footnote
-        # ("Context: ..." line). Population is NOT a corpus-wide sweep:
-        # the cohort is the distinct grounding source ref_ids of live
-        # nanopub_publish rows (any state) — see
-        # context_sentence.backfill_candidate_ref_ids — union every live
-        # ref carrying a context_sentence stamp (the self-heal half,
-        # gr514381), plus a lazy enqueue from precis_web.nanopub_render
-        # on grounding prefill.
-        name="context_sentence",
-        label="Paper context sentence",
-        category="discovery",
-        kind=ServiceKind.PASS,
-        ref_pass=True,
-        enable_env="PRECIS_CONTEXT_SENTENCE_ENABLED",
-        uses_model=True,
-        cost_sources=("context_sentence",),
-        one_line="One neutral method/evidence-type sentence per grounding "
-        "source paper (refs.meta['context_sentence']).",
-        doc_skill="precis-overview",
-    ),
-    ServiceSpec(
         # precis.workers.gen_abstract (gr635825): a LABELLED generated
         # abstract (card_gen_abstract chunk) for papers with no publisher
-        # abstract, built from the body prose only; replaces the
-        # context_sentence summary for such papers. Default-OFF
+        # abstract, built from the body prose only. Default-OFF
         # (`service prio` / --only gen_abstract / enable env); the
         # publisher abstract always wins when one is later filled.
         name="gen_abstract",
@@ -1545,6 +1519,14 @@ SERVICES: tuple[ServiceSpec, ...] = (
         uses_external=("github",),
         one_line="Mint one release-pass plan when main is ahead of prod "
         "and nothing is in flight.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        name="weekly_report",
+        label="Weekly report (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        one_line="Collect factory numbers into report tables; optional draft section.",
         doc_skill="precis-job-help",
     ),
     ServiceSpec(

@@ -1129,3 +1129,29 @@ def test_put_edit_cascades_stale_embedding_away(
         ).fetchone()
     assert new_vector is not None
     assert new_vector != old_vector
+
+
+@pytest.mark.parametrize("selector", ["", "~1", "~L3-3"])
+@pytest.mark.parametrize("kind", ["plaintext", "markdown", "tex"])
+def test_delete_dry_run_previews_and_keeps_file(
+    hub: Hub, pt_root: Path, selector: str, kind: str
+) -> None:
+    from precis.handlers.markdown import MarkdownHandler
+    from precis.handlers.tex import TexHandler
+
+    classes = {
+        "plaintext": PlaintextHandler,
+        "markdown": MarkdownHandler,
+        "tex": TexHandler,
+    }
+    handler = classes[kind](hub=hub, root=pt_root)
+    extension = {"plaintext": "txt", "markdown": "md", "tex": "tex"}[kind]
+    text = "keep me.\n\ndrop me.\n"
+    path = _write(pt_root, f"doc.{extension}", text)
+    out = handler.delete(id=f"doc{selector}", dry_run=True)
+    assert "Would delete" in out.body
+    assert "doc" in out.body
+    assert "lines" in out.body
+    assert ("region" if selector else "file") in out.body
+    assert path.read_text(encoding="utf-8") == text
+    assert handler.store.get_ref(kind=kind, id="doc") is None

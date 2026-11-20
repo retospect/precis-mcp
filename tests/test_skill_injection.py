@@ -1,6 +1,6 @@
 """Tests for bimodal skill injection (§2, ``docs/backlog/skill-question-
 targets-and-injection.md``): :mod:`precis.skill_index.injection`'s
-``match_skill``/``render_injection`` pair, plus the two harness-controlled
+single-skill fallback and section injection, plus the two harness-controlled
 prompt-assembly points wired to it — ``workers/planner_prompt.py`` and
 ``quest/tick.py``. ``workers/executors/claude_inproc.py`` builds no prompt
 of its own (its ``plan_tick`` path *is* ``planner_prompt.py``, already
@@ -62,6 +62,12 @@ def _hermetic_injection_index(
 _KNOWN_QUESTION = "what verbs does precis support?"
 _KNOWN_SKILL = "precis-overview"
 
+#: A second seeded question, from ``precis-todo-help`` — also one of its
+#: H2 headings, so the question twin resolves to a real section either
+#: way. Used to prove two distinct sub-tasks both land in one injection.
+_KNOWN_QUESTION_2 = "how do I file something I need to do?"
+_KNOWN_SKILL_2 = "precis-todo-help"
+
 #: An arbitrary string with no relationship to any shipped skill's
 #: question-shaped chunks — a hash-derived vector has near-zero cosine
 #: similarity to every unrelated hash-derived vector in high dimensions.
@@ -76,7 +82,7 @@ def _mk_quest(store: Any, text: str) -> int:
     return int(m.group(1))
 
 
-# ── match_skill / render_injection ──────────────────────────────────────
+# ── match_skill ──────────────────────────────────────────────────────────
 
 
 def test_match_skill_above_threshold_returns_whole_skill() -> None:
@@ -206,14 +212,144 @@ def test_match_skill_not_lost_behind_decoy_structural_chunks(
     assert injection.match_skill(query) is None
 
 
-def test_render_injection_is_whole_skill_no_truncation() -> None:
-    match = injection.match_skill(_KNOWN_QUESTION)
-    assert match is not None
-    rendered = injection.render_injection(match)
-    assert rendered.startswith(f"# Auto-matched skill: {_KNOWN_SKILL}")
-    assert "auto" in rendered.lower() and "matched" in rendered.lower()
-    # The skill's own body content survives verbatim, not just a snippet.
-    assert "seven verbs" in rendered
+def test_task_injection_fuses_sections_across_sentences() -> None:
+    selection = injection.match_sections(f"{_KNOWN_QUESTION} {_UNRELATED_TEXT}.")
+    rendered = injection.render_section_injection(selection)
+    assert "section matches across 2 phrasings" in rendered
+    assert f"{_KNOWN_SKILL}~" in rendered
+    assert "\tq1\t" in rendered
+    assert "\tq2\t" not in rendered
+
+
+def test_two_subtasks_both_winners_represented() -> None:
+    """gr702892 acceptance: two distinct sub-tasks in one task text both
+    land in the injection — each sub-question's top section is a winner
+    and winners can't be cut before fisheye filler."""
+    selection = injection.match_sections(f"{_KNOWN_QUESTION} {_KNOWN_QUESTION_2}")
+    assert selection.n_queries == 2
+    slugs = {m.slug for m in selection.matches}
+    assert _KNOWN_SKILL in slugs
+    assert _KNOWN_SKILL_2 in slugs
+    winners = {m.slug for m in selection.matches if m.winner}
+    assert _KNOWN_SKILL in winners
+    assert _KNOWN_SKILL_2 in winners
+    # Winners order before filler, so the byte budget can never drop one.
+    first_filler = next(
+        (i for i, m in enumerate(selection.matches) if not m.winner), None
+    )
+    if first_filler is not None:
+        assert all(m.winner for m in selection.matches[:first_filler])
+    rendered = injection.render_section_injection(selection)
+    assert f"{_KNOWN_SKILL}~" in rendered
+    assert f"{_KNOWN_SKILL_2}~" in rendered
+    # The injected block stays under the whole-skill size cap.
+    assert len(rendered.encode("utf-8")) <= injection._MAX_INJECT_BYTES
+
+
+def test_render_section_injection_counts_bytes_not_chars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-land review (td707050): the byte budget was a BYTE budget
+    (``DEFAULT_MAX_BODY_BYTES - 2048``, the value ``test_skill_size.py``
+    enforces as ``st_size`` bytes) but capped on ``len(block)`` chars —
+    non-ASCII bodies could push the encoded block past the whole-skill
+    ceiling. Two 450-char bodies of ``é`` are 900 bytes each: a cap that
+    admits exactly one under byte counting would admit both under a char
+    count."""
+    from precis.handlers.skill import _SkillSearchRow
+
+    row = _SkillSearchRow(
+        slug="s", score=1.0, source="semantic", section="~0 — H", snippet="word"
+    )
+    heavy = "é" * 450  # 450 chars, 900 UTF-8 bytes
+    matches = tuple(
+        injection.SectionMatch(
+            slug="s", chunk_idx=0, row=row, attribution=f"q{i}", body=heavy, winner=True
+        )
+        for i in (1, 2)
+    )
+    selection = injection.SectionSelection(matches, 2)
+
+    full = injection.render_section_injection(selection)
+    assert full.count(heavy) == 2
+    head_bytes = len(full.encode("utf-8")) - 2 * (len(heavy.encode("utf-8")) + 2)
+
+    # Byte counting: one 900-byte body + its separator fits, two don't.
+    # Char counting would fit both (2 × 452 chars < head + 1200 when the
+    # head is ASCII), so a char-capped renderer emits two bodies here.
+    monkeypatch.setattr(injection, "_MAX_INJECT_BYTES", head_bytes + 1200)
+    rendered = injection.render_section_injection(selection)
+    assert rendered.count(heavy) == 1
+    assert len(rendered.encode("utf-8")) <= head_bytes + 1200
+
+
+def test_match_sections_dedups_resolved_bodies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-land review (td707050): deduping on (slug, heading) let one
+    physical merged-alias section inject twice under different alias
+    spellings — a heading_only/body_only hit keys it by one alias while
+    a question_only→structural lookup keys it by the joined heading, and
+    both resolve to the same chunk. Dedup runs on the resolved body, so
+    two different keys whose renders are identical collapse to one
+    injection."""
+    import precis.handlers.skill as skill_mod
+    from precis.skill_index.index import SearchHit
+
+    class _FakeIndex:
+        def is_available(self) -> bool:
+            return True
+
+        def search(
+            self, q: str, page_size: int, build_wait_s: float | None = None
+        ) -> list[SearchHit]:
+            return [
+                SearchHit(
+                    slug="alias-skill",
+                    chunk_idx=3,
+                    heading="Search",
+                    score=1.0,
+                    snippet="body",
+                    variant="heading_only",
+                )
+            ]
+
+    class _FakeHandler:
+        def __init__(self, hub: Any) -> None:
+            pass
+
+        def _fused_leg_rows(
+            self,
+            q: str,
+            *,
+            mode_norm: str,
+            semantic_hits: list[SearchHit] | None = None,
+        ) -> list[tuple[tuple[str, int | None], Any]]:
+            idx = 0 if q.startswith("Alpha") else 1
+            row = skill_mod._SkillSearchRow(
+                slug="alias-skill",
+                score=1.0,
+                source="semantic",
+                section=f"~{idx} — Search",
+                snippet="body",
+            )
+            return [(("alias-skill", idx), row)]
+
+        def get(self, id: str) -> Any:
+            class _Resp:
+                body = "the one physical section body"
+
+            return _Resp()
+
+    monkeypatch.setattr(injection, "_get_index", lambda: _FakeIndex())
+    monkeypatch.setattr(skill_mod, "SkillHandler", _FakeHandler)
+
+    selection = injection.match_sections("Alpha one? Beta two?")
+    assert selection.n_queries == 2
+    assert len(selection.matches) == 1
+    assert selection.matches[0].body == "the one physical section body"
+    rendered = injection.render_section_injection(selection)
+    assert rendered.count("the one physical section body") == 1
 
 
 # ── wiring: workers/planner_prompt.py ────────────────────────────────────
@@ -225,9 +361,7 @@ def test_planner_prompt_injects_matched_skill(
     from precis.workers.planner_prompt import build_planner_prompts
 
     marker = "MARKER-INJECTED-SKILL-BLOCK-PLANNER"
-    fake_match = injection.SkillMatch(slug=_KNOWN_SKILL, title="t", score=0.99)
-    monkeypatch.setattr(injection, "match_skill", lambda text: fake_match)
-    monkeypatch.setattr(injection, "render_injection", lambda m: marker)
+    monkeypatch.setattr(injection, "render_section_injection", lambda sel: marker)
 
     todo = hub.live_store.insert_ref(kind="todo", slug=None, title="do a thing")
     prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
@@ -242,7 +376,9 @@ def test_planner_prompt_no_injection_when_no_match(
 ) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    monkeypatch.setattr(injection, "match_skill", lambda text: None)
+    monkeypatch.setattr(
+        injection, "match_sections", lambda text: injection.SectionSelection((), 0)
+    )
 
     todo = hub.live_store.insert_ref(kind="todo", slug=None, title="do a thing")
     prompts = build_planner_prompts(hub.live_store, ref_id=todo.id, model="opus")
@@ -258,9 +394,7 @@ def test_quest_tick_prompt_injects_matched_skill(
     from precis.quest.tick import build_tick_prompt
 
     marker = "MARKER-INJECTED-SKILL-BLOCK-QUEST"
-    fake_match = injection.SkillMatch(slug=_KNOWN_SKILL, title="t", score=0.99)
-    monkeypatch.setattr(injection, "match_skill", lambda text: fake_match)
-    monkeypatch.setattr(injection, "render_injection", lambda m: marker)
+    monkeypatch.setattr(injection, "render_section_injection", lambda sel: marker)
 
     qid = _mk_quest(store, "A striving toward a catalyst")
     qref = store.get_ref(kind="quest", id=qid)
@@ -273,7 +407,9 @@ def test_quest_tick_prompt_no_injection_when_no_match(
 ) -> None:
     from precis.quest.tick import build_tick_prompt
 
-    monkeypatch.setattr(injection, "match_skill", lambda text: None)
+    monkeypatch.setattr(
+        injection, "match_sections", lambda text: injection.SectionSelection((), 0)
+    )
 
     qid = _mk_quest(store, "A striving toward a catalyst")
     qref = store.get_ref(kind="quest", id=qid)
@@ -289,14 +425,14 @@ def test_quest_tick_prompt_survives_injection_failure(
     run" — but the tick call site (``_skill_injection_section``) had no
     guard of its own, unlike the planner path (safe via the prompt
     assembler's module-level try/except around each ``build``). Any
-    exception out of ``match_skill``/``render_injection`` must degrade to
+    exception out of the section injection must degrade to
     no injection, not abort the tick."""
     from precis.quest.tick import build_tick_prompt
 
     def _boom(text: str) -> Any:
-        raise RuntimeError("boom — simulated match_skill failure")
+        raise RuntimeError("boom — simulated section injection failure")
 
-    monkeypatch.setattr(injection, "match_skill", _boom)
+    monkeypatch.setattr(injection, "match_sections", _boom)
 
     qid = _mk_quest(store, "A striving toward a catalyst")
     qref = store.get_ref(kind="quest", id=qid)

@@ -310,7 +310,7 @@ def _parse_link_target(
             # valid target to *remove* an edge to
             ref = store.get_ref(kind=kind, id=ref_id_or_slug, include_deleted=True)
         if ref is None:
-            if kind in ("part", "skill"):
+            if kind in ("part", "skill", "python"):
                 next_hint = (
                     f"link(kind=..., id=..., target={target!r}) mints the {kind} "
                     "ref on its first link; then this target resolves"
@@ -321,7 +321,7 @@ def _parse_link_target(
                 next_hint = f"check it exists: get(kind={kind!r}, id={identifier!r})"
             forms = (
                 ""
-                if is_numeric or kind in ("part", "skill")
+                if is_numeric or kind in ("part", "skill", "python")
                 else f" (a {kind} is '{kind}:<slug>' or '{kind}:<numeric ref id>')"
             )
             raise NotFound(
@@ -484,10 +484,12 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
     (``markdown`` / ``plaintext`` / ``tex``) lazy-mint the file's ref via
     the live handler's ``ensure_ingested`` — a ``markdown:<slug>`` or
     path-form target then resolves on first link, no get first
-    (gr516697). The DB-free index kinds (``md``, ``python``) carry no
-    refs rows at all; a ``md:`` target can never resolve, so the door
-    refuses early with the linkable sibling named — otherwise
-    :func:`parse_link_target` reports a misleading "no live md ref".
+    (gr516697). A ``python:<qualname>`` target likewise mints its lazy
+    anchor ref when the live python index resolves the qualname
+    (gr702978). The DB-free index kinds carry no refs rows at all; an
+    ``md:`` target can never resolve, so the door refuses early with the
+    linkable sibling named — otherwise :func:`parse_link_target` reports
+    a misleading "no live md ref".
     """
     if not isinstance(target, str):
         return
@@ -495,9 +497,9 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
     kind = kind.strip()
     if not sep:
         return
-    if kind in ("md", "python"):
+    if kind == "md":
         raise BadInput(
-            f"link target {target!r}: {kind!r} is a read/search index "
+            f"link target {target!r}: 'md' is a read/search index "
             "kind — it has no corpus refs to link",
             next=(
                 "link the file's store-backed ref instead: "
@@ -505,6 +507,32 @@ def mint_lazy_link_target(target: str, *, store: Store, hub: Any = None) -> None
                 "lists file slugs)"
             ),
         )
+    if kind == "python":
+        # Python symbols are file-backed; the anchor row is minted on
+        # first link, validated against the live code index — an unknown
+        # qualname mints nothing and refuses (gr702978).
+        identifier = rest.partition("~")[0].strip()
+        if not identifier:
+            return
+        handler = hub.handler_for(kind) if hub is not None else None
+        if handler is None:
+            raise NotFound(
+                f"link target {target!r}: the python kind is not live on "
+                "this hub, so the symbol cannot be validated",
+                next="check PRECIS_PYTHON_ROOTS, or link a store-backed kind",
+            )
+        anchor = handler.symbol_anchor(identifier)
+        if anchor is None:
+            raise NotFound(
+                f"link target {target!r}: no symbol {identifier!r} in any "
+                "registered python root",
+                next=(
+                    "check the qualname: get(kind='python', id='<alias>', "
+                    "view='toc'), or search(kind='python', q='<name>')"
+                ),
+            )
+        store.ensure_python_ref(identifier, alias=anchor[0], file=anchor[1])
+        return
     identifier = rest.partition("~")[0].strip()
     if kind in ("markdown", "plaintext", "tex"):
         handler = hub.handler_for(kind) if hub is not None else None

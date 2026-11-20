@@ -5090,6 +5090,9 @@ def test_gripes_status_change_htmx_swaps_fragment(runtime, client) -> None:
     assert resp.status_code == 200
     assert 'id="gripe-status-96"' in resp.text
     assert "wontfix" in resp.text
+    # Attention rides inside the swapped fragment (gr695933 review): a
+    # terminal status re-renders it, so the metadata line can't go stale.
+    assert "Attention: no" in resp.text
     # The now-active status no longer offers its own transition button.
     assert 'value="wontfix"' not in resp.text
     assert (
@@ -7179,7 +7182,7 @@ def test_nav_badge_counts_on_every_page(client) -> None:
     assert resp.status_code == 200
     # New nav structure is present site-wide.
     assert "Needs you" in resp.text
-    assert "Browse" in resp.text
+    assert 'href="/refs/quest"' in resp.text
     # Rose attention badge carrying the combined count.
     assert re.search(r"bg-danger-solid(?![\w-])", resp.text)
 
@@ -7856,3 +7859,17 @@ def test_ask_followup_quota_failure_defers_instead_of_storing_a_turn(
     assert params["args"]["question"] == "What does this imply?"
     assert params["args"]["request"]["tier"] == "frontier"
     assert "A decision" in params["args"]["request"]["prompt"]
+
+
+def test_nav_has_no_browse_menu(client) -> None:
+    """The Browse ▾ dropdown is gone; Quests and Clusters are plain links."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert "Browse" not in resp.text
+    assert 'href="/refs/quest"' in resp.text
+    assert 'href="/clusters"' in resp.text
+    resp = client.get("/refs/quest")
+    assert resp.status_code == 200
+    # The Quests tab keys on refs:quest, so its highlight actually fires.
+    m = re.search(r'<a href="/refs/quest" class="([^"]*)"', resp.text)
+    assert m and "bg-chrome-hover" in m.group(1)

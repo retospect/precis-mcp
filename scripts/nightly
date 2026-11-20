@@ -83,7 +83,9 @@ if ! docker info >/dev/null 2>&1; then
     exit 0
 fi
 
-echo "nightly: running full suite via scripts/test (this takes a few minutes)…"
+# Forward the long-board opt-in to the container for the suite and its retries.
+export PRECIS_TEST_ENV="${PRECIS_TEST_ENV:+$PRECIS_TEST_ENV }PRECIS_PCB_LONG_BOARDS=1"
+echo "nightly: running full suite via scripts/test (including long PCB boards)…"
 run_log=$(mktemp)
 # -rfE guarantees the per-test "FAILED …" / "ERROR …" short-summary lines the
 # contention filter below parses (default -q output can omit the ERROR list).

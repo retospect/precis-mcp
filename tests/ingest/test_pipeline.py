@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
+from precis.ingest.marker import _MARKER_PAGE_SEPARATOR, _parse_marker_markdown
 from precis.ingest.pdf_metadata import DoiProvenance, PdfMetadata
 from precis.ingest.pipeline import (
     _EM_DASH_LOST_RE,
@@ -25,10 +26,61 @@ from precis.ingest.pipeline import (
     _repair_mojibake,
     _resolve_identity,
     _retag_references,
+    extract_body,
     extract_paper,
     fetch_paper_by_arxiv,
     fetch_paper_by_doi,
 )
+
+
+@pytest.mark.parametrize(
+    ("leading_heading", "target_title", "trimmed"),
+    [
+        (
+            "4-CHANNEL CONFIGURABLE OPEN RF ENGINE FOR QUANTUM EXPERIMENTS",
+            "Imaging carbon chains",
+            True,
+        ),
+        ("Advertisement", "Imaging carbon chains", True),
+        ("Publisher cover", "Imaging carbon chains", False),
+        ("Advertisement", "A different article", False),
+    ],
+)
+def test_pdf_body_excludes_confirmed_ads_and_sentence_loops(
+    tmp_path: Path, leading_heading: str, target_title: str, trimmed: bool
+) -> None:
+    sentence = (
+        "The engine is a single carbon chain engine with a single chain "
+        "containing a single carbon atom and a single chain containing a single carbon atom."
+    )
+    loop = " ".join([sentence] * 20 + [sentence[:60]])
+    repeated_twice = " ".join([sentence] * 2)
+    markdown = (
+        f"{{0}}{_MARKER_PAGE_SEPARATOR}\n\n# {leading_heading}\n\n"
+        "LUGUS\n\n"
+        f"{{1}}{_MARKER_PAGE_SEPARATOR}\n\n{loop}\n\n"
+        f"{{2}}{_MARKER_PAGE_SEPARATOR}\n\nJournal masthead\n\n"
+        "# Imaging carbon chains\n\nThe authors\n\n"
+        f"## Abstract\n\nWe imaged the samples. {loop[:-60]} The samples were stable.\n\n"
+        f"{repeated_twice}"
+    )
+    blocks = _parse_marker_markdown(markdown, {}, {}, "paper")
+    with (
+        patch("precis.ingest.marker._marker_extract", return_value=blocks),
+        patch("precis.ingest.marker._release_marker_caches"),
+    ):
+        body = extract_body(tmp_path / "paper.pdf", "paper", target_title=target_title)
+
+    text = "\n".join(chunk.text for chunk in body.chunks)
+    assert (leading_heading in text) is not trimmed
+    assert ("LUGUS" in text) is not trimmed
+    assert "Journal masthead" in text
+    assert "Imaging carbon chains" in text
+    assert "We imaged the samples." in text and "The samples were stable." in text
+    assert text.count(sentence) == 2
+    assert [chunk.ord for chunk in body.chunks] == list(range(len(body.chunks)))
+    assert {chunk.page_first for chunk in body.chunks} == ({2} if trimmed else {0, 2})
+
 
 # ---------------------------------------------------------------------------
 # _blocks_to_chunks — pure mapping
@@ -657,6 +709,7 @@ class TestExtractPaperMarkerFallbackMeta:
             glyph_health=None,
             ocr_context=None,
             kind=None,
+            target_title="",
         ):
             if fallback_info is not None:
                 fallback_info["used_fallback"] = True
@@ -701,6 +754,7 @@ class TestExtractPaperMarkerFallbackMeta:
             glyph_health=None,
             ocr_context=None,
             kind=None,
+            target_title="",
         ):
             if fallback_info is not None:
                 fallback_info["used_fallback"] = True
@@ -742,6 +796,7 @@ class TestExtractPaperMarkerFallbackMeta:
             glyph_health=None,
             ocr_context=None,
             kind=None,
+            target_title="",
         ):
             if fallback_info is not None:
                 fallback_info["used_fallback"] = True
@@ -777,6 +832,7 @@ class TestExtractPaperMarkerFallbackMeta:
             glyph_health=None,
             ocr_context=None,
             kind=None,
+            target_title="",
         ):
             return [{"type": "paragraph", "text": "Body text.", "page": 0}]
 

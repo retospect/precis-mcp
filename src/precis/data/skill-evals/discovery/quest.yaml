@@ -1,0 +1,33 @@
+# Discovery eval task for the quest family (gr634773): phrased WITHOUT
+# skill names — the discovery condition sees only the task and the tool
+# surface. Two wording variants limit overfitting.
+family: quest
+skill: precis-quest-help
+tasks:
+  - id: mint-a-striving
+    variants:
+      - |
+        Open a long-horizon goal in precis: a room-temperature ammonia
+        catalyst with no external energy input. Judge it by selectivity,
+        yield and stability.
+      - |
+        Track this ambition in precis — a room-temperature ammonia
+        catalyst that needs no external energy. The rubric: selectivity,
+        yield, stability.
+    expect:
+      calls:
+        - {verb: put, kind: quest, args: {text: 're:(?i).*ammonia.*'}}
+      record: {kind: quest}
+    forbid:
+      calls:
+        - {verb: put, kind: todo}     # a striving is a quest, never a completable todo
+    fake:
+      calls:
+        - verb: put
+          kind: quest
+          args:
+            text: "A room-temperature ammonia catalyst with no external energy\n\nRubric: selectivity · yield · stability"
+      record: {kind: quest}
+      answer: >
+        put(kind='quest', text=…) mints the striving — first line is the
+        statement, the rest is rubric; it comes up STATUS:active.

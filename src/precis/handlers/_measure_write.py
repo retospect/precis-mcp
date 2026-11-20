@@ -149,17 +149,23 @@ def _literal_number(literal: str) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def coerce_measure_id(raw: Any) -> int | None:
+    """Decode a measures-table address independently of refs-backed handles."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        return None
+    text = str(raw).strip()
+    if text[:2].lower() == "mx":
+        text = text[2:]
+    if text.isascii() and text.isdigit() and int(text) > 0:
+        return int(text)
+    return None
+
+
 def _measure_id(raw: Any, where: str, field: str) -> int:
     """A measure id from an int, a digit string or an ``mx`` handle."""
-    if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
-        return raw
-    if isinstance(raw, str):
-        text = raw.strip()
-        parsed = handle_registry.parse(text)
-        if parsed is not None and parsed[0] == "measure" and not parsed[1]:
-            return parsed[2]
-        if text.isdigit() and int(text) > 0:
-            return int(text)
+    measure_id = coerce_measure_id(raw)
+    if measure_id is not None:
+        return measure_id
     raise _bad(where, field, f"{raw!r} is not a measure id or mx handle")
 
 

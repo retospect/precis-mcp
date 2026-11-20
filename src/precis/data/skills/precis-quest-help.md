@@ -244,7 +244,7 @@ that serve it (`served-by`, sub-quests then findings first) capped at 8
 per group, see
 `precis-fisheye-help`. The table views (`results`, `frontier`, `series`,
 `measures`) are in the next section.
-A *deed* is not a view — it is the milestone-typed slice of the log. Bare
+A *deed* is not a view — the milestone-typed slice of the log. Bare
 `get(id=N)` digests the logbook **tail** (last 10 entries, cheap even on a
 quest with thousands); `view='logbook'` is the append-only
 notebook paged newest-first (default `limit` 50 — `args={'since': '7d',
@@ -256,10 +256,11 @@ ref-events ledger, a different
 line (striving status · priority · horizon) plus the frontier counts —
 candidates by band and fidelity tier, trusted-per-axis coverage
 (including declared axes at zero coverage), the frontier handles — then
-momentum, the open gaps, the last `quest_tick` coordinator tick (real
-tick activity, `never` while every minted job is still queued), and the
-operator holds in force (`fidelity_restale_cap=0`,
-`compute_lane`/`lit_lane` `off`). It replaces a frontier+gaps+results
+momentum, the open gaps, the last `quest_tick` coordinator tick (`never`
+while every minted job is still queued), and the
+operator holds in force (`fidelity_restale_cap=0` — mechanical
+reruns on the pinned engine excepted; `compute_lane`/`lit_lane`
+`off`). It replaces a frontier+gaps+results
 round-trip for "where does this quest stand". `view='rubric'` prints just
 the measured axes (`rubric_objectives` + demand/supply). `view='raw'` shows
 scalars + meta + a capped links section (`view='links'` is the full graph).
@@ -332,6 +333,17 @@ paper. "Best" follows the taxon's `higher_is_better`; a group without it
 reports its row count and no best. Rows that are ambiguous, flagged
 (`meta.escalation`), anchor-lost or distrusted are left out — never compared
 across groups. See `precis-measure-help`.
+
+## Embed a frontier in a draft
+
+Add a draft figure with `meta={"view": {"source": "quest:<id>#frontier"}}`
+and a caption in `text`. Use the quest handle for `<id>`. Supply `x` and
+`y` together to plot two distinct rubric objective keys, or use the
+default axes. Set `trusted_only=True` to hide provisional candidates,
+`top_n` to a positive count to keep the closest points to the frontier,
+and `label` to `handles`, `names`, or `none`. The draft renders the PNG
+on demand from the quest's stored measurements. See
+`precis-draft-rich-content-help` for the full figure call.
 
 ## Read a quest's numbers — Pourbaix maps and staircase points
 
@@ -469,7 +481,7 @@ where (Reto 2026-11-13):
 | an idea / an approach | direction `todo` `part-of` the quest | `STATUS` open→doing→`done`/`won't-do` |
 | the idea's narrative | `memory` `part-of` the direction todo | prose, no state |
 | a check or research step — lit search, acquisition, test run, exploration | `todo` `part-of` the direction | its own `STATUS`; stays ordinary `doable` work |
-| a hypothesis / open question | `finding(hypothesis=True)` that `serves` the quest (and the direction, if branch-specific) | its own status and `supports`/`contradicts` edges, updated in place; refuted per the record-a-rejection workflow — pending gr664308 (lands in `precis-nanopub-help`/`precis-finding-help`); until then: `retracts`/`superseded-by`-link the hypothesis to the negative ruling and stamp `STATUS:refuted` on it, so the do-not-repropose ledger and the gap list close it |
+| a hypothesis / open question | `finding(hypothesis=True)` that `serves` the quest (and the direction, if branch-specific) | its own status and `supports`/`contradicts` edges, updated in place. To record a rejection, link the hypothesis to the negative ruling with `retracted-by` or `superseded-by` and stamp the hypothesis `STATUS:refuted`. See "Record a rejection" in [[precis-nanopub-help]]. |
 | evidence — finding, paper, measure, structure | `serves` the quest | — |
 
 ## Directions — state rides `STATUS`, not tags
@@ -741,7 +753,17 @@ record-low — treat as invalid until checked.
 A refused gate names its blockers (`barrier_seed_blocker`,
 `barrier_blocked_by` check + subject) and points at
 `view='neb' args={'run': N}` / `view='trust'`; logbook results carry
-the same digest.
+the same digest. Every untrusted stamp also carries a
+`barrier_failure_class` (gr593138): **mechanical** — stale engine,
+seed shortfall, infra/timeout markers — re-queues automatically on the
+current engine under a retry cap, a per-quest GPU-h budget
+(`fidelity_mechanical_retry_cap` / `fidelity_mechanical_gpu_h_budget`)
+and a cooldown, and is exempt from the `fidelity_restale_cap=0` hold;
+**science** — endpoint split, detachment, wrong binder, absurd
+magnitude, twin disagreement — never re-queues: the logbook's
+"science failure" entry routes it to you with the blocker named. A
+mechanical stamp parked at its cap or budget is yours again — decide,
+don't expect another automatic rerun.
 
 A single **low** trusted barrier is strong evidence — an upper bound, since
 a path that cheap exists. A single **high** barrier rules nothing out — the

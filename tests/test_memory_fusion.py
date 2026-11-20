@@ -283,3 +283,36 @@ def test_index_view_admits_one_gotcha_past_k(
     on = _bullets(handler.search(q="alpha beta", view="index", page_size=2).body)
     assert len(on) == 3
     assert "The gotcha" in on[2]
+
+
+def test_rescue_keeps_semantic_evidence_from_deduplicated_chunk(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A both-leg sibling must not hide a ref's nearest semantic chunk."""
+    monkeypatch.setenv(RECENCY_FLAG, "0")
+    monkeypatch.setenv(QUOTA_FLAG, "0")
+    dim = store.embedding_dim()
+    mid = _unit_vec(dim, [(0, 0.7), (1, math.sqrt(0.51))])
+    near = _unit_vec(dim, [(0, 0.99), (1, math.sqrt(0.0199))])
+    for i in range(3):
+        ref = store.insert_ref(kind="memory", slug=None, title=f"competitor {i}")
+        store.chunks.insert_chunks(
+            ref.id, [ChunkInsert(ord=0, text="alpha beta", embedding=mid)]
+        )
+    wanted = store.insert_ref(kind="memory", slug=None, title="multi-chunk memory")
+    store.chunks.insert_chunks(
+        wanted.id,
+        [
+            ChunkInsert(
+                ord=0, text="alpha beta " + "diluted prose " * 30, embedding=mid
+            ),
+            ChunkInsert(ord=1, text="quokkas wander entirely", embedding=near),
+        ],
+    )
+    handler = _handler(store)
+    monkeypatch.setenv(RESCUE_FLAG, "0")
+    off = _bullets(handler.search(q="alpha beta", view="index", page_size=2).body)
+    assert not any(f"(me{wanted.id})" in line for line in off)
+    monkeypatch.setenv(RESCUE_FLAG, "1")
+    on = _bullets(handler.search(q="alpha beta", view="index", page_size=2).body)
+    assert any(f"(me{wanted.id})" in line for line in on)

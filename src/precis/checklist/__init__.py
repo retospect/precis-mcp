@@ -37,7 +37,9 @@ Two layers, deliberately distinct (Reto, design session):
 
 Fingerprints are computed by the target kind's bridge (pcb: a sha256
 over the name-anchored design graph — refdes, net names, members, poses;
-never row ids, because ``pcb_apply`` rebuilds rows on every put). A
+never row ids, because ``pcb_apply`` rebuilds rows on every put. memory:
+a sha256 over the root's live body plus its ``part-of`` subtree, anchors
+refused — gr677471). A
 verdict stores the fingerprint AND the ``anchors`` it was narrowed to, so
 a read recomputes the current digest over the same scope: a verdict
 anchored to ``U3`` goes stale when U3 or its nets change, not when an

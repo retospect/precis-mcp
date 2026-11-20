@@ -367,6 +367,16 @@ def _write(store: Store, rec: LlmCallRecord) -> str | None:
                 rec.attempt,
             ),
         )
+        # Fold the call's *actual* real-money cost into the breaker's shared
+        # pending counter in the same transaction (gr732477): a cap crossed
+        # here gates every process at its next read, not one meter baseline
+        # later. The filter mirrors the meter's spend query exactly —
+        # notional OAuth rows and unpriced calls note nothing.
+        if rec.cost_usd is not None and rec.cost_usd > 0:
+            from precis.budget import meter
+
+            if rec.transport not in meter.OAUTH_TRANSPORTS:
+                meter.note_spend(conn, rec.cost_usd)
         conn.commit()
     return req_hash
 

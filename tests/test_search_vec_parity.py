@@ -412,9 +412,11 @@ GOLDEN: dict[str, list[tuple[str, int, float]]] = {
         ("wang2020nitrate", 0, 0.032266458),
         ("wang2020nitrate", 1, 0.031054405),
         ("lee2021enzymes", 2, 0.031024531),
-        ("smith2019perovskite", 1, 0.029910714),
+        # td703300 (e7934df3b) length-normalizes lexical ranks: ranks 3-5
+        # reorder (shorter lee/4 now outranks smith/1 on the lexical leg)
         ("lee2021enzymes", 3, 0.029877369),
-        ("lee2021enzymes", 4, 0.029040404),
+        ("lee2021enzymes", 4, 0.029513889),
+        ("smith2019perovskite", 1, 0.029437229),
         ("smith2019perovskite", 0, 0.016393443),
         ("wang2020nitrate", 3, 0.016129032),
         ("lee2021enzymes", 1, 0.015625),

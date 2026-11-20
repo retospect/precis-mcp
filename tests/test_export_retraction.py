@@ -629,3 +629,30 @@ def test_summarize_doi_completeness_all_clear_and_mixed():
     assert clean == "all 1 cited paper(s) have a validated DOI"
 
     assert R.summarize_doi_completeness([], {}, {}) == ""
+
+
+@pytest.mark.parametrize("scope", ["none", "stale", "all"])
+def test_coverage_entries_warn_for_never_checked(scope: str) -> None:
+    report = R.DraftRetractionReport(papers=[R.CitedPaper(1, "paper", "Paper")])
+    entries = R.retraction_coverage_entries(report, scope)
+    assert len(entries) == 1
+    assert entries[0][1] is True
+    assert "0 of 1 checked within 30 d" in entries[0][0]
+    assert "never been checked" in entries[0][0]
+
+
+def test_coverage_entries_fresh_and_stale() -> None:
+    now = datetime.now(UTC)
+    fresh = R.DraftRetractionReport(
+        papers=[R.CitedPaper(1, "paper", "Paper", checked_at=now)]
+    )
+    assert R.retraction_coverage_entries(fresh, "stale") == []
+    assert R.retraction_coverage_entries(fresh, "all") == []
+    assert R.retraction_coverage_entries(fresh, "none")[0][1] is True
+    stale = R.DraftRetractionReport(
+        papers=[R.CitedPaper(1, "paper", "Paper", checked_at=now - timedelta(days=31))]
+    )
+    entries = R.retraction_coverage_entries(stale, "stale")
+    assert entries[0][1] is False
+    assert "0 of 1 checked within 30 d" in entries[0][0]
+    assert R.retraction_coverage_entries(R.DraftRetractionReport(), "none") == []

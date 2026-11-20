@@ -338,6 +338,15 @@ def test_probe_codex_exec_classes(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
     )
     assert lane_health._probe_codex_exec() == ("ok", None)
+    # The real CLI writes the success verdict to stderr, not stdout.
+    monkeypatch.setattr(
+        lane_health.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a[0], 0, stdout="", stderr="Logged in using ChatGPT\n"
+        ),
+    )
+    assert lane_health._probe_codex_exec() == ("ok", None)
     monkeypatch.setattr(
         lane_health.subprocess,
         "run",

@@ -25,9 +25,13 @@ supplied next step and record the friction. File each real pain point
 directly: owner ruling me538320 says no duplicate search and no cap;
 triage handles deduplication. Include the exact call, expected
 behavior, actual result and available evidence. Repair in-scope
-defects when authorized, then resume the task. An ordinary,
-informative refusal can simply teach the corrected call. A confusing
-factual memory is handled by the memory-improvement entry, not treated
+defects when authorized, then resume the task. A refusal that fires
+exactly as its skill documents (an intended guard whose message gives a
+working next step) is the tool working: follow the step. A call that
+errors on documented usage, a refusal whose next step does not work, or
+a skill that does not match the tool is friction: file it at once, no
+search first. A confusing factual memory is handled by the
+memory-improvement entry, not treated
 automatically as a tool bug. These are encountered triggers, not a
 separate search for busywork.
 

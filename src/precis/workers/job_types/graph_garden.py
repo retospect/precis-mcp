@@ -1,16 +1,18 @@
-"""``graph_garden`` job_type — one bounded proposals-only upkeep tick.
+"""``graph_garden`` job_type — one bounded upkeep or grounding tick.
 
 The job runs :func:`precis.graph.garden.runner.run_garden_tick` —
 deterministic detectors, then one routed LLM verdict per candidate
 (``graph_garden:propose`` op, steerable via ``llm.op.*``), then
 ``verdict='proposed'`` rows into the ``reviews`` ledger (plus a
 ``rejected`` row per candidate the proposer turned down, so the next run
-does not re-ask it). It writes NOTHING else: no merges, splits, prunes,
-relinks or tags. After the tick the proposal consumer
+does not re-ask it). Grounding ticks also commission bounded research or
+human-review todos from saved audits and re-audit current revisions on
+candidate evidence returns. After the tick the proposal consumer
 (:mod:`precis.graph.garden.consumer`, gr506044) prunes dangling edges and
 has Opus approve (merge applied, undoable) or reject (with a reason
-code) the pending merge/relink proposals; ``params.consume=false`` turns
-it off. A consumer exception lands on ``meta.garden.consume_error``
+code) the pending merge/relink proposals. Audit-only ticks skip the
+consumer, as do other jobs with ``params.consume=false``. A consumer
+exception lands on ``meta.garden.consume_error``
 rather than failing the tick that already wrote its proposals.
 
 Who mints it: an operator-seeded recurring todo under Watches —
@@ -29,7 +31,8 @@ run it.
 
 Outcome contract (the cooling streak reads this): ``meta.garden`` on the
 job row carries ``{candidates, proposals, skipped_pending, rejected,
-llm_errors, llm_truncated, skipped_detectors, proposals_by_detector}``
+llm_errors, llm_truncated, skipped_detectors, proposals_by_detector,
+handoffs}``
 — ``llm_truncated`` is the share of ``llm_errors`` cut on the length
 cap (gr504896) — plus
 ``skipped`` on a gate-skipped
@@ -57,6 +60,7 @@ _PASS_CHOICES = (
     "paper-identity",
     "memory",
     "memory-review",
+    "memory-grounding",
     "host-facts",
     "all",
 )
@@ -129,6 +133,29 @@ def _gate_skip(ctx: Any, reason: str) -> None:
     log.info("graph_garden: run skipped (%s)", reason)
 
 
+def _try_build_embedder(store: Any) -> Any | None:
+    """Embedder for the grounding audit's bounded conflict probe — same
+    construction ``conflict_sweep`` uses. A missing or unconfigured
+    embedder degrades the probe to ``not_probed`` (recorded on the audit
+    row) rather than failing the tick: retrieval needs query vectors,
+    everything else in the tick does not."""
+    try:
+        from precis.config import load_config
+        from precis.embedder import make_embedder
+
+        cfg = load_config()
+        return make_embedder(
+            cfg.embedder,
+            dim=store.embedding_dim(),
+            url=cfg.embedder_url,
+            timeout=cfg.embedder_timeout,
+            max_retries=cfg.embedder_max_retries,
+        )
+    except Exception:
+        log.info("graph_garden: no embedder; grounding conflict probe not_probed")
+        return None
+
+
 def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     """Plugin dispatcher invoked by ``job_inproc`` for a claimed job.
 
@@ -184,6 +211,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     from precis.graph.garden.service import saved_cursors
 
     prev_cursors = saved_cursors(ctx.store)
+    embedder = _try_build_embedder(ctx.store)
     outcome = run_garden_tick(
         ctx.store,
         passes=passes,
@@ -199,6 +227,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         cursors=prev_cursors,
         considered_days=_nonneg("considered_days", CONSIDERED_DAYS),
         propose=propose_llm,
+        embedder=embedder,
     )
     garden: dict[str, Any] = {
         "candidates": outcome.candidates,
@@ -214,13 +243,20 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
         "skipped_detectors": list(outcome.skipped_detectors),
         "not_checked": dict(outcome.not_checked),
         "proposals_by_detector": dict(outcome.proposals_by_detector),
+        # Grounding-handoff claims commissioned this tick (gr634487).
+        "handoffs": outcome.handoffs,
         # Carried forward: a run over a subset of kinds/passes keeps
         # the other windows where the last run left them.
         "cursors": {**prev_cursors, **outcome.cursors},
     }
     ctx.set_meta(garden=garden)
     consumed = None
-    if not outcome.paused and params.get("consume", True) is not False:
+    audit_only = set(passes) == {"memory-grounding"}
+    if (
+        not audit_only
+        and not outcome.paused
+        and params.get("consume", True) is not False
+    ):
         # The proposal consumer (gr506044, Reto 2026-10-23): auto-prune
         # dangling edges, then the Opus review of merge/relink proposals.
         # A consume failure is recorded on meta, not raised — the tick's
@@ -364,13 +400,11 @@ SPEC = JobTypeSpec(
     compatible_executors=frozenset({"job_inproc"}),
     requires=frozenset(),
     description=(
-        "Proposals-only graph upkeep tick: deterministic detectors "
-        "(dupes, orphans, stale nodes, dangling/cycle edges, under-tagged "
-        "refs, polysemy and sibling-confusion signals), one routed LLM "
-        "verdict each, proposals into the reviews ledger — never a graph "
-        "write. Minted by the operator-seeded recurring todo; a run skips "
-        "while the graph_garden service_config row is dark or a dry "
-        "streak cools the pass."
+        "Bounded graph upkeep tick. Deterministic detectors feed the reviewed "
+        "maintenance proposal pipeline. The opt-in grounding audit writes pinned "
+        "coverage reviews, commissions bounded follow-up todos and considers "
+        "candidate returns. An operator-seeded recurring todo mints ticks. "
+        "Runs skip while the service is dark or cooling."
     ),
     dispatch=_dispatch,
     # Reto ruling (gr506045, 2026-10-23): a host-scoped enabled

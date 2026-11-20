@@ -109,12 +109,12 @@ from precis.handlers import (
     _finding_judgments,
     _finding_nanopub,
 )
+from precis.handlers._audited_retirement import AuditedRetirementHandler
 from precis.handlers._finding_common import (
     cap_finding_title,
     fetch_ref_any_kind,
     multi_article_advisory,
 )
-from precis.handlers._numeric_ref import NumericRefHandler
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -227,7 +227,7 @@ def _evidence_target_handle(tgt: str) -> str:
     return tgt
 
 
-class FindingHandler(NumericRefHandler):
+class FindingHandler(AuditedRetirementHandler):
     #: Agent-authored assertions (graph-node-trust-state slice 1).
     trust_origin: ClassVar[str | None] = "generated"
     spec: ClassVar[KindSpec] = KindSpec(
@@ -930,6 +930,7 @@ class FindingHandler(NumericRefHandler):
         rel: str | None = None,
         meta: dict[str, Any] | None = None,
         reason: str | None = None,
+        note: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Taproot-aware link door for findings.
@@ -959,6 +960,13 @@ class FindingHandler(NumericRefHandler):
         ``meta.{model,prompt_version,run_id,why}``) reaches the gate at
         ``store.add_link`` (gr504789). ``reason=`` is the kwarg spelling
         of ``meta={'reason': …}`` (:func:`merge_link_reason`, gr626896).
+        ``note=`` is the same annotation under the name callers reach
+        for first (gr680236): a ``kind='finding'``-only alias for
+        ``reason=`` that must agree with ``reason=``/``meta['reason']``
+        when several spellings arrive together, and is refused on
+        ``mode='remove'``. Other kinds still refuse ``note=`` at the
+        signature gate — ``structure``'s own ``note=`` is a different
+        thing (a provenance ``meta.note``, not this door).
 
         Anything else — a non-hub finding, a non-Taproot relation, or
         ``mode='remove'`` — falls through to the generic numeric-ref link.
@@ -976,7 +984,17 @@ class FindingHandler(NumericRefHandler):
                     "target=..., rel=...); get and tag do take id=[...]"
                 ),
             )
-        meta = merge_link_reason(meta, reason, mode=mode)
+        # ``note=`` folds onto the ``reason=`` door before the shared
+        # merge (gr680236): when both spellings arrive they must agree —
+        # the edge carries one reason — and when they agree either value
+        # lands, so ``note`` wins by convention in the call below.
+        if note is not None and reason is not None and note != reason:
+            raise BadInput(
+                "note= and reason= disagree — the edge carries one reason",
+                next="pass one spelling: note='…' or reason='…' "
+                "(note= is a kind='finding' alias for reason=)",
+            )
+        meta = merge_link_reason(meta, note if note is not None else reason, mode=mode)
         if mode == "add" and rel in (hub.HUB_ROLES | hub.CLAIM_LINK_RELATIONS):
             try:
                 hub_ref_id: int | None = authoring.resolve_hub_ref_id(self.store, id)
@@ -1150,6 +1168,9 @@ class FindingHandler(NumericRefHandler):
         payload through ``get``'s extras channel,
         ``args={'payload': {...}}``; omitted, it gates whatever is already
         frozen or parked on the hub.
+        ``view='publish-preflight'`` reads the existing artifact's publish
+        gates, including trust and withheld evidence, without network I/O
+        or state changes (:mod:`precis.handlers._finding_publish_preflight`).
         ``view='similar'`` lists the ``k`` nearest OTHER live claim hubs to
         this hub's sentence (:func:`precis.taproot.canon.nearest_hubs`,
         the same ANN retrieval the hub-mint dedup cascade runs before
@@ -1197,6 +1218,12 @@ class FindingHandler(NumericRefHandler):
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
             return _finding_nanopub.render_nanopub_view(self.store, ref)
+        if view == "publish-preflight":
+            from precis.handlers import _finding_publish_preflight
+
+            ref_id = self._coerce_id(id)
+            ref = self._resolve_live_ref(ref_id)
+            return _finding_publish_preflight.render_publish_preflight(self.store, ref)
         if view == "mint-preflight":
             from precis.handlers import _finding_mint_preflight
 
@@ -1306,6 +1333,7 @@ class FindingHandler(NumericRefHandler):
         tags: list[str] | None,
         limit: int,
         mode: str | None,
+        include_ref_ids: list[int] | None = None,
     ) -> list[Ref]:
         """Ref hits for ``q``, fusing the title leg with the claim-body leg.
 
@@ -1314,6 +1342,10 @@ class FindingHandler(NumericRefHandler):
         "do we already have a claim like this?" query must match. The
         ``card_combined`` cards on chase-tree rows are chain snapshots, not
         claims, and would only add noise.
+
+        ``include_ref_ids`` carries a materialized ``id_min``/``id_max``
+        range bound on the ranked paths (gr676945) — the same channel
+        ``cited=``/``uncited=`` arrive on.
         """
         return fused_ref_hits(
             self.store,
@@ -1324,7 +1356,21 @@ class FindingHandler(NumericRefHandler):
             limit=limit,
             mode=mode,
             chunk_kinds=["finding_body"],
+            include_ref_ids=include_ref_ids,
         )
+
+    def _range_include_ids(
+        self, id_lo: int | None, id_hi: int | None
+    ) -> list[int] | None:
+        """Materialize an ``id_min``/``id_max`` bound for the ranked paths.
+
+        Thin wrapper over the base's :meth:`_include_ids_in_range` that
+        no-ops when no bound was given; the wrapper exists so both ranked
+        callers read identically.
+        """
+        if id_lo is None and id_hi is None:
+            return None
+        return self._include_ids_in_range(None, id_lo=id_lo, id_hi=id_hi)
 
     def _postures(
         self, ref_ids: list[int], *, strict: bool = False
@@ -1537,8 +1583,19 @@ class FindingHandler(NumericRefHandler):
         # ``refs.created_at`` on it.
         view: str | None = None,
         group_by: str | list[str] | None = None,
+        agg: str | None = None,
         since: str | datetime | None = None,
         until: str | datetime | None = None,
+        # ``args={'id_min': N}`` / ``args={'id_max': M}`` — bound the
+        # result set to a ref-id range. This override owns every search
+        # path (it never forwards ``**_kw``), so it consumes the bounds
+        # itself: SQL-level on the listing and count views, materialized
+        # into ``include_ref_ids`` on the ranked paths — the same
+        # contract NumericRefHandler.search documents (gr676945: the
+        # list footer advertises the spelling on every numeric-ref kind,
+        # and dispatch now admits it here via the MRO-aware accepted set).
+        id_min: int | str | None = None,
+        id_max: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Hybrid search across findings with a status-axis default.
@@ -1597,11 +1654,19 @@ class FindingHandler(NumericRefHandler):
         numeric-ref kinds) plus the live claim-graph census — hubs by
         publish state and trust axis, edges by relation (gr518170).
 
-        Renders a TOON table (``id | title | setup | primary``, plus
-        ``state | support | flags`` once any hit is a claim hub);
+        The default renders a TOON table (``id | title | setup | primary``,
+        plus ``state | support | flags`` once any hit is a claim hub).
+        ``view='index'`` renders the same ranked hits as one bullet per hit
+        (``- <title> (fi<id>) — <STATUS>``). Use
         ``get(kind='finding', id=N)`` for the full begat chain.
         """
+        from precis.handlers._numeric_ref import _require_count_agg_view
+
+        _require_count_agg_view(agg, view)
         q = fold_match_all_q(q)
+        from precis.handlers._numeric_ref import _parse_id_range
+
+        id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
         base_tags: list[str] = list(tags) if tags else []
         resolved_trust = (trust or "").strip().lower() or None
         if resolved_trust is not None and resolved_trust not in FINDING_TRUST_TIERS:
@@ -1614,11 +1679,11 @@ class FindingHandler(NumericRefHandler):
                 ),
             )
 
-        if view is not None:
+        if view not in (None, "index"):
             if view != "count":
                 raise BadInput(
                     f"unknown view {view!r} for search(kind={self.kind!r})",
-                    options=["count"],
+                    options=["count", "index"],
                     next=(
                         f"search(kind={self.kind!r}, view='count', "
                         "args={'group_by': 'state'})"
@@ -1630,8 +1695,11 @@ class FindingHandler(NumericRefHandler):
                 trust=resolved_trust,
                 tags=base_tags,
                 group_by=group_by,
+                agg=agg,
                 since=since,
                 until=until,
+                id_min=id_lo,
+                id_max=id_hi,
             )
 
         if status is None:
@@ -1641,6 +1709,9 @@ class FindingHandler(NumericRefHandler):
                 page_size=page_size,
                 mode=mode,
                 trust=resolved_trust,
+                id_lo=id_lo,
+                id_hi=id_hi,
+                view=view,
             )
 
         # Explicit status= (including '*') — exact single-status filter,
@@ -1665,11 +1736,13 @@ class FindingHandler(NumericRefHandler):
                     kind=self.kind,
                     tags=normalized,
                     limit=self._trust_pool(page_size, resolved_trust),
+                    id_min=id_lo,
+                    id_max=id_hi,
                 )
                 refs = self._apply_trust(
                     refs, trust=resolved_trust, page_size=page_size
                 )
-                return self._render_finding_table(refs, query=None)
+                return self._render_finding_table(refs, query=None, view=view)
             raise BadInput(
                 "search(kind='finding') requires q= or status=/tags=",
                 next=(
@@ -1683,6 +1756,7 @@ class FindingHandler(NumericRefHandler):
             tags=normalized,
             limit=self._trust_pool(page_size, resolved_trust),
             mode=mode,
+            include_ref_ids=self._range_include_ids(id_lo, id_hi),
         )
         refs = self._apply_trust(refs, trust=resolved_trust, page_size=page_size)
         if not refs:
@@ -1715,7 +1789,7 @@ class FindingHandler(NumericRefHandler):
             body += render_next_section(nav)
             return Response(body=body)
 
-        return self._render_finding_table(refs, query=q)
+        return self._render_finding_table(refs, query=q, view=view)
 
     def _search_default_cohort(
         self,
@@ -1725,6 +1799,9 @@ class FindingHandler(NumericRefHandler):
         page_size: int,
         mode: str | None = None,
         trust: str | None = None,
+        id_lo: int | None = None,
+        id_hi: int | None = None,
+        view: str | None = None,
     ) -> Response:
         """The defaulted (``status is None``) search cohort: union of
         ``STATUS:established`` rows and ``TAPROOT:claim`` hubs.
@@ -1757,21 +1834,33 @@ class FindingHandler(NumericRefHandler):
         pool = self._trust_pool(page_size, trust)
         if q is None or not q.strip():
             established_refs = self.store.list_refs(
-                kind=self.kind, tags=established_tags, limit=pool
+                kind=self.kind,
+                tags=established_tags,
+                limit=pool,
+                id_min=id_lo,
+                id_max=id_hi,
             )
-            hub_refs = self.store.list_refs(kind=self.kind, tags=hub_tags, limit=pool)
+            hub_refs = self.store.list_refs(
+                kind=self.kind,
+                tags=hub_tags,
+                limit=pool,
+                id_min=id_lo,
+                id_max=id_hi,
+            )
             refs = self._apply_trust(
                 _merge_dedup(established_refs, hub_refs),
                 trust=trust,
                 page_size=page_size,
             )
-            return self._render_finding_table(refs, query=None)
+            return self._render_finding_table(refs, query=None, view=view)
 
+        range_ids = self._range_include_ids(id_lo, id_hi)
         wide = self._hybrid_hits(
             q=q,
             tags=Tag.normalize_filter(list(base_tags), kind=self.kind),
             limit=pool * _COHORT_OVERFETCH,
             mode=mode,
+            include_ref_ids=range_ids,
         )
         members = self._cohort_members([int(r.id) for r in wide])
         ranked = [r for r in wide if int(r.id) in members]
@@ -1780,9 +1869,19 @@ class FindingHandler(NumericRefHandler):
                 ranked,
                 _merge_dedup(
                     self._hybrid_hits(
-                        q=q, tags=established_tags, limit=pool, mode=mode
+                        q=q,
+                        tags=established_tags,
+                        limit=pool,
+                        mode=mode,
+                        include_ref_ids=range_ids,
                     ),
-                    self._hybrid_hits(q=q, tags=hub_tags, limit=pool, mode=mode),
+                    self._hybrid_hits(
+                        q=q,
+                        tags=hub_tags,
+                        limit=pool,
+                        mode=mode,
+                        include_ref_ids=range_ids,
+                    ),
                 ),
             )
         refs = self._apply_trust(ranked, trust=trust, page_size=page_size)
@@ -1805,7 +1904,7 @@ class FindingHandler(NumericRefHandler):
             body += render_next_section(nav)
             return Response(body=body)
 
-        return self._render_finding_table(refs, query=q)
+        return self._render_finding_table(refs, query=q, view=view)
 
     #: Publish-state display order for the count view — the trust ladder
     #: most-settled first; ``unminted`` (no publish row) closes it.
@@ -1828,8 +1927,11 @@ class FindingHandler(NumericRefHandler):
         trust: str | None,
         tags: list[str],
         group_by: Any,
+        agg: str | None = None,
         since: str | datetime | None,
         until: str | datetime | None,
+        id_min: int | None = None,
+        id_max: int | None = None,
     ) -> Response:
         """``search(kind='finding', view='count')`` — filtered total +
         the live claim-graph census (gr518170).
@@ -1862,7 +1964,9 @@ class FindingHandler(NumericRefHandler):
 
         from precis.handlers._numeric_ref import (
             _COUNT_GROUP_LIMIT,
+            _count_agg_cells,
             _count_facet_label,
+            _parse_count_aggs,
             _parse_count_facets,
             _parse_window_bound,
         )
@@ -1881,6 +1985,7 @@ class FindingHandler(NumericRefHandler):
                 ),
             )
         facets = _parse_count_facets(group_by)
+        aggs = _parse_count_aggs(agg, facets)
         since_dt = _parse_window_bound(since, "since")
         until_dt = _parse_window_bound(until, "until")
 
@@ -1900,15 +2005,23 @@ class FindingHandler(NumericRefHandler):
             q=q,
             q_in_chunks=True,
             facets=facets,
+            aggs=aggs,
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
+            id_min=id_min,
+            id_max=id_max,
         )
         filters: list[str] = []
         if q and q.strip():
             filters.append(f"q={q!r}")
         if normalized:
             filters.append(f"tags={normalized!r}")
+        if id_min is not None or id_max is not None:
+            filters.append(
+                f"ids [{id_min if id_min is not None else '…'}, "
+                f"{id_max if id_max is not None else '…'}]"
+            )
         if since_dt is not None or until_dt is not None:
             lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
             hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
@@ -1920,9 +2033,11 @@ class FindingHandler(NumericRefHandler):
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
-            for vals, n, _span in groups:
+            for vals, n, span in groups:
                 label = " | ".join(v if v is not None else "(none)" for v in vals)
-                parts.append(f"  {label}: {n}")
+                parts.append(
+                    f"  {label}: {n}" + _count_agg_cells(aggs, span.aggregates)
+                )
             if len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
 
@@ -1968,7 +2083,9 @@ class FindingHandler(NumericRefHandler):
             )
         return Response(body="\n".join(parts), result_count=total)
 
-    def _render_finding_table(self, refs: list[Ref], *, query: str | None) -> Response:
+    def _render_finding_table(
+        self, refs: list[Ref], *, query: str | None, view: str | None = None
+    ) -> Response:
         """Render the finding-search TOON table.
 
         Shape: ``id | title | setup | primary``, widened to ``id | title |
@@ -2010,6 +2127,15 @@ class FindingHandler(NumericRefHandler):
             rid: next((value for ns, value in pairs if ns == "STATUS"), "")
             for rid, pairs in self.store.ref_tags_bulk([r.id for r in refs]).items()
         }
+        if view == "index":
+            return Response(
+                body="\n".join(
+                    f"- {' '.join(r.title.splitlines())} (fi{r.id}) — {statuses.get(r.id, '')}"
+                    for r in refs
+                ),
+                result_count=len(refs),
+                result_ids=[int(r.id) for r in refs],
+            )
         rows: list[dict[str, str]] = []
         for r in refs:
             meta = r.meta or {}

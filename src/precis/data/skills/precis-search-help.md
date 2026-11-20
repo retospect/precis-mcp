@@ -147,16 +147,25 @@ Pin it with `mode=` when you know better:
 | `'hybrid'` *(default)* | Lexical + semantic, fused into one order. | General recall — concepts *and* keywords. |
 | `'lexical'` | Full-text match only; no embedding. | You know the **exact string** — an identifier, acronym, surname, code token, a numeric like `1.523 eV`, or an exact phrase. Embeddings blur these; lexical is precise and deterministic. Also the honest tool when the embedder is down (hybrid silently degrades to this anyway). |
 | `'semantic'` | Embedding-similarity match only. | Pure conceptual / paraphrase recall where the wording won't match but the meaning does. No embedder wired → degrades to lexical; embedder wired but failing → a loud error, never a silent zero-hit answer — when the cause is the service at capacity (queue timeout, not down), the error carries a retry-after hint in seconds; capacity ≠ absence, so wait and retry rather than concluding the hit doesn't exist. |
-| `'verbatim'` | Chunks whose extracted keywords contain **all** your query words. When the scan is bounded — one ref (`scope=`/ref-id set) or the `memory` corpus — chunk text containing the whole query as one substring also matches (a backstop for terms extraction never stored: stopwords, LaTeX tokens). Embedder-independent; newest chunk first. | A topical filter tighter than full-text. Each word must appear as a *distinct* term, so it's terms, not phrases (`'oxygen evolution'` = both words present, not the 2-gram). On `kind='memory'` a full-sentence query is the dedup check: a verbatim hit means the sentence already lives in some body. Empty query returns nothing. |
+| `'verbatim'` | Matches chunks containing **all** query words as extracted keywords, or the whole query as a contiguous, case-insensitive substring. The phrase check scans an explicit ref scope or the `memory` corpus directly. Otherwise it checks the newest 1,000 live TSV (full-text index) candidates. Embedder-independent, newest chunk first. | Find exact phrases that keyword extraction may have missed. Keyword matches can contain the terms apart. Use `literal` to confirm the phrase itself. Empty query returns nothing. |
 | `'literal'` | Exact substring match over the chunk text itself (case-insensitive; `%`/`_` are data, not wildcards). Newest chunk first. | The "is this exact string still anywhere" hunt — a filename like `./src/app/config.py`, a flag spelling, a sha, a quoted phrase. `get(id=N, q='…')` is the same literal check scoped to one node. |
+
+`kind='skill'` refuses `mode='literal'`. Use `mode='verbatim'` there
+for a substring match.
 
 ```python
 search(kind="paper", q="MoS2 monolayer", mode="lexical")  # exact term recall
 search(q="ways to stop catalyst poisoning", mode="semantic")  # paraphrase recall
 search(
     kind="paper", q="perovskite stability", mode="verbatim"
-)  # chunks keyworded BOTH terms
+)  # both extracted keywords, or the contiguous phrase in the candidate pool
 ```
+
+The unscoped verbatim phrase cap applies before kind and other result filters.
+Keyword matches are outside the cap. A miss does not establish corpus absence:
+full-text analysis can omit the phrase, and newer candidates can crowd out
+older matches. Use `mode='literal'` for a substring check without the TSV
+prefilter, or scope verbatim to a known paper.
 
 `search(kind="skill", ...)` also takes `args={"family": "se"}` (subject family =
 the skill id's name-prefix stem unless its frontmatter says otherwise) and
@@ -173,6 +182,15 @@ more-relevant is always first. There is no `mode='regex'` on this verb
 pattern hunt elsewhere use `'literal'` (exact substring) or `'lexical'`
 (stemmed full-text).
 
+## Find an exact hub cite in a draft
+
+Scoped `mode='verbatim'` matches substrings: `fi34984` also finds
+`fi349841`. Include the citation brackets to find the exact hub cite:
+
+```python
+search(kind='draft', scope='norr-her-survey', q='[fi34984]', mode='verbatim')
+```
+
 ## The corpus stores one spelling per quantity
 
 ASCII queries are auto-canonicalized — `40 kOhm` finds a claim written
@@ -188,7 +206,7 @@ it words the idea differently than you did. Hand `search` **several
 angles at once** and let it fuse them; a chunk that surfaces across
 phrasings rises to the top.
 
-Two top-level params, both paper-side, fused with `q` into one ranked list:
+Paper search fuses two top-level params with `q` into one ranked list:
 
 - `queries=[…]` — **rephrasings of the question** (synonyms, broader /
   narrower framings, sub-questions hiding inside it). Up to 8.
@@ -473,7 +491,10 @@ Use the **no-`q`** form for counting / inventory / "is the backlog clear?"
 questions. Reach for `q=` only when you mean "the tagged refs that mention
 X". Numeric-ref kinds flag a `q=`-induced drop in the header (`⚠ N of M …
 entries tagged […] also match q`) — but that only helps if you read it;
-prefer no-`q` when you want the whole set.
+prefer no-`q` when you want the whole set. When chunk search retries with any
+word (3+ words, or 2+ within a ref) and any title leg also has no strict
+matches, the header marks `q ran as ANY` and suggests a shorter query or a
+quoted phrase.
 
 Some kinds fold a **default status** into this: `gripe` defaults to
 `status='open'` (live — every non-terminal STATUS; `tags=['STATUS:open']`
@@ -716,33 +737,47 @@ strips `attention is all you need` to its stemmed content words, so any
 content-dense body that repeats those words outranks the paper's own
 short card. Paper search compensates — on page 1 with no
 `scope=`/`tags=`/`after=`/`before=`, a near-exact match on
-the title is promoted to the top of the table **and** named above it:
+the title is named in a record callout above the table:
 
 ```
 Title match — the paper record:
   pa2928 [held] — Ashish Vaswani et al. (2017). Attention is All you Need
 ```
 
-Read that line, not the row it promoted — the promoted row is still a
-*chunk* (often the paper's boilerplate first chunk), so its keywords can
-look nothing like your query. `held` vs `want` says whether the PDF is in
-the corpus. For every title match as a record, use `search(kind='paper',
-args={'title': '…'})`.
+Read that callout for the title match. No table row is promoted: the
+table keeps its ranked hits, and title records consume no page slots.
+Chunk keywords can therefore look unlike the title query. `held` vs
+`want` says whether the PDF is in the corpus. For every title match as a
+record, use `search(kind='paper', args={'title': '…'})`.
 
 ## Find the right skill for a task
 ## Which skill explains how to do X?
 ## Discover a skill by topic
 
 ```python
-search(kind="skill", q="how do I edit a markdown file")
-search(kind="skill", q="paginate paper search")
-search(kind="skill", q="patent prior art")
+search(kind="skill", args={"queries": [
+    "store a new memory", "search memories", "tag a thought",
+]})
 ```
 
-Natural-language queries work — phrase your query the way you'd ask
-it. Skill hits whose kind or required tool isn't available in the current
-build carry `[not configured: <why>]` so you don't follow them to no-op
-recipes; add `args={'configured_only': True}` to drop them.
+Describe your goals in your own words. Use up to five related phrasings
+after deduplication. An optional `q=` counts as the first phrasing.
+Each phrasing drops matches below a minimum relevance score before
+reciprocal rank fusion. Sections found by several phrasings rise in the
+index. Attribution such as `q1,q3` identifies the matching phrasings in
+deduplicated order, and each phrasing with a confident eligible match
+keeps its top section. If that section exceeds the per-skill cap, the
+response provides a direct read link below the table.
+
+The table shows at most three sections per skill and 20 total. Open a
+section with `get(kind='skill', id='<slug>~N')` or map the rest with
+`get(kind='skill', id='<slug>/toc')`. When the index reports more
+matches, narrow the phrasings or filter by skill family or tag. The
+fused form never paginates.
+
+For a single ordinary search, use `q=` alone. Skill hits whose kind or
+required tool is unavailable carry `[not configured: <why>]`. Pass
+`configured_only=True` in `args` to drop them.
 
 ## Find patents not yet in the local store
 ## Search EPO directly via OPS

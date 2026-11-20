@@ -19,6 +19,7 @@ overwrite AnkiWeb, so it is **refused** — the tick aborts and reports.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -68,6 +69,7 @@ class SyncResult:
     all_cards: list[ForeignCard] | None = None  # populated when project=True
     aborted: str | None = None
     deleted_ref_ids: list[int] = field(default_factory=list)
+    boosted_ref_ids: list[int] = field(default_factory=list)
 
     def summary(self) -> str:
         if self.aborted:
@@ -79,9 +81,10 @@ class SyncResult:
             if self.fix_requested
             else ""
         )
+        boost = f", {len(self.boosted_ref_ids)} boosted" if self.boosted_ref_ids else ""
         return (
             f"synced{boot}: {self.pushed} new, {self.updated} updated{rem}, "
-            f"{self.stats_written} stat rows read back{fix}"
+            f"{self.stats_written} stat rows read back{fix}{boost}"
         )
 
 
@@ -108,6 +111,11 @@ def upsert_notes(
                 if name in note.keys() and note[name] != val:  # noqa: SIM118 (anki Note, not a dict)
                     note[name] = val
                     changed = True
+            legacy = f"precis::{spec.ref_id}"
+            if legacy in note.tags:  # fold into the collapsible precis::id tree
+                note.tags = [t for t in note.tags if t != legacy]
+                note.tags.append(precis_tag(spec.ref_id))
+                changed = True
             if changed:
                 col.update_note(note)
                 updated += 1
@@ -137,6 +145,57 @@ def remove_notes_for_refs(col: Any, ref_ids: list[int]) -> int:
             col.remove_notes(nids)
             removed += len(nids)
     return removed
+
+
+def _collection_today(col: Any) -> int:
+    """Anki's day number for right now — days since the collection's
+    creation-day cutoff, which is what a review card's ``due`` compares
+    against. ``sched.today`` is the cached scheduler value on every pylib
+    version in play; the ``crt`` fallback covers the rest."""
+    today = getattr(col.sched, "today", None)
+    if isinstance(today, int):
+        return today
+    crt = getattr(col, "crt", None)
+    if crt:
+        return int((time.time() - crt) // 86400)
+    return 0
+
+
+def bring_due_today(col: Any, ref_ids: list[int]) -> list[int]:
+    """Apply pending boosts (``meta.anki_boost_due``, gr664414): set our
+    review-queue cards' due date to today so they surface at the next review.
+    Returns the ref_ids that actually moved a card — only those boosts are
+    consumed and have their marker cleared by the caller.
+
+    Own-guid lookups only, so foreign notes are unreachable. Only queue 2/3
+    (review / day-learning) cards carry a day-numbered due date; a note not
+    yet in the mirror, or one whose cards are all still new or mid-step,
+    keeps its marker queued — nothing moved, so a later tick applies the
+    boost once a card can move. Everything else about the card — interval,
+    ease, reps, lapses — is left untouched: a boost never rewrites review
+    history. ``usn = -1`` marks the row locally-modified so the change rides
+    the incremental push."""
+    if not ref_ids:
+        return []
+    today = _collection_today(col)
+    consumed: list[int] = []
+    for rid in ref_ids:
+        nids = col.db.list("select id from notes where guid = ?", guid_for(rid))
+        if not nids:
+            continue  # not in the mirror (yet) — leave the marker for a later tick
+        cids = col.db.list(
+            "select id from cards where nid = ? and queue in (2, 3)", nids[0]
+        )
+        if not cids:
+            continue  # still new or mid-step: no day-numbered due to move
+        marks = ", ".join("?" for _ in cids)
+        col.db.execute(
+            f"update cards set due = ?, usn = -1 where id in ({marks})",
+            today,
+            *cids,
+        )
+        consumed.append(rid)
+    return consumed
 
 
 def read_precis_stats(col: Any) -> dict[int, dict[str, Any]]:
@@ -227,7 +286,13 @@ def sync_tick(
 
     ``retire_ref_ids`` are soft-deleted authored refs (the card_forge
     retire/rewrite path) whose notes are removed from the mirror before the push
-    — own-guid lookups only, so foreign notes stay unreachable."""
+    — own-guid lookups only, so foreign notes stay unreachable.
+
+    Specs flagged ``boost`` (``meta.anki_boost_due`` set — the /learning boost
+    button, gr664414) get their mirror cards' due date brought forward to
+    today, never touching review history. The returned ``boosted_ref_ids``
+    (boosts that actually moved a mirror card) tell the caller which markers
+    to clear; the rest stay queued for a later tick."""
     Collection, sp = _import_anki()
     CR = sp.SyncCollectionResponse.ChangesRequired
     col = Collection(mirror_path)
@@ -284,6 +349,14 @@ def sync_tick(
             result.removed = remove_notes_for_refs(col, retire_ref_ids)
 
         result.pushed, result.updated = upsert_notes(col, specs, deck)
+
+        # Pending boosts ride this same push: bring the mirror card's due date
+        # forward to today. Specs already had remotely-deleted refs removed, so
+        # a boost can't resurrect one. The marker is cleared by the caller for
+        # the returned (consumed) ref_ids only.
+        result.boosted_ref_ids = bring_due_today(
+            col, [spec.ref_id for spec in specs if spec.boost]
+        )
 
         out2 = col.sync_collection(auth, False)
         if out2.required == CR.FULL_UPLOAD:

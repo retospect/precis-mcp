@@ -263,13 +263,73 @@ def test_title_hit_mints_a_keeper(gripe: GripeHandler) -> None:
     assert "theme keeper" in out.body
 
 
-def test_weak_match_still_merges_into_a_live_keeper(gripe: GripeHandler) -> None:
-    """The mint bar doesn't apply to a '+1' — the theme is established
-    by its live keeper."""
-    keeper = _keeper(gripe, "devin-messaging")
-    out = gripe.put(text=WEAK_DEVIN_TEXT)
-    assert f"merged into gr{keeper} (theme devin-messaging)" in out.body
-    assert _comments(gripe, keeper)[-1].startswith("+1 (")
+def test_lone_body_hit_files_new_gripe(gripe: GripeHandler) -> None:
+    keeper = _keeper(gripe)
+    before = _ids(gripe)
+    text = "Devin brief turn rule\nUse scripts/test --await while waiting."
+    assert match_themes(text) == ["test-speed"]
+    out = gripe.put(text=text)
+    created = _ids(gripe) - before
+    assert len(created) == 1
+    assert "theme:test-speed" not in _tags(gripe, created.pop())
+    assert not _comments(gripe, keeper)
+    assert "merged" not in out.body
+    gripe.put(text="scripts/test runs wait forever")
+    assert len(_ids(gripe)) == len(before) + 1
+    assert len(_comments(gripe, keeper)) == 1
+
+
+def test_merge_does_not_copy_tags(gripe: GripeHandler) -> None:
+    keeper = _keeper(gripe)
+    before = _tags(gripe, keeper)
+    gripe.put(text=TEST_SPEED_TEXT, tags=["fix:code"], untags=["theme:test-speed"])
+    assert _tags(gripe, keeper) == before
+    comment = _comments(gripe, keeper)[-1]
+    assert "Filing tags: ['fix:code']" in comment
+    assert "Filing untags: ['theme:test-speed']" in comment
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        TEST_SPEED_TEXT + "\n" + "x" * 1500,
+        TEST_SPEED_TEXT + "\nspec: preserve this defect",
+        TEST_SPEED_TEXT + "\n  SPEC: preserve this defect",
+    ],
+)
+def test_long_or_specified_filing_is_never_merged(
+    gripe: GripeHandler, text: str
+) -> None:
+    keeper = _keeper(gripe)
+    before = _ids(gripe)
+    gripe.put(text=text)
+    created = _ids(gripe) - before
+    assert len(created) == 1
+    assert "theme:test-speed" not in _tags(gripe, created.pop())
+    assert not _comments(gripe, keeper)
+
+
+def test_1500_character_filing_can_merge(gripe: GripeHandler) -> None:
+    keeper = _keeper(gripe)
+    text = TEST_SPEED_TEXT + "\n"
+    text += "x" * (1500 - len(text))
+    before = _ids(gripe)
+    gripe.put(text=text)
+    assert _ids(gripe) == before
+    assert _comments(gripe, keeper)[-1].endswith(text)
+
+
+def test_merge_reply_leads_with_not_filed(gripe: GripeHandler) -> None:
+    keeper = _keeper(gripe)
+    out = gripe.put(text=TEST_SPEED_TEXT, tags=["fix:code"])
+    assert out.body.startswith(
+        f"NOT filed as a new gripe: merged into gr{keeper} "
+        "(theme test-speed) as comment 1.\nnext: put("
+    )
+    retry = out.body.splitlines()[1]
+    assert repr(TEST_SPEED_TEXT) in retry
+    assert "tags=['fix:code']" in retry
+    assert "args={'new': True}" in retry
 
 
 @pytest.fixture
@@ -326,7 +386,8 @@ def test_thread_filing_merges_into_a_same_thread_keeper(
     keeper = max(_ids(gripe))
     out = gripe.put(text=TEST_SPEED_TEXT, tags=["thread:pcb-platform"])
     assert f"merged into gr{keeper} (theme test-speed)" in out.body
-    assert _comments(gripe, keeper)[-1] == f"+1: {TEST_SPEED_TEXT}"
+    assert _comments(gripe, keeper)[-1].startswith(f"+1: {TEST_SPEED_TEXT}")
+    assert "thread:pcb-platform" in _comments(gripe, keeper)[-1]
 
 
 # ── observation ───────────────────────────────────────────────────────

@@ -1332,7 +1332,8 @@ For EACH gripe decide:
         unblocks>", "recommended": true|false}} — exactly one
       recommended.
 - recommend: OPTIONAL when fix is "reto" — the one-line summary of the
-  recommended option (used for the gripe's comment).
+  recommended option (used for the gripe's comment): an imperative
+  action, not a restatement of the problem.
 - memory: the "me<id>" handle of the memory whose CONTENT the gripe
   complains about (stale, thin, ungrounded, contradicted, wrong hub, too
   big) — usually the handle leading its first line. null when the gripe
@@ -1560,6 +1561,30 @@ class RetoAsk:
         return next((o for o in self.options if o.recommended), None)
 
 
+#: Token set of a recommendation-shaped string: alphanumeric runs of the
+#: lowercased text (punctuation and underscores split, so ``PRECIS_ROOT``
+#: and ``precis-root`` compare equal).
+_RESTATE_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+#: Fraction of a candidate's tokens that must appear in the compared
+#: text(s) before it reads as a restatement — tolerant of a dropped
+#: clause or an imperative prefix, strict enough to keep a real action
+#: that merely names the same subsystem (gr652284).
+_RESTATE_CONTAINMENT = 0.8
+
+
+def _restates(text: str, *others: str) -> bool:
+    """Does ``text`` just re-say ``others``? True when ≥0.8 of its
+    tokens appear in the others' combined token set — a ``recommend``
+    that re-states the ``reason`` hands the owner the symptom back
+    where the approvable action belongs (gr652284)."""
+    mine = set(_RESTATE_TOKEN_RE.findall(text.lower()))
+    if not mine:
+        return False
+    theirs = {t for o in others for t in _RESTATE_TOKEN_RE.findall(str(o).lower())}
+    return len(mine & theirs) / len(mine) >= _RESTATE_CONTAINMENT
+
+
 @dataclass(frozen=True, slots=True)
 class Verdict:
     """One gripe's validated triage answer."""
@@ -1606,11 +1631,16 @@ class Verdict:
     @property
     def recommendation(self) -> str | None:
         """The one-line recommendation: ``recommend`` when the model
-        wrote one, else the recommended ask option's text."""
-        if self.recommend:
+        wrote a real action, else the recommended ask option's text —
+        never a restatement of ``reason`` (gr652284: a recommend that
+        re-says the problem leaves the ask with a symptom where the
+        approvable call belongs)."""
+        if self.recommend and not _restates(self.recommend, self.reason):
             return self.recommend
         rec = self.ask.recommended if self.ask is not None else None
-        return rec.option if rec is not None else None
+        if rec is not None and not _restates(rec.option, self.reason):
+            return rec.option
+        return None
 
 
 def _needs_reto(v: Verdict) -> bool:
@@ -2104,6 +2134,13 @@ def _write_verdict(
     ``_require_resolved_comment`` convention; Opus review item 6 — the
     old text-dedup could swallow a re-close).
 
+    gr592749: after ``cluster:<slug>`` is written the tick also stamps
+    ``goal:<value>`` — ``goal_of`` over the gripe's ``thread:`` /
+    ``cluster:`` tags — so "fixed gripes by goal" is a real tag
+    facet, not a commit-scope inference. A filer-set ``goal:`` tag is
+    never overwritten; only an absent one is filled (same preservation
+    contract as ``origin-class:``).
+
     Ownership guard (Opus review): the ``FOR UPDATE`` read requires
     ``STATUS:open`` AND ``pipeline.claimed_at`` == the stamp this tick
     wrote. A gripe closed or re-leased while the call ran is skipped —
@@ -2240,6 +2277,7 @@ def _write_verdict(
             g.ref_id, Tag.open(f"cluster:{v.cluster}"), set_by="system", conn=conn
         )
         store.add_tag(g.ref_id, Tag.open(f"size:{v.size}"), set_by="system", conn=conn)
+        from precis.utils.gripe_goal import goal_of
         from precis.utils.gripe_origin_class import classify_origin
 
         pairs = conn.execute(
@@ -2247,12 +2285,12 @@ def _write_verdict(
             "WHERE rt.ref_id = %s",
             (g.ref_id,),
         ).fetchall()
-        origin_tags = [
+        tag_values = [
             f"{ns}:{value}" if ns not in {"OPEN", "FLAG"} else value
             for ns, value in pairs
         ]
-        if not any(t.startswith("origin-class:") for t in origin_tags):
-            origin_class = classify_origin(origin_tags, g.title)
+        if not any(t.startswith("origin-class:") for t in tag_values):
+            origin_class = classify_origin(tag_values, g.title)
             if origin_class:
                 store.add_tag(
                     g.ref_id,
@@ -2260,6 +2298,16 @@ def _write_verdict(
                     set_by="system",
                     conn=conn,
                 )
+        # gr592749: stamp the goal axis off the freshly written
+        # cluster:/thread: tags. A filer-set ``goal:`` is never
+        # overwritten — only an absent one is filled.
+        if not any(t.startswith("goal:") for t in tag_values):
+            store.add_tag(
+                g.ref_id,
+                Tag.open(f"goal:{goal_of(tag_values)}"),
+                set_by="system",
+                conn=conn,
+            )
 
         # gr657257: a memory gripe names a live memory — it becomes
         # ``project:memory`` (the gardener's queue, never the coder wave)

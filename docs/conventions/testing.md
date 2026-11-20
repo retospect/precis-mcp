@@ -11,6 +11,14 @@ a macOS host to exercise the Darwin/bash-3.2 legs for real — see
 
 ## Why not a bare invocation
 
+Tests must inject fake transports rather than contact external services.
+The autouse socket guard in `tests/_network.py` blocks remote TCP, UDP and
+DNS through Python sockets, while allowing loopback test servers and Unix
+sockets. An integration test must explicitly use `@pytest.mark.allow_network`
+to opt in. Native-library connections (including the isolated PostgreSQL
+test database) and subprocesses are outside this Python guard. Nanopub
+registry defaults are always blocked separately: inject `post=` / `fetch=`.
+
 - **`uv run pytest` (host).** The host Python is torch-free, so it reports
   spurious `ModuleNotFoundError` for `marker`, `sentence_transformers`, … —
   not real bugs, just a missing extra the dev container bakes in. See the
@@ -220,11 +228,16 @@ removes them.
 The nightly coverage job caps xdist at four workers: six workers lost the
 runner around 40 minutes at 30–31% on two runs, consistent with memory
 pressure but without an OOM diagnostic (gr564777). It logs memory snapshots
-and test names to verify that inference. macOS splits the complete suite
-across two shards per Python version within the 90-minute job budget
-(td568389): the unsharded run expired at 67% after 72 minutes of tests plus
-13 minutes of setup. The full shape is 27 jobs; one gate beside it
-(12 blocking + ≤5 soak) uses ≤39 of 40 slots, and two concurrent gates
+and test names to verify that inference. It deselects `nightly` as well as
+`no_cov`: the ≥30 s tests are what cannot finish under the tracer (a
+pytest-timeout kill ends the session, since worker restart is off, and the
+uploaded map stops there), and the map feeds the fast-test selection, which
+never runs them. macOS splits the complete suite
+across two shards per Python version (td568389): the unsharded run expired
+at 67% after 72 minutes of tests plus 13 minutes of setup. The job cap is
+180 minutes: shard 1 finished in 49–86 minutes and shard 2 was cancelled at
+the old 90-minute cap on 17 legs between 2026-11-08 and 11-18. The full shape is 28 jobs; one gate's blocking leg
+beside it (12) fills the 40 slots exactly, and two concurrent gates
 with both soaks live fit at 34. Named test output, durations, JUnit and hang-stack
 artifacts expose failures and the slow tail.
 
@@ -382,6 +395,18 @@ full shape (nightly schedule, or on demand via `gh workflow run check.yml
 there. Items are auto-tagged `slow` (tests/conftest.py), so every
 `-m 'not slow'` lane skips them too — the marker lifts a test out of the
 CI gate only, never out of a full run.
+
+**A test longer than its job's cap gets its own nightly job.** A shard is
+cancelled at its cap (Linux: 40 minutes on a gate, 60 on the nightly) with
+no verdict for anything
+still queued behind the long test, so a test whose own `timeout` mark
+exceeds the cap can never report there. The three nano boards of
+`tests/test_pcb_examples_route.py` (25–90 minutes each) are skipped unless
+`PRECIS_PCB_LONG_BOARDS=1`; check.yml's nightly `long-boards` job sets it
+and runs exactly them, one xdist worker per board, under a cap sized from
+the longest board's timeout mark. Locally:
+`PRECIS_TEST_ENV="PRECIS_PCB_LONG_BOARDS=1" scripts/test
+tests/test_pcb_examples_route.py`.
 
 ## macOS-only paths the container can't reach (gr514906)
 
