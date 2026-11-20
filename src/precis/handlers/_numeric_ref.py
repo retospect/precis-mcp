@@ -153,7 +153,12 @@ _FILLER_FIRST_LINE = re.compile(
 #: already gave the spelling an own reading keep it — todo/quest/pres/
 #: taxon 'meta', job's ``'meta'→'raw'``, todo's and
 #: gripe's ``'tags'→None`` — those branches run ahead of the base
-#: dispatch.
+#: dispatch. ``full`` (gr676930) is the family-wide complete-read
+#: spelling promised by the get description; on the base dispatch it
+#: renders the bare get (card + body), the fullest read a base kind
+#: has. Kinds with their own fuller ``full`` (todo, gripe, job, alert's
+#: ``'full'→'detail'``, memory's alias fold) intercept it before the
+#: base dispatch and keep their reading.
 _BASE_VIEWS: tuple[str, ...] = (
     "links",
     "dependants",
@@ -164,6 +169,7 @@ _BASE_VIEWS: tuple[str, ...] = (
     "retired",
     "meta",
     "tags",
+    "full",
 )
 
 #: Batch ``get`` views that mean the default summary block per id.
@@ -1429,6 +1435,13 @@ class NumericRefHandler(Handler):
                 return Response(body=self._render_meta_view(ref), result_count=1)
             if view == "tags":
                 return Response(body=self._render_tags_view(ref), result_count=1)
+        return self._render_default_get(ref)
+
+    def _render_default_get(self, ref: Ref) -> Response:
+        """Render the bare and ``full`` reads after shared selector validation.
+
+        Alias and profile override this hook to preserve their usual payloads.
+        """
         tags = self.store.tags_for(ref.id)
         body = self._render_one(ref, tags)
         # F8: surface the link graph for this ref so the agent's

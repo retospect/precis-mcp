@@ -965,6 +965,7 @@ def test_get_unknown_view_names_the_todo_get_views(handler: TodoHandler) -> None
     with pytest.raises(Unsupported) as exc:
         handler.get(id=rid, view="frobnicate")
     options = exc.value.options or []
+    assert options.count("full") == 1
     assert (
         "body" in options
         and "comments" in options

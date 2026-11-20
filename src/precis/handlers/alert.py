@@ -544,7 +544,7 @@ class AlertHandler(NumericRefHandler):
                 minutes=minutes,
             )
         if concrete and view is not None and view not in _BASE_VIEWS:
-            views = [*_DETAIL_VIEWS, "context", *_BASE_VIEWS]
+            views = ["detail", "context", *_BASE_VIEWS]
             # gr613469: lead with the corrected call — the caller's own
             # get (host=/minutes=/every context filter preserved, review
             # td680653) with the nearest valid view swapped in — ahead

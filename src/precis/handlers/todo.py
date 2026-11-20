@@ -986,7 +986,7 @@ class TodoHandler(NumericRefHandler):
             )
             raise Unsupported(
                 f"unknown view {view!r} for kind='todo'",
-                options=views_list,
+                options=list(dict.fromkeys(views_list)),
                 next=nexts,
             )
         # Single-ref reads route through the base class so links /

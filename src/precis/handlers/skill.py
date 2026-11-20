@@ -3366,11 +3366,10 @@ class SkillHandler(Handler):
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
         # Phase F 2026-05-31: per-kind view enum for the BadInput
-        # envelope on unknown / empty ``view=`` values. Skills only
-        # use ``view='toc'`` today (and only when paired with a
-        # specific slug); the bare-slug get returns the markdown
-        # body, no view kwarg required.
-        return ["toc", "usage", "rulings"]
+        # envelope on unknown / empty ``view=`` values. List ``'full'``
+        # (gr676930) alongside the other slug views because ``get``
+        # accepts it as a spelling of ``full=True``.
+        return ["toc", "usage", "rulings", "full"]
 
     # ── skill ref anchors: usage + open concerns (DB, fail-soft) ───
 

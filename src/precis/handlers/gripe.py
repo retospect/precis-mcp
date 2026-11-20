@@ -3198,7 +3198,7 @@ class GripeHandler(NumericRefHandler):
                 readings,
             )
         if view is not None and view not in _BASE_VIEWS:
-            views = [*_BASE_VIEWS, "body", "comments", "full", "fix", "summary"]
+            views = [*_BASE_VIEWS, "body", "comments", "fix", "summary"]
             near = nearest_option(view, views)
             lead = f"nearest is view={near!r}. " if near else ""
             # gr613469: lead with the corrected call — the caller's own
