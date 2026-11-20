@@ -1424,7 +1424,8 @@ class FusedBlockSearch:
                 if m == "verbatim":
                     # search_chunks(mode='verbatim') ran
                     # search_chunks_keywords(terms=q.split()) — mirror the
-                    # exact terms so the count is the same universe.
+                    # terms to count the same keyword and phrase pool,
+                    # including the TSV candidate cap outside direct-scan scopes.
                     total = self.store.chunks.count_chunks_keywords(
                         terms=q.split(),
                         kind=self.kind,

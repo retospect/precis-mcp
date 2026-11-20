@@ -769,66 +769,59 @@ def _verbatim_backstop(
     kind: str | None,
     kinds: list[str] | None = None,
 ) -> bool:
-    """Whether the ``mode='verbatim'`` scan is bounded enough to afford
-    the phrase-substring backstop (see :func:`_verbatim_pred`).
-
-    True for a single-ref scope or an explicit ref-id set, and for the
-    agent-authored memory corpus (``kind='memory'``, gr662452): the join
-    filters ``refs`` via ``refs_kind_idx`` and probes
-    ``chunks_ref_id_idx``, so the ILIKE leg evaluates only memory-chunk
-    text, never the multi-million-row paper corpus. gr662452: verbatim
-    search is the dedup check the remember/search-first recipes trust,
-    and an exact sentence fails ``keywords @>`` whenever KeyBERT never
-    stored one of its words (stopwords, LaTeX tokens) — a miss then
-    mints duplicates. A memory body is one ``memory_body`` chunk, so a
-    phrase found in the body is always wholly inside that chunk's text.
-    Multi-kind ``kinds=`` filters are never bounded this way (a paper
-    member would reopen the seq-scan), so a mixed list never counts —
-    but a single-element ``['memory']`` list compiles to the same
-    ``refs_kind_idx`` probe as the singular spelling, and the
-    source-search route (``sort='recency'``, gr688850) hands the memory
-    corpus in exactly that shape: without the backstop a verbatim
-    ``sort='recency'`` memory search silently drops every hit the
-    un-sorted singular call finds.
-    """
+    """Allow a direct substring scan for explicit ref scopes and memory."""
     return (
         scope_ref_id is not None
         or include_ref_ids is not None
-        or kind == "memory"
-        or list(kinds or ()) == ["memory"]
+        or (kind == "memory" if kinds is None else set(kinds) == {"memory"})
     )
 
 
+_VERBATIM_TSV_CAP = 1000
+
+
 def _verbatim_pred(terms: list[str], *, scoped: bool = False) -> tuple[str, list[Any]]:
-    """The ``mode='verbatim'`` match predicate as ``(sql, params)``.
+    """Return the shared verbatim search/count predicate and bind params.
 
-    ``c.keywords @> terms`` (KeyBERT containment, GIN-indexed). When
-    ``scoped`` (per :func:`_verbatim_backstop`: a single ref, an explicit
-    ref-id set, or the memory corpus bounds the scan), OR the whole query
-    phrase as one literal ``text`` ILIKE substring — the backstop for a
-    term the keyword extractor never stored (gr518172: 'MSEP' returned
-    1 of 5 matching chunks). Unbounded searches keep containment only:
-    the chunks table has no trigram index, so a substring leg would
-    seq-scan millions of rows. The phrase is matched contiguously, so
-    '7 nm' never matches a chunk with "7" and "nm" apart. One predicate
-    shared by :meth:`ChunkStore.search_chunks_keywords` and
-    :meth:`ChunkStore.count_chunks_keywords` so results and the "N of K"
-    header can never diverge.
-
-    With the memory-ablation ``kwd`` switch off (``precis.bench.switches``)
-    the keyword-containment leg is gone from the ranking: only the literal
-    phrase ``text`` ILIKE match remains, scoped or not.
+    Scoped searches can check the escaped whole phrase directly. Outside
+    those scopes, union the indexed keyword matches with phrase matches
+    from a capped pool of the newest live TSV candidates (gr681521).
+    The cap bounds text checks and can omit older matches. English TSV
+    analysis can also miss literal substrings. With no-kwd, the phrase
+    leg runs alone under the same scope or cap.
     """
     from precis.bench import switches as bench_switches
 
-    if not bench_switches.current().kwd:
-        return "c.text ILIKE %s ESCAPE '\\'", [_ilike_contains(" ".join(terms))]
-    if not scoped:
-        return "c.keywords @> %s::text[]", [terms]
-    return "(c.keywords @> %s::text[] OR c.text ILIKE %s ESCAPE '\\')", [
-        terms,
-        _ilike_contains(" ".join(terms)),
-    ]
+    phrase = " ".join(terms)
+    pattern = _ilike_contains(phrase)
+    kwd = bench_switches.current().kwd
+    if scoped:
+        phrase_pred = "c.text ILIKE %s ESCAPE '\\'"
+        if not kwd:
+            return phrase_pred, [pattern]
+        return f"(c.keywords @> %s::text[] OR {phrase_pred})", [terms, pattern]
+
+    keyword_ids = (
+        "SELECT chunk_id FROM chunks WHERE keywords @> %s::text[] UNION " if kwd else ""
+    )
+    # LIMIT applies before ILIKE, so older TSV hits cannot extend the text scan.
+    return (
+        f"""c.chunk_id IN (
+            {keyword_ids}
+            SELECT candidate.chunk_id
+            FROM (
+                SELECT ch.chunk_id, ch.text
+                FROM chunks ch
+                JOIN refs owner ON owner.ref_id = ch.ref_id
+                WHERE ch.retired_at IS NULL AND owner.retired_at IS NULL
+                  AND ch.tsv @@ plainto_tsquery('english', %s)
+                ORDER BY ch.chunk_id DESC
+                LIMIT %s
+            ) candidate
+            WHERE candidate.text ILIKE %s ESCAPE '\\'
+        )""",
+        ([terms] if kwd else []) + [phrase, _VERBATIM_TSV_CAP, pattern],
+    )
 
 
 def header_card_text(title: str | None, hook: str | None) -> str:
@@ -1164,21 +1157,11 @@ class ChunkStore:
         year_to: int | None = None,
         chunk_kinds: list[str] | None = None,
     ) -> int:
-        """Count chunks matching the ``mode='verbatim'`` filter (no
-        LIMIT). Companion to :meth:`search_chunks_keywords` for the
-        "N of K" header — same :func:`_verbatim_pred` clause (keyword
-        containment OR whole-phrase text substring, noise-floor guard,
-        ``card_kinds`` opt-in, control-tag fences, year range) so a
-        verbatim search's
-        header reports *its own* universe rather than
-        :meth:`count_chunks_lexical`'s FTS one (gr311338 — the header
-        used to always report the lexical count regardless of the mode
-        actually searched, so a verbatim query with e.g. zero keyword
-        hits could still claim "N of 386" from an unrelated FTS
-        universe; prod-measured 846 lexical vs 8 verbatim for a
-        two-word query). The substring leg's gate is
-        :func:`_verbatim_backstop`, shared verbatim with
-        :meth:`search_chunks_keywords`.
+        """Count the same verbatim pool as :meth:`search_chunks_keywords`.
+
+        The total includes all matching keyword hits and the shared phrase
+        leg, which uses a capped TSV pool outside direct-scan scopes. No
+        page limit applies to the count.
 
         The ``DREAM:speculative`` / ``ORIGIN:wikipedia`` / ``STATUS:refuted``
         fences and the ``after=``/``before=`` year-range predicate MUST
@@ -1545,20 +1528,14 @@ class ChunkStore:
         card_kinds: tuple[str, ...] | None = None,
         has_body: bool | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
-        """Verbatim keyword search — chunks whose ``keywords`` array contains
-        **all** of ``terms`` (GIN ``@>`` containment against the per-chunk
-        KeyBERT terms, F20) OR whose ``text`` literally carries the whole
-        query phrase as one substring. The ``search(mode='verbatim')``
-        leg: exact, embedder-independent term matching for when an agent
-        wants a literal keyword rather than fuzzy relevance. The
-        substring backstop covers terms KeyBERT never extracted — a
-        bulk-edit pass trusting verbatim to find every occurrence must
-        not leave stale text behind (gr518172) — and runs whenever
-        :func:`_verbatim_backstop` bounds the scan: a single ref, an
-        explicit ref-id set, or the memory corpus (gr662452: a verbatim
-        sentence search is the dedup check the remember recipes trust,
-        and ``keywords @>`` alone misses any sentence with a word
-        KeyBERT never stored). Shares every filter with the lexical leg
+        """Find keyword containment plus contiguous phrase matches.
+
+        The indexed keyword leg requires all terms. The phrase leg scans
+        a single ref, explicit ref set or memory corpus directly. Other
+        searches check the phrase within the newest capped live TSV
+        candidates (gr681521). This recovers phrases missing from KeyBERT
+        while bounding text checks. Use literal mode for a substring
+        search without the TSV prefilter. Shares lexical filters
         (kind/date/scope/tags/fences/year/chunk-scope/exclude).
 
         Terms are lowercased (KeyBERT stores lowercased; ILIKE is

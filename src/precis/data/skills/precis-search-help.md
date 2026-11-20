@@ -147,7 +147,7 @@ Pin it with `mode=` when you know better:
 | `'hybrid'` *(default)* | Lexical + semantic, fused into one order. | General recall — concepts *and* keywords. |
 | `'lexical'` | Full-text match only; no embedding. | You know the **exact string** — an identifier, acronym, surname, code token, a numeric like `1.523 eV`, or an exact phrase. Embeddings blur these; lexical is precise and deterministic. Also the honest tool when the embedder is down (hybrid silently degrades to this anyway). |
 | `'semantic'` | Embedding-similarity match only. | Pure conceptual / paraphrase recall where the wording won't match but the meaning does. No embedder wired → degrades to lexical; embedder wired but failing → a loud error, never a silent zero-hit answer — when the cause is the service at capacity (queue timeout, not down), the error carries a retry-after hint in seconds; capacity ≠ absence, so wait and retry rather than concluding the hit doesn't exist. |
-| `'verbatim'` | Chunks whose extracted keywords contain **all** your query words. When the scan is bounded — one ref (`scope=`/ref-id set) or the `memory` corpus — chunk text containing the whole query as one substring also matches (a backstop for terms extraction never stored: stopwords, LaTeX tokens). Embedder-independent; newest chunk first. | A topical filter tighter than full-text. Each word must appear as a *distinct* term, so it's terms, not phrases (`'oxygen evolution'` = both words present, not the 2-gram). On `kind='memory'` a full-sentence query is the dedup check: a verbatim hit means the sentence already lives in some body. Empty query returns nothing. |
+| `'verbatim'` | Matches chunks containing **all** query words as extracted keywords, or the whole query as a contiguous, case-insensitive substring. The phrase check scans an explicit ref scope or the `memory` corpus directly. Otherwise it checks the newest 1,000 live TSV (full-text index) candidates. Embedder-independent, newest chunk first. | Find exact phrases that keyword extraction may have missed. Keyword matches can contain the terms apart. Use `literal` to confirm the phrase itself. Empty query returns nothing. |
 | `'literal'` | Exact substring match over the chunk text itself (case-insensitive; `%`/`_` are data, not wildcards). Newest chunk first. | The "is this exact string still anywhere" hunt — a filename like `./src/app/config.py`, a flag spelling, a sha, a quoted phrase. `get(id=N, q='…')` is the same literal check scoped to one node. |
 
 `kind='skill'` refuses `mode='literal'`. Use `mode='verbatim'` there
@@ -158,8 +158,14 @@ search(kind="paper", q="MoS2 monolayer", mode="lexical")  # exact term recall
 search(q="ways to stop catalyst poisoning", mode="semantic")  # paraphrase recall
 search(
     kind="paper", q="perovskite stability", mode="verbatim"
-)  # chunks keyworded BOTH terms
+)  # both extracted keywords, or the contiguous phrase in the candidate pool
 ```
+
+The unscoped verbatim phrase cap applies before kind and other result filters.
+Keyword matches are outside the cap. A miss does not establish corpus absence:
+full-text analysis can omit the phrase, and newer candidates can crowd out
+older matches. Use `mode='literal'` for a substring check without the TSV
+prefilter, or scope verbatim to a known paper.
 
 `search(kind="skill", ...)` also takes `args={"family": "se"}` (subject family =
 the skill id's name-prefix stem unless its frontmatter says otherwise) and

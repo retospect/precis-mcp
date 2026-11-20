@@ -60,6 +60,11 @@ orders browse by creation; cross-kind chunk search accepts ``created`` and
 existing callers' modification-first browse or creation-first search order;
 both new orders use ref id ties and require no derived clock or schema.
 
+Unscoped paper verbatim search checks whole phrases within a capped pool of
+the newest live TSV candidates. This recovers source phrases KeyBERT omitted
+(gr681521) while bounding substring checks. Older or unindexed phrase hits
+can be missed. Search and count share the pool.
+
 Capped paper search opts into ``search_chunks_multi(prefer_body=True)``:
 discard a synthetic card when the fused candidate pool contains a body hit
 for that ref, before the diversity cap and page slice. Otherwise a stronger
