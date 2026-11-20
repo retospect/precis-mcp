@@ -138,7 +138,14 @@ def _held_open(lock):
     if lsof is None:
         return None
     r = _run([lsof, "-F", "pc", "--", lock])
-    if r.stderr.strip():
+    # Linux lsof warns on stderr about mounts it cannot stat (FUSE, tracefs)
+    # on every call; only a non-warning line means the answer is unreadable.
+    errs = [
+        ln
+        for ln in r.stderr.splitlines()
+        if ln.strip() and not ln.startswith("lsof: WARNING")
+    ]
+    if errs:
         return None
     comms = [ln[1:] for ln in r.stdout.splitlines() if ln.startswith("c")]
     for comm in comms:

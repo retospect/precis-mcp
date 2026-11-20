@@ -332,6 +332,31 @@ def test_stale_worktree_lock_reports_then_applies(
     ), result.stdout
 
 
+def test_lsof_warning_lines_do_not_block_the_reap(
+    lock_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """Linux lsof prints `lsof: WARNING: can't stat() ...` on stderr for
+    mounts it cannot read, on every call. That is not an unreadable answer:
+    the stale lock is still reaped."""
+    lock = _make_stale(_admin_lock(lock_repo, "A"))
+    inner = _fake_lsof_bindir(tmp_path)
+    target = str(inner / "lsof") if inner is not None else shutil.which("lsof")
+    assert target
+    wrap = tmp_path / "warn-bin"
+    wrap.mkdir()
+    shim = wrap / "lsof"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'echo "lsof: WARNING: can\'t stat() tracefs file system /sys/kernel/tracing" >&2\n'
+        f'exec "{target}" "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    env = _test_env(path=f"{wrap}{os.pathsep}{os.environ['PATH']}")
+    result = _run_reaper(lock_repo["primary"], env, "--apply")
+    assert not lock.exists(), result.stdout + result.stderr
+
+
 def test_stale_primary_lock_reports_then_applies(
     lock_repo: dict[str, Path], tmp_path: Path
 ) -> None:
