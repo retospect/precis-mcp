@@ -919,6 +919,82 @@ def _fold_get_full_flag(
     )
 
 
+def _fold_get_dry_run(
+    cls: type[Handler],
+    method: Any,
+    kind: str,
+    args: dict[str, Any],
+    extras: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Refuse a truthy ``dry_run=`` on ``get`` with the mutating door named
+    (gr688477).
+
+    ``get`` never writes, so ``dry_run`` has nothing to preview on it — no
+    kind's ``get`` declares the flag. Callers generalise the spelling
+    anyway: the gripe's 24h ledger shows six distinct sessions passing
+    ``args={'dry_run': True}`` (once with ``view='delete'``) on
+    ``get(kind='memory', id=…)``, each refused at the extras gate as
+    ``keys ['dry_run'] not accepted by memory.get; its args= keys are
+    listed below`` — a dead end the sessions retried. The flag belongs to
+    the mutating verbs: ``put``/``edit``/``delete`` honour ``dry_run=True``
+    as the write-nothing preview, so the refusal names that door.
+
+    Mirrors :func:`_fold_get_full_flag`: a handler that declares ``dry_run``
+    on ``get`` itself or tolerates extra kwargs keeps the flag untouched, a
+    falsy flag asserts nothing and drops, and disagreeing top-level/nested
+    spellings refuse as one argument.
+    """
+    if getattr(
+        method, TOLERATES_EXTRA_KWARGS_ATTR, False
+    ) or "dry_run" in _handler_accepted_kwargs(cls, "get"):
+        return extras
+    flag = args.pop("dry_run", None)
+    if isinstance(extras, dict) and "dry_run" in extras:
+        extras = dict(extras)
+        nested = extras.pop("dry_run")
+        if (
+            flag is not None
+            and nested is not None
+            and _flag_truthy(flag) != _flag_truthy(nested)
+        ):
+            raise BadInput(
+                f"dry_run={flag!r} and args={{'dry_run': {nested!r}}} disagree — "
+                "the preview flag is one argument",
+                next=f"get(kind={kind!r}, id=<ref>) — dry_run doesn't apply to get",
+            )
+        if flag is None:
+            flag = nested
+    if not _flag_truthy(flag):
+        return extras
+    ident = args.get("id")
+    ident_s = repr(ident) if ident is not None else "N"
+    if kind == "memory":
+        # The anchored edit is the only body-edit preview: mode='replace'
+        # (the direct-handler default) refuses dry_run outright, and the
+        # find-replace anchor gate dies with text= but no find= — so the
+        # example must carry mode='find-replace', find= AND text= (the
+        # mode= spelling mirrors the refusal at memory.py's edit).
+        next_hints = [
+            f"edit(kind='memory', id={ident_s}, mode='find-replace', "
+            "find='old', text='new', dry_run=True) previews a body edit "
+            "(unified diff, nothing written)",
+            f"delete(kind='memory', id={ident_s}, dry_run=True) previews a retirement",
+            "put(kind='memory', text='...', title='...', dry_run=True) "
+            "previews a create",
+        ]
+    else:
+        next_hints = [
+            "dry_run=True previews a write on the mutating verb, not on "
+            f"get: put/edit/delete(kind={kind!r}, ..., dry_run=True)"
+        ]
+    raise BadInput(
+        f"get(kind={kind!r}) is a read — it writes nothing, so dry_run "
+        "has no meaning on it; dry_run=True is the mutating verbs' "
+        "write-nothing preview (put/edit/delete), not a get argument",
+        next=next_hints,
+    )
+
+
 def _flag_truthy(value: Any) -> bool:
     """Truthiness of a caller flag that may arrive as a JSON string —
     undeclared keys aren't schema-coerced, so ``full='false'`` must not
@@ -4537,6 +4613,7 @@ class DispatchMixin(RuntimeShape):
             )
             if reading is not None:
                 readings.append(reading)
+            extras = _fold_get_dry_run(type(handler), method, kind, args, extras)
         skill_selector_hints = {"section", "heading", "lines", "offset"}
         if (
             verb == "get"

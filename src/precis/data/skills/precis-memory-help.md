@@ -293,7 +293,9 @@ kinds: `before=`/`after=` anchors, `match='unique'` (default; an ambiguous
 `mode='delete', find=...` deletes the span (`text=''` also works where
 the client passes it through; some clients mangle an empty string),
 `dry_run=True` returns the diff and writes
-nothing. `args={'meta': …}` rides along; `title`/`rule`/`warrant` (also
+nothing — it previews mutating calls (`put`/`edit`/`delete`), not `get`
+(a read writes nothing; `get(..., dry_run=True)` is refused with the
+mutating door named). `args={'meta': …}` rides along; `title`/`rule`/`warrant` (also
 in `args=`) ride any mode's transaction too — a retitle pairs with a span
 fix in one call. `title` alone (no body arg) is the retitle door; a
 metadata-only `edit(id=…, args={'title': …, 'hook': …})` corrects the
