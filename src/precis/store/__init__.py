@@ -112,6 +112,10 @@ Generated baselines provision every extension prerequisite and load the full
 seed vocabulary with a transaction-local public search path, so sealed seed
 triggers resolve their helpers without changing function bodies or permissions.
 
+Lexical counts and chunk retrieval optionally report the executed OR fallback
+through call-local metadata, preserving integer count returns. Search notes
+use this signal because any-word matches can cover most of a scope.
+
 Body word counts derive from current chunks in a batched read, so existing
 refs need no counter backfill. POSIX whitespace avoids double interpretation
 of backslashes by Python, SQL escape strings and the regex engine.

@@ -1040,6 +1040,7 @@ class ChunkStore:
         self,
         *,
         q: str,
+        lexical_info_out: dict[str, bool] | None = None,
         kind: str | None = None,
         kinds: list[str] | None = None,
         scope_ref_id: int | None = None,
@@ -1056,7 +1057,9 @@ class ChunkStore:
         """Count chunks matching the lexical filter (no LIMIT). Companion
         to :meth:`search_chunks_lexical` for the "N of K" header — same
         WHERE clause (noise-floor guard, ``card_kinds`` opt-in) so the
-        header matches the search's exact universe.
+        header matches the search's exact universe. ``lexical_info_out``
+        receives ``or_fallback`` even when the retry also finds zero rows;
+        callers that omit it retain the integer-only count API.
 
         ``distinct_refs=True`` counts distinct *refs* with a match
         (``COUNT(DISTINCT c.ref_id)``) instead of matching chunks — the
@@ -1069,6 +1072,7 @@ class ChunkStore:
         **exclusive**. Also serves the ``/drive`` "showing N of ~K"
         denominator.
         """
+        # Optional metadata preserves the integer API while exposing the executed leg.
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         clauses = [
             "r.retired_at IS NULL",
@@ -1120,10 +1124,14 @@ class ChunkStore:
         )
         from precis.store.pool import apply_checkout_budget
 
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = False
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             assert row is not None
             if int(row[0]) == 0 and _or_retry(q, scope_ref_id):
+                if lexical_info_out is not None:
+                    lexical_info_out["or_fallback"] = True
                 # Mirror the OR retry in search_chunks_lexical —
                 # this count IS that leg's universe for the "N of K"
                 # header, so it must count the same rows. Re-derive
@@ -1236,6 +1244,7 @@ class ChunkStore:
         self,
         *,
         q: str,
+        lexical_info_out: dict[str, bool] | None = None,
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
@@ -1243,7 +1252,8 @@ class ChunkStore:
     ) -> int:
         """Count distinct **papers** that match the lexical query but
         carry no ``year`` — the "omitted from a publish-date filter"
-        heads-up. Lexical-only (a hard tsquery match) on purpose: it
+        heads-up. ``lexical_info_out`` reports the same ``or_fallback``
+        flag as :meth:`count_chunks_lexical`. Lexical-only (a hard tsquery match) on purpose: it
         answers "papers your keywords hit that a year filter silently
         drops", so the agent doesn't read an empty year-range result as
         "nothing exists" when the real cause is missing metadata.
@@ -1278,10 +1288,14 @@ class ChunkStore:
         )
         from precis.store.pool import apply_checkout_budget
 
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = False
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             assert row is not None
             if int(row[0]) == 0 and _or_retry(q, scope_ref_id):
+                if lexical_info_out is not None:
+                    lexical_info_out["or_fallback"] = True
                 # Same OR retry as search_chunks_lexical — the
                 # notice counts the universe the leg actually searched.
                 # Re-derive the remaining budget first (gr664954).
@@ -1368,6 +1382,7 @@ class ChunkStore:
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
         has_body: bool | None = None,
+        lexical_info_out: dict[str, bool] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Lexical search over ``chunks.tsv``.
 
@@ -1387,6 +1402,8 @@ class ChunkStore:
         fall through to unfiltered), only chunks whose ``ref_id`` is in
         the set are returned.
         """
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = False
         clauses = [
             "r.retired_at IS NULL",
             # Ghost-chunk guard: a retired draft chunk keeps its embedding +
@@ -1489,6 +1506,8 @@ class ChunkStore:
                     assert probe is not None
                     strict_empty = not probe[0]
                 if strict_empty:
+                    if lexical_info_out is not None:
+                        lexical_info_out["or_fallback"] = True
                     # Same re-derive before the retry itself — the AND
                     # leg (and the probe) already spent budget.
                     apply_checkout_budget(conn)
@@ -1885,6 +1904,7 @@ class ChunkStore:
         card_kinds: tuple[str, ...] | None = None,
         has_body: bool | None = None,
         fold_info_out: dict[int, tuple[float | None, bool]] | None = None,
+        lexical_info_out: dict[str, bool] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Hybrid search via reciprocal rank fusion over lex + sem.
 
@@ -1933,6 +1953,8 @@ class ChunkStore:
         their ordering untouched — the fallback only fills an empty
         leg.
         """
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = False
         if query_vec is None:
             rows = self.search_chunks_lexical(
                 q=q,
@@ -1950,6 +1972,7 @@ class ChunkStore:
                 chunk_ids=chunk_ids,
                 card_kinds=card_kinds,
                 has_body=has_body,
+                lexical_info_out=lexical_info_out,
             )
             # A pure-lexical row is corroborated by definition and has no
             # semantic distance — callers folding on ``fold_info_out``
@@ -2042,7 +2065,7 @@ class ChunkStore:
 
         with self.pool.connection() as conn:
             route, route_kind = _ann_route(conn, kind, None)
-            if or_leg and scope_ref_id is None:
+            if or_leg and (scope_ref_id is None or lexical_info_out is not None):
                 # Second statement on this checkout (the gate read ran
                 # first) — re-derive the remaining budget or it
                 # inherits the checkout-time cap (gr664954, td665127).
@@ -2055,6 +2078,8 @@ class ChunkStore:
                 ).fetchone()
                 assert row is not None
                 or_leg = not bool(row[0])
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = or_leg
         sem_core, order_vec = _ann_core_sql(
             route,
             route_kind,
@@ -2742,10 +2767,14 @@ class ChunkStore:
         card_kinds: tuple[str, ...] | None = None,
         has_body: bool | None = None,
         fold_info_out: dict[int, tuple[float | None, bool]] | None = None,
+        lexical_info_out: dict[str, bool] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Mode-dispatched block search — one entry point over the three
         ranking strategies, so the LLM-facing ``search(mode=…)`` picks a
         mode instead of a function.
+
+        ``lexical_info_out`` reports whether the lexical leg retried with OR;
+        modes without a lexical retry report False.
 
         ``year_from``/``year_to`` are inclusive ``refs.year`` bounds for
         the paper publish-date filter, threaded into all three legs.
@@ -2771,6 +2800,8 @@ class ChunkStore:
         an RRF score, cosine distance, or lexical rank, "more relevant
         first" within a mode, never comparable across modes.
         """
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = False
         m = (mode or "hybrid").strip().lower()
         if m == "verbatim":
             return self.search_chunks_keywords(
@@ -2848,6 +2879,7 @@ class ChunkStore:
                 chunk_ids=chunk_ids,
                 card_kinds=card_kinds,
                 has_body=has_body,
+                lexical_info_out=lexical_info_out,
             )
         return self.search_chunks_fused(
             q=q,
@@ -2871,6 +2903,7 @@ class ChunkStore:
             chunk_ids=chunk_ids,
             card_kinds=card_kinds,
             has_body=has_body,
+            lexical_info_out=lexical_info_out,
             fold_info_out=fold_info_out,
         )
 

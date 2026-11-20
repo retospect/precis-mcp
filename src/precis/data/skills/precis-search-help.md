@@ -491,7 +491,10 @@ Use the **no-`q`** form for counting / inventory / "is the backlog clear?"
 questions. Reach for `q=` only when you mean "the tagged refs that mention
 X". Numeric-ref kinds flag a `q=`-induced drop in the header (`⚠ N of M …
 entries tagged […] also match q`) — but that only helps if you read it;
-prefer no-`q` when you want the whole set.
+prefer no-`q` when you want the whole set. When chunk search retries with any
+word (3+ words, or 2+ within a ref) and any title leg also has no strict
+matches, the header marks `q ran as ANY` and suggests a shorter query or a
+quoted phrase.
 
 Some kinds fold a **default status** into this: `gripe` defaults to
 `status='open'` (live — every non-terminal STATUS; `tags=['STATUS:open']`

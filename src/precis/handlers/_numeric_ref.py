@@ -1817,6 +1817,7 @@ class NumericRefHandler(Handler):
         # replaced: kinds like ``todo`` are almost entirely chunk-less
         # (~2.7k refs, ~37 body chunks), so a block-only search would find
         # nearly nothing there.
+        lexical_info: dict[str, bool] = {}
         hit_refs = fused_ref_hits(
             self.store,
             getattr(self.hub, "embedder", None),
@@ -1829,6 +1830,7 @@ class NumericRefHandler(Handler):
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             card_kinds=self.search_card_kinds,
+            lexical_info_out=lexical_info,
         )
         search_trace.page(
             [search_trace.ref_handle(ref) for ref in hit_refs], rendered=True
@@ -1894,15 +1896,13 @@ class NumericRefHandler(Handler):
         # fused search can return rows it never saw (a semantic-only or
         # notation-leg hit), which would render the nonsense "3 of 0
         # matches" — so the floor is what we actually returned.
-        total = max(
-            self.store.count_refs_lexical(
-                q=q,
-                kind=self.kind,
-                tags=normalized_tags,
-                exclude_tags=excluded or None,
-            ),
-            len(hit_refs),
+        title_total = self.store.count_refs_lexical(
+            q=q,
+            kind=self.kind,
+            tags=normalized_tags,
+            exclude_tags=excluded or None,
         )
+        total = max(title_total, len(hit_refs))
         header = format_search_headline(
             n_returned=len(hit_refs),
             total=total,
@@ -1917,7 +1917,12 @@ class NumericRefHandler(Handler):
             else self._render_hits_table(hit_refs, row_tag_prefixes=row_tag_prefixes)
         )
         trunc = self._tag_truncation_note(
-            normalized_tags, matched_total=total, q=q, exclude_tags=excluded or None
+            normalized_tags,
+            matched_total=total,
+            q=q,
+            exclude_tags=excluded or None,
+            # The block leg can retry even when the title leg matched strictly.
+            or_fallback=title_total == 0 and lexical_info.get("or_fallback", False),
         )
         parts = [header]
         if status_note:
@@ -2171,6 +2176,7 @@ class NumericRefHandler(Handler):
         *,
         matched_total: int,
         q: str,
+        or_fallback: bool = False,
         exclude_tags: list[str] | None = None,
     ) -> str:
         """Warn when a ``q=`` narrowed a tag/status-scoped enumeration.
@@ -2181,16 +2187,24 @@ class NumericRefHandler(Handler):
         must lexically match ``q`` to appear — not merely an ordering.
         So the returned count can fall far below the scoped population,
         silently; this cue makes that visible (the whole point of the
-        fix behind it). Returns ``''`` when the search is unscoped or
-        ``q`` didn't drop anything.
+        fix behind it). An OR retry instead names the loose any-word
+        universe, even when it covers the entire scope. Otherwise returns
+        ``''`` when the search is unscoped or ``q`` did not drop anything.
         """
+        fallback_note = (
+            f"q ran as ANY of its {len(q.split())} words (no entry holds all of them), "
+            f"so {matched_total} is a loose superset; next: for all-words matching "
+            "quote the phrase or cut q to 1-2 words"
+            if or_fallback
+            else ""
+        )
         if not tags and not exclude_tags:
-            return ""
+            return fallback_note
         scope_total = self.store.count_refs(
             kind=self.kind, tags=tags, exclude_tags=exclude_tags
         )
         if scope_total <= matched_total:
-            return ""
+            return fallback_note
         scope = f" tagged {tags}" if tags else ""
         args = f"tags={tags!r}" if tags else ""
         if exclude_tags and set(exclude_tags) != set(_live_excluded_tags(self.kind)):
@@ -2200,10 +2214,10 @@ class NumericRefHandler(Handler):
             # along or the drop-q enumeration would change scope.
             vals = "|".join(f"!{t.split(':', 1)[1]}" for t in exclude_tags)
             args = f"{args + ', ' if args else ''}status='{vals}'"
+        query_note = fallback_note or "here q filters, it does not just order"
         return (
             f"⚠ {matched_total} of {scope_total} {self._sense()} entries{scope} "
-            f"also match q={q!r} — here q filters, it does not just "
-            f"order. To enumerate all {scope_total}, drop q: "
+            f"also match q={q!r} — {query_note}. To enumerate all {scope_total}, drop q: "
             f"search(kind={self.kind!r}{', ' + args if args else ''})"
         )
 
@@ -3430,6 +3444,7 @@ class NumericRefHandler(Handler):
         hard_cut: bool = False,
         query_vec: list[float] | None = None,
         rerank: bool = False,
+        lexical_info_out: dict[str, bool] | None = None,
     ) -> tuple[
         list[tuple[Any, Ref, float]],
         int,
@@ -3568,6 +3583,7 @@ class NumericRefHandler(Handler):
                 kind=self.kind,
                 tags=tags,
                 distinct_refs=True,
+                lexical_info_out=lexical_info_out,
                 exclude_tags=exclude_tags,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
@@ -3616,6 +3632,7 @@ class NumericRefHandler(Handler):
         ``(rank=…)``. Compact views (``view='ids'``/``'list'``) keep the
         complete top-N handle list, so no continuation cursor is needed.
         """
+        lexical_info: dict[str, bool] = {}
         hits, total, fold_info = self._best_body_hits(
             q,
             tags,
@@ -3627,6 +3644,7 @@ class NumericRefHandler(Handler):
             include_ref_ids=include_ref_ids,
             chunk_scope=chunk_scope,
             rerank=True,
+            lexical_info_out=lexical_info,
         )
         if self.heat_salience_on_body_search:
             self.store.chunks.bump_salience(
@@ -3721,7 +3739,11 @@ class NumericRefHandler(Handler):
         # larger, so a generic q= (e.g. 'open' on STATUS:open) can't
         # silently under-count a triage/inventory sweep.
         trunc = self._tag_truncation_note(
-            tags, matched_total=total, q=q, exclude_tags=exclude_tags
+            tags,
+            matched_total=total,
+            q=q,
+            exclude_tags=exclude_tags,
+            or_fallback=lexical_info.get("or_fallback", False),
         )
         if trunc:
             lines.append(trunc)
