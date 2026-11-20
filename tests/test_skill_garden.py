@@ -399,3 +399,47 @@ def test_report_accounts_decided_and_empty(
     assert any(
         c.chunk_kind == "todo_comment" for c in store.chunks.list_chunks_for_ref(todo)
     )
+
+
+def test_approved_proposal_is_not_reproposed_and_reports_confirmed(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """key_block reopens an approved key; an unchanged skill must still
+    not be re-proposed, and the approval shows as a confirmed edit."""
+    from precis.graph.garden.proposals import resolve_proposal
+
+    gid = _gripe(store, done=True)
+    corpus = {"inc": _skill(rulings=[f"gr{gid}"])}
+    calls: list[int] = []
+
+    def _propose(*_a: Any, **_kw: Any) -> sg.SkillVerdict:
+        calls.append(1)
+        return sg.SkillVerdict(
+            verdict="drop", evidence="resolved: abc1234", rationale="gone", model="m"
+        )
+
+    monkeypatch.setattr(sg, "_corpus", lambda: corpus)
+    monkeypatch.setattr(sg, "propose_llm", _propose)
+    monkeypatch.setattr(sg, "_run_example", lambda call: "out")
+    sg._dispatch(_Ctx(store), sg.SPEC)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT review_id FROM reviews WHERE verdict = 'proposed'"
+        ).fetchone()
+    assert row is not None
+    assert resolve_proposal(store, int(row[0]), actor="reto", verdict="approved")
+
+    ctx = _Ctx(store)
+    sg._dispatch(ctx, sg.SPEC)
+    assert len(calls) == 1 and len(_proposals(store)) == 1
+    assert "confirmed edits" in ctx.meta["skill_garden"]["report"]
+
+
+def test_run_example_replay_allowlist_is_flat() -> None:
+    for call in (
+        "search(kind='memory', q='x', batch=[{'key': 'a', 'q': 'b'}])",
+        "search(kind='memory', q='x', args={'batch': []})",
+        "get(kind='skill', id='paper:10.1/x')",
+        "search(kind='*', q='x')",
+    ):
+        assert "skipped" in sg._run_example(call), call

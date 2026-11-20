@@ -61,6 +61,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
 from precis.graph.garden.candidates import GardenCandidate
@@ -364,6 +365,33 @@ def _example_call(rule_text: str) -> str | None:
     return m.group(1) if m else None
 
 
+#: Keys a replayed call may carry. ``args=`` (hoists ``batch``/``under``),
+#: ``batch`` and the cross-kind knobs are out: they send a search through
+#: fan-out or alternate routing the kind allowlist never saw.
+_REPLAY_KEYS = frozenset({"kind", "id", "q", "view", "page_size", "tags"})
+
+
+def _replay_refusal(kwargs: dict[str, Any]) -> str | None:
+    """Why a parsed call may not be replayed, else None. Checked on the
+    final kwargs, before dispatch could route them: the kind must be one
+    plain allowlisted name (no ``*``/comma fan-out), the id must carry no
+    ``kind:`` URI prefix or tombstone-prone selector that re-routes the
+    kind, and only flat read keys pass."""
+    extra = sorted(set(kwargs) - _REPLAY_KEYS)
+    if extra:
+        return f"keys {extra} are not on the read-only replay list"
+    kind = str(kwargs.get("kind") or "").strip().lower()
+    if kind not in _REPLAY_KINDS:
+        return f"kind {kind!r} is not on the read-only replay list"
+    kwargs["kind"] = kind
+    ident = kwargs.get("id")
+    if ident is not None and (not isinstance(ident, (str, int)) or ":" in str(ident)):
+        return "id must be one plain handle (no kind: prefix, no batch)"
+    if not isinstance(kwargs.get("q", ""), str):
+        return "q must be plain text"
+    return None
+
+
 def _run_example(call: str) -> str:
     """Re-run the rule's example call and return its bounded result text
     — the behaviour the caution describes, checked live.
@@ -374,7 +402,7 @@ def _run_example(call: str) -> str:
     runtime is used — ``_get_runtime`` would lazily boot a write-enabled
     one. Anything else is skipped with the reason as the datum; a call's
     own failure is evidence too, never raised."""
-    from precis.tools import TOOL_REGISTRY, core
+    from precis.tools import core
     from precis.tools.command_parser import CommandParseError, parse_command
 
     try:
@@ -383,13 +411,17 @@ def _run_example(call: str) -> str:
         return f"unparseable: {exc}"
     if verb not in _READ_VERBS:
         return f"skipped: {verb} is not a read-only verb"
-    kind = str(kwargs.get("kind") or "").strip().lower()
-    if kind not in _REPLAY_KINDS:
-        return f"skipped: kind {kind!r} is not on the read-only replay list"
-    if core._runtime is None:
+    refusal = _replay_refusal(kwargs)
+    if refusal is not None:
+        return f"skipped: {refusal}"
+    runtime = core._runtime
+    if runtime is None:
         return "skipped: no runtime installed — replay never boots one"
     try:
-        result = TOOL_REGISTRY[verb]["func"](**kwargs)
+        # The runtime's own entry, not the MCP tool wrapper: no serve
+        # ledger, no user scope, no transport — and kwargs already
+        # vetted flat, so nothing in dispatch can re-route the kind.
+        result = runtime.dispatch(verb, dict(kwargs))
     except Exception as exc:  # the call's own failure is the datum
         return f"error: {type(exc).__name__}: {exc}"
     return _excerpt(str(result), _CALL_RESULT_CHARS)
@@ -579,6 +611,7 @@ class _Outcome:
     kept: int = 0
     skipped_pending: int = 0
     skipped_rejected: int = 0
+    skipped_approved: int = 0
     llm_errors: int = 0
     llm_truncated: int = 0
     deferred: int = 0
@@ -597,6 +630,37 @@ def _decided_note(store: Store, anchor: int, key: str) -> tuple[str, int | None]
         if g.get("key") == key:
             return str(g.get("rationale") or g.get("reason") or ""), int(rev.review_id)
     return "", None
+
+
+#: An approval counts as a confirmed edit in the report this long; past
+#: it the item only skips free (a monthly job sees each approval once).
+CONFIRMED_WINDOW_DAYS = 35
+
+
+def _approved_row(store: Store, anchor: int, key: str) -> tuple[int, float, str] | None:
+    """``(review_id, age_days, rationale)`` when the newest ledger row
+    under ``key`` is an approval, else None."""
+    from datetime import datetime
+
+    for rev in store.reviews_for("ref", anchor):
+        try:
+            g = json.loads(rev.note or "{}").get("garden") or {}
+        except ValueError:
+            continue
+        if g.get("key") != key:
+            continue
+        if rev.verdict != "approved":
+            return None
+        at = rev.at
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        age = (datetime.now(UTC) - at).total_seconds() / 86400
+        return (
+            int(rev.review_id),
+            age,
+            str(g.get("rationale") or g.get("reason") or ""),
+        )
+    return None
 
 
 def _judge_checks(
@@ -632,6 +696,18 @@ def _judge_checks(
             else {"status": "unresolvable", "handle": rec.ruling}
         )
         key = _dedup_key(rec, _state_token(gripe))
+        approved = _approved_row(store, anchor, key)
+        if approved is not None:
+            # key_block reopens an approved key (the edit is supposed to
+            # change the sha); until the skill bytes change, the question
+            # is answered — never re-propose it.
+            arid, age_days, anote = approved
+            out.skipped_approved += 1
+            if age_days <= CONFIRMED_WINDOW_DAYS:
+                out.judged.append(
+                    _Judged(rec, "approved", anote, review_id=arid, carried=True)
+                )
+            continue
         block = key_block(store, "ref", anchor, key, prompt_version=PROMPT_VERSION)
         if block is not None:
             note, rid = _decided_note(store, anchor, key)
@@ -726,6 +802,7 @@ def build_report(scanned: int, records: list[RuleRecord], out: _Outcome) -> str:
     proposed = [j for j in out.judged if j.verdict in ("simplify", "drop")]
     kept = [j for j in out.judged if j.verdict == "keep"]
     pending = [j for j in out.judged if j.verdict == "pending"]
+    confirmed = [j for j in out.judged if j.verdict == "approved"]
     lines = [
         f"skill_garden — {scanned} skill(s) scanned, {len(records)} rule "
         f"record(s), {out.proposals} proposal(s) to the review ledger"
@@ -745,6 +822,15 @@ def build_report(scanned: int, records: list[RuleRecord], out: _Outcome) -> str:
         lambda j: (
             f"  - {_rec_label(j.rec)} ({j.rec.ruling}) — {j.verdict}: "
             f"{j.evidence} [review {j.review_id}]"
+        ),
+    )
+    lines.append(
+        f"confirmed edits (approved, last {CONFIRMED_WINDOW_DAYS}d): {len(confirmed)}"
+    )
+    listing(
+        confirmed,
+        lambda j: (
+            f"  - {_rec_label(j.rec)} ({j.rec.ruling}) [review {j.review_id}] — {j.why}"
         ),
     )
     lines.append(f"kept: {len(kept)}")
