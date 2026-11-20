@@ -306,7 +306,8 @@ to the caller, with each hub labelled new or existing.
   gardener proposal; the typed edges above need a chunk pin in
   `meta.evidence` and the `meta.{model,prompt_version,run_id,why}`
   annotation (`get(kind='skill', id='precis-relations')`, machine-written
-  edges).
+  edges). On the setup's inline `put(link=…, meta=…)`, edge annotation
+  keys go to the provenance link; writable node keys stay on the memory.
 - **Write nothing to the body.** Body chunks are the paper; notes,
   memories, hubs and links are the reading.
 - **Caps keep approvals cheap.** Every hub and every new memory is a

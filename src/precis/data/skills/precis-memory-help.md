@@ -129,6 +129,18 @@ and `meta={'hook': 'one line — status + resume point'}` (writable meta
 keys: `hook`, `type`, `expires`; the node type is the `section:<slug>`
 tag, never `meta['type']`).
 
+## Annotate a memory's provenance link
+
+On `put(kind='memory', text=…, link=…, rel=…, meta=…)`, writable node
+keys stay on the node; other keys annotate the inline edge, including
+`evidence`, `model`, `prompt_version`, `run_id`, `why` and `reason`.
+`put(kind='memory', id=N, link=…, rel=…, meta=…)` also accepts edge
+annotations when attaching a link to an existing memory; it cannot patch
+node metadata. For an existing memory, use
+`link(kind='memory', id=N, target=…, rel=…, meta=…)` to annotate an edge.
+`edit` accepts node metadata only; an edge-metadata refusal is recovered
+with `link`, preserving the existing memory.
+
 ## Notation in memory text
 
 Notation: follow [[precis-notation-canon]] (UTF-8 units/exponents, no TeX outside quotes or derivations); if the canon does not fit what you are writing, file a gripe linked to skill:precis-notation-canon instead of improvising.

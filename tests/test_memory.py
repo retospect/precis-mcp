@@ -1099,6 +1099,145 @@ def test_bad_meta_key_names_the_allowed_keys(handler: MemoryHandler) -> None:
 
 
 # ---------------------------------------------------------------------------
+# put(link=..., meta=...) — edge meta rides the inline edge (gr716559)
+# ---------------------------------------------------------------------------
+
+
+def _edge_meta(store: Store, src: int, dst: int, rel: str) -> dict[str, Any]:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = %s",
+            (src, dst, rel),
+        ).fetchone()
+    assert row is not None, f"no {rel} edge {src} -> {dst}"
+    return dict(row[0] or {})
+
+
+def test_put_link_meta_annotates_the_inline_edge(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr716559: ``put(link=..., meta=...)`` routes keys the node allowlist
+    does not take onto the inline edge — the precis-relations
+    machine-edge annotation ``meta.{evidence,model,prompt_version,
+    run_id,why}`` lands on the link row instead of refusing as node
+    meta (the workaround was a bare put plus annotated standalone
+    links)."""
+    dst = id_of(handler.put(text="the source note").body)
+    edge = {
+        "evidence": ["pc1"],
+        "model": "test-model",
+        "prompt_version": "v1",
+        "run_id": "run-1",
+        "why": "the setup chunk this note distils",
+    }
+    r = handler.put(
+        text="setup note",
+        link=f"memory:{dst}",
+        rel="derived-from",
+        meta=edge,
+    )
+    src = id_of(r.body)
+    meta = _edge_meta(store, src, dst, "derived-from")
+    for k, v in edge.items():
+        assert meta[k] == v
+    ref = store.get_ref(kind="memory", id=src)
+    assert ref is not None and all(k not in ref.meta for k in edge)
+
+
+def test_put_link_meta_splits_node_and_edge_keys(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The same ``meta=`` dict can carry both: node-allowlist keys land
+    on the ref, the rest on the edge."""
+    dst = id_of(handler.put(text="the source").body)
+    r = handler.put(
+        text="a note",
+        link=f"memory:{dst}",
+        rel="related-to",
+        meta={"hook": "one line", "why": "the edge's why"},
+    )
+    src = id_of(r.body)
+    ref = store.get_ref(kind="memory", id=src)
+    assert ref is not None and ref.meta.get("hook") == "one line"
+    assert "why" not in ref.meta
+    assert _edge_meta(store, src, dst, "related-to")["why"] == "the edge's why"
+
+
+def test_put_link_meta_node_shape_keys_still_refuse(
+    handler: MemoryHandler,
+) -> None:
+    """Keys that mean node meta (``rule``/``warrant``/``title`` live on the
+    ref via their own kwargs) do not slip onto the edge — they meet the
+    same allowlist refusal as a linkless create."""
+    dst = id_of(handler.put(text="the source").body)
+    with pytest.raises(BadInput, match="not writable on kind='memory'"):
+        handler.put(
+            text="x",
+            link=f"memory:{dst}",
+            meta={"rule": "and-intro"},
+        )
+
+
+def test_put_meta_edge_keys_without_link_still_refuse(
+    handler: MemoryHandler,
+) -> None:
+    """With no ``link=`` there is no edge to annotate — the refusal
+    stands, and its ``next`` names the edge doors."""
+    with pytest.raises(BadInput, match="not writable on kind='memory'") as exc:
+        handler.put(text="x", meta={"model": "m", "why": "w"})
+    assert exc.value.next is not None and "link(" in str(exc.value.next)
+
+
+@pytest.mark.parametrize(
+    "key", ["evidence", "model", "prompt_version", "run_id", "why", "reason"]
+)
+def test_edit_edge_meta_keys_do_not_recommend_put(
+    handler: MemoryHandler, key: str
+) -> None:
+    """An edit refusal must recover through the existing memory's link door."""
+    mid = id_of(handler.put(text="the existing note").body)
+    with pytest.raises(BadInput, match="not writable on kind='memory'") as exc:
+        handler.edit(id=mid, meta={key: "annotation"})
+    recovery = exc.value.next
+    assert isinstance(recovery, str)
+    assert (
+        "link(kind='memory', id=N, target=..., meta={...}) on an existing memory"
+        in recovery
+    )
+    assert "create" not in recovery
+    assert "put(" not in recovery
+    assert "pass link=" not in recovery
+
+
+def test_put_on_existing_link_meta_annotates_the_edge(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The id+link attach path splits the same way — ``meta=`` annotates
+    the edge it lands (a create retry annotates instead of refusing)."""
+    src = id_of(handler.put(text="the note").body)
+    dst = id_of(handler.put(text="the source").body)
+    out = handler.put(
+        id=src,
+        link=f"memory:{dst}",
+        rel="derived-from",
+        meta={"why": "distilled from it", "model": "m"},
+    )
+    assert "linked" in out.body
+    meta = _edge_meta(store, src, dst, "derived-from")
+    assert meta["why"] == "distilled from it" and meta["model"] == "m"
+
+
+def test_put_on_existing_link_meta_node_keys_still_refuse(
+    handler: MemoryHandler,
+) -> None:
+    src = id_of(handler.put(text="the note").body)
+    dst = id_of(handler.put(text="the source").body)
+    with pytest.raises(BadInput, match="already exists"):
+        handler.put(id=src, link=f"memory:{dst}", meta={"hook": "x"})
+
+
+# ---------------------------------------------------------------------------
 # args={'scratch_for': '<owner>'} — the task-scratch pair (gr605669):
 # SPACE:scratch + scratch-for:<owner> in one call
 # ---------------------------------------------------------------------------

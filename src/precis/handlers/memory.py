@@ -201,6 +201,7 @@ from precis.handlers._numeric_ref import (
     _id_batch_next,
     _tag_names_axis,
 )
+from precis.handlers._request_state import RequestState
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
@@ -499,6 +500,48 @@ _TITLE_MAX = 80
 #: ``view='toc'`` parent listing sorts on (gr631890).
 _META_ALLOWED = ("hook", "type", "expires", "order")
 
+#: ``meta=`` keys that name the *node's* meta on a ``put`` — the writable
+#: allowlist, the ruling block, and the internal creation fields
+#: ``put_meta`` carries (``title``/``rule``/``warrant``). On a create or
+#: id+link attach with ``link=``, every other key annotates the edge
+#: instead of refusing (gr716559): the precis-relations machine-edge
+#: annotation ``meta.{evidence,model,prompt_version,run_id,why}`` — and
+#: any other link-meta payload ``link()`` accepts — rides the edge,
+#: never the node.
+_NODE_META_FIELDS = frozenset(
+    {*_META_ALLOWED, *_RULING_META_KEYS, "title", "rule", "warrant"}
+)
+
+#: The edge-annotation keys the ``meta`` allowlist refusal names in its
+#: recovery hint — the machine-edge contract plus the link reason.
+_EDGE_META_HINT_KEYS = frozenset(
+    {"evidence", "model", "prompt_version", "run_id", "why", "reason"}
+)
+
+#: The edge meta a ``put(link=..., meta=...)`` split routes to the inline
+#: link write inside :meth:`MemoryHandler._create_with_id` — call-local
+#: (``_request_state``): a shared handler must never stage request
+#: state (gr716559).
+_PUT_LINK_META: RequestState[dict[str, Any] | None] = RequestState(
+    "memory_put_link_meta", None
+)
+
+
+def _split_put_meta(meta: Any, *, linked: bool) -> tuple[Any, dict[str, Any] | None]:
+    """Partition a ``put`` caller's ``meta=`` into node meta and edge meta.
+
+    With ``link=`` on the call, keys the node does not carry annotate the
+    edge (gr716559); node keys stay put. Without ``link=`` the whole
+    value is node meta — a non-dict or an out-of-allowlist key meets the
+    same :func:`_validate_meta` refusal as before.
+    """
+    if not linked or not isinstance(meta, dict):
+        return meta, None
+    node = {k: v for k, v in meta.items() if k in _NODE_META_FIELDS}
+    edge = {k: v for k, v in meta.items() if k not in _NODE_META_FIELDS}
+    return node, edge or None
+
+
 #: ``meta.expires`` duration grammar — mirrors the alias handler's
 #: ``expires=`` (``'7d'``/``'12h'``/``'30m'``/``'2w'``), resolved at write
 #: into the absolute instant the stored meta carries.
@@ -648,10 +691,17 @@ def _validate_meta(
         str(k) for k in meta if k not in _META_ALLOWED and k not in _RULING_META_KEYS
     )
     if unknown:
+        edgeish = sorted(set(unknown) & _EDGE_META_HINT_KEYS)
         raise BadInput(
             f"meta= key(s) {unknown} not writable on kind='memory'; "
             f"allowed keys: {list(_META_ALLOWED)}{ruling_note}",
-            next=example,
+            next=(
+                f"meta= key(s) {edgeish} annotate an edge, not the node — "
+                "use link(kind='memory', id=N, target=..., meta={...}) "
+                "on an existing memory"
+                if edgeish
+                else example
+            ),
         )
     ruling_keys = {k: meta[k] for k in _RULING_META_KEYS if k in meta}
     if ruling_keys and not ruling:
@@ -1768,6 +1818,10 @@ class MemoryHandler(AuditedRetirementHandler):
 
         ``meta={'hook': '...'}`` sets the memory's one-line index text
         (``refs.meta.hook``); ``type`` (user/feedback/project/reference) is the other writable key.
+        With ``link=``, keys outside the node allowlist annotate the
+        inline edge instead (:func:`_split_put_meta`, gr716559) — the
+        machine-edge annotation ``meta.{evidence,model,prompt_version,
+        run_id,why}`` lands on the link row.
 
         ``args={'scratch_for': 'td<N>'}`` stamps the task-scratch pair —
         ``SPACE:scratch`` + ``scratch-for:td<N>`` — in one call
@@ -1861,6 +1915,7 @@ class MemoryHandler(AuditedRetirementHandler):
         is_ruling = any(
             isinstance(t, str) and t.strip() == RULING_TAG for t in tags or []
         )
+        meta, link_meta = _split_put_meta(meta, linked=link is not None)
         create_meta = (
             _validate_meta(meta or {}, ruling=is_ruling)
             if meta is not None or is_ruling
@@ -1884,18 +1939,19 @@ class MemoryHandler(AuditedRetirementHandler):
         def create() -> Response:
             if guard_thread and guard_deferred:
                 self._guard_thread_create(text or "")
-            resp = base_put(
-                id=id,
-                text=text,
-                mode=mode,
-                tags=tags,
-                untags=untags,
-                link=link,
-                unlink=unlink,
-                rel=rel,
-                auto_refresh_days=auto_refresh_days,
-                meta=create_meta,
-            )
+            with _PUT_LINK_META.bind(link_meta):
+                resp = base_put(
+                    id=id,
+                    text=text,
+                    mode=mode,
+                    tags=tags,
+                    untags=untags,
+                    link=link,
+                    unlink=unlink,
+                    rel=rel,
+                    auto_refresh_days=auto_refresh_days,
+                    meta=create_meta,
+                )
             if is_ruling:
                 resp = replace(resp, body=resp.body + _ruling_ack(create_meta))
             return resp
@@ -2005,6 +2061,7 @@ class MemoryHandler(AuditedRetirementHandler):
                     "to rewrite the body"
                 ),
             )
+        meta, link_meta = _split_put_meta(meta, linked=link is not None)
         has_body = any(
             v is not None and v != {} for v in (text, title, rule, warrant, meta)
         )
@@ -2021,7 +2078,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 ),
             )
         before = self.store.count_links_for_refs([n]).get(n, 0)
-        out = self.link(id=n, target=link, rel=rel or "related-to")
+        out = self.link(id=n, target=link, rel=rel or "related-to", meta=link_meta)
         added = self.store.count_links_for_refs([n]).get(n, 0) > before
         if tags:
             self.tag(id=n, add=tags)
@@ -2170,6 +2227,7 @@ class MemoryHandler(AuditedRetirementHandler):
                     dst_ref_id=target.ref_id,
                     dst_pos=target.pos,
                     relation=relation,
+                    meta=_PUT_LINK_META.get(),
                     conn=conn,
                 )
             if misses:

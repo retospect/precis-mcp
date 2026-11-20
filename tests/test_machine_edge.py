@@ -567,6 +567,88 @@ class TestLinkVerbMeta:
         assert _link_row(store, a, b, "related-to") is None
 
 
+# ── put(link=…) carries the annotation to the inline edge (gr716559) ──
+
+
+class TestPutInlineLinkMeta:
+    """``put(kind='memory', link=..., rel=..., meta=...)``: keys outside
+    the node allowlist annotate the inline edge. Under a machine-writer
+    context that channel is what lets the create's edge meet the
+    admission contract at all — previously the annotation hit the
+    node-meta allowlist refusal instead."""
+
+    def _new_memory_id(self, out: str) -> int:
+        from tests.conftest import id_of
+
+        return int(id_of(out))
+
+    def test_put_inline_edge_admitted_with_annotation(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        dst = _ref(store, "memory", "the source chunk note")
+        with _machine():
+            out = runtime_with_store.dispatch(
+                "put",
+                {
+                    "kind": "memory",
+                    "text": "setup note distilled from the source",
+                    "link": f"memory:{dst}",
+                    "rel": "derived-from",
+                    "meta": _meta(),
+                },
+            )
+        assert "[error:" not in out, out
+        src = self._new_memory_id(out)
+        row = _link_row(store, src, dst, "derived-from")
+        assert row is not None
+        meta = row[3]
+        for key in ("model", "prompt_version", "run_id", "why", "evidence"):
+            assert meta[key] == _meta()[key]
+        # the annotation is on the edge, not the node
+        ref = store.get_ref(kind="memory", id=src)
+        assert ref is not None
+        assert all(k not in ref.meta for k in _meta())
+
+    def test_put_inline_edge_without_annotation_still_refused(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        """The gate sees the same meta the link verb would: a linked
+        create under a machine writer without the annotation is refused
+        and rolls back — no half-created memory."""
+        dst = _ref(store, "memory", "the source")
+        before = store.list_refs(kind="memory", limit=200)
+        with _machine():
+            out = runtime_with_store.dispatch(
+                "put",
+                {
+                    "kind": "memory",
+                    "text": "setup note with no edge meta",
+                    "link": f"memory:{dst}",
+                    "rel": "derived-from",
+                },
+            )
+        assert "[error:BadInput]" in out and "machine-edge-no-evidence" in out
+        after = store.list_refs(kind="memory", limit=200)
+        assert len(after) == len(before)
+
+    def test_put_inline_edge_annotation_only_no_evidence_refused(
+        self, runtime_with_store, store: Store
+    ) -> None:
+        dst = _ref(store, "memory", "the source")
+        with _machine():
+            out = runtime_with_store.dispatch(
+                "put",
+                {
+                    "kind": "memory",
+                    "text": "setup note, annotation but no pin",
+                    "link": f"memory:{dst}",
+                    "rel": "derived-from",
+                    "meta": dict(_ANNOTATION),
+                },
+            )
+        assert "[error:BadInput]" in out and "machine-edge-no-evidence" in out
+
+
 # ── the merge exemption ────────────────────────────────────────────────
 
 
