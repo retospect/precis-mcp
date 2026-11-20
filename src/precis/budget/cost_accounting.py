@@ -9,8 +9,10 @@ The ticks in question and what they actually run:
 * ``route_log.rollup`` / ``route_log.gc`` (the sweeper tick) — pure SQL
   over ``llm_call_log`` / ``llm_call_rollup`` / ``app_state``; no router
   dispatch, no LLM.
-* :func:`precis.budget.meter.current_status` — one cached tote query per
-  TTL window at the dispatch chokepoint; no router dispatch, no LLM.
+* :func:`precis.budget.meter.current_status` — an ``app_state`` snapshot +
+  pending point read at the dispatch chokepoint; the full-ledger
+  re-baseline runs at most once per horizon fleet-wide (gr732477). No
+  router dispatch, no LLM.
 * :func:`precis.budget.outcomes` upsert — one row write per gate decision;
   no router dispatch, no LLM.
 * ``quota_check`` — the only LLM-touching budget tick: one ``claude -p``

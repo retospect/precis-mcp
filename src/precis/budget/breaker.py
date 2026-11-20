@@ -185,7 +185,12 @@ def gate_paid(
     """Gate a paid fetch by its *estimated* per-call cost. ``None`` to allow.
 
     Any fetch with a non-zero estimated cost is gated once a cap trips; only
-    free lookups (cache hits, zero-cost providers) always run.
+    free lookups (cache hits, zero-cost providers) always run. The estimate
+    is a gate input only — never accounted: spend accrues on the shared
+    meter when the fetch's *actual* cost commits to ``cache_state``
+    (:func:`precis.budget.meter.note_spend`), so a failed provider call, or
+    one billed differently from the estimate, can neither trip the breaker
+    on spend that never happened nor hide spend that did.
     """
     if cost_from_usd(expected_cost_usd) is Cost.FREE:
         return None
