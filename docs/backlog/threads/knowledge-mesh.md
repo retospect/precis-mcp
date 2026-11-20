@@ -63,8 +63,9 @@ graph-health-metrics, five parked gripes, and the seam with
 - **Done 2026-10-14 (worktree-measures-gaps):** the six pilot gaps plus
   the unparseable-unit mint log, one commit each (ab0af62df…5260552e3),
   and the coordinator's slice 8 — outlier (`implausible_value`, 3+
-  decades off the measurand's live median) and `glyph_suspected`
-  needs-review flags at write time (bca4761f9).
+  decades from the median magnitude of at least three currently approved live
+  values for the same measurand and effective currency and price year) and
+  `glyph_suspected` needs-review flags at write time (bca4761f9).
   Reto's sign-off ruling is recorded in the two specs: extracted values
   pass by SAMPLED acceptance — a frontier model reviews a stratified
   sample per paper × measurand, the batch is accepted under a 5 %

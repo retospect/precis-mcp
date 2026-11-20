@@ -1117,11 +1117,14 @@ def test_an_order_of_magnitude_outlier_escalates_for_review(
     store: Store, world: dict[str, Any]
 ) -> None:
     # PDF extraction strips the Greek mu (gr228594): 'um' lands as 'm' and the
-    # value sits ~6 orders of magnitude off the measurand's live median.
+    # value sits ~6 orders of magnitude off the measurand's approved median.
     for v in ("1", "2", "3", "5"):
-        store.insert_measure(
+        run = store.insert_measure(
             MeasureSpec(world["energy"], v, world["paper"], reported_unit="eV"),
             actor="reader",
+        )
+        store.record_target_review(
+            "measure", run.output_id, actor="checker", verdict="approved"
         )
     paper = seed_ref(store, title="Paper reporting an outlier", kind="paper")
     outlier = store.insert_measure(
@@ -1160,6 +1163,37 @@ def test_an_order_of_magnitude_outlier_escalates_for_review(
         actor="reader",
     )
     assert _row(store, clean.output_id)["meta"].get("escalation") is None
+
+
+def test_unreviewed_turnover_values_cannot_poison_the_median(
+    store: Store, world: dict[str, Any]
+) -> None:
+    tof = _taxon(store, "turnover frequency", unit="s^-1", parent=world["start"])
+    for _ in range(38):
+        store.insert_measure(
+            MeasureSpec(tof, "4e13", world["paper"], reported_unit="s^-1"),
+            actor="reader",
+        )
+
+    paper = seed_ref(store, title="Paper reporting turnover frequency", kind="paper")
+    chunk = seed_chunk(store, ref_id=paper, text="4.0 × 10⁻⁴ molecule s⁻¹ atom⁻¹")
+    run = store.insert_measure(
+        MeasureSpec(
+            tof,
+            "4.0",
+            paper,
+            value_num=0.0004,
+            reported_unit="s⁻¹",
+            anchor=MeasureAnchor(paper, chunk, "sentence", "s1"),
+        ),
+        actor="reader",
+    )
+
+    assert _row(store, run.output_id)["meta"].get("escalation") is None
+    quest = store.insert_ref(kind="quest", slug=None, title="q").id
+    store.add_link(src_ref_id=paper, dst_ref_id=quest, relation="serves")
+    (group,) = store.best_measure(tof, serving=quest, sense="min")
+    assert group["best"]["id"] == run.output_id
 
 
 def test_a_thin_distribution_flags_nothing(store: Store, world: dict[str, Any]) -> None:

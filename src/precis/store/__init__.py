@@ -135,6 +135,11 @@ cannot veto a current approval; proposed and unreviewed values retain the
 numeric ordering. The winning row exposes ``review_state`` so consumers can
 distinguish eligible values from approved ones without another ledger read.
 
+The write-time magnitude check requires three live values with a current
+approval in the same measurand and effective currency/price year. A majority
+of unchecked extraction errors can otherwise set the median and cause a
+correct reading to be flagged and excluded from ranking.
+
 Measure paper/quest searches match subjects and anchor-chunk owners so
 promoting a subject does not hide its source evidence. Quest filtering
 shares the recursive inbound ``serves`` closure with measure ranking.

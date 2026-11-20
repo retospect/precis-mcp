@@ -41,7 +41,7 @@ whose product has no formula, lands in ``meta.escalation`` (a list of
 ``{"rule": ..., ...}``); ``best_measure`` excludes flagged rows. Two sanity
 flags join them (needs-review, never a drop): ``implausible_value`` — the
 canonical value sits ``_OUTLIER_DECADES`` or more orders of magnitude off the
-measurand's live median, which is what a stripped ``µ`` looks like ("6 µm"
+measurand's approved median, which is what a stripped ``µ`` looks like ("6 µm"
 extracts as "6 m", gr228594) — and ``glyph_suspected`` — the source paper's
 extracted text carries the ingest ``glyph_health`` flag (gr228652). The
 required names come from the output measurand taxon's ``meta.required_conditions``
@@ -186,11 +186,18 @@ MEASURAND_STATUSES = ("explicit", "interpreted", "ambiguous")
 NORMALIZATION_STATUSES = ("explicit", "inferred", "unresolved")
 ROLES = ("context", "preparation", "model")
 
-#: Slice-8 sanity flag: a new output value this far from the measurand's live
+#: Slice-8 sanity flag: a new output value this far from the measurand's approved
 #: median (log10 decades) is needs-review — a stripped µ gives 6 (gr228594).
 _OUTLIER_DECADES = 3.0
-#: the median needs a distribution: fewer existing values, no flag
+#: Require this many approved values in the same measurand and effective
+#: currency and price-year group before checking for outliers.
 _OUTLIER_MIN_SAMPLE = 3
+_CURRENT_REVIEW_VERDICT = (
+    "(SELECT r.verdict FROM reviews r "
+    "WHERE r.target_kind = 'measure' AND r.target_id = m.id "
+    "AND r.content_sha = precis_target_sha('measure', m.id) "
+    "ORDER BY r.at DESC, r.review_id DESC LIMIT 1)"
+)
 INPUT_DIRECTIONS = ("input", "covariate")
 
 
@@ -988,10 +995,7 @@ class MeasuresMixin:
         rows = c.execute(
             "SELECT m.id, m.literal, m.value_num, m.value_low, m.value_high, "
             "       m.value_text, m.value_bool, m.subject, "
-            "       (SELECT r.verdict FROM reviews r "
-            "        WHERE r.target_kind = 'measure' AND r.target_id = m.id "
-            "          AND r.content_sha = precis_target_sha('measure', m.id) "
-            "        ORDER BY r.at DESC, r.review_id DESC LIMIT 1), "
+            f"       {_CURRENT_REVIEW_VERDICT}, "
             "       m.run_key, m.conditions "
             "FROM measures m JOIN links l ON l.link_id = m.primary_link_id "
             "WHERE m.direction = 'output' AND m.superseded_by IS NULL "
@@ -1072,43 +1076,43 @@ class MeasuresMixin:
         ``(value_num, value_low, value_high)``). Both are needs-review, never
         a refusal or a drop: ``implausible_value`` when a reading sits
         ``_OUTLIER_DECADES`` or more orders of magnitude from the measurand's
-        live median, and ``glyph_suspected`` when the source paper carries the
+        approved median, and ``glyph_suspected`` when the source paper carries the
         ingest glyph-health flag. The median is computed per effective
         ``(currency, price_year)`` group — a NULL year is its own group;
         ``currency``/``price_year`` are the new row's, a stored/legacy row's
         comes from its columns or the token in its reported/canonical unit —
         unconverted currencies and price years never mix (gr510555 S1). On a
-        measurand that is not a currency measurand at all every live row is
+        measurand that is not a currency measurand at all every approved row is
         in the one group and no unit is parsed."""
         out: list[dict[str, Any]] = []
         nums = [float(v) for v in values if v is not None and v != 0]
+        mags: list[float] = []
         if nums:
-            if currency is None and not currency_taxon:
-                mags = sorted(
-                    math.log10(abs(float(r[0])))
-                    for r in c.execute(
-                        "SELECT value_num FROM measures "
-                        "WHERE direction = 'output' AND superseded_by IS NULL "
-                        "AND measurand_ref_id = %s "
-                        "AND value_num IS NOT NULL AND value_num <> 0",
-                        (spec.measurand_ref_id,),
-                    ).fetchall()
-                )
-            else:
-                mags = sorted(
-                    math.log10(abs(float(r[0])))
-                    for r in c.execute(
-                        "SELECT value_num, currency, price_year, reported_unit "
-                        "FROM measures "
-                        "WHERE direction = 'output' AND superseded_by IS NULL "
-                        "AND measurand_ref_id = %s "
-                        "AND value_num IS NOT NULL AND value_num <> 0",
-                        (spec.measurand_ref_id,),
-                    ).fetchall()
-                    if effective_currency(r[1], r[2], r[3], canonical_unit)
+            partitioned = currency is not None or currency_taxon
+            columns = (
+                "m.value_num, m.currency, m.price_year, m.reported_unit"
+                if partitioned
+                else "m.value_num"
+            )
+            rows = c.execute(
+                f"SELECT {columns} FROM measures m "
+                "WHERE m.direction = 'output' AND m.superseded_by IS NULL "
+                "AND m.measurand_ref_id = %s "
+                "AND m.value_num IS NOT NULL AND m.value_num <> 0 "
+                f"AND {_CURRENT_REVIEW_VERDICT} = 'approved'",
+                (spec.measurand_ref_id,),
+            ).fetchall()
+            mags = sorted(
+                math.log10(abs(float(row[0])))
+                for row in rows
+                if math.isfinite(row[0])
+                and (
+                    not partitioned
+                    or effective_currency(row[1], row[2], row[3], canonical_unit)
                     == (currency, price_year)
                 )
-        if nums and len(mags) >= _OUTLIER_MIN_SAMPLE:
+            )
+        if len(mags) >= _OUTLIER_MIN_SAMPLE:
             n = len(mags)
             med = mags[n // 2] if n % 2 else (mags[n // 2 - 1] + mags[n // 2]) / 2
             for v in nums:
@@ -1125,7 +1129,7 @@ class MeasuresMixin:
                                 f"the value sits {abs(decades):.1f} orders of "
                                 f"magnitude "
                                 f"{'above' if decades > 0 else 'below'} the "
-                                "measurand's live median — a stripped µ reads "
+                                "measurand's approved median — a stripped µ reads "
                                 "'µm' as 'm' (gr228594)"
                             ),
                         }
@@ -1871,11 +1875,7 @@ class MeasuresMixin:
         cols = _MEASURE_COLS
         if with_review:
             cols += (
-                ", coalesce((SELECT r.verdict FROM reviews r "
-                "WHERE r.target_kind = 'measure' AND r.target_id = m.id "
-                "AND r.content_sha = precis_target_sha('measure', m.id) "
-                "ORDER BY r.at DESC, r.review_id DESC LIMIT 1), "
-                "'unreviewed') AS review_state"
+                f", coalesce({_CURRENT_REVIEW_VERDICT}, 'unreviewed') AS review_state"
             )
         sql = f"SELECT {cols} {_MEASURE_FROM} WHERE {where} ORDER BY t.ref_id, m.id"
         with self.pool.connection() as conn:

@@ -352,8 +352,9 @@ put(kind="measure", text="95",
 - **Answer**: the run key, one line per written row (`mx12 output ...`), then
   `flagged:` lines for anything flagged, each with its reason: a
   `meta.escalation` entry — a missing required condition, no molar mass, an
-  `implausible_value` (the canonical value sits 3+ orders of magnitude off the
-  measurand's live median — a stripped µ looks exactly like that) or
+  `implausible_value` (the canonical value is 3+ orders of magnitude from the
+  median magnitude of at least three currently approved live values for the
+  same measurand and effective currency and price year, where applicable) or
   `glyph_suspected` (the source paper's extracted text is flagged) — or
   `anchor_mismatch` (the literal is not in the anchored span: check the chunk).
 

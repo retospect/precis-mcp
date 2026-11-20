@@ -353,7 +353,10 @@ class TestWithinCurrency:
         # three USD rows make the median sample; an EUR row wildly off it is
         # not flagged — the median never mixes currencies
         for v in ("500", "520", "480"):
-            _put(store, w, "cost", v, unit="USD/t")
+            run = _put(store, w, "cost", v, unit="USD/t")
+            store.record_target_review(
+                "measure", run.output_id, actor="checker", verdict="approved"
+            )
         eur = _put(store, w, "cost", "9e9", unit="EUR/t")
         assert not (_row(store, eur.output_id)["meta"] or {}).get("escalation")
         usd = _put(store, w, "cost", "9e9", unit="USD/t")
@@ -369,7 +372,10 @@ class TestWithinCurrency:
         # three USD2020 rows make the median sample; a USD2010 row wildly
         # off it is its own group and is not flagged
         for v in ("500", "520", "480"):
-            _put(store, w, "cost", v, unit="USD2020/t")
+            run = _put(store, w, "cost", v, unit="USD2020/t")
+            store.record_target_review(
+                "measure", run.output_id, actor="checker", verdict="approved"
+            )
         old = _put(store, w, "cost", "9e9", unit="USD2010/t")
         assert not (_row(store, old.output_id)["meta"] or {}).get("escalation")
         new = _put(store, w, "cost", "9e9", unit="USD2020/t")
