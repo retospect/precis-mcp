@@ -38,6 +38,7 @@ from urllib.parse import parse_qsl, urlencode
 
 from psycopg import Connection
 
+from precis._result_budget import size_cell
 from precis.errors import BadInput, Denied, NotFound, Upstream
 from precis.handlers._interpret import interpreted
 from precis.handlers._numeric_ref import (
@@ -6571,8 +6572,10 @@ class JobHandler(NumericRefHandler):
         the wake_runner re-queues them (``park_job_until`` and run_slice's
         lane waits both write it). One row per job — handle, job_type,
         parent, the lane/node the park names, wake time (UTC), how long it
-        has been parked (age of the STATUS stamp) and the stored
-        ``wake_when.payload.why``, ``-`` when none is stored. Furthest wake
+        has been parked (age of the STATUS stamp), the stored body's size
+        (one bulk read per page, the same source the plain listing uses)
+        and the stored ``wake_when.payload.why``, ``-`` when none is
+        stored. Furthest wake
         first; a wake more than :data:`_PARKED_FAR` away is flagged ``!``
         and counted in the header, so a job parked into next year cannot
         hide among the 20-minute lane waits. A job with no readable wake
@@ -6668,6 +6671,7 @@ class JobHandler(NumericRefHandler):
             )
         from precis.format import render_agent_table
 
+        sizes = self.store.chunks.body_byte_counts([ref.id for ref, _, _ in shown])
         table = [
             {
                 "flag": "!" if wake is not None and wake - now > _PARKED_FAR else "-",
@@ -6684,6 +6688,7 @@ class JobHandler(NumericRefHandler):
                 "where": _parked_where(ref.meta or {}),
                 "wake_utc": _fmt_utc(wake),
                 "parked": _fmt_age(now - stamped) if stamped is not None else "-",
+                "size": size_cell(sizes.get(int(ref.id), 0)),
                 "reason": _parked_reason(ref.meta or {}),
             }
             for ref, stamped, wake in shown
@@ -6699,6 +6704,7 @@ class JobHandler(NumericRefHandler):
                     "where",
                     "wake_utc",
                     "parked",
+                    "size",
                     "reason",
                 ],
             )
