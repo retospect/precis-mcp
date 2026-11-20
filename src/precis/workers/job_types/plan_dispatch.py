@@ -4879,6 +4879,20 @@ def _capacity_refused(j: _Node) -> bool:
     )
 
 
+def _refused_at(j: _Node) -> datetime:
+    """When a capacity refusal happened: ``meta.finished_at`` (the job's
+    end), else its mint — a refusal's mint can precede it by the whole
+    time the land queued for its slot."""
+    raw = j.meta.get("finished_at")
+    if isinstance(raw, str) and raw:
+        try:
+            at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return j.created_at
+        return at if at.tzinfo else at.replace(tzinfo=UTC)
+    return j.created_at
+
+
 def _capacity_wait_done(plan: _Plan, n: _Node, now: datetime) -> str | None:
     """The host name when ``n``'s land has been refused for capacity
     continuously for longer than :data:`LAND_CAPACITY_WAIT_CAP`, else
@@ -4887,10 +4901,10 @@ def _capacity_wait_done(plan: _Plan, n: _Node, now: datetime) -> str | None:
     job ends the run, and so does the floor ``meta.rearmed_after_job`` — an
     answered ask re-arms the wait. The run is measured to ``now``, not to
     the newest refusal, so the ask lands on time while the free-failure
-    backoff is still holding the next mint. The clock starts at the first
-    refusal's mint, which a land queued for the host's slot can be old
-    before it ever ran (queue waits past 45 min happen), so one refusal
-    never fires: the run needs at least two. The host is the land's
+    backoff is still holding the next mint. The clock starts when the first
+    refusal finished (:func:`_refused_at`), not at its mint: a land queued
+    for the host's slot can be old before it ever ran (queue waits past
+    45 min happen). One refusal never fires: the run needs at least two. The host is the land's
     ``params.target_node`` (``"unknown"`` when the params name none)."""
     floor = _rearm_floor(n)
     run: list[_Node] = []
@@ -4900,7 +4914,7 @@ def _capacity_wait_done(plan: _Plan, n: _Node, now: datetime) -> str | None:
         if not _capacity_refused(j):
             break
         run.append(j)
-    if len(run) < 2 or now - run[-1].created_at <= LAND_CAPACITY_WAIT_CAP:
+    if len(run) < 2 or now - _refused_at(run[-1]) <= LAND_CAPACITY_WAIT_CAP:
         return None
     params = run[0].meta.get("params")
     host = params.get("target_node") if isinstance(params, dict) else None
@@ -7706,16 +7720,17 @@ def _mint_ask(
         )
         options = list(_RELAND_ASK_OPTIONS)
     elif capacity:
-        # A land refused for capacity past LAND_CAPACITY_WAIT_CAP: the
-        # branch is fine, the host stayed full (not a re-land ask).
+        # A land refused for capacity past LAND_CAPACITY_WAIT_CAP: the host
+        # stayed full (not a re-land ask). The refused launch may be the
+        # ship or a diagnostic probe after a red gate, so the ask says only
+        # that the launch was blocked and leaves any gate result standing.
         wait = f"{int(LAND_CAPACITY_WAIT_CAP.total_seconds() // 60)} min"
         head = (
-            f"job:{newest.id} {newest.status} — the land has been refused at "
-            f"launch for capacity for over {wait} ({capacity} at capacity)"
+            f"job:{newest.id} {newest.status} — a land launch has been refused "
+            f"for capacity for over {wait} ({capacity} at capacity)"
         )
         title = (
-            f"td{n.id}: land could not start for {wait} — "
-            f"host {capacity} is at capacity"
+            f"td{n.id}: land launch blocked for {wait} — host {capacity} is at capacity"
         )
         options = list(_CAPACITY_ASK_OPTIONS)
     elif human:
@@ -7800,9 +7815,10 @@ def _mint_ask(
         body = (
             f"The plan tick stopped re-minting the land of td{n.id} "
             f"({n.title.splitlines()[0] if n.title else ''}): {head}. "
-            "Nothing is wrong with the branch or the land — the host could "
-            "not admit the ship's footprint, and every land since the first "
-            "refusal met the same full host. Answer 'keep waiting' and "
+            "The host could not admit the launch's footprint, and every land "
+            "since the first refusal met the same full host; this says "
+            "nothing about the gate, and any earlier gate result on the "
+            "branch stands. Answer 'keep waiting' and "
             f"close this todo to let the tick keep re-minting td{n.id}'s "
             f"land for another {wait}; pick 'won't do' by closing "
             f"td{n.id} STATUS:won't-do."

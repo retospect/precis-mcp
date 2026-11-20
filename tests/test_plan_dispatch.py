@@ -1709,6 +1709,15 @@ def _capacity_land(
     )
     if minutes_old:
         _backdate(store, job, minutes_old)
+        # The refusal ended when the land was minted unless a test says so.
+        store.stamp_ref_meta(
+            job,
+            {
+                "finished_at": (
+                    datetime.now(UTC) - timedelta(minutes=minutes_old)
+                ).isoformat()
+            },
+        )
     return job
 
 
@@ -1806,7 +1815,7 @@ def test_capacity_refused_over_the_wait_cap_files_the_capacity_ask(
     ask_ref = store.get_ref(kind="todo", id=ask)
     assert ask_ref is not None
     assert str(ask_ref.title) == (
-        f"td{task}: land could not start for 45 min — host node-a is at capacity"
+        f"td{task}: land launch blocked for 45 min — host node-a is at capacity"
     )
     assert _meta(store, ask)["ask"]["options"] == ["keep waiting", "won't do"]
     assert _blocked_by_ids(store, task) == [ask]
@@ -1829,6 +1838,24 @@ def test_capacity_refusals_under_the_wait_cap_file_no_ask(store: Store) -> None:
     _capacity_land(store, task, minutes_old=20)
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_long_queue_wait_does_not_start_the_capacity_clock(store: Store) -> None:
+    """The wait is measured from the first refusal's ``meta.finished_at``,
+    not its mint: two lands that queued for an hour, were refused and
+    retried within minutes have not waited past the cap."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _backdate(store, _slice_job(store, task, "run_slice", "succeeded"), 180)
+    now = datetime.now(UTC)
+    for minutes_old, finished_ago in ((70, 4), (65, 2)):
+        job = _capacity_land(store, task, minutes_old=minutes_old)
+        store.stamp_ref_meta(
+            job, {"finished_at": (now - timedelta(minutes=finished_ago)).isoformat()}
+        )
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _asks_under(store, mint.root_id, task) == []
 
 
 def test_one_refusal_of_a_long_queued_land_files_no_ask(store: Store) -> None:
