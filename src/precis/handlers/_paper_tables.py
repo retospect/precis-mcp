@@ -20,6 +20,14 @@ cell anchor the recipe slice writes through ``insert_measure``.
 caption or row labels hold any of the words (case-insensitive, on the
 ``markup_surface`` text).
 
+When the paper has no ``chunk_kind='table'`` chunks at all, the view
+does not stop at "no tables": it lists the body chunks that look like
+labeled tables (a ``Table <n>`` caption line or a pipe grid) with their
+``pc`` handles, and points at the first one for a direct ``get`` —
+papers whose tables were stored as plain body chunks stay reachable
+(gr716568). An ordinal cursor bounds each page of previews and keeps
+later matches reachable.
+
 Cell cites are 1-based on both axes: ``pc<id> row R col C`` names
 grid row ``R`` (the ``| R`` gutter) and column ``C`` — ``col 1`` is
 the row-label column, matching the ``[n]`` markers in the
@@ -50,6 +58,7 @@ if TYPE_CHECKING:
 #: Logical tables (groups) fully rendered before the fold — never
 #: slices a table in half; the hidden ones get a one-line pointer each.
 _TABLE_BUDGET = 12
+_BODY_CHUNK_LIMIT = 12
 
 #: Data rows shown per table before a fold line.
 _ROW_CAP = 50
@@ -200,16 +209,58 @@ def render_tables_view(
     paper as a parsed grid, in ord order."""
     tables, neighbours = store.chunks.table_chunks_for_ref(ref.id)
     pa = _pa(ref)
+    after_ord = args.get("after_ord") if args else None
+    if after_ord is not None and (
+        tables or type(after_ord) is not int or not 0 <= after_ord <= 2**31 - 1
+    ):
+        raise BadInput(
+            "args={'after_ord': N} requires a nonnegative chunk ordinal "
+            "and a paper without typed table chunks",
+            next=f"get(id='{pa}', view='tables') lists the first page",
+        )
     if not tables:
         body = f"no tables in {pa}"
-        body += render_next_section(
-            [
-                (
-                    f"get(id='{pa}', view='chunks')",
-                    "chunk counts by kind — the paper may hold no body or no tables",
-                ),
-            ]
+        matches = store.chunks.table_like_chunks_for_ref(
+            ref.id,
+            limit=_BODY_CHUNK_LIMIT + 1,
+            after_ord=-1 if after_ord is None else after_ord,
         )
+        like = matches[:_BODY_CHUNK_LIMIT]
+        if like:
+            body += (
+                " (no chunk_kind='table' chunks), but these body chunks look "
+                "like labeled tables:\n"
+            )
+            for cid, _ord, text in like:
+                first = " ".join(text.split())[:100]
+                body += f"\n- {_chunk_handle(ref.kind, cid)}: {first}"
+        nxt = [
+            (
+                f"get(id='{pa}', view='chunks')",
+                "chunk counts by kind — the paper may hold no body or no tables",
+            ),
+        ]
+        if like:
+            nxt.insert(
+                0,
+                (
+                    f"get(id='{_chunk_handle(ref.kind, like[0][0])}')",
+                    "read a table-like body chunk directly",
+                ),
+            )
+        if len(matches) > _BODY_CHUNK_LIMIT:
+            last_ord = like[-1][1]
+            body += f"\n\nShowing {_BODY_CHUNK_LIMIT} matches. More follow chunk ordinal {last_ord}."
+            nxt.insert(
+                0,
+                (
+                    f"get(id='{pa}', view='tables', args={{'after_ord': {last_ord}}})",
+                    "list the next table-like body chunks",
+                ),
+            )
+        elif after_ord is not None and not like:
+            body += f" (no table-like body chunks after ordinal {after_ord})"
+        body += render_next_section(nxt)
         return Response(body=body)
 
     sel = args.get("table") if isinstance(args, dict) else None

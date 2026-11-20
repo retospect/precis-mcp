@@ -571,12 +571,21 @@ The top-level (unscoped) TOC header also carries a readiness line —
 some chunks' embedding attempts genuinely failed) — so you can poll
 "is my edit indexed yet" instead of guessing.
 
-`view='summaries'` is the flat, per-chunk companion to the clustered
-`view='toc'`: one row per body chunk — its `~ord` handle, its `llm-v1`
-gloss (often empty — the summariser is a deliberate trickle), and its
-extracted keyword string. Use it to scan every chunk's gist at once (the
-web reader's Semantic/Keyword sidebar reads the same data); fall back to
-the keyword column where a gloss hasn't been written yet.
+`view='summaries'` lists each body chunk's `~ord` handle, `llm-v1` gloss
+and keywords. Use the keywords where the summariser has yet to write
+a gloss. The web reader's Semantic/Keyword sidebar uses the same data.
+
+Views: `lookup`, `abstract`, `toc`, `summaries`, `tables`, `measures`, `bibtex` (`cite/bib`), `ris`
+(`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
+`comments` (the note timeline — see Add a note to a paper),
+`ops` (full-state JSON dump — see precis-paper-ref-help), `pdf_link`
+(signed download URL for the held PDF — see precis-paper-ref-help). The
+`view=` kwarg and `slug/<view>` path are equivalent (except for DOIs — see
+above). All are ref-level: a `pc<id>` chunk handle takes no `view=` —
+`get(id='pc512', view='abstract')` is refused; use the paper handle
+(`pa<id>`) for every view but `'toc'`, which also scopes to `pa<id>~N..M`.
+
+## Find and read a paper's tables and extracted measures
 
 `view='tables'` renders every `chunk_kind='table'` chunk as a parsed
 grid — one `T<n>` section per *logical* table with its `pc` chunk
@@ -588,7 +597,13 @@ into consecutive chunks stays one `T<n>` — continuations are labelled
 well-formed pipe grid renders raw rather than being guessed at.
 `args={'table': 2}` (or a `pc` handle) renders one table;
 `args={'match': 'sticking prefactor'}` keeps tables whose header,
-caption or row labels hold any of the words.
+caption or row labels hold any of the words. With no
+`chunk_kind='table'` chunks at all, the view instead lists body chunks
+that look like labeled tables (`Table <n>` caption — including
+`**Table 2** …` and `Table S1:` — or a pipe grid) with their `pc`
+handles. Read a chunk directly with `get(id='pc…')`. The fallback lists
+up to 12 matches in body order. If more matches exist, follow the
+`Next:` call with `args={'after_ord': N}` to list the next page.
 
 `view='measures'` lists outputs grouped by table (`T<n>`), then prose,
 with the same eligibility as default paper-scoped measure search. It
@@ -603,16 +618,6 @@ get(kind="paper", id="pa40", view="tables", args={"table": 2})
 get(kind="paper", id="pa40", view="tables", args={"match": "sticking"})
 get(kind="paper", id="pa40", view="measures")
 ```
-
-Views: `lookup`, `abstract`, `toc`, `summaries`, `tables`, `measures`, `bibtex` (`cite/bib`), `ris`
-(`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
-`comments` (the note timeline — see Add a note to a paper),
-`ops` (full-state JSON dump — see precis-paper-ref-help), `pdf_link`
-(signed download URL for the held PDF — see precis-paper-ref-help). The
-`view=` kwarg and `slug/<view>` path are equivalent (except for DOIs — see
-above). All are ref-level: a `pc<id>` chunk handle takes no `view=` —
-`get(id='pc512', view='abstract')` is refused; use the paper handle
-(`pa<id>`) for every view but `'toc'`, which also scopes to `pa<id>~N..M`.
 
 ## Find a passage in a paper I have
 ## Locate where a topic comes up in a specific paper

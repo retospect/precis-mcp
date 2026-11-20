@@ -4028,6 +4028,34 @@ class ChunkStore:
                 neighbours.append((int(chunk_id), int(ord_), str(text or "")))
         return tables, neighbours
 
+    def table_like_chunks_for_ref(
+        self, ref_id: int, *, limit: int, after_ord: int = -1
+    ) -> list[tuple[int, int, str]]:
+        """Live body chunks that look like a labeled table but are not
+        ``chunk_kind='table'`` (``Table <n>`` caption line, or a pipe
+        grid of three or more rows). The ``view='tables'`` fallback
+        pointer (gr716568). ``(chunk_id, ord, text)`` in ord order.
+
+        The caption branch mirrors :data:`precis.extract.tables._CAPTION_RE`
+        — supplementary ``S<n>`` labels and a closing markdown ``**``
+        (``**Table 2** rates``) count, so a caption the recognizer
+        accepts is never missed here."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT chunk_id, ord, text
+                  FROM chunks
+                 WHERE ref_id = %s AND retired_at IS NULL AND ord >= 0 AND ord > %s
+                   AND chunk_kind <> 'table'
+                   AND (text ~* '(^|\n)[\\s*_#>]*table\\s+[0-9ivxs]+[a-z]?\\s*(\\*\\*|[.:|)-])'
+                        OR text ~ '((^|\n)[[:blank:]]*\\|[^\n]*\\|[^\n]*){3}')
+                 ORDER BY ord
+                 LIMIT %s
+                """,
+                (ref_id, after_ord, limit),
+            ).fetchall()
+        return [(int(r[0]), int(r[1]), str(r[2] or "")) for r in rows]
+
     def chunk_pages(self, ref_id: int, ords: list[int]) -> dict[int, int]:
         """Map body-chunk ``ord`` → ``page_first`` for the given ords.
 

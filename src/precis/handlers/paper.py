@@ -913,6 +913,7 @@ class PaperHandler(Handler):
                 "offset",
                 "limit",
                 "ttl_s",
+                "after_ord",
                 "match",
                 "table",
                 "ord",
@@ -2814,16 +2815,18 @@ class PaperHandler(Handler):
                     ),
                 )
 
-        # ``args={'table'|'match'}`` belong to view='tables' — anywhere
+        # ``args={'table'|'match'|'after_ord'}`` belong to view='tables' — anywhere
         # else (another view, a chunk range, the bare overview) they'd
         # be silently dropped; refuse and name the view they need.
         if (
             effective_view != "tables"
             and isinstance(args, dict)
-            and (args.get("table") is not None or args.get("match") is not None)
+            and any(
+                args.get(key) is not None for key in ("table", "match", "after_ord")
+            )
         ):
             raise BadInput(
-                "args={'table'|'match'} only apply to view='tables', "
+                "args={'table'|'match'|'after_ord'} only apply to view='tables', "
                 f"not view={effective_view!r}",
                 next=(
                     f"get(id='{_pa(ref)}', view='tables', "

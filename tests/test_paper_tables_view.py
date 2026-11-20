@@ -166,6 +166,72 @@ def test_tables_view_no_tables_points_at_chunks_view(store: Store) -> None:
     assert "view='chunks'" in out
 
 
+def test_tables_view_points_at_table_like_body_chunks(store: Store) -> None:
+    """gr716568: labeled tables stored as body chunks are pointed at."""
+    ref = store.insert_ref(kind="paper", slug="tbllike07", title="tbllike07")
+    blocks = store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(ord=0, text="all prose"),
+            ChunkInsert(ord=1, text="Table 2: Benchmark results\n| a | b |\n| 1 | 2 |"),
+            # Caption-only shapes the recognizer (_CAPTION_RE) accepts —
+            # a closing markdown ** and a supplementary S-number label.
+            ChunkInsert(ord=2, text="**Table 2** Benchmark results"),
+            ChunkInsert(ord=3, text="Table S1: Benchmark results"),
+            ChunkInsert(
+                ord=4, text="  | Model | Score |\n\t| --- | --- |\n  | A | 42 |"
+            ),
+            ChunkInsert(ord=5, text="| Incomplete | Grid |\n| --- | --- |\n|"),
+        ],
+    )
+    pa = handle_registry.format_handle("paper", ref.id)
+
+    out = _handler(store).get(id=pa, view="tables").body
+
+    assert f"no tables in {pa}" in out
+    assert "Table 2: Benchmark results" in out
+    assert "**Table 2** Benchmark results" in out
+    assert "Table S1: Benchmark results" in out
+    assert "all prose" not in out
+    # Every pointer row carries its pc handle …
+    for block in blocks[1:5]:
+        handle = handle_registry.format_handle("paper", block.id, chunk=True)
+        assert f"- {handle}:" in out
+    # … and the first one is offered as a direct get.
+    first = handle_registry.format_handle("paper", blocks[1].id, chunk=True)
+    assert f"get(id='{first}')" in out
+    assert "read a table-like body chunk directly" in out
+    assert f"- pc{blocks[5].id}:" not in out
+
+
+def test_tables_view_paginates_table_like_body_chunks(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    store = runtime_with_store.store
+    assert store is not None
+    ref = store.insert_ref(kind="paper", slug="tbllikepages07", title="Table pages")
+    blocks = store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=i * 2, text=f"Table {i + 1}: Results") for i in range(13)],
+    )
+    pa = f"pa{ref.id}"
+    payload = {"kind": "paper", "id": pa, "view": "tables"}
+
+    first = runtime_with_store.dispatch("get", payload)
+    for block in blocks[:12]:
+        assert f"- pc{block.id}:" in first
+    assert f"- pc{blocks[12].id}:" not in first
+    assert "Showing 12 matches. More follow chunk ordinal 22." in first
+    assert "args={'after_ord': 22}" in first
+
+    second = runtime_with_store.dispatch(
+        "get", {**payload, "__extras__": {"after_ord": 22}}
+    )
+    assert f"- pc{blocks[12].id}:" in second
+    assert f"- pc{blocks[11].id}:" not in second
+    assert "More follow" not in second
+
+
 def test_get_tables_args_ride_the_dispatch_extras_channel(
     runtime_with_store: PrecisRuntime,
 ) -> None:
