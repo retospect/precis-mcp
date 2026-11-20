@@ -248,8 +248,9 @@ CODELESS_KINDS: Final[tuple[str, ...]] = (
     "handle",
     # live adapter — IMAP is the source of truth, addressed by folder/uid
     "email",
-    # private non-ref records — leN is store-local, never a shared ref code
+    # private non-ref records — leN/gtN are store-local, never shared ref codes
     "learning",
+    "gtd",
 )
 
 #: Codes whose body is the row's decimal primary key and which

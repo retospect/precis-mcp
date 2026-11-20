@@ -61,6 +61,7 @@ _NO_HANDLE_KINDS: frozenset[str] = frozenset(
     {
         "email",  # live IMAP browse — addressed by folder/uid, never a ref
         "learning",  # private non-ref records; leN stays local to the owned store
+        "gtd",  # private non-ref records; gtN stays local to the owned store
         # stateless compute — addressed by the query/expression itself
         "calc",
         "time",

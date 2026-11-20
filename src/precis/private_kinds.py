@@ -39,6 +39,11 @@ class PrivateKind:
     handler: str
     #: The recovery hint every private refusal carries.
     next_hint: str
+    #: The rendered-response cap this kind's private dispatch enforces;
+    #: the default keeps every private reply one small tool message.
+    max_body_bytes: int = 3500
+    #: Whether the registered guide has shipped and can be advertised.
+    help_published: bool = True
 
     def handler_class(self) -> type[Handler]:
         """Resolve ``module:Class`` on first need, never at import."""
@@ -47,7 +52,7 @@ class PrivateKind:
         return cls
 
 
-#: Registered private kinds by name; learning is the only one today.
+#: Registered private kinds by name; learning and gtd.
 PRIVATE_KINDS: dict[str, PrivateKind] = {
     "learning": PrivateKind(
         kind="learning",
@@ -55,6 +60,17 @@ PRIVATE_KINDS: dict[str, PrivateKind] = {
         oauth_scope="learning",
         handler="precis.handlers.learning:LearningHandler",
         next_hint="get(kind='learning', id='/activity', args={'days': 14})",
+    ),
+    "gtd": PrivateKind(
+        kind="gtd",
+        help_skill="precis-gtd-help",
+        oauth_scope="gtd",
+        handler="precis.handlers.gtd:GtdHandler",
+        next_hint="put(kind='gtd', text='<the thing to capture>')",
+        # A maximal item (4000-byte text + captured + frame) reads back
+        # whole under this bound.
+        max_body_bytes=16000,
+        help_published=False,
     ),
 }
 

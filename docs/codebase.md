@@ -72,7 +72,7 @@ events in dedicated tables, outside chunks, embeddings and public graph
 search. `user_context` binds stable authenticated account IDs; `mcp_identity`
 stores revocable per-user bearer digests. The `learning` handler and web page
 share that store. `runtime.private` routes the kinds in the `private_kinds`
-registry (learning today) around shared payload ledgers and continuation
+registry (learning and gtd today) around shared payload ledgers and continuation
 caches; learning events record engagement, never concept mastery.
 
 `precis.oauth` adds independently revocable user/app grants backed by the same
@@ -80,7 +80,7 @@ account IDs. Web routes own consent and token exchange; `oauth_transport`
 publishes MCP resource discovery. Request identity and dispatch revalidation
 keep OAuth grants separate from personal-token IDs and infrastructure callers.
 Capabilities distinguish explicit full MCP access (including writes and shared
-services) from learning-only connections. User identity does not create
+services) from private-kind-scoped connections. User identity does not create
 per-document ACLs for the shared corpus.
 
 `mcp_identity` also stores the third bearer class (gr595554): client

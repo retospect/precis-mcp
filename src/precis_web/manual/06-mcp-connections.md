@@ -39,9 +39,12 @@ ownership, such as learning, use your signed-in account.
 instead. It lets the app read and update only your own learning activity and
 settings. It does not grant access to another person's activity.
 
+**Private GTD** lets the app capture and read items in your own GTD inbox.
+
 Connections also have access to the OAuth and learning help documents. The
-older manually copied personal MCP tokens remain restricted to learning, and
-only work where your deployment accepts them (see the last section).
+older manually copied personal MCP tokens remain restricted to your own
+learning and GTD data, and only work where your deployment accepts them (see
+the last section).
 
 ## Review or disconnect apps
 

@@ -19,13 +19,12 @@ from precis.errors import BadInput, PrecisError, Unsupported, Upstream
 from precis.private_kinds import PrivateKind
 
 log = logging.getLogger(__name__)
-_MAX_BODY_BYTES = 3500
 
 
 def _bounded(
     runtime: Any, entry: PrivateKind, body: str, error: bool
 ) -> tuple[str, bool]:
-    if len(body.encode("utf-8")) <= _MAX_BODY_BYTES:
+    if len(body.encode("utf-8")) <= entry.max_body_bytes:
         return body, error
     return runtime._render_failure(
         BadInput(f"private {entry.kind} result is too large", next=entry.next_hint)

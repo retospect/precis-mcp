@@ -35,14 +35,14 @@ access to the user's own documents. Owner-aware personal features still read
 the authenticated account. Writes record the OAuth connection and live user
 actor; an OAuth credential never becomes the install principal.
 
-`learning` is a narrower capability for existing private learning calls.
-Read `get(kind='skill', id='precis-learning-help')` for those calls. It may be
-offered instead of full access.
+Each private kind carries a narrower same-named capability: `learning` for
+private learning calls and `gtd` for private GTD calls. One may be offered
+instead of full access.
 
-This guide, the exact learning-help read and
-`get(kind='profile', id='me')` — the session's own user, connection label
+This guide, `get(kind='skill', id='precis-learning-help')` with a learning
+grant, and `get(kind='profile', id='me')` — the session's own user, connection label
 and permission scope — are available to OAuth callers without extra
-view/args fields. A learning-only token cannot elevate itself
+view/args fields. A scoped token cannot elevate itself
 by asking for another kind or supplying an owner. Scope refusals mean
 reconnect with an available permission; do not retry with the infrastructure
 token.
@@ -51,7 +51,7 @@ Connections expire after thirty days. Access tokens renew via refresh until
 then; revoking a connection or disabling the account prevents further use.
 Start a fresh MCP session for another app, connection or account. Legacy SSE
 does not accept OAuth credentials. Existing personal API tokens remain
-learning-only and keep their separate revoke controls.
+scoped to the private kinds and keep their separate revoke controls.
 
 User guide: `/manual/mcp-connections`. Claude's supported flow:
 https://claude.com/docs/connectors/building/authentication (2026-11-10 UTC).

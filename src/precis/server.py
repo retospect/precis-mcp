@@ -32,8 +32,9 @@ Personal-data authority is request-scoped instead: the bearer gate stamps
 stable account/token IDs on the HTTP request, and tools bind them anew for
 each call. Reusing an MCP session cannot reuse its previous owner's token.
 Install and slice credentials remain anonymous for personal data.
-Personal tokens permit learning calls and the exact learning-help tool read;
-the request boundary refuses other tools, resources and prompts.
+Personal tokens permit the registered private-kind calls and each kind's
+exact help read; the request boundary refuses other tools, resources and
+prompts.
 
 Seven tools — `get`, `search`, `put`, `edit`, `delete`, `tag`, `link`
 — are registered as plain sync functions in
@@ -216,7 +217,7 @@ class _ProtocolPayloadFilter(logging.Filter):
     These protocol loggers can format raw client input and full tool
     results before our dispatcher has an opportunity to redact them.
     Filtering is independent of an ambient owner: transport tasks outlive
-    request contexts, and denied anonymous learning calls are private too.
+    request contexts, and denied anonymous private-kind calls are private too.
     SDK session validation warnings keep only their summary: even Pydantic
     locations contain client dictionary keys and can forge log lines.
     Application logger levels and diagnostics are unaffected.
@@ -2438,8 +2439,8 @@ def _install_token_auth(
     rejects cross-owner GET/POST/DELETE before the response router runs.
     Unknown sessions require reinitialization. Personal credentials are
     accepted only on ``personal_path``; legacy SSE remains anonymous for
-    personal data. Personal tools are scoped to learning and the exact
-    learning-help read at dispatch; other content requests refuse at the
+    personal data. Personal tools are scoped to the registered private
+    kinds and their exact help reads at dispatch; other content requests refuse at the
     MCP request boundary. Never applied to stdio.
 
     ``precis_cap_`` capability tokens (gr595554) stamp a

@@ -524,7 +524,7 @@ def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
             *(
                 {"kind": "skill", "id": entry.help_skill}
                 for entry in private_kinds.PRIVATE_KINDS.values()
-                if entry.oauth_scope in oauth.scopes
+                if entry.oauth_scope in oauth.scopes and entry.help_published
             ),
             {"kind": "skill", "id": "precis-oauth-help"},
             WHOAMI,
@@ -541,6 +541,7 @@ def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
         *(
             {"kind": "skill", "id": entry.help_skill}
             for entry in private_kinds.PRIVATE_KINDS.values()
+            if entry.help_published
         ),
         WHOAMI,
     )
@@ -560,14 +561,21 @@ def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
             )
         entries = tuple(private_kinds.PRIVATE_KINDS.values())
         kinds = ", ".join(entry.kind for entry in entries)
-        helps = ", ".join(f"{entry.kind} help" for entry in entries)
-        calls = "; ".join(f"get(kind='{entry.kind}')" for entry in entries)
-        reads = "; ".join(
-            f"get(kind='skill', id='{entry.help_skill}')" for entry in entries
+        published = tuple(entry for entry in entries if entry.help_published)
+        helps = ", ".join(f"{entry.kind} help" for entry in published)
+        permits = (
+            f"{kinds} calls, {helps} and whoami"
+            if helps
+            else f"{kinds} calls and whoami"
         )
+        calls = "; ".join(entry.next_hint for entry in entries)
+        reads = "; ".join(
+            f"get(kind='skill', id='{entry.help_skill}')" for entry in published
+        )
+        hints = "; ".join(part for part in (calls, reads) if part)
         raise Denied(
-            f"personal MCP tokens permit {kinds} calls, {helps} and whoami only",
-            next=f"{calls}; {reads}; get(kind='profile', id='me')",
+            f"personal MCP tokens permit {permits} only",
+            next=f"{hints}; get(kind='profile', id='me')",
         )
 
 

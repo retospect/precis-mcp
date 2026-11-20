@@ -25,10 +25,10 @@ when shown, and use it as the client's bearer credential. It is shown once;
 mint another if lost. Revoke an individual token from Account. An install-wide
 token, slice grant, stdio actor or owner argument does not identify a learner.
 
-A personal token permits learning calls plus exactly
-`get(kind='skill', id='precis-learning-help')`, this public read-only guide.
-That skill read takes no `view`, `args` or other keys. Other kinds, skills,
-skill search, catalogues, MCP resources and prompts are refused.
+A personal token permits calls to your own learning and GTD data. It also
+permits `get(kind='skill', id='precis-learning-help')` and
+`get(kind='profile', id='me')`. These reads take no `view`, `args` or
+other keys.
 
 Personal calls use the streamable HTTP transport with SDK session ownership.
 Start a new MCP session when changing users or switching between an install

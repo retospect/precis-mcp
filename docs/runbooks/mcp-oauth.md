@@ -27,8 +27,8 @@ verbs, including writes and access to shared corpus/configured services.
 Existing runtime restrictions still apply; this does not add per-document or
 per-mailbox ownership to kinds that lack it. For a narrower deployment set
 `learning`, or offer both by setting `learning mcp:full`; each grant records
-the scopes actually requested and approved. Manual personal tokens retain
-their existing learning-only boundary.
+the scopes actually requested and approved. Where enabled, manual personal
+tokens permit access to the owner's learning and GTD data.
 
 The web launchd template includes the private `precis_identity_env` mapping;
 keep actual coordinates in that overlay. Supply the same values to the

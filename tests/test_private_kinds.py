@@ -8,6 +8,7 @@ dispatch — from one registry entry, with no per-kind literals in the gates.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from unittest.mock import Mock
@@ -240,11 +241,14 @@ def test_registered_kind_refusals_carry_its_hint(
     resolve.assert_not_called()
 
 
-def test_learning_is_the_sole_registered_private_kind() -> None:
-    """me663455: the registry holds exactly learning today — the refactor adds
-    no second kind and is_learning_call must agree with private_kind_of on
+def test_learning_and_gtd_are_the_registered_private_kinds() -> None:
+    """me663455: the registry holds exactly learning and gtd today, and
+    is_learning_call must agree with private_kind_of on
     every spelling tests/test_learning_dispatch.py exercises."""
-    assert set(private_kinds.PRIVATE_KINDS) == {"learning"}
+    assert set(private_kinds.PRIVATE_KINDS) == {"learning", "gtd"}
+    gtd = private_kinds.PRIVATE_KINDS["gtd"]
+    assert gtd.handler == "precis.handlers.gtd:GtdHandler"
+    assert (gtd.help_skill, gtd.oauth_scope) == ("precis-gtd-help", "gtd")
     entry = private_kinds.PRIVATE_KINDS["learning"]
     assert entry.help_skill == "precis-learning-help"
     assert entry.oauth_scope == "learning"
@@ -260,3 +264,47 @@ def test_learning_is_the_sole_registered_private_kind() -> None:
         {},
     ):
         assert is_learning_call(payload) == (private_kind_of(payload) == "learning")
+
+
+def _stub_runtime(monkeypatch: pytest.MonkeyPatch, body: str) -> PrecisRuntime:
+    runtime = _runtime(monkeypatch)
+    monkeypatch.setattr(runtime, "_resolve_handler", lambda *_a, **_k: object())
+    monkeypatch.setattr(runtime, "_validate_mode", lambda *_a: None)
+    monkeypatch.setattr(
+        runtime, "_invoke_handler", lambda *_a, **_k: Response(body=body)
+    )
+    return runtime
+
+
+def test_private_response_bound_is_the_kinds_own(
+    journal_kind: PrivateKind, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """me663455: _bounded caps a private response at the kind's own
+    max_body_bytes — a kind declaring a larger bound returns whole a body
+    the 3500 default would refuse."""
+    monkeypatch.setitem(
+        private_kinds.PRIVATE_KINDS,
+        "journal",
+        replace(_JOURNAL, max_body_bytes=16000),
+    )
+    runtime = _stub_runtime(monkeypatch, "x" * 5000)
+    body, error = runtime.dispatch_with_status("get", {"kind": "journal"})
+    assert not error and body == "x" * 5000
+
+
+def test_private_response_bound_defaults_to_3500(
+    journal_kind: PrivateKind, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """me663455: a kind declaring no max_body_bytes keeps the 3500-byte
+    default — journal declares none and a body over it is refused."""
+    assert _JOURNAL.max_body_bytes == 3500
+    runtime = _stub_runtime(monkeypatch, "x" * 3600)
+    body, error = runtime.dispatch_with_status("get", {"kind": "journal"})
+    assert error and "[error:BadInput]" in body
+    assert "too large" in body and "x" * 3600 not in body
+
+
+def test_learning_private_bound_is_3500() -> None:
+    """me663455: learning declares no bound and keeps the 3500 default —
+    its oversized-response refusal stays exactly as before."""
+    assert private_kinds.PRIVATE_KINDS["learning"].max_body_bytes == 3500

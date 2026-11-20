@@ -725,6 +725,8 @@ def test_whoami_over_oauth_wire_names_user_connection_and_scope(
             if grant_scope == "mcp:full":
                 assert "permission: full MCP (all verbs)" in body
             else:
+                # The line names only the kinds the grant's scopes open —
+                # a learning-scoped connection must not read as holding gtd.
                 assert "permission: learning calls, learning help, whoami" in body
             assert f"writes recorded as: oauth:{identity.grant_id}" in body
             assert "revision actor: user:al" in body
