@@ -137,6 +137,10 @@ The detached executor records a submit intent before launching either job.
 Recovery uses launch evidence from that attempt and host to resume poll,
 including a ship that finished before publishing its mirror squash.
 Plan dispatch queues every doable node with its score and release band.
+`release_confirm` attests the workers' heartbeat sha and, from the
+`release.mcp_served` stamp the shared session MCP writes itself
+(`mcp_served_stamp.py`; store only, no token), the sha that server serves:
+no live stamp is a note, a lagging one parks the probe and then files an ask.
 A pre-land review job's and every `land_slice` job's score floors at
 `FINISH_FIRST_SCORE`, so the review and the land of a finished build are
 claimed ahead of fresh builds; at the host claim an already-queued land

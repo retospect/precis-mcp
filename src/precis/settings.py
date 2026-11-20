@@ -334,6 +334,17 @@ REGISTRY: dict[str, SettingSpec] = {
             "DB-only — no env fallback.",
         ),
         SettingSpec(
+            key="release.mcp_served",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="What the shared session MCP serves, as JSON {sha, "
+            "served_from, started_at, at, pending_sha?}: written by the "
+            "server itself at start, every 5 minutes, and when its checkout "
+            "watchdog sees the checkout move (precis.mcp_served_stamp); "
+            "read by release_confirm (gr685985). DB-only — no env fallback.",
+        ),
+        SettingSpec(
             key="release.unbounced_workers",
             type="str",
             env_var=None,

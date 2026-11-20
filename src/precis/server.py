@@ -3338,6 +3338,19 @@ def main(
     from precis.workers.heartbeat import start_nas_attest_thread
 
     start_nas_attest_thread(runtime.store, default_process="precis-serve")
+    # Say in the store what this server serves, so release_confirm can
+    # attest it without a token (gr685985). Only a shared/release-installed
+    # network server stamps; a failure here never stops serving.
+    try:
+        from precis.handlers.skill import _STARTED_AT
+        from precis.mcp_served_stamp import start_served_stamp_thread
+
+        if runtime.store is not None:
+            start_served_stamp_thread(
+                runtime.store, transport=transport, started_at=_STARTED_AT
+            )
+    except Exception:
+        log.warning("mcp served stamp: not started", exc_info=True)
     _warm_embedder_background(runtime)
     _warm_md_index_background(runtime)
     _warm_python_semantic_background(runtime)

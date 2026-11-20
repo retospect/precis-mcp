@@ -884,6 +884,16 @@ class CheckoutWatchdog(threading.Thread):
 
     def _bounce(self, current: str | None) -> None:
         """Quiesce, record why, and exit. Never returns."""
+        if current is not None:
+            # The exit may be deferred up to the cap; tell the release
+            # confirm the checkout is already at the new HEAD (gr685985).
+            # Best effort — a stamp problem must not disturb the bounce.
+            try:
+                from precis.mcp_served_stamp import note_pending
+
+                note_pending(current)
+            except Exception:
+                log.warning("checkout watchdog: pending stamp failed", exc_info=True)
         drain_then_exit(
             reason="checkout-changed",
             detail=(

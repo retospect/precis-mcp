@@ -27,6 +27,23 @@ evidence rather than dying into the tick's retry-cap showstopper. The
 factory attests, a failed probe asks, never rolls back; there is no
 ``good/r<N>`` tag.
 
+**The session MCP** (gr685985). The shared session MCP serves from a
+watched checkout that only a manual step (``scripts/host-ops/pin-prod``)
+moves, and worker heartbeats say nothing about it: r337 and r338 were
+confirmed while it still served the release before. The server stamps what
+it serves in the ``release.mcp_served`` setting (:mod:`precis.mcp_served_stamp`)
+and :func:`_mcp_evidence` reads the stamp, store only — no HTTP, no token.
+No stamp, or one older than the worker liveness window, attests nothing
+and is not a problem (an install without a shared MCP still confirms). A
+live stamp attests when its ``sha`` is the release sha, or the previous
+prod sha under an unbounced scope; or when its ``pending_sha`` — the
+checkout's HEAD, which the checkout watchdog stamps on first seeing it
+move — is the release sha (the restart is deferred while sessions are
+live, up to the watchdog's cap, so the confirm does not wait for it).
+Any other live stamp parks the probe like a worker still rolling, and past
+the deadline is the one problem; when it is the *only* problem the job
+files its own ruling ask (:func:`_mint_mcp_ask`), as for the web.
+
 **The restart race.** Right after the rollout a worker's heartbeat can
 still carry the old sha. The probe re-reads the store until a deadline —
 :data:`_CONFIRM_WINDOW` after the deploy finished (the round row's
@@ -103,6 +120,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from precis import daemon_fleet as _df
+from precis import mcp_served_stamp as _mss
 from precis.plans import red_waiver as _red_waiver
 from precis.plans import release as _release
 from precis.plans.gates import read_ci_verdicts
@@ -219,7 +237,9 @@ class Evidence:
     reported as a note in ``text``, never a problem and never
     ``waiting``. ``unbounced`` names the workers accepted at the previous
     prod sha because the deploy's bounce scope restarted no worker
-    (gr645561)."""
+    (gr645561). ``mcp_only`` is true when the session MCP's stamp
+    (:func:`_mcp_evidence`) is the ONLY problem — the workers all attest —
+    and ``mcp_sha`` is the sha it still serves then (gr685985)."""
 
     ok: bool
     sha: str | None
@@ -230,6 +250,8 @@ class Evidence:
     web_only: bool = False
     noncohort: tuple[str, ...] = ()
     unbounced: tuple[str, ...] = ()
+    mcp_only: bool = False
+    mcp_sha: str | None = None
 
 
 def _same_sha(a: str | None, b: str) -> bool:
@@ -364,6 +386,56 @@ def _web_evidence(url: str | None, sha: str) -> tuple[str, str | None]:
     return "", f"web reports {reported}, release is {sha[:12]}"
 
 
+def _mcp_evidence(
+    store: Store,
+    sha: str,
+    prev_shas: list[str],
+    *,
+    now: datetime,
+    deadline: datetime | None,
+) -> tuple[str, str | None, bool, str | None]:
+    """``(clause, problem, waiting, served)`` for the session MCP half of
+    the evidence (gr685985), from the server's own store stamp.
+
+    No stamp, or one older than the worker liveness window, is a clause,
+    never a problem — an install without a shared MCP must still confirm.
+    A live stamp attests when it serves ``sha`` (or an unbounced previous
+    sha), or when the watched checkout is already at ``sha`` and only the
+    deferred restart is pending. Any other live stamp is ``waiting``
+    before ``deadline`` (like a worker still rolling) and the problem
+    after it. ``served`` is the sha the stamp says is served."""
+    stamp = _mss.read_stamp(store)
+    if stamp is None or now - stamp["at"] > timedelta(minutes=_df.FLEET_FRESH_MIN):
+        return "not attested (no live served-sha stamp)", None, False, None
+    served = str(stamp["sha"])
+    pending = str(stamp.get("pending_sha") or "")
+    if _same_sha(served, sha):
+        return f"at {sha[:12]}", None, False, served
+    if any(_same_sha(served, p) for p in prev_shas):
+        return (
+            f"at {served[:12]} (previous prod sha, deploy bounced no worker)",
+            None,
+            False,
+            served,
+        )
+    if pending and _same_sha(pending, sha):
+        return (
+            f"checkout at {sha[:12]}, restart pending (serving {served[:12]})",
+            None,
+            False,
+            served,
+        )
+    if deadline is not None and now < deadline:
+        return f"serving {served[:12]}, still rolling", None, True, served
+    return (
+        f"serving {served[:12]}",
+        f"session MCP still serves {served[:12]}, release is {sha[:12]} "
+        "— pin the prod checkout (scripts/host-ops/pin-prod)",
+        False,
+        served,
+    )
+
+
 def _fetch_head(repo: str, branch: str) -> str | None:
     """Seam: ``branch``'s live head on GitHub
     (``ci_verdict_poll.fetch_head``); ``None`` when unreadable."""
@@ -474,7 +546,9 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     (gr645561). A worker still on the previous prod sha attests when the
     deploy's bounce scope restarted no worker (:func:`unbounced_shas`). The web is
     optional: ``release.health_url`` unset attests nothing and is not a
-    problem. Any problem or any waiting host makes ``ok`` false."""
+    problem. So is the session MCP (:func:`_mcp_evidence`, gr685985): its
+    stamp attests, parks the probe while it lags, or is the problem past
+    the deadline; no live stamp is a clause only. Any problem or any waiting host makes ``ok`` false."""
     rn = str(rel.get("rN") or "")
     sha = _release.pinned_deploy_sha(store, rn)
     rel_sha = str(rel.get("sha") or "")
@@ -545,6 +619,18 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
             problems.append(web_problem)
     else:
         web_clause = "not attested (no pinned sha)"
+    mcp_problem: str | None = None
+    mcp_sha: str | None = None
+    if sha is not None:
+        mcp_clause, mcp_problem, mcp_waits, mcp_sha = _mcp_evidence(
+            store, sha, prev_shas, now=now, deadline=deadline
+        )
+        if mcp_problem is not None:
+            problems.append(mcp_problem)
+        if mcp_waits:
+            waiting.append("session MCP")
+    else:
+        mcp_clause = "not attested (no pinned sha)"
     if not live:
         problems.append("no live worker host (no heartbeat in the last 60 min)")
     if sha is None:
@@ -572,7 +658,8 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     if noncohort:
         note += "; note: " + ", ".join(f"{h} ({why})" for h, why in noncohort)
     text = mask_secrets(
-        f"{rn or 'r?'} pinned {short}{moved}; {workers}{note}; web: {web_clause}"
+        f"{rn or 'r?'} pinned {short}{moved}; {workers}{note}; web: {web_clause}; "
+        f"mcp: {mcp_clause}"
     )[:_TEXT_CAP]
     return Evidence(
         ok=not problems and not waiting,
@@ -584,6 +671,8 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
         web_only=(web_problem is not None and len(problems) == 1 and not waiting),
         noncohort=tuple(h for h, _why in noncohort),
         unbounced=tuple(unbounced),
+        mcp_only=(mcp_problem is not None and len(problems) == 1 and not waiting),
+        mcp_sha=mcp_sha if mcp_problem is not None else None,
     )
 
 
@@ -607,13 +696,27 @@ _WEB_ASK_OPTIONS: list[str] = [
 ]
 
 
-def _mint_web_ask(store: Store, todo_id: int, rn: str, ev: Evidence) -> int:
-    """The ruling ask a web-only probe failure files on the confirm node
-    (gr607271 ruling): every live worker already attests the sha — the
-    workers decide — and only the operator-set ``release.health_url``
-    probe failed. The ask carries the evidence the tick's retry-cap mint
-    would not, and its ``blocked-by`` edge suppresses that mint
-    (``_Plan.open_asks``); answering re-arms ``todo_id`` with a fresh
+#: Options of the ask an MCP-only probe failure files (gr685985).
+_MCP_ASK_OPTIONS: list[str] = [
+    "retry the MCP check",
+    "won't do",
+]
+
+
+def _mint_probe_ask(
+    store: Store,
+    todo_id: int,
+    ev: Evidence,
+    *,
+    head: str,
+    title: str,
+    body: str,
+    options: list[str],
+) -> int:
+    """The ruling ask a lone probe failure files on the confirm node: the
+    workers already attest, so the ask carries the evidence the tick's
+    retry-cap mint would not, and its ``blocked-by`` edge suppresses that
+    mint (``_Plan.open_asks``); answering re-arms ``todo_id`` with a fresh
     retry budget for the re-probe. Insert shape of
     ``plan_dispatch._mint_ask``; returns the ask's todo id."""
     from precis.plans.nodes import finish_mint
@@ -621,36 +724,17 @@ def _mint_web_ask(store: Store, todo_id: int, rn: str, ev: Evidence) -> int:
     from precis.todo.guards import check_ask_meta
 
     root = _release.plan_root(store, todo_id)
-    short = ev.sha[:12] if ev.sha else "unset"
-    head = f"{NAME}: {rn or 'r?'} workers all at {short}; web probe failed"
     tail = failure_reason(ev)
     context = f"{head}: {tail[: _ASK_CONTEXT_CAP - len(head) - 3]}"
     meta: dict[str, Any] = {
         "ask": {
             "kind": "ruling",
-            "options": list(_WEB_ASK_OPTIONS),
+            "options": list(options),
             "blocks": f"td{todo_id}",
             "context": context[:_ASK_CONTEXT_CAP],
         }
     }
     check_ask_meta(meta)
-    title = (
-        f"{rn or 'release'}: workers attest {short} but the web probe "
-        "failed — fix or clear release.health_url, or drop the confirm?"
-    )
-    body = (
-        f"{ev.text}\n\nEvery live worker host's heartbeat already reports "
-        "the release sha — the workers decide — but the probe of the "
-        f"operator-set release.health_url failed ({tail}). Fix the web or "
-        "the setting (scripts/prod-precis settings set release.health_url "
-        "<url>; clearing it attests the workers only — the URL itself is "
-        "never printed), then answer 'retry the web probe' and close "
-        f"this todo: closing re-arms td{todo_id} with a fresh retry "
-        "budget and the confirm re-probes. Pick 'won't do' by closing "
-        f"td{todo_id} STATUS:won't-do — the release then stays "
-        "unconfirmed until a hand `scripts/round deploy "
-        "--confirm-runtime … && scripts/round close` lands."
-    )
     with store.tx() as conn:
         ref = store.insert_ref(
             kind="todo",
@@ -681,17 +765,90 @@ def _mint_web_ask(store: Store, todo_id: int, rn: str, ev: Evidence) -> int:
     return int(ref.id)
 
 
+def _mint_web_ask(store: Store, todo_id: int, rn: str, ev: Evidence) -> int:
+    """The ruling ask a web-only probe failure files on the confirm node
+    (gr607271 ruling): every live worker already attests the sha — the
+    workers decide — and only the operator-set ``release.health_url``
+    probe failed."""
+    short = ev.sha[:12] if ev.sha else "unset"
+    tail = failure_reason(ev)
+    title = (
+        f"{rn or 'release'}: workers attest {short} but the web probe "
+        "failed — fix or clear release.health_url, or drop the confirm?"
+    )
+    body = (
+        f"{ev.text}\n\nEvery live worker host's heartbeat already reports "
+        "the release sha — the workers decide — but the probe of the "
+        f"operator-set release.health_url failed ({tail}). Fix the web or "
+        "the setting (scripts/prod-precis settings set release.health_url "
+        "<url>; clearing it attests the workers only — the URL itself is "
+        "never printed), then answer 'retry the web probe' and close "
+        f"this todo: closing re-arms td{todo_id} with a fresh retry "
+        "budget and the confirm re-probes. Pick 'won't do' by closing "
+        f"td{todo_id} STATUS:won't-do — the release then stays "
+        "unconfirmed until a hand `scripts/round deploy "
+        "--confirm-runtime … && scripts/round close` lands."
+    )
+    return _mint_probe_ask(
+        store,
+        todo_id,
+        ev,
+        head=f"{NAME}: {rn or 'r?'} workers all at {short}; web probe failed",
+        title=title,
+        body=body,
+        options=_WEB_ASK_OPTIONS,
+    )
+
+
+def _mint_mcp_ask(store: Store, todo_id: int, rn: str, ev: Evidence) -> int:
+    """The ruling ask an MCP-only probe failure files on the confirm node
+    (gr685985): every live worker attests the sha and only the shared
+    session MCP's served-sha stamp still names another one — its watched
+    checkout was not pinned. The one step is ``scripts/host-ops/pin-prod``
+    by whoever owns the prod checkout; answering re-arms the confirm."""
+    short = ev.sha[:12] if ev.sha else "unset"
+    served = (ev.mcp_sha or "unknown")[:12]
+    title = (
+        f"{rn or 'release'}: session MCP still serves {served}, release is "
+        f"{short} — pin the prod checkout, then answer"
+    )
+    body = (
+        f"{ev.text}\n\nThe workers are confirmed: every live worker host "
+        f"already reports {short}. Only the shared session MCP still serves "
+        f"{served} — its watched checkout has not been pinned to the "
+        "release. As the owner of the prod checkout run "
+        "scripts/host-ops/pin-prod, then answer 'retry the MCP check' and "
+        f"close this todo: closing re-arms td{todo_id} with a fresh retry "
+        "budget and the confirm re-reads the server's stamp. Pick 'won't "
+        f"do' by closing td{todo_id} STATUS:won't-do — the release then "
+        "stays unconfirmed until a hand `scripts/round deploy "
+        "--confirm-runtime … && scripts/round close` lands."
+    )
+    return _mint_probe_ask(
+        store,
+        todo_id,
+        ev,
+        head=f"{NAME}: {rn or 'r?'} workers all at {short}; session MCP serves {served}",
+        title=title,
+        body=body,
+        options=_MCP_ASK_OPTIONS,
+    )
+
+
 def _probe_failed(ctx: Any, ev: Evidence, rn: str, todo_id: Any) -> None:
     """The probe failed. A web-only failure — every live worker already
     attests, only the optional web half did — files the ruling ask
-    itself (gr607271) and the failure names it; the tick's ``open_asks``
-    check then never mints its retry-cap showstopper. Any other problem
-    — or a failed ask mint — is a plain failure and the tick asks."""
-    if ev.web_only and isinstance(todo_id, int):
+    itself (gr607271) and the failure names it; so does an MCP-only one
+    (the session MCP still serves another sha, gr685985); the tick's
+    ``open_asks`` check then never mints its retry-cap showstopper. Any
+    other problem — or a failed ask mint — is a plain failure and the
+    tick asks."""
+    mint = _mint_web_ask if ev.web_only else _mint_mcp_ask if ev.mcp_only else None
+    if mint is not None and isinstance(todo_id, int):
         try:
-            ask_id = _mint_web_ask(ctx.store, todo_id, rn, ev)
+            ask_id = mint(ctx.store, todo_id, rn, ev)
         except Exception:
-            log.warning("%s: web ask mint failed", NAME, exc_info=True)
+            log.warning("%s: ask mint failed", NAME, exc_info=True)
         else:
             ctx.record_failure(
                 f"{NAME}: probe failed — {failure_reason(ev)}; asked in td{ask_id}"

@@ -105,7 +105,8 @@ def test_workers_all_at_the_pinned_sha_passes(store: Store) -> None:
     assert ev.ok and ev.sha == SHA and ev.problems == []
     assert ev.text == (
         f"r7 pinned {SHA[:12]}; workers: 2 live (node-a, node-b), "
-        f"all at {SHA[:12]}; web: not attested (release.health_url unset)"
+        f"all at {SHA[:12]}; web: not attested (release.health_url unset); "
+        "mcp: not attested (no live served-sha stamp)"
     )
 
 
@@ -409,7 +410,7 @@ def test_web_unset_passes_with_the_not_attested_line(store: Store) -> None:
     _beat(store, "node-a", SHA)
     ev = rcf.gather_evidence(store, REL, now=NOW)
     assert ev.ok
-    assert ev.text.endswith("web: not attested (release.health_url unset)")
+    assert "web: not attested (release.health_url unset); mcp:" in ev.text
 
 
 def test_web_at_the_pinned_sha_passes(
@@ -420,7 +421,7 @@ def test_web_at_the_pinned_sha_passes(
     psettings.set_setting(rcf.HEALTH_URL_KEY, HEALTH_URL, store=store)
     _web(monkeypatch, resp=_ok_resp(SHA))
     ev = rcf.gather_evidence(store, REL, now=NOW)
-    assert ev.ok and ev.text.endswith(f"web: at {SHA[:12]}")
+    assert ev.ok and f"web: at {SHA[:12]}; mcp:" in ev.text
 
 
 def test_web_another_sha_fails(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -867,3 +868,166 @@ def test_failure_reason_is_capped_at_560(store: Store) -> None:
     assert not ev.ok
     assert len(rcf.failure_reason(ev)) <= 560
     assert "node-00x" in rcf.failure_reason(ev)
+
+
+# ── the session MCP's served-sha stamp (gr685985) ───────────────────
+
+
+def _mcp_stamp(
+    store: Store,
+    sha: str,
+    *,
+    age_min: float = 1,
+    pending: str | None = None,
+) -> None:
+    """Write ``release.mcp_served`` as the server does, ``age_min`` old."""
+    at = datetime.now(UTC) - timedelta(minutes=age_min)
+    rec: dict[str, Any] = {
+        "sha": sha,
+        "served_from": "watched-checkout",
+        "started_at": at.strftime(rcf._TS_FMT),
+        "at": at.strftime(rcf._TS_FMT),
+    }
+    if pending:
+        rec["pending_sha"] = pending
+    psettings.set_setting("release.mcp_served", json.dumps(rec), store=store)
+
+
+def test_mcp_without_a_stamp_is_not_attested_and_not_a_problem(store: Store) -> None:
+    """An install without a shared MCP still confirms."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
+    assert ev.ok and ev.problems == [] and not ev.mcp_only
+    assert "mcp: not attested (no live served-sha stamp)" in ev.text
+
+
+def test_mcp_stale_stamp_is_not_attested(store: Store) -> None:
+    """A stamp older than the worker liveness window says nothing — even
+    one naming another sha, past the deadline."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA2, age_min=rcf._df.FLEET_FRESH_MIN + 30)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.ok and ev.problems == []
+    assert "mcp: not attested (no live served-sha stamp)" in ev.text
+
+
+def test_mcp_at_the_release_sha_confirms(store: Store) -> None:
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA)
+    ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
+    assert ev.ok and ev.problems == [] and ev.waiting == ()
+    assert f"mcp: at {SHA[:12]}" in ev.text
+
+
+def test_mcp_at_another_sha_parks_before_the_deadline(store: Store) -> None:
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA2)
+    ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
+    assert not ev.ok and ev.problems == [] and not ev.mcp_only
+    assert ev.waiting == ("session MCP",) and ev.deadline is not None
+    assert f"mcp: serving {SHA2[:12]}, still rolling" in ev.text
+
+
+def test_mcp_at_another_sha_past_the_deadline_is_the_only_problem(
+    store: Store,
+) -> None:
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA2)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert not ev.ok and ev.waiting == ()
+    assert ev.problems == [
+        f"session MCP still serves {SHA2[:12]}, release is {SHA[:12]} "
+        "— pin the prod checkout (scripts/host-ops/pin-prod)"
+    ]
+    assert ev.mcp_only and ev.mcp_sha == SHA2 and not ev.web_only
+
+
+def test_mcp_problem_beside_a_worker_problem_is_not_mcp_only(store: Store) -> None:
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _beat(store, "node-b", SHA2)
+    _mcp_stamp(store, SHA2)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert not ev.ok and len(ev.problems) == 2 and not ev.mcp_only
+
+
+def test_mcp_checkout_pinned_with_the_restart_pending_confirms(store: Store) -> None:
+    """The watchdog defers the restart while sessions are live (up to 30
+    min): the pinned checkout is what counts, the confirm does not wait."""
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA2, pending=SHA)
+    for now in (datetime.now(UTC), _past_window()):
+        ev = rcf.gather_evidence(store, REL, now=now)
+        assert ev.ok and ev.problems == [] and ev.waiting == ()
+        assert (
+            f"mcp: checkout at {SHA[:12]}, restart pending (serving {SHA2[:12]})"
+            in ev.text
+        )
+
+
+def test_mcp_pending_at_a_third_sha_still_waits(store: Store) -> None:
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA2, pending="dead" + "3" * 36)
+    ev = rcf.gather_evidence(store, REL, now=datetime.now(UTC))
+    assert ev.waiting == ("session MCP",)
+
+
+@pytest.mark.parametrize("scope", ["none", "web"])
+def test_mcp_at_the_previous_sha_confirms_under_an_unbounced_scope(
+    store: Store, scope: str
+) -> None:
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA2)
+    rel = {**REL, "deploy_scope": {"scope": scope, "prev": SHA2}}
+    ev = rcf.gather_evidence(store, rel, now=_past_window())
+    assert ev.ok and ev.problems == []
+    assert f"mcp: at {SHA2[:12]} (previous prod sha" in ev.text
+    full = {**REL, "deploy_scope": {"scope": "full", "prev": SHA2}}
+    assert rcf.gather_evidence(store, full, now=_past_window()).mcp_only
+
+
+def test_an_mcp_only_failure_files_its_own_ask(store: Store) -> None:
+    """The workers are confirmed and only the MCP lags: the job files the
+    ruling ask with the one step instead of dying into the retry cap, and
+    reports no confirmation."""
+    mint = _cut(store)
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    _mcp_stamp(store, SHA2)
+    ev = rcf.gather_evidence(store, REL, now=_past_window())
+    assert ev.mcp_only and not ev.ok
+    failures: list[str] = []
+    ctx = SimpleNamespace(store=store, record_failure=failures.append)
+    rcf._probe_failed(ctx, ev, "r7", mint.ids["confirm"])
+    assert len(failures) == 1 and failures[0].startswith(
+        "release_confirm: probe failed — session MCP still serves"
+    )
+    assert "asked in td" in failures[0]
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, title FROM refs WHERE kind = 'todo' AND parent_id = %s "
+            "AND title LIKE %s",
+            (mint.root_id, "%session MCP%"),
+        ).fetchall()
+    assert len(rows) == 1
+    ask_id, title = int(rows[0][0]), str(rows[0][1])
+    assert SHA2[:12] in title and SHA[:12] in title
+    ref = store.get_ref(kind="todo", id=ask_id)
+    assert ref is not None
+    assert ref.meta["ask"]["options"] == rcf._MCP_ASK_OPTIONS
+    assert ref.meta["ask"]["blocks"] == f"td{mint.ids['confirm']}"
+    body = " ".join(c.text for c in store.chunks.list_chunks_for_ref(ask_id))
+    assert "scripts/host-ops/pin-prod" in body and "workers are confirmed" in body
+
+
+def test_mcp_served_setting_is_registered() -> None:
+    spec = psettings.REGISTRY["release.mcp_served"]
+    assert spec.env_var is None and spec.default is None
