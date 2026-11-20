@@ -74,6 +74,7 @@ def test_without_a_token_the_route_trusts_only_the_gate():
 
     import pytest
     from fastapi import HTTPException
+    from starlette.requests import Request
 
     from precis_web.routes.podcast import _require_listener
 
@@ -84,16 +85,22 @@ def test_without_a_token_the_route_trusts_only_the_gate():
         def get_web_user_credentials(self, login):  # pragma: no cover
             raise AssertionError("the route must not authenticate by itself")
 
-    request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(runtime=SimpleNamespace(store=_Store()))
-        ),
-        query_params={},
-        scope={},
-        headers={"authorization": "Basic cmV0bzpwdw=="},
+    # A real Request carrying a Basic header: the route must raise the
+    # challenge without parsing Basic itself (gr730562).
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/podcast/feed.xml",
+            "headers": [(b"authorization", b"Basic cmV0bzpwdw==")],
+            "query_string": b"",
+            "app": SimpleNamespace(
+                state=SimpleNamespace(runtime=SimpleNamespace(store=_Store()))
+            ),
+        }
     )
     with pytest.raises(HTTPException) as err:
-        _require_listener(request, WebConfig(auth_required=True))  # type: ignore[arg-type]
+        _require_listener(request, WebConfig(auth_required=True))
     assert err.value.status_code == 401
     assert err.value.headers == {"WWW-Authenticate": 'Basic realm="precis"'}
 
