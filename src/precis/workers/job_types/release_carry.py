@@ -45,10 +45,12 @@ left behind are removed by name once the lock is held. A node that
 already recorded a carry is not carried twice.
 
 Nothing is carried once the release's deploy started
-(:func:`precis.plans.release.deploy_started`), for a hold whose carry ask
+(:func:`precis.plans.release.deploy_started`), once the carry's pass
+closed (a queued carry must not push after its pass ended — a drop, a
+cancel; td741722), for a hold whose carry ask
 was answered (an answer waives the carry), or while ``release.auto_carry``
 is off — off restores the ask-at-once behaviour exactly. The last look at
-all three and the push share the pass root's row lock, the lock
+all four and the push share the pass root's row lock, the lock
 ``mark_deploy_started`` takes: a deploy cannot stamp its start between
 the look and the push. After a carry the job puts the pass on the new
 head at once (``release_poll.follow_moved_head``), so the head's verdict
@@ -670,16 +672,38 @@ def _reap_trees(root: Path, rn: str) -> None:
         _git(["worktree", "prune"], root)
 
 
+def _root_status(store: Any, ref_id: int) -> str:
+    """The ref's STATUS tag — ``open`` when it carries none."""
+    return next(
+        (str(t.value) for t in store.tags_for(ref_id) if t.prefix == "STATUS"),
+        "open",
+    )
+
+
 def _last_look(
-    store: Any, todo_id: int, rel: dict[str, Any], picked: dict[str, str], base: str
+    store: Any,
+    todo_id: int,
+    rel: dict[str, Any],
+    picked: dict[str, str],
+    base: str,
+    pass_id: int,
 ) -> dict[str, Any] | None:
     """The outcome that stops the push, else ``None`` — read with the
     pass root's row lock held, right before the push: the switch, the
-    deploy start, and the gate once more (an answer waives the carry, and
-    a commit that reached the branch another way needs none)."""
+    pass still being open (a carry queued while the pass was open must
+    not push after the pass ended — a drop, a cancel), the deploy start,
+    and the gate once more (an answer waives the carry, and a commit
+    that reached the branch another way needs none)."""
     rn = str(rel["rN"])
     if not enabled(store):
         return {"state": "refused", "why": f"{SETTING_KEY} is off", "base": base}
+    status = _root_status(store, pass_id)
+    if status in _CLOSED:
+        return {
+            "state": "refused",
+            "why": f"the pass td{pass_id} is {status} — it takes no more commits",
+            "base": base,
+        }
     started = _release.deploy_started(store, todo_id)
     if started is not None:
         return {
@@ -906,7 +930,7 @@ def _carry_held(
             try:
                 with store.atomic() as conn:
                     conn.execute(_release._LOCK_ROOT_SQL, (pass_id,))
-                    stop = _last_look(store, todo_id, rel, picked, base)
+                    stop = _last_look(store, todo_id, rel, picked, base, pass_id)
                     if stop is None:
                         pushed, detail = _mirror.push_cas(
                             url,

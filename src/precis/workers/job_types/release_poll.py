@@ -1728,8 +1728,12 @@ def _branch_carries(
     the candidate; the proof is the tree (:func:`_replays_as`): replaying
     the main commit onto the branch commit's parent, or the undone
     commit backwards onto it, must give the branch commit's tree byte
-    for byte. Reverts are paired for engine-touching branch commits
-    only. A cherry-pick is found for any branch commit: one that touches
+    for byte. Reverts are paired for EVERY branch commit, not only
+    engine-touching ones: the pair drops both shas from ``scanned``, and
+    a revert of a cherry-picked docs- or test-only corrective must drop
+    the corrective's main sha too — otherwise the carry hold stays
+    cleared after the revert removed the fix from the release (td741722).
+    A cherry-pick is found for any branch commit: one that touches
     no engine path is no gate unit either way, but the main commit it
     repeats may be the corrective a cleared FIX rests on, and the carry
     hold must see that the branch has it (gr741489 — a test-only
@@ -1765,9 +1769,10 @@ def _branch_carries(
         if own is None:
             return {}, set(), []
         # Oldest first: a revert pairs with the newest live commit whose
-        # patch it runs backwards; a paired commit is spent.
+        # patch it runs backwards; a paired commit is spent. Every branch
+        # commit is a candidate, engine or not — see the docstring.
         live: dict[str, list[str]] = {}
-        wanted = {land.sha for land in fixes}
+        wanted = {land.sha for land in branch}
         for land in lands:
             if land.sha in wanted:
                 back = _undo_patch_id(root, land.sha)

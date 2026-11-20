@@ -4770,6 +4770,30 @@ def test_a_cherry_pick_reverted_on_the_branch_is_undone_not_picked(
     assert picked == {}
 
 
+def test_a_docs_corrective_reverted_on_the_branch_leaves_scanned(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td741722: the pick of a docs-only corrective counts as carried
+    only while the branch holds it. An exact revert of the pick touches
+    no engine path either, but the pair must still drop the pick and
+    the corrective's main sha from ``scanned`` — otherwise the carry
+    hold stays cleared after the revert removed the fix from the
+    release."""
+    repo, rel = _carry_repo(tmp_path, monkeypatch)
+    n = repo.git("rev-parse", "refs/remotes/origin/main")  # "N: docs after the cut"
+    repo.git("cherry-pick", n)
+    x = repo.head()
+    repo.git("revert", "--no-edit", x)
+    y = repo.head()
+    picked, undone, _notes, lands = _carries(repo, rel)
+    assert undone == {x, y}
+    assert picked == {}
+    _REL_LANDS.extend(lands)
+    units, _pin, scanned, _gate_notes = rp._gate_lands(store, rel)
+    assert n not in scanned and x not in scanned and y not in scanned
+    assert not [u for u in units if u.sha12 in (n[:12], x[:12], y[:12])]
+
+
 def test_branch_carries_without_git_returns_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

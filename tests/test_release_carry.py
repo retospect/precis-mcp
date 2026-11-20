@@ -332,6 +332,33 @@ def test_nothing_is_carried_once_the_deploy_started(
     assert rig.head("release/r7") == rig.cut
 
 
+def test_a_carry_does_not_push_after_its_pass_closed(
+    store: Store, rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td741722: the deploy-start stamp is not the only end of a carry —
+    a pass closed without a deploy (a drop, a cancel) leaves a queued
+    carry that must not push. The look under the pass root's row lock
+    reads its STATUS and pushes nothing."""
+    mint = _cut(store, rig)
+    f = rig.edit("main", "app.py", 3, "fixed", "the fix")
+    node = _node(store, mint, rig, f)
+    _want(monkeypatch, f)
+    store.add_tag(
+        mint.root_id,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    before = _g(rig.root, "rev-parse", "HEAD")
+    out = rc.carry(store, node, rig.root)
+    assert out["state"] == "refused", out
+    assert f"the pass td{mint.root_id} is won't-do" in out["why"]
+    assert rig.head("release/r7") == rig.cut
+    assert _outcome(store, node)["state"] == "refused"
+    assert _follows == []
+    _untouched(rig, before)
+
+
 def test_a_deploy_that_starts_during_the_picks_stops_the_push(
     store: Store, rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
