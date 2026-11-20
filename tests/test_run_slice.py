@@ -4583,15 +4583,16 @@ def test_poll_defer_refused_when_the_rebuild_added_no_commit(
     assert "attempt:1" in tags
 
 
-@pytest.mark.parametrize("fetch_failed", [False, True])
-def test_poll_defer_refused_when_the_local_tip_is_behind_origins(
-    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, fetch_failed: bool
+@pytest.mark.parametrize("origin_state", ["ahead", "same", "unreachable"])
+def test_poll_defer_refused_when_the_local_tip_does_not_advance_origins(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, origin_state: str
 ) -> None:
     """gr709688's evidence (td695906): the reused tree's tip — a stale
     round-1 head — is an ANCESTOR of the tip another host pushed, not
     the judged head itself. Pushing would clobber the reviewed tip:
     the same refusal, on the ``preland_held`` stash alone. A failed
-    fetch must also refuse, since origin's newer tip cannot be verified."""
+    fetch must also refuse, since origin's newer tip cannot be verified.
+    If origin already has the local tip, the rebuild has nothing to publish."""
     judged = "c5dfcd16" + "a" * 32
     stale = "f69946ef" + "b" * 32
     store = _Store()
@@ -4609,10 +4610,9 @@ def test_poll_defer_refused_when_the_local_tip_is_behind_origins(
     ctx, handle = _submit(store, seams)
     seams["preland"] = 77
     seams["tips"] = {"refs/heads/slice/42": stale}
+    remote = {"ahead": judged, "same": stale, "unreachable": None}[origin_state]
     monkeypatch.setattr(
-        run_slice._slice_park,
-        "fetch_saved",
-        lambda root, todo_id: None if fetch_failed else judged,
+        run_slice._slice_park, "fetch_saved", lambda root, todo_id: remote
     )
     # ``merge-base --is-ancestor`` rc 0: the stale tip sits behind
     # origin's pushed tip.
@@ -4625,7 +4625,7 @@ def test_poll_defer_refused_when_the_local_tip_is_behind_origins(
     assert pctx.status == "failed"
     expected = (
         "cannot verify origin's reviewed slice tip"
-        if fetch_failed
+        if origin_state == "unreachable"
         else "rebuild added no commit since the review FIX"
     )
     assert expected in str(pctx.failure)

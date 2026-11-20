@@ -1398,7 +1398,7 @@ def _defer_land_for_review(
             )
         stale = tip == rejected
         if remote_tip and remote_base and not stale:
-            if remote_base != remote_tip and tip in (remote_base, remote_tip):
+            if tip in (remote_base, remote_tip):
                 stale = True
             elif remote_base == rejected:
                 # The rebuild may amend or rebase the rejected commit.
@@ -1408,7 +1408,7 @@ def _defer_land_for_review(
                     ).returncode
                     != 1
                 )
-            elif remote_base != tip:
+            else:
                 stale = (
                     _git(
                         ["merge-base", "--is-ancestor", remote_base, tip], tree
