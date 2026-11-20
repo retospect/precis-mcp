@@ -412,7 +412,7 @@ class TestGuards:
             reported_unit="eV",
             tier="measured",
             source_attribution="own_work",
-            anchor=_anchor(world, "FE95", "sentence"),
+            anchor=_anchor(world, "s1", "sentence"),
         )
         run = store.insert_measure(spec, actor="reader", model="m1")
         row = _row(store, run.output_id)
@@ -422,7 +422,7 @@ class TestGuards:
         )
         assert link.id == row["primary_link_id"]
         assert link.dst_ref_id == world["energy"] and link.meta == {}
-        assert (row["anchor_scheme"], row["span"]) == ("sentence", "FE95")
+        assert (row["anchor_scheme"], row["span"]) == ("sentence", "s1")
 
     def test_cited_work_is_refused_as_measured_and_lands_asserted(
         self, store: Store, world: dict[str, Any]
@@ -781,15 +781,17 @@ class TestRoundTrips:
     @pytest.mark.parametrize(
         ("scheme", "span"),
         [
-            ("sentence", "6132.4"),
-            ("sentence_range", "6132.4-6"),
-            ("numeric_atom", "6132#3"),
+            ("sentence", "{chunk}.0"),
+            ("sentence_range", "{chunk}.0-1"),
+            ("numeric_atom", "{chunk}#0"),
             ("offsets", [7, 4, 20]),
         ],
     )
     def test_one_row_anchor_per_span_form(
         self, store: Store, world: dict[str, Any], scheme: str, span: Any
     ) -> None:
+        if isinstance(span, str):
+            span = span.format(chunk=world["chunk"])
         run = store.insert_measure(
             MeasureSpec(
                 world["energy"],
@@ -1510,6 +1512,137 @@ class TestRuns:
         )
         assert _row(store, run.output_id)["extraction_status"] == "anchor_mismatch"
 
+    def test_an_unknown_anchor_scheme_is_refused_naming_the_schemes(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        """gr728422: 'list' was accepted and stamped anchor_matched — an
+        unresolvable scheme is refused, never a whole-chunk pass."""
+        spec = MeasureSpec(
+            world["energy"],
+            "1",
+            world["paper"],
+            tier="measured",
+            anchor=_anchor(world, "x", "list"),
+            reported_unit="eV",
+        )
+        with pytest.raises(BadInput, match="anchor_scheme 'list' is not one of"):
+            store.insert_measure(spec, actor="reader")
+        assert store.measures_for(world["paper"]) == []
+
+    @pytest.mark.parametrize(
+        ("scheme", "span"),
+        [
+            ("sentence", "x"),
+            ("sentence", "s1-s2"),  # a run is the sentence_range scheme
+            ("sentence_range", "s2-s1"),  # backwards
+            ("sentence_range", "where"),
+            ("numeric_atom", "s1"),
+            ("offsets", "s1"),
+            ("offsets", [0, 20, 4]),  # start > end
+            ("offsets", [0, -5, 10]),  # negative
+        ],
+    )
+    def test_a_span_its_scheme_cannot_read_is_refused(
+        self, store: Store, world: dict[str, Any], scheme: str, span: Any
+    ) -> None:
+        spec = MeasureSpec(
+            world["energy"],
+            "1",
+            world["paper"],
+            tier="measured",
+            anchor=_anchor(world, span, scheme),
+            reported_unit="eV",
+        )
+        with pytest.raises(BadInput):
+            store.insert_measure(spec, actor="reader")
+        assert store.measures_for(world["paper"]) == []
+
+    def test_a_wrong_sentence_index_flags_mismatch_not_matched(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        """gr728422: '95%' prints in s0 — an s1 anchor used to pass on the
+        whole chunk; now the named sentence is the test."""
+        run = store.insert_measure(
+            MeasureSpec(
+                world["fe"],
+                "95%",
+                world["paper"],
+                value_num=95.0,
+                anchor=_anchor(world, "s1"),
+                reported_unit="%",
+            ),
+            actor="reader",
+        )
+        assert _row(store, run.output_id)["extraction_status"] == "anchor_mismatch"
+
+    @pytest.mark.parametrize(
+        ("scheme", "span"), [("sentence", "s9"), ("sentence_range", "s0-s999")]
+    )
+    def test_an_out_of_bounds_sentence_span_flags_mismatch(
+        self, store: Store, world: dict[str, Any], scheme: str, span: str
+    ) -> None:
+        run = store.insert_measure(
+            MeasureSpec(
+                world["fe"],
+                "95%",
+                world["paper"],
+                value_num=95.0,
+                anchor=_anchor(world, span, scheme),
+                reported_unit="%",
+            ),
+            actor="reader",
+        )
+        assert _row(store, run.output_id)["extraction_status"] == "anchor_mismatch"
+
+    @pytest.mark.parametrize(
+        ("scheme", "suffix"),
+        [("sentence", ".0"), ("sentence_range", ".0-1"), ("numeric_atom", "#0")],
+    )
+    def test_a_positional_span_naming_another_chunk_is_refused(
+        self, store: Store, world: dict[str, Any], scheme: str, suffix: str
+    ) -> None:
+        spec = MeasureSpec(
+            world["fe"],
+            "95%",
+            world["paper"],
+            value_num=95.0,
+            anchor=_anchor(world, f"{world['chunk'] + 1}{suffix}", scheme),
+            reported_unit="%",
+        )
+        with pytest.raises(BadInput, match="but the selected chunk is"):
+            store.insert_measure(spec, actor="reader")
+        assert store.measures_for(world["paper"]) == []
+
+    def test_sentence_range_and_numeric_atom_resolve_to_their_sentences(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        hit = store.insert_measure(
+            MeasureSpec(
+                world["fe"],
+                "95%",
+                world["paper"],
+                value_num=95.0,
+                anchor=_anchor(world, "s0-s1", "sentence_range"),
+                reported_unit="%",
+            ),
+            actor="reader",
+        )
+        atom = store.insert_measure(
+            MeasureSpec(
+                world["fe"],
+                "10",
+                world["paper"],
+                value_num=10.0,
+                anchor=_anchor(world, f"{world['chunk']}#4", "numeric_atom"),
+                reported_unit="%",
+            ),
+            actor="reader",
+        )
+        assert _row(store, hit.output_id)["extraction_status"] == "anchor_matched"
+        # atom #4 is the '10' of '10 µg h⁻¹ cm⁻²' in s1 — its containing
+        # sentence prints the literal
+        assert _row(store, atom.output_id)["extraction_status"] == "anchor_matched"
+
     def test_supersede_writes_a_pointer_and_hides_the_old_row(
         self, store: Store, world: dict[str, Any]
     ) -> None:
@@ -2090,7 +2223,7 @@ class TestLiteralAndUnits:
                 literal,
                 world["paper"],
                 value_num=1.0,
-                anchor=MeasureAnchor(world["paper"], chunk, "sentence", "s1"),
+                anchor=MeasureAnchor(world["paper"], chunk, "sentence", "s0"),
                 reported_unit="eV",
             ),
             actor="reader",
@@ -2122,7 +2255,7 @@ class TestLiteralAndUnits:
                 world["paper"],
                 value_low=1.0,
                 value_high=2.0,
-                anchor=MeasureAnchor(world["paper"], chunk, "sentence", "s1"),
+                anchor=MeasureAnchor(world["paper"], chunk, "sentence", "s0"),
                 reported_unit="eV",
             ),
             actor="reader",

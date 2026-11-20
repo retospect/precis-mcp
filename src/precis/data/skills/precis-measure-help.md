@@ -262,9 +262,14 @@ are listed in `meta.extra_anchors` as `{link_id, anchor_scheme, span}`.
 - `tier='measured'` is **refused** without an anchor on a paper chunk, and refused
   when `source_attribution='cited_work'` (a restated number is `asserted`).
 - `extraction_status` is `anchor_matched` when the literal occurs in the span's
-  text, `anchor_mismatch` when it does not (flagged, never refused),
-  `unverified` with no anchor. Raw offsets test the slice; other schemes test the
-  whole chunk.
+  text, `anchor_mismatch` when it does not or when the span names nothing in
+  the chunk (flagged, never refused), `unverified` with no anchor. The span is
+  resolved under its scheme — an offsets slice, the named sentence(s), or a
+  numeric atom's containing sentence — so a wrong `s<N>` flags, not matches.
+  An `anchor_scheme` outside `sentence` / `sentence_range` / `numeric_atom` /
+  `offsets`, or a span that scheme's grammar cannot read, is refused.
+  Positional sentence, range, and atom IDs must name the selected chunk.
+  A sentence range with either endpoint outside the chunk flags `anchor_mismatch`.
 - A sentence span is `s<N>` naming the chunk's N-th sentence under the anchor
   splitter, numbered from `s0`. Read a chunk's sentence ids before writing:
   `get(kind='paper', id='pc<id>', view='sentences')` (or

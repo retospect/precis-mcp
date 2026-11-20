@@ -632,7 +632,7 @@ class TestBestMeasure:
             "-0.5",
             unit="V",
             tier="asserted",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
         )
         store.record_target_review(
             "measure", run.output_id, actor="checker", verdict="rejected"
@@ -836,7 +836,7 @@ class TestBestMeasure:
             "-0.97",
             unit="V",
             tier="measured",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
         )
         with store.pool.connection() as conn:
             conn.execute(
@@ -956,7 +956,7 @@ class TestSearchMeasures:
             "1.4",
             unit="Å",
             subject=subject,
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
         )
         direct = _put(store, w, "bond", "2", unit="Å", subject=w["paper2"])
         _put(store, w, "bond", "3", unit="Å", subject=w["stray"])
@@ -1543,7 +1543,7 @@ class TestDispatchSurface:
             reference="RHE",
             tier="measured",
             source_attribution="own_work",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
             conds=(
                 _cond(w, "product", "NH3", label="product"),
                 _cond(w, "potential", "-0.5", unit="V", ref="RHE"),
@@ -1577,7 +1577,7 @@ class TestGetRow:
             reference="RHE",
             tier="measured",
             source_attribution="own_work",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
             conds=(
                 _cond(w, "product", "NH3", label="product"),
                 _cond(w, "potential", "-0.5", unit="V", ref="RHE"),
@@ -1593,7 +1593,7 @@ class TestGetRow:
             "bond",
             "1.4",
             unit="Å",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
             meta={
                 "table": {
                     "chunk": w["chunk"],
@@ -1640,7 +1640,7 @@ class TestGetRow:
             "bond",
             "1.4",
             unit="Å",
-            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s0"),
             meta={"transform": "log10", **extra_meta},
         )
         lines = h.get(id=run.output_id).body.splitlines()
@@ -1671,7 +1671,7 @@ class TestGetRow:
         assert "tier: measured · origin: — · attribution: own_work" in out
         assert "extraction: anchor_matched" in out
         assert (
-            f"anchor: pa{w['paper']} Deep paper · pc{w['chunk']} · sentence: s1" in out
+            f"anchor: pa{w['paper']} Deep paper · pc{w['chunk']} · sentence: s0" in out
         )
         assert "reviews:\n  (none)" in out and "supersession: none" in out
         assert "written: " in out and out.count("Z") >= 1
@@ -1929,7 +1929,7 @@ class TestPutRun:
             "anchor": {
                 "chunk": f"pc{w['chunk']}",
                 "anchor_scheme": "sentence",
-                "span": "s1",
+                "span": "s0",
             },
         }
         meta.update(over)
@@ -2042,6 +2042,40 @@ class TestPutRun:
             h.put(text="  ", meta=self._meta(w))
         with pytest.raises(BadInput, match="append-only"):
             h.put(text="95", meta=self._meta(w), id=3)
+
+    def test_an_unknown_anchor_scheme_is_refused_naming_the_field(
+        self, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        """gr728422: 'list' used to pass and stamp anchor_matched on the
+        whole chunk; the scheme is refused by name now."""
+        with pytest.raises(BadInput, match=r"meta\.anchor\.anchor_scheme"):
+            h.put(
+                text="95",
+                meta=self._meta(
+                    w,
+                    anchor={
+                        "chunk": f"pc{w['chunk']}",
+                        "anchor_scheme": "list",
+                        "span": "x",
+                    },
+                ),
+            )
+
+    def test_an_unreadable_anchor_span_is_refused_naming_the_field(
+        self, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        with pytest.raises(BadInput, match=r"meta\.anchor\.span"):
+            h.put(
+                text="95",
+                meta=self._meta(
+                    w,
+                    anchor={
+                        "chunk": f"pc{w['chunk']}",
+                        "anchor_scheme": "sentence",
+                        "span": "x",
+                    },
+                ),
+            )
 
     def test_measured_without_an_anchor_is_refused(
         self, store: Store, w: dict[str, Any], h: MeasureHandler

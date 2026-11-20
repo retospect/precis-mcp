@@ -27,7 +27,10 @@ A row dict (the output's ``meta``, or one entry of ``items``) holds:
   ``meta.note``; written at insert only, since ``meta`` is frozen after);
 * ``anchor`` = ``{chunk, anchor_scheme, span}`` (an input inherits the
   output's), ``extra_anchors`` (a list of the same), ``supersedes`` (a measure
-  id or ``mx`` handle), ``derived_from`` (a list of the same);
+  id or ``mx`` handle), ``derived_from`` (a list of the same) —
+  ``anchor_scheme`` is one of ``sentence`` / ``sentence_range`` /
+  ``numeric_atom`` / ``offsets``; any other scheme, or a span the scheme's
+  grammar cannot read, is refused naming the field (gr728422);
 * ``computed_source`` — a computed-evidence contract dict
   (:mod:`precis.computed_sources`, gr564183) pinning the row's number to a
   producer's exact frozen output bytes, field selector, unit and method.
@@ -52,7 +55,12 @@ from typing import Any
 from precis import computed_sources
 from precis.errors import BadInput
 from precis.store import Store
-from precis.store._measures_ops import MeasureAnchor, MeasureSpec
+from precis.store._measures_ops import (
+    ANCHOR_SCHEMES,
+    MeasureAnchor,
+    MeasureSpec,
+    _span_claim,
+)
 from precis.taxonomy.measure_units import MINUS_FOLD
 from precis.utils import handle_registry
 
@@ -240,7 +248,18 @@ class RunParser:
         scheme = raw["anchor_scheme"]
         if not isinstance(scheme, str):
             raise _bad(where, f"{field}.anchor_scheme", "must be a string")
-        return MeasureAnchor(paper, chunk_id, scheme, raw["span"])
+        if scheme not in ANCHOR_SCHEMES:
+            raise _bad(
+                where,
+                f"{field}.anchor_scheme",
+                f"{scheme!r} is not one of {', '.join(ANCHOR_SCHEMES)}",
+            )
+        anchor = MeasureAnchor(paper, chunk_id, scheme, raw["span"])
+        try:
+            _span_claim(anchor)
+        except BadInput as err:
+            raise _bad(where, f"{field}.span", str(err)) from err
+        return anchor
 
     def _source_agreement(
         self, raw: dict[str, Any], source: dict[str, Any], where: str, literal: str

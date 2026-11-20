@@ -27,13 +27,13 @@ Runtime reserves its suffix before fitting at a sentence boundary.
 A sentence larger than the page gets a marked excerpt, and the next
 window starts at the following span. Numbering stays chunk-local.
 
-One honesty note the response carries too: this read is the ONLY
-span-level check. The write side's ``anchor_matched`` /
-``anchor_mismatch`` receipt cannot resolve ``s<N>`` back to the span —
-for sentence/atom schemes it tests the literal against the whole chunk
-(:func:`precis.store._measures_ops._span_text` falls back to the chunk
-text), a weaker test that stamps ``anchor_matched`` even when ``s<N>``
-names the wrong sentence. Verify the number here, not from the receipt.
+The write side now resolves ``s<N>`` itself
+(:func:`precis.store._measures_ops._span_text`, gr728422): the receipt's
+``anchor_matched`` / ``anchor_mismatch`` checks the literal against the
+sentence(s) the span names — a wrong ``s<N>`` flags ``anchor_mismatch``
+and a span naming nothing in the chunk mismatches too, where before this
+read was the ONLY span-level check (the write tested the whole chunk).
+The numbering shown here is still the one to pick the ``s<N>`` by.
 """
 
 from __future__ import annotations
@@ -55,9 +55,8 @@ _LEAD = (
     "sentences are numbered s0, s1, … by the anchor splitter "
     "(precis.extract.anchors) — anchor one in a measure as "
     "{'chunk': 'pc<id>', 'anchor_scheme': 'sentence', 'span': 'sN'}. "
-    "Pick the sN here: the write receipt can't resolve sN back — it "
-    "tests the literal against the whole chunk, so this read is the "
-    "only span-level check. "
+    "Pick the sN here: the write receipt resolves sN against this "
+    "numbering, so a wrong index reads anchor_mismatch. "
     "Recipe: get(kind='skill', id='precis-measure-help')"
 )
 
@@ -76,9 +75,9 @@ def render_sentences_view(
 
     The ``s<N>`` printed per line is the ``span`` a measure sentence
     anchor names — same splitter, same 0-based numbering. The write
-    receipt does NOT recheck that mapping (sentence spans are not
-    resolvable on write; the literal is tested against the whole chunk),
-    so a caller verifying an anchor must do it against this output.
+    receipt resolves the ``s<N>`` against this numbering
+    (``anchor_mismatch`` when the literal is not in the named sentence),
+    so the ``s<N>`` picked here is exactly what the receipt checks.
 
     ``s_window`` (the ``/sA..B`` path form) selects chunk-local span
     indices and KEEPS the original numbering — the resumable read the

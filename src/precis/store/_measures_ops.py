@@ -25,7 +25,9 @@ own edge and are listed in ``meta.extra_anchors`` as
 
 **Computed on write, never asserted.** ``extraction_status`` is
 ``anchor_matched`` / ``anchor_mismatch`` by looking for the literal in the
-anchored span (a mismatch flags the row, never rejects it) and ``unverified``
+anchored span — the slice or sentence(s) the span names under its scheme,
+``anchor_mismatch`` when the span names nothing in the chunk (a mismatch
+flags the row, never rejects it) — and ``unverified``
 without an anchor.
 
 **Origin (gr606464).** ``spec.origin`` records where the number itself was
@@ -53,7 +55,10 @@ is NOT NULL): the caller mints a ``reaction product`` taxon and labels the row
 ``meta={'condition': 'product'}``; its formula goes in ``value_text``.
 
 **Refusals.** ``tier='measured'`` without an anchor whose chunk is set;
-``tier='measured'`` with ``source_attribution='cited_work'``; a live output
+``tier='measured'`` with ``source_attribution='cited_work'``; an
+``anchor_scheme`` outside ``ANCHOR_SCHEMES`` or a span the scheme's
+grammar cannot read (gr728422 — the whole-chunk fallback used to stamp
+``anchor_matched`` on any scheme/span label); a live output
 row that repeats another's measurand, anchor scheme, span, value and conditions
 (one chunk value extracted under two findings is one measure, not two) — unless
 the matched row's newest current review is ``rejected``: a judged-wrong
@@ -126,6 +131,7 @@ from psycopg.types.json import Jsonb
 
 from precis.errors import BadInput, NotFound
 from precis.extract.accept import DEFAULT_BAR, DEFAULT_Z
+from precis.extract.anchors import sentence_spans
 from precis.store._taxon_ops import _EDGES
 from precis.store.si_links import SI_PDF_ROLE, SI_RELATION
 from precis.taxonomy.measure_units import (
@@ -200,12 +206,32 @@ _CURRENT_REVIEW_VERDICT = (
 )
 INPUT_DIRECTIONS = ("input", "covariate")
 
+#: The ``anchor_scheme`` values a measure accepts and each one's span
+#: grammar (gr728422): ``sentence`` — one sentence, the reader-facing
+#: ``s<N>`` (the ``view='sentences'`` numbering) or the positional
+#: ``<chunk>.<n>``; ``sentence_range`` — a run of sentences,
+#: ``<chunk>.<n>-<m>`` or ``s<N>-s<M>`` / ``s<N>..s<M>``; ``numeric_atom``
+#: — ``<chunk>#<k>``, the k-th numeric region's containing sentence;
+#: ``offsets`` — raw ``[chunk, start, end]``. Any other scheme is refused:
+#: without a grammar the span cannot be resolved, and the old write side
+#: fell back to testing the literal against the whole chunk, stamping
+#: ``anchor_matched`` on a wrong ``s<N>`` or a made-up scheme alike.
+ANCHOR_SCHEMES = ("sentence", "sentence_range", "numeric_atom", "offsets")
+
+_SENTENCE_SPAN_RE = re.compile(r"s(\d+)$")
+_POSITIONAL_SPAN_RE = re.compile(r"(\d+)\.(\d+)$")
+_RANGE_SPAN_RE = re.compile(r"s?(\d+)(?:-|\.\.)s?(\d+)$")
+_POSITIONAL_RANGE_RE = re.compile(r"(\d+)\.(\d+)-(\d+)$")
+_ATOM_SPAN_RE = re.compile(r"(\d+)#(\d+)$")
+
 
 @dataclass(frozen=True, slots=True)
 class MeasureAnchor:
     """Where a number is printed: ``chunk_id`` of ``paper_ref_id``, the span
-    inside it (``scheme`` names how: sentence / range / atom / offsets;
-    ``span`` is the string, or ``[chunk, start, end]`` for raw offsets)."""
+    inside it (``scheme`` names how — one of ``ANCHOR_SCHEMES``: sentence /
+    sentence_range / numeric_atom / offsets; ``span`` is the scheme's
+    string id — ``s<N>`` / ``<chunk>.<n>-<m>`` / ``<chunk>#<k>`` — or
+    ``[chunk, start, end]`` for raw offsets)."""
 
     paper_ref_id: int
     chunk_id: int
@@ -698,17 +724,133 @@ def _literal_in(span_text: str, literal: str) -> bool:
     return stripped != span_text and re.search(pattern, _squash(stripped)) is not None
 
 
-def _span_text(chunk_text: str, span: Any) -> str:
-    """The text a span names. Raw offsets ``[chunk, start, end]`` slice the
-    chunk; every other scheme falls back to the whole chunk (the span's
-    sentence/atom ids are not resolvable here), a weaker test."""
-    if (
-        isinstance(span, (list, tuple))
-        and len(span) == 3
-        and all(isinstance(x, int) and not isinstance(x, bool) for x in span)
-    ):
-        return chunk_text[span[1] : span[2]]
-    return chunk_text
+def _check_span_chunk(anchor: MeasureAnchor, chunk_id: str) -> None:
+    """Require a positional span to name the selected chunk."""
+    if int(chunk_id) != anchor.chunk_id:
+        raise BadInput(
+            f"anchor span {anchor.span!r} names chunk {chunk_id}, "
+            f"but the selected chunk is {anchor.chunk_id}",
+            next="Use a positional span from the selected chunk, or select the chunk it names.",
+        )
+
+
+def _span_claim(anchor: MeasureAnchor) -> tuple[str, int, int]:
+    """What a span claims under its scheme: ``("offsets", start, end)``,
+    ``("sentences", n, m)`` inclusive, or ``("atom", k)``. An
+    ``anchor_scheme`` outside ``ANCHOR_SCHEMES``, or a span the scheme's
+    grammar cannot read, is a :class:`BadInput` — the anchor then names
+    nothing the write can check, and the old whole-chunk fallback stamped
+    it ``anchor_matched`` regardless (gr728422). A positional span must
+    name the selected chunk."""
+    scheme, span = anchor.scheme, anchor.span
+    if scheme == "offsets":
+        if (
+            isinstance(span, (list, tuple))
+            and len(span) == 3
+            and all(isinstance(x, int) and not isinstance(x, bool) for x in span)
+        ):
+            start, end = int(span[1]), int(span[2])
+            if 0 <= start <= end:
+                return ("offsets", start, end)
+        raise BadInput(
+            "anchor scheme 'offsets' wants span [chunk, start, end] "
+            f"(ints, 0 <= start <= end), got {span!r}",
+            next="anchor={'chunk': 'pc<id>', 'anchor_scheme': 'offsets', "
+            "'span': [<chunk>, <start>, <end>]}",
+        )
+    text = span.strip() if isinstance(span, str) else ""
+    if scheme == "sentence":
+        hit = _SENTENCE_SPAN_RE.fullmatch(text)
+        if hit is not None:
+            return ("sentences", int(hit.group(1)), int(hit.group(1)))
+        hit = _POSITIONAL_SPAN_RE.fullmatch(text)
+        if hit is not None:
+            _check_span_chunk(anchor, hit.group(1))
+            return ("sentences", int(hit.group(2)), int(hit.group(2)))
+        raise BadInput(
+            "anchor scheme 'sentence' wants span 's<N>' (the "
+            "view='sentences' numbering) or '<chunk>.<n>', "
+            f"got {span!r}",
+            next="get(id='pc<id>', view='sentences') numbers the chunk's "
+            "sentences; anchor={'chunk': 'pc<id>', 'anchor_scheme': "
+            "'sentence', 'span': 's<N>'}",
+        )
+    if scheme == "sentence_range":
+        hit = _POSITIONAL_RANGE_RE.fullmatch(text)
+        if hit is not None:
+            _check_span_chunk(anchor, hit.group(1))
+            first, last = int(hit.group(2)), int(hit.group(3))
+        else:
+            hit = _RANGE_SPAN_RE.fullmatch(text)
+            if hit is not None:
+                first, last = int(hit.group(1)), int(hit.group(2))
+            else:
+                hit = _SENTENCE_SPAN_RE.fullmatch(text)
+                if hit is None:
+                    raise BadInput(
+                        "anchor scheme 'sentence_range' wants span "
+                        "'<chunk>.<n>-<m>' or 's<N>-s<M>' / 's<N>..s<M>' "
+                        f"(n <= m), got {span!r}",
+                        next="anchor={'chunk': 'pc<id>', 'anchor_scheme': "
+                        "'sentence_range', 'span': 's<N>-s<M>'}",
+                    )
+                first = last = int(hit.group(1))
+        if first > last:
+            raise BadInput(f"sentence_range span {span!r} runs backwards (n > m)")
+        return ("sentences", first, last)
+    if scheme == "numeric_atom":
+        hit = _ATOM_SPAN_RE.fullmatch(text)
+        if hit is not None:
+            _check_span_chunk(anchor, hit.group(1))
+            k = int(hit.group(2))
+            return ("atom", k, k)
+        raise BadInput(
+            "anchor scheme 'numeric_atom' wants span '<chunk>#<k>' "
+            f"(the k-th numeric region), got {span!r}",
+            next="anchor={'chunk': 'pc<id>', 'anchor_scheme': "
+            "'numeric_atom', 'span': '<chunk>#<k>'}",
+        )
+    raise BadInput(
+        f"anchor_scheme {scheme!r} is not one of {', '.join(ANCHOR_SCHEMES)}",
+        next="anchor={'chunk': 'pc<id>', 'anchor_scheme': 'sentence', "
+        "'span': 's<N>'} — get(id='pc<id>', view='sentences') numbers "
+        "the chunk's sentences",
+    )
+
+
+def _span_text(anchor: MeasureAnchor, chunk_text: str) -> str | None:
+    """The text the anchor's span names under its scheme — the offsets
+    slice, the named sentence(s), or a numeric atom's containing
+    sentence — resolved with the same splitter the ``view='sentences'``
+    read numbers by. ``None`` when the span names nothing in this chunk
+    (an out-of-range ``s<N>`` or ``#<k>``): the literal then reads
+    ``anchor_mismatch``, never ``anchor_matched`` (gr728422)."""
+    claim = _span_claim(anchor)
+    if claim[0] == "offsets":
+        return chunk_text[claim[1] : claim[2]]
+    spans = sentence_spans(chunk_text)
+    if claim[0] == "sentences":
+        _kind, first, last = claim
+        if last >= len(spans):
+            return None
+        return chunk_text[spans[first][0] : spans[last][1]]
+    # numeric_atom: the k-th numeric region's containing sentence — the
+    # same resolution the extraction anchor index gives "<chunk>#<k>".
+    from precis.extract.verify import numeric_regions
+
+    regions = numeric_regions(chunk_text)
+    k = claim[1]
+    if k >= len(regions):
+        return None
+    start, end, _part = regions[k]
+    holder = next(
+        (i for i, (a, b) in enumerate(spans) if a <= start and end <= b),
+        None,
+    )
+    if holder is None:
+        return None
+    a, b = spans[holder]
+    return chunk_text[a:b]
 
 
 class MeasuresMixin:
@@ -828,10 +970,16 @@ class MeasuresMixin:
         anchor: MeasureAnchor,
         measurand_ref_id: int,
         link_set_by: str,
-    ) -> tuple[int, str]:
-        """The shared ``quantifies`` edge for this chunk and measurand, and the
-        chunk text. Deduplicated by ``add_link``; the span stays on the row."""
+    ) -> tuple[int, str, str | None]:
+        """The shared ``quantifies`` edge for this chunk and measurand, the
+        chunk text, and the text the anchor's span names under its scheme
+        (``None`` when the span names nothing in the chunk — the literal
+        then reads ``anchor_mismatch``). The scheme and span grammar are
+        refused here, so every anchor — primary or extra — is checked
+        before its edge is written. Deduplicated by ``add_link``; the span
+        stays on the row."""
         ord_, text = self._anchor_chunk(conn, anchor)
+        span_text = _span_text(anchor, text)
         link = self.add_link(
             src_ref_id=anchor.paper_ref_id,
             src_pos=ord_,
@@ -840,7 +988,7 @@ class MeasuresMixin:
             set_by=link_set_by,
             conn=conn,
         )
-        return int(link.id), text
+        return int(link.id), text, span_text
 
     # -- write -------------------------------------------------------------
 
@@ -1433,12 +1581,12 @@ class MeasuresMixin:
         link_id: int | None = None
         status = "unverified"
         if anchor is not None:
-            link_id, chunk_text = self._anchor_link(
+            link_id, _chunk_text, span_text = self._anchor_link(
                 c, anchor, spec.measurand_ref_id, link_set_by
             )
             status = (
                 "anchor_matched"
-                if _literal_in(_span_text(chunk_text, anchor.span), spec.literal)
+                if span_text is not None and _literal_in(span_text, spec.literal)
                 else "anchor_mismatch"
             )
         if spec.extra_anchors:
