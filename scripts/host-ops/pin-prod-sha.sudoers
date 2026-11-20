@@ -2,9 +2,16 @@
 #
 # Installed BY HAND on the session-MCP host(s) with visudo — no script
 # installs it. <worker user> is the factory's deploy user; <owner> is the
-# user that owns the prod watched checkout; the helper path must be the
-# absolute path on the host (the checkout that holds the repo, not a
-# repo-relative one). The grant names this one script only: sudo runs it
-# with a scrubbed environment, it takes no env and no arguments but the
-# sha, and it does only the pin.
-<worker user> ALL=(<owner>) NOPASSWD: <absolute helper path>
+# user that owns the prod watched checkout.
+#
+# 1. Install a root-owned, non-writable COPY of the helper OUTSIDE any
+#    checkout the worker user can write (a grant on a file that user can
+#    edit would let it run anything as <owner>):
+#      install -o root -g wheel -m 0755 scripts/host-ops/pin-prod-sha \
+#        /usr/local/libexec/precis/pin-prod-sha
+#    and beside it a root-owned pin-prod-sha.conf with ONE line,
+#      PROD_CHECKOUT=<absolute path of the prod watched checkout>
+#    (the helper sources nothing else from the repo).
+# 2. The grant allows that path with exactly ONE argument of 40 hex
+#    characters (sudoers matches the argument list as a glob; no `*`):
+<worker user> ALL=(<owner>) NOPASSWD: /usr/local/libexec/precis/pin-prod-sha [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]

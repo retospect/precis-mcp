@@ -1741,6 +1741,29 @@ def test_release_deploy_poll_omits_a_guessed_sha_without_a_deployed_line(
     assert "sha" not in dep and "rollout_at" not in dep
 
 
+def test_release_deploy_poll_retries_the_pin_on_the_already_done_path(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry after a missed pin (rollout already done, no
+    ``RELEASE_DEPLOYED`` line) pins the recorded deployed sha (gr685985)."""
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    mint = _cut(store, host="node-a", checkout=str(checkout["root"]))
+    _cut_round_row(store, checkout, mint)
+    R.record_prod_head(store, SHA, [])
+    seen: list[str] = []
+
+    def fake_pin(root: Path, sha: str = "") -> str:
+        seen.append(sha)
+        return "prod checkout pinned: retry"
+
+    monkeypatch.setattr(rd, "_pin_prod", fake_pin)
+    ctx, handle = _deploy_handle(store, mint)
+    _exit(checkout, 3, "rollout already done\n")
+    assert rd.poll(ctx, handle) is True
+    assert seen == [SHA]
+    assert "prod checkout pinned: retry" in ctx.chunks[-1][1]
+
+
 def test_release_deploy_poll_survives_a_release_of_db_error(
     store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6129,8 +6152,11 @@ def test_pin_prod_cross_owner_command_is_sudo_helper_sha(
     assert rd._pin_prod(tmp_path, "abc1234" + "0" * 33) == (
         "prod checkout pinned: precis-mcp-prod at abc1234"
     )
-    helper = (tmp_path / rd.PIN_PROD_HELPER).resolve()
-    assert seen == [["sudo", "-n", "-u", "mcp", str(helper), "abc1234" + "0" * 33]]
+    # Cross-owner runs the root-owned installed copy, never the repo's.
+    assert seen == [
+        ["sudo", "-n", "-u", "mcp", str(rd.INSTALLED_PIN_HELPER), "abc1234" + "0" * 33]
+    ]
+    assert not str(rd.INSTALLED_PIN_HELPER).startswith(str(tmp_path))
 
 
 def test_pin_prod_same_owner_runs_the_helper_directly(
@@ -6176,9 +6202,8 @@ def test_pin_prod_missing_sudoers_grant_names_the_line(
 
     monkeypatch.setattr(rd, "_run_pin", refused)
     note = rd._pin_prod(tmp_path, "abc1234" + "0" * 33)
-    helper = (tmp_path / rd.PIN_PROD_HELPER).resolve()
     assert "not pinned" in note
-    assert f"worker ALL=(mcp) NOPASSWD: {helper}" in note
+    assert "pin-prod-sha.sudoers" in note and str(rd.INSTALLED_PIN_HELPER) in note
 
 
 def test_pin_prod_helper_failure_and_wrong_sha_are_not_pinned(
@@ -6202,7 +6227,7 @@ def test_pin_prod_helper_failure_and_wrong_sha_are_not_pinned(
         return sp.CompletedProcess(argv, 0, "precis-mcp-prod at ffffffffffff\n", "")
 
     monkeypatch.setattr(rd, "_run_pin", other)
-    deployed = "abc1234" + "0" * 29
+    deployed = "abc1234" + "0" * 33
     assert f"not pinned: at ffffffffffff, deployed {deployed[:12]}" in rd._pin_prod(
         tmp_path, deployed
     )

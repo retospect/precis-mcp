@@ -361,6 +361,16 @@ def _web_evidence(url: str | None, sha: str) -> tuple[str, str | None]:
     return "", f"web reports {reported}, release is {sha[:12]}"
 
 
+def _mcp_token() -> str:
+    """The shared MCP bearer: ``PRECIS_MCP_TOKEN``, else the same name in
+    an explicitly mounted ``PRECIS_SECRETS_FILE_DIR`` (``""`` when neither)."""
+    from precis.secrets import mounted_secret
+
+    return os.environ.get("PRECIS_MCP_TOKEN", "").strip() or (
+        mounted_secret("PRECIS_MCP_TOKEN") or ""
+    )
+
+
 def _mcp_served_sha(url: str) -> str | None:
     """Seam: ``served_sha`` from ``get(kind='skill', id='precis-status')``
     on the session MCP at ``url`` (bearer from ``PRECIS_MCP_TOKEN``); a
@@ -371,7 +381,7 @@ def _mcp_served_sha(url: str) -> str | None:
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
-    token = os.environ.get("PRECIS_MCP_TOKEN", "")
+    token = _mcp_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     async def _ask() -> str | None:
@@ -395,6 +405,9 @@ def _mcp_evidence(url: str | None, sha: str) -> tuple[str, str | None, bool]:
     so the caller parks on it until the window ends. No URL in any text."""
     if not url or not url.strip():
         return "", "MCP not attested (release.mcp_url unset)", False
+    if not _mcp_token():
+        # The shared MCP is bearer-gated: no credential, no transport.
+        return "", "MCP not attested (no MCP credential on this worker)", False
     try:
         served = _mcp_served_sha(url.strip())
     except Exception as exc:

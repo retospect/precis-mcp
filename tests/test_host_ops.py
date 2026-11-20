@@ -563,8 +563,11 @@ def test_pin_prod_sha_sudoers_example_is_one_grant_line(
         ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")
     ]
     assert len(grants) == 1
-    assert re.match(
-        r"^<worker user> ALL=\(<owner>\) NOPASSWD: <absolute helper path>$",
+    # One path outside any checkout, then exactly one 40-hex argument
+    # pattern — no bare `*`, so no extra arguments are granted.
+    assert re.fullmatch(
+        r"<worker user> ALL=\(<owner>\) NOPASSWD: "
+        r"/usr/local/libexec/precis/pin-prod-sha (\[0-9a-f\]){40}",
         grants[0],
     )
 

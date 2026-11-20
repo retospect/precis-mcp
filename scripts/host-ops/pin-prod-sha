@@ -18,8 +18,8 @@
 # exactly one well-formed sha is refused with exit 2; a well-formed sha
 # that names no commit in the checkout is exit 1.
 #
-# The matching sudoers grant is a host op, installed by hand with visudo —
-# see pin-prod-sha.sudoers next to this script.
+# The root-owned install and the matching sudoers grant are host ops, done
+# by hand — see pin-prod-sha.sudoers next to this script.
 set -euo pipefail
 
 usage() {
@@ -41,23 +41,31 @@ if [[ $# -ne 1 || ! "$1" =~ ^[0-9a-f]{7,40}$ ]]; then
 fi
 SHA="$1"
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-_common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-MAIN_CHECKOUT="$(dirname "${_common:-$REPO/.git}")"
-# Ignore caller overrides in both direct and sudo execution.
+# Self-contained on purpose: when run under sudo this file is the installed
+# root-owned copy, so it sources nothing from a repo checkout (a file the
+# factory user can write would run as the owner). The prod checkout is the
+# single `PROD_CHECKOUT=<abs path>` line of the root-owned `<helper>.conf`
+# beside the installed copy (read with sed, never sourced); a repo copy with
+# no conf derives <main-checkout>-prod from its own Git common directory.
+# Caller environment overrides are ignored either way.
 unset PRECIS_PROD_CHECKOUT PROD_CHECKOUT
-# shellcheck source=scripts/lib/env-pointers.sh
-. "${REPO}/scripts/lib/env-pointers.sh"
-PROD_CHECKOUT="${MAIN_CHECKOUT}-prod"
-[[ -f "${PROD_CHECKOUT}/.git/HEAD" ]] || {
-  echo "no prod checkout at ${PROD_CHECKOUT} (factory pin requires the fixed main-checkout sibling)" >&2; exit 1; }
+_self="${BASH_SOURCE[0]}"
+PROD_CHECKOUT=""
+if [[ -f "${_self}.conf" ]]; then
+  PROD_CHECKOUT="$(sed -n 's/^PROD_CHECKOUT=\(\/[^[:space:]]*\)$/\1/p' "${_self}.conf" | head -n1)"
+else
+  REPO="$(cd "$(dirname "$_self")/../.." && pwd)"
+  _common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  PROD_CHECKOUT="$(dirname "${_common:-$REPO/.git}")-prod"
+fi
+[[ -n "$PROD_CHECKOUT" && -f "${PROD_CHECKOUT}/.git/HEAD" ]] || {
+  echo "no prod checkout at ${PROD_CHECKOUT:-<unresolved>} (installed copy: PROD_CHECKOUT=<abs path> in ${_self}.conf)" >&2; exit 1; }
 if ! git -C "$PROD_CHECKOUT" cat-file -e "${SHA}^{commit}" 2>/dev/null; then
   git -C "$PROD_CHECKOUT" fetch -q origin || {
     echo "fetch origin failed in ${PROD_CHECKOUT}" >&2; exit 1; }
 fi
 FULL="$(git -C "$PROD_CHECKOUT" rev-parse --verify --quiet "${SHA}^{commit}")" || {
   echo "${SHA} is not a commit in ${PROD_CHECKOUT} (fetched origin; still unknown)" >&2; exit 1; }
-# env_prod_checkout_sync re-derives the dir from the root; name the resolved
-# path so the sync moves THIS checkout (sudo scrubbed the caller's env).
-PRECIS_PROD_CHECKOUT="$PROD_CHECKOUT" env_prod_checkout_sync "$MAIN_CHECKOUT" "$FULL"
+git -C "$PROD_CHECKOUT" checkout -q --detach "$FULL" || {
+  echo "prod clone ${PROD_CHECKOUT} not moved to ${FULL:0:8} (local edits?)" >&2; exit 1; }
 echo "precis-mcp-prod at $(git -C "$PROD_CHECKOUT" rev-parse --short HEAD) (${PROD_CHECKOUT})"

@@ -315,7 +315,15 @@ _PIN_TIMEOUT_S = 120
 #: the one-line sudoers grant shipped as ``pin-prod-sha.sudoers``.
 PIN_PROD_HELPER = Path("scripts") / "host-ops" / "pin-prod-sha"
 
-_SHA_RE = re.compile(r"[0-9a-f]{7,40}")
+#: The root-owned copy the sudoers grant names (gr685985). The repo copy
+#: sits in a tree the factory user can write, so a grant on it would let
+#: that user run anything as the owner; cross-owner the pin runs only this
+#: installed, self-contained copy (installed by hand, see
+#: ``pin-prod-sha.sudoers``).
+INSTALLED_PIN_HELPER = Path("/usr/local/libexec/precis/pin-prod-sha")
+
+#: Full shas only: the sudoers grant matches exactly 40 hex characters.
+_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 #: sudo's own words when the sudoers grant is absent (``sudo -n`` refuses
 #: before any command runs).
@@ -363,7 +371,7 @@ def _pin_argv(helper: Path, owner: str, user: str, sha: str) -> list[str]:
     variables; a sudoers grant that allowed env would allow any command
     as the owner)."""
     if owner and owner != user:
-        return ["sudo", "-n", "-u", owner, str(helper), sha]
+        return ["sudo", "-n", "-u", owner, str(INSTALLED_PIN_HELPER), sha]
     return [str(helper), sha]
 
 
@@ -406,7 +414,7 @@ def _pin_prod(root: Path, sha: str = "") -> str:
         if argv[0] == "sudo" and _SUDO_GRANT_MISS.search(proc.stderr or ""):
             return (
                 "prod checkout not pinned: missing sudoers grant — add on this "
-                f"host: {user} ALL=({owner}) NOPASSWD: {helper}"
+                f"host: see pin-prod-sha.sudoers for {user} -> {owner} on {INSTALLED_PIN_HELPER}"
             )[:300]
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:]
         return f"prod checkout not pinned: exit {proc.returncode} {''.join(tail)}"[:300]
@@ -454,6 +462,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             ctx, f"{NAME}: scripts/release --deploy-only exit {exit_code}", log_text
         )
         return True
+    todo_id0 = ((ctx.meta or {}).get("params") or {}).get("todo_id")
     lines = [
         f"{NAME}: exit {exit_code} ({'deployed' if exit_code == 0 else 'rollout done, runtime confirmation pending'})"
     ]
@@ -495,6 +504,25 @@ def poll(ctx: Any, handle: Any) -> bool:
         lines.append(_pin_prod(root, head))
     else:
         lines.append("no RELEASE_DEPLOYED line (rollout was already done)")
+        # A retry must recover a missed pin: the recorded deployed sha
+        # (release.round deploy.sha, else the prod head) is the target.
+        try:
+            rel0 = (
+                _release.release_of(ctx.store, todo_id0)
+                if isinstance(todo_id0, int)
+                else None
+            )
+            recorded = _release.pinned_deploy_sha(
+                ctx.store, str((rel0 or {}).get("rN") or "")
+            )
+        except Exception as exc:
+            log.warning("%s: recorded deploy sha unreadable", NAME, exc_info=True)
+            recorded = None
+            lines.append(f"deployed sha unreadable: {type(exc).__name__}")
+        if recorded:
+            lines.append(_pin_prod(Path(str(handle.get("root") or ".")), recorded))
+        else:
+            lines.append("prod checkout not pinned: no recorded deployed sha")
     now = datetime.now(UTC)
     params = (ctx.meta or {}).get("params") or {}
     todo_id = params.get("todo_id")

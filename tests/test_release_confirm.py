@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -882,6 +883,7 @@ _REAL_MCP_EVIDENCE = rcf._mcp_evidence
 
 def _mcp(monkeypatch: pytest.MonkeyPatch, served: str | None) -> None:
     monkeypatch.setattr(rcf, "_mcp_evidence", _REAL_MCP_EVIDENCE)
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "tok")
 
     def get(url: str) -> str | None:
         assert url == MCP_URL
@@ -943,3 +945,33 @@ def test_unset_mcp_url_fails_the_confirm(
 def test_mcp_url_is_a_registered_setting() -> None:
     spec = psettings.REGISTRY["release.mcp_url"]
     assert spec.env_var == "PRECIS_RELEASE_MCP_URL" and spec.default is None
+
+
+def test_mcp_token_falls_back_to_the_mounted_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PRECIS_MCP_TOKEN", raising=False)
+    (tmp_path / "PRECIS_MCP_TOKEN").write_text("mounted-tok\n", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_SECRETS_FILE_DIR", str(tmp_path))
+    assert rcf._mcp_token() == "mounted-tok"
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "env-tok")
+    assert rcf._mcp_token() == "env-tok"
+
+
+def test_no_mcp_credential_is_not_attested_without_a_transport(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rcf, "_mcp_evidence", _REAL_MCP_EVIDENCE)
+    monkeypatch.delenv("PRECIS_MCP_TOKEN", raising=False)
+    monkeypatch.setenv("PRECIS_SECRETS_FILE_DIR", str(tmp_path))  # empty mount
+
+    def never(url: str) -> str | None:
+        raise AssertionError("transport opened without a credential")
+
+    monkeypatch.setattr(rcf, "_mcp_served_sha", never)
+    R.record_prod_head(store, SHA, [])
+    _beat(store, "node-a", SHA)
+    psettings.set_setting(rcf.MCP_URL_KEY, MCP_URL, store=store)
+    ev = rcf.gather_evidence(store, REL, now=NOW)
+    assert not ev.ok
+    assert ev.problems == ["MCP not attested (no MCP credential on this worker)"]
