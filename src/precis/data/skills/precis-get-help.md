@@ -57,6 +57,12 @@ or `view='ids'` (bare handles). Both return one line per distinct ID in caller
 order; missing, deleted or other-kind rows get a one-line status. Other batch
 views keep the 50-ID cap. `args={'tag_prefixes': 'thread,fix'}` overrides list chips.
 
+An `id` list may mix self-identifying handles from different kinds. Mixed
+batches resolve each address independently in caller order and render a scalar
+read per address; the mixed path caps at 300 IDs whatever the view. Shared
+options must be valid for every resolved kind. Same-kind lists keep their
+native batch views and limits.
+
 ## Render a ref with its neighbourhood and recall
 
 For a newly written or edited memory, check

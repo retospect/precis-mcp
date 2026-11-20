@@ -95,11 +95,14 @@ def resolve_live_slug_ref(
         )
     # accept the universal record handle (e.g. ``or123``) — the
     # form output now emits — resolving it by ref_id; else the slug path.
+    # A live slug wins over a coincidental handle shape: the dispatcher
+    # rewrites a resolved handle to its public id, so a slug that itself
+    # parses as a handle must not bounce to the handle's ref (gr720467 —
+    # ``pa<target>`` resolved to slug ``pa<decoy>``, which read the decoy).
     parsed = handle_registry.parse(slug)
-    if parsed is not None and parsed[0] == kind and not parsed[1]:
+    ref = store.get_ref(kind=kind, id=slug)
+    if ref is None and parsed is not None and parsed[0] == kind and not parsed[1]:
         ref = store.get_ref(kind=kind, id=parsed[2])
-    else:
-        ref = store.get_ref(kind=kind, id=slug)
     if ref is None and slug.isdigit():
         # A1: the agent passed a bare number (the prefix stripped off a
         # ``<code><id>`` handle). Slug-addressed kinds are never addressed by a

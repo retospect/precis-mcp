@@ -3310,6 +3310,10 @@ class DispatchMixin(RuntimeShape):
           3. Handler invocation with extras whitelist + defaulted-kind
              error annotation.
         """
+        if verb == "get" and args.get("kind") is None:
+            mixed = self._dispatch_mixed_get(args)
+            if mixed is not None:
+                return mixed
         # D1: accept URI-style ``id='kind:slug[~sel]'`` on input. Extract
         # the kind prefix into ``args['kind']`` (if not already set) and
         # leave the unprefixed identifier in ``args['id']``. Validation
@@ -6077,13 +6081,74 @@ class DispatchMixin(RuntimeShape):
             ),
         )
 
+    def _dispatch_mixed_get(self, args: dict[str, Any]) -> Response | None:
+        """Read heterogeneous self-identifying addresses through scalar routing."""
+        idents = args.get("id")
+        if not isinstance(idents, (list, tuple)) or not idents:
+            return None
+        kinds: list[str] = []
+        for ident in idents:
+            if not isinstance(ident, str):
+                return None
+            probe = {"id": ident}
+            self._maybe_split_prefixed_id(probe, verb="get")
+            if probe.get("kind") is None:
+                return None
+            kinds.append(probe["kind"])
+        # The common kindless batch is same-kind — it falls through to
+        # ``_infer_batch_kind`` for the handler's native batch path, so
+        # probe first and only build per-address calls on a real mix.
+        if len(set(kinds)) < 2:
+            return None
+        from precis.handlers._numeric_ref import COMPACT_BATCH_ID_CAP
+
+        if len(idents) > COMPACT_BATCH_ID_CAP:
+            raise BadInput(
+                f"mixed-kind get accepts at most {COMPACT_BATCH_ID_CAP} IDs",
+                next=f"split id= into batches of at most {COMPACT_BATCH_ID_CAP} handles",
+            )
+        children: list[dict[str, Any]] = []
+        for ident, kind in zip(idents, kinds, strict=True):
+            child = copy.deepcopy(args)
+            child["id"] = ident
+            # Scalar dispatch must resolve the original address exactly once:
+            # a public slug may itself look like another live handle.
+            child["kind"] = kind
+            children.append(child)
+        gate = _KIND_GATE.get()
+        if gate is not None:
+            for child in children:
+                gate("get", child)
+        responses = [self._dispatch_inner_core("get", child) for child in children]
+        return Response(
+            body="\n\n".join(
+                f"{ident}\n{self._render(response)}"
+                for ident, response in zip(idents, responses, strict=True)
+            ),
+            result_count=len(responses),
+            result_ids=[
+                ref_id
+                for response in responses
+                for ref_id in (
+                    response.result_ids
+                    if response.result_ids is not None
+                    else [response.ref_id]
+                    if response.ref_id is not None
+                    else []
+                )
+            ],
+            transient=any(response.transient for response in responses),
+            images=tuple(image for response in responses for image in response.images),
+        )
+
     def _infer_batch_kind(
         self, args: dict[str, Any], idents: Any, *, verb: str | None = None
     ) -> None:
         """``get(id=['pc1', 'pc2'])`` with no ``kind=``: infer the kind per
         handle via the single-id path. One shared kind → that kind's batch
-        get with the rewritten public ids; mixed kinds → ``BadInput``
-        naming them. Items that don't self-identify leave the call as is."""
+        get with the rewritten public ids. Mixed reads fan out before this
+        path; mixed writes refuse. Items that don't self-identify leave
+        the call as is."""
         if args.get("kind") is not None or not idents:
             return
         if not all(isinstance(i, str) for i in idents):

@@ -51,6 +51,10 @@ The binding resets on success and failure so it cannot leak to another call.
 Retired memory redirects drop view, extent and q when the successor is
 another kind, with a receipt: memory read options can break that reader.
 
+Mixed-kind handle lists on get use scalar routing for each address in caller
+order, checking each resolved kind before reading. Same-kind lists retain
+their handler's native batch behavior; writes still require one shared kind.
+
 Search traces reuse agentlog refs without tags or chunks: one best-effort
 INSERT after dispatch, never an embedding/summarize/keywords work item.
 Call-local stage evidence retains pre-cut candidates (50 plus the total),
