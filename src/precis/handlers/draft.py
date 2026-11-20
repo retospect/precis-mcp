@@ -445,6 +445,35 @@ def _coerce_authoring(v: bool | str) -> bool:
     )
 
 
+#: A BCP-47-shaped document-language tag (``en-GB``, ``de``): a 2–3-letter
+#: primary subtag, then optional 1–8-char subtags (gr725247 — the Word
+#: export writes the tag into ``w:lang`` so Word spell-checks the draft in
+#: its own language instead of flagging every British spelling).
+_LANGUAGE_TAG = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$")
+
+
+def _coerce_language(v: str) -> str | None:
+    """``edit(kind='draft', language=…)`` → the stored tag, or ``None`` for
+    an empty string (the clear-a-key convention pops ``ref.meta
+    ['language']``)."""
+    tag = str(v).strip()
+    if not tag:
+        return None
+    # Word core properties cap strings at 255 characters; refuse before
+    # persisting a value that would make this draft impossible to export.
+    if len(tag) > 255:
+        raise BadInput(
+            "language tag must be at most 255 characters",
+            next="edit(kind='draft', id=<slug>, args={'language': 'en-GB'})",
+        )
+    if not _LANGUAGE_TAG.fullmatch(tag):
+        raise BadInput(
+            f"language={v!r} is not a language tag like 'en-GB'",
+            next="edit(kind='draft', id=<slug>, language='en-GB')",
+        )
+    return tag
+
+
 #: The ``draft_refresh`` scanner's opt-in subdict under ``ref.meta``
 #: (gr662152): ``enabled`` is the flag
 #: :func:`precis.workers.draft_refresh_scan._opted_in_drafts` gates on,
@@ -3392,6 +3421,7 @@ class DraftHandler(Handler):
         review: str | None = None,
         verdict: str = "approved",
         authoring: bool | str | None = None,
+        language: str | None = None,
         scaffold: str | None = None,
         dry_run: bool | str = False,
         source: dict[str, Any] | None = None,
@@ -3527,6 +3557,7 @@ class DraftHandler(Handler):
                     "review": review,
                     "verdict": verdict if verdict != "approved" else None,
                     "authoring": authoring,
+                    "language": language,
                     "scaffold": scaffold,
                     "view": view,
                     "render": render,
@@ -3607,6 +3638,25 @@ class DraftHandler(Handler):
             return Response(
                 body=f"auto-author {'ON' if on else 'OFF'} for {ref.slug or ref.id}"
             )
+        # ``language`` is a draft-level op (the remainder of gr725247): the
+        # document language the Word export writes into the file — it sets
+        # ``w:lang`` (and ``dc:language``) from it, so Word spell-checks a
+        # British-English draft in en-GB instead of flagging every
+        # 'neighbouring'. Stored on the draft ref's ``meta['language']``;
+        # an empty string clears it (``patch_ref_meta`` pops a None value).
+        # Distinct from the chunk-level ``lang=`` narration routing (the
+        # audio phonemizer), which is per-chunk and never leaves the store.
+        if language is not None:
+            _reject_dry_run("language")
+            ref = self._resolve_draft_any(id)
+            tag = _coerce_language(language)
+            self.store.drafts.patch_ref_meta(
+                ref.id, {"language": tag}, source={"actor": "draft-edit"}
+            )
+            name = ref.slug or ref.id
+            if tag:
+                return Response(body=f"set language on {name}: {tag}")
+            return Response(body=f"cleared language on {name}")
         # ``scaffold`` is a draft-level op (paper-writing pipeline rung 4,
         # me689904 §"Document classes"): lays
         # down a genre's standard section skeleton, the

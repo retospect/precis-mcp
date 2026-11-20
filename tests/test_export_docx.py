@@ -3778,6 +3778,94 @@ def test_docx_core_properties_come_from_the_draft(
     assert "python-docx" not in cp2._element.xml
 
 
+# ── gr725247 (remainder): document language ─────────────────────────
+
+_LANG_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _doc_default_lang(path: Path) -> str | None:
+    """The ``w:lang`` default (``@w:val`` of docDefaults/rPrDefault) of a
+    saved .docx, or None when the part carries no default language."""
+    import zipfile
+
+    from lxml import etree
+
+    with zipfile.ZipFile(path) as zf:
+        root = etree.fromstring(zf.read("word/styles.xml"))
+    lang = root.find(
+        f"{_LANG_NS}docDefaults/{_LANG_NS}rPrDefault/{_LANG_NS}rPr/{_LANG_NS}lang"
+    )
+    return lang.get(f"{_LANG_NS}val") if lang is not None else None
+
+
+def test_docx_document_language_comes_from_the_draft(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    from precis.errors import BadInput
+
+    pid = _new_draft_project(hub)
+    draft.put(id="langdoc", title="Colour and behaviour", project=pid)
+
+    # set → exported into w:lang (spell-check language) and dc:language
+    reply = draft.edit(id="langdoc", language="en-GB")
+    assert "en-GB" in reply.body
+    ref = hub.live_store.get_ref(kind="draft", id="langdoc")
+    assert ref is not None
+    assert (ref.meta or {}).get("language") == "en-GB"
+    out = tmp_path / "langdoc.docx"
+    export_docx(hub.live_store, ref, target_path=out)
+    assert _doc_default_lang(out) == "en-GB"
+    cp = docx.Document(str(out)).core_properties
+    assert cp.language == "en-GB"
+
+    # A syntactically valid oversized tag must not poison a saved draft.
+    with pytest.raises(BadInput, match="at most 255 characters"):
+        draft.edit(id="langdoc", language="en" + "-abcdefgh" * 29)
+    ref = hub.live_store.get_ref(kind="draft", id="langdoc")
+    assert ref is not None
+    assert (ref.meta or {}).get("language") == "en-GB"
+    export_docx(hub.live_store, ref, target_path=out)
+    assert docx.Document(str(out)).core_properties.language == "en-GB"
+
+    # a draft without a language keeps the template's en-US default
+    draft.put(id="langdoc2", title="No language", project=_new_draft_project(hub))
+    ref2 = hub.live_store.get_ref(kind="draft", id="langdoc2")
+    out2 = tmp_path / "langdoc2.docx"
+    export_docx(hub.live_store, ref2, target_path=out2)
+    assert _doc_default_lang(out2) == "en-US"
+
+    # clear (empty string pops the key) → the export falls back again
+    reply = draft.edit(id="langdoc", language="")
+    assert "cleared" in reply.body
+    ref = hub.live_store.get_ref(kind="draft", id="langdoc")
+    assert ref is not None
+    assert "language" not in (ref.meta or {})
+    out3 = tmp_path / "langdoc3.docx"
+    export_docx(hub.live_store, ref, target_path=out3)
+    assert _doc_default_lang(out3) == "en-US"
+
+    # garbage refuses loudly instead of landing in the file
+    with pytest.raises(BadInput, match="not a language tag"):
+        draft.edit(id="langdoc", language="english-ish!")
+
+
+def test_mcp_edit_tool_forwards_draft_language(
+    monkeypatch, hub: Hub, runtime_with_store, tmp_path: Path
+) -> None:
+    """``edit(kind='draft', language=…)`` reaches the handler through the
+    typed tool function, not just ``DraftHandler.edit`` called directly."""
+    import precis.tools.core as core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+    pid = _new_draft_project(hub)
+    DraftHandler(hub=hub).put(id="langwire", title="Colour", project=pid)
+
+    core.edit(kind="draft", id="langwire", args={"language": "en-GB"})
+    ref = hub.live_store.get_ref(kind="draft", id="langwire")
+    assert ref is not None
+    assert (ref.meta or {}).get("language") == "en-GB"
+
+
 # ── gr725249: header rows, alt text, resolution ───────────────────────
 
 

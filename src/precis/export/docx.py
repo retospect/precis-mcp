@@ -764,11 +764,15 @@ def _add_hyperlink(
     paragraph._p.append(link)
 
 
-def _set_core_properties(doc: Any, title: str | None, byline: dict[str, Any]) -> None:
+def _set_core_properties(
+    doc: Any, title: str | None, byline: dict[str, Any], language: str = ""
+) -> None:
     """Replace the python-docx template's document properties (gr725247):
     title = the draft title as plain text, author = the byline's names (empty
     when the draft has none), created / modified = now (UTC); description and
-    last-modified-by empty."""
+    last-modified-by empty; language = the draft's document language (the
+    ``dc:language`` twin of the ``w:lang`` write :func:`_set_document_language`
+    makes), empty when the draft declares none."""
     from precis.utils.title_views import title_plain
 
     props = doc.core_properties
@@ -777,8 +781,32 @@ def _set_core_properties(doc: Any, title: str | None, byline: dict[str, Any]) ->
     props.author = ", ".join(a["name"] for a in byline.get("authors") or [])
     props.comments = ""
     props.last_modified_by = ""
+    props.language = language
     props.created = now
     props.modified = now
+
+
+def _set_document_language(doc: Any, language: str) -> None:
+    """The document's default language — ``w:lang`` in styles.xml's
+    ``docDefaults`` (the remainder of gr725247): python-docx's template
+    ships en-US, so Word spell-checked a British-English draft in
+    American and flagged every 'neighbouring' / 'tunnelling'. Only
+    written when the draft declares a language; the template default
+    stands otherwise."""
+    if not language:
+        return
+    from docx.oxml.ns import qn
+
+    styles = doc.styles.element
+    rpr_default = styles.find(qn("w:docDefaults") + "/" + qn("w:rPrDefault"))
+    if rpr_default is None:  # pragma: no cover - depends on the docx template
+        return
+    rpr = rpr_default.find(qn("w:rPr"))
+    if rpr is None:  # pragma: no cover - depends on the docx template
+        return
+    lang = rpr.find(qn("w:lang"))
+    if lang is not None:
+        lang.set(qn("w:val"), language)
 
 
 def _render_date(doc: Any) -> None:
@@ -955,7 +983,11 @@ def export_docx(
     doc = Document()
     _apply_paper_theme(doc)
     byline = build_byline(getattr(ref, "authors", None))
-    _set_core_properties(doc, getattr(ref, "title", None), byline)
+    # The draft-level document language (gr725247): what Word
+    # spell-checks against. Unset → the template's en-US default stands.
+    language = str((getattr(ref, "meta", None) or {}).get("language") or "").strip()
+    _set_core_properties(doc, getattr(ref, "title", None), byline, language)
+    _set_document_language(doc, language)
     _header_footer(doc, getattr(ref, "title", None), byline)
 
     # The seeded title chunk renders as the doc title (``\maketitle``); a

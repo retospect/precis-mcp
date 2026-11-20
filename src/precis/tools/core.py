@@ -2633,6 +2633,10 @@ def edit(
     # which Kokoro voice + language phonemizer speaks this chunk on export.
     voice: str | None = None,
     lang: str | None = None,
+    # draft document language (see precis-draft-help "Document metadata"):
+    # language='en-GB' sets the draft-level tag the Word export writes into
+    # w:lang / dc:language; '' clears it (gr725247).
+    language: str | None = None,
     # draft data/table chunk (chunk_kind='table'): replace the
     # canonical data (table={header,rows}) / legend (caption=) / provenance
     # (regen=); the markdown text re-derives. Field-level edits (the shipped
@@ -2826,6 +2830,7 @@ def edit(
         "permission": permission,
         "voice": voice,
         "lang": lang,
+        "language": language,
         "table": table,
         "caption": caption,
         "regen": regen,

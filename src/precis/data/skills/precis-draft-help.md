@@ -195,16 +195,18 @@ edit(
 )
 ```
 
-`title=` writes both `refs.title` (search hits, link chips) and the
-title heading chunk, atomically — repairs an already-drifted state too;
-the heading is edited in place (anchors stay live). `id` may be the slug
-or any `dc<id>`/`¶handle` inside it. Blank title → `BadInput`. A draft
-with no root heading (an import) renames the ref alone and says so.
+`title=` writes `refs.title` and the title heading atomically, repairing
+drift while preserving anchors. `id` is the slug or any `dc<id>`/`¶handle`
+in it. Blank title → `BadInput`. Without a root heading, only the ref changes.
 
-`ror` is the institution's [ROR](https://ror.org) id — two authors
-sharing a ROR collapse to one numbered affiliation. Renders in the web
-reader and both exports (PDF via `authblk`, .docx), org name hyperlinked
-to its ROR; no affiliations → a plain name list. Web reader has the same
+`edit(kind="draft", id=<slug>, args={"language": "en-GB"})` sets the draft
+language (`""` clears): the Word export writes it to `w:lang`/`dc:language`;
+unset exports en-US. Tags must be at most 255 characters.
+
+`ror` is the institution's [ROR](https://ror.org) id — authors sharing
+one collapse to a single numbered affiliation. Renders in the web reader
+and both exports (PDF via `authblk`, .docx), org name linked to its ROR;
+no affiliations → a plain name list. Web reader has the same
 editor: an **authors ▾** dropdown, one author per line as `Name |
 Affiliation | ROR`, posting to `/drafts/<slug>/authors`.
 
@@ -464,9 +466,9 @@ export**; rewrite the passage to the hub's current sentence (a
 whole-chunk `mode='replace'` re-pins even when the prose still stands).
 Undefined-abbreviation warnings are advisory — define the token
 (`chunk_kind='term'`) or silence it (`edit(not_abbrev=[…])`). A
-`doc_type='poster'` draft is branded
-by a `kind='profile'` profile — `meta.workspace.poster.profile` pins one,
-else the draft owner's default — see [[precis-profile-help]].
+`doc_type='poster'` draft is branded by a `kind='profile'` profile
+(`meta.workspace.poster.profile`, else the owner's default) — see
+[[precis-profile-help]].
 
 ## See also
 
