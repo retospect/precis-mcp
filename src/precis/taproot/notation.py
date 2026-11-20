@@ -1232,6 +1232,69 @@ def mask_unauthored(text: str) -> str:
     return text
 
 
+def _authored_finding_spans(
+    text: str,
+) -> list[tuple[str, str | None, int, int, str]]:
+    """Shared core of the two authored-prose lints: ``(code, token, start,
+    end, message)`` per finding, one per (code, token).
+
+    Runs :func:`lint_notation` line by line over :func:`mask_unauthored`
+    text. ``start``/``end`` index the flagged token in the ORIGINAL ``text``:
+    masking is same-length (newlines preserved), so masked-line offsets map
+    onto it 1:1. A ``None`` token keeps span ``(0, 0)`` — only the
+    symbol-less ``approx-spacing`` variant yields one, and it names no
+    token to anchor an edit to.
+    """
+    out: list[tuple[str, str | None, int, int, str]] = []
+    seen: set[tuple[str, str | None]] = set()
+    offset = 0
+    for raw in mask_unauthored(text or "").splitlines(keepends=True):
+        line = raw.rstrip("\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
+        line_offset = offset
+        offset += len(raw)
+        if not line.strip():
+            continue
+        for message in lint_notation(line):
+            code = message.split(":", 1)[0]
+            if code in _AUTHORED_SKIP_CODES:
+                continue
+            token: str | None = None
+            start = end = 0
+            m = _FOUND_SUBSTRING_RE.match(message)
+            needle = m.group(1) if m else None
+            if code == "tex-residue":
+                needle = next((c for c in ("$", "\\") if c in line), None)
+            if needle and " " in needle and needle in line:
+                token = needle.strip()
+                at = line.index(needle)
+                start = line_offset + at + (len(needle) - len(needle.lstrip()))
+                end = start + len(token)
+            elif needle:
+                # Short needles ('x', '^') recur in the line; take the first
+                # whitespace-delimited token that still trips this code.
+                chosen: tuple[str, int] | None = None
+                for at in (i for i in range(len(line)) if line.startswith(needle, i)):
+                    lo = line.rfind(" ", 0, at) + 1
+                    hi = line.find(" ", at + len(needle))
+                    raw_tok = line[lo : hi if hi != -1 else len(line)]
+                    cand = raw_tok.strip(".,;:()")
+                    lead = len(raw_tok) - len(raw_tok.lstrip(".,;:()"))
+                    if chosen is None or not chosen[0]:
+                        chosen = (cand, lo + lead)  # fallback: first occurrence
+                    if any(w.startswith(code + ":") for w in lint_notation(cand)):
+                        chosen = (cand, lo + lead)
+                        break
+                if chosen is not None and chosen[0]:
+                    token, rel = chosen
+                    start = line_offset + rel
+                    end = start + len(token)
+            if (code, token) in seen:
+                continue
+            seen.add((code, token))
+            out.append((code, token, start, end, message))
+    return out
+
+
 def lint_authored_notation(text: str) -> list[tuple[str, str | None, str]]:
     """``(code, offending token, canon message)`` for authored prose.
 
@@ -1240,35 +1303,24 @@ def lint_authored_notation(text: str) -> list[tuple[str, str | None, str]]:
     per (code, token). `formula-ascii-subscript` is never reported (see
     ``_AUTHORED_SKIP_CODES``). Advisory only; ``[]`` for empty or clean input.
     """
-    out: list[tuple[str, str | None, str]] = []
-    seen: set[tuple[str, str | None]] = set()
-    for line in mask_unauthored(text or "").splitlines():
-        if not line.strip():
-            continue
-        for message in lint_notation(line):
-            code = message.split(":", 1)[0]
-            if code in _AUTHORED_SKIP_CODES:
-                continue
-            token: str | None = None
-            m = _FOUND_SUBSTRING_RE.match(message)
-            needle = m.group(1) if m else None
-            if code == "tex-residue":
-                needle = next((c for c in ("$", "\\") if c in line), None)
-            if needle and " " in needle and needle in line:
-                token = needle.strip()
-            elif needle:
-                # Short needles ('x', '^') recur in the line; take the first
-                # whitespace-delimited token that still trips this code.
-                for at in (i for i in range(len(line)) if line.startswith(needle, i)):
-                    lo = line.rfind(" ", 0, at) + 1
-                    hi = line.find(" ", at + len(needle))
-                    cand = line[lo : hi if hi != -1 else len(line)].strip(".,;:()")
-                    token = token or cand  # fallback: first occurrence
-                    if any(w.startswith(code + ":") for w in lint_notation(cand)):
-                        token = cand
-                        break
-            if (code, token) in seen:
-                continue
-            seen.add((code, token))
-            out.append((code, token, message))
-    return out
+    return [
+        (code, token, message)
+        for code, token, _start, _end, message in _authored_finding_spans(text)
+    ]
+
+
+def lint_authored_notation_spans(
+    text: str,
+) -> list[tuple[str, str | None, int, int]]:
+    """``(code, token, start, end)`` for authored prose, offsets into ``text``.
+
+    Same skips, dedup and token rules as :func:`lint_authored_notation`;
+    ``start``/``end`` index the flagged token in the original text (the
+    masking pass preserves length). A ``None`` token — only the symbol-less
+    ``approx-spacing`` variant produces one — carries span ``(0, 0)`` and
+    cannot anchor an edit. Advisory only; ``[]`` for empty or clean input.
+    """
+    return [
+        (code, token, start, end)
+        for code, token, start, end, _message in _authored_finding_spans(text)
+    ]

@@ -11,7 +11,13 @@ from psycopg.types.json import Jsonb
 
 from precis.graph.garden import candidates as cand
 from precis.graph.garden.consumer import _reviewable
-from precis.graph.garden.proposals import GardenProposal, key_block, record_rejection
+from precis.graph.garden.proposals import (
+    GardenProposal,
+    emit_proposal,
+    key_block,
+    pending_proposals,
+    record_rejection,
+)
 from precis.graph.garden.proposer import (
     MEMORY_ACTIONS,
     MEMORY_PROMPT_VERSION,
@@ -22,7 +28,7 @@ from precis.store.revision_context import TrustAct, revision_context
 from precis.store.types import ChunkInsert, Tag
 
 NOW = datetime(2026, 11, 4, tzinfo=UTC)
-DETECTORS = ("review_due", "title_shape", "negative_undated")
+DETECTORS = ("review_due", "title_shape", "negative_undated", "notation")
 
 
 def _memory(
@@ -112,6 +118,7 @@ def test_memory_review_requires_explicit_opt_in() -> None:
     assert cand.detectors_for(("memory-review",)) == [
         "entity_claim_stale",
         "negative_undated",
+        "notation",
         "restated_claim",
         "review_due",
         "source_drift",
@@ -367,7 +374,7 @@ def test_memory_review_prompts_and_actions_stay_proposal_only(detector: str) -> 
     )
     prompt = _prompt_for(candidate)
     assert f'the payload actions are "{"|".join(MEMORY_ACTIONS[detector])}"' in prompt
-    assert "All three detectors are proposal-only" in prompt
+    assert "proposal-only, with no apply or auto-apply path" in prompt
     assert "no apply or auto-apply path" in prompt
     assert "never invent a fix" in prompt
     assert "not_checked" in prompt
@@ -552,3 +559,60 @@ def test_undated_resume_and_prose_containing_path_are_not_title_smells(
     _memory(store, "Resume allocation after dependencies resolve", section="threads")
     _memory(store, "Run scripts/test before committing changes")
     assert cand.title_shape_candidates(store) == []
+
+
+def test_notation_detector_flags_ascii_exponent_not_quoted_one(store: Store) -> None:
+    body = 'The rate is 3 s-1 here.\nQuoted "3 s-1" stays exempt.\n'
+    rid = _memory(store, body=body)
+    (candidate,) = cand.notation_candidates(store)
+    assert candidate.target_id == rid
+    assert candidate.action == "rewrite"
+    (first,) = candidate.evidence["hits"]
+    assert first["code"] == "ascii-minus-exponent"
+    assert body[slice(*first["span"])] == first["token"]
+    assert len(candidate.evidence["hits"]) <= cand.NOTATION_MATCH_CAP
+    (op,) = candidate.payload["ops"]
+    assert op["text"] is None
+    assert op["find"] == first["token"]
+    assert op["span"] == first["span"]
+    assert candidate.payload["base_sha"] == cand._ref_shas(store, [rid])[rid]
+    assert candidate.evidence["content_sha"] == candidate.payload["base_sha"]
+    assert store.reviews_for("ref", rid) == []
+
+
+def test_clean_memory_yields_no_candidate(store: Store) -> None:
+    _memory(store, body="The measured rate reaches 3 s⁻¹ at 25 °C.")
+    assert cand.notation_candidates(store) == []
+
+
+def test_limit_bounds_candidates_and_cursor_advances(store: Store) -> None:
+    targets = [_memory(store, f"slug_{i}", "The rate is 3 s-1 here.") for i in range(3)]
+    cursor: dict[str, int] = {}
+    seen: list[int] = []
+    for _ in targets:
+        found = cand.notation_candidates(
+            store, limit=1, scan_cap=2, cursors=cursor, next_cursors=cursor
+        )
+        seen.extend(c.target_id for c in found)
+    assert seen == targets
+    assert cand.notation_candidates(store, cursors=cursor, next_cursors=cursor) == []
+    assert cursor["notation:memory"] == 0
+
+
+def test_notation_proposal_ops_match_fresh_detector_ops(store: Store) -> None:
+    rid = _memory(store, body="The rate is 3 s-1 here.")
+    targeted = {"notation:memory": rid - 1}
+    (candidate,) = cand.notation_candidates(
+        store, scan_cap=1, cursors=targeted, next_cursors={}
+    )
+    review_id = emit_proposal(
+        store, candidate, rationale="Fixture", model=None, key=candidate.key
+    )
+    assert review_id is not None
+    (proposal,) = [p for p in pending_proposals(store) if p.review_id == review_id]
+    (fresh,) = cand.notation_candidates(
+        store, scan_cap=1, cursors=targeted, next_cursors={}
+    )
+    assert fresh.payload["ops"] == proposal.payload["ops"]
+    assert fresh.evidence == proposal.evidence
+    assert fresh.key == proposal.key

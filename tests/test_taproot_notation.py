@@ -1230,3 +1230,36 @@ def test_authored_lint_still_flags_tilde_approximation() -> None:
 
     hits = lint_authored_notation("Median crystallite size: ~19 nm.")
     assert any(code == "tilde-approximation" for code, _, _ in hits)
+
+
+def test_spans_index_the_flagged_token_and_skip_quotes_code_math() -> None:
+    from precis.taproot.notation import lint_authored_notation_spans
+
+    text = (
+        'Quoted "3 cm^2" stays exempt.\n'
+        "Inline `y^2` stays exempt.\n"
+        "$$\nE = a^2\n$$\n"
+        "Area is 3 cm^2 here.\n"
+    )
+    hits = lint_authored_notation_spans(text)
+    assert [(code, token) for code, token, _, _ in hits] == [("caret-exponent", "cm^2")]
+    _code, token, start, end = hits[0]
+    assert text[start:end] == token == "cm^2"
+    assert start == text.index("cm^2", text.index("Area"))
+
+
+@pytest.mark.parametrize(
+    "separator", list("\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029") + ["\r\n"]
+)
+def test_authored_notation_spans_exclude_line_separators(separator: str) -> None:
+    from precis.taproot.notation import (
+        lint_authored_notation,
+        lint_authored_notation_spans,
+    )
+
+    text = f"Area is 3 cm^2{separator}Volume is 4 cm^3"
+    assert [token for _, token, _ in lint_authored_notation(text)] == ["cm^2", "cm^3"]
+    assert lint_authored_notation_spans(text) == [
+        ("caret-exponent", token, text.index(token), text.index(token) + len(token))
+        for token in ("cm^2", "cm^3")
+    ]

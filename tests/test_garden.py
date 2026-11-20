@@ -1251,3 +1251,11 @@ def test_failed_run_no_retry_while_another_job_pending(store: Store) -> None:
     _on_failed(_FakeCtx(store, job_id, {"params": {}}))
 
     assert _retry_count(store) == 0
+
+
+def test_pass_choices_include_notation_in_memory_review() -> None:
+    assert "notation" in cand.detectors_for(("memory-review",))
+    assert "notation" not in cand.detectors_for(("all",))
+    assert "notation" not in cand.detectors_for(("memory",))
+    assert "notation" not in cand.detectors_for(("all", "memory"))
+    assert "memory-review" in cand.PASS_CHOICES

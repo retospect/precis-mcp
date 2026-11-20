@@ -72,6 +72,7 @@ _ASK_LLM_TIERS = {
     "griped": "opus",
     "host_facts": "opus",
     "negative_undated": "opus",
+    "notation": "sonnet",
     "restated_claim": "opus",
     "review_due": "opus",
     "source_drift": "opus",

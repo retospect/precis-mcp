@@ -53,7 +53,7 @@ pair in a large hub is compared.
 
 ## Memory review checks
 
-Three read-only detectors pin evidence to the memory's content SHA and emit
+Four read-only detectors pin evidence to the memory's content SHA and emit
 proposals only:
 
 - `review_due` flags expired, never-reviewed, SHA-changed,
@@ -76,6 +76,13 @@ proposals only:
 - `negative_undated` flags absence wording ("no X exists") without a date on
   that line. No search has verified the claim; `not_checked` records that
   limit.
+- `notation` flags the first authored-prose span that breaks
+  [[precis-notation-canon]] — one anchored fix per memory per pass,
+  skipping quoted spans, code spans and `$$…$$`/multi-line math (the
+  `Notation flags` section below). The evaluator supplies the
+  canon-correct replacement for the flagged token or asks for human review
+  on TeX residue and verbatim LaTeX sections. The detector skips
+  `formula-ascii-subscript`.
 
 `restated_claim`, `source_drift` and `entity_claim_stale` belong to the same
 review group.
@@ -193,18 +200,17 @@ unresolved and every suggested finding stays provisional.
 
 ## Notation flags
 
-Memory text follows [[precis-notation-canon]]. There is no `notation`
-proposal: the flag is the system-owned `AUDIT:notation` tag that
-`put`/`edit(kind='memory')` set on a title/body that breaks the canon.
+Memory text follows [[precis-notation-canon]]. The `memory-review` pass's
+`notation` detector (above) surfaces existing violations: one anchored
+proposal per memory per pass, fixing one spot at a time. The writer-side
+flag is the system-owned `AUDIT:notation` tag that `put`/`edit(kind=
+'memory')` set on a title/body that breaks the canon.
 `search(kind='memory', tags=['AUDIT:notation'])` lists the flagged nodes.
-A pass that touches a flagged node normalizes it by anchored edit —
-`edit(kind='memory', id='me…', find='<old>', text='<new>')`, one spot at a
-time — never a whole-body rewrite and never a script. Quoted spans, code
-spans and `$$…$$`/multi-line derivations are exempt and stay
-byte-identical; `C60`-style formulas are never flagged (the detector folds
-`C60` to `C₆₀`, and many matches are nomenclature like `B3LYP`). A clean
-rewrite clears the tag; a canon that does not fit the text is a gripe, not
-a spelling improvised in the node.
+Apply a reviewed correction at the flagged spot with
+`edit(kind='memory', id='me…', find='<old>', text='<new>')`. Keep quoted
+spans, code spans and `$$…$$`/multi-line derivations byte-identical.
+A clean rewrite clears the tag. File a gripe if the canon does not fit
+the text.
 
 ## Memory source and entity checks
 

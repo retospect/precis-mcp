@@ -25,6 +25,7 @@ count as errors without aborting the tick. CLI shows hold reasons; rejecting an
 apply-error hold reopens its key. Unresolved ops wait one day; resolved ops get
 fresh proposals. Applied find/span pairs must match fresh detector ops; link
 removals refuse, preventing model overrides from expanding detector edit scope.
+Notation review pins one authored token per memory to bound edits.
 Undo terminally rejects restored content, preventing next-tick reapplication.
 Supersede and retire snapshot links for undo, refusing changed endpoints.
 Retirement validates successor evidence before compaction so stale proposals close retryably.
@@ -131,10 +132,9 @@ trust acts retain the original model string.
    apply do not spend a review. A ``dangling_mention`` proposal whose ops
    are all bare swaps onto verified duplicate successors applies without a
    call (``garden.applied='mention'``, before/after spans recorded).
-   The six ``memory-review`` detectors stay
-   pending without consumer review or state changes. ``qualify`` and ``ask``
-   remain outside that consumer; an ``ask`` verdict files a ``memory-review``
-   todo from the runner (tiered by smell class), never a proposal. A
+   ``memory-review`` proposals stay pending for human review. The runner
+   files a ``memory-review`` todo for each ``ask`` verdict, tiered by smell
+   class. ``qualify`` also requires human review. A
    ``griped`` apply — and an evaluator no-change once no sibling fix
    path remains — replays the gripe's route and hub recall set and
    closes it with a ``resolved:`` comment once the deterministic pass
