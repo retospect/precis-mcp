@@ -136,8 +136,8 @@ per unit mass under unit cost) is a relink, not a merge: reject.
 #: The judgment criteria are NOT here: the per-type checklist, the
 #: disagreement shapes and the standard of done with its never-list are
 #: pinned verbatim from the ``precis-fix-memory-gripe-help`` skill — the
-#: same sections the hand repair path reads (DRY rule). ``__ACTIONS__``
-#: and ``__CHECKLIST__`` are substituted per candidate.
+#: same sections the hand repair path reads (DRY rule). The actions,
+#: rewrite shape and checklist are substituted per candidate.
 _MEMORY_CONTRACT = """You are the graph gardener's memory-body evaluator for a knowledge graph
 (refs = typed nodes, links = typed edges, tags = closed namespaces).
 
@@ -146,8 +146,7 @@ detector's evidence, and the pinned memory-body checklist. Judge the
 body against the checklist for its section type and answer with EXACTLY
 ONE action, as a single JSON object:
 
-{"action": "rewrite", "reason": "why",
- "ops": [{"find": "exact old text", "text": "verified replacement"}]}
+{"action": "rewrite", "reason": "why", __REWRITE_PAYLOAD__}
 {"action": "qualify", "reason": "why", "caveat": "caveat line"}
 {"action": "qualify", "reason": "why", "qualifies_from": "meNNN"}
 {"action": "supersede", "reason": "why", "successor": "meNNN"}
@@ -164,7 +163,7 @@ unsure, answer "no-change". "fisheye" is the target node's own
 fisheye+1hop render; "excerpts" holds each other named ref's bounded
 text.
 
-A rewrite states the claim as currently true — never a label — with one
+A body rewrite states the claim as currently true — never a label — with one
 live anchor and a date or sha; the pinned standard of done is binding.
 "ops" replaces the detector's anchored ops only when yours are better;
 "find" must match the body verbatim. "supersede" names a LIVE node that
@@ -178,11 +177,17 @@ __CHECKLIST__
 
 
 def _memory_contract(detector: str) -> str:
-    """The contract with this detector's payload actions and the pinned
-    checklist substituted in."""
+    """Fill in the detector's actions, rewrite shape and pinned checklist."""
     actions = "|".join(MEMORY_ACTIONS.get(detector, ()))
-    return _MEMORY_CONTRACT.replace("__ACTIONS__", f'"{actions}"').replace(
-        "__CHECKLIST__", memory_body_checklist()
+    rewrite_payload = (
+        '"new_title": "supported conclusion"'
+        if detector == "title_shape"
+        else '"ops": [{"find": "exact old text", "text": "verified replacement"}]'
+    )
+    return (
+        _MEMORY_CONTRACT.replace("__ACTIONS__", f'"{actions}"')
+        .replace("__REWRITE_PAYLOAD__", rewrite_payload)
+        .replace("__CHECKLIST__", memory_body_checklist())
     )
 
 
@@ -281,7 +286,7 @@ not_checked and cannot justify a finding. Reject when no change is
 supported; ask only when resolution needs a human. Preserve base_sha.
 
 title_shape proposes a title stating the body's supported conclusion,
-about twelve words. new_title=null is unresolved, not an empty title.
+about twelve words. A title_shape rewrite requires a non-empty "new_title".
 negative_undated reports undated absence wording, never proves the claim
 false. Its line spans and grep_brief name what needs verification; no repo
 search has been performed. A date on another line does not date the claim.
@@ -546,7 +551,18 @@ def _one_action_verdict(
     if action == "ask":
         return Verdict(accept=False, rationale=reason, ask=reason or None, model=model)
     overrides: dict[str, Any] = {}
-    if action == "rewrite":
+    if action == "rewrite" and candidate.detector == "title_shape":
+        new_title = body.get("new_title")
+        if not isinstance(new_title, str) or not new_title.strip():
+            # An incomplete response must remain eligible for another evaluation.
+            return Verdict(
+                accept=False,
+                rationale=reason,
+                error="title_shape rewrite requires a non-empty new_title",
+                model=model,
+            )
+        overrides["new_title"] = new_title
+    elif action == "rewrite":
         ops = body.get("ops")
         if (
             isinstance(ops, list)

@@ -21,8 +21,11 @@ from precis.graph.garden.proposals import (
 from precis.graph.garden.proposer import (
     MEMORY_ACTIONS,
     MEMORY_PROMPT_VERSION,
+    Verdict,
+    _one_action_verdict,
     _prompt_for,
 )
+from precis.graph.garden.runner import run_garden_tick
 from precis.store import Store
 from precis.store.revision_context import TrustAct, revision_context
 from precis.store.types import ChunkInsert, Tag
@@ -299,6 +302,45 @@ def test_title_shape_keeps_prose_and_dated_non_thread_titles(store: Store) -> No
     _memory(store, "The route reaches the current evidence")
     _memory(store, "A measured result from 2026-11-03")
     assert cand.title_shape_candidates(store) == []
+
+
+def test_title_shape_rewrite_persists_replacement(store: Store) -> None:
+    rid = _memory(store, "route_evidence")
+    (candidate,) = cand.title_shape_candidates(store)
+    assert (
+        '{"action": "rewrite", "reason": "why", "new_title": "supported conclusion"}'
+        in _prompt_for(candidate)
+    )
+    new_title = "The verified route reaches the evidence"
+
+    def propose(_store: Store, item: cand.GardenCandidate) -> Verdict:
+        if item.detector != "title_shape":
+            return Verdict(accept=False)
+        return _one_action_verdict(
+            {"action": "rewrite", "reason": "State the claim", "new_title": new_title},
+            item,
+            model=None,
+        )
+
+    run = run_garden_tick(store, passes=("memory-review",), propose=propose)
+    assert run.proposals == 1
+    (proposal,) = pending_proposals(store)
+    assert proposal.payload == {**candidate.payload, "new_title": new_title}
+    assert store.fetch_refs_by_ids([rid])[rid].title == "route_evidence"
+
+
+@pytest.mark.parametrize(
+    "fields", [{}, {"new_title": None}, {"new_title": "  "}, {"new_title": 5}]
+)
+def test_title_shape_rewrite_requires_replacement(fields: dict[str, Any]) -> None:
+    candidate = cand.GardenCandidate(
+        detector="title_shape", action="rewrite", target_kind="ref", target_id=1
+    )
+    verdict = _one_action_verdict(
+        {"action": "rewrite", **fields}, candidate, model=None
+    )
+    assert not verdict.accept
+    assert verdict.error == "title_shape rewrite requires a non-empty new_title"
 
 
 def test_negative_undated_uses_line_local_dates_and_grep_brief(store: Store) -> None:
