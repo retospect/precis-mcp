@@ -45,9 +45,36 @@ the v17 server.
 | 03:30 | `pg_dump` (`/opt/shared/scripts/pg_backup.sh` from `deploy/roles/backups/templates/pg_backup.sh.j2`; log `/opt/shared/logs/backup-pg.log`). Moved *behind* the reboot 2026-08-11Z: a ~23 h growth budget instead of a 60-min ceiling. ~48 min. |
 | 04:30 | B2 offsite sync. |
 
-Rotation: 7 days local, 90 days NAS; the backup dir sits steady at ~110 GB
-(~14 GB per dump). **No migration deploys 03:00–~04:20Z** — `pg_dump` blocks
-`ADD COLUMN`; see [`migration-deploy-window`](./migration-deploy-window.md).
+Rotation: 90 days NAS; local retention is the role variable
+`pg_backup_local_retention_days` (default 2, which keeps about three nightly
+dumps; set it in host_vars or group_vars, then re-run `playbooks/11-backups.yml`).
+A dump is ~34 GB (2026-11) and the volume also holds Postgres and the cluster
+share. **No migration deploys 03:00–~04:20Z** — `pg_dump` blocks `ADD COLUMN`;
+see [`migration-deploy-window`](./migration-deploy-window.md).
+
+The free-space guard is sized to the dump (gr738880): the run needs 25 GB plus
+the size of the largest existing `precis_prod_*` dir free (if `du` gives nothing
+it logs `could not read the size` and skips). If it is short it deletes local
+dumps one at a time, oldest first **by name**, re-reading free space after each
+(each deletion is logged with the reason in `backup-pg.log`). Only a dump named
+`precis_prod_YYYYMMDD_HHMMSS` whose NAS archive
+`precis_prod_YYYY-MM-DD.tar.zst` exists and is non-empty may be deleted: the
+archive only gets that name after `zstd -t` and a tar listing pass, so it is the
+proof the dump was complete (`toc.dat` is not: `pg_dump` writes it before the
+data). A dump without an archive is never touched, and the newest archived dump
+is always kept. The guard stops if a deletion frees no space (APFS local
+snapshots hold the blocks) and then logs
+`[ERROR] only <n>GB free ... SKIPPING dump` and exits 1. A run
+that finishes with a verified NAS archive also stamps the in-DB backup record
+(`app_state` `backup.last_run_at` / `.last_size_bytes` / `.last_kind`
+`pg-dump-tar-zst`, the same keys `pg_backup_dir.sh` writes, shown in `/facts`).
+The hourly health digest's `backup-stale` condition raises a warn alert, pushed
+to the ops channel, when that stamp is older than 36 h
+(`PRECIS_COND_BACKUP_STALE_H`), i.e. the nightly was skipped by the guard or
+failed; no record at all is no finding. The DB
+node runs no precis worker, so `disk_check` does not watch it; the Prometheus
+`HighDiskUsage` (85%) and `DiskNearlyFull` (93%) rules are the only disk alert
+on that volume.
 
 ## Backup traps and recipes
 

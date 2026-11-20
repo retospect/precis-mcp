@@ -67,9 +67,16 @@ def _alert_line(alert: dict[str, Any]) -> str:
     ann = alert.get("annotations") or {}
     name = labels.get("alertname", "alert")
     inst = labels.get("instance", "")
+    # The node scrape job labels each target with its inventory name as
+    # ``host``; the instance is a bare address (gr738880). Always print it: a
+    # substring test against the text would drop a short name that merely
+    # occurs in the summary.
+    host = labels.get("host", "")
     text = ann.get("summary") or ann.get("description") or ""
     head = f"{_SEVERITY_ICON.get(labels.get('severity', ''), '-')} {name}"
-    if inst and inst not in text:
+    if host:
+        head += f" @ {host}"
+    elif inst and inst not in text:
         head += f" @ {inst}"
     line = f"{head}: {text}" if text else head
     return _safe(line)[:MAX_LINE_CHARS]

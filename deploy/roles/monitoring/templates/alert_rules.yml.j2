@@ -13,15 +13,36 @@ groups:
       # Warn at 85% (was 90%) with a shorter window so the node has headroom
       # before a volume fills — gripe 191008 (the data node hit 100% and
       # DiskFull stalled all prod writes). The precis-native disk_check pass is
-      # the primary, operator-visible watch; this Prometheus rule is the
-      # infra-level backstop.
+      # the primary, operator-visible watch where a precis worker runs; this
+      # Prometheus rule is the infra-level backstop. The DB node runs no
+      # precis worker, so these two rules are the only disk watch on its
+      # volume (gripe 738880: it sat at 88% with the nightly dump peaking near
+      # 96% and nothing named it). DiskNearlyFull is the critical tier at 93%,
+      # the same line as disk_check's critical threshold.
+      # Network and pseudo filesystems are excluded: NFS and the like repeat
+      # the server's volume on every client (the exporting node still reports
+      # its own), and the macOS helper volumes under /System/Volumes share one
+      # APFS container, so the container alerts as / and /System/Volumes/Data,
+      # not once per volume. tmpfs, ramfs and generic fuse (fuseblk,
+      # fuse.mergerfs) stay watched: they can be real disks or fill RAM. The
+      # summary names the mountpoint and what is free. Below 7% free both rules
+      # fire; alertmanager.yml.j2 inhibits the warning while the critical is up.
+{% set local_fs = '{fstype!~"nfs.*|cifs|smbfs|afpfs|autofs|devfs|devtmpfs|overlay|squashfs|fuse.sshfs", mountpoint!~"/System/Volumes/(VM|Preboot|Update|xarts|iSCPreboot|Hardware)(/.*)?"}' %}
       - alert: HighDiskUsage
-        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.15
+        expr: node_filesystem_avail_bytes{{ local_fs }} / node_filesystem_size_bytes{{ local_fs }} < 0.15
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "{% raw %}Disk usage above 85% on {{ $labels.instance }}{% endraw %}"
+          summary: "{% raw %}Disk usage above 85% on {{ $labels.instance }} {{ $labels.mountpoint }} ({{ $value | humanizePercentage }} free){% endraw %}"
+
+      - alert: DiskNearlyFull
+        expr: node_filesystem_avail_bytes{{ local_fs }} / node_filesystem_size_bytes{{ local_fs }} < 0.07
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{% raw %}Disk usage above 93% on {{ $labels.instance }} {{ $labels.mountpoint }} ({{ $value | humanizePercentage }} free){% endraw %}"
 
       - alert: HighMemoryUsage
         expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.9

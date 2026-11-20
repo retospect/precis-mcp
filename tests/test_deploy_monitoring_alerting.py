@@ -76,6 +76,28 @@ def test_prometheus_without_alertmanager_has_no_alerting_block() -> None:
     assert "alerting" not in doc and doc["rule_files"] == ["alert_rules.yml"]
 
 
+def test_node_targets_carry_the_inventory_host_name() -> None:
+    # gr738880: `instance` is a bare address; `host` is what the receiver prints.
+    doc = yaml.safe_load(_render("prometheus.yml.j2"))
+    (node,) = [j for j in doc["scrape_configs"] if j["job_name"] == "node"]
+    got = {
+        t: sc["labels"]["host"] for sc in node["static_configs"] for t in sc["targets"]
+    }
+    assert got == {"203.0.113.10:9100": "pg", "203.0.113.11:9100": "n1"}
+
+
+def test_rules_that_join_on_instance_are_not_disturbed_by_the_host_label() -> None:
+    # The extra target label rides along on every series of the job. Joins name
+    # their key (`on(instance)`) and selectors match `instance`, never the whole
+    # label set, so a new label cannot break them.
+    doc = yaml.safe_load(_render("alert_rules.yml.j2"))
+    exprs = [r["expr"] for g in doc["groups"] for r in g["rules"]]
+    joins = [e for e in exprs if " unless " in e or " and " in e or " or " in e]
+    assert joins
+    for e in joins:
+        assert "on(instance)" in e and "ignoring" not in e
+
+
 def test_alertmanager_routes_everything_to_the_precis_receiver() -> None:
     doc = yaml.safe_load(_render("alertmanager.yml.j2"))
     assert doc["route"]["receiver"] == "precis"
@@ -86,6 +108,24 @@ def test_alertmanager_routes_everything_to_the_precis_receiver() -> None:
     (hook,) = recv["webhook_configs"]
     assert hook["url"] == "http://127.0.0.1:9095/alerts"
     assert hook["send_resolved"] is True
+
+
+def test_critical_disk_alert_inhibits_the_warning_for_the_same_volume() -> None:
+    # Below 7% free both rules fire; one message per volume is enough.
+    doc = yaml.safe_load(_render("alertmanager.yml.j2"))
+    (rule,) = doc["inhibit_rules"]
+    assert rule["source_match"] == {"alertname": "DiskNearlyFull"}
+    assert rule["target_match"] == {"alertname": "HighDiskUsage"}
+    assert sorted(rule["equal"]) == ["instance", "mountpoint"]
+    # the distro Alertmanager is unpinned: the matchers syntax that needs 0.22+
+    # must not be used
+    assert "source_matchers" not in rule and "target_matchers" not in rule
+    names = {
+        r["alert"]
+        for g in yaml.safe_load(_render("alert_rules.yml.j2"))["groups"]
+        for r in g["rules"]
+    }
+    assert {"DiskNearlyFull", "HighDiskUsage"} <= names
 
 
 def test_rules_template_parses_into_nonempty_valid_rules() -> None:

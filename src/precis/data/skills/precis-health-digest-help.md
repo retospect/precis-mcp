@@ -115,7 +115,10 @@ Derived groups name their check after the thing they watch:
   ticks are spending without calling a single precis tool);
   `dead-generation-claims` → `dead-gen-claims:<host>/<process>` (claims
   held by a worker generation that is no longer alive);
-  `settings-env-shadowed`; `analysis-stale`; `limiter-bypassed` (fetcher
+  `settings-env-shadowed`; `analysis-stale`; `backup-stale` (no backup
+  completion stamped in `app_state` `backup.last_run_at` for 36 h: the
+  DB-node nightly was skipped by its free-space guard or failed; no record
+  is no finding); `limiter-bypassed` (fetcher
   traffic but no limiter consume in 24h: failing open); `limiter-cap-full`
   (`host:` rows at the seeding cap, none idle to evict: new hosts run
   unpaced); `limiter-refusing` → `limiter-refusing:<provider>` (a

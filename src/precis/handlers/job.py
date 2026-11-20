@@ -1804,9 +1804,9 @@ class JobHandler(NumericRefHandler):
         this process can't see — so the view reads the ``backup.*``
         ``app_state`` contract (``backup.last_run_at`` ISO,
         ``backup.last_size_bytes`` digits, optional
-        ``backup.last_kind``) the DB-node dir-dump leg stamps after each
-        run (``deploy/roles/backups/templates/pg_backup_dir.sh.j2``),
-        and says plainly when nothing has written it yet instead of
+        ``backup.last_kind``) both DB-node nightly legs stamp after a
+        completed run (``deploy/roles/backups/templates/pg_backup.sh.j2``
+        and ``pg_backup_dir.sh.j2``), and says plainly when nothing has written it yet instead of
         printing a stale figure from memory.
         """
         params = dict(parse_qsl(query_string, keep_blank_values=True))
@@ -1916,10 +1916,10 @@ class JobHandler(NumericRefHandler):
         backup_bytes = self.store.get_setting("backup.last_size_bytes")
         if backup_at is None and backup_bytes is None:
             lines.append(
-                "backup: no in-DB record — the DB-node dir-dump leg "
-                "(pg_backup_dir.sh) stamps app_state backup.last_run_at "
-                "and backup.last_size_bytes after each nightly run; "
-                "none has landed yet."
+                "backup: no in-DB record — the DB-node nightly legs "
+                "(pg_backup.sh, pg_backup_dir.sh) stamp app_state "
+                "backup.last_run_at and backup.last_size_bytes after each "
+                "completed run; none has landed yet."
             )
         else:
             when = str(backup_at) if backup_at else "unknown time"

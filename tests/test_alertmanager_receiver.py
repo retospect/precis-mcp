@@ -199,3 +199,39 @@ def test_cli_refuses_routable_bind(capsys: pytest.CaptureFixture[str]) -> None:
         cli.run(argparse.Namespace(host="::1", port=1, database_url=None))
     assert exc.value.code == 2
     assert "loopback" in capsys.readouterr().err
+
+
+def test_host_label_is_named_in_the_line_when_present() -> None:
+    # gr738880: the instance is a bare address; the node job's `host` label is
+    # what tells the reader which machine it is.
+    g = _group(names=("HighDiskUsage",))
+    g["alerts"][0]["labels"]["host"] = "dbhost"
+    g["alerts"][0]["annotations"]["summary"] = (
+        "Disk usage above 85% on 203.0.113.5:9100 /System/Volumes/Data (11% free)"
+    )
+    _, body, _ = rcv.format_group(g)
+    assert "HighDiskUsage @​ dbhost: Disk usage above 85% on 203.0.113.5" in body
+
+
+def test_short_host_name_inside_the_summary_is_still_printed() -> None:
+    g = _group(names=("HighDiskUsage",))
+    g["alerts"][0]["labels"]["host"] = "db"
+    g["alerts"][0]["annotations"]["summary"] = "db volume nearly full on 203.0.113.5"
+    _, body, _ = rcv.format_group(g)
+    assert "HighDiskUsage @​ db: db volume nearly full" in body
+
+
+def test_without_host_label_the_line_is_unchanged() -> None:
+    g = _group(names=("NodeDown",))
+    g["alerts"][0]["annotations"]["summary"] = "something is down"
+    _, body, _ = rcv.format_group(g)
+    assert "NodeDown @​ 203.0.113.5:9100: something is down" in body
+
+
+def test_host_label_is_defanged_and_line_capped() -> None:
+    g = _group(names=("A",))
+    g["alerts"][0]["labels"]["host"] = "@everyone"
+    g["alerts"][0]["annotations"]["summary"] = "x" * 5000
+    _, body, _ = rcv.format_group(g)
+    assert "@everyone" not in body and "@​everyone" in body
+    assert all(len(line) <= rcv.MAX_LINE_CHARS for line in body.splitlines()[1:])

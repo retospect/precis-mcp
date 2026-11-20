@@ -18,11 +18,16 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
+  # One static_config per node so each target carries `host`, its inventory
+  # name: the instance label is a bare address, which tells the person reading
+  # an alert nothing (gr738880). The alertmanager receiver prints the label.
+  # Rules that join on(instance) or match instance=~ are unaffected by it.
   - job_name: node
     static_configs:
-      - targets:
 {% for host in groups['all'] %}
-          - '{{ hostvars[host]["ansible_host"] }}:9100'
+      - targets: ['{{ hostvars[host]["ansible_host"] }}:9100']
+        labels:
+          host: '{{ host }}'
 {% endfor %}
 {% if monitoring_db_exporters | bool %}
   - job_name: postgres

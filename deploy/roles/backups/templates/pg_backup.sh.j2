@@ -11,7 +11,9 @@
 #      single-file artifact is simpler for off-site sync / inspection.
 #   3. Retain 2 days locally (fast restore — the DB volume is the same SSD
 #      Postgres runs on, so we keep the local footprint tiny), 90 days on the
-#      NAS (durable archive). Adjust the *_RETENTION_DAYS values below.
+#      NAS (durable archive). The local window is the role variable
+#      pg_backup_local_retention_days (default 2); the NAS window is
+#      NAS_RETENTION_DAYS below.
 #
 # Rotation is failure-proof by construction (regression: gripe 191008 — the
 # 2026-08-04 data-node DiskFull that stalled all prod writes). The local prune
@@ -21,6 +23,31 @@
 # volume hit 100%. It now runs up-front AND via a `trap … EXIT`, so it fires on
 # success, failure, or the free-space guard's early exit. A pre-flight guard
 # also skips the dump entirely rather than run Postgres into DiskFull.
+#
+# The guard is sized to the dump (gripe 738880): on the data node the volume
+# holds Postgres, three local dumps and the cluster share, ~34 GB a dump, and a
+# fixed 25 GB floor was smaller than one dump, so the nightly run could drive
+# the volume to ~96% and DiskFull Postgres mid-dump. Required free space is
+# MIN_FREE_GB plus the size of the LARGEST existing precis_prod_* dir (other
+# than the one being written; dumps only grow, so tonight's is at least that
+# big). If that size cannot be read the run skips: a skipped backup beats a
+# DiskFull. If free space is short, the guard deletes local dumps one at a
+# time, oldest first BY NAME (the names are fixed-width UTC timestamps; mtime
+# can be touched or copied), re-reading free space after each. A dir is
+# deletable only if its NAS archive (precis_prod_YYYY-MM-DD.tar.zst for its
+# date) exists and is non-empty: the archive only gets that name after zstd -t
+# and a tar listing verify it, so it is the one proof the dump was complete
+# (toc.dat is not: pg_dump writes it BEFORE the data files). A dir with no
+# archive is never touched here, it may be the only copy. The newest
+# archived dump is always kept as the local restore point. The guard stops, and
+# falls through to the skip, when a deletion does not raise free space (APFS
+# local snapshots hold the blocks) or the dir cannot be removed. Only if the
+# volume is still short does the run log the ERROR (required vs free) and
+# skip. Only dirs named precis_prod_YYYYMMDD_HHMMSS are ever candidates, and
+# the dump being written never is. Every deletion is logged with its reason.
+# A skip is otherwise only a log line, so a run that completes with a verified
+# NAS archive stamps the in-DB backup.* contract (as pg_backup_dir.sh does);
+# the product's backup-stale condition raises when the stamp goes old.
 
 set -euo pipefail
 
@@ -44,11 +71,13 @@ NAS_ARCHIVE="${NAS_BACKUP_DIR}/precis_prod_${DATE_TAG}.tar.zst"
 # `find -mtime +N` rounds age down to whole days, so +2 keeps ~3 nightly dumps
 # (today + the prior two) — a small, bounded local footprint (~3× one dump);
 # the NAS holds the real 90-day history.
-LOCAL_RETENTION_DAYS=2
+LOCAL_RETENTION_DAYS={{ pg_backup_local_retention_days | default(2) }}
 NAS_RETENTION_DAYS=90
 # Refuse to dump if the backup volume (same SSD as the Postgres data dir on the
 # data node) would be left dangerously full — a skipped backup beats a DiskFull
-# that stalls every prod write (gripe 191008).
+# that stalls every prod write (gripe 191008). This is the floor that must stay
+# free AFTER a dump; the guard below adds the largest existing dump's size
+# (gripe 738880).
 MIN_FREE_GB=25
 
 mkdir -p "${LOCAL_BACKUP_DIR}" "${NAS_BACKUP_DIR}"
@@ -66,7 +95,9 @@ prune_local() {
   # A pg_dump killed by SIGKILL/reboot never ran the EXIT trap and leaves an
   # incomplete dir (no toc.dat) that the age prune above keeps for days,
   # eating the MIN_FREE_GB guard (gripe 466216). -mmin +360 spares a dump
-  # running right now; the current LOCAL_DUMP_DIR is never touched.
+  # running right now; the current LOCAL_DUMP_DIR is never touched. toc.dat
+  # is written BEFORE the data files, so this only catches dumps killed before
+  # the data phase (gr738880).
   find "${LOCAL_BACKUP_DIR}" -maxdepth 1 -type d -name "precis_prod_*" \
     -mmin +360 ! -path "${LOCAL_DUMP_DIR}" \
     ! -exec test -e {}/toc.dat \; -exec rm -rf {} + 2>/dev/null || true
@@ -92,12 +123,87 @@ trap on_exit EXIT
 echo "[$(date -u)] Pruning local dumps older than ${LOCAL_RETENTION_DAYS} days (pre-flight)..."
 prune_local
 
-# ── Pre-flight free-space guard ──
-# POSIX `df -Pk` (portable across macOS/Linux): column 4 = available 1K-blocks.
-AVAIL_GB=$(df -Pk "${LOCAL_BACKUP_DIR}" | awk 'NR==2 {print int($4/1024/1024)}')
-if [ "${AVAIL_GB:-0}" -lt "${MIN_FREE_GB}" ]; then
-  echo "[$(date -u)] [ERROR] only ${AVAIL_GB}GB free on backup volume (< ${MIN_FREE_GB}GB) — SKIPPING dump to avoid DiskFull"
-  logger -t pg-backup "ABORT: ${AVAIL_GB}GB free < ${MIN_FREE_GB}GB threshold; skipped nightly pg_dump (gripe 191008 guard)"
+# ── Pre-flight free-space guard, sized to the dump (gripe 738880) ──
+# POSIX `df -Pk` / `du -sk` (portable across macOS/Linux): sizes in 1K-blocks,
+# kept in KB until they are printed so the comparison does not round.
+avail_kb() {
+  df -Pk "${LOCAL_BACKUP_DIR}" | awk 'NR==2 {print $4+0}'
+}
+dir_kb() {
+  { du -sk "$1" 2>/dev/null || true; } | awk '{k=$1} END {print k+0}'
+}
+kb_to_gb_floor() { echo $(( $1 / 1024 / 1024 )); }
+kb_to_gb_ceil() { echo $(( ($1 + 1048575) / 1048576 )); }
+
+# NAS archive for a local dump dir precis_prod_YYYYMMDD_HHMMSS: the archive is
+# named by DATE and only gets its final name once verified (see the mv below).
+nas_archive_for() {
+  local base ymd
+  base="${1##*/}"
+  ymd="${base:12:8}"
+  echo "${NAS_BACKUP_DIR}/precis_prod_${ymd:0:4}-${ymd:4:2}-${ymd:6:2}.tar.zst"
+}
+
+# Dump dirs the guard may delete: fixed-width name, NAS archive present and
+# non-empty, not the dump being written. Name order = age order, oldest first
+# (a glob expands sorted). Anything else is left alone.
+deletable_dumps_oldest_first() {
+  local d
+  for d in "${LOCAL_BACKUP_DIR}"/precis_prod_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]; do
+    if [ -d "${d}" ] && [ ! -L "${d}" ] && [ "${d}" != "${LOCAL_DUMP_DIR}" ] \
+      && [ -s "$(nas_archive_for "${d}")" ]; then
+      echo "${d}"
+    fi
+  done
+}
+
+# Required free space: the floor plus the largest existing dump dir (any
+# precis_prod_* dir, complete or not, except the one being written).
+LARGEST_KB=0
+HAVE_DUMPS=0
+for d in "${LOCAL_BACKUP_DIR}"/precis_prod_*; do
+  if [ -d "${d}" ] && [ "${d}" != "${LOCAL_DUMP_DIR}" ]; then
+    HAVE_DUMPS=1
+    kb=$(dir_kb "${d}")
+    if [ "${kb}" -gt "${LARGEST_KB}" ]; then
+      LARGEST_KB="${kb}"
+    fi
+  fi
+done
+if [ "${HAVE_DUMPS}" -eq 1 ] && [ "${LARGEST_KB}" -eq 0 ]; then
+  echo "[$(date -u)] [ERROR] could not read the size of the existing dumps in ${LOCAL_BACKUP_DIR} (du gave nothing) — SKIPPING dump to avoid DiskFull"
+  logger -t pg-backup "ABORT: could not read existing dump sizes; skipped nightly pg_dump (gripe 191008 guard, sized per gripe 738880)"
+  exit 1
+fi
+REQUIRED_KB=$(( MIN_FREE_GB * 1024 * 1024 + LARGEST_KB ))
+
+AVAIL_KB=$(avail_kb)
+while [ "${AVAIL_KB:-0}" -lt "${REQUIRED_KB}" ]; do
+  DELETABLE=$(deletable_dumps_oldest_first)
+  OLDEST_DUMP=$(printf '%s\n' "${DELETABLE}" | head -n 1)
+  NEWEST_DUMP=$(printf '%s\n' "${DELETABLE}" | tail -n 1)
+  # Nothing archived to give up, or only the newest archived dump is left.
+  if [ -z "${OLDEST_DUMP}" ] || [ "${OLDEST_DUMP}" = "${NEWEST_DUMP}" ]; then
+    break
+  fi
+  echo "[$(date -u)] only $(kb_to_gb_floor "${AVAIL_KB:-0}")GB free, need $(kb_to_gb_ceil "${REQUIRED_KB}")GB (${MIN_FREE_GB}GB + largest dump $(kb_to_gb_ceil "${LARGEST_KB}")GB): deleting oldest local dump ${OLDEST_DUMP} (verified NAS archive $(nas_archive_for "${OLDEST_DUMP}") exists; keeping newest archived dump ${NEWEST_DUMP})"
+  rm -rf "${OLDEST_DUMP}" || true
+  if [ -e "${OLDEST_DUMP}" ]; then
+    echo "[$(date -u)] [ERROR] could not delete ${OLDEST_DUMP}; not deleting any more"
+    break
+  fi
+  PREV_AVAIL_KB="${AVAIL_KB:-0}"
+  AVAIL_KB=$(avail_kb)
+  if [ "${AVAIL_KB:-0}" -le "${PREV_AVAIL_KB}" ]; then
+    echo "[$(date -u)] [ERROR] deleting ${OLDEST_DUMP} freed no space ($(kb_to_gb_floor "${AVAIL_KB:-0}")GB free; APFS local snapshots?); not deleting any more"
+    break
+  fi
+done
+if [ "${AVAIL_KB:-0}" -lt "${REQUIRED_KB}" ]; then
+  AVAIL_GB=$(kb_to_gb_floor "${AVAIL_KB:-0}")
+  REQUIRED_GB=$(kb_to_gb_ceil "${REQUIRED_KB}")
+  echo "[$(date -u)] [ERROR] only ${AVAIL_GB}GB free on backup volume (< ${REQUIRED_GB}GB required: ${MIN_FREE_GB}GB + largest existing dump $(kb_to_gb_ceil "${LARGEST_KB}")GB) — SKIPPING dump to avoid DiskFull"
+  logger -t pg-backup "ABORT: ${AVAIL_GB}GB free < ${REQUIRED_GB}GB required (${MIN_FREE_GB}GB + largest dump); skipped nightly pg_dump (gripe 191008 guard, sized per gripe 738880)"
   exit 1
 fi
 
@@ -123,6 +229,8 @@ DUMP_OK=1  # dump completed — the EXIT trap must NOT reclaim this dir now
 
 LOCAL_SIZE=$(du -sh "${LOCAL_DUMP_DIR}" | cut -f1)
 echo "[$(date -u)] Local dump complete: ${LOCAL_DUMP_DIR} (${LOCAL_SIZE})"
+# Taken now: the verified-only branch below removes the local dir.
+DUMP_BYTES=$(( $(dir_kb "${LOCAL_DUMP_DIR}") * 1024 ))
 
 echo "[$(date -u)] Archiving to NAS (tar+zstd)..."
 # Write to a temp name and only rename over NAS_ARCHIVE once it verifies. The
@@ -168,3 +276,27 @@ find "${NAS_BACKUP_DIR}" -maxdepth 1 -name "precis_prod_*.tar.zst" \
   -mtime "+${NAS_RETENTION_DAYS}" -delete
 
 echo "[$(date -u)] Backup done."
+
+# In-DB stamp (gr738880), the same app_state contract pg_backup_dir.sh stamps
+# for /facts: backup.last_run_at / .last_size_bytes / .last_kind. Reached only
+# when the dump completed AND the NAS archive verified (every failure or
+# free-space skip exits above under `set -e`), so the product's backup-stale
+# condition fires when this goes quiet: a skipped night is otherwise just a log
+# line. It warns instead of failing: the backup itself already succeeded.
+# The SQL goes in on stdin: psql does not expand :'var' inside a -c string
+# (the server gets the colon and answers "syntax error at or near :").
+if psql -U {{ pg_user }} -d precis_prod -q -v ON_ERROR_STOP=1 \
+  -v run_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -v size_bytes="${DUMP_BYTES}" <<'SQL'
+INSERT INTO app_state (key, value) VALUES
+  ('backup.last_run_at', :'run_at'),
+  ('backup.last_size_bytes', :'size_bytes'),
+  ('backup.last_kind', 'pg-dump-tar-zst')
+ON CONFLICT (key) DO UPDATE SET
+  value = EXCLUDED.value, updated_at = now();
+SQL
+then
+  echo "[$(date -u)] Stamped app_state backup.* (pg-dump-tar-zst, ${DUMP_BYTES} bytes)"
+else
+  echo "[$(date -u)] [WARN] app_state backup.* stamp failed (the backup itself completed)" >&2
+fi

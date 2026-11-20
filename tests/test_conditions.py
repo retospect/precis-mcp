@@ -13,11 +13,13 @@ import json
 import re
 import time
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from psycopg.types.json import Jsonb
 
+from precis.alert_ids import ALERT_RULES
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
 from precis.quest import loop as loop_mod
@@ -25,11 +27,13 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.bounded_heal import HealSpec, run_bounded_heal
 from precis.workers.conditions import (
+    CONDITIONS,
     Condition,
     ConditionFinding,
     HealRequest,
     _handler_service,
     _liveness_handler_names,
+    _probe_backup_stale,
     _probe_dead_generation_claims,
     _probe_deploy_fleet,
     _probe_limiter_bypassed,
@@ -1674,3 +1678,101 @@ def test_serving_pressure_fires_then_resolves(store: Store) -> None:
     ok = [c for c in checks if c.name == "local-serving-pressure"]
     assert len(ok) == 1 and ok[0].status == "ok"
     assert findings == []
+
+
+# ── backup-stale (gr738880) ──────────────────────────────────────────────
+#
+# The DB-node backup scripts stamp app_state backup.* only after a completed,
+# NAS-verified run; a stale or missing-after-skip stamp is the only signal a
+# skipped night leaves.
+
+
+def _stamp_backup(
+    store: Store,
+    *,
+    run_at: str | None,
+    size: str = "36500000000",
+    kind: str = "pg-dump-tar-zst",
+) -> None:
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM app_state WHERE key LIKE 'backup.%'")
+        if run_at is not None:
+            conn.execute(
+                "INSERT INTO app_state (key, value) VALUES "
+                "('backup.last_run_at', %s), ('backup.last_size_bytes', %s), "
+                "('backup.last_kind', %s)",
+                (run_at, size, kind),
+            )
+        conn.commit()
+
+
+def _iso_ago(hours: float) -> str:
+    when = datetime.now(UTC) - timedelta(hours=hours)
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@pytest.fixture
+def backup_stamp(store: Store) -> Iterator[None]:
+    yield
+    _stamp_backup(store, run_at=None)
+
+
+def test_backup_stale_no_record_is_no_finding(store: Store, backup_stamp) -> None:
+    """A dev instance, or a prod whose scripts predate the stamp, must not
+    alert."""
+    _stamp_backup(store, run_at=None)
+    assert _probe_backup_stale(store) == []
+
+
+def test_backup_stale_fresh_stamp_is_green(store: Store, backup_stamp) -> None:
+    _stamp_backup(store, run_at=_iso_ago(20))
+    assert _probe_backup_stale(store) == []
+
+
+def test_backup_stale_old_stamp_fires_one_finding(store: Store, backup_stamp) -> None:
+    _stamp_backup(store, run_at=_iso_ago(37))
+    (finding,) = _probe_backup_stale(store)
+    assert finding.key == "backup-stale"
+    assert "37h ago" in finding.detail
+    assert "pg-dump-tar-zst" in finding.detail and "34.0 GiB" in finding.detail
+    assert "free-space guard" in finding.detail and "backup-pg.log" in finding.detail
+    assert finding.heal is None
+
+
+def test_backup_stale_unparseable_stamp_is_a_finding(
+    store: Store, backup_stamp
+) -> None:
+    _stamp_backup(store, run_at="last tuesday")
+    (finding,) = _probe_backup_stale(store)
+    assert finding.key == "backup-stale"
+    assert "unparseable" in finding.detail and "'last tuesday'" in finding.detail
+
+
+def test_backup_stale_threshold_override_is_respected(
+    store: Store, backup_stamp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stamp_backup(store, run_at=_iso_ago(10))
+    assert _probe_backup_stale(store) == []
+    monkeypatch.setenv("PRECIS_COND_BACKUP_STALE_H", "6")
+    assert [f.key for f in _probe_backup_stale(store)] == ["backup-stale"]
+    _stamp_backup(store, run_at=_iso_ago(40))
+    monkeypatch.setenv("PRECIS_COND_BACKUP_STALE_H", "48")
+    assert _probe_backup_stale(store) == []
+
+
+def test_backup_stale_is_registered_and_resolves_on_restamp(
+    store: Store, backup_stamp
+) -> None:
+    """Through the registry: stale → a ``stale`` row named by the key (warn),
+    the next completed run's stamp → the ``ok`` row that auto-closes it."""
+    cond = next(c for c in CONDITIONS if c.name == "backup-stale")
+    assert cond.severity == "warn"
+    _stamp_backup(store, run_at=_iso_ago(50))
+    checks, findings = run_condition_checks(store, conditions=(cond,))
+    stale = [c for c in checks if c.name == "backup-stale"]
+    assert len(stale) == 1 and stale[0].status == "stale" and len(findings) == 1
+    _stamp_backup(store, run_at=_iso_ago(1))
+    checks, findings = run_condition_checks(store, conditions=(cond,))
+    assert [c.status for c in checks if c.name == "backup-stale"] == ["ok"]
+    assert findings == []
+    assert any(r.subject == "backup-stale" for r in ALERT_RULES)

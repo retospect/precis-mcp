@@ -120,6 +120,8 @@ def test_facts_renders_storage_block(jobs: JobHandler, store: Store, hub: Hub) -
     # No deploy-side writer has stamped the backup contract.
     assert "no in-DB record" in body
     assert "backup.last_run_at" in body
+    # both nightly legs are named, not only the dir-dump one
+    assert "pg_backup.sh" in body and "pg_backup_dir.sh" in body
     assert body.startswith("# facts")
     assert "served: " in body
     assert "precis-status" in body

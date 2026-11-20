@@ -359,6 +359,14 @@ ALERT_RULES: tuple[AlertRule, ...] = (
     ),
     _watchdog(
         "condition",
+        "backup-stale",
+        "The nightly Postgres backup has not stamped a completion in 36h "
+        "(skipped by its free-space guard, or failed).",
+        budget="per probe",
+        service="health_digest",
+    ),
+    _watchdog(
+        "condition",
         "limiter-bypassed:{provider}",
         "A fetcher calls a provider but its external_rate_limits row has not "
         "been consumed in 24h (the limiter is failing open).",

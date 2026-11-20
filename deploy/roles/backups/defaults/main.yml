@@ -23,6 +23,13 @@ pg_backup_cron_minute: "30"
 backup_window_start_utc: "03:00"
 backup_window_end_utc: "04:20"
 
+# Local dump retention in days for pg_backup.sh (`find -mtime +N` rounds down,
+# so 2 keeps ~3 nightly dumps). The script also deletes the oldest complete
+# local dumps early when the volume cannot fit another dump (gr738880); this
+# only sets the age at which a dump is always dropped. The template carries the
+# same default, so an inventory that never sets it renders unchanged.
+pg_backup_local_retention_days: 2
+
 # Nightly B2 offsite sync. Off: the offsite copy is a full NAS-disk copy
 # (td461209, Reto 2026-10-11). Set true in the overlay to re-enable.
 b2_sync_enabled: false

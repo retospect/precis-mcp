@@ -158,18 +158,24 @@ date -u +%Y-%m-%dT%H:%M:%SZ > "${SYNC_OK}"
 # In-DB stamp for /facts (see header step 4). psql is on the pinned PATH
 # above. The stamp runs AFTER the sync-ok write so a psql failure can
 # never hold up the NAS restic leg, and warns instead of failing — the
-# backup itself already succeeded.
+# backup itself already succeeded. The SQL goes in on stdin: psql does not
+# expand :'var' inside a -c string, so the -c form this used until gr738880
+# failed on every run ("syntax error at or near :") and /facts never saw a
+# backup record.
 DUMP_BYTES=$(du -sk "${LOCAL_DUMP_DIR}" | awk '{print $1 * 1024}')
-psql -U {{ pg_user }} -d precis_prod -q -v ON_ERROR_STOP=1 \
+if ! psql -U {{ pg_user }} -d precis_prod -q -v ON_ERROR_STOP=1 \
   -v run_at="$(cat "${SYNC_OK}")" \
-  -v size_bytes="${DUMP_BYTES}" \
-  -c "INSERT INTO app_state (key, value) VALUES
-        ('backup.last_run_at', :'run_at'),
-        ('backup.last_size_bytes', :'size_bytes'),
-        ('backup.last_kind', 'pg-dump-dir')
-      ON CONFLICT (key) DO UPDATE SET
-        value = EXCLUDED.value, updated_at = now()" \
-  || echo "[$(date -u)] [WARN] app_state backup.* stamp failed (the backup itself completed)" >&2
+  -v size_bytes="${DUMP_BYTES}" <<'SQL'
+INSERT INTO app_state (key, value) VALUES
+  ('backup.last_run_at', :'run_at'),
+  ('backup.last_size_bytes', :'size_bytes'),
+  ('backup.last_kind', 'pg-dump-dir')
+ON CONFLICT (key) DO UPDATE SET
+  value = EXCLUDED.value, updated_at = now();
+SQL
+then
+  echo "[$(date -u)] [WARN] app_state backup.* stamp failed (the backup itself completed)" >&2
+fi
 
 rm -rf "${LOCAL_DUMP_DIR}"
 echo "[$(date -u)] rsync verified by exit status; local staging dir removed"

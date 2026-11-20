@@ -82,6 +82,12 @@ was invisible for 4 days):
   ``app_settings.deploy.fleet`` on every successful deploy; this probe
   diffs that ledger against ``host_heartbeat`` — uncovered live hosts and
   hosts whose ``meta.code_sha`` is not the deployed sha are findings.
+* ``backup-stale`` — gr738880: ``app_state`` ``backup.last_run_at``, which
+  the DB-node backup scripts stamp only after a completed dump reached the
+  NAS, is older than ``PRECIS_COND_BACKUP_STALE_H`` (36 h) — the nightly
+  run was skipped by its free-space guard or failed. The DB node runs no
+  precis worker, so this is the one place that skip becomes visible.
+  No record is no finding.
 
 Heal arm: ``pass-dead-on-host`` / ``pass-wedged`` findings on the
 ``precis-worker`` process request **restart-once** — ssh + a sudoers
@@ -873,6 +879,59 @@ def _probe_analysis_stale(store: Store) -> list[ConditionFinding]:
     ]
 
 
+def _probe_backup_stale(store: Store) -> list[ConditionFinding]:
+    """The nightly DB backup has stopped stamping its completion (gr738880).
+
+    The DB-node backup legs (``pg_backup.sh`` and ``pg_backup_dir.sh``)
+    stamp ``app_state`` ``backup.last_run_at`` (ISO UTC), ``.last_size_bytes``
+    and ``.last_kind`` only after a dump completed AND reached the NAS. A
+    night skipped by the free-space guard, or failed, is otherwise just a
+    line in a log nobody reads, and the DB node runs no precis worker to
+    alert on it. No record (a dev instance, or a prod whose scripts predate
+    the stamp) is not a finding: ``/facts`` already says "no in-DB record".
+    An unparseable stamp is one, not a swallowed error. Auto-closes when the
+    next completed run restamps."""
+    raw = store.get_setting("backup.last_run_at")
+    if raw is None:
+        return []
+    threshold_h = _env_f("PRECIS_COND_BACKUP_STALE_H", 36.0)
+    kind = store.get_setting("backup.last_kind") or "unknown kind"
+    size_raw = store.get_setting("backup.last_size_bytes")
+    size = (
+        f"{int(size_raw) / 1024**3:.1f} GiB" if size_raw and size_raw.isdigit() else "?"
+    )
+    try:
+        last = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return [
+            ConditionFinding(
+                key="backup-stale",
+                detail=(
+                    f"app_state backup.last_run_at is unparseable ({raw!r}), so "
+                    "backup freshness cannot be judged — check what the DB "
+                    "node's backup scripts stamped"
+                ),
+            )
+        ]
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    age_h = (datetime.now(UTC) - last).total_seconds() / 3600.0
+    if age_h <= threshold_h:
+        return []
+    return [
+        ConditionFinding(
+            key="backup-stale",
+            detail=(
+                f"last completed Postgres backup was {age_h:.0f}h ago "
+                f"({raw}; {kind}, {size}; threshold {threshold_h:g}h) — the "
+                "nightly run was skipped by its free-space guard or failed; "
+                "read the backup log on the DB node (backup-pg.log) and free "
+                "space on the backup volume"
+            ),
+        )
+    ]
+
+
 #: ``external_rate_limits`` provider -> the ``ref_events.source`` of the
 #: fetch_oa leg that must take a token from it before every call.
 _LIMITER_FETCHERS: dict[str, str] = {
@@ -1442,6 +1501,7 @@ CONDITIONS: tuple[Condition, ...] = (
     Condition("local-serving-pressure", "warn", _probe_local_serving_pressure),
     Condition("llm-tier-regression", "warn", _probe_llm_tier_regression),
     Condition("analysis-stale", "warn", _probe_analysis_stale),
+    Condition("backup-stale", "warn", _probe_backup_stale),
     Condition("pass-dead-on-host", "warn", _probe_pass_dead),
     Condition("rescue-pass-cadence", "warn", _probe_rescue_cadence),
     Condition("quest-tick-stalled", "warn", _probe_quest_tick_stalled),

@@ -123,3 +123,90 @@ def test_explicit_nfs_membership_excludes_servers_and_non_clients() -> None:
     assert "NFSMountAbsent" not in _rules(
         {"nfs_servers": ["n3"], "nfs_mount_hosts": ["n3"]}
     )
+
+
+def _disk_matchers(expr: str) -> dict[str, tuple[str, str]]:
+    """``{label: (op, regex)}`` from the first selector of a disk rule."""
+    sel = re.search(r"node_filesystem_avail_bytes\{(.*?)\} /", expr)
+    assert sel, expr
+    return {
+        m.group(1): (m.group(2), m.group(3))
+        for m in re.finditer(r'(\w+)(!~|=~)"([^"]*)"', sel.group(1))
+    }
+
+
+def _selected(expr: str, fstype: str, mountpoint: str) -> bool:
+    """Whether a series with these labels passes the rule's selector.
+
+    PromQL regex matchers are fully anchored, hence ``fullmatch``.
+    """
+    for label, value in (("fstype", fstype), ("mountpoint", mountpoint)):
+        op, rx = _disk_matchers(expr)[label]
+        hit = re.fullmatch(rx, value) is not None
+        if hit == (op == "!~"):
+            return False
+    return True
+
+
+def test_disk_rules_alert_on_local_filesystems_only() -> None:
+    # gr738880: one APFS container fired once per helper volume on the DB host
+    # and again on every NFS client of the share it exports.
+    rules = _rules({})
+    for name in ("HighDiskUsage", "DiskNearlyFull"):
+        expr = rules[name]["expr"]
+        assert _balanced(expr)
+        # numerator and denominator carry the same selector, or the division
+        # would match series on a different label set
+        sel = re.findall(r"\{[^}]*\}", expr)
+        assert len(sel) == 2 and sel[0] == sel[1]
+        for fstype, mp in (
+            ("apfs", "/"),
+            ("apfs", "/System/Volumes/Data"),
+            ("ext4", "/"),
+            ("ext4", "/var/lib/docker"),
+            ("xfs", "/data"),
+        ):
+            assert _selected(expr, fstype, mp), (fstype, mp)
+        for fstype in (
+            "nfs",
+            "nfs4",
+            "autofs",
+            "devfs",
+            "devtmpfs",
+            "cifs",
+            "smbfs",
+            "afpfs",
+            "overlay",
+            "squashfs",
+            "fuse.sshfs",
+        ):
+            assert not _selected(expr, fstype, "/mnt/cluster"), fstype
+        # tmpfs, ramfs and generic fuse can be real disks or fill RAM: watched
+        for fstype in ("tmpfs", "ramfs", "fuseblk", "fuse.mergerfs", "vfat", "zfs"):
+            assert _selected(expr, fstype, "/data"), fstype
+        for vol in ("VM", "Preboot", "Update", "xarts", "iSCPreboot", "Hardware"):
+            assert not _selected(expr, "apfs", f"/System/Volumes/{vol}"), vol
+        # an unrelated mount that merely starts alike stays watched
+        assert _selected(expr, "apfs", "/System/Volumes/DataSomething")
+
+
+def test_disk_rules_name_mountpoint_and_free_fraction() -> None:
+    rules = _rules({})
+    warn, crit = rules["HighDiskUsage"], rules["DiskNearlyFull"]
+    assert warn["expr"].endswith("< 0.15") and warn["for"] == "5m"
+    assert warn["labels"]["severity"] == "warning"
+    assert crit["expr"].endswith("< 0.07") and crit["for"] == "2m"
+    assert crit["labels"]["severity"] == "critical"
+    for r, pct in ((warn, "85"), (crit, "93")):
+        s = r["annotations"]["summary"]
+        assert s.startswith(f"Disk usage above {pct}% on ")
+        assert "{{ $labels.instance }} {{ $labels.mountpoint }}" in s
+        assert "{{ $value | humanizePercentage }} free" in s
+
+
+def test_mount_rules_keep_their_own_selectors() -> None:
+    # The disk rules' filter must not leak into the mount-health rules, which
+    # exist to see nfs mounts.
+    rules = _rules({})
+    assert "fstype" not in rules["NFSMountFullOrEmpty"]["expr"]
+    assert "fstype" not in rules["NASMountFullOrEmpty"]["expr"]

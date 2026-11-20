@@ -69,6 +69,390 @@ def test_pg_backup_uses_host_local_root_when_set() -> None:
     assert 'LOCAL_BACKUP_DIR="/var/local/backups/postgres"' in out
 
 
+def test_pg_backup_local_retention_is_a_role_variable_with_the_old_default() -> None:
+    assert "LOCAL_RETENTION_DAYS=2\n" in _render("pg_backup.sh.j2")
+    out = _render("pg_backup.sh.j2", pg_backup_local_retention_days=5)
+    assert "LOCAL_RETENTION_DAYS=5\n" in out
+    defaults = (_ROLES / "backups" / "defaults" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    assert re.search(r"^pg_backup_local_retention_days: 2$", defaults, re.M)
+
+
+_GB = 1024 * 1024  # KB per GB
+
+# (name, size_gb, archived): archived is True (verified NAS archive for the
+# dump's date), False (none) or "empty" (a zero-byte file under that name).
+_Dump = tuple[str, int, bool | str]
+
+
+def _run_pg_backup(
+    tmp_path: Path,
+    *,
+    total_gb: int,
+    dumps: list[_Dump],
+    new_dump_gb: int = 1,
+    reverse_mtimes: bool = False,
+    df_frozen: bool = False,
+    du_blank: tuple[str, ...] = (),
+    zstd_fail: bool = False,
+    psql_exit: int = 0,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    """Run the rendered nightly script against a fake volume.
+
+    ``dumps`` is oldest first by name; every dir has a ``toc.dat`` (a killed
+    dump has one too). ``df`` reports the volume's total minus the sizes the
+    fake dump dirs declare (``.size_kb``), so a deletion really frees space
+    (``df_frozen`` pins it instead: a deletion frees nothing); ``du`` reads the
+    same file (prints nothing for ``du_blank`` names); ``pg_dump`` makes a dir.
+    ``zstd_fail`` fails the NAS archive step; ``psql_exit`` is the stub psql's
+    exit status (it logs ``psql <args>`` on one line). Returns the result, the
+    backup dir and the stub-call log.
+    """
+    if sys.platform == "win32":
+        pytest.skip("POSIX-only: runs the rendered bash backup script")
+    local_root = tmp_path / "local"
+    backup = local_root / "backups" / "postgres"
+    backup.mkdir(parents=True)
+    nas = tmp_path / "nas" / "backups" / "postgres"
+    nas.mkdir(parents=True)
+    now = time.time()
+    for i, (name, size_gb, archived) in enumerate(dumps):
+        d = backup / name
+        d.mkdir()
+        (d / ".size_kb").write_text(f"{size_gb * _GB}\n", encoding="utf-8")
+        (d / "toc.dat").write_text("toc\n", encoding="utf-8")
+        if name in du_blank:
+            (d / ".no_du").write_text("", encoding="utf-8")
+        if archived:
+            ymd = name.split("_")[2]
+            tag = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:]}"
+            body = "" if archived == "empty" else "archive\n"
+            (nas / f"precis_prod_{tag}.tar.zst").write_text(body, encoding="utf-8")
+        # all inside the 2-day age prune, so only the free-space guard acts;
+        # reversed, the oldest name carries the newest mtime
+        age_rank = i if reverse_mtimes else len(dumps) - i
+        stamp = now - age_rank * 3600
+        os.utime(d, (stamp, stamp))
+
+    log = tmp_path / "calls.log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    commands = {
+        "df": """if [ -n "$TEST_DF_FROZEN_KB" ]; then
+    avail="$TEST_DF_FROZEN_KB"
+else
+    used=$(cat "$TEST_BACKUP"/precis_prod_*/.size_kb 2>/dev/null \\
+      | awk '{s+=$1} END {print s+0}')
+    avail=$((TEST_TOTAL_KB - used))
+fi
+printf "Filesystem 1024-blocks Used Available Capacity Mounted\\n"
+printf "fake %s 0 %s 0%% /\\n" "$TEST_TOTAL_KB" "$avail\"""",
+        "du": """for last; do :; done
+if [ -f "$last/.no_du" ]; then
+    exit 0
+elif [ -f "$last/.size_kb" ]; then
+    printf "%s\\t%s\\n" "$(cat "$last/.size_kb")" "$last"
+else
+    printf "1\\t%s\\n" "$last"
+fi""",
+        "pg_dump": """for a; do case "$a" in --file=*) out="${a#--file=}";; esac; done
+mkdir -p "$out"
+printf "toc\\n" > "$out/toc.dat"
+printf "%s\\n" "$TEST_NEW_KB" > "$out/.size_kb"
+echo "pg_dump $out" >> "$TEST_LOG\"""",
+        "logger": 'echo "logger $*" >> "$TEST_LOG"',
+        "tar": "exit 0",
+        "zstd": 'exit "${TEST_ZSTD_EXIT:-0}"',
+        "psql": """echo "psql $(printf '%s ' "$@" | tr '\\n' ' ')<<< $(tr '\\n' ' ')" >> "$TEST_LOG"
+exit "${TEST_PSQL_EXIT:-0}\"""",
+    }
+    for name, body in commands.items():
+        command = bin_dir / name
+        command.write_text(f"#!/bin/bash\n{body}\n", encoding="utf-8")
+        command.chmod(0o755)
+    script = tmp_path / "pg_backup.sh"
+    script.write_text(
+        _render(
+            "pg_backup.sh.j2",
+            host_local_root=str(local_root),
+            nas_root=str(tmp_path / "nas"),
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(script)],
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.defpath}",
+            "TEST_BACKUP": str(backup),
+            "TEST_TOTAL_KB": str(total_gb * _GB),
+            "TEST_DF_FROZEN_KB": str(total_gb * _GB) if df_frozen else "",
+            "TEST_NEW_KB": str(new_dump_gb * _GB),
+            "TEST_LOG": str(log),
+            "TEST_ZSTD_EXIT": "1" if zstd_fail else "0",
+            "TEST_PSQL_EXIT": str(psql_exit),
+        },
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    return result, backup, log
+
+
+def _survivors(backup: Path) -> list[str]:
+    """The fixture dirs still there (they are dated 2001; tonight's is not)."""
+    return sorted(p.name for p in backup.glob("precis_prod_2001*"))
+
+
+def _dump_ran(log: Path) -> bool:
+    lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return any(line.startswith("pg_dump ") for line in lines)
+
+
+def _logged(log: Path) -> str:
+    return log.read_text(encoding="utf-8") if log.exists() else ""
+
+
+def _tonights(backup: Path) -> list[str]:
+    return sorted(p.name for p in backup.glob("precis_prod_*") if "_2001" not in p.name)
+
+
+_D1, _D2, _D3, _D4 = (f"precis_prod_2001010{n}_033000" for n in (1, 2, 3, 4))
+
+
+def test_pg_backup_guard_enough_room_deletes_nothing(tmp_path: Path) -> None:
+    # 200 GB volume, 90 GB of dumps: 110 GB free >= 25 + 30 required.
+    dumps: list[_Dump] = [(_D1, 30, True), (_D2, 30, True), (_D3, 30, True)]
+    result, backup, log = _run_pg_backup(tmp_path, total_gb=200, dumps=dumps)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "deleting oldest" not in result.stdout
+    assert _survivors(backup) == [_D1, _D2, _D3]
+    assert len(_tonights(backup)) == 1
+    assert _dump_ran(log)
+
+
+def test_pg_backup_guard_drops_only_the_oldest_archived_dump_that_makes_room(
+    tmp_path: Path,
+) -> None:
+    # 125 GB volume, 100 GB of dumps (40 + 30 + 30): 25 GB free, 65 needed
+    # (25 + the largest, 40). Dropping the oldest frees 40 -> exactly enough.
+    dumps: list[_Dump] = [(_D1, 40, True), (_D2, 30, True), (_D3, 30, True)]
+    result, backup, log = _run_pg_backup(tmp_path, total_gb=125, dumps=dumps)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _survivors(backup) == [_D2, _D3]
+    assert result.stdout.count("deleting oldest local dump") == 1
+    assert f"dump {backup / _D1} (verified NAS archive " in result.stdout
+    assert "precis_prod_2001-01-01.tar.zst" in result.stdout
+    assert len(_tonights(backup)) == 1 and _dump_ran(log)
+
+
+def test_pg_backup_guard_skips_an_unarchived_oldest_and_takes_the_next(
+    tmp_path: Path,
+) -> None:
+    # The oldest has no NAS archive: it may be the only copy. The next archived
+    # one goes instead; the newest archived one is never a candidate.
+    dumps: list[_Dump] = [
+        (_D1, 30, False),
+        (_D2, 30, True),
+        (_D3, 30, True),
+        (_D4, 30, True),
+    ]
+    result, backup, log = _run_pg_backup(tmp_path, total_gb=150, dumps=dumps)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _survivors(backup) == [_D1, _D3, _D4]
+    assert result.stdout.count("deleting oldest local dump") == 1
+    assert _dump_ran(log)
+
+
+def test_pg_backup_guard_never_deletes_the_newest_archived_dump(
+    tmp_path: Path,
+) -> None:
+    # 60 GB volume: 20 (no archive) + 5 + 5 + 20 GB leaves 10; 45 needed. The
+    # two small archived dumps go (-> 20 GB) and it is still short: the newest
+    # archived dump and the unarchived one stay, the run skips.
+    dumps: list[_Dump] = [
+        (_D1, 20, False),
+        (_D2, 5, True),
+        (_D3, 5, True),
+        (_D4, 20, True),
+    ]
+    result, backup, log = _run_pg_backup(tmp_path, total_gb=60, dumps=dumps)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert _survivors(backup) == [_D1, _D4]
+    assert result.stdout.count("deleting oldest local dump") == 2
+    assert "[ERROR] only 20GB free on backup volume (< 45GB required" in result.stdout
+    assert "logger -t pg-backup ABORT: 20GB free < 45GB required" in _logged(log)
+    assert not _dump_ran(log)
+
+
+def test_pg_backup_guard_with_nothing_archived_deletes_nothing_and_skips(
+    tmp_path: Path,
+) -> None:
+    # toc.dat is no proof (pg_dump writes it first); only a NAS archive is.
+    dumps: list[_Dump] = [(_D1, 30, False), (_D2, 30, False), (_D3, 30, False)]
+    result, backup, log = _run_pg_backup(tmp_path, total_gb=100, dumps=dumps)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert _survivors(backup) == [_D1, _D2, _D3]
+    assert "deleting oldest" not in result.stdout
+    assert "[ERROR] only 10GB free on backup volume (< 55GB required" in result.stdout
+    assert not _dump_ran(log)
+
+
+def test_pg_backup_guard_treats_an_empty_archive_as_no_archive(
+    tmp_path: Path,
+) -> None:
+    dumps: list[_Dump] = [(_D1, 30, "empty"), (_D2, 30, True), (_D3, 30, True)]
+    result, backup, _ = _run_pg_backup(tmp_path, total_gb=120, dumps=dumps)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _survivors(backup) == [_D1, _D3]
+
+
+def test_pg_backup_guard_orders_by_name_not_mtime(tmp_path: Path) -> None:
+    # The oldest name carries the NEWEST mtime (a touched or copied dump).
+    dumps: list[_Dump] = [(_D1, 30, True), (_D2, 30, True), (_D3, 30, True)]
+    result, backup, _ = _run_pg_backup(
+        tmp_path, total_gb=120, dumps=dumps, reverse_mtimes=True
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _survivors(backup) == [_D2, _D3]
+
+
+def test_pg_backup_guard_stops_when_a_deletion_frees_nothing(
+    tmp_path: Path,
+) -> None:
+    # df reports the same free space whatever is deleted (APFS local snapshots
+    # hold the blocks): one deletion, then stop and skip, not all but the newest.
+    dumps: list[_Dump] = [(_D1, 30, True), (_D2, 30, True), (_D3, 30, True)]
+    result, backup, log = _run_pg_backup(
+        tmp_path, total_gb=30, dumps=dumps, df_frozen=True
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert _survivors(backup) == [_D2, _D3]
+    assert result.stdout.count("deleting oldest local dump") == 1
+    assert "freed no space" in result.stdout
+    assert "SKIPPING dump" in result.stdout
+    assert not _dump_ran(log)
+
+
+def test_pg_backup_guard_skips_when_the_dump_size_cannot_be_read(
+    tmp_path: Path,
+) -> None:
+    # du prints nothing: sizing would read 0 and wave the dump through.
+    dumps: list[_Dump] = [(_D1, 30, True)]
+    result, backup, log = _run_pg_backup(
+        tmp_path, total_gb=500, dumps=dumps, du_blank=(_D1,)
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "could not read the size of the existing dumps" in result.stdout
+    assert "logger -t pg-backup ABORT: could not read existing dump sizes" in _logged(
+        log
+    )
+    assert _survivors(backup) == [_D1]
+    assert not _dump_ran(log)
+
+
+def test_pg_backup_guard_ignores_a_killed_dump_when_choosing_what_to_keep(
+    tmp_path: Path,
+) -> None:
+    # A killed dump has toc.dat but no archive, and is the newest dir. It is
+    # neither deletable nor the protected newest: the newest ARCHIVED dump is.
+    # 133 GB volume, 130 GB used, 65 needed (25 + the 40 GB killed dir): both
+    # older archived dumps go (-> 63 GB), the newest archived stays, run skips.
+    killed = "precis_prod_20010105_033000"
+    dumps: list[_Dump] = [
+        (_D1, 30, True),
+        (_D2, 30, True),
+        (_D3, 30, True),
+        (killed, 40, False),
+    ]
+    result, backup, log = _run_pg_backup(tmp_path, total_gb=133, dumps=dumps)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert _survivors(backup) == [_D3, killed]
+    assert not _dump_ran(log)
+
+
+def test_pg_backup_guard_only_deletes_fixed_pattern_names(tmp_path: Path) -> None:
+    # An archived-looking dir with a name outside precis_prod_YYYYMMDD_HHMMSS
+    # is never a candidate, however old.
+    odd = "precis_prod_2001-manual"
+    dumps: list[_Dump] = [(odd, 30, True), (_D2, 30, True), (_D3, 30, True)]
+    result, backup, _ = _run_pg_backup(tmp_path, total_gb=120, dumps=dumps)
+    assert odd in _survivors(backup)
+    assert _D2 not in _survivors(backup)
+
+
+def test_pg_backup_guard_with_no_dumps_requires_only_the_floor(
+    tmp_path: Path,
+) -> None:
+    result, _, _ = _run_pg_backup(tmp_path / "ok", total_gb=26, dumps=[])
+    assert result.returncode == 0, result.stdout + result.stderr
+    result, _, _ = _run_pg_backup(tmp_path / "short", total_gb=24, dumps=[])
+    assert result.returncode == 1
+    assert "(< 25GB required: 25GB + largest existing dump 0GB)" in result.stdout
+
+
+def _psql_calls(log: Path) -> list[str]:
+    lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return [line for line in lines if line.startswith("psql ")]
+
+
+def test_pg_backup_success_stamps_the_in_db_backup_contract(tmp_path: Path) -> None:
+    result, _, log = _run_pg_backup(tmp_path, total_gb=200, dumps=[], new_dump_gb=3)
+    assert result.returncode == 0, result.stdout + result.stderr
+    (call,) = _psql_calls(log)  # exactly once
+    # same flags and user as pg_backup_dir.sh's stamp
+    assert "-U postgres -d precis_prod -q -v ON_ERROR_STOP=1" in call
+    assert re.search(r"-v run_at=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ", call)
+    assert f"-v size_bytes={3 * _GB * 1024} " in call  # the stub dump, in bytes
+    for key in ("backup.last_run_at", "backup.last_size_bytes", "backup.last_kind"):
+        assert f"'{key}'" in call
+    assert "'backup.last_kind', 'pg-dump-tar-zst'" in call
+    assert "ON CONFLICT (key) DO UPDATE" in call
+    assert "Stamped app_state backup.*" in result.stdout
+    # the statement reaches psql on stdin, after the argv
+    args, _, stdin = call.partition("<<< ")
+    assert "INSERT INTO app_state" in stdin and "INSERT" not in args
+
+
+@pytest.mark.parametrize("template", ["pg_backup.sh.j2", "pg_backup_dir.sh.j2"])
+def test_backup_stamp_sql_is_never_a_dash_c_string(template: str) -> None:
+    # psql expands :'var' only in input it lexes itself (stdin, -f). Inside a
+    # -c string the server gets the colon and answers "syntax error at or near
+    # :", so the dir leg's stamp failed on every run and /facts never saw a
+    # backup record (gr738880). A stubbed psql cannot see this; the shape can.
+    out = _render(template)
+    assert ":'run_at'" in out and ":'size_bytes'" in out
+    assert not re.search(r"""-c\s+"[^"]*:'""", out)
+    stamp = out[out.index("-v run_at=") : out.index("INSERT INTO app_state")]
+    assert "<<'SQL'" in stamp and "-c " not in stamp
+
+
+def test_pg_backup_skip_by_the_guard_does_not_stamp(tmp_path: Path) -> None:
+    result, _, log = _run_pg_backup(tmp_path, total_gb=24, dumps=[])
+    assert result.returncode == 1 and "SKIPPING dump" in result.stdout
+    assert _psql_calls(log) == []
+
+
+def test_pg_backup_failed_nas_archive_does_not_stamp(tmp_path: Path) -> None:
+    result, _, log = _run_pg_backup(tmp_path, total_gb=200, dumps=[], zstd_fail=True)
+    assert result.returncode != 0
+    assert _dump_ran(log)  # the dump ran; only the archive step failed
+    assert _psql_calls(log) == []
+
+
+def test_pg_backup_failing_stamp_warns_but_does_not_fail_the_backup(
+    tmp_path: Path,
+) -> None:
+    result, _, log = _run_pg_backup(tmp_path, total_gb=200, dumps=[], psql_exit=2)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Backup done." in result.stdout
+    assert "[WARN] app_state backup.* stamp failed" in result.stderr
+    assert len(_psql_calls(log)) == 1
+
+
 def test_b2_sync_default_and_override_source() -> None:
     d = _render("b2_sync.sh.j2")
     assert 'PG_SOURCE="$SHARED/backups/postgres/"' in d
@@ -362,7 +746,8 @@ def test_pg_backup_dir_stamps_facts_backup_contract() -> None:
     # A failed stamp must not fail a backup that already succeeded —
     # and it runs after the sync-ok write (never holds up the restic
     # leg) but before the local staging dir goes (it measures it).
-    assert "|| echo" in out
+    assert "if ! psql" in out
+    assert "[WARN] app_state backup.* stamp failed" in out
     assert (
         out.index('> "${SYNC_OK}"')
         < out.index("INSERT INTO app_state")
