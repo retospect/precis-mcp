@@ -249,7 +249,7 @@ def test_propose_carries_the_nodes_fisheye(
 
 
 def test_memory_prompt_version_covers_the_checklist() -> None:
-    assert MEMORY_PROMPT_VERSION.startswith("garden-propose.memory.v4.")
+    assert MEMORY_PROMPT_VERSION == "garden-propose.memory.v5"
     assert MEMORY_PROMPT_VERSION != PROMPT_VERSION
 
 

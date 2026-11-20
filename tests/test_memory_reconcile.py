@@ -26,6 +26,10 @@ from precis.utils import memory_reconcile
 from precis.utils.llm import router
 from precis.utils.llm.router import LlmRequest, LlmResult, Tier
 
+#: sha256[:12] of the pinned policy + checklist prose at the current
+#: MEMORY_POLICY_VERSION; see test_pinned_policy_prose_digest_matches_tripwire.
+_PINNED_POLICY_PROSE_DIGEST = "6d0b4e903f61"
+
 
 def _memory(store: Store, title: str, body: str) -> int:
     ref = store.insert_ref(kind="memory", slug=None, title=title, meta={})
@@ -66,15 +70,36 @@ def test_make_memory_include_and_garden_loader_share_exact_policy() -> None:
     assert "{{include" not in expanded
 
 
-def test_policy_change_changes_memory_rejection_cache_identity(
+def test_wording_change_keeps_memory_rejection_cache_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A wording-only edit to the pinned sections must not re-ask decided
+    questions: the version is hand-bumped, not a prose digest (gr732279)."""
     original = memory_reconcile.memory_policy_version()
     policy = memory_reconcile.memory_reconciliation_policy()
     monkeypatch.setattr(
         memory_reconcile, "memory_reconciliation_policy", lambda: policy + "\nChanged."
     )
-    assert memory_reconcile.memory_policy_version() != original
+    assert memory_reconcile.memory_policy_version() == original
+    checklist = memory_reconcile.memory_body_checklist()
+    monkeypatch.setattr(
+        memory_reconcile, "memory_body_checklist", lambda: checklist + "\nChanged."
+    )
+    assert memory_reconcile.memory_policy_version() == original
+
+
+def test_pinned_policy_prose_digest_matches_tripwire() -> None:
+    """Tripwire for the hand-bumped version (gr732279): any byte change to
+    the pinned sections fails here, forcing an explicit decision — bump
+    ``MEMORY_POLICY_VERSION`` in ``memory_reconcile`` when the policy's
+    meaning changed, or update this pin when the edit is wording-only."""
+    text = (
+        memory_reconcile.memory_reconciliation_policy()
+        + "\n\n"
+        + memory_reconcile.memory_body_checklist()
+    )
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    assert digest == _PINNED_POLICY_PROSE_DIGEST
 
 
 def test_missing_packaged_policy_section_refuses_instead_of_omitting_rules(
