@@ -2526,7 +2526,13 @@ def mint_release_fix(
     ``brief:`` comment per fix node -- the minted ``fix`` takes the first
     cluster, :func:`mint_release_fix_clusters` mints one sibling per
     further cluster, so the fixers run in parallel. The run_slice session
-    reads the brief through ``run_slice._brief_parts``. Once the plan has
+    reads the brief through ``run_slice._brief_parts``. The setting
+    ``release.fix_mode`` (:func:`precis.plans.release.fix_mode`) can
+    replace the per-cluster split with ONE top-rung fixer that owns the
+    whole red: ``owner`` every iteration, ``escalate`` from iteration 2
+    on (the digest node's ``(iteration N)`` title, :func:`iteration_of`);
+    the digest then briefs this ``fix`` node alone, closes any other
+    ``no-op`` and mints no sibling. Once the plan has
     a cut (``meta.release``), every fix node carries
     ``meta.land_target = 'release/r<N>'`` and its body names that branch
     as base and land target: ``run_slice`` cuts the worktree from it and
@@ -2610,7 +2616,16 @@ def mint_release_fix(
     return _run_body(store, loop_todo_id, root, build)
 
 
-_ITERATION_RE = re.compile(r" \(iteration \d+\)$")
+_ITERATION_RE = re.compile(r" \(iteration (\d+)\)$")
+
+
+def iteration_of(title: str | None) -> int:
+    """The release-fix iteration a node's title names (``... (iteration
+    N)``, :func:`_iteration_suffix`); no suffix is iteration 1 — the title
+    is per node, so a retried digest and an old iteration's node read the
+    iteration they were minted for."""
+    m = _ITERATION_RE.search(str(title or ""))
+    return int(m.group(1)) if m else 1
 
 
 def mint_release_fix_clusters(

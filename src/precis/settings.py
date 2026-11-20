@@ -707,6 +707,20 @@ REGISTRY: dict[str, SettingSpec] = {
             "reads as 'off'.",
         ),
         SettingSpec(
+            key="release.fix_mode",
+            type="str",
+            env_var=None,
+            default="clusters",
+            doc="DB-only. How a TEST red on a release branch is fixed "
+            "(ci_red_digest). 'clusters' (default): the digest splits the "
+            "failures into clusters, one cheap fixer each. 'owner': every "
+            "test-red iteration gets ONE fixer, pinned to the model "
+            "ladder's top rung, that owns every failure of the run. "
+            "'escalate': iteration 1 splits into clusters, iteration 2 "
+            "and later get the one owner fixer. An unrecognised value or "
+            "a failed read reads as 'clusters'.",
+        ),
+        SettingSpec(
             key="cluster.gateway_host",
             type="str",
             env_var="PRECIS_GATEWAY_HOST",

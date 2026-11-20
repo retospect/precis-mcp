@@ -2921,6 +2921,162 @@ def test_spend_cap_mints_the_remaining_allowance(
     assert params["budget_usd"] == pytest.approx(15.0)
 
 
+_FABLE = "claude-fable-5-1-medium"
+
+
+def _pinned_task_plan(
+    store: Store, model: str, extra: dict[str, Any] | None = None
+) -> T.PlanMint:
+    """One run_slice task whose ``meta.op.params`` pins ``model`` (a node
+    born on a rung: the escalated review fix, the release-fix owner)."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "The task",
+            {
+                "op": {"type": "run_slice", "params": {"model": model}},
+                **(extra or {}),
+            },
+            body="Do it.",
+        )
+
+    return T._run(store, None, build)
+
+
+def _pinned_lanes(monkeypatch: pytest.MonkeyPatch) -> None:
+    use_lanes(
+        monkeypatch,
+        _paid_devin_lane(),
+        seed_lane("claude-sub"),
+        entitlements=_fable_caps(),
+    )
+
+
+def test_a_model_pinned_capped_rung_mints_with_the_whole_allowance(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr739266: a node pinned to a capped rung is bound by its cap from
+    the first attempt — the job carries ``params.budget_usd`` = the cap
+    and the node ``meta.spend`` (blocked False)."""
+    _pinned_lanes(monkeypatch)
+    task = _pinned_task_plan(store, _FABLE).ids["task"]
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert params["model"] == _FABLE
+    assert params["budget_usd"] == pytest.approx(25.0)
+    spend = _meta(store, task)["spend"]
+    assert (spend["blocked"], spend["usd"], spend["cap_usd"]) == (False, 0.0, 25.0)
+
+
+def test_a_model_pinned_retry_carries_the_remaining_allowance(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _pinned_lanes(monkeypatch)
+    task = _pinned_task_plan(store, _FABLE).ids["task"]
+    _failed_job(
+        store,
+        task,
+        "boom",
+        lane="devin",
+        model=_FABLE,
+        meta={"usage": {"on_demand_usd": 10.0}},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert params["model"] == _FABLE  # still never climbed
+    assert params["budget_usd"] == pytest.approx(15.0)
+    spend = _meta(store, task)["spend"]
+    assert (spend["blocked"], spend["usd"]) == (False, 10.0)
+
+
+@pytest.mark.parametrize("usd", [25.0, 30.0])
+def test_a_model_pinned_node_at_its_cap_is_capped_like_a_spent_ladder_node(
+    store: Store, monkeypatch: pytest.MonkeyPatch, usd: float
+) -> None:
+    """At or over the cap nothing mints and the node ends the way a spent
+    ladder node does (rescue:builder, ``meta.spend`` blocked), not idle."""
+    _pinned_lanes(monkeypatch)
+    task = _pinned_task_plan(store, _FABLE).ids["task"]
+    _failed_job(
+        store,
+        task,
+        "boom",
+        lane="devin",
+        model=_FABLE,
+        meta={"usage": {"on_demand_usd": usd}},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:builder" in _open_tags(store, task)
+    spend = _meta(store, task)["spend"]
+    assert (spend["blocked"], spend["cap_usd"], spend["usd"]) == (True, 25.0, usd)
+    assert len(_jobs_under(store, task)) == 1
+
+
+def test_a_model_pinned_uncapped_rung_is_unchanged(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pin on an uncapped rung — and one on a model no enabled rung
+    lists — mints as before: no budget, no ``meta.spend``."""
+    _pinned_lanes(monkeypatch)
+    for model in ("claude-opus-5-5", "no-such-model"):
+        task = _pinned_task_plan(store, model).ids["task"]
+        _failed_job(
+            store,
+            task,
+            "boom",
+            lane="devin",
+            model=model,
+            meta={"usage": {"on_demand_usd": 90.0}},
+        )
+        res = pd.run_pass(store)
+        assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
+        params = _jobs_under(store, task)[-1][1]["params"]
+        assert params["model"] == model and "budget_usd" not in params
+        assert "spend" not in _meta(store, task)
+
+
+def test_a_release_fix_owner_node_is_bound_by_its_pinned_rung_cap(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The node ``ci_red_digest`` pins for ``release.fix_mode=owner``
+    (top rung, ``meta.release_fix_owner``, ``land_target`` kept) takes
+    the same path: capped top rung, budget minted, then spent."""
+    use_lanes(
+        monkeypatch,
+        entitlements={"claude-sub": {"rung_caps": {"claude-opus-5-5": 25.0}}},
+    )
+    task = _pinned_task_plan(
+        store,
+        "claude-opus-5-5",
+        {
+            "land_target": "release/r7",
+            "release_fix_owner": {"mode": "owner", "iteration": 1, "run_id": "31"},
+        },
+    ).ids["task"]
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.rescued) == (1, 0)
+    params = _jobs_under(store, task)[-1][1]["params"]
+    assert params["model"] == "claude-opus-5-5"
+    assert params["budget_usd"] == pytest.approx(25.0)
+    assert _meta(store, task)["land_target"] == "release/r7"
+    _failed_job(
+        store,
+        task,
+        "boom",
+        lane="claude-sub",
+        model="claude-opus-5-5",
+        meta={"usage": {"cost_usd": 26.0}},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.rescued) == (0, 1)
+    assert _meta(store, task)["spend"]["blocked"] is True
+
+
 def test_human_only_hit_files_the_ask_at_once(store: Store) -> None:
     """td584381 S1a: a failed attempt stamped ``human_only_hit`` skips
     the ladder and rescue — the ask names the paths a human must edit."""

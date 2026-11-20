@@ -108,7 +108,9 @@ that holds the lane's credentials with ``params.target_node``):
   SIGKILL while the group still answers past the grace. A budget stop
   is always a failed attempt — even on a clean exit, it never mints a
   land;
-  posts the session's last message as a ``handoff:`` comment on the todo,
+  posts the session's last message as a ``handoff:`` comment on the todo
+  (a release-fix node's ``gripe:``/``unfixed:`` lines in it are filed as
+  gripes and a plan-root comment, :mod:`precis.workers.release_fix_handoff`),
   records the branch state (dirty count, commits ahead of
   ``origin/main``) in the job summary. On a clean exit (0, no claude
   error, no deny hit) with commits on the branch it mints one
@@ -295,6 +297,7 @@ from precis.utils.dispatch_score import (
 from precis.workers import admission
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
+from precis.workers import release_fix_handoff as _release_fix_handoff
 from precis.workers.job_types import (
     Reconcile,
     _lane_decide,
@@ -1888,6 +1891,25 @@ def _append_comment(store: Any, todo_id: int, text: str) -> None:
             )
         ],
     )
+
+
+def _file_fix_markers(ctx: Any, todo_id: int, handoff: str) -> None:
+    """File a release-fix node's ``gripe:`` / ``unfixed:`` hand-off lines
+    (:mod:`precis.workers.release_fix_handoff`) — the lane cannot write the
+    graph, so the dispatcher does. Never changes the job's outcome: a
+    failure is a warning."""
+    try:
+        _release_fix_handoff.file_markers(
+            ctx.store,
+            todo_id=todo_id,
+            job_id=getattr(ctx, "ref_id", None),
+            handoff=handoff,
+            append_comment=_append_comment,
+        )
+    except Exception:
+        log.warning(
+            "run_slice: filing td%d's hand-off markers failed", todo_id, exc_info=True
+        )
 
 
 def _claim_todo(store: Any, todo_id: int, lane: str) -> None:
@@ -8127,6 +8149,7 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                             else None
                         ),
                     )
+    full_handoff = handoff
     if unscrubbed:
         # The raw result may quote a key the poll cannot name — the todo
         # gets the withheld comment instead of any session text (review
@@ -8146,6 +8169,8 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             _append_comment(ctx.store, todo_id, f"handoff: {handoff}")
         except Exception:  # pragma: no cover — the job outcome still lands
             log.warning("run_slice: handoff comment on td%d failed", todo_id)
+    if full_handoff and not unscrubbed:
+        _file_fix_markers(ctx, todo_id, full_handoff)
 
     ctx.set_meta(compute_handle_released=True)
     if test_failure:

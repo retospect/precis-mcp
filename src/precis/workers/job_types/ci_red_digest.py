@@ -40,7 +40,24 @@ pinned to that host the same way.
   fixer. With both kinds present their briefs split the unlisted
   failures one way (td730820): a section catch-all owns every failure
   its section's log shows, the run-wide one only failures no flagged
-  section owns. A digest with no parsed id at all keeps one brief. The digest
+  section owns. A digest with no parsed id at all keeps one brief.
+  **Owner mode** (setting ``release.fix_mode``, Reto 2026-11-20; read by
+  :func:`precis.plans.release.fix_mode`): ``clusters`` (default, and what
+  an unknown value or failed read falls back to) is the split above;
+  ``owner`` gives every test-red iteration ONE fixer; ``escalate`` splits
+  iteration 1 and gives iteration 2 and later the one fixer — the
+  iteration is the digest todo's ``(iteration N)`` title suffix, none
+  meaning 1 (:func:`_owner_mode`). The first fix node gets the whole
+  brief (:func:`_owner_done`) — scope paragraph, a group index of the
+  mechanical clusters it is not bound by, the digest, the suspects table
+  and the owner rule (:data:`_OWNER_RULE`, which sends it to
+  :data:`RELEASE_FIX_RUNBOOK` and asks for ``unfixed:`` / ``gripe:``
+  lines) — without :data:`OTHER_CLUSTERS_MARKER`, since every id is its
+  own; it is pinned to the ladder's top rung the way ``plan_dispatch``
+  pins a deep review fix (``meta.op.params``, so the spend caps still
+  apply) and stamped ``meta.release_fix_owner``; every other target
+  closes ``no-op`` and no sibling is minted. A retried digest of the
+  same run finds the stamp and posts nothing again. The digest
   reads the newest red run on ``meta.release.sha``: the cut, or — after
   a fix round's restamp (``ci_verdict_poll`` restamp mode) — the release
   head, so a second red digests the head's run, never the cut's. A fix
@@ -116,6 +133,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from precis.plans import lanes as _lanes
 from precis.plans import red_suspects as _suspects
 from precis.plans import red_waiver as _waiver
 from precis.plans import release as _release
@@ -223,6 +241,28 @@ _RELEASE_RULE = (
     "ids already pass on origin/{target}, finish with `verified: <ids> "
     "green on origin/{target}` and no commit."
 )
+
+#: The fixer's memory of the release-fix build process: the owner brief
+#: sends the session to read it first and to add a trap line it hits.
+RELEASE_FIX_RUNBOOK = "docs/runbooks/release-fix.md"
+
+#: What the owner's rule adds to the cluster rules above: the owner reads
+#: the runbook, and reports what it left red and what the pipeline got
+#: wrong in lines the dispatcher files (the escape lines stay verbatim —
+#: ``run_slice._fix_moot`` matches them).
+_OWNER_TAIL = (
+    f" Read {RELEASE_FIX_RUNBOOK} in your worktree first — it is the "
+    "fixer's memory of the build process; add a line under Traps in the "
+    "same commit if you hit one that is not listed. In your final message "
+    "write `unfixed: <test id> — <why>` for any id you leave red, and "
+    "`gripe: <what ran, what you expected, what happened>` on one line for "
+    "each defect in the pipeline itself (lander, lint, digest, CI "
+    "infrastructure, the runbook); the dispatcher files those."
+)
+#: The owner's rule, main and release forms (:data:`_RULE`,
+#: :data:`_RELEASE_RULE` plus the tail).
+_OWNER_RULE = _RULE + _OWNER_TAIL
+_OWNER_RELEASE_RULE = _RELEASE_RULE + _OWNER_TAIL
 
 #: A red splits into at most this many fix nodes; the smallest clusters
 #: past the cap fold into the last one, so a wide red cannot launch a
@@ -429,11 +469,15 @@ def _clusters_of(
     return clusters, dict(catch)
 
 
-def _fix_rule(store: Any, fix_id: int) -> str:
+def _fix_rule(store: Any, fix_id: int, *, owner: bool = False) -> str:
     """The brief's last line: :data:`_RELEASE_RULE` for a fix node that
-    lands on a release branch, else the main-land :data:`_RULE`."""
+    lands on a release branch, else the main-land :data:`_RULE`; with
+    ``owner`` the owner forms (:data:`_OWNER_RELEASE_RULE`,
+    :data:`_OWNER_RULE`)."""
     ref = store.get_ref(kind="todo", id=fix_id)
     target = _release.land_target_of(ref.meta if ref is not None else None)
+    if owner:
+        return _OWNER_RELEASE_RULE.format(target=target) if target else _OWNER_RULE
     return _RELEASE_RULE.format(target=target) if target else _RULE
 
 
@@ -1219,8 +1263,27 @@ def _digest_done(
     # trimming a composed digest would cut the failure lines the room
     # exists to keep. The room reserves the longer of the two fix rules
     # (a release-branch fix node gets :data:`_RELEASE_RULE`).
+    # A digest that could not parse everything still splits (gr681901):
+    # the parsed ids cluster as usual and each flagged section gets a
+    # catch-all fixer that reads the run itself. Only a digest with no
+    # parsed id at all keeps one brief with the whole digest.
+    failures, problems = _waiver.parse_failures(log_text or "", dict(rescued))
+    clusters, catch_alls = _clusters_of(log_text or "", failures, problems, run_id)
+    # release.fix_mode (Reto 2026-11-20): one top-rung fixer owns the whole
+    # red instead of one cheap fixer per cluster — every iteration
+    # ('owner') or from the second on ('escalate').
+    mode, iteration = _owner_mode(ctx.store, todo_id)
+    owner_scope = (
+        _owner_scope(run_id, mode, iteration, clusters, problems, failures)
+        if _wants_owner(mode, iteration)
+        else ""
+    )
     suspects = mask_secrets(_suspects_block(ctx, rel, log_text or "", dict(rescued)))
     rule_room = max(len(_RULE), len(_RELEASE_RULE.format(target="release/r9999")))
+    if owner_scope:
+        rule_room = len(owner_scope) + max(
+            len(_OWNER_RULE), len(_OWNER_RELEASE_RULE.format(target="release/r9999"))
+        )
     digest = _compose_digest(
         log_text or "",
         rescue,
@@ -1230,12 +1293,16 @@ def _digest_done(
         ),
     )
     head = f"brief: release {rn} is red at {sha9} (range {rng}), check.yml run {run_id}"
-    # A digest that could not parse everything still splits (gr681901):
-    # the parsed ids cluster as usual and each flagged section gets a
-    # catch-all fixer that reads the run itself. Only a digest with no
-    # parsed id at all keeps one brief with the whole digest.
-    failures, problems = _waiver.parse_failures(log_text or "", dict(rescued))
-    clusters, catch_alls = _clusters_of(log_text or "", failures, problems, run_id)
+    if owner_scope:
+        return _owner_done(
+            ctx,
+            targets,
+            run_id,
+            (mode, iteration),
+            f"{NAME}: {rn} red at {sha9} (run {run_id}); ",
+            [head, owner_scope, digest, suspects],
+            waiver_lines,
+        )
     if len(clusters) <= 1:
         posted = [
             (
@@ -1263,6 +1330,150 @@ def _digest_done(
         + "\n".join(mask_secrets(line) for line in waiver_lines)
         + "\n"
         + "\n\n".join(text for _, text in posted),
+    )
+    ctx.set_status("succeeded")
+    return True
+
+
+def _owner_mode(store: Any, digest_id: int) -> tuple[str, int]:
+    """``(release.fix_mode, iteration)`` for the digest node. The iteration
+    is the digest todo's own title suffix (``... (iteration N)``,
+    :func:`precis.plans.templates.iteration_of`; none is iteration 1): the
+    loop mints the body with ``iteration=`` and titles every node with it,
+    so it is stable across a retried digest and an old iteration's node."""
+    from precis.plans import templates as _templates
+
+    ref = store.get_ref(kind="todo", id=digest_id)
+    iteration = _templates.iteration_of(ref.title if ref is not None else None)
+    return _release.fix_mode(store), iteration
+
+
+def _wants_owner(mode: str, iteration: int) -> bool:
+    """``owner``: always; ``escalate``: from the second iteration on."""
+    return mode == "owner" or (mode == "escalate" and iteration >= 2)
+
+
+def _owner_scope(
+    run_id: str,
+    mode: str,
+    iteration: int,
+    clusters: list[tuple[str, list[str]]],
+    problems: list[str],
+    failures: dict[str, str],
+) -> str:
+    """The owner brief's scope paragraph and group index: this session owns
+    every failure of the run, the mechanical grouping is a hint it is not
+    bound by, and an id list the digest could not complete sends it to the
+    run itself. Never carries :data:`OTHER_CLUSTERS_MARKER` — every id is
+    this node's own, so run_slice's acceptance harvest reads all of it."""
+    scope = (
+        f"owner: this session owns every failure of check.yml run {run_id} "
+        f"(release.fix_mode={mode}, iteration {iteration}) — no other fix "
+        "node works this red, so nothing in the digest is someone else's. "
+        "Group the failures by cause before fixing any. For each cause find "
+        "the introducing commit in the changed-files table below and "
+        "decide: a code bug (fix the code; a test must fail without the "
+        "fix) or a stale test (update the test to assert the new behaviour "
+        "at least as strictly, and name the commit in your commit body). "
+        "Reproduce each id with scripts/test on the touched files. Make one "
+        "commit for the whole digest."
+    )
+    if problems or not failures:
+        why = "; ".join(problems) or "no failing test id parsed"
+        scope += (
+            f" The digest could not list every failing id ({why}), so its "
+            f"id list is incomplete: read the check.yml run {run_id} "
+            f"(scripts/ci-failed {run_id}) for failures no listed id names "
+            "— they are yours too."
+        )
+    lines = [scope]
+    if clusters:
+        lines.append(
+            "Mechanical grouping the digest found (a hint, not a boundary — "
+            "regroup by cause):"
+        )
+        for key, ids in clusters:
+            shown = ", ".join(ids) if ids else "(ids the digest could not list)"
+            lines.append(f"  {key}: {shown}")
+    return mask_secrets("\n".join(lines))
+
+
+def _owner_done(
+    ctx: Any,
+    targets: list[int],
+    run_id: str,
+    owner_mode: tuple[str, int],
+    lead: str,
+    parts: list[str],
+    waiver_lines: list[str],
+) -> bool:
+    """The owner path of :func:`_digest_done`: the first fix node gets the
+    whole brief and is pinned to the ladder's top rung (the pin
+    ``plan_dispatch`` gives a FIX_ESCALATE_DEPTH fix: ``meta.op.params``
+    ``model`` or ``lane``, so ``_escalate`` leaves it and the dispatch
+    spend caps still count its jobs); every other target closes ``no-op``
+    and no sibling is minted. ``meta.release_fix_owner`` is stamped last
+    with the run id: a retried digest of the same run finds it and posts
+    nothing again."""
+    store = ctx.store
+    mode, iteration = owner_mode
+    owner = targets[0]
+    ref = store.get_ref(kind="todo", id=owner)
+    meta = ref.meta if ref is not None and isinstance(ref.meta, dict) else {}
+    marked = meta.get(_release.RELEASE_FIX_OWNER_KEY)
+    if isinstance(marked, dict) and str(marked.get("run_id")) == run_id:
+        ctx.append_chunk(
+            "job_summary",
+            f"{lead}owner mode: the brief is already on td{owner} (run "
+            f"{run_id}); nothing re-posted\n" + "\n".join(waiver_lines),
+        )
+        ctx.set_status("succeeded")
+        return True
+    # The pin is read before any write: a lane-table fault fails the job
+    # with nothing posted, and the retry starts clean.
+    task_class = str(meta.get("task_class") or _rs._DEFAULT_TASK_CLASS)
+    top = _lanes.top_rung(task_class, lanes=_lanes.load_lanes(store))
+    for tid in targets[1:]:
+        _rs._append_comment(
+            store,
+            tid,
+            f"no-op: one owner fixer (td{owner}) owns the whole red "
+            "(release.fix_mode); none is left for this one.",
+        )
+        _rs.close_todo(store, tid, None)
+    brief = "\n".join(
+        part for part in [*parts, _fix_rule(store, owner, owner=True)] if part
+    )
+    _rs._append_comment(store, owner, brief)
+    stamp: dict[str, Any] = {
+        _release.RELEASE_FIX_OWNER_KEY: {
+            "mode": mode,
+            "iteration": iteration,
+            "run_id": run_id,
+        }
+    }
+    if top is not None:
+        stamp["op"] = {"type": _rs.NAME, "params": _lanes.pin_params(top)}
+    store.stamp_ref_meta(owner, stamp)
+    pin = (
+        f"pinned {_lanes.pin_label(top)}" if top is not None else _lanes.pin_label(top)
+    )
+    _rs._append_comment(
+        store,
+        owner,
+        f"{NAME}: owner: one fixer owns the whole red "
+        f"(release.fix_mode={mode}, iteration {iteration}) — {pin}",
+    )
+    closed = ", ".join(f"td{t}" for t in targets[1:])
+    ctx.append_chunk(
+        "job_summary",
+        f"{lead}owner mode (release.fix_mode={mode}, iteration {iteration}): "
+        f"one fixer td{owner}, {pin}; brief posted on td{owner}"
+        + (f"; closed no-op: {closed}" if closed else "")
+        + "\n"
+        + "\n".join(mask_secrets(line) for line in waiver_lines)
+        + "\n"
+        + brief,
     )
     ctx.set_status("succeeded")
     return True

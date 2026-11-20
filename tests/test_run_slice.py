@@ -6,6 +6,7 @@ no git, no claude is ever spawned.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -19,7 +20,7 @@ import threading
 import time
 import types
 import urllib.error
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
@@ -88,7 +89,9 @@ class _Chunks:
     def list_chunks_for_ref(self, ref_id: int) -> list[_Chunk]:
         return sorted(self.rows.get(ref_id, []), key=lambda c: c.ord)
 
-    def insert_chunks(self, ref_id: int, blocks: list[ChunkInsert]) -> None:
+    def insert_chunks(
+        self, ref_id: int, blocks: list[ChunkInsert], *, conn: Any = None
+    ) -> None:
         for b in blocks:
             assert all(c.ord != b.ord for c in self.rows.get(ref_id, []))
             self.rows.setdefault(ref_id, []).append(
@@ -140,6 +143,7 @@ class _Store:
         *,
         set_by: str = "agent",
         replace_prefix: bool = False,
+        conn: Any = None,
     ) -> None:
         cur = self.tags.setdefault(ref_id, [])
         if replace_prefix and tag.prefix:
@@ -167,7 +171,9 @@ class _Store:
             if c.chunk_kind == "todo_comment"
         ]
 
-    def stamp_ref_meta(self, ref_id: int, updates: dict[str, Any]) -> None:
+    def stamp_ref_meta(
+        self, ref_id: int, updates: dict[str, Any], *, conn: Any = None
+    ) -> None:
         self.refs[ref_id].meta.update(updates)
 
 
@@ -14529,3 +14535,247 @@ def test_reconcile_stale_record_mismatched_pid_is_unknown(
     run_slice._write_launch_record(attempt / "handle", {"pid": 4242})
     (attempt / "pid").write_text("5555", encoding="utf-8")
     assert run_slice.reconcile(ctx) is None
+
+
+# ── release-fix hand-off markers: gripe: / unfixed: filed by the poll ──
+
+
+class _GripeStore(_Store):
+    """The in-memory store plus the gripe-minting surface of the real one
+    (``tx``, ``insert_ref``, ``add_link``) — the lane cannot write, so the
+    poll files for it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gripes: dict[int, _Ref] = {}
+        self.links: list[tuple[int, int, str]] = []
+
+    @contextlib.contextmanager
+    def tx(self) -> Iterator[object]:
+        yield object()
+
+    def insert_ref(
+        self,
+        *,
+        kind: str,
+        slug: str | None,
+        title: str,
+        meta: dict[str, Any],
+        conn: Any = None,
+    ) -> _Ref:
+        assert kind == "gripe"
+        ref = _Ref(5000 + len(self.gripes) + 1, title, dict(meta))
+        self.gripes[ref.id] = ref
+        return ref
+
+    def add_link(
+        self,
+        *,
+        src_ref_id: int,
+        dst_ref_id: int,
+        relation: str,
+        set_by: str,
+        conn: Any = None,
+    ) -> None:
+        self.links.append((src_ref_id, dst_ref_id, relation))
+
+    def gripe_body(self, gid: int) -> str:
+        return self.chunks.list_chunks_for_ref(gid)[0].text
+
+
+_RF_PAIR = (
+    "gripe: the lander ran ruff on the squash and reported a stale cache hit "
+    "although the tree had changed\n"
+    "gripe: land lint flagged tests/test_x.py as changed but it was untouched\n"
+    "unfixed: tests/test_a.py::test_b — needs the db container the lane lacks"
+)
+
+
+def _rf_world(
+    seams: dict[str, Any],
+    *,
+    meta: dict[str, Any] | None = None,
+    tags: tuple[str, ...] = ("plan:1",),
+) -> tuple[_GripeStore, _Ctx, Any]:
+    """A release plan root td1 and the fix node td42 under it, submitted."""
+    store = _GripeStore()
+    store.add_todo(1, "Release pass", tags=("release-pass",))
+    store.add_todo(
+        42,
+        "Fix the failures",
+        tags=tags,
+        meta={_release_real.LAND_TARGET_KEY: "release/r7"} if meta is None else meta,
+    )
+    ctx, handle = _submit(store, seams)
+    return store, ctx, handle
+
+
+def _rf_poll(
+    store: _GripeStore, ctx: _Ctx, handle: Any, text: str, job: int = 900
+) -> _Ctx:
+    _finish(handle, 0, json.dumps({"is_error": False, "result": text}))
+    pctx = _poll_ctx(store, ctx)
+    pctx.ref_id = job
+    assert run_slice.poll(pctx, handle) is True
+    return pctx
+
+
+def _rf_trail(store: _GripeStore) -> list[str]:
+    return [c for c in store.comments(42) if c.startswith("filed from")]
+
+
+def test_poll_files_a_release_fixers_gripe_and_unfixed_lines(
+    seams: dict[str, Any],
+) -> None:
+    store, ctx, handle = _rf_world(seams)
+    pctx = _rf_poll(store, ctx, handle, "I stopped.\n" + _RF_PAIR)
+    # The outcome and the handoff comment are the ones a marker-less result
+    # gets: no commit, so a failed attempt, the raw text posted.
+    assert pctx.status == "failed"
+    assert any(c.startswith("handoff: I stopped.") for c in store.comments(42))
+    assert [g.title for g in store.gripes.values()] == [
+        "[release-fix] the lander ran ruff on the squash and reported a stale "
+        "cache hit although the tree had changed",
+        "[release-fix] land lint flagged tests/test_x.py as changed but it was "
+        "untouched",
+    ]
+    body = store.gripe_body(min(store.gripes))
+    assert body.startswith("[release-fix] the lander ran ruff")
+    assert body.endswith(
+        "Filed by the dispatcher from the hand-off of td42 (release r7, job "
+        "jo900); the fixer session cannot write to the graph."
+    )
+    for gid in store.gripes:
+        assert store.tag_strings(gid) == {
+            "STATUS:open",
+            "origin:release-fix-handoff",
+            "cluster:dark-factory",
+        }
+    assert store.links == [(42, gid, "related-to") for gid in sorted(store.gripes)]
+    # ONE root comment carries the unfixed line; ONE node comment the trail.
+    assert store.comments(1) == [
+        "release-fix td42 left red:\n"
+        "- tests/test_a.py::test_b — needs the db container the lane lacks"
+    ]
+    assert _rf_trail(store) == [
+        "filed from this hand-off's gripe: lines: gr5001, gr5002"
+    ]
+
+
+def test_poll_marker_filing_is_once_per_job_and_per_text(
+    seams: dict[str, Any],
+) -> None:
+    store, ctx, handle = _rf_world(seams)
+    _rf_poll(store, ctx, handle, _RF_PAIR)
+    assert len(store.gripes) == 2 and len(store.comments(1)) == 1
+    # The same finished job polled again files nothing more.
+    _rf_poll(store, ctx, handle, _RF_PAIR)
+    assert len(store.gripes) == 2 and len(store.comments(1)) == 1
+    assert len(_rf_trail(store)) == 1
+    # A later attempt (another job) repeating one line, in other case and
+    # spacing, files only the new one.
+    again = (
+        "GRIPE:   The lander ran ruff on the squash and reported a stale cache "
+        "hit although  the tree had changed\n"
+        "gripe: the digest named a test that no longer exists in the tree"
+    )
+    _rf_poll(store, ctx, handle, again, job=901)
+    assert [g.title for g in store.gripes.values()][2:] == [
+        "[release-fix] the digest named a test that no longer exists in the tree"
+    ]
+    assert len(store.comments(1)) == 1  # no unfixed line this time
+    assert _rf_trail(store)[-1] == "filed from this hand-off's gripe: lines: gr5003"
+
+
+def test_poll_marker_lines_are_ignored_off_a_release_fix(
+    seams: dict[str, Any],
+) -> None:
+    # No release land target: an ordinary build node.
+    store, ctx, handle = _rf_world(seams, meta={})
+    _rf_poll(store, ctx, handle, _RF_PAIR)
+    assert not store.gripes and not store.links and store.comments(1) == []
+    assert _rf_trail(store) == []
+    assert any(c.startswith("handoff: gripe:") for c in store.comments(42))
+
+
+def test_poll_marker_lines_are_ignored_on_a_reviewer(seams: dict[str, Any]) -> None:
+    store, ctx, handle = _rf_world(
+        seams,
+        meta={
+            _release_real.LAND_TARGET_KEY: "release/r7",
+            "kind": "generator",
+            "generate": {"role": "reviewer", "from": 41},
+        },
+    )
+    _rf_poll(store, ctx, handle, "review: LAND\n" + _RF_PAIR)
+    assert any(c.startswith("handoff: review: LAND") for c in store.comments(42))
+    assert not store.gripes and store.comments(1) == []
+
+
+def test_poll_marker_cap_and_floor(seams: dict[str, Any]) -> None:
+    store, ctx, handle = _rf_world(seams)
+    lines = [
+        f"gripe: pipeline defect number {i} in the lander output" for i in range(7)
+    ]
+    lines.insert(2, "gripe: too short, 19 ch")  # under the 20-character floor
+    lines.insert(3, "gripe:      ")
+    _rf_poll(store, ctx, handle, "\n".join(lines))
+    assert len(store.gripes) == 5
+    assert [g.title for g in store.gripes.values()][-1].endswith(
+        "number 4 in the lander output"
+    )
+    assert _rf_trail(store) == [
+        "filed from this hand-off's gripe: lines: "
+        "gr5001, gr5002, gr5003, gr5004, gr5005 (2 over the cap of 5 not filed)"
+    ]
+
+
+def test_poll_marker_text_is_masked(seams: dict[str, Any]) -> None:
+    store, ctx, handle = _rf_world(seams)
+    token = "ghp_" + "A1b2C3d4" * 4 + "E5f6"  # 36 alnum after ghp_
+    _rf_poll(
+        store,
+        ctx,
+        handle,
+        f"gripe: the lander echoed its token {token} into the digest\n"
+        f"unfixed: tests/test_a.py::test_b — pushed with {token}",
+    )
+    (gid,) = store.gripes
+    assert token not in store.gripes[gid].title
+    assert "<redacted:" in store.gripes[gid].title
+    assert token not in store.gripe_body(gid)
+    assert token not in store.comments(1)[0]
+    assert "<redacted:" in store.comments(1)[0]
+
+
+@pytest.mark.parametrize("which", ["mint", "whole"])
+def test_poll_survives_a_marker_filing_failure(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, which: str
+) -> None:
+    tried: list[str] = []
+
+    def boom(*_a: Any, **_k: Any) -> Any:
+        tried.append(which)
+        raise RuntimeError("graph down")
+
+    target = "_mint_gripe" if which == "mint" else "file_markers"
+    monkeypatch.setattr(run_slice._release_fix_handoff, target, boom)
+    store, ctx, handle = _rf_world(seams)
+    pctx = _rf_poll(store, ctx, handle, _RF_PAIR)
+    assert tried and set(tried) == {which}
+    assert pctx.status == "failed" and pctx.meta_set[run_slice.NO_COMMIT_KEY] is True
+    assert "attempt:1" in store.tag_strings(42)
+    assert not store.gripes
+    assert any(c.startswith("handoff: gripe:") for c in store.comments(42))
+    if which == "mint":  # the unfixed line still lands on the root
+        assert len(store.comments(1)) == 1
+
+
+def test_poll_without_marker_lines_touches_nothing_more(
+    seams: dict[str, Any],
+) -> None:
+    store, ctx, handle = _rf_world(seams)
+    before = dict(store.refs[1].meta)
+    _rf_poll(store, ctx, handle, "Nothing to report; gripe in the middle: not a marker")
+    assert not store.gripes and store.comments(1) == []
+    assert store.refs[1].meta == before

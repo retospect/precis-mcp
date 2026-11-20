@@ -280,6 +280,37 @@ access, an unbound or malformed marker, or any other field problem leaves
 the gate as strict as before. The safety-net revert defers to a fix chain
 only while it moved within 24 h.
 
+### Who fixes a red release (release.fix_mode)
+
+`release.fix_mode` (`clusters` | `owner` | `escalate`, default `clusters`,
+DB-only; an unknown value or a failed read reads `clusters`) picks who a
+TEST red that was not waived goes to. It is read when `ci_red_digest`
+writes the brief, so a change takes effect on the next digest; change it
+between passes.
+
+- `clusters`: the digest splits the failing ids into clusters and mints
+  one fixer per cluster on the foot of the ladder.
+- `owner`: every test-red iteration goes to ONE fixer that owns every
+  failing id of the run. The node is pinned to the ladder's top rung
+  (`lanes.top_rung`) and stamped `meta.release_fix_owner`; no sibling is
+  minted.
+- `escalate`: iteration 1 runs as `clusters`, iteration 2 and later as
+  `owner`.
+
+The owner's spend is bound by its rung's `rung_caps` entry like any other
+node: the job is minted with the remaining allowance and a spent cap parks
+the node for rescue. A rung with no cap is unbound.
+
+A builder lane cannot write to the graph. The fixer's standing knowledge
+is [`release-fix`](./release-fix.md), which it extends in its own commit,
+and the dispatcher files the `gripe:` and `unfixed:` lines of its hand-off
+(`workers/release_fix_handoff.py`): one gripe per line, tagged
+`origin:release-fix-handoff`, and the unfixed ids as a comment on the
+pass's plan root.
+
+    scripts/prod-precis settings set release.fix_mode owner
+    scripts/prod-precis settings set release.fix_mode clusters
+
 ### Stuck watchdog
 
 The same `release_poll` pass also watches the live `release.round`

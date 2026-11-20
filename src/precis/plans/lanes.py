@@ -1063,6 +1063,22 @@ def top_rung(
     return per_lane[-1][-1] if per_lane else None
 
 
+def pin_params(rung: Rung) -> dict[str, str]:
+    """The ``meta.op.params`` that pin a ``run_slice`` node to ``rung``:
+    its ``model`` (routed through ``pick_lane``), else its ``lane`` for
+    a lane that declares no models. Shared by every born-pinned node
+    (a deep review fix, the release-fix owner)."""
+    return {"model": rung.model} if rung.model else {"lane": rung.lane}
+
+
+def pin_label(rung: Rung | None) -> str:
+    """How a pin reads in a node comment: the rung's lane and model, or
+    that no enabled rung fit the task class."""
+    if rung is None:
+        return "unpinned — no enabled rung for its task class"
+    return f"lane {rung.lane} model {rung.model or 'default'}"
+
+
 def rung_index(
     rungs: tuple[Rung, ...], lane: str | None, model: str | None
 ) -> int | None:

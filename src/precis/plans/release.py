@@ -74,6 +74,7 @@ what lives here:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -91,6 +92,8 @@ from precis.utils import handle_registry
 
 if TYPE_CHECKING:
     from precis.store import Store
+
+log = logging.getLogger(__name__)
 
 #: ``tests-green`` range of a release-pass gate minted before its cut (a
 #: valid sha shape that matches no commit: the gate stays closed).
@@ -211,6 +214,51 @@ def cut_host(store: Store) -> str | None:
     except Exception:
         return None
     return host or None
+
+
+# ── the release-fix mode (release.fix_mode) ──────────────────────
+
+#: The DB-only setting choosing how a test red is fixed
+#: (``precis.settings.REGISTRY``): ``clusters`` (the digest splits the red
+#: into one cheap fixer per cluster), ``owner`` (one top-rung fixer owns
+#: the whole red, every iteration), ``escalate`` (clusters on iteration 1,
+#: the owner from iteration 2).
+FIX_MODE_KEY = "release.fix_mode"
+FIX_MODES = ("clusters", "owner", "escalate")
+FIX_MODE_DEFAULT = "clusters"
+
+#: ``meta.release_fix_owner`` on the fix node ``ci_red_digest`` made the
+#: owner of a whole red: ``{mode, iteration, run_id}``. Written last, so
+#: it doubles as the once-per-run marker a retried digest honours.
+RELEASE_FIX_OWNER_KEY = "release_fix_owner"
+
+
+def fix_mode(store: Store) -> str:
+    """``release.fix_mode`` read strictly (a failed read is not "unset"),
+    one of :data:`FIX_MODES`. A failed read and an unrecognised value both
+    answer ``clusters`` — today's behaviour, never the pricier owner
+    session — with a logged warning."""
+    from precis import settings
+
+    try:
+        raw = settings._db_read_strict(store, FIX_MODE_KEY)
+    except Exception:
+        log.warning(
+            "%s: settings read failed; using %s",
+            FIX_MODE_KEY,
+            FIX_MODE_DEFAULT,
+            exc_info=True,
+        )
+        return FIX_MODE_DEFAULT
+    if raw is None:
+        raw = str(settings.REGISTRY[FIX_MODE_KEY].default)
+    mode = raw.strip().lower()
+    if mode not in FIX_MODES:
+        log.warning(
+            "%s: unrecognised value %r; using %s", FIX_MODE_KEY, raw, FIX_MODE_DEFAULT
+        )
+        return FIX_MODE_DEFAULT
+    return mode
 
 
 def release_target_of(store: Store, todo_id: int) -> dict[str, Any] | None:

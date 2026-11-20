@@ -337,8 +337,13 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    a capped rung mints the job with ``params.budget_usd`` — the cap
    minus recorded spend — and ``run_slice`` kills the session once its
    live usage meets the bound, so an attempt starting under the cap
-   cannot run past it (td601015). An uncapped
-   rung is never spend-blocked. What
+   cannot run past it (td601015). A rung the node is *pinned* to
+   (``meta.op.params.model``: a deep review fix born on the top rung, the
+   release-fix owner) is bound too (gr739266): :func:`_pinned_spend`
+   stamps ``meta.spend`` and mints with the remaining ``budget_usd``,
+   and a pin whose cap is spent is capped like a spent ladder node
+   (:func:`_spend_rungs` feeds :func:`_spend_hit` just the pinned rung).
+   An uncapped rung is never spend-blocked. What
    parks it follows the failure: an
    exhausted ``run_slice`` node enters rescue —
    :func:`precis.workers.factory_rescue.enter_rescue` tags it
@@ -2611,13 +2616,9 @@ def _review_fix(
         task_class = str(node.meta.get("task_class") or _DEFAULT_TASK_CLASS)
         top = _lanes.top_rung(task_class, lanes=lane_table)
         if top is not None:
-            params = {"model": top.model} if top.model else {"lane": top.lane}
+            params = _lanes.pin_params(top)
             w.stamp_meta(node, {"op": {"type": DEFAULT_OP, "params": params}})
-        pin = (
-            f"lane {top.lane} model {top.model or 'default'}"
-            if top is not None
-            else "unpinned — no enabled rung for its task class"
-        )
+        pin = _lanes.pin_label(top)
         w.comment(
             node,
             f"plan_dispatch: escalated: round {depth} of td{n.root} — "
@@ -5417,6 +5418,86 @@ def _task_rungs(
     return rungs
 
 
+def _pinned_rung(
+    lane_table: tuple[_lanes.Lane, ...], n: _Node, params: dict[str, Any]
+) -> _lanes.Rung | None:
+    """The enabled rung a model-pinned op names: the node's task-class
+    ladder entry whose model is ``params["model"]`` (on ``params["lane"]``
+    when that is pinned too; the first such rung in ladder order
+    otherwise). ``None`` for an unpinned node or a model on no enabled
+    rung — the pin then behaves as it always did, bound by nothing."""
+    model = params.get("model")
+    if not model:
+        return None
+    task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
+    lane = params.get("lane")
+    return next(
+        (
+            r
+            for r in _lanes.ladder(task_class, lanes=lane_table)
+            if r.model == model and (not lane or r.lane == lane)
+        ),
+        None,
+    )
+
+
+def _spend_rungs(
+    lane_table: tuple[_lanes.Lane, ...], n: _Node, params: dict[str, Any]
+) -> tuple[_lanes.Rung, ...]:
+    """The rungs :func:`_spend_hit` weighs: just the pinned rung for a
+    model-pinned node (gr739266 — the whole ladder always held an uncapped
+    rung, so a capped pin never read as spent), else :func:`_task_rungs`.
+    Kept apart from ``_task_rungs`` because ``_capped`` also reads that
+    ladder for the no-commit top-rung rule, which a pin must not change."""
+    pinned = _pinned_rung(lane_table, n, params)
+    return (pinned,) if pinned is not None else _task_rungs(lane_table, n, params)
+
+
+def _pinned_spend(
+    w: _Writer,
+    plan: _Plan,
+    n: _Node,
+    params: dict[str, Any],
+    lane_table: tuple[_lanes.Lane, ...],
+    rules: dict[str, dict[str, Any]] | None,
+) -> tuple[bool, str | None, dict[str, Any] | None]:
+    """:func:`_escalate`'s answer for a model-pinned node (gr739266): the
+    pin is never climbed, but the pinned rung's ``rung_caps`` cap still
+    binds it. An uncapped (or unknown) pin is left alone. A capped one
+    stamps ``meta.spend`` and mints with ``params.budget_usd`` = the
+    remaining allowance, the bound ``run_slice`` enforces mid-run
+    (td601015); at or over the cap nothing mints — ``blocked: True`` is
+    stamped and :func:`_spend_hit`'s caller caps the node the way a spent
+    ladder node is."""
+    pinned = _pinned_rung(lane_table, n, params)
+    cap_usd = _rung_cap_usd(pinned, rules) if pinned is not None and rules else None
+    if pinned is None or rules is None or cap_usd is None:
+        return True, None, None
+    spend = _node_spend_usd(plan, n, rules)
+    blocked = spend >= cap_usd
+    w.stamp_meta(
+        n,
+        {
+            SPEND_KEY: {
+                "usd": round(spend, 4),
+                "cap_usd": cap_usd,
+                "blocked": blocked,
+                "at": _iso(datetime.now(UTC)),
+            }
+        },
+    )
+    if blocked:
+        return (
+            False,
+            f"td{n.id}: pinned rung lane {pinned.lane} model {pinned.model} is "
+            f"spent — ${spend:.2f} recorded against its ${cap_usd:.2f} cap; "
+            "no job minted",
+            None,
+        )
+    params["budget_usd"] = round(cap_usd - spend, 4)
+    return True, None, None
+
+
 def _cap_rungs(
     plan: _Plan,
     lane_table: tuple[_lanes.Lane, ...],
@@ -5783,9 +5864,10 @@ def _escalate(
     models from the default upward). The retry climbs one rung above where
     the newest ended attempt ran (its job's ``meta.lane``/``meta.model``);
     when that is unknown, attempt *k* takes rung *k* from the foot. Floored
-    at the top rung. A node whose ``meta.op`` already pins ``model`` is left
-    alone (gr549046: the triage's pick wins); one that pins ``lane`` climbs
-    within that lane only. Rungs on lanes a host refusal backed off are
+    at the top rung. A node whose ``meta.op`` already pins ``model`` is never
+    climbed (gr549046: the triage's pick wins) but its rung's ``rung_caps``
+    cap still binds it (:func:`_pinned_spend`, gr739266); one that pins
+    ``lane`` climbs within that lane only. Rungs on lanes a host refusal backed off are
     skipped — an escalated retry would park there, not build (gr571395);
     the floor is read on the FULL ladder so a backed-off lane never drops
     the retry below the last real attempt's rung, and when nothing free
@@ -5806,7 +5888,7 @@ def _escalate(
     mode, and always ``None`` when the climb was skipped).
     """
     if "model" in params:
-        return True, None, None
+        return _pinned_spend(w, plan, n, params, lane_table, rules)
     # A reviewer whose newest job left no readable verdict retries on the
     # lane ``_review_lane`` picked: a format miss says nothing about the
     # lane's strength, and the climb pinned swe-2-max while the verdict
@@ -7508,7 +7590,11 @@ def _step_dispatch(
                     continue
         rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()
         cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params, rules))
-        spend_hit = _spend_hit(plan, n, rungs, rules) if rules else None
+        spend_hit = (
+            _spend_hit(plan, n, _spend_rungs(lane_table, n, params), rules)
+            if rules and job_type == DEFAULT_OP
+            else None
+        )
         if spend_hit is not None:
             w.stamp_meta(
                 n,
@@ -9120,7 +9206,11 @@ def _step_hygiene(
         job_type, params = _resolve_op(n)
         rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()
         cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params, rules))
-        spend_hit = _spend_hit(plan, n, rungs, rules) if rules else None
+        spend_hit = (
+            _spend_hit(plan, n, _spend_rungs(lane_table, n, params), rules)
+            if rules and job_type == DEFAULT_OP
+            else None
+        )
         if spend_hit is not None:
             w.stamp_meta(
                 n,

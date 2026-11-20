@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,7 @@ from precis.workers.job_types import release_confirm as rcf
 from precis.workers.job_types import release_cut as rc
 from precis.workers.job_types import release_deploy as rd
 from precis.workers.job_types import run_slice as rs
+from tests._lane_rows import use_lanes
 
 pytestmark = pytest.mark.db
 
@@ -4059,6 +4061,325 @@ def test_a_red_in_one_file_keeps_one_fix_node(
     [text] = _todo_comments(store, it["fix"])
     assert "cluster" not in text.splitlines()[1]
     assert "lander lands it onto release/r7, never main" in text
+
+
+# ── release.fix_mode: one owner fixer for the whole red ─────────────
+
+_THREE_CLUSTER_RED = (
+    "== test-linux (3.13, 1) ==\n"
+    "  FAILED tests/test_alpha.py::test_one - assert 1 == 2\n"
+    "  FAILED tests/test_beta.py::test_two - KeyError: 'x'\n"
+    "  FAILED tests/test_beta.py::test_three - KeyError: 'y'\n"
+    "  FAILED tests/test_gamma.py::test_four - boom\n"
+    "  ===== 4 failed, 40 passed in 3.00s =====\n"
+)
+_RED_IDS = (
+    "tests/test_alpha.py::test_one",
+    "tests/test_beta.py::test_two",
+    "tests/test_beta.py::test_three",
+    "tests/test_gamma.py::test_four",
+)
+
+
+def _digest_red(
+    store: Store, checkout: dict[str, Any], digest_id: int, red: str
+) -> Ctx:
+    """Run one ``ci_red_digest`` job on the red ``red`` to completion."""
+    ctx = Ctx(store, {"todo_id": digest_id})
+    handle = crd.submit(ctx, None)
+    _exit(checkout, 0, red)
+    assert crd.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failures
+    return ctx
+
+
+def _owner_iteration(
+    store: Store, mode: str | None, iteration: int
+) -> tuple[T.PlanMint, dict[str, int]]:
+    """A red cut r7 with ``release.fix_mode`` set to ``mode`` and the
+    release-fix body minted for ``iteration``."""
+    if mode is not None:
+        psettings.set_setting("release.fix_mode", mode, store=store)
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    it = T.mint_body(store, mint.ids["loop"], "release-fix", iteration=iteration).ids
+    return mint, it
+
+
+def _fixes(store: Store, mint: T.PlanMint) -> list[int]:
+    """The loop's ``run_slice`` fix nodes (a pinned one carries a dict op)."""
+    out = []
+    for tid in _children(store, mint.ids["loop"]):
+        op = _meta(store, tid).get("op")
+        if op == "run_slice" or (
+            isinstance(op, dict) and op.get("type") == "run_slice"
+        ):
+            out.append(tid)
+    return sorted(out)
+
+
+def test_owner_mode_gives_the_whole_red_to_one_pinned_fixer(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """release.fix_mode=owner (Reto 2026-11-20): a three-cluster red is ONE
+    brief on the first fix node naming every failing id, no sibling is
+    minted, a second target closes no-op, the node is stamped and pinned
+    to the ladder's top rung and says so in a comment."""
+    use_lanes(monkeypatch)
+    mint, it = _owner_iteration(store, "owner", 1)
+    # A second live fix node blocked-by the digest (a sibling a cluster
+    # round minted): the owner path closes it.
+    [spare] = T.mint_release_fix_clusters(
+        store, it["digest"], it["fix"], ["tests/test_spare.py"]
+    )
+    _ci_failed_script(checkout)
+    ctx = _digest_red(store, checkout, it["digest"], _THREE_CLUSTER_RED)
+
+    assert _fixes(store, mint) == sorted([it["fix"], spare])  # none minted
+    [brief, pin_note] = _todo_comments(store, it["fix"])
+    assert brief.startswith(f"brief: release r7 is red at {SHA[:9]}")
+    for tid in _RED_IDS:
+        assert tid in brief
+    assert "owner: this session owns every failure of check.yml run 31" in brief
+    assert "release.fix_mode=owner, iteration 1" in brief
+    assert "tests/test_beta.py: tests/test_beta.py::test_two, " in brief  # index
+    assert crd.OTHER_CLUSTERS_MARKER not in brief
+    assert "incomplete" not in brief
+    assert f"Read {crd.RELEASE_FIX_RUNBOOK} in your worktree first" in brief
+    assert "`unfixed: <test id> — <why>`" in brief
+    assert "lander lands it onto release/r7, never main" in brief
+    assert "never skip, xfail or loosen a test" in brief
+    # scope paragraph first, the digest after it, the rule last
+    assert brief.index("owner: this session") < brief.index("FAILED tests/test_alpha")
+    assert brief.rstrip().endswith("the dispatcher files those.")
+
+    meta = _meta(store, it["fix"])
+    assert R.RELEASE_FIX_OWNER_KEY == "release_fix_owner"
+    assert meta["release_fix_owner"] == {
+        "mode": "owner",
+        "iteration": 1,
+        "run_id": "31",
+    }
+    assert meta["land_target"] == "release/r7"
+    assert meta["op"] == {"type": "run_slice", "params": {"model": "claude-opus-5-5"}}
+    assert pin_note == (
+        "ci_red_digest: owner: one fixer owns the whole red "
+        "(release.fix_mode=owner, iteration 1) — pinned lane claude-sub "
+        "model claude-opus-5-5"
+    )
+    # The surplus target closed no-op, with its reason, and got no brief.
+    assert _status(store, spare) == "done"
+    [closed] = _todo_comments(store, spare)
+    assert closed.startswith("no-op: one owner fixer") and f"td{it['fix']}" in closed
+    assert "release_fix_owner" not in _meta(store, spare)
+    assert "owner mode" in ctx.chunks[-1][1] and f"td{it['fix']}" in ctx.chunks[-1][1]
+    assert _blockers(store, it["restamp"]) == {it["fix"], spare}
+
+
+def test_owner_mode_main_land_node_keeps_the_main_rule_and_pins_nothing_without_a_rung(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fix node with no ``meta.land_target`` gets the main form of the
+    owner rule; with no enabled rung for its class it stays unpinned and
+    the comment says so."""
+    monkeypatch.setattr(crd._lanes, "load_lanes", lambda store: ())
+    psettings.set_setting("release.fix_mode", "owner", store=store)
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    digest_id, fix_id = _digest_and_fix(store, mint.ids["loop"], mint.root_id)
+    _ci_failed_script(checkout)
+    _digest_red(store, checkout, digest_id, _THREE_CLUSTER_RED)
+    [brief, pin_note] = _todo_comments(store, fix_id)
+    assert "Fix forward on main; never skip, xfail or loosen a test." in brief
+    assert "Land the fix with scripts/ship --quick." in brief
+    assert pin_note == (
+        "ci_red_digest: owner: one fixer owns the whole red "
+        "(release.fix_mode=owner, iteration 1) — unpinned — no enabled rung "
+        "for its task class"
+    )
+    meta = _meta(store, fix_id)
+    assert meta["op"] == "run_slice"  # nothing to pin to
+    assert meta["release_fix_owner"]["mode"] == "owner"
+
+
+def test_escalate_mode_splits_iteration_one(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_lanes(monkeypatch)
+    mint, it = _owner_iteration(store, "escalate", 1)
+    _ci_failed_script(checkout)
+    _digest_red(store, checkout, it["digest"], _THREE_CLUSTER_RED)
+    assert len(_fixes(store, mint)) == 3  # the three clusters, as today
+    assert "release_fix_owner" not in _meta(store, it["fix"])
+    assert "cluster 1/3" in _todo_comments(store, it["fix"])[0]
+
+
+def test_escalate_mode_iteration_two_is_owner(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_lanes(monkeypatch)
+    mint, it = _owner_iteration(store, "escalate", 2)
+    digest = store.get_ref(kind="todo", id=it["digest"])
+    assert digest is not None and str(digest.title).endswith("(iteration 2)")
+    _ci_failed_script(checkout)
+    _digest_red(store, checkout, it["digest"], _THREE_CLUSTER_RED)
+    assert _fixes(store, mint) == [it["fix"]]
+    meta = _meta(store, it["fix"])
+    assert meta["release_fix_owner"] == {
+        "mode": "escalate",
+        "iteration": 2,
+        "run_id": "31",
+    }
+    assert meta["op"]["params"] == {"model": "claude-opus-5-5"}
+    [brief, _pin] = _todo_comments(store, it["fix"])
+    assert "release.fix_mode=escalate, iteration 2" in brief
+
+
+@pytest.mark.parametrize("mode", [None, "clusters"])
+def test_clusters_and_default_mode_split_as_before(
+    store: Store, checkout: dict[str, Any], mode: str | None
+) -> None:
+    mint, it = _owner_iteration(store, mode, 2)
+    _ci_failed_script(checkout)
+    _digest_red(store, checkout, it["digest"], _THREE_CLUSTER_RED)
+    fixes = _fixes(store, mint)
+    assert len(fixes) == 3
+    for tid in fixes:
+        assert "release_fix_owner" not in _meta(store, tid)
+        [text] = _todo_comments(store, tid)
+        assert crd.OTHER_CLUSTERS_MARKER in text and "owner:" not in text
+    assert _meta(store, it["fix"])["op"] == "run_slice"  # no pin
+
+
+def test_unknown_fix_mode_reads_as_clusters_with_a_warning(
+    store: Store, checkout: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    mint, it = _owner_iteration(store, "everyone", 1)
+    _ci_failed_script(checkout)
+    with caplog.at_level("WARNING", logger="precis.plans.release"):
+        _digest_red(store, checkout, it["digest"], _THREE_CLUSTER_RED)
+    assert len(_fixes(store, mint)) == 3
+    assert "release.fix_mode" in caplog.text and "'everyone'" in caplog.text
+
+
+def test_a_failed_fix_mode_read_reads_as_clusters_with_a_warning(
+    store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    psettings.set_setting("release.fix_mode", "owner", store=store)
+    assert R.fix_mode(store) == "owner"
+
+    def boom(store: Store, key: str) -> str | None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(psettings, "_db_read_strict", boom)
+    with caplog.at_level("WARNING", logger="precis.plans.release"):
+        assert R.fix_mode(store) == "clusters"
+    assert "settings read failed" in caplog.text
+
+
+def test_owner_brief_on_an_incomplete_id_list_sends_the_fixer_to_the_run(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_lanes(monkeypatch)
+    mint, it = _owner_iteration(store, "owner", 1)
+    _ci_failed_script(checkout)
+    _digest_red(store, checkout, it["digest"], _PARTLY_PARSED_RED)
+    assert _fixes(store, mint) == [it["fix"]]
+    [brief, _pin] = _todo_comments(store, it["fix"])
+    assert "id list is incomplete" in brief
+    assert "id list truncated (+1 more)" in brief
+    assert "read the check.yml run 31 (scripts/ci-failed 31)" in brief
+    assert "they are yours too" in brief
+    assert crd.OTHER_CLUSTERS_MARKER not in brief
+    assert "job test-linux (3.13, 2): (ids the digest could not list)" in brief
+    for tid in ("tests/test_alpha.py::test_one", "tests/test_gamma.py::test_g"):
+        assert tid in brief
+
+
+def test_a_retried_owner_digest_posts_and_stamps_nothing_new(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_lanes(monkeypatch)
+    mint, it = _owner_iteration(store, "owner", 1)
+    [spare] = T.mint_release_fix_clusters(
+        store, it["digest"], it["fix"], ["tests/test_spare.py"]
+    )
+    _ci_failed_script(checkout)
+    _digest_red(store, checkout, it["digest"], _THREE_CLUSTER_RED)
+    before = {tid: _todo_comments(store, tid) for tid in (it["fix"], spare)}
+    meta_before = _meta(store, it["fix"])
+    assert len(before[it["fix"]]) == 2 and len(before[spare]) == 1
+
+    ctx = _digest_red(store, checkout, it["digest"], _THREE_CLUSTER_RED)
+    assert {tid: _todo_comments(store, tid) for tid in before} == before
+    assert _meta(store, it["fix"]) == meta_before
+    assert _fixes(store, mint) == sorted([it["fix"], spare])
+    assert "already on" in ctx.chunks[-1][1]
+
+    # A different run id on the same node is a new red: briefed afresh.
+    R.record_ci_verdict(store, SHA, RNG, "red", "32")
+    _digest_red(store, checkout, it["digest"], _THREE_CLUSTER_RED)
+    assert len(_todo_comments(store, it["fix"])) == 4
+    assert _meta(store, it["fix"])["release_fix_owner"]["run_id"] == "32"
+
+
+def test_owner_rules_keep_the_escapes_run_slice_matches() -> None:
+    """The owner rule's release and main forms keep the existing rule
+    verbatim: the escape lines still satisfy run_slice's regexes, and the
+    runbook sentence follows them."""
+    release = crd._OWNER_RELEASE_RULE.format(target="release/r7")
+    [verified] = re.findall(r"`(verified:[^`]*)`", release)
+    match = rs._FIX_VERIFIED_RE.match(verified)
+    assert match is not None
+    assert rs._FIX_VERIFIED_GREEN_RE.search(match.group(1))
+    assert crd._RELEASE_RULE.format(target="release/r7") in release
+    [moot] = re.findall(r"`(moot:[^`]*)`", crd._OWNER_RULE)
+    assert rs._MOOT_LINE_RE.match(moot)
+    assert crd._RULE in crd._OWNER_RULE
+    for rule in (release, crd._OWNER_RULE):
+        assert f"Read {crd.RELEASE_FIX_RUNBOOK} in your worktree first" in rule
+        assert "add a line under Traps in the same commit" in rule
+        assert "`gripe: <what ran, what you expected, what happened>`" in rule
+    assert crd.RELEASE_FIX_RUNBOOK == "docs/runbooks/release-fix.md"
+
+
+def test_the_owner_rule_points_at_a_runbook_that_exists() -> None:
+    """The brief sends the fixer to this file as its only memory of the
+    build process (a builder lane cannot read graph memory): a dangling
+    path, a missing Traps section or marker lines the dispatcher does not
+    parse would each leave it with nothing."""
+    from precis.workers import release_fix_handoff as handoff
+
+    runbook = Path(__file__).resolve().parent.parent / crd.RELEASE_FIX_RUNBOOK
+    text = runbook.read_text(encoding="utf-8")
+    assert "\n## Traps\n" in text
+    for marker in ("gripe:", "unfixed:"):
+        assert f"`{marker} " in text and f"`{marker} " in crd._OWNER_TAIL
+    # the lines the runbook and the rule ask for are the ones that get filed
+    sample = (
+        "gripe: the lander refused a land for a file the fix never touched\n"
+        "unfixed: tests/test_x.py::test_y — needs a schema change\n"
+    )
+    want = (
+        ["the lander refused a land for a file the fix never touched"],
+        ["tests/test_x.py::test_y — needs a schema change"],
+    )
+    assert handoff.parse_markers(sample) == want
+    # a session formats its hand-off; a bulleted, bold or backticked marker
+    # line is the same line, and marks inside the text stay
+    formatted = (
+        "- `gripe: the lander refused a land for a file the fix never touched`\n"
+        "  * **unfixed:** tests/test_x.py::test_y — needs a schema change\n"
+    )
+    assert handoff.parse_markers(formatted) == want
+    assert handoff.parse_markers("gripe: the lint flagged `__init__`\n")[0] == [
+        "the lint flagged `__init__`"
+    ]
+    # prose that merely mentions the word files nothing
+    assert handoff.parse_markers("I had one gripe: the suite is slow today\n") == (
+        [],
+        [],
+    )
 
 
 def test_digest_fails_without_a_red_verdict_run_id(
