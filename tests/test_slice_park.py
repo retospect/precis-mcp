@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from precis.workers.job_types import _slice_park, run_slice
+from precis.workers.job_types import _slice_park, land_slice, run_slice
 
 _GIT_ENV = {
     "GIT_AUTHOR_NAME": "t",
@@ -73,12 +73,13 @@ class _Rig:
 def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Rig:
     r = _Rig(tmp_path)
 
-    def push(tree: Path, todo_id: int, sha: str) -> str:
+    def push(tree: Path, todo_id: int, sha: str, expected_tip: str) -> str:
+        ref = _slice_park.saved_ref(todo_id)
         _rg(
             tree,
             "push",
             "-q",
-            "-f",
+            f"--force-with-lease={ref}:{expected_tip}",
             "origin",
             f"{sha}:{_slice_park.saved_ref(todo_id)}",
         )
@@ -87,6 +88,47 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Rig:
     monkeypatch.setattr(_slice_park, "_push", push)
     monkeypatch.setenv("PRECIS_NODE", "host-a")
     return r
+
+
+@pytest.mark.parametrize("has_snapshot", [False, True])
+def test_park_save_leases_the_observed_ref(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch, has_snapshot: bool
+) -> None:
+    tree, _ = _tree_with_work(rig)
+    ref = _slice_park.saved_ref(TD)
+    if has_snapshot:
+        assert _slice_park.save_work(tree, TD, "previous failure") is not None
+    other_tip = _commit(rig.b, "other.txt")
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(rig.a))
+    monkeypatch.delenv("PRECIS_FACTORY_GIT_TOKEN", raising=False)
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: str(rig.origin),
+    )
+
+    def push(tree: Path, todo_id: int, sha: str, expected_tip: str) -> str:
+        _rg(rig.b, "push", "--force", "origin", f"{other_tip}:{ref}")
+        return land_slice._push_branch(
+            tree, run_slice.slice_branch(todo_id), sha, expected_tip=expected_tip
+        )
+
+    monkeypatch.setattr(_slice_park, "_push", push)
+    record = _slice_park.save_work(tree, TD, "stale save")
+    assert record is not None
+    assert "lease refused" in record["error"]
+    assert rig.origin_ref(ref) == other_tip
+    assert _rg(tree, "cat-file", "-t", record["head"]) == "commit"
+
+
+def test_park_save_keeps_snapshot_local_when_origin_cannot_be_read(rig: _Rig) -> None:
+    tree, _ = _tree_with_work(rig)
+    _rg(tree, "remote", "set-url", "origin", str(rig.origin / "missing"))
+    record = _slice_park.save_work(tree, TD, "failed attempt")
+    assert record is not None
+    assert record["push"] == "withheld: cannot verify origin's saved tip"
+    assert rig.origin_ref(_slice_park.saved_ref(TD)) is None
+    assert _rg(tree, "cat-file", "-t", record["head"]) == "commit"
 
 
 def _tree_with_work(rig: _Rig) -> tuple[Path, str]:
@@ -256,6 +298,59 @@ def test_same_host_ordinary_retry_still_drops_uncommitted_edits(rig: _Rig) -> No
     assert _rg(tree, "rev-parse", "HEAD") == tip  # committed work keeps
     assert _rg(tree, "status", "--porcelain") == ""  # dirty edits drop
     assert not (tree / "new.txt").exists()
+
+
+def test_reused_tree_fast_forwards_to_origins_pushed_tip(rig: _Rig) -> None:
+    """gr709688: host A's local ``slice/42`` holds the round-1 tip while
+    a round on host B pushed a newer tip to ``refs/factory/slice/42``.
+    The reuse fetches it and fast-forwards the branch — a tip origin
+    moved past is never the rebuild's base again — while a branch with
+    unpushed commits of its own is never moved."""
+    tree = run_slice._ensure_worktree(rig.a, TD)
+    first = _commit(tree, "built.txt", "round 1")
+    assert _slice_park.save_work(tree, TD, "failed round") is not None
+    assert rig.origin_ref(f"refs/factory/slice/{TD}") == first
+
+    b_tree = run_slice._ensure_worktree(rig.b, TD)
+    assert _rg(b_tree, "rev-parse", "HEAD") == first
+    newer = _commit(b_tree, "built2.txt", "round 2")
+    assert _slice_park.save_work(b_tree, TD, "host B round 2") is not None
+    assert rig.origin_ref(f"refs/factory/slice/{TD}") == newer
+
+    notes: list[str] = []
+    again = run_slice._ensure_worktree(rig.a, TD, notes=notes)
+    assert again == tree
+    assert _rg(tree, "rev-parse", "HEAD") == newer
+    assert notes == [f"resumed from {newer}"]
+
+    # A diverged branch — commits origin never got — is never moved.
+    _rg(tree, "reset", "-q", "--hard", first)
+    diverged = _commit(tree, "local.txt", "unpushed")
+    run_slice._ensure_worktree(rig.a, TD)
+    assert _rg(tree, "rev-parse", "HEAD") == diverged
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+def test_save_work_withholds_a_tip_behind_origins(rig: _Rig, dirty: bool) -> None:
+    """gr709688: the same clobber the defer refusal stops, through the
+    park-save — a stale tree's tip (or the WIP snapshot on it) does not
+    descend from the tip another host pushed, so the save withholds it
+    like a secret-scan hit: kept local, never an error."""
+    tree = run_slice._ensure_worktree(rig.a, TD)
+    _commit(tree, "built.txt", "round 1")
+    assert _slice_park.save_work(tree, TD, "round 1") is not None
+    b_tree = run_slice._ensure_worktree(rig.b, TD)
+    newer = _commit(b_tree, "built2.txt", "round 2")
+    assert _slice_park.save_work(b_tree, TD, "round 2") is not None
+    assert rig.origin_ref(f"refs/factory/slice/{TD}") == newer
+
+    if dirty:
+        (tree / "new.txt").write_text("unsaved", encoding="utf-8")
+    rec = _slice_park.save_work(tree, TD, "stale retry")
+    assert rec is not None
+    assert rec["push"].startswith("withheld: behind origin's pushed tip")
+    assert "error" not in rec
+    assert rig.origin_ref(f"refs/factory/slice/{TD}") == newer
 
 
 def test_same_host_resume_never_resets_committed_work(rig: _Rig) -> None:

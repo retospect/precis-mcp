@@ -277,6 +277,7 @@ from precis.plans import outcome as _outcome
 from precis.plans import release as _release
 from precis.plans.nodes import MOOT_TAG, any_verdict, generator_verdict, node_kind
 from precis.principal import worker_comment_meta
+from precis.store._todo_sql import _PRELAND_REVIEWER_CLAUSE
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.utils.container_limits import mem_limit_preexec
 from precis.utils.dispatch_score import (
@@ -1246,14 +1247,12 @@ def _preland_reviewer(store: Any, todo_id: int) -> int | None:
 
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
-            SELECT ref_id FROM refs
-             WHERE kind = 'todo' AND retired_at IS NULL
-               AND meta->'generate'->>'role' = 'reviewer'
-               AND meta->'generate'->>'from' = %s
-               AND meta->%s = 'true'::jsonb
+            f"""
+            SELECT r.ref_id FROM refs r
+             WHERE {_PRELAND_REVIEWER_CLAUSE}
+               AND r.meta->'generate'->>'from' = %s
             """,
-            (f"td{todo_id}", PRELAND_REVIEW_KEY),
+            (PRELAND_REVIEW_KEY, f"td{todo_id}"),
         ).fetchall()
     for (rid,) in rows:
         if _todo_status(store, int(rid)) not in TERMINAL_TODO_STATUSES:
@@ -1284,14 +1283,12 @@ def rearm_preland_review(store: Any, todo_id: int) -> list[int]:
     store.stamp_ref_meta(todo_id, {PENDING_LAND_KEY: None})
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
-            SELECT ref_id FROM refs
-             WHERE kind = 'todo' AND retired_at IS NULL
-               AND meta->'generate'->>'role' = 'reviewer'
-               AND meta->'generate'->>'from' = %s
-               AND meta->%s = 'true'::jsonb
+            f"""
+            SELECT r.ref_id FROM refs r
+             WHERE {_PRELAND_REVIEWER_CLAUSE}
+               AND r.meta->'generate'->>'from' = %s
             """,
-            (f"td{todo_id}", PRELAND_REVIEW_KEY),
+            (PRELAND_REVIEW_KEY, f"td{todo_id}"),
         ).fetchall()
     reopened: list[int] = []
     for (rid,) in rows:
@@ -1315,6 +1312,39 @@ def rearm_preland_review(store: Any, todo_id: int) -> list[int]:
     return reopened
 
 
+class _StaleSliceTip(RuntimeError):
+    """gr709688 — the pre-land defer refused: the rebuild's tip is the
+    launch tip, the head the review's last FIX/REVERT judged, or sits behind the tip
+    origin's ``refs/factory/slice/<id>`` already holds (a stale reused
+    tree on this host). Pushing would re-stamp ``pending_land`` with
+    the rejected head or clobber a newer pushed tip, so the run fails
+    the attempt instead — the retry cap or the coordinator ask owns
+    the loop, not another push."""
+
+
+def _rejected_preland_head(store: Any, todo_id: int) -> str | None:
+    """The head the build's last pre-land send-back judged (gr709688):
+    ``meta.preland_fix_rounds.head`` (gr684815), else the stashed
+    ``meta.preland_held.params.head`` (gr681208). ``None`` when no
+    FIX/REVERT round is on record — the defer pushes as before."""
+    from precis.plans.templates import PRELAND_FIX_ROUNDS_KEY, PRELAND_HELD_KEY
+
+    ref = store.get_ref(kind="todo", id=todo_id)
+    meta = dict((ref.meta if ref is not None else None) or {})
+    rounds = meta.get(PRELAND_FIX_ROUNDS_KEY)
+    if isinstance(rounds, dict):
+        head = str(rounds.get("head") or "")
+        if re.fullmatch(r"[0-9a-f]{40}", head):
+            return head
+    held = meta.get(PRELAND_HELD_KEY)
+    params = held.get("params") if isinstance(held, dict) else None
+    if isinstance(params, dict):
+        head = str(params.get("head") or "")
+        if re.fullmatch(r"[0-9a-f]{40}", head):
+            return head
+    return None
+
+
 def _defer_land_for_review(
     ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool, reviewer: int
 ) -> str:
@@ -1327,7 +1357,15 @@ def _defer_land_for_review(
     LAND verdict. A defer that made it here succeeded, so a stale
     ``meta.preland_defer_failed`` (gr663738) clears with the same
     write, as does the ``meta.preland_held`` stash a FIX/REVERT left
-    (gr681208). Returns the push note for the job summary."""
+    (gr681208). Returns the push note for the job summary.
+
+    gr709688: with a send-back head on record
+    (:func:`_rejected_preland_head`) the push first proves the rebuild
+    moved — a tip equal to the launch or judged head, or an ancestor of the tip
+    origin's slice ref already holds, means the rebuild added nothing
+    (or would clobber a newer pushed tip) and the defer raises
+    :class:`_StaleSliceTip` instead of pushing. A park snapshot protects
+    its parent for ancestry but its own SHA for the push lease."""
     from precis.plans.templates import (
         PENDING_LAND_KEY,
         PRELAND_DEFER_FAILED_KEY,
@@ -1335,7 +1373,55 @@ def _defer_land_for_review(
     )
     from precis.workers.job_types import land_slice as _ls
 
-    note = _ls._push_branch(tree, slice_branch(todo_id))
+    branch = slice_branch(todo_id)
+    tip = (_git(["rev-parse", f"refs/heads/{branch}"], tree).stdout or "").strip()
+    rejected = _rejected_preland_head(ctx.store, todo_id)
+    if rejected is None:
+        note = _ls._push_branch(tree, branch)
+    else:
+        launch_tip = (ctx.meta or {}).get("branch_tip")
+        if tip == launch_tip:
+            raise _StaleSliceTip(
+                f"rebuild added no commit since the review FIX: {branch} "
+                f"still at launch tip {tip[:12]}"
+            )
+        remote_tip = (
+            _slice_park.fetch_saved(tree, todo_id)
+            if tip != rejected and re.fullmatch(r"[0-9a-f]{40}", tip)
+            else None
+        )
+        remote_base = _slice_park.without_wip(tree, remote_tip) if remote_tip else None
+        if tip != rejected and (remote_tip is None or remote_base is None):
+            raise _StaleSliceTip(
+                f"cannot verify origin's reviewed slice tip for {branch}; "
+                "retry the rebuild when the saved ref can be fetched"
+            )
+        stale = tip == rejected
+        if remote_tip and remote_base and not stale:
+            if remote_base != remote_tip and tip in (remote_base, remote_tip):
+                stale = True
+            elif remote_base == rejected:
+                # The rebuild may amend or rebase the rejected commit.
+                stale = (
+                    _git(
+                        ["merge-base", "--is-ancestor", tip, remote_base], tree
+                    ).returncode
+                    != 1
+                )
+            elif remote_base != tip:
+                stale = (
+                    _git(
+                        ["merge-base", "--is-ancestor", remote_base, tip], tree
+                    ).returncode
+                    != 0
+                )
+        if stale:
+            raise _StaleSliceTip(
+                f"rebuild added no commit since the review FIX: {branch} "
+                f"tip {tip[:12]} does not pass the judged head "
+                f"{rejected[:12]}"
+            )
+        note = _ls._push_branch(tree, branch, tip, expected_tip=remote_tip)
     if "FAILED" in note:
         raise RuntimeError(note)
     params = _land_params(ctx, todo_id, tree, lane, checked)
@@ -1344,11 +1430,8 @@ def _defer_land_for_review(
     # added nothing; a verdict naming another head read a stale branch.
     # The preland_held stash and its re-hold carry it like the other
     # params.
-    pushed = (
-        _git(["rev-parse", f"refs/heads/{slice_branch(todo_id)}"], tree).stdout or ""
-    ).strip()
-    if re.fullmatch(r"[0-9a-f]{40}", pushed):
-        params["head"] = pushed
+    if re.fullmatch(r"[0-9a-f]{40}", tip):
+        params["head"] = tip
     ctx.store.stamp_ref_meta(
         todo_id,
         {
@@ -3700,6 +3783,29 @@ def _reset_reused_worktree(tree: Path, branch: str) -> None:
     _git(["worktree", "prune"], tree)
 
 
+def _sync_reused_branch(root: Path, tree: Path, todo_id: int) -> str | None:
+    """gr709688 — a reused tree's local ``slice/<id>`` can sit behind
+    origin's pushed ``refs/factory/slice/<id>``: a round another host
+    ran pushed a newer tip this clone never fetched, and a rebuild
+    launched on the stale tip reads the wrong base (its clean exit's
+    defer then pushes the old head back over the reviewed one). Fetch
+    the saved ref and move the branch onto its last real commit —
+    :func:`_slice_park.resume_tip` drops a WIP snapshot, like the
+    no-local-tree resume — but only as a fast-forward: a local tip that
+    is not an ancestor of it carries unpushed commits and is never
+    moved. Returns the sha moved to, else ``None``."""
+    tip = _slice_park.resume_tip(root, todo_id, keep_wip=False)
+    if tip is None:
+        return None
+    now = (_git(["rev-parse", "HEAD"], tree).stdout or "").strip()
+    if now == tip:
+        return None
+    if _git(["merge-base", "--is-ancestor", "HEAD", tip], tree).returncode != 0:
+        return None
+    moved = _git(["reset", "--hard", tip], tree)
+    return tip if moved.returncode == 0 else None
+
+
 #: Env vars a credentialed git needs besides PATH and HOME: locale, the
 #: TLS trust roots and the proxy a host may point git at. Nothing else of
 #: the worker's environment (DSN, tokens, session variables) reaches the
@@ -3924,9 +4030,12 @@ def _ensure_worktree(
     release-train T1). A retry reuses an existing
     tree and branch (the branch stays owned by its slice until it lands or
     is abandoned) — reset to a clean checkout of the branch tip first
-    (:func:`_reset_reused_worktree`); a legacy ``slice-td<id>`` branch is
-    renamed first. ``fetched`` skips the fetch: the caller already fetched
-    ``origin/<base>`` under the credential (:func:`_prepare_repo`).
+    (:func:`_reset_reused_worktree`), then fast-forwarded onto origin's
+    pushed ``refs/factory/slice/<id>`` tip when it is behind it
+    (:func:`_sync_reused_branch`, gr709688); a legacy ``slice-td<id>``
+    branch is renamed first. ``fetched`` skips the fetch: the caller
+    already fetched ``origin/<base>`` under the credential
+    (:func:`_prepare_repo`).
 
     **Park = save, resume anywhere** (:mod:`._slice_park`): with no local
     tree the slice's pushed ``refs/factory/slice/<id>`` is fetched, and
@@ -3966,10 +4075,15 @@ def _ensure_worktree(
         saved_head = parked_tip
     if tree.exists():
         _reset_reused_worktree(tree, branch)
+        moved = None
         if keep_wip and not start_over:
             moved = _slice_park.apply_saved_wip(root, tree, todo_id, saved_head)
-            if moved:
-                note.append(f"resumed from {moved}")
+        elif not start_over:
+            # gr709688: origin's pushed ref may hold rounds this clone
+            # never saw — fast-forward onto it before judging the tip.
+            moved = _sync_reused_branch(root, tree, todo_id)
+        if moved:
+            note.append(f"resumed from {moved}")
         return tree
     extra = [] if base == "main" else [f"+refs/heads/{base}:refs/remotes/origin/{base}"]
     if not fetched:
@@ -7891,6 +8005,7 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
     # its child todos, so it has nothing to land.
     land = clean and not _is_generator(ctx.store, todo_id)
     nothing = None
+    preland_defer_refused = False
     # gr595545: the hard gates are computed BEFORE the close/land arms —
     # and they DECIDE, every run and every arm (review td655142): a
     # clean exit that failed one (an uncompilable tree, a ``tests:``
@@ -8409,6 +8524,17 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                 note = _defer_land_for_review(
                     ctx, todo_id, tree, lane, checked, preland
                 )
+            except _StaleSliceTip as exc:
+                log.warning("run_slice: pre-land defer for td%d refused", todo_id)
+                preland_defer_refused = True
+                # gr709688: the refusal means origin's pushed tip is the
+                # truth — nothing was pushed, so no
+                # ``preland_defer_failed`` stamp (it would pin "the
+                # branch never reached origin" on work that did, and
+                # mute the tick's verdict re-hold into an unbounded
+                # attempt-free spin). The burned attempt owns the
+                # rebuild: the retry's synced tree, else the cap's ask.
+                nothing = f"exited clean but the pre-land defer was refused ({exc})"
             except Exception as exc:
                 log.warning("run_slice: pre-land defer for td%d failed", todo_id)
                 # gr663738: the branch never reached origin — the work
@@ -8554,6 +8680,7 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             todo_id,
             budget_note or denied or test_failure or nothing or f"exit {exit_code}",
             base=base,
+            local_only=preland_defer_refused,
         )
     attempt = None
     try:

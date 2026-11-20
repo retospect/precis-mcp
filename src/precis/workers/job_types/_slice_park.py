@@ -196,11 +196,27 @@ def _snapshot_commit(tree: Path, todo_id: int, reason: str) -> str | None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _push(tree: Path, todo_id: int, sha: str) -> str:
+def _push(tree: Path, todo_id: int, sha: str, expected_tip: str) -> str:
     """Push ``sha`` to ``refs/factory/slice/<td>`` — a seam for tests."""
     from precis.workers.job_types import land_slice as _ls
 
-    return _ls._push_branch(tree, _rs().slice_branch(todo_id), sha)
+    return _ls._push_branch(
+        tree, _rs().slice_branch(todo_id), sha, expected_tip=expected_tip
+    )
+
+
+def _save_lease(tree: Path, todo_id: int) -> str | None:
+    """Read the saved ref, distinguishing verified absence from failure."""
+    try:
+        tip = fetch_saved(tree, todo_id)
+        if tip is not None:
+            return tip
+        probe = _rs()._git(
+            ["ls-remote", "--exit-code", "origin", saved_ref(todo_id)], tree
+        )
+        return "" if probe.returncode == 2 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def save_work(
@@ -210,6 +226,7 @@ def save_work(
     *,
     base: str = "origin/main",
     include_dirty: bool = True,
+    local_only: bool = False,
 ) -> dict[str, Any] | None:
     """Save the work in ``tree`` so the node may park without losing it.
 
@@ -218,6 +235,14 @@ def save_work(
     or ``None`` when there is nothing to save (a clean tree whose branch
     is not ahead of ``base``). Never raises past a failed push: the
     record then carries ``error``.
+
+    The push is withheld — kept local, never an error — when origin's
+    ref already holds a tip ``sha`` does not descend from (gr709688:
+    a stale tree's save must not clobber a round another host pushed;
+    the remote tip's WIP snapshot counts at its parent, so a same-host
+    re-save still replaces its own earlier snapshot). An unverifiable ref
+    or a secret-scan hit also keeps the save local. ``local_only`` keeps
+    the snapshot on this host after a pre-land defer refusal.
 
     ``include_dirty`` False (a failed land: its tree may sit mid-rebase)
     pushes the branch tip only."""
@@ -232,10 +257,33 @@ def save_work(
     if wip is None and (not ahead.isdigit() or int(ahead) == 0):
         return None
     sha = wip or head
-    hits = secret_hits(tree, base, sha)
-    # A hit keeps the snapshot local: the repo is public and refs/factory/*
-    # fetchable. Same-host resume still works from the local object.
-    note = f"withheld: secret-scan {hits} hits" if hits else _push(tree, todo_id, sha)
+    expected_tip = None if local_only else _save_lease(tree, todo_id)
+    remote_tip = without_wip(tree, expected_tip) if expected_tip else expected_tip
+    if local_only:
+        note = "withheld: pre-land defer refused"
+    elif expected_tip is None or remote_tip is None:
+        note = "withheld: cannot verify origin's saved tip"
+    elif (
+        remote_tip
+        and remote_tip != sha
+        and rs._git(["merge-base", "--is-ancestor", remote_tip, sha], tree).returncode
+        != 0
+    ):
+        # gr709688: origin's pushed ref holds a newer tip (a round on
+        # another host, or this one's already-pushed defer) — the save
+        # must not clobber it with a tip that does not descend from it.
+        # The snapshot stays local; a same-host resume still finds it.
+        note = f"withheld: behind origin's pushed tip {remote_tip[:12]}"
+    else:
+        hits = secret_hits(tree, base, sha)
+        # A hit keeps the snapshot local: the repo is public and
+        # refs/factory/* fetchable. Same-host resume still works from
+        # the local object.
+        note = (
+            f"withheld: secret-scan {hits} hits"
+            if hits
+            else _push(tree, todo_id, sha, expected_tip)
+        )
     record: dict[str, Any] = {
         "host": node_name(),
         "worktree": str(tree),
@@ -258,6 +306,7 @@ def save_at_job_end(
     *,
     base: str = "origin/main",
     include_dirty: bool = True,
+    local_only: bool = False,
 ) -> None:
     """:func:`save_work` for the end of a failed run: stamps ``meta.saved``
     on the job and logs what happened. A failed save is written on the job
@@ -265,7 +314,12 @@ def save_at_job_end(
     error: str | None
     try:
         record = save_work(
-            tree, todo_id, reason, base=base, include_dirty=include_dirty
+            tree,
+            todo_id,
+            reason,
+            base=base,
+            include_dirty=include_dirty,
+            local_only=local_only,
         )
     except Exception as exc:
         log.warning("park-save: td%d failed", todo_id, exc_info=True)
@@ -311,9 +365,18 @@ def fetch_saved(root: Path, todo_id: int) -> str | None:
     return tip if _HEX40.fullmatch(tip) else None
 
 
-def is_wip(root: Path, sha: str) -> bool:
-    subject = _out(_rs()._git(["log", "-1", "--format=%s", sha], root))
-    return subject.startswith(WIP_PREFIX)
+def without_wip(root: Path, tip: str) -> str | None:
+    """Return the real tip under a park snapshot, or None if unreadable."""
+    try:
+        commit = _rs()._git(["show", "-s", "--format=%P%n%s", tip], root)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if commit.returncode:
+        return None
+    parent, _, subject = commit.stdout.partition("\n")
+    if subject.startswith(WIP_PREFIX):
+        return parent if _HEX40.fullmatch(parent) else None
+    return tip
 
 
 def resume_tip(root: Path, todo_id: int, *, keep_wip: bool) -> str | None:
@@ -322,12 +385,7 @@ def resume_tip(root: Path, todo_id: int, *, keep_wip: bool) -> str | None:
     WIP snapshot on top and takes the last real commit; a parked node's
     resume keeps it."""
     tip = fetch_saved(root, todo_id)
-    if tip is None:
-        return None
-    if not keep_wip and is_wip(root, tip):
-        parent = _out(_rs()._git(["rev-parse", f"{tip}^"], root))
-        return parent if _HEX40.fullmatch(parent) else None
-    return tip
+    return without_wip(root, tip) if tip is not None and not keep_wip else tip
 
 
 def apply_saved_wip(

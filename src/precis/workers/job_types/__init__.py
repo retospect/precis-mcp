@@ -34,6 +34,16 @@ Park snapshots scan every unpublished commit, because even credentials
 deleted at the tip become fetchable when history is pushed. Parked resumes
 require the recorded snapshot before cleanup; unavailable saves must resume
 on their saving host or receive an explicit start-over.
+Ordinary retries resume from the snapshot's parent. Park-save and pre-land
+FIX deferral use that parent for ancestry, so a new commit and an earlier
+snapshot can share the same parent. Both bind the push lease to the actual
+remote ref observed during the check, including the snapshot SHA or verified
+absence. A move after the check refuses the push, and park-save keeps the
+snapshot local when it cannot verify the ref.
+Pre-land FIX deferral compares the final tip to the recorded launch tip
+because a stale checkout can diverge from an amended review head. A
+refused defer keeps any park snapshot local so the failure path preserves
+the reviewed ref.
 
 ``run_slice`` delegates CLI argv, stdin and output parsing to
 ``_slice_adapters``. Only ``claude_p`` gets a precis MCP grant; Codex and
@@ -53,6 +63,10 @@ matching the regular check gate.
 Plan dispatch and executor claims use the same brief selection as build
 and land to resolve overlap targets. This keeps brief-only release fixes
 isolated from main while holding overlapping work on the same branch.
+A rescue or child-failed tag on the pre-land reviewer releases the build's
+pending overlap hold because rescue owns the review gate. The reviewer is
+linked by ``meta.generate.from`` and can be a sibling under the plan root.
+Live build and land jobs still hold overlapping files.
 ``run_slice`` gates code builds on the available supplied tests. Missing
 tests fall back to checked landing; non-code/no-commit nodes are exempt.
 Acceptance runs are detached and polled across passes so slow tests cannot

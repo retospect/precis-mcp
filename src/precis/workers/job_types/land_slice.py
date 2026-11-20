@@ -5714,7 +5714,9 @@ def _landed_finish(
     return True
 
 
-def _push_branch(tree: Path, branch: str, sha: str | None = None) -> str:
+def _push_branch(
+    tree: Path, branch: str, sha: str | None = None, *, expected_tip: str | None = None
+) -> str:
     """Push ``<branch>`` to origin's hidden ``refs/factory/<branch>``
     (:data:`~precis.plans.templates.SLICE_REF_NS`) under the factory
     credential — until then the branch lives only on this host, so a
@@ -5744,7 +5746,9 @@ def _push_branch(tree: Path, branch: str, sha: str | None = None) -> str:
 
     ``sha`` pushes that commit instead of the local branch tip: the
     park-save's WIP snapshot (:mod:`precis.workers.slice_park`) rides the
-    same ref without moving the local branch."""
+    same ref without moving the local branch. When the caller checks
+    ancestry, it supplies ``expected_tip`` (empty for verified absence)
+    so the lease uses that exact observation without reading origin again."""
     ops: Path | None = None
     remote: dict[str, str] | None = None
     try:
@@ -5767,8 +5771,12 @@ def _push_branch(tree: Path, branch: str, sha: str | None = None) -> str:
         )
         if ops is None:
             return f"branch push of {branch}: FAILED (no ops repo)"
-        remote = _factory_git_mirror.ls_remote(
-            url, (branch,), env=env, namespace=SLICE_REF_NS
+        remote = (
+            _factory_git_mirror.ls_remote(
+                url, (branch,), env=env, namespace=SLICE_REF_NS
+            )
+            if expected_tip is None
+            else {branch: expected_tip}
         )
         lease: list[str] = []
         if remote is not None:

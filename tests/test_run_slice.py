@@ -275,6 +275,8 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             if per is not None and len(args) > 2:
                 return _proc(per.get(args[2], ""))
             return _proc(calls.get("ahead", ""))
+        if args[:2] == ["rev-list", "--count"]:
+            return _proc(str(len(calls.get("ahead", "").splitlines())))
         if args[:2] == ["rev-parse", "HEAD"]:
             # The submit-time branch tip stamp (gr674785).
             return _proc(calls.get("head_sha", ""))
@@ -301,6 +303,8 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         if args[:3] == ["show", "-s", "--format=%B"]:
             # The candidate sha's own commit message.
             return _proc(calls.get("show_msg", ""), rc=calls.get("show_rc", 0))
+        if args[:3] == ["show", "-s", "--format=%P%n%s"]:
+            return _proc(calls.get("saved_commit", "\nordinary commit\n"))
         if args[:2] == ["cat-file", "-e"]:
             # rc 0 = the named path exists on origin/main.
             return _proc(rc=calls.get("cat_rc", 0))
@@ -392,8 +396,15 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     calls["push"] = []
     calls["push_note"] = "branch push of {branch}: on origin"
 
-    def fake_push_branch(tree: Path, branch: str, sha: str | None = None) -> str:
+    def fake_push_branch(
+        tree: Path,
+        branch: str,
+        sha: str | None = None,
+        *,
+        expected_tip: str | None = None,
+    ) -> str:
         calls["push"].append((Path(tree), branch))
+        calls["push_tip"] = (sha, expected_tip)
         return calls["push_note"].format(branch=branch)
 
     monkeypatch.setattr(land_slice, "_push_branch", fake_push_branch)
@@ -4512,6 +4523,151 @@ def test_successful_preland_defer_clears_the_stamp(
     assert pctx.status == "succeeded"
     assert store.refs[42].meta["preland_defer_failed"] is None
     assert store.refs[42].meta["pending_land"]["todo_id"] == 42
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def _fix_round_meta(head: str) -> dict[str, Any]:
+    """The send-back record a pre-land FIX leaves (gr684815, gr681208)."""
+    return {
+        "preland_fix_rounds": {"count": 3, "head": head},
+        "preland_held": {
+            "params": {"todo_id": 42, "branch": "slice/42", "head": head},
+            "reviewer": 77,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("divergent", "dirty"), [(False, False), (False, True), (True, True)]
+)
+def test_poll_defer_refused_when_the_rebuild_added_no_commit(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, divergent: bool, dirty: bool
+) -> None:
+    """gr709688: an unchanged divergent checkout is stale too. A
+    refusal burns an attempt and keeps even a dirty park snapshot local."""
+    judged = "c5dfcd16" + "a" * 32
+    local = "f" * 40 if divergent else judged
+    snapshot = "e" * 40 if dirty else None
+    store = _Store()
+    store.add_todo(42, "t", body="b", meta=_fix_round_meta(judged))
+    seams["head_sha"] = local
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    seams["tips"] = {"refs/heads/slice/42": local}
+    seams["ancestor_rc"] = 1 if divergent else 0
+    monkeypatch.setattr(
+        run_slice._slice_park, "fetch_saved", lambda tree, todo_id: judged
+    )
+    monkeypatch.setattr(
+        run_slice._slice_park,
+        "_snapshot_commit",
+        lambda tree, todo_id, reason: snapshot,
+    )
+    monkeypatch.setattr(run_slice._slice_park, "secret_hits", lambda *args: 0)
+    pctx = _poll_ctx(store, ctx)
+    run_slice.poll(pctx, handle)
+    seams["ahead"] = f"{local[:7]} feat(x): y (td42)\n"
+    result = {"type": "result", "is_error": False, "result": "done.\ntests: ran"}
+    _finish(handle, 0, json.dumps(result) + "\n")
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "rebuild added no commit since the review FIX" in str(pctx.failure)
+    assert seams["push"] == []
+    assert pctx.meta_set["saved"]["head"] == (snapshot or local)
+    assert pctx.meta_set["saved"]["push"] == "withheld: pre-land defer refused"
+    meta = store.refs[42].meta
+    assert "pending_land" not in meta
+    assert "preland_defer_failed" not in meta
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags and "STATUS:done" not in tags
+    assert "attempt:1" in tags
+
+
+@pytest.mark.parametrize("fetch_failed", [False, True])
+def test_poll_defer_refused_when_the_local_tip_is_behind_origins(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, fetch_failed: bool
+) -> None:
+    """gr709688's evidence (td695906): the reused tree's tip — a stale
+    round-1 head — is an ANCESTOR of the tip another host pushed, not
+    the judged head itself. Pushing would clobber the reviewed tip:
+    the same refusal, on the ``preland_held`` stash alone. A failed
+    fetch must also refuse, since origin's newer tip cannot be verified."""
+    judged = "c5dfcd16" + "a" * 32
+    stale = "f69946ef" + "b" * 32
+    store = _Store()
+    store.add_todo(
+        42,
+        "t",
+        body="b",
+        meta={
+            "preland_held": {
+                "params": {"todo_id": 42, "branch": "slice/42", "head": judged},
+                "reviewer": 77,
+            }
+        },
+    )
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    seams["tips"] = {"refs/heads/slice/42": stale}
+    monkeypatch.setattr(
+        run_slice._slice_park,
+        "fetch_saved",
+        lambda root, todo_id: None if fetch_failed else judged,
+    )
+    # ``merge-base --is-ancestor`` rc 0: the stale tip sits behind
+    # origin's pushed tip.
+    pctx = _poll_ctx(store, ctx)
+    run_slice.poll(pctx, handle)
+    seams["ahead"] = f"{stale[:7]} feat(x): y (td42)\n"
+    result = {"type": "result", "is_error": False, "result": "done.\ntests: ran"}
+    _finish(handle, 0, json.dumps(result) + "\n")
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    expected = (
+        "cannot verify origin's reviewed slice tip"
+        if fetch_failed
+        else "rebuild added no commit since the review FIX"
+    )
+    assert expected in str(pctx.failure)
+    assert seams["push"] == []
+    meta = store.refs[42].meta
+    assert "pending_land" not in meta and "preland_defer_failed" not in meta
+    assert "STATUS:open" in store.tag_strings(42)
+    assert "attempt:1" in store.tag_strings(42)
+
+
+@pytest.mark.parametrize("wip", [False, True])
+def test_poll_defer_pushes_a_tip_past_the_judged_head(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, wip: bool
+) -> None:
+    """The refusal is scoped to a rebuild that added nothing: a tip
+    ahead of the judged head AND of origin's pushed ref defers, stamps
+    ``pending_land`` with the new head and closes as before."""
+    judged = "c5dfcd16" + "a" * 32
+    new_tip = "d01dab1e" + "c" * 32
+    store = _Store()
+    store.add_todo(42, "t", body="b", meta=_fix_round_meta(judged))
+    ctx, handle = _submit(store, seams)
+    seams["preland"] = 77
+    seams["tips"] = {"refs/heads/slice/42": new_tip}
+    remote = "f" * 40 if wip else judged
+    if wip:
+        seams["saved_commit"] = f"{judged}\nwip: parked failed attempt (td42)\n"
+    monkeypatch.setattr(
+        run_slice._slice_park, "fetch_saved", lambda root, todo_id: remote
+    )
+    seams["ancestor_rc"] = 1  # the new tip is not behind origin's tip
+    pctx = _poll_ctx(store, ctx)
+    run_slice.poll(pctx, handle)
+    seams["ahead"] = f"{new_tip[:7]} feat(x): y (td42)\n"
+    result = {"type": "result", "is_error": False, "result": "done.\ntests: ran"}
+    _finish(handle, 0, json.dumps(result) + "\n")
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["push"] == [(Path(handle["worktree"]), "slice/42")]
+    assert seams["push_tip"] == (new_tip, remote)
+    pending = store.refs[42].meta["pending_land"]
+    assert pending["head"] == new_tip and pending["todo_id"] == 42
     assert "STATUS:done" in store.tag_strings(42)
 
 

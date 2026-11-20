@@ -252,9 +252,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    Only builds with the same land target wait on each other. The target
    comes from metadata, body or selected brief, with main as the default.
    A build whose ``land_slice``
-   died (newest job failed/cancelled/timed-out, none live) or that
-   carries or sits under a ``rescue:``/``child-failed:`` tag holds no
-   lock (gr701628); the dead-land drop reads only a failure of the
+   died (newest job failed/cancelled/timed-out, none live) releases the
+   pending hold (gr701628). Rescue or child failure on the build, an ancestor,
+   or its pre-land reviewer also releases a pending hold (gr709688).
+   The dead-land drop reads only a failure of the
    stamp's own ``head`` — a rebuild's fresh ``pending_land`` outlives the
    historical dead job (td701778). ``live_nodes`` counts a held
    candidate as not live.
@@ -475,7 +476,7 @@ from precis.plans.nodes import (
     node_kind,
 )
 from precis.principal import worker_comment_meta
-from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
+from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS, _PRELAND_REVIEWER_CLAUSE
 from precis.store.advisory import try_xact_advisory_lock
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
@@ -6319,8 +6320,8 @@ def _started_slices(store: Any) -> dict[int, _Started]:
     newest ``land_slice`` job died (``failed``/``cancelled``/
     ``timed-out``) — nothing re-mints it and only ``_record_land`` clears
     the stamp, so the dead land held the lock forever — or when the build
-    or an ancestor carries a ``rescue:`` or ``child-failed:`` tag (the
-    rescue pass owns it now). The dead-land drop is scoped to the current
+    or an ancestor or its pre-land reviewer carries a ``rescue:`` or
+    ``child-failed:`` tag (the rescue pass owns it now). The dead-land drop is scoped to the current
     build attempt (review td701778): the dying job carries the ``head``
     it was minted from (the stamp's pushed tip at mint time), and only a
     dead land OF THE CURRENT STAMP's head drops the hold — after a
@@ -6368,7 +6369,7 @@ def _started_slices(store: Any) -> dict[int, _Started]:
                             AND jsonb_typeof(p.meta->%s) = 'object')
                  ORDER BY j.parent_id, j.ref_id DESC
             )
-            SELECT r.ref_id, COALESCE(live.landing, FALSE),
+            SELECT r.ref_id, live.landing,
                    (jsonb_typeof(r.meta->%s) = 'object'
                     AND NOT (COALESCE(land_dead.dead, FALSE)
                              AND land_dead.job_head IS NOT DISTINCT FROM
@@ -6405,14 +6406,17 @@ def _started_slices(store: Any) -> dict[int, _Started]:
     out: dict[int, _Started] = {}
     for rid, landing, pending, files in rows:
         state = (
-            "landing" if landing else "in pre-land review" if pending else "building"
+            "landing"
+            if landing
+            else "in pre-land review"
+            if landing is None and pending
+            else "building"
         )
         paths = tuple(str(p) for p in files) if isinstance(files, list) else ()
         out[int(rid)] = _Started(state, paths, _lanes.DEFAULT_REPO)
     if not out:
         return out
-    # A bare pending_land stamp under a rescue / child-failed tag (own or
-    # an ancestor's) holds no lock (gr701628).
+    # A rescue or child-failed tag can release the bare pending_land hold.
     for rid in _rescued_ids(
         store, [i for i, s in out.items() if s.state == "in pre-land review"]
     ):
@@ -6462,14 +6466,14 @@ def _started_slices(store: Any) -> dict[int, _Started]:
 
 def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
     """The todos in ``ids`` that carry a ``rescue:`` or ``child-failed:``
-    open tag themselves or on an ancestor — in the store, because a held
-    build can sit outside the loaded plan (:func:`_held_by_registry` is
-    the in-plan read of the same tags)."""
+    open tag themselves, on an ancestor, or on their pre-land reviewer.
+    Read the store because the build and reviewer can sit outside the
+    loaded plan."""
     if not ids:
         return set()
     with store.pool.connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH RECURSIVE up(origin, anc, depth) AS (
                 SELECT ref_id, ref_id, 0
                   FROM refs WHERE ref_id = ANY(%s)
@@ -6477,10 +6481,19 @@ def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
                 SELECT u.origin, r.parent_id, u.depth + 1
                   FROM up u JOIN refs r ON r.ref_id = u.anc
                  WHERE u.anc IS NOT NULL AND u.depth < 25
+            ),
+            candidates(origin, node) AS (
+                SELECT origin, anc FROM up
+                UNION ALL
+                SELECT u.origin, r.ref_id
+                  FROM up u
+                  JOIN refs r ON r.meta->'generate'->>'from' = 'td' || u.origin
+                             AND {_PRELAND_REVIEWER_CLAUSE}
+                 WHERE u.depth = 0
             )
-            SELECT DISTINCT u.origin
-              FROM up u
-              JOIN refs r ON r.ref_id = u.anc
+            SELECT DISTINCT c.origin
+              FROM candidates c
+              JOIN refs r ON r.ref_id = c.node
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t USING (tag_id)
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
@@ -6488,7 +6501,7 @@ def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
                AND (starts_with(t.value, 'rescue:')
                     OR starts_with(t.value, 'child-failed:'))
             """,
-            (sorted(ids),),
+            (sorted(ids), _templates.PRELAND_REVIEW_KEY),
         ).fetchall()
     return {int(r[0]) for r in rows}
 

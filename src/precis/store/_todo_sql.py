@@ -6,6 +6,14 @@ Lives in ``store`` so ``precis.workers`` can use them without importing
 
 from __future__ import annotations
 
+# The reviewer row uses alias r. Bind PRELAND_REVIEW_KEY at the placeholder.
+_PRELAND_REVIEWER_CLAUSE = """
+    r.kind = 'todo' AND r.retired_at IS NULL
+    AND r.meta->'generate'->>'role' = 'reviewer'
+    AND r.meta->%s = 'true'::jsonb
+"""
+
+
 #: Open-tag forms that pull a leaf out of ``view='doable'`` AND out of
 #: the dispatch worker's candidate query. The shared registry keeps
 #: the doable filter and the dispatch filter in lock-step — adding a

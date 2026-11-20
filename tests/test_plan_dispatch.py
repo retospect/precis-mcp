@@ -9646,6 +9646,45 @@ def test_rescue_does_not_release_a_live_land(store: Store) -> None:
     assert pd._started_slices(store)[build].state == "landing"
 
 
+@pytest.mark.parametrize("tag", ["rescue:review", "child-failed:run_slice"])
+@pytest.mark.parametrize("preland", [True, False])
+def test_reviewer_rescue_releases_only_its_pending_preland_build(
+    store: Store, tag: str, preland: bool
+) -> None:
+    plan = store.insert_ref(
+        kind="todo", slug=None, title="plan", meta={}, parent_id=None
+    )
+    build = _pending_build(store, ["src/precis/a.py"], parent=plan.id)
+    other = _pending_build(store, ["src/precis/b.py"], parent=plan.id)
+    store.add_tag(
+        build, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    reviewer = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Reviewer",
+        meta={
+            "op": "run_slice",
+            "generate": {"role": "reviewer", "from": f"td{build}"},
+            "preland_review": preland,
+        },
+        parent_id=plan.id,
+    )
+    assert pd._started_slices(store)[build].state == "in pre-land review"
+    store.add_tag(reviewer.id, Tag.open(tag), set_by="system")
+    started = pd._started_slices(store)
+    if preland:
+        assert build not in started
+    else:
+        assert started[build].state == "in pre-land review"
+    assert started[other].state == "in pre-land review"
+
+    _slice_job(store, build, "run_slice", "running")
+    assert pd._started_slices(store)[build].state == "building"
+    _slice_job(store, build, "land_slice", "queued")
+    assert pd._started_slices(store)[build].state == "landing"
+
+
 def test_brief_files_needs_a_word_boundary_after_the_extension() -> None:
     """gr701628: ``github.com`` is a host, not ``github.c``; real file
     names — ``check.yml``, ``src/x.py``, ``a/b.pyi`` — still match."""
