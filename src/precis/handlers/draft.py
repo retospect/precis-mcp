@@ -65,7 +65,13 @@ from precis._result_budget import (
 from precis.dispatch import Hub, InitError
 from precis.draft import lint as _draft_lint
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
-from precis.errors import BadInput, NotFound, PrecisError, Unsupported
+from precis.errors import (
+    BadInput,
+    NotFound,
+    PrecisError,
+    ResultBudgetExceeded,
+    Unsupported,
+)
 from precis.format import render_agent_table
 from precis.handlers._eye import EYE_LADDER, eye_body, is_eye_view
 from precis.handlers._interpret import interpreted
@@ -8064,10 +8070,24 @@ class DraftHandler(Handler):
         )
 
     def _render_chunk(self, handle: str) -> Response:
+        """Fit ranges after runtime suffix reservation to preserve continuation.
+
+        Oversized single chunks refuse with an exact retry rather than losing
+        their tail to generic byte truncation.
+        """
         # Universal handles relative navigation: ``dc<id>^N`` (ancestor), ``+N``/``-N``
         # (sibling step), ``-lo..hi`` (signed span — the reading-order
         # window around the anchor). Resolved against the draft tree.
-        rel = self.store.drafts.draft_relative_chunk_ids(handle)
+        span_read = self.store.drafts.draft_relative_span(handle, clamp_heading=True)
+        rel: list[int] | None
+        if span_read is not None:
+            span_anchor_id, rel, span_start = span_read
+        else:
+            span_anchor_id, span_start = 0, 0
+            rel = self.store.drafts.draft_relative_chunk_ids(handle, clamp_heading=True)
+        # ``shown`` maps each window chunk to its index in the resolved run,
+        # so continuation offsets survive a chunk vanishing between reads.
+        shown: list[int] = []
         if rel is not None:
             if not rel:
                 raise NotFound(
@@ -8076,11 +8096,16 @@ class DraftHandler(Handler):
                     next="drop the relative suffix (^ / +N / -B..A) and read "
                     "the plain handle: get(kind='draft', id='dc<id>')",
                 )
-            window = [
-                c
-                for cid in rel
-                if (c := self.store.drafts.get_draft_chunk(f"dc{cid}")) is not None
-            ]
+            window = []
+            for i, cid in enumerate(rel):
+                if (c := self.store.drafts.get_draft_chunk(f"dc{cid}")) is not None:
+                    window.append(c)
+                    shown.append(i)
+            if not window:
+                raise NotFound(
+                    f"draft chunk {handle!r} resolves to nothing (chunks vanished)",
+                    next="re-read: get(kind='draft', id='dc<id>')",
+                )
         else:
             m = _CHUNK_HANDLE.match(handle)
             if m is None:
@@ -8129,24 +8154,30 @@ class DraftHandler(Handler):
             + f"\n{_chunk_display_text(c)}"
             for c in window
         ]
-        body = "\n\n".join(blocks)
-        if any(c.retired for c in window):
-            # A retired chunk stays readable by direct handle (gripe 49153)
-            # but is no longer part of the draft — without this notice a
-            # reader can't tell why search/reading-order/export skip text
-            # they can plainly see (gr192827 finding 8).
-            body += (
-                "\n\n⚠ RETIRED chunk(s) above: no longer part of the draft — "
-                "excluded from reading order, search (all modes), and export. "
-                "A live replacement may exist; read the enclosing section."
-            )
-        for chunk in window:
-            if chunk.retired:
-                body += self._retirement_notice(chunk)
-        window_text = "\n\n".join(c.text for c in window)
-        body += _draft_lint.dangling_finding_hint(self.store, window_text)
-        body += _draft_lint.dangling_chunk_hint(self.store, window_text)
-        body += _draft_lint.tombstone_chunk_hint(self.store, window_text)
+
+        def notices(sub: list[DraftChunk]) -> str:
+            """Retirement, dangling-ref and tombstone warnings for ``sub``."""
+            out = ""
+            if any(c.retired for c in sub):
+                # A retired chunk stays readable by direct handle (gripe 49153)
+                # but is no longer part of the draft — without this notice a
+                # reader can't tell why search/reading-order/export skip text
+                # they can plainly see (gr192827 finding 8).
+                out += (
+                    "\n\n⚠ RETIRED chunk(s) above: no longer part of the draft — "
+                    "excluded from reading order, search (all modes), and export. "
+                    "A live replacement may exist; read the enclosing section."
+                )
+            for chunk in sub:
+                if chunk.retired:
+                    out += self._retirement_notice(chunk)
+            sub_text = "\n\n".join(c.text for c in sub)
+            out += _draft_lint.dangling_finding_hint(self.store, sub_text)
+            out += _draft_lint.dangling_chunk_hint(self.store, sub_text)
+            out += _draft_lint.tombstone_chunk_hint(self.store, sub_text)
+            return out
+
+        body = "\n\n".join(blocks) + notices(window)
         if len(window) == 1:
             if not window[0].retired:
                 # ``descendant_chunk_ids`` counts live only, and the span
@@ -8155,7 +8186,44 @@ class DraftHandler(Handler):
                 # subtree instead).
                 body += self._children_hint(window[0])
             body += self._fisheye_affordance()
-        return Response(body=body)
+
+        span_anchor = f"dc{span_anchor_id}" if span_read else window[0].dc
+        if span_read is None:
+            span_start = 0
+        if len(shown) != len(window):
+            shown = list(range(len(window)))  # list expansion: window order
+        last_index = shown[-1]
+
+        def fit(cap: int) -> str:
+            if body_bytes(body) <= cap:
+                return body
+            for keep in range(len(blocks) - 1, 0, -1):
+                last = window[keep - 1]
+                nxt = shown[keep - 1] + 1
+                candidate = (
+                    "\n\n".join(blocks[:keep])
+                    + notices(window[:keep])
+                    + f"\n\n… window cut at {last.dc}: showed {keep} of "
+                    f"{len(window)} chunks\nnext: "
+                    f"get(kind='draft', id='{span_anchor}{span_start + nxt:+d}.."
+                    f"{span_start + last_index}')"
+                )
+                if body_bytes(candidate) <= cap:
+                    return candidate
+            raise ResultBudgetExceeded(
+                f"draft chunk {window[0].dc} cannot fit whole under the "
+                f"{cap}-byte result budget; no chunks shown",
+                next=(
+                    "increase PRECIS_MAX_BODY_BYTES and "
+                    "PRECIS_TOOL_RESULT_CONTEXT_BYTES, then retry "
+                    f"get(kind='draft', id={handle!r})"
+                ),
+            )
+
+        # Plain list handles expand to their items too. Every chunk read must
+        # use the same whole-chunk fitter, including single chunks with large
+        # recovery/children footers; the generic line fitter loses their tails.
+        return Response(body=body, budget_fit=fit)
 
     def _retirement_notice(self, chunk: DraftChunk) -> str:
         """Show the retirement event and a recipe for copying the lost text."""

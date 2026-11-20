@@ -11,7 +11,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.draft import lint as _draft_lint
-from precis.errors import BadInput, Gone, NotFound, Unsupported
+from precis.errors import BadInput, Gone, NotFound, ResultBudgetExceeded, Unsupported
 from precis.handlers.draft import DraftHandler
 from precis.store.store import Store
 from tests.factories import insert_gist
@@ -921,15 +921,210 @@ def test_span_is_a_reading_order_window(draft: DraftHandler, hub: Hub) -> None:
     body = draft.get(id=f"{ulist.dc}-0..3").body
     assert "item one" in body and "item two" in body
 
-    # A span on a heading reads through its section and crosses into the
-    # next sibling's content — not a headings-only sibling run.
+    # A span on a heading reads through its section and stops before the
+    # next sibling section (gr720456).
     body = draft.get(id=f"{intro}-0..5").body
-    assert "lead" in body and "item one" in body and "Methods" in body
+    assert "lead" in body and "item one" in body and "Methods" not in body
+    # Both endpoints are signed offsets, not a before-count and length.
+    ids = hub.live_store.drafts.draft_relative_chunk_ids(
+        f"{intro}-1..3", clamp_heading=True
+    )
+    section = _order(hub, "nt")
+    start = next(i for i, c in enumerate(section) if c.dc == intro)
+    assert ids == [c.chunk_id for c in section[start : start + 4]]
+    assert hub.live_store.drafts.draft_relative_chunk_ids(f"{intro}+1..3") == [
+        c.chunk_id for c in section[start + 1 : start + 4]
+    ]
 
     # Before-context crosses tree boundaries too: 'lead' is Intro's first
     # child, so -1..1 reads [Intro, lead, ulist].
     body = draft.get(id=f"{lead}-1..1").body
     assert "Intro" in body and "lead" in body
+
+
+def test_span_cut_names_last_chunk_and_continuation(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr720456: a span past the byte budget is cut on a chunk boundary
+    and says which chunk was last shown and how to continue."""
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "2048")
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="heading", text="Intro", at={"after": "¶" + th})
+    intro = _dc_of(hub, "Intro")
+    for i in range(6):
+        draft.put(
+            id="nt",
+            chunk_kind="paragraph",
+            text=f"para{i} " + "x" * 400,
+            at={"into": intro, "last": True},
+        )
+    response = draft.get(id=f"{intro}-0..6")
+    assert response.budget_fit is not None
+    body = response.budget_fit(2048)
+    assert "window cut at dc" in body
+    assert "get(kind='draft', id='dc" in body.split("next:")[-1]
+    assert f"id='{intro}+" in body.split("next:")[-1]
+    assert "truncated: showing" not in body
+
+
+def test_span_cut_keeps_warnings_for_shown_chunks(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shortened page keeps lint warnings for chunks it still shows and
+    drops those for chunks it cut."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="heading", text="Intro", at={"after": "¶" + th})
+    intro = _dc_of(hub, "Intro")
+    for i in range(6):
+        draft.put(
+            id="nt",
+            chunk_kind="paragraph",
+            text=f"para{i} " + "x" * 400,
+            at={"into": intro, "last": True},
+        )
+
+    def hint(_store: object, text: str) -> str:
+        return "".join(f"\n\nWARN-{tag}" for tag in ("para0", "para5") if tag in text)
+
+    monkeypatch.setattr(_draft_lint, "tombstone_chunk_hint", hint)
+    response = draft.get(id=f"{intro}-0..6")
+    assert response.budget_fit is not None
+    body = response.budget_fit(2048)
+    assert "window cut at dc" in body
+    assert "WARN-para0" in body
+    assert "WARN-para5" not in body
+
+
+@pytest.mark.parametrize("ranged", [False, True])
+def test_chunk_budget_refuses_oversized_first_chunk(
+    draft: DraftHandler, hub: Hub, ranged: bool
+) -> None:
+    """gr720456: never silently skip the remainder of an oversized chunk."""
+    draft.put(id="nt", title="T", project=_proj(hub))
+    draft.put(id="nt", text="x" * 4000, at={"last": True})
+    chunk = _order(hub, "nt")[-1]
+    handle = chunk.dc + ("-0..1" if ranged else "")
+    response = draft.get(id=handle)
+    assert response.budget_fit is not None
+    with pytest.raises(ResultBudgetExceeded, match="no chunks shown") as exc:
+        response.budget_fit(1000)
+    assert handle in str(exc.value)
+
+
+def test_chunk_budget_includes_single_chunk_footer(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A large children footer cannot send a single read to byte truncation."""
+    draft.put(id="nt", title="T", project=_proj(hub))
+    root = _order(hub, "nt")[0].dc
+    monkeypatch.setattr(draft, "_children_hint", lambda chunk: "x" * 4000)
+    response = draft.get(id=root)
+    assert response.budget_fit is not None
+    with pytest.raises(ResultBudgetExceeded, match="no chunks shown"):
+        response.budget_fit(1000)
+
+
+def test_plain_list_budget_continuation(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """List expansion reserves runtime suffix bytes and resumes at the next item."""
+    from precis._result_budget import fit_result_body
+
+    draft.put(id="nt", title="T", project=_proj(hub))
+    draft.put(
+        id="nt",
+        text="\n".join(f"- item{i} " + "x" * 600 for i in range(6)),
+        at={"last": True},
+    )
+    chunks = _order(hub, "nt")
+    container = next(c for c in chunks if c.chunk_kind == "ulist")
+    response = draft.get(id=container.dc)
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1600")
+    suffix = "\nRuntime hint " + "s" * 200
+    body = fit_result_body(
+        response.body + suffix,
+        verb="get",
+        kind="draft",
+        context_limited=True,
+        targeted_hint=None,
+        structured_fit=response.budget_fit,
+        suffix=suffix,
+    )
+    assert len(body.encode("utf-8")) <= 1600
+    assert body.endswith(suffix)
+    assert "truncated: showing" not in body
+    resume = re.search(r"next: get\(kind='draft', id='([^']+)'\)", body)
+    assert resume is not None
+    shown = [int(cid) for cid in re.findall(r"^dc(\d+)  \[", body, re.M)]
+    remaining = hub.live_store.drafts.draft_relative_chunk_ids(resume[1])
+    subtree = set(hub.live_store.drafts.draft_subtree_chunk_ids(container.dc))
+    expected = [c.chunk_id for c in chunks if c.chunk_id in subtree]
+    assert remaining is not None
+    assert shown + remaining == expected
+
+
+@pytest.mark.parametrize("anchor_heading", [True, False])
+def test_span_continuation_preserves_window_across_nested_heading(
+    draft: DraftHandler, hub: Hub, anchor_heading: bool
+) -> None:
+    """gr720456: rebasing at a nested heading dropped its later siblings."""
+    import re
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    root = _order(hub, "nt")[0].dc
+    draft.put(id="nt", chunk_kind="heading", text="Intro", at={"into": root})
+    intro = _dc_of(hub, "Intro")
+    draft.put(id="nt", text="lead " + "x" * 700, at={"into": intro})
+    lead = _dc_of(hub, "lead " + "x" * 700)
+    draft.put(
+        id="nt",
+        chunk_kind="heading",
+        text="Nested " + "n" * 700,
+        at={"into": intro, "last": True},
+    )
+    nested = _dc_of(hub, "Nested " + "n" * 700)
+    draft.put(id="nt", text="nested prose " + "y" * 700, at={"into": nested})
+    draft.put(id="nt", chunk_kind="heading", text="Sibling", at={"after": nested})
+    sibling = _dc_of(hub, "Sibling")
+    draft.put(id="nt", text="sibling prose " + "z" * 700, at={"into": sibling})
+    draft.put(id="nt", chunk_kind="heading", text="Outside", at={"after": intro})
+    anchor = intro if anchor_heading else lead
+    handle = f"{anchor}-1..5" if anchor_heading else f"{anchor}-1..4"
+    expected = hub.live_store.drafts.draft_relative_chunk_ids(
+        handle, clamp_heading=True
+    )
+    shown: list[int] = []
+    continuations: list[str] = []
+    for _ in range(10):
+        response = draft.get(id=handle)
+        assert response.budget_fit is not None
+        body = response.budget_fit(1300)
+        shown.extend(int(cid) for cid in re.findall(r"^dc(\d+)  \[", body, re.M))
+        continuation = re.search(r"next: get\(kind='draft', id='([^']+)'\)", body)
+        if continuation is None:
+            break
+        handle = continuation[1]
+        continuations.append(handle)
+        assert handle.startswith(anchor)
+    else:
+        pytest.fail("continuation did not finish")
+    assert continuations
+    first_remaining = hub.live_store.drafts.draft_relative_chunk_ids(continuations[0])
+    assert first_remaining is not None
+    assert first_remaining[0] == int(nested[2:])
+    assert shown == expected
+    assert len(shown) == len(set(shown))
+    # Context windows (including heading-focused ask previews) retain before-context.
+    assert hub.live_store.drafts.draft_relative_chunk_ids(f"{intro}-1..1") == [
+        int(root[2:]),
+        int(intro[2:]),
+        int(lead[2:]),
+    ]
 
 
 def test_heading_selector_resolves_to_its_chunk(draft: DraftHandler, hub: Hub) -> None:

@@ -350,38 +350,37 @@ get(kind="draft", id="nanotrans", q="amine")  # passages inside it (find-in-ref)
 get(id="dc12")  # one chunk, verbatim source
 get(id="nanotrans~Methods")  # ~<heading title> → that heading's dc chunk
 get(id="dc12-5..3")  # reading-order window: 5 chunks before → 3 after,
-                     # crossing headings (not a sibling run); clamped at the ends
+                     # signed offsets from dc12 (not a sibling run)
 get(id="dc12+1")  # next sibling under the same parent; dc12^ = enclosing heading
 get(id="dc12", view="fisheye")  # verbatim center + reading-order neighbors
 get(id="dc12", view="fisheye+1hop")  # fisheye + everything it points at
 ```
 
+A range anchored on a heading stays inside that heading's subtree,
+including nested sections; negative offsets do not add preceding context.
+Ranges anchored on other chunk kinds cross headings and clamp at the
+document ends. Both endpoints are signed offsets: `dc12+41..80` reads
+offsets 41 through 80, while `dc12-41..80` starts 41 chunks before dc12.
+Large ranges stop at a whole chunk, name the last chunk shown, and give
+an exact `next:` range retaining the original anchor. Follow that handle
+to read the remaining window without skipping nested sections. A single
+chunk too large for the budget refuses with a retry instruction; no partial
+chunk is shown. Plain list-container reads use the same whole-chunk limit
+and continuation. Recovery notices and other footers also count toward the
+budget; if a single chunk with its footer cannot fit, the read refuses.
+
 A chunk read shows the addressed chunk alone — when it has children, the
 footer counts them and names the `dc<N>-0..K` span that reads the whole
 subtree inline (children are contiguous in reading order).
 
-Reading order is each chunk's `pos` key, not the order calls went in —
-see where a chunk actually landed with `get(id='dc<id>',
-view='fisheye')`.
+Reading order follows `pos`, not insertion time. Inspect placement with
+`get(id="dc<id>", view="fisheye")`. Read the outline before prose.
+For view rungs, reference rings and section eyes, see [[precis-fisheye-help]].
 
-Navigate the outline first (cheap), then pull verbatim only for the
-region you act on. `view=` rungs each strictly contain the previous:
-`kwd` (ancestor path + bookmark) → `summary` (gloss) → `verbatim` (full
-text) → `fisheye` (graduated span, ±5 full text/±10 gloss/±15 bookmark,
-under the ancestor heading) → `fisheye+1hop` (+ the reference ring:
-cited papers/patents/datasheets, cross-referenced `[dc…]`/`[¶…]` chunks,
-linked notes; a cited `[fi<id>]` naming a live Taproot claim hub gets
-its own **Claims** group — see `precis-fisheye-help`). `extent=<rung>`
-is the same door on every kind; a section handle (`dc<id>`/`¶<base58>`,
-`pe<id>` on a plan) is the eye — a whole draft has none.
-
-The outline ends with a **`## Work in progress`** block when todos
-working on this draft are stuck or in flight (walked draft → project →
-todo subtree): `⚠ blocked` carries a `child-failed:<job>` bubble, `⚙ in
-flight` is a live/queued job. Inspect with `get(kind='todo', id='<id>')`;
-unblock by retrying, splitting, or dropping (`tag` off the
-`child-failed:` bubble + `STATUS:done`) — how a failed enrichment job
-registers on the draft instead of silently stalling.
+The outline’s **Work in progress** block lists blocked/in-flight todos
+from the draft’s project. Inspect with `get(kind="todo", id="<id>")`.
+Retry, split, or drop failed work; dropping removes the `child-failed:`
+bubble and sets `STATUS:done`.
 
 ## Edit, review & retire a chunk
 

@@ -25,10 +25,14 @@ and bulk substitute. [[precis-draft-help]] covers the authoring workflow.
 **Addressing.** Every chunk has a stable handle `dc<id>` (e.g. `dc41`) —
 globally unique, no draft name needed; the draft *record* is its slug or
 `dr<id>`. Never guess/compute a handle — `put`/search/get return it.
-Windows: `dc41-2..3` (2 before, 3 after), `dc41+1`, `dc41^` (parent). No
+Windows: `dc41-2..3` (signed offsets -2 through 3), `dc41+1`, `dc41^` (parent). No
 positional `~N` ordinals (they rot on insert). A window is a read
 address only: `view=` (kwd…fisheye+1hop) targets one chunk, so pair it
 with a bare `dc<id>`, never a `-B..A` window.
+
+Heading windows stop at the end of that heading’s subtree and omit before-context.
+Large windows name the last complete chunk shown and the next range call. If
+one chunk cannot fit, increase the named byte budgets and retry the exact call.
 
 **`get` — views**
 
@@ -36,7 +40,7 @@ with a bare `dc<id>`, never a `-B..A` window.
 |---|---|
 | `get(id='<slug>')` / `view='outline'` | handle \| §-path \| gist, whole doc |
 | `get(id='dc<id>')` | one chunk, verbatim |
-| `get(id='dc<id>-B..A')` | that chunk + B before, A after |
+| `get(id='dc<id>-B..A')` | signed offsets -B through A in reading order; heading anchors stay inside their subtree |
 | `get(id='dc<id>', view='fisheye')` | verbatim center + graduated neighborhood |
 | `get(id='dc<id>', view='fisheye+1hop')` | fisheye + cited/cross-ref/note ring |
 | `get(id=<scope>, view='toc')` | heading skeleton (whole draft, or one heading's subtree) |
@@ -47,6 +51,8 @@ with a bare `dc<id>`, never a `-B..A` window.
 | `get(id='dc<id>', view='proposals')` | open anchored todos with `meta.proposed_text`, as diffs vs the current text |
 | `get(id='<slug>', view='links')` | the draft's link graph (cites/cross-refs/notes); `args={'rel': 'touched', 'of_kind': 'agentlog'}` narrows it (a hot draft's unfiltered view runs to hundreds of KB) |
 | `get(kind='draft', project=<todo-id>)` | reverse lookup: that project's draft |
+
+## Choose edit params
 
 **`edit` — params** (`text=` rewrite is the default; one param family per
 call)

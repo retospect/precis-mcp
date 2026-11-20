@@ -1051,8 +1051,57 @@ class DraftStore(_AbbrevMixin):
             retired=row[8] is not None,
         )
 
+    def _span_window(
+        self, base: DraftChunk, rest: list[Any], clamp_heading: bool
+    ) -> tuple[list[int], int]:
+        """Span ids plus the first id's offset from the anchor, both taken
+        from one ``reading_order`` traversal so continuation offsets cannot
+        drift from the rows a concurrent move/insert/retire changes."""
+        lo_off, hi_off = rest
+        ordered = self.reading_order(base.ref_id, kind=base.kind)
+        idx = next(
+            (i for i, c in enumerate(ordered) if c.chunk_id == base.chunk_id),
+            None,
+        )
+        if idx is None:
+            return [], 0  # anchor retired or otherwise outside the live tree
+        lo = max(0, idx + lo_off)
+        hi = min(len(ordered) - 1, idx + hi_off)
+        if clamp_heading and base.kind == "draft" and base.chunk_kind == "heading":
+            lo = max(lo, idx)
+            end = next(
+                (
+                    i
+                    for i in range(idx + 1, len(ordered))
+                    if ordered[i].depth <= ordered[idx].depth
+                ),
+                len(ordered),
+            )
+            hi = min(hi, end - 1)
+        if lo > hi:
+            return [], 0
+        return [c.chunk_id for c in ordered[lo : hi + 1]], lo - idx
+
+    def draft_relative_span(
+        self, handle: str, *, kind: str = "draft", clamp_heading: bool = False
+    ) -> tuple[int, list[int], int] | None:
+        """``(anchor_id, ids, start)`` for a span handle, else ``None``.
+
+        ``start`` is the first id's reading-order offset from the anchor,
+        derived from the same traversal as ``ids``."""
+        parsed = handle_registry.parse_relative(handle)
+        if parsed is None or parsed[0] != kind or parsed[3][0] != "span":
+            return None
+        base = self.get_draft_chunk(
+            handle_registry.format_handle(kind, parsed[2], chunk=True), kind=kind
+        )
+        if base is None:
+            return parsed[2], [], 0
+        ids, start = self._span_window(base, list(parsed[3][1:]), clamp_heading)
+        return parsed[2], ids, start
+
     def draft_relative_chunk_ids(
-        self, handle: str, *, kind: str = "draft"
+        self, handle: str, *, kind: str = "draft", clamp_heading: bool = False
     ) -> list[int] | None:
         """Resolve a relative draft/plan handle to target chunk id(s).
 
@@ -1060,8 +1109,10 @@ class DraftStore(_AbbrevMixin):
         ``dc<id>+N``/``-N`` steps ``N`` siblings (ordered by ``pos`` under
         the same parent); ``dc<id>-lo..hi`` is the signed span — the
         reading-context window: ``lo``/``hi`` chunks before/after the
-        anchor in DFS reading order (crossing tree boundaries, the same
-        window ``pc<id>-lo..hi`` gives flat ``ord`` kinds). Returns target
+        anchor in DFS reading order. With ``clamp_heading=True``, draft
+        heading anchors clamp both endpoints to their subtree. Context
+        callers keep the default so preceding chunks remain visible;
+        other anchors and plan windows cross tree boundaries. Returns target
         ids (one for a step/ancestor, the contiguous run for a span),
         **empty list** when out of range/past the root, or ``None`` when
         ``handle`` isn't a relative handle of ``kind`` (caller then tries
@@ -1085,19 +1136,8 @@ class DraftStore(_AbbrevMixin):
             # rendered the empty container and the next heading with none
             # of the items in between (gr514337), and a span on a heading
             # listed bare sibling headings (gr514405).
-            lo_off, hi_off = rest
-            ordered = self.reading_order(base.ref_id, kind=kind)
-            idx = next(
-                (i for i, c in enumerate(ordered) if c.chunk_id == base.chunk_id),
-                None,
-            )
-            if idx is None:
-                return []  # anchor retired or otherwise outside the live tree
-            lo = max(0, idx + lo_off)
-            hi = min(len(ordered) - 1, idx + hi_off)
-            if lo > hi:
-                return []
-            return [c.chunk_id for c in ordered[lo : hi + 1]]
+            ids, _start = self._span_window(base, rest, clamp_heading)
+            return ids
         with self.pool.connection() as conn:
             if op_kind == "ancestor":
                 (n,) = rest

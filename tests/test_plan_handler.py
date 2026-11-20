@@ -196,6 +196,20 @@ def test_retire_node(plan: PlanHandler, hub: Hub) -> None:
     assert h not in plan.get(id="p1").body
 
 
+def test_heading_range_keeps_plan_context(plan: PlanHandler, hub: Hub) -> None:
+    """gr720456's section clamp applies to drafts, preserving plan windows."""
+    plan.put(id="p1", title="P", project=_proj(hub))
+    first = _pe(
+        plan.put(id="p1", chunk_kind="heading", text="First", at={"last": True}).body
+    )
+    second = _pe(
+        plan.put(id="p1", chunk_kind="heading", text="Second", at={"last": True}).body
+    )
+    chunks = hub.live_store.drafts
+    ids = chunks.draft_relative_chunk_ids(f"{first}-0..1", kind="plan")
+    assert ids == [int(first[2:]), int(second[2:])]
+
+
 def test_edit_and_move_node(plan: PlanHandler, hub: Hub) -> None:
     proj = _proj(hub)
     plan.put(id="p1", title="P", project=proj)
