@@ -174,6 +174,10 @@ def test_search_scope_refusal_names_accepting_kinds(
     assert "kinds accepting scope=:" in out
     assert "paper" in out
     assert "skill" in out
+    # gr729755: scope= is not a typo of chunk_scope= (a title/body filter
+    # that never scopes to a ref) — no corrected call may suggest it.
+    assert "chunk_scope" not in out.split("kinds accepting scope=")[0]
+    assert "args={'chunk_scope'" not in out
 
 
 def test_tolerant_handler_ignores_unrecognized_extras(

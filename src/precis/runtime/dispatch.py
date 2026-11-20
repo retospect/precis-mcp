@@ -4908,7 +4908,14 @@ class DispatchMixin(RuntimeShape):
                 # gr613469: lead with the corrected call — the same call,
                 # each typo'd kwarg swapped for its nearest accepted
                 # spelling — ahead of the drop-it prose.
-                swapped_top = _nearest_swapped(clean, unknown_top, accepted_top)
+                # ``scope=`` (find-in-ref) is not a typo of ``chunk_scope=``
+                # (a title/body chunk filter that never scopes to a ref):
+                # never offer that swap as the corrected call.
+                swapped_top = (
+                    None
+                    if verb == "search" and "scope" in unknown_top
+                    else _nearest_swapped(clean, unknown_top, accepted_top)
+                )
                 corrected = (
                     render_corrected_call(
                         verb,
