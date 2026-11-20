@@ -58,6 +58,7 @@ so a second run on the same paper should write nothing new.
 ```python
 get(kind="paper", id="pa<id>", view="toc")
 get(kind="paper", id="pa<id>", view="summaries")
+get(id="pc<id>", view="sentences")  # sentences labelled s0, s1, … within that chunk
 get(kind="paper", id="pa<id>", view="measures")  # numbers extraction already caught
 ```
 
