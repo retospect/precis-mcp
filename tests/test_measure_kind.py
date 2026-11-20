@@ -1275,8 +1275,9 @@ class TestDispatchSurface:
             assert f"# mx{run.output_id}" in out and "literal: 1.4" in out, ident
         out = self._text(mounted.get(kind="measure", id=f"mx{run.output_id}"))
         assert "1.4 Å" in out
-        # the handle alone (no kind=) routes to the measure kind
-        assert "literal: 1.4" in self._text(mounted.get(id=f"mx{run.output_id}"))
+        # mx<N> addresses a measures row, not a ref (td707074): the bare
+        # handle does not self-identify, so kind='measure' is required.
+        assert "missing kind=" in self._text(mounted.get(id=f"mx{run.output_id}"))
 
     def test_fisheye_is_unsupported_with_a_reason(
         self, store: Store, w: dict[str, Any], mounted: Any
