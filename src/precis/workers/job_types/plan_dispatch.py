@@ -2362,12 +2362,16 @@ def _mint_coordinator_ask(
     context: str,
     now: datetime,
     block_node: bool = False,
+    extra_meta: dict[str, Any] | None = None,
 ) -> int:
     """Insert a coordinator ask and expose it to later steps this pass.
 
     A task configuration ask also links the node ``blocked-by`` the ask.
     The dispatch tick's lock and that edge dedupe subsequent passes.
     FIX-chain asks retain the root-wide coordinator tag as their hold.
+    ``extra_meta`` adds top-level keys beside ``meta.ask`` (never inside
+    it — ``check_ask_meta`` refuses unknown ask keys): the marker a
+    later pass seeks the ask by (:func:`_park_preland_rounds`, gr738860).
     """
     # A root task/generator must stay childless so it can dispatch after
     # repair; its ask sits alongside it, still linked as its blocker.
@@ -2381,6 +2385,8 @@ def _mint_coordinator_ask(
         }
     }
     check_ask_meta(meta)
+    if extra_meta:
+        meta.update(extra_meta)
     with store.tx() as conn:
         ref = store.insert_ref(
             kind="todo",
@@ -3408,6 +3414,24 @@ def _preland_round(
     return count, record, None
 
 
+#: Top-level ask meta key marking an ask :func:`_park_preland_rounds`
+#: minted: ``{node, reason, head, repeats}`` (gr738860). Top level, not
+#: inside ``meta.ask`` — ``check_ask_meta`` refuses unknown ask keys.
+PRELAND_STOP_KEY = "preland_stop"
+
+
+def _open_preland_stop_ask(plan: _Plan, t: _Node) -> _Node | None:
+    """The OPEN ask :func:`_park_preland_rounds` already minted for the
+    build ``t`` (gr738860), lowest id first; ``None`` when there is none.
+    A closed (answered) ask never counts: its answer re-armed the slice
+    and the next stop is a new question."""
+    for m in sorted(plan.nodes.values(), key=lambda m: m.id):
+        stop = m.meta.get(PRELAND_STOP_KEY) if m.kind == "todo" else None
+        if isinstance(stop, dict) and stop.get("node") == t.id and not _closed(m):
+            return m
+    return None
+
+
 def _park_preland_rounds(
     plan: _Plan,
     w: _Writer,
@@ -3418,6 +3442,7 @@ def _park_preland_rounds(
     rest: str,
     stop: tuple[str, str],
     now: datetime,
+    pushed: str = "",
 ) -> None:
     """Hold the sent-back build ``t`` on a coordinator ask instead of
     rebuilding again (gr684815, gr688058): ``stop`` is
@@ -3425,9 +3450,60 @@ def _park_preland_rounds(
     running, an unchanged reviewed head, a stale-read verdict, or
     :data:`PRELAND_FIX_CAP` rounds. The ask's title names the reason and
     its body that reason's own reading (:data:`_PRELAND_STOPS`). The
-    count clears, so the answer buys a fresh one."""
+    count clears, so the answer buys a fresh one.
+
+    One open ask per slice (gr738860): the ask carries
+    ``meta.preland_stop = {node, reason, head, repeats}``, and a stop on
+    a build that already has such an ask open mints nothing — the slice
+    is held either way and one answer re-arms it. The existing ask gets
+    one comment (reason, why, head, reviewer), its ``repeats`` bumped and
+    its reason/head updated, and ``t`` stays ``blocked-by`` it.
+    ``pushed`` is the pushed head the verdict judged (``""`` for none)."""
     reason, why = stop
+    head = pushed or None
     w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: None})
+    existing = _open_preland_stop_ask(plan, t)
+    if existing is not None:
+        prior = existing.meta.get(PRELAND_STOP_KEY)
+        try:
+            repeats = int(prior.get("repeats") or 0) + 1 if prior else 1
+        except (TypeError, ValueError):
+            repeats = 1
+        if w.dry_run:
+            res.notes.append(
+                f"td{t.id}: would note the repeat stop on ask td{existing.id} — {why}"
+            )
+            return
+        w.comment_id(
+            existing.id,
+            f"The pre-land review loop stopped again on td{t.id} ({reason}): "
+            f"{why}. Head: {head or 'none'}. Reviewer: td{n.id}. "
+            f"Repeat {repeats} on this ask — no new ask minted; one answer "
+            "re-arms the slice (gr738860).",
+        )
+        w.stamp_meta(
+            existing,
+            {
+                PRELAND_STOP_KEY: {
+                    "node": t.id,
+                    "reason": reason,
+                    "head": head,
+                    "repeats": repeats,
+                }
+            },
+        )
+        if not any(b.id == existing.id for b in plan.blockers.get(t.id, [])):
+            w.store.add_link(
+                src_ref_id=t.id, dst_ref_id=existing.id, relation="blocked-by"
+            )
+            plan.blockers.setdefault(t.id, []).append(
+                _Blocker(id=existing.id, status="open", is_ask=True, created_at=now)
+            )
+        res.notes.append(
+            f"td{t.id}: pre-land review loop stopped again ({why}) — "
+            f"repeat {repeats} noted on ask td{existing.id}, no new ask"
+        )
+        return
     res.asks += 1
     if w.dry_run:
         # Mirror the hold so the dispatch step mints no rebuild this pass.
@@ -3459,6 +3535,14 @@ def _park_preland_rounds(
         context=why,
         now=now,
         block_node=True,
+        extra_meta={
+            PRELAND_STOP_KEY: {
+                "node": t.id,
+                "reason": reason,
+                "head": head,
+                "repeats": 0,
+            }
+        },
     )
     w.comment(
         t,
@@ -3492,7 +3576,11 @@ def _review_back_to_builder(
     ask only on the failure the ask describes (gr688058) — the same
     finding twice running, an unchanged reviewed head, a verdict that
     names a head other than the pushed tip, or
-    :data:`PRELAND_FIX_CAP` rounds."""
+    :data:`PRELAND_FIX_CAP` rounds. The stash carries ``at``, the
+    send-back time (gr738860): :func:`_step_verdicts` reads only a
+    verdict newer than it, so the verdict this review just judged cannot
+    re-hold the land before the rebuild runs. The pushed head goes to
+    :func:`_park_preland_rounds` for its one-ask-per-slice record."""
     targets = _pending_targets(plan, n)
     single = len(targets) == 1
     ruled: list[int] = []
@@ -3505,6 +3593,12 @@ def _review_back_to_builder(
                 _templates.PRELAND_HELD_KEY: {
                     "params": t.meta[_templates.PENDING_LAND_KEY],
                     "reviewer": n.id,
+                    # When the send-back happened (gr738860): a verdict
+                    # older than this is the one that was reviewed, never
+                    # the rebuild's. Microsecond precision — whole seconds
+                    # would read a verdict posted just before the
+                    # send-back as newer than it.
+                    "at": now.astimezone(UTC).isoformat(),
                 },
                 _templates.PENDING_LAND_KEY: None,
             },
@@ -3540,7 +3634,7 @@ def _review_back_to_builder(
             w.set_status(t, "open")
         count, record, stop = _preland_round(n, t, kind, rest, pushed, raw, single)
         if stop is not None:
-            _park_preland_rounds(plan, w, res, n, t, kind, rest, stop, now)
+            _park_preland_rounds(plan, w, res, n, t, kind, rest, stop, now, pushed)
         else:
             w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: record})
     sent_back = [t.id for t in targets if t.id not in ruled]
@@ -4017,6 +4111,29 @@ def _foreign_verdict(store: Any, n: _Node, verdict: tuple[str, str]) -> bool:
     return gid is not None and int(named.group(1)) != gid
 
 
+def _sent_back_at(store: Any, n: _Node, held: dict[str, Any]) -> datetime | None:
+    """When a pre-land FIX/REVERT sent ``n`` back (gr738860): the
+    stash's ``at`` stamp, else — a stash written before the stamp — the
+    ``created_at`` of the newest comment on the node carrying
+    :data:`_templates.PRELAND_HANDBACK_MARK`. ``None`` when neither
+    reads (the caller keeps the job-bounded read)."""
+    raw = held.get("at")
+    if isinstance(raw, str) and raw:
+        try:
+            at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            at = None
+        if at is not None:
+            return at if at.tzinfo else at.replace(tzinfo=UTC)
+    for c in _comments(store, n.id):
+        created = getattr(c, "created_at", None)
+        if _templates.PRELAND_HANDBACK_MARK in str(c.text) and isinstance(
+            created, datetime
+        ):
+            return created
+    return None
+
+
 def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
     """A node carrying a verdict is dropped here, ahead of the moot
     close (gr602896): a ``no-op:``/``moot:``/``validated:`` line on a
@@ -4047,7 +4164,14 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
     branch is ready as it stands", never "nothing to land" (gr681208):
     the ``meta.preland_held`` stash a FIX/REVERT left re-holds the land
     and closes done as a fresh defer does; with neither hold nor stash
-    the node stays open."""
+    the node stays open. The stash makes a verdict count only when it is
+    NEWER than the send-back (gr738860, :func:`_sent_back_at`): no job
+    runs between a FIX and its rebuild, so the job-bounded read kept
+    finding the old ``no-op:`` the reviewer had just judged — it re-held
+    and closed the node, the review ran on the same head, and every
+    second round minted another pre-land-stop ask. An older verdict is
+    left open with a note, and a ``validated:``/``no-op:`` on a stashed
+    node held by an OPEN coordinator ask neither re-holds nor closes."""
     for n in plan.todos():
         if _closed(n) or n.id == n.root or _is_ask_node(n):
             continue
@@ -4100,11 +4224,39 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
         # denied job is itself newest.
         if src is not None and src.meta.get(HUMAN_ONLY_KEY):
             continue
-        verdict = _verdict_comment(
-            store, n.id, since=bound.created_at if bound is not None else None
-        )
-        if verdict is None and src is not None and src.status == "failed":
+        held = n.meta.get(_templates.PRELAND_HELD_KEY)
+        held_params = held.get("params") if isinstance(held, dict) else None
+        held_land = isinstance(n.meta.get(_templates.PENDING_LAND_KEY), dict)
+        since = bound.created_at if bound is not None else None
+        sent_back: datetime | None = None
+        if isinstance(held, dict) and isinstance(held_params, dict) and not held_land:
+            # gr738860: a build a pre-land FIX/REVERT sent back reads only
+            # a verdict NEWER than the send-back. The ``since`` bound is
+            # the newest ended JOB, and none ran since — so the verdict
+            # the previous build posted (the ``no-op:`` that was held for
+            # review and reviewed) would be found again, re-hold the land
+            # and release the reviewer onto the same head, every pass.
+            sent_back = _sent_back_at(store, n, held)
+            if sent_back is not None and (since is None or sent_back > since):
+                since = sent_back
+        verdict = _verdict_comment(store, n.id, since=since)
+        if (
+            verdict is None
+            and src is not None
+            and src.status == "failed"
+            and (sent_back is None or src.created_at > sent_back)
+        ):
             verdict = any_verdict(_job_event_text(store, src.id))
+        if verdict is None and sent_back is not None:
+            older = _verdict_comment(
+                store, n.id, since=bound.created_at if bound is not None else None
+            )
+            if older is not None:
+                res.notes.append(
+                    f"td{n.id}: `{older[0]}:` verdict is older than the pre-land "
+                    "send-back — ignored; left open for the rebuild (gr738860)"
+                )
+            continue
         if verdict is None or _foreign_verdict(store, n, verdict):
             continue
         kind_, why = verdict
@@ -4121,14 +4273,21 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
                 "meta.preland_defer_failed is stamped; left open (gr663738)"
             )
             continue
-        held = n.meta.get(_templates.PRELAND_HELD_KEY)
-        held_params = held.get("params") if isinstance(held, dict) else None
-        held_land = isinstance(n.meta.get(_templates.PENDING_LAND_KEY), dict)
         if (
             kind_ in ("validated", "no-op")
             and isinstance(held_params, dict)
             and not held_land
         ):
+            if plan.open_asks(n):
+                # gr738860: a pre-land stop holds this build on an open
+                # coordinator ask — the verdict neither re-holds the land
+                # (releasing the reviewer onto the stopped head) nor
+                # closes; the answer re-arms the build.
+                res.notes.append(
+                    f"td{n.id}: `{kind_}:` ignored — held on an open "
+                    "coordinator ask; left open (gr738860)"
+                )
+                continue
             # gr681208: a pre-land FIX/REVERT reopened this build and
             # stashed its held land in ``meta.preland_held`` — the
             # rebuild's verdict is "the pushed branch is ready as it
@@ -7362,6 +7521,76 @@ def _block_lane_gap(
     res.asks += 1
 
 
+def _newest_brief_chunk(n: _Node, chunks: list[Any]) -> Any | None:
+    """The newest coordinator ``brief:`` comment chunk of ``n`` — not
+    worker-stamped, not hidden — that :func:`_route_text` reads as the
+    brief; shared so the pre-land finding route can date it
+    (gr738860)."""
+    from precis.workers.job_types import run_slice as _rs
+
+    hidden = set(n.meta.get(_HIDDEN_META_KEY) or ())
+    return next(
+        (
+            c
+            for c in sorted(chunks, key=lambda c: int(c.ord), reverse=True)
+            if c.chunk_kind == _rs._COMMENT_KIND
+            and int(c.ord) not in hidden
+            and not str((c.meta or {}).get("principal", "")).startswith("worker:")
+            and str(c.text or "").lstrip().lower().startswith("brief:")
+        ),
+        None,
+    )
+
+
+#: The hand-back's trailing ``(review td<N>, <mark> — rebuild on it …)``
+#: parenthetical (:func:`_review_back_to_builder`): the tick's own
+#: boilerplate, not part of the finding.
+_HANDBACK_TAIL_RE = re.compile(
+    r"\n*\(review td\d+, " + re.escape(_templates.PRELAND_HANDBACK_MARK) + r".*\)\s*\Z",
+    re.DOTALL,
+)
+#: The hand-back's ``handoff: review: <KIND> —`` head.
+_HANDBACK_HEAD_RE = re.compile(
+    r"\Ahandoff:\s*review:\s*(?:FIX|REVERT)?\s*[—–-]*\s*", re.IGNORECASE
+)
+
+
+def _handback_finding(store: Any, plan: _Plan, n: _Node) -> str | None:
+    """The finding of the newest pre-land hand-back on ``n`` still
+    waiting for its rebuild (gr738860), else ``None``: the newest comment
+    starting ``handoff: review:`` that carries
+    :data:`_templates.PRELAND_HANDBACK_MARK`, its head and trailing
+    parenthetical stripped. ``None`` once a coordinator ``brief:``
+    (:func:`_route_text`'s) is newer — the coordinator has spoken — or a
+    builder job was created after it (a rebuild already ran on that
+    finding)."""
+    hand = next(
+        (
+            c
+            for c in _comments(store, n.id)
+            if str(c.text).lstrip().lower().startswith("handoff: review:")
+            and _templates.PRELAND_HANDBACK_MARK in str(c.text)
+        ),
+        None,
+    )
+    stamp = getattr(hand, "created_at", None)
+    if hand is None or not isinstance(stamp, datetime):
+        return None
+    from precis.workers.job_types import run_slice as _rs
+
+    brief = _newest_brief_chunk(n, _rs._todo_chunks(store, n.id))
+    brief_at = getattr(brief, "created_at", None)
+    if brief is not None and (not isinstance(brief_at, datetime) or brief_at > stamp):
+        return None
+    if any(
+        str(j.meta.get("job_type") or DEFAULT_OP) == DEFAULT_OP and j.created_at > stamp
+        for j in plan.jobs(n)
+    ):
+        return None
+    text = _HANDBACK_TAIL_RE.sub("", str(hand.text).strip())
+    return _HANDBACK_HEAD_RE.sub("", text, count=1).strip() or None
+
+
 def _route_text(store: Any, n: _Node) -> tuple[str, str | None]:
     """The body and newest coordinator ``brief:`` comment (gr645163).
     Keep them separate: the brief is an instruction in its own right,
@@ -7379,18 +7608,8 @@ def _route_text(store: Any, n: _Node) -> tuple[str, str | None]:
 
     chunks = _rs._todo_chunks(store, n.id)
     parts = [str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text]
-    hidden = set(n.meta.get(_HIDDEN_META_KEY) or ())
-    brief = next(
-        (
-            str(c.text).lstrip()
-            for c in sorted(chunks, key=lambda c: int(c.ord), reverse=True)
-            if c.chunk_kind == _rs._COMMENT_KIND
-            and int(c.ord) not in hidden
-            and not str((c.meta or {}).get("principal", "")).startswith("worker:")
-            and str(c.text or "").lstrip().lower().startswith("brief:")
-        ),
-        None,
-    )
+    newest = _newest_brief_chunk(n, chunks)
+    brief = str(newest.text).lstrip() if newest is not None else None
     if brief is not None:
         # The ``brief:`` label is the comment's type, not instruction
         # text: judged with the label still on it, a handle-only brief
@@ -7401,7 +7620,13 @@ def _route_text(store: Any, n: _Node) -> tuple[str, str | None]:
 
 
 def _block_route(
-    plan: _Plan, w: _Writer, res: PassResult, n: _Node, why: str, text: str
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    n: _Node,
+    why: str,
+    text: str,
+    lead: str = "brief",
 ) -> None:
     """Hold one run_slice-bound node on a coordinator ask — the mint-time
     route of gr645163: a brief no builder lane may run (it asks to write
@@ -7409,14 +7634,16 @@ def _block_route(
     and burns no build; the ``blocked-by`` edge keeps later passes from
     re-minting or re-asking. The ask's body carries the brief itself —
     the ruling's "with the diff/brief attached", and ``why`` quotes the
-    sentence the route fired on."""
+    sentence the route fired on. ``lead`` names the judged text in the
+    body and dry-run note (``brief``; for a pre-land review finding that
+    needs a denied path, gr738860, the hand-back's)."""
     now = datetime.now(UTC)
     if w.dry_run:
         # Mirror the hold so hygiene cannot report a second ask this pass.
         plan.blockers.setdefault(n.id, []).append(
             _Blocker(id=-n.id, status="open", is_ask=True, created_at=now)
         )
-        res.notes.append(f"td{n.id}: would ask coordinator — brief {why}")
+        res.notes.append(f"td{n.id}: would ask coordinator — {lead} {why}")
     else:
         ask_id = _mint_coordinator_ask(
             w.store,
@@ -7425,14 +7652,26 @@ def _block_route(
             title=f"td{n.id}: {why} — a coordinator call",
             body=(
                 f"Task td{n.id} routes to the coordinator at mint: the "
-                f"brief {why}. No builder lane may do the work, so no "
+                f"{lead} {why}. No builder lane may do the work, so no "
                 "run_slice job was minted — the builder that ran it would "
                 "refuse as won't-do or end with no commit (gr645163, the "
                 "td643078/td638980 stalls). Land it by hand, mint a "
                 "builder outside the factory's deny rules, or drop the "
-                f"node; closing this ask `acknowledged` re-arms td{n.id} "
-                "and it routes again while the text still asks to write "
-                "a denied path.\n\n---\n\n" + text.strip()[:4000]
+                + (
+                    f"node; closing this ask `acknowledged` re-arms td{n.id} "
+                    "and it routes again while the text still asks to write "
+                    "a denied path."
+                    if lead == "brief"
+                    else f"node. A newer `brief:` comment on td{n.id} "
+                    "replaces the review finding as the builder's "
+                    "instruction — say what it may do inside its lanes, or "
+                    "that the denied-path part was landed by hand — and "
+                    f"closing this ask `acknowledged` then rebuilds td{n.id} "
+                    "on it. Closing `acknowledged` with no newer `brief:` "
+                    "routes here again (gr738860)."
+                )
+                + "\n\n---\n\n"
+                + text.strip()[:4000]
             ),
             context=why,
             now=now,
@@ -7754,6 +7993,35 @@ def _step_dispatch(
                 if routed is not None:
                     text = "\n\n".join(part for part in (body, brief) if part)
                     _block_route(plan, w, res, n, routed, text)
+                    continue
+                # gr738860: a pre-land review FIX that needs a denied
+                # path is no rebuild the builder lanes can do — the
+                # worker-stamped hand-back never classifies above
+                # (:func:`_route_text`), so a finding of this kind looped
+                # rebuild -> review -> FIX until the round bound asked.
+                # One ask holds the node (the ``blocked-by`` edge keeps
+                # later passes quiet) while the hand-back awaits its
+                # rebuild with no newer coordinator brief.
+                finding = _handback_finding(w.store, plan, n)
+                # The classifier reads change intent only under a ``Fix:``
+                # / ``Goal:`` / ``Want:`` label (``route._INTENT_START``);
+                # a review's finding is prose with no label, and it IS
+                # what the build must fix — judge it as that.
+                routed = (
+                    _route.coordinator_route("Fix: " + finding, node_deny, graph=False)
+                    if finding is not None
+                    else None
+                )
+                if finding is not None and routed is not None:
+                    _block_route(
+                        plan,
+                        w,
+                        res,
+                        n,
+                        "review finding " + routed,
+                        finding,
+                        lead="pre-land hand-back's",
+                    )
                     continue
         rungs = _task_rungs(lane_table, n, params) if job_type == DEFAULT_OP else ()
         cap = _retry_cap(n, _cap_rungs(plan, lane_table, n, job_type, params, rules))

@@ -862,13 +862,20 @@ def _write_set_lines(text: str) -> str:
 
 
 def coordinator_route(
-    text: str | None, deny_paths: Iterable[str], *, brief: str | None = None
+    text: str | None,
+    deny_paths: Iterable[str],
+    *,
+    brief: str | None = None,
+    graph: bool = True,
 ) -> str | None:
     """The short reason the work routes straight to the coordinator, or
     ``None`` when a builder lane may take it. The reason is written into
     the ask body and context, so it names the signal, not advice.
     An optional newest brief has its own intent and declared write set;
-    neither it nor the body can mask the other's deny paths."""
+    neither it nor the body can mask the other's deny paths. ``graph``
+    False skips the prod-graph-only classification: a caller judging a
+    review's finding (gr738860) routes on a deny-path hit only — a
+    finding naming no path is ordinary rebuild work."""
     parts = [
         strip_evidence(strip_direct_head(part))
         for part in (brief, text)
@@ -887,6 +894,6 @@ def coordinator_route(
             token, glob, sentence = hit
             quote = sentence.replace('"', "'")[:160]
             return f'names deny path `{token}` (matched `{glob}`) in "{quote}"'
-    if graph_only("\n\n".join(parts)):
+    if graph and graph_only("\n\n".join(parts)):
         return "prod-graph only — no repo diff exists for a builder to write"
     return None

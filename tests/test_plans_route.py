@@ -79,6 +79,15 @@ def test_handle_only_report_is_graph_only() -> None:
     assert why is not None and "graph" in why
 
 
+def test_graph_false_skips_the_graph_only_reason() -> None:
+    """gr738860: a review finding routes on a deny-path hit only."""
+    assert (
+        route.coordinator_route("gr630346 me123456 td999", _DENY, graph=False) is None
+    )
+    why = route.coordinator_route("Fix: edit scripts/ship", _DENY, graph=False)
+    assert why is not None and "scripts/ship" in why
+
+
 @pytest.mark.parametrize(
     "text",
     [

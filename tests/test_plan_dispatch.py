@@ -8522,6 +8522,333 @@ def test_validated_rebuild_after_preland_fix_restamps_pending_land(
     assert _jobs_under(store, dep) == []
 
 
+_STALE_NOOP = "handoff: no-op: the branch already holds the work"
+
+
+def _preland_stops(store: Store, build: int) -> list[int]:
+    """Every ask minted by the pre-land stop for ``build`` (open or
+    closed), by id."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'todo' "
+            "AND (meta->'preland_stop'->>'node')::int = %s ORDER BY ref_id",
+            (build,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def test_stale_noop_verdict_does_not_rehold_a_sent_back_build(store: Store) -> None:
+    """gr738860, the flood end to end: the build's last job ended
+    `no-op:`, the land was held and reviewed, the review returned FIX.
+    No job ran since, so the job-bounded verdict read found the SAME
+    `no-op:` again, re-held the land and released the reviewer onto the
+    same head — one pre-land-stop ask every other round (td706632: 576
+    comments, 133 open asks). The send-back stamps when it happened; the
+    rebuild mints; and once the loop parks, the node stays open and
+    blocked with one ask, whatever further passes and verdicts come."""
+    mint = _reviewed_pending(store, "review: FIX — a.py::f misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    _todo_comment(store, build, _STALE_NOOP)
+    runs = len(_run_slice_jobs(store, build))
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, build) == "open"
+    meta = _meta(store, build)
+    assert meta.get("pending_land") is None
+    assert meta["preland_held"]["at"]
+    # The stale verdict closed nothing: the rebuild minted instead.
+    assert len(_run_slice_jobs(store, build)) == runs + 1
+    assert not any("closed on verdict" in c for c in _todo_comments(store, build))
+    assert any("older than the pre-land send-back" in n for n in res.notes)
+    reviews = len(_jobs_under(store, review))
+    for _ in range(3):
+        pd.run_pass(store)
+    assert _status(store, build) == "open"
+    assert len(_run_slice_jobs(store, build)) == runs + 1
+    assert len(_jobs_under(store, review)) == reviews
+
+    # The rebuild pushes the same finding back: one park, one ask.
+    res = _rebuild_and_review(
+        store, build, review, "review: FIX — a.py::f misses the empty case"
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    parked_runs = len(_run_slice_jobs(store, build))
+    parked_reviews = len(_jobs_under(store, review))
+    for _ in range(4):
+        again = pd.run_pass(store)
+        assert again.asks == 0
+    assert _status(store, build) == "open"
+    assert _blocked_by_ids(store, build) == [ask]
+    assert _preland_stops(store, build) == [ask]
+    assert len(_run_slice_jobs(store, build)) == parked_runs
+    assert len(_jobs_under(store, review)) == parked_reviews
+
+
+def test_verdict_posted_while_parked_on_an_ask_does_not_rehold(store: Store) -> None:
+    """gr738860: a `no-op:`/`validated:` that lands on a stashed build
+    held by an OPEN coordinator ask neither re-holds the land (which
+    would release the reviewer onto the stopped head) nor closes."""
+    mint = _reviewed_pending(store, "review: FIX — a.py::f misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    _rebuild_and_review(
+        store, build, review, "review: FIX — a.py::f misses the empty case"
+    )
+    (ask,) = _blocked_by_ids(store, build)
+    reviews = len(_jobs_under(store, review))
+    _todo_comment(store, build, "handoff: no-op: the branch is ready as it stands")
+    res = pd.run_pass(store)
+    assert _status(store, build) == "open"
+    assert _meta(store, build).get("pending_land") is None
+    assert _meta(store, build).get("preland_held") is not None
+    assert any("open coordinator ask" in n for n in res.notes)
+    assert len(_jobs_under(store, review)) == reviews
+    assert _blocked_by_ids(store, build) == [ask]
+
+
+def _stashed_build(store: Store, *, at: bool) -> tuple[int, int]:
+    """A sent-back build (open, ``preland_held`` stash, the hand-back
+    comment) whose ended job's `no-op:` predates the send-back; ``at``
+    False is a stash written before the stamp existed. No rebuild job
+    ran. Returns ``(build, review)``."""
+    mint = _review_plan(store, preland=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, _STALE_NOOP)
+    held: dict[str, Any] = {
+        "params": {"todo_id": build, "branch": f"slice/{build}"},
+        "reviewer": review,
+    }
+    if at:
+        held["at"] = datetime.now(UTC).isoformat()
+    store.stamp_ref_meta(build, {"preland_held": held})
+    _todo_comment(
+        store,
+        build,
+        f"handoff: review: FIX — a.py misses the empty case\n\n(review td{review}, "
+        "pre-land: the branch is still on origin — rebuild on it from the "
+        "brief with this finding in mind)",
+    )
+    return build, review
+
+
+def test_stash_without_at_reads_the_handback_comment_time(store: Store) -> None:
+    """gr738860: a stash written before ``at`` existed falls back to the
+    newest hand-back comment's time — the older `no-op:` is still no
+    verdict on the rebuild."""
+    build, _ = _stashed_build(store, at=False)
+    res = pd.run_pass(store)
+    assert _status(store, build) == "open"
+    assert _meta(store, build).get("pending_land") is None
+    assert not any("closed on verdict" in c for c in _todo_comments(store, build))
+    assert any("older than the pre-land send-back" in n for n in res.notes)
+    assert res.dispatched == 1
+
+
+def test_noop_newer_than_the_send_back_still_reholds_the_land(store: Store) -> None:
+    """gr738860: the bound moves the verdict's floor, it does not ban the
+    verdict — a `no-op:` posted after the send-back (the rebuild's own)
+    re-holds the land as gr681208 says, with or without the ``at`` stamp."""
+    for with_at in (True, False):
+        build, review = _stashed_build(store, at=with_at)
+        _todo_comment(store, build, "handoff: no-op: the branch is ready as it stands")
+        pd.run_pass(store)
+        assert _status(store, build) == "done", with_at
+        assert _meta(store, build)["pending_land"]["branch"] == f"slice/{build}"
+        assert _meta(store, build).get("preland_held") is None
+        assert any(
+            "land held for review" in c and f"td{review}" in c
+            for c in _todo_comments(store, build)
+        )
+
+
+_DENIED_FINDING = (
+    "review: FIX — the remote land is not wired: add a --remote flag to "
+    "scripts/ship for harness diffs."
+)
+
+
+def test_preland_fix_needing_a_denied_path_routes_to_one_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr738860: a pre-land FIX whose finding asks to change a denied
+    path is no rebuild a builder lane can do — the worker-stamped
+    hand-back never classified, so it looped rebuild -> review -> FIX.
+    The node holds on ONE coordinator ask carrying the finding (without
+    the tick's trailing parenthetical), mints no rebuild, and a second
+    pass files no second ask."""
+    use_lanes(monkeypatch)
+    mint = _reviewed_pending(store, _DENIED_FINDING)
+    build = mint.ids["build"]
+    runs = len(_run_slice_jobs(store, build))
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert res.asks == 1
+    assert _status(store, build) == "open"
+    assert len(_run_slice_jobs(store, build)) == runs
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "scripts/ship" in _meta(store, ask)["ask"]["context"]
+    assert "review finding" in str(store.get_ref(kind="todo", id=ask).title)  # type: ignore[union-attr]
+    attached = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(ask))
+    assert "add a --remote flag to scripts/ship" in attached
+    assert "pre-land: the branch is still on origin" not in attached
+    # The answer path: a newer `brief:` replaces the finding; a bare close
+    # routes here again (one ask per answer otherwise).
+    assert "A newer `brief:` comment" in attached
+    assert "routes here again" in attached
+    assert "while the text still asks to write" not in attached
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _blocked_by_ids(store, build) == [ask]
+    assert len(_run_slice_jobs(store, build)) == runs
+
+
+def test_preland_fix_on_an_allowed_path_still_rebuilds(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr738860: a finding that only mentions an allowed path (or a deny
+    path as evidence) rebuilds as before."""
+    use_lanes(monkeypatch)
+    mint = _reviewed_pending(
+        store,
+        "review: FIX — a.py::f misses the empty case; scripts/ship was green "
+        "but the new test in tests/test_a.py never covers it.",
+    )
+    build = mint.ids["build"]
+    runs = len(_run_slice_jobs(store, build))
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _blocked_by_ids(store, build) == []
+    assert len(_run_slice_jobs(store, build)) == runs + 1
+
+
+def test_preland_finding_naming_only_graph_handles_still_rebuilds(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr738860: the hand-back route fires on a deny-path hit only — a
+    finding with no file path is ordinary rebuild work, never the
+    "prod-graph only" reason (``coordinator_route(graph=False)``)."""
+    use_lanes(monkeypatch)
+    mint = _reviewed_pending(
+        store, "review: FIX — the commit message does not name td123 or gr456"
+    )
+    build = mint.ids["build"]
+    runs = len(_run_slice_jobs(store, build))
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _blocked_by_ids(store, build) == []
+    assert len(_run_slice_jobs(store, build)) == runs + 1
+
+
+def test_older_brief_does_not_suppress_the_preland_finding_route(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr738860: only a coordinator ``brief:`` NEWER than the hand-back
+    has spoken on the finding; one posted before the review ran does not
+    suppress the route."""
+    use_lanes(monkeypatch)
+    mint = _reviewed_pending(store, _DENIED_FINDING)
+    build = mint.ids["build"]
+    _todo_comment(store, build, "brief: land the doc fix in docs/land.md only")
+    runs = len(_run_slice_jobs(store, build))
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert len(_blocked_by_ids(store, build)) == 1
+    assert len(_run_slice_jobs(store, build)) == runs
+
+
+def test_newer_brief_suppresses_the_preland_finding_route(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr738860: a coordinator ``brief:`` newer than the hand-back has
+    spoken — answering the ask with one rebuilds even though the old
+    finding still names a denied path."""
+    use_lanes(monkeypatch)
+    mint = _reviewed_pending(store, _DENIED_FINDING)
+    build = mint.ids["build"]
+    runs = len(_run_slice_jobs(store, build))
+    pd.run_pass(store)
+    (ask,) = _blocked_by_ids(store, build)
+    _todo_comment(store, build, "brief: land the doc fix in docs/land.md only")
+    _mark_done(store, ask)
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert len(_run_slice_jobs(store, build)) == runs + 1
+
+
+def test_rebuild_after_the_handback_suppresses_the_preland_finding_route(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr738860: a builder job created after the hand-back means the
+    rebuild already ran on that finding — the route does not fire on it
+    again when the node is next dispatchable."""
+    use_lanes(monkeypatch)
+    mint = _reviewed_pending(store, _DENIED_FINDING)
+    build = mint.ids["build"]
+    pd.run_pass(store)
+    (ask,) = _blocked_by_ids(store, build)
+    _job(store, build, lane="claude-sub")  # a rebuild ran after the hand-back
+    _mark_done(store, ask)
+    runs = len(_run_slice_jobs(store, build))
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _blocked_by_ids(store, build) == [ask]
+    assert len(_run_slice_jobs(store, build)) == runs + 1
+
+
+def test_second_preland_stop_on_a_slice_notes_the_open_ask(store: Store) -> None:
+    """gr738860: seek before mint. A second stop on a build whose first
+    pre-land-stop ask is still open adds one comment and bumps
+    ``repeats``; it mints no ask and ``res.asks`` stays put. An answered
+    (closed) ask does not count — the next stop mints a fresh one."""
+    mint = _reviewed_pending(store, "review: FIX — a.py::f misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    _rebuild_and_review(
+        store, build, review, "review: FIX — a.py::f misses the empty case"
+    )
+    (ask,) = _blocked_by_ids(store, build)
+    assert _meta(store, ask)["preland_stop"]["repeats"] == 0
+    comments = len(_todo_comments(store, ask))
+
+    def stop_again(head: str) -> pd.PassResult:
+        plan = pd._load(store)
+        res = pd.PassResult(dry_run=False)
+        pd._park_preland_rounds(
+            plan,
+            pd._Writer(store, False),
+            res,
+            plan.nodes[review],
+            plan.nodes[build],
+            "FIX",
+            "b.py::g drops the guard",
+            ("round cap", "review sent the branch back 5 times in a row"),
+            datetime.now(UTC),
+            head,
+        )
+        return res
+
+    res = stop_again("a" * 40)
+    assert res.asks == 0
+    assert _preland_stops(store, build) == [ask]
+    assert _blocked_by_ids(store, build) == [ask]
+    assert len(_todo_comments(store, ask)) == comments + 1
+    stop = _meta(store, ask)["preland_stop"]
+    assert stop["repeats"] == 1
+    assert stop["reason"] == "round cap" and stop["head"] == "a" * 40
+    assert "a" * 40 in _todo_comments(store, ask)[-1]
+
+    _mark_done(store, ask)  # answered
+    res = stop_again("b" * 40)
+    assert res.asks == 1
+    fresh = [i for i in _preland_stops(store, build) if i != ask]
+    assert len(fresh) == 1
+    assert _meta(store, fresh[0])["preland_stop"]["head"] == "b" * 40
+    assert fresh[0] in _blocked_by_ids(store, build)
+
+
 def test_bare_verdict_never_closes_a_build_with_a_live_preland_reviewer(
     store: Store,
 ) -> None:
