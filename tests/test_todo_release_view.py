@@ -248,6 +248,23 @@ def test_a_fix_iteration_reads_in_pass_order(store: Store) -> None:
     assert "digest#2" in body
 
 
+def test_the_head_says_when_fix_lands_are_past_it(store: Store) -> None:
+    """The stored head moves only at the restamp: fix lands of an iteration
+    whose restamp has not run are on the branch but not in the record."""
+    mint = _cut_pass(store)
+    ids = mint.ids
+    for key in ("cut", "poll"):
+        _status(store, ids[key], "done")
+    loop = T.mint_body(store, ids["loop"], "release-fix", iteration=1).ids
+    assert "recorded at the last restamp" not in _body(store, mint.root_id)
+    _status(store, loop["digest"], "done")
+    _status(store, loop["fix"], "done")
+    head = _body(store, mint.root_id).splitlines()[0]
+    assert "head c0ffee111 (recorded at the last restamp; 1 fix land since)" in head
+    _status(store, loop["restamp"], "done")
+    assert "recorded at the last restamp" not in _body(store, mint.root_id)
+
+
 def test_a_node_inside_the_pass_resolves_to_the_root(store: Store) -> None:
     mint = _cut_pass(store)
     assert _body(store, mint.ids["deploy"]) == _body(store, mint.root_id)

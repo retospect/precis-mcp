@@ -303,6 +303,26 @@ class _Node:
         return f"{self.role}#{self.iteration}" if self.iteration else self.role
 
 
+def _ahead_note(nodes: list[_Node]) -> str:
+    """Says when the branch is past the head the header prints.
+
+    The stored head moves only at a restamp, and this screen reads the
+    store, never the remote ref: the fix lands of an iteration whose
+    restamp has not run are on the branch but not in the record."""
+    waiting = {n.iteration for n in nodes if n.role == "restamp" and not n.closed}
+    lands = sum(
+        1
+        for n in nodes
+        if n.role == "fix" and n.status == "done" and n.iteration in waiting
+    )
+    if not lands:
+        return ""
+    return (
+        f" (recorded at the last restamp; {lands} fix land"
+        f"{'' if lands == 1 else 's'} since)"
+    )
+
+
 def _pass_order(by_id: dict[int, _Node], root: int) -> list[_Node]:
     """Depth-first, children in id order — the template's own order: the
     loop's iterations sit between the gate and the deploy."""
@@ -586,7 +606,7 @@ def render_release(
     branch = _release.release_branch(rn) if rel else "-"
     lines = [
         f"release {rn}  branch {branch}  cut {cut[:9] or '-'}  "
-        f"head {head[:9] or '-'}  cut host {host}"
+        f"head {head[:9] or '-'}{_ahead_note(nodes)}  cut host {host}"
     ]
     lines.append(f"state: {_state(root_node, nodes, held, refused_at, now)}")
 
