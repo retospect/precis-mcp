@@ -24,7 +24,7 @@ reaper).
 lsof is the script's open-lock proof on every platform, but the dev image
 ships no lsof package — so the fixture drops a minimal /proc-backed
 ``lsof`` onto PATH whenever the real binary is absent, answering the
-script's call shapes (``-F pc -- <path>``, ``-t -- <path>`` and ``-a -p <pid> -d cwd -Fn``)
+script's call shapes (``-w -F pc -- <path>``, ``-t -- <path>`` and ``-a -p <pid> -d cwd -Fn``)
 with the same results real lsof gives on Linux. No DB / MCP fixtures —
 pure git, ps and the shipped scripts.
 """
@@ -55,10 +55,11 @@ REAP_WORKTREES_SRC = REPO_ROOT / "scripts" / "reap-worktrees"
 STALE_AGE_SECONDS = 1200
 
 #: A minimal, truthful lsof stand-in for the lsof-free dev image: the same
-#: answers real lsof gives for the two calls scripts/reap-index-locks
-#: makes. `-t -- <path>` prints the pid of every process holding the file
-#: open (matched by dev+inode — lsof's own notion of "same open file", so
-#: hardlinks/symlink paths can't fool it); `-a -p <pid> -d cwd -Fn` prints
+#: answers real lsof gives for the calls scripts/reap-index-locks
+#: makes. `-w -F pc -- <path>` prints each holder as a p<pid>/c<comm>
+#: pair and `-t -- <path>` just the pid (both matched by dev+inode —
+#: lsof's own notion of "same open file", so hardlinks/symlink paths
+#: can't fool it); `-a -p <pid> -d cwd -Fn` prints
 #: the process's cwd in -F form. Linux-only (it reads /proc), which is
 #: exactly where the real lsof is missing.
 FAKE_LSOF = """#!/usr/bin/env python3
@@ -98,6 +99,7 @@ def _comm(pid):
 
 
 def main(argv):
+    argv = [a for a in argv if a != "-w"]  # -w only suppresses warnings
     if argv[:2] == ["-t", "--"]:
         for pid in _pids_holding(argv[2]):
             print(pid)

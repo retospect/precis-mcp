@@ -123,7 +123,9 @@ def _lsof_bin():
         return found
     fallbacks = os.environ.get("PRECIS_REAP_LSOF_FALLBACKS")
     for cand in (
-        fallbacks.split(os.pathsep) if fallbacks else ("/usr/sbin/lsof", "/usr/bin/lsof")
+        fallbacks.split(os.pathsep)
+        if fallbacks
+        else ("/usr/sbin/lsof", "/usr/bin/lsof")
     ):
         if os.path.exists(cand):
             return cand
@@ -137,7 +139,12 @@ def _held_open(lock):
     lsof = _lsof_bin()
     if lsof is None:
         return None
-    r = _run([lsof, "-F", "pc", "--", lock])
+    # -w: the -t call this replaced suppressed warnings implicitly (-t
+    # selects -w); -F does not, so mounts lsof cannot stat (fuse.portal,
+    # snap squashfs, docker overlays — the usual runner noise) would fill
+    # stderr and read as "can't tell" forever. Real status errors still
+    # reach stderr under -w.
+    r = _run([lsof, "-w", "-F", "pc", "--", lock])
     if r.stderr.strip():
         return None
     comms = [ln[1:] for ln in r.stdout.splitlines() if ln.startswith("c")]

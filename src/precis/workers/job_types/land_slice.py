@@ -3230,7 +3230,11 @@ def _lock_holders(lock: Path) -> list[tuple[str, str]] | None:
         return None
     try:
         cp = subprocess.run(
-            ["lsof", "-F", "pc", "--", str(lock)],
+            # -w: without it lsof's can't-stat warnings (fuse.portal,
+            # squashfs, overlay mounts — ordinary worker noise) fill
+            # stderr and read as "cannot answer" forever; real status
+            # errors still reach stderr under -w.
+            ["lsof", "-w", "-F", "pc", "--", str(lock)],
             executable=lsof,
             capture_output=True,
             text=True,
