@@ -406,6 +406,34 @@ def test_terminal_parent_not_flagged(store: Store) -> None:
     assert _alert_open(store, f"parent-paused:{jid}") is False
 
 
+def test_job_the_wait_is_for_is_not_flagged(store: Store) -> None:
+    """gr738684: the ``ci_rerun`` a parked fix waits for is claimable, so
+    no alert; with a second pause tag it is gated again and the alert
+    names that tag only — removing the wait tag would not release it."""
+    serving = {
+        "job_type": "demo",
+        "executor": "ssh_node",
+        "params": {},
+        "serves_parent_wait": "waiting-for:ci-rerun",
+    }
+    free = _queue(store, dict(serving), _paused_parent(store, "waiting-for:ci-rerun"))
+    held = _queue(
+        store,
+        dict(serving),
+        _paused_parent(store, "waiting-for:ci-rerun", "ask-user"),
+    )
+    assert _alert_unschedulable_jobs(store) == 1
+    assert _alert_open(store, f"parent-paused:{free}") is False
+    assert _alert_open(store, f"parent-paused:{held}") is True
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT title FROM refs WHERE kind = 'alert' AND meta->>'fingerprint' = %s",
+            (f"parent-paused:{held}",),
+        ).fetchone()
+    assert row is not None
+    assert "ask-user" in row[0] and "waiting-for:ci-rerun" not in row[0]
+
+
 def test_unparent_gated_executor_not_flagged(store: Store) -> None:
     """``coordinator`` never passes ``parent_not_paused`` — the claim
     gate doesn't bind its jobs, so no parent-pause alert (the unschedulable

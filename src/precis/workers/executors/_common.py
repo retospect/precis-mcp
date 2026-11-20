@@ -38,6 +38,7 @@ from precis.store._resource_slots_ops import (
 )
 from precis.store._todo_sql import (
     _doable_exclusion_clause,
+    not_served_wait_sql,
     parent_gate_exclusion_sql,
 )
 from precis.store.types import ChunkInsert, Tag
@@ -1114,7 +1115,8 @@ def parent_pause_gaps(conn: Connection) -> dict[int, frozenset[str]]:
     gives a placement-blocked job. The read IS the shared
     :func:`~precis.store._todo_sql.parent_gate_exclusion_sql` predicate,
     so the alert fires exactly when (and only when) the claim gate
-    blocks; a terminal parent's stale tags appear in no value."""
+    blocks; a terminal parent's stale tags appear in no value, and
+    neither does the wait a job itself resolves (gr738684)."""
     rows = conn.execute(
         f"""
         SELECT r.ref_id, pt.value
@@ -1125,6 +1127,7 @@ def parent_pause_gaps(conn: Connection) -> dict[int, frozenset[str]]:
            AND r.meta->>'executor' = ANY(%s)
            AND pt.namespace = 'OPEN'
            AND {_doable_exclusion_clause("pt", "prt")}
+           AND {not_served_wait_sql("pt", "r")}
            AND {parent_gate_exclusion_sql("r")}
            AND EXISTS (
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
@@ -2061,7 +2064,9 @@ def claim_executor_jobs(
     and a TERMINAL parent (``done`` / ``won't-do`` / ``auto-timeout``)
     is exempt: a finished todo's stale pause tags (a leftover
     ``waiting-for:fleet``) must not pin its queued jobs forever
-    (gr575883).
+    (gr575883). So is the one ``waiting-for:`` tag a job declares it
+    resolves (``meta.serves_parent_wait`` — the ``ci_rerun`` a parked
+    release fix waits for, gr738684).
     """
     if limit <= 0:
         raise ValueError("limit must be positive")

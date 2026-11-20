@@ -487,7 +487,7 @@ from precis.plans.nodes import (
     node_kind,
 )
 from precis.principal import worker_comment_meta
-from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
+from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS, SERVES_PARENT_WAIT_KEY
 from precis.store.advisory import try_xact_advisory_lock
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
@@ -6070,6 +6070,60 @@ def _digest_of(plan: _Plan, n: _Node) -> _Node | None:
     return None
 
 
+def _fix_siblings(plan: _Plan, n: _Node) -> list[_Node]:
+    """The other fix nodes of ``n``'s iteration — ``run_slice`` todos
+    ``blocked-by`` the same digest; the digest mints one per further
+    cluster of the red (``templates.mint_release_fix_clusters``)."""
+    digest = _digest_of(plan, n)
+    if digest is None:
+        return []
+    return [
+        m
+        for m in plan.todos()
+        if m.id != n.id
+        and _op_type(m) == DEFAULT_OP
+        and any(b.id == digest.id for b in plan.blockers.get(m.id, []))
+    ]
+
+
+def _may_still_land(plan: _Plan, m: _Node) -> bool:
+    """A fix node that can still move the release head: open and not
+    itself parked on the rerun, or closed with its land held or in
+    flight."""
+    if NOREPRO_WAIT_TAG in m.open_tags:
+        return False
+    if not _closed(m):
+        return True
+    return m.status == "done" and (
+        plan.live_job(m) or isinstance(m.meta.get(_templates.PENDING_LAND_KEY), dict)
+    )
+
+
+def _landed_fix(store: Any, plan: _Plan, siblings: list[_Node]) -> _Node | None:
+    """The first of ``siblings`` whose fix is on the release branch: a
+    succeeded ``land_slice`` under it and a ``landed: <sha>`` comment
+    (a land of an empty branch records ``landed: nothing``)."""
+    for m in siblings:
+        if any(
+            j.meta.get("job_type") == "land_slice" and j.status == "succeeded"
+            for j in plan.jobs(m)
+        ) and _landed_sha(store, m.id):
+            return m
+    return None
+
+
+def _owns_rerun(plan: _Plan, m: _Node, minted: set[int]) -> bool:
+    """``m`` is parked on the rerun it fired (this pass, or earlier and
+    not yet settled)."""
+    if m.id in minted:
+        return True
+    return (
+        NOREPRO_WAIT_TAG in m.open_tags
+        and not _closed(m)
+        and any(j.meta.get("job_type") == "ci_rerun" for j in plan.jobs(m))
+    )
+
+
 def _mint_rerun_ask(store: Any, n: _Node, why: str, continued: str) -> int | None:
     """The ONE ask a stalled rerun path files under the plan root
     (gr588028 item 4, review round 1): it RECORDS the stall — the loop
@@ -6196,7 +6250,15 @@ def _step_ci_rerun(
     as today. Anything blocking files one stall comment and the deduped
     root ask, never a retry. Runs between :func:`_step_phases` and
     :func:`_step_dispatch` — the park tag's ``waiting-for:`` prefix keeps
-    the node out of dispatch while this step owns it."""
+    the node out of dispatch while this step owns it.
+
+    A red split into clusters has several fix nodes on one run
+    (gr738684), so before a rerun mints: a sibling that landed closes
+    the node (the head moved past the run; the push's gate run re-tests
+    its ids), a sibling that may still land makes it wait, and a
+    sibling that already fired the run's one rerun is waited on."""
+    #: Nodes that minted a rerun this pass — ``plan`` was loaded before.
+    minted: set[int] = set()
     for n in plan.todos():
         if NOREPRO_WAIT_TAG not in n.open_tags or _closed(n):
             continue
@@ -6313,6 +6375,39 @@ def _step_ci_rerun(
                     f"td{n.id}: verdict already green; closed without a rerun"
                 )
                 continue
+            # gr738684: a red split into clusters has one fix node per
+            # cluster, each landing on the release branch. A sibling's
+            # land moves the head past the red run — ``ci_rerun`` refuses
+            # a superseded run, and the push started a gate run on the
+            # new head that re-tests this node's ids. r339's td738093
+            # ended "already fixed on origin/release/r339" and was parked
+            # for a rerun that could never fire.
+            siblings = _fix_siblings(plan, n)
+            landed = _landed_fix(store, plan, siblings)
+            if landed is not None:
+                w.comment(
+                    n,
+                    f"validated: no rerun — td{landed.id} landed on the "
+                    "release branch after the red run; the gate run on the "
+                    "new head re-tests these ids",
+                )
+                w.remove_tags(n, [NOREPRO_WAIT_TAG])
+                w.set_status(n, "done")
+                res.notes.append(
+                    f"td{n.id}: td{landed.id} landed after the red run; "
+                    "closed without a rerun"
+                )
+                continue
+            working = [m for m in siblings if _may_still_land(plan, m)]
+            if working:
+                # A rerun fired now is superseded the moment one of them
+                # lands; the restamp waits for them anyway.
+                res.notes.append(
+                    f"td{n.id}: rerun waits — td{working[0].id} of the same "
+                    "iteration may still land"
+                    + (f" (+{len(working) - 1} more)" if len(working) > 1 else "")
+                )
+                continue
             rid = _release.newest_red_run(store, sha) if sha else None
             if not rid:
                 _rerun_stall(
@@ -6326,6 +6421,19 @@ def _step_ci_rerun(
                 )
                 continue
             if _release.ci_rerun_fired(store, rid):
+                owner = next(
+                    (m for m in siblings if _owns_rerun(plan, m, minted)), None
+                )
+                if owner is not None:
+                    # Two clusters of one flaky run both ended non-repro:
+                    # the run is rerun once, and its verdict settles both
+                    # (green closes this node above; a stall un-parks the
+                    # owner, then this node below).
+                    res.notes.append(
+                        f"td{n.id}: waits on the rerun of run {rid} that "
+                        f"td{owner.id} fired"
+                    )
+                    continue
                 # Defensive — run_slice's spent ruling never parks on a
                 # fired run; a tag placed by hand un-parks to the plain
                 # no_commit path.
@@ -6352,8 +6460,16 @@ def _step_ci_rerun(
                 "ssh_node",
                 params,
                 idem_key=f"ci_rerun:{rid}",
-                meta_extra={ATTEMPT_FREE_KEY: "ci-rerun"},
+                meta_extra={
+                    ATTEMPT_FREE_KEY: "ci-rerun",
+                    # The park tag is a pause tag, and ssh_node's parent
+                    # gate skips a job under one: the rerun names the tag
+                    # as the wait it resolves, or it sits queued until a
+                    # person removes the tag (gr738684, 51 and 63 min).
+                    SERVES_PARENT_WAIT_KEY: NOREPRO_WAIT_TAG,
+                },
             )
+            minted.add(n.id)
             res.notes.append(
                 f"td{n.id}: minted ci_rerun job:{job_id} for run {rid} "
                 "(the failed legs re-fire once)"

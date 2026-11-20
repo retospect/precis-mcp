@@ -86,6 +86,32 @@ def _doable_exclusion_clause(tag_alias: str = "t", reftag_alias: str = "rt") -> 
     return "(" + " OR ".join(parts) + ")"
 
 
+#: Job meta key: the parent's ``waiting-for:`` tag this job is itself
+#: the thing waited for. The parent gate ignores that one tag for that
+#: one job (gr738684): ``plan_dispatch._step_ci_rerun`` parks a release
+#: fix node on ``waiting-for:ci-rerun`` and mints the ``ci_rerun`` job
+#: under it, and the tag gated out the very job it waits for until a
+#: person removed it. Only a ``waiting-for:`` value is honoured — a job
+#: never exempts itself from ``halt`` / ``ask-user`` / ``child-failed:``
+#: / a hold, and any other pause tag on the parent still gates it.
+#:
+#: No Python twin: ``factory_rescue`` holds any node carrying a
+#: ``waiting-for:`` tag before it reads the parent gate, so its
+#: ``_parent_gate_tag`` never sees the exempted tag.
+SERVES_PARENT_WAIT_KEY = "serves_parent_wait"
+
+
+def not_served_wait_sql(tag_alias: str, job_alias: str) -> str:
+    """SQL predicate: the parent tag row ``tag_alias`` is NOT the wait
+    the job row ``job_alias`` declares it resolves
+    (:data:`SERVES_PARENT_WAIT_KEY`). Both aliases are trusted — never
+    user input."""
+    return (
+        f"NOT ({tag_alias}.value LIKE 'waiting-for:%%' AND {tag_alias}.value = "
+        f"COALESCE({job_alias}.meta->>'{SERVES_PARENT_WAIT_KEY}', ''))"
+    )
+
+
 def parent_gate_exclusion_sql(job_alias: str = "r") -> str:
     """SQL predicate: the job row ``job_alias`` is parent-gated — its
     parent carries an open-namespace exclusion tag while NOT itself
@@ -105,6 +131,10 @@ def parent_gate_exclusion_sql(job_alias: str = "r") -> str:
     must not pin the parent's queued jobs forever; the ``NOT EXISTS``
     arm carves terminal parents out of the gate.
 
+    gr738684: the one ``waiting-for:`` tag a job declares it resolves
+    (:data:`SERVES_PARENT_WAIT_KEY`) does not gate that job
+    (:func:`not_served_wait_sql`); every other pause tag still does.
+
     The predicate carries ONE ``%s`` param slot — the caller binds
     ``sorted(TERMINAL_TODO_STATUSES)`` (:mod:`precis.todo` must not be
     imported here: store is the bottom layer). ``job_alias`` is a
@@ -116,6 +146,7 @@ def parent_gate_exclusion_sql(job_alias: str = "r") -> str:
         f"WHERE rt.ref_id = {job_alias}.parent_id "
         "AND t.namespace = 'OPEN' "
         f"AND {_doable_exclusion_clause()} "
+        f"AND {not_served_wait_sql('t', job_alias)} "
         "AND NOT EXISTS ("
         "SELECT 1 FROM ref_tags xrt JOIN tags xt ON xt.tag_id = xrt.tag_id "
         f"WHERE xrt.ref_id = {job_alias}.parent_id "

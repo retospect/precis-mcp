@@ -4567,6 +4567,119 @@ def test_parked_fix_mints_the_ci_rerun_once_per_run_id(store: Store) -> None:
     assert _job_ids(store, it["fix"], "ci_rerun") == [job_id]
 
 
+def test_the_minted_ci_rerun_is_claimed_under_its_parked_fix(store: Store) -> None:
+    """gr738684: the park tag is a pause tag, and ssh_node's parent gate
+    skips a job under one — the rerun sat queued 51 and 63 minutes until
+    a person removed the tag. The minted job names the tag as the wait
+    it resolves, so the real claim takes it while the fix stays parked."""
+    from precis.workers.executors._common import claim_executor_jobs
+
+    _mint, it = _parked_release_fix(store, host="node-a")
+    _advertise(store, "node-a", {"repo_checkout": 1, "git": 1})
+    pd.run_pass(store)
+    job_id, meta = _jobs_under(store, it["fix"])[-1]
+    assert meta["serves_parent_wait"] == pd.NOREPRO_WAIT_TAG
+    assert pd.NOREPRO_WAIT_TAG in _open_tags(store, it["fix"])
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn,
+            executor="ssh_node",
+            limit=1,
+            node="node-a",
+            reserve_host_id="node-a",
+            parent_not_paused=True,
+        )
+        conn.rollback()
+    assert [row[0] for row in claimed] == [job_id]
+
+
+def _sibling_fix(store: Store, it: dict[str, int], status: str = "open") -> int:
+    """One more fix node of the iteration, as the digest mints it for a
+    second cluster of the red."""
+    (sibling,) = T.mint_release_fix_clusters(
+        store, it["digest"], it["fix"], ["tests/test_other.py"]
+    )
+    store.add_tag(
+        sibling, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+    )
+    return sibling
+
+
+def test_parked_fix_closes_when_a_sibling_cluster_landed(store: Store) -> None:
+    """gr738684 (r339): the sibling's land moved the release head past
+    the red run, so that run can no longer be rerun and the push's gate
+    run re-tests this cluster's ids. The parked node closes; no rerun
+    mints and no ask is filed."""
+    mint, it = _parked_release_fix(store)
+    sibling = _sibling_fix(store, it, "done")
+    _slice_job(store, sibling, "land_slice", "succeeded")
+    _todo_comment(store, sibling, "landed: abc1234 — fix(tests): the other cluster")
+    pd.run_pass(store)
+    assert _status(store, it["fix"]) == "done"
+    assert pd.NOREPRO_WAIT_TAG not in _open_tags(store, it["fix"])
+    assert _job_ids(store, it["fix"], "ci_rerun") == []
+    assert any(
+        f"validated: no rerun — td{sibling} landed" in c
+        for c in _comment_texts(store, it["fix"])
+    )
+    assert _rerun_asks(store, mint.root_id) == []
+
+
+def test_parked_fix_waits_while_a_sibling_cluster_may_still_land(
+    store: Store,
+) -> None:
+    """A rerun fired while a sibling is still building is superseded the
+    moment that sibling lands. The parked node waits for it; a sibling
+    that closes with nothing landed leaves the run's head in place, and
+    the rerun mints."""
+    _mint, it = _parked_release_fix(store)
+    sibling = _sibling_fix(store, it)
+    store.add_tag(sibling, Tag.open("claimed-by:lane-x"), set_by="system")
+    store.add_tag(
+        sibling, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    _slice_job(store, sibling, "run_slice", "running")
+    res = pd.run_pass(store)
+    assert _job_ids(store, it["fix"], "ci_rerun") == []
+    assert pd.NOREPRO_WAIT_TAG in _open_tags(store, it["fix"])
+    assert any(f"rerun waits — td{sibling}" in note for note in res.notes)
+    # The sibling ends "already on main: no diff": closed, nothing landed.
+    _succeed_newest(store, sibling)
+    store.remove_tag(sibling, Tag.open("claimed-by:lane-x"))
+    store.add_tag(
+        sibling, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    pd.run_pass(store)
+    assert len(_job_ids(store, it["fix"], "ci_rerun")) == 1
+
+
+def test_two_parked_clusters_share_the_one_rerun(store: Store) -> None:
+    """Both clusters of a flaky run ended non-repro. The run is rerun
+    once: the second node waits on the first's rerun, never un-parks to
+    a fresh fix session, and the green verdict closes both."""
+    mint, it = _parked_release_fix(store)
+    sibling = _sibling_fix(store, it)
+    store.add_tag(sibling, Tag.open(pd.NOREPRO_WAIT_TAG), set_by="system")
+    # Same pass as the mint, then a later pass with the job loaded.
+    for _ in range(2):
+        pd.run_pass(store)
+        assert len(_job_ids(store, it["fix"], "ci_rerun")) == 1
+        assert _job_ids(store, sibling, "ci_rerun") == []
+        assert pd.NOREPRO_WAIT_TAG in _open_tags(store, sibling)
+        assert _jobs_under(store, sibling) == []
+    _succeed_rerun(store, it["fix"])
+    pd.run_pass(store)
+    R.record_ci_verdict(store, _R_SHA, _R_RNG, "green", _R_RUN)
+    _succeed_newest(store, it["fix"])
+    pd.run_pass(store)
+    assert _status(store, it["fix"]) == "done"
+    pd.run_pass(store)
+    assert _status(store, sibling) == "done"
+    assert pd.NOREPRO_WAIT_TAG not in _open_tags(store, sibling)
+    assert _jobs_under(store, sibling) == []
+    assert _rerun_asks(store, mint.root_id) == []
+
+
 def test_accepted_rerun_mints_the_verdict_poll(store: Store) -> None:
     """A succeeded ``ci_rerun`` (the rerun request was accepted) mints
     one ``ci_verdict_poll`` carrying ``rerun_of`` — the plan's own

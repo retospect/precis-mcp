@@ -326,6 +326,57 @@ def test_parent_gate_ignores_terminal_parent(
     assert _status(store, rid) == "succeeded"
 
 
+def _serving(store: Store, job_id: int, tag: str) -> None:
+    store.stamp_ref_meta(job_id, {"serves_parent_wait": tag})
+
+
+def test_parent_gate_lets_through_the_job_the_wait_is_for(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr738684: a release fix parked on ``waiting-for:ci-rerun`` waits
+    for the ``ci_rerun`` job minted under it. The job names that tag as
+    the wait it resolves and is claimed; its sibling under the same
+    parent stays gated."""
+    _succeeds(ssh_node, monkeypatch)
+    parked = store.insert_ref(kind="todo", slug=None, title="parked", meta={})
+    store.add_tag(parked.id, Tag.parse_strict("waiting-for:ci-rerun"), set_by="system")
+    rerun = _mk_job(store, parent_id=parked.id)
+    _serving(store, rerun, "waiting-for:ci-rerun")
+    sibling = _mk_job(store, parent_id=parked.id)
+
+    ssh_node.run_ssh_node_pass(store, limit=5)
+    assert _status(store, rerun) == "succeeded"
+    assert _status(store, sibling) == "queued"
+
+
+def test_served_wait_exempts_only_that_tag(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exemption is one tag wide: a second pause tag on the parent
+    still gates the job, a different ``waiting-for:`` tag is not the one
+    it resolves, and a job cannot name ``halt`` or ``ask-user``."""
+    _succeeds(ssh_node, monkeypatch)
+
+    def parent(*tags: str) -> int:
+        ref = store.insert_ref(kind="todo", slug=None, title="p", meta={})
+        for tag in tags:
+            store.add_tag(ref.id, Tag.parse_strict(tag), set_by="system")
+        return int(ref.id)
+
+    also_asking = _mk_job(store, parent_id=parent("waiting-for:ci-rerun", "ask-user"))
+    _serving(store, also_asking, "waiting-for:ci-rerun")
+    other_wait = _mk_job(store, parent_id=parent("waiting-for:fleet"))
+    _serving(store, other_wait, "waiting-for:ci-rerun")
+    names_halt = _mk_job(store, parent_id=parent("halt:manual"))
+    _serving(store, names_halt, "halt:manual")
+    names_ask = _mk_job(store, parent_id=parent("ask-user"))
+    _serving(store, names_ask, "ask-user")
+
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 0
+    for job_id in (also_asking, other_wait, names_halt, names_ask):
+        assert _status(store, job_id) == "queued"
+
+
 # ── crash recovery: reclaim expired-lease STATUS:running jobs ─────
 
 
