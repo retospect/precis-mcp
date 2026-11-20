@@ -75,7 +75,7 @@ agent_cli_installers:
     bin: codex
     install: "npm install -g @openai/codex@{version}"
     pinnable: true
-    smoke: ["exec", "Reply with the single word OK."]
+    smoke: ["exec", "--skip-git-repo-check", "Reply with the single word OK."]
   devin:
     bin: devin
     install: "devin update"

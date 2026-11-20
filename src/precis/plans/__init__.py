@@ -34,7 +34,7 @@ Modules (each lands as its own slice under td540836):
   write (a deny-path brief or prod-graph-only work), run by
   ``gripe_dispatch`` on the gripe report and by ``plan_dispatch`` on
   each run_slice-bound todo's brief. Deny paths in structured reports
-  are judged on explicit change-intent paragraphs so symptom evidence
+  are judged on declared write sets or labelled edit requests so evidence
   does not divert builder work; graph-only checks retain the full report.
   A todo's body and newest brief keep separate deny-path scopes: body
   labels must not hide the brief's requested edit.

@@ -12,17 +12,24 @@ Meant to be reached over the Tailscale-served origin for a private feed —
 set ``PRECIS_PODCAST_BASE_URL`` to that origin so enclosure URLs are absolute
 and reachable from the phone. See :mod:`precis_web.podcast`.
 
-**These two routes authenticate themselves**, which is why
-:mod:`precis_web.auth` exempts the ``/podcast`` prefix from its blanket
-Basic gate. A podcast app subscribes once and then fetches enclosures on
-its own schedule, and support for HTTP Basic on those enclosure requests
-is inconsistent across clients — Basic alone would leave the phone
-silently not downloading. So a per-user feed token
-(``precis users feed-token <login>``) is accepted as ``?t=`` and is
-threaded into the enclosure URLs the feed emits; Basic still works for a
-browser hitting the feed directly. Both paths go through
-:func:`_require_listener`, so an unauthenticated request is rejected here
-exactly as it would have been upstream.
+**A request carrying ``?t=`` authenticates itself**, which is why
+:mod:`precis_web.auth` lets it past its blanket gate. A podcast app
+subscribes once and then fetches enclosures on its own schedule, and
+support for HTTP Basic on those enclosure requests is inconsistent
+across clients — Basic alone would leave the phone silently not
+downloading. So a per-user feed credential is accepted as ``?t=`` and is
+threaded into the enclosure URLs the feed emits. A request *without* a
+token is not exempt: the gate authenticates it (Basic or session cookie,
+with the lockout, failure log and credential cache every other route
+gets) and this module only reads the signed-in caller back (gr730562 —
+the route's own Basic fallback sat outside all of that and allowed
+unlimited password guessing). Since gr595554 that
+credential is a ``feed``-scoped client capability token — minted by
+``precis users feed-token <login>`` (prefix ``precis_feed_``, legacy
+bare tokens still authenticate by digest) or at ``/account`` (a
+``precis_cap_`` whose allow-list names ``feed``). Both paths go through
+:func:`_require_listener`, which also fails closed on an unauthenticated
+token-less request should the gate ever not have run.
 """
 
 from __future__ import annotations
@@ -31,7 +38,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
 from precis import audio_feed as podcast
-from precis.users import feed_token_digest, recall_feed_token
+from precis.users import feed_token_digest, recall_live_feed_token
 from precis_web.config import WebConfig
 from precis_web.deps import get_web_config
 
@@ -42,20 +49,15 @@ def _require_listener(request: Request, cfg: WebConfig) -> str | None:
     """Authorize a podcast request; return the feed token it presented.
 
     Returns the feed token to thread back into enclosure URLs, or
-    ``None`` when there is none to thread (auth off, or a Basic caller
-    whose token this deployment can't read back). A Basic caller gets
-    *their own* token looked up: subscribing by pasting the plain
+    ``None`` when there is none to thread (auth off, or a signed-in
+    caller whose token this deployment can't read back). A Basic or
+    cookie caller gets *their own* token looked up: subscribing by pasting the plain
     ``/podcast/feed.xml`` into an app that does send Basic would
     otherwise yield a feed whose enclosures carry no credential, and the
     episodes would silently fail to download. Raises 401/503 exactly like
     the middleware otherwise.
     """
-    from precis_web.auth import (
-        AuthError,
-        authenticate,
-        parse_basic_header,
-        require_roster,
-    )
+    from precis_web.auth import AuthError, current_user, require_roster
 
     if not cfg.auth_required:
         return None
@@ -77,25 +79,20 @@ def _require_listener(request: Request, cfg: WebConfig) -> str | None:
         # can't answer and churn.
         raise HTTPException(status_code=401, detail="invalid feed token")
 
-    creds = parse_basic_header(request.headers.get("authorization"))
-    if creds is None:
+    # No token: the middleware sent this request through the ordinary gate
+    # (Basic or session cookie, lockout, failure log) and parked the
+    # caller on the scope. Fail closed if it didn't — that can only mean
+    # the middleware and this route disagree about "has a token".
+    user = current_user(request)
+    if user is None:
         raise HTTPException(
             status_code=401,
             detail="authentication required",
             headers={"WWW-Authenticate": 'Basic realm="precis"'},
         )
-    try:
-        user = authenticate(store, creds[0], creds[1])
-    except AuthError as exc:
-        headers = (
-            {"WWW-Authenticate": 'Basic realm="precis"'} if exc.challenge else None
-        )
-        raise HTTPException(
-            status_code=exc.status, detail=exc.detail, headers=headers
-        ) from exc
     if not user.has_feed_token:
         return None
-    return recall_feed_token(user.login, store=store)
+    return recall_live_feed_token(user.login, store=store)
 
 
 def _base_url(request: Request, cfg: WebConfig) -> str:

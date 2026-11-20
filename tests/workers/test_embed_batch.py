@@ -237,6 +237,38 @@ def test_truly_empty_queue_exits_after_bounded_retries(
 # ── EmbedderUnavailable → failed(infra) ──────────────────────────────────
 
 
+@pytest.mark.parametrize("deleted_failed", [False, True])
+def test_deleted_chunk_skipped_without_aborting_batch(
+    store: Store, monkeypatch: pytest.MonkeyPatch, deleted_failed: bool
+) -> None:
+    """gr695927: body replacement must not discard the other two results."""
+    _patch_embedder(monkeypatch, make_mock_bge_m3())
+    _, chunk_ids = seed_chunks(store, ["first", "replaced", "last"])
+    real_process = EmbedHandler.process_batch
+
+    def _replace(self: EmbedHandler, rows: Any) -> list[Any]:
+        results = list(real_process(self, rows))
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM chunks WHERE chunk_id = %s", (chunk_ids[1],))
+            conn.commit()
+        if deleted_failed:
+            for i, row in enumerate(rows):
+                if row.chunk_id == chunk_ids[1]:
+                    results[i] = ValueError("embedding failed for replaced chunk")
+        return results
+
+    monkeypatch.setattr(EmbedHandler, "process_batch", _replace)
+    ctx = _mk_ctx(store, params={"limit": 3})
+    result = embed_batch._dispatch(ctx, embed_batch.SPEC)
+
+    assert result == {"embedded": 2, "failed": 0, "skipped": 1}
+    assert ctx.failures == []
+    assert ctx.statuses == []  # executor finalizes a successful dispatch
+    assert _embedding_count(store) == 2
+    assert _claim_count(store) == 0
+    assert "embedded 2 chunk(s) (0 failed, 1 skipped)" in ctx.summaries[0][1]
+
+
 class _DownEmbedder(MockEmbedder):
     def embed(self, texts: list[str]) -> list[list[float]]:
         raise EmbedderUnavailable("embedder daemon unreachable")
@@ -285,7 +317,7 @@ def test_lock_contention_on_write_retries_and_drains(
 
     def _flaky(self: EmbedHandler, conn: Any, chunk_id: int, payload: Any) -> None:
         calls["n"] += 1
-        if calls["n"] == 1:
+        if calls["n"] == 2:
             raise LockNotAvailable("lock not available")
         real_write_ok(self, conn, chunk_id, payload)
 
@@ -297,6 +329,7 @@ def test_lock_contention_on_write_retries_and_drains(
     assert ctx.failures == []
     assert _embedding_count(store) == 3
     assert _claim_count(store) == 0
+    assert "embedded 3 chunk(s) (0 failed, 0 skipped)" in ctx.summaries[0][1]
 
 
 def test_lock_contention_exhausted_fails_infra(

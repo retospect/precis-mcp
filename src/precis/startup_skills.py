@@ -1,14 +1,15 @@
 """Resolve ``PRECIS_STARTUP_SKILLS`` into a pinned-skill verdict.
 
 A pure-functional shim over the skill loader: parse the env var,
-look up each slug, drop unknowns (with a notice), cap the cumulative
-body size, and produce a :class:`Resolution` the server renders in
-the cold-start banner.
+look up each slug, drop unknowns (with a notice), and produce a
+:class:`Resolution` the server renders in the cold-start banner.
 
-The wiring is intentionally one-shot at boot. Cap behaviour is
-**drop-tail** (preserve operator-stated priority order); cap == 0
-disables the cap entirely (operator opt-out, documented as
-not-recommended in ``PrecisConfig.startup_skills_cap_kb``).
+Pinning is **not** limited by skill body size (gr681315): the banner
+prints names only — bodies are fetched on demand via ``get`` or
+``prompts/get`` — so a byte cap would limit a cost nobody pays and
+silently drop operator-stated pins (the six-skill asa default exceeds
+50 KB before the third slug). If a future path inlines pinned bodies
+into the banner, the cap belongs there, at the inlining site.
 
 No I/O beyond the skill loader; safe to call from
 :func:`precis.server._build_instructions` on every banner refresh
@@ -41,16 +42,11 @@ class Resolution:
     parametrisations) without surprises.
     """
 
-    #: Slugs that survived parsing, lookup, and the cap. Order
-    #: matches the operator-stated order in the env var.
+    #: Known slugs that pass kind gating, in the configured order.
     pinned: tuple[str, ...] = ()
     #: Slugs that didn't resolve to a known skill (typo, removed
     #: skill, third-party skill from a sibling deployment).
     unknown: tuple[str, ...] = ()
-    #: Slugs dropped because the cumulative body size would have
-    #: exceeded :attr:`cap_kb`. Drop-tail: the first slug that
-    #: trips the cap and every slug after it lands here.
-    truncated: tuple[str, ...] = ()
     #: Slugs whose subject kind isn't loaded on this server
     #: (prohibited via ``PRECIS_KINDS_DISABLED``, missing resources,
     #: or otherwise gated out by :mod:`precis.kind_gate`). The skill
@@ -58,19 +54,13 @@ class Resolution:
     #: agent tries to call the kind, so we surface a warning notice
     #: rather than silently teaching unusable knowledge.
     kind_unavailable: tuple[str, ...] = ()
-    #: The cap that was in force at resolution time, in KB. Echoed
-    #: into the banner notice so an operator can correlate the
-    #: trimming with their config without grepping their .env.
-    cap_kb: int = 0
 
 
 def parse(value: str | None) -> list[str]:
     """Parse a comma-separated env value into a deduped ordered list.
 
     Whitespace around commas is tolerated. Empty entries (``a,,b``)
-    are dropped. Duplicates after the first occurrence are dropped
-    so the operator's ordering survives — useful for the drop-tail
-    cap behaviour.
+    are dropped. Each slug keeps its first position in the configured order.
     """
     if not value:
         return []
@@ -88,16 +78,15 @@ def parse(value: str | None) -> list[str]:
 def resolve(
     slugs: list[str],
     *,
-    cap_kb: int = 50,
     unavailable_kinds: frozenset[str] = frozenset(),
     loader: Callable[[str], str | None] = _load_skill,
     known: Callable[[], list[str]] = _list_skills,
 ) -> Resolution:
-    """Look up each slug, sum body bytes, cap the tail.
+    """Look up each slug and bucket unknowns / kind-gated skills.
 
-    ``cap_kb <= 0`` disables the cap. ``loader`` / ``known`` are
-    injectable so tests can stand a fake catalogue without touching
-    the package data.
+    ``loader`` / ``known`` are injectable so tests can stand a fake
+    catalogue without touching the package data. No size accounting:
+    see the module docstring for why body bytes are irrelevant here.
 
     ``unavailable_kinds`` is the set of kinds gated out by
     :mod:`precis.kind_gate` (typically derived from
@@ -115,45 +104,22 @@ def resolve(
     known_set = set(known())
     pinned: list[str] = []
     unknown: list[str] = []
-    truncated: list[str] = []
     kind_unavailable: list[str] = []
-    cap_bytes = cap_kb * 1024 if cap_kb > 0 else None
-    used = 0
-    over_cap = False
     for slug in slugs:
         if slug not in known_set:
             unknown.append(slug)
             continue
-        # Once we've tripped the cap, every remaining valid slug
-        # joins ``truncated`` — we don't backfill from later
-        # smaller entries because that would silently override
-        # operator-stated priority order.
-        if over_cap:
-            truncated.append(slug)
-            continue
         body = loader(slug) or ""
-        size = len(body.encode("utf-8"))
-        if cap_bytes is not None and used + size > cap_bytes:
-            over_cap = True
-            truncated.append(slug)
-            continue
         if unavailable_kinds:
             referenced = _kinds_referenced_by_skill(slug, parse_frontmatter(body))
             if any(k in unavailable_kinds for k in referenced):
                 kind_unavailable.append(slug)
                 continue
-        used += size
         pinned.append(slug)
     if unknown:
         log.warning(
             "PRECIS_STARTUP_SKILLS skipped unknown skill ids: %s",
             ", ".join(unknown),
-        )
-    if truncated:
-        log.warning(
-            "PRECIS_STARTUP_SKILLS truncated to cap (%d KB): omitted %s",
-            cap_kb,
-            ", ".join(truncated),
         )
     if kind_unavailable:
         log.warning(
@@ -163,9 +129,7 @@ def resolve(
     return Resolution(
         pinned=tuple(pinned),
         unknown=tuple(unknown),
-        truncated=tuple(truncated),
         kind_unavailable=tuple(kind_unavailable),
-        cap_kb=cap_kb,
     )
 
 
@@ -182,13 +146,7 @@ def format_banner(result: Resolution) -> str:
     if result.pinned:
         lines.append("Pinned skills: " + ", ".join(result.pinned) + ".")
     if result.unknown:
-        lines.append("\u26a0 unknown skill ids: " + ", ".join(result.unknown) + ".")
-    if result.truncated:
-        lines.append(
-            f"\u26a0 truncated ({result.cap_kb} KB cap): "
-            + ", ".join(result.truncated)
-            + "."
-        )
+        lines.append("⚠ unknown skill ids: " + ", ".join(result.unknown) + ".")
     if result.kind_unavailable:
         lines.append(
             "\u26a0 skills for unavailable kinds: "

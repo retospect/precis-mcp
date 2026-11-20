@@ -175,8 +175,9 @@ source paragraph. The bar is therefore stricter than for an inline citation.
 
 ## What makes a mintable claim — soft flags and claim sorts
 
-The extractor returns a `type` per claim (`measurement`, `definition`,
-`capability`, `mechanism`, `landscape`); mint persists it on the hub.
+The extractor returns a `type` per claim (`measurement`, `calculation`,
+`definition`, `capability`, `mechanism`, `landscape`); mint persists it
+on the hub.
 `landscape` means the material is the class the sentence names, not the
 paper's subject: "Graphene-fullerene composites are typically made by
 mixing", not "we mixed C60 with graphene". Landscape hubs are
@@ -195,11 +196,11 @@ consensus-verified, never widened and not publishable as nanopubs — see
 - **Grounding depth.** One supporter is mintable; definitions and
   landscape/survey claims also want a secondary source (a review) —
   `hub_refine` attaches corroborators when enabled. Abstract-only
-  grounding is fine for a definition/existence claim; a measurement or
-  mechanism claim grounded only on an abstract/intro chunk also wants
-  the body passage carrying its specifics attached — `hub_refine`'s job
-  when enabled, else `link(kind='finding', rel='corroborates',
-  target='pc<id>')` manually.
+  grounding is fine for a definition/existence claim; a measurement,
+  calculation or mechanism claim grounded only on an abstract/intro
+  chunk also wants the body passage carrying its specifics attached —
+  `hub_refine`'s job when enabled, else `link(kind='finding',
+  rel='corroborates', target='pc<id>')` manually.
 - **Notation.** Claim sentences render as plain text (list views, page
   titles, MCP output) — write formulas with UTF-8 sub/superscripts and
   symbols (`C₆₀`, `g-C₃N₄`, `≈10⁴ cm² V⁻¹ s⁻¹`, `μB`), never TeX
@@ -226,6 +227,7 @@ consensus-verified, never widened and not publishable as nanopubs — see
 | Sort | Example | Bar |
 |------|---------|-----|
 | Measurement | "Single-wall carbon nanocones were observed with opening angles of ≈19°, 39°, 60°, 85°, and 113°." | Carry the numbers; one primary source suffices. |
+| Calculation | "DFT with PBE predicts an adsorption energy of −0.74 eV for C60 on graphene." | Keep method and model in claim and scope; sort by how the result was obtained. |
 | Definition | "The term 'nanobud' refers to structures in which fullerenes are directly bonded to a carbon nanotube or graphene surface." | Coining paper as originator; wants a review as corroborator. |
 | Capability | "Graphene–fullerene composites can be formed by physical mixing, without covalent attachment." | Name the conditions or the contrast, else vacuous. |
 | Mechanism | "Charge transfer at the C60–nanotube junction alters field-emission behavior." | Name the mechanism, not "plays an important role". |

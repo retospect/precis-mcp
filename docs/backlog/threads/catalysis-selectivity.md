@@ -396,10 +396,10 @@ the dated detail is in `git log` and the owning items):**
 - **chemistry** owns the catpath engine's health and output contract;
   this thread changes the network content and adds link fields. Engine
   edits here bump the catpath version through chemistry's
-  `catpath-wheel-version-reuse.md` path, never a second wheel.
-- **plugin-split** owns `pathway-presentation-shared-module.md`; if it
+  `catpath-wheel-version-reuse (me690566)` path, never a second wheel.
+- **plugin-split** owns `pathway-presentation-shared-module (me692580)`; if it
   lands before Do-next 3, the diagram change goes into it.
-- `pathway-viewer-ux-batch.md` item 3 (where H₂O leaves) is subsumed by
+- `pathway-viewer-ux-batch (me692650)` item 3 (where H₂O leaves) is subsumed by
   Do-next 3; the rest of that item stays with chemistry.
 - **roadmap-quest** owns promotion dispatch; Do-next 6 changes the
   promotion rule; re-dispatch and infra retries now keep each candidate's

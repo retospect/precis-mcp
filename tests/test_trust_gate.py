@@ -319,14 +319,11 @@ def test_assumed_tol_when_records_lack_stamp() -> None:
 
 
 def test_single_seed_vacuous_pass_is_labelled() -> None:
-    """gr517804 ruling: a 1-seed neb run is no longer a vacuous pass — the
-    seed-independence gate blocks it, and the footer advises a rerun with
-    ≥2 fresh seeds. The endpoint_agreement row still reads not-run, never
-    pass."""
+    """gr593137: verified single-seed evidence is WARN, with its reason."""
     records = _records([0], with_detachment=False)
     meta = _meta(_results(records, [0]))
     body = trust_toon(meta, pw_handle="pw1")
-    assert "verdict: BLOCKED" in body
+    assert "verdict: WARN ≈" in body
     assert "seeds:1-independent" in body
     ea_line = next(
         ln for ln in body.splitlines() if ln.startswith("endpoint_agreement")
@@ -653,7 +650,7 @@ def test_render_blocked_header_and_sections() -> None:
     )
     # gr593139: the distinct-minimum endpoint fail demotes — only the
     # detachment still counts as a fatal on-route fail
-    assert "verdict: BLOCKED · 1 fatal on-route fails" in body
+    assert "verdict: FAIL · 1 fatal on-route fails" in body
     assert "replay agrees with stored trust_summary" in body
     assert "## endpoint agreement" in body
     assert "gate · pw515950 · candidate st336035" in body
@@ -680,7 +677,7 @@ def test_trust_toon_two_seed_pass_renders_seed_row_pass() -> None:
             [2, 3],
             [1],
             [1],
-            "BLOCKED",
+            "WARN",
             "(requested [2,3], executed [1]); dispatch dropped or substituted seeds",
             id="substituted-single-seed",
         ),
@@ -696,7 +693,7 @@ def test_trust_toon_two_seed_pass_renders_seed_row_pass() -> None:
             [2, 3],
             [2, 3],
             [2],
-            "BLOCKED",
+            "WARN",
             "(requested [2,3], executed [2,3])",
             id="started-is-not-usable",
         ),
@@ -752,7 +749,7 @@ def test_trust_toon_reports_seed_dispatch_without_changing_independence(
     assert f"verdict: {verdict}" in verdict_line
     assert note in verdict_line
     assert note in seed_line
-    if verdict == "BLOCKED":
+    if verdict == "WARN":  # gr593137: verified single-seed evidence is WARN
         assert f"seeds:1-independent {note}" in verdict_line
         assert "fail" in seed_line
     else:
@@ -790,7 +787,7 @@ def test_trust_toon_union_shortfall_blocks_and_suggests_fresh() -> None:
     records = _records([0], hi_states=(), with_detachment=False)
     meta = _meta(_results(records, [0]))
     body = trust_toon(meta, pw_handle="pw515950", pooled_seeds={0})
-    assert "verdict: BLOCKED" in body
+    assert "verdict: WARN ≈" in body
     assert "seeds:1-independent" in body
     nxt = next(ln for ln in body.splitlines() if ln.startswith("next:"))
     assert "'seeds': [0, 1, 2]" in nxt
@@ -806,7 +803,7 @@ def test_trust_toon_unknowable_seed_set_is_blocked() -> None:
     del results["seeds"]
     body = trust_toon(_meta(results), pw_handle="pw1")
     assert "seeds:unknown" in body
-    assert "verdict: BLOCKED" in body
+    assert "verdict: FAIL" in body
     row = next(ln for ln in body.splitlines() if ln.startswith("seed independence"))
     assert "fail" in row and "unknowable" in row
 
@@ -838,7 +835,7 @@ def test_trust_toon_stale_engine_row_blocks(
     monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.40.0")
     records = _records([0, 1], hi_states=(), with_detachment=False)
     body = trust_toon(_meta(_results(records, [0, 1])), pw_handle="pw1")
-    assert "verdict: BLOCKED" in body
+    assert "verdict: WARN ≈" in body
     assert "blocked_by: engine:stale" in body
     row = next(ln for ln in body.splitlines() if ln.startswith("engine staleness"))
     assert "fail" in row and "0.39.0" in row and "0.40.0" in row
@@ -891,7 +888,7 @@ def test_kinetics_recompute_does_not_refresh_barrier_evidence(
     meta = _meta(_results(records, [0, 1]))
     meta["results"]["kinetics_v2"] = {"engine_version": "0.50.0", "tof_mf": 1.0}
     body = trust_toon(meta, pw_handle="pw1")
-    assert "verdict: BLOCKED" in body and "blocked_by: engine:stale" in body
+    assert "verdict: WARN ≈" in body and "blocked_by: engine:stale" in body
 
 
 def _ident(
@@ -1538,7 +1535,7 @@ def test_trust_toon_union_disagree_blocks() -> None:
         _ident("P", 1, -10.0),
     ]
     body = trust_toon(meta, pw_handle="pw1", pooled_seeds={1}, pooled_identity=sib)
-    assert "verdict: BLOCKED" in body
+    assert "verdict: FAIL" in body
     assert "endpoint:union-disagree" in body
     ea_line = next(
         ln for ln in body.splitlines() if ln.startswith("endpoint_agreement")
@@ -1567,7 +1564,7 @@ def test_trust_toon_union_not_run_blocks() -> None:
     records = _records([0], hi_states=(), with_detachment=False)
     meta = _meta(_results(records, [0]))
     body = trust_toon(meta, pw_handle="pw1", pooled_seeds={1}, pooled_identity=[])
-    assert "verdict: BLOCKED" in body
+    assert "verdict: FAIL" in body
     assert "endpoint:union-not-run" in body
 
 
@@ -1856,3 +1853,21 @@ def test_compare_toon_renders_gate_column_and_legends() -> None:
     assert "n/a" in out  # no gate supplied → n/a, never a blank
     assert "NOT the trust gate" in out
     assert "view='trust'" in out
+
+
+@pytest.mark.parametrize("refusal", ["lookup", "stored"])
+def test_trust_toon_warning_cannot_override_refusal(refusal: str) -> None:
+    """Caught WARN overwriting an unavailable summary or sibling lookup."""
+    meta = _meta(_results(_records([0], with_detachment=False), [0]))
+    if refusal == "stored":
+        meta["results"]["trust_summary"]["barrier"]["available"] = False
+    body = trust_toon(meta, pw_handle="pw1", seed_lookup_failed=refusal == "lookup")
+    assert "verdict: FAIL" in body
+    assert "verdict: WARN" not in body
+
+
+def test_trust_toon_pass_preserves_vacuous_note() -> None:
+    """A strict PASS retains the missing endpoint-comparison explanation."""
+    meta = _meta(_results(_records([0], with_detachment=False), [0]), tier="verify")
+    body = trust_toon(meta, pw_handle="pw1")
+    assert "verdict: PASS (vacuous: endpoint agreement not run" in body

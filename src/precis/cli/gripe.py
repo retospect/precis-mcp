@@ -947,3 +947,94 @@ def _iso(value: Any) -> str | None:
 
 
 __all__ = ["add_parser", "run"]
+
+
+def add_origin_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    """Register the non-deprecated provenance maintenance command."""
+    parser = sub.add_parser(
+        "gripe", help="Maintain gripe origin-class and goal tag classifications."
+    )
+    commands = parser.add_subparsers(dest="gripe_command", required=True)
+    backfill = commands.add_parser(
+        "origin-backfill",
+        help="Backfill origin-class tags; --goal runs the goal: maintenance pass.",
+    )
+    backfill.add_argument("--apply", action="store_true")
+    backfill.add_argument("--status", default="done")
+    backfill.add_argument(
+        "--goal",
+        action="store_true",
+        help="Stamp goal:<value> from thread:/cluster: tags instead of origin-class.",
+    )
+    backfill.add_argument("--database-url", default=None)
+    return parser
+
+
+def run_origin(args: argparse.Namespace) -> None:
+    """Report a provenance backfill, writing only with --apply."""
+    from precis.config import load_config
+    from precis.store import Store
+
+    store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+    bind_process_store(store)
+    try:
+        print(
+            origin_backfill(store, apply=args.apply, status=args.status, goal=args.goal)
+        )
+    finally:
+        store.close()
+
+
+def origin_backfill(
+    store: Any, *, apply: bool = False, status: str = "done", goal: bool = False
+) -> str:
+    """Classify live unstamped gripes under row locks; dry-run writes nothing.
+
+    ``goal=True`` runs the gr592749 pass instead: ``goal:<value>`` from
+    the thread:/cluster: glob mapping (``goal_of``); every gripe gets a
+    value — unmapped → ``other`` — so nothing is unclassifiable."""
+    from precis.store.types import Tag
+    from precis.utils.gripe_goal import GOALS, goal_of
+    from precis.utils.gripe_origin_class import ORIGINS, classify_origin
+
+    axis = "goal" if goal else "origin-class"
+    counts = dict.fromkeys(GOALS if goal else ORIGINS, 0)
+    unknown: list[str] = []
+    with store.pool.connection() as conn, conn.transaction():
+        rows = conn.execute(
+            "SELECT r.ref_id, r.title, r.meta FROM refs r "
+            "WHERE r.kind = %s AND r.retired_at IS NULL "
+            "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = r.ref_id AND t.namespace = %s AND t.value = %s) "
+            "ORDER BY r.ref_id FOR UPDATE",
+            ("gripe", "STATUS", status),
+        ).fetchall()
+        for gid, title, meta in rows:
+            pairs = conn.execute(
+                "SELECT t.namespace, t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "WHERE rt.ref_id = %s",
+                (gid,),
+            ).fetchall()
+            tags = [
+                value if ns in {"OPEN", "FLAG"} else f"{ns}:{value}"
+                for ns, value in pairs
+            ]
+            if any(t.startswith(f"{axis}:") for t in tags):
+                continue
+            value = (
+                goal_of(tags)
+                if goal
+                else classify_origin(tags, title or "", (meta or {}).get("filed_by"))
+            )
+            if value is None:
+                unknown.append(f"gr{gid}")
+                continue
+            counts[value] += 1
+            if apply:
+                store.add_tag(
+                    gid, Tag.open(f"{axis}:{value}"), set_by="system", conn=conn
+                )
+    mode = "applied" if apply else "dry-run"
+    if goal:
+        return f"{mode} goal: {counts}"
+    return f"{mode}: {counts}; unclassified ({len(unknown)}): {chr(32).join(unknown)}"

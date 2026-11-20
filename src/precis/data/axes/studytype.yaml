@@ -1,16 +1,5 @@
-# v2 vocabulary (still version: 1 — never applied, pre-Round-0 edits
-# are free). Refactored to a pure *epistemic mode* axis:
-# how does the paper know what it claims? The old theory-dft/theory-md
-# split was method flavor, which now lives in the chunk-level method:
-# axis; the old `characterization` value is absorbed by the two
-# experimental values (what you measure is not a separate mode from
-# measuring). The new ensemble vs single-entity split is a distinction
-# the old vocabulary could not express (a SAM-film conductivity study
-# and a break-junction experiment both study molecular systems but are
-# epistemically different papers).
-
 id: studytype
-version: 1
+version: 2
 question: "How does this paper know what it claims — its primary epistemic mode?"
 values:
   [conceptual, computational, experimental-ensemble,
@@ -49,6 +38,14 @@ prompt: |
   {"value": "<one>", "confidence": <0..1>,
    "rationale": "<one sentence; required if confidence < 0.7>"}
 
+  Trace each headline result to its source. MD trajectories, Monte Carlo
+  samples (including grand-canonical ensembles), and DFT predictions are
+  computational evidence. Simulated averages, isotherms, and spectra can
+  look like physical measurements; classify them by how they were obtained.
+  Comparison with published measurements validates a simulation but does
+  not turn it into a physical experiment. Structures built or optimized
+  in silico and predictions of synthesizability do not establish synthesis.
+
   Measurement as the headline → one of the experimental values; use
   "synthesis" when making something is the headline even if
   measurement also happens. Experiment with supporting DFT is the
@@ -57,3 +54,15 @@ prompt: |
   Statistics OVER many single-entity measurements (e.g. thousands of
   break-junction traces) is still "experimental-single-entity" — the
   test is what one measurement resolves, not how many are taken.
+
+examples:
+  - text: "Molecular dynamics trajectories yield an ensemble-average diffusion coefficient."
+    value: computational
+  - text: "Grand-canonical Monte Carlo predicts adsorption isotherms that agree with published measurements."
+    value: computational
+  - text: "Density functional theory predicts stable structures and proposes routes for their synthesis."
+    value: computational
+  - text: "We measure adsorption isotherms on powders and use DFT to interpret the measured trends."
+    value: experimental-ensemble
+  - text: "We prepare a new compound and confirm its structure by diffraction."
+    value: synthesis

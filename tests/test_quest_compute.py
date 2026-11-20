@@ -1922,18 +1922,18 @@ class TestHarvest:
     def test_ordinary_infra_aggregate_failure_gets_no_amnesty(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Budget spent + a real infra failure: no re-dispatch (gripe-filed
-        dedup path), counter untouched."""
+        """An ordinary infra failure obeys the mechanical budget."""
         qid, sid, calls = self._off_lane_harness(
             store,
             monkeypatch,
             {"failure_class": "infra", "error": "OOM: killed by the kernel"},
         )
+        store.stamp_ref_meta(qid, {"fidelity_mechanical_gpu_h_budget": 0})
         step = compute_mod.harvest_measures(store, qid, hub=object())
         assert calls == []
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta.get("quest_autocatpath_infra_retries") == 2
-        assert not any("amnesty" in n for n in step.notes)
+        assert any("GPU-h budget" in n for n in step.notes)
 
     def test_failed_autocatpath_never_rules_out_candidate(self, store: Any) -> None:
         """A failed legacy ``autocatpath_explore`` (retired pre-fan-out shape,
@@ -2424,6 +2424,7 @@ class TestHarvest:
 
         def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
             calls.append(structure_ref_id)
+            _kw["minted_by_node"]["gpu"] = 1
             return "autocatpath[ml]"
 
         class _FakeGripeHandler:
@@ -2648,7 +2649,7 @@ class TestHarvest:
         assert calls == [sid]
         assert gripes == []
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
-        assert meta.get("quest_seed_infra_retries") == 1
+        assert meta.get("barrier_mechanical_reruns") == 1
         assert not any("timed out" in n for n in step.notes)
 
     @pytest.mark.parametrize(
@@ -2701,6 +2702,7 @@ class TestHarvest:
 
         def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
             calls.append(structure_ref_id)
+            _kw["minted_by_node"]["gpu"] = 1
             return "autocatpath[ml]"
 
         class _FakeGripeHandler:
@@ -2720,14 +2722,14 @@ class TestHarvest:
         assert calls == [sid]
         assert gripes == []
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
-        assert meta.get("quest_seed_infra_retries") == 1
+        assert meta.get("barrier_mechanical_reruns") == 1
         assert "quest_seed_timeout_noted" not in meta
         assert not any("timed out" in n for n in step.notes)
 
     def test_non_timeout_failed_seed_still_retries_with_pinned_wall(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """failure_class='infra' at an unraised wall: the old retry path."""
+        """failure_class='infra' at an unraised wall: the bounded mechanical retry path."""
         qid = self._reaction_quest(store)
         sid = compute_mod.ensure_candidate(
             store, qid, {"name": "Fe", "structure": _SPEC}
@@ -2738,13 +2740,14 @@ class TestHarvest:
 
         def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
             calls.append(structure_ref_id)
+            _kw["minted_by_node"]["gpu"] = 1
             return "autocatpath[ml]"
 
         monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_dispatch)
         compute_mod.harvest_measures(store, qid, hub=object())
         assert calls == [sid]
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
-        assert meta.get("quest_seed_infra_retries") == 1
+        assert meta.get("barrier_mechanical_reruns") == 1
         assert "quest_seed_timeout_noted" not in meta
 
     def test_stuck_seed_with_hub_retries_once_then_gripes_on_recurrence(

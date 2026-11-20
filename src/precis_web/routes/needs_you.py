@@ -17,8 +17,9 @@ Folds the two queues where *you* must act into one landing:
   ``/papers/triage``.
 
 The chunkless paper-stub *fetch* backlog is intentionally NOT here —
-the fetcher works it automatically, so it lives under Browse →
-``/papers-needed``, not in the "needs you" queue. Agent-proposed hypotheses
+the fetcher works it automatically, so it lives in Drive's
+``state=stub`` queue (the folded ``/papers-needed`` list), not in the
+"needs you" queue. Agent-proposed hypotheses
 (``hypothesis-proposed`` findings) are likewise NOT here, nor in the badge
 (Reto 2026-10-11) — they live on the claim workbench (``/nanopub``).
 

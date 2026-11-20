@@ -579,17 +579,17 @@ def test_job_budget_fits_the_cap() -> None:
     gate = 2 + _PLAN.SHARDS
     assert gate == 12
     soak_parallel = 5
-    # plan + lint + coverage-db + test-other (2 Pythons x 2 macOS shards)
-    # + test-linux (2 Pythons x 10 shards) = 27.
-    nightly = 1 + 1 + 1 + 2 * 2 + 2 * _PLAN.SHARDS
-    assert nightly == 27
+    # plan + lint + coverage-db + long-boards + test-other (2 Pythons x
+    # 2 macOS shards) + test-linux (2 Pythons x 10 shards) = 28.
+    nightly = 1 + 1 + 1 + 1 + 2 * 2 + 2 * _PLAN.SHARDS
+    assert nightly == 28
     # A main push runs the lint_only lane = plan + lint only; grounded by
     # test-linux's `if` skipping lint_only rather than a bare literal.
     assert "needs.plan.outputs.lint_only != 'true'" in WORKFLOW
     # Two concurrent gates with both soaks live: 2 x (12 + 5) = 34.
     assert 2 * (gate + soak_parallel) == 34 <= CAP
-    # nightly (27) + one gate's blocking leg (12) = 39.
-    assert nightly + gate == 39 <= CAP
+    # nightly (28) + one gate's blocking leg (12) = 40: exactly the cap.
+    assert nightly + gate == 40 <= CAP
     # Three gates' blocking legs at once is the max; a fourth queues.
     assert 3 * gate <= CAP < 4 * gate
 

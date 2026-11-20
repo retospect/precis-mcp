@@ -9,6 +9,7 @@ Uses the same ``store`` fixture every DB-backed handler test uses (auto
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import numpy as np
 import pytest
@@ -1844,3 +1845,35 @@ def test_structure_search_row_shows_generator_params(structure, store):
     body = structure.search(q="adsorption screening", mode="lexical").body
     assert "hexfold_scene" in body
     assert "periods=8" in body and "seams=++++++" in body
+
+
+def test_neighborhood_exposes_vacancy_labels_and_periodic_coordinates(
+    structure: Any,
+) -> None:
+    """gr700540: choose a Pd vacancy adjacent to Rh across the cell boundary."""
+    structure.put(
+        id="rh_pd_boundary",
+        text=json.dumps(
+            {
+                "cell": {"a": 10.0, "b": 10.0, "c": 10.0, "pbc": [True, True, False]},
+                "ops": [
+                    {"op": "add_atom", "element": "Rh", "frac": [0.05, 0.5, 0.5]},
+                    {"op": "add_atom", "element": "Pd", "frac": [0.79, 0.5, 0.5]},
+                    {"op": "add_atom", "element": "Pd", "frac": [0.5, 0.5, 0.5]},
+                ],
+            }
+        ),
+    )
+    summary = structure.get(id="rh_pd_boundary").body
+    assert "view='neighborhood'" in summary
+    assert "coordinates" in summary
+    body = structure.get(
+        id="rh_pd_boundary", view="neighborhood", args={"atom": "aRh1", "radius": 3.0}
+    ).body
+    assert "aPd1" in body
+    assert "aPd2" not in body
+    assert "2.600" in body
+    assert "-1,0,0" in body
+    assert "0.790000,0.500000,0.500000" in body
+    assert "-2.100000,5.000000,5.000000" in body
+    assert "minimum image" in body

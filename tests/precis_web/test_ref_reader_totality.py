@@ -103,6 +103,16 @@ def test_registered_and_drive_kinds_have_readers(store, tmp_path):
                 assert pivot.status_code == 200
                 assert f'href="/refs/{kind}/{ref.id}"' not in pivot.text
                 continue
+            if kind == "tag":
+                # No per-ref reader and no Drive row either: the kind's
+                # home is the drive's own ``k=tag`` listing (gr636493),
+                # which renders the tags table, not refs — a ``tag``
+                # kind ref is a totality probe, not a real entity.
+                assert response.status_code == 303
+                assert expected == "/drive?k=tag"
+                assert response.headers["location"] == expected
+                assert client.get(expected).status_code == 200
+                continue
             assert response.status_code in (200, 303), (kind, response.text[:300])
             if expected != f"/refs/{kind}/{ref.id}":
                 assert response.status_code == 303

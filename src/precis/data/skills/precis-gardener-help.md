@@ -53,6 +53,11 @@ run ids) for a judge to verify.
   thread shape, anchor rot and more). Null replacement text needs
   evaluation; it is never a deletion instruction. Detail:
   [[precis-gardener-memory-help]].
+- **memory-review** — proposal-only read-only checks on live memory bodies:
+  review debt (`review_due`), title shape (`title_shape`), undated absence
+  claims (`negative_undated`) and notation-canon violations (`notation` —
+  one anchored fix per memory per pass, skipping quoted spans, code and
+  math). Detail: [[precis-gardener-memory-help]].
 - **relink** — a `taxon` reaching no start node gets a `specialises`-edge
   proposal naming the nearest start node as candidate parent, only when that
   parent sits past the `+recall` distance floor: inside it the index already

@@ -18,24 +18,31 @@ scope: write
 
 # precis-edit-help — anchored region edits across file kinds
 
+Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
+
 `edit` rewrites a region of an existing file. The grammar is identical
 across `markdown`, `plaintext`, `tex`, and `python`; only the
 post-edit validation differs.
 
 **`mode=` varies by kind — this page's four-mode grammar
 (`find-replace`/`insert`/`append`/`replace`) is the file-kind shape
-only.** `quest` supports `edit` but accepts only
-`mode='replace'` (pass it explicitly — the top-level default
+only.** `quest` accepts `replace`, `pause`, and `resume`
+(pass `replace` explicitly for content edits — the top-level default
 `mode='find-replace'` is rejected there); see `precis-quest-help`.
 `todo` takes `replace` (title/body) plus `find-replace` / `insert` on its
 details body (literal `find=`, unique unless `match=`, `dry_run=True`
 previews; comments are untouched); see `precis-todo-tree-help`. `memory` takes `replace` plus the `find-replace` /
 `insert` anchors on its body — and `ops=[{find,text,...}]`, several
 anchored ops applied in order in one transaction, a bad op refusing the
-whole call as `ops[i]` (`precis-memory-help`). Most other kinds either
-ignore `mode=` (metadata-patch edits like `paper`/`draft`/`structure`)
+whole call as `ops[i]` (`precis-memory-help`). `finding` takes `replace`
+/ `find-replace`; `fleet` and `learning` take `replace`. Most other
+kinds either ignore `mode=` (metadata-patch edits on `paper`/`structure`)
 or don't support `edit` at all. A wrong `mode=` raises `BadInput`
-naming that kind's actual accepted set.
+naming that kind's actual accepted set. Draft uses `replace-content` to
+rewrite a block's own content while keeping its children, and `insert`
+(needs `find=`, `text=`, `where=`; refused without `find=`) to splice text
+next to an anchor inside a chunk — to add a new paragraph use
+`put(kind='draft', ..., args={'at': {'before': 'dc<id>'}})`.
 
 Address the chunk by the **handle** get/search hands you — `mc<id>` for a
 markdown chunk, `lc<id>` plaintext, `xc<id>` tex — and paste it straight into
@@ -59,13 +66,25 @@ lands (relocated exact-hash run). Omit it to edit regardless.
 
 ## Select modes and fields for non-file edits
 
-todo: `replace` accepts `text=` (title) and/or `body=` (details).
-quest: `replace` only — the declared default `find-replace` is rejected
-there, so pass `replace` explicitly; metadata-patch kinds
-(paper/draft/structure) ignore `mode=` entirely. memory: `replace`,
-`find-replace`, `insert`, or `ops=[{find,text,...}]` for several
-anchored ops in one call. Structural or metadata ops use their
-kind-specific fields.
+| Kind | Accepted edit modes |
+| --- | --- |
+| markdown | `find-replace`, `insert`, `append`, `replace` |
+| plaintext | `find-replace`, `insert`, `append`, `replace` |
+| tex | `find-replace`, `insert`, `append`, `replace` |
+| python | `find-replace`, `insert`, `append`, `replace` |
+| todo | `replace`, `find-replace`, `insert`, `delete`, `gate` |
+| quest | `replace`, `pause`, `resume` |
+| memory | `replace`, `find-replace`, `insert`, `append`, `delete` |
+| finding | `replace`, `find-replace` |
+| fleet | `replace` |
+| learning | `replace` |
+
+Todo's `replace` accepts `text=` (title) and/or `body=` (details).
+Pass quest's `replace` explicitly for content edits; its default
+`find-replace` is rejected. Memory also takes `ops=[{find,text,...}]`.
+Draft's `replace-content` is handled within the handler rather than
+declared in `edit_modes`; its other edits use kind-specific fields.
+Paper and structure ignore `mode=` for metadata patches.
 
 ## Change one token, cite, or literal in a file
 ## Replace a string somewhere I know exists
@@ -103,11 +122,14 @@ edit(
 )
 ```
 
-Pass `mode='delete'` with `find=` only to delete the match — `text=` is
-not given. (`text=''` is also accepted where the client passes it
-through; some clients mangle an empty string before the call reaches
-the server, which is why `mode='delete'` exists.) The `delete` verb is
-for whole files and whole chunks — not lines or tokens.
+On a file kind, delete the match by passing an empty replacement:
+`mode='find-replace', find=…, text=''`. (`mode='delete'` with `find=`
+only is the memory/todo form — some clients mangle an empty string
+before the call reaches the server, which is why that mode exists
+there — and a file kind's edit refuses it.) The `delete` verb removes
+a whole chunk, a `~L<a>-<b>` line range, or a python symbol; a whole
+file needs `confirm='delete-file-<slug>'`. A line or token inside a
+chunk is `edit`, not `delete` — see [[precis-delete-help]].
 
 ## Rewrite a whole chunk, function, or paragraph
 ## Replace an entire region by its handle
@@ -304,7 +326,7 @@ Per-kind gates:
 | Create a new file | `put(kind='<kind>', id='<slug>', text='...', mode='create')` |
 | Rewrite a region of an existing file | `edit` |
 | Remove a whole file or chunk | `delete` |
-| Remove one line or token | `edit` with `mode='delete', find=...` (or `text=''` where the client passes it through) |
+| Remove one line or token | `edit` — file kinds: `mode='find-replace', find=…, text=''`; memory/todo: `mode='delete', find=…` |
 
 `put` on a file kind is creation-only; use `edit` to modify.
 

@@ -325,7 +325,6 @@ _REF_PASS_PRIORITY: dict[str, PassPriority] = {
     "_card_describe_pass": PassPriority.BACKGROUND,
     "_llm_reconcile_pass": PassPriority.BACKGROUND,
     "_paper_glossary_pass": PassPriority.BACKGROUND,
-    "_context_sentence_pass": PassPriority.BACKGROUND,
     "_gen_abstract_pass": PassPriority.BACKGROUND,
     "_paper_rank_pass": PassPriority.BACKGROUND,
     "_classify_topics_pass": PassPriority.BACKGROUND,

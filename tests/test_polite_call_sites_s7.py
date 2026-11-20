@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 import pytest
 
+from precis.nanopub.registry import _default_post as registry_post
 from precis.utils import http
 from precis.utils.http import (
     POLICIES,
@@ -191,6 +192,8 @@ def test_registry_publish_retries_429_but_not_5xx(
 
     client = _FakeClient([429, 200])
     monkeypatch.setattr("precis.utils.http.http_client", lambda **_kw: client)
+    # Restore the transport under test only after replacing its HTTP client.
+    monkeypatch.setattr(registry, "_default_post", registry_post)
     registry._default_post("https://registry.example.org/", b"x")
     assert client.calls == 2
 

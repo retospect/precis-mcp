@@ -1,37 +1,34 @@
-"""Tags browser — every tag in the cluster, ordered by usage count.
+"""Tag maintenance routes — the browse surfaces moved into ``/drive``
+(gr636493): ``GET /tags`` redirects to ``/drive?k=tag`` (the tag kind's
+own listing) and ``GET /tags/refs`` to ``/drive?tag=…`` (the drive's
+tag facet, which lists the same refs grouped as rows instead of the
+old per-kind table). Both 302s preserve the meaningful params — the
+index's ``q`` substring filter and page, the refs listing's tag /
+kind / page — so existing links (status page chips, eye ``[ns:value]``
+chips, bookmarks) keep landing on the equivalent view.
 
-Single-page table. Each row carries the namespace:value, a per-tag
-usage count, and a one-click pivot to the Todo dashboard filtered
-to refs carrying that tag. Useful when the operator wants to see
-what conventions have crept into the corpus (which ``DREAM:*`` and
-``tier:*`` and ``waiting-for:*`` tags exist, who's using
-``user:asa`` vs ``user:hermes``, what `OPEN` vocabulary is in play).
+Kept here: :func:`resolve_tag_chip` + :func:`count_tag_refs` (the eye
+chip's closed-vs-OPEN resolution and hover count), the protected-
+namespace roster, and ``POST /tags/delete`` — the cluster-wide tag
+wipe the drive's tag rows post to.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 
 from precis import profiles
-from precis.store._tags_ops import _bust_tag_caches, escape_like
-from precis_web.auth import current_user
-from precis_web.deps import get_store, templates
-from precis_web.ref_urls import ref_url
+from precis.store._tag_filter import tag_filter_string
+from precis.store._tags_ops import _bust_tag_caches
+from precis_web.deps import get_store
+from precis_web.routes.flags import _safe_local_redirect
 
 router = APIRouter(prefix="/tags", tags=["tags"])
-
-#: Page size for the ``/tags/refs`` listing. High-cardinality tags
-#: (``DREAM:speculative`` and friends — the dream loop mints these by
-#: the hundreds) overran the old flat ``LIMIT 500`` and silently
-#: truncated; the listing now pages instead.
-_DEFAULT_PAGE_SIZE = 100
-#: Upper bound on a caller-supplied ``?page_size=`` so a hand-edited URL
-#: can't ask for an unbounded scan.
-_MAX_PAGE_SIZE = 500
 
 #: Namespaces the delete button never offers. Structural / closed-vocab
 #: tags (``STATUS``, ``DREAM``, ``PRIO``, ``SRC``, ``CACHE``, ``EMBED``,
@@ -56,36 +53,30 @@ _PROTECTED_NAMESPACES: frozenset[str] = frozenset(
 )
 
 
-def _list_tags(
-    store: object, q: str, limit: int, offset: int = 0
-) -> list[dict[str, object]]:
-    """Tags by usage (most-used first). ``q=`` is a case-insensitive
-    substring filter on ``namespace:value``. Paginated via
-    ``limit`` / ``offset`` — the caller passes ``limit+1`` to probe
-    for a next page.
-    """
-    sql = """
-        SELECT t.namespace, t.value, count(rt.ref_id) AS n
-          FROM tags t LEFT JOIN ref_tags rt USING(tag_id)
-         WHERE %s = ''
-            OR (t.namespace || ':' || t.value) ILIKE %s
-         GROUP BY t.namespace, t.value
-         ORDER BY n DESC, t.namespace, t.value
-         LIMIT %s OFFSET %s
-    """
-    pattern = f"%{escape_like(q.strip())}%"
-    with store.pool.connection() as conn:  # type: ignore[attr-defined]
-        rows = conn.execute(sql, (q.strip(), pattern, limit, offset)).fetchall()
-    return [
-        {
-            "namespace": str(r[0]),
-            "value": str(r[1]),
-            "label": f"{r[0]}:{r[1]}",
-            "count": int(r[2]),
-            "deletable": str(r[0]) not in _PROTECTED_NAMESPACES,
-        }
-        for r in rows
-    ]
+def _refs_drive_url(
+    *,
+    tag_filter: str | None,
+    kind: str | None,
+    ref_kinds: list[str],
+    page: int,
+) -> str:
+    """Build the ``/drive`` URL a ``/tags/refs`` call maps to.
+
+    The old listing was kind-agnostic (every ref carrying the tag) and
+    folder-agnostic, so the target pins every row-backed kind as an
+    explicit ``k=`` (no ``k=`` would resolve the ``items_kinds`` cookie,
+    silently dropping kinds) plus ``folder=*`` ("anywhere" — the drive's
+    default top-level filter would hide filed refs). A ``kind=`` call
+    selects just that kind; ``page=`` rides along."""
+    pairs: list[tuple[str, str]] = [("tag", tag_filter)] if tag_filter else []
+    if kind:
+        pairs.append(("k", kind))
+    elif tag_filter:
+        pairs.extend(("k", kk) for kk in ref_kinds)
+    pairs.append(("folder", "*"))
+    if page > 1:
+        pairs.append(("page", str(page)))
+    return "/drive?" + urlencode(pairs)
 
 
 def resolve_tag_chip(store: Any, text: str) -> tuple[str, str] | None:
@@ -126,7 +117,7 @@ def resolve_tag_chip(store: Any, text: str) -> tuple[str, str] | None:
 
 def count_tag_refs(store: Any, namespace: str, value: str, login: str | None) -> int:
     """Live, viewer-visible refs carrying ``(namespace, value)`` — the
-    same WHERE the ``/tags/refs`` listing counts on (gr575024's
+    same WHERE the ``/tags/refs`` listing counted on (gr575024's
     chip-hover number)."""
     acl_sql, acl_params = profiles.visible_sql("r", login)
     with store.pool.connection() as conn:
@@ -141,36 +132,21 @@ def count_tag_refs(store: Any, namespace: str, value: str, login: str | None) ->
     return int(row[0]) if row and row[0] is not None else 0
 
 
-#: Tags per page on the leaderboard.
-_INDEX_PAGE_SIZE = 200
+@router.get("", response_class=RedirectResponse)
+@router.get("/", response_class=RedirectResponse)
+async def index(q: str = "", page: int = 1) -> RedirectResponse:
+    """The tag leaderboard lives in the drive now (gr636493): ``k=tag``
+    lists the same roster — most-used first, ``q`` a substring filter,
+    same pager."""
+    pairs: list[tuple[str, str]] = [("k", "tag")]
+    if q.strip():
+        pairs.append(("q", q.strip()))
+    if page > 1:
+        pairs.append(("page", str(page)))
+    return RedirectResponse(url="/drive?" + urlencode(pairs), status_code=302)
 
 
-@router.get("", response_class=HTMLResponse)
-@router.get("/", response_class=HTMLResponse)
-async def index(request: Request, q: str | None = None, page: int = 1) -> HTMLResponse:
-    """Render the tag table (most-used first). ``?q=`` narrows by
-    substring; ``?page=N`` walks past the first window."""
-    store = get_store(request)
-    query = (q or "").strip()
-    page = max(1, page)
-    offset = (page - 1) * _INDEX_PAGE_SIZE
-    rows = _list_tags(store, query, limit=_INDEX_PAGE_SIZE + 1, offset=offset)
-    has_next = len(rows) > _INDEX_PAGE_SIZE
-    rows = rows[:_INDEX_PAGE_SIZE]
-    return templates.TemplateResponse(
-        request,
-        "tags/index.html.j2",
-        {
-            "active_tab": "tags",
-            "q": query,
-            "rows": rows,
-            "page": page,
-            "has_next": has_next,
-        },
-    )
-
-
-@router.get("/refs", response_class=HTMLResponse)
+@router.get("/refs", response_class=RedirectResponse)
 async def refs_by_tag(
     request: Request,
     namespace: str | None = None,
@@ -178,37 +154,21 @@ async def refs_by_tag(
     kind: str | None = None,
     tag: str | None = None,
     page: int = 1,
-    page_size: int = _DEFAULT_PAGE_SIZE,
-) -> HTMLResponse:
-    """List refs matching a tag, a kind, or both, grouped by kind.
+) -> RedirectResponse:
+    """The refs-carrying-a-tag listing is the drive's ``tag=`` facet
+    (gr636493). Call shapes all map:
 
-    Four call shapes — all hit the same template:
-
-    * ``?namespace=NS&value=V`` — every ref carrying the tag (the
-      original "Tags table → view N refs" pivot)
-    * ``?kind=K`` — every live ref of one kind (DRY with the tag-pivot
-      view above; no longer linked from the UI — the Status page's
-      "Refs by kind" chips now land on ``/drive?k=K&folder=*``, the
-      general browse surface, rather than opening this single-purpose
-      listing — but kept as a URL shape and as the tag+kind base)
-    * ``?namespace=NS&value=V&kind=K`` — intersection: refs of one
-      kind that also carry the tag
-    * ``?tag=NS:V`` — the chip-text form (gr575024): an eye viewer
-      ``[ns:value]`` chip links here with its text verbatim and
-      :func:`resolve_tag_chip` decides the closed-vs-OPEN split, since
-      the renderer can't (``project:precis`` is ``OPEN``, not a
-      ``programme`` axis). Combines with ``kind=`` like the explicit
-      pair does.
-
-    Paginated: ``?page=N`` (1-based) over a fixed ``page_size`` window
-    ordered ``(kind, ref_id DESC)``. A single kind can therefore span
-    consecutive pages — the grouping is per-page, not global. A total
-    count drives the pager so the operator knows how many refs carry a
-    high-cardinality tag even though only one window renders at a time.
-
-    Page groups by kind and links each ref to its native detail view
-    (``/refs/{kind}/{ref_id}`` for browsable kinds, ``/papers/{ref_id}``
-    for papers, ``/todo?focus=N`` for todos).
+    * ``?namespace=NS&value=V`` → ``/drive?tag=<filter>`` (+ every
+      row-backed kind pinned — the old page was kind-agnostic). The
+      filter string is :func:`tag_filter_string`'s canonical spelling,
+      so a lowercase axis (``tier:dream`` …) keeps its stored pair as
+      ``=ns:value`` instead of flattening to an OPEN/FLAG filter that
+      matches nothing.
+    * ``?kind=K`` → ``/drive?k=K``
+    * ``?namespace=…&value=…&kind=K`` → both
+    * ``?tag=<chip text>`` → resolves the closed-vs-OPEN split via
+      :func:`resolve_tag_chip` first, then the same tag= mapping —
+      eye ``[ns:value]`` chips link here verbatim (gr575024).
     """
     if namespace is None and value is None and kind is None and tag is None:
         raise HTTPException(
@@ -217,134 +177,29 @@ async def refs_by_tag(
         )
     store = get_store(request)
     if tag is not None and namespace is None and value is None:
-        resolved = resolve_tag_chip(store, tag)
+        resolved = None
+        if getattr(store, "pool", None) is not None:
+            resolved = await asyncio.to_thread(resolve_tag_chip, store, tag)
         if resolved is not None:
             namespace, value = resolved
         else:
+            # No stored row matches any probe — mirror ``Tag.parse``'s
+            # split (uppercase prefix → closed pair, else the OPEN
+            # whole-text the chip most likely renders).
             ns, sep, v = tag.partition(":")
-            namespace, value = (ns, v) if sep and ns else ("OPEN", tag)
+            namespace, value = (ns, v) if sep and ns and ns.isupper() else ("OPEN", tag)
     has_tag = namespace is not None and value is not None
     page = max(1, page)
-    page_size = max(1, min(page_size, _MAX_PAGE_SIZE))
-
-    where_parts: list[str] = []
-    params: list[object] = []
-    if has_tag:
-        where_parts.append("t.namespace = %s AND t.value = %s")
-        params.extend([namespace, value])
-    if kind:
-        where_parts.append("r.kind = %s")
-        params.append(kind)
-    where_parts.append("r.retired_at IS NULL")  # default: hide soft-deleted
-    # Another owner's profile never lists (gr490266): owner-scoped in the
-    # shared WHERE, so the count and the page agree.
-    user = current_user(request)
-    acl_sql, acl_params = profiles.visible_sql("r", user.login if user else None)
-    where_parts.append(acl_sql)
-    params.extend(acl_params)
-    where_sql = " AND ".join(where_parts)
-    # Tag-carrying call shapes need the ref_tags/tags join; the
-    # kind-only pivot reads refs directly. Both the count and the page
-    # query share this FROM/WHERE so they can never drift apart.
-    from_sql = (
-        "FROM refs r JOIN ref_tags rt ON rt.ref_id = r.ref_id JOIN tags t USING(tag_id)"
-        if has_tag
-        else "FROM refs r"
+    ref_kinds: list[str] = []
+    if has_tag and not kind:
+        ref_kinds = sorted(await asyncio.to_thread(store.ref_kinds_present))
+    target = _refs_drive_url(
+        tag_filter=(tag_filter_string(str(namespace), str(value)) if has_tag else None),
+        kind=kind,
+        ref_kinds=ref_kinds,
+        page=page,
     )
-    select_cols = (
-        "SELECT r.kind, r.ref_id, r.title, r.retired_at IS NOT NULL AS dropped"
-        if has_tag
-        else "SELECT r.kind, r.ref_id, r.title, FALSE AS dropped"
-    )
-    count_sql = f"SELECT count(*) {from_sql} WHERE {where_sql}"
-    page_sql = (
-        f"{select_cols} {from_sql} WHERE {where_sql} "
-        "ORDER BY r.kind, r.ref_id DESC "
-        "LIMIT %s OFFSET %s"
-    )
-    offset = (page - 1) * page_size
-    with store.pool.connection() as conn:
-        count_row = conn.execute(count_sql, tuple(params)).fetchone()
-        total = int(count_row[0]) if count_row and count_row[0] is not None else 0
-        rows = conn.execute(page_sql, (*params, page_size, offset)).fetchall()
-    refs = store.fetch_refs_by_ids([int(r[1]) for r in rows])
-    # Group by kind, preserving the SQL order.
-    by_kind: dict[str, list[dict[str, object]]] = {}
-    for r in rows:
-        row_kind = str(r[0])
-        ref_id = int(r[1])
-        title = (r[2] or "").split("\n", 1)[0]
-        if len(title) > 80:
-            title = title[:80].rstrip() + "…"
-        by_kind.setdefault(row_kind, []).append(
-            {
-                "id": ref_id,
-                "title": title or "(untitled)",
-                "deleted": bool(r[3]),
-                "url": ref_url(
-                    row_kind, ref_id, getattr(refs.get(ref_id), "slug", None)
-                ),
-            }
-        )
-    if has_tag and kind:
-        label = f"{namespace}:{value} on kind={kind}"
-    elif has_tag:
-        label = f"{namespace}:{value}"
-    else:
-        label = f"kind={kind}"
-
-    shown = sum(len(v) for v in by_kind.values())
-    total_pages = max(1, (total + page_size - 1) // page_size)
-    # Preserve every filter (and a non-default page_size) across the
-    # prev/next links; only the page number changes.
-    base_params: dict[str, object] = {}
-    if namespace is not None:
-        base_params["namespace"] = namespace
-    if value is not None:
-        base_params["value"] = value
-    if kind:
-        base_params["kind"] = kind
-    if page_size != _DEFAULT_PAGE_SIZE:
-        base_params["page_size"] = page_size
-
-    def _page_url(n: int) -> str:
-        return "/tags/refs?" + urlencode({**base_params, "page": n})
-
-    # Compact numbered window around the current page (…1 4 5 [6] 7 8 …last),
-    # so the operator can jump pages and see where the end is — not just
-    # step one page at a time.
-    lo = max(1, page - 3)
-    hi = min(total_pages, page + 3)
-    page_window = [
-        {"n": n, "url": _page_url(n), "current": n == page} for n in range(lo, hi + 1)
-    ]
-
-    return templates.TemplateResponse(
-        request,
-        "tags/refs.html.j2",
-        {
-            "active_tab": "tags" if has_tag else "status",
-            "namespace": namespace or "",
-            "value": value or "",
-            "kind_filter": kind or "",
-            "label": label,
-            "by_kind": by_kind,
-            "total": total,
-            "shown": shown,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": total_pages,
-            "range_start": offset + 1 if shown else 0,
-            "range_end": offset + shown,
-            "prev_url": _page_url(page - 1) if page > 1 else None,
-            "next_url": _page_url(page + 1) if page < total_pages else None,
-            "page_window": page_window,
-            "first_url": _page_url(1) if lo > 1 else None,
-            "last_url": _page_url(total_pages) if hi < total_pages else None,
-            "lead_gap": lo > 2,
-            "trail_gap": hi < total_pages - 1,
-        },
-    )
+    return RedirectResponse(url=target, status_code=302)
 
 
 @router.post("/delete")
@@ -353,6 +208,7 @@ async def delete_tag(
     namespace: str = Form(...),
     value: str = Form(...),
     q: str = Form(""),
+    back: str = Form(""),
 ) -> RedirectResponse:
     """Wipe one tag from the entire cluster.
 
@@ -362,9 +218,10 @@ async def delete_tag(
     the operation; per-ref removal via the standard ``tag`` verb is
     still available for those.
 
-    ``q`` is the search-box query — preserved across the redirect so
-    the operator returns to the same filtered view they just cleaned
-    up. Empty string drops the param.
+    ``back`` returns to the page the button was posted from (the
+    drive's tag rows pass the current filtered URL); ``q`` is the
+    legacy search-box query — folded into the ``/drive?k=tag`` landing
+    when no ``back`` rides along.
     """
     if namespace in _PROTECTED_NAMESPACES:
         raise HTTPException(
@@ -385,7 +242,11 @@ async def delete_tag(
     # the discovery surfaces (which read through this same store) reflect
     # the delete instead of serving it stale for the TTL.
     _bust_tag_caches(conn)
-    target = "/tags"
+    pairs: list[tuple[str, str]] = [("k", "tag")]
     if q.strip():
-        target = f"/tags?q={q.strip()}"
+        pairs.append(("q", q.strip()))
+    # ``back`` is caller-supplied — the gr541794 open-redirect guard
+    # (``/\host`` collapses to ``//host`` in the browser) before it can
+    # become the 303's Location.
+    target = _safe_local_redirect(back, "/drive?" + urlencode(pairs))
     return RedirectResponse(url=target, status_code=303)

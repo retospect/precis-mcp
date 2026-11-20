@@ -1,8 +1,7 @@
 """gripe_autoclose — close a landed gripe when its prod check runs
 (gr519676).
 
-The last rung of the gripe-fix loop (``docs/backlog/
-gripe-fix-loop-on-the-gripe.md`` § "Auto-close on deploy"): the fixer
+The last rung of the gripe-fix loop (``me691588`` § "Auto-close on deploy"): the fixer
 records the fix's sha in ``meta.fix.landed`` and a **check line** in
 ``meta.fix.check`` at land time; when the sha is deployed, this pass
 runs the check read-only and either closes the gripe or closes it and

@@ -63,6 +63,8 @@ GARDEN_ACTOR = "graph-garden"
 #: readable.
 GARDEN_VERSION = "garden.v1"
 
+DEFAULT_PENDING_PROPOSAL_LIMIT = 200
+
 #: Shared with the consumer so reviewer evidence needs no consumer import.
 MEMORY_APPLY_ACTIONS = frozenset({"rewrite", "supersede", "retire", "compact", "split"})
 
@@ -537,7 +539,7 @@ def pending_proposals(
     store: Store,
     *,
     action: str | None = None,
-    limit: int = 200,
+    limit: int = DEFAULT_PENDING_PROPOSAL_LIMIT,
 ) -> list[GardenProposal]:
     """The read view: garden proposals still awaiting a verdict.
 
@@ -553,6 +555,9 @@ def pending_proposals(
     out of the scan: no proposal precedes them, so they decide nothing
     here, and they would crowd the over-read window.
     """
+    # A filtered read must examine the same recent ledger window as the
+    # full listing even when the caller asks for fewer matching rows.
+    scan_limit = limit if action is None else max(limit, DEFAULT_PENDING_PROPOSAL_LIMIT)
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT review_id, target_kind, target_id, model, content_sha, "
@@ -563,28 +568,29 @@ def pending_proposals(
             "   AND NOT (actor = %s AND verdict = 'rejected' AND note LIKE %s) "
             " ORDER BY at DESC, review_id DESC LIMIT %s",
             # over-read; superseded keys fold below
-            ('%"garden"%', GARDEN_ACTOR, '%"proposer_reject": true%', limit * 4),
+            ('%"garden"%', GARDEN_ACTOR, '%"proposer_reject": true%', scan_limit * 4),
         ).fetchall()
-    decided: set[str] = set()
+    seen_keys: set[str] = set()
     out: list[GardenProposal] = []
     for rid, tkind, tid, model, _sha, verdict, note, at, current in rows:
         g = _parse_note(note)
         if g is None:
             continue
         key = str(g.get("key") or "")
-        if key in decided:
-            continue  # a later verdict already resolved this key
+        if key in seen_keys:
+            continue  # the newest row already determined this key's state
+        seen_keys.add(key)
         if verdict != "proposed":
-            decided.add(key)  # newest garden row for the key is terminal
             continue
-        if action is not None and g.get("action") != action:
+        stored_action = str(g.get("action") or "")
+        if action is not None and stored_action != action:
             continue
         out.append(
             GardenProposal(
                 review_id=int(rid),
                 target_kind=str(tkind),
                 target_id=int(tid),
-                action=str(g.get("action") or ""),
+                action=stored_action,
                 key=key,
                 detector=str(g.get("detector") or ""),
                 title=str(g.get("title") or ""),
@@ -596,7 +602,6 @@ def pending_proposals(
                 current=bool(current),
             )
         )
-        decided.add(key)
         if len(out) >= limit:
             break
     return out

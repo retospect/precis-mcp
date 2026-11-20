@@ -62,7 +62,16 @@
     that:
       - precis_mcp_public_oauth_env.PRECIS_OAUTH_ISSUER is defined
       - precis_mcp_public_oauth_env.PRECIS_OAUTH_RESOURCE is defined
-    fail_msg: Set canonical OAuth issuer/resource URLs in the private gateway inventory.
+      # The web plist below carries the class list too, and the web app
+      # refuses to start on a bad one: validate before rendering it.
+      - precis_mcp_public_credential_classes is string
+      - (precis_mcp_public_credential_classes | lower | replace(',', ' ')).split() | length > 0
+      - (precis_mcp_public_credential_classes | lower | replace(',', ' ')).split() | reject('in', ['install', 'slice', 'personal', 'capability', 'oauth']) | list | length == 0
+      - "'oauth' in (precis_mcp_public_credential_classes | lower | replace(',', ' ')).split()"
+    fail_msg: >-
+      Set canonical OAuth issuer/resource URLs in the private gateway
+      inventory, and list oauth (plus only install, slice, personal or
+      capability) in precis_mcp_public_credential_classes.
   tags: [precis-web-config, precis-mcp-public]
 
 # Anonymous health and login challenges do not read credential columns.

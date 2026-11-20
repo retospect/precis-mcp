@@ -415,15 +415,27 @@ def test_the_exempt_subtree_itself_still_passes() -> None:
     """Guard the other side: don't fix the leak by closing the door.
 
     ``/podcast`` exactly, and anything under ``/podcast/``, must still
-    reach the route's own token check rather than the middleware's 401.
+    reach the route's own token check rather than the middleware's 401 —
+    but only when it carries a ``t`` (``/files`` always does).
     """
-    from precis_web.auth import _is_self_auth
+    from precis_web.auth import _bypasses_gate, _is_self_auth
 
     assert _is_self_auth("/podcast")
     assert _is_self_auth("/podcast/feed.xml")
     assert _is_self_auth("/podcast/audio/ep-1.mp3")
     assert not _is_self_auth("/podcastfoo")
     assert not _is_self_auth("/console")
+
+    def scope(query: bytes) -> dict:
+        return {"query_string": query}
+
+    assert _bypasses_gate(scope(b"t=abc"), "/podcast/feed.xml")
+    assert _bypasses_gate(scope(b"x=1&t=abc"), "/podcast/audio/ep-1.mp3")
+    assert not _bypasses_gate(scope(b""), "/podcast/feed.xml")
+    assert not _bypasses_gate(scope(b"t="), "/podcast/feed.xml")
+    assert not _bypasses_gate(scope(b"x=t"), "/podcast")
+    assert not _bypasses_gate(scope(b"t=abc"), "/podcastfoo")
+    assert _bypasses_gate(scope(b""), "/files/pdf/x")
 
 
 def test_podcast_feed_token_authorizes_and_is_threaded_into_urls(tmp_path) -> None:
@@ -736,6 +748,9 @@ def test_the_lock_is_per_address_too_at_a_higher_threshold() -> None:
     assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
     for i in range(_LOCKOUT_FAILURES, _LOCKOUT_ADDR_FAILURES):
         assert client.get("/", headers=_basic(f"user{i}", "pw")).status_code == 401
+    # (a browser without the session cookie the success above minted: with
+    # one, the cookie would serve it through the lock)
+    client.cookies.clear()
     assert client.get("/", headers=_basic("reto", "pw")).status_code == 429
 
 
@@ -768,7 +783,7 @@ def test_tracker_memory_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
 
     clock = [1000.0]
     monkeypatch.setattr("precis_web.auth.time.monotonic", lambda: clock[0])
-    tracker = FailureTracker(failures=2, window=600.0, maxsize=8)
+    tracker = FailureTracker(login_failures=2, window=600.0, maxsize=8)
     for _ in range(2):
         tracker.record("login:target")  # locked, and the freshest key below
     for i in range(50):
@@ -794,20 +809,21 @@ def test_lockout_keys_on_the_canonical_login() -> None:
     assert client.get("/", headers=_basic("reto", "pw")).status_code == 429
 
 
-def test_a_success_clears_the_login_window_but_not_the_address() -> None:
-    """A correct password forgets that login's failures (a user who
+def test_a_success_clears_the_pair_window_but_not_the_address() -> None:
+    """A correct password forgets that pair's failures (a user who
     fumbled a few times is not locked out by their own success), while
     the address bucket keeps counting — a shared NAT address may carry
     both the legitimate user and the run targeting them."""
     from precis_web.auth import FailureTracker
 
     tracker = FailureTracker(failures=3, addr_failures=3, window=60.0)
+    pair, addr = "pair:reto|1.2.3.4", "addr:1.2.3.4"
     for _ in range(2):
-        tracker.record("login:reto", "addr:1.2.3.4")
-    tracker.clear("login:reto")
-    tracker.record("login:reto", "addr:1.2.3.4")
-    assert tracker.locked_for("login:reto") == 0.0
-    assert tracker.locked_for("addr:1.2.3.4") > 0.0
+        tracker.record(pair, addr)
+    tracker.clear(pair)
+    tracker.record(pair, addr)
+    assert tracker.locked_for(pair) == 0.0
+    assert tracker.locked_for(addr) > 0.0
 
 
 def test_the_window_slides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -815,7 +831,7 @@ def test_the_window_slides(monkeypatch: pytest.MonkeyPatch) -> None:
 
     clock = [1000.0]
     monkeypatch.setattr("precis_web.auth.time.monotonic", lambda: clock[0])
-    tracker = FailureTracker(failures=3, window=60.0)
+    tracker = FailureTracker(login_failures=3, window=60.0)
     for _ in range(3):
         tracker.record("login:x")
         clock[0] += 10
@@ -823,3 +839,655 @@ def test_the_window_slides(monkeypatch: pytest.MonkeyPatch) -> None:
     clock[0] += 31
     assert tracker.locked_for("login:x") == 0.0
     assert tracker.locked_for("login:other") == 0.0
+
+
+# ── gr730562: login+address lockout, /podcast through the gate, cookies ──
+#
+# Distinct client addresses are simulated the way production sees them:
+# the socket peer is the loopback proxy and the real client is the last
+# X-Forwarded-For hop (see ``_remote_addr``). RFC 5737 / 3849 documentation
+# ranges throughout.
+
+_A, _B, _C = "192.0.2.10", "192.0.2.20", "192.0.2.30"
+
+
+def _app(store: FakeUserStore, **cfg_kw):
+    cfg = WebConfig(corpus_dir=None, auth_required=True, **cfg_kw)
+    return create_app(runtime=SimpleNamespace(store=store), web_config=cfg)
+
+
+def _proxy(app) -> TestClient:
+    """A client whose peer is the loopback proxy, with its own cookie jar."""
+    return TestClient(app, client=("127.0.0.1", 50000))
+
+
+def _via(addr: str, **headers: str) -> dict[str, str]:
+    return {"X-Forwarded-For": addr, **headers}
+
+
+def _guess(client: TestClient, addr: str, path: str = "/", login: str = "reto"):
+    return client.get(
+        path,
+        headers=_via(addr, **_basic(login, "nope")),
+        follow_redirects=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("remote", "bucket"),
+    [
+        ("192.0.2.7", "192.0.2.7"),
+        ("2001:db8:0:1::1", "2001:db8:0:1::/64"),
+        ("2001:db8:0:1:ffff:ffff:ffff:ffff", "2001:db8:0:1::/64"),
+        ("2001:db8:0:2::1", "2001:db8:0:2::/64"),
+        ("::ffff:192.0.2.9", "192.0.2.9"),
+        ("fe80::1%eth0", "fe80::/64"),
+        ("testclient", "testclient"),
+        ("-", None),
+    ],
+)
+def test_the_address_bucket(remote: str, bucket: str | None) -> None:
+    from precis_web.auth import _addr_bucket
+
+    assert _addr_bucket(remote) == bucket
+
+
+def test_podcast_basic_guessing_is_gated_logged_and_locked(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The route's own Basic fallback was an unlimited guessing oracle at
+    one scrypt per request. Now ``/podcast/feed.xml`` without a token is
+    the gate's: logged, counted, and 429 before scrypt — against the same
+    buckets as ``/``."""
+    from precis_web.auth import _LOCKOUT_FAILURES
+
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    client = _client(store)
+    with caplog.at_level("WARNING", logger="precis_web.auth"):
+        codes = [
+            client.get("/podcast/feed.xml", headers=_basic("reto", "nope")).status_code
+            for _ in range(30)
+        ]
+    assert codes == [401] * _LOCKOUT_FAILURES + [429] * (30 - _LOCKOUT_FAILURES)
+    assert len(_failure_lines(caplog)) == _LOCKOUT_FAILURES
+    reads = store.credential_reads
+    # Same bucket as the rest of the app: the right password is refused on
+    # ``/`` too, with no row read.
+    assert client.get("/", headers=_basic("reto", "pw")).status_code == 429
+    assert store.credential_reads == reads
+
+
+def _seed_episode(tmp_path):
+    from datetime import datetime
+
+    from precis import audio_feed
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "ep.mp3").write_bytes(b"\x00" * 16)
+    podcast_dir = tmp_path / "feed"
+    audio_feed.publish_episode(
+        podcast_dir,
+        src / "ep.mp3",
+        episode_id="ep",
+        title="Ep",
+        description="",
+        published_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    return podcast_dir
+
+
+def test_a_token_request_needs_no_basic_and_a_wrong_token_never_touches_the_tracker(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from precis.users import feed_token_digest
+
+    token = "s3cret-feed-token"
+    store = FakeUserStore(
+        user=_user(),
+        record=hash_password("pw"),
+        feed_digest=feed_token_digest(token),
+    )
+    client = _client(store, podcast_dir=_seed_episode(tmp_path))
+    assert client.get(f"/podcast/feed.xml?t={token}").status_code == 200
+    with caplog.at_level("WARNING", logger="precis_web.auth"):
+        codes = {client.get("/podcast/feed.xml?t=wrong").status_code for _ in range(30)}
+    # Dead end every time, never a 429: nothing was counted, so nothing locks.
+    assert codes == {401}
+    assert _failure_lines(caplog) == []
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+
+
+def test_basic_and_cookie_callers_get_the_feed_with_their_own_token(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        "precis_web.routes.podcast.recall_live_feed_token",
+        lambda login, *, store: f"vaulted-for-{login}",
+    )
+    store = FakeUserStore(
+        user=replace(_user(), has_feed_token=True), record=hash_password("pw")
+    )
+    client = _client(store, podcast_dir=_seed_episode(tmp_path))
+    by_basic = client.get("/podcast/feed.xml", headers=_basic("reto", "pw"))
+    assert by_basic.status_code == 200
+    assert "/podcast/audio/ep.mp3?t=vaulted-for-reto" in by_basic.text
+    # The gate minted a cookie on that response; the jar replays it.
+    assert SESSION_COOKIE in client.cookies
+    by_cookie = client.get("/podcast/feed.xml")
+    assert by_cookie.status_code == 200
+    assert "/podcast/audio/ep.mp3?t=vaulted-for-reto" in by_cookie.text
+    assert client.get("/podcast/audio/ep.mp3").status_code == 200
+
+
+def test_ten_wrong_guesses_from_one_address_do_not_lock_the_owner_elsewhere() -> None:
+    from precis_web.auth import _LOCKOUT_FAILURES
+
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    client = _proxy(_app(store))
+    for _ in range(_LOCKOUT_FAILURES):
+        assert _guess(client, _A).status_code == 401
+    # Address A is locked for that login — even with the right password …
+    right_a = client.get("/", headers=_via(_A, **_basic("reto", "pw")))
+    assert right_a.status_code == 429
+    # … but it is only the pair: another login from A is merely wrong,
+    assert _guess(client, _A, login="someone").status_code == 401
+    # and the owner at B signs in.
+    right_b = client.get(
+        "/", headers=_via(_B, **_basic("reto", "pw")), follow_redirects=False
+    )
+    assert _ok(right_b)
+
+
+def test_addresses_in_one_ipv6_64_share_a_bucket() -> None:
+    from precis_web.auth import _LOCKOUT_FAILURES
+
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    client = _proxy(_app(store))
+    in_64 = ["2001:db8:0:1::1", "2001:db8:0:1::2", "2001:db8:0:1:aaaa::3"]
+    for i in range(_LOCKOUT_FAILURES):
+        assert _guess(client, in_64[i % 3]).status_code == 401
+    same = client.get("/", headers=_via("2001:db8:0:1:bbbb::9", **_basic("reto", "pw")))
+    assert same.status_code == 429
+    other = client.get(
+        "/",
+        headers=_via("2001:db8:0:2::1", **_basic("reto", "pw")),
+        follow_redirects=False,
+    )
+    assert _ok(other)
+
+
+@pytest.fixture
+def _fast_scrypt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hundred real scrypts would be six seconds of nothing."""
+    from precis_web import auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod,
+        "verify_password",
+        lambda password, record, *, pepper: password == "pw",
+    )
+
+
+def _gate(app):
+    """The live ``BasicAuthMiddleware`` instance of *app* (built on first
+    request), to read the tracker the gate actually wrote."""
+    from precis_web.auth import BasicAuthMiddleware
+
+    TestClient(app).get("/healthz")
+    node = app.middleware_stack
+    while not isinstance(node, BasicAuthMiddleware):
+        node = node.app
+    return node
+
+
+def _counting_scrypt(monkeypatch: pytest.MonkeyPatch, *, delay: float = 0.0):
+    """Replace the derivation with a counter (and optional sleep)."""
+    import time as time_mod
+
+    from precis_web import auth as auth_mod
+
+    calls = {"verify": 0, "burn": 0}
+
+    def verify(password, record, *, pepper):
+        calls["verify"] += 1
+        time_mod.sleep(delay)
+        return password == "pw"
+
+    def burn():
+        calls["burn"] += 1
+        time_mod.sleep(delay)
+
+    monkeypatch.setattr(auth_mod, "verify_password", verify)
+    monkeypatch.setattr(auth_mod, "burn_verify", burn)
+    return calls
+
+
+def _snapshot(gate) -> dict[str, list[float]]:
+    return {k: list(v) for k, v in gate.failures._hits.items()}
+
+
+def _lock_pair_and_addr(client: TestClient, addr: str) -> None:
+    """Someone else fills ``pair:reto|addr`` and ``addr:addr``."""
+    from precis_web.auth import _LOCKOUT_ADDR_FAILURES, _LOCKOUT_FAILURES
+
+    for _ in range(_LOCKOUT_FAILURES):
+        assert _guess(client, addr).status_code == 401
+    for i in range(_LOCKOUT_ADDR_FAILURES - _LOCKOUT_FAILURES):
+        assert _guess(client, addr, login=f"u{i}").status_code == 401
+
+
+def test_basic_plus_a_valid_cookie_is_served_in_a_bucket_someone_else_locked(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A browser sends its cached Basic header and the cookie together. The
+    owner whose address bucket a neighbour filled keeps working — on the
+    cookie: nothing verified, recorded, cleared or re-minted."""
+    calls = _counting_scrypt(monkeypatch)
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    app = _app(store)
+    gate = _gate(app)
+    owner = _proxy(app)
+    assert _ok(
+        owner.get("/", headers=_via(_A, **_basic("reto", "pw")), follow_redirects=False)
+    )
+    _lock_pair_and_addr(_proxy(app), _A)
+    assert gate.failures.locked_for("pair:reto|192.0.2.10") > 0
+    assert gate.failures.locked_for("addr:192.0.2.10") > 0
+    before, verified = _snapshot(gate), calls["verify"] + calls["burn"]
+    caplog.clear()
+
+    with caplog.at_level("WARNING", logger="precis_web.auth"):
+        for password in ("pw", "wrong"):  # right or wrong: the cookie serves it
+            resp = owner.get(
+                "/",
+                headers=_via(_A, **_basic("reto", password)),
+                follow_redirects=False,
+            )
+            assert _ok(resp), password
+            assert "set-cookie" not in resp.headers
+    assert _failure_lines(caplog) == []
+    assert _snapshot(gate) == before  # nothing recorded, nothing cleared
+    assert calls["verify"] + calls["burn"] == verified  # no scrypt
+
+
+def test_a_locked_bucket_without_a_usable_cookie_is_still_429(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _counting_scrypt(monkeypatch)
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    app = _app(store)
+    owner = _proxy(app)
+    assert _ok(
+        owner.get("/", headers=_via(_A, **_basic("reto", "pw")), follow_redirects=False)
+    )
+    stale = owner.cookies.get(SESSION_COOKIE)
+    assert stale
+    _lock_pair_and_addr(_proxy(app), _A)
+    right = _basic("reto", "pw")
+
+    # No cookie: the owner's fresh browser waits out the window.
+    assert _proxy(app).get("/", headers=_via(_A, **right)).status_code == 429
+    # A cookie for another login does not vouch for this one.
+    other = _proxy(app)
+    other.cookies.set(SESSION_COOKIE, app.state.session_tokens.issue("someone"))
+    assert other.get("/", headers=_via(_A, **right)).status_code == 429
+    # A cookie minted before a password change: authorizes nothing.
+    original = store.record
+    store.record = hash_password("pw2")
+    assert owner.get("/", headers=_via(_A, **right)).status_code == 429
+    # A cookie for a since-disabled account likewise.
+    store.record = original
+    store.user = _user(disabled=True)
+    assert owner.get("/", headers=_via(_A, **right)).status_code == 429
+
+
+def test_a_cookie_session_is_not_refused_while_its_buckets_are_locked() -> None:
+    from precis_web.auth import _LOCKOUT_FAILURES
+
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    client = _client(store)
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+    # Wrong Basic beside the live cookie while NOT locked: judged (401)
+    # and counted — a valid cookie buys no immunity from "Basic wins".
+    for _ in range(_LOCKOUT_FAILURES):
+        assert client.get("/", headers=_basic("reto", "nope")).status_code == 401
+    # Now locked: cookie only, and Basic + cookie, are both served.
+    assert _ok(client.get("/", follow_redirects=False))
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+    # A browser with no cookie is not.
+    client.cookies.clear()
+    assert client.get("/", headers=_basic("reto", "pw")).status_code == 429
+
+
+def test_above_the_global_ceiling_a_cookie_is_a_fallback_not_a_trust_token(
+    _fast_scrypt: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    from precis_web.auth import _LOCKOUT_LOGIN_FAILURES
+
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    app = _app(store)
+    gate = _gate(app)
+    owner = _proxy(app)
+    # The owner signs in from A once: A is now known, and the jar holds a cookie.
+    assert _ok(
+        owner.get("/", headers=_via(_A, **_basic("reto", "pw")), follow_redirects=False)
+    )
+    # A distributed run: every guess from a fresh address, so no pair or
+    # address bucket ever fills — only the login ceiling does.
+    attacker = _proxy(app)
+    for i in range(_LOCKOUT_LOGIN_FAILURES):
+        assert _guess(attacker, f"198.51.100.{i + 1}").status_code == 401
+
+    with caplog.at_level("WARNING", logger="precis_web.auth"):
+        # An address never seen, no cookie: refused with the right password.
+        stranger = attacker.get("/", headers=_via(_C, **_basic("reto", "pw")))
+    assert stranger.status_code == 429
+    assert int(stranger.headers["retry-after"]) >= 1
+    assert any("locked out login='reto'" in r.getMessage() for r in caplog.records)
+    # The known address is trusted: it signs in with a fresh browser.
+    known = _proxy(app).get(
+        "/", headers=_via(_A, **_basic("reto", "pw")), follow_redirects=False
+    )
+    assert _ok(known)
+    # Never-seen address + a valid cookie: served on the cookie, recording
+    # nothing (the ceiling's window is untouched) and minting nothing.
+    before = _snapshot(gate)
+    roaming = owner.get(
+        "/", headers=_via(_C, **_basic("reto", "pw")), follow_redirects=False
+    )
+    assert _ok(roaming) and "set-cookie" not in roaming.headers
+    assert _snapshot(gate) == before
+    # The ceiling doesn't swallow other logins.
+    assert _guess(attacker, _B, login="someone").status_code == 401
+    # Never-seen address + a STALE cookie (password changed since): 429. The
+    # old rule let any HMAC-valid cookie lift the ceiling.
+    store.record = hash_password("pw2")
+    stale = owner.get("/", headers=_via(_C, **_basic("reto", "pw2")))
+    assert stale.status_code == 429
+
+
+def test_a_burst_of_wrong_guesses_is_verified_only_up_to_the_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lock was checked on arrival and the failure recorded after the
+    scrypt, so a simultaneous burst all got verified. The guard checks
+    inside the slot and records before releasing it, so for one bucket at
+    most ``limit + slots - 1`` are ever derived, however many arrive."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from precis_web.auth import _LOCKOUT_FAILURES, _SCRYPT_SLOTS
+
+    calls = _counting_scrypt(monkeypatch, delay=0.05)
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    app = _app(store)
+    n = 60
+    barrier = threading.Barrier(n)
+
+    def hit(_: int) -> int:
+        client = _proxy(app)
+        barrier.wait()
+        return _guess(client, _A).status_code
+
+    with ThreadPoolExecutor(n) as pool:
+        codes = list(pool.map(hit, range(n)))
+    verified = calls["verify"]
+    bound = _LOCKOUT_FAILURES + _SCRYPT_SLOTS - 1
+    print(f"pair burst: verified={verified} bound={bound} codes={sorted(set(codes))}")
+    assert _LOCKOUT_FAILURES <= verified <= bound
+    assert codes.count(401) == verified
+    assert set(codes) <= {401, 429, 503}
+    assert codes.count(429) + codes.count(503) == n - verified
+
+
+def test_a_burst_across_logins_is_verified_only_up_to_the_address_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from precis_web.auth import _LOCKOUT_ADDR_FAILURES, _SCRYPT_SLOTS
+
+    calls = _counting_scrypt(monkeypatch, delay=0.02)
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    app = _app(store)
+    n = 120
+    barrier = threading.Barrier(n)
+
+    def hit(i: int) -> int:
+        client = _proxy(app)
+        barrier.wait()
+        return _guess(client, _A, login=f"u{i}").status_code
+
+    with ThreadPoolExecutor(n) as pool:
+        codes = list(pool.map(hit, range(n)))
+    verified = calls["burn"]  # unknown logins burn, never verify
+    bound = _LOCKOUT_ADDR_FAILURES + _SCRYPT_SLOTS - 1
+    print(f"addr burst: verified={verified} bound={bound} codes={sorted(set(codes))}")
+    assert _LOCKOUT_ADDR_FAILURES <= verified <= bound
+    assert codes.count(401) == verified
+    assert set(codes) <= {401, 429, 503}
+
+
+def test_eviction_keeps_the_hot_keys_and_drops_the_single_hit_flood() -> None:
+    """Evicting by staleness let ~2,000 junk logins reset a victim's count.
+    Fewest-hits-first lets a flood of single-hit keys evict itself."""
+    from precis_web.auth import FailureTracker
+
+    tracker = FailureTracker()  # defaults: login 100, pair 10, maxsize 4096
+    for _ in range(100):
+        tracker.record("login:victim")  # the earliest hits of all
+    for _ in range(10):
+        tracker.record("pair:victim|192.0.2.10")
+    for i in range(5000):
+        tracker.record(f"login:junk{i}", f"pair:junk{i}|192.0.2.99")
+    assert tracker.locked_for("login:victim") > 0.0
+    assert tracker.locked_for("pair:victim|192.0.2.10") > 0.0
+    assert len(tracker._hits) <= 4096
+
+
+def test_the_tracker_survives_concurrent_writers() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from precis_web.auth import FailureTracker
+
+    tracker = FailureTracker(login_failures=10_000, maxsize=64)
+
+    def work(i: int) -> None:
+        for j in range(300):
+            tracker.record(f"login:k{(i * 7 + j) % 200}", "login:shared")
+            tracker.locked_for("login:shared", f"login:k{j % 50}")
+
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(work, range(8)))
+    assert len(tracker._hits) <= 64
+    assert len(tracker._hits["login:shared"]) == 8 * 300
+
+
+def test_cookie_only_401s_are_logged_but_not_counted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A stale cookie replayed must not lock its own owner out."""
+    from precis_web.auth import _LOCKOUT_FAILURES
+
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    client = _client(store)
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+    store.user = _user(disabled=True)
+    with caplog.at_level("WARNING", logger="precis_web.auth"):
+        codes = {client.get("/").status_code for _ in range(3 * _LOCKOUT_FAILURES)}
+    assert codes == {401}
+    assert len(_failure_lines(caplog)) == 3 * _LOCKOUT_FAILURES
+    store.user = _user()
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+
+
+def test_every_rejection_has_the_same_body_and_the_log_names_the_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    app = _app(store)
+    bodies = {}
+    with caplog.at_level("WARNING", logger="precis_web.auth"):
+        client = _proxy(app)
+        bodies["unknown"] = client.get("/", headers=_basic("mallory", "pw")).text
+        bodies["wrong"] = client.get("/", headers=_basic("reto", "nope")).text
+        store.user = _user(disabled=True)
+        bodies["disabled"] = client.get("/", headers=_basic("reto", "pw")).text
+        store.user = _user()
+        assert _ok(
+            client.get("/", follow_redirects=False, headers=_basic("reto", "pw"))
+        )
+        store.user = _user(disabled=True)
+        bodies["cookie"] = client.get("/").text
+    assert set(bodies.values()) == {"invalid credentials"}, bodies
+    lines = _failure_lines(caplog)
+    assert any("account disabled" in line and "(basic)" in line for line in lines)
+    assert any("account disabled" in line and "(cookie)" in line for line in lines)
+
+
+def test_a_saturated_scrypt_gate_sheds_load_with_503(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import threading
+
+    from precis_web import auth as auth_mod
+    from precis_web.auth import _LOCKOUT_FAILURES
+
+    gate = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(auth_mod, "_SCRYPT_GATE", gate)
+    monkeypatch.setattr(auth_mod, "_SCRYPT_WAIT", 0.05)
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    client = _client(store)
+
+    assert gate.acquire(timeout=1)  # every slot is taken
+    with caplog.at_level("WARNING", logger="precis_web.auth"):
+        # Past the pair limit: a counted failure would have locked by now.
+        for login in ("reto", "mallory") * _LOCKOUT_FAILURES:
+            resp = client.get("/", headers=_basic(login, "nope"))
+            assert resp.status_code == 503
+            assert int(resp.headers["retry-after"]) >= 1
+    assert _failure_lines(caplog) == []
+    gate.release()
+    # Not recorded: the right password is accepted straight away.
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+
+
+def test_a_shed_attempt_is_served_on_a_valid_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flood that holds every scrypt slot must not 503 a signed-in
+    browser once its cached credential lapses: the cookie serves it, and
+    a caller with no cookie is still shed."""
+    import threading
+
+    from precis_web import auth as auth_mod
+
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    client = _client(store)
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+    _gate(client.app).cache.clear()  # the credential cache TTL lapsed
+    gate = threading.BoundedSemaphore(1)
+    assert gate.acquire(timeout=1)  # every slot is taken
+    monkeypatch.setattr(auth_mod, "_SCRYPT_GATE", gate)
+    monkeypatch.setattr(auth_mod, "_SCRYPT_WAIT", 0.05)
+
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+    client.cookies.clear()
+    resp = client.get("/", follow_redirects=False, headers=_basic("reto", "pw"))
+    assert resp.status_code == 503
+
+
+def test_a_cache_hit_needs_no_scrypt_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    from precis_web import auth as auth_mod
+
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    client = _client(store)
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+    gate = threading.BoundedSemaphore(1)
+    assert gate.acquire(timeout=1)
+    monkeypatch.setattr(auth_mod, "_SCRYPT_GATE", gate)
+    monkeypatch.setattr(auth_mod, "_SCRYPT_WAIT", 0.05)
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+
+
+def test_a_cookie_minted_before_a_password_change_is_refused_after_it() -> None:
+    """``precis users passwd`` runs in another process and can't reach this
+    one's state; the cookie's password tag is what makes it bite."""
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    client = _client(store)
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+    assert _ok(client.get("/", follow_redirects=False))  # cookie alone works
+
+    store.record = hash_password("pw2")  # what the CLI just wrote
+
+    refused = client.get("/", follow_redirects=False)
+    assert refused.status_code == 401
+    assert refused.headers["www-authenticate"].startswith("Basic realm=")
+    # The new password signs in and replaces the stale cookie, which then works.
+    signed_in = client.get("/", follow_redirects=False, headers=_basic("reto", "pw2"))
+    assert _ok(signed_in)
+    assert SESSION_COOKIE in signed_in.headers.get("set-cookie", "")
+    assert _ok(client.get("/", follow_redirects=False))
+
+
+def test_a_cookie_minted_before_sign_out_is_refused_after_it() -> None:
+    store = FakeUserStore(user=_user(), record=hash_password("pw"))
+    client = _client(store)
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+    old_cookie = client.cookies.get(SESSION_COOKIE)
+    assert old_cookie
+
+    out = client.post("/account/logout")  # the cookie alone vouches for it
+    assert out.status_code == 401
+
+    # A copy of the cookie kept elsewhere (the deletion is client-side only).
+    client.cookies.clear()
+    client.cookies.set(SESSION_COOKIE, old_cookie)
+    assert client.get("/", follow_redirects=False).status_code == 401
+
+    # Signing straight back in works, within the same second.
+    client.cookies.clear()
+    assert _ok(client.get("/", follow_redirects=False, headers=_basic("reto", "pw")))
+    assert _ok(client.get("/", follow_redirects=False))
+
+
+def test_session_token_not_before_mark_and_tag() -> None:
+    tokens = SessionTokens()
+    before = tokens.issue("reto", "t1")
+    claim = tokens.parse(before)
+    assert claim is not None and claim.login == "reto" and claim.password_tag == "t1"
+    tokens.sign_out("reto")
+    other = tokens.issue("other")
+    assert tokens.verify(before) is None
+    after = tokens.issue("reto", "t1")  # same instant, as far as time() goes
+    assert tokens.verify(after) == "reto"
+    assert tokens.verify(other) == "other"  # the mark is per login
+    # The tag is authenticated: editing it breaks the signature.
+    expires, issued, _tag, rest = after.split(".", 3)
+    assert tokens.verify(f"{expires}.{issued}.t2.{rest}") is None
+
+
+def test_known_addresses_expire_and_are_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis_web.auth import KnownAddresses
+
+    clock = [1000.0]
+    monkeypatch.setattr("precis_web.auth.time.monotonic", lambda: clock[0])
+    known = KnownAddresses(ttl=60.0, maxsize=3)
+    known.add("reto", "a")
+    assert ("reto", "a") in known and ("reto", "b") not in known
+    assert ("reto", None) not in known
+    clock[0] += 61
+    assert ("reto", "a") not in known
+    for b in "wxyz":
+        clock[0] += 1
+        known.add("reto", b)
+    assert ("reto", "w") not in known  # stalest evicted
+    assert all(("reto", b) in known for b in "xyz")

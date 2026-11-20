@@ -107,6 +107,7 @@ class TestBuildServeEnv:
             "PRECIS_HARMLESS_VAR": "keep-me",
             "PRECIS_MCP_TOKEN": "the-daemon-own-token",
             "PRECIS_MCP_PROFILE": "command",
+            "PRECIS_MCP_CREDENTIAL_CLASSES": "oauth",
         }
         env = read_mcp.build_serve_env(
             base, ro_dsn="postgresql://agent_ro@x/y", token="tok-run"
@@ -127,6 +128,9 @@ class TestBuildServeEnv:
         # The daemon's own MCP token is stripped; only the per-run one rides.
         assert env["PRECIS_MCP_TOKEN"] == "tok-run"
         assert env["PRECIS_MCP_PROFILE"] == "typed"
+        # A parent restricted to OAuth must not leave the child unable to
+        # take its own per-run token.
+        assert env["PRECIS_MCP_CREDENTIAL_CLASSES"] == "install"
 
 
 class TestMcpJsonPayload:

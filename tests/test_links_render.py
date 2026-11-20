@@ -32,6 +32,50 @@ def _mk_ref(store: Store, kind: str, title: str) -> int:
 
 
 class TestRenderLinksSection:
+    def test_reciprocal_edges_fold_into_one_row(self, store: Store) -> None:
+        a = _mk_ref(store, "memory", "source")
+        b = _mk_ref(store, "memory", "neighbour")
+        c = _mk_ref(store, "memory", "another neighbour")
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="supports")
+        store.add_link(src_ref_id=b, dst_ref_id=a, relation="supports")
+        store.add_link(src_ref_id=a, dst_ref_id=c, relation="related-to")
+        ref = store.get_ref(kind="memory", id=a)
+        assert ref is not None
+        section = render_links_section(store, ref, limit=1)
+        assert section.count(f"me{b}") == 1
+        assert "supports / supported by" in section
+        assert "Links (1 of 2):" in section
+        assert "+1 more" in section
+
+    def test_symmetric_markers_appear_once(self, store: Store) -> None:
+        a = _mk_ref(store, "memory", "source")
+        b = _mk_ref(store, "memory", "neighbour")
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
+        store.add_link(src_ref_id=b, dst_ref_id=a, relation="related-to")
+        ref = store.get_ref(kind="memory", id=a)
+        assert ref is not None
+        section = render_links_section(store, ref)
+        assert section.count(f"me{b}") == 1
+        assert "-- / --" not in section
+
+    def test_default_get_call_column_is_dropped(self, store: Store) -> None:
+        from precis.store.types import ChunkInsert
+
+        a = _mk_ref(store, "memory", "source")
+        b = _mk_ref(store, "memory", "neighbour")
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
+        ref = store.get_ref(kind="memory", id=a)
+        assert ref is not None
+        assert "how to get" not in render_links_section(store, ref)
+        paper = store.insert_ref(kind="paper", slug="chunk-target", title="paper")
+        store.chunks.insert_chunks(
+            paper.id, [ChunkInsert(ord=0, text="grounding", meta={})]
+        )
+        store.add_link(src_ref_id=a, dst_ref_id=paper.id, dst_pos=0, relation="cites")
+        section = render_links_section(store, ref)
+        assert "how to get" in section
+        assert "id='chunk-target~0'" in section
+
     def test_no_links_is_empty_string(self, store: Store) -> None:
         a = _mk_ref(store, "memory", "lonely memory")
         ref = store.get_ref(kind="memory", id=a)
@@ -62,12 +106,13 @@ class TestRenderLinksSection:
 
     def test_sub_kb_endpoint_row_still_names_a_size(self, store: Store) -> None:
         """gr568219: a memory under 1 kB used to render a blank size cell
-        next to sized gripe rows — every row now reports raw bytes."""
+        next to sized gripe rows — every row now reports decimal kB
+        (gr573411: ``353B`` → ``0.4kB``; only the ~1kB default blanks)."""
         from precis.store.types import ChunkInsert
 
         a = _mk_ref(store, "memory", "subject note")
         b = _mk_ref(store, "memory", "tiny target note")
-        body = "short body, well under a kilobyte"
+        body = "x" * 353
         store.chunks.insert_chunks(
             b,
             [ChunkInsert(ord=0, text=body, meta={"chunk_kind": "memory_body"})],
@@ -76,8 +121,26 @@ class TestRenderLinksSection:
         ref = store.get_ref(kind="memory", id=a)
         assert ref is not None
         section = render_links_section(store, ref)
-        n_bytes = len(body.encode("utf-8"))
-        assert f"{n_bytes}B" in section
+        assert "size [kB] (default 1kB)" in section
+        assert "0.4kB" in section
+
+    def test_default_kb_endpoint_row_blanks_the_cell(self, store: Store) -> None:
+        """gr573411: a body rounding to the 1kB default renders no size
+        cell — the header's ``(default 1kB)`` carries the meaning."""
+        from precis.store.types import ChunkInsert
+
+        a = _mk_ref(store, "memory", "subject note")
+        b = _mk_ref(store, "memory", "one-kilobyte target note")
+        store.chunks.insert_chunks(
+            b,
+            [ChunkInsert(ord=0, text="y" * 1006, meta={"chunk_kind": "memory_body"})],
+        )
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
+        ref = store.get_ref(kind="memory", id=a)
+        assert ref is not None
+        section = render_links_section(store, ref)
+        assert "size [kB] (default 1kB)" in section
+        assert section.count("1kB") == 1  # only the header's default note
 
     def test_chunk_level_endpoints_render_pc_and_dc_handles(self, store: Store) -> None:
         """A chunk-grounded edge renders the *chunk* handle (``pc<id>`` /
@@ -228,11 +291,8 @@ def test_patent_links_view_registered_even_without_credentials() -> None:
 
 
 class TestRenderLinksSectionCapAndPriority:
-    def test_default_no_kwargs_is_byte_identical_to_before(self, store: Store) -> None:
-        """Regression: the numeric-ref callsite (and render_links_view)
-        pass no kwargs — the new priority/limit machinery must be
-        fully guarded off in that case, sorting by link.id exactly as
-        it did before this signature grew."""
+    def test_default_no_kwargs_matches_explicit_defaults(self, store: Store) -> None:
+        """Default options retain edge-id ordering and omit redundant calls."""
         a = store.insert_ref(kind="paper", slug="subj2020", title="subject paper").id
         b = store.insert_ref(kind="paper", slug="rel2020", title="related paper").id
         c = store.insert_ref(kind="paper", slug="citer2020", title="citing paper").id
@@ -251,6 +311,7 @@ class TestRenderLinksSectionCapAndPriority:
         # (link 2).
         assert no_kwargs.index("related paper") < no_kwargs.index("citing paper")
         assert "Links:" in no_kwargs
+        assert "how to get" not in no_kwargs
         assert "Links (" not in no_kwargs  # no truncation header
 
     def test_priority_true_sorts_evidential_before_related_to(

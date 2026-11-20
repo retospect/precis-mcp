@@ -14,6 +14,19 @@ Self-service controls:
   once, with no-store. Every token operation rechecks the stable account
   ID, and list/revoke queries always include that owner. Learning settings
   link to the protected ``/learning`` page.
+* **Client capability tokens** — per-consumer credentials (gr595554) for
+  MCP clients that act as a thing, not a person: a chat connector, a
+  feed listener. Each carries its own kinds/verbs allow-list
+  (``read``/``read:<kind>``/``write:<kind>``/``feed``; blank mints the
+  ``read`` default); the ``feed`` scope doubles as the podcast ``?t=``
+  credential. Same rules as the personal tokens — digest-only, shown
+  once, owner-scoped mint and revoke.
+* Both token sections follow ``PRECIS_MCP_CREDENTIAL_CLASSES``
+  (``app.state.mcp_credential_classes``): where ``personal`` / ``capability``
+  is not accepted the mint route is a 404 and the form is not rendered;
+  existing rows stay listed and revocable, and with none the section is
+  omitted. The podcast link mints feed-scoped capability rows through its
+  own route and is unaffected in every mode.
 * **Profile** — full name, email, and ORCID iD. The first two are
   display-only; the iD is not. A nanopub signature is attributed to an
   ORCID, never to a login (:func:`precis.nanopub.keys.load_profile`
@@ -25,7 +38,7 @@ Self-service controls:
 * **Podcast feed link** — the subscribe URL, shown whole so it can be
   copied into a podcast app, plus mint/revoke. The row stores only the
   token's digest, so the readable copy comes from the vault
-  (:func:`precis.users.recall_feed_token`); when the vault can't produce
+  (:func:`precis.users.recall_live_feed_token`); when the vault can't produce
   one, the page falls back to "mint to see a link".
 * **reMarkable pairing** — send-to-tablet, entirely per-user
   (:mod:`precis.export.remarkable`) — there is no deployment-wide device.
@@ -53,18 +66,25 @@ the worse outcome.
 Nothing here has to tell the gate about the change: its cache stores the
 ``password_hash`` each entry was verified against and re-reads the row
 every request, so writing a new hash retires every entry that referenced
-the old one. That has to hold for ``precis users passwd`` too, which
-runs in another process entirely — see
-:class:`precis_web.auth.CredentialCache`.
+the old one. The session cookie works the same way: it carries a tag of
+the ``password_hash`` and is refused once the row's tag differs. That
+has to hold for ``precis users passwd`` too, which runs in another
+process entirely — see :class:`precis_web.auth.CredentialCache` and
+:func:`precis_web.auth.password_tag`. What a password change does *not*
+revoke (app connections, MCP tokens, the podcast link) is said on the
+page after the change.
 
 **Current password is required to change it.** Browsers cache Basic
 credentials for the life of the tab, so "you're already authenticated"
 is a weak claim about who is at the keyboard. Re-typing it is the only
 thing standing between an unlocked laptop and a stolen account.
 
-**Signing out is a 401, not a cookie delete.** There is no session to
-end: the credential lives in the browser, which re-sends it on every
-request until it decides to forget. The one lever a server has is to
+**Signing out is a 401 plus a server-side mark.** The Basic credential
+lives in the browser, which re-sends it on every request until it
+decides to forget; the session cookie is the part the server can end,
+and :func:`logout` does (``SessionTokens.sign_out`` voids every cookie
+issued for the login so far, so a copy kept elsewhere stops working
+too). For the Basic half the one lever a server has is to
 answer with a fresh challenge, which is what :func:`logout` does — a
 401 carrying ``WWW-Authenticate`` under a realm the cached credential
 was never accepted for. Every mainstream browser responds by dropping
@@ -78,6 +98,7 @@ of this route.
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from typing import Any
 
@@ -86,7 +107,17 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.responses import Response
 
 from precis.errors import BadInput, Denied, Upstream
-from precis.mcp_identity import list_user_tokens, mint_user_token, revoke_user_token
+from precis.mcp_identity import (
+    CREDENTIAL_CLASSES_ENV,
+    credential_classes,
+    list_capability_tokens,
+    list_user_tokens,
+    mint_capability_token,
+    mint_user_token,
+    parse_capability_scopes,
+    revoke_capability_token,
+    revoke_user_token,
+)
 from precis.user_context import require_user, user_scope
 from precis.users import (
     MIN_PASSWORD_LENGTH,
@@ -97,7 +128,7 @@ from precis.users import (
     mint_feed_token,
     normalize_discord_user_id,
     normalize_orcid,
-    recall_feed_token,
+    recall_live_feed_token,
     remember_feed_token,
     resolve_pepper,
     validate_password,
@@ -130,6 +161,24 @@ def _require_self(request: Request) -> WebUser:
             headers={"Cache-Control": "no-store"},
         )
     return user
+
+
+def _accepts(request: Request, name: str) -> bool:
+    """Whether this deployment's MCP gate accepts credential class ``name``."""
+    classes = getattr(request.app.state, "mcp_credential_classes", None)
+    if classes is None:
+        classes = credential_classes(os.environ.get(CREDENTIAL_CLASSES_ENV))
+    return name in classes
+
+
+def _require_class(request: Request, name: str) -> None:
+    """404 a mint route whose credential class the MCP gate would refuse."""
+    if not _accepts(request, name):
+        raise HTTPException(
+            status_code=404,
+            detail=f"this deployment does not accept {name} MCP tokens",
+            headers={"Cache-Control": "no-store"},
+        )
 
 
 def _require_token_owner(request: Request) -> WebUser:
@@ -170,6 +219,7 @@ def _render(
     notice: str = "",
     feed_url: str | None = None,
     new_mcp_token: str | None = None,
+    new_cap_token: str | None = None,
 ) -> HTMLResponse:
     """Render the page, looking the feed URL up unless one was passed.
 
@@ -190,6 +240,7 @@ def _render(
     poster_profile: dict[str, Any] | None = None
     poster_roles: list[str] = []
     mcp_tokens = []
+    cap_tokens = []
     if user is not None:
         from precis import profiles
         from precis import secrets as _secrets
@@ -198,6 +249,12 @@ def _render(
 
         store = get_store(request)
         mcp_tokens = list_user_tokens(store, user.id)
+        cap_tokens = list_capability_tokens(store, user.id)
+        if not _accepts(request, "capability"):
+            # The podcast link is a feed-only row and still works; its own
+            # section manages it, so it does not belong under the notice
+            # that these tokens are refused.
+            cap_tokens = [t for t in cap_tokens if tuple(t.scopes) != ("feed",)]
         remarkable_paired = user_remarkable_configured(store, user.login)
         # Presence, not reveal: ANKI_PASSWORD:<login> is class infra (0285,
         # precis_system-only) — this role can't decrypt it, and must not.
@@ -230,8 +287,12 @@ def _render(
             "poster_profile": poster_profile,
             "poster_roles": poster_roles,
             "mcp_tokens": mcp_tokens,
-            # Returned by the mint POST only; no URL, vault or persistence.
+            "cap_tokens": cap_tokens,
+            "accepts_personal": _accepts(request, "personal"),
+            "accepts_capability": _accepts(request, "capability"),
+            # Returned by the mint POSTs only; no URL, vault or persistence.
             "new_mcp_token": new_mcp_token,
+            "new_cap_token": new_cap_token,
             "auth_on": get_web_config(request).auth_required,
             "min_password_length": MIN_PASSWORD_LENGTH,
         },
@@ -254,7 +315,11 @@ async def index(request: Request, changed: str = "", saved: str = "") -> HTMLRes
     user = current_user(request)
     notice = ""
     if changed:
-        notice = "Password changed — this page loaded with the new one."
+        notice = (
+            "Password changed — this page loaded with the new one. "
+            "App connections, MCP tokens and the podcast link were not "
+            "revoked by the password change; review them on this page."
+        )
     elif saved:
         notice = "Saved."
     if user is None:
@@ -265,6 +330,7 @@ async def index(request: Request, changed: str = "", saved: str = "") -> HTMLRes
 @router.post("/mcp-tokens", response_class=HTMLResponse)
 def create_mcp_token(request: Request, label: str = Form("")) -> HTMLResponse:
     """Show a newly minted personal credential exactly once, with no cache."""
+    _require_class(request, "personal")
     user = _require_token_owner(request)
     try:
         _token_id, raw = mint_user_token(get_store(request), user.id, label)
@@ -294,6 +360,53 @@ def revoke_mcp_token(request: Request, token_id: str = Form("")) -> Response:
         raise HTTPException(
             status_code=404,
             detail="MCP token not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    return RedirectResponse(
+        "/account", status_code=303, headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.post("/capability-tokens", response_class=HTMLResponse)
+def create_capability_token(
+    request: Request, label: str = Form(""), scopes: str = Form("")
+) -> HTMLResponse:
+    """Mint a per-consumer credential; show its plaintext exactly once."""
+    _require_class(request, "capability")
+    user = _require_token_owner(request)
+    try:
+        parsed = parse_capability_scopes(scopes)
+        _token_id, raw = mint_capability_token(
+            get_store(request), user.id, label, parsed
+        )
+    except BadInput as exc:
+        return _render(request, user=user, error=exc.cause)
+    except Denied as exc:
+        raise HTTPException(
+            status_code=403, detail=exc.cause, headers={"Cache-Control": "no-store"}
+        ) from exc
+    return _render(
+        request,
+        user=user,
+        notice="Capability token created. Copy it now; it will not be shown again.",
+        new_cap_token=raw,
+    )
+
+
+@router.post("/capability-tokens/revoke", response_class=HTMLResponse)
+def revoke_capability_token_route(
+    request: Request, token_id: str = Form("")
+) -> Response:
+    """Revoke only the signed-in owner's token; never accept an owner field."""
+    user = _require_token_owner(request)
+    if not token_id.isascii() or not token_id.isdecimal() or len(token_id) > 19:
+        return _render(
+            request, user=user, error="Choose an active capability token to revoke."
+        )
+    if not revoke_capability_token(get_store(request), user.id, int(token_id)):
+        raise HTTPException(
+            status_code=404,
+            detail="capability token not found",
             headers={"Cache-Control": "no-store"},
         )
     return RedirectResponse(
@@ -409,6 +522,12 @@ async def logout(request: Request) -> Response:
     user = current_user(request)
     if user is not None:
         log.info("account: sign-out challenge issued for %s", user.login)
+        # Server-side half of the sign-out: a copy of the cookie kept
+        # elsewhere (or one a browser ignores the deletion of) must stop
+        # verifying too, not just disappear from this browser's jar.
+        sessions = getattr(request.app.state, "session_tokens", None)
+        if sessions is not None:
+            sessions.sign_out(user.login)
     return templates.TemplateResponse(
         request,
         "account/logout.html.j2",
@@ -594,14 +713,14 @@ async def anki(
 def _feed_url(request: Request, user: WebUser) -> str:
     """The subscribe URL, or "" when there is no readable token.
 
-    Guarded on ``feed_token_sha256``: the row is what decides whether a
-    link is live, and a vault entry can outlive it (``precis users
-    feed-token --clear`` on an older build wrote only the row). Showing a
-    URL that 401s would be worse than showing none.
+    Guarded on the feed-scoped capability row (gr595554): the store is
+    what decides whether a link is live, and a vault entry can outlive
+    it (``precis users feed-token --clear`` on an older build wrote only
+    the row). Showing a URL that 401s would be worse than showing none.
     """
     if not user.has_feed_token:
         return ""
-    token = recall_feed_token(user.login, store=get_store(request))
+    token = recall_live_feed_token(user.login, store=get_store(request))
     if not token:
         return ""
     return f"{_base_url(request)}/podcast/feed.xml?t={token}"

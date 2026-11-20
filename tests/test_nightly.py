@@ -184,6 +184,27 @@ def test_real_failures_still_record_red_after_isolated_retries(
     assert "persistent after isolated retry" in top
 
 
+def test_long_boards_are_enabled_for_full_run_and_retry(tmp_path: Path) -> None:
+    tree = _stage(
+        tmp_path,
+        r"""#!/usr/bin/env bash
+printf '%s\n' "${PRECIS_TEST_ENV:-}" >> test-env.log
+if [[ "$1" == "-rfE" ]]; then
+    echo "FAILED tests/test_pcb_examples_route.py::test_example_routes_fully_at_drc_zero[nano] - AssertionError"
+    exit 1
+fi
+echo "===== 1 passed in 0.05s ====="
+""",
+    )
+    proc = _run(tmp_path, tree, PRECIS_TEST_ENV="KEEP_ME=1")
+    assert proc.returncode == 0
+    assert "all passed on isolated retry" in _top_result(tree)
+    assert (tree / "test-env.log").read_text(encoding="utf-8").splitlines() == [
+        "KEEP_ME=1 PRECIS_PCB_LONG_BOARDS=1",
+        "KEEP_ME=1 PRECIS_PCB_LONG_BOARDS=1",
+    ]
+
+
 def test_nonfatal_stale_image_warning_does_not_reclassify_red(
     tmp_path: Path,
 ) -> None:

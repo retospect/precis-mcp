@@ -42,6 +42,14 @@ window, price), the coarse **1–5 capability axes** (`code`,
 `long-context-recall`, `tool-structured`, `reasoning-convergence`,
 `summarize-extract`), and provenance.
 
+## Check account promotions, models and lane rank
+
+```python
+get(kind='llm', id='/accounts')
+```
+
+Each row shows `promo_expiry`, `models`, and `lane_rank`.
+
 ## Has this model actually been good / cheap / reliable here?
 ## See a model's realized cost + error rate + reviews
 

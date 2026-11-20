@@ -278,7 +278,7 @@ _INSPECTION_VIEWS = ("wire", "part", "layer", "snippet")
 _RENDER_VIEWS = ("svg", "schematic", "capability")
 #: gr341532 fix 3 — the ``part_footprints`` cache gap made visible per
 #: catalog-part instance, the read-side counterpart to ``op='footprint'``.
-#: ``notes`` (pcb-argue-with-design.md) — the design's argument ledger:
+#: ``notes`` (me690151) — the design's argument ledger:
 #: what the user typed on the board page, verbatim, anchored by handle,
 #: with the model's answer re each question (:mod:`precis.pcb.argue`).
 #: ``availability`` (gr485250) — the per-BOM-line stock/library/lifecycle
@@ -4027,8 +4027,7 @@ class PcbHandler(Handler):
 
     def _op_pad(self, ref: Any, args: dict[str, Any]) -> Response:
         """``put(args={'op':'pad','refdes':'J1','pad':'3','dx':…,'dy':…,
-        'w':…,'h':…,'drill':…}})`` — gr520149, docs/backlog/
-        pcb-pad-overrides.md: a per-pad, per-INSTANCE footprint-local
+        'w':…,'h':…,'drill':…}})`` — gr520149, me693055: a per-pad, per-INSTANCE footprint-local
         override. ``dx``/``dy`` shift the pad's stored centre (mm);
         ``w``/``h`` replace its extent (mm, absolute); ``drill`` re-drills
         a PLATED through-hole pad to an absolute diameter (mm — slice 2;
@@ -8319,7 +8318,7 @@ class PcbHandler(Handler):
         *,
         record: bool = False,
     ) -> Response:
-        """The ONE check surface (pcb-lazy-netlist-and-checks.md §1g, Slice
+        """The ONE check surface (me693232 §1g, Slice
         8) — geometric, netlist and ERC rules report on the same finding
         list, filterable on ``rule``/``severity``/``phase``. ``view='drc'``
         stays as this surface's preset for continuity (the run it shows,
@@ -9967,7 +9966,7 @@ class PcbHandler(Handler):
                 "pose": self._pose(i),
                 # A locked source component is "do not move this" — the
                 # fact must be readable where the parts are listed
-                # (pcb-datasheet-review.md slice 1).
+                # (me692814 slice 1).
                 "fixed": i.get("fixed") or "—",
                 "roles": ",".join(i["roles"]) or "—",
             }

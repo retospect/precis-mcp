@@ -343,11 +343,11 @@ def test_resource_read_numeric_id_kind_coerces(
     # Most-recent ref is what was just inserted.  We don't know its
     # numeric id without a search, so look it up via /recent.
     listing = runtime_with_store.dispatch("get", {"kind": "memory", "id": "/recent"})
-    # The listing renders ids as right-aligned integers.  Pull the
-    # first integer from the rendered body.
+    # The listing renders ids as handles (``me<N>``, td707301).  Pull
+    # the numeric part from the rendered body.
     import re
 
-    m = re.search(r"^\s*(\d+)\s+modality probe", listing, re.MULTILINE)
+    m = re.search(r"^\s*(?:me)?(\d+)\s+modality probe", listing, re.MULTILINE)
     assert m is not None, f"expected to find seeded memory in listing: {listing!r}"
     mid = m.group(1)
 

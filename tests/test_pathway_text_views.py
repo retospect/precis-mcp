@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -52,3 +53,27 @@ def test_mermaid_supply_link_needs_no_barrier() -> None:
     }
 
     assert graph_to_mermaid(graph) == "flowchart LR\n  n_a -.->|supply| n_b"
+
+
+def test_mermaid_hide_supply_drops_supply_edges() -> None:
+    from precis_pathway.handler import PathwayHandler
+
+    graph = {
+        "nodes": [{"id": s} for s in ("a", "b", "side")],
+        "links": [
+            {"source": "a", "target": "b", "barrier": 0.4},
+            {"source": "a", "target": "side", "kind": "supply"},
+        ],
+    }
+    handler = object.__new__(PathwayHandler)
+    ref = SimpleNamespace(id=42, slug="path", title="Pathway", meta={"graph": graph})
+    setattr(
+        handler,
+        "hub",
+        SimpleNamespace(live_store=SimpleNamespace(get_ref=lambda **_kw: ref)),
+    )
+    full = handler.get(id="path", view="mermaid").body
+    pruned = handler.get(id="path", view="mermaid", args={"hide_supply": True}).body
+    assert "supply" in full and "supply" not in pruned
+    assert "side" not in pruned
+    assert len(pruned.splitlines()) < len(full.splitlines())

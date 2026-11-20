@@ -146,6 +146,29 @@ def test_feed_token_lookup_and_rotation(store: Store) -> None:
     assert store.get_web_user_by_feed_token(second) is not None
 
 
+def test_feed_lookup_requires_a_feed_only_scope_row(store: Store) -> None:
+    """has_feed_token and the feed lookup share one predicate (gr730564): a
+    row mixing ``feed`` with an MCP scope is neither a feed credential nor
+    a reason for /account to show a feed link."""
+    user = _make(store)
+    _, digest = mint_feed_token()
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO web_user_capability_tokens"
+            " (user_id, label, token_sha256, scopes) VALUES (%s, %s, %s, %s)",
+            (user.id, "legacy mix", digest, ["read", "feed"]),
+        )
+    assert store.get_web_user_by_feed_token(digest) is None
+    fetched = store.get_web_user("reto")
+    assert fetched is not None and not fetched.has_feed_token
+
+    _, feed_digest = mint_feed_token()
+    assert store.set_web_user_feed_token("reto", feed_digest)
+    fetched = store.get_web_user("reto")
+    assert fetched is not None and fetched.has_feed_token
+    assert store.get_web_user_by_feed_token(feed_digest) is not None
+
+
 def test_disabled_user_feed_token_stops_working(store: Store) -> None:
     """Disabling an account must kill its podcast feed in the same
     keystroke — otherwise the token outlives the login."""

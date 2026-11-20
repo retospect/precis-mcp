@@ -838,7 +838,7 @@ class TestUpgradeMergesIngestMeta:
         """gr514381: a bodiless ingest (no ord >= 0 chunks; its card chunk
         collides on ``(ref_id, ord)``) writes nothing but the meta fold —
         the ``updated_at`` bump is the only record that an abstract just
-        landed, and the ``context_sentence`` heal arms key on it."""
+        landed."""
         ref_id = self._seed_stub(store, {})
         before = store.fetch_refs_by_ids([ref_id])[ref_id].updated_at
 
@@ -1232,3 +1232,85 @@ class TestDroppedIdentifierSuppression:
         assert ("pdf_sha256", sha) not in idents
         assert ("pdf_sha256", "ef" * 32) not in idents
         assert ("content_hash", chash) not in idents
+
+
+@pytest.mark.parametrize("count,matching", [(1, True), (4, False), (4, True)])
+def test_preview_pdf_replacement_is_pinned_and_requires_growth(
+    store: object, count: int, matching: bool
+) -> None:
+    from typing import Any, cast
+
+    from precis.ingest.add import _valid_fold_stub
+
+    db = cast(Any, store)
+    old_sha, new_sha = "a" * 64, "b" * 64
+    old = PaperToWrite(
+        title="Preview",
+        authors=[],
+        year=2020,
+        paper_id="preview2020",
+        cite_key_prefix="preview2020",
+        provider="crossref",
+        pdf_sha256=old_sha,
+        content_hash="c" * 64,
+        pdf_page_count=1,
+        chunks=[ChunkToWrite(ord=0, chunk_kind="paragraph", text="0")],
+    )
+    with db.pool.connection() as conn:
+        rid = write_paper(old, conn=conn).ref_id
+        conn.commit()
+    pin = {
+        "from": old_sha,
+        "to": new_sha if matching else "d" * 64,
+        "url": "https://example.org/full.pdf",
+    }
+    db.update_ref(rid, meta_patch={"pdf_preview_refetch": pin})
+    full = PaperToWrite(
+        title="Preview",
+        authors=[],
+        year=2020,
+        paper_id="preview2020",
+        cite_key_prefix="preview2020",
+        provider="crossref",
+        pdf_sha256=new_sha,
+        content_hash="e" * 64,
+        pdf_page_count=20,
+        chunks=[
+            ChunkToWrite(ord=i, chunk_kind="paragraph", text=str(i + 10))
+            for i in range(count)
+        ],
+    )
+    with db.pool.connection() as conn:
+        assert _valid_fold_stub(rid, kind="paper", conn=conn, pdf_sha256=new_sha) == (
+            rid if matching else None
+        )
+        written = register_aliases_and_maybe_upgrade(rid, full, conn=conn)
+        conn.commit()
+        row = conn.execute(
+            "SELECT pdf_sha256, meta FROM refs WHERE ref_id = %s", (rid,)
+        ).fetchone()
+        texts = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0 ORDER BY ord",
+            (rid,),
+        ).fetchall()
+        events = conn.execute(
+            "SELECT payload FROM ref_events WHERE ref_id = %s AND event = 'body_replaced'",
+            (rid,),
+        ).fetchall()
+        aliases = conn.execute(
+            "SELECT id_value FROM ref_identifiers WHERE ref_id = %s AND id_kind = 'pdf_sha256'",
+            (rid,),
+        ).fetchall()
+    replaced = matching and count > 1
+    assert written == (count if replaced else 0)
+    assert row[0].strip() == (new_sha if replaced else old_sha)
+    assert [r[0] for r in texts] == (
+        [str(i + 10) for i in range(count)] if replaced else ["0"]
+    )
+    assert (old_sha,) in aliases
+    if replaced:
+        assert "pdf_preview_refetch" not in row[1]
+        assert events[0][0]["url"] == pin["url"]
+        assert events[0][0]["from"] == old_sha
+    else:
+        assert not events

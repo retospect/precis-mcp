@@ -281,7 +281,11 @@ fix loop is in [[precis-gripe-loop-help]].
 The `gripe_dispatch` worker pass (every 10 minutes, dark until
 `service_config` lights it for a host) mints one `gripe-fix-direct`
 chain per free code-lane slot (summed cap of the enabled `code` lanes,
-minus open chains whose build has not landed). The build carries the
+minus chains whose build is live: a parked build -- ask-user,
+waiting-for, child-failed, paused -- holds no slot, and a chain parked
+with nothing moving for `factory.gripe_dispatch.stall_hours` (6) and
+no open ask is closed won't-do; the second such stall tags the gripe
+`hold:no-dispatch` for a re-brief). The build carries the
 gripe text verbatim and picks its lane at dispatch (cheapest fit, free
 before paid); the land writes `resolved: <sha>` on the gripe.
 It picks the hottest `prio` then the oldest among gripes that are `open`

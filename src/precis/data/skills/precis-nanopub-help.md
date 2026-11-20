@@ -8,11 +8,12 @@ answers:
   - what publish state is this claim hub in?
   - can I mint or sign a nanopub myself as an agent?
   - how do I propose a hypothesis for a human to review?
+  - how do I record a rejection of a hypothesis I proposed?
   - how do I check my payload against the mint gates without approving?
   - when does signing freeze a claim's content?
   - why does a claim hub show as unmintable?
   - what does the OpenTimestamps (OTS) anchor prove, and when does a signed nanopub count as anchored?
-applies-to: get (kind='finding', view='nanopub'|'mint-preflight'); put (kind='finding', hypothesis=True); reading publish state
+applies-to: get (kind='finding', view='nanopub'|'mint-preflight'|'publish-preflight'); put (kind='finding', hypothesis=True); reading publish state
 status: active
 tags: [workflow, troubleshooting]
 kinds: [finding]
@@ -167,6 +168,26 @@ envelope and keeps the prior wording in `meta.testable_by_history` /
 `meta.motivation_history`. An unsigned review reopens in place and consumers
 are flagged/listed for re-review. Once signed, correction requires a successor
 nanopublication; this edit door refuses.
+
+## Record a rejection
+
+To record a rejection, first create the ruling, then link and stamp the hypothesis.
+
+1. Mint an ordinary sourced finding for the negative ruling. State what was
+   run and what it showed, set `cited_in` to the source chunk, and confirm
+   the chase established the finding. See [[precis-finding-help]].
+2. Link the hypothesis to the ruling with
+   `link(id='fi<hypothesis>', rel='retracted-by', target='fi<ruling>')`.
+   Use `rel='superseded-by'` when the ruling is a successor that settles
+   the same ground.
+3. Stamp the hypothesis with
+   `tag(kind='finding', id='fi<hypothesis>', add=['STATUS:refuted'])`.
+   This closes it on the serving quest's gap list and excludes it from
+   default search.
+
+Read the do-not-repropose ledger with
+`search(kind='finding', status='refuted')`. This explicit status opts in
+to refuted findings, which `status='*'` still excludes.
 
 ## Report and definition types
 
@@ -445,10 +466,24 @@ approval/signing and publication of successors remain the normal human flow.
 
 ## Publish states
 
+`get(kind='finding', id='fi123', view='publish-preflight')` reads the
+publish-time gates from stored records, without network calls or state
+changes. It reports **clear to publish** when no blocking issue remains,
+otherwise one line per issue marked **blocking** or **note**. Notes do not
+block publication. This complements `view='mint-preflight'`, which checks
+the candidate payload before approval.
+
+For `grounding-stale`, today ask a person to reopen the claim to candidate
+and re-approve its grounding, or to read the newer evidence edges and sign
+using the claim page's accept-newer-evidence checkbox.
+
 `anchored` → `publishing` → `published`. While a row is `publishing` (the
 registry upload is in flight), supersede, reopen, restage and a second
 publish all refuse it. A row that stays `publishing` after an ambiguous
-registry response is resolved by a human.
+registry response is resolved without you by the publication operator:
+present becomes published, absent goes back to anchored. Re-read later.
+For withheld evidence edges, ask the evidence-verification operator to
+re-verify them, or a person to sign off after reading the passages.
 
 ## OpenTimestamps (OTS) anchoring
 
@@ -458,6 +493,8 @@ stamped. An anchor proves existence **no later than** T — an upper bound
 only, nothing about authorship — and exists for key-rotation scoping, so
 granularity caps at one batch per day. Only a 32-byte content-blind digest
 leaves the system. A batch whose proof stays pending for days raises the `nanopub_ots` alert
-`stuck-pending:{batch_id}` (warn); stored bytes that fail the integrity
+`stuck-pending:{batch_id}` (warn). Ask the timestamp operator to inspect
+and re-stamp a stuck timestamp batch; there is no agent repair call.
+Stored bytes that fail the integrity
 audit raise a critical `audit-mismatch` alert. An external nanopub that
 asserts one of our AIDA sentences raises a `concurrence` alert.

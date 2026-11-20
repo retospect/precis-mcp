@@ -3,7 +3,7 @@
 A thin, deterministic wrapper over ``latexmk``: one command runs every
 pass (pdflatex reruns + biber + makeglossaries, wired by the copied
 ``latexmkrc``). Mirrors the existing workspace ``compile_guard`` (same
-flags, timeout, log-tail), but returns a result object instead of
+flags and log-tail), but returns a result object instead of
 raising — the export CLI decides what to do with a failure, and the
 (future) LLM-repair loop consumes ``log_tail``.
 
@@ -109,7 +109,7 @@ def compile_pdf(
             skipped=True,
         )
     if timeout_s is None:
-        timeout_s = int(os.environ.get("PRECIS_LATEXMK_TIMEOUT_S", "120"))
+        timeout_s = int(os.environ.get("PRECIS_LATEXMK_TIMEOUT_S", "300"))
     pdf = project_dir / (Path(entrypoint).stem + ".pdf")
     # Remove any leftover target first so "exists afterwards" means THIS
     # run wrote it — a stale PDF from an earlier attempt must not rescue

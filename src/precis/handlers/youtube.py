@@ -205,7 +205,7 @@ class YouTubeHandler(CacheBackedHandler):
         supports_chunk_selectors=True,
         is_numeric=False,
         id_required=True,
-        views=("languages", "body", "toc"),
+        views=("languages", "body", "toc", "links"),
     )
 
     #: args= keys ``put`` reads — the fetch_many submit (gr531240).
@@ -226,6 +226,8 @@ class YouTubeHandler(CacheBackedHandler):
     attribution: ClassVar[str] = _YT_BASE_ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
     example_query: ClassVar[str] = "dQw4w9WgXcQ"
+    # The ``yt<id>`` handle routes by ref id (gr702962).
+    handle_routes_by_ref_id: ClassVar[bool] = True
 
     # ── overridden get to honour view='languages' ─────────────────────
 
@@ -252,17 +254,23 @@ class YouTubeHandler(CacheBackedHandler):
             # list of available tracks for the given video so the agent
             # can pick one before paying the (free) transcript fetch.
             video_input = self._coerce_query(id, q)
-            video_id = _extract_video_id(video_input)
+            # A ``yt<N>`` handle routes id= as the ref id — resolve the
+            # stored row's slug, which IS the video id, before the
+            # extractor refuses bare digits (review td707055).
+            video_id = _extract_video_id(
+                self._stored_ref_video_id(video_input) or video_input
+            )
             return _list_languages(video_id)
 
-        if view is not None and view not in ("body", "toc"):
+        if view is not None and view not in ("body", "toc", "links"):
             # The eye-ladder labels in view= are intercepted by the
             # dispatcher before this method runs, so any view reaching
-            # here other than the base's ``body`` read or ``toc`` is
-            # genuinely unknown — refuse, don't silently ignore.
+            # here other than the base's ``body`` read, ``toc`` or
+            # ``links`` is genuinely unknown — refuse, don't silently
+            # ignore.
             raise BadInput(
                 f"unknown view={view!r} for kind='youtube'",
-                options=["languages", "toc", "body"],
+                options=["languages", "toc", "body", "links"],
                 next=(
                     "extent= picks an eye-ladder rung (kwd|summary|verbatim|fisheye|…)"
                 ),
@@ -488,8 +496,8 @@ class YouTubeHandler(CacheBackedHandler):
     ) -> Response:
         """Paginated cached-video listing (gr498108).
 
-        One row per video: the video-id slug (its pastable handle on
-        this kind — youtube carries no universal handle), title,
+        One row per video: the video-id slug (its pastable id on
+        this kind — the universal handle is ``yt<ref_id>``), title,
         channel, duration and cache state, newest fetch first.
         ``page=``/``page_size=`` ride ``args=`` on the MCP surface.
         """
@@ -1062,26 +1070,21 @@ class YouTubeHandler(CacheBackedHandler):
         except BadInput:
             return prefix.strip()
 
-    def _render_chunk_selector(
-        self,
-        slug: str,
-        lo: int,
-        hi: int,
-        *,
-        tags: list[str] | None = None,
-        untags: list[str] | None = None,
-        view: str | None = None,
-    ) -> Response:
-        """Re-window a legacy one-blob transcript BEFORE the selector
-        resolves its chunk (gr540142), then defer to the base's range
-        read (gr533135). The re-chunk commits before the base re-reads
-        the entry by slug, so the second lookup sees the new chunks."""
-        cached = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
-        if cached is not None:
-            self._maybe_rechunk(cached[0])
-        return super()._render_chunk_selector(
-            slug, lo, hi, tags=tags, untags=untags, view=view
-        )
+    def _stored_ref_video_id(self, video_input: str) -> str | None:
+        """The video id behind a bare-digits input — the shape a ``yt<N>``
+        handle routes ``id=`` as (the ref id). The stored row's slug IS
+        the bare video id; ``None`` when the input isn't digits or names
+        no cached row."""
+        s = str(video_input).strip()
+        if not s.isdecimal():
+            return None
+        entry = self.store.get_cache_entry_by_ref_id(kind=self.spec.kind, ref_id=int(s))
+        if entry is None or not entry[0].slug:
+            return None
+        return entry[0].slug
+
+    def _prepare_chunk_read(self, ref: Ref) -> None:
+        self._maybe_rechunk(ref)
 
     def _chunk_label(self, slug: str, block: Any) -> str | None:
         """``slug~n`` plus the chunk's video time window, printed before
@@ -1167,7 +1170,12 @@ class YouTubeHandler(CacheBackedHandler):
         """Chunk map of a cached transcript — selector, time window and
         size per row (gr540142). Read-only: never fetches."""
         video_input = self._coerce_query(id, q)
-        slug = self._selector_slug(video_input)
+        # A ``yt<N>`` handle routes id= as the ref id — resolve the
+        # stored row's slug (the video id) rather than mapping bare
+        # digits to a NotFound (review td707055).
+        slug = self._stored_ref_video_id(video_input) or self._selector_slug(
+            video_input
+        )
         cached = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
         if cached is None:
             raise NotFound(

@@ -27,7 +27,14 @@ def test_markdown_table_header_and_cells_link_like_prose() -> None:
     assert rendered.count(_HREF) == 4
     assert re.search(r"<th\b[^>]*>.*?" + re.escape(_HREF), rendered)
     assert re.search(r"<td\b[^>]*>.*?" + re.escape(_HREF), rendered)
-    assert "<ul><li>See " in rendered
+    # td700858: block elements carry classes and prose sits in a span
+    assert re.search(
+        r"<ul\b[^>]*>\s*<li\b[^>]*>(?:<span\b[^>]*>)?See .*?"
+        + re.escape(_HREF)
+        + r".*?</li>",
+        rendered,
+        re.DOTALL,
+    )
     assert "<script>bad</script>" not in rendered
     assert "&lt;script&gt;bad&lt;/script&gt; &amp; more" in rendered
 

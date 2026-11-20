@@ -469,7 +469,8 @@ def enter_rescue(
 # review td688453): a queued job the ``parent_not_paused`` gate refuses
 # (a ``_DOABLE_EXCLUSION_TAGS`` tag or a live ``claimed-by:`` lease on
 # the parent), the coordinator's ``hold:no-dispatch``, the td603849
-# file-overlap sequence, the free-failure backoff and a
+# file-overlap sequence (its mint queues; the claim loop skips the job
+# until the blocker lands, gr702610), the free-failure backoff and a
 # ``child-failed:``-latched transient park's ``retry_after``.
 # Release plans belong to
 # ``release_poll::watch_stuck`` and are skipped. Read-only (kill switch
@@ -1066,44 +1067,33 @@ def _no_dispatch_hold(plan: Any, n: Any) -> str | None:
 
 def _overlap_hold(store: Store, plan: Any, n: Any) -> str | None:
     """The td603849 file-overlap hold's reason while a started, unlanded
-    build in the same repo touches a file this build's brief names —
-    ``_step_dispatch`` refuses the mint until the blocker is on main.
-    Same inputs as the dispatch step's ``held`` computation, evaluated
-    for this one candidate: only ``run_slice`` tasks wait (generators
-    commit nothing), a node never holds itself, and the blocker's
-    governing ``repo:`` must match."""
-    from precis.utils import dispatch_score as _dscore
+    build in the same repo touches a file this build's brief names (the
+    same repo-relative path; ``dispatch_score.shared_files``) — the mint
+    is not refused: the build's job queues and the executor claim loop
+    skips it until the blocker is on main (gr702610). The claim's own
+    read (``plan_dispatch._overlap_holds``) for this one candidate, so
+    the reason never names a hold the claim does not apply (gr734976:
+    this used to read file names from builder handoffs and ignored the
+    land target): only ``run_slice`` tasks wait (generators commit
+    nothing), a node never holds itself, and the blocker's governing
+    ``repo:`` and land target must match."""
     from precis.workers.job_types import plan_dispatch as pd
 
-    if pd._resolve_op(n)[0] != pd.DEFAULT_OP or pd._is_generator(n):
-        return None
     started = pd._started_slices(store)
     started.pop(n.id, None)
     if not started:
         return None
-    files = pd._brief_file_sets(store, [n.id, *started])
-    mine = files.get(n.id) or frozenset()
-    if not mine:
+    hit = pd._overlap_holds(plan, store, started, [n]).get(n.id)
+    if hit is None:
         return None
-    repo = pd._node_repo(plan, n)
-    for hid in sorted(started):
-        s = started[hid]
-        if s.repo != repo:
-            continue
-        shared = mine & (
-            (files.get(hid) or frozenset())
-            | _dscore.brief_files("\n".join(s.branch_files))
-        )
-        if not shared:
-            continue
-        named = sorted(p for p in shared if "/" in p) or sorted(shared)
-        return (
-            f"file-overlap hold — waits on td{hid} ({s.state}): both touch "
-            f"{', '.join(f'`{p}`' for p in named[:3])}"
-            f"{' …' if len(named) > 3 else ''}; dispatches once td{hid} "
-            "is on main"
-        )
-    return None
+    hid, shared = hit
+    named = sorted(p for p in shared if "/" in p) or sorted(shared)
+    return (
+        f"file-overlap hold — waits on td{hid} ({started[hid].state}): both "
+        f"touch {', '.join(f'`{p}`' for p in named[:3])}"
+        f"{' …' if len(named) > 3 else ''}; claims once td{hid} "
+        "is on main"
+    )
 
 
 def _parent_gate_tag(store: Store, now: datetime, n: Any) -> str | None:
@@ -1220,7 +1210,8 @@ def _stage_for(
     overlap = _overlap_hold(store, plan, n)
     if overlap is not None:
         # The td603849 sequence: a started, unlanded build owns the
-        # shared files first; the tick re-tries the mint every pass.
+        # shared files first; the claim loop re-checks the hold until
+        # the blocker is on main.
         return "parked", "parked", j, f"waiting ({overlap})"
     job_type, params = pd._resolve_op(n)
     if job_type == pd.DEFAULT_OP:
@@ -1477,6 +1468,16 @@ def _judge_node(
                 f"(executor {ex}); a wait, not a stall"
             )
             return
+        if jt == "run_slice":
+            # gr702610: the mint now queues held builds — a job the
+            # claim-time overlap hold skips never claims, so its queue
+            # can sit still past the deadline while the holder builds.
+            # (Only run_slice claims skip; a queued land is never held.)
+            overlap = _overlap_hold(store, plan, n)
+            if overlap is not None:
+                res.held += 1
+                res.notes.append(f"td{n.id}: {overlap} — a wait, not a stall")
+                return
     branch = head_sha = None
     head = _branch_head(plan, n)
     if head is not None:

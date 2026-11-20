@@ -235,6 +235,353 @@ def test_current_status_over_hourly_cap() -> None:
     assert status.tripped_window == "hourly"
 
 
+# ── shared snapshot + pending (gr732477) ───────────────────────────────
+# The meter reads two ``app_state`` point rows — ``budget.meter:snapshot``
+# (last full-ledger sums) and ``budget.meter:pending`` (spend committed
+# since) — and re-baselines under an advisory lock only when the snapshot
+# outlives the horizon the *effective* status implies (300s quiet, 15s near
+# or over a cap). Ledger writers bump ``pending`` with the committed cost.
+
+
+class _MeterConn:
+    """``app_state``-capable fake conn for the meter's shared path.
+
+    Answers the reader's three-scalar select, the refresh CTE (one row:
+    pending, now-epoch, llm h/d, cache h/d), the snapshot upsert, the
+    pending-subtract RETURNING, the advisory-lock probe, and — as real
+    arithmetic — ``note_spend``'s upsert. Everything else falls through to
+    the plain ``llm_call_log`` / ``cache_state`` sums / ``_Cursor(None)``,
+    the same shape as :class:`_Conn`.
+    """
+
+    def __init__(
+        self,
+        state: dict[str, str],
+        *,
+        llm: float = 0.0,
+        fetch: float = 0.0,
+        now: list[float] | None = None,
+        on_refresh: Any = None,
+    ) -> None:
+        self._state = state
+        self._llm = llm
+        self._fetch = fetch
+        self.now = now if now is not None else [0.0]
+        self._on_refresh = on_refresh
+        self.lock_held = False
+        self.refreshes = 0
+        self.commits = 0
+
+    def __enter__(self) -> _MeterConn:
+        return self
+
+    def __exit__(self, *a: object) -> Literal[False]:
+        return False
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def bump_pending(self, usd: float) -> None:
+        """A committed ``note_spend`` — what a ledger writer's txn does."""
+        key = meter._PENDING_KEY
+        self._state[key] = repr(float(self._state.get(key, "0")) + usd)
+
+    def execute(self, sql: str, params: object = None) -> _Cursor:
+        s = sql.upper()
+        if "PG_TRY_ADVISORY_XACT_LOCK" in s:
+            return _Cursor((not self.lock_held,))
+        if "SAVEPOINT" in s:
+            return _Cursor(None)
+        if "LLM_CALL_LOG" in s and "CACHE_STATE" in s:
+            # The refresh CTE — one row, one snapshot: (pending, now,
+            # llm h/d, cache h/d). Pending is captured at the statement's
+            # snapshot instant; on_refresh then lands an increment
+            # *between* the read and the later subtract.
+            self.refreshes += 1
+            pending_at_read = self._state.get(meter._PENDING_KEY)
+            if self._on_refresh is not None:
+                self._on_refresh(self)
+            return _Cursor(
+                (
+                    pending_at_read,
+                    self.now[0],
+                    self._llm,
+                    self._llm,
+                    self._fetch,
+                    self._fetch,
+                )
+            )
+        if s.startswith("INSERT INTO APP_STATE"):
+            args = cast("tuple", params)
+            if len(args) == 3:  # note_spend: (key, insert-value, addend)
+                self.bump_pending(float(args[2]))
+            else:  # snapshot upsert: (key, json)
+                self._state[cast("str", args[0])] = cast("str", args[1])
+            return _Cursor(None)
+        if s.startswith("UPDATE APP_STATE"):
+            args = cast("tuple", params)
+            key = cast("str", args[1])
+            if key not in self._state:
+                return _Cursor(None)  # UPDATE on a missing row touches nothing
+            # READ COMMITTED: the subtract sees increments committed after
+            # the CTE's snapshot — modelled by bump_pending inside
+            # on_refresh having already landed.
+            left = max(0.0, float(self._state[key]) - float(args[0]))
+            self._state[key] = repr(left)
+            return _Cursor((self._state[key],))
+        if "APP_STATE" in s:
+            # The reader: (snapshot json, pending, now-epoch).
+            return _Cursor(
+                (
+                    self._state.get(meter._SNAPSHOT_KEY),
+                    self._state.get(meter._PENDING_KEY),
+                    self.now[0],
+                )
+            )
+        if "llm_call_log" in sql:
+            return _Cursor((self._llm, self._llm))
+        if "cache_state" in sql:
+            return _Cursor((self._fetch, self._fetch))
+        return _Cursor(None)
+
+
+class _MeterPool:
+    def __init__(self, conn: _MeterConn) -> None:
+        self._conn = conn
+
+    def connection(self) -> _MeterConn:
+        return self._conn
+
+
+class SharedStore(_FakeStoreBase):
+    """Fake store whose conn understands the meter's ``app_state`` rows."""
+
+    def __init__(
+        self,
+        *,
+        state: dict[str, str] | None = None,
+        llm: float = 0.0,
+        fetch: float = 0.0,
+        now: list[float] | None = None,
+        on_refresh: Any = None,
+    ) -> None:
+        super().__init__()
+        self.state: dict[str, str] = state if state is not None else {}
+        self.conn = _MeterConn(
+            self.state, llm=llm, fetch=fetch, now=now, on_refresh=on_refresh
+        )
+        self.pool = _MeterPool(self.conn)
+
+
+def test_current_status_shared_snapshot_horizons() -> None:
+    # gr732477: a quiet snapshot is re-baselined at the 300s horizon; once
+    # the effective status reaches half of either cap the tight 15s
+    # horizon applies so an approaching trip re-reads promptly.
+    now = [0.0]
+    store = SharedStore(llm=1.0, fetch=0.0, now=now)
+
+    now[0] = 1000.0
+    status = meter.current_status(cast("Store", store))
+    assert status is not None and status.hourly_spent == pytest.approx(1.0)
+    assert store.conn.refreshes == 1  # no snapshot → baseline written
+    assert meter._SNAPSHOT_KEY in store.state
+
+    now[0] += 100.0  # 100s < 300s quiet horizon → no re-baseline
+    assert meter.current_status(cast("Store", store)) is not None
+    assert store.conn.refreshes == 1
+
+    now[0] += 250.0  # 350s > 300s → re-baseline
+    assert meter.current_status(cast("Store", store)) is not None
+    assert store.conn.refreshes == 2
+
+    # Push the effective status to half the hourly cap via pending — the
+    # tight 15s horizon now applies to the next re-baseline.
+    store.conn.bump_pending(1.6)  # 1.0 + 1.6 = 2.6 ≥ 0.5 × $5
+    now[0] += 16.0
+    assert meter.current_status(cast("Store", store)) is not None
+    assert store.conn.refreshes == 3
+
+    now[0] += 10.0  # < 15s tight horizon → no re-baseline
+    assert meter.current_status(cast("Store", store)) is not None
+    assert store.conn.refreshes == 3
+
+
+def test_pending_spend_trips_across_processes_without_rebaseline() -> None:
+    # Review td733299: a quiet snapshot must not hide another process's
+    # spend for 300s. Pending is shared state — a second reader on the
+    # same rows sees the trip at its next read, no re-baseline needed.
+    now = [2000.0]
+    shared: dict[str, str] = {}
+    store_a = SharedStore(state=shared, now=now)
+    store_b = SharedStore(state=shared, now=now)  # the "other process"
+
+    assert meter.current_status(cast("Store", store_a)) is not None
+    assert store_a.conn.refreshes == 1  # baseline written
+    assert meter._PENDING_KEY not in shared or shared[meter._PENDING_KEY] == "0.0"
+
+    # Process A commits paid spend — the ledger write bumps pending. The
+    # baseline sums are 0, so pending alone carries the spend over the cap.
+    store_a.conn.bump_pending(4.6)
+    store_a.conn.bump_pending(0.4)  # pending = 5.0 ≥ $5 hourly cap
+
+    status = meter.current_status(cast("Store", store_b))
+    assert status is not None and status.tripped is True
+    assert status.tripped_window == "hourly"
+    assert store_b.conn.refreshes == 0  # seen off the point read alone
+
+
+def test_rebaseline_preserves_inflight_pending() -> None:
+    # Review td733299: an increment committed between the CTE's snapshot
+    # and the subtract must survive — the subtract removes only what the
+    # baseline already counted.
+    store = SharedStore(
+        state={meter._PENDING_KEY: "2.0"},
+        llm=1.0,
+        fetch=0.5,
+        on_refresh=lambda conn: conn.bump_pending(1.5),
+    )
+    status = meter.current_status(cast("Store", store))
+    assert status is not None
+    # Fresh sums 1.5 + the surviving in-flight 1.5.
+    assert status.hourly_spent == pytest.approx(3.0)
+    assert float(store.state[meter._PENDING_KEY]) == pytest.approx(1.5)
+
+
+def test_note_spend_guards_and_accumulates() -> None:
+    conn = _MeterConn({})
+    for bad in (None, 0.0, -1.0):
+        meter.note_spend(cast(Any, conn), bad)
+    assert meter._PENDING_KEY not in conn._state
+    meter.note_spend(cast(Any, conn), 0.25)
+    meter.note_spend(cast(Any, conn), 0.75)
+    assert float(conn._state[meter._PENDING_KEY]) == pytest.approx(1.0)
+
+
+def test_gate_paid_never_accounts_the_estimate() -> None:
+    # Review td733299: the estimate is a gate input only — repeated gated
+    # calls (each of which may then fail unbilled) must not accrue meter
+    # spend; only a committed ledger row does.
+    store = SharedStore()
+    assert breaker_mod.gate_paid(0.50, store=cast("Store", store)) is None
+    assert meter._PENDING_KEY not in store.state
+
+
+def test_route_log_write_notes_actual_spend_only() -> None:
+    # ``route_log._write`` folds the committed cost into pending for
+    # metered transports; OAuth (notional) and unpriced rows note nothing.
+    from precis import route_log
+
+    state: dict[str, str] = {}
+    store = SharedStore(state=state)
+
+    def rec(**kw: Any) -> route_log.LlmCallRecord:
+        base: dict[str, Any] = {
+            "source": "test",
+            "tier": "big",
+            "transport": "openai_tools",
+            "model": "m",
+            "tools_needed": False,
+            "request_text": "REQ",
+            "response_text": "RESP",
+            "cost_usd": 0.5,
+            "turns_used": None,
+            "duration_ms": None,
+            "errored": False,
+            "error": None,
+            "data_parsed": None,
+            "store_blobs": False,
+        }
+        base.update(kw)
+        return route_log.LlmCallRecord(**base)
+
+    route_log._write(cast("Store", store), rec(cost_usd=0.40))
+    assert float(state[meter._PENDING_KEY]) == pytest.approx(0.40)
+    route_log._write(cast("Store", store), rec(transport="claude_p", cost_usd=2.0))
+    route_log._write(cast("Store", store), rec(cost_usd=None))
+    assert float(state[meter._PENDING_KEY]) == pytest.approx(0.40)
+
+
+# ── real-Postgres end run (skipped without PRECIS_TEST_PG_URL) ─────────
+
+
+def test_meter_shared_state_roundtrip_on_real_db(store: Any) -> None:
+    """Ledger write → pending note → shared read → baseline fold, for real."""
+    from precis import route_log
+
+    route_log.record_call(
+        route_log.LlmCallRecord(
+            source="test",
+            tier="big",
+            transport="openai_tools",
+            model="m",
+            tools_needed=False,
+            request_text="REQ",
+            response_text="RESP",
+            cost_usd=0.40,
+            turns_used=None,
+            duration_ms=None,
+            errored=False,
+            error=None,
+            data_parsed=None,
+            store_blobs=False,
+        ),
+        store=store,
+    )
+    with store.pool.connection() as conn:
+        pend = conn.execute(
+            "SELECT value FROM app_state WHERE key = %s", (meter._PENDING_KEY,)
+        ).fetchone()
+    assert pend is not None and float(pend[0]) == pytest.approx(0.40)
+
+    status = meter.current_status(store)
+    assert status is not None
+    assert status.hourly_spent == pytest.approx(0.40)
+
+    with store.pool.connection() as conn:
+        pend = conn.execute(
+            "SELECT value FROM app_state WHERE key = %s", (meter._PENDING_KEY,)
+        ).fetchone()
+        snap = conn.execute(
+            "SELECT value FROM app_state WHERE key = %s", (meter._SNAPSHOT_KEY,)
+        ).fetchone()
+    assert snap is not None  # baseline written
+    assert pend is None or float(pend[0]) == pytest.approx(0.0)  # folded
+
+    # A second read rides the snapshot — still shows the spend.
+    status = meter.current_status(store)
+    assert status is not None and status.hourly_spent == pytest.approx(0.40)
+
+
+def test_put_cache_entry_notes_pending_spend_on_real_db(store: Any) -> None:
+    """A paid fetch's committed ``cache_state.cost_usd`` accrues pending;
+    a free one doesn't (finding: actuals, not estimates)."""
+    store.put_cache_entry(
+        kind="wikipedia",
+        slug="meter-note-paid",
+        title="t",
+        body_blocks=[],
+        provider="wikipedia",
+        request_hash="mnh-paid",
+        ttl_seconds=60,
+        cost_usd=0.25,
+    )
+    store.put_cache_entry(
+        kind="wikipedia",
+        slug="meter-note-free",
+        title="t",
+        body_blocks=[],
+        provider="wikipedia",
+        request_hash="mnh-free",
+        ttl_seconds=60,
+        cost_usd=0.0,
+    )
+    with store.pool.connection() as conn:
+        pend = conn.execute(
+            "SELECT value FROM app_state WHERE key = %s", (meter._PENDING_KEY,)
+        ).fetchone()
+    assert pend is not None and float(pend[0]) == pytest.approx(0.25)
+
+
 # ── breaker ──────────────────────────────────────────────────────────────
 
 

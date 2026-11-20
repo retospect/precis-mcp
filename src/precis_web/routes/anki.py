@@ -14,6 +14,10 @@ teach, and the daily mint cap for heavy mornings.
                           mirror) and set ``meta.mastery=1.0`` /
                           ``state='mastered'``.
 * ``POST /anki/drop``   — the same retire path on one bad card.
+* ``POST /anki/boost``  — stamp ``meta.anki_boost_due`` on one live card;
+                          the next ``anki_sync`` tick brings the mirror
+                          card's due date forward to today (never review
+                          history) and clears the marker once a card moves.
 * ``POST /anki/queue``  — one term per line: an existing concept/taxon named
                           it (case-insensitive) is tagged ``twin:asked``;
                           otherwise a ``twin:asked`` concept is minted. The
@@ -117,14 +121,19 @@ def _counts(store: Store, owner: str) -> dict[str, int]:
 def _forge_groups(store: Store, owner: str) -> list[dict[str, Any]]:
     """Forge-authored live cards, grouped by their ``represents`` concept —
     newest card first inside each group, groups ordered by their newest
-    card. ``(concept, mastery, state, [(card_id, cloze_text), …])``."""
+    card. ``(concept, mastery, state, [(card_id, cloze_text, boosted), …])``.
+
+    ``boosted`` mirrors ``meta.anki_boost_due``: a queued bring-forward the
+    next ``anki_sync`` tick applies, so a list row can show "boost queued"
+    instead of offering the same boost again."""
     sql = """
         SELECT c.ref_id,
                c.meta->>'name',
                c.meta->>'mastery',
                c.meta->>'state',
                a.ref_id,
-               a.meta->'fields'->>'Text'
+               a.meta->'fields'->>'Text',
+               a.meta->>'anki_boost_due'
         FROM refs a
         JOIN links l ON (
                  (l.dst_ref_id = a.ref_id AND l.relation = 'represents')
@@ -139,7 +148,7 @@ def _forge_groups(store: Store, owner: str) -> list[dict[str, Any]]:
     """
     groups: dict[int, dict[str, Any]] = {}
     with store.pool.connection() as conn:
-        for cid, name, mastery, state, card_id, cloze in conn.execute(
+        for cid, name, mastery, state, card_id, cloze, boost_due in conn.execute(
             sql, (owner, _FORGE_AUTHOR)
         ).fetchall():
             g = groups.setdefault(
@@ -152,7 +161,13 @@ def _forge_groups(store: Store, owner: str) -> list[dict[str, Any]]:
                     "cards": [],
                 },
             )
-            g["cards"].append({"id": int(card_id), "text": cloze or ""})
+            g["cards"].append(
+                {
+                    "id": int(card_id),
+                    "text": cloze or "",
+                    "boosted": bool(boost_due),
+                }
+            )
     return list(groups.values())
 
 
@@ -245,6 +260,11 @@ async def known(request: Request) -> Response:
                 "state": STATE_MASTERED,
             },
         )
+    if request.headers.get("HX-Request") == "true":
+        # htmx row delete (``hx-swap="delete"`` on /learning's concept rows)
+        # — the surrounding list is already correct; a 303 would swap the
+        # whole /anki page into the row.
+        return Response(status_code=200)
     return RedirectResponse(f"/anki?retired={retired}", status_code=303)
 
 
@@ -258,7 +278,31 @@ async def drop(request: Request, card: int = Form(...)) -> Response:
     if ref is None or getattr(ref, "owner_login", None) != user.login:
         raise HTTPException(status_code=404, detail=f"anki id={card} not found")
     store.retire_ref(card)
+    if request.headers.get("HX-Request") == "true":
+        return Response(status_code=200)
     return RedirectResponse("/anki?retired=1", status_code=303)
+
+
+@router.post("/boost", response_class=HTMLResponse)
+async def boost(request: Request, card: int = Form(...)) -> Response:
+    """Queue one live card to be shown sooner: stamp ``meta.anki_boost_due``
+    with today's date; the next ``anki_sync`` tick brings the mirror card's
+    due date forward to that day (review history untouched) and clears the
+    marker. Same owner guard as ``drop`` — a foreign id is a 404, never a
+    write. Re-boosting an already-queued card just refreshes the date."""
+    user = _require_user(request)
+    store = get_store(request)
+    ref = store.get_ref(kind="anki", id=card)
+    if ref is None or getattr(ref, "owner_login", None) != user.login:
+        raise HTTPException(status_code=404, detail=f"anki id={card} not found")
+    store.update_ref(
+        card,
+        meta_patch={"anki_boost_due": datetime.now(UTC).date().isoformat()},
+    )
+    if request.headers.get("HX-Request") == "true":
+        # Swap the button for the queued chip (``hx-swap="outerHTML"``).
+        return templates.TemplateResponse(request, "anki/_boosted.html.j2", {})
+    return RedirectResponse("/anki?saved=1", status_code=303)
 
 
 @router.post("/queue", response_class=HTMLResponse)

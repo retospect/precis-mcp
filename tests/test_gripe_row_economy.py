@@ -13,8 +13,14 @@ longer gripe's footer still names it, last. The batch-get footer names
 ``view='full'`` too — its summary blocks are titles only.
 """
 
+from typing import Any
+
+import pytest
+
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.gripe import GripeHandler
+from precis.runtime import PrecisRuntime
 from precis.store import Tag
 from tests._refs import insert_gripe
 from tests.conftest import id_of
@@ -107,3 +113,45 @@ def test_batch_get_footer_names_view_full(hub: Hub) -> None:
     b = id_of(handler.put(text="batch probe b").body)
     body = handler.get(id=[a, b]).body
     assert f"get(kind='gripe', id={a}, view='full')" in body
+
+
+@pytest.mark.parametrize("view", [None, "list"])
+@pytest.mark.parametrize("q", [None, "prefix override probe"])
+def test_tag_prefixes_override(hub: Hub, view: str | None, q: str | None) -> None:
+    handler = GripeHandler(hub=hub)
+    gid = id_of(handler.put(text="prefix override probe").body)
+    for tag in ("thread:x", "fix:code", "cluster:y"):
+        handler.store.add_tag(gid, Tag.open(tag), set_by="system")
+    default = handler.search(q=q, view=view).body
+    assert "[cluster:y]" in default
+    assert "[thread:x]" not in default
+    body = handler.search(q=q, view=view, tag_prefixes=" thread:,fix ").body
+    assert "[thread:x]" in body
+    assert "[fix:code]" in body
+    assert "[cluster:y]" not in body
+    assert "[thread:x]" not in handler.search(q=q, view=view).body
+
+
+@pytest.mark.parametrize("value", ["", " ", None, [], 12, "thread,,fix"])
+def test_tag_prefixes_bad_input(hub: Hub, value: Any) -> None:
+    handler = GripeHandler(hub=hub)
+    with pytest.raises(BadInput, match="tag_prefixes"):
+        handler.search(tag_prefixes=value)
+    with pytest.raises(BadInput, match="tag_prefixes"):
+        handler.get(id=[1, 2], tag_prefixes=value)
+
+
+def test_tag_prefixes_through_dispatch(
+    hub: Hub, runtime_with_store: PrecisRuntime
+) -> None:
+    handler = GripeHandler(hub=hub)
+    gid = id_of(handler.put(text="dispatch prefix probe").body)
+    handler.store.add_tag(gid, Tag.open("reto:ask"), set_by="system")
+    for verb, params in (
+        ("search", {"tags": ["STATUS:open"]}),
+        ("get", {"id": [gid]}),
+    ):
+        body = runtime_with_store.dispatch(
+            verb, {"kind": "gripe", **params, "__extras__": {"tag_prefixes": "reto"}}
+        )
+        assert "[reto:ask]" in body

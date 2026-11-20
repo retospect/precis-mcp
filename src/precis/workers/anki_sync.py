@@ -93,10 +93,14 @@ def _sync_one_user(
     retire_ids = [] if no_retire else retired_ref_ids(store, login=login)
 
     if dry_run:
+        boosts = sum(1 for s in specs if s.boost)
+        boost_note = (
+            f", {boosts} boost(s) would bring due forward to today" if boosts else ""
+        )
         return (
             f"{prefix} [DRY-RUN]: {len(specs)} cloze card(s) would sync, "
             f"{len(retire_ids)} retired ref(s) would be removed from the "
-            f"mirror.{claim_note}"
+            f"mirror{boost_note}.{claim_note}"
         )
 
     # No-op shortcut: nothing to push and nothing to retire means this tick
@@ -146,6 +150,10 @@ def _sync_one_user(
             retire_ref_ids=retire_ids,
         )
         now = datetime.now(UTC).isoformat()
+        for ref_id in result.deleted_ref_ids:
+            # Specs are owner-scoped authored refs. Retiring keeps the deletion
+            # durable across ticks; a new explicit add gets a new ref/guid.
+            store.retire_ref(ref_id)
         for ref_id, st in stats.items():
             # FLAT keys — `meta_patch` is a shallow jsonb `||` merge, so a
             # nested `{"anki": {...}}` would REPLACE the whole meta.anki
@@ -155,6 +163,16 @@ def _sync_one_user(
                 ref_id,
                 meta_patch={"anki_stats": st, "anki_synced_at": now},
             )
+        if not result.aborted:
+            # Consumed boosts only (a mirror card actually moved — its due
+            # date rode this push forward). A `meta ||` merge cannot express
+            # a delete, so the marker clears through the dedicated key
+            # remover; unconsumed boosts (note not yet in the mirror, or no
+            # movable card yet) stay queued for a later tick.
+            for ref_id in result.boosted_ref_ids:
+                store.clear_ref_meta_keys(
+                    ref_id, ["anki_boost_due"], source="anki_boost"
+                )
         lines = [f"{prefix}: {result.summary()}{claim_note}"]
         if result.all_cards is not None:
             from precis.anki.project import project_cards

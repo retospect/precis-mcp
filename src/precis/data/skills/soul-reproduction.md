@@ -23,9 +23,7 @@ A published computational claim needs an inspectable reproduction path:
 pinned inputs, code, environment, configuration, model identity, seeds
 when relevant, outputs and declared comparison tolerances. State what is
 unavailable. Replaying our run and agreeing with published DFT results
-are separate checks. For November's paper, follow the current owner
-decision on td459589 and its repro-bundle spec; do not lift existing
-validation or compute holds.
+are separate checks.
 
 ## Goals → skills
 

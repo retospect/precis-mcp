@@ -66,7 +66,7 @@ test piece, the anneal may move its 103 unlocked parts, and it gets
 routed on prod as is. Import locks only the parts the source locked
 (`--freeze` locks all). A same-day freeze-all default was reverted: it
 contradicted his 09-30 "only freeze when needed"
-(`pcb-freeze-mechanicals-and-parts.md`). Per Reto's ruling on review-queue
+(`pcb-freeze-mechanicals-and-parts (me693126)`). Per Reto's ruling on review-queue
 `pcb-easyeda-round-trip-5`, the import report lists likely alignment-critical
 parts without locking them, and the author pins one with the `align` measure
 (within one board; hard align snaps after the anneal; precis-measures-help).
@@ -232,7 +232,7 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    than a warned drop), teardrops (derived fill, Pro regenerates on
    repour), source silk art (regenerated — 16 source records vs 139
    POLYs + 96 designators written), the two plated free pads (no
-   precis free-pad model — pcb-free-pad-model.md), schematic docs and
+   precis free-pad model — pcb-free-pad-model (me693028)), schematic docs and
    DEVICE records (deliberate — no "update PCB from schematic" trap;
    pin names fall back to pad numbers on re-import). **The 0.5 um
    round-trip test (Horizon 6) landed with it**: import → `view='epro'`

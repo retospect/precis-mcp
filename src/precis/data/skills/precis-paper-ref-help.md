@@ -62,10 +62,10 @@ share the same `refs` machinery.
 | export a ref's full state (undo) | `get(id=…, view='ops')` |
 | rebuild a ref from its dump | `put(id=…, args={'restore': <slice>, 'reason': …})` |
 | download a held PDF | `get(id=…, view='pdf_link')` — signed URL, no bytes over MCP |
-| upload a local PDF | `args={'pdf_upload_link': True}` → POST the file to the URL → `args={'pdf_upload': '<sha>', 'reason': …}` — single-use link |
+| upload a local PDF (needs a client that can POST a file) | `args={'pdf_upload_link': True}` → POST the file to the URL → `args={'pdf_upload': '<sha>', 'reason': …}` — single-use link |
 | convert a misfiled datasheet | `args={'convert_to': 'datasheet', 'subtype'?: …, 'reason': …}` |
 | re-arm a worker pass | `args={'clear_stamp': '<key>'}` (allow-listed keys only) |
-| attach a legal PDF | `put(id=…, args={'pdf_url': '<url>'})` |
+| attach a legal PDF (no HTTP client needed — the worker fetches) | `put(id=…, args={'pdf_url': '<url>'})` |
 | declare a record as SI | `args={'supplement_of': '<parent>'}` — the SI section in [[precis-paper-help]] |
 
 ## See a paper's full byline with identity links
@@ -99,9 +99,14 @@ every later re-resolution.
 `author=` search does, **plus** an optional bracketed ORCID iD per line
 — the row grammar `Family, Given Middle [0000-0002-1825-0097]` (the
 bracket is optional; an invalid iD is dropped silently and the name is
-kept). This always writes `source='human'` and stamps the paper's
-`human_verified_at` sign-off — a manual byline correction *is* the
-review that stamp records.
+kept). New or changed rows get `source='human'`. Rows with the same
+case-sensitive normalized name and ORCID at the same position keep their
+source tier, `verified_at`, and `person_ref_id`. Omitting
+`openalex_author_id` on a matching row preserves its stored OpenAlex link.
+Inserting a name earlier in the byline rewrites shifted rows that differ
+from the authors previously at those positions. The edit
+stamps the paper's `human_verified_at` sign-off when at least one author
+survives normalization.
 
 ## Edit paper metadata — title, venue, year, DOI
 ## Repair a stub's metadata in place — title, identifiers, venue
@@ -481,14 +486,15 @@ it returns a signed `GET /files/pdf/<sha>?t=<token>` URL (sha, byte
 size and page count, expiry, and the `curl` line), never the bytes.
 The link is reusable until it expires — `args={'ttl_s': N}` (default
 600 s, cap 3600 s). A ref with no PDF refuses and points at
-`pdf_url`. When the reply's first line says the link is path-only,
-the server's web origin is not configured: prepend the origin yourself
-if you have it, else report it.
+`pdf_url`. When the deployment's web origin is unset the view refuses
+naming the missing setting (`PRECIS_WEB_BASE_URL`) — an operator fix
+(`precis secret set PRECIS_WEB_BASE_URL` or /secrets), not something
+the caller can route around.
 
 ## A worker stamped a paper as done/failed — how do I re-run it?
 
 ```python
-edit(kind="paper", id=[101, 102, 103], args={"clear_stamp": "context_sentence_no_abstract"})
+edit(kind="paper", id=[101, 102, 103], args={"clear_stamp": "s2_enriched_at"})
 ```
 
 Some worker passes stamp a converged/skip key into `refs.meta` and stop
@@ -497,8 +503,7 @@ ref or a list; the ack reports, per key, refs cleared vs already clear,
 each cleared ref getting a `metadata_edited` ref_event. `dry_run`
 previews.
 
-Only allow-listed retry stamps clear — `context_sentence_failed`,
-`context_sentence_no_abstract`, `s2_enriched_at`, `s2_enrich_failed`,
+Only allow-listed retry stamps clear — `s2_enriched_at`, `s2_enrich_failed`,
 `llm_band_failures`, `openalex` — anything else is refused naming the
 allowed set. There is no generic `refs.meta` delete door, and
 `clear_stamp` combines with no other edit field.
@@ -512,10 +517,28 @@ put(kind="paper", id="smith2023", args={"pdf_url": "https://host/paper.pdf"})
 Queues a `paper_pull` job: a worker fetches the URL (SSRF-guarded, 50 MB cap,
 `%PDF` required) and drops it in the ingest inbox with a sidecar naming this
 stub (`source='agent_url'`, `url`), so the normal ingest attaches the body.
-Refused up front for a non-paper and a complete paper (a body AND a held
-PDF — its drop would mint a duplicate rather than fold); a bodiless paper
-holding a preview PDF and a sha-less paper whose body came from markup
-(the file folds attach-only, keeping the body) are accepted. Outcome: `meta.paper_pull` (`dropped` / `failed` + `reason`). Use
+Accepted targets: a body-less stub; a sha-less paper whose body came from
+markup (the file folds attach-only, keeping the body); a bodiless paper
+holding a preview PDF; and — the gr715554 case — a paper whose body came
+from a short held preview (at most 2 pages, article entry type), taking a
+fuller public copy. Everything else refuses up front, non-papers and
+complete papers (a body AND a held PDF that is not a short article preview)
+included: a drop would mint a duplicate rather than fold.
+
+The preview replacement is hash-pinned and growth-checked (gr715554). The
+pull records `meta.pdf_preview_refetch` — `from` the held preview's sha,
+`to` the new file's, plus the `url` and `at` — and the fold replaces the
+body only when the new extraction is larger than the old one: a
+`body_replaced` ref_event journals both hashes and both chunk counts, the
+outgoing preview's PDF stays reachable as a `pdf_sha256` identifier alias
+on the ref, and the folded paper keeps the new URL as `meta.source_url`.
+A replacement whose extraction does not grow the body is declined
+(`body_replace_declined`, chunk counts in the payload) — the old body and
+preview stay. The replacing PDF must also pass the identity gate and
+exceed 2 pages, and unlike a plain stub drop its identity may not be
+`unchecked`: `preview_suspected` fires when any of that fails.
+
+Outcome: `meta.paper_pull` (`dropped` / `failed` + `reason`). Use
 it after `fetch_oa` failed and you know a legal open copy (repository, author
 page, preprint); `fetch_oa` already covers OA via DOI. Shadow libraries
 (Sci-Hub, LibGen, Z-Library, Anna's Archive and kin) are refused at put time
@@ -529,13 +552,24 @@ folded body yourself. The folded paper keeps the URL as `meta.source_url`.
 
 No legal copy to fetch at all — every leg of the daily fetch failed
 (no open version, publisher 403, body-less markup)? Re-queueing does
-nothing: get the PDF from the person and upload it. Mint a single-use
-link, POST the file to it, then attach the sha256 the POST answers:
+nothing: get the PDF from the person. Two routes, picked by what your
+client can do:
+
+- **No HTTP client that can POST a file** (a chat client, say): have
+  the person host the file anywhere they can serve a URL, and attach
+  it with `pdf_url` (above) — the worker fetches it. Nothing else is
+  needed from you.
+- **A client that can POST a file**: mint a single-use upload link,
+  POST the file to it, then attach the sha256 the POST answers:
 
 ```python
 put(kind="paper", id="smith2023", args={"pdf_upload_link": True})
 put(kind="paper", id="smith2023", args={"pdf_upload": "<sha256>", "reason": "person supplied the PDF"})
 ```
+
+Both doors refuse naming the missing setting when the deployment's
+web origin is unset (`PRECIS_WEB_BASE_URL`) — an operator fix, not a
+caller route; the `pdf_url` route above works meanwhile.
 
 The same identity gate as `pdf_url` applies before the file folds in.
 The link works for a paper that still needs a PDF or a body (sha-less

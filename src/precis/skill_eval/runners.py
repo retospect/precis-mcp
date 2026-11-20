@@ -11,6 +11,13 @@ the run's stream-json ``tool_use`` events, not a declared reply — so a
 skill that misleads at execution time (right plan, wrong verb arguments
 under a real tool surface, a record that never lands) scores red here
 where the live runner stays green (gr608716).
+
+Every runner carries a ``condition`` — ``supplied`` (default) injects
+the case's skill text into the prompt; ``discovery`` (gr634773) renders
+no skill block at all, no text and no slug, so the model starts from the
+tool descriptions alone. The executed runner pairs the two conditions
+under one budget to measure whether an agent can *find* the guidance,
+not just follow it.
 """
 
 from __future__ import annotations
@@ -111,24 +118,23 @@ class Runner(Protocol):
     def run(self, case: EvalCase, prompt: str) -> Transcript: ...
 
 
-def build_prompt(case: EvalCase, skill_texts: Mapping[str, str]) -> str:
+def build_prompt(
+    case: EvalCase, skill_texts: Mapping[str, str], *, condition: str = "supplied"
+) -> str:
     """The dry-run prompt: skills in full, the task, one-JSON-object reply.
 
     A ``{run}`` token in the case prompt renders as
     :data:`DRY_RUN_TOKEN` — corpus cases address the records they create
     as ``<slug>-{run}`` so executed runs on a shared eval DB never
     collide, and dry runs get the same ``<digits>-<digits>`` shape.
+
+    ``condition='discovery'`` (gr634773) renders no skill block at all:
+    the model plans from the task and the verb surface alone, the dry-run
+    twin of the executed discovery condition.
     """
-    skills = "\n\n".join(
-        f"<skill id={slug!r}>\n{skill_texts[slug]}\n</skill>" for slug in case.skills
-    )
     verbs = ", ".join(sorted(VERBS))
-    return (
-        "You are an agent working through the precis MCP server (verbs: "
-        f"{verbs}). This is a dry run: you cannot execute calls. Read the "
-        "skill(s) below, then plan exactly how you would complete the task.\n\n"
-        f"{skills}\n\n"
-        f"Task: {case.prompt.replace('{run}', DRY_RUN_TOKEN)}\n\n"
+    task = f"Task: {case.prompt.replace('{run}', DRY_RUN_TOKEN)}"
+    contract = (
         "Reply with exactly one JSON object and nothing else:\n"
         '{"calls": [{"verb": "get", "kind": "paper", "args": {"id": "pa40"}}], '
         '"record": null, "answer": "..."}\n'
@@ -138,19 +144,52 @@ def build_prompt(case: EvalCase, skill_texts: Mapping[str, str]) -> str:
         "the 'kind' and the fields of the one record you would put; else null.\n"
         "- answer: the one-paragraph reply you would give the user."
     )
+    if condition == "discovery":
+        return (
+            "You are an agent working through the precis MCP server (verbs: "
+            f"{verbs}). This is a dry run: you cannot execute calls. No "
+            "guidance has been supplied — decide from the task alone how you "
+            f"would complete it.\n\n{task}\n\n{contract}"
+        )
+    if condition != "supplied":
+        raise ValueError(f"unknown condition {condition!r}")
+    skills = "\n\n".join(
+        f"<skill id={slug!r}>\n{skill_texts[slug]}\n</skill>" for slug in case.skills
+    )
+    return (
+        "You are an agent working through the precis MCP server (verbs: "
+        f"{verbs}). This is a dry run: you cannot execute calls. Read the "
+        "skill(s) below, then plan exactly how you would complete the task.\n\n"
+        f"{skills}\n\n{task}\n\n{contract}"
+    )
 
 
 class FakeRunner:
     """Replays each case's scripted ``fake:`` transcript (or an override from
-    ``scripts``) and records every prompt it was handed."""
+    ``scripts``) and records every prompt it was handed.
+
+    ``condition`` tags the prompt the runner is built for: ``supplied``
+    injects the skill text, ``discovery`` renders the task alone
+    (gr634773). The fake never calls a model, so the condition only
+    shapes the recorded prompt and the report row's condition/metrics.
+    """
 
     name = "fake"
     #: Every runner may carry a model tag; the fake's default is none.
     model: str | None = None
 
-    def __init__(self, scripts: Mapping[str, Transcript] | None = None) -> None:
+    def __init__(
+        self,
+        scripts: Mapping[str, Transcript] | None = None,
+        *,
+        condition: str = "supplied",
+    ) -> None:
         self.scripts: dict[str, Transcript] = dict(scripts or {})
+        self.condition = condition
         self.recorded: list[RecordedRun] = []
+
+    def build_prompt(self, case: EvalCase, skill_texts: Mapping[str, str]) -> str:
+        return build_prompt(case, skill_texts, condition=self.condition)
 
     def run(self, case: EvalCase, prompt: str) -> Transcript:
         self.recorded.append(RecordedRun(case.case_id, prompt))
@@ -206,9 +245,11 @@ class LiveClaudeRunner:
         case_usd: float | None = None,
         run_usd: float | None = None,
         timeout_s: float | None = None,
+        condition: str = "supplied",
         call: Callable[..., Any] | None = None,
     ) -> None:
         self.model = model or os.environ.get("PRECIS_SKILL_EVAL_MODEL") or None
+        self.condition = condition
         self.case_usd = (
             case_usd
             if case_usd is not None
@@ -237,6 +278,9 @@ class LiveClaudeRunner:
         if shutil.which(binary) is None and not os.path.isfile(binary):
             return f"claude binary not found ({binary!r})"
         return None
+
+    def build_prompt(self, case: EvalCase, skill_texts: Mapping[str, str]) -> str:
+        return build_prompt(case, skill_texts, condition=self.condition)
 
     def run(self, case: EvalCase, prompt: str) -> Transcript:
         if self.spent_usd + self.case_usd > self.run_usd + 1e-9:
@@ -276,6 +320,7 @@ def build_exec_prompt(
     skill_texts: Mapping[str, str],
     *,
     run_id: str = DRY_RUN_TOKEN,
+    condition: str = "supplied",
 ) -> str:
     """The executed prompt: same skill injection as :func:`build_prompt`,
     a *call the tools* contract in place of the declared-JSON one.
@@ -284,7 +329,24 @@ def build_exec_prompt(
     the task text expands to it so every record the case mints is
     namespaced to this run on the shared eval DB (a second pass, or a
     second model's pass, can't collide with or read this one's rows).
+
+    ``condition='discovery'`` (gr634773) renders no skill block at all —
+    no skill text, no slug: the model starts from the tool surface alone,
+    which is what makes a paired supplied/discovery run a discovery test.
     """
+    task = f"Task: {case.prompt.replace('{run}', run_id)}"
+    if condition == "discovery":
+        return (
+            "You are an agent with the precis MCP server's tools attached; they "
+            "are live on a scratch database. No guidance has been supplied — "
+            "work out how to complete the task from the tool descriptions "
+            "alone, then actually call the tools; a plan without calls is a "
+            f"failure.\n\n{task}\n\n"
+            "Do it now with the precis tools. Finish with a short reply "
+            "naming the calls you made and the result."
+        )
+    if condition != "supplied":
+        raise ValueError(f"unknown condition {condition!r}")
     skills = "\n\n".join(
         f"<skill id={slug!r}>\n{skill_texts[slug]}\n</skill>" for slug in case.skills
     )
@@ -293,8 +355,7 @@ def build_exec_prompt(
         "are attached and live on a scratch database. Read the skill(s) "
         "below, then complete the task by actually calling the tools — a "
         "plan without calls is a failure.\n\n"
-        f"{skills}\n\n"
-        f"Task: {case.prompt.replace('{run}', run_id)}\n\n"
+        f"{skills}\n\n{task}\n\n"
         "Do it now with the precis tools. Finish with a short reply "
         "naming the calls you made and the result."
     )
@@ -446,10 +507,18 @@ def _scored_calls(
     out: list[VerbCall] = []
     for tid, call in pairs:
         text, is_error = results.get(tid, ("", False))
+        err: str | None = None
         if is_error or _ERROR_ENVELOPE_RE.match(text):
             err = text.strip().splitlines()[0][:200] if text.strip() else "tool error"
-            call = VerbCall(call.verb, call.kind, call.args, error=err)
-        out.append(call)
+        out.append(
+            VerbCall(
+                call.verb,
+                call.kind,
+                call.args,
+                error=err,
+                result_bytes=len(text.encode("utf-8")),
+            )
+        )
     return tuple(out)
 
 
@@ -602,12 +671,14 @@ class ExecutedClaudeRunner:
         max_turns: int | None = None,
         serve_cmd: str | None = None,
         run_id: str | None = None,
+        condition: str = "supplied",
         call: Callable[..., Any] | None = None,
         fetch_record: Callable[[str, str | None, str], dict[str, Any] | None]
         | None = None,
     ) -> None:
         self.dsn = dsn or os.environ.get("PRECIS_SKILL_EVAL_DSN") or DEFAULT_DEV_DSN
         self.model = model or os.environ.get("PRECIS_SKILL_EVAL_MODEL") or None
+        self.condition = condition
         self.case_usd = (
             case_usd
             if case_usd is not None
@@ -645,7 +716,9 @@ class ExecutedClaudeRunner:
         self.spent_usd = 0.0
 
     def build_prompt(self, case: EvalCase, skill_texts: Mapping[str, str]) -> str:
-        return build_exec_prompt(case, skill_texts, run_id=self.run_id)
+        return build_exec_prompt(
+            case, skill_texts, run_id=self.run_id, condition=self.condition
+        )
 
     def unavailable_reason(self) -> str | None:
         binary = resolve_binary()

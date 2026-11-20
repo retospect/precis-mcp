@@ -368,8 +368,7 @@ def _build_rows(
                     }
                 )
 
-    # DOI completeness/validity line (docs/backlog/
-    # draft-doi-completeness-check.md) — over the papers this draft
+    # DOI completeness/validity line (gr690484) — over the papers this draft
     # actually *cites* (direct paper/patent cite tokens only), reusing the
     # identifier/ref lookups already fetched above rather than a second
     # walk. Deliberately excludes ``evidence_rows_paper_ids`` — those are

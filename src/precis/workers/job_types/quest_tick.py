@@ -1010,8 +1010,7 @@ def _phase_roadmap_tick(
     state: dict[str, Any],
     slice_count: int,
 ) -> Any:
-    """Roadmap-root leg of ``_phase_tick`` (docs/backlog/bootstrap-roadmap-
-    quest.md In-scope 1): one :func:`precis.quest.roadmap_tick.roadmap_tick`
+    """Roadmap-root leg of ``_phase_tick`` (me691652 In-scope 1): one :func:`precis.quest.roadmap_tick.roadmap_tick`
     call — one role (demand / supply / bridge) on one capability axis.
 
     **The role picks the tier, in code** (the 2026-09-28 model-tiers

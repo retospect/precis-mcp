@@ -647,8 +647,11 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "The Claude OAuth credential on a host is expired or unreadable.",
         "critical",
         "quota_check",
-        triage="Re-login on <host> (`claude login`); agent ticks there are "
-        "failing until then.",
+        triage="The vault token CLAUDE_CODE_OAUTH_TOKEN is expired or "
+        "revoked: mint a new one with `claude setup-token` on a machine "
+        "that is logged in and store it with `precis secret set "
+        "CLAUDE_CODE_OAUTH_TOKEN`; do not log in on the worker host. "
+        "Agent ticks there are failing until then.",
     ),
     AlertRule(
         "review:empty:{reviewer}",

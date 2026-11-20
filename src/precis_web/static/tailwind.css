@@ -745,11 +745,6 @@ video {
   margin-bottom: 0.5rem;
 }
 
-.my-3 {
-  margin-top: 0.75rem;
-  margin-bottom: 0.75rem;
-}
-
 .my-4 {
   margin-top: 1rem;
   margin-bottom: 1rem;
@@ -1876,11 +1871,6 @@ video {
 .border-line {
   --tw-border-opacity: 1;
   border-color: rgb(var(--border-line) / var(--tw-border-opacity, 1));
-}
-
-.border-line-solid {
-  --tw-border-opacity: 1;
-  border-color: rgb(var(--border-line-solid) / var(--tw-border-opacity, 1));
 }
 
 .border-line-strong {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -10,6 +12,8 @@ from fastapi.testclient import TestClient
 
 from precis.figure.turn import TurnResult
 from precis.handlers.figure import FigureHandler
+from precis.runtime import PrecisRuntime
+from precis.store import Store
 from precis_web.app import create_app
 from precis_web.config import WebConfig
 
@@ -262,6 +266,105 @@ def test_refresh_swaps_blob_and_snapshot(
     assert refreshed is not None
     assert refreshed.meta["figure"]["data_package"] == new_snapshot
     assert refreshed.meta["figure"]["origin"] == "own_graph"  # untouched
+
+
+def test_refresh_pathway_uses_stored_recipe(
+    fig_client: TestClient,
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.render.figure import needs_render, pathway_recipe
+
+    store = runtime_with_store.store
+    assert store is not None
+    pathway = store.insert_ref(kind="pathway", slug="refresh-path", title="Path")
+    ref, fig = _draft_with_data_package_figure(store, pathway.id)
+    recipe = pathway_recipe(
+        "refresh-path#graph",
+        {"route_only": True, "top_n_barriers": 2, "kinetics": True},
+    )
+    store.drafts.set_render_recipe(fig.chunk_id, recipe)
+    new_png = b"\x89PNG\r\n\x1a\n-graph-"
+    snapshot = _snapshot(pathway.id, kind="pathway")
+
+    def render(
+        store_arg: Store, target: Any, **options: Any
+    ) -> tuple[bytes, dict[str, Any]]:
+        assert target.id == pathway.id
+        assert options == {
+            "view": "graph",
+            "route_only": True,
+            "top_n_barriers": 2,
+            "kinetics": True,
+        }
+        return new_png, snapshot
+
+    monkeypatch.setattr("precis.quest.figures.pathway_profile_figure", render)
+    response = fig_client.post(
+        f"/drafts/{ref.slug}/figure/{fig.handle}/refresh", follow_redirects=False
+    )
+    assert response.status_code == 303
+    fresh = store.drafts.get_draft_chunk(fig.dc)
+    assert fresh is not None
+    assert fresh.meta["figure"]["data_package"] == snapshot
+    assert not needs_render(store, fresh)
+    blob = store.drafts.get_chunk_blob(fig.handle)
+    assert blob is not None and blob[0] == new_png
+
+
+def test_refresh_quest_uses_stored_recipe(
+    fig_client: TestClient,
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.quest.frontier import FrontierResult
+    from precis.render.figure import needs_render, quest_recipe
+
+    store = runtime_with_store.store
+    assert store is not None
+    quest = store.insert_ref(kind="quest", slug=None, title="Q1")
+    ref, fig = _draft_with_data_package_figure(store, quest.id)
+    store.drafts.set_render_recipe(
+        fig.chunk_id,
+        quest_recipe(
+            f"qu{quest.id}#frontier",
+            {
+                "x": "energy",
+                "y": "cost",
+                "trusted_only": True,
+                "top_n": 3,
+                "label": "names",
+            },
+        ),
+    )
+    new_png = b"\x89PNG\r\n\x1a\n-frontier-"
+    snapshot = _snapshot(quest.id, rows=[{"handle": "st2"}])
+
+    def render(
+        store_arg: Store, target: Any, *, frontier: FrontierResult, **options: Any
+    ) -> tuple[bytes, dict[str, Any]]:
+        assert target.id == quest.id
+        assert options == {
+            "x": "energy",
+            "y": "cost",
+            "trusted_only": True,
+            "top_n": 3,
+            "label": "names",
+        }
+        return new_png, snapshot
+
+    monkeypatch.setattr("precis.quest.figures.quest_pareto_figure", render)
+    response = fig_client.post(
+        f"/drafts/{ref.slug}/figure/{fig.handle}/refresh", follow_redirects=False
+    )
+    assert response.status_code == 303
+    fresh = store.drafts.get_draft_chunk(fig.dc)
+    assert fresh is not None
+    assert fresh.meta["figure"]["data_package"] == snapshot
+    assert fresh.meta["render"]["cached_key"]
+    assert not needs_render(store, fresh)
+    blob = store.drafts.get_chunk_blob(fig.handle)
+    assert blob is not None and blob[0] == new_png
 
 
 def test_refresh_without_snapshot_rejected(fig_client, runtime_with_store) -> None:

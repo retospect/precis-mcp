@@ -19,6 +19,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.semanticscholar import SemanticScholarHandler, _format_paper
 from precis.store import Store
+from precis.store.types import ChunkInsert
 from precis.utils.http import reset_circuit
 
 
@@ -972,6 +973,120 @@ def test_doi_lookup_404_is_a_clean_not_found(
     resp = s2handler.get(id="10.9999/nonexistent")
     assert "no record" in resp.body.lower()
     assert "404" in resp.body
+
+
+def test_arxiv_prefixed_id_routes_to_paper_lookup(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """gr711201: ``arxiv:<id>`` must hit /paper/ARXIV:<id>, not the
+    free-text search — that path returned ~10 unrelated
+    "arXiv"-flavoured hits an agent read as "not found"."""
+    seen: list[str] = []
+
+    def fake_raw(url: str, params: dict) -> _FakeResp:
+        seen.append(url)
+        return _FakeResp(
+            200,
+            {
+                "title": "Real Preprint",
+                "year": 2025,
+                "authors": [{"name": "A. Author"}],
+                "externalIds": {"ArXiv": "2510.25380"},
+            },
+        )
+
+    monkeypatch.setattr(s2handler, "_s2_raw_get", fake_raw)
+    resp = s2handler.get(id="arxiv:2510.25380")
+    assert seen == ["https://api.semanticscholar.org/graph/v1/paper/ARXIV:2510.25380"]
+    assert "Real Preprint" in resp.body
+    assert "2510.25380" in resp.body
+
+
+def test_bare_arxiv_id_routes_to_paper_lookup(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    seen: list[str] = []
+
+    def fake_raw(url: str, params: dict) -> _FakeResp:
+        seen.append(url)
+        return _FakeResp(200, {"title": "P"})
+
+    monkeypatch.setattr(s2handler, "_s2_raw_get", fake_raw)
+    s2handler.get(id="2510.25380v2")
+    assert seen[0].endswith("/paper/ARXIV:2510.25380v2")
+
+
+def test_arxiv_lookup_404_is_a_clean_not_found(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    monkeypatch.setattr(s2handler, "_s2_raw_get", lambda url, params: _FakeResp(404))
+    resp = s2handler.get(id="arxiv:9999.99999")
+    assert "no record" in resp.body.lower()
+    assert "ARXIV:9999.99999" in resp.body
+
+
+def test_arxiv_lookup_ignores_legacy_cached_topic_search(
+    store: Store, s2handler: SemanticScholarHandler, monkeypatch
+) -> None:
+    """gr711201: a fresh (or pinned) ``arxiv:<id>`` row cached by the old
+    free-text routing must not be served as the lookup result."""
+    legacy_key = "arxiv:2510.25380"
+    store.put_cache_entry(
+        kind="semanticscholar",
+        slug="arxiv-2510-25380",
+        title="S2 search: arxiv:2510.25380",
+        body_blocks=[ChunkInsert(ord=0, text="Unrelated arXiv-flavoured topic hit")],
+        provider=s2handler.provider,
+        request_hash=s2handler._hash(legacy_key),
+        ttl_seconds=None,
+        cache_meta={"key": legacy_key, "papers": [{"title": "Unrelated"}]},
+    )
+    seen: list[str] = []
+
+    def fake_raw(url: str, params: dict) -> _FakeResp:
+        seen.append(url)
+        return _FakeResp(200, {"title": "Real Preprint"})
+
+    monkeypatch.setattr(s2handler, "_s2_raw_get", fake_raw)
+    resp = s2handler.get(id="arxiv:2510.25380")
+    assert seen == ["https://api.semanticscholar.org/graph/v1/paper/ARXIV:2510.25380"]
+    assert "Real Preprint" in resp.body
+    assert "Unrelated" not in resp.body
+
+
+@pytest.mark.parametrize(
+    ("legacy_key", "legacy_slug"),
+    [("arxivid:2510.25380", "arxivid-2510-25380"), ("arxivid-2510-25380", None)],
+)
+def test_arxiv_lookup_ignores_legacy_arxivid_topic_rows(
+    store: Store,
+    s2handler: SemanticScholarHandler,
+    monkeypatch,
+    legacy_key: str,
+    legacy_slug: str | None,
+) -> None:
+    """A cached topic query spelled like the lookup's old key or slug is
+    neither served on ``get`` nor overwritten by it."""
+    slug = legacy_slug or "arxivid-2510-25380"
+    store.put_cache_entry(
+        kind="semanticscholar",
+        slug=slug,
+        title=f"S2 search: {legacy_key}",
+        body_blocks=[ChunkInsert(ord=0, text="Unrelated topic hit")],
+        provider=s2handler.provider,
+        request_hash=s2handler._hash(legacy_key),
+        ttl_seconds=None,
+        cache_meta={"key": legacy_key, "papers": [{"title": "Unrelated"}]},
+    )
+    monkeypatch.setattr(
+        s2handler, "_s2_raw_get", lambda url, params: _FakeResp(200, {"title": "Real"})
+    )
+    resp = s2handler.get(id="arxiv:2510.25380")
+    assert "Real" in resp.body
+    assert "Unrelated" not in resp.body
+    legacy = store.get_cache_entry_by_slug(kind="semanticscholar", slug=slug)
+    assert legacy is not None
+    assert legacy[0].title == f"S2 search: {legacy_key}"
 
 
 def test_s2_error_raises_carry_next() -> None:

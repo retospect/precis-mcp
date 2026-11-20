@@ -176,10 +176,16 @@ def test_fan_out_deadline_names_stragglers_and_keeps_fast_kinds(
         return []
 
     _patch_invoke(monkeypatch, rt, fake)
-    t0 = time.perf_counter()
-    out = rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
-    elapsed = time.perf_counter() - t0
-    release.set()
+    # gr700451: earlier calls can leave stragglers holding shared workers.
+    # Give each kind a worker so this tests the deadline, not pool contention.
+    with ThreadPoolExecutor(max_workers=len(kinds)) as pool:
+        monkeypatch.setattr(search_mod, "_cross_kind_executor", lambda: pool)
+        try:
+            t0 = time.perf_counter()
+            out = rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
+            elapsed = time.perf_counter() - t0
+        finally:
+            release.set()
     assert elapsed < budget(2.0)
     assert isinstance(out[kinds[0]], TimeoutError)
     assert out[kinds[1]] == [] and out[kinds[2]] == []
@@ -280,39 +286,40 @@ def test_checkout_deadline_fails_fast_past_the_deadline(
         POOL_CHECKOUT_DEADLINE.reset(token)
 
 
+@pytest.mark.parametrize(("timeout", "expected"), [(None, 2.0), (1.0, 1.0), (5.0, 2.0)])
 def test_checkout_deadline_bounds_a_waiting_checkout(
-    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch, timeout: float | None, expected: float
 ) -> None:
-    """The bound shrinks the wait, not just the past-deadline case: a
-    checkout with seconds left may not queue for the pool's full 30 s
-    default — the straggler fails at its call deadline and frees the
-    executor worker."""
-    from precis.store.pool import POOL_CHECKOUT_DEADLINE
+    """gr700450: pin the forwarded wait without a live pool or wall clock.
 
-    rt = runtime_with_store
-    store = rt.hub.store
-    assert store is not None
+    A shared runtime pool also serves boot reconciliation checkouts, so
+    spying on it can collect unrelated waits. An unopened pool and a
+    simulated saturated checkout isolate the deadline contract, including
+    preservation of a tighter explicit timeout.
+    """
+    from psycopg import Connection
+    from psycopg_pool import PoolTimeout
+
+    from precis.store.pool import POOL_CHECKOUT_DEADLINE, PrecisPool
+
+    clock = _patch_pool_clock(monkeypatch)
+    pool = PrecisPool(open=False, timeout=30.0)
     checkouts: list[float | None] = []
-    orig_getconn = store.pool.getconn
 
-    def spy(timeout: float | None = None):
-        # The contract binds only checkouts requested under the
-        # deadline scope — boot's daemon reconcile threads
-        # (checklist_sync / oracle_sync) check out through the same
-        # pool on their own context, where no bound applies.
-        if POOL_CHECKOUT_DEADLINE.get() is not None:
-            checkouts.append(timeout)
-        return orig_getconn(timeout=timeout)
+    def saturated(timeout: float | None = None) -> Connection:
+        checkouts.append(timeout)
+        raise PoolTimeout("simulated saturated pool")
 
-    token = POOL_CHECKOUT_DEADLINE.set(time.monotonic() + 2.0)
+    monkeypatch.setattr(pool, "getconn", saturated)
+    token = POOL_CHECKOUT_DEADLINE.set(clock["t"] + 2.0)
     try:
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(store.pool, "getconn", spy)
-            with store.pool.connection():
-                pass
+        with pytest.raises(PoolTimeout, match="simulated saturated pool"):
+            with pool.connection(timeout=timeout):
+                pytest.fail("saturated checkout must not yield a connection")
     finally:
         POOL_CHECKOUT_DEADLINE.reset(token)
-    assert checkouts and all(t is not None and 0 < t <= 2.0 for t in checkouts)
+        pool.close()
+    assert checkouts == [expected]
 
 
 def test_starved_kind_runs_lexical_instead_of_timing_out(

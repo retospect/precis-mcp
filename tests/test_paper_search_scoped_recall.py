@@ -278,3 +278,19 @@ def test_unscoped_count_mirrors_the_or_retry(store: Store) -> None:
     count retries OR-ed corpus-wide."""
     _seed(store, embedded=False)
     assert store.chunks.count_chunks_lexical(q=_Q, kind="paper") == 2
+
+
+def test_scoped_hyphen_token_does_not_kill_or_retry(store: Store) -> None:
+    """gr681469: a chemical '-NH' token is read as a negation by the
+    strict leg, but must not disable the OR recall fallback."""
+    ref = store.insert_ref(
+        kind="paper", slug="raman-nh-paper", title="Raman", year=2024
+    )
+    rows = store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text="Raman peaks assigned to NH3 and -NH appear at 1056")],
+    )
+    hits = store.chunks.search_chunks_lexical(
+        q="Raman peaks assigned NH3 -NH 1056 1489", scope_ref_id=ref.id
+    )
+    assert [b.id for b, _r, _s in hits] == [rows[0].id]

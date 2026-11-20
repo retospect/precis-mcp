@@ -120,6 +120,7 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
     "fidelity_restale_band",
     "fidelity_promote_neb",
     "fidelity_promote_verify",
+    "fidelity_mechanical_retry_cap",
 )
 
 #: ``edit(kind='quest', meta=...)``'s closed allowlist (quest-tick-incident-
@@ -144,7 +145,11 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
 #: non-negative int, ``0`` = that pass off — gr537835; and
 #: ``fidelity_restale_cap=0`` is wider still — it holds EVERY automatic
 #: pathway re-mint on the quest, promote passes and repair re-dispatches
-#: included — ``compute._automatic_rerun_hold``, gr543908).
+#: included — ``compute._automatic_rerun_hold``, gr543908; the one exemption
+#: is the mechanical-rerun arm, gr593138: untrusted barriers that classify
+#: mechanical requeue on the pinned engine under
+#: ``fidelity_mechanical_retry_cap`` / ``fidelity_mechanical_gpu_h_budget``
+#: even under the hold — Reto ruling 2026-11-12).
 #: Mirrors ``todo.tag()``'s ``TAG_META_ALLOWED_KEYS`` promotion gate
 #: (``guards.check_meta_keys_promotable``) — a closed set, not a general meta
 #: bag; anything else still goes through ``put()``/create-time meta. Before
@@ -162,6 +167,7 @@ _META_ALLOWED_KEYS: frozenset[str] = frozenset(
         "environment_space",
         "reaction_config",
         "lit_gate",
+        "fidelity_mechanical_gpu_h_budget",
         *_FIDELITY_INT_KEYS,
     }
 )
@@ -575,6 +581,15 @@ def _check_fidelity_meta(meta: dict[str, Any]) -> None:
                 f"meta.{key} must be an integer >= 0 (0 = pass off), got {val!r}",
                 next=f"edit(kind='quest', id=N, meta={{'{key}': 0}})",
             )
+    budget = meta.get("fidelity_mechanical_gpu_h_budget")
+    if budget is not None and (
+        isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget < 0
+    ):
+        raise BadInput(
+            "meta.fidelity_mechanical_gpu_h_budget must be a number >= 0 "
+            f"(GPU-hours for mechanical reruns, gr593138), got {budget!r}",
+            next="edit(kind='quest', id=N, meta={'fidelity_mechanical_gpu_h_budget': 36})",
+        )
 
 
 def _check_demand_meta(meta: dict[str, Any]) -> None:
@@ -865,6 +880,7 @@ def _shape_fr(fr: Any, *, trusted: bool, sort: tuple[str, str] | None) -> Any:
         fr = replace(
             fr,
             frontier=[c for c in fr.frontier if candidate_trusted(c) is True],
+            pass_frontier=[c for c in fr.pass_frontier if candidate_trusted(c) is True],
             dominated=[c for c in fr.dominated if candidate_trusted(c) is True],
             provisional=[
                 pc for pc in fr.provisional if candidate_trusted(pc.candidate) is True
@@ -2277,7 +2293,8 @@ class QuestHandler(NumericRefHandler):
         candidate bands + fidelity tiers and the trusted-per-axis coverage
         the frontier header computes, the open exploration queue
         (``view='gaps'``), the last coordinator tick, and the operator
-        holds in force (``fidelity_restale_cap=0`` is the master hold;
+        holds in force (``fidelity_restale_cap=0`` is the master hold, with
+        one exemption: mechanical reruns on the pinned engine;
         ``fidelity_promote_*=0`` holds one pass; ``compute_lane`` /
         ``lit_lane`` ``off``). Sized to ~1 kB — listings cap at
         ``_STATUS_*_CAP`` and point at the full views."""
@@ -2439,7 +2456,9 @@ class QuestHandler(NumericRefHandler):
         cap = _fval("fidelity_restale_cap")
         if cap is not None and cap <= 0:
             holds.append(
-                "fidelity_restale_cap=0 (every automatic pathway re-mint held)"
+                "fidelity_restale_cap=0 (every automatic pathway re-mint held, "
+                "except mechanical reruns on the pinned engine under their "
+                "retry cap and GPU-h budget)"
             )
         for key in ("fidelity_promote_neb", "fidelity_promote_verify"):
             v = _fval(key)
@@ -2654,7 +2673,17 @@ class QuestHandler(NumericRefHandler):
         sort: str | None = None,
         args: dict[str, Any] | None = None,
     ) -> Response:
-        """Page the Pareto bands or the trusted view's evidence ladder."""
+        """Page the Pareto bands or the trusted view's evidence ladder.
+
+        The bands are rows for the table lens (gr592637): ``band`` is a
+        column, so ``args={'where': {'band': 'pass'}}`` or a ``sort`` across
+        bands works, the footer names the call that continues the page, and
+        hidden rows keep their aggregates. When any frontier or dominated
+        candidate carries a ``barrier_assurance`` flag (td700775), the
+        frontier splits into two preserved headings — ``PASS-only Pareto
+        set`` and ``PASS+WARN Pareto set`` — with each candidate in exactly
+        one band, so totals never count a pass candidate twice.
+        """
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
         meta = ref.meta or {}
         body = meta.get(_weave_tick.QUEST_BODY_META_KEY)
@@ -2704,8 +2733,27 @@ class QuestHandler(NumericRefHandler):
             rungs = frontier_mod.evidence_ladder(raw_fr, top_n=len(raw_fr.provisional))
             provisional = {r.provisional.candidate.ref_id: r.provisional for r in rungs}
             blockers = {r.provisional.candidate.ref_id: r.blocker for r in rungs}
+        # td700775's assurance bands as lens groups: the PASS-only set and
+        # the PASS+WARN set keep both preserved headings, but each candidate
+        # lands in exactly one group — pass candidates are NOT repeated in
+        # the frontier group — so the lens total and the hidden-row
+        # aggregates never count a candidate twice (review td700771).
+        if any(c.flags.get("barrier_assurance") for c in (*fr.frontier, *fr.dominated)):
+            pass_ids = {c.ref_id for c in fr.pass_frontier}
+            band_groups: list[tuple[str, list[Any], str]] = [
+                ("pass", list(fr.pass_frontier), "PASS-only Pareto set"),
+                (
+                    "frontier",
+                    [c for c in fr.frontier if c.ref_id not in pass_ids],
+                    "PASS+WARN Pareto set",
+                ),
+            ]
+        else:
+            band_groups = [
+                ("frontier", list(fr.frontier), "Pareto frontier — current best")
+            ]
         groups = [
-            ("frontier", fr.frontier, "Pareto frontier — current best"),
+            *band_groups,
             ("dominated", fr.dominated, "dominated — explored + beaten"),
             (
                 "provisional",
@@ -2747,6 +2795,7 @@ class QuestHandler(NumericRefHandler):
                         or ("; ".join(pc.reasons) if pc else ""),
                         "_ref_id": c.ref_id,
                         "_untrusted": sorted(pc.untrusted_keys) if pc else [],
+                        "_assurance": frontier_mod.assurance_note(c),
                         "_marker": " ★ provisional-frontier"
                         if pc and pc.on_frontier
                         else "",
@@ -2804,9 +2853,11 @@ class QuestHandler(NumericRefHandler):
                 if band != "awaiting":
                     line += f" — {values or '(no measures)'}"
                 line += row["_marker"]
-                if band in {"frontier", "dominated"}:
+                if band in {"pass", "frontier", "dominated"}:
                     if row["_ref_id"] in graduated:
                         line += " ★ needs-experiment"
+                    if row["_assurance"]:
+                        line += f" — {row['_assurance']}"
                 if row["blocker"]:
                     line += (
                         f" — clear: {row['blocker']}"

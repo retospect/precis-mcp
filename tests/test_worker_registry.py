@@ -410,3 +410,8 @@ def test_run_loop_pass_gate_distinguishes_same_named_axis_closures() -> None:
         pass_gate=lambda service: service != "axis:material",
     )
     assert calls == ["domain"]  # only the material one was gated off
+
+
+def test_retired_context_sentence_is_absent_from_worker_startup() -> None:
+    assert "context_sentence" not in SERVICES_BY_NAME
+    assert "context_sentence" not in _passes_referenced_in_worker()

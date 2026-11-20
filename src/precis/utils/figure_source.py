@@ -163,6 +163,18 @@ def figure_export_asset(store: Store, chunk: Any) -> tuple[bytes, str] | None:
     return None
 
 
+def figure_asset_is_rasterised_vector(store: Store, chunk: Any) -> bool:
+    """True when :func:`figure_export_asset` rasterised this figure from an
+    SVG (a linked canvas or an SVG blob) — the exporter chose the PNG's pixel
+    width, so a resolution check does not apply to it."""
+    if store.drafts.figure_canvas_ref(chunk.chunk_id) is not None:
+        return True
+    blob = store.drafts.get_chunk_blob(chunk.handle)
+    if blob is None:
+        return False
+    return (blob[1] or "").split(";", 1)[0].strip() == "image/svg+xml"
+
+
 def resolve_figure_source(store: Store, chunk: Any) -> FigureSource:
     """Resolve a draft figure chunk to its :class:`FigureSource`.
 

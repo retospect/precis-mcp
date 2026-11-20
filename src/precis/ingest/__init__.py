@@ -18,6 +18,22 @@ body. A matching source and quote enter ordinary citation chase; retained
 verifier metadata never establishes trust. Bodyless papers safely leave staged
 findings untouched (``finding_drafts.py``).
 
+Short held article previews can take a longer agent-supplied PDF through
+``paper_pull``. Hash-pinned ingest replaces the body only on growth, keeping
+the old PDF alias and journaling both hashes and the source URL. Failed
+downloads or extractions leave the old body available.
+
+Identifier trust (td730803): a prefixed ``arxiv:``/``doi:`` S2 single-id
+lookup must echo the requested id, so its record always carries it. An
+S2-attributed DOI on a stub put is kept only if the DOI registries
+corroborate it; an ``10.48550/arxiv.<id>`` mint self-corroborates only
+when ``<id>`` is the record's own arXiv id (another preprint's mint drops
+outright). Otherwise an ordinary DOI survives an inconclusive registry check
+(miss, outage, tokenless or missing titles, unusable bylines); only a clear
+title/author disagreement drops it. A ``doi:`` put whose S2 cluster would add
+arXiv/S2 aliases is registry-checked too, and a clear mismatch discards the
+cluster.
+
 The legacy ``.acatome`` bundle parser that this package re-exported
 through B6 was deleted in B7. Callers that still need bundle
 parsing should pin to ``precis<0.7``; otherwise migrate to the
@@ -30,6 +46,10 @@ because Marker's page estimates cannot identify PDF slides. Evidence
 relations excluding ``pres`` also refuse. The original chunks remain on
 the tombstone, and the new presentation retains a stable cite key even
 when the paper had none.
+
+Cite-key and notice-slug allocation count aliases as occupied to preserve
+existing citations. The partial trigram index on ``ref_identifiers.id_value``
+covers both identifier kinds so these prefix probes are eligible to use it.
 
 Discovery layer (F20)
 ---------------------
@@ -51,6 +71,17 @@ static for the process lifetime). Policy:
 Hygiene: pysbd sentence splitting in the chunker fallback chain
 (:mod:`precis.ingest.text_chunker`); dehyphenation across line breaks in
 ``marker._clean_text``.
+Marker's pagination markers preserve physical page boundaries. Before
+merging blocks, paper extraction drops recognised leading advert pages
+when the target title and abstract confirm the next page is the article
+opening. Exact OCR sentence loops are removed before splitting so
+fragments of the loop cannot become searchable chunks.
+arXiv HTML can display citation numbers that disagree with their linked
+bibliography entries. Before flattening the HTML, ``markup.parse_arxiv_html``
+uses the destination labels for fully linked numeric citation groups and
+emits each structured bibliography item separately for ``bib_parse``.
+Repeated numeric labels trigger the markup fallback because citation
+storage has one number namespace per paper.
 
 Figure alt text and captions are authored inside the dependency stack,
 not in this package: marker-pdf's surya-ocr VLM emits them from its
@@ -86,7 +117,10 @@ the lookup provider).
 ``meta.entry_type``/``journal``/``issn``, extra ``ref_identifiers``,
 per-author ORCID links, and retraction status from one Crossref
 (+conditional OpenAlex) fetch, on the :mod:`precis.workers.paper_meta_enrich`
-cadence; ``meta.authors_resolved_at`` is its idempotency stamp and
+cadence. Journal spelling comes from the shared Crossref journal record keyed
+by ISSN (``journal_record``), with a 30-day background refresh even for
+already-enriched papers; ambiguous source identities create review todos.
+``meta.authors_resolved_at`` is its idempotency stamp and
 ``refs.human_verified_at`` its skip guard. It also fills
 ``refs.title``/``refs.year`` when — and only when — the ref has none of
 its own (:func:`precis.identity.is_placeholder_title`), which is how a

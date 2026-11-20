@@ -40,7 +40,8 @@ instead. It lets the app read and update only your own learning activity and
 settings. It does not grant access to another person's activity.
 
 Connections also have access to the OAuth and learning help documents. The
-older manually copied personal MCP tokens remain restricted to learning.
+older manually copied personal MCP tokens remain restricted to learning, and
+only work where your deployment accepts them (see the last section).
 
 ## Review or disconnect apps
 
@@ -53,3 +54,45 @@ Access credentials renew automatically while the connection remains valid.
 Connections expire after 30 days and require a new sign-in. If you revoke a
 connection or disable the account, the app cannot renew it. Reconnecting makes
 a new row; it does not reactivate the old one.
+
+## Capability tokens for other clients
+
+Capability tokens and personal MCP tokens work only where the deployment
+accepts those credential classes. The default public endpoint accepts OAuth
+connections only: it refuses both, and **Account** offers no way to mint them
+(tokens already minted stay listed so you can revoke them). Your podcast
+subscribe link is a separate credential and is not affected. If this page's
+sections are missing from your **Account**, connect through the OAuth
+instructions above.
+
+OAuth is the recommended path for a claude.ai chat connector. Where a client
+can present a static bearer but cannot complete the OAuth sign-in — or where
+a narrower scope is the point — a **client capability token** is the third
+credential class: it names the consumer, not you, so minting one never hands
+a client your personal data.
+
+Open **Account → Client capability tokens**, name the consumer (for example
+"claude.ai chat"), and pick its allow-list of scopes:
+
+- `read` — the whole get/search read surface. Blank scope input means this.
+- `read:<kind>` — reads on one kind only, e.g. `read:paper`.
+- `write:<kind>` — all seven verbs on one kind (writes imply same-kind
+  reads). There is no whole-corpus write scope.
+- `feed` — the podcast `?t=` credential only; it grants no MCP verb.
+
+Copy the token once — it is shown exactly once and stored only as a digest.
+Send it as `Authorization: Bearer <token>` on the streamable-HTTP MCP
+endpoint. Claude's *Request headers* setting is a limited organization beta;
+an organization Owner enters the credential, which all members then share.
+If that setting is absent, use the OAuth connection above. These constraints
+are documented in [Claude's authentication guide](https://claude.com/docs/connectors/building/authentication).
+The credential never goes in the MCP URL; feed listeners are the exception
+because podcast apps cannot set headers, which is what the `feed` scope and
+the subscribe link are for.
+
+Revoke a row from the same section to cut that consumer off; revoking or
+disabling takes effect on the next request. Minting a token does not share
+your account: the token resolves to its own allow-list, so `read` plus
+`write:memory` lets a connector read the corpus and write memories, but
+never reach private kinds — those still require a personal token or an
+OAuth connection.

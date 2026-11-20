@@ -68,8 +68,12 @@ import logging
 import os
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
+
+from psycopg import Connection
+from psycopg.pq import TransactionStatus
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -469,6 +473,22 @@ REGISTRY: dict[str, SettingSpec] = {
             "ask a human.",
         ),
         SettingSpec(
+            key="release.cut_host",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="The node (PRECIS_NODE) the first release_cut of a pass "
+            "is pinned to (gr713351): the cut's checkout is also the "
+            "deploy's, and only a host holding the private deploy "
+            "overlay (deploy/inventory + .vault-pass) can deploy from "
+            "it. Later cut-pinned jobs follow meta.release.host; this "
+            "names where the first cut runs, before that exists. Unset: "
+            "plan_dispatch holds the cut with a note (fail closed) "
+            "rather than let any ssh_node host claim it. A params."
+            "target_node on the node still wins. DB-only — no env "
+            "fallback, so a drifted host cannot redirect the cut.",
+        ),
+        SettingSpec(
             key="pr.factory_builders",
             type="str",
             env_var=None,
@@ -547,6 +567,19 @@ REGISTRY: dict[str, SettingSpec] = {
             "immediately, a negative value reads as 0.",
         ),
         SettingSpec(
+            key="factory.overlap_hold_max_runs",
+            type="int",
+            env_var="PRECIS_FACTORY_OVERLAP_HOLD_MAX_RUNS",
+            default=3,
+            doc="Ended run_slice runs after which a build that has not "
+            "landed stops holding the file-overlap lock (td603849) while "
+            "it rebuilds or waits for its pre-land review; it still holds "
+            "while its land_slice is live. Builds that did not converge "
+            "with their reviewers held 30 queued builds for up to 23 h "
+            "(2026-11-19). 0 never lifts the hold, a negative value reads "
+            "as 0.",
+        ),
+        SettingSpec(
             key="factory.deny_relaxed",
             type="bool",
             env_var=None,
@@ -584,6 +617,57 @@ REGISTRY: dict[str, SettingSpec] = {
             "dispatched. Hold tags, a live linked todo, the age floor "
             "and lane capacity apply either way. An unrecognised value "
             "reads as 'filer'.",
+        ),
+        SettingSpec(
+            key="factory.gripe_dispatch.queue_depth",
+            type="int",
+            env_var=None,
+            default=2,
+            doc="DB-only. Target queued, unclaimed build jobs per free executor "
+            "slot on live code-capable hosts. Bounds how far ahead gripe text "
+            "is frozen into chains; host claim loops alone admit running work.",
+        ),
+        SettingSpec(
+            key="factory.gripe_dispatch.max_parked",
+            type="int",
+            env_var=None,
+            default=500,
+            doc="DB-only. Last-resort backstop on gripe fix chains whose "
+            "build is not live (no running job or claim: queued, "
+            "file-overlap held, paused, blocked, ask-user, waiting-for:*, "
+            "child-failed:*) in the gripe_dispatch intake "
+            "(precis.workers.gripe_dispatch); the queued queue_depth "
+            "buffer counts here. Such work holds no running slot and is never closed by a timer, so the count of "
+            "parked chains is no longer a brake; at this many the pass "
+            "still mints nothing and logs why. The brake is the cause-based "
+            "breaker (factory.gripe_dispatch.breaker_parks).",
+        ),
+        SettingSpec(
+            key="factory.gripe_dispatch.breaker_parks",
+            type="int",
+            env_var=None,
+            default=5,
+            doc="DB-only. K of the cause-based breaker "
+            "(precis.plans.lane_breaker): when the newest K ended "
+            "run_slice builds on one lane or one host all failed of the "
+            "same engine cause (lane auth, HTTP 401/403, quota/rate/"
+            "transport, failure_class=infra, host refusal) across at "
+            "least two build nodes, one ask-user todo names it and new "
+            "builds stop going there until the ask is closed. Every other "
+            "lane and host keeps dispatching.",
+        ),
+        SettingSpec(
+            key="factory.gripe_dispatch.stall_hours",
+            type="int",
+            env_var=None,
+            default=6,
+            doc="DB-only. Hours a gripe fix chain's whole plan may sit "
+            "untouched (build not live, nothing live in the plan, no open "
+            "ask-user todo in it) before the gripe_dispatch pass opens ONE "
+            "ask-user todo on the chain: resume, start over, or drop. The "
+            "chain is never closed by the sweep; the open ask keeps it "
+            "parked and out of the sweep. The gripe counts the asks "
+            "(chain-stalls:<n>).",
         ),
         SettingSpec(
             key="asks_triage.tier",
@@ -668,10 +752,17 @@ def _db_read_strict(store: Store, key: str) -> str | None:
     the row is genuinely unset, anything else raises. For callers whose
     default-on-error policy must differ from default-on-unset (a security
     control that fails closed)."""
+    # The pool may lend a caller's open transaction. Roll back a failed
+    # query before the best-effort reader catches it and uses its fallback.
     with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT value FROM app_settings WHERE key = %s", (key,)
-        ).fetchone()
+        borrowed = (
+            isinstance(conn, Connection)
+            and conn.info.transaction_status == TransactionStatus.INTRANS
+        )
+        with conn.transaction() if borrowed else nullcontext():
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = %s", (key,)
+            ).fetchone()
     return str(row[0]) if row else None
 
 

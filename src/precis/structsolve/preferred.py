@@ -1,6 +1,5 @@
 """Preferred-number term — differentiable wells pulling declared
-measurements toward round values (docs/backlog/
-multiscale-optimisation-method.md §4; slice 1 spec
+measurements toward round values (me694543 §4; slice 1 spec
 preferred-number-term.md).
 
 The method: for a measurement ``m`` and a pitch ``p``, the distance to

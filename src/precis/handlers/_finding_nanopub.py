@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from precis.nanopub import assemble, evidence
 from precis.nanopub.aida import aida_uri, canonical_sentence
+from precis.nanopub.preflight import PUBLISHING_MESSAGE
 from precis.response import Response
 
 if TYPE_CHECKING:
@@ -58,10 +59,14 @@ def render_nanopub_view(store: Store, ref: Ref) -> Response:
                 f"# unsigned comment — verify against the stored bytes, "
                 f"not this rendering.\n"
             )
+            if row.state == "publishing":
+                header += f"# {PUBLISHING_MESSAGE}\n"
             return Response(body=header + artifact.trig_bytes.decode("utf-8"))
 
     bundle = evidence.load_bundle(store, ref.id)
     notes: list[str] = []
+    if row is not None and row.state == "publishing":
+        notes.append(PUBLISHING_MESSAGE)
 
     if row is not None and row.state == "reviewed":
         payload = row.grounding

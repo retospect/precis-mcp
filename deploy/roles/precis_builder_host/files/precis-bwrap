@@ -1,0 +1,12 @@
+# precis builder hosts: Ubuntu 24.04 restricts unprivileged user namespaces
+# (kernel.apparmor_restrict_unprivileged_userns=1). bwrap, codex's sandbox,
+# needs one. Ubuntu's documented pattern: an unconfined profile that only
+# adds the userns permission, attached to the bwrap binaries by path.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile precis-bwrap /{usr/bin/bwrap,home/*/.local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-*/vendor/*/codex-resources/bwrap} flags=(unconfined) {
+  userns,
+
+  include if exists <local/precis-bwrap>
+}

@@ -412,3 +412,47 @@ def test_kind_skills_hint_not_duplicated_against_existing_list_next(
     err.next = ["skills for kind='se': ..."]
     result = _kind_skills_hint(err, "se")
     assert result == ["skills for kind='se': ..."]
+
+
+@pytest.mark.parametrize("selector", ["patch", "rows", "add_column", "base", "footer"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_table_refusal_uses_table_help(selector: str, nested: bool) -> None:
+    """Table recovery preserves the repair and omits unrelated draft skills."""
+    from typing import cast
+
+    from precis.runtime.hints import HintsMixin
+
+    stub = cast(HintsMixin, _StubRuntime(["draft"]))
+    args: dict[str, Any] = {"kind": "draft", "id": "dc123"}
+    args.update({"__extras__": {selector: []}} if nested else {selector: []})
+    err = BadInput("invalid table operation", next="repair the selector")
+    HintsMixin._maybe_add_skill_hint(stub, err, "edit", args)
+    HintsMixin._maybe_add_kind_skills_hint(stub, err, "edit", args)
+    assert err.next == [
+        "repair the selector",
+        "get(kind='skill', id='precis-table-help')",
+    ]
+
+
+@pytest.mark.parametrize("selector", ["where", "at", "text"])
+def test_ambiguous_table_edit_hint_resolves_chunk(selector: str) -> None:
+    from types import SimpleNamespace
+    from typing import cast
+    from unittest.mock import Mock
+
+    from precis.runtime.hints import HintsMixin
+
+    drafts = Mock()
+    drafts.get_draft_chunk.return_value = SimpleNamespace(chunk_kind="table")
+    stub = cast(
+        HintsMixin,
+        SimpleNamespace(
+            hub=SimpleNamespace(kinds=["draft"], store=SimpleNamespace(drafts=drafts))
+        ),
+    )
+    err = BadInput("invalid table edit", next="repair")
+    args = {"kind": "draft", "id": "dc123", selector: "bad"}
+    HintsMixin._maybe_add_skill_hint(stub, err, "edit", args)
+    HintsMixin._maybe_add_kind_skills_hint(stub, err, "edit", args)
+    assert err.next == ["repair", "get(kind='skill', id='precis-table-help')"]
+    drafts.get_draft_chunk.assert_called_with("dc123")

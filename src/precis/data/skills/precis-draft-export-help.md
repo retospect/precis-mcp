@@ -40,6 +40,18 @@ Pull the same lists any time without exporting:
 `get(kind='draft', id=<slug>, view='hygiene')`.
 
 
+## Retraction checks
+
+The export pane offers `retraction_check`: `stale` (default; check citations
+older than 30 days or never checked), `all` (ignore the persisted TTL), or
+`none` (read stored state only). PDF jobs check the whole draft, then block
+retracted citations unless `ignore_retractions=True` explicitly waives the
+gate. The pane button has a per-press cap; PDF jobs do not. Progress and the
+pane show "N of M checked within 30 d". Word exports never contact Crossref.
+Both formats place a Retraction coverage block after Unverified claims when
+coverage is incomplete or checks were skipped; its first line is red for
+`none` or any never-checked citation.
+
 ## Export — LaTeX, PDF, Word, reMarkable
 
 ```
@@ -81,9 +93,14 @@ per-install config on `PrecisConfig` (`PRECIS_LIBRARY_SEARCH_URL`,
 becomes a `\newacronym`, first use full and later `\gls{…}`, with a
 page-number list in the glossary. PDF and Word define the same
 occurrence: headings print the bare short and never define it, URLs and
-DOIs are left alone, `CNB-based` counts as a use, and `et al.`/`e.g.` do
+DOIs are left alone, `CNB-based` and `aerosol-CVD` count as uses (the
+latter defines as `aerosol-CVD (chemical vapour deposition)`), and `et al.`/`e.g.` do
 not capitalise the next word. Record handles follow the audience choice
-below; draft chunk cross-references retain their section/figure numbers.
+below; chunk cross-references read `Figure 1`, `Table 1`, `Section 5.4`
+(`Eq. (1)`); ones joined by whitespace, `,` or `and` merge (`Sections 1 and 2`,
+`Figures 1 to 3`; not `or`); a reference into the citing chunk's own section or an
+ancestor prints `above` (target first) or `below` (`Above` at a sentence
+start) and ends a run; same in both formats.
 The byline becomes an `authblk`
 block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
 (or the byline) yourself. Citations must resolve (`[fi<id>]` → a hub
@@ -98,8 +115,68 @@ biblatex style — `numeric-comp` (default), `chem-rsc` (alias `rsc`),
 - **PDF** — deterministic but slow, so it runs as a **job**
   (`put(kind='job', ...)` above), landing the path in
   `job_summary`/`meta.pdf`; no TeX toolchain → a friendly error instead.
-- **Word/.docx** — toolchain-free and **synchronous**, with render-time
-  acronym first-use expansion + an auto acronyms list.
+- **Word/.docx** — toolchain-free and **synchronous**, with acronym
+  first-use expansion + list; figure, table and equation numbers and
+  cross-references are Word fields (update fields renumbers); styles below.
+
+## Repeated citations
+
+Within one paragraph, list item, caption or table cell, a citation mark
+naming the same references as the previous printed mark is dropped, in
+Word and PDF: "text [5]. More [5]." prints "text [5]. More." The
+reference still counts and stays in the list. A different reference in
+between, an SI postnote or a trust mark ("(unverified)") keeps the mark.
+So does a sentence that leans on it: after "(", a comma, a colon or a full
+stop, after "see", "in", "ref." and the like, at the start of the block, or
+before "'s". The kept mark is the one the next mark is compared with.
+In EndNote mode the dropped mark's pinned passage joins the kept field's
+research notes. To print every mark, pass `--repeat-cites` (CLI) or
+`repeat_cites: true` (job param).
+
+Two cited records with the same DOI share one number and one list entry
+(the export warns once). Records with equal title, year and first author
+but no shared DOI are not merged; the export only warns.
+
+## Word citation machinery
+
+The export dialog's dropdown (web `?citations=`) picks how the Word file
+encodes citations; every choice prints the same marks and list. Offered
+today: **EndNote fields** (default, `endnote`: `ADDIN EN.CITE` fields with
+embedded records, `EN.REFLIST`), **Word citations** (`word`: Word's own
+`CITATION` fields over the sources stored in the document, and a
+`BIBLIOGRAPHY` field; a co-author needs no EndNote, numbering stays live
+in Word's own style), **Zotero fields** (`zotero`: `ADDIN ZOTERO_ITEM`
+fields carrying each item as embedded CSL JSON, an `ADDIN ZOTERO_BIBL`
+list and the document preferences the Zotero plugin needs; a co-author
+with the plugin keeps citing and refreshes) and **plain text** (`plain`:
+no citation fields). Cross-references and the page number stay fields in
+every choice. A group with an SI source stays one mark in every choice
+(`[1 (SI), 2]`); in Word citations and Zotero fields the SI postnote is
+bound to its own source. The draft's bibliography style picks the
+EndNote and Zotero style.
+
+The **research notes** box (web `?notes=0|1`, job param
+`research_notes`) applies to EndNote fields only. On puts each cited
+passage into its record's Research Notes; off leaves them out, also for
+a dropped repeat. Default: on for **dev**, off for **external**.
+
+## Word styles
+
+The Word export puts its look in named styles, not in direct formatting:
+restyle a whole class of text by editing one style in Word.
+
+| Text | Style |
+|---|---|
+| Figure caption (left-aligned) | `Caption` |
+| Table title | `Table Caption` (based on `Caption`) |
+| "Figure N:" / "Table N:" label | `Caption Label` (character) |
+| Picture paragraph | `Figure` |
+| Reference entry: "[n]", a tab, the entry; hanging indent | `Bibliography`; `EndNote Bibliography` when citations are EndNote fields |
+| Acronym entry "SHORT: long form" | `Definition`; the label in `Definition Term` (character) |
+| Published claim artifact entry: sentence, source numbers, linked word "link", "(under embargo)" until public | `Published Claim` |
+| "Abstract" label above the prose before the first heading (Word only; no number, not a heading) | `Abstract Title`; the paragraphs in `Abstract` until a "Keywords:" paragraph |
+| Page footer "Page N" (live field, centred; no page count) | `Footer` |
+| Header from page 2: short title left, first author's family name (or "A and B", "A et al.") right | `Header` |
 
 ## Audience and data supplement
 

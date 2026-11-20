@@ -88,6 +88,7 @@ MEMORY_ACTIONS = {
     "griped": ("rewrite", "supersede", "retire"),
     "host_facts": ("rewrite",),
     "negative_undated": ("rewrite", "qualify", "ask"),
+    "notation": ("rewrite", "ask"),
     "restated_claim": ("rewrite",),
     "review_due": ("rewrite", "qualify", "supersede", "retire", "ask"),
     "source_drift": ("rewrite",),
@@ -286,7 +287,19 @@ false. Its line spans and grep_brief name what needs verification; no repo
 search has been performed. A date on another line does not date the claim.
 Only propose a supported correction or qualification, with a live anchor
 and date; otherwise reject or ask. Preserve base_sha and evidence spans.
-All three detectors are proposal-only, with no apply or auto-apply path.
+review_due, title_shape, negative_undated and notation are all
+proposal-only, with no apply or auto-apply path.
+
+notation flags the first authored-prose span in a memory body that breaks
+precis-notation-canon outside quotes, code and math — evidence.hits names
+each hit's code, token and span; `formula-ascii-subscript` is never
+flagged. The proposed rewrite replaces only the flagged token per the
+canon, keeping the op's find and span unchanged; never invent a fix
+outside the flagged span, and never touch quoted spans, code or math —
+those stay byte-identical. Answer "ask" for tex-residue hits and verbatim
+LaTeX sections so a human can check the source. text=null is unresolved,
+never a delete instruction. Preserve base_sha and the evidence spans;
+never refine to merge or prune.
 
 compact owes a per-sentence plan before its memory may retire or drop a
 claim. For every sentence in evidence.sentences decide one of: keep (it

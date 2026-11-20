@@ -1090,8 +1090,10 @@ def _build_agent_result(res: Any, *, duration_s: float) -> AgentResult:
     ):
         raise ClaudeAgentError(
             "claude -p (agent) returned but is not logged in. "
-            "CLAUDE_CODE_OAUTH_TOKEN missing or stale — load it from "
-            "~/.claude_oauth_token or re-run 'claude /login'.",
+            "The vault token CLAUDE_CODE_OAUTH_TOKEN is missing or "
+            "revoked in the vault — mint a new one with `claude "
+            "setup-token` on a machine that is logged in and store it "
+            "with `precis secret set CLAUDE_CODE_OAUTH_TOKEN`.",
             stdout=res.stdout,
             stderr=res.stderr,
             returncode=0,

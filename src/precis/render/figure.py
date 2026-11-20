@@ -24,10 +24,11 @@ import hashlib
 import json
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from precis.quest.frontier import FrontierResult
     from precis.viz3d.camera import Camera
 
 from precis.render.sandbox import DEFAULT_TIMEOUT_S, render_python
@@ -386,6 +387,10 @@ def render_figure_chunk(
     or a render failure, so a caller (the render pass / export barrier) can
     bubble the reason without crashing the worker."""
     recipe = store.drafts.figure_render_recipe(figure_chunk_id)
+    if recipe is not None and recipe.get("kind") == "pathway_profile":
+        return _render_pathway_chunk(store, figure_chunk_id, recipe)
+    if recipe is not None and recipe.get("kind") == "quest_pareto":
+        return _render_quest_chunk(store, figure_chunk_id, recipe)
     if recipe is not None and recipe.get("kind") == "view":
         return _render_view_chunk(store, figure_chunk_id, recipe)
     bundle = store.drafts.figure_render_bundle(figure_chunk_id)
@@ -420,6 +425,18 @@ def needs_render(store: Any, chunk: Any) -> bool:
         return True
     if not isinstance(meta.get("render"), dict):
         return False
+    if meta["render"].get("kind") == "pathway_profile":
+        recipe = meta["render"]
+        ref = store.get_ref(kind="pathway", id=recipe["source"]["slug"])
+        return ref is not None and recipe.get("cached_key") != pathway_key(ref, recipe)
+    if meta["render"].get("kind") == "quest_pareto":
+        from precis.quest.frontier import quest_frontier
+
+        recipe = meta["render"]
+        ref = resolve_quest_ref(store, recipe["source"]["handle"])
+        return ref is not None and recipe.get("cached_key") != quest_key(
+            ref, recipe, quest_frontier(store, ref.id)
+        )
     if meta["render"].get("kind") == "view":
         return _view_fresh(store, meta) is _STALE
     bundle = store.drafts.figure_render_bundle(chunk.chunk_id)
@@ -495,3 +512,178 @@ def ensure_rendered(store: Any, chunk: Any) -> str | None:
         return _failure_message(outcome.error, outcome.detail)
     store.drafts.clear_render_pending(chunk.chunk_id)
     return None
+
+
+def pathway_recipe(source: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Canonical lazy pathway recipe; kinetics defaults on even for source-only puts."""
+    from precis.utils.pathway_figure import OPTIONS, figure_options
+
+    slug, _, view = source.partition("#")
+    if not slug or view not in ("", "profile", "graph"):
+        raise ValueError("pathway source must be <slug>[#profile|#graph]")
+    unknown = set(options) - OPTIONS - {"source"}
+    if unknown:
+        raise ValueError(f"unknown pathway figure options: {sorted(unknown)}")
+    return {
+        "kind": "pathway_profile",
+        "source": {"kind": "pathway", "slug": slug},
+        "view": view or "profile",
+        "options": {"kinetics": True, **figure_options(options)},
+    }
+
+
+def pathway_key(ref: Any, recipe: dict[str, Any]) -> str:
+    """Hash stored source data, recipe and renderer version; no solver or timestamp dependency."""
+    inputs = {
+        "version": 1,
+        "ref": ref.id,
+        "title": ref.title,
+        "meta": ref.meta,
+        "view": recipe["view"],
+        "options": recipe["options"],
+    }
+    return hashlib.sha256(
+        json.dumps(inputs, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _render_pathway_chunk(
+    store: Any, chunk_id: int, recipe: dict[str, Any]
+) -> RenderOutcome:
+    from precis.quest.figures import pathway_profile_figure
+
+    ref = store.get_ref(kind="pathway", id=recipe["source"]["slug"])
+    if ref is None:
+        return RenderOutcome(
+            ok=False, error="no-source", detail="pathway source no longer exists"
+        )
+    key = pathway_key(ref, recipe)
+    try:
+        png, snapshot = pathway_profile_figure(
+            store, ref, view=recipe["view"], **recipe["options"]
+        )
+    except Exception as exc:
+        return RenderOutcome(ok=False, error="view-error", detail=str(exc))
+    with store.tx() as conn:
+        store.drafts.upsert_chunk_blob(chunk_id, png, RENDER_MIME, conn=conn)
+        store.drafts.stamp_figure_data_package(chunk_id, snapshot, conn=conn)
+    store.drafts.stamp_render_fields(chunk_id, {"cached_key": key})
+    return RenderOutcome(ok=True, cached_key=key)
+
+
+#: Allowed ``label`` values for a quest-frontier figure
+#: (:func:`precis.quest.figures._pareto_figure`'s point annotations).
+_QUEST_LABEL_MODES = ("handles", "names", "none")
+#: Allowed option keys on a ``quest:<handle>#frontier`` view source.
+_QUEST_RECIPE_KEYS = {"x", "y", "trusted_only", "top_n", "label"}
+
+
+def resolve_quest_ref(store: Any, handle: Any) -> Any | None:
+    """The live quest ref a ``quest:<handle>#frontier`` recipe names — a
+    ``qu<id>`` handle (:func:`precis.utils.handle_registry.parse`) or a bare
+    numeric ref id. ``None`` when nothing resolves (a vanished source keeps
+    its last rendered image, mirroring the pathway rule)."""
+    from precis.utils import handle_registry
+
+    parsed = handle_registry.parse(str(handle))
+    if parsed is not None:
+        kind, is_chunk, pk = parsed
+        if is_chunk or kind != "quest":
+            return None
+        return store.get_ref(kind="quest", id=pk)
+    token = str(handle).strip()
+    if token.lstrip("-").isdigit():
+        return store.get_ref(kind="quest", id=int(token))
+    return None
+
+
+def quest_recipe(source: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Canonical lazy quest-frontier recipe; source is ``<handle>#frontier``
+    (``handle`` a ``qu<id>`` handle or bare numeric ref id). ``x``/``y`` pick
+    any two of the quest's rubric objective keys; ``trusted_only`` drops
+    provisional points; ``top_n`` keeps the points closest to the frontier;
+    ``label`` annotates points with handles or names."""
+    slug, _, view = source.partition("#")
+    if not slug or view != "frontier":
+        raise ValueError("quest source must be <handle>#frontier")
+    unknown = set(options) - _QUEST_RECIPE_KEYS - {"source"}
+    if unknown:
+        raise ValueError(f"unknown quest frontier figure options: {sorted(unknown)}")
+    label = options.get("label", "none")
+    if label not in _QUEST_LABEL_MODES:
+        raise ValueError(f"label must be one of {list(_QUEST_LABEL_MODES)}")
+    top_n = options.get("top_n")
+    if top_n is not None and (
+        isinstance(top_n, bool) or not isinstance(top_n, int) or top_n < 1
+    ):
+        raise ValueError(f"top_n must be a positive integer, got {top_n!r}")
+    trusted_only = options.get("trusted_only", False)
+    if not isinstance(trusted_only, bool):
+        raise ValueError(f"trusted_only must be a boolean, got {trusted_only!r}")
+    return {
+        "kind": "quest_pareto",
+        "source": {"kind": "quest", "handle": slug},
+        "view": "frontier",
+        "x": options.get("x"),
+        "y": options.get("y"),
+        "trusted_only": trusted_only,
+        "top_n": top_n,
+        "label": label,
+    }
+
+
+def quest_key(ref: Any, recipe: dict[str, Any], frontier: FrontierResult) -> str:
+    """Hash measures and membership from serving structures with the recipe."""
+    inputs = {
+        "version": 2,
+        "ref": ref.id,
+        "title": ref.title,
+        "rubric": (ref.meta or {}).get("rubric_objectives"),
+        "frontier": asdict(frontier),
+        "view": recipe["view"],
+        "x": recipe.get("x"),
+        "y": recipe.get("y"),
+        "trusted_only": recipe.get("trusted_only"),
+        "top_n": recipe.get("top_n"),
+        "label": recipe.get("label"),
+    }
+    return hashlib.sha256(
+        json.dumps(
+            inputs,
+            sort_keys=True,
+            default=lambda obj: sorted(obj) if isinstance(obj, frozenset) else str(obj),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _render_quest_chunk(
+    store: Any, chunk_id: int, recipe: dict[str, Any]
+) -> RenderOutcome:
+    from precis.quest.figures import quest_pareto_figure
+    from precis.quest.frontier import quest_frontier
+
+    ref = resolve_quest_ref(store, recipe["source"]["handle"])
+    if ref is None:
+        return RenderOutcome(
+            ok=False, error="no-source", detail="quest source no longer exists"
+        )
+    try:
+        frontier = quest_frontier(store, ref.id)
+        key = quest_key(ref, recipe, frontier)
+        png, snapshot = quest_pareto_figure(
+            store,
+            ref,
+            x=recipe.get("x"),
+            y=recipe.get("y"),
+            trusted_only=recipe.get("trusted_only", False),
+            top_n=recipe.get("top_n"),
+            label=recipe.get("label", "none"),
+            frontier=frontier,
+        )
+    except Exception as exc:
+        return RenderOutcome(ok=False, error="view-error", detail=str(exc))
+    with store.tx() as conn:
+        store.drafts.upsert_chunk_blob(chunk_id, png, RENDER_MIME, conn=conn)
+        store.drafts.stamp_figure_data_package(chunk_id, snapshot, conn=conn)
+        store.drafts.stamp_render_fields(chunk_id, {"cached_key": key}, conn=conn)
+    return RenderOutcome(ok=True, cached_key=key)

@@ -477,7 +477,8 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         name="PRECIS_WEB_BASE_URL",
         purpose="Public precis_web origin the signed file-link views join "
         "minted paths onto (page_image, pdf_link, the upload doors). Unset "
-        "→ every link is path-only and an agent cannot fetch it.",
+        "→ pdf_link / pdf_upload_link refuse naming it (gr681313); "
+        "page_image still returns a path-only link.",
         get_url=None,
         get_blurb="The gateway's Tailscale-serve origin — the same value as "
         "the deploy var `precis_web_podcast_base_url`. Operator-set, here or "

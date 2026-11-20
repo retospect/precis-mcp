@@ -239,6 +239,12 @@ def _close_at_exit(pool: ConnectionPool) -> None:
 #: thread/context, or ``None``. Read by :meth:`PrecisPool.connection`.
 _PINNED: ContextVar[Connection | None] = ContextVar("precis_pinned_conn", default=None)
 
+
+def connection_is_pinned() -> bool:
+    """Whether retries must defer to the owner of an outer transaction."""
+    return _PINNED.get() is not None
+
+
 #: Monotonic deadline (``time.monotonic()``) past which pool checkouts in
 #: this context may not wait — set by the cross-kind fan-out so a
 #: straggler outliving its call deadline stops queueing for connections

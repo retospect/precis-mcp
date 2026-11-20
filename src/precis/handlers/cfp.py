@@ -246,6 +246,10 @@ class CfpHandler(PaperHandler):
             page=int(kw.get("page") or 1),
             page_size=int(kw.get("page_size") or 10),
             sort=chosen,
+            # ``args={'ids': …}`` rides the same include-channel fold
+            # the paper tags-only door documents (gr719628) — without
+            # the forward the browse would widen past the named cohort.
+            ids=kw.get("ids"),
         )
 
 

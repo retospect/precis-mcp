@@ -217,7 +217,7 @@ def mem_limit_preexec(
     mem_mb: float | None = None,
     *,
     address_space: bool = False,
-) -> Callable[[], None] | None:
+) -> Callable[[], bool] | None:
     """A ``preexec_fn`` capping a bare subprocess's memory (gr595537).
 
     Resolves the same cap as the container flags (estimate →
@@ -229,7 +229,10 @@ def mem_limit_preexec(
     cap would kill GPU jobs outright —
     :func:`precis_pathway.runner._apply_memory_cap` made the same call.
     The soft limit clamps under an inherited hard one — a child never
-    *raises* its ceiling.
+    *raises* its ceiling. A kernel refusal (possible on Darwin, gr700449)
+    leaves that limit unchanged. The callback returns whether all requested
+    limits were applied. Popen ignores the result, so a child can run without
+    the requested cap. The spawn-started compute child logs a refusal.
 
     Over the cap, allocations fail: Python raises ``MemoryError`` (which a
     child like pathway's maps to its classified "memory limit exceeded"
@@ -255,14 +258,17 @@ def mem_limit_preexec(
     if not limits:
         return None
 
-    def _apply() -> None:
+    def _apply() -> bool:
+        applied = True
         for what in limits:
             try:
                 _soft, hard = resource.getrlimit(what)
                 soft = cap if hard == resource.RLIM_INFINITY else min(cap, hard)
                 resource.setrlimit(what, (soft, hard))
             except (ValueError, OSError):
-                pass
+                # Popen runs this after fork, when logging locks may be held.
+                applied = False
+        return applied
 
     return _apply
 

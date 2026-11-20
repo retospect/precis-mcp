@@ -75,6 +75,10 @@ precis_mcp_public_port: 8766
 # Set 443 to share the web listener's HTTPS port through path mappings.
 precis_mcp_public_https_port: 8443
 precis_mcp_public_oauth_env: {}
+# Bearer classes the public MCP accepts (PRECIS_MCP_CREDENTIAL_CLASSES): any of
+# install, slice, personal, capability, oauth, comma/space separated. Listing
+# ``install`` makes the role generate the infrastructure token again.
+precis_mcp_public_credential_classes: oauth
 precis_mcp_public_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
 precis_mcp_public_secrets_dir: /opt/mcps/mcp-public-secrets
 # The same-node embedder service (precis_embedder role). Unset, the process

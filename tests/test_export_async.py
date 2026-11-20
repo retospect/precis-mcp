@@ -176,6 +176,39 @@ def _wait(client: TestClient, url: str, timeout_s: float = 60.0) -> dict[str, An
         time.sleep(0.1)
 
 
+@pytest.mark.parametrize(
+    ("query", "citations", "notes"),
+    [
+        ("citations=endnote&notes=0", "endnote", False),
+        ("citations=plain", "plain", True),
+        ("", "endnote", True),
+    ],
+)
+def test_async_start_carries_citations_and_notes(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+    citations: str,
+    notes: bool,
+) -> None:
+    """The start route replays the whole query to the export route, so the
+    citation machinery and the notes switch reach ``export_docx``."""
+    seen: list[dict[str, Any]] = []
+    real = docx_mod.export_docx
+
+    def spy(store: Any, ref: Any, **kw: Any) -> Any:
+        seen.append(kw)
+        return real(store, ref, **kw)
+
+    monkeypatch.setattr(docx_mod, "export_docx", spy)
+    start = client.post("/drafts/asyncd/export/start?fmt=docx&" + query)
+    tok = start.json()["token"]
+    snap = _wait(client, f"/drafts/asyncd/export/status/{tok}")
+    assert snap["state"] == "done"
+    assert seen[-1]["citations"] == citations
+    assert seen[-1]["research_notes"] is notes
+
+
 def test_async_docx_matches_direct_download(client: TestClient) -> None:
     start = client.post("/drafts/asyncd/export/start?fmt=docx&citations=plain")
     assert start.status_code == 200
@@ -457,7 +490,7 @@ def test_export_jobs_queue_past_the_build_cap(
 
 def test_reader_page_wires_the_progress_ui(client: TestClient) -> None:
     html = client.get("/drafts/asyncd").text
-    assert "startExport('docx')" in html
+    assert "startExport('docx', docxExtra())" in html
     assert "startExport('pdf')" in html
     assert "data-export-progress" in html
     assert "/export/start" in html

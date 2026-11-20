@@ -220,6 +220,9 @@
     {% if p.filtered %}
       {% set ns.extra = ns.extra ~ "\nfiltered: " ~ p.filter_reasons | join("\nfiltered: ") %}
     {% endif %}
+    {% if p.assurance_note %}
+      {% set ns.extra = ns.extra ~ "\n" ~ p.assurance_note %}
+    {% endif %}
     {% if p.band == "provisional" %}
       {% set pcolor = "#c2410c" %}
       {% set status = "provisional" + (", untrusted" if p.untrusted else "") + (" — provisional frontier ★" if p.on_frontier else "") %}

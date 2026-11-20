@@ -224,12 +224,26 @@ _SUPERSCRIPT_TAIL_RE = re.compile(f"[{_SUPERSCRIPT_DIGITS}]+$")
 #: A letter-run following a `/` -- the candidate denominator to classify.
 _DENOMINATOR_RUN_RE = re.compile(f"/([A-Za-zµμΩ]+[{_SUPERSCRIPT_DIGITS}]*)")
 
+#: A def2 basis-set name after a method/basis solidus is nomenclature,
+#: not a unit. Inspect the complete name: the denominator scanner only
+#: captures `def`, losing the digits and hyphen that establish its meaning.
+_DEF2_BASIS_RE = re.compile(r"def2-(?:SVP|SV\(P\)|[TQ]ZVPP?D?)(?![\w-])")
+
 #: A differential-quotient denominator (`dI/dV`, `dR/dT`, ...) -- physics
 #: shorthand where `d<Symbol>` is half of a derivative, not a compound
 #: unit; the ambiguity the two-denominator rule guards against (two units
 #: bundled on one solidus) doesn't apply here, so it's a carve-out on top
 #: of the accepted-unit set rather than an entry in it.
 _DIFFERENTIAL_DENOMINATOR_RE = re.compile(r"^d[A-Z]$")
+
+#: An all-caps acronym run immediately left of a `/` (gr722272): with an
+#: all-caps run right of the slash too, the solidus joins two *named
+#: methods* (`CBMC/CFCMC`, `DFT/MD`, `MD/MC`) -- a name pair as printed,
+#: not a value over a denominator, so the two-denominator ambiguity (which
+#: factor moves under the exponent) never arises. Real units fail this on
+#: the left side: `cm²/Vs` has lowercase letters before the slash, and the
+#: accepted-denominator check above already clears `S/cm`-style pairs.
+_ACRONYM_LEFT_OF_SOLIDUS_RE = re.compile(r"(?<![A-Za-z])[A-Z]{2,}$")
 
 #: One formula unit: an element symbol, optionally followed by
 #: stoichiometric digits (`Pd`, `Ni5`).
@@ -300,6 +314,20 @@ def set_skill_slug_probe(probe: Callable[[str], bool] | None) -> None:
     """Register the skill-slug predicate the `~N` selector carve-out uses."""
     global _SKILL_SLUG_PROBE
     _SKILL_SLUG_PROBE = probe
+
+
+def is_served_skill_slug(token: str) -> bool:
+    """Whether ``token`` names a skill this build serves.
+
+    The same probe the `~N` carve-out consults (plugin slugs included),
+    with the packaged-corpus fallback when the probe was never
+    registered. ``precis.runtime.dispatch`` uses this for kindless-get
+    inference (gr676949) — taproot answers so the runtime need not reach
+    up to the handlers layer.
+    """
+    if _SKILL_SLUG_PROBE is not None:
+        return _SKILL_SLUG_PROBE(token)
+    return token in _skill_slugs()
 
 
 @lru_cache(maxsize=1)
@@ -396,8 +424,13 @@ _UNIT_TOKEN_ALT = "|".join(
 #: reading, which is nonsensical -- the same unit symbol repeating right
 #: after the digits is `range-unit-repeated`'s shape, not an exponent, so
 #: this rule stands down and lets that one fire instead.
+#: Zero is not a negative power: `cycle-0` is an ordinal label, and
+#: rewriting it would corrupt prose. Bare `K-12` is also ambiguous with
+#: the conventional E. coli strain designation, so preserve it; an
+#: explicit caret (`K^-12`) still unambiguously requests an exponent.
 _ASCII_MINUS_EXP_RE = re.compile(
-    rf"(?<![A-Za-zµμΩ])(?P<unit>{_UNIT_TOKEN_ALT})\^?-(\d+)\b(?!\s?(?P=unit)\b)"
+    rf"(?<![A-Za-zµμΩ])(?!K-12\b)(?P<unit>{_UNIT_TOKEN_ALT})"
+    rf"\^?-(?!0+\b)(\d+)\b(?!\s?(?P=unit)\b)"
 )
 
 #: A caret followed by an uppercase letter is a letter superscript
@@ -509,11 +542,15 @@ _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
 #: immediately (optionally through one space) followed by a unit-ish
 #: token -- `300-800 mg/g`, `10-20 Mt`, `0.7-0.9`. Four guards keep
 #: nomenclature hyphens out, each found by a corpus dry run:
-#: `(?<![-A-Za-z\d])` before the first number excludes a hyphen/letter/
-#: digit immediately to its left, so a *named-method* hyphen (`M06-2X`,
-#: a DFT functional) never fires (the `06` would otherwise read as the
-#: left half of a range) and neither does a mid-chain member of a longer
-#: hyphenated run; `(?!-\d)` after the second number excludes a
+#: `(?<![-\w.])` before the first number excludes a hyphen, word
+#: character or dot immediately to its left, so a *named-method* hyphen
+#: (`M06-2X`, a DFT functional) never fires (the `06` would otherwise
+#: read as the left half of a range), neither does a mid-chain member of
+#: a longer hyphenated run, and neither does a hyphen inside a model/
+#: package identifier (`qwen3.6-27b-q8_0`, `model_6-27b`, `模型6-27b`) --
+#: blocking dots keeps the matcher from restarting after an identifier's
+#: decimal point while still accepting a standalone decimal range
+#: (`0.7-0.9 mg`); `(?!-\d)` after the second number excludes a
 #: `-<digit>` immediately to its right, so a three-way nomenclature chain
 #: (`5-8-5`, a Stone-Wales defect label) never fires on either of its two
 #: hyphens. Compound/series names (`Fe-ZSM-5`, `UiO-66`, `MIL-101`,
@@ -536,16 +573,21 @@ _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
 #: does not merely lint, it rewrites `6-311G` to `6–311G` and corrupts
 #: the basis set.
 _HYPHEN_NUMERIC_RANGE_RE = re.compile(
-    r"(?<![-A-Za-z\d])(?![3-6]-\d{2,3}G(?![A-Za-z]))"
+    r"(?<![-\w.])(?![3-6]-\d{2,3}G(?![A-Za-z]))"
     r"(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?!-\d)(?=\s?[A-Za-zµ°%])"
 )
 
-#: `ascii-x-multiplier`: a bare ASCII `x` immediately after a digit,
-#: word-bounded on the right -- `1.61x`, `4-8x`, `100x`. The lookbehind
-#: means the `x` must directly abut the digit (no space), and the
-#: trailing `\b` means a grid-style label like `2x2` never fires (`x` is
-#: followed by another digit, so no word boundary sits between them).
-_ASCII_X_MULT_RE = re.compile(r"(?<=\d)x\b")
+#: `ascii-x-multiplier`: a bare ASCII `x` immediately after a digit run
+#: that starts at a word boundary -- `1.61x`, `4-8x`, `100x`. The
+#: leading `\b` means the digit run must start at the beginning of a
+#: word: a ref-handle range like `pa4249x` (pa42490 to pa42499) has its
+#: digits glued to the handle prefix (`pa`, `pc`, `fi`, `me`, `td`,
+#: `gr`, ...), and between two word characters no boundary sits, so the
+#: range never fires (gr694538). The trailing `\b` means a grid-style
+#: label like `2x2` never fires either (`x` is followed by another
+#: digit, so no word boundary sits between them). The digit run is
+#: captured so `normalize_notation` can rewrite only the `x`.
+_ASCII_X_MULT_RE = re.compile(r"\b(\d+)x\b")
 
 #: `range-unit-repeated` (2026-08-20 numeric-value policy): a unit
 #: written after BOTH endpoints of a range -- `9 GPa-12 GPa`, `9 GPa-12
@@ -555,14 +597,31 @@ _ASCII_X_MULT_RE = re.compile(r"(?<=\d)x\b")
 #: separately and on a structurally disjoint shape (that rule requires
 #: the two numbers to be dash-adjacent with nothing between; this one
 #: requires a unit token *between* the first number and the dash, so the
-#: two never double-fire on the same span). The same
-#: `(?<![-A-Za-z\d])` guard as `hyphen-numeric-range` keeps a named-
-#: method hyphen (`M06-2X`) from reading its trailing digit as a range
-#: endpoint. `(?P=unit)` requires an exact repeat of the first unit's
-#: text, so `9 GPa-12 kPa` (a genuine unit change, not a duplication)
-#: never fires.
+#: two never double-fire on the same span). The same `(?<![-\w.])` guard
+#: as `hyphen-numeric-range` keeps a named-method hyphen (`M06-2X`) and
+#: an identifier's word-char/dot-adjacent digits (`model_4b-4b`) from
+#: reading as a range endpoint. `(?P=unit)` requires an exact repeat of
+#: the first unit's text, so `9 GPa-12 kPa` (a genuine unit change, not
+#: a duplication) never fires.
+#:
+#: The leading negative lookahead (gr720667) excludes an electronic-orbital
+#: label joined to its own repeat -- `4s–4s`, `3d–3d`, `4s²–4s²`. There
+#: the digit+letter is ONE name (principal quantum number + orbital
+#: letter, optionally carrying a superscript occupancy), not a value+unit
+#: pair: the `s` is never seconds, and rewriting to `4–4 s` corrupts the
+#: chemistry. Only superscript occupancy digits may follow the letter;
+#: anything else (`4fs`, `2ps`, `s⁻¹`, `dB`) is a genuine unit whose
+#: repeated range still fires (td732122). The guard anchors to a SINGLE
+#: digit (principal quantum numbers run 1-7), so a real unspaced unit
+#: repeat on a multi-digit value (`12s-15s`) still fires; the canonically
+#: spaced seconds form (`9 s-12 s`) never reaches the guard, since a space
+#: between the value and the letter already rules out an orbital label.
+#: The second label must repeat the first verbatim (`4s–4s`); two
+#: different labels (`4s–5s`) are a genuine seconds range and still fire.
 _RANGE_UNIT_REPEATED_RE = re.compile(
-    r"(?<![-A-Za-z\d])(?P<num1>\d+(?:\.\d+)?)\s?"
+    r"(?<![-\w.])"
+    r"(?!(?P<orb>\d[spdf][¹²³⁴⁵⁶⁷⁸⁹⁰]*)\s?[–-]\s?(?P=orb)(?!\w))"
+    r"(?P<num1>\d+(?:\.\d+)?)\s?"
     r"(?P<unit>[A-Za-zµ°Ω%][\w°Ω%⁻¹²³⁴⁵⁶⁷⁸⁹⁰/]*)"
     r"\s?[–-]\s?(?P<num2>\d+(?:\.\d+)?)\s?(?P=unit)\b"
 )
@@ -727,6 +786,8 @@ def lint_notation(sentence: str) -> list[str]:
         )
 
     for dm in _DENOMINATOR_RUN_RE.finditer(sentence):
+        if _DEF2_BASIS_RE.match(sentence, dm.start(1)):
+            continue
         run = dm.group(1)
         if len(run) < 2:
             continue
@@ -737,11 +798,16 @@ def lint_notation(sentence: str) -> list[str]:
             continue
         if _is_chemistry_run(stripped):
             continue
+        if stripped.isupper() and _ACRONYM_LEFT_OF_SOLIDUS_RE.search(
+            sentence[: dm.start()]
+        ):
+            continue  # '<ACRONYM>/<ACRONYM>' names two methods, not a unit
         warnings.append(
             f"two-denominator-solidus: '/{run}' found -- a solidus is fine "
             "for a single recognised unit ('mA/µm', 'S/cm') but ambiguous "
             "with two denominators ('cm²/Vs' -> 'cm² V⁻¹ s⁻¹'); a chemical "
-            "formula or Miller-index facet ('PdH/Pd(111)') is not a unit."
+            "formula or Miller-index facet ('PdH/Pd(111)') and a pair of "
+            "all-caps named methods ('CBMC/CFCMC') are not units."
         )
 
     # ── canon v2: ASCII -> UTF-8 symbol respellings ─────────────────────
@@ -1087,7 +1153,13 @@ def normalize_notation(sentence: str) -> tuple[str, list[str]]:
         "hyphen-numeric-range",
         applied,
     )
-    s = _apply(s, _ASCII_X_MULT_RE, "×", "ascii-x-multiplier", applied)
+    s = _apply(
+        s,
+        _ASCII_X_MULT_RE,
+        lambda m: f"{m.group(1)}×",
+        "ascii-x-multiplier",
+        applied,
+    )
     s = _apply(
         s,
         _RANGE_UNIT_REPEATED_RE,
@@ -1160,6 +1232,69 @@ def mask_unauthored(text: str) -> str:
     return text
 
 
+def _authored_finding_spans(
+    text: str,
+) -> list[tuple[str, str | None, int, int, str]]:
+    """Shared core of the two authored-prose lints: ``(code, token, start,
+    end, message)`` per finding, one per (code, token).
+
+    Runs :func:`lint_notation` line by line over :func:`mask_unauthored`
+    text. ``start``/``end`` index the flagged token in the ORIGINAL ``text``:
+    masking is same-length (newlines preserved), so masked-line offsets map
+    onto it 1:1. A ``None`` token keeps span ``(0, 0)`` — only the
+    symbol-less ``approx-spacing`` variant yields one, and it names no
+    token to anchor an edit to.
+    """
+    out: list[tuple[str, str | None, int, int, str]] = []
+    seen: set[tuple[str, str | None]] = set()
+    offset = 0
+    for raw in mask_unauthored(text or "").splitlines(keepends=True):
+        line = raw.rstrip("\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
+        line_offset = offset
+        offset += len(raw)
+        if not line.strip():
+            continue
+        for message in lint_notation(line):
+            code = message.split(":", 1)[0]
+            if code in _AUTHORED_SKIP_CODES:
+                continue
+            token: str | None = None
+            start = end = 0
+            m = _FOUND_SUBSTRING_RE.match(message)
+            needle = m.group(1) if m else None
+            if code == "tex-residue":
+                needle = next((c for c in ("$", "\\") if c in line), None)
+            if needle and " " in needle and needle in line:
+                token = needle.strip()
+                at = line.index(needle)
+                start = line_offset + at + (len(needle) - len(needle.lstrip()))
+                end = start + len(token)
+            elif needle:
+                # Short needles ('x', '^') recur in the line; take the first
+                # whitespace-delimited token that still trips this code.
+                chosen: tuple[str, int] | None = None
+                for at in (i for i in range(len(line)) if line.startswith(needle, i)):
+                    lo = line.rfind(" ", 0, at) + 1
+                    hi = line.find(" ", at + len(needle))
+                    raw_tok = line[lo : hi if hi != -1 else len(line)]
+                    cand = raw_tok.strip(".,;:()")
+                    lead = len(raw_tok) - len(raw_tok.lstrip(".,;:()"))
+                    if chosen is None or not chosen[0]:
+                        chosen = (cand, lo + lead)  # fallback: first occurrence
+                    if any(w.startswith(code + ":") for w in lint_notation(cand)):
+                        chosen = (cand, lo + lead)
+                        break
+                if chosen is not None and chosen[0]:
+                    token, rel = chosen
+                    start = line_offset + rel
+                    end = start + len(token)
+            if (code, token) in seen:
+                continue
+            seen.add((code, token))
+            out.append((code, token, start, end, message))
+    return out
+
+
 def lint_authored_notation(text: str) -> list[tuple[str, str | None, str]]:
     """``(code, offending token, canon message)`` for authored prose.
 
@@ -1168,35 +1303,24 @@ def lint_authored_notation(text: str) -> list[tuple[str, str | None, str]]:
     per (code, token). `formula-ascii-subscript` is never reported (see
     ``_AUTHORED_SKIP_CODES``). Advisory only; ``[]`` for empty or clean input.
     """
-    out: list[tuple[str, str | None, str]] = []
-    seen: set[tuple[str, str | None]] = set()
-    for line in mask_unauthored(text or "").splitlines():
-        if not line.strip():
-            continue
-        for message in lint_notation(line):
-            code = message.split(":", 1)[0]
-            if code in _AUTHORED_SKIP_CODES:
-                continue
-            token: str | None = None
-            m = _FOUND_SUBSTRING_RE.match(message)
-            needle = m.group(1) if m else None
-            if code == "tex-residue":
-                needle = next((c for c in ("$", "\\") if c in line), None)
-            if needle and " " in needle and needle in line:
-                token = needle.strip()
-            elif needle:
-                # Short needles ('x', '^') recur in the line; take the first
-                # whitespace-delimited token that still trips this code.
-                for at in (i for i in range(len(line)) if line.startswith(needle, i)):
-                    lo = line.rfind(" ", 0, at) + 1
-                    hi = line.find(" ", at + len(needle))
-                    cand = line[lo : hi if hi != -1 else len(line)].strip(".,;:()")
-                    token = token or cand  # fallback: first occurrence
-                    if any(w.startswith(code + ":") for w in lint_notation(cand)):
-                        token = cand
-                        break
-            if (code, token) in seen:
-                continue
-            seen.add((code, token))
-            out.append((code, token, message))
-    return out
+    return [
+        (code, token, message)
+        for code, token, _start, _end, message in _authored_finding_spans(text)
+    ]
+
+
+def lint_authored_notation_spans(
+    text: str,
+) -> list[tuple[str, str | None, int, int]]:
+    """``(code, token, start, end)`` for authored prose, offsets into ``text``.
+
+    Same skips, dedup and token rules as :func:`lint_authored_notation`;
+    ``start``/``end`` index the flagged token in the original text (the
+    masking pass preserves length). A ``None`` token — only the symbol-less
+    ``approx-spacing`` variant produces one — carries span ``(0, 0)`` and
+    cannot anchor an edit. Advisory only; ``[]`` for empty or clean input.
+    """
+    return [
+        (code, token, start, end)
+        for code, token, start, end, _message in _authored_finding_spans(text)
+    ]

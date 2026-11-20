@@ -1497,13 +1497,18 @@ def render_blocked(store: Store) -> Response:
     on no surface at all, the worst state for a self-continuing tree.
     Such rows render with ``blocked-by (nothing recorded)`` so the
     missing edge is itself the visible defect to fix.
+
+    gr656970: gripes are leaves too — a gripe with an open ``blocked-by``
+    target (todo or gripe) renders here, named by the blocker handle.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
             f"""
-            SELECT r.ref_id, r.title,
+            SELECT r.ref_id, r.kind, r.title,
                    array_agg(l.dst_ref_id ORDER BY l.dst_ref_id)
-                       FILTER (WHERE l.dst_ref_id IS NOT NULL) AS blockers
+                       FILTER (WHERE l.dst_ref_id IS NOT NULL) AS blockers,
+                   array_agg(b.kind ORDER BY l.dst_ref_id)
+                       FILTER (WHERE l.dst_ref_id IS NOT NULL) AS blocker_kinds
               FROM refs r
               LEFT JOIN links l
                      ON l.src_ref_id = r.ref_id AND l.relation = 'blocked-by'
@@ -1519,25 +1524,37 @@ def render_blocked(store: Store) -> Response:
                                  'open'
                                ) NOT IN {blocker_terminal_sql()}
                     )
-             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+              LEFT JOIN refs b ON b.ref_id = l.dst_ref_id
+             WHERE r.kind IN ('todo', 'gripe') AND r.retired_at IS NULL
                -- Defensive parity with render_ask_user: a terminal leaf
                -- can't normally also be STATUS:blocked (closed-prefix
                -- replace), but a direct-SQL backfill could violate that —
                -- keep finished leaves out of the triage view regardless.
-               AND COALESCE(
-                     (SELECT t2.value FROM ref_tags rt2
-                        JOIN tags t2 ON t2.tag_id = rt2.tag_id
-                       WHERE rt2.ref_id = r.ref_id
-                         AND t2.namespace = 'STATUS' LIMIT 1),
-                     'open'
-                   ) NOT IN ('done', 'won''t-do')
-             GROUP BY r.ref_id, r.title
+               -- Terminal vocabularies differ per kind (gr520237).
+               AND CASE WHEN r.kind = 'gripe' THEN
+                     COALESCE(
+                       (SELECT t2.value FROM ref_tags rt2
+                          JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                         WHERE rt2.ref_id = r.ref_id
+                           AND t2.namespace = 'STATUS' LIMIT 1),
+                       'open'
+                     ) NOT IN ('done', 'wontfix')
+                   ELSE
+                     COALESCE(
+                       (SELECT t2.value FROM ref_tags rt2
+                          JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                         WHERE rt2.ref_id = r.ref_id
+                           AND t2.namespace = 'STATUS' LIMIT 1),
+                       'open'
+                     ) NOT IN ('done', 'won''t-do')
+                   END
+             GROUP BY r.ref_id, r.kind, r.title
             HAVING count(l.dst_ref_id) > 0
-                OR EXISTS (
+                OR (r.kind = 'todo' AND EXISTS (
                     SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                      WHERE rt.ref_id = r.ref_id
                        AND t.namespace = 'STATUS' AND t.value = 'blocked'
-                )
+                ))
              ORDER BY r.ref_id DESC
              LIMIT 50
             """,
@@ -1546,16 +1563,24 @@ def render_blocked(store: Store) -> Response:
         return Response(body="no blocked leaves")
     lines = [f"# {len(rows)} blocked"]
     sizes = store.chunks.body_byte_counts([r[0] for r in rows])
-    for ref_id, title, blockers in rows:
+    for ref_id, kind, title, blockers, blocker_kinds in rows:
         first_line = (title or "").split("\n", 1)[0]
         blocker_ids = (
-            ", ".join(_h(b) for b in blockers)
+            ", ".join(
+                # A blocker can be any kind — one with no registered
+                # handle code (``se``…) falls back to ``kind:id`` like
+                # the work board's ``after`` builder, never a KeyError.
+                handle_registry.try_format(k, i) or f"{k}:{i}"
+                for k, i in zip(blocker_kinds, blockers or (), strict=True)
+            )
             if blockers
             else "(nothing recorded — add a blocked-by link)"
         )
         cell = size_cell(sizes.get(int(ref_id), 0))
         sz = f" · {cell}" if cell else ""
-        lines.append(f"{_h(ref_id):<6} {first_line:<60}  blocked-by {blocker_ids}{sz}")
+        lines.append(
+            f"{_h(ref_id, kind=kind):<6} {first_line:<60}  blocked-by {blocker_ids}{sz}"
+        )
     return Response(body="\n".join(lines))
 
 

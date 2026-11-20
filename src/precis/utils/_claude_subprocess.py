@@ -433,93 +433,141 @@ def run_claude(
     piped image bytes as an image content block). Mutually exclusive with
     ``stdin_devnull``; implies binary mode, so stdout/stderr are decoded to
     ``str`` before the usual ``CompletedProcess[str]`` return.
+
+    Admitted when a store is bound (gr657996/gr657245): the CLI burns real
+    CPU/memory on this host. A capacity refusal maps to ``error_cls`` —
+    this lane's ordinary error path — never an attempt at running
+    unaccounted.
     """
-    # Bootstrap the long-lived OAuth token from ~/.claude_oauth_token so any
-    # ``claude -p`` caller — call_claude_p (figure turn, web follow-up, run as
-    # the ``deploy`` precis-web user) as well as call_claude_agent — auths off
-    # the token file instead of the daemon user's empty/stale keychain and 401s
-    # (2026-07-12 incident). Central chokepoint: every claude -p goes through
-    # here. Idempotent + override-safe (an env token already set wins).
-    env = dict(env) if env is not None else dict(os.environ)
-    disarm_session_hooks(env)
-    if bootstrap_oauth:
-        ensure_oauth_token(env)
-    if stdin_data is not None and stdin_devnull:
-        raise ValueError("run_claude: stdin_data and stdin_devnull are exclusive")
-    refuse_oversized_argv(argv, label=label, error_cls=error_cls)
-    try:
-        # MeasuredPopen: the reap captures this child's own rusage and
-        # attributes it to the job bound on this thread (gr595536).
-        proc = MeasuredPopen(
-            argv,
-            stdin=(
-                subprocess.PIPE
-                if stdin_data is not None
-                else (subprocess.DEVNULL if stdin_devnull else None)
-            ),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            # Binary stdin can't ride text=True — run raw and decode.
-            text=stdin_data is None,
-            encoding="utf-8" if stdin_data is None else None,
-            env=env,
-            cwd=cwd,
-            # Same process group as the worker (never start_new_session):
-            # launchd kills the job's group on exit, so a restart reaps an
-            # in-flight claude. terminate_claude signals the pid — the
-            # group is OURS.
-        )
-    except FileNotFoundError as exc:
-        raise error_cls(
-            f"claude binary not found ({binary!r}); "
-            f"set PRECIS_CLAUDE_BIN or install Claude Code",
-            binary_missing=True,
-        ) from exc
-    except OSError as exc:
-        if exc.errno == errno.E2BIG:
-            raise error_cls(
-                f"{label}: argv exceeds the kernel exec limit (E2BIG) — "
-                "the call can never run",
-                argv_too_long=True,
-            ) from exc
-        raise
-    try:
-        out, err = proc.communicate(input=stdin_data, timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        terminate_claude(proc)
-        # A survivor the KILL couldn't reach (under the run-user wrapper:
-        # a TERM-ignoring claude behind the dead sudo) still holds the
-        # pipe write ends — bound the drain so this thread can't wedge.
-        try:
-            out, err = proc.communicate(timeout=_REAP_DRAIN_S)
-        except subprocess.TimeoutExpired as drain:
-            out, err = drain.output, drain.stderr
-        raise error_cls(
-            f"{label} timed out after {timeout_s}s",
-            stdout=to_str(out),
-            stderr=to_str(err),
-            timed_out=True,
-        ) from None
-    except BaseException:
-        # Never leak a live CLI on an unexpected error.
-        terminate_claude(proc)
-        raise
-    res: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(
-        argv, proc.returncode, to_str(out), to_str(err)
+    return _run_claude_inner(
+        argv,
+        binary=binary,
+        label=label,
+        timeout_s=timeout_s,
+        error_cls=error_cls,
+        env=env,
+        stdin_devnull=stdin_devnull,
+        stdin_data=stdin_data,
+        cwd=cwd,
+        bootstrap_oauth=bootstrap_oauth,
     )
 
-    if res.returncode != 0:
-        raise error_cls(
-            f"{label} exited {res.returncode}: {exit_detail(res.stdout, res.stderr)}",
-            stdout=res.stdout,
-            stderr=res.stderr,
-            returncode=res.returncode,
-            # A container's INNER exec can hit the argv limit while the
-            # host-side ``docker run`` succeeded — its runtime prints the
-            # overflow on stderr and exits non-zero (gr573328).
-            argv_too_long=_e2big_in_output(res.stdout, res.stderr),
-        )
-    return res
+
+def _run_claude_inner(
+    argv: list[str],
+    *,
+    binary: str,
+    label: str,
+    timeout_s: float,
+    error_cls: type[ClaudeProcessError],
+    env: dict[str, str] | None,
+    stdin_devnull: bool,
+    stdin_data: bytes | None,
+    cwd: str | None,
+    bootstrap_oauth: bool,
+) -> subprocess.CompletedProcess[str]:
+    from precis.budget import meter
+    from precis.workers import admission
+
+    host = admission.local_host()
+    footprint = admission.Footprint(
+        cpu_milli=1000, mem_mb=2048, wall_s=float(timeout_s)
+    )
+    try:
+        with admission.hold(
+            meter.active_store(), host, footprint, f"{host}:{os.getpid()}"
+        ):
+            # Bootstrap the long-lived OAuth token from ~/.claude_oauth_token so any
+            # ``claude -p`` caller — call_claude_p (figure turn, web follow-up, run as
+            # the ``deploy`` precis-web user) as well as call_claude_agent — auths off
+            # the token file instead of the daemon user's empty/stale keychain and 401s
+            # (2026-07-12 incident). Central chokepoint: every claude -p goes through
+            # here. Idempotent + override-safe (an env token already set wins).
+            env = dict(env) if env is not None else dict(os.environ)
+            disarm_session_hooks(env)
+            if bootstrap_oauth:
+                ensure_oauth_token(env)
+            if stdin_data is not None and stdin_devnull:
+                raise ValueError(
+                    "run_claude: stdin_data and stdin_devnull are exclusive"
+                )
+            refuse_oversized_argv(argv, label=label, error_cls=error_cls)
+            try:
+                # MeasuredPopen: the reap captures this child's own rusage and
+                # attributes it to the job bound on this thread (gr595536).
+                proc = MeasuredPopen(
+                    argv,
+                    stdin=(
+                        subprocess.PIPE
+                        if stdin_data is not None
+                        else (subprocess.DEVNULL if stdin_devnull else None)
+                    ),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    # Binary stdin can't ride text=True — run raw and decode.
+                    text=stdin_data is None,
+                    encoding="utf-8" if stdin_data is None else None,
+                    env=env,
+                    cwd=cwd,
+                    # Same process group as the worker (never start_new_session):
+                    # launchd kills the job's group on exit, so a restart reaps an
+                    # in-flight claude. terminate_claude signals the pid — the
+                    # group is OURS.
+                )
+            except FileNotFoundError as exc:
+                raise error_cls(
+                    f"claude binary not found ({binary!r}); "
+                    f"set PRECIS_CLAUDE_BIN or install Claude Code",
+                    binary_missing=True,
+                ) from exc
+            except OSError as exc:
+                if exc.errno == errno.E2BIG:
+                    raise error_cls(
+                        f"{label}: argv exceeds the kernel exec limit (E2BIG) — "
+                        "the call can never run",
+                        argv_too_long=True,
+                    ) from exc
+                raise
+            try:
+                out, err = proc.communicate(input=stdin_data, timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                terminate_claude(proc)
+                # A survivor the KILL couldn't reach (under the run-user wrapper:
+                # a TERM-ignoring claude behind the dead sudo) still holds the
+                # pipe write ends — bound the drain so this thread can't wedge.
+                try:
+                    out, err = proc.communicate(timeout=_REAP_DRAIN_S)
+                except subprocess.TimeoutExpired as drain:
+                    out, err = drain.output, drain.stderr
+                raise error_cls(
+                    f"{label} timed out after {timeout_s}s",
+                    stdout=to_str(out),
+                    stderr=to_str(err),
+                    timed_out=True,
+                ) from None
+            except BaseException:
+                # Never leak a live CLI on an unexpected error.
+                terminate_claude(proc)
+                raise
+            res: subprocess.CompletedProcess[str] = subprocess.CompletedProcess(
+                argv, proc.returncode, to_str(out), to_str(err)
+            )
+
+            if res.returncode != 0:
+                raise error_cls(
+                    f"{label} exited {res.returncode}: {exit_detail(res.stdout, res.stderr)}",
+                    stdout=res.stdout,
+                    stderr=res.stderr,
+                    returncode=res.returncode,
+                    # A container's INNER exec can hit the argv limit while the
+                    # host-side ``docker run`` succeeded — its runtime prints the
+                    # overflow on stderr and exits non-zero (gr573328).
+                    argv_too_long=_e2big_in_output(res.stdout, res.stderr),
+                )
+            return res
+
+    except admission.Refused as exc:
+        raise error_cls(f"{label}: deferred, host at capacity: {exc}") from exc
 
 
 #: Statuses ``mcp_status`` reports for a server that will not become
@@ -709,170 +757,223 @@ def run_claude_gated(
     ``timeout_s`` (covering gate + run) → ``timed_out``, missing binary →
     ``binary_missing``, non-zero exit → ``returncode``. Env handling (copy,
     :func:`disarm_session_hooks`, OAuth bootstrap) is identical.
+
+    Admitted when a store is bound (gr657996/gr657245), same footprint
+    contract as :func:`run_claude`.
     """
-    env = dict(env) if env is not None else dict(os.environ)
-    disarm_session_hooks(env)
-    if bootstrap_oauth:
-        ensure_oauth_token(env)
-    poll = MCP_GATE_POLL_S if poll_s is None else poll_s
-    refuse_oversized_argv(argv, label=label, error_cls=error_cls)
+    return _run_claude_gated_inner(
+        argv,
+        prompt=prompt,
+        require_mcp=require_mcp,
+        gate_deadline_s=gate_deadline_s,
+        binary=binary,
+        label=label,
+        timeout_s=timeout_s,
+        error_cls=error_cls,
+        env=env,
+        cwd=cwd,
+        bootstrap_oauth=bootstrap_oauth,
+        poll_s=poll_s,
+    )
+
+
+def _run_claude_gated_inner(
+    argv: list[str],
+    *,
+    prompt: str,
+    require_mcp: tuple[str, ...],
+    gate_deadline_s: float,
+    binary: str,
+    label: str,
+    timeout_s: float,
+    error_cls: type[ClaudeProcessError],
+    env: dict[str, str] | None,
+    cwd: str | None,
+    bootstrap_oauth: bool,
+    poll_s: float | None,
+) -> subprocess.CompletedProcess[str]:
+    from precis.budget import meter
+    from precis.workers import admission
+
+    host = admission.local_host()
+    footprint = admission.Footprint(
+        cpu_milli=1000, mem_mb=2048, wall_s=float(timeout_s)
+    )
     try:
-        # MeasuredPopen, as in run_claude: per-child rusage at reap.
-        proc = MeasuredPopen(
-            argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-            cwd=cwd,
-            # No start_new_session — stay in the worker's process group so
-            # a launchd restart reaps an in-flight run (see run_claude).
-        )
-    except FileNotFoundError as exc:
-        raise error_cls(
-            f"claude binary not found ({binary!r}); "
-            f"set PRECIS_CLAUDE_BIN or install Claude Code",
-            binary_missing=True,
-        ) from exc
-    except OSError as exc:
-        if exc.errno == errno.E2BIG:
-            raise error_cls(
-                f"{label}: argv exceeds the kernel exec limit (E2BIG) — "
-                "the call can never run",
-                argv_too_long=True,
-            ) from exc
-        raise
-
-    started = time.monotonic()
-    gate_end = started + min(gate_deadline_s, timeout_s)
-    run_end = started + timeout_s
-    gs = _GatedStream(proc, require_mcp)
-
-    def _gate_failure(detail: str, status: dict[str, str] | None) -> ClaudeProcessError:
-        gs.close_stdin()
-        try:
-            proc.wait(timeout=_GATE_EXIT_GRACE_S)
-        except subprocess.TimeoutExpired:
-            terminate_claude(proc)
-        stdout, stderr = gs.collect()
-        waited = round(time.monotonic() - started)
-        return error_cls(
-            f"{'/'.join(require_mcp)} MCP not connected "
-            f"({_gate_status_text(require_mcp, status)}) after {waited}s"
-            f"{detail} — pass not started",
-            stdout=stdout,
-            stderr=stderr,
-            returncode=proc.returncode,
-            mcp_not_ready=True,
-            mcp_status=status,
-        )
-
-    def _timeout_failure() -> ClaudeProcessError:
-        gs.close_stdin()
-        terminate_claude(proc)
-        stdout, stderr = gs.collect()
-        return error_cls(
-            f"{label} timed out after {timeout_s}s",
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=True,
-        )
-
-    def _exit_failure(what: str) -> ClaudeProcessError:
-        stdout, stderr = gs.collect()
-        return error_cls(
-            f"{label} exited {proc.returncode} {what}: {exit_detail(stdout, stderr)}",
-            stdout=stdout,
-            stderr=stderr,
-            returncode=proc.returncode,
-            argv_too_long=_e2big_in_output(stdout, stderr),
-        )
-
-    try:
-        # ── gate: poll mcp_status until every required server is up ──
-        n = 0
-        while True:
-            n += 1
-            gs.write(_mcp_status_request(n))
-            with gs.cond:
-                gs.cond.wait_for(
-                    lambda: gs.verdict() is not None or proc.poll() is not None,
-                    timeout=min(poll, max(gate_end - time.monotonic(), 0.0)),
-                )
-                verdict = gs.verdict()
-                responses, last_error = gs.responses, gs.last_error
-            exited = proc.poll() is not None
-            if exited and verdict is None:
-                # A final status line may have raced the exit: drain, re-read.
-                gs.collect()
-                with gs.cond:
-                    verdict = gs.verdict()
-                    responses, last_error = gs.responses, gs.last_error
-            if verdict == "ready":
-                # The one positive trace a gated run leaves: a clean pass
-                # alone cannot show the gate ran (gr463517).
-                log.info(
-                    "claude gate: %s connected after %.1fs (%d mcp_status poll(s))",
-                    "/".join(require_mcp),
-                    time.monotonic() - started,
-                    n,
-                )
-                break
-            if verdict == "bad":
-                raise _gate_failure("", gs.required_status())
-            if exited:
-                if proc.returncode != 0:
-                    raise _exit_failure("before MCP readiness")
-                raise _gate_failure(" (CLI exited)", gs.required_status())
-            if time.monotonic() >= gate_end:
-                if timeout_s <= gate_deadline_s:
-                    raise _timeout_failure()
-                if responses == 0:
-                    why = " (CLI never answered the mcp_status control request"
-                    why += f"; last error: {last_error})" if last_error else ")"
-                    raise _gate_failure(why, None)
-                raise _gate_failure("", gs.required_status())
-
-        # ── gate passed: send the prompt, run to the result event ──
-        user_msg = {"type": "user", "message": {"role": "user", "content": prompt}}
-        if not gs.write(json.dumps(user_msg) + "\n"):
+        with admission.hold(
+            meter.active_store(), host, footprint, f"{host}:{os.getpid()}"
+        ):
+            env = dict(env) if env is not None else dict(os.environ)
+            disarm_session_hooks(env)
+            if bootstrap_oauth:
+                ensure_oauth_token(env)
+            poll = MCP_GATE_POLL_S if poll_s is None else poll_s
+            refuse_oversized_argv(argv, label=label, error_cls=error_cls)
             try:
-                proc.wait(timeout=_GATE_EXIT_GRACE_S)
-            except subprocess.TimeoutExpired:
+                # MeasuredPopen, as in run_claude: per-child rusage at reap.
+                proc = MeasuredPopen(
+                    argv,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=env,
+                    cwd=cwd,
+                    # No start_new_session — stay in the worker's process group so
+                    # a launchd restart reaps an in-flight run (see run_claude).
+                )
+            except FileNotFoundError as exc:
+                raise error_cls(
+                    f"claude binary not found ({binary!r}); "
+                    f"set PRECIS_CLAUDE_BIN or install Claude Code",
+                    binary_missing=True,
+                ) from exc
+            except OSError as exc:
+                if exc.errno == errno.E2BIG:
+                    raise error_cls(
+                        f"{label}: argv exceeds the kernel exec limit (E2BIG) — "
+                        "the call can never run",
+                        argv_too_long=True,
+                    ) from exc
+                raise
+
+            started = time.monotonic()
+            gate_end = started + min(gate_deadline_s, timeout_s)
+            run_end = started + timeout_s
+            gs = _GatedStream(proc, require_mcp)
+
+            def _gate_failure(
+                detail: str, status: dict[str, str] | None
+            ) -> ClaudeProcessError:
+                gs.close_stdin()
+                try:
+                    proc.wait(timeout=_GATE_EXIT_GRACE_S)
+                except subprocess.TimeoutExpired:
+                    terminate_claude(proc)
+                stdout, stderr = gs.collect()
+                waited = round(time.monotonic() - started)
+                return error_cls(
+                    f"{'/'.join(require_mcp)} MCP not connected "
+                    f"({_gate_status_text(require_mcp, status)}) after {waited}s"
+                    f"{detail} — pass not started",
+                    stdout=stdout,
+                    stderr=stderr,
+                    returncode=proc.returncode,
+                    mcp_not_ready=True,
+                    mcp_status=status,
+                )
+
+            def _timeout_failure() -> ClaudeProcessError:
+                gs.close_stdin()
                 terminate_claude(proc)
-            raise _exit_failure("while the prompt was being sent")
-        with gs.cond:
-            finished = gs.cond.wait_for(
-                lambda: gs.result_seen or proc.poll() is not None,
-                timeout=max(run_end - time.monotonic(), 0.0),
-            )
-        if not finished:
-            raise _timeout_failure()
-        # The CLI waits for more input after the result event; let it exit.
-        gs.close_stdin()
-        try:
-            proc.wait(timeout=max(run_end - time.monotonic(), 0.0))
-        except subprocess.TimeoutExpired:
-            raise _timeout_failure() from None
-    except BaseException:
-        # Never leak a live CLI on an unexpected error (KeyboardInterrupt, a
-        # bug above); the gate's own errors have already reaped it.
-        if proc.poll() is None:
-            terminate_claude(proc)
-        raise
-    stdout, stderr = gs.collect()
-    if proc.returncode != 0:
-        raise error_cls(
-            f"{label} exited {proc.returncode}: {exit_detail(stdout, stderr)}",
-            stdout=stdout,
-            stderr=stderr,
-            returncode=proc.returncode,
-            argv_too_long=_e2big_in_output(stdout, stderr),
-        )
-    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+                stdout, stderr = gs.collect()
+                return error_cls(
+                    f"{label} timed out after {timeout_s}s",
+                    stdout=stdout,
+                    stderr=stderr,
+                    timed_out=True,
+                )
+
+            def _exit_failure(what: str) -> ClaudeProcessError:
+                stdout, stderr = gs.collect()
+                return error_cls(
+                    f"{label} exited {proc.returncode} {what}: {exit_detail(stdout, stderr)}",
+                    stdout=stdout,
+                    stderr=stderr,
+                    returncode=proc.returncode,
+                    argv_too_long=_e2big_in_output(stdout, stderr),
+                )
+
+            try:
+                # ── gate: poll mcp_status until every required server is up ──
+                n = 0
+                while True:
+                    n += 1
+                    gs.write(_mcp_status_request(n))
+                    with gs.cond:
+                        gs.cond.wait_for(
+                            lambda: gs.verdict() is not None or proc.poll() is not None,
+                            timeout=min(poll, max(gate_end - time.monotonic(), 0.0)),
+                        )
+                        verdict = gs.verdict()
+                        responses, last_error = gs.responses, gs.last_error
+                    exited = proc.poll() is not None
+                    if exited and verdict is None:
+                        # A final status line may have raced the exit: drain, re-read.
+                        gs.collect()
+                        with gs.cond:
+                            verdict = gs.verdict()
+                            responses, last_error = gs.responses, gs.last_error
+                    if verdict == "ready":
+                        # The one positive trace a gated run leaves: a clean pass
+                        # alone cannot show the gate ran (gr463517).
+                        log.info(
+                            "claude gate: %s connected after %.1fs (%d mcp_status poll(s))",
+                            "/".join(require_mcp),
+                            time.monotonic() - started,
+                            n,
+                        )
+                        break
+                    if verdict == "bad":
+                        raise _gate_failure("", gs.required_status())
+                    if exited:
+                        if proc.returncode != 0:
+                            raise _exit_failure("before MCP readiness")
+                        raise _gate_failure(" (CLI exited)", gs.required_status())
+                    if time.monotonic() >= gate_end:
+                        if timeout_s <= gate_deadline_s:
+                            raise _timeout_failure()
+                        if responses == 0:
+                            why = " (CLI never answered the mcp_status control request"
+                            why += f"; last error: {last_error})" if last_error else ")"
+                            raise _gate_failure(why, None)
+                        raise _gate_failure("", gs.required_status())
+
+                # ── gate passed: send the prompt, run to the result event ──
+                user_msg = {
+                    "type": "user",
+                    "message": {"role": "user", "content": prompt},
+                }
+                if not gs.write(json.dumps(user_msg) + "\n"):
+                    try:
+                        proc.wait(timeout=_GATE_EXIT_GRACE_S)
+                    except subprocess.TimeoutExpired:
+                        terminate_claude(proc)
+                    raise _exit_failure("while the prompt was being sent")
+                with gs.cond:
+                    finished = gs.cond.wait_for(
+                        lambda: gs.result_seen or proc.poll() is not None,
+                        timeout=max(run_end - time.monotonic(), 0.0),
+                    )
+                if not finished:
+                    raise _timeout_failure()
+                # The CLI waits for more input after the result event; let it exit.
+                gs.close_stdin()
+                try:
+                    proc.wait(timeout=max(run_end - time.monotonic(), 0.0))
+                except subprocess.TimeoutExpired:
+                    raise _timeout_failure() from None
+            except BaseException:
+                # Never leak a live CLI on an unexpected error (KeyboardInterrupt, a
+                # bug above); the gate's own errors have already reaped it.
+                if proc.poll() is None:
+                    terminate_claude(proc)
+                raise
+            stdout, stderr = gs.collect()
+            if proc.returncode != 0:
+                raise error_cls(
+                    f"{label} exited {proc.returncode}: {exit_detail(stdout, stderr)}",
+                    stdout=stdout,
+                    stderr=stderr,
+                    returncode=proc.returncode,
+                    argv_too_long=_e2big_in_output(stdout, stderr),
+                )
+            return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+    except admission.Refused as exc:
+        raise error_cls(f"{label}: deferred, host at capacity: {exc}") from exc
 
 
 async def run_claude_async(
@@ -919,132 +1020,180 @@ async def run_claude_async(
     * Clean (exit 0) run → returns an object with ``.stdout`` / ``.stderr``
       (mirrors ``subprocess.CompletedProcess`` closely enough for every
       downstream reader, which only touches those two attributes).
+
+    Admitted when a store is bound (gr657996/gr657245), same footprint
+    contract as :func:`run_claude`.
     """
-    # COPY before injecting, matching run_claude's documented contract — a
-    # caller that passes an isolated/restricted dict must not see it silently
-    # gain vars this function sets (this path previously mutated it in place).
-    env = dict(env) if env is not None else dict(os.environ)
-    disarm_session_hooks(env)
-    ensure_oauth_token(env)
-    if stdin_data is not None and stdin_devnull:
-        raise ValueError("run_claude_async: stdin_data and stdin_devnull are exclusive")
-    refuse_oversized_argv(argv, label=label, error_cls=error_cls)
+    return await _run_claude_async_inner(
+        argv,
+        binary=binary,
+        label=label,
+        timeout_s=timeout_s,
+        error_cls=error_cls,
+        env=env,
+        stdin_devnull=stdin_devnull,
+        stdin_data=stdin_data,
+        cwd=cwd,
+        on_event=on_event,
+    )
 
+
+async def _run_claude_async_inner(
+    argv: list[str],
+    *,
+    binary: str,
+    label: str,
+    timeout_s: float,
+    error_cls: type[ClaudeProcessError],
+    env: dict[str, str] | None,
+    stdin_devnull: bool,
+    stdin_data: bytes | None,
+    cwd: str | None,
+    on_event: Callable[[dict[str, Any]], Awaitable[None]] | None,
+) -> SimpleNamespace:
+    from precis.budget import meter
+    from precis.workers import admission
+
+    host = admission.local_host()
+    footprint = admission.Footprint(
+        cpu_milli=1000, mem_mb=2048, wall_s=float(timeout_s)
+    )
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=(
-                asyncio.subprocess.PIPE
-                if stdin_data is not None
-                else (asyncio.subprocess.DEVNULL if stdin_devnull else None)
-            ),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=env,
-            # No start_new_session — stay in the worker's process group so
-            # a launchd restart reaps an in-flight run (see run_claude).
-        )
-    except FileNotFoundError as exc:
-        raise error_cls(
-            f"claude binary not found ({binary!r}); "
-            f"set PRECIS_CLAUDE_BIN or install Claude Code",
-            binary_missing=True,
-        ) from exc
-    except OSError as exc:
-        if exc.errno == errno.E2BIG:
-            raise error_cls(
-                f"{label}: argv exceeds the kernel exec limit (E2BIG) — "
-                "the call can never run",
-                argv_too_long=True,
-            ) from exc
-        raise
+        with admission.hold(
+            meter.active_store(), host, footprint, f"{host}:{os.getpid()}"
+        ):
+            # COPY before injecting, matching run_claude's documented contract — a
+            # caller that passes an isolated/restricted dict must not see it silently
+            # gain vars this function sets (this path previously mutated it in place).
+            env = dict(env) if env is not None else dict(os.environ)
+            disarm_session_hooks(env)
+            ensure_oauth_token(env)
+            if stdin_data is not None and stdin_devnull:
+                raise ValueError(
+                    "run_claude_async: stdin_data and stdin_devnull are exclusive"
+                )
+            refuse_oversized_argv(argv, label=label, error_cls=error_cls)
 
-    feeder: asyncio.Task[None] | None = None
-    if stdin_data is not None:
-
-        async def _feed() -> None:
-            assert proc.stdin is not None
             try:
-                proc.stdin.write(stdin_data)
-                await proc.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError):
-                pass  # child exited before reading — the exit path reports it
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=(
+                        asyncio.subprocess.PIPE
+                        if stdin_data is not None
+                        else (asyncio.subprocess.DEVNULL if stdin_devnull else None)
+                    ),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                    env=env,
+                    # No start_new_session — stay in the worker's process group so
+                    # a launchd restart reaps an in-flight run (see run_claude).
+                )
+            except FileNotFoundError as exc:
+                raise error_cls(
+                    f"claude binary not found ({binary!r}); "
+                    f"set PRECIS_CLAUDE_BIN or install Claude Code",
+                    binary_missing=True,
+                ) from exc
+            except OSError as exc:
+                if exc.errno == errno.E2BIG:
+                    raise error_cls(
+                        f"{label}: argv exceeds the kernel exec limit (E2BIG) — "
+                        "the call can never run",
+                        argv_too_long=True,
+                    ) from exc
+                raise
+
+            feeder: asyncio.Task[None] | None = None
+            if stdin_data is not None:
+
+                async def _feed() -> None:
+                    assert proc.stdin is not None
+                    try:
+                        proc.stdin.write(stdin_data)
+                        await proc.stdin.drain()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass  # child exited before reading — the exit path reports it
+                    try:
+                        proc.stdin.close()
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        pass
+
+                feeder = asyncio.create_task(_feed())
+
+            stdout_lines: list[str] = []
+
+            async def _pump_stdout() -> None:
+                assert proc.stdout is not None
+                while True:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        return
+                    text = line.decode("utf-8", errors="replace")
+                    stdout_lines.append(text)
+                    if on_event is None:
+                        continue
+                    stripped = text.strip()
+                    if not stripped.startswith("{"):
+                        continue
+                    try:
+                        evt = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        continue
+                    await on_event(evt)
+
             try:
-                proc.stdin.close()
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                pass
-
-        feeder = asyncio.create_task(_feed())
-
-    stdout_lines: list[str] = []
-
-    async def _pump_stdout() -> None:
-        assert proc.stdout is not None
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                return
-            text = line.decode("utf-8", errors="replace")
-            stdout_lines.append(text)
-            if on_event is None:
-                continue
-            stripped = text.strip()
-            if not stripped.startswith("{"):
-                continue
-            try:
-                evt = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            await on_event(evt)
-
-    try:
-        await asyncio.wait_for(_pump_stdout(), timeout=timeout_s)
-    except TimeoutError:
-        if feeder is not None:
-            feeder.cancel()
-        await terminate_claude_async(proc)
-        stderr_partial = b""
-        if proc.stderr is not None:
-            try:
-                stderr_partial = await asyncio.wait_for(proc.stderr.read(), timeout=1.0)
-            except (TimeoutError, OSError):
+                await asyncio.wait_for(_pump_stdout(), timeout=timeout_s)
+            except TimeoutError:
+                if feeder is not None:
+                    feeder.cancel()
+                await terminate_claude_async(proc)
                 stderr_partial = b""
-        raise error_cls(
-            f"{label} timed out after {timeout_s}s",
-            stdout="".join(stdout_lines),
-            stderr=to_str(stderr_partial),
-            timed_out=True,
-        ) from None
-    except BaseException:
-        # Never leak a live CLI on cancellation/an unexpected error.
-        if feeder is not None:
-            feeder.cancel()
-        if proc.returncode is None:
-            await terminate_claude_async(proc)
-        raise
-    if feeder is not None:
-        try:
-            await feeder
-        except BaseException:
-            pass  # a feeder failure is a write-side abort; the run stands
+                if proc.stderr is not None:
+                    try:
+                        stderr_partial = await asyncio.wait_for(
+                            proc.stderr.read(), timeout=1.0
+                        )
+                    except (TimeoutError, OSError):
+                        stderr_partial = b""
+                raise error_cls(
+                    f"{label} timed out after {timeout_s}s",
+                    stdout="".join(stdout_lines),
+                    stderr=to_str(stderr_partial),
+                    timed_out=True,
+                ) from None
+            except BaseException:
+                # Never leak a live CLI on cancellation/an unexpected error.
+                if feeder is not None:
+                    feeder.cancel()
+                if proc.returncode is None:
+                    await terminate_claude_async(proc)
+                raise
+            if feeder is not None:
+                try:
+                    await feeder
+                except BaseException:
+                    pass  # a feeder failure is a write-side abort; the run stands
 
-    # Read stderr to EOF (closes when the process exits) *before* ``wait()``
-    # so a chatty stderr can't deadlock against an unread pipe buffer.
-    stderr_bytes = await proc.stderr.read() if proc.stderr is not None else b""
-    returncode = await proc.wait()
+            # Read stderr to EOF (closes when the process exits) *before* ``wait()``
+            # so a chatty stderr can't deadlock against an unread pipe buffer.
+            stderr_bytes = await proc.stderr.read() if proc.stderr is not None else b""
+            returncode = await proc.wait()
 
-    stdout = "".join(stdout_lines)
-    stderr = to_str(stderr_bytes)
-    if returncode != 0:
-        raise error_cls(
-            f"{label} exited {returncode}: {exit_detail(stdout, stderr)}",
-            stdout=stdout,
-            stderr=stderr,
-            returncode=returncode,
-            argv_too_long=_e2big_in_output(stdout, stderr),
-        )
-    return SimpleNamespace(stdout=stdout, stderr=stderr)
+            stdout = "".join(stdout_lines)
+            stderr = to_str(stderr_bytes)
+            if returncode != 0:
+                raise error_cls(
+                    f"{label} exited {returncode}: {exit_detail(stdout, stderr)}",
+                    stdout=stdout,
+                    stderr=stderr,
+                    returncode=returncode,
+                    argv_too_long=_e2big_in_output(stdout, stderr),
+                )
+            return SimpleNamespace(stdout=stdout, stderr=stderr)
+
+    except admission.Refused as exc:
+        raise error_cls(f"{label}: deferred, host at capacity: {exc}") from exc
 
 
 __all__ = [

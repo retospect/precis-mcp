@@ -285,9 +285,10 @@ PENDING_LAND_KEY = "pending_land"
 PRELAND_DEFER_FAILED_KEY = "preland_defer_failed"
 #: ``meta.branch_files`` on a build todo: the repo paths its slice branch
 #: touched (the diff against its land base), stamped by ``run_slice`` at
-#: each clean exit. ``plan_dispatch``'s overlap hold reads it as the exact
-#: file set of a started build, where the brief only guesses.
+#: each land handoff.
 BRANCH_FILES_KEY = "branch_files"
+#: The tip covered by a complete branch_files stamp, null if incomplete.
+BRANCH_FILES_HEAD_KEY = "branch_files_head"
 #: Where the factory keeps a slice branch on origin: a hidden namespace,
 #: not ``refs/heads/``, so GitHub lists no branch and offers no "Compare
 #: & pull request" for it (Reto 2026-11-15) — landing is ship's squash,
@@ -308,13 +309,18 @@ def slice_fetch_cmd(branch: str) -> str:
 #: tick's hand-back — the finding the rebuild exists to act on — from a
 #: session's own last message, which may also begin ``handoff: review:``.
 PRELAND_HANDBACK_MARK = "pre-land: the branch is still on origin"
+#: The text ``plan_dispatch`` puts between a mechanical-red ``brief:`` and
+#: the red job it names (gr705291). ``run_slice._wants_session`` reads it
+#: to tell that brief — an instruction to change the branch — from a plain one.
+MECH_BRIEF_MARK = " — mechanical red on jo"
 #: ``meta.preland_fix_rounds`` on a build todo (gr684815): ``{count,
-#: finding, head?, anchors?}`` — the pre-land FIX/REVERT verdicts in a
+#: finding, head?, anchors?, text?}`` — the pre-land FIX/REVERT verdicts in a
 #: row since the last land or coordinator ask, a digest of the newest
 #: finding, the ``file::function`` anchors its last ``anchors:`` line
 #: declares (the active findings — the tick never reads prose cites,
 #: td688394 r5) and the pushed head the
-#: verdict judged (gr688058). ``plan_dispatch`` counts and caps it;
+#: verdict judged (gr688058), plus normalized finding text for similarity
+#: comparison (gr702711). ``plan_dispatch`` counts and caps it;
 #: ``land_slice._record_land`` clears it.
 PRELAND_FIX_ROUNDS_KEY = "preland_fix_rounds"
 #: ``meta.preland_held`` on a build todo a pre-land FIX/REVERT sent back
@@ -430,8 +436,11 @@ _PRELAND_REVIEWER_BRIEF_TAIL = (
     "`file::function` each ACTIVE finding hangs on. A cite you make "
     "only to declare resolved is context and stays off the line (none "
     "at all — write `anchors:` bare or leave it out). The tick reads "
-    "only that line against the last round's: the same anchor twice "
-    "running is the repeat stop; prose cites never count (gr688058).\n\n"
+    "only that line for anchor overlap. A shared anchor stops the loop "
+    "only with token Jaccard similarity >= 0.6 against the previous "
+    "finding text; prose cites never count. An identical finding digest "
+    "also stops it, ignoring anchors lines and head shas. Different "
+    "findings at the same function keep rebuilding (gr702711).\n\n"
     "Reject (FIX) a diff that changes behavior or tests without the "
     "matching documentation (docstrings, comments, skills, docs) updated "
     "in the same diff, and check one hop out: read the callers and "
@@ -1657,14 +1666,11 @@ def mint_release_pass(
     and the loop's ``until``. ``poll`` (``ci_verdict_poll``) records the
     GitHub verdict, parking itself while CI runs. The gate and the loop are
     siblings blocked-by the poll, so the loop sees a recorded verdict: green
-    closes it empty, red mints a fixer. ``approval`` is an ``answer`` gate
-    that is also the ask Reto answers (``deploy r<N>`` | ``hold``) —
-    minted with the ``ask-user`` tag only while ``release.auto_deploy``
-    is disarmed; armed, the tick's standing approval answers it and a
-    definitive refusal re-tags it
-    (:func:`precis.plans.release.auto_answer_approval`, gr595272).
-    ``deploy`` (``release_deploy``) refuses unless that answer names
-    ``deploy r<N>`` (:func:`precis.plans.release.approval`). ``confirm``
+    closes it empty, red mints a fixer. With ``release.auto_deploy`` off,
+    ``approval`` is an ``answer`` gate and human ask (``deploy r<N>`` |
+    ``hold``). With it on, no approval node is minted: deploy depends on
+    the CI gate directly. Both paths recheck
+    :func:`precis.plans.release.may_release` before deploying. ``confirm``
     (``release_confirm``) then attests the deployed runtime — every live
     worker's heartbeat ``code_sha``, and the web's boot sha when
     ``release.health_url`` is set — before ``scripts/round`` confirms and
@@ -1681,16 +1687,23 @@ def mint_release_pass(
         "blocks": "nothing",
         "context": "release/r<N> is cut by this plan; green CI gates this ask",
     }
-    # gr595272: armed, the standing approval answers the ask — it stays
-    # off the human queue until a definitive refusal re-tags it.
+    # Standing approval skips the ask entirely; dispatch checks the policy.
     human_ask = not _release.auto_deploy_armed(store)
 
     def build(m: _Minter) -> None:
         root = m.node("root", "Release pass", _phase())
         _tag(m, root, "release-pass")
-        # The release-fixer class outranks routine builds (gr604593).
+        # The release-fixer class outranks routine builds (gr604593). The
+        # claim band rides every job minted under the root (the fixers'
+        # run_slice and their lands), so a release fixer claims in the
+        # release band, not as background (gr681901).
         m.store.stamp_ref_meta(
-            root, {_dscore.SCORE_META_KEY: _dscore.RELEASE_SCORE}, conn=m.conn
+            root,
+            {
+                _dscore.SCORE_META_KEY: _dscore.RELEASE_SCORE,
+                _dscore.CLAIM_BAND_META_KEY: _dscore.RELEASE_CLAIM_BAND,
+            },
+            conn=m.conn,
         )
         stamped = release_main_tag(main_sha)
         if stamped is not None:
@@ -1727,14 +1740,15 @@ def mint_release_pass(
             {"loop": {"until": gate, "body": "release-fix"}},
             blocked_by=("poll",),
         )
-        approval = m.node(
-            "approval",
-            _release.approval_title("r<N>"),
-            {"gate": {"kind": "answer"}, "ask": ask},
-            body=_release.approval_body("r<N>"),
-            blocked_by=("gate",),
-        )
+        approval = None
         if human_ask:
+            approval = m.node(
+                "approval",
+                _release.approval_title("r<N>"),
+                {"gate": {"kind": "answer"}, "ask": ask},
+                body=_release.approval_body("r<N>"),
+                blocked_by=("gate",),
+            )
             _tag(m, approval, "ask-user")
         deploy = m.node(
             "deploy",
@@ -1742,9 +1756,9 @@ def mint_release_pass(
             _task("release_deploy"),
             body=(
                 "release_deploy runs scripts/release --deploy-only r<N> (pinned), "
-                "only after the approval ask is answered 'deploy r<N>'."
+                "only once the shared release gate allows the deploy."
             ),
-            blocked_by=("approval",),
+            blocked_by=("approval",) if human_ask else ("gate",),
         )
         m.node(
             "confirm",
@@ -1786,7 +1800,8 @@ def mint_release_pass(
         m.store.stamp_ref_meta(mid, {"op": merge_op}, conn=m.conn)
         final = {**ask, "blocks": f"td{deploy}"}
         check_ask_meta({"ask": final})
-        m.store.stamp_ref_meta(approval, {"ask": final}, conn=m.conn)
+        if approval is not None:
+            m.store.stamp_ref_meta(approval, {"ask": final}, conn=m.conn)
 
     return _run(store, parent_id, build)
 
@@ -2225,10 +2240,13 @@ def mint_pcb_pipeline(
 _ROUTE_LOOP_MAX = 6
 #: The loop body a ``route-loop`` re-mints (a key of :data:`BODIES`).
 ROUTE_FIX_BODY = "route-fix"
-#: What every ``route-fix`` iteration measures: the examples route gate,
-#: every row (``scripts/test`` alone skips the ``slow`` nano rows).
+#: What every ``route-fix`` iteration measures: the examples route gate.
 ROUTE_GATE_TEST = "tests/test_pcb_examples_route.py"
-ROUTE_GATE_CMD = f'scripts/test {ROUTE_GATE_TEST} -m "slow or not slow"'
+#: The nano rows need the opt-in forwarded into the test container.
+ROUTE_GATE_CMD = (
+    'PRECIS_TEST_ENV="PRECIS_PCB_LONG_BOARDS=1" '
+    f'scripts/test {ROUTE_GATE_TEST} -m "slow or not slow"'
+)
 #: The comment a route-fix slicer posts on the loop todo once every board
 #: routes fully at DRC 0; the loop's ``answer`` until reads it there.
 ROUTE_ANSWER = "answer: all example boards route fully at DRC 0 at <sha>"
@@ -2726,15 +2744,14 @@ def _route_measure_body(
         f"Step 0. Read the newest comment on td{loop_id}. If it starts `answer:` "
         "(every board already routes fully at DRC 0), run nothing and make "
         f"`{_ROUTE_NO_OP}` the first line of your final message.\n\n"
-        f"Step 1, measure. Run `{ROUTE_GATE_CMD}` (the nano rows take about 30 "
-        "minutes each at effort 20000; the file runs under two hours; your wall "
-        "cap is four). Record per board: routable, routed, failed, drc_errors, "
+        f"Step 1, measure. Run `{ROUTE_GATE_CMD}` (the nano rows take 25–90 "
+        "minutes each). Record per board: routable, routed, failed, drc_errors, "
         "seconds and the cause (the assertion text carries failed= and "
         "unrouted= net names; a LocalError names the corridor). A strict XPASS "
         "means that board is complete and its xfail row is stale. Post the "
         f"table as one `measure: <origin/main sha>` comment on td{loop_id}, one "
         "line per board.\n\n"
-        "Step 2. If every board is complete and no xfail row is left: post "
+        "Step 2. If every board ran and is complete and no xfail row is left: post "
         f"`{ROUTE_ANSWER}` on td{loop_id} (it must be the newest comment there) "
         f"and make `{_ROUTE_NO_OP}` the first line of your final message.\n\n"
         "Step 3. Otherwise mint child todos under this todo (args parent_id = "

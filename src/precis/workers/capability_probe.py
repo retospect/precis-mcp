@@ -19,6 +19,10 @@ distinction:
   not retract a GPU the host really has (and, once 6c lands, drop its live
   reservations).
 
+Claude and Codex lane tokens require login presence as well as a binary:
+installing a CLI before logging in must not consume slice retry budgets.
+Credential presence does not prove that a token is still valid upstream.
+
 The capability vocabulary is *derived from the registry* — the union of
 every ``ServiceSpec.requires`` token — so adding a ``requires={"foo"}``
 service and a ``_PROBES["foo"]`` entry is the whole change; nothing here
@@ -346,10 +350,10 @@ def _stored_claude_auth() -> bool:
     """The non-env auth arms a daemon-spawned ``claude -p`` can resolve:
     the vaulted OAuth token (``ensure_oauth_token``'s env → ``vault.reveal``
     → bootstrap-file order, via ``get_secret``) or an interactive
-    ``~/.claude`` login state. Extracted as the test seam (mirrors
+    credentials file/macOS keychain item. Extracted as the test seam (mirrors
     :func:`_embedder_ready`). ``get_secret`` is best-effort and never
     raises in practice; a raised import-time error degrades to the
-    login-dir check rather than failing the heartbeat."""
+    local credential check rather than failing the heartbeat."""
     try:
         from precis import secrets as _secrets
         from precis.utils.claude_oauth import ENV_VAR as _oauth_var
@@ -358,13 +362,32 @@ def _stored_claude_auth() -> bool:
             return True
     except Exception:
         log.warning("capability_probe: claude oauth vault lookup raised", exc_info=True)
-    return os.path.isdir(os.path.expanduser("~/.claude"))
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    if os.path.isfile(os.path.join(config_dir, ".credentials.json")):
+        return True
+    if sys.platform != "darwin":
+        return False
+    # Query item metadata only: never extract the CLI's credential. A config
+    # directory alone is created before login and proves nothing (gr701455).
+    try:
+        return (
+            subprocess.run(
+                ["security", "find-generic-password", "-s", "Claude Code-credentials"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def _probe_claude_config() -> int:
     """Auth/config state for ``claude -p`` — the ``claude_config_mount``
     token: the ``CLAUDE_CODE_OAUTH_TOKEN`` env, the vault/bootstrap token,
-    or an interactive ``~/.claude`` login. Presence, not correctness: a
+    or an interactive credentials file/keychain item. Presence, not correctness: a
     stale keychain still advertises (the run path surfaces the 401)."""
     from precis.utils.claude_oauth import ENV_VAR
 
@@ -465,17 +488,18 @@ def _probe_latexmk() -> int:
 
 
 def claude_bin_present() -> bool:
-    """Public read of the ``claude_bin`` probe — whether THIS host can exec
-    ``claude`` (``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH). The LLM router's
-    rung gate reuses it so a host the capability advertisement marks
-    claude-less skips the same transports at dispatch."""
+    """Binary-only seam: whether THIS host can exec ``claude``
+    (``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH). The LLM router's rung
+    gate uses it to skip transports without an executable. The advertised
+    ``claude_bin`` token uses :func:`_probe_claude_lane` to require login too."""
     return _probe_claude_bin() == 1
 
 
 def claude_auth_present() -> bool:
     """Public read of the ``claude_config_mount`` probe — whether a
     non-``--bare`` ``claude -p`` can resolve a credential here (env token,
-    vault/bootstrap token, or an interactive ``~/.claude`` login). Presence,
+    vault/bootstrap token, or a ``.credentials.json`` file in the Claude
+    config directory or a macOS keychain item). Presence,
     not correctness: a stale login still reports True (the run path surfaces
     the 401)."""
     return _probe_claude_config() == 1
@@ -498,11 +522,21 @@ def codex_login_present() -> bool:
     :mod:`precis.utils.codex_exec`). Presence, not correctness: a stale
     login still reports True — the run path surfaces the auth failure.
 
-    Deliberately NOT in :data:`_PROBES`: no ``ServiceSpec`` declares a
-    ``codex_exec`` token yet (the lane ships dark), and probe keys must
-    stay a subset of the registry vocabulary. Registering it is a
-    one-liner once a service requires it."""
+    Used by the ``codex_bin`` lane token as well as the router gate."""
     from precis.utils.codex_exec import codex_login_present as _probe
+
+    return _probe()
+
+
+def devin_login_present() -> bool:
+    """Public read of the ``devin_tree`` lane's login probe — the binary
+    resolves and ``devin auth status`` reports a login (TTL-cached in
+    :mod:`precis.workers.job_types._slice_adapters`, lazy import: the
+    worker module is heavier than this probe file). Presence, not
+    correctness: a stale login still reports True.
+
+    Used by the ``devin_bin`` lane token and run_slice's pick filter."""
+    from precis.workers.job_types._slice_adapters import devin_login_present as _probe
 
     return _probe()
 
@@ -517,9 +551,18 @@ def _probe_adapter_bin(adapter: str) -> int:
 
 
 def _probe_codex_bin() -> int:
-    """The ``codex_exec`` lane's binary (``PRECIS_CODEX_BIN`` or ``codex``
-    on PATH) — the ``codex_bin`` token."""
-    return 1 if codex_bin_present() else 0
+    """Advertise ``codex_bin`` only with a binary and subscription login."""
+    return int(codex_bin_present() and codex_login_present())
+
+
+def _probe_claude_lane() -> int:
+    """Advertise ``claude_bin`` only with an executable and credentials.
+
+    Installation precedes vendor login on new builders; advertising the
+    executable alone spends slice retry budgets on unauthenticated launches.
+    Keep the binary-only public seam for callers that check auth separately.
+    """
+    return int(claude_bin_present() and claude_auth_present())
 
 
 def _probe_kimi_bin() -> int:
@@ -528,16 +571,20 @@ def _probe_kimi_bin() -> int:
 
 
 def _probe_devin_bin() -> int:
-    """The ``devin_tree`` lane's binary — the ``devin_bin`` token."""
-    return _probe_adapter_bin("devin_tree")
+    """Advertise ``devin_bin`` only with a binary and a Devin login.
+
+    A logged-out host that advertised the lane would die in the submit
+    preflight on every launch, and that refusal backs the lane off for
+    the whole fleet. No binary answers 0 without running ``auth status``."""
+    return int(devin_login_present())
 
 
 def _probe_builder() -> int:
-    """The ``builder`` token — at least one slice-lane binary on this
+    """The ``builder`` token — at least one ready slice lane on this
     host: the unpinned ``run_slice`` placement floor (gr676054). The
     pick then filters to the adapters actually present."""
     for probe in (
-        _probe_claude_bin,
+        _probe_claude_lane,
         _probe_codex_bin,
         _probe_kimi_bin,
         _probe_devin_bin,
@@ -573,7 +620,7 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "tts": _probe_tts,
     "embedder": _probe_embedder,
     "git": _probe_git,
-    "claude_bin": _probe_claude_bin,
+    "claude_bin": _probe_claude_lane,
     "codex_bin": _probe_codex_bin,
     "kimi_bin": _probe_kimi_bin,
     "devin_bin": _probe_devin_bin,

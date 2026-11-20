@@ -394,16 +394,17 @@ def _safe_call(call: ClaudeFn, prompt: str) -> dict[str, Any]:
     try:
         out = call(prompt)
     except Exception as exc:  # model/parse/subprocess failure
-        # Almost always an env issue on the server (an expired `claude`
-        # OAuth login, a missing binary, or a quota cap) — not something the
-        # user did. Log the detail; give the human an actionable, jargon-free
-        # note instead of a raw "claude -p exited 1". Nothing was changed.
+        # Almost always an env issue on the server (the vault's Claude
+        # OAuth token expired or was revoked, a missing binary, or a
+        # quota cap) — not something the user did. Log the detail; give
+        # the human an actionable, jargon-free note instead of a raw
+        # "claude -p exited 1". Nothing was changed.
         log.warning("diagram turn: model call failed: %s", exc)
         return {
             "reply": (
                 "(I couldn't reach the drawing model just now — nothing was "
-                "changed. This usually means `claude` needs re-authenticating "
-                "on the server (an operator runs `claude /login`). Your "
+                "changed. This usually means the model credential needs "
+                "replacing (an operator updates the vault token). Your "
                 "message wasn't lost — try again once it's back.)"
             )
         }

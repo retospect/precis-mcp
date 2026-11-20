@@ -5,7 +5,7 @@ the plain-lexical universe.
 Store-level: :meth:`Store.chunks.count_chunks_keywords` (the
 ``mode='verbatim'`` companion to ``count_chunks_lexical``) counts the same
 ``_verbatim_pred`` pool (``c.keywords @> terms``, plus a phrase substring
-fallback when ref-scoped, gr518172) :meth:`Store.chunks.search_chunks_keywords`
+fallback checked in a capped TSV pool when unscoped) :meth:`Store.chunks.search_chunks_keywords`
 retrieves from.
 
 Handler-level: :class:`~precis.handlers._paper_search.FusedBlockSearch`
@@ -58,29 +58,26 @@ def test_count_chunks_keywords_matches_search(store: Store) -> None:
     terms = [f"photocatalysis{tag}", f"mechanism{tag}"]
     total = store.chunks.count_chunks_keywords(terms=terms, kind="paper")
     all_hits = store.chunks.search_chunks_keywords(terms=terms, kind="paper", limit=100)
-    assert total == len(all_hits) == 3
+    assert total == len(all_hits) == 5
 
 
-def test_count_chunks_keywords_substring_only_when_scoped(store: Store) -> None:
-    """gr518172 ruling: count and search share one predicate — the phrase
-    substring fallback applies under a ref scope, never over a whole kind."""
+def test_count_chunks_keywords_substring_with_and_without_scope(store: Store) -> None:
+    """Count and search share the phrase leg with and without a ref scope."""
     tag = uuid4().hex[:8]
     rid = _seed(
         store,
         slug=f"cnt-sc-{tag}",
-        blocks=[f"the zz{tag}.one cell {i}" for i in range(2)],
+        blocks=[f"the zz{tag} cell {i}" for i in range(2)],
     )
-    q = f"zz{tag}.one"
-    assert store.chunks.count_chunks_keywords(terms=[q], kind="paper") == 0
-    assert (
-        store.chunks.count_chunks_keywords(terms=[q], kind="paper", scope_ref_id=rid)
-        == len(
-            store.chunks.search_chunks_keywords(
-                terms=[q], kind="paper", scope_ref_id=rid, limit=100
-            )
+    terms = [f"zz{tag}", "cell"]
+    for scope_ref_id in (None, rid):
+        total = store.chunks.count_chunks_keywords(
+            terms=terms, kind="paper", scope_ref_id=scope_ref_id
         )
-        == 2
-    )
+        hits = store.chunks.search_chunks_keywords(
+            terms=terms, kind="paper", scope_ref_id=scope_ref_id
+        )
+        assert total == len(hits) == 2
 
 
 def test_count_chunks_keywords_empty_terms_is_zero(store: Store) -> None:
@@ -93,15 +90,15 @@ def test_count_chunks_keywords_empty_terms_is_zero(store: Store) -> None:
 
 def test_verbatim_total_differs_from_lexical_total(store: Store) -> None:
     """Same query, same corpus: lexical's pool is every chunk containing
-    both words; verbatim's pool is only the chunks whose own KeyBERT
-    keywords contain both words verbatim — genuinely smaller here, and
+    both words; verbatim matches keyword containment or a contiguous
+    text phrase. Separated words without keywords stay lexical-only, and
     the header must say so (not silently repeat the lexical K, the
     gr311338 defect)."""
     tag = uuid4().hex[:8]
     rid = _seed(
         store,
         slug=f"totals-{tag}",
-        blocks=[f"photocatalysis{tag} mechanism{tag} paragraph {i}" for i in range(5)],
+        blocks=[f"photocatalysis{tag} paragraph {i} mechanism{tag}" for i in range(5)],
     )
     with store.pool.connection() as conn:
         # Only 3 of the 5 lexically-matching chunks carry both terms as

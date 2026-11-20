@@ -8,6 +8,7 @@ answers:
   - how does the gardener detect restated memory claims?
   - how does the gardener detect changed memory sources and entity state?
   - what do the memory and memory-review checks flag?
+  - how do I audit memory claim coverage?
   - what does a reviewed memory supersede or retire do?
   - how do I fix a memory flagged AUDIT:notation?
 applies-to: get/search (kind='memory'/'job'), reviews ledger
@@ -52,7 +53,7 @@ pair in a large hub is compared.
 
 ## Memory review checks
 
-Three read-only detectors pin evidence to the memory's content SHA and emit
+Four read-only detectors pin evidence to the memory's content SHA and emit
 proposals only:
 
 - `review_due` flags expired, never-reviewed, SHA-changed,
@@ -75,24 +76,141 @@ proposals only:
 - `negative_undated` flags absence wording ("no X exists") without a date on
   that line. No search has verified the claim; `not_checked` records that
   limit.
+- `notation` flags the first authored-prose span that breaks
+  [[precis-notation-canon]] — one anchored fix per memory per pass,
+  skipping quoted spans, code spans and `$$…$$`/multi-line math (the
+  `Notation flags` section below). The evaluator supplies the
+  canon-correct replacement for the flagged token or asks for human review
+  on TeX residue and verbatim LaTeX sections. The detector skips
+  `formula-ascii-subscript`.
 
 `restated_claim`, `source_drift` and `entity_claim_stale` belong to the same
 review group.
 
+## Claim-level grounding audit
+
+Run an audit tick when the gardener is enabled and outside cooling.
+Like every hand-submitted job it needs a parent — the todo it runs for:
+
+```python
+put(kind='job', parent_id=<todo ref id>,
+    args={'job_type': 'graph_garden',
+    'params': {'pass': 'memory-grounding'}})
+```
+
+`memory-grounding` is opt-in and excluded from `all`. Audit-only jobs skip
+the proposal consumer. The audit skips DREAMs and human-origin holds.
+A tick scans up to ten memories within the shared proposal budget — the
+audit row and its repair proposals all spend `max_proposals`, and repairs
+are capped at what the budget still holds.
+Each memory gets one classifier call with
+at most 60 body spans, 16,000 span characters, and 12 candidate citation
+links. A router pause defers the tick with its audit window available for retry.
+Failed or incomplete classifier replies leave the same SHA eligible on a later scan.
+
+The review ledger stores a `proposed` row per audited memory revision with
+actor `garden-grounding`, version `grounding.v6`, content SHA and a
+`grounding_audit` note. The
+row is audit-only and outside the pending action queue —
+`get(kind='job', id='/garden/proposals')` intentionally excludes it. Read
+it back with `precis.graph.garden.grounding.latest_audit(store, ref_id)`
+in Python, or on prod:
+
+```
+scripts/prod-psql --ro "SELECT review_id, content_sha, at
+  FROM reviews WHERE actor = 'garden-grounding'
+    AND target_kind = 'ref' AND target_id = <memory ref_id>
+  ORDER BY review_id DESC LIMIT 5"
+```
+
+Each claim gives body offsets, subject, scope, kind, evidence or
+premises, and term flags. The classifier records meaning and existence
+as distinct claims. Chat — a `chat:`/`conv:` reference or a `co`/`cc`/`ag`
+handle — can support attribution or a decision, never an empirical claim.
+Read `classifier_reported_claims` / `inspected` as anchored-entry counts,
+`provisional` as suggested support awaiting verification, `unresolved` as
+claims with open support or term questions, and `spans_unchecked` /
+`unaccounted_ranges` (with `truncated`, `spans_omitted_by_limit`,
+`candidate_links_truncated`) for exactly which text the bounds left
+unchecked. Exact claim totals and unchecked claim counts stay null — a
+classifier can miss assertions even inside an excerpt. `all_grounded`
+stays false in this audit-only pass.
+
+## Grounding verdicts, budgets and repairs
+
+Evidence-bound judgments: for empirical / source_report claims with
+resolvable citations, the shared contextual evidence reviewer verifies the
+claim against the cited passages (batched, at most 5 claims and 8 passages
+per memory) and records `claim.support` — source fidelity separate from
+evidential strength, study type, caveats, quantity/condition checks and
+the identity of the passage the judgment anchored at. A faithful report of
+a weak or simulated paper is never `supported`; a claim that outruns its
+passage is `partial` (single-hop overreach); a passage that merely
+restates another work's result is flagged as source copying; a reviewer
+outage is `unresolved`, never `unsupported`. Definitions and decisions
+never support existence.
+
+Premise lineage (`rollup`, with `lineage` counts) then rolls each claim up
+to `supported` / `partial` / `unsupported` / `contradicted` / `unresolved`.
+Exact assertion quotes identify premises within the same memory. Missing
+or ambiguous quotes remain unresolved. External memory premises use their
+current audit judgments. Other citation handles without a premise judgment
+remain unresolved. A supported inference needs a separate warrant judgment
+and support for every necessary premise. The audit records
+`inference_depth` as inference steps and flags deep derivations for review.
+Local cycles and cross-memory cycles detected within four audit hops ground
+nothing. Evidence handles compare by root ref, so two chunks of one paper
+count as one source. `stale_sources` lists evidence whose SHA moved since
+the previous audit pinned it in `evidence_shas`. A stale source caps the
+claim at `partial` and sets `needs_source_review`.
+
+Passage-verified `supported` empirical claims get a bounded conflict probe
+(`conflict`, at most 2 claims per memory, 6 verify calls each, ranked by
+the conflict sweep's `read_first`/distance selection): `contradicted`,
+`none_found`, `unknown`, or `not_probed` (no embedder wired, ineligible claim or
+probe budget spent). `none_found` records scope (method version,
+kinds, queries, UTC date), the checked passages' identities and unknowns —
+never proof of support, and never reported after a retrieval or verify
+outage (those are `unknown`).
+
+Pending repairs: `rollup` of `unsupported`/`contradicted` mints a `rewrite`
+proposal, `partial` with verifier flags or a partial warrant mints `qualify`, and `unresolved`
+with unresolvable premises mints `ask` — at most 3 per memory, each pinned
+to its claim span and the audited revision (`payload.audit_sha`), through
+the shared garden ledger with no apply door registered. They stay pending
+for a human or reviewer; a rollup of `supported` is withheld (capped
+`partial`) when the pipeline itself supplied or certified the evidence
+(audit or garden-ledger actor on the evidence ref's reviews or revisions).
+
+An `unresolved` claim carries `missing_check`. The coordinator can
+commission three handoffs per tick and resumes deferred or failed writes
+from the saved audit. It reuses a research todo when its claim, source
+and check pins match. A new `grounding-handoff` todo records the exact
+question, pins, stopping condition and return destination. Three
+cumulative audit attempts exhaust the research handoff. Ambiguous terms,
+identity or authority questions, and substantive decisions go to an
+`ask-user` todo.
+
+Return research through an ordinary todo comment starting with
+`candidate-evidence:`. Report each completed check on a line starting
+with `Checks performed:`. Close the research todo when work ends,
+including when evidence is unavailable or disputed. A return prompts
+re-audit of the same memory SHA as candidate input. The audit can remain
+unresolved and every suggested finding stays provisional.
+
 ## Notation flags
 
-Memory text follows [[precis-notation-canon]]. There is no `notation`
-proposal: the flag is the system-owned `AUDIT:notation` tag that
-`put`/`edit(kind='memory')` set on a title/body that breaks the canon.
+Memory text follows [[precis-notation-canon]]. The `memory-review` pass's
+`notation` detector (above) surfaces existing violations: one anchored
+proposal per memory per pass, fixing one spot at a time. The writer-side
+flag is the system-owned `AUDIT:notation` tag that `put`/`edit(kind=
+'memory')` set on a title/body that breaks the canon.
 `search(kind='memory', tags=['AUDIT:notation'])` lists the flagged nodes.
-A pass that touches a flagged node normalizes it by anchored edit —
-`edit(kind='memory', id='me…', find='<old>', text='<new>')`, one spot at a
-time — never a whole-body rewrite and never a script. Quoted spans, code
-spans and `$$…$$`/multi-line derivations are exempt and stay
-byte-identical; `C60`-style formulas are never flagged (the detector folds
-`C60` to `C₆₀`, and many matches are nomenclature like `B3LYP`). A clean
-rewrite clears the tag; a canon that does not fit the text is a gripe, not
-a spelling improvised in the node.
+Apply a reviewed correction at the flagged spot with
+`edit(kind='memory', id='me…', find='<old>', text='<new>')`. Keep quoted
+spans, code spans and `$$…$$`/multi-line derivations byte-identical.
+A clean rewrite clears the tag. File a gripe if the canon does not fit
+the text.
 
 ## Memory source and entity checks
 

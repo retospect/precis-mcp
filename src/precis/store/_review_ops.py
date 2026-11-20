@@ -216,6 +216,7 @@ class ReviewsMixin:
         note: str | None = None,
         sha_basis: ShaBasis = "content",
         conn: Connection | None = None,
+        expected_sha: str | None = None,
     ) -> Review:
         """Append a review of the target at its sha now. ``verdict`` is
         ``proposed`` for a machine write awaiting review, else ``approved``
@@ -223,7 +224,8 @@ class ReviewsMixin:
         binds (0235): ``'content'`` = 0185's content sha (default, every
         pre-0235 row); ``'trust-subject'`` = the subject sha — timeline
         chunks (comments, logs, review notes) do not stale it. Raises
-        NotFound when the target does not exist."""
+        NotFound when the target does not exist or its SHA differs from
+        the supplied expected SHA."""
         _check_kind(target_kind)
         if verdict not in _VERDICTS:
             raise BadInput(
@@ -246,7 +248,7 @@ class ReviewsMixin:
                 "version, content_sha, verdict, note, sha_basis) "
                 f"SELECT %s, %s, %s, %s, %s, s.sha, %s, %s, %s "
                 f"  FROM (SELECT {sha_fn}(%s, %s) AS sha) s "
-                " WHERE s.sha IS NOT NULL "
+                " WHERE s.sha IS NOT NULL AND s.sha = coalesce(%s, s.sha) "
                 "RETURNING review_id, target_kind, target_id, actor, model, "
                 "          version, content_sha, verdict, note, at, sha_basis",
                 (
@@ -260,8 +262,13 @@ class ReviewsMixin:
                     sha_basis,
                     target_kind,
                     target_id,
+                    expected_sha,
                 ),
             ).fetchone()
+        if row is None and expected_sha is not None:
+            raise NotFound(
+                f"{target_kind} {target_id} no longer matches its expected SHA"
+            )
         if row is None:
             raise NotFound(f"no {target_kind} {target_id} to review")
         rid, kind, tid, who, mdl, ver, sha, verd, nt, at, basis = row

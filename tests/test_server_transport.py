@@ -213,6 +213,253 @@ def test_install_token_auth_rejects_a_revoked_slice_token(tmp_path: Any) -> None
     assert resp.status_code == 401
 
 
+# ── credential-class allow-list (PRECIS_MCP_CREDENTIAL_CLASSES) ──
+
+_BEARER = {"Authorization": "Bearer s3cr3t"}
+
+
+def _class_client(classes: Any, *, token: str | None = "s3cr3t", slice_dir: Any = None):
+    from starlette.testclient import TestClient
+
+    app = _scope_echo_app()
+    server._install_token_auth(app, token=token, slice_dir=slice_dir, classes=classes)
+    return TestClient(app)
+
+
+def test_oauth_only_gate_refuses_install_and_slice_like_a_wrong_token(
+    tmp_path: Any,
+) -> None:
+    from precis import slice_tokens
+
+    client = _class_client(frozenset({"oauth"}), slice_dir=tmp_path)
+    grant = slice_tokens.mint(tmp_path, "td42")
+    wrong = client.get("/probe", headers={"Authorization": "Bearer nope"})
+    assert wrong.status_code == 401
+    for header in (_BEARER, {"Authorization": f"Bearer {grant}"}):
+        refused = client.get("/probe", headers=header)
+        assert refused.status_code == 401
+        assert refused.content == wrong.content
+        assert dict(refused.headers) == dict(wrong.headers)
+
+
+@pytest.mark.parametrize("listed", [True, False])
+@pytest.mark.parametrize("name", ["install", "slice"])
+def test_install_and_slice_are_accepted_only_when_listed(
+    name: str, listed: bool, tmp_path: Any
+) -> None:
+    from precis import slice_tokens
+
+    classes = frozenset({name} if listed else {"oauth"})
+    client = _class_client(classes, slice_dir=tmp_path)
+    header = (
+        _BEARER
+        if name == "install"
+        else {"Authorization": f"Bearer {slice_tokens.mint(tmp_path, 'td42')}"}
+    )
+    assert client.get("/probe", headers=header).status_code == (200 if listed else 401)
+
+
+def test_default_classes_accept_install_and_slice(tmp_path: Any) -> None:
+    from precis import slice_tokens
+
+    grant = slice_tokens.mint(tmp_path, "td42")
+    for classes in (None, frozenset(server.mcp_identity.CREDENTIAL_CLASSES)):
+        client = _class_client(classes, slice_dir=tmp_path)
+        assert client.get("/probe", headers=_BEARER).status_code == 200
+        header = {"Authorization": f"Bearer {grant}"}
+        assert client.get("/probe", headers=header).status_code == 200
+
+
+def test_the_install_check_never_runs_without_a_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from precis import slice_tokens
+
+    def _unexpected(*args: Any) -> bool:
+        raise AssertionError("install check ran")
+
+    monkeypatch.setattr(server, "_check_bearer_token", _unexpected)
+    client = _class_client(frozenset({"slice"}), token=None, slice_dir=tmp_path)
+    grant = slice_tokens.mint(tmp_path, "td42")
+    assert client.get("/probe", headers={"Authorization": "Bearer "}).status_code == 401
+    assert client.get("/probe").status_code == 401
+    header = {"Authorization": f"Bearer {grant}"}
+    assert client.get("/probe", headers=header).status_code == 200
+
+
+def test_install_accepted_without_a_token_raises() -> None:
+    for classes in (None, frozenset({"install"}), frozenset({"install", "oauth"})):
+        for token in (None, ""):
+            with pytest.raises(ValueError, match="PRECIS_MCP_CREDENTIAL_CLASSES"):
+                server._install_token_auth(_tiny_app(), token=token, classes=classes)
+    # not accepted: no token needed
+    server._install_token_auth(_tiny_app(), token=None, classes=frozenset({"slice"}))
+
+
+def _stub_serve(monkeypatch: pytest.MonkeyPatch) -> None:
+    import uvicorn
+    from mcp.server.fastmcp import FastMCP
+
+    async def fake_serve(self: Any, sockets: Any = None) -> None:
+        return None
+
+    monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
+    # configure_transport / the icon swap mutate these; keep them test-local.
+    monkeypatch.setattr(server, "mcp", FastMCP("classes-test"))
+    monkeypatch.setattr(server, "_MCP_ICONS", list(server._MCP_ICONS))
+    monkeypatch.delenv("PRECIS_MCP_SLICE_TOKEN_DIR", raising=False)
+    monkeypatch.delenv("PRECIS_MCP_CREDENTIAL_CLASSES", raising=False)
+
+
+def _configure_oauth(monkeypatch: pytest.MonkeyPatch, on: bool) -> None:
+    if on:
+        monkeypatch.setenv("PRECIS_OAUTH_ISSUER", "https://auth.example")
+        monkeypatch.setenv("PRECIS_OAUTH_RESOURCE", "https://mcp.example:8443/mcp")
+    else:
+        monkeypatch.delenv("PRECIS_OAUTH_ISSUER", raising=False)
+        monkeypatch.delenv("PRECIS_OAUTH_RESOURCE", raising=False)
+
+
+def test_run_network_transport_passes_the_parsed_classes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_serve(monkeypatch)
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        server, "_install_token_auth", lambda app, **kw: seen.append(kw["classes"])
+    )
+    kwargs: dict[str, Any] = {
+        "transport": "streamable-http",
+        "host": "127.0.0.1",
+        "port": 1,
+        "token": "tok",
+    }
+    server._run_network_transport(**kwargs)
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", " Install, SLICE\toauth ")
+    server._run_network_transport(**kwargs)
+    assert seen == [
+        frozenset(server.mcp_identity.CREDENTIAL_CLASSES),
+        frozenset({"install", "slice", "oauth"}),
+    ]
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", "oauth,bearer")
+    with pytest.raises(ValueError, match="PRECIS_MCP_CREDENTIAL_CLASSES.*bearer"):
+        server._run_network_transport(**kwargs)
+
+
+def test_oauth_only_endpoint_starts_without_a_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_serve(monkeypatch)
+    _configure_oauth(monkeypatch, True)
+    monkeypatch.setattr(server, "_runtime", SimpleNamespace(store=object()))
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", "oauth")
+    server._run_network_transport(
+        transport="streamable-http", host="127.0.0.1", port=1, token=None
+    )
+
+
+@pytest.mark.parametrize(
+    ("classes", "oauth", "store", "transport", "token"),
+    [
+        ("oauth", False, True, "streamable-http", None),  # no OAuth configuration
+        ("oauth", True, False, "streamable-http", None),  # no store
+        ("oauth", True, True, "sse", None),  # legacy SSE carries no OAuth
+        ("personal", False, False, "streamable-http", None),  # no store
+        ("capability", False, True, "sse", None),  # streamable-http only
+        ("slice", False, True, "streamable-http", None),  # no slice dir
+        ("install", False, True, "streamable-http", None),  # no token
+    ],
+)
+def test_startup_refuses_when_no_accepted_class_can_authenticate(
+    monkeypatch: pytest.MonkeyPatch,
+    classes: str,
+    oauth: bool,
+    store: bool,
+    transport: str,
+    token: str | None,
+) -> None:
+    _stub_serve(monkeypatch)
+    _configure_oauth(monkeypatch, oauth)
+    monkeypatch.setattr(
+        server, "_runtime", SimpleNamespace(store=object() if store else None)
+    )
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", classes)
+    with pytest.raises(ValueError, match="PRECIS_MCP_CREDENTIAL_CLASSES"):
+        server._run_network_transport(
+            transport=transport, host="127.0.0.1", port=1, token=token
+        )
+
+
+def test_startup_needs_only_one_usable_class(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """A class that cannot authenticate is tolerated beside one that can."""
+    _stub_serve(monkeypatch)
+    _configure_oauth(monkeypatch, False)
+    monkeypatch.setattr(server, "_runtime", SimpleNamespace(store=None))
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", "oauth slice")
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(tmp_path))
+    server._run_network_transport(
+        transport="streamable-http", host="127.0.0.1", port=1, token=None
+    )
+
+
+def _stub_main(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(server, "_log_version_banner", lambda: None)
+    monkeypatch.setattr(server, "_init_runtime", lambda: SimpleNamespace(store=None))
+    monkeypatch.setattr(server, "_warm_embedder_background", lambda runtime: None)
+    monkeypatch.setattr(
+        server, "_run_network_transport", lambda **kw: captured.update(kw)
+    )
+    monkeypatch.setattr(
+        "precis.install_watchdog.install_drain_signal", lambda **kw: False
+    )
+    return captured
+
+
+@_NEEDS_SIGHUP
+def test_main_without_install_never_consults_the_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _stub_main(monkeypatch)
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", "oauth")
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "from-env")
+    monkeypatch.setattr(
+        server,
+        "mounted_secret",
+        lambda name: pytest.fail("the token secret must not be read"),
+    )
+    server.main(transport="streamable-http", token="from-arg")
+    assert captured["token"] is None
+
+
+@_NEEDS_SIGHUP
+def test_main_with_install_listed_still_requires_a_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _stub_main(monkeypatch)
+    monkeypatch.delenv("PRECIS_MCP_TOKEN", raising=False)
+    monkeypatch.setattr(server, "mounted_secret", lambda name: None)
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", "oauth, install")
+    with pytest.raises(ValueError, match="requires --token"):
+        server.main(transport="streamable-http")
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "from-env")
+    server.main(transport="streamable-http")
+    assert captured["token"] == "from-env"
+
+
+@_NEEDS_SIGHUP
+def test_main_rejects_an_unknown_class_before_the_token_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_main(monkeypatch)
+    monkeypatch.delenv("PRECIS_MCP_TOKEN", raising=False)
+    monkeypatch.setenv("PRECIS_MCP_CREDENTIAL_CLASSES", "oauth,static")
+    with pytest.raises(ValueError, match="PRECIS_MCP_CREDENTIAL_CLASSES.*static"):
+        server.main(transport="streamable-http")
+
+
 # ── session idle timeout + /mcp session-id logging (gr538272) ─────
 
 

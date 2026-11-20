@@ -26,7 +26,6 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
-import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -655,122 +654,6 @@ def _frozen_rung(state: str | None) -> str:
     ).frozen
 
 
-#: ref_ids whose lazy generation thread is still running. A prefill is
-#: rendered on every approve-form AND read-only dry-run-panel view, so an
-#: unguarded enqueue would spawn a fresh thread — and a fresh billed LLM
-#: call — per refresh for the whole window before the sentence lands.
-_CONTEXT_SENTENCE_INFLIGHT: set[int] = set()
-_CONTEXT_SENTENCE_LOCK = threading.Lock()
-
-#: Cached query embedder for the retrieval arm of the sentence pass —
-#: resolved once on first enqueue. ``recall_embedder`` builds the remote
-#: HTTP embedder only (never torch in the web process) and returns
-#: ``None`` when no remote URL is configured, which degrades the
-#: retrieval to its lexical legs.
-_CONTEXT_SENTENCE_EMBEDDER: list[Any] = []
-
-
-def _context_sentence_embedder(store: Any) -> Any:
-    if not _CONTEXT_SENTENCE_EMBEDDER:
-        from precis.backfill.workspace import recall_embedder
-
-        _CONTEXT_SENTENCE_EMBEDDER.append(recall_embedder(store))
-    return _CONTEXT_SENTENCE_EMBEDDER[0]
-
-
-def _run_context_sentence_enqueue(store: Any, ref_id: int) -> None:
-    """The actual paper-context-sentence generation for one ref (``docs/
-    backlog/paper-context-sentence.md``) — run off the request thread by
-    :func:`_enqueue_context_sentence`. Swallows every error: this is
-    best-effort background work, never something a page render depends on."""
-    try:
-        from precis.utils.llm.router import DispatchClient, Tier
-        from precis.workers.context_sentence import run_context_sentence_pass
-
-        client = DispatchClient(tier=Tier.SMALL, source="context_sentence")
-        run_context_sentence_pass(
-            store,
-            client=client,
-            ref_ids=[ref_id],
-            embedder=_context_sentence_embedder(store),
-        )
-    except Exception:
-        log.warning(
-            "context_sentence: lazy enqueue failed for ref_id=%s",
-            ref_id,
-            exc_info=True,
-        )
-
-
-def _context_sentence_thread_body(store: Any, ref_id: int) -> None:
-    """Thread target: do the work, then always release the in-flight slot.
-    The release lives here rather than in :func:`_run_context_sentence_enqueue`
-    so it still happens when a test monkeypatches that function out."""
-    try:
-        _run_context_sentence_enqueue(store, ref_id)
-    finally:
-        with _CONTEXT_SENTENCE_LOCK:
-            _CONTEXT_SENTENCE_INFLIGHT.discard(ref_id)
-
-
-def _enqueue_context_sentence(store: Any, ref_id: int) -> threading.Thread | None:
-    """Fire-and-forget: generate + write the paper-context sentence for
-    ``ref_id`` in a background thread — never blocks or raises into the
-    prefill render. Returns ``None`` when a thread for this ref is already
-    in flight (:data:`_CONTEXT_SENTENCE_INFLIGHT`), else the started thread
-    (tests join it; callers otherwise ignore the return value)."""
-    with _CONTEXT_SENTENCE_LOCK:
-        if ref_id in _CONTEXT_SENTENCE_INFLIGHT:
-            return None
-        _CONTEXT_SENTENCE_INFLIGHT.add(ref_id)
-    thread = threading.Thread(
-        target=_context_sentence_thread_body,
-        args=(store, ref_id),
-        name=f"context-sentence-{ref_id}",
-        daemon=True,
-    )
-    try:
-        thread.start()
-    except Exception:
-        # A thread that never started will never run its finally-clause,
-        # so release the slot here or this ref is wedged for the process.
-        with _CONTEXT_SENTENCE_LOCK:
-            _CONTEXT_SENTENCE_INFLIGHT.discard(ref_id)
-        log.warning("context_sentence: thread start failed ref_id=%s", ref_id)
-        return None
-    return thread
-
-
-def _lazy_enqueue_context_sentences(store: Any, sources: list[Any]) -> None:
-    """Best-effort: for every grounding source paper in ``sources`` missing
-    ``refs.meta['context_sentence']``, fire off the generation pass
-    (:func:`_enqueue_context_sentence`) — the lazy half of the population
-    policy (docs/backlog/paper-context-sentence.md); the batch-backfill
-    half runs off ``context_sentence.backfill_candidate_ref_ids``. Never
-    raises: a lookup hiccup just skips the enqueue for this render."""
-    ref_ids = [s.ref_id for s in sources]
-    if not ref_ids:
-        return
-    try:
-        from precis.workers.context_sentence import stamps_gate_claim
-
-        refs = store.fetch_refs_by_ids(ref_ids)
-    except Exception:
-        log.warning("context_sentence: lazy lookup failed", exc_info=True)
-        return
-    for ref_id in ref_ids:
-        ref = refs.get(ref_id)
-        meta = (getattr(ref, "meta", None) or {}) if ref is not None else {}
-        if meta.get("context_sentence"):
-            continue
-        # A converged stamp gates the pass inside _claim too — skip the
-        # thread spawn for papers the pass would immediately drop
-        # (a current-version stamp with no newer ref content).
-        if stamps_gate_claim(meta, ref_updated_at=getattr(ref, "updated_at", None)):
-            continue
-        _enqueue_context_sentence(store, ref_id)
-
-
 def _source_drift(store: Any, row: Any) -> list[dict[str, Any]]:
     """Web sources whose page changed since approval ("source changed since
     approval"): the frozen passages' ``content_sha256`` against the page's
@@ -793,12 +676,7 @@ def _suggested_payload(
     so a human opening a proposed hub finds the form already filled in;
     else per-passage candidates derived from the grounding chunks
     (:func:`precis.nanopub.prefill.derived_payload`) — quote + unique snip
-    suggested, for the reviewer to trim and attest.
-
-    Also fires the lazy half of the paper-context-sentence population
-    policy (:func:`_lazy_enqueue_context_sentences`) for every grounding
-    source paper missing a sentence — best-effort, never blocking."""
-    _lazy_enqueue_context_sentences(store, bundle.sources)
+    suggested, for the reviewer to trim and attest."""
     if row is not None and row.grounding:
         return json.dumps(row.grounding, indent=2)
     from precis.handlers._finding_hypothesis import META_PROPOSED_PAYLOAD

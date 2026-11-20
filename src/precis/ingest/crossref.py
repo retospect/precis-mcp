@@ -20,6 +20,28 @@ from precis.utils.rate_limit import RateLimited
 _DEADLINE_S = 60.0
 
 
+def fetch_journal(issn: str, mailto: str = "") -> dict[str, Any] | None:
+    """Fetch Crossref's journal record, rather than a work's container title.
+
+    A missing record is a miss; transport failures propagate so the background
+    repair stays claimable. The caller persists successful records by ISSN.
+    """
+    cr = Crossref(ua_string=polite_user_agent(mailto), mailto=mailto or None)
+    try:
+        result = call_with_deadline(
+            lambda: call_with_backoff(
+                lambda: cr.journals(ids=issn), service="crossref"
+            ),
+            deadline_s=_DEADLINE_S,
+            label=f"crossref journal {issn}",
+        )
+    except Exception as exc:
+        if getattr(getattr(exc, "response", None), "status_code", None) == 404:
+            return None
+        raise
+    return result.get("message") if isinstance(result, dict) else None
+
+
 def fetch_message(doi: str, mailto: str = "") -> dict[str, Any] | None:
     """Raw CrossRef ``message`` dict for a DOI, or ``None`` if not found.
 

@@ -259,14 +259,13 @@ def resolve_cite_key(
     """Pick the next free ``cite_key`` for a given prefix.
 
     Probes ``ref_identifiers`` for keys starting with ``cite_key_prefix``
-    and asks :func:`precis.identity.make_cite_key` to choose the next
-    free suffix. ``cite_key_alias`` rows count as taken too (gr521515):
-    a rekeyed paper's old key is reserved — minting it afresh would
-    silently retarget every ``\\cite{<old>}`` onto the new ref.
+    and passes the occupied keys to :func:`_next_cite_key` to choose the
+    next free suffix. ``cite_key_alias`` rows reserve old keys so existing
+    ``\\cite{<old>}`` references keep resolving to the original ref (gr521515).
 
-    The probe is cheap thanks to the ``cite_key_trgm`` index on
-    ``ref_identifiers (id_value)``. The set of "taken" keys is
-    typically small (papers from the same first-author + year).
+    The kind filter matches the widened partial predicate of
+    ``ref_identifiers_cite_key_trgm_idx``, making the GIN index eligible
+    for the LIKE probe (gr732478).
     """
     if not cite_key_prefix:
         raise ValueError("cite_key_prefix must be non-empty")
@@ -278,10 +277,6 @@ def resolve_cite_key(
     rows = conn.execute(sql, (cite_key_prefix + "%",)).fetchall()
     taken = {row[0] for row in rows}
 
-    # ``make_cite_key`` re-derives the prefix from authors+year. We
-    # already have the prefix string; the cleanest path is to call
-    # the helper with the raw inputs, but since the prefix is what
-    # we have, we simulate the suffix progression here.
     return _next_cite_key(cite_key_prefix, taken)
 
 
@@ -809,6 +804,73 @@ def register_aliases_and_maybe_upgrade(
         # acquire stub minted unverified (gr489237).
         clear_acquire_unverified(conn, existing_ref_id, by="fetch")
 
+    # A URL pull pins both hashes after checking identity and page count.
+    # Keep the preview until a larger body arrives; retain its PDF alias.
+    if has_body and new_body > 0 and paper.pdf_sha256:
+        pin_row = conn.execute(
+            "SELECT meta->'pdf_preview_refetch' FROM refs WHERE ref_id = %s",
+            (existing_ref_id,),
+        ).fetchone()
+        pin = pin_row[0] if pin_row else None
+        if (
+            isinstance(pin, dict)
+            and pin.get("from") == str(existing_pdf_row[0]).strip()
+            and pin.get("to") == paper.pdf_sha256
+        ):
+            old_row = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id = %s AND ord >= 0",
+                (existing_ref_id,),
+            ).fetchone()
+            old_count = int(old_row[0]) if old_row else 0
+            if new_body > old_count and (paper.pdf_page_count or 0) > 2:
+                conn.execute(
+                    "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                    "VALUES ('pdf_sha256', %s, %s, 'paper_pull') "
+                    "ON CONFLICT (id_kind, id_value) DO NOTHING",
+                    (pin["from"], existing_ref_id),
+                )
+                conn.execute(
+                    "DELETE FROM chunks WHERE ref_id = %s AND ord >= 0",
+                    (existing_ref_id,),
+                )
+                conn.execute(
+                    "DELETE FROM ref_identifiers WHERE ref_id = %s "
+                    "AND id_kind = 'content_hash' AND id_value <> %s",
+                    (existing_ref_id, paper.content_hash or ""),
+                )
+                conn.execute(
+                    "UPDATE refs SET pdf_sha256 = %s, pdf_pages = %s::int4range, "
+                    "meta = (meta - 'pdf_preview_refetch') || "
+                    "jsonb_build_object('survey_requeue_pending', now()), "
+                    "updated_at = now() WHERE ref_id = %s",
+                    (paper.pdf_sha256, _pdf_pages_range(paper), existing_ref_id),
+                )
+                conn.execute(
+                    "INSERT INTO ref_events (ref_id, source, event, payload) "
+                    "VALUES (%s, 'paper_pull', 'body_replaced', %s)",
+                    (
+                        existing_ref_id,
+                        Jsonb({**pin, "old_chunks": old_count, "new_chunks": new_body}),
+                    ),
+                )
+                has_body = False
+            else:
+                conn.execute(
+                    "INSERT INTO ref_events (ref_id, source, event, payload) "
+                    "VALUES (%s, 'paper_pull', 'body_replace_declined', %s)",
+                    (
+                        existing_ref_id,
+                        Jsonb(
+                            {
+                                **pin,
+                                "old_chunks": old_count,
+                                "new_chunks": new_body,
+                                "reason": "replacement body did not grow",
+                            }
+                        ),
+                    ),
+                )
+
     # Markup-backfill gated replacement (gr372781 item 3). A ref pinned
     # by paper_hygiene.requeue_front_matter_only_papers carries
     # meta.markup_refetch: its existing body is the front-matter-only
@@ -1054,16 +1116,8 @@ def _merge_ingest_meta(
     Body-owned keys (:data:`_BODY_OWNED_META_KEYS`) are replaced. Every
     other key (abstract, journal, keywords, ...) only fills a gap: a stub's
     S2/Crossref metadata is richer than what Marker scrapes off a PDF, so
-    an existing non-empty value always wins.
-
-    The write bumps ``updated_at``: a folded ``abstract`` is content
-    arriving, and readers that key on "ref changed since T" (the
-    ``context_sentence`` heal arms, which compare ``updated_at`` and chunk
-    ``created_at`` against a stamp's ``at`` — gr514381) must see it. A
-    bodiless ingest is exactly the case no chunk ``created_at`` covers:
-    this ref's card-only ``paper.chunks`` collide on ``(ref_id, ord)`` and
-    insert nothing, so the timestamp is the ONLY signal the abstract
-    landed.
+    an existing non-empty value always wins. The write bumps ``updated_at``
+    even when an abstract arrives without new body chunks.
     """
     incoming = incoming or {}
     row = conn.execute(

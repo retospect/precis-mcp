@@ -34,7 +34,12 @@ this module. They are 32 random bytes, so the row stores a bare SHA-256
 and that digest is the only thing that authenticates. The *plaintext* is
 additionally kept in the vault (:func:`remember_feed_token`) purely so
 ``/account`` can show you your own subscribe URL — see there for why a
-write-only credential is the wrong shape for this one.
+write-only credential is the wrong shape for this one. Since gr595554 a
+feed credential is stored as a ``feed``-scoped row in
+``web_user_capability_tokens`` (:mod:`precis.mcp_identity`) — the client
+capability class it always was informally — labelled ``podcast feed``;
+new mints carry the ``precis_feed_`` prefix, and legacy bare digests
+migrated verbatim keep working.
 """
 
 from __future__ import annotations
@@ -101,7 +106,7 @@ class WebUser:
     last_login_at: datetime | None
     created_at: datetime | None
     updated_at: datetime | None
-    #: Whether ``feed_token_sha256`` is set. The digest itself never
+    #: Whether a live feed-scoped capability token exists. The digest itself never
     #: leaves the store — only whether there is a live podcast link, so
     #: ``/account`` knows the difference between "no link yet" and "a
     #: link exists but this deployment can't read it back".
@@ -323,6 +328,17 @@ def burn_verify() -> None:
     _derive("", salt=_DUMMY_SALT, pepper=None)
 
 
+#: Wire prefix for newly minted feed credentials — a client capability
+#: token (gr595554) whose only scope is ``feed``, so it never names a
+#: shape the MCP bearer gate resolves. Legacy bare ``token_urlsafe``
+#: feed tokens still authenticate by digest.
+FEED_TOKEN_PREFIX = "precis_feed_"
+
+#: Capability-token label the podcast mint and the 0332 fold give feed
+#: rows — the consumer those credentials name.
+FEED_TOKEN_LABEL = "podcast feed"
+
+
 def mint_feed_token() -> tuple[str, str]:
     """Return ``(token, sha256_hex)`` for the podcast ``?t=`` credential.
 
@@ -332,7 +348,7 @@ def mint_feed_token() -> tuple[str, str]:
     exists, which is why ``precis users feed-token`` prints the whole
     feed URL and rotating is the way to "recover" it.
     """
-    token = _stdlib_secrets.token_urlsafe(32)
+    token = FEED_TOKEN_PREFIX + _stdlib_secrets.token_urlsafe(32)
     return token, hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
@@ -355,8 +371,8 @@ def feed_token_secret_name(login: str) -> str:
 def remember_feed_token(login: str, token: str, *, store: Store) -> bool:
     """Keep the plaintext token so ``/account`` can show the URL again.
 
-    ``feed_token_sha256`` stays the *verification* path — nothing checks
-    this copy — so a stolen row still yields no working feed URL. This
+    The capability-token digest stays the *verification* path — nothing
+    checks this copy — so a stolen row still yields no working feed URL. This
     exists only because the alternative is worse: with the digest alone,
     the only way to see your own subscription URL is to mint a new one,
     which silently unsubscribes the phone that was already working. A
@@ -389,6 +405,23 @@ def recall_feed_token(login: str, *, store: Store) -> str | None:
     except Exception:  # pragma: no cover - vault outage
         log.debug("feed token recall failed for %s", login, exc_info=True)
         return None
+
+
+def recall_live_feed_token(login: str, *, store: Store) -> str | None:
+    """The vaulted feed token, only while *that* credential is still live.
+
+    A user can hold several feed-scoped capability rows; revoking the
+    vaulted one leaves the vault copy behind while other rows stay
+    active, so "any active feed row" is not enough — the exact digest
+    must still authenticate as ``login``.
+    """
+    token = recall_feed_token(login, store=store)
+    if not token:
+        return None
+    owner = store.get_web_user_by_feed_token(feed_token_digest(token))
+    if owner is None or owner.login != login:
+        return None
+    return token
 
 
 def forget_feed_token(login: str, *, store: Store) -> bool:
@@ -432,6 +465,7 @@ __all__ = [
     "normalize_login",
     "normalize_orcid",
     "recall_feed_token",
+    "recall_live_feed_token",
     "remember_feed_token",
     "resolve_pepper",
     "validate_password",

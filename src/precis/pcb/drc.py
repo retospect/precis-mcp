@@ -1022,7 +1022,7 @@ def check_clearance(
     # One resolution per pair and layer (rules.required): the per-net
     # per-layer tiers, a class pair rule, then the pairwise voltage term (a
     # missing annotation is not 0 V; the coverage report above already
-    # named it). Slice 4b (ewod-controller-and-hv-supply.md): a resolved
+    # named it). Slice 4b (me690877): a resolved
     # ``min_clearance_mm`` is a HARD floor — below it is an ERROR, the same
     # tier the fab minimum owns. With layer-scoped rules a multi-layer pair
     # (a through via) is judged on the layer where it fares worst: an
@@ -2797,8 +2797,7 @@ def check_courtyard_overlap(
     ``pads`` (``model["pads"]``, each carrying ``refdes``) refines the
     error tier further: a courtyard is the union of a part's pad
     outlines, an over-approximation of what the part occupies, so two
-    courtyards intersecting proves nothing about the lands (docs/backlog/
-    pcb-lazy-netlist-and-checks.md §1g-bis — an over-approximation is
+    courtyards intersecting proves nothing about the lands (me693232 §1g-bis — an over-approximation is
     sound for proving a collision ABSENT, not present). With pads given,
     the error is kept only when a real land of one part intersects a real
     land of the other; courtyards that overlap with every land clear are
@@ -5634,7 +5633,7 @@ def _erc_unknown_for_net(
     pins: list[dict[str, Any]],
     what: str,
 ) -> DrcFinding:
-    """A per-net cannot-fire row (pcb-datasheet-review.md slice 2, Reto's
+    """A per-net cannot-fire row (me692814 slice 2, Reto's
     ruling): pins on this net declare a bound (``max_voltage_v`` /
     ``max_current_a``) but the net declares no voltage/current to compare
     it against. The net's value is NEVER guessed — the finding asks the
@@ -5740,8 +5739,8 @@ def check_over_current(
 ) -> list[DrcFinding]:
     """A net's declared ``est_current_a`` exceeds a pin's declared
     ``max_current_a`` — a 3 A rail through a pin rated 1 A
-    (pcb-datasheet-review.md slice 2; the ratings-validation half of
-    ``pcb-component-model.md``'s power section).
+    (me692814 slice 2; the ratings-validation half of
+    ``me692617``'s power section).
 
     Whether a pin sits IN the current path is ``meta['current_role']``
     (``series``/``shunt``/``signal``, authored via ``op='pins'``): only
@@ -5950,7 +5949,7 @@ def check_passive_rating(
     net_class_rules: dict[str, Any] | None = None,
 ) -> list[DrcFinding]:
     """A catalog passive whose parsed rating fails the margin policy —
-    pcb-datasheet-review.md slice 3 (in-scope 4's parse + 5's
+    me692814 slice 3 (in-scope 4's parse + 5's
     ``passive_rating``): ``C1525``'s description parses to
     ``100nF 16V X7R`` (:func:`precis.pcb.catalog.parse_passive_description`)
     and the named policy (``PASSIVE_MARGIN_POLICY`` r

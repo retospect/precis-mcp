@@ -194,6 +194,47 @@ def test_acquire_is_idempotent(handler: PaperHandler, store: Store) -> None:
     assert "get(id=" in second.body
 
 
+def test_acquire_wiley_twin_doi_collapses(handler: PaperHandler, store: Store) -> None:
+    # The twin collapse must also hold when the anie twin is an
+    # already-HELD paper (pdf present): the ange acquire collapses onto
+    # it, registers the second DOI there, and must not pin it (nothing
+    # left to fetch).
+    held_ref = store.insert_ref(kind="paper", slug="angew1966", title="Held Angew")
+    held = held_ref.id
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('doi', '10.1002/anie.5660280', %s, 'test')",
+            (held,),
+        )
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 1, 100, '/tmp/stub')",
+            ("c" * 64, "c" * 64),
+        )
+        conn.execute(
+            "UPDATE refs SET pdf_sha256 = %s, prio = NULL, "
+            "meta = meta - 'prio_by' WHERE ref_id = %s",
+            ("c" * 64, held),
+        )
+        conn.commit()
+    r = handler.acquire(identifier="doi:10.1002/ange.5660280")
+    assert _ref_id(r.body) == held
+    assert "already tracked" in r.body
+    assert f"twin DOI of pa{held}, nothing minted" in r.body
+    assert "pinned" not in r.body
+    assert (
+        store.find_ref_by_identifier("doi", "10.1002/anie.5660280", kind="paper")
+        == held
+    )
+    assert (
+        store.find_ref_by_identifier("doi", "10.1002/ange.5660280", kind="paper")
+        == held
+    )
+    prio, prio_by, _ = _fetch_pin(store, held)
+    assert (prio, prio_by) == (None, None)
+
+
 def test_acquire_pmcid_mints_stub(handler: PaperHandler, store: Store) -> None:
     """gr663681: ``pmcid:`` identifiers queue a stub — the gripe's
     PMC-only reference could not be put at all."""
@@ -242,6 +283,169 @@ def test_acquire_registers_pubmed_pmc_aliases_from_s2(
     again = handler.acquire(identifier="pmcid:PMC11089570")
     assert "already tracked" in again.body
     assert _ref_id(again.body) == rid
+
+
+# ── S2-attributed DOI corroboration (gr710828) ───────────────────────
+#
+# S2's cluster for arXiv:1705.07874 (s2:442e10a3… — the real SHAP
+# record) mis-merged the Korean journal DOI 10.9728/dcs.2024.25.7.1847
+# into its externalIds. Re-asking S2 cannot detect it — DOI:<that doi>
+# resolves back onto the same poisoned cluster — so an S2-ATTRIBUTED
+# DOI (one the caller did not ask by) must be corroborated at the DOI
+# registries before the stub carries it.
+
+_SHAP_S2_META = {
+    "title": "A Unified Approach to Interpreting Model Predictions",
+    "year": 2017,
+    "authors": [{"name": "Scott M. Lundberg"}, {"name": "Su-In Lee"}],
+    "doi": "10.9728/dcs.2024.25.7.1847",
+    "arxiv_id": "1705.07874",
+    "s2_id": "442e10a3c6640ded9408622005e3c2a8906ce4c2",
+    "external_ids": {
+        "ArXiv": "1705.07874",
+        "DOI": "10.9728/dcs.2024.25.7.1847",
+        "DBLP": "conf/nips/LundbergL17",
+    },
+}
+
+_KOREAN_REGISTRY_META = {
+    "title": "Exploration of Digital Divide Factors Affecting Life "
+    "Satisfaction in Older People: Using Tree-Based Ensemble "
+    "Machine Learning and SHAP",
+    "authors": [{"given": "Jeong-Seon", "family": "Lee"}],
+    "year": 2024,
+    "source": "crossref",
+}
+
+
+def test_acquire_arxiv_drops_registry_uncorroborated_s2_doi(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr710828: the S2 record carries a foreign DOI and the registry's
+    title for it shares no distinctive token with the record's — the
+    stub mints arxiv-only."""
+    monkeypatch.setattr(
+        paper_mod, "_lookup_acquire_metadata", lambda *_: dict(_SHAP_S2_META)
+    )
+    monkeypatch.setattr(
+        paper_mod, "_lookup_doi_registry", lambda *_: dict(_KOREAN_REGISTRY_META)
+    )
+    r = handler.acquire(
+        identifier="arxiv:1705.07874",
+        title="A Unified Approach to Interpreting Model Predictions",
+    )
+    assert "minted stub" in r.body
+    rid = _ref_id(r.body)
+    ids = _identifiers(store, rid)
+    assert ("arxiv", "1705.07874") in ids
+    assert ("s2", "442e10a3c6640ded9408622005e3c2a8906ce4c2") in ids
+    assert not any(kind == "doi" for kind, _ in ids)
+
+
+def test_acquire_arxiv_keeps_registry_corroborated_s2_doi(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The good case the gripe names: an S2-attributed DOI whose registry
+    record names the same work (shared title tokens, agreeing first
+    author) still lands on the stub."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            **_SHAP_S2_META,
+            "doi": "10.5555/shap-journal",
+            "external_ids": {
+                "ArXiv": "1705.07874",
+                "DOI": "10.5555/shap-journal",
+                "DBLP": "conf/nips/LundbergL17",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        lambda *_: {
+            "title": "A unified approach to interpreting model predictions",
+            "authors": [{"given": "Scott", "family": "Lundberg"}],
+            "year": 2017,
+            "source": "crossref",
+        },
+    )
+    r = handler.acquire(identifier="arxiv:1705.07874")
+    rid = _ref_id(r.body)
+    ids = _identifiers(store, rid)
+    assert ("doi", "10.5555/shap-journal") in ids
+    assert ("arxiv", "1705.07874") in ids
+
+
+def test_acquire_arxiv_keeps_s2_doi_when_registry_cannot_answer(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A registry fault is not evidence of a mis-merge — abstain and
+    keep the DOI (the gr483930 miss-vs-fault split)."""
+    monkeypatch.setattr(
+        paper_mod, "_lookup_acquire_metadata", lambda *_: dict(_SHAP_S2_META)
+    )
+
+    def _down(*_a: object) -> None:
+        raise RuntimeError("crossref unreachable")
+
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", _down)
+    r = handler.acquire(identifier="arxiv:1705.07874")
+    rid = _ref_id(r.body)
+    assert ("doi", "10.9728/dcs.2024.25.7.1847") in _identifiers(store, rid)
+
+
+def test_acquire_doi_identifier_never_scrubbed(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The requested DOI is trusted by definition — the scrub and the
+    poisoned-cluster check must not consult the registry to corroborate
+    what the caller asked for. Asserted on the call count, not a raising
+    mock: the mismatch check swallows resolver exceptions, so a raise
+    inside the mock could not prove the registry went unconsulted. The S2
+    response here carries no year, so the registry year cross-check
+    (gr722127) is outside this test's scope; see
+    ``test_acquire_doi_year_crosscheck_consults_registry_once``."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Whatever",
+            "doi": "10.9728/dcs.2024.25.7.1847",
+            "external_ids": {"DOI": "10.9728/dcs.2024.25.7.1847"},
+        },
+    )
+    consulted: list[str] = []
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", consulted.append)
+    r = handler.acquire(identifier="doi:10.9728/dcs.2024.25.7.1847")
+    rid = _ref_id(r.body)
+    assert ("doi", "10.9728/dcs.2024.25.7.1847") in _identifiers(store, rid)
+    assert consulted == []
+
+
+def test_acquire_doi_year_crosscheck_consults_registry_once(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Companion to ``test_acquire_doi_identifier_never_scrubbed``: when S2
+    carries a year, the registry year cross-check (gr722127) is the one
+    registry call a requested DOI makes. The DOI identifier is still kept."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Whatever",
+            "year": 2024,
+            "doi": "10.9728/dcs.2024.25.7.1847",
+            "external_ids": {"DOI": "10.9728/dcs.2024.25.7.1847"},
+        },
+    )
+    consulted: list[str] = []
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", consulted.append)
+    r = handler.acquire(identifier="doi:10.9728/dcs.2024.25.7.1847")
+    rid = _ref_id(r.body)
+    assert ("doi", "10.9728/dcs.2024.25.7.1847") in _identifiers(store, rid)
+    assert consulted == ["10.9728/dcs.2024.25.7.1847"]
 
 
 def _fetch_pin(store: Store, ref_id: int) -> tuple[int | None, str | None, str | None]:
@@ -497,6 +701,133 @@ def test_put_book_stub_stores_supplied_authors(
         ).fetchall()
     assert rows == [("Doe", "human"), ("Smith", "human")]
     assert "stored 2 supplied authors" in response.body
+
+
+def test_put_s2_verified_stub_writes_byline(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr689211: S2 authors seed both the cite key and stored byline."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Resolved Paper",
+            "year": 2018,
+            "authors": [{"name": "Jane Clark"}, {"name": "John Smith"}],
+            "journal": "Test Journal",
+        },
+    )
+    response = handler.put(doi="10.1/s2-byline")
+    rid = _ref_id(response.body)
+    ref = store.get_ref(kind="paper", id=rid)
+    assert ref is not None
+    assert ref.slug == "clark18"
+    assert ref.authors is not None
+    assert [a["name"] for a in ref.authors] == ["Jane Clark", "John Smith"]
+    assert _meta(store, rid)["journal"] == "Test Journal"
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT source FROM paper_authors WHERE ref_id = %s ORDER BY position",
+            (rid,),
+        ).fetchall()
+    assert rows == [("s2",), ("s2",)]
+
+
+def test_acquire_doi_year_crosscheck_prefers_registry(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr722127: S2's year for 10.1007/BF02650179 is 1999 (a reprint
+    date); the Crossref record says 1982. The registration agency is
+    authoritative for what the DOI names, so the stub year and the cite
+    key must come from the registry, not S2."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Simulating physics with computers",
+            "year": 1999,
+            "authors": [{"given": "Richard", "family": "Feynman"}],
+            "journal": "International Journal of Theoretical Physics",
+        },
+    )
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        lambda *_: {
+            "title": "Simulating physics with computers",
+            "year": 1982,
+            "doi": "10.1007/BF02650179",
+            "journal": "International Journal of Theoretical Physics",
+            "source": "crossref",
+        },
+    )
+    response = handler.put(doi="10.1007/BF02650179")
+    rid = _ref_id(response.body)
+    ref = store.get_ref(kind="paper", id=rid)
+    assert ref is not None
+    assert ref.year == 1982
+    assert ref.slug == "feynman82"
+    assert _meta(store, rid).get("acquire_year_registry") == "crossref"
+
+
+def test_acquire_doi_year_crosscheck_title_mismatch_keeps_s2(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The registry's year only wins when the registry vouches for the
+    same work — a title that doesn't match S2's keeps S2's year."""
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Simulating physics with computers",
+            "year": 1999,
+            "authors": [{"given": "Richard", "family": "Feynman"}],
+        },
+    )
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        lambda *_: {
+            "title": "An entirely different proceedings volume",
+            "year": 1982,
+            "source": "crossref",
+        },
+    )
+    response = handler.put(doi="10.1007/BF02650179")
+    rid = _ref_id(response.body)
+    ref = store.get_ref(kind="paper", id=rid)
+    assert ref is not None
+    assert ref.year == 1999
+    assert ref.slug == "feynman99"
+    assert "acquire_year_registry" not in _meta(store, rid)
+
+
+def test_acquire_doi_year_crosscheck_registry_fault_keeps_s2(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A registry fault on the cross-check leg is not evidence against
+    the DOI — S2 verified it and S2's year stands."""
+
+    def _down(*_a: object) -> None:
+        raise RuntimeError("crossref offline in test")
+
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            "title": "Simulating physics with computers",
+            "year": 1999,
+            "authors": [{"given": "Richard", "family": "Feynman"}],
+        },
+    )
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", _down)
+    response = handler.put(doi="10.1007/BF02650179")
+    rid = _ref_id(response.body)
+    ref = store.get_ref(kind="paper", id=rid)
+    assert ref is not None
+    assert ref.year == 1999
+    assert "acquire:unverified" not in _tags(store, rid)
+    assert "acquire_year_registry" not in _meta(store, rid)
 
 
 def test_put_supplied_authors_override_registry_on_fresh_stub(
@@ -914,19 +1245,34 @@ def test_acquire_registry_fault_mints_unverified(
     assert "crossref" in str(_meta(store, rid).get("acquire_unverified_reason", ""))
 
 
-def test_acquire_registry_lookup_skipped_on_s2_hit(
-    handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+def test_acquire_registry_lookup_on_s2_hit_crosschecks_year(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An S2 hit never reaches the registry fallback."""
+    """gr722127: an S2 hit for a DOI now still consults the registry —
+    the year cross-check. A registry that knows nothing leaves S2's
+    stub untouched."""
     consulted: list[str] = []
     monkeypatch.setattr(
         paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {"title": "Resolved Paper", "year": 2018},
+    )
+
+    def _registry(doi: str) -> None:
+        consulted.append(doi)
+        return None
+
+    monkeypatch.setattr(
+        paper_mod,
         "_lookup_doi_registry",
-        consulted.append,
+        _registry,
     )
     r = handler.acquire(identifier="doi:10.1/x")
     assert "minted stub" in r.body
-    assert consulted == []
+    assert consulted == ["10.1/x"]
+    ref = store.get_ref(kind="paper", id=_ref_id(r.body))
+    assert ref is not None
+    assert ref.year == 2018
 
 
 def test_acquire_registry_lookup_skipped_for_non_doi(
@@ -981,3 +1327,155 @@ def test_acquire_tags_applied_to_minted_stub(
     r = handler.put(doi="10.1234/tagged-stub", tags=["reading-list"], verify=False)
     assert "minted stub" in r.body
     assert "reading-list" in _tags(store, _ref_id(r.body))
+
+
+def test_acquire_arxiv_mint_doi_for_other_preprint_is_corroborated(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``10.48550/arxiv.<other id>`` DOI does not self-corroborate: its
+    suffix names a different preprint — a conflict on its face, so the
+    alias drops WITHOUT a registry call (the registry cannot vouch for
+    it while two preprint ids claim one record)."""
+    other = "10.48550/arxiv.2001.00001"
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            **_SHAP_S2_META,
+            "doi": other,
+            "external_ids": {"ArXiv": "1705.07874", "DOI": other},
+        },
+    )
+    consulted: list[str] = []
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", consulted.append)
+    r = handler.acquire(identifier="arxiv:1705.07874")
+    ids = _identifiers(store, _ref_id(r.body))
+    assert not any(kind == "doi" for kind, _ in ids)
+    assert consulted == []
+
+
+def test_acquire_arxiv_other_preprint_mint_dropped_with_registry_down(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Conflicting arXiv ids are evidence enough: dropped without the registry."""
+    other = "10.48550/arxiv.2001.00001"
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            **_SHAP_S2_META,
+            "doi": other,
+            "external_ids": {"ArXiv": "1705.07874", "DOI": other},
+        },
+    )
+    calls: list[str] = []
+
+    def _down(doi: str) -> None:
+        calls.append(doi)
+        raise RuntimeError("registry down")
+
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", _down)
+    r = handler.acquire(identifier="arxiv:1705.07874")
+    ids = _identifiers(store, _ref_id(r.body))
+    assert not any(kind == "doi" for kind, _ in ids)
+    assert calls == []
+
+
+def test_acquire_poisoned_doi_does_not_collapse_onto_shap_ref(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reverse direction: putting the foreign DOI must not adopt the
+    poisoned S2 cluster's arXiv/S2 aliases and dedupe onto the SHAP ref."""
+    monkeypatch.setattr(
+        paper_mod, "_lookup_acquire_metadata", lambda *_: dict(_SHAP_S2_META)
+    )
+    monkeypatch.setattr(
+        paper_mod, "_lookup_doi_registry", lambda *_: dict(_KOREAN_REGISTRY_META)
+    )
+    shap = _ref_id(
+        handler.acquire(
+            identifier="arxiv:1705.07874",
+            title="A Unified Approach to Interpreting Model Predictions",
+        ).body
+    )
+    r = handler.acquire(identifier="doi:10.9728/dcs.2024.25.7.1847")
+    other = _ref_id(r.body)
+    assert other != shap
+    ids = _identifiers(store, other)
+    assert ("doi", "10.9728/dcs.2024.25.7.1847") in ids
+    assert not any(kind in ("arxiv", "s2") for kind, _ in ids)
+
+
+def test_acquire_poisoned_doi_reuses_registry_record(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The registry record that established the poisoned S2 cluster is
+    the DOI's own verification: acquire reuses it instead of asking the
+    registries a second time — a second ask can miss and reject an
+    already-confirmed DOI (gr710828 review)."""
+    foreign = "10.9728/dcs.2024.25.7.1847"
+    calls: list[str] = []
+
+    def _registry(doi: str) -> dict[str, object]:
+        calls.append(doi)
+        return dict(_KOREAN_REGISTRY_META)
+
+    monkeypatch.setattr(
+        paper_mod, "_lookup_acquire_metadata", lambda *_: dict(_SHAP_S2_META)
+    )
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", _registry)
+    r = handler.acquire(identifier=f"doi:{foreign}")
+    assert "minted stub" in r.body
+    assert calls == [foreign]
+    rid = _ref_id(r.body)
+    ids = _identifiers(store, rid)
+    assert ("doi", foreign) in ids
+    assert not any(kind in ("arxiv", "s2") for kind, _ in ids)
+    # Reused record still lands its provenance — verified, not unverified.
+    assert _meta(store, rid).get("acquire_registry") == "crossref"
+    assert "acquire:unverified" not in _tags(store, rid)
+
+
+def test_acquire_arxiv_own_mint_doi_skips_registry(
+    handler: PaperHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record's own arXiv DataCite mint is kept without a registry call."""
+    own = "10.48550/arXiv.1705.07874"
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_acquire_metadata",
+        lambda *_: {
+            **_SHAP_S2_META,
+            "doi": own,
+            "external_ids": {"ArXiv": "1705.07874", "DOI": own},
+        },
+    )
+
+    consulted: list[str] = []
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", consulted.append)
+    r = handler.acquire(identifier="arxiv:1705.07874")
+    ids = _identifiers(store, _ref_id(r.body))
+    assert any(kind == "doi" for kind, _ in ids)
+    assert consulted == []
+
+
+def test_scrub_keeps_doi_when_a_title_has_no_usable_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Identical one-word titles (``DNA``) give zero overlap by
+    tokenisation, not by disagreement — inconclusive, so the DOI stays."""
+    meta = {
+        "title": "DNA",
+        "doi": "10.5555/dna",
+        "authors": [{"name": "Jane Roe"}],
+        "external_ids": {"DOI": "10.5555/dna"},
+    }
+    monkeypatch.setattr(
+        paper_mod,
+        "_lookup_doi_registry",
+        lambda *_: {
+            "title": "DNA",
+            "authors": [{"given": "Jane", "family": "Roe"}],
+        },
+    )
+    assert paper_mod._scrub_uncorroborated_s2_doi("arxiv", meta) is meta

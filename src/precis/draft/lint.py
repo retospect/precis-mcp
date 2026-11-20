@@ -163,7 +163,7 @@ def write_abbrev_hints(
 ) -> str:
     """Abbreviation feedback for one write, scoped to what it *introduced*
     (so editing a chunk doesn't re-nag about acronyms it already
-    contained). Two disjoint hints:
+    contained). Three disjoint hints:
 
     * **undefined** — acronym-shaped tokens with no definition anywhere
       in the draft (and new in this write): define or silence them.
@@ -171,6 +171,14 @@ def write_abbrev_hints(
       but lives only in this chunk's prose and isn't yet a glossary
       ``term``: offer to formalise it (durable across edits). The two
       never overlap — an inline-defined token isn't "undefined".
+    * **authored** — an inline definition of a registered term export
+      will define itself (gr725250). Fires on any such definition this
+      write introduces, even when it is the term's first and only use:
+      export collapses the authored span either way — at the first use
+      the glossary's canonical long form replaces the authored one, and
+      after an earlier use the authored span stays verbatim and repeats
+      the generated definition — so "write the short alone" holds in
+      both cases.
     """
     from precis.utils.abbreviations import find as _find
     from precis.utils.abbreviations import find_acronyms as _acr
@@ -186,7 +194,37 @@ def write_abbrev_hints(
         for short, long in _find(new_text).items()
         if short not in old_pairs and short not in terms
     }
-    return abbrev_hint(slug, undefined) + promote_hint(slug, promote)
+    duplicate = sorted((_find(new_text).keys() - old_pairs.keys()) & terms)
+    return (
+        abbrev_hint(slug, undefined)
+        + promote_hint(slug, promote)
+        + authored_abbrev_hint(duplicate)
+    )
+
+
+def authored_abbrev_hint(shorts: list[str]) -> str:
+    """Warn about authored definitions of glossary terms (gr725250).
+
+    Export owns first use across paragraphs. Fires even when the authored
+    ``long form (SHORT)`` is the term's first and only use — export
+    collapses the authored span either way: at the first use the
+    glossary's canonical long form replaces the authored wording
+    (``export/_abbrev.py::expand``'s stashed-span branch), and after an
+    earlier use the authored span prints verbatim, repeating the
+    definition the export already emitted. Narrowing the condition to
+    "has an earlier use" would need a whole-draft scan on the write
+    path; the advice — write the short alone — is the same in both
+    cases, so the hint fires on the authored definition itself.
+    """
+    if not shorts:
+        return ""
+    return (
+        "\n\n⚠ hand-written abbreviation definition(s): "
+        + ", ".join(shorts)
+        + ". Use the short alone: the glossary already defines it, and export "
+        "expands its first use automatically; an authored long form (SHORT) "
+        "can duplicate that definition."
+    )
 
 
 def promote_hint(slug: str, promote: dict[str, str]) -> str:
@@ -439,10 +477,12 @@ def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
 
 def glyph_cite_hint(store: Store, text: str) -> str:
     """Warn per paper cited in ``text`` whose ingest flagged glyph damage
-    (``meta.glyph_health.suspected``, gr228652): Greek/\u03bc characters may
-    have been dropped or substituted in the extracted text, so quoted
-    numbers/units can be off by 10^3-10^6x. Advisory only. Scoped to the
-    cites present in the touched text; one batched ref fetch, deduped by ref.
+    (``meta.glyph_health.suspected``, gr228652): Greek/\u03bc characters
+    may have been dropped or substituted in the extracted text, so quoted
+    numbers/units can be off by 10^3-10^6x. A sign-damage-only record
+    (gr685717) instead warns about lost minus signs / mangled \u00b1.
+    Advisory only. Scoped to the cites present in the touched text; one
+    batched ref fetch, deduped by ref.
     """
     from precis.utils.glyph_health import glyph_suspected
     from precis.utils.mentions import resolve_handle_target
@@ -458,11 +498,26 @@ def glyph_cite_hint(store: Store, text: str) -> str:
     for rid, ref in sorted(store.fetch_refs_by_ids(ids, include_deleted=False).items()):
         if ref.kind == "paper" and glyph_suspected(ref.meta):
             handle = handle_registry.try_format("paper", rid) or ids[rid]
-            lines.append(
-                f"\n\n\u25c6 glyphs: cites {handle}, whose extracted text may "
-                "have lost Greek/\u03bc characters \u2014 check quoted "
-                "numbers/units against the PDF"
+            rec = ref.meta.get("glyph_health") if isinstance(ref.meta, dict) else None
+            sign_only = (
+                isinstance(rec, dict)
+                and isinstance(rec.get("sign_damage"), dict)
+                and rec["sign_damage"].get("detected") is True
+                and not rec.get("modes")
+                and not rec.get("suspect_fonts")
             )
+            if sign_only:
+                lines.append(
+                    f"\n\n\u25c6 glyphs: cites {handle}, whose extracted "
+                    "text may have lost minus signs or \u00b1 characters "
+                    "\u2014 check quoted numbers against the PDF"
+                )
+            else:
+                lines.append(
+                    f"\n\n\u25c6 glyphs: cites {handle}, whose extracted text may "
+                    "have lost Greek/\u03bc characters \u2014 check quoted "
+                    "numbers/units against the PDF"
+                )
     return "".join(lines)
 
 
@@ -772,7 +827,23 @@ def concept_label_hint(
     return out
 
 
-def pin_hint(store: Store, new_text: str, old_text: str = "") -> str:
+def _table_pin_regions(text: str) -> list[str]:
+    """A table row (including its source column) is one citation scope."""
+    from precis.utils.table_data import table_payload
+
+    payload = table_payload(None, text)
+    if payload is None:
+        return text.splitlines()
+    return [
+        payload.get("caption") or "",
+        " | ".join(payload["header"]),
+        *(" | ".join(row) for row in payload["rows"]),
+    ]
+
+
+def pin_hint(
+    store: Store, new_text: str, old_text: str = "", *, table: bool = False
+) -> str:
     """Pin warnings for a write (G3 coverage, G4 pin rule — see
     :mod:`precis.nanopub.pin_lint`): a ``[fi<hub>>pc<chunk>]`` /
     ``[fi<hub>+pc<chunk>]`` whose pinned passage(s) no longer carry a term
@@ -780,15 +851,19 @@ def pin_hint(store: Store, new_text: str, old_text: str = "") -> str:
     frozen grounding. Fires only on what this write *changed* — a new pin,
     or a sentence edit that uncovered a term — so re-saving a chunk never
     re-nags about pins it left alone. Advisory; a failing check degrades to
-    no hint rather than taking the write path down."""
+    no hint rather than taking the write path down. With ``table=True``,
+    check the caption, header and each data row separately
+    (:func:`_table_pin_regions`)."""
     if "[fi" not in new_text:
         return ""
     try:
         from precis.nanopub import pin_lint
 
+        new = _table_pin_regions(new_text) if table else new_text
+        old = _table_pin_regions(old_text) if table else old_text
         lines = [
             line
-            for f in pin_lint.edit_findings(store, new_text, old_text)
+            for f in pin_lint.edit_findings(store, new, old)
             for line in pin_lint.render_finding(f)
         ]
     except Exception:  # pragma: no cover — advisory, not correctness

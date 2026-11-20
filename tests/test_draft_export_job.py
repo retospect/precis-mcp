@@ -219,10 +219,9 @@ def test_dispatch_records_retraction_override_when_flagged(
 ) -> None:
     """``params.ignore_retractions`` (set by the route once the user has
     already bypassed the export-gate block) makes the job re-derive the
-    same no-network retraction report and thread its ``retracted`` list into
+    retraction report, enforce its gate, and thread its ``retracted`` list into
     the sources appendix — ``docs/backlog/retraction-override-appendix-
-    trace.md``'s trace. No sources-appendix param → nothing to record it
-    in, so it's a no-op without ``include_sources``."""
+    trace.md``'s trace. A newly discovered retraction also blocks the job."""
     import precis.export.retraction as retraction_mod
     from precis.export.retraction import CitedPaper, DraftRetractionReport
 
@@ -250,7 +249,9 @@ def test_dispatch_records_retraction_override_when_flagged(
         meta={"params": {"draft": slug, "include_sources": True}},
     )
     spec.dispatch(ctx, spec)
-    assert not ctx.failures, ctx.failures
+    assert any(
+        "retracted citations block export" in failure for failure in ctx.failures
+    )
 
     ctx_override = _FakeCtx(
         store=hub.store,
@@ -828,3 +829,77 @@ def test_lock_timeout_stamps_infra_lock_timeout_tag(hub: Hub, monkeypatch: Any) 
     assert "infra:lock-timeout" in job_tags
     parent_tags = {str(t) for t in hub.live_store.tags_for(pid)}
     assert f"child-failed:{jid}" not in parent_tags
+
+
+def test_export_job_checks_and_reapplies_retraction_gate(monkeypatch: Any) -> None:
+    """A retraction discovered after enqueue blocks rendering unless waived."""
+    from types import SimpleNamespace
+
+    import precis.export.retraction as retraction_mod
+    from precis.export.retraction import CitedPaper, DraftRetractionReport
+    from precis.workers.job_types import draft_export as job
+
+    calls: list[dict[str, Any]] = []
+    report = DraftRetractionReport(
+        papers=[CitedPaper(1, "paper", "Paper", status="retracted")]
+    )
+
+    def check(store: Any, ref: Any, **kwargs: Any) -> DraftRetractionReport:
+        calls.append(kwargs)
+        return report
+
+    def stop_after_gate(*args: Any) -> Any:
+        raise ValueError("reached rendering setup")
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", check)
+    monkeypatch.setattr(job, "_resolve_doc_type", lambda ctx: "article")
+    monkeypatch.setattr(job, "_resolve_audience_out_dir", stop_after_gate)
+    monkeypatch.setattr(
+        job.settings,
+        "get_str",
+        lambda key: "ops@example.org" if key == "contact.polite_email" else None,
+    )
+    for scope in ("none", "stale", "all"):
+        ctx = _FakeCtx(store=object(), meta={})
+        job._export_and_compile(
+            ctx, SimpleNamespace(), {"retraction_check": scope}, "draft", frozenset()
+        )
+        assert calls[-1] == {
+            "check": scope != "none",
+            "force": scope == "all",
+            "mailto": "ops@example.org",
+        }
+        assert any(
+            "retracted citations block export" in failure for failure in ctx.failures
+        )
+    ctx = _FakeCtx(store=object(), meta={})
+    job._export_and_compile(
+        ctx,
+        SimpleNamespace(),
+        {"retraction_check": "all", "ignore_retractions": True},
+        "draft",
+        frozenset(),
+    )
+    assert ctx.failures == ["draft_export: reached rendering setup"]
+
+
+def test_repeat_cites_param_reaches_the_exporter(hub: Hub, monkeypatch: Any) -> None:
+    """``params.repeat_cites`` is passed to ``export_draft`` (default off)."""
+    from precis.export import compile as compile_mod
+    from precis.export import latex as latex_mod
+
+    _pid, slug = _make_project_and_draft(hub)
+    spec = get_job_type("draft_export")
+    assert spec is not None and spec.dispatch is not None
+    assert "repeat_cites" in spec.params_schema["properties"]
+    runs: list[dict[str, Any]] = []
+
+    def _fake_export(*_a: Any, **kw: Any) -> Any:
+        runs.append(kw)
+        raise RuntimeError("stop after capture")
+
+    monkeypatch.setattr(latex_mod, "export_draft", _fake_export)
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: True)
+    for params in ({"draft": slug}, {"draft": slug, "repeat_cites": True}):
+        spec.dispatch(_FakeCtx(store=hub.store, meta={"params": params}), spec)
+    assert [r["repeat_cites"] for r in runs] == [False, True]

@@ -943,6 +943,17 @@ def test_get_view_brief_and_tags_read_as_the_card(handler: TodoHandler) -> None:
         assert "project:x" in body
 
 
+def test_get_view_status_reads_as_the_card(handler: TodoHandler) -> None:
+    todo_id = _id_of(handler.put(text="Check todo status.").body)
+    handler.tag(id=todo_id, add=["STATUS:doing"])
+    plain = handler.get(id=todo_id)
+    assert "STATUS:doing" in plain.body
+    status = handler.get(id=todo_id, view="status")
+    assert status.body == (
+        "interpreted: view='status' read as the default view\n" + plain.body
+    )
+
+
 def test_get_unknown_view_names_the_todo_get_views(handler: TodoHandler) -> None:
     """gr547804: an unknown get view lists todo's own get views —
     'comments' and 'tree' on top of the base views — and its ``next=``
@@ -990,6 +1001,7 @@ def test_get_every_served_view_still_serves(handler: TodoHandler) -> None:
         "full",
         "brief",
         "tags",
+        "status",
         # Todo's own get views.
         "comments",
         "tree",
@@ -1625,3 +1637,14 @@ def test_direction_todos_not_in_open_todo_servers(
     m = quest_momentum(store, qid)
     assert dir_id in direction_ref_ids(store, qid)
     assert m.open_todo_servers == 0
+
+
+def test_recent_lists_handles(store: Store) -> None:
+    from precis.dispatch import Hub
+    from precis.handlers.todo import TodoHandler
+
+    h = TodoHandler(hub=Hub(store=store))
+    h.put(text="recent handle probe")
+    body = h.get(id="/recent").body
+    rows = [ln.strip() for ln in body.splitlines() if "recent handle probe" in ln]
+    assert rows and rows[0].startswith("td"), body

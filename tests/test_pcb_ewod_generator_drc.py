@@ -597,7 +597,12 @@ def test_rim_corner_via_clears_its_flanking_cardinal_neighbours_vias(grid):
     clearance in the first place. Isolated to VIA-VS-VIA pairs, same as
     the full-grid plaza-ring test above."""
     _, model = _ewod_model(grid=grid, variant="rim")
-    findings = drc.check_clearance(model, _CAP4)
+    # This contract concerns via pairs only. Do not spend its worker budget
+    # checking the crenellated electrode polygons and neck tracks; the
+    # copper-inclusive grid sweep above covers those separately.
+    vias = [item for item in model["copper"] if item["ctype"] == "via"]
+    assert len(vias) == 2 * grid[0] + 2 * grid[1] - 4
+    findings = drc.check_clearance({**model, "pads": [], "copper": vias}, _CAP4)
     via_via_errors = [
         f
         for f in findings

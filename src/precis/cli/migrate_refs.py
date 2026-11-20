@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 # Kinds whose bare ``kind:ident`` mention we rewrite. The full linkify
 # allowlist minus ``paper`` (its mentions are citations, left as-is) and
 # the low-signal kinds the grammar already suppresses.
-_REWRITE_KINDS: frozenset[str] = (
+_REWRITE_KINDS: frozenset[str] = frozenset(
     mentions.LINKIFY_KINDS - mentions.LOW_SIGNAL_KINDS - {"paper"}
 )
 

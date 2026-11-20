@@ -115,8 +115,7 @@ to the dispatcher boundary as-is. ``DslError`` is *itself* a ``BadInput``
 the dispatcher's ``except PrecisError`` branch and flatten to an opaque
 ``internal error in put: DslError (see server log)``, stripping the
 grammar-teaching cause text at exactly the moment an agent is failing and
-needs it (units-cutover prompt-surface audit, `docs/backlog/llm-prompt-
-surface-audit.md`).
+needs it (units-cutover prompt-surface audit, `me691582`).
 """
 
 from __future__ import annotations

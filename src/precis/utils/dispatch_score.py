@@ -97,6 +97,11 @@ OVERLAP_DEMOTE = 0.01
 #: rung is worth a human nudge.
 RECOMMEND_URGENT = 16.0
 RECOMMEND_HIGH = 8.0
+#: Floor on the stamped score of a pre-land review job — the same value
+#: as :data:`RECOMMEND_URGENT`: above every ordinary build score, below
+#: :data:`RELEASE_SCORE`, so only an urgent-or-higher build outranks a
+#: review of work already built.
+FINISH_FIRST_SCORE = 16.0
 
 
 def prio_multiplier(prio: int | None) -> float:
@@ -207,41 +212,125 @@ def score_sql() -> str:
 
 #: A repo-path token a brief names — ``src/precis/workers/gripe_triage.py``,
 #: ``workers/gripe_triage.py::prio_for``, ``tests/test_foo.py``, a bare
-#: ``land_slice.py``. Extensions cover the buildable surfaces.
+#: ``land_slice.py``. Extensions cover the buildable surfaces. The
+#: trailing ``\b`` keeps an extension from matching the head of a longer
+#: word (``github.com`` is not ``github.c``; gr701628) and lets the
+#: alternation backtrack to the longer spelling (``.pyi`` over ``.py``).
 _FILE_RE = re.compile(
     r"[A-Za-z0-9_./-]*[A-Za-z0-9_-]+"
     r"\.(?:py|pyi|sql|sh|bash|yml|yaml|toml|json|j2|ts|tsx|js|jsx|css|html|"
-    r"md|rs|go|mjs|c|h|cc|cpp|tex)"
+    r"md|rs|go|mjs|c|h|cc|cpp|tex)\b"
 )
 _ANCHOR_RE = re.compile(r"::.*$")
 _LEADING_ROOTS = ("./", "src/precis/", "src/")
+#: A URL in a brief (``https://github.com/x/y.py``): its path and host
+#: fragments are not repo files (gr705093).
+_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s<>\"')\]]*")
+#: A leading dotted host segment (``github.com/x/y.py``, no scheme).
+_HOST_RE = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+_FILE_EXTS = frozenset(
+    [
+        "py",
+        "pyi",
+        "sql",
+        "sh",
+        "bash",
+        "yml",
+        "yaml",
+        "toml",
+        "json",
+        "j2",
+        "ts",
+        "tsx",
+        "js",
+        "jsx",
+        "css",
+        "html",
+        "md",
+        "rs",
+        "go",
+        "mjs",
+        "c",
+        "h",
+        "cc",
+        "cpp",
+        "tex",
+    ]
+)
+#: Basenames that name many files across the tree: a bare token for one is
+#: never a key (a full path to one still is) — gr705093.
+_NEVER_KEY_BASENAMES = frozenset({"__init__.py", "conftest.py", "__main__.py"})
+#: Shared ratchet tests every UI brief names; never a key in any spelling,
+#: so they never make two unrelated builds conflict (gr705093).
+_SHARED_RATCHET_BASENAMES = frozenset({"test_colour_ratchet.py"})
+
+
+def _is_host_path(path: str) -> bool:
+    """``github.com/x/y.py``: a scheme-less URL, not a repo path."""
+    head, sep, _ = path.partition("/")
+    if not sep or not _HOST_RE.fullmatch(head):
+        return False
+    return head.rsplit(".", 1)[1].lower() not in _FILE_EXTS
 
 
 def brief_files(text: str) -> frozenset[str]:
-    """The file set a brief or gripe report names, normalised for
-    overlap comparison.
+    """The file set a brief or gripe report names — one normalised path
+    per token (``src/precis/x/y.py`` and ``./x/y.py`` both give
+    ``x/y.py``; a bare ``y.py`` stays ``y.py``).
 
-    Every token yields up to three keys — the full normalised path, its
-    last two segments, and its basename — so ``src/precis/x/y.py``,
-    ``x/y.py`` and ``y.py`` all meet on a shared key. Over-matching is
-    the safe direction: a false overlap only delays a candidate behind
-    an in-flight land; a missed one rebuilds the td603849 land
-    conflict."""
+    A token is a path as written, minus the ``src/precis/``/``src/``
+    root: a short suffix is not widened to its basename or last two
+    segments, because matching on those held two builds that touched
+    different ``dispatch.py``/``__init__.py`` files on each other.
+    Dropped: tokens inside a URL or under a host name, a bare
+    :data:`_NEVER_KEY_BASENAMES` name, and the
+    :data:`_SHARED_RATCHET_BASENAMES` tests in any spelling.
+    :func:`shared_files` decides whether two sets name the same file."""
     keys: set[str] = set()
-    for raw in _FILE_RE.findall(text or ""):
+    for raw in _FILE_RE.findall(_URL_RE.sub(" ", text or "")):
         path = _ANCHOR_RE.sub("", raw).strip("./")
         for root in _LEADING_ROOTS:
             if path.startswith(root):
                 path = path[len(root) :]
                 break
-        if not path:
+        if not path or _is_host_path(path):
+            continue
+        base = path.rsplit("/", 1)[-1]
+        if base in _SHARED_RATCHET_BASENAMES:
+            continue
+        if "/" not in path and base in _NEVER_KEY_BASENAMES:
             continue
         keys.add(path)
-        parts = path.split("/")
-        if len(parts) >= 2:
-            keys.add("/".join(parts[-2:]))
-        keys.add(parts[-1])
     return frozenset(keys)
+
+
+def shared_files(mine: frozenset[str], theirs: frozenset[str]) -> frozenset[str]:
+    """The files of ``theirs`` that a candidate's :func:`brief_files` set
+    ``mine`` names — the td603849 overlap test, same repo-relative path
+    only (gr701628 follow-up).
+
+    A key of ``mine`` equal to a path of ``theirs`` matches. Otherwise
+    it is a path suffix (``job_types/land_slice.py``, a bare
+    ``land_slice.py``) and resolves only when exactly one path of
+    ``theirs`` is that suffix after a ``/``; a suffix that fits several
+    paths or none holds nothing. Conversely a multi-segment path of
+    ``theirs`` that is a suffix of a key of ``mine`` matches (the other
+    brief wrote the shorter spelling); a bare basename of ``theirs``
+    never does. The result holds the ``theirs`` paths. Cost is
+    ``len(mine) * len(theirs)`` string tests on a per-tick path, both
+    sets a handful of files."""
+    shared: set[str] = set()
+    for key in mine:
+        if key in theirs:
+            shared.add(key)
+            continue
+        tail = "/" + key
+        hits = [p for p in theirs if p.endswith(tail)]
+        if len(hits) == 1:
+            shared.add(hits[0])
+        elif not hits and "/" in key:
+            shared.update(p for p in theirs if "/" in p and key.endswith("/" + p))
+    return frozenset(shared)
 
 
 __all__ = [
@@ -251,6 +340,7 @@ __all__ = [
     "DISPATCH_META_KEY",
     "FACTORY_MULT",
     "FACTORY_TAGS",
+    "FINISH_FIRST_SCORE",
     "OVERLAP_DEMOTE",
     "RELEASE_CLAIM_BAND",
     "RELEASE_SCORE",
@@ -263,4 +353,5 @@ __all__ = [
     "prio_multiplier",
     "recommended_rung",
     "score_sql",
+    "shared_files",
 ]

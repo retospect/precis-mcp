@@ -14,6 +14,8 @@ tags: orientation, troubleshooting
 
 # precis-session-context-help — what this session is set up with
 
+Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
+
 The cold-start banner reports what is live in this process; read it
 before assuming a kind is live or a tag is yours alone.
 

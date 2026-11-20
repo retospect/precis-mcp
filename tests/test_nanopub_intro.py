@@ -66,6 +66,13 @@ def test_live_posts_the_exact_bytes(vault: str) -> None:
     assert len(data) == result.byte_count
 
 
+def test_live_without_post_is_blocked(vault: str) -> None:
+    from precis.nanopub.intro import introduce
+
+    with pytest.raises(pytest.fail.Exception, match="inject post=/fetch="):
+        introduce(None, name="Josiah Carberry", interactive=True, live=True)
+
+
 def test_non_interactive_is_refused_before_touching_the_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

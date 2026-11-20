@@ -89,8 +89,8 @@ held for hexfold; leave the hero and its unrelaxed-junction caption intact.
   - pillar delete + `pillar/regen.py` + re-export;
   - rename the stale `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/merge_1181.py` (the classifier blocked the session). <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 - **Off-thread requests from this session, each with its owner:**
-  - local-compute: MeluXina bumped up, with uses widened to MLIP and DFT; a local tuned-model plan; the greenfield layout (now `llm-capacity-plan.md`);
-  - knowledge-mesh: rxn_values folded into measures; LLM specs as a consumer; range + conditions search with SI storage (in `measures-substrate.md`);
+  - local-compute: MeluXina bumped up, with uses widened to MLIP and DFT; a local tuned-model plan; the greenfield layout (now `llm-capacity-plan (me695246)`);
+  - knowledge-mesh: rxn_values folded into measures; LLM specs as a consumer; range + conditions search with SI storage (in `measures-substrate (me693370)`);
   - orchestrator: the fleet's default model is sonnet.
 **Deployed vs landed (2026-10-02):** everything this thread shipped is on
 prod (fleet 7242d4c9 includes 974e3a20 hygiene fix and 1f2324a4); nothing

@@ -50,6 +50,7 @@ from typing import Any
 
 import psycopg
 
+from precis import settings
 from precis.workers.job_types import JobTypeSpec
 
 log = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # ?ignore_retractions=1 — the sources appendix records which cited
         # papers were overridden (see precis.export.retraction).
         "ignore_retractions": {"type": "boolean"},
+        "retraction_check": {"type": "string", "enum": ["none", "stale", "all"]},
         # Opt-in: export even when figures are uncleared — image-less ones
         # ship as the exporter's visible placeholders, uncleared real images
         # are withheld (framed box, never embedded). Same waiver
@@ -87,6 +89,9 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # Closing "Published claim artifacts" appendix (export_draft's
         # claim_appendix). Default on; false omits it.
         "claim_appendix": {"type": "boolean"},
+        # Print every cite mark (export_draft's repeat_cites). Default off:
+        # a mark equal to the previous one in its paragraph is dropped.
+        "repeat_cites": {"type": "boolean"},
         # biblatex bibliography style (precis.export.latex._BIB_STYLES:
         # numeric-comp | chem-rsc/rsc | chem-acs/acs | nature). Absent →
         # the draft's meta.workspace.style, else numeric-comp.
@@ -438,15 +443,27 @@ def _export_and_compile(
         # is a paper-genre feature; don't let it break a poster compile.
         ctx.append_chunk("job_event", "warn: include_sources ignored for poster export")
         include_sources = False
-    # The route already decided (and blocked, if not overridden) — recompute
-    # the same no-network read here so the appendix records exactly which
-    # cites were retracted, without threading paper details through the job
-    # params. Only meaningful alongside a sources appendix to record it in.
-    retraction_override: list[Any] = []
-    if include_sources and params.get("ignore_retractions"):
-        from precis.export.retraction import draft_retraction_report
+    from precis.export import progress
+    from precis.export.retraction import draft_retraction_report
 
-        retraction_override = draft_retraction_report(ctx.store, ref).retracted
+    scope = str(params.get("retraction_check") or "none")
+    progress.report("checking retractions")
+    report = draft_retraction_report(
+        ctx.store,
+        ref,
+        check=scope != "none",
+        force=scope == "all",
+        mailto=settings.get_str("contact.crossref_mailto")
+        or settings.get_str("contact.polite_email"),
+    )
+    progress.report(report.coverage_summary())
+    ctx.append_chunk("job_event", report.coverage_summary())
+    if report.blocks_export and not params.get("ignore_retractions"):
+        ctx.record_failure(
+            "draft_export: retracted citations block export: " + report.summary()
+        )
+        return
+    retraction_override = report.retracted if params.get("ignore_retractions") else []
     audience_name = str(params.get("audience") or "dev")
     try:
         out_dir, in_workspace = _resolve_audience_out_dir(ctx, slug, audience_name)
@@ -466,9 +483,12 @@ def _export_and_compile(
             include_sources=include_sources,
             doc_type=doc_type,
             retraction_override=retraction_override,
+            retraction_report=report,
+            retraction_check=scope,
             doi_links=bool(params.get("doi_links", True)),
             library_links=bool(params.get("library_links", True)),
             claim_appendix=bool(params.get("claim_appendix", True)),
+            repeat_cites=bool(params.get("repeat_cites", False)),
             bib_style=str(params.get("bib_style") or "").strip() or None,
             withheld_figures=withheld,
             # A queued export job is the explicit write op — it records the

@@ -48,6 +48,9 @@ def test_is_corroborating_gate() -> None:
     assert is_corroborating({"supports": "no"}) is False
     assert is_corroborating({"supports": None}) is False
     assert is_corroborating({}) is False
+    for support in ("yes", "partial"):
+        assert not is_corroborating({"supports": support, "same_setup": False})
+        assert is_corroborating({"supports": support, "same_setup": True})
 
 
 _VERIFY_PATH = "precis.workers.hub_refine._verify_support_with_caveats"
@@ -1086,7 +1089,10 @@ def test_legacy_meta_stamp_fallback_when_no_ledger_row(store: Any) -> None:
 # ── (d) rejection memo — a supports=no candidate is verified once ───
 
 
-def test_rejection_memo_verifies_a_no_candidate_exactly_once(store: Any) -> None:
+@pytest.mark.parametrize("verdict", [_VERIFY_NO, {**_VERIFY_YES, "same_setup": False}])
+def test_rejection_memo_verifies_a_rejected_candidate_exactly_once(
+    store: Any, verdict: dict[str, Any]
+) -> None:
     """Same wording across passes (no sha-reopen) -- the memo persists and
     the precheck skips the candidate on a re-trigger."""
     embedder = make_mock_bge_m3()
@@ -1095,15 +1101,16 @@ def test_rejection_memo_verifies_a_no_candidate_exactly_once(store: Any) -> None
         store, embedder, cite_key="reject", text="An unrelated measurement."
     )
 
-    with patch_verify(return_value=_VERIFY_NO) as mock_verify:
+    with patch_verify(return_value=verdict) as mock_verify:
         first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
         assert first == {"claimed": 1, "ok": 1, "failed": 0}
         assert mock_verify.call_count == 1
-        assert _edges_from(store, paper) == []  # no edge for a NO verdict
+        assert _edges_from(store, paper) == []
 
         rejected = _hub_meta(store, hub).get("taproot_rejected") or {}
         assert str(paper) in rejected
-        assert rejected[str(paper)]["supports"] == "no"
+        assert rejected[str(paper)]["supports"] == verdict["supports"]
+        assert rejected[str(paper)]["same_setup"] == verdict.get("same_setup")
 
         # Re-trigger (a new near paper -- same claim wording, no reopen).
         store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")

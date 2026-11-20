@@ -90,8 +90,10 @@ its nearest sibling. Boundary examples go in `includes` / `excludes`
 (shown on `get`, not searched), never in the definition. Set them at put, or
 sharpen a node later with `edit(kind="taxon", id="tn812",
 meta={"excludes": [...]})` (also `definition`, `aliases`, `includes`). A put
-under a parent is refused when its definition reads like an existing sibling;
-sharpen the difference or use the sibling:
+under a parent is refused when its definition reads like an existing sibling.
+Use the sibling, or name it in `excludes` by whole handle (`tn812`), name or
+alias; a named boundary clears the near match (exact name/alias duplicates
+still refuse). Name the real sibling, not a placeholder:
 
 ```python
 put(kind="taxon",

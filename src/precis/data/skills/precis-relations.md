@@ -18,14 +18,11 @@ status: active
 
 # precis-relations — relation vocabulary for `link(rel=)`
 
-Closed list of relation slugs `link(...)` accepts as `rel=`. Default
-is `related-to`. Unknown relations raise `BadInput` with the full
-options list plus a did-you-mean on a near-miss. There is no
-`duplicate-of` relation: marking a dup IS supersession, so the
-`duplicate-of`/`duplicate`/`dup-of`/`dupe-of` spellings (and
-`duplicated-by`) are accepted but normalise to
-`superseded-by`/`supersedes` — dup → the keeper. Link verb mechanics
-and target grammar live in `precis-link-help`.
+Relations agents write with `link(rel=…)` default to `related-to`.
+Unknown slugs raise `BadInput` with options and near-match suggestions.
+`duplicate-of`/`duplicate`/`dup-of`/`dupe-of` normalise to
+`superseded-by` (dup → keeper), and `duplicated-by` to `supersedes`.
+For link mechanics and target grammar, see `precis-link-help`.
 
 ## Which relation should I use?
 ## Pick the right rel= for what I want to record
@@ -38,6 +35,8 @@ and target grammar live in `precis-link-help`.
 | `supports` | `supported-by` | A provides evidence for B. |
 | `disputes` | (none) | A appears to conflict with B — free to file, never blocks. The open-question edge for claim-graph disagreement (memory-vs-memory too). |
 | `contradicts` | `contradicted-by` | Claim-graph disagreement, **adjudication-derived only** — file `disputes`, not this. Fileable only where the constraint table below allows it. |
+| `inspired-by` | `inspired` | An idea or design took inspiration from B prior art; does not assert evidential support. |
+| `rejected-after` | (none) | A records deciding against an approach after reading B prior art. |
 | `derived-from` | `derived-into` | A was produced from B (summary, distillation, chase result). |
 | `refines` | (none) | A is a higher-fidelity treatment of the same object as B — no inverse (advisory only). Two independent uses: a sharper/reworded taproot claim hub → the coarser claim hub it refines; a verify-tier (coadsorbed) reaction `pathway` → its neb-tier (parked) sibling on the same catalyst candidate. |
 | `conjunct-of` | (none) | Taproot only: A (an atomic claim hub) is one conjunct of B (the composite hub bundling it) — no inverse, advisory-only, written by `taproot.hub.apply_extraction`'s decomposition, not hand-authored. |
@@ -62,8 +61,8 @@ and the write recipe: `precis-memory-help` ("Hubs, part-of and
 qualifies", "Write a memory that will be found later"); where each
 edge renders: `precis-fisheye-help`.
 
-## Which relation for workflow items, reasoning, documents and parts?
-## Relation slugs beyond claims and citations — blocks, fixes, entails, cited-in, realized-by
+## Which relation for workflow items, reasoning and documents?
+## Relation slugs beyond claims and citations — blocks, fixes, entails, cited-in
 ## What do the workflow, argument-graph and document rels mean?
 
 | `rel=` | Inverse | Use for |
@@ -85,13 +84,21 @@ edge renders: `precis-fisheye-help`.
 | `corroborates` | (none) | Evidence A supports an existing point: either a claim hub (evidence edge) or a point already woven into a dossier, grouped with it. |
 | `superseded-in` | (none) | Paper A is subsumed by a later/review paper already integrated into document B; recorded, not separately woven. |
 | `off-topic-for` | (none) | Paper A was considered for document B and rejected as out of scope. |
+| `tests` | (none) | Computed pathway A ran hypothesis finding B's pre-registered discriminating experiment. Only the measurement-ruling pass writes this edge, without evidence. |
+
+## How do I link parts, source documents and measurements?
+
+| `rel=` | Inverse | Use for |
+|---|---|---|
 | `realized-by` | `realizes` | A is made real by B: a cad design's catalog part → the component that realizes it, or a component → the catalog part that builds it (`target='part:C25804'`; the part's ref is minted on its first link). |
+| `made-of` | `used-in` | Component A is made of material B. |
+| `used-in` | `made-of` | Material A is used in component B. |
 | `selects` | (none) | A memory selection record chooses a part or component; part selection only. |
 | `rejects` | (none) | A memory selection record rejects a part or component; requires nonblank `meta.reason`. |
 | `considered` | (none) | A scope (memory, quest, research node) was judged against a source: `meta={'verdict': …, 'reason': …, 'depth': …}` records the "checked, does not fit because" verdict (every judgment lands in the `considerations` history); `depth='none'` is acquisition state, not rejection. Read the ledger: `get(id=N, view='considerations')` on the scope (memory or quest). |
 | `quantifies` | `quantified-by` | Paper chunk A states a number for measurand taxon B. One shared edge per chunk and measurand; each measure keeps its own span. Written by measure extraction (see `precis-measure-help`), never by hand. |
 | `datasheet-of` | `has-datasheet` | Datasheet A documents part B. `edit(kind='datasheet', part_lcsc='C25804')` writes it. |
-| `part-of` | `contains` | Two uses: a memory's membership edge to its `section:index` hub or summary node — hand-written, the "Memory ↔ memory" block above — and a supplementary-information PDF (own paper ref, `meta.role='supplement'` on the edge) part of its parent paper, written by the SI ingest, not by hand. The SI cites as the parent. A dedicated `supplements` / `has-supplement` pair is not seeded yet. |
+| `part-of` | `contains` | Memory → hub or summary (see above). SI ingest also links a supplementary PDF's paper ref → parent paper with `meta.role='supplement'`. The SI cites as the parent. A dedicated `supplements` / `has-supplement` pair is not seeded yet. |
 
 ## Which endpoints does a relation accept?
 ## Why did link() refuse my rel= — wrong kind, second draft, or a cycle?
@@ -102,6 +109,9 @@ write. Every other relation accepts any two refs.
 | `rel=` | domain (source kind) | range (target kind) | functional | acyclic |
 |---|---|---|---|---|
 | `contradicts` | memory | memory | - | - |
+| `inspired-by` | gripe, markdown, memory, todo | memory, paper, web | - | - |
+| `inspired` | memory, paper, web | gripe, markdown, memory, todo | - | - |
+| `rejected-after` | gripe, markdown, memory, todo | memory, paper, web | - | - |
 | `selects` | memory | component, part | - | - |
 | `rejects` | memory | component, part | - | - |
 | `draft-of` | any | any | yes | - |
@@ -135,14 +145,12 @@ A refusal names the relation, the offending end and what it accepts:
 Inverse slugs follow the same rule as the relation they mirror
 (`has-draft` is checked as `draft-of`, `part-of` as `contains`).
 
-All relations except `related-to` and `see-also` auto-mirror: writing
-`cites` from A→B makes A→B queryable as `cited-by` from B's side
-without a second `link()`. `selects` / `rejects` / `considered` and
-`cited-in` / `corroborates` / `superseded-in` /
-`off-topic-for` are the exception among the *non*-`related-to`/`see-also`
-set — asymmetric with NO inverse (like `see-also`): a paper's disposition
-toward a dossier reads from the dossier side via `get(kind='draft',
-id=<dossier-slug>, view='integration')`, not a mirrored `link()` read.
+Inverse slugs are automatic. `cites` reads as `cited-by` from the target.
+`related-to` is symmetric.
+`see-also`, `rejected-after`, `selects`, `rejects`, `considered`,
+`cited-in`, `corroborates`, `superseded-in`, and `off-topic-for` have
+no inverse. Read paper dispositions from the dossier with
+`get(kind='draft', id=<dossier-slug>, view='integration')`.
 
 For part selection, use `link(kind='memory', id=<record>,
 target='part:C123', rel='rejects', meta={'reason': '<why rejected>'})`.
@@ -198,8 +206,7 @@ link(kind="perplexity-research", id=88, target="todo:14", rel="derived-from")
 ```
 
 `derived-from` records that A's content was produced from B —
-summaries, distillations, chase-pipeline outputs, manual notes
-extracted from a passage.
+summaries, distillations, chase outputs, manual notes.
 
 ## Express abstraction level
 ## A is broader / narrower than B
@@ -227,8 +234,9 @@ link(kind="todo", id=141, target="todo:158", rel="blocked-by")
 link(kind="todo", id=158, target="gripe:7", rel="blocks")
 ```
 
-`blocks` / `blocked-by` is the workflow-filter pair. Targets are
-usually `todo` or `gripe`. The `todo` list view filters on these.
+`blocks` / `blocked-by` sequences the work (gr656970): either kind on
+either side waits — undispatched and unclaimed — until the blocker
+reaches a terminal STATUS; `view='blocked'` names it.
 
 ## Mark a retraction, correction, or concern
 ## A retracts / corrects / raises concern about B
@@ -377,3 +385,9 @@ existing claim/source identities, and retain the decisive passage. Follow
 [[precis-link-help]] for chunk targets and machine-writer admission. Read back
 the affected refs and their links. A link or a fluent summary does not promote
 trust, resolve a dispute, or authorize publication.
+
+## Record prior-art decisions
+
+`link(kind="gripe", id=608714, target="pa57193", rel="inspired-by")`
+records adoption; `rejected-after` records rejection, with rationale in the
+source. Backlog files use stored `markdown` refs, not the read-only `md` index.

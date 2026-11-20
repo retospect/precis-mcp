@@ -635,3 +635,143 @@ def test_gripe_links_view_renders_reason(hub: Hub) -> None:
     )
     body = GripeHandler(hub=hub).get(id=src, view="links").body
     assert "this gripe implements that spec section" in body
+
+
+# ---------------------------------------------------------------------------
+# gr680236 — link(kind='finding') takes note= as an alias for reason=:
+# the call-error cluster showed agents reaching for the annotation
+# spelling and dying at the signature gate. The alias is finding-only —
+# other kinds still refuse note=.
+# ---------------------------------------------------------------------------
+
+
+def _finding(store, title: str = "a finding") -> int:
+    return store.insert_ref(kind="finding", slug=None, title=title).id
+
+
+def test_finding_note_kwarg_folds_onto_meta(hub: Hub) -> None:
+    """``link(kind='finding', note=…)`` — the spelling the cluster kept
+    retrying — lands as ``meta.reason`` on the edge."""
+    from precis.handlers.finding import FindingHandler
+
+    store = hub.live_store
+    src = _finding(store, "the claim doing the linking")
+    dst = _finding(store, "a related claim")
+    FindingHandler(hub=hub).link(id=src, target=f"fi{dst}", rel="related-to", note=".")
+    links = store.links_for(src, direction="out")
+    assert len(links) == 1
+    assert links[0].meta["reason"] == "."
+
+
+def test_finding_note_kwarg_agrees_with_reason(hub: Hub) -> None:
+    """Both spellings carrying the same value is not an ambiguity."""
+    from precis.handlers.finding import FindingHandler
+
+    store = hub.live_store
+    src = _finding(store)
+    dst = _finding(store, "a related claim")
+    FindingHandler(hub=hub).link(
+        id=src,
+        target=f"fi{dst}",
+        note="the edge adds X",
+        reason="the edge adds X",
+    )
+    assert store.links_for(src, direction="out")[0].meta["reason"] == (
+        "the edge adds X"
+    )
+
+
+def test_finding_note_kwarg_disagrees_with_reason(hub: Hub) -> None:
+    """Two spellings, two values — the edge carries one reason."""
+    from precis.handlers.finding import FindingHandler
+
+    store = hub.live_store
+    src = _finding(store)
+    dst = _finding(store, "a related claim")
+    with pytest.raises(BadInput, match="disagree"):
+        FindingHandler(hub=hub).link(
+            id=src,
+            target=f"fi{dst}",
+            note="the edge adds X",
+            reason="the edge adds Y",
+        )
+    assert store.links_for(src, direction="out") == []
+
+
+def test_finding_note_kwarg_disagrees_with_meta_reason(hub: Hub) -> None:
+    from precis.handlers.finding import FindingHandler
+
+    store = hub.live_store
+    src = _finding(store)
+    dst = _finding(store, "a related claim")
+    with pytest.raises(BadInput, match="disagree"):
+        FindingHandler(hub=hub).link(
+            id=src,
+            target=f"fi{dst}",
+            note="the edge adds X",
+            meta={"reason": "the edge adds Y"},
+        )
+
+
+def test_finding_note_kwarg_is_add_only(hub: Hub) -> None:
+    from precis.handlers.finding import FindingHandler
+
+    store = hub.live_store
+    src = _finding(store)
+    dst = _finding(store, "a related claim")
+    with pytest.raises(BadInput, match="only applies when adding"):
+        FindingHandler(hub=hub).link(id=src, target=f"fi{dst}", mode="remove", note=".")
+
+
+def test_finding_note_kwarg_rejects_blank(hub: Hub) -> None:
+    from precis.handlers.finding import FindingHandler
+
+    store = hub.live_store
+    src = _finding(store)
+    dst = _finding(store, "a related claim")
+    with pytest.raises(BadInput, match="non-empty string"):
+        FindingHandler(hub=hub).link(id=src, target=f"fi{dst}", note="   ")
+
+
+def test_finding_link_note_through_dispatch(
+    hub: Hub, runtime_with_store: PrecisRuntime
+) -> None:
+    """The reported call end to end: the strictness gate passes ``note=``
+    through to the handler instead of refusing it."""
+    store = hub.live_store
+    src = _finding(store, "the claim doing the linking")
+    dst = _finding(store, "the claim it leans on")
+    out = runtime_with_store.dispatch(
+        "link",
+        {
+            "kind": "finding",
+            "id": src,
+            "target": f"fi{dst}",
+            "rel": "related-to",
+            "note": "this claim borrows that one's premise",
+        },
+    )
+    assert "linked" in out
+    links = store.links_for(src, direction="out")
+    assert links[0].meta["reason"] == "this claim borrows that one's premise"
+
+
+def test_note_refused_on_kinds_without_the_alias(
+    hub: Hub, runtime_with_store: PrecisRuntime
+) -> None:
+    """``note=`` is finding-only: the extras gate still refuses it on a
+    kind whose ``link`` signature does not declare it."""
+    store = hub.live_store
+    src = _mem(store, "a note")
+    dst = _mem(store, "another note")
+    out = runtime_with_store.dispatch(
+        "link",
+        {
+            "kind": "memory",
+            "id": src,
+            "target": f"memory:{dst}",
+            "note": ".",
+        },
+    )
+    assert "does not accept" in out
+    assert store.links_for(src, direction="out") == []

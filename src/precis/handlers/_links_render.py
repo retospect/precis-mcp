@@ -126,7 +126,13 @@ def render_links_section(
 ) -> str:
     """F8: render the Links: TOON sub-section for a single-ref get.
 
-    Three columns: ``{related to	keywords	how to get}``. Column 1
+    Reciprocal edges to the same endpoint fold into one row, with distinct
+    relation markers joined by `` / ``. Chunk scope and edge reasons remain
+    distinct so folding never loses grounding. Caps count folded rows.
+    The ``how to get`` column is omitted when all rows address whole refs.
+
+    Columns: ``{related to	keywords	how to get	size [kB]
+    (default 1kB)}``. Column 1
     holds ``<rel-marker> <target>`` — ``--`` for default ``related-to``
     (no semantic relation specified), the literal rel name otherwise.
     Inbound rows use the passive form via :data:`_INVERSE_REL`
@@ -166,44 +172,70 @@ def render_links_section(
             ``NumericRefHandler._render_links_view`` already exposes as
             ``args={'of_kind': …}`` (gr472990).
 
-    Both kwargs default to a no-op so every existing callsite (the
-    numeric-ref per-``get()`` append, ``render_links_view``) renders
-    byte-identical output to before this signature grew.
+    Filters default to a no-op. Default ordering follows the earliest
+    edge in each folded row; priority ordering follows its strongest edge.
     """
     prepared = _select_link_pairs(store, ref, rel=rel, of_kind=of_kind)
     if prepared is None:
         return ""
     combined, endpoints, ref_sizes, chunk_sizes = prepared
 
-    def render(selected: list[tuple[Link, str]], total: int) -> str:
-        rows = [
-            _link_row(
-                lnk,
-                d,
-                ref=ref,
-                endpoints=endpoints,
-                ref_sizes=ref_sizes,
-                chunk_sizes=chunk_sizes,
-            )
-            for lnk, d in selected
-        ]
+    # Fold before capping: reciprocal storage must not consume the preview.
+    ordered = sorted(
+        combined, key=_priority_sort_key if priority else lambda pair: pair[0].id
+    )
+    folded: dict[tuple[int, str, str], tuple[dict[str, str], list[str], bool]] = {}
+    for lnk, direction in ordered:
+        row = _link_row(
+            lnk,
+            direction,
+            ref=ref,
+            endpoints=endpoints,
+            ref_sizes=ref_sizes,
+            chunk_sizes=chunk_sizes,
+        )
+        outbound = direction == "out"
+        other_id = lnk.dst_ref_id if outbound else lnk.src_ref_id
+        marker = (
+            _format_outbound_rel(lnk.relation)
+            if outbound
+            else _format_inbound_rel(lnk.relation)
+        )
+        target = row["related to"][len(marker) :].lstrip()
+        key = (other_id, target, row["how to get"])
+        needs_call = bool(row["how to get"]) and (
+            endpoints.get(other_id) is None
+            or (lnk.dst_chunk_id if outbound else lnk.src_chunk_id) is not None
+            or (lnk.dst_ord if outbound else lnk.src_ord) is not None
+        )
+        if key not in folded:
+            folded[key] = (row, [], needs_call)
+        markers = folded[key][1]
+        if marker not in markers:
+            markers.append(marker)
+        folded[key][0]["related to"] = f"{' / '.join(markers)} {target}".strip()
+
+    def render(
+        selected: list[tuple[dict[str, str], list[str], bool]], total: int
+    ) -> str:
+        rows = [row for row, _markers, _needs_call in selected]
+        schema = ["related to", "keywords", "size [kB] (default 1kB)"]
+        if any(needs_call for _row, _markers, needs_call in selected):
+            schema.insert(2, "how to get")
         truncated = len(selected) < total
 
         from precis.format import render_agent_table
 
         header = f"Links ({limit} of {total}):" if truncated else "Links:"
-        out = f"\n\n{header}\n" + render_agent_table(
-            rows, schema=["related to", "keywords", "how to get", "size"]
-        )
-        return out
+        return f"\n\n{header}\n" + render_agent_table(rows, schema=schema)
 
     handle = handle_registry.try_format(ref.kind, ref.id) or (
         ref.slug if ref.slug is not None else ref.id
     )
     return render_capped_section(
-        combined,
+        list(folded.values()),
         limit=limit,
-        key=_priority_sort_key if priority else lambda pair: pair[0].id,
+        key=lambda _row: 0,
         render=render,
         overflow=lambda n: (
             f"\n+{n} more · get(kind={ref.kind!r}, id={handle!r}, view='links')"
@@ -294,7 +326,8 @@ def _link_row(
     ref_sizes: dict[int, int],
     chunk_sizes: dict[int, int],
 ) -> dict[str, str]:
-    """One ``{related to, keywords, how to get, size}`` table row.
+    """One ``{related to, keywords, how to get, size [kB] (default 1kB)}``
+    table row.
 
     The ``related to`` cell names the far endpoint, then ``via`` the
     focus's own chunk when the edge pins one (gr627629 — a chunk-grounded
@@ -322,7 +355,7 @@ def _link_row(
             "related to": f"{rel_marker} {placeholder}".strip(),
             "keywords": "",
             "how to get": "",
-            "size": "",
+            "size [kB] (default 1kB)": "",
         }
     target = _format_target_handle(other_id, other_pos, other_chunk_id, endpoints)
     teaser = _teaser_for(endpoints.get(other_id))
@@ -345,10 +378,10 @@ def _link_row(
         ).strip(),
         "keywords": teaser,
         "how to get": get_call,
-        # Every row names a size — sub-kB bodies report raw
-        # bytes, so a small memory doesn't render sizeless
-        # next to a sized gripe (gr568219).
-        "size": row_size_cell(n_bytes),
+        # Every row names a size — sub-kB bodies report decimal
+        # kB (gr568219, gr573411); the column header names the
+        # unit and the hidden ~1kB default.
+        "size [kB] (default 1kB)": row_size_cell(n_bytes),
     }
 
 
@@ -469,7 +502,8 @@ def render_links_view(
         )
         out = f"# {noun} {ref.id} - links{filt}\n\n{table_head}\n"
         out += render_agent_table(
-            rows[:shown], schema=["related to", "keywords", "how to get", "size"]
+            rows[:shown],
+            schema=["related to", "keywords", "how to get", "size [kB] (default 1kB)"],
         )
         if end < total:
             next_args: dict[str, Any] = {

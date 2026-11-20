@@ -11,17 +11,140 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from precis.anki.notes import (
     MANAGED_TAG,
+    AnkiCardSpec,
     aggregate_stats,
     guid_for,
     precis_tag,
     ref_id_from_guid,
     spec_from_ref,
 )
+
+
+@pytest.mark.parametrize("full_download", [False, True])
+@pytest.mark.parametrize("had_mirror", [False, True])
+def test_remote_deletion_is_not_recreated(
+    monkeypatch: pytest.MonkeyPatch, full_download: bool, had_mirror: bool
+) -> None:
+    """Pull deletions before upserting; a rebuilt mirror uses the PG receipt."""
+    from precis.anki import sync
+
+    col = MagicMock()
+    # Ref 7 was synced and then deleted remotely. Ref 8 is a new explicit
+    # add of the same text; ref 9 still exists and remains editable.
+    col.db.all.side_effect = [
+        [(guid_for(7),), (guid_for(9),)] if had_mirror else [],
+        [(guid_for(9),), ("foreign-guid",)],
+    ]
+    changes = SimpleNamespace(FULL_UPLOAD=1, FULL_SYNC=2, FULL_DOWNLOAD=3)
+    col.sync_collection.side_effect = [
+        SimpleNamespace(
+            required=3 if full_download else 0, new_endpoint=None, server_media_usn=0
+        ),
+        SimpleNamespace(required=0),
+    ]
+    sp = SimpleNamespace(
+        SyncCollectionResponse=SimpleNamespace(ChangesRequired=changes),
+        SyncAuth=lambda **kw: SimpleNamespace(**kw),
+    )
+    monkeypatch.setattr(sync, "_import_anki", lambda: (lambda path: col, sp))
+    upsert = MagicMock(return_value=(1, 1))
+    monkeypatch.setattr(sync, "upsert_notes", upsert)
+    monkeypatch.setattr(sync, "read_precis_stats", lambda col: {})
+    specs = [
+        AnkiCardSpec(7, {"Text": "{{c1::same}}"}, previously_synced=not had_mirror),
+        AnkiCardSpec(8, {"Text": "{{c1::same}}"}),
+        AnkiCardSpec(9, {"Text": "{{c1::edited}}"}, previously_synced=True),
+    ]
+    result, _ = sync.sync_tick(
+        mirror_path="unused", user="user", password="pw", specs=specs
+    )
+    assert result.deleted_ref_ids == [7]
+    assert upsert.call_args.args[1] == specs[1:]
+    assert result.bootstrapped == full_download
+    col.close.assert_called_once()
+
+
+def test_boosted_specs_bring_due_forward_before_the_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only boosted specs are brought forward, and only their markers are
+    reported as consumed (the caller clears those)."""
+    from precis.anki import sync
+
+    col = MagicMock()
+    col.db.all.side_effect = [[], [(guid_for(5),), (guid_for(6),)]]
+    changes = SimpleNamespace(FULL_UPLOAD=1, FULL_SYNC=2, FULL_DOWNLOAD=3)
+    col.sync_collection.side_effect = [
+        SimpleNamespace(required=0, new_endpoint=None, server_media_usn=0),
+        SimpleNamespace(required=0),
+    ]
+    sp = SimpleNamespace(
+        SyncCollectionResponse=SimpleNamespace(ChangesRequired=changes),
+        SyncAuth=lambda **kw: SimpleNamespace(**kw),
+    )
+    monkeypatch.setattr(sync, "_import_anki", lambda: (lambda path: col, sp))
+    monkeypatch.setattr(sync, "upsert_notes", MagicMock(return_value=(0, 0)))
+    monkeypatch.setattr(sync, "read_precis_stats", lambda col: {})
+    brought: list[list[int]] = []
+
+    def _bring(c: Any, ids: Any) -> list[int]:
+        brought.append(list(ids))
+        return list(ids)
+
+    monkeypatch.setattr(sync, "bring_due_today", _bring)
+    specs = [
+        AnkiCardSpec(5, {"Text": "{{c1::boosted}}"}, boost=True),
+        AnkiCardSpec(6, {"Text": "{{c1::plain}}"}),
+    ]
+    result, _ = sync.sync_tick(
+        mirror_path="unused", user="user", password="pw", specs=specs
+    )
+    assert brought == [[5]]
+    assert result.boosted_ref_ids == [5]
+    assert "1 boosted" in result.summary()
+    col.close.assert_called_once()
+
+
+def test_remote_deletion_retires_ref_across_ticks(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from precis.anki import sync
+    from precis.workers.anki_sync import run_anki_sync
+
+    _add_user(store, "reto", "rs")
+    _configure_creds(monkeypatch, "reto", "reto@example.com")
+    old = store.insert_ref(
+        kind="anki",
+        slug=None,
+        title="{{c1::same}}",
+        owner_login="reto",
+        meta={"anki_synced_at": "2026-11-16T00:00:00Z"},
+    )
+    new = store.insert_ref(
+        kind="anki", slug=None, title="{{c1::same}}", owner_login="reto"
+    )
+    calls: list[list[int]] = []
+
+    def fake_tick(*, specs, **kw):
+        calls.append([s.ref_id for s in specs])
+        if len(calls) == 1:
+            assert next(s for s in specs if s.ref_id == old.id).previously_synced
+            return sync.SyncResult(deleted_ref_ids=[old.id]), {}
+        return sync.SyncResult(), {}
+
+    monkeypatch.setattr(sync, "sync_tick", fake_tick)
+    cfg = _cfg(mirror_dir=str(tmp_path))
+    run_anki_sync(store, cfg)
+    run_anki_sync(store, cfg)
+    assert old.id in calls[0]
+    assert calls[1] == [new.id]
 
 
 class TestPureHelpers:
@@ -78,6 +201,22 @@ class TestPureHelpers:
         spec = spec_from_ref(ref)
         assert spec is not None and spec.fields["Text"] == "Body {{c1::x}}"
         assert "Back Extra" not in spec.fields
+
+    def test_spec_from_ref_carries_the_boost_flag(self) -> None:
+        """gr664414: ``meta.anki_boost_due`` (the /learning boost button)
+        flags the spec so the tick brings the mirror card's due forward."""
+        boosted = SimpleNamespace(
+            id=3,
+            title="x {{c1::y}}",
+            meta={"anki_boost_due": "2026-11-17", "fields": {"Text": "x {{c1::y}}"}},
+        )
+        boosted_spec = spec_from_ref(boosted)
+        assert boosted_spec is not None and boosted_spec.boost is True
+        plain = SimpleNamespace(
+            id=4, title="x {{c1::y}}", meta={"fields": {"Text": "x {{c1::y}}"}}
+        )
+        plain_spec = spec_from_ref(plain)
+        assert plain_spec is not None and plain_spec.boost is False
 
     def test_aggregate_stats(self) -> None:
         # two cards of one cloze note: (ivl, factor, reps, lapses, due, queue)
@@ -149,6 +288,20 @@ class TestUpsert:
         assert note.guid == guid_for(42)  # identity preserved across the edit
         assert "{{c2::blood}}" in note["Text"]
 
+    def test_legacy_id_tag_folded_under_precis_id(self, col) -> None:
+        from precis.anki.sync import upsert_notes
+
+        specs = _specs((42, {"Text": "The {{c1::heart}} pumps blood."}))
+        upsert_notes(col, specs)
+        note = col.get_note(col.find_notes("deck:Precis")[0])
+        note.tags = ["precis::42", MANAGED_TAG]
+        col.update_note(note)
+        upsert_notes(col, specs)
+        note = col.get_note(col.find_notes("deck:Precis")[0])
+        assert precis_tag(42) == "precis::id::42"
+        assert "precis::42" not in note.tags
+        assert "precis::id::42" in note.tags
+
     def test_two_refs_two_notes(self, col) -> None:
         from precis.anki.sync import upsert_notes
 
@@ -201,6 +354,49 @@ class TestReadBack:
         # tag filter finds it by the per-ref tag, misses a bogus one
         assert len(read_all_cards(col, tag=precis_tag(5))) == 1
         assert len(read_all_cards(col, tag="precis-fix")) == 0
+
+
+class TestBoost:
+    """gr664414: ``bring_due_today`` applies a queued boost — the mirror
+    review card's due date moves to today and NOTHING else changes."""
+
+    def test_bring_due_today_moves_review_cards_and_keeps_history(self, col) -> None:
+        from precis.anki.sync import _collection_today, bring_due_today, upsert_notes
+
+        upsert_notes(
+            col,
+            _specs(
+                (42, {"Text": "review {{c1::me}} today"}),
+                (43, {"Text": "stay {{c1::new}}"}),
+            ),
+        )
+        today = _collection_today(col)
+        # Fabricate a reviewed card (queue 2) due far ahead, with history.
+        nid = col.db.list("select id from notes where guid = ?", guid_for(42))[0]
+        col.db.execute(
+            "update cards set queue = 2, due = 400, ivl = 30, reps = 5, "
+            "lapses = 1, factor = 2100 where nid = ?",
+            nid,
+        )
+        consumed = bring_due_today(col, [42, 43, 999])
+        assert consumed == [42]  # 43 is still a new card; 999 was never pushed
+        due, queue, ivl, reps, lapses, factor = col.db.all(
+            "select due, queue, ivl, reps, lapses, factor from cards where nid = ?",
+            nid,
+        )[0]
+        assert due == today  # brought forward …
+        assert (queue, ivl, reps, lapses, factor) == (
+            2,
+            30,
+            5,
+            1,
+            2100,
+        )  # … history untouched
+        # The unboosted sibling card is exactly as upsert left it (still new).
+        nid43 = col.db.list("select id from notes where guid = ?", guid_for(43))[0]
+        (queue43,) = col.db.all("select queue from cards where nid = ?", nid43)[0]
+        assert queue43 == 0
+        assert bring_due_today(col, []) == []
 
 
 class TestRetire:
@@ -534,6 +730,81 @@ class TestRunAnkiSyncFanOut:
             run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
         message = str(exc_info.value)
         assert "reto" in message and "alice" in message and "boom" in message
+
+
+class TestRunAnkiSyncBoost:
+    """gr664414: a consumed boost (note was in the mirror, due rode the push
+    forward) clears ``meta.anki_boost_due``; an unconsumed one stays queued."""
+
+    def _boosted_card(self, store):
+        return store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::x}}",
+            meta={
+                "notetype": "Cloze",
+                "fields": {"Text": "{{c1::x}}"},
+                "anki_boost_due": "2026-11-17",
+            },
+            owner_login="reto",
+        )
+
+    def test_consumed_boost_clears_the_marker(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        card = self._boosted_card(store)
+        monkeypatch.setattr(
+            sync_mod,
+            "sync_tick",
+            lambda **kw: (SyncResult(boosted_ref_ids=[card.id]), {}),
+        )
+        summary = run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        assert "1 boosted" in summary
+        meta = store.get_ref(kind="anki", id=card.id).meta or {}
+        assert "anki_boost_due" not in meta
+
+    def test_unconsumed_boost_keeps_the_marker(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        card = self._boosted_card(store)
+        monkeypatch.setattr(sync_mod, "sync_tick", lambda **kw: (SyncResult(), {}))
+        run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        meta = store.get_ref(kind="anki", id=card.id).meta or {}
+        assert meta.get("anki_boost_due") == "2026-11-17"
+
+    def test_aborted_sync_keeps_the_marker(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """An aborted push never applied anything — the marker (and the due
+        change, held in the local mirror) survive to the next tick."""
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import AnkiSyncError, SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        card = self._boosted_card(store)
+        monkeypatch.setattr(
+            sync_mod,
+            "sync_tick",
+            lambda **kw: (SyncResult(boosted_ref_ids=[card.id], aborted="boom"), {}),
+        )
+        with pytest.raises(AnkiSyncError):
+            run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        meta = store.get_ref(kind="anki", id=card.id).meta or {}
+        assert meta.get("anki_boost_due") == "2026-11-17"
 
 
 class TestNoOpShortcut:

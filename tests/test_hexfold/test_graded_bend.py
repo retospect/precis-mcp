@@ -130,12 +130,17 @@ def test_foot_2_plus_2_plus_2() -> None:
 # rim (+3) onto the tube (0) the other 3.  Only k = 3 mod 4 on the washer
 # seam lines the frustum's 3 corners up with 3 of the washer's 6; every
 # other phase adds three 5-7 pairs.
+# Short tubes (len=2): the seam topology the census and k-ranking assert
+# lives at the rims, so the lengths only add dead atoms — and options()
+# rebuilds this net per phase (~26 builds), which is what made this test
+# the shard's heaviest (gr701507: an xdist worker died on it under CI
+# memory pressure).
 CORNER_33 = """hexfold 0.2
 origin n
-n: tube(12,0, len=3)
+n: tube(12,0, len=2)
 w: cap(24,0) - hex(1)@(0,0,A):0
 f: cap(60,0) + 3@(-1,0,A):2 - hex(7)@(-1,0,A):0
-t: tube(30,0, len=4)
+t: tube(30,0, len=2)
 n.out --fuse k=0--> w.hole
 w.in --fuse k={k}--> f.hole
 f.in --fuse k=0--> t.in

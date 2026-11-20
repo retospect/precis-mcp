@@ -135,6 +135,14 @@ class TestParseNeeds:
         assert needs_mod.tool_key("XRD Scanner (v2)") == "xrd-scanner-v2"
         assert needs_mod.tool_key("  autocatpath  batch  ") == "autocatpath-batch"
 
+    def test_tool_key_preserves_distinct_lane_suffixes(self) -> None:
+        assert needs_mod.tool_key("reaction lane gr") == "reaction-lane-gr"
+        assert needs_mod.tool_key("reaction lane fo") == "reaction-lane-fo"
+        assert needs_mod.tool_key("reaction lane for co2") == "reaction-lane-for-co2"
+        assert needs_mod.tool_key("reaction lane gpu") != needs_mod.tool_key(
+            "reaction lane"
+        )
+
     def test_tool_key_drops_handle_citations(self) -> None:
         """gr646881 — a need that cites its own earlier gripe is the SAME
         need: ``raw-benchmark-log-reader (gr618517/gr624301, gripe
@@ -171,6 +179,36 @@ class TestParseNeeds:
         assert needs_mod.tool_key("token-F1 scorer") == "token-f1-scorer"
         assert needs_mod.tool_key("co2 reduction lane") == "co2-reduction-lane"
         assert needs_mod.tool_key("al99 alloy lookup") == "al99-alloy-lookup"
+
+    def test_tool_key_strips_capped_citation_stubs(self) -> None:
+        """gr685371 (review td706623) — the 60-char cap can land anywhere
+        inside a "for qu<N>"/"gr<N>" tail; every digit-less remainder
+        must re-key to the base, not only the ``-fo``/``-gr`` pair."""
+        base = "q" * 57
+        for stub in ("-f", "-fo", "-for", "-for-q", "-for-qu", "-g", "-gr"):
+            padded = "q" * (60 - len(stub))
+            assert needs_mod.tool_key(padded + stub) == padded
+        # the reported prod keys: 57-char base + 3-char stub at the cap
+        assert needs_mod.tool_key(base + "-fo") == base
+        assert needs_mod.tool_key(base + "-gr") == base
+
+    def test_tool_key_strips_legacy_for_tail(self) -> None:
+        """The pre-citation-strip code removed ``qu<N>`` but left the
+        literal ``for``, filing ``X-for`` markers at any length that a
+        re-worded ``X`` need could never bump."""
+        assert needs_mod.tool_key("reaction-lane-for") == "reaction-lane"
+        assert needs_mod.tool_key("reaction lane for qu509651") == "reaction-lane"
+
+    def test_tool_key_caps_before_stripping(self) -> None:
+        """Regression (review td706623): the length test ran on the
+        uncapped key, so a need whose slug exceeded 60 chars and capped
+        onto ``-fo`` filed under the stub while its own marker re-keyed
+        to the base — a fresh gripe every tick. The cap runs first, so
+        the filing key is a fixpoint of ``tool_key``."""
+        long_tool = "b" * 57 + " format engine"
+        key = needs_mod.tool_key(long_tool)
+        assert key == "b" * 57
+        assert needs_mod.tool_key(key) == key
 
 
 # ── the tick prompts carry the contract ───────────────────────────────
@@ -306,6 +344,72 @@ def _need(tool: str = "xrd scanner", **kw: Any) -> dict[str, Any]:
 
 
 class TestNeedGripeFiling:
+    def test_parked_need_with_truncated_decoration_bumps(self, store: Any) -> None:
+        """gr685371: legacy capped suffixes must not bypass a parked need."""
+        from precis.store.types import ChunkInsert, Tag
+
+        qid = _mk_quest(store)
+        base = "quest-level-reaction-config-autocatpath-lane-provisioning"
+        assert len(base) == 57
+        for suffix in ("-fo", "-gr"):
+            with store.tx() as conn:
+                ref = store.insert_ref(
+                    kind="gripe",
+                    slug=None,
+                    title="quest needs lane",
+                    meta={},
+                    conn=conn,
+                )
+                store.chunks.insert_chunks(
+                    ref.id,
+                    [
+                        ChunkInsert(
+                            ord=0,
+                            text=f"quest-need: qu{qid} {base}{suffix}",
+                            meta={"chunk_kind": "gripe_body"},
+                        )
+                    ],
+                    conn=conn,
+                )
+                store.add_tag(
+                    ref.id, Tag.closed("STATUS", "parked"), set_by="system", conn=conn
+                )
+                store.add_link(
+                    src_ref_id=ref.id,
+                    dst_ref_id=qid,
+                    relation="blocks",
+                    set_by="system",
+                    conn=conn,
+                )
+            for tool in (base, f"{base} for qu{qid}", f"{base} (gr567691)"):
+                out = needs_mod.apply_needs(store, qid, [_need(tool)])
+                assert out.gripes == (int(ref.id),)
+            assert len(_gripe_comments(store, ref.id)) == 3
+            store.add_tag(
+                ref.id,
+                Tag.closed("STATUS", "done"),
+                set_by="system",
+                replace_prefix=True,
+            )
+        assert len(_gripes(store)) == 2
+
+    def test_capped_stub_filing_bumps_its_own_marker(self, store: Any) -> None:
+        """Regression (review td706623): a need whose slug caps onto a
+        citation stub (``…-fo`` at the 60-char boundary) filed under
+        the stub but re-keyed its own marker to the base — every tick
+        filed a fresh gripe. The cap runs before the strip, so the
+        filing key equals the dedup key and the repeat bumps."""
+        qid = _mk_quest(store)
+        long_tool = "b" * 57 + " format engine"
+        out = needs_mod.apply_needs(store, qid, [_need(long_tool)])
+        (gid,) = out.gripes
+        body = _gripe_body(store, gid)
+        assert body.splitlines()[0] == f"quest-need: qu{qid} {'b' * 57}"
+        out2 = needs_mod.apply_needs(store, qid, [_need(long_tool)])
+        assert out2.gripes == (gid,)
+        assert len(_gripes(store)) == 1
+        assert len(_gripe_comments(store, gid)) == 1
+
     def test_first_need_files_one_gripe(self, store: Any) -> None:
         qid = _mk_quest(store)
         out = run_quest_tick(

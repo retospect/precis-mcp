@@ -38,7 +38,13 @@ The lanes
   ``spec.dispatch`` still works but logs a
   deprecation naming gr187627 (a blocking call starved a worker's whole
   rotation long enough to trip host-dark). A reclaimed row that already
-  carries a handle is re-adopted, never re-submitted.
+  carries a handle is re-adopted, never re-submitted. With only a submit
+  intent, the plugin reconciles the attempt on the submitting host before
+  the crash-loop guard. Verified live adoption refunds the reclaim. A
+  recovered exit resumes poll even at the cap so finishing writes can run.
+  Ambiguous evidence fails with an infrastructure diagnostic. A submit
+  that parks clears its intent and temporary host pin in the park
+  transaction, before the wake runner can issue another claim.
   Seed handles record Linux boot ID and process start ticks at launch:
   a live process-group number alone can belong to an unrelated process
   after reuse. Orphan cleanup requires matching identity, excludes legacy
@@ -138,6 +144,11 @@ their live DOI health and signed image/PDF URL views are refused in read scope.
 Converted handles recheck the resolved kind against the same policy before
 dispatch rewrites the kind, so redirects cannot bypass it. Pulls and edits remain
 behind the removed write verbs and the callback's ``agent_ro`` database role.
+
+Fresh run_slice claims probe the same fixed CPU/memory footprint as launch.
+The probe refunds immediately because detached spawn owns the lifetime hold;
+a race before spawn parks on lane wait without spending an attempt.
+
 """
 
 from __future__ import annotations

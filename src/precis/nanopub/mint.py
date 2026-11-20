@@ -267,9 +267,6 @@ def approve(
     )
     frozen_payload["passages"] = _freeze_canonical_snip(frozen_payload["passages"])
     frozen_payload["passages"] = _freeze_contiguity(store, frozen_payload["passages"])
-    frozen_payload["passages"] = _freeze_context_sentence(
-        store, frozen_payload["passages"]
-    )
     # Only a claim cites computed evidence in its artifact (the live draft
     # renders it for claims only; a hypothesis refuses it at the gate).
     frozen_payload["computed"] = (
@@ -382,6 +379,8 @@ def _freeze_source_anchor(
     stamped: list[dict[str, Any]] = []
     for p in passages:
         p = dict(p)
+        # Only historical publish rows carry the retired context literal.
+        p.pop("context_sentence", None)
         p.pop("source_url", None)
         p.pop("content_sha256", None)
         p.pop("source_ref_id", None)
@@ -498,54 +497,6 @@ def _freeze_contiguity(
         key = _passage_source_key(p)
         if key in flags:
             p = {**p, "contiguous_group": flags[key]}
-        else:
-            p = dict(p)
-        stamped.append(p)
-    return stamped
-
-
-def _freeze_context_sentence(
-    store: Store, passages: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Stamp each passage with ``context_sentence`` — the paper-level
-    context sentence (``docs/backlog/paper-context-sentence.md``), read
-    from ``refs.meta['context_sentence']`` NOW against the exact
-    ``chunk_id`` the reviewer approved and frozen identically onto every
-    passage sharing a source (grouped by resolved ``ref_id``, mirroring
-    :func:`_freeze_contiguity`'s DOI grouping). Omitted from a passage
-    whose source carries no sentence yet — population is a deliberate
-    backfill + lazy enqueue (never a corpus-wide sweep), so this is the
-    common case, not an error — or whose ``chunk_id`` can't resolve;
-    minting never blocks on this."""
-    raw_chunk_ids = [
-        p.get("chunk_id") for p in passages if p.get("chunk_id") is not None
-    ]
-    if not raw_chunk_ids:
-        return list(passages)
-    chunk_ids = [int(cid) for cid in raw_chunk_ids]  # type: ignore[arg-type]
-    chunks = evidence.fetch_chunks(store, chunk_ids)
-    ref_by_chunk = {c.chunk_id: c.ref_id for c in chunks}
-    ref_ids = set(ref_by_chunk.values())
-    if not ref_ids:
-        return list(passages)
-    refs = store.fetch_refs_by_ids(list(ref_ids))
-    sentence_by_ref: dict[int, str] = {}
-    for ref_id, ref in refs.items():
-        sentence = (ref.meta or {}).get("context_sentence")
-        if isinstance(sentence, str) and sentence.strip():
-            sentence_by_ref[ref_id] = sentence
-    if not sentence_by_ref:
-        return list(passages)
-
-    stamped: list[dict[str, Any]] = []
-    for p in passages:
-        cid = p.get("chunk_id")
-        source_ref_id = ref_by_chunk.get(int(cid)) if cid is not None else None
-        sentence = (
-            sentence_by_ref.get(source_ref_id) if source_ref_id is not None else None
-        )
-        if sentence:
-            p = {**p, "context_sentence": sentence}
         else:
             p = dict(p)
         stamped.append(p)

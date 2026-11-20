@@ -32,6 +32,66 @@ from precis.utils.table_toon import (
 )
 
 
+def test_column_name_anchors_and_cell_reads(draft: DraftHandler, hub: Hub) -> None:
+    tc = _seed(draft, hub)
+    rows, cols = _ids(hub, tc)
+    draft.edit(id=tc.dc, move_column="qty", at={"before": "gap"})
+    assert [c["name"] for c in _meta(hub, tc)["columns"]] == ["el", "qty", "gap"]
+    draft.edit(id=tc.dc, add_column={"name": "extra"}, at={"after": "gap"})
+    assert _meta(hub, tc)["columns"][-1]["name"] == "extra"
+    assert (
+        draft.get(id=f"{tc.dc}~{rows[0]}.gap").body
+        == draft.get(id=f"{tc.dc}~{rows[0]}.{cols[1]}").body
+    )
+    with pytest.raises(BadInput, match="no row id"):
+        draft.edit(id=tc.dc, move_row=rows[0], at={"after": "gap"})
+    # self-move refuses by name too — not as a misleading "no column"
+    with pytest.raises(BadInput, match="relative to itself"):
+        draft.edit(id=tc.dc, move_column="gap", at={"after": "gap"})
+    _ids_now = [c["id"] for c in _meta(hub, tc)["columns"]]
+    draft.edit(id=tc.dc, move_column="gap", at={"after": _ids_now[0]})
+    assert [c["id"] for c in _meta(hub, tc)["columns"]][1] == _ids_now[2]
+
+
+def test_cell_reply_hash_and_dependents(draft: DraftHandler, hub: Hub) -> None:
+    tc = _seed(draft, hub)
+    rows, _cols = _ids(hub, tc)
+    draft.edit(id=tc.dc, add_column={"name": "twice", "formula": "qty * 2"})
+    reply = draft.edit(id=tc.dc, cell=f"{rows[0]}.qty", text="7")
+    assert "hash: " in reply.body
+    assert rows[0] in reply.body and rows[1] not in reply.body
+    assert "twice" in reply.body and "14" in reply.body
+    reply = draft.edit(id=tc.dc, footer={"qty": "sum"})
+    assert "hash: " in reply.body and "footer: " in reply.body
+
+
+def test_markdown_create_names_coercions(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="d", title="T", project=_proj(hub))
+    reply = draft.put(
+        id="d",
+        chunk_kind="table",
+        text="| zip | pop |\n|---|---|\n| 02134 | 2e3 |",
+        at={"last": True},
+    )
+    assert "zip: '02134' stored as 2134" in reply.body
+    assert "pop: '2e3' stored as 2000.0" in reply.body
+    assert "JSON strings" in reply.body
+
+
+def test_markdown_create_overwide_row_refuses(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="d", title="T", project=_proj(hub))
+    # A body row wider than the header still reaches normalize_table's
+    # clean refusal — the coercion scan must not IndexError on the
+    # overflow cell first (gr685381 review).
+    with pytest.raises(BadInput, match="every row must align to header"):
+        draft.put(
+            id="d",
+            chunk_kind="table",
+            text="| a | b |\n|---|---|\n| x | y | 02134 |",
+            at={"last": True},
+        )
+
+
 @pytest.fixture
 def draft(hub: Hub) -> DraftHandler:
     return DraftHandler(hub=hub)
@@ -195,6 +255,25 @@ def test_apply_patch_unknown_col_and_calc_refused() -> None:
         apply_patch(t2, "{#\ttotal}\n" + t2["rowmeta"][0]["id"] + "\t5\n")
 
 
+def test_add_column_and_toon_from_refused(draft: DraftHandler, hub: Hub) -> None:
+    """gr685370 — 'from' pull specs have no resolver: add_column= and a
+    toon= header declaring <from> both refuse instead of minting an
+    empty, unwritable column."""
+    tc = _seed(draft, hub)
+    with pytest.raises(BadInput, match="pulled columns are not available"):
+        draft.edit(
+            id=tc.dc,
+            add_column={"name": "zip", "from": "table:dc6579686~kgv5"},
+        )
+    t = _meta(hub, tc)
+    doc = table_toon(t)
+    cid = t["columns"][0]["id"]
+    bad = doc.replace(f"{cid}:el", f"{cid}:el <table:dc6579686~kgv5>", 1)
+    assert bad != doc
+    with pytest.raises(BadInput, match="pulled columns are not available"):
+        draft.edit(id=tc.dc, toon=bad)
+
+
 def test_table_from_toon_roundtrip_and_retire() -> None:
     t = _table()
     doc = table_toon(t)
@@ -277,6 +356,57 @@ def test_edit_patch_dry_run_writes_nothing(draft: DraftHandler, hub: Hub) -> Non
     r = draft.edit(id=tc.dc, patch="{#\tqty}\n" + f"{rows[0]}\t99\n", dry_run=True)
     assert "dry-run" in r.body and "99" in r.body
     assert _meta(hub, tc) == before
+
+
+def test_footer_dry_run_reports_metadata(draft: DraftHandler, hub: Hub) -> None:
+    """gr685369: a footer change never appears in the derived markdown, so
+    the generic dry-run text diff used to claim "no change" for a write the
+    real call then applied. footer= now previews (and acks) through the op
+    reply — the rendered footer line before → after + hash + grid."""
+    proj = _proj(hub)
+    draft.put(id="foot", title="T", project=proj)
+    draft.put(
+        id="foot",
+        chunk_kind="table",
+        table={
+            "header": ["sku", "item", "count", "unit_price", "line_cost"],
+            "rows": [
+                ["a1", "bolt", 10, 0.5, 5.0],
+                ["a2", "nut", 20, 0.2, 4.0],
+                ["a3", "washer", 32, 0.25, 8.0],
+            ],
+            "footer": {"line_cost": "sum"},
+        },
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "foot")
+    before = _meta(hub, tc)
+    footer = {"count": "sum", "line_cost": "mean", "item": "count"}
+    r = draft.edit(id=tc.dc, footer=footer, dry_run=True)
+    assert "dry-run — nothing written" in r.body
+    assert "no change" not in r.body
+    assert "before: sum(line_cost)=17.0" in r.body
+    assert "after: " in r.body
+    assert "mean(line_cost)=5.666666666666667" in r.body
+    assert "count(item)=3" in r.body
+    assert "sum(count)=62" in r.body
+    assert "hash: " in r.body
+    assert "{#" in r.body
+    assert _meta(hub, tc) == before, "dry run must not write"
+    # The real write acks with the same reply shape (before/after + hash)…
+    r = draft.edit(id=tc.dc, footer=footer)
+    assert "before: sum(line_cost)=17.0" in r.body
+    assert "after: " in r.body and "hash: " in r.body
+    # …and the footer actually lands, readable on the default get's footer line.
+    t = _meta(hub, tc)
+    names = {c["id"]: c["name"] for c in t["columns"]}
+    stored = {names.get(k, k): v for k, v in (t.get("footer") or {}).items()}
+    assert stored == footer
+    body = draft.get(id=tc.dc).body
+    assert "footer: " in body
+    assert "sum(count)=62" in body
+    assert "mean(line_cost)=5.666666666666667" in body
+    assert "count(item)=3" in body
 
 
 def test_edit_toon_replace(draft: DraftHandler, hub: Hub) -> None:

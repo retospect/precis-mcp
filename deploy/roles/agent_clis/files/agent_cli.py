@@ -19,7 +19,9 @@ installer for the pin, then smoke it: ``--version`` names the pin and (when
 smoke reinstalls the previous version (vendor installers that cannot pin a
 version, ``pinnable: false``, are reported with no rollback) and the run
 exits 1. Restoring the previous pin and running ``update`` again is the
-rollback by pin. No CLI auth file is read or copied.
+rollback by pin. A recognized missing login/model keeps the verified binary,
+reports installed, needs login and exits 2 (failures take precedence).
+No CLI auth file is read or copied.
 
 For pinnable npm CLIs, ``latest`` resolves via ``npm view <pkg> version``.
 Resolve once before comparing or installing, so smoke and rollback use the
@@ -346,17 +348,30 @@ def _install(
 
 def _smoke(
     cfg: dict[str, Any], pin: str, path: str, prompt: bool, run: Runner
-) -> str | None:
-    """None when the CLI passes (``--version`` names the pin, one headless
+) -> tuple[str | None, bool]:
+    """Failure and whether only login/configuration is missing.
+
+    None when the CLI passes (``--version`` names the pin, one headless
     prompt answers), else the failure."""
     rc, out = run([path, "--version"], 30.0)
     if rc != 0 or parse_version(out) != pin:
-        return f"--version gave rc={rc} {out[:120]!r}, wanted {pin}"
+        return f"--version gave rc={rc} {out[:120]!r}, wanted {pin}", False
     if prompt and cfg.get("smoke"):
         rc, out = run([path, *cfg["smoke"]], SMOKE_TIMEOUT_S)
+        needs_login = any(
+            text in out.casefold()
+            for text in (
+                "not logged in",
+                "no model configured",
+                "please run /login",
+                "run `codex login`",
+            )
+        )
+        if needs_login:
+            return f"headless prompt rc={rc} {out[:120]!r}", True
         if rc != 0 or not out:
-            return f"headless prompt rc={rc} {out[:120]!r}"
-    return None
+            return f"headless prompt rc={rc} {out[:120]!r}", False
+    return None, False
 
 
 def _roll_back(
@@ -426,7 +441,19 @@ def update_one(
     row.update(path=after["path"], version=after["version"])
     if after["path"] is None:
         return _roll_back(cli, cfg, row, run, find, "binary missing after install")
-    fault = _smoke(cfg, pin, after["path"], smoke_prompt, run)
+    fault, needs_login = _smoke(cfg, pin, after["path"], smoke_prompt, run)
+    if needs_login:
+        binary = cfg.get("bin") or cli
+        login = cfg.get("login") or {
+            "claude": "claude /login",
+            "codex": "codex login",
+            "kimi": "kimi (then /login)",
+        }.get(cli, f"{binary} (then /login)")
+        row.update(
+            action="updated-needs-login",
+            detail=f"installed, needs login: run {login} as user {pwd.getpwuid(os.geteuid()).pw_name}; {fault}",
+        )
+        return row
     if fault:
         return _roll_back(cli, cfg, row, run, find, f"smoke failed: {fault}")
     row.update(action="updated", status=classify(after["version"], pin, row["min"]))
@@ -657,7 +684,9 @@ def main(
         + json.dumps({"host": socket.gethostname(), "mode": args.mode, "rows": rows})
     )
     if args.mode == "update":
-        return 0 if all(r.get("ok", True) for r in rows) else 1
+        if not all(r.get("ok", True) for r in rows):
+            return 1
+        return 2 if any(r.get("action") == "updated-needs-login" for r in rows) else 0
     return 1 if args.strict and any(a.startswith("ALERT") for a in lines) else 0
 
 

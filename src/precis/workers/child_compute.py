@@ -136,8 +136,8 @@ def _child_main(
     # a spawn-started child has no preexec_fn door. Resolves to None when
     # no cap is configured, so an unconfigured host is byte-identical.
     apply = mem_limit_preexec()
-    if apply is not None:
-        apply()
+    if apply is not None and not apply():
+        log.warning("Could not apply the requested memory cap as RLIMIT_DATA")
     try:
         result = fn(*args)
     except BaseException as exc:

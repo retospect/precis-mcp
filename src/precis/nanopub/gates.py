@@ -982,8 +982,7 @@ def check_primary_source(
 def check_claim_sentence(
     sentence: str, *, artifact_type: str = "claim"
 ) -> list[GateViolation]:
-    """Claim-sentence lint's blocking half (``docs/backlog/nanopub-corpus-
-    remediation.md`` Phase 1) — the notation and admissibility/grammar
+    """Claim-sentence lint's blocking half (``me691969`` Phase 1) — the notation and admissibility/grammar
     lints run everywhere as advice (``lint_notation``,
     ``lint_claim_sentence`` at authoring/reword); this is the one place
     a subset of that advice becomes a hard mint gate, per
@@ -1313,10 +1312,7 @@ def integral_chunk_id(value: Any) -> int | None:
     it is not an integral value — an ``int`` (never a ``bool``) or a
     string of digits. A JSON float (``12.0``) is refused even though
     ``int(12.0)`` works: the approved payload is frozen verbatim into
-    ``nanopub_publish.grounding`` and cast with ``::bigint`` downstream
-    (``workers.context_sentence._BACKFILL_SQL``), which Postgres rejects
-    for ``'12.0'`` — the gate is where such a value must stop, not a
-    ``CASE`` guard three modules later."""
+    ``nanopub_publish.grounding`` and read back as a chunk identifier."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):

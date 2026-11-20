@@ -1603,3 +1603,114 @@ class TestConvergeObservation:
         assert edges[0].meta["reason"] == (
             "dedup converge — this run reached the same claim"
         )
+
+
+@pytest.mark.parametrize("passage_only", [False, True])
+@pytest.mark.parametrize("retry_stage", ["none", "judge", "containment"])
+def test_mint_logs_phase_timings(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    passage_only: bool,
+    retry_stage: str,
+) -> None:
+    """Identical wording is not a retry; passage and both retry stages count."""
+    from itertools import count
+    from threading import Lock
+
+    from precis.response import Response
+    from precis.taproot.canon import ContainmentVerdict
+
+    ticks = count()
+    monkeypatch.setattr(_finding_hub_mint, "perf_counter", lambda: float(next(ticks)))
+    candidates = [
+        MergeCandidate(hub_ref_id=i, claim="same wording", distance=0.01)
+        for i in (1, 2)
+    ]
+    monkeypatch.setattr(_finding_hub_mint, "_converge_identical", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        _finding_hub_mint,
+        "_same_passage_neighbours",
+        lambda *a: candidates if passage_only else [],
+    )
+    monkeypatch.setattr(
+        _finding_hub_mint, "_mint_new", lambda *a, **kw: Response(body="minted")
+    )
+    calls = {"judge": 0, "containment": 0}
+    lock = Lock()
+
+    def verdict(stage: str) -> str:
+        with lock:
+            calls[stage] += 1
+            return (
+                "error" if stage == retry_stage and calls[stage] == 1 else "different"
+            )
+
+    def judge(a: str, b: str) -> Verdict:
+        return cast(
+            Verdict,
+            {"verdict": verdict("judge"), "confidence": 0.9, "rationale": "test"},
+        )
+
+    def containment(a: str, b: str) -> ContainmentVerdict:
+        return cast(
+            ContainmentVerdict,
+            {"verdict": verdict("containment"), "confidence": 0.9, "rationale": "test"},
+        )
+
+    with caplog.at_level("INFO", logger=_finding_hub_mint.__name__):
+        response = _finding_hub_mint.put_hub(
+            cast("Store", object()),
+            sentence="new claim",
+            scope={},
+            supporters=[],
+            embedder=object(),
+            block_fn=lambda *a: [] if passage_only else candidates,
+            judge_fn=judge,
+            containment_fn=containment,
+        )
+    assert response.body == "minted"
+    records = [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("finding.mint phases")
+    ]
+    assert len(records) == 1
+    fields = dict(re.findall(r"(\w+)=([\d.]+)", records[0]))
+    for phase in ("block", "judge", "place", "containment", "mint"):
+        assert float(fields[phase]) > 0
+    assert fields["candidates"] == "2"
+    assert fields["containment_candidates"] == "2"
+    assert fields["judge_retries"] == ("0" if retry_stage == "none" else "1")
+    assert calls == {stage: 2 + int(stage == retry_stage) for stage in calls}
+
+
+def test_mint_logs_elapsed_phase_on_failure(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    ticks = iter([10.0, 12.5])
+    monkeypatch.setattr(_finding_hub_mint, "perf_counter", lambda: next(ticks))
+
+    def fail(*args: Any) -> list[MergeCandidate]:
+        raise Upstream("unavailable", next="retry later")
+
+    with (
+        caplog.at_level("INFO", logger=_finding_hub_mint.__name__),
+        pytest.raises(Upstream),
+    ):
+        _finding_hub_mint.put_hub(
+            cast("Store", object()),
+            sentence="claim",
+            scope={},
+            supporters=[],
+            embedder=object(),
+            block_fn=fail,
+        )
+    records = [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("finding.mint phases")
+    ]
+    assert len(records) == 1
+    assert (
+        "block=2.500 judge=0.000 place=0.000 containment=0.000 mint=0.000" in records[0]
+    )

@@ -66,7 +66,10 @@
       changed_when: false
       check_mode: false
 
-    # No -admin: a standard account. No -password: nothing to log in with.
+    # No -admin: a standard account. sysadminctl without -password leaves an
+    # account that accepts a BLANK password, so the tasks after the home
+    # template set a random one nobody keeps, hide the account from the login
+    # window and assert the blank password no longer works.
     - name: Create the builder account (standard user, own primary group)
       when: _builder_user_probe.rc != 0
       ansible.builtin.command: >-
@@ -80,6 +83,52 @@
       ansible.builtin.command: createhomedir -c -u {{ precis_builder_user }}
       args:
         creates: "{{ precis_builder_home }}/Library"
+
+    - name: Probe for a blank builder password
+      ansible.builtin.command: dscl . -authonly {{ precis_builder_user }} ""
+      register: _builder_blank_before
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    # The password is generated in the shell and never leaves it: nothing
+    # registers or prints it, and no_log hides the command. Only when the
+    # account was just created or the blank-password probe succeeded, so a
+    # re-run does not rotate it for nothing.
+    - name: Set a random builder password nobody keeps
+      when: _builder_user_probe.rc != 0 or _builder_blank_before.rc == 0
+      ansible.builtin.shell: >-
+        dscl . -passwd /Users/{{ precis_builder_user }} "$(openssl rand -base64 33)"
+      no_log: true
+
+    - name: Probe the builder account's login-window visibility
+      ansible.builtin.command: dscl . -read /Users/{{ precis_builder_user }} IsHidden
+      register: _builder_hidden_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: Hide the builder account from the login window
+      when: _builder_hidden_probe.rc != 0 or _builder_hidden_probe.stdout.split()[-1] != '1'
+      ansible.builtin.command: dscl . -create /Users/{{ precis_builder_user }} IsHidden 1
+
+    - name: Probe the builder password again
+      ansible.builtin.command: dscl . -authonly {{ precis_builder_user }} ""
+      register: _builder_blank_after
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: The builder account must not accept a blank password
+      ansible.builtin.assert:
+        that: _builder_blank_after.rc != 0
+        fail_msg: >-
+          {{ precis_builder_user }} accepts a blank password
+          (dscl . -authonly succeeded with an empty one); set a random
+          one (dscl . -passwd /Users/{{ precis_builder_user }} <password>).
+        quiet: true
 
     - name: Probe admin membership
       ansible.builtin.command: dseditgroup -o checkmember -m {{ precis_builder_user }} admin
@@ -144,9 +193,19 @@
 
 # `devin update` self-updates an existing install; a fresh user has none,
 # so the vendor installer runs once (it lays ~/.local/share/devin and links
-# ~/.local/bin/devin). No failed_when: a failed install must stop the play.
+# ~/.local/bin/devin). The installer then starts an interactive login, which
+# without a TTY prints "Login canceled" and exits 1 — so it gets no stdin and
+# its exit code is ignored; success is the binary existing and running. A
+# missing binary (failed download or install) still stops the play.
 - name: First devin install for the builder user (vendor installer, once)
-  ansible.builtin.shell: set -o pipefail; curl -fsSL https://cli.devin.ai/install.sh | bash
+  ansible.builtin.shell: |
+    set -eu -o pipefail
+    installer="$(mktemp)"
+    trap 'rm -f "$installer"' EXIT
+    curl -fsSL https://cli.devin.ai/install.sh -o "$installer"
+    bash "$installer" < /dev/null || true
+    test -x {{ precis_builder_home }}/.local/bin/devin
+    {{ precis_builder_home }}/.local/bin/devin --version > /dev/null
   args:
     executable: /bin/bash
     creates: "{{ precis_builder_home }}/.local/bin/devin"

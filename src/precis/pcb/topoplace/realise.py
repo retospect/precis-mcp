@@ -7127,7 +7127,9 @@ def _copper_zones(
     rows (net-tagged, so the same net may still touch them) — the
     survivors' copper frozen for :func:`route_design`'s pass 3.
 
-    Each piece is clipped to outside every pad of its layer (the copper
+    Same-net pieces on the same layer are unioned before meshing: internal
+    overlapping boundaries can strand CDT constraint recovery. Each union
+    is clipped to outside every pad of its layer (the copper
     the mesh will constrain, at ``pose``, default ``d.pose0``): a
     fanout stub starts at its pad's centre, and a zone vertex inside a
     pad ring would collapse that pad's wall in the mesh. The clipped
@@ -7165,7 +7167,7 @@ def _copper_zones(
 
     from precis.pcb import clearance as pcb_clearance
 
-    out: list[TopoZone] = []
+    pieces: dict[tuple[str, int | None], list[Any]] = {}
     for row in pcb_realize.result_copper_rows(rres, ir, layers, derived=True):
         body = pcb_clearance.body_of(dict(row))
         if body is None:
@@ -7186,7 +7188,11 @@ def _copper_zones(
         # a via barrel spans every layer — its zone must too
         is_via = str(row.get("ctype") or "") == "via"
         idx = None if is_via or layer not in name_to_idx else name_to_idx[layer]
-        geom = geom.difference(lands_on(idx))
+        pieces.setdefault((str(row.get("net") or ""), idx), []).append(geom)
+
+    out: list[TopoZone] = []
+    for (net, idx), geoms in pieces.items():
+        geom = unary_union(geoms).difference(lands_on(idx))
         for part in getattr(geom, "geoms", (geom,)):
             if part.geom_type != "Polygon" or part.area <= 1e-6:
                 continue
@@ -7195,8 +7201,8 @@ def _copper_zones(
                     kind="fixed_copper",
                     ring=np.asarray(part.exterior.coords, dtype=np.float64),
                     layers=() if idx is None else (idx,),
-                    net=str(row.get("net") or ""),
-                    name=f"pass-2 copper {row.get('ctype') or '?'}",
+                    net=net,
+                    name="pass-2 copper union",
                 )
             )
     return out

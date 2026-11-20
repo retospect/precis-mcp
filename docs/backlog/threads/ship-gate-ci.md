@@ -67,7 +67,7 @@ the reverted commits show the wiring (8e94e8c33-era, pre-drop sha).
 feeds it. First real `--checked` ship is the dogfood; watch for the
 `coverage-db` job's artifact + selector drift on missing evidence.
 Left: gripe-filing from a red soak leg is deliberately out of scope
-(job summary only); `release-ci-diff-coverage.md` now has its DB produced
+(job summary only); `release-ci-diff-coverage (gr692382)` now has its DB produced
 nightly — the diff-cover verdict is still open.
 
 2026-11-07 me580555: supersedes the 2026-10-15 "keep the full suite on
@@ -102,12 +102,12 @@ counts `lint`, `test-linux`, `gate-fast`; `round`/`release` also count
 
 ## Do next
 
-0. **`test-loop-speed.md` (me692006)** (draft, Reto
+0. **`test-loop-speed (me692006)`** (draft, Reto
    2026-10-24: the top friction theme goes first) — single-file
    `scripts/test` measured 17.9 s no-DB / 40.6 s DB; the cost is xdist
    `-n6`, a ~6 s preflight and ~4.5 s per-process DB setup, not Docker.
    7 slices; four questions for Reto at its end.
-0. **`release-train.md` (me692603)** (draft, Reto 2026-10-23
+0. **`release-train (me692603)`** (draft, Reto 2026-10-23
    ruling) — qland everything, harness-only `--remote`, one 10-shard
    release gate fixed in place, next cut at deploy start. 7 slices; two
    questions open for Reto at its end. Supersedes the "one release at a
@@ -233,7 +233,7 @@ counts `lint`, `test-linux`, `gate-fast`; `round`/`release` also count
 `monitors-that-go-quiet` owns signals that lie; this thread owns the gate,
 the reaper and the qland drift guard that feeds that thread's "is main
 green" answer. `deploy-fleet-ops` owns the
-rest of `deploy-async-task-controller-filenotfounderror.md` (whether a
+rest of `deploy-async-task-controller-filenotfounderror (gr690411)` (whether a
 vanished play file should abort a running play; the apt stall).
 
 `backlog/backlog-lint-flags-ticked-subitems-as-shipped.md` was named by the

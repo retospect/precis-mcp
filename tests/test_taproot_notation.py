@@ -341,6 +341,29 @@ def test_hyphen_numeric_range_does_not_fire_on_named_method() -> None:
     assert not any("hyphen-numeric-range" in w for w in warnings)
 
 
+@pytest.mark.parametrize(
+    "identifier",
+    ["qwen3.6-27b-q8_0", "package3.16-27b", "model_6-27b", "模型6-27b"],
+)
+def test_hyphen_numeric_range_preserves_identifiers(identifier: str) -> None:
+    sentence = f"The selected model is {identifier}."
+    assert not any("hyphen-numeric-range" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert out == sentence
+    assert "hyphen-numeric-range" not in codes
+
+
+@pytest.mark.parametrize("numeric_range", ["0.7-0.9 mg", "6-27 mg", "16-27b"])
+def test_hyphen_numeric_range_preserves_standalone_detection(
+    numeric_range: str,
+) -> None:
+    sentence = f"The measured range is {numeric_range}."
+    assert any("hyphen-numeric-range" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert out == sentence.replace("-", "–")
+    assert "hyphen-numeric-range" in codes
+
+
 # Pople basis sets are nomenclature hyphens, not ranges. Found on
 # fi191307, which no reword could clear: keeping the basis set kept the
 # lint, dropping it failed numeric-token preservation
@@ -399,6 +422,19 @@ def test_ascii_x_multiplier_does_not_fire_on_grid_label() -> None:
     assert not any("ascii-x-multiplier" in w for w in warnings)
 
 
+def test_ascii_x_multiplier_does_not_fire_on_handle_range() -> None:
+    # 'pa4249x' is a ref-handle range (pa42490 to pa42499), not a number
+    # times something: the digit run is glued to the handle prefix, so no
+    # word boundary sits before it (gr694538). The normalize path must not
+    # rewrite it either.
+    sentence = "The pa4249x range has 5 merged pairs."
+    warnings = lint_notation(sentence)
+    assert not any("ascii-x-multiplier" in w for w in warnings)
+    out, codes = normalize_notation(sentence)
+    assert "×" not in out, out
+    assert "ascii-x-multiplier" not in codes, codes
+
+
 # ── 2026-08-20 numeric-value policy: range-unit-repeated ─────────────────
 
 
@@ -436,6 +472,68 @@ def test_range_unit_repeated_does_not_fire_on_nomenclature() -> None:
             sentence,
             warnings,
         )
+
+
+@pytest.mark.parametrize("identifier", ["model_4b-4b", "model.4b-4b", "模型4b-4b"])
+def test_range_unit_repeated_does_not_fire_on_identifier(identifier: str) -> None:
+    # Same `(?<![-\w.])` guard as hyphen-numeric-range: `4b-4b` here is a
+    # model/package version tag, not a duplicated unit (gr695785) -- and
+    # normalize must leave the identifier byte-identical.
+    sentence = f"Runs used {identifier} throughout."
+    assert not any("range-unit-repeated" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert identifier in out
+    assert "range-unit-repeated" not in codes
+
+
+def test_range_unit_repeated_does_not_fire_on_orbital_label() -> None:
+    # `4s-4s` names one orbital interaction twice (gr720667): the digit and
+    # letter are a single orbital label, `s` is never seconds, and the
+    # suggested rewrite (`4 s-4 s` -> `4-4 s`) would corrupt the chemistry.
+    # Both dash spellings, every orbital letter, and superscript occupancy.
+    for label in ("4s-4s", "4s–4s", "2p–2p", "3d-3d", "5f–5f", "4s²–4s²"):
+        sentence = f"The Cu-Cu {label} orbital interaction defines the bond."
+        assert not any("range-unit-repeated" in w for w in lint_notation(sentence)), (
+            label
+        )
+        out, codes = normalize_notation(sentence)
+        assert label in out
+        assert "range-unit-repeated" not in codes
+
+
+def test_range_unit_repeated_still_fires_on_spaced_seconds() -> None:
+    # The orbital-label guard must not shield a real unit duplication:
+    # canonically spaced seconds, and a multi-digit unspaced value (the
+    # guard anchors to a single digit -- principal quantum numbers run 1-7),
+    # and two different single-digit labels (`4s–5s`), not a verbatim repeat.
+    for sentence in (
+        "The pulse lasts 9 s-12 s in the control run.",
+        "The pulse lasts 12s-15s in the control run.",
+        "The pulse lasts 4s–5s in the control run.",
+    ):
+        assert any("range-unit-repeated" in w for w in lint_notation(sentence)), (
+            sentence
+        )
+
+
+def test_range_unit_repeated_still_fires_on_orbital_like_units() -> None:
+    # A unit that merely STARTS with an orbital letter is still a unit:
+    # `fs`/`ps`/`ds` are femto-/pico-/deciseconds, `s⁻¹` a frequency, `dB`
+    # decibels. Only a bare orbital letter plus optional superscript
+    # occupancy is an orbital label (td732122 review of gr720667).
+    for sentence in (
+        "The pump pulse spans 4fs-5fs at the sample.",
+        "The jitter budget is 2ps–3ps across channels.",
+        "The gate holds 4ds–5ds before release.",
+        "Rates rose from 4s⁻¹-9s⁻¹ during the ramp.",
+        "The sweep ran 4dB-5dB above threshold.",
+    ):
+        assert any("range-unit-repeated" in w for w in lint_notation(sentence)), (
+            sentence
+        )
+    out, codes = normalize_notation("The pump pulse spans 4fs-5fs.")
+    assert "range-unit-repeated" in codes
+    assert "4–5 fs" in out
 
 
 def test_range_unit_repeated_auto_fixes() -> None:
@@ -626,6 +724,29 @@ def test_single_denominator_solidus_units_do_not_fire() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "basis", ["def2-TZVP", "def2-TZVPP", "def2-SVP", "def2-QZVPPD", "def2-SV(P)"]
+)
+def test_method_basis_label_does_not_fire_solidus(basis: str) -> None:
+    """gr722410: the solidus separates a method from its basis set."""
+    sentence = f"Energies were calculated with revPBE-D3(BJ)/{basis}."
+    assert lint_notation(sentence) == []
+    assert any(
+        "two-denominator-solidus" in warning
+        for warning in lint_notation(sentence + " Mobility is 10 cm²/Vs.")
+    )
+
+
+@pytest.mark.parametrize(
+    "denominator", ["def", "def2-TZVPextra", "def2-TZVP-extra", "Vs", "sprocket"]
+)
+def test_basis_exemption_does_not_hide_other_denominators(denominator: str) -> None:
+    assert any(
+        "two-denominator-solidus" in warning
+        for warning in lint_notation(f"The rate is 5 widgets/{denominator}.")
+    )
+
+
 def test_chemical_formula_and_miller_surface_do_not_fire_solidus() -> None:
     """gr530995: `PdH/Pd(111)` names a hydride over a Miller-index facet --
     chemistry, not a compound unit. The lint must still fire on a real
@@ -646,6 +767,30 @@ def test_chemical_formula_and_miller_surface_do_not_fire_solidus() -> None:
         for w in lint_notation("Mobility reaches 10 cm²/Vs at 300 K.")
     )
     # ...and a letter run that is no unit and no formula still fires
+    assert any(
+        "two-denominator-solidus" in w
+        for w in lint_notation("The rate reaches 5 widgets/sprocket.")
+    )
+
+
+def test_named_method_pair_do_not_fire_solidus() -> None:
+    """gr722272: `CBMC/CFCMC` names two Monte Carlo methods as printed --
+    an all-caps acronym on both sides of the slash is a name pair, not a
+    compound-unit denominator. Real two-denominator units and a
+    non-acronym left token still fire."""
+    for sentence in [
+        "Adsorption free energies were computed by CBMC/CFCMC.",
+        "The DFT/MD scheme couples a static surface to dynamics.",
+    ]:
+        warnings = lint_notation(sentence)
+        assert not any("two-denominator-solidus" in w for w in warnings), (
+            sentence,
+            warnings,
+        )
+    assert any(
+        "two-denominator-solidus" in w
+        for w in lint_notation("Mobility reaches 10 cm²/Vs at 300 K.")
+    )
     assert any(
         "two-denominator-solidus" in w
         for w in lint_notation("The rate reaches 5 widgets/sprocket.")
@@ -676,6 +821,10 @@ _NOMENCLATURE_HYPHEN_SENTENCES: list[str] = [
     "HKUST-1 exhibits a Langmuir surface area above 2000 m2 per gram.",
     "VOTCPP-PIF-1 was deployed as a chemiresistive sensor.",
     "Features below sub-10-nm scale were resolved by TEM.",
+    "The climate orchestrator's cycle-0 count is recorded.",
+    "E. coli K-12 was cultured overnight.",
+    "The K-12 strain was cultured overnight.",
+    "The cycle-00 label is preserved.",
 ]
 
 
@@ -704,6 +853,8 @@ def test_real_unit_minus_exponents_still_fire_and_convert() -> None:
         ("Mobility was 500 cm2 V-1 s-1.", "V⁻¹ s⁻¹"),
         ("The rate constant is 4.2 M-1 s-1.", "M⁻¹ s⁻¹"),
         ("Sheet resistance falls off as cm-2.", "cm⁻²"),
+        ("Sensitivity is 2 K-1.", "K⁻¹"),
+        ("The decay rate is 2 cycle-1.", "cycle⁻¹"),
     ]
     for sentence, expected_fragment in cases:
         warnings = lint_notation(sentence)
@@ -711,6 +862,15 @@ def test_real_unit_minus_exponents_still_fire_and_convert() -> None:
         out, codes = normalize_notation(sentence)
         assert "ascii-minus-exponent" in codes, (sentence, codes)
         assert expected_fragment in out, (sentence, out)
+
+
+def test_explicit_kelvin_minus_exponent_is_not_a_strain_name() -> None:
+    sentence = "The coefficient has units K^-12."
+    assert any("ascii-minus-exponent" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert out == "The coefficient has units K⁻¹²."
+    # Caret normalization runs before the bare-minus normalization.
+    assert "caret-exponent" in codes
 
 
 def test_fully_canon_compliant_sentence_produces_no_warnings() -> None:
@@ -1070,3 +1230,36 @@ def test_authored_lint_still_flags_tilde_approximation() -> None:
 
     hits = lint_authored_notation("Median crystallite size: ~19 nm.")
     assert any(code == "tilde-approximation" for code, _, _ in hits)
+
+
+def test_spans_index_the_flagged_token_and_skip_quotes_code_math() -> None:
+    from precis.taproot.notation import lint_authored_notation_spans
+
+    text = (
+        'Quoted "3 cm^2" stays exempt.\n'
+        "Inline `y^2` stays exempt.\n"
+        "$$\nE = a^2\n$$\n"
+        "Area is 3 cm^2 here.\n"
+    )
+    hits = lint_authored_notation_spans(text)
+    assert [(code, token) for code, token, _, _ in hits] == [("caret-exponent", "cm^2")]
+    _code, token, start, end = hits[0]
+    assert text[start:end] == token == "cm^2"
+    assert start == text.index("cm^2", text.index("Area"))
+
+
+@pytest.mark.parametrize(
+    "separator", list("\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029") + ["\r\n"]
+)
+def test_authored_notation_spans_exclude_line_separators(separator: str) -> None:
+    from precis.taproot.notation import (
+        lint_authored_notation,
+        lint_authored_notation_spans,
+    )
+
+    text = f"Area is 3 cm^2{separator}Volume is 4 cm^3"
+    assert [token for _, token, _ in lint_authored_notation(text)] == ["cm^2", "cm^3"]
+    assert lint_authored_notation_spans(text) == [
+        ("caret-exponent", token, text.index(token), text.index(token) + len(token))
+        for token in ("cm^2", "cm^3")
+    ]

@@ -19,6 +19,7 @@ from precis.errors import BadInput
 from precis.nanopub import registry
 from precis.nanopub.demote import ACTION_SUPERSEDE_REQUIRED, plan_demotion
 from precis.nanopub.supersede import supersede
+from precis.store.types import Tag
 from tests.test_nanopub_supersede import _old
 
 
@@ -205,11 +206,39 @@ def _stuck(store: Any) -> Any:
     old = _old(store)
 
     def post(url: str, body: bytes) -> None:
-        raise TimeoutError("read timed out")
+        raise TimeoutError("injected registry stub: read timed out")
 
     with pytest.raises(BadInput):
         _live(store, old.claim_ref_id, post)
     return old
+
+
+def test_missing_post_cannot_publish_to_live_registry(store: Any) -> None:
+    old = _old(store)
+    with pytest.raises(pytest.fail.Exception, match="inject post=/fetch="):
+        registry.publish(store, old.claim_ref_id, live=True, interactive=True)
+
+
+def test_missing_fetch_cannot_reconcile_against_live_registry(store: Any) -> None:
+    _stuck(store)
+    with pytest.raises(pytest.fail.Exception, match="inject post=/fetch="):
+        registry.reconcile_publishing(store, older_than=timedelta(0))
+
+
+def test_publishing_state_header_names_what_happens(store: Any) -> None:
+    from precis.handlers._finding_nanopub import render_nanopub_view
+    from precis.nanopub.preflight import publish_preflight
+
+    old = _stuck(store)
+    store.add_tag(old.claim_ref_id, Tag.closed("TAPROOT", "claim"), set_by="system")
+    ref = store.fetch_refs_by_ids({old.claim_ref_id})[old.claim_ref_id]
+    body = render_nanopub_view(store, ref).body
+    assert "re-read later" in body
+    assert "publication operator" in body
+    assert "present becomes published" in body
+    issues = publish_preflight(store, old.claim_ref_id)
+    state = next(issue for issue in issues if issue.check == "state")
+    assert state.blocking and "re-read later" in state.message
 
 
 def test_reconcile_present_resolves_to_published(store: Any) -> None:

@@ -16,9 +16,10 @@ status: active
 
 # precis-ai-contributions-help — credit the models like any other contributor
 
-Stance from Lieblich, "On disclosure and shame"
-(https://proofsandprompts.com/2026/10/24/on-disclosure-and-shame/,
-2026-10-24): "disclosure" frames model use as a conflict of interest and
+Stance from Max Lieblich, "On disclosure and shame", Proofs and Prompts
+(blog post, no DOI),
+https://proofsandprompts.com/2026/10/24/on-disclosure-and-shame/,
+2026-10-24: "disclosure" frames model use as a conflict of interest and
 pushes authors toward concealment. Say what each model did, the way an
 author-contribution statement says what each author did.
 
@@ -79,8 +80,9 @@ non-AI software credits.
 
 ## Credit precis (every paper produced with precis)
 
-Name precis in the software acknowledgements and cite precis-mcp as a
-reference. The DOI is stable (Reto, 2026-10-24).
+Name precis in the software acknowledgements and in the AI contributions
+line for the models it runs (next section), citing precis-mcp as a
+reference both times. The DOI is stable (Reto, 2026-10-24).
 
 | Field | Value |
 |---|---|
@@ -98,9 +100,25 @@ put(kind="paper", doi="10.5281/zenodo.22863181")  # idempotent request
 # once ingested: put(kind="finding", title="<claim>", args={"supporters": [{"paper": "pa<id>", "source_handle": "pc<id>"}]})
 ```
 
-Copy `pa<id>` / `pc<id>` from search output. If the record has no passage
-to ground on, put the fields above in the venue's bibliography file
-directly.
+Copy `pa<id>` / `pc<id>` from search output. A software record has no
+passage to ground a hub on: cite the record whole, `[pa<id>]`. The draft
+answers with a whole-paper-citation warning, which is expected here.
+
+## List the models precis itself runs
+
+Reto, 2026-11-18: the statement also covers the models precis runs in
+the background. No `agentlog` run names them, so add one line each:
+
+| Model | Role | Where to read it |
+|---|---|---|
+| summariser | wrote the passage summaries that search displays | the `llm` card whose `view='tote'` lists the `llm_summarize` source |
+| embedder | computed the vectors behind semantic search; generates no text | the Embedder block of `get(kind='skill', id='precis-status')` |
+| claim drafting | drafted the claim hubs the draft cites | the hub's `trust:` line; "unstamped" means unrecorded |
+
+No lookup maps a source to its model yet (gr725421): open the tote of
+the local cards that `get(kind='llm', id='/')` lists. A summary does not
+record which model wrote it. Say so, and say that the authors checked
+cited statements against the source passages, not against summaries.
 
 ## Gather the facts from precis provenance
 

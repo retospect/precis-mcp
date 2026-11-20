@@ -26,6 +26,7 @@ MEMORY_DETECTORS = (
     "review_due",
     "title_shape",
     "negative_undated",
+    "notation",
     "source_drift",
     "entity_claim_stale",
     "restated_claim",

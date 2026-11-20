@@ -10,8 +10,6 @@ sat in the same paper, one click away from being evidence.
 
 * **Passages** — what the reviewer attests, i.e. each grounding passage's
   ``quote`` (the chunk text only when a prefill left the quote blank).
-  Not ``context_sentence``: that is a paper-level sentence, not a quoted
-  passage.
 * **Papers behind the hub** — the grounding passages' own papers first,
   then every other evidence source on the hub. Their live body chunks
   (``ord >= 0``, ``retired_at IS NULL``, references blocks excluded) feed

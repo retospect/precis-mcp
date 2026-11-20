@@ -18,6 +18,19 @@ _BAD = {
     }
 }
 _CLEAN = {"glyph_health": {"suspected": False, "modes": [], "suspect_fonts": []}}
+_BAD_SIGN = {
+    "glyph_health": {
+        "suspected": True,
+        "sign_damage": {
+            "detected": True,
+            "minus_raw": 8,
+            "minus_extracted": 0,
+            "pm_raw": 1,
+            "pm_extracted": 0,
+            "pm_mojibake": 1,
+        },
+    }
+}
 
 
 def _paper(store, slug: str, meta: dict):
@@ -40,12 +53,45 @@ def test_predicate_and_caveat() -> None:
     assert glyph_caveat(_CLEAN) == ""
 
 
+def test_caveat_sign_damage_only() -> None:
+    """gr685717: a sign-damage-only record names minus/±, not Greek/μ."""
+    assert glyph_suspected(_BAD_SIGN)
+    text = glyph_caveat(_BAD_SIGN)
+    assert "minus signs or ± characters" in text
+    assert "Greek" not in text
+    assert "sign damage: minus/±" in text
+    assert "Check numbers and units against the PDF" in text
+
+
+def test_caveat_sign_damage_alongside_fonts() -> None:
+    """Both evidences in one record: Greek/μ lead, sign damage in detail."""
+    both = {
+        "glyph_health": {
+            "suspected": True,
+            "modes": ["a"],
+            "suspect_fonts": ["KKLGAD+AdvP7DA6"],
+            "sign_damage": {"detected": True},
+        }
+    }
+    text = glyph_caveat(both)
+    assert "Greek/μ characters" in text
+    assert "sign damage: minus/±" in text
+
+
 def test_paper_banner_only_when_suspected(store) -> None:
     bad = _paper(store, "bad24a", _BAD)
     clean = _paper(store, "clean24a", _CLEAN)
     banner = _paper_banner(bad)
     assert banner is not None and "GLYPH-DAMAGED SOURCE" in banner
     assert _paper_banner(clean) is None
+
+
+def test_paper_banner_sign_damage(store) -> None:
+    """gr685717: sign-damage-only records raise the same banner."""
+    ref = _paper(store, "sign24a", _BAD_SIGN)
+    banner = _paper_banner(ref)
+    assert banner is not None and "GLYPH-DAMAGED SOURCE" in banner
+    assert "minus signs" in banner
 
 
 def test_paper_banner_follows_retraction_banner(store) -> None:
@@ -107,3 +153,13 @@ def test_draft_lint_warns_for_suspected_cite_only(store) -> None:
     assert clean_h not in out
     assert glyph_cite_hint(store, f"Only [{clean_h}].") == ""
     assert glyph_cite_hint(store, "no cites") == ""
+
+
+def test_draft_lint_sign_damage_message(store) -> None:
+    """gr685717: sign-only damage names minus/±, not Greek/μ."""
+    bad = _paper(store, "lintsign24a", _BAD_SIGN)
+    bad_h = handle_registry.format_handle("paper", bad.id)
+    out = glyph_cite_hint(store, f"See [{bad_h}].")
+    assert f"cites {bad_h}, whose extracted text may have lost" in out
+    assert "minus signs" in out
+    assert "Greek" not in out

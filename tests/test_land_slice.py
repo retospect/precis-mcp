@@ -13,9 +13,12 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -24,11 +27,12 @@ pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: the launcher execs /bin/sh"
 )
 
-from precis.plans import lanes
+from precis.plans import lanes, nodes
 from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.executors import ssh_node
 from precis.workers.job_types import (
+    Reconcile,
     get_job_type,
     known_job_types,
     land_slice,
@@ -1014,6 +1018,36 @@ def test_land_env_scrubs_credentials_keeps_knobs(
     assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
     for leaked in ("tok-a", "tok-b", "sk-live", "ghp_x"):
         assert leaked not in env.values()
+
+
+@pytest.mark.parametrize("existing_uv", [False, True])
+def test_land_env_finds_user_uv_without_replacing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_uv: bool
+) -> None:
+    """gr702644: non-login land services must reach uv in nested helpers."""
+    home = tmp_path / "coder"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    installed = local_bin / "uv"
+    installed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    installed.chmod(0o755)
+    service_bin = tmp_path / "service-bin"
+    service_bin.mkdir()
+    if existing_uv:
+        configured = service_bin / "uv"
+        configured.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        configured.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(service_bin))
+    env = land_slice.land_env()
+    expected = str(service_bin)
+    if not existing_uv:
+        expected += os.pathsep + str(local_bin)
+    assert env["PATH"] == expected
+    result = subprocess.run(
+        ["/usr/bin/env", "uv"], env=env, check=False, capture_output=True
+    )
+    assert result.returncode == 0
 
 
 def test_submit_ship_env_is_allowlist_not_whole_worker_env(
@@ -4769,6 +4803,52 @@ def _host_defer_setup(
     return store, handle
 
 
+BUSY_LOG = (
+    "quick ship (--quick)\n"
+    "release lifecycle busy — a cut, deploy, abandon or release fix is "
+    "running; retry after it completes\n"
+    "\x1b[31m✖ release lifecycle busy — nothing pushed.\x1b[0m\n"
+)
+
+
+def test_poll_a_busy_release_lock_waits_a_minute_on_its_own_counter(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """Sibling release fixes build side by side and reach ``ship --onto``'s
+    push together; the one that finds the round lock held runs again a
+    minute later, not after the half-hour main-refusal backoff, and the
+    wait does not spend the main-refusal budget."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    handle["main_refusals"] = land_slice.MAX_MAIN_REFUSALS
+    _finish(handle, 1, BUSY_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    assert handle["release_busy"] == 1
+    assert handle["main_refusals"] == land_slice.MAX_MAIN_REFUSALS
+    assert handle["not_before"] == "2026-11-01T10:01:00Z"
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_event" and "host-side refusal #1" in text
+    assert "release lifecycle busy" in text
+    assert store.comments(42) == []
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_poll_a_release_lock_busy_past_its_cap_blocks_the_land(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    handle["release_busy"] = land_slice.MAX_RELEASE_BUSY_WAITS
+    _finish(handle, 1, BUSY_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.failure is not None
+
+
 def test_poll_host_refusal_defers_without_a_probe(
     seams: dict[str, Any], clock: dict[str, datetime]
 ) -> None:
@@ -5371,12 +5451,37 @@ def test_kill_pushes_the_slice_branch_to_origin(
         return "ok"
 
     monkeypatch.setattr(land_slice, "_push_branch", fake_push)
+    # The fake ship pgid (5151) is a real id on the runner: never signal it.
+    monkeypatch.setattr(land_slice._rs, "_signal_group", lambda pgid, sig: None)
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     _ctx, handle = _submit(store, seams)
     ctx = _Ctx(store, _params(seams))
     land_slice.kill(ctx, handle)
     assert pushed == [(str(seams["tree"]), "slice/42")]
+
+
+def test_kill_skips_a_pgid_owned_by_another_user(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reused pgid owned by another user (EPERM) is skipped, not raised:
+    the branch push still runs (r331's red gate, a real 5151 on the runner)."""
+    pushed: list[str] = []
+
+    def eperm(pgid: int, sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    def fake_push(tree: Path, branch: str) -> str:
+        pushed.append(branch)
+        return "ok"
+
+    monkeypatch.setattr(land_slice, "_push_branch", fake_push)
+    monkeypatch.setattr(land_slice._rs, "_signal_group", eperm)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    land_slice.kill(_Ctx(store, _params(seams)), handle)
+    assert pushed == ["slice/42"]
 
 
 # ── outside-diff reds verified before charging (gr573347 b) ────────
@@ -5862,6 +5967,106 @@ def test_poll_checked_red_verify_launch_failure_is_ordinary(
     assert pctx.status == "failed"
     assert "verify" not in handle
     assert "attempt:1" in store.tag_strings(42)
+
+
+def test_poll_checked_red_verify_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A verify launch refused for capacity defers attempt-free
+    (``red_class = "admission"``): the tick re-mints the land when the
+    host frees — capacity is the host's moment, never the branch's red
+    (review td702053)."""
+
+    def boom(*a: Any, **_kw: Any) -> int:
+        raise run_slice.admission.Refused("host cannot fit the verify footprint")
+
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    monkeypatch.setattr(land_slice, "_launch", boom)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "verify" not in handle
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "admission"
+    assert "deferred" in (pctx.failure or "")
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_main_verify_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The main probe's launch refused for capacity drops the throwaway
+    worktree and defers attempt-free — never the ordinary red."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # alone probe launched
+    real_launch = land_slice._launch
+
+    def refuse_main(argv: list[str], **kw: Any) -> int:
+        if Path(str(kw.get("cwd") or "")).name == "slice-main-td42":
+            raise run_slice.admission.Refused("host cannot fit the verify footprint")
+        return real_launch(argv, **kw)
+
+    monkeypatch.setattr(land_slice, "_launch", refuse_main)
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "admission"
+    assert "verify" not in handle
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    main_tree = _main_tree(seams)
+    assert ["worktree", "remove", "--force", str(main_tree)] in [
+        a for a, _ in seams["git"]
+    ]
+    assert pctx.meta_set.get("main_probe") is None
+
+
+def test_deselect_verify_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deselect gate's launch refused for capacity still drops the
+    finished main probe's tree and defers attempt-free — the --quick
+    relaunch waits for the host, not a rebuild."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: False)
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # alone probe launched
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False  # main probe launched
+    real_launch = land_slice._launch
+
+    def refuse_deselect(argv: list[str], **kw: Any) -> int:
+        if "--deselect" in argv:
+            raise run_slice.admission.Refused("host cannot fit the verify footprint")
+        return real_launch(argv, **kw)
+
+    monkeypatch.setattr(land_slice, "_launch", refuse_deselect)
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "admission"
+    assert "verify" not in handle
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    main_tree = _main_tree(seams)
+    assert ["worktree", "remove", "--force", str(main_tree)] in [
+        a for a, _ in seams["git"]
+    ]
+    assert pctx.meta_set.get("main_probe") is None
 
 
 def test_poll_checked_red_alone_probe_no_tests_is_ordinary(
@@ -6757,6 +6962,28 @@ def test_foreign_slice_land_lock_defers_retryable(
     assert ctx.meta_set["red_class"] == "ship-busy"
 
 
+def test_ship_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host that cannot fit the land gate's footprint defers attempt-free
+    (``red_class = "admission"``): the tick re-mints the land when capacity
+    returns — a capacity refusal never sends a clean branch for rebuild
+    (review td702053)."""
+
+    def boom(*_a: Any, **_kw: Any) -> int:
+        raise run_slice.admission.Refused("host cannot fit the gate footprint")
+
+    monkeypatch.setattr(land_slice, "_launch", boom)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == []
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert ctx.meta_set["red_class"] == "admission"
+    assert "deferred" in (ctx.failure or "")
+
+
 def test_own_ship_stamp_is_adopted_not_relaunched(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -7326,3 +7553,125 @@ def test_git_in_tree_unparseable_ps_is_unknown(
         ),
     )
     assert land_slice._git_in_tree(tmp_path) is None
+
+
+# ── skill-editor follow-up mint (gr657065) ────────────────────────────
+
+
+class _MintStore:
+    def __init__(self, marker: str) -> None:
+        self.meta: dict[str, Any] = {}
+        self.minted: list[dict[str, Any]] = []
+        self.bodies: list[Any] = []
+        self.chunks = SimpleNamespace(
+            list_chunks_for_ref=lambda _: [
+                SimpleNamespace(
+                    text="handoff: Built.\n" + marker, chunk_kind="todo_comment"
+                )
+            ],
+            insert_chunks=lambda ref_id, chunks, **kw: self.bodies.extend(chunks),
+        )
+
+    @contextmanager
+    def tx(self) -> Iterator[_MintStore]:
+        yield self
+
+    def execute(self, sql: str, args: tuple[Any, ...]) -> _MintStore:
+        assert "FOR UPDATE" in sql
+        return self
+
+    def fetchone(self) -> tuple[dict[str, Any]]:
+        return (self.meta,)
+
+    def insert_ref(self, **kw: Any) -> SimpleNamespace:
+        self.minted.append(kw)
+        return SimpleNamespace(id=99)
+
+    def add_tag(self, *args: Any, **kw: Any) -> None:
+        pass
+
+    def tags_for(self, ref_id: int) -> list[Any]:
+        return []
+
+    def stamp_ref_meta(self, ref_id: int, updates: dict[str, Any], **kw: Any) -> None:
+        self.meta.update(updates)
+
+
+def test_land_mints_skill_edit_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    finished: list[int] = []
+    monkeypatch.setattr(nodes, "finish_mint", lambda s, tid, **kw: finished.append(tid))
+    store = _MintStore("skills: precis-get-help, precis-put-help")
+    sha = "a" * 40
+    assert "minted td99" in land_slice._mint_skill_edit(store, 42, sha)
+    assert "already minted" in land_slice._mint_skill_edit(store, 42, sha)
+    assert len(store.minted) == 1 and finished == [99]
+    job = store.minted[0]
+    assert job["parent_id"] == 42 and job["meta"]["task_class"] == "skill"
+    assert job["meta"]["skill_ids"] == ["precis-get-help", "precis-put-help"]
+    assert sha in store.bodies[0].text
+    for marker, note in [("skills: none", "skills: none"), ("", "skills: not stated")]:
+        empty = _MintStore(marker)
+        assert land_slice._mint_skill_edit(empty, 42, sha) == note
+        assert empty.minted == []
+
+
+def test_reconcile_completed_ship_resumes_mirror_publication(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen = _patch_sync_seams(monkeypatch)
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx = _Ctx(store, _params(seams))
+    ctx.meta.update(
+        submit_attempt="a" * 32,
+        submit_host=run_slice.admission.local_host(),
+        submit_started_at=1.0,
+    )
+    tips = {"main": "f" * 40, "prod": "0" * 40}
+    handle = land_slice.submit(ctx, None)
+    assert handle is not None
+    attempt = run_slice.run_dir(42) / ("a" * 32)
+    assert Path(handle["exit_file"]) == attempt / "exit"
+
+    # Simulate death before even the full handle record. The completed
+    # wrapper left its PID and exit code, and the mirror is awaiting poll.
+    (attempt / "handle").unlink()
+    baseline = json.loads((attempt / "baseline").read_text(encoding="utf-8"))
+    run_slice._write_launch_record(
+        attempt / "baseline", {**baseline, "factory_mirror_tips": tips}
+    )
+    (attempt / "pid").write_text(str(handle["pid"]), encoding="utf-8")
+    _finish(handle, 0, GREEN_LOG)
+    assert land_slice._ship_busy(Path(seams["tree"]), 42, "slice/42") is None
+
+    verdict = land_slice.reconcile(ctx)
+
+    assert isinstance(verdict, Reconcile)
+    assert land_slice.poll(ctx, verdict.handle) is True
+    assert ctx.status == "succeeded"
+    [(_mirror, _cache, _url, got_tips, _expect)] = seen["sync"]
+    assert got_tips == tips
+    assert len(seams["launch"]) == 1
+
+
+def test_reconcile_free_lock_without_current_evidence_is_unknown(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    store = _Store()
+    store.add_todo(42)
+    ctx = _Ctx(store, _params(seams))
+    ctx.meta.update(
+        submit_attempt="a" * 32,
+        submit_host=run_slice.admission.local_host(),
+        submit_started_at=1.0,
+    )
+
+    assert land_slice._ship_busy(Path(seams["tree"]), 42, "slice/42") is None
+    assert land_slice.reconcile(ctx) is None
+    assert seams["launch"] == []

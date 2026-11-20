@@ -724,7 +724,7 @@ delete(
 The quest harvest stamps bool trust verdicts onto a candidate's meta
 (`barrier_trusted`, `selectivity_trusted`, `kinetics_trusted`) and the
 frontier re-reads them every pass. When a stamp is wrong — e.g. a barrier
-shows trusted while its pathway gate says BLOCKED — correct it through
+shows trusted while its pathway gate says FAIL — correct it through
 this audited door (gr592893); `edit` ops, `tag` and unrestricted meta
 writes cannot touch these keys:
 
@@ -736,7 +736,7 @@ put(
     args={
         "stamp": {
             "barrier_trusted": False,   # one *_trusted key per call: bool, or null to unset
-            "reason": "pathway gate BLOCKED despite trusted stamp",
+            "reason": "pathway gate FAIL despite trusted stamp",
             "evidence": "pw339066",      # optional handle/citation, verbatim
         }
     },

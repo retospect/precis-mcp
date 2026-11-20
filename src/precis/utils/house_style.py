@@ -69,15 +69,17 @@ _ITALIC_UNDERSCORE = re.compile(r"(?<!\w)_(?=[^\s_])[^_\n]*?(?<=[^\s_])_(?!\w)")
 _DOUBLE_HYPHEN = re.compile(r"(?<=\w)--(?=\w)|(?<=\s)--(?=\s)")
 _EM_DASH = re.compile("—")
 
+EM_DASH_FIX = (
+    "split the sentence first and give each sentence one main fact. "
+    "Use a comma or parentheses only for a short gloss such as a unit. "
+    "Use a colon to introduce a list or explanation"
+)
+
 #: rule name -> (pattern, fix advice). Order is report order; ``bold`` runs
 #: before ``italic_star`` and its span is masked so ``**x**`` never also
 #: reads as two italics.
 RULES: tuple[tuple[str, re.Pattern[str], str], ...] = (
-    (
-        "em_dash",
-        _EM_DASH,
-        "split the sentence, or use a colon, comma or parentheses",
-    ),
+    ("em_dash", _EM_DASH, EM_DASH_FIX),
     ("bold", _BOLD, "drop the asterisks: write the plain words"),
     (
         "italic_star",

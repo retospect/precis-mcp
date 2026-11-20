@@ -290,13 +290,13 @@ def test_eye_row_drops_the_space_the_ring_filter_already_applied(
 def test_memory_eye_1hop_labels_a_codeless_neighbour_by_kind_and_slug(
     hub: Hub,
 ) -> None:
-    """gr476896: a ring holding a websearch cache (no handle code) raised
+    """gr476896: a ring holding a codeless cache (no handle code) raised
     KeyError and the whole eye failed. The neighbour renders as
-    ``websearch:<slug>``, the handle ``get`` resolves."""
+    ``<kind>:<slug>``, the form ``get`` resolves."""
     store = hub.live_store
     mem = store.insert_ref(kind="memory", slug=None, title="Focus")
     cache = store.insert_ref(
-        kind="websearch", slug="characteristic-length-nanoparticles", title="ℓc search"
+        kind="math", slug="characteristic-length-nanoparticles", title="ℓc search"
     )
     paper = store.insert_ref(kind="paper", slug="wenzel16", title="XPS profiling")
     for near in (cache, paper):
@@ -307,7 +307,7 @@ def test_memory_eye_1hop_labels_a_codeless_neighbour_by_kind_and_slug(
     )
 
     assert "  related-to (2):" in out
-    assert "websearch:characteristic-length-nanoparticles — ℓc search" in out
+    assert "math:characteristic-length-nanoparticles — ℓc search" in out
     assert f"pa{paper.id} — XPS profiling" in out
 
 

@@ -274,27 +274,16 @@ move the work forward by exactly one of these output shapes:
    cheapest model that can produce the depth required. Add
    ordering with `link(kind='todo', id=<B>, target='todo:<A>',
    rel='blocked-by')` (B waits on A) for sequential pairs; leave unlinked for parallel siblings. You will
-   be re-called once all children resolve. Children automatically
-   inherit your workspace.
+   be re-called once all children resolve. Children inherit project context and export-home metadata.
+   Name the hub memory handle in their briefs.
 
-2. **Write the artefact directly.** *If this project owns a draft*
-   (you will see a `## Draft` block below in this message), that draft
-   is the deliverable: write prose **into the draft** with
-   `put(kind='draft', …)` / `edit(id='dc<id>', …)` exactly as that
-   block describes — the `.tex` is regenerated from the draft, so the
-   file kinds below are gated off for you this tick. Otherwise (a plain
-   tex workspace with no draft), write the artefact via the
-   workspace-routed
-   `put(kind='tex', name='<slug>', text='\\section{...}\\n...')`.
-   The system places the file at the right path under your project's
-   workspace; you don't compute paths. For figures use
-   `put(kind='pic', name='<slug>.svg', text='<svg>')`; for raw data
-   `put(kind='data', name='<slug>.csv', text='...')`. The first
-   `put` in a fresh workspace auto-creates the directory layout
-   (entrypoint `main.tex`, `tex/`, `pics/`, `data/`, `.gitignore`,
-   `git init`). Every successful `put` produces a git commit; on
-   rollback, `git reset --hard <sha>` returns the workspace to that
-   tick's state.
+2. **Write the artefact directly in the mesh.** Project prose lives in
+   memories. Find the hub first with
+   `search(kind='memory', tags=['project:<slug>'])` and follow its
+   navigation links. Write section memories linked `part-of` the hub.
+   If a `## Draft` block is present, write into that bound draft with
+   `put(kind='draft', …)` / `edit(id='dc<id>', …)` as the block describes.
+   File kinds are import/export only; compile/export when requested.
 
    **Prose style.** Write plain declarative sentences, one idea each.
    No em-dashes (the `—` character): split the thought into separate
@@ -414,27 +403,13 @@ move the work forward by exactly one of these output shapes:
   `STATUS:done` — reporting blocked is correct; a fabricated "done"
   is the worse failure.
 
-## Files (workspace-routed)
+## Files (explicit import/export)
 
-The MCP server handles project infrastructure (layout, gitignore,
-git init, main.tex skeleton, refs.bib generation) lazily on first
-need. You never think about physical paths.
+Project prose lives in memories (the hub memory) or the bound draft.
+File kinds are export/import only. `meta.workspace` is the export home.
+Follow the hub's navigation before requesting a compiled/exported artifact.
 
-- `put(kind='tex', name='intro', text='\\section{Introduction}...')`
-- `put(kind='tex', name='main', text='...')` — entrypoint (special)
-- `put(kind='pic', name='timeline.svg', text='<svg>')`
-- `put(kind='data', name='qy-by-node.csv', text='...')`
-- `get(kind='tex', id='tex--intro')` — read your section back
-- `edit(kind='tex', id='tex--intro~scope', mode='replace',
-       text='...')` — block-level edit by slug
-
-The `put` returns one of two verdicts:
-
-- **`ok`**: file landed (possibly with a small mechanical-fix note:
-  unicode escapes, missing `\\usepackage{}`, etc — silently fixed).
-- **`hint`**: file NOT written; the system has a proposed correction
-  for an error it won't auto-resolve without your ack. Read the
-  hint, decide if it preserves your intent, resubmit if it does.
+{file_exports}
 
 **Paper not in corpus**: if you want to cite a paper that isn't in
 the corpus yet, **request it** — don't just flag a gap and move on.
@@ -591,7 +566,7 @@ Format (copy verbatim, fill in the values):
 Verdict semantics — `done`, `continue` and `yield` describe the state
 changes you made earlier; the runner applies `halt` itself:
 
-* `done` — you tagged STATUS:done and the parent can read your files
+* `done` — you tagged STATUS:done and the parent can read your linked refs
 * `continue` — you minted subtasks; the parent will be re-summoned
   once they resolve
 * `yield` — you tagged `ask-user:<question>`; awaiting human input
@@ -612,14 +587,14 @@ Writing is not exclusive to leaves. Where in the tree you sit shapes
 what you write:
 
 * **Leaves** (no children) write *substrate*: section bodies,
-  citations, raw findings. One file per leaf is the typical pattern.
+  citations, raw findings. Link section memories to the project hub
+  or write the bound draft chunks.
 * **Mid-level synthesis nodes** (you minted children, they finished,
   you're re-ticking with their summaries) write *connective tissue*:
   transitions between sibling sections, intro/outro of a multi-part
-  topic, updated `\\input{}` ordering in `main.tex`.
+  topic, and navigation links between the section memories or draft chunks.
 * **Strategic root** writes the *frame*: executive summary, outlook,
-  the highest-level transitions. Often writing `main.tex`'s prose
-  scaffolding around the leaves' `\\input{}` calls.
+  the highest-level transitions in the hub memory or bound draft.
 
 If you're a mid-level node and your children's summaries already
 cover the substrate, your job is the stitching — not minting another
@@ -632,9 +607,9 @@ Information flow:
   you write at mint time. Be specific — name the deliverable, depth
   target, the considerations to weigh. A vague brief produces a
   vague leaf.
-* **Upward**: leaves produce artefacts (files on disk) + structured
+* **Upward**: leaves produce linked memories or draft chunks + structured
   conclusion summaries (the block above) + minted refs (citations,
-  findings). Parents re-tick and see workspace status + children
+  findings). Parents follow hub navigation and children
   status without re-reading the raw stdouts.
 
 ## Depth discipline (the value proposition)
@@ -1807,8 +1782,31 @@ def _m_kinds(ctx: AssemblyContext) -> str:
     return kinds_table()
 
 
+def _planner_contract(*, file_kinds: bool) -> str:
+    """Offer explicit TeX exports only on a surface that supports them."""
+    exports = ""
+    if file_kinds:
+        exports = (
+            "### Explicit file exports\n\n"
+            "Only when no hub memory or bound draft exists and an export is requested, "
+            "use `put(kind='tex', name='<slug>', text='<export>')`; "
+            "read it back with `get(kind='tex', id='tex--<slug>')`."
+        )
+    return _PLANNER_CONTRACT.replace("{file_exports}", exports)
+
+
 def _m_contract(ctx: AssemblyContext) -> str:
-    return _PLANNER_CONTRACT
+    from precis.config import load_config
+    from precis.kind_gate import parse_disabled
+    from precis.utils.surface_scope import surface_disabled_kinds
+
+    disabled = parse_disabled(load_config().kinds_disabled) | surface_disabled_kinds()
+    file_kinds = bool(os.environ.get("PRECIS_ROOT")) and "tex" not in disabled
+    # The subprocess kind overlay is installed after prompt assembly. Check
+    # the same draft binding here so its prompt never advertises a gated kind.
+    if file_kinds and ctx.store is not None and bound_draft(ctx.store, ctx.ref_id):
+        file_kinds = False
+    return _planner_contract(file_kinds=file_kinds)
 
 
 def _m_identity(ctx: AssemblyContext) -> str:
@@ -1935,27 +1933,13 @@ def _m_body(ctx: AssemblyContext) -> str:
 
 
 def _m_skill_injection(ctx: AssemblyContext) -> str:
-    """Bimodal skill injection (docs/backlog/skill-question-targets-and-
-    injection.md §2): embed this tick's task text against the skill
-    corpus's question-shaped retrieval targets; on a high-confidence
-    match, inject the WHOLE matched skill body instead of leaving
-    discovery to the model to decide on its own (measured: 5 of ~19,853
-    prod jobs used it). No cue/snippet tier — below threshold injects
-    nothing, on purpose (see :mod:`precis.skill_index.injection`).
-
-    Skipped (``""``) while autoskill is active — the router injects the
-    skills similar sessions used, with this same bimodal match as its
-    thin-history fallback, so a tick never gets both."""
-    from precis.skill_index.injection import match_skill, render_injection
+    """Inject high-confidence skill sections unless autoskill handles discovery."""
+    from precis.skill_index import injection
     from precis.utils.llm import autoskill
 
     if autoskill.active():
         return ""
-    task_text = _ref_body(ctx)
-    match = match_skill(task_text)
-    if match is None:
-        return ""
-    return render_injection(match)
+    return injection.render_section_injection(injection.match_sections(_ref_body(ctx)))
 
 
 def _m_anchor(ctx: AssemblyContext) -> str:

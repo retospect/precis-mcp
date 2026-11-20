@@ -35,6 +35,32 @@ lane, and calling it from a process without that provider gets `NotFound`
 with a `kind 'pathway' routes through host(s): …` hint — expected off-host,
 not a bug; retry from a host that has it.
 
+## Declutter profiles and embed pathway figures
+
+```python
+get(kind="pathway", id="<slug>", view="profile",
+    args={"route_only": True, "hide_supply": True, "kinetics": True})
+get(kind="pathway", id="<slug>", view="mermaid",
+    args={"route_only": True, "top_n_barriers": 5, "hide_supply": True})
+```
+
+`route_only` keeps the shortest productive route; route selection traverses
+supply bridges before display pruning. `hide_supply` removes those edges and
+isolated states. `top_n_barriers` keeps N largest selected reaction barriers.
+`label_threshold_eV` suppresses smaller barrier labels. Profile `kinetics`
+defaults true: stored TOF (log10), method, trust, T and gas table accompany
+Ea and uncertainty, without solving again. Missing records say "kinetics not
+solved". The highlighted largest route barrier is not a solved degree of
+rate control. `U` shifts the profile using recorded `n_H`; kinetics remains at
+its stored environment.
+
+A draft figure accepts `meta={'view': {'source': 'pathway:<slug>#profile',
+'route_only': True, 'kinetics': True}}`; omit the suffix for profile or use
+`#graph` for the network. The same pruning, `label_threshold_eV`, `U` and
+`size=[width,height]` (inches, each 1–24) options control lazy PNG rendering.
+Source edits invalidate it; Refresh preserves its recipe. Full call and
+provenance details: `precis-draft-rich-content-help`.
+
 ## Find existing pathways / list what has been run
 
 A bare get lists the most recently updated pathways with their slugs, the
@@ -583,7 +609,7 @@ or enqueue the suggested calls.
   The `engine staleness` row compares the pathway's stamped engine against
   the env-or-pinned current version — the same check the harvest's seed
   gate demotes on: an OLDER stamp fails with `engine:stale` in `blocked_by`
-  (BLOCKED — a newer stamp is not stale), and the pathway re-measures on
+  (see assurance tiers below), and the pathway re-measures on
   the current engine when the quest opted into the tier ladder
   (`fidelity_restale_cap` > 0, frontier or top provisional band only),
   while a pathway with no engine stamp reads `not-run`. The seed-independence row
@@ -743,3 +769,16 @@ above don't change — only what you can put in the config.
   standing optimization campaign on the todo tree.
 - [[precis-structure-help]] — the atomistic structures behind each
   intermediate.
+
+## Barrier assurance tiers
+
+The trust verdict is PASS, WARN or FAIL. PASS retains the strict gate.
+WARN requires converged, saddle-verified evidence and permits only a single
+seed, stale engine or BEP estimate; it ranks with `≈` and its reason.
+FAIL includes unconverged NEB, absurd magnitude, endpoint split, detachment
+and wrong binder, and never ranks. A failed sibling lookup or stored barrier
+refusal remains FAIL. A vacuous endpoint check remains labelled on PASS.
+Quest frontiers show PASS-only and PASS+WARN Pareto bands side by side;
+leaderboards carry those membership columns and the assurance reason in
+`quality`. Carry the `≈` marker and reason into reports of WARN numbers;
+do not report numbers from FAIL rows.

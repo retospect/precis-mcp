@@ -57,6 +57,7 @@
     <a href="/eye/{{ g.handle }}" class="font-mono text-xs text-fg-subtle hover:underline">{{ g.handle }}</a>
     <span title="{{ g.title }}">{{ g.title.split('\n', 1)[0] | truncate(120) }}</span>
     {% if g.lane %}<span class="text-xs text-fg-faint">[{{ g.lane }}]</span>{% endif %}
+    {% if g.after %}<span class="text-xs text-fg-faint">after {% for handle in g.after %}<a href="/eye/{{ handle }}" class="hover:underline">{{ handle }}</a>{{ ", " if not loop.last }}{% endfor %}</span>{% endif %}
   </div>
   <div class="w-40 shrink-0 text-xs text-fg-secondary truncate">{{ g.stage }}</div>
   <div class="w-14 shrink-0 text-right text-xs"><span class="text-fg-ghost">–</span></div>

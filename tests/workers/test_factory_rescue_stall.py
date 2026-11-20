@@ -365,6 +365,30 @@ def test_queued_job_on_a_stalled_queue_is_rescued(store: Store) -> None:
     assert _rescue_tags(store, task) == ["rescue:stalled"]
 
 
+def test_queued_overlap_held_build_on_a_stalled_queue_waits(store: Store) -> None:
+    """gr702610: the mint queues a file-overlap-held build — its job
+    never claims while the holder builds, so its queue can sit still
+    past the deadline. The hold, not a stall, owns the silence."""
+    root = _root(store)
+    holder = _node(store, root, title="holder build")
+    _body(store, holder, "Edit src/precis/a.py")
+    _job(
+        store,
+        holder,
+        status="running",
+        meta_extra={"started_at": (NOW - timedelta(minutes=15)).isoformat()},
+    )
+    task = _node(store, root, title="held build")
+    _body(store, task, "Edit src/precis/a.py")
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any("file-overlap hold" in note for note in res.notes)
+
+
 def test_queued_job_other_type_drain_does_not_hold(store: Store) -> None:
     """gr625325's cohort is the queue the job actually waits in: another
     job_type (or executor) draining does not shorten this queue, so a

@@ -10,9 +10,12 @@ by the DB-backed tests in ``test_memory.py``.
 from __future__ import annotations
 
 import re
+import types
 from typing import Any
 
-from precis.utils import mentions
+import pytest
+
+from precis.utils import handle_registry, mentions
 
 # ---------------------------------------------------------------------------
 # extract_handles
@@ -52,6 +55,52 @@ def test_extract_gates_on_allowlist_and_low_signal() -> None:
     # should surface, even though both match the ``noun:value`` shape.
     handles = mentions.extract_handles("user:asa tag:open memory:1")
     assert handles == [("memory", "1", None)]
+
+
+def test_linkify_kinds_cover_handle_registry() -> None:
+    """gr702989: every registered record kind supports legacy mentions."""
+    expected = handle_registry.record_kinds() - mentions.LOW_SIGNAL_KINDS
+    assert expected <= mentions.LINKIFY_KINDS
+    assert not mentions.LINKIFY_KINDS & mentions.LOW_SIGNAL_KINDS
+    assert mentions.LINKIFY_KINDS - expected == {
+        "calc",
+        "math",
+        "provenance",
+        "random",
+    }
+
+
+def test_linkify_kinds_follow_plugin_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consumers retain a live view when plugin discovery adds kinds."""
+    kinds = {"memory": "me"}
+    monkeypatch.setattr(handle_registry, "_kind_codes", lambda: kinds)
+    assert "sample" not in mentions.LINKIFY_KINDS
+    kinds["sample"] = "zz"
+    assert "sample" in mentions.LINKIFY_KINDS
+    assert "sample" in set(mentions.LINKIFY_KINDS)
+    assert len(mentions.LINKIFY_KINDS) == len(set(mentions.LINKIFY_KINDS))
+    assert mentions.extract_handles("sample:123") == [("sample", "123", None)]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    sorted(mentions.LINKIFY_KINDS - {"python"}),
+)
+def test_extract_every_linkify_kind(kind: str) -> None:
+    assert mentions.extract_handles(f"see {kind}:123~2") == [(kind, "123", "~2")]
+
+
+def test_extract_python_numeric_mention_is_dead() -> None:
+    """gr702978: python's mention grammar is qualname-based
+    (``python:<dotted.qualname>``) — the REF_PATTERN pass skips ``python``
+    so a numeric/single-segment id no longer extracts; a ``py<N>`` handle
+    is not a decimal handle (python is file-backed)."""
+    assert mentions.extract_handles("see python:123~2") == []
+    assert mentions.extract_handles("see python:pkg.mod.Sym~2") == [
+        ("python", "pkg.mod.Sym", None)
+    ]
 
 
 def test_extract_handles_structure() -> None:
@@ -192,6 +241,22 @@ class _FakeStore:
 
         return _Cur()
 
+    # -- universal-handle path -----------------------------------------
+    def resolve_handle(self, token: str) -> Any:
+        """Duck-typed ``Store.resolve_handle``: a live record row whose
+        kind matches the token's code resolves; chunk codes, dead rows
+        and kind mismatches return ``None`` (the typo guard)."""
+        parsed = handle_registry.parse(handle_registry.normalize(token))
+        if parsed is None:
+            return None
+        kind, is_chunk, pk = parsed
+        if is_chunk:
+            return None
+        ref = self._refs.get(pk)
+        if ref is None or ref.retired_at is not None or ref.kind != kind:
+            return None
+        return types.SimpleNamespace(ref_id=pk, chunk_id=None, chunk_ord=None)
+
     # -- numeric lookup path -------------------------------------------
     def fetch_refs_by_ids(
         self, ids: list[int], include_deleted: bool = False
@@ -205,6 +270,71 @@ class _FakeStore:
                 continue
             out[i] = ref
         return out
+
+
+# ---------------------------------------------------------------------------
+# Bare-prose handles at write time (gr702966): a whole-word ``me5`` is the
+# same mention as ``[me5]`` — it links at write and warns when dead,
+# matching the web autolinker and the retire guard.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("token", ["me5", "ME5", "Me5"])
+def test_resolve_targets_bare_prose_handle_links(token: str) -> None:
+    store = _FakeStore(refs={5: _FakeRef(5)}, cite_keys={})
+    targets = mentions.resolve_link_targets(store, f"the fix in {token} worked")
+    assert [(t.dst_ref_id, t.dst_pos) for t in targets] == [(5, None)]
+
+
+def test_resolve_targets_bare_handle_dedupes_with_bracketed() -> None:
+    store = _FakeStore(refs={5: _FakeRef(5)}, cite_keys={})
+    targets = mentions.resolve_link_targets(store, "[me5] and again me5 bare")
+    assert [(t.dst_ref_id, t.dst_pos) for t in targets] == [(5, None)]
+
+
+def test_resolve_targets_bare_handle_dead_or_mismatched_stays_literal() -> None:
+    store = _FakeStore(refs={5: _FakeRef(5)}, cite_keys={})
+    # me9 names nothing, td5 claims a todo while 5 is a memory (the typo
+    # guard), zz is unregistered, and some5/me5-x are not whole words.
+    assert mentions.resolve_link_targets(store, "me9 td5 zz9 some5 me5-x") == []
+
+
+def test_resolve_targets_bare_handle_honours_exclude() -> None:
+    store = _FakeStore(refs={5: _FakeRef(5)}, cite_keys={})
+    assert mentions.resolve_link_targets(store, "see me5", exclude_ref_id=5) == []
+
+
+def test_resolve_targets_pin_targets_stay_provenance() -> None:
+    # ``[fi42>pa5]``'s pin list is inside the bracket span — export
+    # provenance, not a link-graph mention (gr702966 must not mint it).
+    store = _FakeStore(
+        refs={42: _FakeRef(42, kind="finding"), 5: _FakeRef(5, kind="paper")},
+        cite_keys={},
+    )
+    targets = mentions.resolve_link_targets(store, "see [fi42>pa5,pc9]")
+    assert [(t.dst_ref_id, t.dst_pos) for t in targets] == [(42, None)]
+
+
+def test_unresolved_mentions_reports_bracketed_and_bare() -> None:
+    store = _FakeStore(refs={5: _FakeRef(5)}, cite_keys={})
+    out = mentions.unresolved_handle_mentions(store, "see ME5 and [me7] or Me9")
+    assert out == [("me7", True), ("me9", False)]
+
+
+def test_unresolved_mentions_bare_dedupes_and_skips_self() -> None:
+    store = _FakeStore(refs={5: _FakeRef(5)}, cite_keys={})
+    # me5 resolves (a self-mention is still resolved — never reported);
+    # me9 written both bare and bracketed reports once — the bracketed
+    # pass runs first, so the bracketed form wins the label.
+    out = mentions.unresolved_handle_mentions(
+        store, "me9 then me5 and me9 again [me9]", exclude_ref_id=5
+    )
+    assert out == [("me9", True)]
+
+
+def test_unresolved_mentions_ignores_non_handle_words() -> None:
+    store = _FakeStore(refs={5: _FakeRef(5)}, cite_keys={})
+    assert mentions.unresolved_handle_mentions(store, "zz9 py3 some5 me5-x") == []
 
 
 def test_resolve_targets_numeric_slug_and_chunk() -> None:

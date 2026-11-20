@@ -796,6 +796,27 @@ def test_kill_signals_the_gate_group_and_drops_the_land_tree(
     assert Path(handle["slice_tree"]).is_dir() and _branches(rig) != ""
 
 
+def test_kill_permission_denied_still_drops_the_land_tree(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """gr702533: a reused foreign pgid must not prevent land cleanup."""
+    import os
+
+    ctx, handle, _ = _gated(rig, exit_code=None)
+    signals: list[tuple[int, int]] = []
+
+    def denied(pgid: int, sig: int) -> None:
+        signals.append((pgid, int(sig)))
+        raise PermissionError("foreign process group")
+
+    monkeypatch.setattr(os, "killpg", denied)
+    land_slice.kill(ctx, handle)
+    assert signals == [(4242, 15)]
+    assert not rig.land_tree().exists()
+    assert Path(handle["slice_tree"]).is_dir() and _branches(rig) != ""
+    assert "permission denied for pgid 4242" in caplog.text
+
+
 def test_kill_never_signals_the_workers_own_pid_or_group(
     rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:

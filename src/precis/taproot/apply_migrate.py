@@ -1018,8 +1018,7 @@ def apply_dry_run(
                     if placement is None:
                         # Withheld: re-grounding found this atom ungrounded
                         # on a hub that has candidate source papers — "no
-                        # source, no atom" (docs/backlog/
-                        # taproot-compound-migration.md). No hub minted, no
+                        # source, no atom" (me691011). No hub minted, no
                         # conjunct-of link, no cascade ever ran for it.
                         atom_hub_ids.append(None)
                         reason = withheld_reasons_by_idx[i]

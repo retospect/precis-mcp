@@ -45,7 +45,9 @@ while its newest ``run_slice`` job carries a refusal ``until`` in the
 future; ``pick_lane`` skips it, the first submit after the window is the
 probe, and a probe job without the mark clears the lane by being newer.
 A broken host then costs one failed probe per window instead of a
-retry-cap ask per todo.
+retry-cap ask per todo. A lane whose newest builds all died of one engine
+cause is held out the same way until its breaker ask is closed
+(:mod:`precis.plans.lane_breaker`).
 
 Retry (:func:`ladder`): the table in order is also the escalation chain
 ``plan_dispatch`` climbs when a slice fails — each enabled fit lane's
@@ -98,6 +100,10 @@ COST_ORDER: tuple[str, ...] = (COST_FREE, COST_SUBSCRIPTION, COST_METERED)
 #: probe per window, short enough that a fixed login is picked up the
 #: same hour.
 HOST_REFUSAL_BACKOFF = timedelta(minutes=30)
+#: The "until" :func:`lane_backoffs` reports for a lane the cause-based
+#: breaker holds out: no real deadline — the open ask is the hold, closing
+#: it lifts it — so a far one.
+BREAKER_HOLD = timedelta(days=365)
 
 #: Job statuses that no longer hold a lane slot (mirrors
 #: ``precis.workers.executors._common.TERMINAL``; restated so this
@@ -761,7 +767,9 @@ def lane_backoffs(store: Any, now: datetime | None = None) -> dict[str, datetime
     per ``meta.lane``) carries ``meta.host_refusal.until`` in the future
     (gr571395): a later job on the lane without the mark — a probe that
     launched — clears the backoff by being newer, so no second write
-    path is needed.
+    path is needed. A lane the cause-based breaker holds out (an open
+    breaker ask, :mod:`precis.plans.lane_breaker`) is reported too, with
+    a far deadline: closing the ask lifts it.
     """
     now = now or datetime.now(UTC)
     with store.pool.connection() as conn:
@@ -790,6 +798,18 @@ def lane_backoffs(store: Any, now: datetime | None = None) -> dict[str, datetime
             until = until.replace(tzinfo=UTC)
         if until > now:
             out[str(lane)] = until
+    # The cause-based breaker (:mod:`precis.plans.lane_breaker`) holds a
+    # lane out the same way, until its ask is closed: every picker that
+    # skips a backed-off lane skips it. A blip reads as no breaker.
+    try:
+        from precis.plans import lane_breaker
+
+        held = lane_breaker.tripped_lanes(store)
+    except Exception:
+        log.warning("lanes.lane_backoffs: breaker read failed", exc_info=True)
+        held = set()
+    for lane in held:
+        out.setdefault(lane, now + BREAKER_HOLD)
     return out
 
 

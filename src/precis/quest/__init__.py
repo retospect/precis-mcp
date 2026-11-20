@@ -6,29 +6,36 @@ Design-of-record ``quest-layer`` (git-only); kind + logbook surface in
 exploration queue), `logbook` (WORM entries), `dossier` (the living
 synthesis), `tick` (one bounded LLM step), `compute` (candidates →
 ``structure`` sims), `frontier` (Pareto rank), `protocol` (per-quest
-measurement protocols, deduped dispatch/harvest drift logbook entries, and
+measurement protocols, deduped dispatch/harvest drift logbook entries,
 frontier/status protocol histograms; gr593142), `environment_basis` and
-`correction_policy` (engine-free hashes/tuples in the network basis), `atomcost` (static
-element-price table → the ``atom_cost`` economic axis), `figures` (static matplotlib
+`correction_policy` (engine-free hashes/tuples), `atomcost` (element-price
+table → the ``atom_cost`` economic axis), `figures` (static matplotlib
 pareto/profile renderers + frozen data snapshots for draft export; CLI
-``precis quest figure``), `replay` (the optimisation-benchmark read of the
+``precis quest figure``), `replay` (optimisation-benchmark read of the
 measured history — per-axis top-5% coverage + best-so-far/regret of the
-LLM proposer's picks vs a seeded random baseline, gr608711; CLI
+proposer's picks vs a seeded random baseline, gr608711; CLI
 ``precis quest replay`` + ``get(kind='quest', view='replay')``),
 `graduate` (per-candidate
 milestones), `loop` (the reconciler), `catalyst_seed` (human seeding),
 `explore` (tried-set summary), `rulings` (code-minted measurement rulings),
 `narrative_budget` (the growth-ratchet gate,
-owner-agnostic — reusable by any rolling-context rewrite), `trap_check`
-(the planted-trap regression: a dormant sandbox quest whose candidate
-network carries a stale-engine measure, a swapped endpoint and an absurd
-barrier beside one control, ticked N times and scored on the frontier
-gate + the ask-vs-propose leg, gr593141 — the weekly ``quest_traps``
-cadence in :mod:`precis.workers.quest_traps` lands the score). The perpetual loop itself is the
+reusable by any rolling-context rewrite), `trap_check`
+(the planted-trap regression: a dormant sandbox quest carrying a
+stale-engine measure, a swapped endpoint and an absurd barrier beside
+one control, ticked N times and scored on the frontier gate +
+ask-vs-propose leg, gr593141 — the weekly ``quest_traps``
+cadence lands the score). The perpetual loop is the
 ``quest_tick`` coordinator job (``precis.workers.job_types.quest_tick``).
+`failure_class` (gr593138) splits untrusted barrier stamps:
+mechanical auto-requeues under caps, science routes to the agent.
 
 Package-level invariants (detail lives on the named module):
 
+- **Need citations do not create new capabilities.** ``needs.tool_key``
+  strips citation decoration and legacy capped stubs (cap before strip,
+  so a filed key re-keys to itself); repeats bump even parked gripes
+  without merging distinct lane prefixes.
+- **Operational commits advance ticks.**
 - **Environment objectives preserve missing evidence.**
   ``environment_optimizer`` evaluates one stored point without solving or
   stamping: the five eV terms, physical/trust mask and bottleneck J. Rates
@@ -37,7 +44,6 @@ Package-level invariants (detail lives on the named module):
   -infinity, unknown masks/terms stay unavailable with reasons. The
   log-rate term is unavailable for zero TOF, but its raw zero still fails
   a positive rate floor, so M=0 and J=-infinity.
-  The pathway plugin's ``optimum`` read supplies staircase/map/bulk evidence.
 - **The discovery agent owns all chemistry.** ``catalyst_seed.PARAM_SPACE``
   is coverage-count + buildability only, never a chemistry menu; code never
   fabricates a dispatch or picks chemistry (``tick``).
@@ -54,20 +60,19 @@ Package-level invariants (detail lives on the named module):
   (``compute``; dossier-owned-by-process).
 - **Seed budgets preserve full-network search.** Defaults, caps, runner margins
   and retry eligibility: ``compute._autocatpath_wall_seconds`` (gr614723).
-- **Untrusted measures don't rank — but they stay visible.** A pathway with
-  NEB-not-converged / adsorbate-detached warnings, a nonphysical barrier
-  (> ``compute._BARRIER_ABSURD_EV``), a symmetry-twin pair whose barriers
-  disagree (same ``geom_hash_c``+tier, Δ > ``compute._TWIN_BARRIER_TOL_EV``
-  — both sides untrusted), or a kinetics solve whose
-  guard bracket disagrees / TOF is non-finite (``kinetics_trusted``), is
-  excluded from the
-  confirmed frontier and can never graduate (``compute._pathway_quality`` →
-  ``frontier`` → ``graduate``), but its measured values surface as a
-  **provisional** band (``frontier.ProvisionalCandidate`` — merged measures,
-  untrusted keys + reasons named, own Pareto rank) in the tick prompt, text
-  view, and web scatter, so the loop is never blind to its own measurements.
+- **Barrier assurance separates ranking from strict credit.** PASS keeps
+  the strict gate; WARN needs converged, saddle-verified evidence and permits
+  only one independent seed, stale engine or BEP estimates. WARN ranks with
+  an approximation marker and reasons, but cannot graduate. The frontier
+  retains independent PASS-only and PASS+WARN Pareto sets. Physical failures
+  and missing verification remain FAIL and cannot rank, even when the
+  diagnostic provisional band retains their raw values.
+  The magnitude ceiling (``compute._BARRIER_ABSURD_EV``), symmetry-twin
+  disagreement (``compute._TWIN_BARRIER_TOL_EV``), and kinetics validity
+  (``kinetics_trusted``) remain independent guards. Diagnostic values stay
+  visible through ``frontier.ProvisionalCandidate`` in tick/text/web views.
   Seeded pathway runs record ``requested_seeds`` at dispatch and accumulate
-  ``executed_seeds`` only after child launch, including later failures.
+  ``executed_seeds`` only after child launch.
   Trust verdicts show both lists and flag dispatch mismatches, while the
   independent-seed gate still uses actual trust records: starting a child
   does not prove usable independent evidence. Historical launch lists stay
@@ -139,36 +144,34 @@ Package-level invariants (detail lives on the named module):
 - **Window/Shapley measures stamp wherever the anchors exist.**
   ``window_objectives`` (SPSO slice 6) turns the resting map + staircase
   routes into measures (window area/fraction, Shapley Σφ²/IPR, ridge
-  churn, the HER margin) on every candidate that carries a coverage scan
-  — the scan is the paid measurement. Declaring a key in
-  ``rubric_objectives`` promotes it to a Pareto axis and the logbook; an
-  unflagged quest's frontier and logbook stay as before. ``precis_pathway``
-  is reached lazily via ``importlib`` (the boundary's dynamic form): a
-  missing plugin or a not-yet-landed sibling module degrades to notes,
+  churn, the HER margin) on every candidate carrying a coverage scan
+  (the paid measurement). Declaring a key in
+  ``rubric_objectives`` promotes it to a Pareto axis and the logbook;
+  unflagged quests stay as before. ``precis_pathway``
+  loads lazily via ``importlib``: a
+  missing plugin degrades to notes,
   never a crash. Anchor-scan placement is **propose-only**: ranked
   proposals go on the logbook; the dispatcher mints.
 - **Engine deploys re-score.** The autocatpath content key folds an
   engine-version token, so new results never dedupe onto stale jobs;
   ``compute.redispatch_candidates``/``reset_compute`` are the CLIs.
   Evidence minted on an older token demotes to a *named* blocker —
-  ``engine:stale`` (or ``engine:unknown`` when a trusted edge carries no
-  stamp) in ``barrier_seed_blocker``/``barrier_blocked_by``, never a
-  silent flip — and self-heals: the harvest re-queues a stale-trusted
-  struct_neb edge on the current engine
-  (``StructureHandler.enqueue_stale_neb_rerun`` through the
-  ``_dispatch_neb`` mint under the recomputed cache key, daily-capped),
-  while an autocatpath pathway re-measures through the restale lane —
-  and only when the quest opted into the tier ladder with
-  ``fidelity_restale_cap`` > 0, for candidates in the frontier or the
-  top provisional band. ``fidelity_restale_cap=0`` is a wider hold than
-  the restale pass: it stops every automatic pathway re-mint on the
-  quest — promotes, repair re-dispatches, the loop reconciler's
-  wrongful-kill arm and the tick's ``reruns`` entries
-  (``compute._automatic_rerun_hold``, gr543908) — while the deliberate
-  doors (``request_rerun``, ``redispatch_candidates``) stay open.
-  ``view='trust'``'s "engine staleness
-  (precis)" row answers ``engine:stale`` exactly when the harvest does;
-  an unstamped engine reads ``not-run``.
+  ``engine:stale``/``engine:unknown`` (an unstamped trusted edge) in
+  ``barrier_seed_blocker``/``barrier_blocked_by``, never a silent flip —
+  and self-heals: the harvest re-queues a stale-trusted
+  struct_neb edge on the current engine (daily-capped,
+  ``StructureHandler.enqueue_stale_neb_rerun``), while an
+  autocatpath pathway re-measures through the restale lane —
+  for opted-in frontier and top provisional candidates.
+  ``fidelity_restale_cap=0`` holds automatic restale, promotion, repair,
+  wrongful-kill reconciliation and tick reruns (gr543908). Operators can
+  still use ``request_rerun`` and ``redispatch_candidates``. Mechanical
+  stamps and classified infra/timeout failures retry on the pinned
+  engine with either hold setting (gr593138), subject to a cooldown,
+  ``fidelity_mechanical_retry_cap``, and
+  ``fidelity_mechanical_gpu_h_budget`` at 1.5 GPU-h per seed. A fresh science
+  verdict vetoes failed-job redispatch, including amnesties, and routes
+  the blocker to the quest agent. ``view='trust'`` matches harvest staleness.
 - **One proposal in flight (WIP=1).** ``tick.max_proposals_per_tick``
   (``PRECIS_QUEST_MAX_PROPOSALS``, default 1) caps dispatch/tick; extras
   stay ``hypothesis`` leads until the in-flight one's sims land.

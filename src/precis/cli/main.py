@@ -92,7 +92,8 @@ def _build_parser(path: tuple[str, ...] | None = None) -> argparse.ArgumentParse
         choices=["stdio", "sse", "streamable-http"],
         default="stdio",
         help="stdio (default, every existing caller) | sse | streamable-http "
-        "(network transports need --token or PRECIS_MCP_TOKEN — used by "
+        "(network transports need --token or PRECIS_MCP_TOKEN unless "
+        "PRECIS_MCP_CREDENTIAL_CLASSES leaves out `install` — used by "
         "the sandbox_run precis_access:read per-run callback).",
     )
     serve_parser.add_argument(
@@ -104,8 +105,9 @@ def _build_parser(path: tuple[str, ...] | None = None) -> argparse.ArgumentParse
     serve_parser.add_argument(
         "--token",
         default=None,
-        help="Bearer token required on a network transport (or set "
-        "PRECIS_MCP_TOKEN). Ignored on stdio.",
+        help="Install bearer token for a network transport (or set "
+        "PRECIS_MCP_TOKEN); required unless PRECIS_MCP_CREDENTIAL_CLASSES "
+        "leaves out `install`. Ignored on stdio.",
     )
     serve_parser.add_argument(
         "--fd",

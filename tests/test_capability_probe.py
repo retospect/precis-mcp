@@ -488,6 +488,63 @@ def test_probe_claude_config_stored_auth(monkeypatch: pytest.MonkeyPatch) -> Non
     assert cap._probe_claude_config() == 0
 
 
+@pytest.mark.parametrize("adapter", ["claude", "codex"])
+@pytest.mark.parametrize(
+    "binary, login", [(False, False), (False, True), (True, False), (True, True)]
+)
+def test_lane_tokens_require_binary_and_login(
+    monkeypatch: pytest.MonkeyPatch, adapter: str, binary: bool, login: bool
+) -> None:
+    """gr701455: installed but logged-out CLIs cannot advertise a builder."""
+    monkeypatch.setattr(cap, "claude_bin_present", lambda: False)
+    monkeypatch.setattr(cap, "codex_bin_present", lambda: False)
+    monkeypatch.setattr(cap, f"{adapter}_bin_present", lambda: binary)
+    monkeypatch.setattr(cap, "claude_auth_present", lambda: login)
+    monkeypatch.setattr(cap, "codex_login_present", lambda: login)
+    monkeypatch.setattr(cap, "_probe_kimi_bin", lambda: 0)
+    monkeypatch.setattr(cap, "_probe_devin_bin", lambda: 0)
+    assert cap._PROBES[f"{adapter}_bin"]() == int(binary and login)
+    assert cap._probe_builder() == int(binary and login)
+
+
+def test_claude_directory_without_credentials_is_not_a_login(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from precis import secrets
+
+    monkeypatch.setattr(secrets, "get_secret", lambda name: None)
+    monkeypatch.setattr(cap.sys, "platform", "linux")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    assert cap._stored_claude_auth() is False
+    (tmp_path / ".credentials.json").write_text("{}", encoding="utf-8")
+    assert cap._stored_claude_auth() is True
+
+
+@pytest.mark.parametrize("returncode", [0, 44])
+def test_claude_keychain_checks_presence_without_extracting_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, returncode: int
+) -> None:
+    from precis import secrets
+
+    monkeypatch.setattr(secrets, "get_secret", lambda name: None)
+    monkeypatch.setattr(cap.sys, "platform", "darwin")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+
+    def probe(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        assert argv == [
+            "security",
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+        ]
+        assert kwargs["stdout"] == subprocess.DEVNULL
+        assert kwargs["timeout"] == 5
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(cap.subprocess, "run", probe)
+    assert cap._stored_claude_auth() is (returncode == 0)
+
+
 def test_probe_host_resources_swallows_probe_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -672,3 +729,116 @@ def test_latexmk_probe_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_latexmk_probe_is_registered() -> None:
     assert "latexmk" in cap._PROBES
+
+
+# ── devin lane: binary + login, TTL-cached ──────────────────────────────
+
+
+@pytest.fixture
+def devin_probe(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """The real devin login probe over fake seams: ``bin`` is whether the
+    binary resolves, ``status`` the ``auth status`` answer, ``runs`` how
+    many times ``auth status`` ran. The cache is dropped around each test."""
+    from precis.workers.job_types import _slice_adapters as sa
+
+    state = SimpleNamespace(bin=True, status="Logged in\n", rc=0, runs=0)
+
+    def auth_status(_bin: str) -> subprocess.CompletedProcess[str]:
+        state.runs += 1
+        return subprocess.CompletedProcess([], state.rc, state.status, "")
+
+    monkeypatch.setattr(sa, "adapter_bin_present", lambda name: state.bin)
+    monkeypatch.setattr(sa, "devin_auth_status", auth_status)
+    monkeypatch.setattr(sa, "_devin_login_cache", None)
+    return state
+
+
+@pytest.mark.parametrize(
+    "binary, status, rc, token",
+    [
+        (True, "Logged in (via Devin)\n", 0, 1),
+        (True, "Not logged in\n", 1, 0),
+        (True, "Not logged in\n", 0, 0),
+        (False, "Logged in\n", 0, 0),
+    ],
+)
+def test_devin_bin_token_requires_binary_and_login(
+    monkeypatch: pytest.MonkeyPatch,
+    devin_probe: SimpleNamespace,
+    binary: bool,
+    status: str,
+    rc: int,
+    token: int,
+) -> None:
+    """A logged-out devin host must not advertise the lane: its preflight
+    refusal would back the lane off for the whole fleet."""
+    devin_probe.bin, devin_probe.status, devin_probe.rc = binary, status, rc
+    for other in ("_probe_claude_lane", "_probe_codex_bin", "_probe_kimi_bin"):
+        monkeypatch.setattr(cap, other, lambda: 0)
+    assert cap._PROBES["devin_bin"]() == token
+    assert cap._probe_builder() == token
+
+
+def test_devin_bin_token_without_binary_never_runs_auth_status(
+    devin_probe: SimpleNamespace,
+) -> None:
+    devin_probe.bin = False
+    assert cap._probe_devin_bin() == 0
+    assert devin_probe.runs == 0
+
+
+def test_devin_login_probe_is_ttl_cached_and_bustable(
+    devin_probe: SimpleNamespace,
+) -> None:
+    from precis.workers.job_types import _slice_adapters as sa
+
+    assert cap.devin_login_present() is True
+    assert cap.devin_login_present() is True
+    assert devin_probe.runs == 1  # the second read was inside the TTL
+    devin_probe.status, devin_probe.rc = "Not logged in\n", 1
+    assert cap.devin_login_present() is True  # still the cached verdict
+    sa._bust_devin_login_probe()
+    assert cap.devin_login_present() is False
+    assert devin_probe.runs == 2
+
+
+def test_devin_login_probe_reprobes_after_the_ttl(
+    devin_probe: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.workers.job_types import _slice_adapters as sa
+
+    assert cap.devin_login_present() is True
+    now = sa.time.monotonic()
+    monkeypatch.setattr(
+        sa.time, "monotonic", lambda: now + sa._DEVIN_LOGIN_PROBE_TTL_S + 1
+    )
+    assert cap.devin_login_present() is True
+    assert devin_probe.runs == 2
+
+
+def test_note_devin_logged_out_flips_the_cached_answer(
+    devin_probe: SimpleNamespace,
+) -> None:
+    from precis.workers.job_types import _slice_adapters as sa
+
+    assert cap.devin_login_present() is True
+    sa.note_devin_logged_out()
+    assert cap.devin_login_present() is False
+    assert devin_probe.runs == 1  # recorded, not re-probed
+
+
+@pytest.mark.parametrize(
+    "stdout, rc, expected",
+    [
+        ("Logged in (via Devin)\n", 0, True),
+        ("Not logged in\n", 0, False),
+        ("Not logged in\n", 1, False),
+        ("Logged in\n", 1, False),
+        ("", 127, False),
+    ],
+)
+def test_devin_status_logged_in_reading(stdout: str, rc: int, expected: bool) -> None:
+    from precis.workers.job_types._slice_adapters import devin_status_logged_in
+
+    status = subprocess.CompletedProcess([], rc, stdout, "")
+    assert devin_status_logged_in(status) is expected

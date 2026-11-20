@@ -138,47 +138,68 @@ def _docx_ctx(store: Any) -> Any:
     )
 
 
-def test_docx_records_sources_and_section_of_claim_cites(monkeypatch) -> None:
+def test_docx_records_sources_of_claim_cites(monkeypatch) -> None:
     monkeypatch.setattr(dx, "_conjunct_cite_keys", lambda _s, _pk: ["a21", "b22"])
     monkeypatch.setattr(dx, "_render_trust_mark", lambda *_a: None)
     ctx = _docx_ctx(_FindingFake({}))
-    ctx.cur_section = "2.1"
     para = docx_lib.Document().add_paragraph()
     dx._render_inline("claim [fi7].", ctx, para)
     assert ctx.claim_cites == {7: ["a21", "b22"]}
-    assert ctx.claim_sections == {7: ["2.1"]}
 
 
-def test_docx_unnumbered_section_is_not_recorded(monkeypatch) -> None:
-    monkeypatch.setattr(dx, "_conjunct_cite_keys", lambda _s, _pk: ["a21"])
-    monkeypatch.setattr(dx, "_render_trust_mark", lambda *_a: None)
-    ctx = _docx_ctx(_FindingFake({}))
-    para = docx_lib.Document().add_paragraph()
-    dx._render_inline("claim [fi7].", ctx, para)
-    assert ctx.claim_sections == {}
-
-
-def test_docx_published_table_row_per_claim_and_no_new_citations() -> None:
+def test_docx_published_claims_are_text_paragraphs_with_a_link() -> None:
     ctx = _docx_ctx(_NpStore())
     ctx.trust = _trust([7, 8])
     ctx.cited = ["x1", "a21", "b22"]
     ctx.claim_cites = {7: ["b22", "a21"], 8: ["ghost"]}  # ghost never cited
-    ctx.claim_sections = {7: ["2", "3.1"]}
     cited_before = list(ctx.cited)
     doc = docx_lib.Document()
     dx._append_published_claims(doc, ctx)
 
-    assert [p.text for p in doc.paragraphs] == [SECTION_TITLE]
-    (table,) = doc.tables
-    rows = [[c.text for c in r.cells] for r in table.rows]
-    assert rows[0] == ["Claim", "Sources", "Cited in", "Artifact"]
-    assert len(rows) == 3  # header + one row per claim
-    assert rows[1][0] == "“Nanobuds hold.”"
-    assert rows[1][1] == "[2, 3]"
-    assert rows[1][2] == "2, 3.1"
-    assert rows[1][3].startswith("https://w3id.org/np/RAabc — published 2026-01-02")
-    assert rows[2][1] == "" and rows[2][2] == ""
+    assert doc.tables == []
+    head, first, second = doc.paragraphs
+    assert head.text == SECTION_TITLE
+    style = first.style
+    assert style is not None and style.name == "Published Claim"
+    assert style.base_style is not None and style.base_style.name == "Normal"
+    # Sentence without quotes, merged numbers, then the linked word; the
+    # URL itself is not printed; a published artifact has no embargo note.
+    assert first.text == "Nanobuds hold. [2, 3] link"
+    (link,) = first._p.xpath("./w:hyperlink")
+    rid = link.get(
+        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+    )
+    rel = doc.part.rels[rid]
+    assert rel.is_external and rel.target_ref == "https://w3id.org/np/RAabc"
+    assert "".join(link.xpath(".//w:t/text()")) == "link"
+    # A claim with no registered sources prints no number mark.
+    assert second.text == "Nanobuds hold. link"
     assert ctx.cited == cited_before  # the section registered nothing
+
+
+def test_docx_unpublished_claim_is_marked_embargo() -> None:
+    class _Embargoed(_Row):
+        state = "signed"
+
+    class _Store(_NpStore):
+        def nanopub_publish_row(self, _fid: int) -> _Row:
+            return _Embargoed()
+
+        def nanopub_artifact(self, _aid: int) -> None:
+            return None
+
+    ctx = _docx_ctx(_Store())
+    ctx.trust = _trust([7])
+    doc = docx_lib.Document()
+    dx._append_published_claims(doc, ctx)
+    assert doc.paragraphs[1].text == "Nanobuds hold. link (under embargo)"
+
+
+def test_published_entry_public_flag() -> None:
+    from precis.export._nanopub_appendix import published_claim_entries
+
+    (e,) = published_claim_entries(_NpStore(), _trust([7]))
+    assert e.public is True
 
 
 # ── doi: prose survives the ref branch (gr493193) ──────────────────────

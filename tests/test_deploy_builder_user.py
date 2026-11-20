@@ -138,6 +138,49 @@ def test_macos_account_is_a_standard_user_checked_against_admin() -> None:
     )
 
 
+def test_macos_account_has_no_blank_password_and_is_hidden() -> None:
+    block = _task(_tasks("user.yml"), "Builder user account (macOS)")["block"]
+    names = [t["name"] for t in block]
+
+    def idx(prefix: str) -> int:
+        return names.index(_task(block, prefix)["name"])
+
+    setpw = _task(block, "Set a random builder password")
+    cmd = " ".join(str(setpw["ansible.builtin.shell"]).split())
+    assert "dscl . -passwd /Users/{{ precis_builder_user }}" in cmd
+    assert "openssl rand -base64" in cmd
+    assert setpw["no_log"] is True, "the password must never be printed"
+    cond = setpw["when"]
+    assert "_builder_user_probe.rc != 0" in cond
+    assert "_builder_blank_before.rc == 0" in cond
+    assert _task(block, "Probe for a blank builder password")["no_log"] is True
+
+    hide = _task(block, "Hide the builder account")
+    assert (
+        hide["ansible.builtin.command"]
+        == "dscl . -create /Users/{{ precis_builder_user }} IsHidden 1"
+    )
+
+    guard = _task(block, "The builder account must not accept a blank password")
+    assert "_builder_blank_after.rc != 0" in str(
+        guard["ansible.builtin.assert"]["that"]
+    )
+    after = _task(block, "Probe the builder password again")
+    assert after["ansible.builtin.command"] == (
+        'dscl . -authonly {{ precis_builder_user }} ""'
+    )
+    assert after["register"] == "_builder_blank_after"
+    assert after["no_log"] is True
+    assert idx("Create the builder account") < idx("Probe for a blank")
+    assert idx("Probe for a blank") < idx("Set a random builder password")
+    assert idx("Set a random builder password") < idx(
+        "Probe the builder password again"
+    )
+    assert idx("Probe the builder password again") < idx(
+        "The builder account must not accept"
+    )
+
+
 def test_deploy_is_never_created_by_this_role() -> None:
     main = _tasks()
     for prefix in ("Builder user account", "Builder user's own .pgpass"):
@@ -360,9 +403,101 @@ def test_builder_user_gets_a_user_npm_prefix_and_a_first_devin_install() -> None
     devin = _task(tasks, "First devin install")
     assert devin["become_user"] == "{{ precis_builder_user }}"
     assert devin["args"]["creates"] == "{{ precis_builder_home }}/.local/bin/devin"
-    assert "https://cli.devin.ai/install.sh" in devin["ansible.builtin.shell"]
+    script = devin["ansible.builtin.shell"]
+    assert "https://cli.devin.ai/install.sh" in script
     assert devin["timeout"] > 0
     assert "failed_when" not in devin and "ignore_errors" not in devin
+
+
+def test_devin_installer_gets_no_stdin_and_success_is_the_binary() -> None:
+    """The installer's interactive login exits 1 without a TTY: it runs with
+    stdin from /dev/null, its exit code is ignored, and the play instead fails
+    when the binary is missing or does not run."""
+    devin = _task(_tasks("user.yml"), "First devin install")
+    lines = [ln.strip() for ln in devin["ansible.builtin.shell"].splitlines()]
+    assert 'bash "$installer" < /dev/null || true' in lines
+    assert "curl | bash" not in " ".join(lines)
+    assert not any(ln.startswith("curl") and "| bash" in ln for ln in lines)
+    binary = "{{ precis_builder_home }}/.local/bin/devin"
+    assert f"test -x {binary}" in lines
+    assert f"{binary} --version > /dev/null" in lines
+    assert lines.index(f"test -x {binary}") > lines.index(
+        'bash "$installer" < /dev/null || true'
+    ), "the binary check must come after the installer"
+    head = devin["ansible.builtin.shell"].splitlines()[0]
+    assert "-e" in head and "pipefail" in head, "a failed check must fail the play"
+    assert devin["args"]["creates"] == binary
+
+
+# ── bwrap under Ubuntu 24.04's AppArmor userns restriction ────────────
+# codex sandboxes with bwrap, which needs an unprivileged user namespace;
+# with kernel.apparmor_restrict_unprivileged_userns=1 it fails for every
+# user. The role installs an unconfined, userns-only profile on the bwrap
+# binaries and proves the builder user can run bwrap.
+
+_USERNS_GATE = "(_builder_userns_probe.stdout | default('') | trim) == \"1\""
+
+
+def test_bwrap_profile_grants_only_userns_and_covers_the_bwrap_binaries() -> None:
+    text = (_ROLE / "files" / "precis-bwrap").read_text(encoding="utf-8")
+    body = [
+        ln.strip()
+        for ln in text.splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    assert "userns," in body
+    m = re.search(r"^profile precis-bwrap (\S+) flags=\(unconfined\) \{", text, re.M)
+    assert m, "an unconfined profile named precis-bwrap"
+    attach = m.group(1)
+    assert "usr/bin/bwrap" in attach
+    assert "codex-resources/bwrap" in attach, "codex's vendored bwrap too"
+    rules = [
+        ln for ln in body if ln.endswith(",") and not ln.startswith(("abi", "include"))
+    ]
+    assert rules == ["userns,"], "the profile grants nothing but userns"
+
+
+def test_bwrap_profile_is_installed_only_on_linux_behind_the_sysctl_probe() -> None:
+    main = _tasks()
+    probe = _task(main, "Probe the AppArmor unprivileged-userns restriction")
+    assert probe["when"] == 'os_family == "linux"'
+    assert (
+        probe["ansible.builtin.command"]
+        == "sysctl -n kernel.apparmor_restrict_unprivileged_userns"
+    )
+    assert probe["changed_when"] is False and probe["failed_when"] is False
+    reg = probe["register"]
+    assert reg == "_builder_userns_probe"
+
+    install = _task(main, "Install the bwrap AppArmor profile")
+    c = install["ansible.builtin.copy"]
+    assert c["src"] == "precis-bwrap"
+    assert c["dest"] == "/etc/apparmor.d/precis-bwrap"
+    assert (c["owner"], c["group"], c["mode"]) == ("root", "root", "0644")
+    assert install["become"] is True
+    assert 'os_family == "linux"' in install["when"]
+    assert _USERNS_GATE in install["when"]
+
+    load = _task(main, "Load the bwrap AppArmor profile")
+    assert load["ansible.builtin.command"] == (
+        "apparmor_parser -r /etc/apparmor.d/precis-bwrap"
+    )
+    assert load["become"] is True
+    assert f"{install['register']} is changed" in load["when"]
+    assert 'os_family == "linux"' in load["when"] and _USERNS_GATE in load["when"]
+
+
+def test_bwrap_verify_runs_as_the_builder_user_and_fails_the_play() -> None:
+    verify = _task(_tasks(), "Verify the builder user can run bwrap")
+    assert verify["ansible.builtin.command"] == (
+        "/usr/bin/bwrap --unshare-net --dev-bind / / true"
+    )
+    assert verify["become"] is True
+    assert verify["become_user"] == "{{ precis_builder_user }}"
+    assert verify["args"]["chdir"] == "/tmp"
+    assert "failed_when" not in verify and "ignore_errors" not in verify
+    assert 'os_family == "linux"' in verify["when"]
+    assert _USERNS_GATE in verify["when"]
 
 
 # ── the builder's own heartbeat identity (gr695674) ───────────────────

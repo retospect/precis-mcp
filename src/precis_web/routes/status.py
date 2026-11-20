@@ -254,7 +254,9 @@ def _synthetic_insights_count(store: Store) -> int:
     """How many ``tier:synthetic-insight`` memories exist total.
 
     Used as the badge on the "Recent dreams" panel link to the
-    full insights view at /tags/refs?namespace=tier&value=synthetic-insight.
+    full insights view — ``/tags/refs?namespace=tier&value=
+    synthetic-insight``, which redirects into the drive's ``tag=``
+    facet (gr636493).
     """
     with _connect(store) as conn:
         row = conn.execute(
@@ -583,6 +585,25 @@ def _budget_tote(store: Any) -> dict[str, Any]:
     }
 
 
+_HOSTS_SQL = """
+    SELECT seen.host, seen.last_seen, COALESCE(problems.n, 0)::int
+      FROM (
+          SELECT host, max(ts) AS last_seen
+            FROM worker_logs
+           WHERE ts > now() - interval '7 days'
+           GROUP BY host
+      ) AS seen
+      LEFT JOIN (
+          SELECT host, count(*) AS n
+            FROM worker_logs
+           WHERE level IN ('WARNING', 'ERROR')
+             AND ts > now() - interval '24 hours'
+           GROUP BY host
+      ) AS problems USING (host)
+     ORDER BY seen.last_seen DESC
+"""
+
+
 def _hosts(store: Store) -> list[dict[str, Any]]:
     """Per-host liveness from ``worker_logs``: last-seen + recent errors.
 
@@ -590,15 +611,13 @@ def _hosts(store: Store) -> list[dict[str, Any]]:
     ``last_seen`` is the newest log line and ``problems`` counts
     WARNING/ERROR rows in the last 24h. ``stale`` flags hosts quiet
     for longer than ``_STALE_AFTER_S``.
+
+    Separate aggregates let host/ts cover liveness and the partial level/ts
+    index serve problems. A FILTER in the liveness aggregate needs heap
+    reads of every recent log to inspect its level (gr732476).
     """
     with _connect(store) as conn:
-        rows = conn.execute(
-            "SELECT host, max(ts) AS last_seen, "
-            "count(*) FILTER (WHERE level IN ('WARNING','ERROR') "
-            "AND ts > now() - interval '24 hours')::int AS problems "
-            "FROM worker_logs WHERE ts > now() - interval '7 days' "
-            "GROUP BY host ORDER BY max(ts) DESC"
-        ).fetchall()
+        rows = conn.execute(_HOSTS_SQL).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
         age = _age_seconds(r[1])
