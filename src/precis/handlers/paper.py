@@ -22,6 +22,12 @@ edit.
 Stub puts accept caller-supplied authors through the existing byline writer.
 They seed the cite key and populate ``paper_authors`` on a fresh mint; a
 deduplication hit keeps its byline and names the explicit metadata-edit call.
+S2 verification also persists its byline and journal on fresh stubs: the
+stub upsert uses authors for cite keys without writing the byline itself.
+
+DOI status reads use the fetch-status table before acquisition handling.
+An unheld DOI reports unresolved there, while an ordinary DOI get can
+request acquisition.
 
 Superseded paper restoration is CLI-only (``precis garden restore``);
 MCP/web handlers expose no restore-superseded write door.
@@ -54,7 +60,7 @@ import re
 import shlex
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 import psycopg
 
@@ -130,7 +136,11 @@ from precis.utils.block_selector import (
 )
 from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.embed_query import embed_query
-from precis.utils.glyph_health import glyph_caveat
+from precis.utils.glyph_health import (
+    glyph_caveat,
+    glyph_suspected,
+    passage_glyph_caveat,
+)
 from precis.utils.link_tag_ops import (
     apply_link_ops,
     apply_tag_ops,
@@ -151,10 +161,19 @@ from precis.utils.search_merge import (
 )
 from precis.utils.secret_scan import mask_secrets
 from precis.utils.text import excerpt as _excerpt
-from precis.utils.title_merge import title_merge_refusal
+from precis.utils.title_merge import (
+    _MIN_IDENTICAL_TITLE_TOKENS,
+    _first_family,
+    _title_identity_key,
+    content_tokens,
+    title_merge_refusal,
+)
 from precis.utils.title_views import title_md, title_plain
 from precis.utils.toc import ChunksForToc
 from precis.utils.toc_db import render_from_store
+
+if TYPE_CHECKING:
+    from precis.store._dependants import DependantsPage
 
 log = logging.getLogger(__name__)
 
@@ -307,6 +326,13 @@ def _body_op_tx(store: Store, door: str) -> Iterator[Any]:
 #: rather than dying mid-transaction on the timeout.
 _BODY_OP_MAX_CHUNKS = 20_000
 
+#: Default ``page_size`` of a paper search by row shape: one row per paper
+#: vs one row per matching chunk (``unique_per='chunk'``, ``scope=``,
+#: ``mode='verbatim'``). Chunk rows are ~30 tokens each; the benchmark put
+#: the first gold chunk at ranks 11-20 often enough to widen the page.
+_PAPER_ROWS_PAGE_SIZE = 25
+_CHUNK_ROWS_PAGE_SIZE = 20
+
 
 def _refuse_oversized_body(probe: Any, door: str, handle: str) -> None:
     """Refuse a body door whose chunk count can't fit the lifted
@@ -344,6 +370,7 @@ _BATCH_ID_CAP = 50
 _BATCH_DOI_QUEUE_CAP = 5
 
 _SUPPORTED_VIEWS = (
+    "lookup",
     "bibtex",
     "ris",
     "endnote",
@@ -366,6 +393,7 @@ _SUPPORTED_VIEWS = (
     "comments",
     "retired",
     "tags",
+    "dependants",
     # ``status`` delegates to the same fetch-state table the batch get
     # and ``search(view='status', ids=[…])`` serve (gr635828).
     "status",
@@ -518,6 +546,14 @@ def _suggest_paper_slugs(slug: str, *, store: Store, kind: str = "paper") -> lis
     → no ``options:`` line in the rendered envelope, which is exactly
     what we want when there's nothing useful to suggest.
 
+    The candidate fetch projects only ``ref_identifiers.id_value``
+    (one join, ~150 KB of strings at the cap) — the scan reads nothing
+    but the slug, so the ``list_refs`` projection it replaced (33
+    columns including ``meta`` jsonb + a per-row cite_key subquery)
+    was pure IO on an error path (gr674691: a batch ``view='bibtex'``
+    get paid one corpus scan per element and never answered inside the
+    client's 300 s).
+
     Why a free function (not a method): keeping this off the handler
     makes it independently testable without spinning up a Hub fixture
     and means the same logic could be reused by patent/oracle/conv
@@ -525,8 +561,19 @@ def _suggest_paper_slugs(slug: str, *, store: Store, kind: str = "paper") -> lis
     """
     if not slug:
         return []
-    refs = store.list_refs(kind=kind, limit=_SUGGEST_CORPUS_CAP)
-    candidates = [r.slug for r in refs if r.slug]
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ri.id_value FROM ref_identifiers ri "
+            "JOIN refs r ON r.ref_id = ri.ref_id "
+            "WHERE r.kind = %s AND r.retired_at IS NULL "
+            "AND ri.id_kind = 'cite_key' "
+            "ORDER BY r.updated_at DESC LIMIT %s",
+            (kind, _SUGGEST_CORPUS_CAP),
+        ).fetchall()
+    # Dedupe preserving recency order — a rekeyed ref can carry several
+    # cite_key rows and all of them still resolve, but a repeated
+    # string in ``candidates`` would suggest the same slug twice.
+    candidates = list(dict.fromkeys(str(r[0]) for r in rows if r[0]))
     if not candidates:
         return []
     return difflib.get_close_matches(
@@ -540,7 +587,7 @@ def _suggest_paper_slugs(slug: str, *, store: Store, kind: str = "paper") -> lis
 # Identifier prefixes the gated ``acquire`` tool accepts in its
 # ``identifier=`` slot. Bare DOIs (``10....``, including doi.org URL
 # forms) and arXiv ids are inferred without a prefix.
-_ACQUIRE_ID_PREFIXES = ("doi", "arxiv", "s2", "pubmed")
+_ACQUIRE_ID_PREFIXES = ("doi", "arxiv", "s2", "pubmed", "pmcid")
 
 
 def _stub_authors(raw: Any) -> list[dict[str, Any]] | None:
@@ -561,16 +608,19 @@ def _parse_acquire_identifier(raw: str) -> tuple[str, str] | None:
     """Parse an ``acquire`` identifier into an ``(id_kind, id_value)`` pair.
 
     Accepts prefixed forms (``doi:10.1/x``, ``arxiv:2401.00001``,
-    ``s2:<id>``, ``pubmed:<id>``) and infers bare DOIs, URL-form DOIs
-    (``https://doi.org/10.…``, ``doi.org/10.…``), and bare arXiv ids.
-    DOI and arXiv values are canonicalised through
+    ``s2:<id>``, ``pubmed:<id>``, ``pmcid:<PMC…>``) and infers bare
+    DOIs, URL-form DOIs (``https://doi.org/10.…``, ``doi.org/10.…``),
+    and bare arXiv ids. DOI and arXiv values are canonicalised through
     :func:`precis.identity.normalize_doi` / ``normalize_arxiv`` so the
     spellings callers actually paste — ``DOI:10.1/X``, another ``doi:``
     inside the value, a doi.org URL, arXiv URLs and version suffixes —
     collapse to the same ``(kind, canonical)`` pair the
     ``ref_identifiers`` collapse probe and the S2 lookup expect
-    (gr484234). Returns ``None`` when nothing recognisable is found —
-    the caller turns that into a ``BadInput`` with a usage hint.
+    (gr484234). A PMCID canonicalises to ``pmc<digits>`` —
+    ``pmcid:PMC11089570`` and ``pmcid:11089570`` are the same id, in the
+    lowercase form ``ref_identifiers`` stores (gr663681). Returns
+    ``None`` when nothing recognisable is found — the caller turns that
+    into a ``BadInput`` with a usage hint.
     """
     from precis.identity import normalize_arxiv, normalize_doi
 
@@ -585,6 +635,9 @@ def _parse_acquire_identifier(raw: str) -> tuple[str, str] | None:
                 val = normalize_doi(val) or ""
             elif pfx == "arxiv":
                 val = normalize_arxiv(val) or ""
+            elif pfx == "pmcid":
+                digits = re.sub(r"^pmc", "", val, flags=re.IGNORECASE)
+                val = f"pmc{digits}" if digits.isdigit() else ""
             if not val:
                 return None
             return (pfx, val)
@@ -648,13 +701,22 @@ def _lookup_acquire_metadata(id_kind: str, id_value: str) -> dict[str, Any] | No
         return get_paper_by_id(f"arxiv:{id_value}", propagate=True)
     if id_kind == "s2":
         return get_paper_by_id(id_value, propagate=True)
+    # S2's paper endpoint accepts ``PMID:<digits>`` / ``PMCID:<PMC…>``
+    # external ids verbatim (the ``pmid:``/``pmcid:`` prefixes the
+    # semanticscholar kind's ``_s2_path_id`` passes through). Stored
+    # pmcid values are ``pmc<digits>`` — S2 wants the ``PMC`` prefix
+    # cased up (gr663681).
+    if id_kind == "pubmed":
+        return get_paper_by_id(f"pmid:{id_value}", propagate=True)
+    if id_kind == "pmcid":
+        return get_paper_by_id(f"pmcid:{id_value.upper()}", propagate=True)
     return None
 
 
 def _lookup_doi_registry(doi: str) -> dict[str, Any] | None:
     """DOI registration-agency fallback for a genuine S2 miss (gr486090).
 
-    Crossref then DataCite via :mod:`precis.ingest.doi_registry` — the
+    Crossref, DataCite, then JaLC via :mod:`precis.ingest.doi_registry` — the
     fetch goes through ``safe_get`` because the DOI is agent-supplied.
     Returns the normalized metadata dict or ``None`` when no registry
     knows the DOI. ``RegistryLookupError`` propagates so the caller can
@@ -669,10 +731,145 @@ def _lookup_doi_registry(doi: str) -> dict[str, Any] | None:
     )
 
 
+def _scrub_uncorroborated_s2_doi(id_kind: str, meta: dict[str, Any]) -> dict[str, Any]:
+    """Drop an S2-attributed DOI the DOI registries can't corroborate.
+
+    gr710828: ``put(kind='paper', arxiv='1705.07874')`` minted a stub
+    carrying ``doi:10.9728/dcs.2024.25.7.1847`` — an unrelated Korean
+    journal paper *about* SHAP — because S2's cluster for that arXiv id
+    (s2:442e10a3…) mis-merged the foreign DOI into its ``externalIds``.
+    Re-asking S2 cannot detect it (``DOI:<that doi>`` resolves back onto
+    the same poisoned record), and the stub's DOI alias is not
+    decoration: fetch_oa would pull the wrong paper's PDF under it, and
+    every later ``doi:`` request would collapse onto this ref.
+
+    So when the caller asked by a *non-DOI* id and the resolved record
+    attributes one, corroborate: resolve the DOI at the registries
+    (Crossref / DataCite / JaLC — the same fallback the ``doi:`` leg
+    already uses) and require the registered work to look like the same
+    paper — at least one shared distinctive title token
+    (:func:`~precis.ingest.verify_metadata.title_overlap`; the published
+    version of a preprint essentially always shares one) and no clear
+    first-author disagreement
+    (:func:`~precis.utils.title_merge.first_author_agreement`). The
+    ``10.48550/arxiv.<id>`` DataCite mint corroborates itself only when
+    ``<id>`` is the record's own arXiv id. A registry miss, fault, or
+    unjudgeable pair (missing or tokenless titles, unusable bylines)
+    ABSTAINS and keeps the DOI — a resolver hiccup is not evidence of a
+    mis-merge, the same split gr483930 drew for the S2 leg.
+
+    No-op for ``id_kind='doi'`` (the DOI *is* the requested id) and for
+    records carrying none. Returns ``meta`` unchanged when the DOI
+    stays, else a copy with ``doi``/``external_ids.DOI`` dropped — the
+    caller's dict is never mutated.
+    """
+    if id_kind == "doi":
+        return meta
+    doi = str(meta.get("doi") or "").strip()
+    if not doi:
+        return meta
+    if doi.lower().startswith("10.48550/arxiv."):
+        # The DataCite mint corroborates itself only when its suffix IS
+        # the resolved arXiv id; another preprint's mint is a conflict
+        # on its face — two preprint ids on one record — so the alias
+        # drops without a registry call (it also can't be vouched for
+        # while the registry is down).
+        from precis.identity import normalize_arxiv
+
+        want = normalize_arxiv(str(meta.get("arxiv_id") or ""))
+        got = normalize_arxiv(doi[len("10.48550/arxiv.") :])
+        if want and got:
+            if want.lower() == got.lower():
+                return meta
+            return _drop_s2_doi(meta, doi)
+    _reg, reg_title = _registry_disagreement(doi, meta)
+    if reg_title is None:
+        return meta
+    log.info(
+        "acquire: dropping registry-uncorroborated DOI %s off the %s record "
+        "(registry title %r vs record title %r) — gr710828",
+        doi,
+        id_kind,
+        reg_title,
+        meta.get("title"),
+    )
+    return _drop_s2_doi(meta, doi)
+
+
+def _drop_s2_doi(meta: dict[str, Any], doi: str) -> dict[str, Any]:
+    """Copy of ``meta`` without ``doi`` / ``external_ids.DOI``."""
+    out = dict(meta)
+    out["doi"] = None
+    ext = dict(out.get("external_ids") or {})
+    if str(ext.get("DOI") or "").strip().lower() == doi.lower():
+        del ext["DOI"]
+    out["external_ids"] = ext
+    return out
+
+
+def _registry_disagreement(
+    doi: str, meta: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """``(registry record, its title)`` when the registry clearly names
+    another work than ``meta``; ``(record, None)`` when the record
+    corroborates ``meta``; ``(None, None)`` when inconclusive (no S2
+    title, registry miss/fault, tokenless titles, unjudgeable bylines).
+
+    The record returns with the verdict so a caller that already paid for
+    the lookup can reuse it: re-asking the registries can miss on the
+    second pass and reject a DOI the first pass confirmed (gr710828
+    review).
+    """
+    s2_title = str(meta.get("title") or "").strip()
+    if not s2_title:
+        return None, None
+    try:
+        reg = _lookup_doi_registry(doi)
+    except Exception:
+        return None, None
+    reg_title = str((reg or {}).get("title") or "").strip()
+    if not reg_title:
+        return reg, None
+    from precis.ingest.verify_metadata import title_overlap
+    from precis.utils.title_merge import content_tokens, first_author_agreement
+
+    if not content_tokens(reg_title) or not content_tokens(s2_title):
+        return reg, None
+    if (
+        title_overlap(reg_title, s2_title) > 0
+        and first_author_agreement(meta.get("authors"), (reg or {}).get("authors"))
+        is not False
+    ):
+        return reg, None
+    return reg, reg_title
+
+
+def _poisoned_s2_cluster_registry(
+    meta: dict[str, Any], doi: str
+) -> dict[str, Any] | None:
+    """The registry record establishing that ``doi``'s S2 cluster belongs
+    to another work, else ``None``.
+
+    A ``doi:`` request whose S2 record would also hand the stub other
+    ids (arXiv / S2 paperId) while the registry names a different work.
+    The DOI echo check can't catch this: S2 resolves ``DOI:<foreign>``
+    onto the poisoned cluster (gr710828), and adopting that cluster's
+    arXiv / S2 aliases would collapse the DOI onto an unrelated ref.
+    Records with no other ids to adopt need no check. The caller reuses
+    the returned record as the DOI's own registry verification instead
+    of re-asking the registries — a second lookup can miss and reject a
+    DOI the first lookup confirmed (gr710828 review).
+    """
+    if not (meta.get("arxiv_id") or meta.get("s2_id")):
+        return None
+    reg, disagree = _registry_disagreement(doi, meta)
+    return reg if disagree is not None else None
+
+
 #: Display names for the ``meta.source`` tags ``resolve_registry_doi``
 #: returns — surfaced in the acquire response so the caller can see
 #: which registry vouched for the DOI.
-_REGISTRY_LABELS = {"crossref": "Crossref", "datacite": "DataCite"}
+_REGISTRY_LABELS = {"crossref": "Crossref", "datacite": "DataCite", "jalc": "JaLC"}
 
 
 class PaperHandler(Handler):
@@ -719,6 +916,23 @@ class PaperHandler(Handler):
                 "match",
                 "table",
                 "ord",
+                # ``view='links'`` (gr627629): args={'cursor': '<bucket>:
+                # <link_id>'} resumes the paged table where the footer's
+                # ``next:`` line left off; ``rel``/``of_kind`` filter the
+                # edge set like draft's links view.
+                "cursor",
+                "reason",
+                "relation",
+                "src_kind",
+                "dst_kind",
+                "include_structural",
+                "count",
+                "space",
+                "under",
+                "endpoint",
+                "direction",
+                "rel",
+                "of_kind",
                 # ``view='comments'`` note selectors (gr521094):
                 # ``args={'comment': K}`` one note, ``args={'comments':
                 # K}`` the newest K, ``args={'comments': 'A-B'}`` a
@@ -925,7 +1139,8 @@ class PaperHandler(Handler):
         ``put(kind='paper', id=<stub>, args={'pdf_url': 'https://…'})`` is
         the door for a known-legal PDF the OA fetcher cannot find: it queues
         a ``paper_pull`` job that drops the PDF into the ingest inbox for
-        that body-less stub (:meth:`_queue_pdf_pull`).
+        that stub or short held article preview
+        (:meth:`_queue_pdf_pull`).
 
         ``put(kind='paper', id=<slug>, mode='fetch-si')`` is the one other
         door: it queues a supplementary-information fetch for an existing
@@ -1224,7 +1439,8 @@ class PaperHandler(Handler):
         if ident is None and not (title and title.strip()):
             raise BadInput(
                 "put(kind='paper') mints a stub - pass doi=, arxiv=, "
-                "identifier= (doi:/arxiv:/s2:), citation=, or title=",
+                "identifier= (doi:/arxiv:/s2:/pubmed:/pmcid:), citation=, "
+                "or title=",
                 next="put(kind='paper', doi='10.1038/nature10352')",
             )
         return self.acquire(
@@ -1240,7 +1456,7 @@ class PaperHandler(Handler):
 
     def _queue_pdf_pull(self, id: str | int | None, pdf_url: Any) -> Response:
         """Queue a ``paper_pull`` job feeding an agent-supplied PDF URL to a
-        body-less stub. Refuses a non-paper and a bodied stub up front; the job fetches (``safe_stream``) and drops PDF + sidecar
+        stub or short held article preview. Refuses other complete refs; the job fetches (``safe_stream``) and drops PDF + sidecar
         in the ingest inbox — the MCP server fetches nothing."""
         from urllib.parse import urlsplit
 
@@ -1260,7 +1476,7 @@ class PaperHandler(Handler):
                 next="use a publisher, repository or author-hosted open copy",
             )
         slug, ref_id = self._resolve_paper_slug(id)
-        problem = paper_pull.target_problem(self.store, ref_id)
+        problem = paper_pull.target_problem(self.store, ref_id, allow_preview=True)
         if problem is not None:
             raise BadInput(
                 f"{slug} {problem}",
@@ -1311,23 +1527,24 @@ class PaperHandler(Handler):
                 "get(kind='paper', id=...) to check its state",
             )
         _uploads.require_uploads_dir()
-        token = file_links.mint("put", file_links.UPLOAD_SHA, ref_id, store=self.store)
-        exp = file_links.parse(token).exp
-        path = f"/files/upload/{ref_id}?t={token}"
         base = (
             vault.get_secret(file_links.WEB_BASE_URL_SECRET, store=self.store) or ""
         ).rstrip("/")
-        url = f"{base}{path}" if base else path
-        expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        lines: list[str] = []
         if not base:
-            lines.append(
-                "PRECIS_WEB_BASE_URL is not set — the link below is "
-                "path-only; prepend the precis_web origin to POST to it "
-                "(the operator sets it with `precis secret set "
-                "PRECIS_WEB_BASE_URL` or on /secrets)."
+            raise Unsupported(
+                "PRECIS_WEB_BASE_URL is not set — the deployment's web "
+                "origin is unset, so the upload link would come back "
+                "path-only and nothing could POST to it (gr681313)",
+                next="operator: set the web origin with `precis secret set "
+                "PRECIS_WEB_BASE_URL <origin>` or on /secrets, then retry "
+                f"{example}",
             )
-        lines += [
+        token = file_links.mint("put", file_links.UPLOAD_SHA, ref_id, store=self.store)
+        exp = file_links.parse(token).exp
+        path = f"/files/upload/{ref_id}?t={token}"
+        url = f"{base}{path}"
+        expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines: list[str] = [
             f"# {slug} — PDF upload link",
             f"url: {url}",
             f"expires: {expires} (single use — one upload per link)",
@@ -1789,11 +2006,14 @@ class PaperHandler(Handler):
         :meth:`put`); this method does the work. A dream (or anyone)
         notices the corpus keeps citing a paper it doesn't hold and mints
         a **stub** so the existing fetch pipeline takes over
-        (``docs/backlog/dreaming.md`` §Acquire) — never ingests inline, no
+        (`gr690614` §Acquire) — never ingests inline, no
         download, no Marker, in the dream turn.
 
-        1. Resolve ``identifier`` (``doi:``/``arxiv:``/``s2:`` or a bare
-           DOI/arXiv id) and best-effort enrich via S2.
+        1. Resolve ``identifier`` (``doi:``/``arxiv:``/``s2:``/
+           ``pubmed:``/``pmcid:`` or a bare DOI/arXiv id) and
+           best-effort enrich via S2 — a DOI also gets a registration-
+           agency year cross-check, the registry being authoritative
+           for what the DOI names (gr722127).
         2. Idempotently upsert a stub ``paper`` ref (identifier-collapse:
            a hit on an already-held or already-wanted paper short-circuits
            to a no-op), tagged ``DREAM:acquire`` with ``meta.set_by='dream'``.
@@ -1830,7 +2050,7 @@ class PaperHandler(Handler):
         has_title = bool(title and title.strip())
         if not has_identifier and not has_title:
             raise BadInput(
-                "acquire requires identifier= (doi/arxiv/s2) or title=",
+                "acquire requires identifier= (doi/arxiv/s2/pubmed/pmcid) or title=",
                 next="acquire(identifier='doi:10.1/x', reason='cited 5x in cluster')",
             )
 
@@ -1842,7 +2062,8 @@ class PaperHandler(Handler):
                 raise BadInput(
                     f"acquire: unrecognised identifier {identifier!r}",
                     next=(
-                        "use 'doi:10...', 'arxiv:2401.00001', or 's2:<id>' "
+                        "use 'doi:10...', 'arxiv:2401.00001', 's2:<id>', "
+                        "'pubmed:<id>', or 'pmcid:<PMC…>' "
                         "(or pass title= for a backlog-only stub)"
                     ),
                 )
@@ -1863,7 +2084,9 @@ class PaperHandler(Handler):
 
         # Best-effort S2 enrichment → a meaningful stub. Failure is fine.
         # ``year`` arrives as a caller hint (e.g. from put(kind='paper',
-        # year=…)); S2 overrides it when it has one, else the hint stands.
+        # year=…)); S2 overrides it when it has one, else the hint stands —
+        # except for a DOI, where the registration-agency cross-check below
+        # can override S2's year (gr722127).
         stub_title = title.strip() if title and title.strip() else None
         identifiers: list[tuple[str, str]] = [id_pair] if id_pair else []
         unverified = False
@@ -1872,6 +2095,9 @@ class PaperHandler(Handler):
         registry_meta: dict[str, Any] | None = None
         meta: dict[str, Any] | None = None
         s2_down = False
+        # Set when the DOI-registry year cross-check below replaces S2's
+        # year — the value names the registry that vouched (gr722127).
+        year_registry_source: str | None = None
         if id_pair is not None:
             try:
                 meta = _lookup_acquire_metadata(*id_pair)
@@ -1882,7 +2108,25 @@ class PaperHandler(Handler):
                 # real DOI as "hallucinated" (gr483930).
                 meta = None
                 resolver_err = exc
+            if meta and id_pair[0] == "doi":
+                # S2's cluster for this DOI may belong to another work
+                # (gr710828): adopt none of its aliases then. The registry
+                # record that established the mismatch doubles as the
+                # DOI's own verification — reuse it below instead of
+                # re-asking the registries, whose second lookup can miss
+                # and reject an already-confirmed DOI.
+                poisoned_reg = _poisoned_s2_cluster_registry(meta, id_pair[1])
+                if poisoned_reg is not None:
+                    log.info(
+                        "acquire: doi %s resolved to a mismatched S2 cluster "
+                        "(registry names %r) — using the registry record",
+                        id_pair[1],
+                        (poisoned_reg.get("title") or ""),
+                    )
+                    meta = None
+                    registry_meta = poisoned_reg
             if meta:
+                meta = _scrub_uncorroborated_s2_doi(id_pair[0], meta)
                 # Lazy import mirrors ``_lookup_acquire_metadata`` above —
                 # ``semanticscholar`` is gated behind the ``[paper]``
                 # extra, and a successful ``meta`` here already proves
@@ -1906,6 +2150,59 @@ class PaperHandler(Handler):
                         )
                         if pair not in identifiers:
                             identifiers.append(pair)
+                # S2's externalIds cluster also carries PubMed / PMC
+                # aliases — register them so a later ``pubmed:`` /
+                # ``pmcid:`` / bare ``PMC…`` lookup collapses onto this
+                # stub instead of minting a twin (gr663681).
+                external = meta.get("external_ids") or {}
+                pubmed_raw = external.get("PubMed")
+                if pubmed_raw and str(pubmed_raw).strip().isdigit():
+                    pair = ("pubmed", str(pubmed_raw).strip())
+                    if pair not in identifiers:
+                        identifiers.append(pair)
+                pmc_raw = external.get("PubMedCentral") or external.get(
+                    "PubMedCentralID"
+                )
+                if pmc_raw:
+                    pmc_digits = re.sub(
+                        r"^pmc", "", str(pmc_raw).strip(), flags=re.IGNORECASE
+                    )
+                    if pmc_digits.isdigit():
+                        pair = ("pmcid", f"pmc{pmc_digits}")
+                        if pair not in identifiers:
+                            identifiers.append(pair)
+                if id_pair[0] == "doi":
+                    # Year cross-check against the DOI's registration
+                    # agency (gr722127): S2's index is a secondary source
+                    # and its year can be wrong — S2 says 1999 for
+                    # Feynman's 1982 "Simulating physics with computers"
+                    # (10.1007/BF02650179), minting the cite key
+                    # ``feynman99``. The registry is authoritative for
+                    # what the DOI names; when it vouches for the same
+                    # title its year wins. A registry fault or a
+                    # non-matching title keeps S2's year. Only an S2 year
+                    # is cross-checked: with none there is nothing to
+                    # correct, so the requested DOI costs no registry call.
+                    crosscheck = None
+                    if isinstance(meta.get("year"), int):
+                        try:
+                            crosscheck = _lookup_doi_registry(id_pair[1])
+                        except Exception:
+                            crosscheck = None
+                    if crosscheck is not None:
+                        from precis.ingest._text_norm import best_jaccard
+
+                        score, _, _ = best_jaccard(
+                            str(meta.get("title") or ""),
+                            str(crosscheck.get("title") or ""),
+                        )
+                        if score >= _DOI_EDIT_TITLE_MISMATCH_THRESHOLD:
+                            reg_year = crosscheck.get("year")
+                            if isinstance(reg_year, int):
+                                year = reg_year
+                                year_registry_source = str(
+                                    crosscheck.get("source") or ""
+                                )
             elif resolver_err is not None:
                 # The resolver could not answer at all (S2 outage, 429
                 # storm, broken client) — mint anyway, marked unverified.
@@ -1932,7 +2229,10 @@ class PaperHandler(Handler):
                 # index lags fresh records and misses whole registries
                 # (DataCite proceedings like LIPIcs), so for a DOI ask
                 # the registration agencies before rejecting (gr486090).
-                if id_pair[0] == "doi":
+                # A ``None`` meta can also be a poisoned S2 cluster
+                # dropped above — that branch already stashed the
+                # registry record, so don't ask again here.
+                if id_pair[0] == "doi" and registry_meta is None:
                     try:
                         registry_meta = _lookup_doi_registry(id_pair[1])
                     except Exception as exc:
@@ -1995,6 +2295,22 @@ class PaperHandler(Handler):
                 if pair not in identifiers:
                     identifiers.append(pair)
 
+        twin_doi_of: int | None = None
+        for _k, _v in identifiers:
+            if _k != "doi":
+                continue
+            from precis.identity import doi_twins
+
+            if self.store.find_ref_by_identifier("doi", _v, kind="paper") is not None:
+                break
+            for _twin in doi_twins(_v):
+                twin_doi_of = self.store.find_ref_by_identifier(
+                    "doi", _twin, kind="paper"
+                )
+                if twin_doi_of is not None:
+                    break
+            break
+
         with self.store.tx() as conn:
             ref_id, created = self.store.upsert_stub_paper(
                 identifiers=identifiers,
@@ -2039,6 +2355,26 @@ class PaperHandler(Handler):
                     conn.execute(
                         "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
                         (Jsonb(patch), ref_id),
+                    )
+                if meta:
+                    # The upsert only uses authors to choose the cite key.
+                    # Persist the verified S2 byline before workers can fetch
+                    # the body and take this paper out of the stub queue.
+                    s2_patch: dict[str, Any] = {}
+                    journal = meta.get("journal")
+                    if isinstance(journal, str) and journal.strip():
+                        s2_patch["journal"] = journal.strip()
+                    if year_registry_source:
+                        # The registry's year replaced S2's in the mint
+                        # (gr722127) — leave the provenance on the stub.
+                        s2_patch["acquire_year_registry"] = year_registry_source
+                    self.store.update_paper_fields(
+                        ref_id,
+                        authors=meta.get("authors") or None,
+                        meta_patch=s2_patch,
+                        source="acquire:s2",
+                        authors_source="s2",
+                        conn=conn,
                     )
                 if registry_meta is not None:
                     # A registry-resolved stub is verified — carry the
@@ -2119,7 +2455,7 @@ class PaperHandler(Handler):
             apply_tag_ops(self.store, "paper", ref_id, tags=tags, untags=None)
 
         state = "minted stub" if created else "already tracked"
-        parts = [f"acquire: {state} paper id={ref_id}"]
+        parts = [f"acquire: {state} paper id=pa{ref_id}"]
         if new_authors is not None:
             if created:
                 parts.append(f"(stored {len(new_authors)} supplied authors)")
@@ -2145,6 +2481,8 @@ class PaperHandler(Handler):
             )
             s2_state = "S2 unavailable" if s2_down else "S2 has no record"
             parts.append(f"(identifier verified via {reg_label} — {s2_state})")
+        if twin_doi_of is not None and not created and twin_doi_of == ref_id:
+            parts.append(f"(twin DOI of pa{ref_id}, nothing minted)")
         if pinned:
             parts.append("(pinned to front of fetch queue)")
         if identifiers:
@@ -2257,13 +2595,19 @@ class PaperHandler(Handler):
                 result_count=len(id),
             )
         find_preflight(kind=self.spec.kind, id=id, view=view, q=q)
+        # gr715493: a view names a read, so the queue door stays shut here
+        # too (same rule as the plain get below).
+        queues = view is None
         try:
-            raw_id = _maybe_resolve_doi(self.store, str(id))
+            raw_id = _maybe_resolve_doi(self.store, str(id), will_queue=queues)
         except NotFound:
             # gr551840: an unheld well-formed DOI queues ingest, same
             # door as the plain get below (the batch loop shares its
-            # mint budget through ``_queue_budget``).
-            queued = _queue_doi_ingest(self.store, str(id), budget=_queue_budget)
+            # mint budget through ``_queue_budget``). A view is a read
+            # and never queues (gr717456, gr715493).
+            queued = _queue_doi_ingest(
+                self.store, str(id), budget=_queue_budget, queue=queues
+            )
             if queued is not None:
                 return queued
             raise
@@ -2315,6 +2659,37 @@ class PaperHandler(Handler):
         # find-in-ref (gr486840): ``q`` on a concrete get is the shared
         # find; ``id=None`` keeps its older meaning below (delegate to
         # ``search``). Eye views keep their own ``q`` (ring expansion).
+        if (
+            isinstance(id, str)
+            and id.endswith("/lookup")
+            and detect_identifier_scheme(id) is None
+        ):
+            id = id.removesuffix("/lookup")
+            view = "lookup"
+        if view == "lookup":
+            if id is None or q is not None:
+                raise BadInput(
+                    "lookup requires id and does not accept q",
+                    next="get(kind='paper', id='<DOI or handle>', view='lookup')",
+                )
+            if isinstance(id, list):
+                return self._get_batch(id, view=view, args=args)
+            try:
+                _, slug, _, _ = self._resolve_batch_element(id)
+                ref = resolve_live_slug_ref(
+                    self.store,
+                    kind=self.spec.kind,
+                    id=slug,
+                    next_hint="search(kind='paper', q='<title>')",
+                )
+            except NotFound:
+                return Response(
+                    body=f"{id}: not held (no ingest queued)", result_count=0
+                )
+            return Response(
+                body=f"{id}: held — pa{ref.id} — {ref.title} (may be a stub)",
+                result_count=1,
+            )
         if q is not None and not is_eye_view(view):
             return self.find_in_ref(id=id, view=view, q=q)
         # Round-2 picky 2026-05-30: ``get(kind='paper', q='...')`` was
@@ -2329,13 +2704,24 @@ class PaperHandler(Handler):
             return self._render_list_papers()
         if isinstance(id, list):
             return self._get_batch(id, view=view, args=args)
+        if (
+            self.spec.kind == "paper"
+            and _normalise_view(view) == "status"
+            and detect_identifier_scheme(str(id).strip().partition("~")[0]) == "doi"
+        ):
+            # Check availability before the DOI miss can request acquisition.
+            return self._fetch_status_view([str(id)])
+        id = self._rewrite_chunk_handle(id)
+        # gr715493: an explicit view requests a read of stored data.
+        # Even aliases for the default renderer disable DOI ingest.
+        queues = view is None
         try:
-            raw_id = _maybe_resolve_doi(self.store, str(id))
+            raw_id = _maybe_resolve_doi(self.store, str(id), will_queue=queues)
         except NotFound:
             # gr551840 (Reto ruling 2026-11-02): a well-formed DOI nobody
             # holds earns an ingest job, not a repeated error — the ack
             # names it and the retry lands on the same door.
-            queued = _queue_doi_ingest(self.store, str(id))
+            queued = _queue_doi_ingest(self.store, str(id), queue=queues)
             if queued is not None:
                 return queued
             raise
@@ -2361,7 +2747,10 @@ class PaperHandler(Handler):
             kind=kind,
             id=slug,
             next_hint=f"search(kind='{kind}', q='your query') to find existing",
-            options=_suggest_paper_slugs(slug, store=self.store, kind=kind),
+            # Lazy (gr674691): the suggestion scan only matters when the
+            # slug misses — on a hit it was a full-corpus fetch thrown
+            # away, once per element under ``id=[...]``.
+            options=lambda: _suggest_paper_slugs(slug, store=self.store, kind=kind),
         )
 
         # Citation-chunk-grounding "active paper" trigger (see
@@ -2526,6 +2915,10 @@ class PaperHandler(Handler):
         them; past the cap it asks for ``args={'confirm_bulk': True}``
         up front instead, so a legitimate large batch goes through in
         one call.
+
+        ``view='abstract'`` is a read-only existence check (gr717456):
+        it skips the ``confirm_bulk`` pre-scan and never queues, so an
+        unheld DOI reads as plain not-found.
         """
         kind = self.spec.kind
         if not ids:
@@ -2540,13 +2933,23 @@ class PaperHandler(Handler):
                 f"id=[...] takes at most {_BATCH_ID_CAP} ids, got {len(ids)}",
                 next=_id_batch_next("get", kind, ids),
             )
+        if view == "lookup":
+            results = [self.get(id=elem, view="lookup") for elem in ids]
+            return Response(
+                body="\n\n".join(result.body for result in results),
+                result_count=sum(result.result_count or 0 for result in results),
+            )
         if str(view or "").strip() == "status":
             # ``search(kind='paper', view='status', ids=[…])`` is the
             # same table — the caller already had the list, just on the
             # other verb (the gr501175 arg sample).
             return self._fetch_status_view([str(i) for i in ids])
         confirm_bulk = bool((args or {}).get("confirm_bulk"))
-        if not confirm_bulk:
+        # gr715493: with a view the batch renders reads, so nothing will
+        # mint — skip the confirm_bulk pre-scan and shut the per-element
+        # queue door (same rule as the single-id get).
+        queues = view is None
+        if not confirm_bulk and queues:
             pending = 0
             for elem in ids:
                 try:
@@ -2588,11 +2991,16 @@ class PaperHandler(Handler):
                 blocks.append(self._batch_summary(ref))
             except NotFound:
                 # gr551840: an unheld well-formed DOI element queues its
-                # ingest job like the single-id get does — bounded per
+                # ingest job like the single-id get does (except abstract
+                # views, read-only per gr717456) — bounded per
                 # call by _BATCH_DOI_QUEUE_CAP (the review's N-paid-legs
                 # hole): past it the element reads as plain
-                # not-ingested with the explicit-put hint.
-                queued = _queue_doi_ingest(self.store, shown, budget=queue_budget)
+                # not-ingested with the explicit-put hint. A batch
+                # carrying a view is a read, so the door stays shut
+                # (gr715493) and the element reads as plain not-found.
+                queued = _queue_doi_ingest(
+                    self.store, shown, budget=queue_budget, queue=queues
+                )
                 blocks.append(
                     queued.body if queued is not None else f"{shown}  not found"
                 )
@@ -2612,6 +3020,31 @@ class PaperHandler(Handler):
             ]
         )
         return Response(body=body, result_count=len(ids))
+
+    def _rewrite_chunk_handle(self, raw: str | int) -> str | int:
+        """A bare ``pc<id>`` chunk handle → ``<slug>~<ord>``.
+
+        Dispatch rewrites a chunk handle before the handler sees it
+        (``_maybe_infer_kind_from_handle``); a direct ``get(id='pc…')``
+        on the handler must read the same chunk, as the batch path
+        already does in :meth:`_resolve_batch_element`. Anything that is
+        not a live paper chunk handle comes back unchanged.
+        """
+        # A ``~`` selector (table row/col) is not a bare handle — leave it.
+        if not isinstance(raw, str) or "~" in raw:
+            return raw
+        normalized = handle_registry.normalize(raw.strip())
+        if not handle_registry.is_well_formed(normalized):
+            return raw
+        resolved = self.store.resolve_handle(normalized)
+        if (
+            resolved is None
+            or resolved.kind != self.spec.kind
+            or resolved.chunk_id is None
+            or resolved.chunk_ord is None
+        ):
+            return raw
+        return f"{resolved.public_id}~{resolved.chunk_ord}"
 
     def _resolve_batch_element(
         self, elem: Any
@@ -2683,8 +3116,9 @@ class PaperHandler(Handler):
         q: str | None = None,
         scope: str | None = None,
         tags: list[str] | None = None,
-        # ``None`` picks the mode-aware default: 25 rows on the default
-        # ``unique_per='paper'`` page, 10 on the per-chunk page — the MCP
+        # ``None`` picks the mode-aware default: ``_PAPER_ROWS_PAGE_SIZE``
+        # rows on the default ``unique_per='paper'`` page,
+        # ``_CHUNK_ROWS_PAGE_SIZE`` on the per-chunk page — the MCP
         # surface forwards ``None`` when the caller didn't name a size so
         # this default can follow the resolved row shape.
         page_size: int | None = None,
@@ -2729,6 +3163,7 @@ class PaperHandler(Handler):
         # (gr500643, ``days=``) are paper-only ingest-state reads.
         view: str | None = None,
         group_by: str | list[str] | None = None,
+        agg: str | None = None,
         since: str | None = None,
         until: str | None = None,
         ids: list[str] | None = None,
@@ -2818,6 +3253,9 @@ class PaperHandler(Handler):
         :mod:`precis.handlers._paper_search`.
         """
         kind = self.spec.kind
+        from precis.handlers._numeric_ref import _require_count_agg_view
+
+        _require_count_agg_view(agg, view)
         q = fold_match_all_q(q)
         linked_from_kind = (
             self._link_scope_kind(linked_from, "linked_from")
@@ -3043,6 +3481,7 @@ class PaperHandler(Handler):
                     q=q,
                     tags=tags,
                     group_by=group_by,
+                    agg=agg,
                     since=bf["since"],
                     until=bf["until"],
                     year_from=bf["year_from"],
@@ -3391,6 +3830,26 @@ class PaperHandler(Handler):
         # flags the scope instead of silently dropping it. Captured
         # before the quartile fold, which re-issues as ``min_quartile``.
         injected_scope = include_ref_ids is not None or bool(exclude_ref_ids)
+        # ``args={'ids': …}`` (gr719628) — the named-id cohort resolves
+        # onto the include channel ahead of every no-q listing door: the
+        # stamp and link-scope listings consume only ``include_ref_ids``,
+        # so without this fold a caller's id restriction would silently
+        # widen past the named cohort (r2 S2 — a queryless listing must
+        # never drop a filter). The q= path rides the same channel into
+        # the fused search; the read-state/tags listings fold ``ids=``
+        # again inside their renderers (idempotent — same set, same
+        # intersection). Captured after ``injected_scope`` so the flag
+        # keeps naming only the dispatch-injected cited=/uncited=/hubbed=
+        # cohorts, which have no ``args=`` respelling.
+        if ids:
+            wanted = resolve_exclude_paper_ids(
+                [str(i) for i in ids], store=self.store, kind=kind
+            )
+            include_ref_ids = sorted(
+                (set(include_ref_ids) & set(wanted))
+                if include_ref_ids is not None
+                else wanted
+            )
         # ``args={'min_quartile': 'Qn'}`` (gr606422) — the venue-quartile
         # cohort intersects the include channel. Resolved here, ahead of
         # the no-q listing doors, so it composes into linked_from/lacks,
@@ -3552,6 +4011,7 @@ class PaperHandler(Handler):
                     tags=tags,
                     page=page,
                     page_size=page_size if page_size is not None else 10,
+                    ids=ids,
                     include_ref_ids=include_ref_ids,
                     exclude_ref_ids=exclude_ref_ids,
                     exclude=exclude,
@@ -3680,7 +4140,11 @@ class PaperHandler(Handler):
                 "capped per-hit view",
             )
         if page_size is None:
-            page_size = 25 if resolved_unique_per == "paper" else 10
+            page_size = (
+                _PAPER_ROWS_PAGE_SIZE
+                if resolved_unique_per == "paper"
+                else _CHUNK_ROWS_PAGE_SIZE
+            )
 
         # ``good=True`` — the deep-search campaign surface. Does NOT
         # search inline: mints a ``good_search`` coordinator job (under
@@ -3861,7 +4325,7 @@ class PaperHandler(Handler):
         )
 
         # Everything else — validation, single-leg vs. broad (RRF-fused)
-        # retrieval, title-introducer promotion, year-omitted notice — is
+        # retrieval, title-match record callouts, year-omitted notice — is
         # FusedBlockSearch's job; PaperSearchResultRenderer turns the
         # result into the agent-facing Response (empty-hits DOI-aware
         # guidance, or headline + TOON table + steering trailer).
@@ -4741,6 +5205,7 @@ class PaperHandler(Handler):
         q: str | None,
         tags: list[str] | None,
         group_by: Any,
+        agg: str | None = None,
         since: str | datetime | None,
         until: str | datetime | None,
         exclude_ref_ids: list[int] | None,
@@ -4779,7 +5244,9 @@ class PaperHandler(Handler):
         """
         from precis.handlers._numeric_ref import (
             _COUNT_GROUP_LIMIT,
+            _count_agg_cells,
             _count_facet_label,
+            _parse_count_aggs,
             _parse_count_facets,
             _parse_window_bound,
         )
@@ -4787,6 +5254,7 @@ class PaperHandler(Handler):
 
         kind = self.spec.kind
         facets = _parse_count_facets(group_by)
+        aggs = _parse_count_aggs(agg, facets)
         since_dt = _parse_window_bound(since, "since")
         until_dt = _parse_window_bound(until, "until")
         normalized = Tag.normalize_filter(tags, kind=kind) if tags else None
@@ -4801,6 +5269,7 @@ class PaperHandler(Handler):
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
             facets=facets,
+            aggs=aggs,
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
@@ -4843,9 +5312,11 @@ class PaperHandler(Handler):
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
-            for vals, n, _span in groups:
+            for vals, n, span in groups:
                 label = " | ".join(v if v is not None else "(none)" for v in vals)
-                parts.append(f"  {label}: {n}")
+                parts.append(
+                    f"  {label}: {n}" + _count_agg_cells(aggs, span.aggregates)
+                )
             if len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
             if any(ft == "fulltext" for ft, _k in facets):
@@ -4903,8 +5374,13 @@ class PaperHandler(Handler):
 
     def _fetch_status_view(self, ids: list[str] | None) -> Response:
         """``search(kind='paper', view='status', ids=[…])`` — one row per
-        paper: body state (full-text / thin-text / card-only / stub),
-        has-PDF, and the newest fetcher outcome. Full-text = live
+        *input* id in input order: each ``asked`` id maps to its paper's
+        body state (full-text / thin-text / card-only / stub), has-PDF,
+        and the newest fetcher outcome; a ``dr…``/``dc…`` container id
+        resolves to every cited paper yet still gets ONE row, each
+        paper's status a ``; ``-separated segment; a repeat of a paper
+        already shown reads ``same as <asked>`` and a miss reads
+        ``unresolved`` (gr608579). Full-text = live
         non-card, non-references body chunks; thin-text = at most
         :data:`~precis.store._body_predicate.THIN_BODY_MAX_CHUNKS` of
         them with a ``no_oa_version`` newest fetcher verdict — an
@@ -4926,27 +5402,77 @@ class PaperHandler(Handler):
                 f"ids= has {len(ids)} entries, max {_STATUS_MAX_IDS}",
                 next=f"split the list into pages of up to {_STATUS_MAX_IDS}",
             )
-        resolved = resolve_exclude_paper_ids([str(i) for i in ids], store=self.store)
-        rows = self.store.paper_fetch_status(sorted(resolved))
-        lines = [f"fetch status — {len(rows)} of {len(ids)} ids resolved:", ""]
+        asked_ids = [str(i) for i in ids]
+        # Resolve each input separately so every asked id maps to its own
+        # row (gr608579): a ``pc`` chunk handle lands on its owning paper,
+        # a slug/DOI on the ref itself, a ``dr``/``dc`` container on every
+        # cited paper. The old one-set resolution collapsed repeats, so
+        # "178 of 190 ids resolved" meant duplicates, not misses — and no
+        # input->output trace survived to tell which was which.
+        per_input: list[tuple[str, list[int]]] = [
+            (asked, sorted(resolve_exclude_paper_ids([asked], store=self.store)))
+            for asked in asked_ids
+        ]
+        all_ref_ids = sorted({rid for _a, rids in per_input for rid in rids})
+        status_by_id = {
+            r["ref_id"]: r for r in self.store.paper_fetch_status(all_ref_ids)
+        }
         counts: dict[str, int] = {}
-        for r in rows:
-            counts[r["body"]] = counts.get(r["body"], 0) + 1
-            h = handle_registry.format_handle("paper", r["ref_id"])
-            last = (
-                f"{r['last_event']} {r['last_ts'][:16]}Z ({r['last_source']})"
-                if r["last_event"]
-                else "never tried"
-            )
-            pdf = "pdf" if r["has_pdf"] else "no-pdf"
-            lines.append(
-                f"  {h}  [{r['cite_key'] or h}]  {r['body']}"
-                f" ({r['full_chunks']} body chunks)  {pdf}  fetch: {last}"
-            )
-        unresolved = len(ids) - len(rows)
+        seen: dict[int, str] = {}
+        unresolved: list[str] = []
+        n_dup = 0
+        row_lines: list[str] = []
+        for asked, rids in per_input:
+            live = [rid for rid in rids if rid in status_by_id]
+            if not live:
+                unresolved.append(asked)
+                row_lines.append(f"  {asked}  unresolved")
+                continue
+            fresh = [rid for rid in live if rid not in seen]
+            if not fresh:
+                # Every paper this id resolves to was already shown by
+                # an earlier input — one ``same as`` row naming the
+                # antecedent input(s), never a re-print of the cells.
+                antecedents = ", ".join(dict.fromkeys(seen[rid] for rid in live))
+                row_lines.append(f"  {asked}  same as {antecedents}")
+                n_dup += 1
+                continue
+            # One row per input even when a ``dr…``/``dc…`` container
+            # resolves to several papers: each cited paper's status is a
+            # ``; ``-separated segment inside the single row — row N
+            # still answers id N.
+            segments: list[str] = []
+            for rid in live:
+                h = handle_registry.format_handle("paper", rid)
+                if rid in seen:
+                    segments.append(f"{h} same as {seen[rid]}")
+                    continue
+                seen[rid] = asked
+                r = status_by_id[rid]
+                counts[r["body"]] = counts.get(r["body"], 0) + 1
+                last = (
+                    f"{r['last_event']} {r['last_ts'][:16]}Z ({r['last_source']})"
+                    if r["last_event"]
+                    else "never tried"
+                )
+                pdf = "pdf" if r["has_pdf"] else "no-pdf"
+                segments.append(
+                    f"{h}  [{r['cite_key'] or h}]  {r['body']}"
+                    f" ({r['full_chunks']} body chunks)  {pdf}  fetch: {last}"
+                )
+            row_lines.append(f"  {asked} -> " + "; ".join(segments))
+        lines = [
+            f"fetch status — {len(asked_ids)} ids -> {len(seen)} papers "
+            f"({n_dup} duplicate inputs, {len(unresolved)} unresolved)",
+            "",
+            *row_lines,
+        ]
+        if unresolved:
+            lines.append("")
+            lines.append("unresolved: " + ", ".join(unresolved))
         summary = " · ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "none"
-        if unresolved > 0:
-            summary += f" · {unresolved} unresolved"
+        if unresolved:
+            summary += f" · {len(unresolved)} unresolved"
         lines.append("")
         lines.append(f"summary: {summary}")
         lines.append(
@@ -4957,7 +5483,7 @@ class PaperHandler(Handler):
                 ]
             )
         )
-        return Response(body="\n".join(lines), result_count=len(rows))
+        return Response(body="\n".join(lines), result_count=len(seen))
 
     def _ingest_rate_view(self, days: int | None) -> Response:
         """``search(kind='paper', view='ingest', days=N)`` — is ingestion
@@ -5451,6 +5977,70 @@ class PaperHandler(Handler):
         the change labels. Papers take none."""
         return []
 
+    def _dep_ref_id_for_edit(self, id: str | int) -> int | None:
+        """Best-effort ref_id for the pre-door dependants walk.
+
+        Doors like retire/merge/redirect legitimately target tombstones
+        and merge-alias spellings the live resolver refuses — the walk
+        still wants that ref's rely-side page (a tombstone's dependants
+        resolve fine). Only a spelling no ref answers yields ``None``;
+        the door's own, more specific error then stands alone.
+        """
+        try:
+            return self._resolve_paper_ref_id(id)
+        except (BadInput, Gone, NotFound):
+            pass
+        try:
+            if isinstance(id, int) or (isinstance(id, str) and id.strip().isdigit()):
+                ref = self.store.fetch_refs_by_ids([int(id)], include_deleted=True).get(
+                    int(id)
+                )
+                return (
+                    ref.id if ref is not None and ref.kind == self.spec.kind else None
+                )
+            raw = _maybe_resolve_doi(self.store, str(id))
+            slug, _chunk_sel, _path_view = _parse_paper_id(raw, self.spec.kind)
+            ref = self.store.get_ref(kind=self.spec.kind, id=slug, include_deleted=True)
+            return ref.id if ref is not None else None
+        except (BadInput, Gone, NotFound):
+            return None
+
+    def _with_deps(
+        self,
+        ref_id: int | None,
+        id_arg: str,
+        resp: Response,
+        *,
+        dry: bool,
+        page: DependantsPage | None = None,
+    ) -> Response:
+        """Append the dependants surface (gr626866) to an edit response:
+        the ``## Dependants`` block on a dry-run preview, the one-line
+        ``dependants:`` summary on a real ack. ``ref_id``/``page`` are
+        pre-computed when the caller resolved before the write; a
+        ``None`` ``ref_id`` (unresolvable spelling) returns ``resp``
+        untouched."""
+        if ref_id is None:
+            return resp
+        from dataclasses import replace
+
+        from precis.handlers._dependants_view import (
+            dependants_block,
+            dependants_summary,
+        )
+
+        if dry:
+            block = dependants_block(
+                self.store,
+                kind=self.spec.kind,
+                ref_id=ref_id,
+                id_arg=id_arg,
+                page=page,
+            )
+            return replace(resp, body=f"{resp.body}\n\n{block}")
+        line = dependants_summary(self.store, ref_id=ref_id, page=page)
+        return replace(resp, body=f"{resp.body}\n{line}")
+
     def edit(  # type: ignore[override]
         self,
         *,
@@ -5519,8 +6109,8 @@ class PaperHandler(Handler):
         ``{family, given}`` or ``{name}`` dicts) and is canonicalised via
         :func:`precis.utils.authors.normalize_authors` — a flat "Family,
         Given" string splits to ``{given, family}``; anything ambiguous
-        or junk-flagged stays ``{"name"}`` or is dropped. This always
-        writes ``paper_authors.source='human'`` (the
+        or junk-flagged stays ``{"name"}`` or is dropped. This writes
+        ``paper_authors.source='human'`` for changed or new rows (the
         ``_default_author_source`` mapping for this door) and — as long
         as at least one author survived normalisation — stamps
         ``human_verified_at`` (:meth:`Store.set_human_verified`), a
@@ -5647,33 +6237,44 @@ class PaperHandler(Handler):
                     next=f"make the {door} call alone, then edit the rest",
                 )
             reason = str(raw_args.get("reason") or _kw.get("reason") or "").strip()
+            # Resolve + walk before the door runs — a retire/merge leaves
+            # the caller's spelling unresolvable and migrates the edges
+            # the rely-side count reads (gr626866). Tombstone-tolerant:
+            # the door owns the live-target refusals.
+            dep_ref_id = self._dep_ref_id_for_edit(id)
+            dep_page = (
+                self.store.dependants(dep_ref_id, limit=10)
+                if dep_ref_id is not None
+                else None
+            )
+            resp: Response
             if door == "cite_key":
-                return self._rekey(
+                resp = self._rekey(
                     id, raw_args["cite_key"], reason=reason, dry=bool(dry_mode)
                 )
-            if door == "retire":
-                return self._retire_stub(
+            elif door == "retire":
+                resp = self._retire_stub(
                     id,
                     raw_args["retire"],
                     reason=reason,
                     dry=bool(dry_mode),
                     force=_args_truthy(raw_args.get("force")),
                 )
-            if door == "redirect_to":
-                return self._repoint_supersede(
+            elif door == "redirect_to":
+                resp = self._repoint_supersede(
                     id,
                     raw_args["redirect_to"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "merge_into":
-                return self._merge_duplicate_into(
+            elif door == "merge_into":
+                resp = self._merge_duplicate_into(
                     id,
                     raw_args["merge_into"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "drop_body":
+            elif door == "drop_body":
                 keep_raw = raw_args.get("keep_pdf")
                 keep_pdf = (
                     str(keep_raw).strip().lower() not in ("false", "0", "no", "")
@@ -5688,86 +6289,90 @@ class PaperHandler(Handler):
                         "{'drop_body': True, 'keep_pdf': True, 'pdf_sha256': "
                         f"'{raw_args['pdf_sha256']}', 'reason': '<why>'}})",
                     )
-                return self._drop_body(
+                resp = self._drop_body(
                     id,
                     reason=reason,
                     dry=bool(dry_mode),
                     keep_pdf=keep_pdf,
                     pdf_sha256=raw_args.get("pdf_sha256"),
                 )
-            if door == "reextract":
-                return self._reextract(
+            elif door == "reextract":
+                resp = self._reextract(
                     id,
                     reason=reason,
                     dry=bool(dry_mode),
                     pdf_sha256=raw_args.get("pdf_sha256"),
                 )
-            if door == "move_body_to":
-                return self._move_body_to(
+            elif door == "move_body_to":
+                resp = self._move_body_to(
                     id,
                     raw_args["move_body_to"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "move_pdf_to":
-                return self._move_pdf_to(
+            elif door == "move_pdf_to":
+                resp = self._move_pdf_to(
                     id,
                     raw_args["move_pdf_to"],
                     reason=reason,
                     dry=bool(dry_mode),
                     pdf_sha256=raw_args.get("pdf_sha256"),
                 )
-            if door == "attach_pdf":
-                return self._attach_pdf(
+            elif door == "attach_pdf":
+                resp = self._attach_pdf(
                     id,
                     raw_args["attach_pdf"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "pdf_pointer":
-                return self._pdf_pointer(
+            elif door == "pdf_pointer":
+                resp = self._pdf_pointer(
                     id,
                     raw_args["pdf_pointer"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "split_body":
-                return self._split_body(
+            elif door == "split_body":
+                resp = self._split_body(
                     id,
                     raw_args["split_body"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "convert_to":
-                return self._convert_to(
+            elif door == "convert_to":
+                resp = self._convert_to(
                     id,
                     raw_args["convert_to"],
                     subtype=raw_args.get("subtype"),
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "drop_identifier":
-                return self._drop_identifier(
+            elif door == "drop_identifier":
+                resp = self._drop_identifier(
                     id,
                     raw_args["drop_identifier"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "move_identifier_to":
-                return self._move_identifier_to(
+            elif door == "move_identifier_to":
+                resp = self._move_identifier_to(
                     id,
                     raw_args["move_identifier_to"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            if door == "clear":
-                return self._clear_fields(
+            elif door == "clear":
+                resp = self._clear_fields(
                     id,
                     raw_args["clear"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
-            return self._clear_abstract(id, reason=reason, dry=bool(dry_mode))
+            else:
+                resp = self._clear_abstract(id, reason=reason, dry=bool(dry_mode))
+            return self._with_deps(
+                dep_ref_id, str(id), resp, dry=bool(dry_mode), page=dep_page
+            )
         ref_id = self._resolve_paper_ref_id(id)
         # gr514995: an explicit blank abstract used to be a silent no-op
         # (a *wrong* abstract had no removal door). Blank means "keep"
@@ -5806,8 +6411,13 @@ class PaperHandler(Handler):
                     "supplement_of= cannot be combined with other edit fields",
                     next="make the supplement_of= call alone, then edit the rest",
                 )
-            return self._declare_supplement(
-                ref_id, str(supplement_of).strip(), dry=bool(dry_mode)
+            return self._with_deps(
+                ref_id,
+                str(id),
+                self._declare_supplement(
+                    ref_id, str(supplement_of).strip(), dry=bool(dry_mode)
+                ),
+                dry=bool(dry_mode),
             )
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
         new_authors = normalize_authors(authors) if authors else None
@@ -5881,9 +6491,14 @@ class PaperHandler(Handler):
             and not arxiv_clear
         ):
             if extra_changes:
-                return Response(
-                    body=f"updated {self.spec.kind} id={ref_id}: "
-                    f"{', '.join(extra_changes)}."
+                return self._with_deps(
+                    ref_id,
+                    str(id),
+                    Response(
+                        body=f"updated {self.spec.kind} id={ref_id}: "
+                        f"{', '.join(extra_changes)}."
+                    ),
+                    dry=bool(dry_mode),
                 )
             raise BadInput(
                 f"edit(kind='{self.spec.kind}') needs at least one field to change",
@@ -5893,18 +6508,30 @@ class PaperHandler(Handler):
                 ),
             )
         if dry_mode:
-            return self._render_paper_dry_run(
+            return self._with_deps(
                 ref_id,
-                new_title=new_title,
-                year=year,
-                new_authors=new_authors,
-                meta_patch=meta_patch,
-                doi=doi if has_doi else None,
-                arxiv=arxiv if has_arxiv else None,
-                doi_clear=doi_clear,
-                arxiv_clear=arxiv_clear,
+                str(id),
+                self._render_paper_dry_run(
+                    ref_id,
+                    new_title=new_title,
+                    year=year,
+                    new_authors=new_authors,
+                    meta_patch=meta_patch,
+                    doi=doi if has_doi else None,
+                    arxiv=arxiv if has_arxiv else None,
+                    doi_clear=doi_clear,
+                    arxiv_clear=arxiv_clear,
+                ),
+                dry=True,
             )
         changed: list[str] = []
+        identity_warnings = (
+            self._article_identity_warnings(
+                ref_id, title=new_title, doi=str(doi).strip() if has_doi else None
+            )
+            if self.spec.kind == "paper" and (new_title is not None or has_doi)
+            else []
+        )
         doi_edit_check: tuple[str, str] | None = None
         with self.store.tx() as conn:
             updated = self.store.update_paper_fields(
@@ -6009,6 +6636,8 @@ class PaperHandler(Handler):
                 )
         changed_str = ", ".join(changed) if changed else "no change"
         body = f"updated {self.spec.kind} id={ref_id}: {changed_str}."
+        if identity_warnings:
+            body += "\n" + "\n".join(identity_warnings)
         if reminted:
             body += f" cite_key re-minted — {reminted}"
         if doi_edit_check is not None:
@@ -6020,7 +6649,7 @@ class PaperHandler(Handler):
             )
             if doi_warning:
                 body = f"{body}\n{doi_warning}"
-        return Response(body=body)
+        return self._with_deps(ref_id, str(id), Response(body=body), dry=False)
 
     def _clear_worker_stamps(
         self,
@@ -6428,7 +7057,10 @@ class PaperHandler(Handler):
         names), a target equal to the loser, a missing ``reason``, and a
         title-gate failure naming the refusal (``short-title`` /
         ``year-unknown`` / ``year-mismatch`` / ``author-mismatch`` /
-        low similarity) — fix the disagreeing field and retry.
+        low similarity) — fix the disagreeing field and retry. A
+        ``short-title`` refusal on titles identical after normalisation
+        also names the identical-title waiver leg that failed
+        (:meth:`_identical_title_waiver_gap`, gr634191).
         """
         from precis.ingest.dedup import merge_duplicate
 
@@ -6511,14 +7143,24 @@ class PaperHandler(Handler):
             sim=sim,
             unknown_year_min_sim=_MERGE_UNKNOWN_YEAR_SIM,
         )
+        gap = (
+            self._identical_title_waiver_gap(loser, winner, loser_h, winner_h)
+            if refusal == "short-title"
+            else None
+        )
         if sim < _MERGE_TITLE_SIM_FLOOR or refusal is not None:
             raise BadInput(
                 f"{loser_h} and {winner_h} fail the merge title gate "
-                f"({refusal or 'low-similarity'}; sim {sim:.2f})",
-                next=f"if they are the same paper, fix the disagreeing "
-                f"field first (edit(kind='{kind}', id='{loser_h}', "
-                "title=/year=/authors=[...])) then retry the merge_into "
-                "call",
+                f"({refusal or 'low-similarity'}; sim {sim:.2f})"
+                + (f" — {gap[0]}" if gap else ""),
+                next=(
+                    gap[1]
+                    if gap
+                    else f"if they are the same paper, fix the disagreeing "
+                    f"field first (edit(kind='{kind}', id='{loser_h}', "
+                    "title=/year=/authors=[...])) then retry the merge_into "
+                    "call"
+                ),
             )
         if dry:
             return Response(
@@ -6555,6 +7197,69 @@ class PaperHandler(Handler):
                 "'duplicate_merged' / 'soft_deleted_duplicate' logged). "
                 f"{loser_h} now resolves to {winner_h}."
             )
+        )
+
+    def _identical_title_waiver_gap(
+        self, loser: Ref, winner: Ref, loser_h: str, winner_h: str
+    ) -> tuple[str, str] | None:
+        """Name the missing identical-title waiver leg (gr634191).
+
+        :func:`title_merge_refusal` collapses every identical-title
+        waiver miss into ``short-title``, so a confirmed pair with a
+        two-word title (the td658522 wedge — sim 1.00, same DOI) refused
+        with no hint which leg to fix. When the normalised titles ARE
+        identical, name the failing leg and the ``edit`` that supplies
+        it. ``(detail, next_hint)`` or ``None`` when the refusal isn't
+        the identical-title case — the caller keeps the generic hint.
+        Below the waiver's token floor no field edit lifts the gate:
+        the hint then describes the limitation and the human merge
+        door, never ``retire`` (a retire folds nothing and writes no
+        supersede redirect, and the stub-retire guards refuse a ref
+        that still carries identifiers, body or inbound cites).
+        """
+        key = _title_identity_key(loser.title)
+        if key == "" or key != _title_identity_key(winner.title):
+            return None
+        kind = self.spec.kind
+        if len(content_tokens(key)) < _MIN_IDENTICAL_TITLE_TOKENS:
+            return (
+                "identical title but under the identical-title waiver's "
+                f"{_MIN_IDENTICAL_TITLE_TOKENS}-content-token floor — too "
+                "generic to collapse on title alone; no field edit lifts "
+                "the floor",
+                "the title gate cannot confirm this pair — a human merges "
+                "it (the paper page's duplicate-resolver merge door)",
+            )
+        gaps: list[str] = []
+        fixes: list[str] = []
+        yearless = [
+            h for h, r in ((loser_h, loser), (winner_h, winner)) if r.year is None
+        ]
+        if yearless:
+            gaps.append(f"year unknown on {' and '.join(yearless)}")
+            fixes.extend(
+                f"edit(kind='{kind}', id='{h}', year=<pub year>)" for h in yearless
+            )
+        a, b = _first_family(loser.authors), _first_family(winner.authors)
+        authorless = [h for h, fam in ((loser_h, a), (winner_h, b)) if fam == ""]
+        if authorless:
+            gaps.append(f"no first author on {' and '.join(authorless)}")
+            fixes.extend(
+                f"edit(kind='{kind}', id='{h}', authors=['Family, Given'])"
+                for h in authorless
+            )
+        elif a != b:
+            gaps.append(f"first authors disagree ({a!r} vs {b!r})")
+            fixes.append(
+                f"correct the byline on the wrong side: edit(kind='{kind}', "
+                "id=<handle>, authors=['Family, Given'])"
+            )
+        if not gaps:
+            return None
+        return (
+            "identical title but " + "; ".join(gaps),
+            "add the missing field(s) then retry the merge_into call: "
+            + "; ".join(fixes),
         )
 
     def _retire_stub(
@@ -9241,6 +9946,46 @@ class PaperHandler(Handler):
             f"{parent_h}; cite as {parent_h}."
         )
 
+    def _article_identity_warnings(
+        self, ref_id: int, *, title: str | None, doi: str | None
+    ) -> list[str]:
+        """Advisory evidence checks from the article opening, never chunk zero.
+
+        Issue-page PDFs can start with another article's tail (gr663170).
+        Keep legitimate repairs writable: lexical absence is a warning,
+        not proof that the proposed identity is wrong.
+        """
+        from precis.ingest.article_spread import article_start_ord, foreign_tail_ord
+        from precis.utils.title_body import title_body_score
+
+        warnings: list[str] = []
+        if any(
+            tag.namespace == "open" and tag.value == "multi-article"
+            for tag in self.store.tags_for(ref_id)
+        ):
+            warnings.append(
+                "warning: tagged multi-article: no single title exists - split it "
+                "(see precis-paper-ref-help) instead of retitling"
+            )
+        chunks = self.store.chunks.list_chunks_for_ref(ref_id)
+        start = article_start_ord(self.store, ref_id) or foreign_tail_ord(chunks) or 0
+        article = [chunk for chunk in chunks if chunk.ord >= start]
+        if title is not None and article:
+            score = title_body_score(title, "\n".join(c.text for c in article[:6]))
+            if score is not None and score.score < 0.5:
+                warnings.append(
+                    "warning: title not supported by the article body "
+                    f"(score {score.score:.2f}; missing: {', '.join(score.missing)}) "
+                    "- check the title block, not chunk 0 "
+                    f"(matched: {', '.join(score.matched) or 'none'})"
+                )
+        if doi is not None and len(chunks) >= 3:
+            if not any(doi.casefold() in c.text.casefold() for c in article):
+                warnings.append(
+                    "warning: doi not found in the body outside the leading chunks"
+                )
+        return warnings
+
     def _doi_edit_warning(self, ref_id: int, *, doi: str, current_title: str) -> str:
         """Warn when a DOI edit risks a future wrong-paper metadata clobber.
 
@@ -9369,13 +10114,27 @@ class PaperHandler(Handler):
                 continue
             owner_id = self.store.find_ref_by_identifier(scheme, str(value))
             if owner_id is not None and owner_id != ref_id:
+                # gr634191: same merge_into pointer the real write's
+                # set_ref_identifier collision names — the session MCP
+                # can fold the pair, no web-UI detour.
+                owner = self.store.fetch_refs_by_ids(
+                    [owner_id], include_deleted=True
+                ).get(owner_id)
+                owner_h = (
+                    _pa(owner)
+                    if owner is not None
+                    else handle_registry.format_handle(self.spec.kind, owner_id)
+                )
+                this_h = handle_registry.format_handle(self.spec.kind, ref_id)
                 raise BadInput(
                     f"{scheme}={str(value).strip()!r} already belongs to ref id={owner_id}",
                     next=(
-                        "a merge_duplicate cleanup is needed — see "
-                        "get(kind='skill', id='precis-paper-help') §resolving "
-                        "a duplicate ref; prefer the ref with chunks/body as "
-                        "the survivor"
+                        f"preview the merge: edit(kind='{self.spec.kind}', "
+                        f"id='{this_h}', args={{'merge_into': "
+                        f"'{owner_h}', 'reason': '<why>'}}, "
+                        "dry_run=True) — the ref with chunks/body and "
+                        "inbound citations should be the survivor; "
+                        f"flip the pair if that is {this_h}"
                     ),
                 )
         lines: list[str] = []
@@ -9422,27 +10181,62 @@ class PaperHandler(Handler):
     def tag(  # type: ignore[override]
         self,
         *,
-        id: str | int,
+        id: str | int | list[str | int],
         add: list[str] | None = None,
         remove: list[str] | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Add/remove paper tags. Allowed axes: ``SRC``, ``CACHE`` + open."""
+        """Apply the same tag edits to one or more papers atomically.
+
+        ``id`` accepts a single paper address or a nonempty list with no size
+        cap. Resolve every address before writing so a missing paper aborts
+        the whole call. Collapse aliases by ref id so each paper gets one
+        edit and one optional ``agent/retagged`` audit event. The edits and
+        events share one transaction.
+        """
         require_tag_ops("paper", add, remove)
-        slug, ref_id = self._resolve_paper_slug(id)
-        n_added, n_removed = apply_tag_ops(
-            self.store, "paper", ref_id, tags=add, untags=remove
-        )
-        return Response(
-            body=format_link_tag_ack(
-                kind=self.spec.kind,
-                ref_label=slug,
-                n_links_added=0,
-                n_links_removed=0,
-                n_tags_added=n_added,
-                n_tags_removed=n_removed,
+        ids = id if isinstance(id, list) else [id]
+        if not ids:
+            raise BadInput(
+                "id=[] is empty — pass at least one paper",
+                next="pass a paper slug, a pa handle, or a list of paper ids",
             )
-        )
+        papers: dict[int, str] = {}
+        for ident in ids:
+            slug, ref_id = self._resolve_paper_slug(ident)
+            papers.setdefault(ref_id, slug)
+
+        receipts: list[str] = []
+        audit_reason = (reason or "").strip()
+        with self.store.tx() as conn:
+            for ref_id, slug in papers.items():
+                n_added, n_removed = apply_tag_ops(
+                    self.store, "paper", ref_id, tags=add, untags=remove, conn=conn
+                )
+                if audit_reason:
+                    self.store.append_event(
+                        ref_id,
+                        source="agent",
+                        event="retagged",
+                        payload={"reason": audit_reason},
+                        conn=conn,
+                    )
+                receipts.append(
+                    format_link_tag_ack(
+                        kind=self.spec.kind,
+                        ref_label=slug,
+                        n_links_added=0,
+                        n_links_removed=0,
+                        n_tags_added=n_added,
+                        n_tags_removed=n_removed,
+                    )
+                )
+        if isinstance(id, list):
+            receipts.insert(
+                0, f"tagged {len(papers)} {self.spec.kind} refs in one transaction"
+            )
+        return Response(body="\n".join(receipts))
 
     def link(  # type: ignore[override]
         self,
@@ -10213,15 +11007,58 @@ class PaperHandler(Handler):
             return Response(body="\n".join(lines))
 
         if view == "links":
+            if (args or {}).get("reason") == "missing":
+                from precis.handlers._links_missing_reason import render_missing_reasons
+
+                return render_missing_reasons(
+                    self.store,
+                    kind=ref.kind,
+                    id_arg=ref.public_id,
+                    focus_ref_id=ref.id,
+                    **(args or {}),
+                )
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️): paper
             # had no links view at all — ``related-to`` / ``cites`` /
             # ``cited-by`` edges on a paper (214 inbound related-to on
             # some refs, checked in prod) were invisible to an agent
             # reading it. Shares the render with every numeric-ref kind
             # (``handlers/_links_render.py``) rather than forking it.
+            # args={'rel'|'of_kind'} narrow the graph; args={'limit'|
+            # 'cursor'} page it — the footer's ``next:`` line carries the
+            # exact continuation (gr627629).
             from precis.handlers._links_render import render_links_view
+            from precis.utils.relations import validate_relation
 
-            return render_links_view(self.store, ref, sense=self.spec.kind)
+            a = args or {}
+            rel = a.get("rel")
+            if rel is not None:
+                rel = validate_relation(str(rel), store=self.store)
+            of_kind = a.get("of_kind")
+            return render_links_view(
+                self.store,
+                ref,
+                sense=self.spec.kind,
+                rel=rel,
+                of_kind=str(of_kind) if of_kind is not None else None,
+                limit=a.get("limit"),
+                cursor=a.get("cursor"),
+            )
+
+        if view == "dependants":
+            # Mutation review (gr626866): who relies on this paper —
+            # the bounded rely-side walk every numeric-ref kind serves.
+            # ``id_arg`` echoes the caller's own address (slug or
+            # handle) so the printed continue-call pastes as-is.
+            from precis.handlers._dependants_view import render_dependants_view
+
+            return render_dependants_view(
+                self.store,
+                kind=self.spec.kind,
+                sense=self.spec.kind,
+                ref_id=ref.id,
+                id_arg=str(ref.slug or ref.id),
+                args=args,
+            )
 
         if view == "status":
             # "State of this paper" asked on the get verb — the same
@@ -10683,6 +11520,7 @@ class PaperHandler(Handler):
             lines.append(banner)
             lines.append("")
         pointers = self._figure_pointer_lines(ref, blocks)
+        has_glyph_caveat = glyph_suspected(ref.meta)
         block_spans: list[tuple[int, int]] = []  # (ord, end line index)
         for b in blocks:
             # head each chunk with its computed handle plus the ~ord it
@@ -10691,6 +11529,11 @@ class PaperHandler(Handler):
             lines.append(
                 f"# {handle_registry.chunk_head_label(ref.kind, b.id, b.ord, ref.slug)}"
             )
+            if b.ord >= 0 and not has_glyph_caveat:
+                caveat = passage_glyph_caveat(b.text)
+                if caveat:
+                    lines.append(_glyph_damage_banner(caveat))
+                    lines.append("")
             lines.append(_render_block_body(ref.slug or "???", b.ord, b.text))
             lines.extend(pointers.get(b.ord, ()))
             # Citation-chunk-grounding Part 3 (the sidecar render): capped, expand-on-request
@@ -11104,6 +11947,7 @@ class PaperHandler(Handler):
         page: int,
         page_size: int,
         sort: str | None = None,
+        ids: list[str] | None = None,
         include_ref_ids: list[int] | None = None,
         exclude_ref_ids: list[int] | None = None,
         exclude: list[str] | None = None,
@@ -11125,7 +11969,7 @@ class PaperHandler(Handler):
         The dispatch-injected id channels and the date bounds are
         honoured too (r2 S2 — a queryless listing must never drop a
         filter silently): ``include_ref_ids``/``exclude_ref_ids``
-        (cited=/hubbed=/uncited=), ``exclude=``, publish-year
+        (cited=/hubbed=/uncited=), ``ids=``, ``exclude=``, publish-year
         ``after=``/``before=`` and the ``since=``/``until=`` created
         window all intersect the listing with an honest total.
 
@@ -11137,6 +11981,13 @@ class PaperHandler(Handler):
         """
         kind = self.spec.kind
         normalized_tags = Tag.normalize_filter(tags, kind=kind)
+        if ids is not None:
+            wanted = resolve_exclude_paper_ids(
+                [str(i) for i in ids], store=self.store, kind=kind
+            )
+            include_ref_ids = sorted(
+                set(include_ref_ids) & wanted if include_ref_ids is not None else wanted
+            )
         bf = self._resolve_browse_filters(
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
@@ -11209,10 +12060,11 @@ class PaperHandler(Handler):
         # 100-row search cap (tools/core.py refuses above it), and at the
         # cap itself nothing is offered.
         if offset + len(refs) < total and page_size < 100:
+            ids_arg = f", args={{'ids': {ids!r}}}" if ids is not None else ""
             next_ops.append(
                 (
                     f"search(kind='{kind}', tags={normalized_tags!r}, "
-                    f"page_size={min(100, page_size * 2)})",
+                    f"page_size={min(100, page_size * 2)}{ids_arg})",
                     "see more entries (raise page_size)",
                 )
             )
@@ -11439,6 +12291,10 @@ def _retraction_banner(ref: Ref) -> str | None:
     return " ".join(parts)
 
 
+def _glyph_damage_banner(caveat: str) -> str:
+    return f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}"
+
+
 def _paper_banner(ref: Ref, *, store: Store | None = None) -> str | None:
     """Combined banner block for the top of a paper view: the retraction
     banner, then (when ``meta.glyph_health`` is suspected) a glyph-damage
@@ -11452,7 +12308,7 @@ def _paper_banner(ref: Ref, *, store: Store | None = None) -> str | None:
     lines = [_retraction_banner(ref)]
     caveat = glyph_caveat(ref.meta)
     if caveat:
-        lines.append(f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}")
+        lines.append(_glyph_damage_banner(caveat))
     one_page = (
         store.is_one_page_preview(ref) if store is not None else ref.is_one_page_pdf
     )
@@ -11535,7 +12391,7 @@ def _render_citation_candidates(citation: str, cands: list[dict[str, Any]]) -> s
 def resolve_paper_slug(
     store: Store, id: str | int, *, kind: str = "paper"
 ) -> tuple[str, int]:
-    """Coerce a paper id to a ``(slug, ref_id)`` pair — the module-level home
+    """Coerce a paper id to a ``(canonical slug, ref_id)`` pair — the module-level home
     of what ``PaperHandler._resolve_paper_slug`` used to do inline, shared
     with ``precis paper fetch-si``.
 
@@ -11573,12 +12429,12 @@ def resolve_paper_slug(
         kind=kind,
         id=slug,
         next_hint=(f"search(kind='{kind}', q='...') to find existing slugs"),
-        options=_suggest_paper_slugs(slug, store=store, kind=kind),
+        options=lambda: _suggest_paper_slugs(slug, store=store, kind=kind),
     )
-    return slug, ref.id
+    return ref.slug or str(ref.id), ref.id
 
 
-def _maybe_resolve_doi(store: Store, raw: str) -> str:
+def _maybe_resolve_doi(store: Store, raw: str, *, will_queue: bool = True) -> str:
     """Translate an identifier-form paper id to its slug form.
 
     When an agent hands us a paper identifier — a DOI
@@ -11608,7 +12464,9 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
     Raises :class:`NotFound` when the identifier is well-formed but no
     live paper carries it; the error carries an acquire hint rather
     than falling through to the generic ``"illegal character"``
-    message the slug regex would emit.
+    message the slug regex would emit. ``will_queue=False`` (the get
+    named a view — gr715493 — or the scope is read-only) makes the
+    hint say ``get`` does not queue the ingest, since this call won't.
     """
     base, sep, sel = raw.partition("~")
     if not base:
@@ -11646,13 +12504,15 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
         # an unheld-DOI get queues a bounded ingest — a fleet-wide
         # rolling-24h cap (PRECIS_GET_DOI_QUEUE_DAILY, default 50) plus
         # _BATCH_DOI_QUEUE_CAP per batch — and lands here when a cap is
-        # spent, the scope is read-only, or the DOI is malformed. The
-        # non-DOI schemes never queue: the hint text keeps that split
-        # honest. Kept short: the MCP client already appends the tool
-        # schema on isError, so a long hint lands twice (gr516710).
+        # spent, the scope is read-only, the DOI is malformed, or the
+        # get named a view (gr715493: a view get is a read of stored
+        # data and never mints). The non-DOI schemes never queue: the
+        # hint text keeps that split honest. Kept short: the MCP client
+        # already appends the tool schema on isError, so a long hint
+        # lands twice (gr516710).
         from precis.runtime.scope import current_scope
 
-        if scheme == "doi" and current_scope() != "read":
+        if scheme == "doi" and current_scope() != "read" and will_queue:
             queue_wording = (
                 "to mint a stub — get also queues a bounded ingest for "
                 "an unheld DOI (fleet daily cap, 5/batch): the fetch "
@@ -11717,7 +12577,11 @@ def _retired_paper_id_for_doi(store: Store, doi: str) -> int | None:
 
 
 def _queue_doi_ingest(
-    store: Store, raw: str, *, budget: list[int] | None = None
+    store: Store,
+    raw: str,
+    *,
+    budget: list[int] | None = None,
+    queue: bool = True,
 ) -> Response | None:
     """gr551840 (Reto ruling 2026-11-02): a well-formed DOI no live paper
     holds earns an ingest job, not a repeated "not ingested" — the gripe
@@ -11747,7 +12611,13 @@ def _queue_doi_ingest(
     the read-only / privilege errors — ``get`` is in
     ``READ_ONLY_VERBS``, so on a read-only serve or a read-only DB role
     the caller's original NotFound with the acquire hint is the honest
-    answer."""
+    answer.
+
+    ``queue=False`` (gr715493: the get named a view, so the call is a
+    read of stored data) skips every mint door — the tombstone answer
+    still renders, everything else returns ``None`` so the caller
+    re-raises the original NotFound with the acquire hint.
+    """
     doi = _queueable_doi(raw)
     if doi is None:
         return None
@@ -11768,6 +12638,8 @@ def _queue_doi_ingest(
                 )
             )
         )
+    if not queue:
+        return None
     from precis.runtime.scope import current_scope
 
     if current_scope() == "read":

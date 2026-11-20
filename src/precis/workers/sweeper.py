@@ -30,8 +30,8 @@ terminalizes the same way, tagged ``reaped:dead-node-queued``, leaving
 quest loops (``idem_key`` ``quest_tick:*``) to ``quest/loop.py``'s own
 cancel-plus-re-mint arm. ``_reap_off_lane_pinned`` (gr493226) covers the
 live-host case both of those miss: the node still heartbeats but stopped
-running the job's executor pass (castor went heartbeat-only and its pinned
-seeds sat ~28h). Lane membership is read from ``worker_logs`` per-cycle
+running the job's executor pass (the local-serving node went heartbeat-only and
+its pinned seeds sat ~28h). Lane membership is read from ``worker_logs`` per-cycle
 rows for ``job_<executor>`` on the pinned host — ran within 7 days, silent
 past ``PRECIS_OFF_LANE_PIN_SILENCE_S`` (4h), and no live lease on that
 worker process (a blocking dispatch silences its rotation). Queued and
@@ -132,6 +132,7 @@ from precis.workers.executors._common import (
     append_chunk,
     effective_requires,
     job_type_requires,
+    lane_adapter_map,
     parent_pause_gaps,
     placement_gap,
     placement_requires,
@@ -813,6 +814,7 @@ def _alert_unschedulable_jobs(store: Store) -> int:
     """
     with store.pool.connection() as conn:
         by_host = advertised_by_host(conn)
+        lane_map = lane_adapter_map(conn)
         advertised = set().union(*by_host.values()) if by_host else set()
         rows = conn.execute(
             """
@@ -871,7 +873,7 @@ def _alert_unschedulable_jobs(store: Store) -> int:
         # td543917: placement tokens are gated on EVERY claim path (pinned or
         # not) and must all sit on ONE live host, so a fleet that has the
         # checkout on one host and claude on another still pages.
-        gap = placement_gap(meta, by_host)
+        gap = placement_gap(meta, by_host, lane_map)
         if not requires and not gap:
             continue
         params = meta.get("params") or {}
@@ -1604,7 +1606,7 @@ _OFF_LANE_SILENCE_S_FLOOR = 600
 def _off_lane_silence_s() -> int:
     """Seconds a node's executor pass must be silent before its pinned jobs
     are reaped (``PRECIS_OFF_LANE_PIN_SILENCE_S``, default 4h — pass-dead's
-    budget; floor 10 min). The slowest healthy rotation on prod (melchior's
+    budget; floor 10 min). The slowest healthy rotation on prod (the agent host's
     agent-profile ``precis-worker``) gapped 2.6h in a week."""
     raw = os.environ.get("PRECIS_OFF_LANE_PIN_SILENCE_S")
     try:
@@ -2011,7 +2013,7 @@ def _reap_off_lane_pinned(store: Store, *, limit: int) -> int:
 
     The dead-node reaps call a node dead only when the *host* is down. A
     host that still heartbeats but no longer runs the job's executor pass
-    (castor went heartbeat-only and its pinned ``autocatpath_seed`` jobs
+    (the local-serving node went heartbeat-only and its pinned ``autocatpath_seed`` jobs
     sat ~28h) is invisible to them, and every claim path node-gates on the
     pin, so nothing else can take the job. Here a node has left the lane
     when it ran ``job_<executor>`` within the last week, has not for
@@ -2107,7 +2109,8 @@ def _kill_job_container(ref_id: int, meta: dict) -> None:
     keyed off ``meta`` (never a blanket kill); a docker/ssh failure is
     logged and swallowed so it can never abort the sweep.
 
-    Only the ``struct_relax`` (``ssh_node``-executor) branch is live today:
+    Only the ``struct_relax``/``electronic_analysis``
+    (``ssh_node``-executor) branch is live today:
     it's reached from :func:`_transition_dead_node_orphan_to_failed`
     (gr172886 part-b's dead-node reap, the one case ``ssh_node`` rows DO
     still terminalize outside their own executor). A ``claude_docker``
@@ -2120,14 +2123,24 @@ def _kill_job_container(ref_id: int, meta: dict) -> None:
     """
     try:
         job_type = meta.get("job_type")
-        if job_type == "struct_relax":
+        if job_type in ("struct_relax", "electronic_analysis"):
             from precis.workers.job_types import struct_relax
 
-            target_node = (meta.get("params") or {}).get("target_node")
+            params = meta.get("params") or {}
+            target_node = params.get("target_node")
+            # The container name is ``precis-job-<structure_ref_id>`` —
+            # the STRUCTURE ref, not this job's (both job types stage by
+            # structure so a relax and an analysis on one design share the
+            # mutex). Passing the job id would name a container that
+            # doesn't exist and leave the real one orphaned.
+            try:
+                container_ref = int(params.get("structure_ref_id") or ref_id)
+            except (TypeError, ValueError):
+                container_ref = ref_id
             # kill_container now verifies removal (gripe 310809) instead of
             # reporting success on a bare "command issued" — log the honest
             # outcome rather than assuming the old always-True.
-            if not struct_relax.kill_container(ref_id, node=target_node):
+            if not struct_relax.kill_container(container_ref, node=target_node):
                 log.warning(
                     "sweeper: container kill for job #%d on %s was not verified "
                     "removed — it may still be occupying the node/GPU",
@@ -2140,7 +2153,7 @@ def _kill_job_container(ref_id: int, meta: dict) -> None:
 
 #: Minimum seconds between *remote* stale-DFT-container reaps from this
 #: process (``PRECIS_DFT_REMOTE_REAP_INTERVAL_S``). The DFT node may run a
-#: heartbeat-only worker (pollux does), so no sweeper pass ever executes
+#: heartbeat-only worker (the second DGX node does), so no sweeper pass ever executes
 #: there — sweeper hosts must reap it over ssh (gr310809), but the
 #: per-minute pass must not fan an ssh + ``docker ps`` at the node from
 #: every host every pass, so the remote leg is throttled per process.

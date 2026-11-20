@@ -18,7 +18,7 @@
 - gr506049: the stale Cloudsmith Caddy apt source and keyring are removed
   (state: absent, both paths), only where the `caddy` deb is not installed,
   and the apt cache refresh fires only on change — never in check mode.
-- gr508877: spark's hand-managed grafana apt source keeps its key in the
+- gr508877: spruce's hand-managed grafana apt source keeps its key in the
   legacy /etc/apt/trusted.gpg keyring (apt warns on every update). The role
   exports the Grafana Labs key into /etc/apt/keyrings/grafana.gpg (fetching
   the published key as fallback), pins the source with signed-by=, and drops
@@ -240,10 +240,10 @@ esac
     "precis": (
         'echo "precis host=${PRECIS_HOST_NAME:-} $*" >>"$FAKE_LOG"; '
         'case "${FAKE_RESERVE:-none}" in '
-        'none) echo "reserve: none on castor" ;; '
+        'none) echo "reserve: none on cedar" ;; '
         "crash) echo Traceback; exit 1 ;; "
         'odd) echo "service_config: ok" ;; '
-        '*) echo "reserve: active on castor"; exit 3 ;; esac'
+        '*) echo "reserve: active on cedar"; exit 3 ;; esac'
     ),
 }
 
@@ -267,7 +267,7 @@ def guard(tmp_path: Path) -> Any:
         env = {
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "FAKE_LOG": str(log),
-            "FAKE_WORKER_ENV": "PRECIS_DATABASE_URL=postgresql://db/x PRECIS_HOST_NAME=castor",
+            "FAKE_WORKER_ENV": "PRECIS_DATABASE_URL=postgresql://db/x PRECIS_HOST_NAME=cedar",
             "OS_UPDATE_REBOOT_MARKER": str(marker),
             "OS_UPDATE_HOST_BUSY": str(_FILES / "host-busy"),
             "OS_UPDATE_PRECIS": str(bin_dir / "precis"),
@@ -292,7 +292,7 @@ def test_guard_reboots_only_when_marked_idle_and_unreserved(guard: Any) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     assert "apt-get" in calls and "-y upgrade" in calls
     assert (
-        "precis host=castor service reserved --database-url postgresql://db/x" in calls
+        "precis host=cedar service reserved --database-url postgresql://db/x" in calls
     )
     assert "shutdown -r now" in calls
 

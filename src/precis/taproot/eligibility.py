@@ -1,6 +1,6 @@
 """The one shared evidence-eligibility predicate.
 
-docs/backlog/graph-node-trust-state.md slice 2a. Taproot support counting
+me691024 slice 2a. Taproot support counting
 (:mod:`precis.taproot.seniority`), the nanopub mint gate
 (:func:`precis.nanopub.gates.run_mint_gates`) and the draft cite nudge
 (:func:`precis.taproot.lookup.hubs_grounded_by_paper`) all call

@@ -76,8 +76,13 @@ from typing import Any, ClassVar
 
 from precis import bom_nudge, supply
 from precis import component_series as cseries
+from precis.corrected_call import retry_call
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound
+from precis.errors import (
+    BadInput,
+    NotFound,
+    nearest_option,
+)
 from precis.format import render_agent_table
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers._value_entity import (
@@ -1073,9 +1078,18 @@ class ComponentHandler(ValueEntityHandler):
         values = self.store.component_values_for_ref(ref.id)
         if view == "table":
             return self._render_table(ref, values)
-        if view not in (None, "stored", "supplier-live"):
+        if view is not None and view not in ("stored", "supplier-live"):
+            # gr613469: name the corrected call — the same get, nearest
+            # valid view swapped in.
+            near = nearest_option(view, _VIEWS)
             raise BadInput(
-                f"unknown view={view!r} for kind='component'", options=list(_VIEWS)
+                f"unknown view={view!r} for kind='component'",
+                options=list(_VIEWS),
+                next=(
+                    retry_call("get", kind="component", id=slug, view=near)
+                    if near
+                    else None
+                ),
             )
         from precis.supply.live import live_lines
 

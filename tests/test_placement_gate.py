@@ -20,7 +20,12 @@ from precis.workers.executors import ssh_node
 from precis.workers.registry import SERVICES_BY_NAME, ServiceKind
 from precis.workers.sweeper import _alert_unschedulable_jobs
 
-SLICE_HOST: dict[str, int | None] = {"repo_checkout": 1, "claude_bin": 1, "git": 1}
+SLICE_HOST: dict[str, int | None] = {
+    "repo_checkout": 1,
+    "claude_bin": 1,
+    "builder": 1,
+    "git": 1,
+}
 
 
 def _queue(store: Store, job_type: str, params: dict[str, Any] | None = None) -> int:
@@ -75,8 +80,10 @@ def _alert_open(store: Store, fingerprint: str) -> bool:
 @pytest.mark.parametrize(
     ("name", "placement"),
     [
-        ("run_slice", {"repo_checkout", "claude_bin", "git"}),
+        ("run_slice", {"repo_checkout", "builder", "git"}),
         ("land_slice", {"repo_checkout", "git"}),
+        ("repo_release", {"repo_checkout", "git"}),
+        ("pin_bump", {"repo_checkout", "git"}),
         ("release_cut", {"repo_checkout", "git"}),
         ("release_deploy", {"repo_checkout", "git"}),
         ("release_confirm", {"repo_checkout", "git"}),
@@ -86,6 +93,9 @@ def _alert_open(store: Store, fingerprint: str) -> bool:
         ("ci_verdict_poll", set()),
         ("release_poll", set()),
         ("gripe_validate", set()),
+        # gr592838: draft_export compiles through latexmk — a host
+        # capability, so a TeX-less claim waits for a capable host.
+        ("draft_export", {"latexmk"}),
     ],
 )
 def test_factory_job_types_declare_placement(name: str, placement: set[str]) -> None:
@@ -308,3 +318,237 @@ def test_pinned_release_deploy_alerts_when_its_host_lacks_git(store: Store) -> N
     jid = _queue(store, "release_deploy", {"todo_id": 1, "target_node": "node-b"})
     _alert_unschedulable_jobs(store)
     assert _alert_open(store, f"unschedulable:{jid}")
+
+
+# ── lane → <a>_bin substitution (gr676054) ─────────────────────────
+
+
+def test_adapter_placement_tokens_cover_every_slice_adapter() -> None:
+    """The ``builder`` → ``<a>_bin`` map is restated in
+    ``executors._common`` (``job_types`` pulls it, never the reverse): it
+    must name every adapter ``run_slice`` can launch, and each token must
+    be a lane-bin token the capability probe advertises — a token no
+    probe emits would strand that lane's jobs on every host."""
+    from precis.workers import capability_probe
+    from precis.workers.executors._common import _ADAPTER_PLACEMENT_TOKENS
+    from precis.workers.job_types._slice_adapters import ADAPTERS
+
+    assert set(_ADAPTER_PLACEMENT_TOKENS) == set(ADAPTERS)
+    assert set(_ADAPTER_PLACEMENT_TOKENS.values()) <= set(
+        capability_probe.LANE_BIN_TOKENS
+    )
+
+
+@pytest.mark.parametrize(
+    ("meta", "lane_adapters", "expected"),
+    [
+        # No lane named → the ``builder`` floor stands.
+        ({"job_type": "run_slice"}, None, {"repo_checkout", "builder", "git"}),
+        # A stamped adapter (a prior submit resolved the lane) swaps the
+        # floor for its bin token — no lane table needed.
+        (
+            {"job_type": "run_slice", "adapter": "kimi_tree"},
+            None,
+            {"repo_checkout", "kimi_bin", "git"},
+        ),
+        # An unknown adapter stamp falls back to the floor, not a
+        # phantom token.
+        (
+            {"job_type": "run_slice", "adapter": "no_such"},
+            None,
+            {"repo_checkout", "builder", "git"},
+        ),
+        # A ``params.lane`` pin resolves through the lane→adapter map.
+        (
+            {"job_type": "run_slice", "params": {"lane": "kimi"}},
+            {"kimi": "kimi_tree"},
+            {"repo_checkout", "kimi_bin", "git"},
+        ),
+        # Lane the map can't resolve → the floor stands (the claim path
+        # then leaves it to run_slice's pinned-bin park).
+        (
+            {"job_type": "run_slice", "params": {"lane": "kimi"}},
+            {"codex": "codex_exec"},
+            {"repo_checkout", "builder", "git"},
+        ),
+        (
+            {"job_type": "run_slice", "params": {"lane": "kimi"}},
+            None,
+            {"repo_checkout", "builder", "git"},
+        ),
+        # The adapter stamp wins over a lane pin — it is the resolved
+        # truth, the pin only a fallback.
+        (
+            {
+                "job_type": "run_slice",
+                "adapter": "codex_exec",
+                "params": {"lane": "kimi"},
+            },
+            {"kimi": "kimi_tree"},
+            {"repo_checkout", "codex_bin", "git"},
+        ),
+        # A non-run_slice spec never substitutes — no ``builder`` floor
+        # to swap, and an adapter stamp is irrelevant to it.
+        (
+            {"job_type": "land_slice", "adapter": "kimi_tree"},
+            None,
+            {"repo_checkout", "git"},
+        ),
+        # A job_type with no spec places nowhere.
+        ({"job_type": "no_such_type"}, None, set()),
+    ],
+)
+def test_placement_requires_substitutes_the_lane_bin(
+    meta: dict[str, Any],
+    lane_adapters: dict[str, str] | None,
+    expected: set[str],
+) -> None:
+    from precis.workers.executors._common import placement_requires
+
+    assert placement_requires(meta, lane_adapters) == frozenset(expected)
+
+
+def test_placement_gap_reads_the_substituted_token() -> None:
+    """``placement_gap`` (the sweeper alert + plan-tick note) judges the
+    lane's bin token, not the ``builder`` floor: a kimi-pinned row fits a
+    kimi host, and a host carrying only ``builder``/``claude_bin`` is a
+    gap that names the kimi requirement."""
+    from precis.workers.executors._common import placement_gap
+
+    meta = {"job_type": "run_slice", "params": {"lane": "kimi"}}
+    lane_map = {"kimi": "kimi_tree"}
+    kimi_host = {"repo_checkout", "kimi_bin", "git"}
+    builder_only = {"repo_checkout", "builder", "claude_bin", "git"}
+    assert placement_gap(meta, {"h1": kimi_host}, lane_map) == frozenset()
+    assert placement_gap(meta, {"h1": builder_only}, lane_map) == frozenset(
+        {"repo_checkout", "kimi_bin", "git"}
+    )
+    # The map absent → the floor stands and the builder host fits.
+    assert placement_gap(meta, {"h1": builder_only}) == frozenset()
+    assert placement_gap(meta, {"h1": kimi_host}) == frozenset(
+        {"repo_checkout", "builder", "git"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("meta", "expected"),
+    [
+        (
+            {"job_type": "run_slice", "params": {"repo": "catpath"}},
+            {"repo_checkout", "builder", "git", "repo_checkout_catpath"},
+        ),
+        # Composes with the lane-bin substitution.
+        (
+            {"job_type": "run_slice", "params": {"repo": "catpath", "lane": "kimi"}},
+            {"repo_checkout", "kimi_bin", "git", "repo_checkout_catpath"},
+        ),
+        (
+            {"job_type": "land_slice", "params": {"repo": "catpath"}},
+            {"repo_checkout", "git", "repo_checkout_catpath"},
+        ),
+        (
+            {"job_type": "repo_release", "params": {"repo": "catpath"}},
+            {"repo_checkout", "git", "repo_checkout_catpath"},
+        ),
+        # pin_bump runs in the precis clone: its pin_repo adds no token.
+        (
+            {"job_type": "pin_bump", "params": {"pin_repo": "catpath"}},
+            {"repo_checkout", "git"},
+        ),
+        # A repo with no profile still adds its token: fail closed.
+        (
+            {"job_type": "run_slice", "params": {"repo": "nope"}},
+            {"repo_checkout", "builder", "git", "repo_checkout_nope"},
+        ),
+        # The default repo, an empty or non-string value, and no repo at
+        # all keep the plain tokens.
+        (
+            {"job_type": "run_slice", "params": {"repo": "precis"}},
+            {"repo_checkout", "builder", "git"},
+        ),
+        (
+            {"job_type": "land_slice", "params": {"repo": "precis"}},
+            {"repo_checkout", "git"},
+        ),
+        (
+            {"job_type": "run_slice", "params": {"repo": ""}},
+            {"repo_checkout", "builder", "git"},
+        ),
+        ({"job_type": "land_slice", "params": {}}, {"repo_checkout", "git"}),
+    ],
+)
+def test_placement_requires_adds_the_second_repo_token(
+    meta: dict[str, Any], expected: set[str]
+) -> None:
+    """A second-repo slice job must require ``repo_checkout_<repo>``; if it
+    does not, any host with ``repo_checkout`` + ``git`` claims it and the job
+    fails at submit for want of a clone."""
+    from precis.workers.executors._common import placement_requires
+
+    assert placement_requires(meta, {"kimi": "kimi_tree"}) == frozenset(expected)
+
+
+def test_second_repo_job_needs_a_host_with_the_repo_token() -> None:
+    """A host advertising everything except ``repo_checkout_catpath`` fails
+    the gate and ``placement_gap`` names the token; breaking this lets a
+    builder host without a clone claim the job."""
+    from precis.workers.executors._common import _placement_ok, placement_gap
+
+    meta = {"job_type": "run_slice", "params": {"repo": "catpath"}}
+    base = {"repo_checkout", "builder", "git"}
+    full = base | {"repo_checkout_catpath"}
+    assert not _placement_ok(meta, {"h1": base}, "h1")
+    assert _placement_ok(meta, {"h1": full}, "h1")
+    assert placement_gap(meta, {"h1": base}) == frozenset(full)
+    assert placement_gap(meta, {"h1": base, "h2": full}) == frozenset()
+    assert placement_gap(meta, {}) == frozenset(full)
+
+
+def test_lane_adapter_map_reads_llm_account(store: Store) -> None:
+    """``lane_adapter_map`` is the claim/sweeper/plan-tick lookup that
+    turns ``params.lane`` into an adapter — it reads ``llm_account``
+    (the seeded lane rows)."""
+    from precis.workers.executors._common import lane_adapter_map
+
+    with store.pool.connection() as conn:
+        lane_map = lane_adapter_map(conn)
+    assert lane_map["claude-sub"] == "claude_p"
+    assert lane_map["codex"] == "codex_exec"
+    assert lane_map["devin"] == "devin_tree"
+    assert lane_map["kimi"] == "kimi_tree"
+
+
+def test_lane_pinned_run_slice_waits_for_its_adapter_bin(
+    store: Store, _ssh_host: list[int]
+) -> None:
+    """gr676054: on the claim path a ``params.lane`` pin turns the
+    ``builder`` floor into the lane's ``<a>_bin`` token — a builder host
+    carrying only claude holds a kimi-pinned row queued until a kimi bin
+    shows up (the lane table is the seeded ``llm_account``)."""
+    _advertise(
+        store, "node-a", {"repo_checkout": 1, "builder": 1, "claude_bin": 1, "git": 1}
+    )
+    jid = _queue(store, "run_slice", {"todo_id": 1, "lane": "kimi"})
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 0
+    assert _ssh_host == []
+    assert _status(store, jid) == "queued"
+    _advertise(store, "node-a", {"repo_checkout": 1, "kimi_bin": 1, "git": 1})
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 1
+    assert _ssh_host == [jid]
+
+
+def test_lane_pinned_run_slice_alert_heals_on_a_matching_bin_host(
+    store: Store,
+) -> None:
+    """The sweeper's unschedulable alert applies the same substitution:
+    a kimi-pinned row alerts on a claude-only fleet and heals when a
+    kimi-capable host appears."""
+    _advertise(
+        store, "node-a", {"repo_checkout": 1, "builder": 1, "claude_bin": 1, "git": 1}
+    )
+    jid = _queue(store, "run_slice", {"todo_id": 1, "lane": "kimi"})
+    assert _alert_unschedulable_jobs(store) == 1
+    assert _alert_open(store, f"unschedulable:{jid}")
+    _advertise(store, "node-b", {"repo_checkout": 1, "kimi_bin": 1, "git": 1})
+    assert _alert_unschedulable_jobs(store) == 0
+    assert not _alert_open(store, f"unschedulable:{jid}")

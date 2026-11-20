@@ -1,5 +1,5 @@
 """The single per-net rules resolver — closes gr-shaped defects A and B in
-docs/backlog/pcb-usb-c-pd-nano-testboard.md's §Blockers in ONE place rather
+me695012's §Blockers in ONE place rather
 than two: :mod:`precis.pcb.realize` emitted a flat ``track_width_mm=0.25``
 default regardless of current, and :mod:`precis.pcb.drc` read only the fab
 capability table, never a ``pcb_net_classes.rules`` override. Both gaps are

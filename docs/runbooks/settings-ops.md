@@ -104,4 +104,4 @@ registered inventory with `updated_at`/`updated_by`.
 
 - `precis.settings` module docstring — the full why, precedence
   argument, and never-moves-here boundary.
-- `docs/backlog/db-resident-settings.md` — build history across slices.
+- gr690347 — build history across slices.

@@ -27,9 +27,9 @@ cap exist in the DB but don't surface until explicitly searched.
 | Tag | Cardinality | Decay | Surface |
 |---|---|---|---|
 | `internal-state` | rolling self-doc (latest wins) | none (durable) | top 1 by recency |
-| `internal-thought` | many fragments | `auto_refresh_days` stamp (write-only today — nothing ranks on it) | top 8 by `updated_at` |
+| `internal-thought` | many fragments | none | top 8 by `updated_at` |
 | `DREAM:speculative` | written by the dream worker | none (fenced by `speculative_fence`) | top 5 |
-| `interest:<topic>` | several | `auto_refresh_days` stamp (write-only today) | not in preamble; search to find |
+| `interest:<topic>` | several | none | not in preamble; search to find |
 | `changed-mind:<topic>` | as-needed | none | not in preamble; search to find |
 | `user:asa` | identity anchor, applied to *all* of the above | — | scopes to asa's own memories |
 
@@ -45,13 +45,11 @@ put(
     # omit → derived from the first body line
     tags=["internal-thought", "user:asa"],
 )
-# → integer id, auto_refresh_days defaults to None unless set
+# → integer id
 ```
 
-To mark a thought as time-boxed, pass `args={'auto_refresh_days': 30}`
-on create — it stamps `refreshed_at` plus the window. Today both are
-write-only: no query orders or weights on them, and re-tagging does
-not reset anything (tag writes never touch the `refs` row).
+`args={'auto_refresh_days': N}` on create is stored and nothing reads
+it: no thought decays, and no query orders or weights on it.
 
 ## Update the state-of-self doc
 ## Refresh my living self-doc
@@ -88,16 +86,16 @@ search(kind="memory", tags=["user:asa"])  # everything you own
 search(kind="memory", q="<keyword>", tags=["internal-thought"])  # fragments by keyword
 ```
 
-`tags=` is OR-semantics. To narrow by both kind-of-thought *and*
-topic, scope by tag and filter with `q=` for the content.
+`tags=` is AND-semantics: every listed tag must match. To narrow by both
+kind-of-thought *and* topic, list both
+(`tags=["internal-thought", "topic:co2"]`); add `q=` to filter on content.
 
 ## Resurface an old thought
 ## Bring a fragment back into the preamble
 ## Keep a thought on top
 
-There is no decay to beat — `auto_refresh_days`/`refreshed_at` are
-write-only today — and re-tagging is a pure tag-set change (it bumps
-neither `refreshed_at` nor `updated_at`). What *does* resurface a
+There is no decay to beat, and re-tagging is a pure tag-set change (it
+does not bump `updated_at`). What *does* resurface a
 fragment in the preamble is an `edit`: the recent-thoughts list
 orders by `updated_at`, so editing the body or title puts it back on
 top:
@@ -114,7 +112,7 @@ at 8 either way.
 ## Accept a speculative connection
 
 Dreams are tagged `DREAM:speculative` so they're fenced from regular
-`search` by default (see `_tag_filter.speculative_fence`). To
+`search` by default. To
 promote one — confirm the connection feels real — remove the
 namespace tag and add the non-speculative variant:
 
@@ -137,22 +135,19 @@ put(
     title="<short header>",  # omit → derived from first body line
     tags=["interest:<topic>", "user:asa"],
 )
-# → integer id; consider auto_refresh_days=90 to mark the interest
-# as time-boxed (a written marker — nothing decays on it yet)
+# → integer id
 ```
 
 `interest:<topic>` and `changed-mind:<topic>` aren't surfaced in
 the preamble by default — they live in your durable corpus and
-asa-bot's slash commands or `precis search` retrieve them on
-demand.
+`search` retrieves them on demand.
 
 ## See dreams from a specific region
 ## Find what the dream worker has been thinking about
 
 ```python
 search(kind="memory", tags=["DREAM:speculative"], q="<topic of interest>")
-# include_speculative=True is implicit when the speculative tag
-# is named in tags= (see _tag_filter._fence_speculative).
+# naming the speculative tag in tags= lifts the dream fence.
 ```
 
 ## Bulk review old fragments
@@ -196,10 +191,10 @@ put(
 # actionable: trigger + action + why/anchor
 put(
     kind="memory",
-    text="Next time bge-m3 cold-start bites skill search: point MCP at "
-    "PRECIS_EMBEDDER=remote (always-hot serve-embeddings) rather "
-    "than retrying. See skill:precis-search-help.",
-    title="bge-m3 cold-start → PRECIS_EMBEDDER=remote, not retry",
+    text="Next time I search for an exact figure like '1.523 eV': use "
+    "mode='lexical' (exact string, no embedding) rather than hybrid. "
+    "See skill:precis-search-help.",
+    title="exact figure search → mode='lexical'",
     tags=["internal-thought", "user:asa"],
 )
 ```

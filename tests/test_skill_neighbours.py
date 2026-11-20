@@ -37,7 +37,8 @@ from tests._skill_corpus import _install_corpus, _md
 #: ``family=``/tag/kind facets or a direct search. Pinned both ways so a
 #: NEW isolated skill fails here (give it a real neighbour — a wikilink
 #: or a category — or record the deliberate exception) and a skill that
-#: gains a neighbour must leave the list.
+#: gains a neighbour must leave the list. (precis-loose-files-help left
+#: 2026-11-16: 6faedad78 gave it a ``[[precis-spec-help]]`` wikilink.)
 _KNOWN_ISOLATED: tuple[str, ...] = (
     "components",
     "patent-abstract",
@@ -49,7 +50,6 @@ _KNOWN_ISOLATED: tuple[str, ...] = (
     "precis-draft-reviewer",
     "precis-draft-section-insertion",
     "precis-learning-help",
-    "precis-loose-files-help",
     "precis-mermaid",
     "precis-mermaid-class",
     "precis-mermaid-er",

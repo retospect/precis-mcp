@@ -230,6 +230,13 @@ COMMANDS: tuple[Command, ...] = (
     _c("podcast", "podcast", "Publish/list private audio-feed episodes."),
     _c("gripes", "gripe", "Dump all filed gripes for human triage."),
     _c(
+        "gripe",
+        "gripe",
+        "Maintain gripe origin-class and goal tag classifications.",
+        register="add_origin_parser",
+        run="run_origin",
+    ),
+    _c(
         "gripe-fix",
         "gripe_fix",
         "Gripe-fix loop: import the file-era state, render a batch brief, "

@@ -1444,7 +1444,7 @@ def invariant_measure_findings(
     layers: list[str],
 ) -> list[DrcFinding]:
     """The ``strength='invariant'`` half of the always-valid gate
-    (docs/backlog/pcb-missing-constraint-classes.md §F, ruled 2026-10-12):
+    (me693086 §F, ruled 2026-10-12):
     every stored measure at that strength, evaluated by
     :func:`precis.pcb.eyes.evaluate_measures` over the SAME data the
     geometric rules see, becomes an error-severity :class:`DrcFinding`

@@ -14,7 +14,7 @@
 #                    bind-mount, which is slower but correct.
 #   scripts/build-image precis-dev → `docker compose build precis-dev`
 #
-# Prod is remote (caspar, over SSH); nothing here touches it.
+# Prod is remote (the database host, over SSH); nothing here touches it.
 services:
   # pgvector test DB, reached by service name over the compose network as
   # postgresql://postgres@precis-test-db:5432/precis_test.

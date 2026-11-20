@@ -14,7 +14,10 @@ one canonical source and its two entry tables are GENERATED from them —
   staging graph), a first-person hook line and a ``## Goals → skills``
   table (the goal-to-skill links the staged cards carried);
 - roles and principles use the same ordinary-skill shape — the same
-  frontmatter keys and sections, nothing persona-flavoured.
+  frontmatter keys and sections, nothing persona-flavoured;
+- a soul page points at a skill section by heading — ``[[slug]] §
+  "Heading"`` or the ``slug~<heading>`` selector — never by ``slug~N``
+  position, and that heading exists (``test_soul_pointers_resolve``).
 
 Pure file stats — no DB, no embedder.
 """
@@ -28,6 +31,8 @@ from precis.skill_index import soul_index
 from precis.skill_index.chunker import chunk_by_h2
 from precis.skill_index.soul_index import SoulIndexError
 from precis.utils.skill_common import parse_frontmatter
+from precis.utils.skill_scope import render as scope_render
+from precis.utils.skill_scope import strip_heading_mark
 from tests._skill_roots import BUILTIN_SKILLS_DIR
 
 ROOT_FILE = BUILTIN_SKILLS_DIR / f"{soul_index.ROOT_SLUG}.md"
@@ -124,6 +129,122 @@ def test_every_entry_carries_the_contract() -> None:
 def test_entries_link_back_to_root() -> None:
     for path in _ENTRY_FILES:
         assert "[[soul]]" in path.read_text(encoding="utf-8"), path.name
+
+
+#: A section pointer: ``[[precis-memory-help]] § "Update or new node?"``
+#: (the quoted text may wrap onto the next line).
+_SECTION_POINTER_RE = re.compile(r"\[\[([a-z0-9][a-z0-9-]*)\]\]\s+§\s+\"([^\"]+)\"")
+#: A heading-selector pointer in the skill id grammar (gr676916):
+#: ``precis-memory-help~A recalled memory misled me`` — the selector
+#: may contain digits and span several words (the runtime grammar,
+#: ``_SKILL_ID_RE`` in the skill handler, takes everything after ``~``
+#: up to the end of the id), so the capture runs to the end of the
+#: line — the Goals-table cell bar or the line end — and only trailing
+#: sentence punctuation comes off.
+_HEADING_SELECTOR_RE = re.compile(
+    r"(?<![\w-])([a-z0-9][a-z0-9-]*)~([^\d~\s|][^|~]*?)(?=$|\|)",
+    re.M,
+)
+_SELECTOR_TRAILING_PUNCT = ".,;:!?)]}\"'”"
+#: The positional form soul pages never use.
+_POSITIONAL_RE = re.compile(r"\b([a-z0-9][a-z0-9-]*)~\d+")
+
+
+def _fold_heading(value: str) -> str:
+    """Whitespace- and case-normalised heading, `` {write}`` mark off."""
+    return " ".join(strip_heading_mark(value).casefold().split())
+
+
+def _resolve_heading(body: str, selector: str) -> str | None:
+    """Return a problem description, or None when the selector resolves.
+
+    Mirrors the runtime ``slug~<heading>`` resolution
+    (``_resolve_skill_heading`` in the skill handler): exact match on a
+    chunk heading, alias, or `` / ``-split part wins; otherwise a
+    unique prefix must match exactly one section.
+    """
+    chunks = chunk_by_h2(body)
+    names = {
+        i: {_fold_heading(n) for n in (c.heading, *c.aliases, *c.heading.split(" / "))}
+        for i, c in enumerate(chunks)
+        if c.heading
+    }
+    needle = _fold_heading(selector)
+    matches = [i for i, variants in names.items() if needle in variants]
+    if not matches:
+        matches = [
+            i
+            for i, variants in names.items()
+            if any(n.startswith(needle) for n in variants)
+        ]
+    if len(matches) == 1:
+        return None
+    if matches:
+        return f"selector {selector!r} is ambiguous — sections {matches}"
+    return f"selector {selector!r} matches no section heading"
+
+
+def test_soul_pointers_resolve() -> None:
+    """A soul pointer names a live section; ``~N`` positions fail.
+
+    ``slug~N`` is a position: any H2 inserted above it re-aims the
+    pointer at a neighbour while the dead-xref gate, which only asks
+    that block N exists, stays green — so a numeric selector in a soul
+    file is refused outright, whether or not its slug is a skill file
+    today. A heading (``§`` pointer or ``slug~<heading>`` selector)
+    survives renumbering and breaks only when the section itself is
+    renamed, removed, or becomes ambiguous.
+    """
+    problems: list[str] = []
+    for path in [ROOT_FILE, *_ENTRY_FILES]:
+        text = path.read_text(encoding="utf-8")
+        for m in _POSITIONAL_RE.finditer(text):
+            problems.append(
+                f"{path.name}: {m.group(0)} is positional — write "
+                f'[[{m.group(1)}]] § "<heading>"'
+            )
+        for m in _SECTION_POINTER_RE.finditer(text):
+            slug, pinned = m.group(1), " ".join(m.group(2).split())
+            target = BUILTIN_SKILLS_DIR / f"{slug}.md"
+            if not target.is_file():
+                problems.append(f"{path.name}: [[{slug}]] is not a skill file")
+                continue
+            body = scope_render(target.read_text(encoding="utf-8"), "write")[0]
+            if problem := _resolve_heading(body, pinned):
+                problems.append(f"{path.name}: [[{slug}]] § — {problem}")
+        for m in _HEADING_SELECTOR_RE.finditer(text):
+            slug = m.group(1)
+            selector = m.group(2).strip().rstrip(_SELECTOR_TRAILING_PUNCT).strip()
+            if not selector:
+                continue
+            target = BUILTIN_SKILLS_DIR / f"{slug}.md"
+            if not target.is_file():
+                problems.append(
+                    f"{path.name}: {m.group(0)} — {slug} is not a skill file"
+                )
+                continue
+            body = scope_render(target.read_text(encoding="utf-8"), "write")[0]
+            if problem := _resolve_heading(body, selector):
+                problems.append(f"{path.name}: {m.group(0)} — {problem}")
+    assert not problems, "\n".join(problems)
+
+
+def test_refusal_boundary_and_reproduction_one_off_are_gone() -> None:
+    """gr676938: the retired one-off wordings must not creep back in.
+
+    soul-citizenship pins the refusal-vs-gripe boundary (a documented
+    guard is the tool working; a broken one is friction filed at once),
+    and soul-reproduction pins the deletion of the dated November
+    sentence in favour of the standing reproduction contract.
+    """
+    citizenship = (BUILTIN_SKILLS_DIR / "soul-citizenship.md").read_text(
+        encoding="utf-8"
+    )
+    assert "simply teach" not in citizenship
+    reproduction = (BUILTIN_SKILLS_DIR / "soul-reproduction.md").read_text(
+        encoding="utf-8"
+    )
+    assert "November" not in reproduction
 
 
 def test_staged_from_handles_are_unique() -> None:

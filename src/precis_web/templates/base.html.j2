@@ -3,6 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  {# The precis mark (gr633600): SVG first, the multi-resolution
+     favicon.ico as the legacy fallback. #}
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="alternate icon" href="/favicon.ico" sizes="any" />
   <title>{% block title %}precis{% endblock %} · precis web</title>
   {# Prebuilt static Tailwind (scripts/ship regenerates it from the content
      scan). Replaces the in-browser Play CDN, which warns in production and is
@@ -54,8 +58,8 @@
         {# Nav, by attention priority (the rationalized target information
            architecture; see also precis_web.nav):
              • Daily — daily-driver kinds, always visible, left.
-             • Browse ▾ — the corpus look-up long tail (Drive's five
-               standalone kind-specific readers), behind a dropdown.
+             • Quests / Clusters / Reactions — plain links; the old
+               Browse ▾ presets are Drive's sidebar "Saved views".
              • Attention (right, badged) — Needs you, Gripes, Alerts.
              • Manual — the user-facing how-to, top-level and unbadged.
              • Ops ▾ — System + the admin/dev surfaces, right dropdown.
@@ -70,10 +74,15 @@
 
           {# ── Daily: always-visible daily-driver kinds ──
              Drafts/Papers/Items retired into Drive (WS1a/WS1b/nav
-             restructure) — their routes redirect, so no tab needed. #}
-          {% set tabs = [('drive','Drive','/drive'), ('tags','Tags','/tags'), ('todo','ToDo','/todo'), ('design','Design','/design')] %}
+             restructure) — their routes redirect, so no tab needed.
+             ToDo joined them (gr664410): the dashboard list is the
+             Drive ``queue=doable`` preset, and the
+             ``/todo`` workbench stays per-item. Tags joined them
+             (gr636493): the leaderboard is the Drive ``k=tag`` view —
+             ``/tags`` and ``/tags/refs`` both redirect. #}
+          {% set tabs = [('drive','Drive','/drive'), ('design','Design','/design')] %}
           {# g-chord shortcuts (static/shortcuts.js): one per nav anchor, unique. #}
-          {% set _sc = {'drive': 'g d', 'todo': 'g t', 'drafts': 'g r', 'papers': 'g p', 'status': 'g s'} %}
+          {% set _sc = {'drive': 'g d', 'status': 'g s'} %}
           {% for key, label, href in tabs %}
           <a href="{{ href }}"{% if key in _sc %} data-shortcut="{{ _sc[key] }}" data-shortcut-label="{{ label }}" title="{{ label }} ({{ _sc[key] }})"{% endif %}
              class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == key %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
@@ -86,38 +95,28 @@
           {% endif %}
 
           <span class="mx-1 h-4 w-px bg-chrome-hover"></span>
+          {# ── Quests / Clusters / Reactions: plain links. The former
+             Browse ▾ dropdown is gone: its kind presets (Drafts, Papers,
+             Schedules, Structures, CAD, PCB, Figures, Mermaid) are the
+             "Saved views" block at the top of Drive's sidebar
+             (precis_web.drive_views), and the Nanopubs workbench link
+             lives there too. The reaction ledger stays a top-level link
+             (gr664411 — Reto: not folded into Drive's New form). #}
+          {% for key, label, href in [('refs:quest','Quests','/refs/quest'), ('clusters','Clusters','/clusters'), ('rxn','Reactions','/rxn')] %}
+          <a href="{{ href }}" class="px-2 py-1 rounded text-xs font-medium transition {% if active_tab == key %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">{{ label }}</a>
+          {% endfor %}
+          {# g r / g p / g t — the Browse ▾ presets' global chords, kept from
+             every page now that the dropdown is gone (gr664411 review): g r/g p
+             ride the Drive presets, g t is the doable todo queue (gr664410).
+             The anchors are visually hidden (shortcuts.js clicks an invisible
+             target, and "?" lists them); they are the single chord source, so
+             Drive's sidebar Saved views do not repeat them. #}
+          <span class="hidden">
+            <a href="/drive?k=draft&folder=*&sort=recency" data-shortcut="g r" data-shortcut-label="Drafts" title="Drafts (g r)">Drafts</a>
+            <a href="/drive?k=paper&folder=*&sort=recency" data-shortcut="g p" data-shortcut-label="Papers" title="Papers (g p)">Papers</a>
+            <a href="/drive?submitted=1&k=todo&queue=doable" data-shortcut="g t" data-shortcut-label="Todos" title="Todos (g t)">Todos</a>
+          </span>
 
-          {# ── Browse ▾: the corpus look-up long tail ──
-             WS1b folded Papers-Needed / Oracle / Patents / CFPs / Refs
-             per-kind lists into Drive kind/state facet presets (Oracle's
-             "roll the dice" and Patents' OPS remote-search are MCP/CLI
-             affordances, not web routes, so nothing web-facing was lost).
-             Structures/CAD/PCB/Figures/Mermaid's own list pages are
-             likewise retired now that a Drive row carries real per-kind
-             state (design.py's dedicated ItemPresenters — atom/run/energy,
-             level/block counts, routed/placed, canvas size, …); these
-             entries link straight to the ``kind=`` facet preset (the same
-             target ``/pcb`` etc. now redirect to) rather than bouncing
-             through the retired route. Their workbenches
-             (``/structure/{slug}`` etc.) are unaffected. Clusters is
-             a bespoke visualization with no Drive equivalent. #}
-          {% set browse = [('drafts','Drafts','/drive?k=draft&folder=*&sort=recency'), ('papers','Papers','/drive?k=paper&folder=*&sort=recency'), ('quests','Quests','/drive?submitted=1&k=quest&sort=recency'), ('schedules','Schedules','/drive?submitted=1&k=todo&tag=level:recurring&sort=recency'), ('clusters','Clusters','/clusters'), ('structure','Structures','/drive?k=structure&folder=*&sort=recency'), ('cad','CAD','/drive?k=cad&folder=*&sort=recency'), ('pcb','PCB','/drive?k=pcb&folder=*&sort=recency'), ('figure','Figures','/drive?k=figure&folder=*&sort=recency'), ('mermaid','Mermaid','/drive?k=mermaid&folder=*&sort=recency'), ('rxn','Reaction ledger','/rxn'), ('nanopub','Nanopubs','/nanopub')] %}
-          {% set browse_keys = browse | map(attribute=0) | list %}
-          <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
-            <button type="button" @click="open=!open"
-                    class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center gap-1 {% if active_tab in browse_keys %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
-              Browse <span class="text-[9px]">▾</span>
-            </button>
-            <div x-show="open" x-cloak x-transition.opacity
-                 class="absolute left-0 mt-1 z-40 min-w-[9rem] rounded-md border border-chrome bg-chrome-raised py-1 shadow-lg">
-              {% for key, label, href in browse %}
-              <a href="{{ href }}"{% if key in _sc %} data-shortcut="{{ _sc[key] }}" data-shortcut-label="{{ label }}" title="{{ label }} ({{ _sc[key] }})"{% endif %}
-                 class="block px-3 py-1.5 text-xs font-medium transition {% if active_tab == key %}bg-chrome-hover text-chrome-strong{% else %}text-chrome-muted hover:bg-chrome-hover hover:text-chrome-strong{% endif %}">
-                {{ label }}
-              </a>
-              {% endfor %}
-            </div>
-          </div>
 
           {# ── Right: Attention (Needs you / Gripes / Alerts, badged) +
                Ops ▾ (System + admin surfaces) + global search. ── #}

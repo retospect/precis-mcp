@@ -211,7 +211,7 @@ deeper stock.
 For divider and threshold chains, check **every threshold with the rounded
 values at worst-case tolerance corners** by hand (resistor tolerance, plus
 reference/feedback-pin tolerance). An automatic tolerance engine
-(backlog item `pcb-tolerance-selection`) is planned, not built.
+(spec `me692831`, `pcb-tolerance-selection`) is planned, not built.
 
 ## When the part you want isn't well stocked
 

@@ -337,7 +337,7 @@ def place_footprint_pads(
     net-name data degrades to an empty string, never a skipped pad.
 
     ``role``/``mask``/``paste`` (pcb-ewod-multitile Slice 1's authoring
-    surface, ``docs/backlog/pcb-component-model.md`` §Features' minimum
+    surface, `me692617` §Features' minimum
     viable slice) ride straight through onto the placed pad dict when the
     source pad carries them — an EasyEDA-parsed catalog footprint never
     does, so those pads are silently untouched (``.get`` with the same

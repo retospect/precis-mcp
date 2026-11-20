@@ -7,10 +7,10 @@ effort: high
 
 ## Resume
 
-- **Next:** Dormant from 2026-10-17 (Reto): P1 winds down to maintenance once memory P4 landed (2026-10-18). R17 [norr-her-meta packing reconciliation](../norr-her-meta.md#r17-packing-evidence-reconciliation), native task `td470289`: hand off the verified retained corrected packed 300-row receipts and exact reproducibility manifest with independent review before any duplicate implementation or spend. Packing and per-half grouping already shipped. Trust slice 1 is built (compat mode), reviewed and landing; see Do next 0.
-- **Blocked by:** No blocker to retained-artifact verification. The separate local 100-row qualification still needs supported placement access; old Castor/0188 status below is historical, not a current runtime claim. Canonical focused tests/types wait for root's R16 queue release if code changes are necessary.
+- **Next:** Dormant from 2026-10-17 (Reto): P1 winds down to maintenance once memory P4 landed (2026-10-18). R17 norr-her-meta packing reconciliation (me690599), native task `td470289`: hand off the verified retained corrected packed 300-row receipts and exact reproducibility manifest with independent review before any duplicate implementation or spend. Packing and per-half grouping already shipped. Trust slice 1 is built (compat mode), reviewed and landing; see Do next 0.
+- **Blocked by:** No blocker to retained-artifact verification. The separate local 100-row qualification still needs supported placement access; old local-serving-node/0188 status below is historical, not a current runtime claim. Canonical focused tests/types wait for root's R16 queue release if code changes are necessary.
 - **Unblocks:** A qualified taxonomy substrate for graph memory.
-- **Acceptance:** The bounded R17 criteria in [norr-her-meta](../norr-her-meta.md#r17-packing-evidence-reconciliation), with durable native receipts and explicit unavailable evidence; no full corpus, freeze, gold adjudication or quest tick.
+- **Acceptance:** The bounded R17 criteria in norr-her-meta (me690599), with durable native receipts and explicit unavailable evidence; no full corpus, freeze, gold adjudication or quest tick.
 - **Worktree:** `codex-knowledge-mesh-r17-packing` (`work/knowledge-mesh/norr-her-packing`)
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -70,7 +70,7 @@ graph-health-metrics, five parked gripes, and the seam with
   sample per paper × measurand, the batch is accepted under a 5 %
   Wilson bar, and only escalations reach Reto; per-value human
   sign-off is retired. The extraction-pass plan is in the spec
-  §"Next slice" — Spark reader, pa5044 first, the versioned anchor
+  §"Next slice" — GPU-node reader, pa5044 first, the versioned anchor
   scheme ported first.
 - **Next:** local-mesh-upkeep slice 2 (feed), once the queue and the
   controller exist; a mesh-eval candidate score, once a serving window
@@ -119,7 +119,7 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Do next
 
-0. **[Graph node/edge trust state](../graph-node-trust-state.md)** — slice 1
+0. **Graph node/edge trust state (me691024)** — slice 1
    built in compatibility mode on tree `mesh-trust` (2026-10-15, migrations
    0214/0215): origin + confidence on every ref/link, acts in
    `revisions.trust_acts`, and six converted verb kinds plus the taproot,
@@ -137,7 +137,7 @@ graph-health-metrics, five parked gripes, and the seam with
    built on tree `trust-2b` as migration 0235 — the rulings above it, the
    migration lands through the release owner.
 
-0b. **[Corpus quantitative extraction](../corpus-quantitative-extraction.md)**
+0b. **Corpus quantitative extraction (me694248)**
    — assigned here by Reto 2026-10-12 (chat): sourced numbers from papers,
    traceable to span and conditions, comparable across overlapping
    experiments, behind validation gates for citability. Still `draft`:
@@ -145,20 +145,20 @@ graph-health-metrics, five parked gripes, and the seam with
    or sampled with an error bar) and the trust-state tie-in to item 0 before
    any build. Feeds a survey paper, December at the earliest.
 
-1. **backlog/term-taxonomy.md v1.5 in-scope 2 (ops acceptance)** — the
+1. **me693578 v1.5 in-scope 2 (ops acceptance)** — the
    `precis-classify-help` guide and `includes`/`excludes` shipped
    2026-10-05 (04c13fd28), deployed in R16. Exact-deploy skill readback
    and the cold-agent check (10 seeded AFM items) remain pending; the axis
    contract fields wait on v1.5 (Horizon 2). Folded from
    taxon-facet-navigation 2026-10-21.
-2. **backlog/taxonomy-bootstrap.md §Resume** — waits on castor's local
-   big model (Reto, knowledge-mesh-9: wait for castor; no date, Slice 0
+2. **me692282 §Resume** — waits on the local-serving node's local
+   big model (Reto, knowledge-mesh-9: wait for the local-serving node; no date, Slice 0
    not run; local-compute pings on serving). Then: two
    `--placement local --pack 4 --limit 100` runs, `compare_runs.py`
    local-vs-local against the 0.711 bar (cross-run folded agreement,
    knowledge-mesh-7); if it clears, the full run goes local ($0).
    `--placement local` shipped (fdfae5c5c).
-3. **backlog/local-mesh-upkeep.md** — draft (Reto 2026-10-03, tier 2,
+3. **me693504** — draft (Reto 2026-10-03, tier 2,
    co-owned with local-compute): what local models can do for upkeep
    (categorise, link, finding extraction, merge), measured per action
    against an auto-apply bar and a reviewed-by-a-bigger-model bar; one
@@ -181,7 +181,7 @@ graph-health-metrics, five parked gripes, and the seam with
    `revisions_unrecorded` cadence counts unwrapped write paths.
    Remaining: slice 2 (feed) waits on the queue and the controller. The
    as-built choices are in the item's decisions log.
-4. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
+4. **me690507** — Reto ruled 2026-10-02
    (td461151): the cheap duplicate-hub reconcile, in order:
    re-check on embed, text-version watermark, a distance cutoff
    calibrated on hand-merged twins, one backfill, a pre-publish check.
@@ -214,39 +214,39 @@ graph-health-metrics, five parked gripes, and the seam with
    once 9 lands. 2026-10-06
    (Reto: "dive into the graph and back out again"): the navigation
    pieces — zoom-out via `UP_RELATIONS`, came-from slot, peek, keyboard
-   map — live in `web-graph-navigation.md` slices 7–9; `/eye/` keeps the
+   map — live in `web-graph-navigation (me694223)` slices 7–9; `/eye/` keeps the
    text ladder. Edge editing from the page is
-   **backlog/eye-link-editor.md** (draft, blocked-by web-graph-navigation)
+   **me693490** (draft, blocked-by web-graph-navigation)
    — a human fixing a wrong edge where they see it is the complement of
-   the gardener's proposals (graph-gardener-value.md, below).
-7. **backlog/measures-substrate.md: the qu202467 pilot gaps** (Reto
+   the gardener's proposals (graph-gardener-value (me693885), below).
+7. **me693370: the qu202467 pilot gaps** (Reto
    2026-10-03, knowledge-mesh-12, option 1). Builds A–D are live and the
    pilot data is written and reviewed (see Resume). Open: 0188 (A2) on its
    branch, then the six gaps in §"Found by the pilot write". qu202467
    stays held until Reto answers knowledge-mesh-13.
-8. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
+8. **me692057** — owned here as
    term-taxonomy's v2 (defined classes as canonical constraint sets with
    membership yes/no/unknown, per-axis similarity spaces, participant
    roles, curves/fits/laws — Reto's sourced-KG design notes, folded in at
    the pillar review). Right after 7 because it builds on the same taxon
    identity; consumed by `se-machine-design.md` (pocket specs) and
-   `materials-molecular-substitution-db.md`.
+   `materials-molecular-substitution-db (gr695283)`.
 9. **memory-file-mirror** — SHIPPED (aa669f59f, c06e338fc, legacy refresh
    8993c22e6, native export afa814bd9), backlog doc deleted 2026-10-15.
    Real import live: 150 refs in namespace `repo-dev-harness-20261007`.
-10. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
+10. **me690599** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Starts on a frozen list.
 
 ## Horizon
 
-1. **backlog/taxonomy-bootstrap.md full run** (1231 calls) — waits on the
+1. **me692282 full run** (1231 calls) — waits on the
    re-probe clearing the probe criterion and the concurrency decision;
    delivers list.v1.yaml, the first frozen measurand list.
-2. **backlog/term-taxonomy.md v1.5** (axis start node, meta.axis validated)
+2. **me693578 v1.5** (axis start node, meta.axis validated)
    — waits on gardener-promoted axes; link filters by axis. This is
    the thread's answer to "hierarchies over links": axis hierarchy, not
    relation specialisation.
-2a. **backlog/ontology-v2.md** — approved by Reto 2026-10-22: measurand
+2a. **me693381** — approved by Reto 2026-10-22: measurand
    groups on named axes, a `method` start node, material/reaction under
    `subject`, campaign tag vocabularies promoted to taxa with
    `instance-of` (today 0 such edges, so `under=` answers nothing),
@@ -256,20 +256,20 @@ graph-health-metrics, five parked gripes, and the seam with
    quantity-class groups + `other` catch-all) is built, awaiting prod
    `--apply` after deploy; slices 2–3 before Horizon 2's validated axes
    land. 4b's signal 1 reads its facets.
-3. **backlog/knowledge-mesh.md** (walk, numeric conflicts, quest_mesh,
+3. **me693314** (walk, numeric conflicts, quest_mesh,
    universal row) — waits on Do-next 7; its ladder item moved to Do-next 6.
-4. **backlog/experiment-loop.md** — waits on Do-next 7; hypothesis → todo
+4. **me693311** — waits on Do-next 7; hypothesis → todo
    `tests` → measure → ruling → refuted, walked end to end through the
    verbs, plus the skill that teaches it.
-4a. **backlog/graph-gardener-value.md** — Reto 2026-10-21: links only
+4a. **me693885** — Reto 2026-10-21: links only
    where RAG cannot recompute them (stance, distant, provenance,
    identity), machine edges on the trust contract, a per-quest retrieval
-   eval, gardener v1 corrections, the castor scout. Gardener v1 lit on
-   prod 2026-10-21 with castor gpt-oss-120b; a 6-hourly watch files
+   eval, gardener v1 corrections, the local-model scout. Gardener v1 lit on
+   prod 2026-10-21 with local-serving gpt-oss-120b; a 6-hourly watch files
    gripes. Also carries the v1 spec's open `agentlog_id` stamping (folded
    2026-10-21); the sibling-disjointness pass reads confusion from the
    taxonomy-bootstrap probe runs, so it can start before Horizon 1.
-4b. **backlog/kg-mesh-loop.md** — approved by Reto 2026-10-22 from the
+4b. **me690203** — approved by Reto 2026-10-22 from the
    Pd-hydride pilot (me504790: 23 writes, 19 wins over RAG): cheap tier
    proposes per quest cluster, strong tier writes pinned hubs and stance
    edges, each write passes a before/after retrieval test, 2-h cadence
@@ -278,43 +278,43 @@ graph-health-metrics, five parked gripes, and the seam with
    stamps and the quest-edge direction fix; slice 1 (selector +
    stats, SQL only) landed 2026-10-22
    (`precis mesh loop clusters|stats`, `src/precis/graph/mesh_loop/`).
-6. **backlog/session-history-into-precis.md** — the linear logbook: human
+6. **me694237** — the linear logbook: human
    sessions as `conv`, machine runs as `agentlog` (Reto's 2026-09-29
    split); waits on the shared redaction path, whichever item ships it
    first.
-7. **backlog/curation-gate.md** — waits on eval-run-spine's verdict column
+7. **me695348** — waits on eval-run-spine's verdict column
    (serving-programme thread); the guard that lets 5 run unattended.
-8. **backlog/draft-linearization.md** — waits on 3; the graph as the
+8. **me693562** — waits on 3; the graph as the
    truth and a draft as a rendered subgraph. Render-only v1, ruled
    2026-09-30.
-9. **backlog/context-memory-hierarchy.md** — the resident/discovered split
+9. **me692173** — the resident/discovered split
    for the harness memory, re-sliced 2026-10-17: S1 (band report) and S2
    (band placement in hub renders) built; S3/S4 wait on Reto decisions.
-10. **backlog/corpus-quantitative-extraction.md** — waits on Horizon 1 and
+10. **me694248** — waits on Horizon 1 and
     Do-next 7; sourced numeric triples bound to list entries.
-11. **backlog/norr-her-meta.md steps 3-5** (20-paper round, gold set,
+11. **me690599 steps 3-5** (20-paper round, gold set,
     figure, draft) — waits on Horizon 1; the paper's spine.
-12. **backlog/dreaming.md** — the consolidation pass over memory nodes;
+12. **gr690614** — the consolidation pass over memory nodes;
     revisit once 5 and 7 exist, since both replace hand consolidation.
-13. **backlog/first-party-experiment-records.md** — waits on Do-next 7;
+13. **gr690817** — waits on Do-next 7;
     our own runs (a job, a quest tick, an se design) need the same measure
     identity as a paper's before they can be stored honestly. Note the
-    open contradiction it records: `measures-substrate.md` §3 owns an
-    `experiment` kind, `experiment-loop.md` says no new kind.
-14. **backlog/graph-health-metrics.md** — waits on Horizon 3; a populated
+    open contradiction it records: `measures-substrate (me693370)` §3 owns an
+    `experiment` kind, `experiment-loop (me693311)` says no new kind.
+14. **gr690826** — waits on Horizon 3; a populated
     mesh is the precondition for measuring its own reachability, orphan
     rate and edge precision, which is what gardener (5) fixes against.
-15. **backlog/capability-landscape-steals.md** — five externally sourced
+15. **me690603** — five externally sourced
     ideas (a ChemBench eval slice, categorizer rule distillation, and
     three more) from the capability-landscape comparison; sequenced behind
     the substrate (Do-next 1-8) by choice, not blocked.
 
-16. **backlog/datasheet-facts-mesh.md** — waits on Do-next 7 (its part
+16. **me693194** — waits on Do-next 7 (its part
     ref subject shipped); a pulled datasheet's ratings, specs, package and pin table as
     page-cited `measures` rows on the part ref (Reto, ewod-pcb-2 and
     knowledge-mesh-6); the pin table feeds the pad-map check from the
     pcb-platform thread's pin table.
-17. **backlog/greenfield-schema-review.md** — file only (Reto,
+17. **me691394** — file only (Reto,
     knowledge-mesh-6): what the schema would be designed today and the
     migration path there. A review, not a refactor; any time. It now
     also holds the OPEN-namespace teardown section: a GO (Reto
@@ -379,7 +379,7 @@ items.
   the extraction stub is deleted, `docs/how-to-setup-like-this.md`
   carries the line).
 - a relation hierarchy (sub-relations as rows) — rejected in
-  `backlog/term-taxonomy.md`'s reconciliation table; Horizon 2 covers the
+  me693578's reconciliation table; Horizon 2 covers the
   need.
 - a graph database or a closure table — rejected in knowledge-mesh and
   term-taxonomy with a stated revisit trigger.

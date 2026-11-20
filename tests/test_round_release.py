@@ -2260,6 +2260,122 @@ def test_a_resumed_failed_leg_keeps_started_epoch_on_a_refusal(rig: Rig) -> None
     assert out.returncode == 1 and "partial rollout" in out.stderr
 
 
+def test_a_deploy_refused_before_any_host_is_not_journaled(rig: Rig) -> None:
+    """gr730609: `scripts/deploy` exits 75 from a guard ahead of its first
+    host contact. `round deploy` puts the record back as it was before the
+    leg — no journal — so `fail` has nothing to mark and a re-run deploys."""
+    head = _cut(rig)
+    before = _rel(_round_json(rig), 1)
+    out = rig.round("deploy", DEPLOY_STUB_RC="75", **_verdict(head))
+    assert out.returncode == 75, out.stdout + out.stderr
+    assert "no host was touched" in out.stderr
+    assert rig.deploy_log() == [f"{head} --pinned"]
+    after = _rel(_round_json(rig), 1)
+    # The leg published origin/gated before the refusal; that observation
+    # is the one thing the record keeps from it.
+    assert after.pop("gated_seen") == [head] == [rig.origin_ref("gated")]
+    assert after == before
+    assert after["state"] == before["state"]
+    assert after.get("state_at") == before.get("state_at")
+    assert "deployment" not in after
+    out = rig.round("fail")
+    assert out.returncode == 1
+    assert "never started a rollout" in out.stderr
+    out = _deploy(rig, DEPLOY_STUB_VERIFY="1", **_verdict(head))
+    assert out.returncode == 0, out.stdout + out.stderr
+
+
+@pytest.mark.parametrize("moved", ["deleted", "regressed"])
+def test_a_refused_leg_keeps_its_gated_bound_for_the_retry(
+    rig: Rig, moved: str
+) -> None:
+    """Review td731692 of gr730609: the refused leg moved `origin/gated` to
+    the release head before `scripts/deploy` exited 75. Dropping its journal
+    must not drop that observation — a `gated` deleted or moved back before
+    the retry is a refusal, not a starting point to publish from again."""
+    head = _cut(rig)
+    out = rig.round("deploy", DEPLOY_STUB_RC="75", **_verdict(head))
+    assert out.returncode == 75, out.stdout + out.stderr
+    assert rig.origin_ref("gated") == head
+    if moved == "deleted":
+        _git(rig.origin, "update-ref", "-d", "refs/heads/gated")
+        left = ""
+    else:
+        left = rig.shas["c0"]
+        _git(rig.origin, "update-ref", "refs/heads/gated", left)
+    out = rig.round("deploy", **_verdict(head))
+    assert out.returncode != 0, out.stdout + out.stderr
+    assert rig.deploy_log() == [f"{head} --pinned"]  # no second rollout launch
+    assert rig.origin_ref("gated") == left  # and nothing republished
+    assert _rel(_round_json(rig), 1)["gated_seen"] == [head]
+
+
+def test_a_damaged_gated_bound_refuses_the_retry(rig: Rig) -> None:
+    """A `gated_seen` that is not a list of shas is a refusal, never no bound."""
+    head = _cut(rig)
+    out = rig.round("deploy", DEPLOY_STUB_RC="75", **_verdict(head))
+    assert out.returncode == 75, out.stdout + out.stderr
+    path = rig.root / ".git" / "precis-round" / "round.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    _rel(data, 1)["gated_seen"] = "not a list"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    out = rig.round("deploy", **_verdict(head))
+    assert out.returncode != 0, out.stdout + out.stderr
+    assert rig.deploy_log() == [f"{head} --pinned"]
+
+
+def test_a_deploy_refused_before_any_host_can_be_abandoned(rig: Rig) -> None:
+    """The restored record carries no journal, so `cut --abandon` takes it
+    (a journaled record refuses — see
+    test_release_zero_exit_without_health_or_prod_never_retires)."""
+    head = _cut(rig)
+    out = rig.round("deploy", DEPLOY_STUB_RC="75", **_verdict(head))
+    assert out.returncode == 75, out.stdout + out.stderr
+    out = rig.round("cut", "--abandon")
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "abandoned"
+    assert rig.origin_ref("release/r1") == ""
+
+
+def test_a_resumed_leg_refused_before_any_host_keeps_the_partial_rollout(
+    rig: Rig,
+) -> None:
+    """A `failed` record whose journal shows a launched rollout gets that
+    journal (launch marker included) back when the resumed leg is refused
+    with no host contacted: the earlier partial rollout stays live."""
+    head = _failed_deploy(rig)
+    journal = dict(_rel(_round_json(rig), 1)["deployment"])
+    out = rig.round("deploy", DEPLOY_STUB_RC="75", **_verdict(head))
+    assert out.returncode == 75, out.stdout + out.stderr
+    assert "no host was touched" in out.stderr
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "failed"
+    assert rel["deployment"] == journal
+    out = rig.round("cut", **_fresh(rig, "c3"))
+    assert out.returncode == 1
+    assert "partial rollout" in out.stderr
+
+
+def test_the_untouched_exit_code_is_one_number() -> None:
+    """scripts/deploy, scripts/round, scripts/release and release_deploy.py
+    each restate the "no host was touched" exit code; they must agree."""
+    import re
+
+    from precis.workers.job_types.release_deploy import UNTOUCHED_EXIT
+
+    def _read(name: str) -> str:
+        return (REPO_ROOT / "scripts" / name).read_text(encoding="utf-8")
+
+    in_deploy = re.search(r"^DEPLOY_RC_UNTOUCHED=(\d+)$", _read("deploy"), re.M)
+    assert in_deploy, "scripts/deploy lost DEPLOY_RC_UNTOUCHED"
+    codes = [int(in_deploy.group(1)), UNTOUCHED_EXIT]
+    for name in ("round", "release"):
+        m = re.search(r"^DEPLOY_RC_UNTOUCHED = (\d+)$", _read(name), re.M)
+        assert m, f"scripts/{name} lost DEPLOY_RC_UNTOUCHED"
+        codes.append(int(m.group(1)))
+    assert codes == [75, 75, 75, 75]
+
+
 def test_supersede_refuses_a_terminal_failed_record(rig: Rig) -> None:
     """`failed` whose rollout never launched is already terminal: the next
     `cut` supersedes it — `supersede` reports nothing to do."""
@@ -2918,7 +3034,8 @@ def test_unchanged_record_publishes_once_even_seconds_apart(
     mod._publish_round(data)
     time.sleep(1.05)
     mod._publish_round(data)
-    assert [c[:2] for c in prod.calls] == [["settings", "set"]]
+    # one read-compare-write; the unchanged second call sends nothing
+    assert [c[:2] for c in prod.calls] == [["settings", "get"], ["settings", "set"]]
 
 
 def test_publish_failure_reports_once_then_stops(
@@ -2973,10 +3090,11 @@ def test_a_verb_publishes_its_final_write_once(
     mod._write(path, _round_data(rig, _record(1, rig.shas["c2"], "gating")))
     assert prod.calls == []  # nothing publishes until the verb ends
     mod._publish_pending()
-    assert len(prod.calls) == 1
-    assert json.loads(prod.calls[0][3])["state"] == "gating"
+    sets = [c for c in prod.calls if c[:2] == ["settings", "set"]]
+    assert len(sets) == 1
+    assert json.loads(sets[0][3])["state"] == "gating"
     mod._publish_pending()
-    assert len(prod.calls) == 1  # the flush consumes its stash
+    assert len(prod.calls) == 2  # the flush consumes its stash (one get, one set)
 
 
 def test_open_and_close_with_no_release_publish_nothing(
@@ -2988,6 +3106,203 @@ def test_open_and_close_with_no_release_publish_nothing(
     assert mod.main(["eta", "later"]) == 0  # a marks write is not a round write
     assert mod.main(["close"]) == 0
     assert prod.calls == []
+
+
+# ── guarded row writes (gr675506) ────────────────────────────────
+
+
+def _other_row(rig: Rig, n: int, state: str = "cut", **extra: Any) -> dict[str, Any]:
+    """A row another clone owns."""
+    return {
+        "n": n,
+        "branch": f"release/r{n}",
+        "base": rig.shas["c2"],
+        "state": state,
+        "owner": {"host": "other-node", "checkout": "/elsewhere/clone"},
+        "cut_at": "2026-11-14T11:00:00Z",
+        **extra,
+    }
+
+
+def _sets(prod: Any) -> list[list[str]]:
+    return [c for c in prod.calls if c[:2] == ["settings", "set"]]
+
+
+def test_abandoning_a_stale_local_release_leaves_a_live_foreign_row_alone(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gr675506 (a): `round cut --abandon` of a stale local r309 used to
+    publish {n:309, abandoned} over the row holding another clone's live
+    r313 — the poll then minted a second release. The row stays as it was."""
+    live = _other_row(rig, 313)
+    prod = _Prod(row=dict(live))
+    mod = _published(rig, monkeypatch, prod)
+    _state_write(rig, _record(309, rig.shas["c2"], "cut"), n=309)
+    assert mod.main(["cut", "--abandon"]) == 0
+    assert _rel(_round_json(rig), 309)["state"] == "abandoned"  # local action ran
+    assert prod.row == live
+    assert _sets(prod) == []
+    err = capsys.readouterr().err
+    assert err.count("round record not published:") == 1
+    assert "r313 [cut]" in err and "a higher n than r309" in err
+
+
+def test_a_lower_n_never_overwrites_the_row_even_when_terminal(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = _other_row(rig, 313, "confirmed")
+    prod = _Prod(row=dict(row))
+    mod = _published(rig, monkeypatch, prod)
+    mod._publish_round(_round_data(rig, _record(309, rig.shas["c2"], "cut")))
+    assert prod.row == row and _sets(prod) == []
+
+
+def test_a_higher_n_never_displaces_a_live_row_another_clone_owns(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = _other_row(rig, 5)
+    prod = _Prod(row=dict(row))
+    mod = _published(rig, monkeypatch, prod)
+    mod._publish_round(_round_data(rig, _record(6, rig.shas["c2"], "cut")))
+    assert prod.row == row and _sets(prod) == []
+
+
+def test_a_higher_n_replaces_a_terminal_foreign_row_or_our_own(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prod = _Prod(row=_other_row(rig, 5, "confirmed"))
+    mod = _published(rig, monkeypatch, prod)
+    mod._publish_round(_round_data(rig, _record(6, rig.shas["c2"], "cut")))
+    assert prod.row is not None and prod.row["n"] == 6
+    # our own live row (a pipelined cut) moves up too
+    prod = _Prod(row=_db_row(rig, host="fake-node", checkout=str(rig.root)))
+    mod = _published(rig, monkeypatch, prod)
+    mod._publish_round(_round_data(rig, _record(2, rig.shas["c2"], "cut")))
+    assert prod.row is not None and prod.row["n"] == 2
+
+
+def test_the_owner_advances_its_own_release_but_never_moves_it_back(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    row = _db_row(rig, host="fake-node", checkout=str(rig.root), state="deploying")
+    prod = _Prod(row=dict(row))
+    mod = _published(rig, monkeypatch, prod)
+    mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "deployed")))
+    assert prod.row is not None and prod.row["state"] == "deployed"
+    # a stale local `cut` against the advanced row is refused
+    mod2 = _published(rig, monkeypatch, prod)
+    mod2._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "cut")))
+    assert prod.row["state"] == "deployed"
+    assert "further along than this record" in capsys.readouterr().err
+
+
+def test_only_the_owner_retires_a_live_row(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Same n and branch, another clone's live row: an abandon/supersede
+    here must not retire it."""
+    row = _db_row(rig, host="other-node", checkout="/elsewhere/clone")
+    prod = _Prod(row=dict(row))
+    mod = _published(rig, monkeypatch, prod)
+    mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "abandoned")))
+    assert prod.row == row and _sets(prod) == []
+    assert "owned by another clone" in capsys.readouterr().err
+
+
+def test_an_unreadable_or_failing_row_read_is_never_overwritten(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    prod = _Prod()
+    prod.row = None
+    mod = _published(rig, monkeypatch, prod)
+
+    def bad(args: list[str], **kw: Any) -> tuple[int, str, str]:
+        prod.calls.append(args)
+        return 0, "release.round = not-json (layer=db)\n", ""
+
+    monkeypatch.setattr(mod, "_prod_precis", bad)
+    mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "cut")))
+    assert _sets(prod) == []
+    assert "release.round is unreadable" in capsys.readouterr().err
+
+
+def test_the_published_row_carries_the_release_pass_marker(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("PRECIS_RELEASE_PASS", "td4242")
+    mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "cut")))
+    assert prod.row is not None and prod.row["pass"] == "td4242"
+
+
+def test_a_publish_without_the_marker_keeps_the_rounds_pass(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td678528: a deploy or confirm leg that runs without the marker keeps
+    the pass the cut stamped on the same round; another round's pass is
+    never carried."""
+    prod = _Prod()
+    mod = _published(rig, monkeypatch, prod)
+    monkeypatch.setenv("PRECIS_RELEASE_PASS", "td4242")
+    mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "cut")))
+    monkeypatch.delenv("PRECIS_RELEASE_PASS")
+    mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "deploying")))
+    assert prod.row is not None and prod.row["state"] == "deploying"
+    assert prod.row["pass"] == "td4242"
+    prod.row = {**prod.row, "n": 0}
+    mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "deployed")))
+    assert prod.row is not None and "pass" not in prod.row
+
+
+# ── one cutter: PRECIS_RELEASE_PASS (gr675506) ──────────────────
+
+
+def test_a_cut_without_the_release_pass_marker_warns_and_still_cuts(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr675506 (d), first release: `round cut` without the factory pass
+    marker still cuts but warns once; with it, or on `--dry-run` and
+    `--abandon`, it says nothing. (A later release makes it a refusal.)"""
+    monkeypatch.delitem(rig.env, "PRECIS_RELEASE_PASS")
+    assert rig.round("open").returncode == 0
+    dry = rig.round("cut", "--dry-run", **_fresh(rig))
+    assert dry.returncode == 0, dry.stderr
+    assert "dry-run: would push" in dry.stdout and "gr675506" not in dry.stderr
+    out = rig.round("cut", **_fresh(rig), PRECIS_RELEASE_PASS="  ")  # blank = unset
+    assert out.returncode == 0, out.stderr
+    assert out.stderr.count("PRECIS_RELEASE_PASS is unset") == 1
+    assert "gr675506" in out.stderr
+    assert rig.origin_ref("release/r1") == rig.shas["c2"]
+    ab = rig.round("cut", "--abandon")
+    assert ab.returncode == 0, ab.stderr
+    assert "gr675506" not in ab.stderr
+    out = rig.round("cut", **_fresh(rig), PRECIS_RELEASE_PASS="td77")
+    assert out.returncode == 0, out.stderr
+    assert "PRECIS_RELEASE_PASS is unset" not in out.stderr
+
+
+def test_a_resumed_deploy_publishes_over_a_live_failed_row(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr675506 review: a `failed` row whose rollout launched is a live
+    partial rollout — rank 1 as in `update_round`, not terminal rank 3 — so
+    the resumed deploy's `deploying`/`deployed` write is a move forward. A
+    `failed` row that never launched stays terminal (rank 3)."""
+    live_failed = _db_row(rig, host="fake-node", checkout=str(rig.root), state="failed")
+    live_failed["deploy"] = {"started_epoch": 1760000000}
+    for state in ("deploying", "deployed"):
+        prod = _Prod(row=dict(live_failed))
+        mod = _published(rig, monkeypatch, prod)
+        mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], state)))
+        assert prod.row is not None and prod.row["state"] == state
+    # never launched: terminal, a `deploying` record is behind it
+    prod = _Prod(
+        row=_db_row(rig, host="fake-node", checkout=str(rig.root), state="failed")
+    )
+    mod = _published(rig, monkeypatch, prod)
+    mod._publish_round(_round_data(rig, _record(1, rig.shas["c2"], "deploying")))
+    assert prod.row is not None and prod.row["state"] == "failed"
 
 
 def test_status_names_a_foreign_record_owner(

@@ -1,6 +1,6 @@
 """``run_slice`` — launch one slice headless on a lane (dark factory step 6).
 
-Spec: ``docs/backlog/dark-factory.md`` § "Next steps" 6, § "Lanes:
+Spec: `me692430` § "Next steps" 6, § "Lanes:
 capacity shapes", § "Engine: ``claude -p`` or direct access?" and § "Job
 lifecycle per task". The todo holds the work state (what, prio, lease,
 loop comments); this job holds the run state. Tie it to its slice with
@@ -14,7 +14,8 @@ that holds the lane's credentials with ``params.target_node``):
   ``brief:``/``handoff:`` comment + the adapter's finishing instruction —
   after a failed attempt the newest ``brief:`` wins over the dead
   session's builder ``handoff:`` but never over a lander handoff,
-  gr571311),
+  gr571311; a reviewer node's own ``handoff: review:`` verdict is never
+  the next run's brief, gr680813),
   picks the lane
   (:func:`precis.plans.lanes.pick_lane`) unless ``params.lane`` names one
   (a pinned lane at its cap parks the job like a full pick does) —
@@ -29,8 +30,24 @@ that holds the lane's credentials with ``params.target_node``):
   tree is reset to a clean checkout of its branch tip first
   (:func:`_reset_reused_worktree`, gr571311), after a dead git's stale
   ``index.lock`` there is reaped by land_slice's keep-on-doubt rule; a
-  live one fails the submit ``attempt_free`` (:func:`_clear_slice_index_lock`,
-  gr650484) — writes
+  live one is waited out briefly, then fails the submit
+  ``attempt_free`` (:func:`_clear_slice_index_lock`, gr650484, gr662077)
+  — a reused branch holding commits ahead of ``origin/<base>`` is
+  judged before the brief is written (:func:`_route_ahead_branch`,
+  gr674785 — td665126 burned all five rungs re-finding a fix a sibling
+  had landed): a change already patch-equivalent on the base
+  (:func:`_carried_on_base` — a cherry-picked, merged or squash-carried
+  land) closes the node done with the landing sha, the job ending
+  ``attempt_free`` "already-on-main"; commits ahead with novel work go
+  to the land — the pre-land reviewer when one gates it, else a
+  ``land_slice`` mint — ``attempt_free`` "branch-ahead", and a
+  ``handoff: lander:``, ``handoff: review: FIX|REVERT`` or the tick's
+  mechanical-red ``brief:`` (gr705291) skips that second arm since the
+  branch is mid-fix by design (the reviewer's reject wants the rebuild,
+  not a route back into the same review);
+  the submit-time ``branch_tip``/``branch_ahead``
+  the job records is the poll arm's evidence for the same ruling —
+  writes
   ``scratch/brief.md`` there and launches the lane's adapter (``claude_p``,
   ``codex_exec``, ``devin_tree`` or ``kimi_tree``) detached. Claude's argv
   and MCP grant are unchanged; the other vendors receive no precis MCP
@@ -135,7 +152,17 @@ that holds the lane's credentials with ``params.target_node``):
   result or the newest comments closes the todo done, a ``moot:``
   tagged ``verdict:moot`` so the tick drops the plan and notes the
   verdict on the gripe — except a ``moot:`` pinned to a different
-  ``gr<N>`` than the plan's, which is never this plan's verdict. Only
+  ``gr<N>`` than the plan's, which is never this plan's verdict.
+  Before any verdict arm rules, a clean exit whose session left edits
+  but no commit gets the worker's commit in its stead
+  (:func:`_commit_for_session`, gr564261): the session's
+  ``scratch/commit-msg.txt``, or — when it reported the commit blocked
+  and left no message — a worker-generated ``fix(slice): complete
+  (<handles>)`` subject (:func:`_commit_blocked`,
+  :func:`_session_commit_fallback`; gr702644: a sandboxed codex build
+  that cannot write ``.git`` must not round-trip through the no-commit
+  retry holding the file-overlap slot). A commit that still fails
+  park-saves the tree (:mod:`_slice_park`) like every failed run. Only
   a no-commit exit carrying no verdict anywhere is the failure below.
   Every one of those closes and the ``land_slice`` mint stands only on
   the every-run hard gates (:mod:`precis.plans.outcome`, gr595545 —
@@ -143,7 +170,9 @@ that holds the lane's credentials with ``params.target_node``):
   tree, a ``tests:`` obligation never honoured (a code run that left
   commits owes the receipt whether or not its brief named test paths),
   a step-cap halt — mints nothing and closes nothing, validate runs
-  included; the run ends ``failed`` like the cases below.
+  included (a validate run that delivered ``validated:``/``moot:`` owes
+  no test receipt on top — the verdict IS its deliverable, gr685988);
+  the run ends ``failed`` like the cases below.
   The release-fix loop's fix
   node (``blocked-by`` a live ``ci_red_digest`` under a
   ``release-pass`` root) gets a weaker ruling INSTEAD
@@ -158,7 +187,13 @@ that holds the lane's credentials with ``params.target_node``):
   way when the branch carries no net diff against ``origin/main``
   (:func:`_fix_declared`, gr648125 — the empty branch is itself the
   proof nothing is left to land; a ``no_commit`` stamp would only
-  climb the ladder into a rescue the work never needed). Otherwise
+  climb the ladder into a rescue the work never needed). Before the
+  ``no_commit`` stamp the poll also re-judges the branch the run
+  INHERITED (gr674785): the submit-time ``branch_tip`` already
+  patch-equivalent on the base (:func:`_carried_on_base` — a session
+  that rebases its branch onto main drops the carried commits and then
+  reports "nothing left") closes done tagged ``verdict:moot`` with the
+  landing sha, the same close a verified claim lands. Otherwise
   (non-zero exit, a
   deny-path hit, a code node with no commit to land) it ends ``failed``
   with the log tail and releases the lease; a deny hit on a
@@ -174,7 +209,11 @@ that holds the lane's credentials with ``params.target_node``):
   value lost on a worker restart) drops the env-naming lines from the
   tail and withholds the raw handoff for a fixed marker. The
   claim tag goes, the todo returns to ``STATUS:open`` and gains
-  ``attempt:<n>``.
+  ``attempt:<n>`` — unless the todo already sits at a terminal STATUS:
+  a mid-run ruling (the coordinator closing the node ``done`` /
+  ``won't-do`` while the session ran, gr663909) outranks the writeback
+  entirely — no land mint, no verdict close, no reopen, no attempt
+  burned; the run's result is discarded and one comment says so.
 * :func:`kill` SIGTERMs the session's process group. :func:`release`
   revokes the MCP grant and releases the todo even when the poison
   guard cannot safely signal a process (poll may never run).
@@ -220,11 +259,14 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -242,18 +284,36 @@ from precis.utils.dispatch_score import (
     CLAIM_BAND_META_KEY as _CLAIM_BAND_KEY,
 )
 from precis.utils.dispatch_score import (
+    FINISH_FIRST_SCORE as _FINISH_FIRST_SCORE,
+)
+from precis.utils.dispatch_score import (
     RELEASE_CLAIM_BAND as _RELEASE_CLAIM_BAND,
 )
-from precis.workers.job_types import _lane_decide, _run_features
+from precis.utils.dispatch_score import (
+    SCORE_META_KEY as _SCORE_KEY,
+)
+from precis.workers import admission
+from precis.workers import factory_git as _factory_git
+from precis.workers import factory_git_mirror as _factory_git_mirror
+from precis.workers.job_types import (
+    Reconcile,
+    _lane_decide,
+    _run_features,
+    _slice_park,
+)
 from precis.workers.job_types._slice_adapters import (
     ADAPTERS,
     PERMISSION_MODE,
     adapter_bin,
+    adapter_bin_present,
     deny_settings,
+    devin_auth_status,
     devin_bin,
     devin_model_rate,
+    devin_status_logged_in,
     get_adapter,
     kimi_bin,
+    note_devin_logged_out,
     parse_devin_model_prices,
 )
 from precis.workers.job_types._slice_adapters import (
@@ -278,8 +338,14 @@ _BRIEF_PREFIXES: tuple[str, ...] = ("brief:", "handoff:")
 #: wins over while an ``attempt:`` tag stands (gr571311).
 _LANDER_HANDOFF_PREFIX = "handoff: lander:"
 
-#: Todo statuses that refuse a launch.
-_CLOSED_STATUSES = frozenset({"done", "won't-do"})
+#: How the tick's pre-land FIX/REVERT hand-back begins
+#: (``plan_dispatch._review_back_to_builder``). A reviewer session's own
+#: last message can begin the same way, so :func:`_outranks_brief` also
+#: wants the tick's trailer (gr684815). The hand-back bypasses
+#: ``_route_ahead_branch``'s land route like a lander handoff (gr674785
+#: review, td675373): the branch it rejected wants the rebuild the
+#: verdict asked for, not a defer back into the same open review.
+_REVIEW_HANDBACK_PREFIX = "handoff: review:"
 
 _DEFAULT_MAX_TURNS = 300
 _DEFAULT_WALL_S = 4 * 3600
@@ -447,6 +513,10 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "effort": {"type": "string"},
         # ssh_node's host pin (the host holding the lane's credentials).
         "target_node": {"type": "string"},
+        # The repo the slice builds in (td659522): a lanes.REPO_PROFILES
+        # name; unset is the default repo. plan_dispatch stamps it from the
+        # node's repo: tag; validate_submit checks it against the todo's.
+        "repo": {"type": "string"},
         # The PR head sha the intake classified (the 'land after fixes'
         # slice); the brief merges that sha. Informational for the job.
         "head_sha": {"type": "string"},
@@ -559,10 +629,12 @@ def _diverse_test_pick(
     (review td655142: an unestablishable prior model may never ride an
     empty avoid past the different-model rule)."""
     try:
-        avoid, unknown = _outcome.code_session_models(ctx.store, todo_id)
+        avoid, unknown_adapters, unknown = _outcome.code_session_models(
+            ctx.store, todo_id
+        )
     except Exception:  # pragma: no cover — the read already reports
         log.warning("run_slice: prior-pick read for td%d failed", todo_id)
-        avoid, unknown = frozenset(), "read"
+        avoid, unknown_adapters, unknown = frozenset(), frozenset(), "read"
     if unknown == "read":
         # A store fault, not a verdict: park on the lane-wait machinery
         # rather than launch on a guess or burn an attempt on a window
@@ -575,8 +647,9 @@ def _diverse_test_pick(
         )
         return None, None, None
     if unknown == "unrecorded":
-        # Permanent: a prior code session's model was never recorded —
-        # no pick can be PROVEN different from it.
+        # Permanent: a prior code session recorded neither a model nor
+        # the adapter that ran it — no pick can be PROVEN different
+        # from it.
         why = (
             "run_slice: the test session must run a different model than "
             "the run's code session(s), but a prior code session's model "
@@ -585,7 +658,7 @@ def _diverse_test_pick(
         )
         ctx.append_chunk("job_event", why)
         return None, None, why
-    if not avoid:
+    if not avoid and not unknown_adapters:
         return lane, model, None
     new_lane, new_model, note = _outcome.diverse_model_pick(
         ctx.store,
@@ -598,9 +671,15 @@ def _diverse_test_pick(
         avoid=avoid,
         model_pin=model_pin,
         task_class=task_class,
+        unknown_adapters=unknown_adapters,
     )
     if note:
         ctx.append_chunk("job_event", note)
+    if new_lane is None and note and note.startswith(_outcome.DIVERSE_BUSY_PREFIX):
+        # A busy different-model lane is a wait (gr674214): park, never
+        # refuse — a refusal mints a coordinator ask per node.
+        _park_lane_full(ctx, note)
+        return None, None, None
     return new_lane, new_model, note
 
 
@@ -621,6 +700,65 @@ def slice_root() -> Path:
         )
     common = Path(proc.stdout.strip())
     return common.parent if common.name == ".git" else common
+
+
+#: Env var mapping repo name to the absolute host path of its clone, for
+#: the repos the factory builds besides the default one (td659522).
+SLICE_REPOS_ENV = "PRECIS_SLICE_REPOS"
+
+
+def slice_root_for(repo: str) -> Path:
+    """The checkout a ``repo:<name>`` slice's worktrees are cut under: the
+    default repo is :func:`slice_root`; any other comes from the JSON object
+    in :data:`SLICE_REPOS_ENV` (name to absolute host path), read at call
+    time. A missing or malformed variable, or no entry for ``repo``, raises
+    ``RuntimeError`` (the worker never guesses a path for a private repo)."""
+    if repo == _lanes.DEFAULT_REPO:
+        return slice_root()
+    nxt = (
+        f"next: set {SLICE_REPOS_ENV} to a JSON object mapping '{repo}' "
+        "to its clone path on this host"
+    )
+    raw = os.environ.get(SLICE_REPOS_ENV, "")
+    if not raw.strip():
+        raise RuntimeError(
+            f"{SLICE_REPOS_ENV} is not set, so repo '{repo}' has no clone; {nxt}"
+        )
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"{SLICE_REPOS_ENV} is not valid JSON ({exc}); {nxt}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(
+            f"{SLICE_REPOS_ENV} must be a JSON object, "
+            f"not {type(parsed).__name__}; {nxt}"
+        )
+    path = parsed.get(repo)
+    if not isinstance(path, str) or not path.strip():
+        raise RuntimeError(
+            f"{SLICE_REPOS_ENV} has no path entry for repo '{repo}'; {nxt}"
+        )
+    if not Path(path).is_absolute():
+        # A relative path would resolve against whatever cwd the worker has.
+        raise RuntimeError(
+            f"{SLICE_REPOS_ENV} maps repo '{repo}' to a relative path; {nxt}"
+        )
+    return Path(path).resolve()
+
+
+def job_repo(job: Mapping[str, Any]) -> str:
+    """The repo a ``run_slice`` job builds in (td659522): ``params.repo``,
+    else :data:`lanes.DEFAULT_REPO`. ``job`` is the job meta (its
+    ``params`` dict is read, as ``submit`` and ``_land_params`` do) or the
+    params dict itself (as ``validate_submit`` gets it)."""
+    inner = job.get("params")
+    params = inner if isinstance(inner, Mapping) else job
+    repo = params.get("repo")
+    if isinstance(repo, str) and repo.strip():
+        return repo.strip()
+    return _lanes.DEFAULT_REPO
 
 
 def slice_name(todo_id: int) -> str:
@@ -658,6 +796,20 @@ def run_dir(todo_id: int) -> Path:
     return path
 
 
+def _submit_attempt_dir(ctx: Any, todo_id: int) -> Path | None:
+    """Only the submitting host may use the current intent's local evidence."""
+    meta = ctx.meta or {}
+    attempt = meta.get("submit_attempt")
+    if (
+        not isinstance(attempt, str)
+        or not re.fullmatch(r"[0-9a-f]{32}", attempt)
+        or meta.get("submit_host") != admission.local_host()
+        or not meta.get("submit_started_at")
+    ):
+        return None
+    return ops_root() / f"td{todo_id}" / attempt
+
+
 def uv_cache_dir() -> Path:
     """``UV_CACHE_DIR`` for the session: ``<ops_root>/uv-cache``. The
     checkout's hooks run through ``uv``, and uv's default cache is under
@@ -673,6 +825,28 @@ def uv_cache_dir() -> Path:
 def slice_branch(todo_id: int) -> str:
     """Branch of a slice: ``slice/<id>`` (spec § "Branches")."""
     return f"slice/{todo_id}"
+
+
+def path_with_user_uv(path: str | None) -> str:
+    """``path`` with the worker user's ``~/.local/bin`` appended when
+    ``uv`` is not on it but is installed there — the uv installer's
+    default destination. Appending preserves PATH precedence: an
+    operator's own entry still wins.
+
+    gr702380 / gr702644: the least-privilege ``coder`` services launch
+    without a login shell, so the unit's PATH can omit that dir — the
+    session or land child then cannot exec ``uv`` (``scripts/test``,
+    ``uv run``) or ``gh`` when it also lives there, although both are
+    installed. ``slice_env`` applies the rule to the session;
+    :func:`precis.workers.job_types.land_slice.land_env` applies it to
+    land children."""
+    base = path or os.defpath
+    local_bin = Path.home() / ".local" / "bin"
+    if shutil.which("uv", path=base) is None and shutil.which(
+        "uv", path=str(local_bin)
+    ):
+        return base + os.pathsep + str(local_bin)
+    return base
 
 
 def slice_env(
@@ -698,6 +872,10 @@ def slice_env(
     ``kimi_tree`` (td573681): :func:`_kimi_launch_env` adds the
     synthesized provider env, key included, after this returns."""
     env = {k: os.environ[k] for k in ENV_ALLOWLIST if os.environ.get(k)}
+    # gr702380: a non-login coder unit's PATH can lack the user's uv
+    # install dir — append it (precedence-preserving) so the session can
+    # exec uv/gh; the same rule ``land_env`` gives its children.
+    env["PATH"] = path_with_user_uv(env.get("PATH"))
     if mcp:
         from precis.utils.claude_oauth import ensure_oauth_token
 
@@ -746,11 +924,69 @@ def deny_violations(paths: list[str], deny_paths: tuple[str, ...]) -> list[str]:
 # ── Seams (tests monkeypatch these) ────────────────────────────────
 
 
+#: Non-secret names ``_git`` keeps from the worker's env; ``LC_*`` and
+#: :data:`_GIT_AUTH_PASSTHROUGH` (TLS and proxy) ride along. An allowlist
+#: of its own, not ``land_slice.land_env``: land_slice imports this module.
+#: ``SSH_AUTH_SOCK`` is a socket path, not a key; the identity names let a
+#: unit pin the worker commit's author.
+_GIT_BASE_ENV_NAMES: tuple[str, ...] = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "TMPDIR",
+    "TZ",
+    "XDG_CONFIG_HOME",
+    "SSH_AUTH_SOCK",
+    "GIT_SSH_COMMAND",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+)
+
+
+def _git_env() -> dict[str, str]:
+    """The env :func:`_git` runs under: the non-secret names of
+    ``os.environ`` (:data:`_GIT_BASE_ENV_NAMES`, ``LC_*``,
+    :data:`_GIT_AUTH_PASSTHROUGH`) and nothing else, so no token, DSN or
+    command-scope ``GIT_CONFIG_*`` entry reaches a spawned child.
+
+    Unlike ``land_slice._git`` the system and global git config stay
+    visible. These calls carry no credential, so a planted config has
+    nothing to steal that the repo's own (session-writable) config could
+    not already reach; and the host's identity, global ignores,
+    ``safe.directory`` and URL rewrites keep working as before."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if v
+        and (
+            k in _GIT_BASE_ENV_NAMES
+            or k in _GIT_AUTH_PASSTHROUGH
+            or k.startswith("LC_")
+        )
+    }
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return env
+
+
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    """Run ``git <args>`` in ``cwd``; never raises on a non-zero exit."""
+    """Run ``git <args>`` in ``cwd``; never raises on a non-zero exit.
+
+    Never the worker's ambient env (td659522, gr659929): the repos and
+    worktrees these calls touch are writable by a builder session, so a
+    planted hook, ``core.fsmonitor`` program or filter would meet the
+    factory token and the DSN in a spawned child's env. The env is
+    :func:`_git_env` and hooks are off
+    (:data:`~precis.workers.factory_git_mirror.TRUSTED_ARGS`). Credentialed
+    network git is :func:`_prepare_repo`'s ``fetch_ref_into``."""
     return subprocess.run(
-        ["git", *args],
+        ["git", *_factory_git_mirror.TRUSTED_ARGS, *args],
         cwd=str(cwd),
+        env=_git_env(),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -776,6 +1012,22 @@ def _run(
     )
 
 
+#: Work-class footprints (gr657245): a detached launch admits one of
+#: these on the launching host. A slice build is modest — an agent plus
+#: its tests; the land gate is heavy — ship's checked gate runs pytest
+#: under xdist with container work; the probes are small. Sized so two
+#: slice builds and one land gate coexist on a 32 GiB worker host.
+_WORK_FOOTPRINTS: dict[str, admission.Footprint] = {
+    "slice": admission.Footprint(cpu_milli=2000, mem_mb=4096),
+    "land": admission.Footprint(cpu_milli=6000, mem_mb=12288),
+    "verify": admission.Footprint(cpu_milli=4000, mem_mb=8192),
+    "acceptance": admission.Footprint(cpu_milli=2000, mem_mb=4096),
+    "dep_check": admission.Footprint(cpu_milli=2000, mem_mb=4096, wall_s=30 * 60),
+    "lane_health": admission.Footprint(cpu_milli=1000, mem_mb=2048),
+    "boundary_probe": admission.Footprint(cpu_milli=2000, mem_mb=4096),
+}
+
+
 def _launch(
     argv: list[str],
     *,
@@ -785,26 +1037,61 @@ def _launch(
     exit_file: Path,
     env: dict[str, str],
     pass_fds: tuple[int, ...] = (),
+    store: Any = None,
+    work_class: str = "slice",
+    pid_file: Path | None = None,
 ) -> int:
     """Start ``argv`` detached in its own session: stdin from ``stdin``,
     stdout+stderr to ``log``, its exit code written to ``exit_file`` by the
     wrapping shell (a restarted worker, no longer the parent, still reads
     it). ``stdin=None`` feeds ``/dev/null``. ``pass_fds`` are fds the child
-    inherits (an flock held for the run's life — gr650484). The child also
-    gets the per-task memory cap as an rlimit (gr595537 — the slice's
-    agent, builds and tests die over the ceiling instead of wedging the
-    host into swap; no cap configured ⇒ ``preexec_fn=None``). Returns the
-    process group pid."""
-    script = '"$@" < "$RS_IN" > "$RS_LOG" 2>&1; echo $? > "$RS_EXIT"'
+    inherits (an flock held for the run's life — gr650484). ``pid_file``
+    is where the child's *first* act writes its own pid — the launch
+    proof ``reconcile`` reads when the caller died between the spawn and
+    the handle persist (gr708457). The child also gets the per-task
+    memory cap as an rlimit (gr595537 — the slice's agent, builds and
+    tests die over the ceiling instead of wedging the host into swap; no
+    cap configured ⇒ ``preexec_fn=None``). Returns the process group pid.
+
+    With a ``store`` (a real Store — fakes without a pool keep the legacy
+    unheld path) the launch is admitted first: :func:`admission.spawn`
+    takes the work class's footprint on this host, launches, and babysits
+    the holds for the child's whole life. A full host raises
+    :class:`admission.Refused` — the caller retries attempt-free, never
+    treating capacity as the build's failure (review td702053).
+    """
+    if store is not None and getattr(store, "pool", None) is not None:
+        return admission.spawn(
+            store,
+            admission.local_host(),
+            _WORK_FOOTPRINTS[work_class],
+            f"{admission.local_host()}:{os.getpid()}",
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=stdin,
+            log_path=log,
+            exit_file=exit_file,
+            pid_file=pid_file,
+            pass_fds=pass_fds,
+            preexec_fn=mem_limit_preexec(),
+        )
     full_env = {
         **env,
         "RS_IN": str(stdin) if stdin is not None else os.devnull,
         "RS_LOG": str(log),
         "RS_EXIT": str(exit_file),
+        "RS_PID": str(pid_file) if pid_file is not None else os.devnull,
     }
     # Fixed script; argv rides as positional args, never interpolated.
     proc = subprocess.Popen(
-        ["/bin/sh", "-c", script, "run_slice", *argv],
+        [
+            "/bin/sh",
+            "-c",
+            admission._SPAWN_SCRIPT,
+            str(pid_file) if pid_file else "run_slice",
+            *argv,
+        ],
         cwd=str(cwd),
         env=full_env,
         stdin=subprocess.DEVNULL,
@@ -883,6 +1170,8 @@ def _group_alive(pgid: int) -> bool:
 
 
 def _session_alive(handle: dict[str, Any]) -> bool:
+    if handle.get("recovered_exit"):
+        return False
     pid = int(handle.get("pid") or 0)
     if pid > 1:
         if "ps_identity" in handle:
@@ -928,7 +1217,47 @@ def _land_params(
     node = run_params.get("target_node") or os.environ.get("PRECIS_NODE")
     if node:
         params["target_node"] = str(node)
+    repo = job_repo(run_params)
+    if repo != _lanes.DEFAULT_REPO:
+        params["repo"] = repo
     return params
+
+
+#: Bound the stored overlap hints even for unusually large diffs.
+_BRANCH_FILES_CAP = 200
+
+
+def _stamp_branch_files(store: Any, todo_id: int, tree: Path, head: str | None) -> None:
+    """Record paths for a specific land tip. Incomplete or unavailable
+    diffs can supplement the brief but cannot replace it."""
+    from precis.plans.templates import BRANCH_FILES_HEAD_KEY, BRANCH_FILES_KEY
+
+    fields: dict[str, Any] = {BRANCH_FILES_HEAD_KEY: None}
+    if head:
+        try:
+            base = _land_base(store, todo_id)
+            diff = _git(
+                ["diff", "--name-only", "-z", "--no-renames", f"{base}...{head}"], tree
+            )
+            if diff.returncode == 0:
+                paths = diff.stdout.rstrip("\0").split("\0") if diff.stdout else []
+                fields[BRANCH_FILES_KEY] = paths[:_BRANCH_FILES_CAP]
+                if len(paths) <= _BRANCH_FILES_CAP:
+                    fields[BRANCH_FILES_HEAD_KEY] = head
+        except Exception:
+            log.warning("run_slice: branch_files diff for td%d failed", todo_id)
+    store.stamp_ref_meta(todo_id, fields)
+
+
+def _land_head(tree: Path, ref: str) -> str | None:
+    try:
+        result = _git(["rev-parse", ref], tree)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    head = (result.stdout or "").strip()
+    return (
+        head if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", head) else None
+    )
 
 
 def _mint_land(
@@ -936,7 +1265,9 @@ def _mint_land(
 ) -> int:
     """Mint the ``land_slice`` job for the slice (idem key
     ``land_slice:td<id>``, a child of the todo, pinned to this run's host so
-    the claimant holds the worktree). ``checked`` sets
+    the claimant holds the worktree), stamped with this build's own
+    ``dispatch_score`` floored at ``FINISH_FIRST_SCORE`` so the land
+    claims ahead of fresh builds. ``checked`` sets
     ``params["checked"]`` — what ``land_slice.ship_flag`` reads as
     ``--checked`` when the builder's test evidence is missing (gr573563).
     Returns its id."""
@@ -944,7 +1275,15 @@ def _mint_land(
 
     meta = ctx.meta or {}
     params = _land_params(ctx, todo_id, tree, lane, checked)
+    head = _land_head(tree, "HEAD")
+    _stamp_branch_files(ctx.store, todo_id, tree, head)
+    if head:
+        params["head"] = head
     extra = {"plan_root": meta["plan_root"]} if meta.get("plan_root") else None
+    # Finishing started work outranks starting new work: a queued land
+    # keeps its build's files held.
+    own = float(meta.get(_SCORE_KEY) or 0.0)
+    extra = {**(extra or {}), _SCORE_KEY: max(own, _FINISH_FIRST_SCORE)}
     if meta.get(_CLAIM_BAND_KEY) == _RELEASE_CLAIM_BAND:
         # The waiver gripe's land claims in the same band as its build.
         extra = {**(extra or {}), _CLAIM_BAND_KEY: _RELEASE_CLAIM_BAND}
@@ -994,15 +1333,20 @@ def rearm_preland_review(store: Any, todo_id: int) -> list[int]:
     for a rebuild (gr570506): the reviewer already closed on its LAND
     verdict, so without this ``_preland_reviewer`` finds none and the
     rebuilt code would land unreviewed. Clears ``meta.pending_land``
-    (the rebuild stamps its own) and reopens each closed pre-land
+    (the rebuild stamps its own) and reopens each ``done`` pre-land
     reviewer with ``meta.rearmed_after_job`` at its newest job, so the
-    tick re-dispatches it once the rebuild defers again. Returns the
-    reopened reviewer ids."""
+    tick re-dispatches it once the rebuild defers again — a reviewer at
+    ``won't-do``/``auto-timeout`` is a ruling and stands (gr663909).
+    Returns the reopened reviewer ids."""
     from precis.plans.templates import PENDING_LAND_KEY, PRELAND_REVIEW_KEY
-    from precis.todo import TERMINAL_TODO_STATUSES
 
     ref = store.get_ref(kind="todo", id=todo_id)
     if ref is None or not (ref.meta or {}).get(PENDING_LAND_KEY):
+        return []
+    if _terminal_ruling(store, todo_id) is not None:
+        # gr663909: the todo was ruled out while the land ran — no
+        # rebuild comes, so no reviewer re-arms either. (The held
+        # ``done`` itself is no ruling and re-arms as before.)
         return []
     store.stamp_ref_meta(todo_id, {PENDING_LAND_KEY: None})
     with store.pool.connection() as conn:
@@ -1019,7 +1363,10 @@ def rearm_preland_review(store: Any, todo_id: int) -> list[int]:
     reopened: list[int] = []
     for (rid,) in rows:
         rid = int(rid)
-        if _todo_status(store, rid) not in TERMINAL_TODO_STATUSES:
+        # Only the machine's own ``done`` re-arms (gr570506): a
+        # ``won't-do`` / ``auto-timeout`` on the reviewer is a ruling
+        # (gr663909) and stands like the build's.
+        if _todo_status(store, rid) != "done":
             continue
         with store.pool.connection() as conn:
             row = conn.execute(
@@ -1039,20 +1386,43 @@ def _defer_land_for_review(
     ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool, reviewer: int
 ) -> str:
     """Hold the land behind the pre-land review td<reviewer> (gr570506):
-    push the slice branch to origin (the reviewer's worktree reads the
+    push the slice branch to origin's hidden ``refs/factory/`` namespace
+    (the reviewer's worktree reads the
     diff off it; a reaped worktree loses nothing), stamp the land's
     params as ``meta.pending_land`` and close the todo — the tick
     releases the reviewer, which gates the ``land_slice`` mint on its
-    LAND verdict. Returns the push note for the job summary."""
-    from precis.plans.templates import PENDING_LAND_KEY
+    LAND verdict. A defer that made it here succeeded, so a stale
+    ``meta.preland_defer_failed`` (gr663738) clears with the same
+    write, as does the ``meta.preland_held`` stash a FIX/REVERT left
+    (gr681208). Returns the push note for the job summary."""
+    from precis.plans.templates import (
+        PENDING_LAND_KEY,
+        PRELAND_DEFER_FAILED_KEY,
+        PRELAND_HELD_KEY,
+    )
     from precis.workers.job_types import land_slice as _ls
 
     note = _ls._push_branch(tree, slice_branch(todo_id))
     if "FAILED" in note:
         raise RuntimeError(note)
+    params = _land_params(ctx, todo_id, tree, lane, checked)
+    # The pushed tip, for plan_dispatch's send-back checks (gr688058):
+    # a FIX round whose verdict judged this same head means the rebuild
+    # added nothing; a verdict naming another head read a stale branch.
+    # The preland_held stash and its re-hold carry it like the other
+    # params.
+    pushed = _land_head(tree, f"refs/heads/{slice_branch(todo_id)}")
+    _stamp_branch_files(ctx.store, todo_id, tree, pushed)
+    if pushed:
+        params["head"] = pushed
     ctx.store.stamp_ref_meta(
         todo_id,
-        {PENDING_LAND_KEY: _land_params(ctx, todo_id, tree, lane, checked)},
+        {
+            PENDING_LAND_KEY: params,
+            PRELAND_DEFER_FAILED_KEY: None,
+            # A fresh defer supersedes the FIX/REVERT stash (gr681208).
+            PRELAND_HELD_KEY: None,
+        },
     )
     _append_comment(
         ctx.store,
@@ -1063,6 +1433,315 @@ def _defer_land_for_review(
     )
     close_todo(ctx.store, todo_id, str(lane) if lane else None)
     return note
+
+
+class _RestoreOutcome(Enum):
+    """The non-tip outcomes of :func:`_restore_reviewed_branch` (gr698949):
+    the verdict hold must tell "origin verifiably holds no reviewed
+    branch" apart from "the pushed state could not be verified or git
+    refused the move" — the first has nothing to hold or lose, the second
+    may heal on a later run."""
+
+    #: The ``ls_remote`` oracle answered and no namespace holds
+    #: ``<branch>`` (never pushed or already deleted), or the tip it holds
+    #: carries nothing beyond ``base`` — provably nothing reviewed exists
+    #: on origin, so the bare verdict close is safe.
+    ABSENT = "absent"
+    #: GitHub could not be read, the tracking-ref fetch failed or landed
+    #: off the oracle's sha, ``merge-base`` could not say, the checkout
+    #: refused, or git raised — the pushed state is unknown or unrestored,
+    #: so the leave-open arm (now capped) applies.
+    UNRESTORABLE = "unrestorable"
+
+
+#: Attempt-free ``preland-hold-unrestored`` repeats on one todo before the
+#: leave-open arm burns a real attempt instead (gr698949): the repeats end
+#: the job ``succeeded``, so ``plan_dispatch``'s ``FREE_RUN_CAP`` (which
+#: walks failed/timed-out jobs only) never bounds them — without a local
+#: count an unrestorable tip relaunches forever, burning nothing (38 runs
+#: on td697701). Mirrors ``plan_dispatch.FREE_RUN_CAP``.
+PRELAND_HOLD_UNRESTORED_CAP = 6
+
+#: The ``_preland_verdict_hold`` leave-open arm's ``meta.attempt_free``
+#: reason — also the run length :func:`_unrestored_free_run` counts.
+PRELAND_HOLD_UNRESTORED = "preland-hold-unrestored"
+
+
+def _unrestored_free_run(store: Any, todo_id: int, job_id: int) -> int:
+    """The consecutive run of ``todo_id``'s jobs stamped
+    ``meta.attempt_free = "preland-hold-unrestored"``, newest first
+    (gr698949): the verdict hold's leave-open repeats. The count rides the
+    job metas of completed runs before this job — the current running job
+    has no attempt-free stamp yet and must not reset the count. The todo's tags carry no attempt-free history."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.meta->>'attempt_free' AS free
+              FROM refs r
+             WHERE r.kind = 'job' AND r.parent_id = %s
+               AND r.ref_id < %s
+               AND EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                      AND t.value IN ('succeeded', 'failed', 'cancelled'))
+             ORDER BY r.ref_id DESC
+            """,
+            (todo_id, job_id),
+        ).fetchall()
+    run = 0
+    for (free,) in rows:
+        if free != PRELAND_HOLD_UNRESTORED:
+            break
+        run += 1
+    return run
+
+
+def _restore_reviewed_branch(
+    tree: Path, branch: str, base: str
+) -> str | _RestoreOutcome:
+    """Make ``tree``'s checkout the tip the pre-land review judged —
+    ``origin/<branch>``'s — and return that sha. When it cannot be, return
+    a :class:`_RestoreOutcome` telling the caller WHY (gr698949):
+    ``ABSENT`` when the ``ls_remote`` oracle VERIFIED origin holds no
+    reviewed branch — no ``<branch>`` in either home (never pushed or
+    already deleted), or a tip that carries nothing beyond ``base`` —
+    there is nothing reviewed to hold and nothing the hold could lose, so
+    the bare verdict close is safe; ``UNRESTORABLE`` when the pushed state
+    could not be verified or git refused the move (the pushed state is
+    unknown, a later run's tree may still hold it). The
+    verdict-hold's fallback names THIS run's worktree in
+    ``meta.pending_land``, but a recut or cross-host tree reads empty
+    while ``origin/<branch>`` still carries the reviewed commits
+    (review td682306 on gr681208): holding as-is would land the empty
+    local tip, and the land's cleanup can delete the unlanded remote
+    branch. The tip the restore trusts is the ``ls_remote`` oracle's —
+    the same read ``land_slice._delete_remote_branch`` makes before its
+    ``push --delete`` — and the tracking-ref fetch only materializes
+    the objects; a local ref at any other tip is clobbered to origin's
+    — review ruled on the pushed state, never on what a rebuild's tree
+    happens to hold — and HEAD moves with it, since the lander's ship
+    reads the checkout. ``checkout -f -B`` refuses a branch checked out
+    in another worktree, which is the wanted failure."""
+    from precis.plans.templates import SLICE_REF_NS
+
+    ref = f"refs/heads/{branch}"
+    remote_ref = f"refs/remotes/origin/{branch}"
+    try:
+        env = _factory_git.git_auth_env(base=_git_env())
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        url = _factory_git_mirror.github_url(slice_root(), env=env)
+        if url is None:
+            return _RestoreOutcome.UNRESTORABLE
+        tip: str | None = None
+        src: str | None = None
+        for ns in (SLICE_REF_NS, "refs/heads/"):
+            remote = _factory_git_mirror.ls_remote(
+                url, (branch,), env=env, namespace=ns
+            )
+            if remote is None:
+                # GitHub cannot be read: the pushed state is unknown.
+                return _RestoreOutcome.UNRESTORABLE
+            tip = remote.get(branch)
+            if tip is not None:
+                src = f"{ns}{branch}"
+                break
+        if tip is None or src is None:
+            # The oracle ANSWERED and GitHub holds no <branch> in either
+            # home — never pushed or already deleted; nothing reviewed
+            # exists to restore or to lose (gr698949).
+            return _RestoreOutcome.ABSENT
+        fetch = _git(["fetch", "-q", "origin", f"+{src}:{remote_ref}"], tree)
+        got = (_git(["rev-parse", remote_ref], tree).stdout or "").strip()
+        if fetch.returncode != 0 or got != tip:
+            # The tip is the ``ls_remote`` oracle's — what GitHub serves
+            # — never the ``refs/remotes/origin/*`` ref a builder session
+            # can rewrite in the shared common dir. The fetch only
+            # materializes the tip's objects, and its answer is trusted
+            # only when the tracking ref lands exactly on the oracle's
+            # sha — a ``url.insteadOf`` redirect cannot pass that check.
+            return _RestoreOutcome.UNRESTORABLE
+        ancestor_rc = _git(["merge-base", "--is-ancestor", tip, base], tree).returncode
+        if ancestor_rc == 0:
+            # The remote tip carries nothing beyond base: origin holds
+            # nothing reviewed for the land to ship (gr698949).
+            return _RestoreOutcome.ABSENT
+        if ancestor_rc != 1:
+            # Git cannot say whether the tip is ahead: the pushed state
+            # is unverified.
+            return _RestoreOutcome.UNRESTORABLE
+        local = (_git(["rev-parse", ref], tree).stdout or "").strip()
+        head = (_git(["symbolic-ref", "-q", "HEAD"], tree).stdout or "").strip()
+        if local == tip and head == ref:
+            return tip
+        if _git(["checkout", "-f", "-B", branch, tip], tree).returncode == 0:
+            return tip
+    except (OSError, subprocess.TimeoutExpired, RuntimeError):
+        pass
+    return _RestoreOutcome.UNRESTORABLE
+
+
+def _preland_verdict_hold(
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    lane: Any,
+    checked: bool,
+    kind: str,
+    base: str,
+) -> str | None:
+    """gr681208's second closer: a no-commit ``validated:``/``no-op:``
+    verdict on a build whose land a live pre-land review still gates is
+    "the pushed branch is ready as it stands", not "nothing to land" —
+    the worktree can read empty (a recut or reaped tree, a fresh node)
+    while ``origin/slice/<id>`` still carries the reviewed work, and the
+    bare verdict close is what released dependants onto a main missing
+    it. Re-stamp ``meta.pending_land`` and close held for the reviewer,
+    as a fresh defer does. Returns the job summary line when it handled
+    the close, else ``None``.
+
+    The hold names the checkout ``land_slice`` ships, so it may only name
+    a tree verified to carry the pushed tip review judged (review
+    td682306): this run's worktree can sit at base while
+    ``origin/slice/<id>`` still carries the reviewed commits — a recut,
+    a reset branch, a fresh node — and holding unverified would land
+    the empty tip while the land's ``no_land`` cleanup deletes the
+    unlanded remote branch. The ``meta.preland_held`` params a
+    FIX/REVERT stashed name the DEFER's worktree — usually this same
+    ``slice-td<id>`` path, but on a cross-host rebuild the equal string
+    is another machine's tree — so they are never stamped back
+    unverified: :func:`_restore_reviewed_branch` puts the pushed tip on
+    THIS tree's branch first, and this run's
+    :func:`_land_params` (pinning this host) take the hold. An
+    unrestorable tip leaves the todo open, like the defer-failed arm —
+    the next run's tree may still hold it — but not forever: the
+    repeats are clean-exit successes plan_dispatch's ``FREE_RUN_CAP``
+    never sees, so after :data:`PRELAND_HOLD_UNRESTORED_CAP`
+    attempt-free repeats the arm burns a real attempt and the node's
+    retry cap parks the spin on the coordinator ask (gr698949). A tip
+    the oracle verified ABSENT from origin (never pushed or already
+    deleted, or nothing beyond base) is different: there is nothing
+    reviewed to hold or lose, so the plain verdict close takes over
+    and the tick's dead-chain sweep closes the stale reviewer
+    won't-do (gr698949).
+
+    ``meta.preland_defer_failed`` (gr663738) gets the same protection
+    the tick's verdict step gives it, on any verdict kind: the stamp
+    says the push died and nothing reached origin, so there is nothing
+    to hold — the lease goes back attempt-free and the todo stays open
+    for the retry's defer."""
+    from precis.plans.templates import (
+        PENDING_LAND_KEY,
+        PRELAND_DEFER_FAILED_KEY,
+        PRELAND_HELD_KEY,
+    )
+
+    ref = ctx.store.get_ref(kind="todo", id=todo_id)
+    tmeta = dict((ref.meta if ref is not None else None) or {})
+    if tmeta.get(PRELAND_DEFER_FAILED_KEY):
+        unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: "preland-defer-failed"})
+        return (
+            f"Land: none — `{kind}:` ignored: meta.preland_defer_failed "
+            "stands, so nothing reached origin to hold; "
+            f"td{todo_id} back to open with no attempt (gr663738)."
+        )
+    if kind not in ("validated", "no-op"):
+        return None
+    reviewer = _preland_reviewer(ctx.store, todo_id)
+    if reviewer is None:
+        return None
+    branch = slice_branch(todo_id)
+    restored = _restore_reviewed_branch(tree, branch, base)
+    if isinstance(restored, _RestoreOutcome):
+        if restored is _RestoreOutcome.ABSENT:
+            # gr698949: the oracle VERIFIED origin holds no reviewed
+            # branch (never pushed or already deleted, or carrying
+            # nothing beyond base) — there is nothing to hold and
+            # nothing the hold could lose. The plain verdict close
+            # takes over: the tick's dead-chain sweep closes the stale
+            # reviewer won't-do (its target closed with no `landed:`).
+            _append_comment(
+                ctx.store,
+                todo_id,
+                f"run_slice: `{kind}:` under the live pre-land review "
+                f"td{reviewer}, but origin holds no {branch} in either "
+                "ref home — never pushed or already deleted, so there "
+                f"is nothing reviewed to hold; td{todo_id} takes the "
+                "plain verdict close and the tick closes the stale "
+                f"review td{reviewer} (gr698949).",
+            )
+            return None
+        prior = _unrestored_free_run(ctx.store, todo_id, ctx.ref_id)
+        if prior >= PRELAND_HOLD_UNRESTORED_CAP:
+            # gr698949: the repeats are clean-exit successes, so
+            # plan_dispatch's FREE_RUN_CAP never sees them — after the
+            # cap, the leave-open arm burns a real attempt (the job
+            # carries no ``attempt_free`` and the lease bumps
+            # ``attempt:<n>``), so the node's retry cap finally reaches
+            # the spin and parks it on the coordinator ask.
+            release_todo(ctx.store, todo_id, str(lane) if lane else None)
+            _append_comment(
+                ctx.store,
+                todo_id,
+                f"run_slice: `{kind}:` under the live pre-land review "
+                f"td{reviewer}, but origin/{branch}'s reviewed tip "
+                f"could not be restored here on {prior} consecutive "
+                f"runs — burning an attempt now so the retry cap can "
+                f"reach the spin (gr698949); td{todo_id} back to open.",
+            )
+            return (
+                f"Land: none — `{kind}:` under pre-land review "
+                f"td{reviewer} but origin/{branch}'s tip is "
+                f"unrestorable here after {prior} attempt-free "
+                f"repeats; td{todo_id} back to open, attempt burned "
+                "(gr698949)."
+            )
+        unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: PRELAND_HOLD_UNRESTORED})
+        _append_comment(
+            ctx.store,
+            todo_id,
+            f"run_slice: `{kind}:` under the live pre-land review "
+            f"td{reviewer}, but origin/{branch}'s reviewed tip "
+            f"could not be restored into this worktree — td{todo_id} "
+            "stays open for a run whose tree still holds the "
+            "pushed branch (gr681208).",
+        )
+        return (
+            f"Land: none — `{kind}:` under pre-land review "
+            f"td{reviewer} but origin/{branch}'s tip is "
+            f"unrestorable here; td{todo_id} back to open with no "
+            "attempt (gr681208)."
+        )
+    tip = restored
+    _stamp_branch_files(ctx.store, todo_id, tree, tip)
+    params = _land_params(ctx, todo_id, tree, lane, checked)
+    # The restored pushed tip — the head the next verdict judges
+    # (gr688058): unchanged on a second send-back, the tick's
+    # unchanged-head stop reads it.
+    params["head"] = tip
+    ctx.store.stamp_ref_meta(
+        todo_id,
+        {
+            PENDING_LAND_KEY: params,
+            PRELAND_HELD_KEY: None,
+        },
+    )
+    _append_comment(
+        ctx.store,
+        todo_id,
+        f"run_slice: `{kind}:` verdict under the live pre-land review "
+        f"td{reviewer} — the pushed branch is ready as it stands; the "
+        f"land is held for td{reviewer} — the tick mints land_slice on "
+        "its `review: LAND` verdict (gr681208).",
+    )
+    close_todo(ctx.store, todo_id, str(lane) if lane else None)
+    return (
+        f"Land: held for the pre-land review td{reviewer} "
+        f"(`{kind}:` — the pushed branch is ready as it stands); "
+        f"td{todo_id} closed — the tick mints land_slice on a LAND "
+        "verdict (gr681208)."
+    )
 
 
 def _process_identity(pid: int) -> tuple[str, int] | None:
@@ -1093,6 +1772,54 @@ def _todo_status(store: Any, todo_id: int) -> str | None:
     return None
 
 
+def _terminal_status(store: Any, todo_id: int) -> str | None:
+    """``todo_id``'s STATUS when terminal — a ruling set while the run was
+    in flight (gr663909: the coordinator closes a node mid-run and the
+    end-of-run writeback must not reopen it — a reopened todo
+    re-dispatches duplicate work) — else ``None``."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    status = _todo_status(store, todo_id)
+    return status if status in TERMINAL_TODO_STATUSES else None
+
+
+def _terminal_ruling(store: Any, todo_id: int) -> str | None:
+    """Terminal STATUS that counts as a ruling on the work (gr663909) —
+    the lease writebacks' check. ``won't-do`` / ``auto-timeout`` are
+    always rulings; ``done`` is, except the pre-land hold: a build
+    stamped ``meta.pending_land`` was closed ``done`` by
+    :func:`_defer_land_for_review` itself (gr570506), and a failed land
+    must reopen it for the rebuild — that ``done`` is machine state,
+    not a ruling."""
+    status = _terminal_status(store, todo_id)
+    if status == "done":
+        from precis.plans.templates import PENDING_LAND_KEY
+
+        ref = store.get_ref(kind="todo", id=todo_id)
+        if ref is not None and (ref.meta or {}).get(PENDING_LAND_KEY):
+            return None
+    return status
+
+
+def _discarded_writeback(store: Any, todo_id: int, status: str) -> None:
+    """The comment a lease writeback leaves on a todo a mid-run terminal
+    ruling already closed (gr663909): the run's result is discarded, the
+    STATUS stands. One comment per run: poll's terminal arm and the lease
+    functions can both fire on the same writeback."""
+    text = (
+        f"run_slice: td{todo_id} was already STATUS:{status} (a terminal "
+        "ruling set mid-run) when the run ended; the run's result was "
+        "discarded — the status stands."
+    )
+    newest = max(
+        (c for c in _todo_chunks(store, todo_id) if c.chunk_kind == _COMMENT_KIND),
+        key=lambda c: int(c.ord),
+        default=None,
+    )
+    if newest is None or str(newest.text or "") != text:
+        _append_comment(store, todo_id, text)
+
+
 def _is_generator(store: Any, todo_id: int) -> bool:
     ref = store.get_ref(kind="todo", id=todo_id)
     return ref is not None and node_kind(ref.meta) == "generator"
@@ -1121,7 +1848,7 @@ def _no_commit_kind(store: Any, todo_id: int) -> str | None:
     ref = store.get_ref(kind="todo", id=todo_id)
     meta = (ref.meta if ref is not None else None) or {}
     cls = str(meta.get("task_class") or _DEFAULT_TASK_CLASS)
-    if cls != _DEFAULT_TASK_CLASS:
+    if cls not in (_DEFAULT_TASK_CLASS, "skill"):
         return f"task_class {cls!r}"
     role = _generate_role(meta)
     if role in _NO_COMMIT_ROLES:
@@ -1171,11 +1898,19 @@ def _claim_todo(store: Any, todo_id: int, lane: str) -> None:
     )
 
 
-def release_todo(store: Any, todo_id: int, lane: str | None) -> int:
+def release_todo(store: Any, todo_id: int, lane: str | None) -> int | None:
     """Release the lease after a failed run: drop the claim, return the
-    todo to ``STATUS:open`` and bump ``attempt:<n>``. Returns ``n``."""
+    todo to ``STATUS:open`` and bump ``attempt:<n>``. Returns ``n`` —
+    ``None`` when the todo already sits at a terminal STATUS (a mid-run
+    ruling): the writeback burns no attempt and never reopens it
+    (gr663909); the claim still drops since the run is over either way.
+    The pre-land ``done`` hold is not a ruling
+    (:func:`_terminal_ruling`): a failed land reopens it as before."""
     if lane:
         store.remove_tag(todo_id, Tag.open(f"claimed-by:lane-{lane}"))
+    if (status := _terminal_ruling(store, todo_id)) is not None:
+        _discarded_writeback(store, todo_id, status)
+        return None
     prior = 0
     for value in _open_tag_values(store, todo_id):
         m = _ATTEMPT_RE.match(value)
@@ -1192,9 +1927,13 @@ def release_todo(store: Any, todo_id: int, lane: str | None) -> int:
 
 def unclaim_todo(store: Any, todo_id: int, lane: str | None) -> None:
     """Give the lease back with no attempt burned: the lane's window failed
-    (a quota or rate notice), not the task (gr565359)."""
+    (a quota or rate notice), not the task (gr565359). A todo a mid-run
+    ruling already closed keeps its terminal STATUS (gr663909)."""
     if lane:
         store.remove_tag(todo_id, Tag.open(f"claimed-by:lane-{lane}"))
+    if (status := _terminal_ruling(store, todo_id)) is not None:
+        _discarded_writeback(store, todo_id, status)
+        return
     store.add_tag(
         todo_id, Tag.closed("STATUS", "open"), set_by="system", replace_prefix=True
     )
@@ -1206,9 +1945,14 @@ def close_todo(
     """Close a generator that correctly minted nothing (a ``no-op:`` /
     ``moot:`` verdict): drop the claim, add ``tags``, ``STATUS:done``. The
     tick leaves a childless done generator closed (``_step_reopen`` only
-    reopens one with open children)."""
+    reopens one with open children). A todo a mid-run ruling already
+    closed keeps its terminal STATUS — the run's verdict is discarded
+    with the rest of its writeback (gr663909)."""
     if lane:
         store.remove_tag(todo_id, Tag.open(f"claimed-by:lane-{lane}"))
+    if (status := _terminal_ruling(store, todo_id)) is not None:
+        _discarded_writeback(store, todo_id, status)
+        return
     for value in tags:
         store.add_tag(todo_id, Tag.open(value), set_by="system")
     store.add_tag(
@@ -1309,10 +2053,15 @@ def _reviewer_close(todo_id: int, mcp: bool = True) -> list[str]:
         "land, push or ship. Do not tag this todo done: the dispatcher "
         "closes it on your verdict.",
         "",
+        "A test the build changed is judged like code (gr674030): LAND when "
+        "the handoff shows the old assertion was a wrong spec, FIX when the "
+        "change weakens a real check to get green.",
+        "",
         "You are read-only: run no tests, no typecheck, no lint and no "
         "`uv` or `scripts/test` command — read the diff the Review target "
         "section names (a `git show <sha>` squash after land, a "
-        "`git diff <base>...origin/slice/<id>` branch before it, `<base>` "
+        "`git diff <base>...origin/slice/<id>` branch before it (fetched by "
+        "the command the Review target section gives), `<base>` "
         "being `origin/main` or, for a release fix whose todo names a "
         "`land target: release/r<N>`, `origin/release/r<N>`) and the files. "
         "End your verdict line with "
@@ -1396,22 +2145,100 @@ def _followups_on_main(root: Path, landed: str) -> list[str]:
     return [line for line in proc.stdout.splitlines() if line.strip()][:10]
 
 
-def _fetch_review_branch(branch: str) -> None:
-    """Best-effort fetch of ``origin/<branch>`` into the slice checkout,
-    so a reviewer's ``git show`` of a release-branch squash resolves
-    (release-train T3 review F3)."""
+def _fetch_review_branch(branch: str, *, namespace: str = "refs/heads/") -> str | None:
+    """Best-effort fetch of origin's ``<namespace><branch>`` into the slice
+    checkout's ``origin/<branch>``, so a reviewer's ``git show`` of a
+    release-branch squash resolves (release-train T3 review F3); a held
+    slice passes the hidden ``refs/factory/`` namespace. ``None`` when
+    the fetch ran clean, else why it did not (git's last line) — the
+    tracking ref then still holds whatever this checkout last saw."""
     try:
-        _git(
+        proc = _git(
             [
                 "fetch",
                 "-q",
                 "origin",
-                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+                f"+{namespace}{branch}:refs/remotes/origin/{branch}",
             ],
             slice_root(),
         )
-    except (RuntimeError, OSError, subprocess.TimeoutExpired):
-        pass
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        return f"{type(exc).__name__}: {exc}"[:200]
+    if proc.returncode != 0:
+        tail = (proc.stderr or "").strip().splitlines()[-1:]
+        return (tail[0] if tail else f"git fetch exited {proc.returncode}")[:200]
+    return None
+
+
+def _sha_matches(a: str, b: str) -> bool:
+    """``a`` and ``b`` name one commit: equal, or one abbreviates the other."""
+    a, b = a.strip().lower(), b.strip().lower()
+    return bool(a and b) and (a.startswith(b) or b.startswith(a))
+
+
+def _preland_head(
+    branch: str, expected: str | None = None
+) -> tuple[str | None, str | None]:
+    """Fetch ``origin/main`` and ``origin/<branch>`` into the slice
+    checkout and return ``(head, stale)``: the branch head, ``None``
+    when unreadable (gr681634), and ``stale`` — why this checkout could
+    not be brought to the ``expected`` pushed tip
+    (``meta.pending_land.head``), else ``None``. The worker fetches
+    because a sandboxed reviewer lane
+    cannot write the checkout's ``FETCH_HEAD``: left to its own
+    ``git fetch`` it read whatever head this checkout last saw, and a
+    branch pushed from another clone was reviewed stale. A stale
+    ``origin/main`` would also widen the three-dot diff with main's own
+    commits once the branch is rebased past it.
+
+    A failed fetch leaves the old tracking ref in place, and the brief
+    used to name it as the head (td707034: the reviewer judged the tip
+    of two days earlier). So with ``expected`` known, a head that is not
+    it retries the hidden-ref fetch once. The retry still off, the head
+    is stale whatever the fetch's exit code said (td730820): a clean
+    fetch that disagrees with ``expected`` means origin's branch moved
+    after the defer stamped the tip (or the stamp names another push) —
+    either way the brief must not hand the reviewer a head the pending
+    stamp does not hold, or its LAND would release a land for a commit
+    the review never read."""
+    from precis.plans.templates import SLICE_REF_NS
+
+    _fetch_review_branch("main")
+    # The slice lives under the hidden namespace, not refs/heads/ (no
+    # GitHub branch, no PR — Reto 2026-11-15). A slice pushed before
+    # that is still a branch: fetch it first, so the hidden ref (when
+    # there is one) overwrites it and an absent one leaves it in place.
+    _fetch_review_branch(branch)
+    head: str | None = None
+    failed: str | None = None
+    for _attempt in range(2):
+        failed = _fetch_review_branch(branch, namespace=SLICE_REF_NS)
+        try:
+            proc = _git(
+                ["rev-parse", "--verify", "-q", f"origin/{branch}"], slice_root()
+            )
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            return None, None
+        out = proc.stdout.strip()
+        head = out if proc.returncode == 0 and out else None
+        if not expected or (head is not None and _sha_matches(head, expected)):
+            return head, None
+    if failed is None:
+        failed = (
+            f"origin/{branch} reads {head or 'nothing'} after a clean fetch, "
+            f"not the pushed tip {expected}"
+        )
+    log.warning(
+        "run_slice: pre-land fetch of %s%s could not reach the pushed tip "
+        "(%s); origin/%s is at %s, the pushed tip is %s",
+        SLICE_REF_NS,
+        branch,
+        failed,
+        branch,
+        head,
+        expected,
+    )
+    return head, failed
 
 
 def _review_target(store: Any, meta: Any) -> str | None:
@@ -1422,7 +2249,11 @@ def _review_target(store: Any, meta: Any) -> str | None:
     that touch the same files are named (gr568824) — a finding a
     follow-up already fixed is not a finding. ``None`` for any other
     node."""
-    from precis.plans.templates import PENDING_LAND_KEY
+    from precis.plans.templates import (
+        PENDING_LAND_KEY,
+        SLICE_REF_NS,
+        slice_fetch_cmd,
+    )
 
     if _generate_role(meta) != "reviewer":
         return None
@@ -1479,13 +2310,61 @@ def _review_target(store: Any, meta: Any) -> str | None:
             if isinstance(pending, dict) and pending.get("branch")
             else f"slice/{target_id}"
         )
+        head: str | None = None
+        stale: str | None = None
+        pushed = str(pending.get("head") or "") if isinstance(pending, dict) else ""
         if pending:
+            head, stale = _preland_head(branch, pushed or None)
+        if stale:
+            # td707034 / td730820: never name a head this checkout could
+            # not bring to the pushed tip as the one to judge — a failed
+            # fetch, or a clean fetch whose answer disagrees with the
+            # stamp, both leave the reviewer unable to read the commit
+            # the held land ships. A run that leaves no ``review:``
+            # comment is retried by the tick (plan_dispatch._step_reviews),
+            # so the next run gets a fresh fetch.
+            lines.append(
+                f"STALE CHECKOUT — judge nothing. td{target_id}'s branch is "
+                f"pushed to origin as `{SLICE_REF_NS}{branch}` at "
+                f"`{pushed}`, but this checkout cannot read that tip "
+                f"({stale}) and origin/{branch} still reads "
+                f"`{head or 'nothing'}`. Run `git rev-parse "
+                f"origin/{branch}`: unless it prints `{pushed}`, write NO "
+                "`review:` comment and no verdict — end with the one line "
+                "`stale checkout: <the fetch error>`. The tick then runs "
+                "this review again."
+            )
+        elif pending:
             lines.append(
                 "Pre-land review (gr570506): nothing is on main yet — the "
-                f"diff is td{target_id}'s branch, pushed to origin. Run "
-                f"`git fetch -q origin`, then read `git diff origin/main..."
-                f"origin/{branch}`."
+                f"diff is td{target_id}'s branch, pushed to origin as the "
+                f"hidden ref `{SLICE_REF_NS}{branch}`. This "
+                "checkout fetched it before your session started: read "
+                f"`git diff origin/main...origin/{branch}`. A `git fetch` "
+                "of your own may be refused by the sandbox; you do not "
+                "need one (if you do fetch, a plain `git fetch` skips the "
+                f"hidden ref: `{slice_fetch_cmd(branch)}`)."
             )
+            if head:
+                lines.append(
+                    f"The branch head is `{head}`. If `git rev-parse "
+                    f"origin/{branch}` prints another sha, the checkout is "
+                    "stale: say so and judge nothing."
+                )
+                lines.append(
+                    "Name the head you judged in the verdict comment "
+                    "(`verified head <sha>`): the tick reads it against "
+                    "the pushed tip — a mismatch is a stale read, not a "
+                    "finding (gr688058)."
+                )
+                lines.append(
+                    "End a FIX or REVERT comment with one `anchors:` "
+                    "line (`anchors: file.py::func, …`) naming the "
+                    "`file::function` each active finding hangs on — "
+                    "resolved-context cites stay off it. The tick reads "
+                    "only that line for the repeat stop, never your "
+                    "prose (gr688058)."
+                )
         else:
             lines.append(
                 f"td{target_id} has no `landed:` comment yet: nothing is on "
@@ -1500,6 +2379,341 @@ def _review_target(store: Any, meta: Any) -> str | None:
     if text:
         lines += ["", "Its brief:", "", text]
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class RepoReviewTarget:
+    """What a reviewer of a second-repo slice judges (td659522 step 5):
+    ``shas`` are the landed commits (7-40 hex as the ``landed:`` comments
+    name them, one per landed target, ascending by todo id), ``title`` the
+    targets' ``td<N>: <title>`` lines and ``brief`` their briefs, capped.
+    ``ids`` are the target todo ids, in the order of ``shas``."""
+
+    shas: tuple[str, ...]
+    title: str
+    brief: str
+    ids: tuple[int, ...] = ()
+
+
+_LANDED_SHA_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
+_REVIEW_SHA_RE = re.compile(r"[0-9a-f]{7,40}")
+
+
+def _newest_landed_comment(store: Any, todo_id: int) -> str | None:
+    """The text of the todo's newest ``landed:`` comment, else ``None``."""
+    for c in reversed(_todo_chunks(store, todo_id)):
+        if c.chunk_kind != _COMMENT_KIND:
+            continue
+        text = str(c.text or "").strip()
+        if text.lower().startswith("landed:"):
+            return text
+    return None
+
+
+def _newest_landed_sha(store: Any, todo_id: int) -> str | None:
+    """The sha (7-40 hex, lowercased) of the todo's newest ``landed:``
+    comment that names one, else ``None``. A ``landed: nothing — …`` (a
+    rebuild with no net diff, as after a REVERT) is skipped, not read as
+    the newest land: this is the reading of ``plan_dispatch._landed_sha``,
+    so the dispatcher and the reviewer agree on the commit under review."""
+    for c in reversed(_todo_chunks(store, todo_id)):
+        if c.chunk_kind != _COMMENT_KIND:
+            continue
+        hit = _LANDED_SHA_RE.match(str(c.text or "").strip())
+        if hit is not None:
+            return hit.group(1).lower()
+    return None
+
+
+def _review_target_repo(
+    store: Any, meta: Any, profile: _lanes.RepoProfile
+) -> RepoReviewTarget | str:
+    """The target of a reviewer of a ``profile`` (second-repo) slice, read
+    from the STORE only: no git, no fetch, nothing in the precis clone
+    (td659522 step 5). The targets are the todo ``meta.generate.from`` names
+    or, when that todo has no ``landed:`` comment naming a sha, its
+    children that have one. Each target needs ``meta.landed_repo ==
+    profile.name`` and a ``landed:`` comment naming a 7-40 hex sha (the
+    lander writes the first nine); the newest such comment is read, a newer
+    ``landed: nothing — …`` skipped (:func:`_newest_landed_sha`). Else a
+    one-sentence refusal ending in ``next:``,
+    a ``str`` where success is a :class:`RepoReviewTarget`. A caller with
+    several shas detaches at the fetched base tip: they are all ancestors
+    of it (:func:`_ensure_review_tree`)."""
+    name = profile.name
+    if _generate_role(meta) != "reviewer":
+        return "this node is not a reviewer; next: dispatch only reviewer nodes here"
+    m = _TD_FROM_RE.fullmatch(str((meta.get("generate") or {}).get("from") or ""))
+    if m is None:
+        return "the reviewer names no td<N> target; next: mint it with generate.from"
+    target_id = int(m.group(1))
+    if store.get_ref(kind="todo", id=target_id) is None:
+        return f"review target td{target_id} does not exist; next: re-mint the review"
+    ids = [target_id]
+    if _newest_landed_sha(store, target_id) is None:
+        kids = sorted(
+            int(r.id)
+            for r in store.recent_refs(["todo"], parent_id=target_id, limit=1000)
+            if _newest_landed_sha(store, int(r.id)) is not None
+        )
+        ids = kids or ids
+    shas: list[str] = []
+    titles: list[str] = []
+    briefs: list[str] = []
+    for tid in ids:
+        ref = store.get_ref(kind="todo", id=tid)
+        landed = _newest_landed_comment(store, tid)
+        if landed is None:
+            return (
+                f"td{tid} has no `landed:` comment, so nothing is on {name} to "
+                "review; next: review it after its land"
+            )
+        owner = (getattr(ref, "meta", None) or {}).get(_lanes.LANDED_REPO_KEY)
+        if owner != name:
+            return (
+                f"td{tid} landed in {owner!r}, not '{name}' ({_lanes.LANDED_REPO_KEY}); "
+                "next: review it in the repo it landed in"
+            )
+        sha = _newest_landed_sha(store, tid)
+        if sha is None:
+            return (
+                f"td{tid}'s newest `landed:` comment names no commit "
+                f"({landed[:80]!r}), nor does an older one; next: nothing "
+                "landed, close the review"
+            )
+        shas.append(sha)
+        title = str(getattr(ref, "title", "") or "").strip()
+        titles.append(f"td{tid}: {title}")
+        body, latest = _brief_parts(store, tid)
+        text = (body or "").strip()
+        if latest:
+            text = f"{text}\n\n{latest.strip()}".strip()
+        if len(text) > _TARGET_CAP:
+            text = text[:_TARGET_CAP].rstrip() + "\n\n[brief cut here]"
+        briefs.append(f"td{tid}:\n\n{text}" if len(ids) > 1 else text)
+    return RepoReviewTarget(
+        shas=tuple(shas),
+        title="; ".join(titles),
+        brief="\n\n".join(briefs),
+        ids=tuple(ids),
+    )
+
+
+def _review_sha(target: RepoReviewTarget, tip: str) -> str:
+    """The commit a second-repo reviewer's tree is cut at. Several landed
+    commits: the fetched base tip, which has them all as ancestors. One: the
+    ``landed:`` comment's sha (the lander writes nine hex;
+    :func:`_ensure_review_tree` expands it in the clone). The full sha lives
+    only on the land job's ``meta.landed_sha``, never on the todo."""
+    if len(target.shas) != 1:
+        return tip
+    return target.shas[0]
+
+
+def _ensure_review_tree(
+    profile: _lanes.RepoProfile, root: Path, todo_id: int, sha: str, tip: str
+) -> Path | str:
+    """A fresh detached worktree ``<root>/.claude/worktrees/slice-td<id>`` of
+    the clone at ``root``, at the landed commit ``sha`` (7-40 hex, expanded
+    here), for a second-repo reviewer. No branch is created and no network
+    is touched: the caller already fetched through :func:`_prepare_repo`
+    and passes ``tip``, the fetched base tip sha. ``sha`` must be an
+    ancestor of ``tip``. A tree left there by an earlier launch is removed
+    first: a reviewer's tree is re-cut on every launch, never reused. The
+    clone's ``info/exclude`` is :func:`_prepare_repo`'s per-clone job, not
+    this tree's. Returns the path, or a one-sentence refusal ending in
+    ``next:``."""
+    name = profile.name
+    if not _REVIEW_SHA_RE.fullmatch(sha):
+        return f"'{sha}' is not a commit sha; next: fix the landed comment"
+    full = _git(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"], root)
+    if full.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", full.stdout.strip()):
+        return (
+            f"the '{name}' clone does not know commit {sha[:12]}; "
+            "next: check that the land pushed it"
+        )
+    full_sha = full.stdout.strip()
+    anc = _git(["merge-base", "--is-ancestor", full_sha, tip], root)
+    if anc.returncode != 0:
+        return (
+            f"commit {full_sha[:12]} is not on the fetched {name} "
+            f"{profile.base} ({tip[:12]}); next: wait for the land to reach it"
+        )
+    tree = worktrees_dir(root) / slice_name(todo_id)
+    if tree.exists():
+        gone = _git(["worktree", "remove", "--force", str(tree)], root)
+        if gone.returncode != 0 or tree.exists():
+            shutil.rmtree(tree, ignore_errors=True)
+    _git(["worktree", "prune"], root)
+    if tree.exists():
+        return f"could not clear the old review tree {tree}; next: remove it by hand"
+    add = _git(["worktree", "add", "--detach", str(tree), full_sha], root)
+    if add.returncode != 0:
+        tail = " ".join((add.stderr or "").split())[-200:]
+        return f"git worktree add failed for the review tree ({tail}); next: retry"
+    return tree
+
+
+def _render_repo_review_brief(
+    profile: _lanes.RepoProfile,
+    *,
+    todo_id: int,
+    sha: str,
+    tip: str,
+    target_title: str,
+    target_brief: str,
+    shas: Sequence[str] = (),
+    body: str = "",
+    latest: str | None = None,
+) -> str:
+    """The launch brief of a reviewer of a ``profile`` (second-repo) slice
+    (td659522 step 5). The session works in a detached tree at ``sha``, off
+    the network, and writes nothing; ``tip`` is the fetched base tip the
+    later-changes query ends at. ``shas`` are the landed commits to read
+    (``sha`` alone when empty). ``body`` and ``latest`` are the review
+    node's own body and newest ``brief:``/``handoff:`` comment, inlined like
+    a precis brief's (:func:`_task_lines`) so coordinator steering reaches
+    the session; the repo rules above them still win. The verdict is the
+    first line of the final message, in the grammar and with the marker of
+    :func:`_reviewer_close`'s verdict; poll posts that message as the
+    ``handoff:`` comment and ``plan_dispatch._read_verdict`` reads it there."""
+    from precis.plans.templates import REVIEW_GRAMMAR, REVIEW_READONLY_MARKER
+
+    name = profile.name
+    checks = [*profile.lint_cmds, *profile.test_cmds]
+    ran = (
+        "the lander ran " + ", ".join(f"`{c}`" for c in checks) + " green"
+        if checks
+        else "the lander ran the repo's checks green"
+    )
+    reads = list(shas) or [sha]
+    lines = [
+        f"# Review td{todo_id}: {target_title}",
+        "",
+        f"This is the `{name}` repository. Your working tree is a detached "
+        f"checkout at the landed commit `{sha}`. You review it; you change "
+        "nothing.",
+        "",
+        f"## Rules for this repo ({name}); they win over the task text",
+        "",
+        "- Do not fetch, pull, checkout, edit, commit, push, tag, bump a "
+        "version or open a pull request. The tree is read-only for you.",
+        "- Do not run `uv`, a linter or tests: " + ran + " on this commit.",
+        "- Do not file reports or leave notes anywhere; your final message is "
+        "all you write.",
+        "",
+        "## What to read",
+        "",
+    ]
+    if len(reads) > 1:
+        lines += [
+            "The slice landed these commits; read each with `git show <sha>`:",
+            "",
+            *[f"- `{s}`" for s in reads],
+        ]
+    else:
+        lines.append(f"Read `git show {reads[0]}` and the files it touches.")
+    lines += [
+        "",
+        "For later changes to the same files, `git log <sha>..<tip> -- <files>` "
+        f"(`<tip>` is `{tip}`; local only) names the commits since: a finding "
+        "a later commit already fixed is not a finding.",
+        "",
+        "Judge whether the diff does what the slice's brief below asked, and "
+        "nothing it should not. A test the build changed is judged like "
+        "code: LAND when the old assertion was a wrong spec, FIX when the "
+        "change weakens a real check to get green.",
+        "",
+        "## The slice's brief",
+        "",
+        target_brief.strip() or "(the slice has no brief)",
+    ]
+    if body.strip():
+        lines += ["", "## This review's brief", "", body.strip()]
+    if latest and latest.strip():
+        lines += ["", "## Latest brief / handoff on this review", "", latest.strip()]
+    lines += [
+        "",
+        "## When done: your verdict",
+        "",
+        "This todo is a reviewer: your work is one verdict, not a land and "
+        "not child todos. Make the verdict the FIRST line of your final "
+        "message, one of: " + REVIEW_GRAMMAR + ".",
+        "",
+        "`FIX` and `REVERT` need the list / the why after the dash: name "
+        "files and the concrete problem. End the verdict line with "
+        f"`{REVIEW_READONLY_MARKER}`. Below that line, in a few lines: what "
+        "you checked and the findings. No other line of the message may "
+        "start with `review:`.",
+        "",
+        "Mint nothing: no child todos, no fix, no revert. Commit nothing. Do "
+        "not tag this todo done: the dispatcher closes it on your verdict.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _cut_review_tree(
+    store: Any,
+    todo: Any,
+    todo_id: int,
+    profile: _lanes.RepoProfile,
+    root: Path,
+    brief_kwargs: dict[str, Any],
+    tip: str | None,
+) -> tuple[Path, str | None]:
+    """The launch half of a second-repo reviewer, after
+    :func:`_prepare_repo_tip`, whose fetched base tip sha is ``tip`` (the
+    launch fetches once): the review target again (it may have changed
+    since the submit-time check), the sha to review (:func:`_review_sha`)
+    and the detached tree at it. Fills ``brief_kwargs["review"]`` for
+    :func:`render_brief`. Returns the tree and its head sha. Every refusal
+    is a :class:`_ReviewRefusal`."""
+    if tip is None:
+        raise _ReviewRefusal(
+            f"git fetch origin {profile.base} (or its oracle check) failed for "
+            f"the '{profile.name}' repo; next: check the network and the "
+            "factory git token"
+        )
+    target = _review_target_repo(store, todo.meta, profile)
+    if isinstance(target, str):
+        raise _ReviewRefusal(target)
+    sha = _review_sha(target, tip)
+    tree = _ensure_review_tree(profile, root, todo_id, sha, tip)
+    if isinstance(tree, str):
+        raise _ReviewRefusal(tree)
+    brief_kwargs["review"] = dict(
+        sha=sha,
+        tip=tip,
+        target_title=target.title,
+        target_brief=target.brief,
+        shas=target.shas,
+    )
+    head = _git(["rev-parse", "HEAD"], tree)
+    full = head.stdout.strip() if head.returncode == 0 else ""
+    return tree, full if re.fullmatch(r"[0-9a-f]{40}", full) else None
+
+
+def _drop_review_tree(handle: dict[str, Any]) -> None:
+    """Remove a second-repo reviewer's detached tree after its run, whatever
+    the outcome: ``git worktree remove --force`` through the trusted
+    :func:`_git`, then a prune. Only a ``slice-td<N>`` directory under the
+    repo's own worktrees dir is touched. A failure is logged, not raised."""
+    try:
+        repo = str(handle.get("repo") or "")
+        tree = Path(str(handle.get("worktree") or ""))
+        root = slice_root_for(repo)
+        if tree.parent != worktrees_dir(root) or not tree.name.startswith("slice-td"):
+            log.warning("run_slice: review tree %s is not under %s", tree, root)
+            return
+        if tree.exists():
+            gone = _git(["worktree", "remove", "--force", str(tree)], root)
+            if gone.returncode != 0 or tree.exists():
+                shutil.rmtree(tree, ignore_errors=True)
+        _git(["worktree", "prune"], root)
+        if tree.exists():
+            log.warning("run_slice: review tree %s was not removed", tree)
+    except Exception:
+        log.warning("run_slice: review tree drop failed", exc_info=True)
 
 
 #: The lint the land runs on the whole tree before it merges, in the
@@ -1582,6 +2796,235 @@ def _land_lint_steps(base: str = "main") -> tuple[str, ...]:
 _MIGRATION_PATH_RE = re.compile(r"src/[\w-]+/migrations/")
 
 
+_SESSION_RULES = (
+    " You get one "
+    "turn: when your turn ends the session ends and any subagents "
+    "still running are killed with it — never start a background "
+    "subagent and wait for it; do your research in the foreground, "
+    "then finish the work in this same turn (gr571311: a builder "
+    "that yielded to wait on forks lost the whole session). Work "
+    "only in this worktree."
+)
+
+
+_DEVIN_TURN_RULES = (
+    "Do not end your turn to wait for a command: run it in the foreground "
+    "or poll it (`scripts/ship --await`, `scripts/test --await <run-id>`) "
+    "inside this turn; do not post progress-only messages — your first "
+    "final message ends the session."
+)
+
+#: The foreign-repo (repo-profile) variant: the same rule without the
+#: precis repo's own ``scripts/`` poll commands, which a profiled repo
+#: does not carry (gr709133).
+_DEVIN_TURN_RULES_FOREIGN = (
+    "Do not end your turn to wait for a command: run it in the foreground "
+    "or poll it inside this turn; do not post progress-only messages — "
+    "your first final message ends the session."
+)
+
+
+def _brief_intro(
+    todo_id: int,
+    title: str,
+    lane: str,
+    model: str | None,
+    effort: str,
+    base: str,
+    adapter: str | None = None,
+    *,
+    foreign: bool = False,
+) -> list[str]:
+    """The brief's heading and session paragraph, repo-neutral up to and
+    including "Work only in this worktree." — each brief appends its own
+    reading list. ``foreign`` marks a repo-profile brief: its Devin turn
+    rule omits the precis repo's ``scripts/`` poll commands."""
+    lines = [
+        f"# Slice td{todo_id}: {title.strip()}",
+        "",
+        f"You are a headless build session on lane `{lane}` "
+        f"(model `{model or 'account default'}`, "
+        f"effort `{effort}`), in git worktree `{slice_name(todo_id)}` on branch "
+        f"`{slice_branch(todo_id)}`, cut from `origin/{base}`." + _SESSION_RULES,
+    ]
+    if adapter == "devin_tree":
+        lines.extend(["", _DEVIN_TURN_RULES_FOREIGN if foreign else _DEVIN_TURN_RULES])
+    return lines
+
+
+def _no_mcp_lines(read_mcp: str | None) -> list[str]:
+    """The brief paragraph for a lane without the full precis MCP: the
+    ``reader`` or ``triage`` scope's own text (gr574082), else the
+    no-MCP notice."""
+    if read_mcp == "reader":
+        return [
+            "",
+            "This lane has a read-only precis MCP (get and search). "
+            "Before grepping or reading a whole .py file: "
+            "search(kind='python', mode='pattern', q='<name>'), then "
+            "get(kind='python', id='main::<qualname>', view='source'). "
+            "wt-slice-td<id>::<qualname> reads your own tree if it "
+            "resolves; main:: is the shared checkout and may lag your "
+            "branch. Repo prose: get(kind='md', id='main/docs/...'). "
+            "Your task's comments: get(kind='todo', id='td<id>', "
+            "view='comments'). Skills: search(kind='skill', q='<task>'). "
+            "Nothing else is served and nothing is writable; your "
+            "hand-off is still your final message.",
+        ]
+    elif read_mcp == "triage":
+        return [
+            "",
+            "This lane's precis MCP is scoped to structure reads and "
+            "gripe triage. Reads: search(kind='python', mode='pattern', "
+            "q='<name>'), then get(kind='python', id='main::<qualname>', "
+            "view='source'); wt-slice-td<id>::<qualname> reads your own "
+            "tree if it resolves; main:: is the shared checkout and may "
+            "lag your branch. Repo prose: get(kind='md', "
+            "id='main/docs/...'). Your task's comments: get(kind='todo', "
+            "id='td<id>', view='comments'). Skills: search(kind='skill', "
+            "q='<task>'). Gripes: search(kind='gripe', q='STATUS:open') "
+            "and get(kind='gripe', id='gr<id>') on any gripe to pick one. "
+            "Writes: put(kind='todo', id='td<id>', text='…') comments on "
+            "your own todo and put(kind='gripe', id='gr<id>', text='…') "
+            "on any gripe; tag(kind=..., id=..., add=[...]) with "
+            "STATUS: or claimed-by: values on those; and "
+            "link(kind='todo', id='td<id>', target='gr<id>', "
+            "rel='fixes') for the gripe you pick. Everything else "
+            "refuses; your hand-off is still your final message.",
+        ]
+    else:
+        return [
+            "",
+            "This lane has no precis MCP. Do not try to reach it. "
+            "Everything you want recorded goes in your final message.",
+        ]
+
+
+def _deny_lines(deny_paths: tuple[str, ...]) -> list[str]:
+    """The "Paths you may not write" section; empty for an empty set."""
+    if not deny_paths:
+        return []
+    return [
+        "",
+        "## Paths you may not write",
+        "",
+        "Do not create, edit or delete these paths by any means (Bash "
+        "included). A branch or working tree that touches one fails this "
+        "attempt and reopens the todo. If the work needs a change there, "
+        "stop and say so in your final message.",
+        "",
+        *[f"- `{p}`" for p in deny_paths],
+    ]
+
+
+def _task_lines(body: str, latest: str | None, target: str | None) -> list[str]:
+    """The task itself: the todo body, the newest ``brief:``/``handoff:``
+    comment and a reviewer's inlined target."""
+    lines = [
+        "",
+        "## Brief",
+        "",
+        body.strip() or "(the todo has no body; the title is the brief)",
+    ]
+    if latest:
+        lines += ["", "## Latest brief / handoff on the todo", "", latest.strip()]
+    if target:
+        lines += ["", "## Review target", "", target.strip()]
+    return lines
+
+
+def _devin_leave_edits(todo_id: int) -> str:
+    """The Devin contract's worktree-only, leave-the-edits sentences."""
+    return (
+        "Make the change only inside this slice worktree; cwd is pinned "
+        "and --sandbox is off by default (operator opt-in: "
+        "PRECIS_DEVIN_SANDBOX=1). Do not commit, push, land or "
+        "open a PR. Leave the edits in the working tree and write a "
+        f"conventional subject (`type(scope): what (td{todo_id})`) and "
+        "short body to `scratch/commit-msg.txt`."
+    )
+
+
+def _devin_verdict_text(base: str) -> str:
+    """The Devin final-message verdicts and the ``tests:`` marker poll
+    reads (:func:`tests_ran`, the first-line ``validated:``/``no-op:``/
+    ``moot:`` forms)."""
+    return (
+        "If no change is needed, make the first line of your final "
+        "output `validated: <why>` when the requested check passed, "
+        "`no-op: <why>` when the plan should continue without a change, "
+        "or `moot: gr<N> already fixed by <sha>` when its reason is gone. "
+        f"The SHA must name the fixing commit on origin/{base}; a bare "
+        "moot is refused for code builds. Supplied test files alone "
+        "must not hide that verdict in a worker commit. A silent exit "
+        "with no changes is a failed attempt. "
+        "Otherwise report what changed and what remains. End with "
+        "`tests: ran` or `tests: NOT RUN — <why>`; the harness still "
+        "runs the supplied tests itself before committing."
+    )
+
+
+_DEVIN_HANDOFF_TEXT = (
+    "Your final message is posted on the todo as the `handoff:` comment "
+    "the next session starts from: what changed, what is left, and "
+    "what you would do next. A test that asserts a wrong spec is code: "
+    "fix it in this build and name the test, the change and why in the "
+    "handoff — no ask (gr674030)."
+)
+
+_BUILDER_HANDOFF_TEXT = (
+    "Your final message is posted on the todo as the `handoff:` comment the "
+    "next session starts from: what you committed, what is left, what you "
+    "would do next. A test that asserts a wrong spec is code: fix it in this "
+    "build and name the test, the change and why in the handoff — no ask "
+    "(gr674030)."
+)
+
+#: The builder's ``tests:`` line instruction (:func:`tests_ran` reads it).
+_TESTS_MARKER_TEXT = (
+    "Fix every report and re-run until all are clean — do not commit "
+    "while any step is red. End your final message with exactly one "
+    "line naming the gate's outcome: `tests: ran`, or `tests: NOT RUN "
+    "— <which step, why>` when a step could not run in this sandbox "
+    "(a first-line `validated:`/`no-op:`/`moot:` verdict still comes "
+    "first)."
+)
+
+
+def _commit_steps(todo_id: int, first: int) -> tuple[str, str]:
+    """The builder's numbered commit step and clean-tree step, numbered
+    from ``first``: the ``subject:`` line, ``scratch/commit-msg.txt`` and
+    the worker-commits fallback for a sandbox that refuses ``git commit``."""
+    return (
+        f"{first}. Commit on `{slice_branch(todo_id)}` with a conventional "
+        f"subject (`type(scope): what (td{todo_id})`, at most 72 bytes), "
+        "message via `git commit -F scratch/commit-msg.txt`. One commit "
+        "is best: the lander squashes the branch under that subject — or "
+        "under a `subject: type(scope): what` line in your final message "
+        "when you state one (it wins over every commit subject).",
+        f"{first + 1}. Leave the working tree clean (`git status --porcelain` "
+        "prints nothing). If your sandbox refuses `git commit` (a "
+        "read-only `.git`), stop with the changes in the working tree and "
+        "`scratch/commit-msg.txt` written: the worker commits them with "
+        "that message after you exit.",
+    )
+
+
+def _builder_verdict_text(base: str) -> str:
+    """The builder's commit-less exits: the first-line ``validated:``/
+    ``no-op:``/``moot:`` verdicts poll reads."""
+    return (
+        "Nothing to commit on purpose? Say so as the FIRST line of your final "
+        "message: `validated: <why>` when the check you were asked for passed, "
+        "`no-op: <why>` when there is nothing to change and the plan should go "
+        "on, `moot: gr<N> already fixed by <sha>` when the plan's reason is "
+        f"gone — `<sha>` the commit on origin/{base} that fixed it, whose own "
+        "message names the gripe; a bare `moot: <why>` is not accepted for a "
+        "code build (it goes to rescue). The todo then closes done. Any other "
+        "commit-less exit counts as a failed attempt and is retried."
+    )
+
+
 def render_brief(
     *,
     todo_id: int,
@@ -1600,9 +3043,18 @@ def render_brief(
     target: str | None = None,
     adapter: str | None = None,
     base: str = "main",
+    profile: _lanes.RepoProfile | None = None,
+    review: Mapping[str, Any] | None = None,
+    task_class: str = "code",
 ) -> str:
     """The prompt a slice session starts from. ``base`` is the branch the
     worktree is cut from (``main``, or a release fix's ``release/r<N>``).
+    ``profile`` (td659522) names the repo: ``None`` or the default repo's
+    profile renders the precis brief below; any other profile renders
+    :func:`_render_repo_brief` (builder and Devin variants only — a
+    generator brief for another repo raises ``ValueError``, except the
+    reviewer of a profile whose ``reviewer`` is set: its brief is
+    :func:`_render_repo_review_brief` over the ``review`` keywords).
     Ends with the commit-and-
     hand-off instruction (the ``land_slice`` job lands the branch); a
     ``generator`` brief ends with the child-todo instruction instead (the
@@ -1616,91 +3068,74 @@ def render_brief(
     ``read_mcp`` (:func:`_read_mcp_scope`) swaps the no-MCP paragraph for
     the scope's: ``reader`` reads only, ``triage`` also names its write
     set (gr574082)."""
-    name = slice_name(todo_id)
-    lines = [
-        f"# Slice td{todo_id}: {title.strip()}",
-        "",
-        f"You are a headless build session on lane `{lane}` "
-        f"(model `{model or 'account default'}`, "
-        f"effort `{effort}`), in git worktree `{name}` on branch "
-        f"`{slice_branch(todo_id)}`, cut from `origin/{base}`. You get one "
-        "turn: when your turn ends the session ends and any subagents "
-        "still running are killed with it — never start a background "
-        "subagent and wait for it; do your research in the foreground, "
-        "then finish the work in this same turn (gr571311: a builder "
-        "that yielded to wait on forks lost the whole session). Work "
-        "only in this worktree. Read CLAUDE.md and AGENTS.md here before "
+    if profile is not None and profile.name != _lanes.DEFAULT_REPO:
+        if generator and role == "reviewer" and profile.reviewer:
+            if review is None:
+                raise ValueError(
+                    "render_brief: a repo reviewer's brief needs review=; "
+                    f"none for repo {profile.name!r}"
+                )
+            return _render_repo_review_brief(
+                profile, todo_id=todo_id, body=body, latest=latest, **review
+            )
+        if generator:
+            raise ValueError(
+                "render_brief: generator briefs are precis-only; "
+                f"no brief for repo {profile.name!r}"
+            )
+        return _render_repo_brief(
+            profile,
+            todo_id=todo_id,
+            title=title,
+            body=body,
+            latest=latest,
+            lane=lane,
+            model=model,
+            effort=effort,
+            mcp=mcp,
+            read_mcp=read_mcp,
+            deny_paths=deny_paths,
+            target=target,
+            adapter=adapter,
+        )
+    lines = _brief_intro(todo_id, title, lane, model, effort, base, adapter)
+    lines[-1] += (
+        " Read CLAUDE.md and AGENTS.md here before "
         "editing; their rules bind you — except the round rule: a slice "
         "is not a round peer, so never run `scripts/round` (any verb); "
-        "the mark belongs to the coordinator.",
-    ]
+        "the mark belongs to the coordinator."
+    )
     if not mcp:
-        if read_mcp == "reader":
-            lines += [
-                "",
-                "This lane has a read-only precis MCP (get and search). "
-                "Before grepping or reading a whole .py file: "
-                "search(kind='python', mode='pattern', q='<name>'), then "
-                "get(kind='python', id='main::<qualname>', view='source'). "
-                "wt-slice-td<id>::<qualname> reads your own tree if it "
-                "resolves; main:: is the shared checkout and may lag your "
-                "branch. Repo prose: get(kind='md', id='main/docs/...'). "
-                "Your task's comments: get(kind='todo', id='td<id>', "
-                "view='comments'). Skills: search(kind='skill', q='<task>'). "
-                "Nothing else is served and nothing is writable; your "
-                "hand-off is still your final message.",
-            ]
-        elif read_mcp == "triage":
-            lines += [
-                "",
-                "This lane's precis MCP is scoped to structure reads and "
-                "gripe triage. Reads: search(kind='python', mode='pattern', "
-                "q='<name>'), then get(kind='python', id='main::<qualname>', "
-                "view='source'); wt-slice-td<id>::<qualname> reads your own "
-                "tree if it resolves; main:: is the shared checkout and may "
-                "lag your branch. Repo prose: get(kind='md', "
-                "id='main/docs/...'). Your task's comments: get(kind='todo', "
-                "id='td<id>', view='comments'). Skills: search(kind='skill', "
-                "q='<task>'). Gripes: search(kind='gripe', q='STATUS:open') "
-                "and get(kind='gripe', id='gr<id>') on any gripe to pick one. "
-                "Writes: put(kind='todo', id='td<id>', text='…') comments on "
-                "your own todo and put(kind='gripe', id='gr<id>', text='…') "
-                "on any gripe; tag(kind=..., id=..., add=[...]) with "
-                "STATUS: or claimed-by: values on those; and "
-                "link(kind='todo', id='td<id>', target='gr<id>', "
-                "rel='fixes') for the gripe you pick. Everything else "
-                "refuses; your hand-off is still your final message.",
-            ]
-        else:
-            lines += [
-                "",
-                "This lane has no precis MCP. Do not try to reach it. "
-                "Everything you want recorded goes in your final message.",
-            ]
+        lines += _no_mcp_lines(read_mcp)
     if deny_paths is None:
         deny_paths = _lanes.deny_paths_for(None)
-    if deny_paths:
+    lines += _deny_lines(deny_paths)
+    lines += _task_lines(body, latest, target)
+    if task_class == "skill":
         lines += [
             "",
-            "## Paths you may not write",
-            "",
-            "Do not create, edit or delete these paths by any means (Bash "
-            "included). A branch or working tree that touches one fails this "
-            "attempt and reopens the todo. If the work needs a change there, "
-            "stop and say so in your final message.",
-            "",
-            *[f"- `{p}`" for p in deny_paths],
+            "## Skill editor",
+            "Only write src/precis/data/skills/** and src/precis/data/skill-evals/**. "
+            "Read the landed code diff and every named skill. Read the live tool and "
+            "run each example call in each touched skill; reuse the extractor in "
+            "tests/test_skill_example_drift.py. Report the literal calls run, their "
+            "results and what you fixed. Edit only what diverges. Never edit a "
+            "governs:factory skill: flag it to Reto.",
+            "Before weakening or deleting a rule, open its ruling from rulings: "
+            "frontmatter (get(kind='skill', id='<skill>', view='rulings')). "
+            "Keep only the rule in visible prose; link its ruling in frontmatter. "
+            "Only Reto may change or drop his say-so rulings (his words and date). "
+            "An incident-born ruling names its gripe and cause: loosen it only "
+            "with evidence the cause is fixed and a regression test guards it. "
+            "Flag a rule with no ruling to Reto; never silently keep or cut it.",
         ]
-    lines += [
-        "",
-        "## Brief",
-        "",
-        body.strip() or "(the todo has no body; the title is the brief)",
-    ]
-    if latest:
-        lines += ["", "## Latest brief / handoff on the todo", "", latest.strip()]
-    if target:
-        lines += ["", "## Review target", "", target.strip()]
+    if not generator:
+        lines += [
+            "",
+            "Your handoff must include `skills: none` or `skills: <id>, <id>` "
+            "naming skills this change makes wrong. Put it before the final tests: "
+            "line. A successful land schedules their skill-editor follow-up.",
+        ]
     if _MIGRATION_PATH_RE.search(
         "\n".join(t for t in (body, latest or "", target or "") if t)
     ):
@@ -1728,29 +3163,14 @@ def render_brief(
             "the land runs its normal --checked gate. Non-code and no-commit "
             "nodes are exempt from the worker acceptance-test gate.",
             "",
-            "Make the change only inside this slice worktree; cwd is pinned "
-            "and --sandbox is off by default (operator opt-in: "
-            "PRECIS_DEVIN_SANDBOX=1). Do not commit, push, land or "
-            "open a PR. Leave the edits in the working tree and write a "
-            f"conventional subject (`type(scope): what (td{todo_id})`) and "
-            "short body to `scratch/commit-msg.txt`. Our harness runs the "
+            _devin_leave_edits(todo_id) + " Our harness runs the "
             "available supplied tests with `scripts/test <test paths>`, "
             "commits the changes if that gate passes or is absent, and "
             "hands the branch to the separate land_slice job with --checked, "
             "subject to review. Worker-run tests do not replace the "
             "lander's impacted-test rerun.",
             "",
-            "If no change is needed, make the first line of your final "
-            "output `validated: <why>` when the requested check passed, "
-            "`no-op: <why>` when the plan should continue without a change, "
-            "or `moot: gr<N> already fixed by <sha>` when its reason is gone. "
-            f"The SHA must name the fixing commit on origin/{base}; a bare "
-            "moot is refused for code builds. Supplied test files alone "
-            "must not hide that verdict in a worker commit. A silent exit "
-            "with no changes is a failed attempt. "
-            "Otherwise report what changed and what remains. End with "
-            "`tests: ran` or `tests: NOT RUN — <why>`; the harness still "
-            "runs the supplied tests itself before committing.",
+            _devin_verdict_text(base),
             "",
             "Land lint steps (the last two inspect committed work and belong "
             "to the lander after the worker commit; run the earlier checks "
@@ -1763,9 +3183,7 @@ def render_brief(
             f"you added to origin/{base}'s next free number (filename and its "
             "own header); never renumber or edit an already-landed migration.",
             "",
-            "Your final message is posted on the todo as the `handoff:` comment "
-            "the next session starts from: what changed, what is left, and "
-            "what you would do next.",
+            _DEVIN_HANDOFF_TEXT,
         ]
         return "\n".join(lines) + "\n"
     n = len(_land_lint_steps(base))
@@ -1797,44 +3215,245 @@ def render_brief(
         "duplicated or already-landed one; a merge commit on the branch is "
         "fine too, the land squashes it away.",
         "",
-        "Fix every report and re-run until all are clean — do not commit "
-        "while any step is red. End your final message with exactly one "
-        "line naming the gate's outcome: `tests: ran`, or `tests: NOT RUN "
-        "— <which step, why>` when a step could not run in this sandbox "
-        "(a first-line `validated:`/`no-op:`/`moot:` verdict still comes "
-        "first).",
+        _TESTS_MARKER_TEXT,
         "",
-        f"{n + 2}. Commit on `{slice_branch(todo_id)}` with a conventional "
-        f"subject (`type(scope): what (td{todo_id})`, at most 72 bytes), "
-        "message via `git commit -F scratch/commit-msg.txt`. One commit "
-        "is best: the lander squashes the branch under that subject — or "
-        "under a `subject: type(scope): what` line in your final message "
-        "when you state one (it wins over every commit subject).",
-        f"{n + 3}. Leave the working tree clean (`git status --porcelain` "
-        "prints nothing). If your sandbox refuses `git commit` (a "
-        "read-only `.git`), stop with the changes in the working tree and "
-        "`scratch/commit-msg.txt` written: the worker commits them with "
-        "that message after you exit.",
+        *_commit_steps(todo_id, n + 2),
         f"{n + 4}. Stop. Do not land, push, comment `landed:` or tag this "
         "todo done: once you exit cleanly, the lander lands every commit "
         "on the branch, so commit only work fit to land. Never open a pull "
         "request (`gh pr create` and friends): the factory's squash merge "
         "is the only path to main (gr570506).",
         "",
-        "Nothing to commit on purpose? Say so as the FIRST line of your final "
-        "message: `validated: <why>` when the check you were asked for passed, "
-        "`no-op: <why>` when there is nothing to change and the plan should go "
-        "on, `moot: gr<N> already fixed by <sha>` when the plan's reason is "
-        f"gone — `<sha>` the commit on origin/{base} that fixed it, whose own "
-        "message names the gripe; a bare `moot: <why>` is not accepted for a "
-        "code build (it goes to rescue). The todo then closes done. Any other "
-        "commit-less exit counts as a failed attempt and is retried.",
+        _builder_verdict_text(base),
         "",
-        "Your final message is posted on the todo as the `handoff:` comment the "
-        "next session starts from: what you committed, what is left, what you "
-        "would do next.",
+        _BUILDER_HANDOFF_TEXT,
     ]
     return "\n".join(lines) + "\n"
+
+
+#: What :func:`deny_violations` refuses on EVERY slice whatever the lane's
+#: deny list says (:data:`lanes.HUMAN_ONLY_PATHS`), in families: the
+#: brief for another repo names these without listing the ~60 globs or
+#: the precis rule files they include. ``test_repo_brief_always_denied_text``
+#: pins each family to the real set.
+_ALWAYS_DENIED_TEXT = (
+    "On every slice, whatever the list above says, the harness also refuses "
+    "any change to: credential, inventory and service-unit files under "
+    "`deploy/`; the agent-tool directories `.claude/`, `.codex/`, `.devin/` "
+    "and `.kimi-code/` (at any depth for `.claude/`); `.mcp.json`; "
+    "`scripts/hooks/`; and the agent rule files at any depth."
+)
+
+
+#: The words of ``repo_land``'s conflict handoff that mark it; the brief's
+#: one merge carve-out keys on them (``_repo_rules_lines``).
+LANDER_CONFLICT_MARK = "conflicts with origin/"
+
+
+def _lander_conflict(latest: str | None) -> bool:
+    """Whether the newest brief/handoff is a lander merge-conflict handoff."""
+    text = (latest or "").lstrip().lower()
+    return text.startswith(_LANDER_HANDOFF_PREFIX) and LANDER_CONFLICT_MARK in text
+
+
+def _repo_rules_lines(
+    profile: _lanes.RepoProfile,
+    todo_id: int,
+    devin: bool,
+    latest: str | None = None,
+) -> list[str]:
+    """The rules section of a non-default repo's brief. It binds over the
+    task text: task bodies written for precis still say to rebase on
+    ``origin/main``, bump the version or open a pull request. The one
+    merge it allows is ``git merge origin/<base>`` after a lander conflict
+    handoff (``latest``), to resolve that conflict."""
+    base = f"origin/{profile.base}"
+    finish = (
+        "Leave your edits in the working tree: the harness commits them."
+        if devin
+        else f"Commit your work on this branch (`{slice_branch(todo_id)}`) and stop."
+    )
+    if _lander_conflict(latest):
+        sync = (
+            f"- This worktree is current with `{base}`. Do not `git fetch`, "
+            f"`git pull` or rebase. The latest handoff says the lander found a "
+            f"merge conflict: run `git merge {base}` (the local ref, no fetch) "
+            "once, resolve the conflicts, and commit the merge. Never merge "
+            "anything else."
+        )
+    else:
+        sync = (
+            f"- This worktree is already current with `{base}`. Do not `git fetch`, "
+            "`git pull`, rebase or merge from origin."
+        )
+    return [
+        "",
+        f"## Rules for this repo ({profile.name}); they win over the task text",
+        "",
+        sync,
+        "- Do not push.",
+        "- Do not bump the version, edit the version line in `pyproject.toml`, "
+        "tag or release: a mechanical release job does that.",
+        "- Never open a pull request (`gh pr create` and friends).",
+        f"- {finish}",
+        "",
+        'If the task text below says otherwise (for example "rebase on '
+        f'origin/{profile.base}", "bump the version" or "open a pull '
+        'request"), this section wins.',
+    ]
+
+
+def _repo_check_lines(profile: _lanes.RepoProfile) -> list[str]:
+    """Setup, lint and test commands of a non-default repo's brief."""
+    lines: list[str] = []
+    if profile.setup_cmds:
+        lines += [
+            "",
+            "## Setup",
+            "",
+            "Run once, before anything else:",
+            "",
+            *[f"- `{c}`" for c in profile.setup_cmds],
+        ]
+    if profile.lint_cmds:
+        lines += [
+            "",
+            "## Lint",
+            "",
+            "Run each before you hand off and fix every report:",
+            "",
+            *[f"- `{c}`" for c in profile.lint_cmds],
+            "",
+            "Do not run a formatter and do not reformat code you did not "
+            "change: this repo is deliberately not auto-formatted.",
+        ]
+    if profile.test_cmds:
+        cmd = profile.test_cmds[0]
+        lines += [
+            "",
+            "## Tests",
+            "",
+            "Run the tests you added or touched with the repo's test command "
+            f"narrowed to those paths (`{cmd} <paths>`). Do not run the whole "
+            "suite: the lander runs it later.",
+        ]
+    return lines
+
+
+def _render_repo_brief(
+    profile: _lanes.RepoProfile,
+    *,
+    todo_id: int,
+    title: str,
+    body: str,
+    latest: str | None,
+    lane: str,
+    model: str | None,
+    effort: str,
+    mcp: bool = True,
+    read_mcp: str | None = None,
+    deny_paths: tuple[str, ...] | None = None,
+    target: str | None = None,
+    adapter: str | None = None,
+) -> str:
+    """The prompt for a slice in a repo other than the default (td659522),
+    from the repo's :class:`lanes.RepoProfile`: no precis convention docs,
+    scripts or lint guards, the repo's own setup/lint/test commands, and a
+    rules section that wins over the task text. Builder and Devin
+    (``adapter == "devin_tree"``) variants only. The task itself and the
+    final-message contract poll parses (the ``subject:`` line, the
+    ``tests:`` marker, the ``validated:``/``no-op:``/``moot:`` verdicts,
+    the ``handoff:`` comment) come from the helpers
+    :func:`render_brief` uses. The read-MCP paragraph is kept only for a
+    profile whose tree carries the precis MCP. ``deny_paths`` is the
+    lane's list, used only when the profile carries none."""
+    base = profile.base
+    devin = adapter == "devin_tree"
+    lines = _brief_intro(
+        todo_id, title, lane, model, effort, base, adapter, foreign=True
+    )
+    lines[-1] += f" This is the `{profile.name}` repository."
+    if profile.read_first:
+        lines[-1] += (
+            " Before editing, read "
+            + ", ".join(f"`{f}`" for f in profile.read_first)
+            + " here."
+        )
+    if profile.mcp and not mcp:
+        lines += _no_mcp_lines(read_mcp)
+    lines += _repo_rules_lines(profile, todo_id, devin, latest)
+    lines += _repo_check_lines(profile)
+    deny = profile.deny_paths
+    if deny is None:
+        deny = deny_paths if deny_paths is not None else _lanes.deny_paths_for(None)
+    lines += _deny_lines(deny)
+    lines += ["", _ALWAYS_DENIED_TEXT]
+    lines += _task_lines(body, latest, target)
+    if devin:
+        lines += [
+            "",
+            "## Finishing contract (overrides conflicting task instructions)",
+            "",
+            "Supplied test files, if any, are already installed in this "
+            "worktree: use them as acceptance criteria and do not weaken "
+            "them.",
+            "",
+            _devin_leave_edits(todo_id)
+            + " Run lint and the tests you touched yourself; our harness runs "
+            "no tests here. It commits the changes and hands the branch to "
+            "the separate lander, which runs the full suite, subject to "
+            "review.",
+            "",
+            _devin_verdict_text(base),
+            "",
+            _DEVIN_HANDOFF_TEXT,
+        ]
+        return "\n".join(lines) + "\n"
+    commit, clean = _commit_steps(todo_id, 1)
+    lines += [
+        "",
+        "## When done: commit on the branch and hand off",
+        "",
+        _TESTS_MARKER_TEXT,
+        "",
+        commit,
+        clean,
+        "3. Stop. Do not land, push, comment `landed:` or tag this todo done: "
+        "once you exit cleanly, the lander lands every commit on the branch, "
+        "so commit only work fit to land.",
+        "",
+        _builder_verdict_text(base),
+        "",
+        _BUILDER_HANDOFF_TEXT,
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _outranks_brief(handoff: str) -> bool:
+    """A ``handoff:`` the machine wrote as the next session's instruction:
+    the lander's failure note, or the tick's pre-land review hand-back.
+    Neither is a dead session's last message, so each steers the retry
+    like a ``brief:`` does (:func:`_brief_parts`)."""
+    from precis.plans.templates import PRELAND_HANDBACK_MARK
+
+    lowered = handoff.lower()
+    return lowered.startswith(_LANDER_HANDOFF_PREFIX) or (
+        lowered.startswith(_REVIEW_HANDBACK_PREFIX) and PRELAND_HANDBACK_MARK in handoff
+    )
+
+
+def _wants_session(steer: str) -> bool:
+    """The newest steer asks for a session, not another land of the same
+    head: :func:`_outranks_brief`'s pair, or the tick's mechanical-red
+    ``brief:`` (gr705291). That brief is the tick's instruction to change
+    the branch (rebase, renumber, fix the named lint), posted after the
+    lander's handoff, so like that handoff it wants the rebuild."""
+    from precis.plans.templates import MECH_BRIEF_MARK
+
+    if _outranks_brief(steer):
+        return True
+    text = steer.lstrip()
+    return text.lower().startswith("brief:") and MECH_BRIEF_MARK in text
 
 
 def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
@@ -1847,35 +3466,74 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
     shadow the real instructions for the retry. A lander handoff
     (:data:`_LANDER_HANDOFF_PREFIX`) is different: it is the failure
     instruction the reopened todo exists to act on, so it keeps winning
-    by recency."""
+    by recency. So does the tick's pre-land review hand-back (gr684815):
+    shadowed by an older ``brief:``, the rebuild never saw the finding
+    and the reviewer returned the same FIX every round — and the
+    ahead-branch route's rebuild check never fired, so the rejected
+    branch routed back into the same open review unbuilt (gr674785
+    review, td675373). A dead session's handoff yields to whichever of
+    those steers is newest.
+
+    gr680813: on a reviewer node an unmarked ``handoff: review: …``
+    comment is the node's own verdict — its last run's final message,
+    not a steer for the next run. Fed back as the brief, a re-released
+    pre-land reviewer repeated it on findings the pushed rebuild
+    already fixed (td677548 re-judged resolved lines to attempt:3).
+    The tick's marked hand-back lands on the builder todo, never here,
+    so every unmarked ``handoff: review:`` a reviewer carries is its
+    own output and drops out of the scan."""
+    ref = store.get_ref(kind="todo", id=todo_id)
+    meta = ref.meta if ref is not None else None
+    reviewer = node_kind(meta) == "generator" and _generate_role(meta) == "reviewer"
     chunks = _todo_chunks(store, todo_id)
     body = "\n\n".join(
         str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text
     )
+    latest = _select_slice_brief(
+        (
+            (int(c.ord), str(c.text or ""))
+            for c in chunks
+            if c.chunk_kind == _COMMENT_KIND
+        ),
+        reviewer=reviewer,
+        open_tags=lambda: _open_tag_values(store, todo_id),
+    )
+    return body, latest
+
+
+def _select_slice_brief(
+    comments: Iterable[tuple[int, str]],
+    *,
+    reviewer: bool,
+    open_tags: Callable[[], Iterable[str]],
+) -> str | None:
+    """Select the brief from ordered comment positions and retry tags."""
     latest: str | None = None
     latest_ord = -1
-    brief: str | None = None
-    brief_ord = -1
-    for c in chunks:
-        if c.chunk_kind != _COMMENT_KIND:
-            continue
-        text = str(c.text or "").lstrip()
+    steer: str | None = None
+    steer_ord = -1
+    for ord_, comment in comments:
+        text = comment.lstrip()
         lowered = text.lower()
         if not lowered.startswith(_BRIEF_PREFIXES):
             continue
-        if int(c.ord) > latest_ord:
-            latest, latest_ord = text, int(c.ord)
-        if lowered.startswith("brief:") and int(c.ord) > brief_ord:
-            brief, brief_ord = text, int(c.ord)
+        if (
+            reviewer
+            and lowered.startswith(_REVIEW_HANDBACK_PREFIX)
+            and not _outranks_brief(text)
+        ):
+            continue
+        if ord_ > latest_ord:
+            latest, latest_ord = text, ord_
+        if (lowered.startswith("brief:") or _outranks_brief(text)) and ord_ > steer_ord:
+            steer, steer_ord = text, ord_
     if (
-        latest is not None
-        and latest_ord > brief_ord
-        and brief is not None
-        and not latest.lower().startswith(_LANDER_HANDOFF_PREFIX)
-        and any(_ATTEMPT_RE.match(v) for v in _open_tag_values(store, todo_id))
+        steer is not None
+        and latest_ord > steer_ord
+        and any(_ATTEMPT_RE.match(v) for v in open_tags())
     ):
-        latest = brief
-    return body, latest
+        latest = steer
+    return latest
 
 
 # ── Submit gate ────────────────────────────────────────────────────
@@ -1892,12 +3550,117 @@ def _todo_rejection(store: Any, todo_id: Any) -> str | None:
             f"run_slice: todo {todo_id} not found (missing or retired); "
             "next: pass the id of a live slice todo"
         )
-    status = _todo_status(store, todo_id)
-    if status in _CLOSED_STATUSES:
+    status = _terminal_status(store, todo_id)
+    if status is not None:
         return (
             f"run_slice: todo {todo_id} is closed (STATUS:{status}); next: "
             f"reopen it with tag(kind='todo', id={todo_id}, add=['STATUS:open']) "
             "or launch another slice"
+        )
+    return None
+
+
+def slice_repos(store: Any, todo_id: int) -> list[str]:
+    """The ``repo:`` values governing a slice: its todo's own, else the
+    nearest tagged ancestor's — a parent tagged for a repo covers its
+    subtree, the reach ``plan_dispatch`` gives the same tag."""
+    seen: set[int] = set()
+    cur: int | None = todo_id
+    while cur is not None and cur not in seen:
+        seen.add(cur)
+        repos = _lanes.repo_tags(store.tags_for(cur))
+        if repos:
+            return repos
+        ref = store.get_ref(kind="todo", id=cur)
+        cur = getattr(ref, "parent_id", None)
+    return []
+
+
+def _repo_rejection(store: Any, todo_id: Any) -> str | None:
+    """td659522 step 0: a slice builds in a precis worktree, so a todo
+    tagged for another repo is refused until that repo has a build
+    profile and ``factory.open_repos`` lists it."""
+    if store is None or not isinstance(todo_id, int):
+        return None
+    problem = _lanes.repo_refusal(slice_repos(store, todo_id), store)
+    return None if problem is None else f"run_slice: todo {todo_id}: {problem}"
+
+
+def _slice_deny(store: Any, repo: str, lane: _lanes.Lane) -> tuple[str, ...]:
+    """The write-deny globs of a slice in ``repo`` (td659522): the lane's
+    ``deny_write_paths`` for the default repo (and for a profile that sets
+    none), else the profile's own ``deny_paths``. Governed precis skills
+    are not added here; they are precis-only and ``submit`` adds them."""
+    del store
+    profile = _lanes.repo_profile(repo)
+    if repo != _lanes.DEFAULT_REPO and profile is not None:
+        if profile.deny_paths is not None:
+            return profile.deny_paths
+    return lane.deny_write_paths
+
+
+def _repo_reviewer(profile: _lanes.RepoProfile | None, meta: Any) -> bool:
+    """A reviewer node of a non-default repo whose profile admits one
+    (td659522 step 5; ``RepoProfile.reviewer``)."""
+    return (
+        profile is not None
+        and profile.name != _lanes.DEFAULT_REPO
+        and profile.reviewer
+        and node_kind(meta) == "generator"
+        and _generate_role(meta) == "reviewer"
+    )
+
+
+def _repo_param_rejection(
+    store: Any, todo_id: Any, repo: str, *, target: bool = True
+) -> str | None:
+    """td659522 step 1: ``params.repo`` must name a profile, equal the repo
+    the todo resolves to (:func:`slice_repos`; no tag is the default), and a
+    non-default repo takes no generator node, except the reviewer of a
+    profile that sets ``reviewer`` (step 5): it also needs a review target
+    that resolves (:func:`_review_target_repo`; the refusal ends in
+    ``next:``), unless ``target`` is false (``validate_submit`` and the
+    claim-time guard in ``submit``: the launch checks it, where a refusal
+    burns no attempt and is backed off). ``store=None`` checks only
+    that the repo is known."""
+    if _lanes.repo_profile(repo) is None:
+        return (
+            f"run_slice: unknown params.repo {repo!r} "
+            f"(profiles: {', '.join(_lanes.REPO_PROFILES)}); "
+            "next: drop it or name a repo with a build profile"
+        )
+    if store is None or not isinstance(todo_id, int):
+        return None
+    tagged = slice_repos(store, todo_id)
+    resolved = ",".join(tagged) or _lanes.DEFAULT_REPO
+    if resolved != repo:
+        hint = f"resubmit with params.repo={resolved!r}"
+        if resolved == _lanes.DEFAULT_REPO:
+            hint = "drop params.repo"
+        return (
+            f"run_slice: todo {todo_id} resolves to repo {resolved!r} but "
+            f"params.repo is {repo!r}; next: {hint}"
+        )
+    ref = store.get_ref(kind="todo", id=todo_id)
+    if (
+        repo != _lanes.DEFAULT_REPO
+        and ref is not None
+        and node_kind(ref.meta) == "generator"
+    ):
+        profile = _lanes.repo_profile(repo)
+        if _repo_reviewer(profile, ref.meta):
+            assert profile is not None
+            if not target:
+                return None
+            got = _review_target_repo(store, ref.meta, profile)
+            if isinstance(got, str):
+                return f"run_slice: todo {todo_id}: {got}"
+            return None
+        return (
+            f"run_slice: todo {todo_id}: generator nodes are precis-only; in "
+            f"repo {repo!r} only a reviewer runs, and only when its profile "
+            "sets reviewer (td659522 step 5); next: build it in the precis "
+            "repo or split out a builder node"
         )
     return None
 
@@ -1909,7 +3672,8 @@ def validate_submit(
     params: dict[str, Any],
 ) -> str | None:
     """Submit-time gate. Refuses while ``PRECIS_FACTORY=off``, on a
-    missing/closed todo, and on an unknown or disabled ``params.lane``.
+    missing/closed todo, on a todo tagged for a repo the factory cannot
+    build in, and on an unknown or disabled ``params.lane``.
 
     ``gripe_id`` is the link target (the todo for ``rel='builds'``); the
     slice is ``params.todo_id`` either way. ``store=None`` (tests) skips the
@@ -1922,6 +3686,20 @@ def validate_submit(
             "on the worker host to launch slices"
         )
     reason = _todo_rejection(store, params.get("todo_id"))
+    if reason is not None:
+        return reason
+    reason = _repo_rejection(store, params.get("todo_id"))
+    if reason is not None:
+        return reason
+    # td659522 step 5: a second-repo reviewer's target is not checked here.
+    # A refusal at submit mints no job, so it would earn no backoff, no
+    # attempt-free cap and no ask: the dispatcher would re-note it every
+    # tick and the release behind the reviewer would wait forever. submit's
+    # ``_cut_review_tree`` checks it at launch, where a refusal is an
+    # attempt-free ``_ReviewRefusal`` under the cap.
+    reason = _repo_param_rejection(
+        store, params.get("todo_id"), job_repo(params), target=False
+    )
     if reason is not None:
         return reason
     reason = _acceptance_artifacts_rejection(params.get("acceptance_tests", {}))
@@ -1971,11 +3749,24 @@ def _adopt_legacy_branch(root: Path, todo_id: int) -> None:
         )
 
 
+#: ``meta.attempt_free`` of a second-repo reviewer that could not launch (the
+#: repo, its review target or its tree was not ready): no attempt is spent.
+REVIEW_WAIT_KEY = "review-wait"
+
+
+class _ReviewRefusal(RuntimeError):
+    """A second-repo reviewer's pre-launch refusal (td659522 step 5); the
+    text is a one-sentence reason ending in ``next:``. Submit gives the
+    lease back with ``meta.attempt_free = "review-wait"``."""
+
+
 class _IndexLockWait(RuntimeError):
     """A reused slice tree's ``index.lock`` that a live (or unjudgeable)
-    git holds: an infra wait, not the build's failure (gr650484). Submit
-    gives the lease back with ``meta.attempt_free = "index-lock"``, so
-    no ``attempt:<n>`` and no ladder rung is spent on it."""
+    git still holds past the brief wait (gr650484): an infra wait, not
+    the build's failure. Submit gives the lease back with
+    ``meta.attempt_free = "index-lock"``, so no ``attempt:<n>`` and no
+    ladder rung is spent on it; the tick backs off a sustained run of
+    identical waits instead of re-minting every pass (gr662077)."""
 
 
 def _git_or_raise(args: list[str], tree: Path) -> None:
@@ -1997,10 +3788,12 @@ def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
     (:func:`land_slice._index_lock_state`, scripts/reap-index-locks'
     rule): provably dead is removed with a job_event line — the judged
     inode/mtime rides to the unlink so a lock replaced after the verdict
-    is never unlinked; young, held open, a live git in the tree,
-    unjudgeable, or a mismatched replacement is kept and raises
-    :class:`_IndexLockWait`. No tree yet, or no gitdir git will name:
-    nothing to clear."""
+    is never unlinked. A live or unjudgeable lock gets the brief
+    :func:`land_slice.index_lock_wait_s` wait first (gr662077): the
+    previous attempt's own git often still holds the lock when the retry
+    lands, and finishing it beats bouncing back to the tick — only a
+    lock still held past the wait raises :class:`_IndexLockWait`. No
+    tree yet, or no gitdir git will name: nothing to clear."""
     if not tree.exists():
         return
     # land_slice imports this module at load time; the lazy import keeps
@@ -2011,15 +3804,27 @@ def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
     if gitdir is None:
         return
     lock = gitdir / "index.lock"
-    state, judged = _ls._index_lock_state(lock, tree)
-    if state == "stale" and judged is not None:
-        _ls._reap_index_lock(ctx, lock, judged, who=NAME)
-    if lock.exists():
-        raise _IndexLockWait(
-            f"index.lock {lock} is kept — a live git holds it, it is younger "
-            f"than {_ls.index_lock_stale_s():.0f}s, or its holder cannot be "
-            "ruled out; the reuse checkout waits for it"
-        )
+    deadline = time.monotonic() + _ls.index_lock_wait_s()
+    while True:
+        state, judged = _ls._index_lock_state(lock, tree)
+        if state == "absent":
+            return
+        if (
+            state == "stale"
+            and judged is not None
+            and _ls._reap_index_lock(ctx, lock, judged, who=NAME)
+        ):
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _IndexLockWait(
+                f"index.lock {lock} was still held after "
+                f"{_ls.index_lock_wait_s():.0f}s — a live git owns the "
+                "checkout, it is younger than "
+                f"{_ls.index_lock_stale_s():.0f}s, or its holder cannot be "
+                "ruled out; the reuse checkout waits for it"
+            )
+        time.sleep(min(1.0, remaining))
 
 
 def _reset_reused_worktree(tree: Path, branch: str) -> None:
@@ -2049,7 +3854,224 @@ def _reset_reused_worktree(tree: Path, branch: str) -> None:
     _git(["worktree", "prune"], tree)
 
 
-def _ensure_worktree(root: Path, todo_id: int, base: str = "main") -> Path:
+#: Env vars a credentialed git needs besides PATH and HOME: locale, the
+#: TLS trust roots and the proxy a host may point git at. Nothing else of
+#: the worker's environment (DSN, tokens, session variables) reaches the
+#: child.
+_GIT_AUTH_PASSTHROUGH: tuple[str, ...] = (
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "GIT_SSL_CAINFO",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+)
+
+
+def _ensure_info_exclude(root: Path, lines: tuple[str, ...]) -> None:
+    """Make each of ``lines`` present in the clone's ``info/exclude`` under
+    git's common dir (so a linked worktree of ``root`` works too). Appends
+    only the missing ones, keeps existing content, creates the file and
+    ``info/`` when absent; idempotent."""
+    if not lines:
+        return
+    proc = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(
+            f"{root} is not a git checkout (git: {proc.stderr.strip()[:200]}); "
+            "next: point the repo's clone path at a git checkout"
+        )
+    path = Path(proc.stdout.strip()) / "info" / "exclude"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    have = {ln.strip() for ln in text.splitlines()}
+    missing = [ln for ln in lines if ln.strip() not in have]
+    if not missing:
+        return
+    sep = "" if not text or text.endswith("\n") else "\n"
+    path.write_text(text + sep + "\n".join(missing) + "\n", encoding="utf-8")
+
+
+_HEX40 = re.compile(r"[0-9a-f]{40}")
+
+
+def pinned_git_rev(lock_text: str, package: str) -> str | None:
+    """The commit sha a ``uv.lock`` pins for ``package`` when its source is
+    a git source (``source = { git = "<url>?rev=<x>#<sha>" }``, the sha is
+    the fragment). ``None`` when the package is absent, not a git source,
+    carries no 40-hex fragment, or the text does not parse."""
+    try:
+        data = tomllib.loads(lock_text)
+    except tomllib.TOMLDecodeError:
+        return None
+    for pkg in data.get("package", []):
+        if not isinstance(pkg, dict) or pkg.get("name") != package:
+            continue
+        source = pkg.get("source")
+        url = source.get("git") if isinstance(source, dict) else None
+        if not isinstance(url, str) or "#" not in url:
+            continue
+        sha = url.rsplit("#", 1)[1].strip()
+        if _HEX40.fullmatch(sha):
+            return sha
+    return None
+
+
+def _norm_remote(url: str) -> str:
+    """``url`` without a trailing ``/`` and ``.git``, for comparing remotes."""
+    url = url.strip().rstrip("/")
+    return url[:-4] if url.endswith(".git") else url
+
+
+def fetch_base_tip(profile: _lanes.RepoProfile, root: Path) -> str | None:
+    """Fetch ``profile.base`` of a private repo under the factory credential
+    and return its tip sha, with ``refs/remotes/origin/<base>`` in the clone
+    at ``root`` moved to it. ``None`` on any failure.
+
+    No credential-bearing git runs inside the clone, whose config a session
+    can write: :func:`factory_git_mirror.fetch_ref_into` fetches the
+    profile's remote constant in a fresh ops gitdir under the precis
+    checkout's scratch, checks the tip against the ``ls-remote`` oracle, and
+    moves the ref in with a credential-free local push. Callers use the
+    returned sha, not the tracking ref a session could rewrite afterwards
+    (the second-repo lander squashes onto it and pushes from it)."""
+    common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
+    if common.returncode != 0 or not common.stdout.strip():
+        return None
+    env = _factory_git.git_auth_env(base=_git_env())
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return _factory_git_mirror.fetch_ref_into(
+        root,
+        profile.remote,
+        profile.base,
+        f"refs/remotes/origin/{profile.base}",
+        ops_parent=_factory_git_mirror.mirror_root(slice_root()),
+        env=env,
+        object_dirs=(Path(common.stdout.strip()) / "objects",),
+    )
+
+
+def _prepare_repo(profile: _lanes.RepoProfile, root: Path) -> str | None:
+    """:func:`_prepare_repo_tip`'s refusal alone: ``None`` when ready."""
+    return _prepare_repo_tip(profile, root)[0]
+
+
+def _prepare_repo_tip(
+    profile: _lanes.RepoProfile, root: Path
+) -> tuple[str | None, str | None]:
+    """Ready a non-default repo's host clone before a worktree is cut.
+    ``(None, tip)`` when ready, else ``(refusal, None)``: a one-sentence
+    refusal ending in ``next:`` (expected refusals do not raise). ``tip`` is
+    the fetched base tip sha, so a launch that needs it (a second-repo
+    reviewer's tree) fetches once; ``None`` when a public clone's tracking
+    ref cannot be read back after its fetch. In order: ``root`` is a
+    checkout whose ``origin`` is ``profile.remote`` (the worker never clones; userinfo in
+    the URL refuses); the profile's ``exclude`` lines are in
+    ``info/exclude``; ``origin/<base>`` is fetched (under the credential for
+    a private repo); and, when ``profile.pin`` is set, the git rev the
+    precis ``origin/main`` lockfile pins for the package is an ancestor of
+    ``origin/<base>``. Any non-zero ``merge-base`` exit refuses: an unknown
+    rev and a rev off the base both fail closed."""
+    name = profile.name
+    top = _git(["rev-parse", "--show-toplevel"], root) if root.is_dir() else None
+    if (
+        top is None
+        or top.returncode != 0
+        or Path(top.stdout.strip()).resolve() != root.resolve()
+    ):
+        return (
+            f"{root} is not a git checkout of repo '{name}'; "
+            "next: clone it there, the worker never clones",
+            None,
+        )
+    got = _git(["remote", "get-url", "origin"], root)
+    url = got.stdout.strip() if got.returncode == 0 else ""
+    if not url or "@" in url or _norm_remote(url) != _norm_remote(profile.remote):
+        return (
+            f"origin of the '{name}' clone at {root} is not {profile.remote} "
+            "or carries userinfo; next: git remote set-url origin to that "
+            "https URL without credentials",
+            None,
+        )
+    _ensure_info_exclude(root, profile.exclude)
+    tip = f"origin/{profile.base}"
+    fetched: str | None
+    if profile.private:
+        # Credentialed fetch never runs git inside the clone (a session can
+        # write its config): a fresh ops gitdir outside it fetches under the
+        # token, and a credential-free local push moves the ref in.
+        if not _factory_git.factory_git_token():
+            return (
+                f"no {_factory_git.SECRET_NAME} configured on this host, so the "
+                f"'{name}' clone cannot be fetched; next: set the factory git token",
+                None,
+            )
+        sha = fetch_base_tip(profile, root)
+        if sha is None:
+            return (
+                f"git fetch origin {profile.base} (or its oracle check) failed "
+                f"for the '{name}' repo; next: check the network and the "
+                "factory git token",
+                None,
+            )
+        # The pin check below reads the returned sha, not the tracking ref
+        # a session could rewrite after the fetch.
+        tip = fetched = sha
+    else:
+        # An explicit refspec: the tracking ref moves whatever fetch refspec
+        # the clone's config carries.
+        base_ref = f"+refs/heads/{profile.base}:refs/remotes/origin/{profile.base}"
+        fetch = _git(["fetch", "origin", base_ref], root)
+        if fetch.returncode != 0:
+            tail = " ".join((fetch.stderr or "").split())[-300:]
+            return (
+                f"git fetch origin {profile.base} failed in the '{name}' clone "
+                f"({tail}); next: check the clone's network and the factory git token",
+                None,
+            )
+        # Read back at once: later checks and callers use this sha, not
+        # the tracking ref.
+        back = _git(["rev-parse", "--verify", "--quiet", f"{tip}^{{commit}}"], root)
+        out = back.stdout.strip() if back.returncode == 0 else ""
+        fetched = out if re.fullmatch(r"[0-9a-f]{40}", out) else None
+        tip = fetched or tip
+    if profile.pin is None:
+        return None, fetched
+    lockfile, package = profile.pin
+    shown = _git(["show", f"origin/main:{lockfile}"], slice_root())
+    rev = pinned_git_rev(shown.stdout, package) if shown.returncode == 0 else None
+    if rev is None:
+        return (
+            f"no git rev for '{package}' in {lockfile} on precis origin/main; "
+            "next: fix the lockfile pin or the repo profile",
+            None,
+        )
+    anc = _git(["merge-base", "--is-ancestor", rev, tip], root)
+    if anc.returncode != 0:
+        return (
+            f"the '{name}' base origin/{profile.base} is behind the pin "
+            f"{rev[:12]} (or does not know it); next: land the pinned commit "
+            f"on {profile.base} first",
+            None,
+        )
+    return None, fetched
+
+
+def _ensure_worktree(
+    root: Path,
+    todo_id: int,
+    base: str = "main",
+    *,
+    fetched: bool = False,
+    keep_wip: bool = False,
+    start_over: bool = False,
+    saved_head: str | None = None,
+    notes: list[str] | None = None,
+) -> Path:
     """Worktree ``<root>/.claude/worktrees/slice-td<id>`` on branch
     ``slice/<id>``, cut from ``origin/<base>`` — ``main``, or the
     ``release/r<N>`` a release fix lands on (``meta.land_target``,
@@ -2057,28 +4079,87 @@ def _ensure_worktree(root: Path, todo_id: int, base: str = "main") -> Path:
     tree and branch (the branch stays owned by its slice until it lands or
     is abandoned) — reset to a clean checkout of the branch tip first
     (:func:`_reset_reused_worktree`); a legacy ``slice-td<id>`` branch is
-    renamed first."""
+    renamed first. ``fetched`` skips the fetch: the caller already fetched
+    ``origin/<base>`` under the credential (:func:`_prepare_repo`).
+
+    **Park = save, resume anywhere** (:mod:`._slice_park`): with no local
+    tree the slice's pushed ``refs/factory/slice/<id>`` is fetched, and
+    when origin holds it the tree is cut from that tip, not from
+    ``origin/<base>`` — a re-armed build on another host carries on from
+    the work a failed run pushed. ``keep_wip`` (the node is parked:
+    ``meta.parked``) keeps the ``wip: parked`` snapshot on top of it, and
+    also moves a reused local tree's branch onto the snapshot
+    (``saved_head`` is ``meta.parked.head``, found locally when the same
+    host saved it); an ordinary retry resumes from the last real commit.
+    An unavailable recorded snapshot refuses launch before cleanup; only an
+    explicit start-over may discard it. Committed work is never reset away.
+    ``start_over`` (the closing answer said so) first drops the local tree and branch and origin's saved ref,
+    and cuts from ``origin/<base>``. ``notes`` collects what happened
+    (``resumed from <sha>``) for the job's events."""
     tree = worktrees_dir(root) / slice_name(todo_id)
     branch = slice_branch(todo_id)
+    note = notes if notes is not None else []
     _adopt_legacy_branch(root, todo_id)
+    if start_over:
+        note.extend(_slice_park.drop_saved(root, todo_id))
+    # Resolve before any destructive cleanup: a withheld/failed push must
+    # never turn a parked resume into a fresh build or use an older ref.
+    parked_tip = None
+    if keep_wip and not start_over:
+        if saved_head and _slice_park._HEX40.fullmatch(saved_head):
+            have = _git(["cat-file", "-e", f"{saved_head}^{{commit}}"], root)
+            if have.returncode == 0:
+                parked_tip = saved_head
+        if parked_tip is None:
+            parked_tip = _slice_park.fetch_saved(root, todo_id)
+        if parked_tip is None or (saved_head and parked_tip != saved_head):
+            raise RuntimeError(
+                f"parked snapshot {saved_head or todo_id} is unavailable; "
+                "resume on the saving host or explicitly start over"
+            )
+        saved_head = parked_tip
     if tree.exists():
         _reset_reused_worktree(tree, branch)
+        if keep_wip and not start_over:
+            moved = _slice_park.apply_saved_wip(root, tree, todo_id, saved_head)
+            if moved:
+                note.append(f"resumed from {moved}")
         return tree
     extra = [] if base == "main" else [f"+refs/heads/{base}:refs/remotes/origin/{base}"]
-    fetch = _git(["fetch", "origin", "main", *extra], root)
-    if fetch.returncode != 0:
-        raise RuntimeError(f"git fetch origin {base} failed: {fetch.stderr.strip()}")
-    add = _git(["worktree", "add", "-b", branch, str(tree), f"origin/{base}"], root)
+    if not fetched:
+        fetch = _git(["fetch", "origin", "main", *extra], root)
+        if fetch.returncode != 0:
+            raise RuntimeError(
+                f"git fetch origin {base} failed: {fetch.stderr.strip()}"
+            )
+    saved = (
+        None
+        if start_over or _branch_exists(root, branch)
+        else parked_tip or _slice_park.resume_tip(root, todo_id, keep_wip=keep_wip)
+    )
+    add = _git(
+        ["worktree", "add", "-b", branch, str(tree), saved or f"origin/{base}"], root
+    )
+    if add.returncode == 0 and saved:
+        note.append(f"resumed from {saved}")
     if add.returncode != 0:
         # The branch outlived its tree (an earlier attempt): re-attach it.
         add = _git(["worktree", "add", str(tree), branch], root)
         if add.returncode != 0:
             raise RuntimeError(f"git worktree add failed: {add.stderr.strip()}")
+        if keep_wip and not start_over:
+            moved = _slice_park.apply_saved_wip(root, tree, todo_id, saved_head)
+            if moved:
+                note.append(f"resumed from {moved}")
     return tree
 
 
 #: The MCP preflight's HTTP call — a seam for tests.
 _mcp_preflight_open = urllib.request.urlopen
+
+#: The default docker socket a ``DOCKER_HOST``-less client hits on
+#: Linux — a module constant so tests can point the seam (gr676054).
+_LINUX_DOCKER_SOCK = Path("/var/run/docker.sock")
 
 
 def _mcp_url(tree: Path) -> str | None:
@@ -2236,6 +4317,14 @@ def _codex_writable_roots(tree: Path) -> tuple[Path, ...]:
         # HOME, when it exists — a missing dir grants no phantom root.
         candidate = Path.home() / ".colima"
         sock_dir = candidate if candidate.is_dir() else None
+        if sock_dir is None:
+            # Linux system docker (gr676054): with no DOCKER_HOST the
+            # client defaults to /var/run/docker.sock. The granted
+            # parent is /var/run — broad on paper, but the socket's
+            # group mode still binds, and no grant at all is the dead
+            # docker-in-gate this fallback exists to fix.
+            if _LINUX_DOCKER_SOCK.exists():
+                sock_dir = _LINUX_DOCKER_SOCK.parent
     if sock_dir is not None:
         home = Path.home()
         if sock_dir == home or home.is_relative_to(sock_dir):
@@ -2261,23 +4350,9 @@ def _devin_bin_ok(bin: str) -> bool:
 
 
 def _devin_auth_status(bin: str) -> subprocess.CompletedProcess[str]:
-    """``<bin> auth status``; never raises on a non-zero exit — a missing
-    or crashing binary answers rc 127, a hang answers rc 124."""
-    try:
-        return subprocess.run(
-            [bin, "auth", "status"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=15,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            [bin], 124, stdout="", stderr="auth status timed out"
-        )
-    except OSError as e:
-        return subprocess.CompletedProcess([bin], 127, stdout="", stderr=str(e))
+    """``<bin> auth status`` (:func:`_slice_adapters.devin_auth_status`) —
+    this module's seam for the preflight and lane_health."""
+    return devin_auth_status(bin)
 
 
 def _devin_model_prices() -> dict[str, tuple[float, float, float]] | None:
@@ -2364,8 +4439,8 @@ def _devin_preflight(under: Path) -> None:
             "point PRECIS_DEVIN_BIN at it"
         )
     status = _devin_auth_status(binary)
-    out = f"{status.stdout}\n{status.stderr}".lower()
-    if status.returncode != 0 or "not logged in" in out or "logged in" not in out:
+    if not devin_status_logged_in(status):
+        note_devin_logged_out()
         detail = (status.stdout or status.stderr).strip().splitlines()
         tail = f" ({detail[-1].strip()[:200]})" if detail else ""
         raise _HostRefusal(
@@ -2422,7 +4497,7 @@ def _kimi_launch_env(model: str | None, *, store: Any) -> dict[str, str]:
     :class:`_HostRefusal`. Nothing else is set: no User-Agent, identity
     or telemetry override — the CLI ships as shipped (the subscription
     terms forbid tampering). Names verified against the installed 2.3.3
-    binary by the author only; confirm at the melchior preflight."""
+    binary by the author only; confirm at the agent host preflight."""
     from precis import secrets
     from precis.errors import BadInput
     from precis.utils.llm import kimi
@@ -2721,6 +4796,21 @@ def _resolve_lane_refusal(store: Any, lane: str) -> None:
         )
 
 
+def _adapter_ready(adapter: str) -> bool:
+    """Match advertised login requirements when picking on a mixed host."""
+    from precis.workers import capability_probe
+
+    if not adapter_bin_present(adapter):
+        return False
+    if adapter == "codex_exec":
+        return capability_probe.codex_login_present()
+    if adapter == "claude_p":
+        return capability_probe.claude_auth_present()
+    if adapter == "devin_tree":
+        return capability_probe.devin_login_present()
+    return True
+
+
 def _lane_offers(lane: _lanes.Lane, capability: str) -> bool:
     """``True`` when the lane's adapter declares ``capability`` — the
     ``params.lane_capability`` requirement the pick enforces."""
@@ -2729,10 +4819,13 @@ def _lane_offers(lane: _lanes.Lane, capability: str) -> bool:
 
 
 def _free_lane_wait_min(store: Any) -> int:
-    """Minutes a submit parks for a free lane at its cap before a paid
-    lane may take the pick — ``factory.free_lane_wait_min``, default 20
-    (gr573563). Unset or unparsable resolves 20; a negative setting is
-    0 (pay immediately)."""
+    """Minutes a submit parks while every fit flat-rate (free or
+    subscription) lane is at its cap before a metered lane may take the
+    pick — ``factory.free_lane_wait_min``, default 20 (gr573563; free
+    and subscription share the pick's tier 0 since gr685753, so the
+    wait holds only the per-token metered lanes out). Unset or
+    unparsable resolves 20; a negative setting is 0 (pay
+    immediately)."""
     from precis import settings
 
     wait = settings.get_int("factory.free_lane_wait_min", store=store)
@@ -2766,7 +4859,7 @@ def _park_lane_full(
     so a later quota park of the same job is never woken as a lane wait. A
     park that follows an early wake (``meta.lane_woken``: the job lost the
     race for the slot) adds the real elapsed seconds to ``meta.early_wait_s``
-    instead of a ``wait_parks`` step, so the cap and the free-lane wait clock
+    instead of a ``wait_parks`` step, so the cap and the lane-wait clock
     keep measuring wall-clock time (:func:`_lane_waited`)."""
     meta = ctx.meta or {}
     parks = int(meta.get("wait_parks") or 0)
@@ -2826,12 +4919,32 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     assert isinstance(todo_id, int)
     todo = store.get_ref(kind="todo", id=todo_id)
+    # td659522 step 1: the repo this job builds in. Every job repeats the
+    # validate_submit guard at claim time (the setting or the todo's tag may
+    # have changed since the mint, and a job minted before a todo was
+    # tagged for another repo must not build it here) and fails like the
+    # refusals above.
+    repo = job_repo(params)
+    reason = _repo_rejection(store, todo_id) or _repo_param_rejection(
+        store, todo_id, repo, target=False
+    )
+    if reason is not None:
+        ctx.record_failure(reason)
+        return None
+    profile: _lanes.RepoProfile | None = None
+    if repo != _lanes.DEFAULT_REPO:
+        profile = _lanes.repo_profile(repo)
+        assert profile is not None
 
     task_class = str((todo.meta or {}).get("task_class") or _DEFAULT_TASK_CLASS)
     # A relaunch after a lane's quota/rate window (gr565359) skips that
     # vendor outright; the table shrinks, it does not fall back.
     exclude = str((ctx.meta or {}).get("exclude_vendor") or "")
     lane_table = _lanes.load_lanes(store)
+    if task_class == "skill":
+        from precis.plans.boundary import fit_lanes as skill_fit_lanes
+
+        lane_table = skill_fit_lanes(task_class, lane_table)
     # ``params.lane_capability`` — the requirement a factory mint stamps
     # when it cannot hold its pin (factory_rescue._resolve_lane_pin,
     # td610544): the pin becomes a preference and the capability the
@@ -2872,6 +4985,7 @@ def submit(ctx: Any, spec: Any) -> Any:
     counts: dict[str, int] | None = None
     backoffs: dict[str, datetime] | None = None
     table: tuple[_lanes.Lane, ...] = ()
+    pick_table: tuple[_lanes.Lane, ...] = ()
     paid_ok = True
     if params.get("lane") and not left_pin:
         dead = lane is None or not lane.enabled or lane.parked
@@ -2905,13 +5019,41 @@ def submit(ctx: Any, spec: Any) -> Any:
         if until is not None:
             # Per-todo jitter (≤5 min) so a fleet of jobs parked on the
             # same refusal does not probe the lane in one burst.
-            wake = until + timedelta(seconds=int(todo_id) * 37 % 300)
+            jitter = timedelta(seconds=int(todo_id) * 37 % 300)
+            recheck = datetime.now(UTC) + _lanes.HOST_REFUSAL_BACKOFF
+            if until > recheck:
+                # A breaker-held lane reports a far deadline that means
+                # "until its ask closes" (lanes.BREAKER_HOLD), not a time.
+                # Parking to it slept four jobs a year past an ask that
+                # closed the same day: re-check on the refusal cadence.
+                _park_lane_full(
+                    ctx,
+                    f"run_slice: lane {lane.name!r} pinned by params.lane is "
+                    "held out by an open lane-breaker ask; re-checked at "
+                    f"{recheck.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+                    until=recheck + jitter,
+                )
+                return None
             _park_lane_full(
                 ctx,
                 f"run_slice: lane {lane.name!r} pinned by params.lane is "
                 f"backed off until {until.strftime('%Y-%m-%dT%H:%M:%SZ')} "
                 "after a host refusal",
-                until=wake,
+                until=until + jitter,
+            )
+            return None
+        if lane.adapter in ADAPTERS and not _adapter_ready(lane.adapter):
+            # The lane pin landed on a host that cannot exec it (gr676054:
+            # the placement gate only sees the ``builder`` floor when the
+            # lane→adapter map misses). A host gap, not a lane failure —
+            # park without the ``meta.host_refusal`` stamp so the lane is
+            # not backed off fleet-wide; the wait rides the lane's wakes.
+            _park_lane_full(
+                ctx,
+                f"run_slice: lane {lane.name!r} pinned by params.lane "
+                f"cannot run here — no {lane.adapter} binary or login on this "
+                "host; held for a host that has both",
+                lanes=(lane.name,),
             )
             return None
         counts = _lanes.live_lane_counts(store)
@@ -2938,21 +5080,54 @@ def submit(ctx: Any, spec: Any) -> Any:
             else lane_table
         )
         table = tuple(ln for ln in capable if not exclude or ln.vendor != exclude)
+        # Only lanes this host can exec (gr676054): a builder fleet host
+        # may carry a subset of the lane binaries — the ``builder``
+        # placement floor passes any one of them, so the pick must not
+        # offer a lane whose adapter preflight would refuse and stamp a
+        # GLOBAL lane backoff for a one-host gap.
+        host_adapters = {
+            ln.adapter
+            for ln in table
+            if ln.adapter in ADAPTERS and _adapter_ready(ln.adapter)
+        }
+        table = tuple(ln for ln in table if ln.adapter in host_adapters)
         backoffs = _lanes.lane_backoffs(store)
-        # Free compute first (gr573563): while a fit free lane exists the
-        # pick holds paid lanes out; the build waits on the free lane's
-        # cap and falls through to paid only once wait_parks has covered
+        # Flat compute first (gr573563, gr685753): the pick's tier 0 is
+        # the free AND flat-rate subscription lanes ordered by load, a
+        # metered lane its last resort — while a fit tier-0 lane exists
+        # the build waits on the flat lanes' caps and falls through to
+        # metered only once wait_parks has covered
         # factory.free_lane_wait_min of LANE_FULL_BACKOFF parks.
+        # pick_lane's own paid_ok=False would still cut the fit set to
+        # free-only, so the caller applies the shared tier itself:
+        # metered lanes leave the pick table while a fit tier-0 lane
+        # (enabled, unparked, fit, model-compatible, not backed off —
+        # at-cap ones included, their cap is the point of the wait)
+        # exists; with none at all — a pin only a metered lane runs,
+        # every tier-0 lane backed off — the metered lanes stay in, the
+        # fall-through pick_lane's hold encoded for free lanes.
         wait_min = _free_lane_wait_min(store)
         waited = _lane_waited(ctx.meta or {})
         paid_ok = waited >= timedelta(minutes=wait_min)
+        pick_table = table
+        if not paid_ok and any(
+            ln.enabled
+            and not ln.parked
+            and ln.fits(task_class)
+            and (model_pin is None or ln.accepts_model(model_pin))
+            and ln.name not in backoffs
+            and ln.cost_class != _lanes.COST_METERED
+            for ln in table
+        ):
+            pick_table = tuple(
+                ln for ln in table if ln.cost_class != _lanes.COST_METERED
+            )
         lane = _lanes.pick_lane(
             store,
             task_class,
-            lanes=table,
+            lanes=pick_table,
             model=model_pin,
             backoff=backoffs,
-            paid_ok=paid_ok,
         )
         if lane is None:
             if model_pin and not any(
@@ -2981,27 +5156,28 @@ def submit(ctx: Any, spec: Any) -> Any:
             backed = sorted(set(fit_names) & set(backoffs))
             why = "no enabled lane" if not fit_names else "every fit lane at its cap"
             # The lanes whose freeing slot would let this job launch
-            # (gr611299): fit and not backed off, and while the free-lane
-            # wait runs (not paid_ok) only the free ones — a paid lane
-            # freeing would wake a job that cannot take it.
+            # (gr611299): fit and not backed off, and while the flat-tier
+            # wait runs (not paid_ok) only the free and subscription
+            # ones — a metered lane freeing would wake a job that cannot
+            # take it.
             wake_lanes = [ln for ln in fit_lanes if ln.name not in backoffs]
             if not paid_ok:
-                held_free = [
+                held_flat = [
                     ln.name
                     for ln in fit_lanes
-                    if ln.cost_class == _lanes.COST_FREE and ln.name not in backoffs
+                    if ln.cost_class != _lanes.COST_METERED and ln.name not in backoffs
                 ]
-                if held_free:
-                    wake_lanes = [ln for ln in wake_lanes if ln.name in held_free]
-                held_paid = [
+                if held_flat:
+                    wake_lanes = [ln for ln in wake_lanes if ln.name in held_flat]
+                held_metered = [
                     ln.name
                     for ln in fit_lanes
-                    if ln.cost_class != _lanes.COST_FREE and ln.name not in backoffs
+                    if ln.cost_class == _lanes.COST_METERED and ln.name not in backoffs
                 ]
-                if held_free and held_paid:
+                if held_flat and held_metered:
                     why = (
-                        f"free lane {', '.join(held_free)} at its cap; "
-                        f"a paid lane after {wait_min} min"
+                        f"flat-rate lanes {', '.join(held_flat)} at their caps; "
+                        f"a metered lane after {wait_min} min"
                     )
             if backed:
                 why = f"lanes {', '.join(backed)} backed off after a host refusal"
@@ -3037,13 +5213,16 @@ def submit(ctx: Any, spec: Any) -> Any:
     # through the new lane's vendor, not the stale one (review
     # td655142); a refusal fails the job without a launch, a prior-pick
     # read that could not answer parks it (no note — ``_park_lane_full``
-    # already spoke), and an unrecorded prior model refuses it.
+    # already spoke), and a code session with neither a recorded model
+    # nor a known adapter refuses it (gr702143: an unnamed default
+    # otherwise falls back to its adapter — a different vendor's lane
+    # proves the difference).
     if task_class == _outcome.TEST_TASK_CLASS and lane is not None:
         lane, model, diversity_note = _diverse_test_pick(
             ctx,
             lane=lane,
             model=model,
-            candidates=table or (lane,),
+            candidates=pick_table or (lane,),
             counts=counts,
             backoffs=backoffs,
             paid_ok=paid_ok,
@@ -3069,6 +5248,9 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         return None
     mints = _mints_children(store, todo_id)
+    if task_class == "skill" and (not adapter.mcp or profile is not None):
+        ctx.record_failure("run_slice: skill editors require the precis live MCP lane")
+        return None
     if not adapter.mcp and mints:
         # A child-minting generator works through the precis MCP; a lane
         # without one ends with nothing minted. The templates class such
@@ -3172,12 +5354,22 @@ def submit(ctx: Any, spec: Any) -> Any:
             + "\n".join(f"- `{path}`" for path in sorted(artifacts))
         )
     is_generator = node_kind(todo.meta) == "generator"
+    # td659522 step 5: a reviewer of a second-repo slice reads the landed
+    # commit in a detached tree of that repo's clone, with no MCP of either
+    # kind (its verdict is the first line of its final message).
+    repo_review = _repo_reviewer(profile, todo.meta)
     # The scoped read grant is a code-class affordance of the read lanes
     # (codex_exec, devin_tree — gr574082): PRECIS_SLICE_READ_MCP names the
     # scope to mint, anything else is today's no-MCP launch (ships dark).
+    # A repo whose tree carries no precis ``.mcp.json`` (profile.mcp false)
+    # gets no MCP of either kind.
+    use_mcp = adapter.mcp and (profile is None or profile.mcp) and not repo_review
     read_scope = (
         _read_mcp_scope()
-        if adapter.read_mcp and task_class == _DEFAULT_TASK_CLASS and not is_generator
+        if adapter.read_mcp
+        and task_class == _DEFAULT_TASK_CLASS
+        and not is_generator
+        and (profile is None or profile.mcp)
         else None
     )
     brief_kwargs: dict[str, Any] = dict(
@@ -3190,52 +5382,173 @@ def submit(ctx: Any, spec: Any) -> Any:
         effort=effort,
         generator=is_generator,
         role=_generate_role(todo.meta),
-        mcp=adapter.mcp,
-        deny_paths=lane.deny_write_paths,
+        task_class=task_class,
+        mcp=use_mcp,
+        deny_paths=_slice_deny(store, repo, lane),
         lane_models=lane.models,
-        target=_review_target(store, todo.meta),
+        target=None if repo_review else _review_target(store, todo.meta),
         adapter=adapter.name,
     )
     # release-train T1: a release fix branches from the release it lands on.
     base = _release.land_target_of(todo.meta, body, latest) or "main"
     if base != "main":
         brief_kwargs["base"] = base
+    if profile is not None:
+        brief_kwargs["profile"] = profile
     grant: dict[str, Any] | None = None
     mint_error: str | None = None
     read_url: str | None = None
+    # A second-repo reviewer's detached tree once cut: every launch failure
+    # after that drops it (the run's own end drops it in poll).
+    review_tree: Path | None = None
+    # A crash past ``_launch`` but before this function's own record /
+    # the executor's handle persist leaves a live orphan: the generic
+    # except below kills the group when ``pid`` is already assigned
+    # (gr708457). The child-written pid file still names the compute
+    # for the *hard* kill a plain except cannot reach.
+    pid: int | None = None
     try:
-        _clear_slice_index_lock(ctx, worktrees_dir(slice_root()) / slice_name(todo_id))
-        tree = _ensure_worktree(
-            slice_root(), todo_id, *(() if base == "main" else (base,))
-        )
-        # gr657066: governs:factory skills join the lane's deny set —
-        # resolved at the base ref so the branch cannot un-tag the
-        # fence, and fail-closed like every other gate read here.
-        governed = _governs.governed_skill_paths_at_ref(
-            tree, f"origin/{base}", git=_git
-        )
+        repo_root: Path | None = None
+        base_tip: str | None = None
+        if profile is not None:
+            if base != profile.base:
+                raise RuntimeError(
+                    f"land target {base!r} is not the '{repo}' base "
+                    f"{profile.base!r}; release-branch fixes are precis-only"
+                )
+            repo_root = slice_root_for(repo)
+            not_ready, base_tip = _prepare_repo_tip(profile, repo_root)
+            if not_ready is not None:
+                raise (_ReviewRefusal if repo_review else RuntimeError)(not_ready)
+        review_head: str | None = None
+        if repo_review:
+            assert profile is not None and repo_root is not None
+            tree, review_head = _cut_review_tree(
+                store, todo, todo_id, profile, repo_root, brief_kwargs, base_tip
+            )
+            review_tree = tree
+        else:
+            _clear_slice_index_lock(
+                ctx, worktrees_dir(repo_root or slice_root()) / slice_name(todo_id)
+            )
+            # Park = save, resume anywhere (_slice_park): a re-armed
+            # parked node resumes from its saved branch; ``start over``
+            # in the closing answer drops it.
+            parked = (todo.meta or {}).get(_slice_park.PARKED_KEY)
+            park_kw: dict[str, Any] = {
+                "keep_wip": isinstance(parked, dict),
+                "start_over": bool((todo.meta or {}).get(_slice_park.START_OVER_KEY)),
+                "saved_head": str(parked.get("head") or "")
+                if isinstance(parked, dict)
+                else None,
+                "notes": [],
+            }
+            if profile is None:
+                tree = _ensure_worktree(
+                    slice_root(),
+                    todo_id,
+                    *(() if base == "main" else (base,)),
+                    **park_kw,
+                )
+            else:
+                assert repo_root is not None
+                tree = _ensure_worktree(
+                    repo_root, todo_id, base=profile.base, fetched=True, **park_kw
+                )
+            for line in park_kw["notes"]:
+                ctx.append_chunk("job_event", f"run_slice: td{todo_id} {line}")
+            if park_kw["start_over"]:
+                # Consumed: the saved branch is gone; the node is no
+                # longer parked work.
+                store.stamp_ref_meta(
+                    todo_id,
+                    {_slice_park.START_OVER_KEY: None, _slice_park.PARKED_KEY: None},
+                )
+            # gr674785 (td665126 spent its whole ladder on a fix a
+            # sibling had landed): judge the branch the retry reused
+            # BEFORE a session spends a rung. The recorded tip is the
+            # poll-side arm's evidence when the session rewrites the
+            # branch out from under it (a rebase that drops carried
+            # commits reads "nothing left"). A git hiccup stamps nothing
+            # — the launch proceeds as before.
+            tip_now: subprocess.CompletedProcess[str] | None = None
+            ahead_now: subprocess.CompletedProcess[str] | None = None
+            try:
+                tip_now = _git(["rev-parse", "HEAD"], tree)
+                ahead_now = _git(["log", "--oneline", f"origin/{base}..HEAD"], tree)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            tip_sha = ""
+            if tip_now is not None and tip_now.returncode == 0:
+                parts = tip_now.stdout.strip().splitlines()
+                tip_sha = parts[0] if parts else ""
+            ahead_n = (
+                len([ln for ln in ahead_now.stdout.splitlines() if ln.strip()])
+                if ahead_now is not None and ahead_now.returncode == 0
+                else 0
+            )
+            if tip_sha:
+                ctx.set_meta(branch_tip=tip_sha, branch_ahead=ahead_n)
+            # A steer asking for the session skips the land route: the
+            # lander's failure brief, the tick's pre-land review
+            # hand-back, or the tick's mechanical-red brief that follows
+            # the lander's — the rejected branch wants its rebuild, not a
+            # defer back into the same open review (gr674785 review,
+            # td675373) or another land of the head that just failed
+            # (gr705291). ``_wants_session`` names those three.
+            resume = (latest or "").lstrip()
+            if (
+                ahead_n
+                and not is_generator
+                and _no_commit_kind(store, todo_id) is None
+                and (profile is not None or not _fix_node(store, todo_id))
+                and _route_ahead_branch(
+                    ctx,
+                    todo_id,
+                    tree,
+                    f"origin/{base}",
+                    lane.name,
+                    other_repo=profile is not None,
+                    rebuild=_wants_session(resume),
+                )
+            ):
+                return None
+        governed: tuple[str, ...] | None = ()
+        if profile is None:
+            # gr657066: governs:factory skills join the lane's deny set —
+            # resolved at the base ref so the branch cannot un-tag the
+            # fence, and fail-closed like every other gate read here.
+            governed = _governs.governed_skill_paths_at_ref(
+                tree, f"origin/{base}", git=_git
+            )
         if governed is None:
             raise RuntimeError(
                 f"governed-skill scan failed at origin/{base}; refusing "
                 "to launch a slice whose deny set it cannot name"
             )
-        deny = lane.deny_write_paths + governed
+        deny = _slice_deny(store, repo, lane) + governed
         brief_kwargs["deny_paths"] = deny
         brief = render_brief(**brief_kwargs, read_mcp=read_scope)
-        _install_acceptance_tests(tree, artifacts, deny)
+        if not repo_review:
+            _install_acceptance_tests(tree, artifacts, deny)
         scratch = tree / "scratch"
         scratch.mkdir(parents=True, exist_ok=True)
         brief_path = scratch / "brief.md"
         brief_path.write_text(brief, encoding="utf-8")
-        acceptance_tests = sorted(
-            set(_MOOT_TEST_RE.findall(body + "\n" + (latest or "")))
-        )
+        acceptance_tests = _acceptance_paths(body, latest)
         missing_tests = [p for p in acceptance_tests if not _slice_test_exists(tree, p)]
         ops = run_dir(todo_id)
         log_path = ops / "run_slice.log"
         exit_path = ops / "run_slice.exit"
-        exit_path.unlink(missing_ok=True)
-        if adapter.mcp:
+        attempt_dir = _submit_attempt_dir(ctx, todo_id)
+        if attempt_dir is not None:
+            attempt_dir.mkdir()
+            exit_path = attempt_dir / "exit"
+        else:
+            exit_path.unlink(missing_ok=True)
+        log_path = _attempt_log(attempt_dir, log_path)
+        pid_path = attempt_dir / "pid" if attempt_dir is not None else None
+        if use_mcp:
             assert model is not None
             grant = _mint_slice_token(ctx, todo_id, model=model, brief=brief)
         elif read_scope:
@@ -3300,6 +5613,11 @@ def submit(ctx: Any, spec: Any) -> Any:
             mcp_token=grant["token"] if grant else None,
             mcp=adapter.mcp,
         )
+        if profile is not None:
+            if not use_mcp:
+                env.pop("PRECIS_MCP_TOKEN", None)
+            if profile.uv_python:
+                env["UV_PYTHON"] = profile.uv_python
         if adapter.name == "devin_tree":
             # The checkout's worktrees dir is the slice's parent; seed it
             # before launch or the session stalls on the trust prompt.
@@ -3314,27 +5632,57 @@ def submit(ctx: Any, spec: Any) -> Any:
             job = getattr(ctx, "ref_id", None)
             if isinstance(job, int) and not isinstance(job, bool):
                 _KIMI_SUBMIT_KEYS[job] = env["KIMI_MODEL_API_KEY"]
-        if adapter.mcp:
+        if use_mcp:
             _preflight_mcp(tree, env.get("PRECIS_MCP_TOKEN"))
+        handle: dict[str, Any] = {
+            "worktree": str(tree),
+            "log": str(log_path),
+            "exit_file": str(exit_path),
+            "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        if profile is not None:
+            # Later phases read the repo off the handle, never the tag
+            # again.
+            handle["repo"] = repo
+        if repo_review:
+            # The poll judges the read-only brief against this head and
+            # drops the detached tree when the run ends.
+            handle["review"] = {"head": review_head}
+        if atif_path is not None:
+            handle["atif"] = str(atif_path)
+        if adapter.name == "devin_tree" and not is_generator:
+            handle["acceptance_tests"] = acceptance_tests
+            handle["acceptance_tests_missing"] = missing_tests
+        if grant:
+            handle["slice_token_dir"] = grant["dir"]
+            handle["slice_token_name"] = grant["name"]
+            handle["agentlog_id"] = grant["agentlog_id"]
+            if grant.get("devin_config"):
+                handle["devin_config"] = grant["devin_config"]
+        if attempt_dir is not None:
+            # Recovery must use the same finishing inputs as normal poll.
+            # Persist these before the agent can edit the checkout.
+            _write_launch_record(attempt_dir / "baseline", handle)
         pid = _launch(
             argv,
             cwd=tree,
             stdin=adapter.stdin(brief_path),
             log=log_path,
             exit_file=exit_path,
+            pid_file=pid_path,
             env=env,
+            store=store,
+            work_class="slice",
         )
-        started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        identity = _process_identity(pid)
-        ps_identity = (
-            _darwin_process_identity(pid) if sys.platform == "darwin" else None
-        )
+        _record_launched_process(handle, pid, attempt_dir)
     except _HostRefusal as exc:
         # The host cannot run the lane right now; the task is uncharged —
         # give the lease back clean, like the lane-table error path. The
         # refusal stamps the lane's backoff on this job (gr571395):
         # lane_backoffs skips the lane until then, and plan_dispatch never
         # counts the job as an attempt.
+        if review_tree is not None:
+            _drop_review_tree({"repo": repo, "worktree": str(review_tree)})
         _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         unclaim_todo(ctx.store, todo_id, lane.name)
@@ -3349,6 +5697,16 @@ def submit(ctx: Any, spec: Any) -> Any:
         _raise_lane_refusal(ctx.store, lane.name, str(exc), until)
         ctx.record_failure(f"run_slice: {exc}")
         return None
+    except _ReviewRefusal as exc:
+        # A reviewer has no work to burn an attempt on: the repo, the
+        # target or the tree is not ready. Same give-back as the lock wait;
+        # a sustained identical run is plan_dispatch's ask.
+        _drop_submit_key(ctx)
+        _revoke_slice_grant(ctx, todo_id, grant, "aborted")
+        unclaim_todo(ctx.store, todo_id, lane.name)
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: REVIEW_WAIT_KEY})
+        ctx.record_failure(f"run_slice: td{todo_id} review not launched: {exc}")
+        return None
     except _IndexLockWait as exc:
         # gr650484: a live git's index.lock in the reused tree is a wait,
         # not the build's failure — the lease goes back unburned and
@@ -3359,8 +5717,40 @@ def submit(ctx: Any, spec: Any) -> Any:
         ctx.set_meta(**{ATTEMPT_FREE_KEY: "index-lock"})
         ctx.record_failure(f"run_slice: {exc}")
         return None
+    except admission.Refused as exc:
+        # The host is full, not the build broken: the same give-back as
+        # the lock wait — attempt-free, so plan_dispatch re-queues the
+        # node when capacity returns instead of spending a rung on the
+        # host's moment (review td702053).
+        if review_tree is not None:
+            _drop_review_tree({"repo": repo, "worktree": str(review_tree)})
+        _drop_submit_key(ctx)
+        _revoke_slice_grant(ctx, todo_id, grant, "aborted")
+        unclaim_todo(ctx.store, todo_id, lane.name)
+        # gr708204: park on the lane-wait path (the busy-lane shape) —
+        # a failed job per deferral climbed to FREE_RUN_CAP and filed a
+        # showstopper ask per node. Past the park cap the job still
+        # fails attempt-free as "lane-wait".
+        _park_lane_full(
+            ctx,
+            f"run_slice: launch deferred, host at capacity: {exc}",
+            lanes=[lane.name],
+        )
+        return None
     except Exception as exc:
         log.warning("run_slice: launch of td%d failed", todo_id, exc_info=True)
+        if pid is not None:
+            # The compute already exists but the submit is failing —
+            # a bare record_failure would orphan it (gr708457). The
+            # child wrote its pid file at exec, so even a crash between
+            # here and the executor's handle persist leaves the group
+            # named; kill it now while the pid is in hand.
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        if review_tree is not None:
+            _drop_review_tree({"repo": repo, "worktree": str(review_tree)})
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         _fail_submit(ctx, todo_id, lane.name, f"launch failed: {exc}")
         return None
@@ -3371,7 +5761,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         else f"none ({mint_error})"
         if mint_error
         else "shared"
-        if adapter.mcp
+        if use_mcp
         else "none"
     )
     ctx.append_chunk(
@@ -3403,32 +5793,170 @@ def submit(ctx: Any, spec: Any) -> Any:
         effort=effort,
         task_class=task_class,
     )
-    handle: dict[str, Any] = {
-        "pid": pid,
-        "pgid": pid,
-        "worktree": str(tree),
-        "log": str(log_path),
-        "exit_file": str(exit_path),
-        "started_at": started_at,
-    }
-    if atif_path is not None:
-        handle["atif"] = str(atif_path)
-    if adapter.name == "devin_tree" and not is_generator:
-        handle["acceptance_tests"] = acceptance_tests
-        handle["acceptance_tests_missing"] = missing_tests
-    if grant:
-        handle["slice_token_dir"] = grant["dir"]
-        handle["slice_token_name"] = grant["name"]
-        handle["agentlog_id"] = grant["agentlog_id"]
-        if grant.get("devin_config"):
-            handle["devin_config"] = grant["devin_config"]
-    if identity is not None:
-        # ssh_node's orphan reaper kills only a group whose leader still
-        # has this boot_id and start-tick count; without them it skips.
-        handle["boot_id"], handle["start_time"] = identity
-    if ps_identity is not None:
-        handle["ps_identity"] = ps_identity
     return handle
+
+
+def _attempt_log(attempt_dir: Path | None, latest: Path) -> Path:
+    """Keep the stable log path for rescue while each handle reads its own log."""
+    if attempt_dir is None:
+        # A retry launched from poll has no submit intent. Start a new
+        # stable log without truncating the previous attempt's evidence.
+        if latest.is_symlink():
+            latest.unlink()
+        return latest
+    path = (attempt_dir / "log").absolute()
+    link = latest.with_name(f".{latest.name}.{attempt_dir.name}")
+    link.symlink_to(path)
+    os.replace(link, latest)
+    return path
+
+
+def _write_launch_record(path: Path, record: dict[str, Any]) -> None:
+    """Atomically publish JSON evidence that survives a worker restart."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _read_launch_record(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _record_launched_process(
+    handle: dict[str, Any], pid: int, attempt_dir: Path | None
+) -> None:
+    handle.update(pid=pid, pgid=pid)
+    identity = _process_identity(pid)
+    if identity is not None:
+        handle["boot_id"], handle["start_time"] = identity
+    if sys.platform == "darwin":
+        ps_identity = _darwin_process_identity(pid)
+        if ps_identity is not None:
+            handle["ps_identity"] = ps_identity
+    if attempt_dir is not None:
+        try:
+            _write_launch_record(attempt_dir / "handle", handle)
+        except OSError:
+            log.warning(
+                "could not save detached handle in %s", attempt_dir, exc_info=True
+            )
+
+
+def _launch_pid(path: Path) -> int | None:
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError, UnicodeError):
+        return None
+    return pid if pid > 1 else None
+
+
+def _darwin_launch_identity(pid: int, pid_path: Path) -> str | None:
+    """The wrapper's shell argument binds the PID to this launch on Darwin."""
+    identity = _darwin_process_identity(pid)
+    if identity is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-ww", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if (
+        result.returncode == 0
+        and f" {pid_path} " in result.stdout
+        and _darwin_process_identity(pid) == identity
+    ):
+        return identity
+    return None
+
+
+def _launch_pid_identity(pid: int, pid_path: Path) -> tuple[str, int] | None:
+    """Bind the live wrapper to its attempt before recording its identity."""
+    identity = _process_identity(pid)
+    if identity is None:
+        return None
+    try:
+        env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    if os.fsencode(f"RS_PID={pid_path}") in env and _process_identity(pid) == identity:
+        return identity
+    return None
+
+
+def _rebuild_handle_from_pid(attempt_dir: Path, pid: int) -> dict[str, Any] | None:
+    handle = _read_launch_record(attempt_dir / "baseline")
+    if handle is None:
+        return None
+    handle.update(pid=pid, pgid=pid)
+    pid_path = attempt_dir / "pid"
+    if sys.platform == "darwin":
+        ps_identity = _darwin_launch_identity(pid, pid_path)
+        if ps_identity is not None:
+            handle["ps_identity"] = ps_identity
+            return handle
+    else:
+        identity = _launch_pid_identity(pid, pid_path)
+        if identity is not None:
+            handle["boot_id"], handle["start_time"] = identity
+            return handle
+    if _read_exit(handle) is not None:
+        # An exit proves the launch ran. It cannot authorize signals to a
+        # PID that might have been recycled before the reclaim.
+        return {**handle, "recovered_exit": True}
+    return None
+
+
+def _recover_launch(ctx: Any) -> Reconcile | None:
+    """Recover only the current attempt, using its saved finishing inputs."""
+    params = (ctx.meta or {}).get("params") or {}
+    todo_id = params.get("todo_id")
+    if not isinstance(todo_id, int) or isinstance(todo_id, bool):
+        return None
+    attempt_dir = _submit_attempt_dir(ctx, todo_id)
+    if attempt_dir is None:
+        return None
+    pid = _launch_pid(attempt_dir / "pid")
+    handle = _read_launch_record(attempt_dir / "handle")
+    if handle is not None:
+        recorded_pid = handle.get("pid")
+        if type(recorded_pid) is not int or recorded_pid <= 1:
+            return None
+        if pid is not None and pid != recorded_pid:
+            return None
+        if sys.platform == "darwin":
+            identity = handle.get("ps_identity")
+            live = bool(identity and _darwin_process_identity(recorded_pid) == identity)
+        else:
+            identity = _process_identity(recorded_pid)
+            live = identity is not None and identity == (
+                handle.get("boot_id"),
+                handle.get("start_time"),
+            )
+        if live:
+            return Reconcile(handle=handle)
+        if _read_exit(handle) is not None:
+            return Reconcile(handle={**handle, "recovered_exit": True})
+    if pid is not None:
+        handle = _rebuild_handle_from_pid(attempt_dir, pid)
+        if handle is not None:
+            return Reconcile(handle=handle)
+    return None
+
+
+def reconcile(ctx: Any) -> Reconcile | None:
+    """Resume a proven launch. The child can exist before its first write."""
+    return _recover_launch(ctx)
 
 
 def _read_exit(handle: dict[str, Any]) -> int | None:
@@ -3542,13 +6070,61 @@ def _commit_message(tree: Path, todo_id: int) -> str | None:
     return "\n".join([subject, *body]).strip() + "\n"
 
 
+def _session_commit_fallback(store: Any, todo_id: int) -> str:
+    """The worker-generated conventional subject
+    :func:`_commit_for_session` uses when the session left no
+    ``scratch/commit-msg.txt``: the todo's ``fixes`` gripes first, then
+    the td — the lander squashes the branch under this subject."""
+    refs = _fixes_refs(store, todo_id)
+    return f"fix(slice): complete ({', '.join([*refs[1:], refs[0]])})\n"
+
+
+#: Substrings a session's report carries when its ``git commit`` was
+#: refused — a read-only ``.git``, a denied write, a permission it
+#: lacked, an ``index.lock`` it could not take (gr702644).
+_COMMIT_BLOCKED_MARKERS: tuple[str, ...] = (
+    "blocked",
+    "refus",
+    "denied",
+    "read-only",
+    "read only",
+    "could not",
+    "couldn't",
+    "cannot",
+    "can't",
+    "unable",
+    "permission",
+)
+
+
+def _commit_blocked(result: str | None) -> bool:
+    """``True`` when the session's final text says its commit was refused
+    or could not run — the sandboxed builder's exit-clean-with-dirty-tree
+    shape (gr702644: td700755 finished real work under codex and reported
+    "Commit blocked by read-only `.git`"; with no
+    ``scratch/commit-msg.txt`` the poll read 0 commits as a no-commit run
+    and relaunched, holding the file-overlap slot the whole time). The
+    marker gates only the fallback subject — a session that left real
+    edits and says the commit itself failed still gets the worker's
+    commit; a clean tree never reaches the write either way."""
+    for ln in (result or "").splitlines():
+        low = ln.lower()
+        if "commit" in low and any(m in low for m in _COMMIT_BLOCKED_MARKERS):
+            return True
+        if "index.lock" in low or "read-only `.git`" in low:
+            return True
+    return False
+
+
 def _commit_for_session(
     tree: Path, todo_id: int, *, fallback_message: str | None = None
 ) -> str | None:
     """Commit the working tree a clean session left uncommitted, with its
     ``scratch/commit-msg.txt``. Returns a note for the summary, or ``None``
     when there was nothing to do (no message or fallback, nothing staged).
-    Devin supplies a fallback so a missing message cannot strand its edits.
+    Devin supplies a fallback so a missing message cannot strand its edits;
+    so does any adapter whose session reported its commit blocked
+    (:func:`_commit_blocked`, gr702644).
 
     gr564261's first codex-direct run (jo565335): ``codex exec`` under
     ``--sandbox workspace-write`` keeps ``.git`` read-only, so the session
@@ -3583,6 +6159,29 @@ def _commit_for_session(
     if commit.returncode != 0:
         return f"worker commit failed ({commit.stderr.strip()[:200]})"
     return f"{WORKER_COMMITTED} the session's working tree with {source}"
+
+
+def _acceptance_paths(body: str, latest: str | None) -> list[str]:
+    """The slice's worker-run acceptance tests, harvested from the node
+    body and its latest comment, only on explicit Acceptance tests: or
+    File set: lines. Prose can quote symptom paths, not test requests
+    (gr689446). A release-fix cluster brief
+    names the sibling clusters other fix nodes own after
+    ``ci_red_digest.OTHER_CLUSTERS_MARKER`` — text from the marker on is
+    another node's scope, not this slice's."""
+    from precis.workers.job_types import ci_red_digest as _crd
+
+    text = "\n".join(
+        part.split(_crd.OTHER_CLUSTERS_MARKER, 1)[0] for part in (body, latest or "")
+    )
+    declarations = re.findall(
+        r"^[ \t]*(?:Acceptance tests|File set):[ \t]*(.*)$",
+        text,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    return sorted(
+        {path for line in declarations for path in _MOOT_TEST_RE.findall(line)}
+    )
 
 
 def _acceptance_artifacts_rejection(value: Any) -> str | None:
@@ -3631,9 +6230,12 @@ def _slice_test_exists(tree: Path, path: str) -> bool:
 
 
 def _devin_acceptance_tests(
-    tree: Path, handle: dict[str, Any]
-) -> tuple[bool, str | None]:
-    """Return ``(ran, failure)`` for available tests supplied before the build.
+    tree: Path, handle: dict[str, Any], ctx: Any
+) -> tuple[bool, str | None] | None:
+    """Return ``(ran, failure)``, or ``None`` while detached tests are pending.
+
+    Persist the receipt paths and PID so a worker restart resumes polling;
+    no pass waits for the test process (gr687841).
 
     Never discover tests from Devin's output or the generated lint footer:
     those cannot establish that the ask had tests before implementation.
@@ -3650,16 +6252,92 @@ def _devin_acceptance_tests(
         and p not in handle.get("acceptance_tests_missing", [])
         and _slice_test_exists(tree, p)
     ]
-    if not paths:
+    if not paths and not isinstance(handle.get("acceptance_handle"), dict):
         return False, None
-    try:
-        proc = _run(["scripts/test", *paths], tree, timeout=_MOOT_TEST_TIMEOUT_S)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return True, f"Devin acceptance tests could not run: {exc}"
-    if proc.returncode != 0:
-        tail = "\n".join((proc.stdout + "\n" + proc.stderr).splitlines()[-60:])
-        return True, f"Devin acceptance tests failed (exit {proc.returncode})\n{tail}"
+    test_handle = handle.get("acceptance_handle")
+    if not isinstance(test_handle, dict):
+        directory = Path(handle["exit_file"]).parent
+        test_handle = {
+            "log": str(directory / "acceptance.log"),
+            "exit_file": str(directory / "acceptance.exit"),
+            "started": time.time(),
+        }
+        Path(test_handle["exit_file"]).unlink(missing_ok=True)
+        try:
+            test_handle["pid"] = _launch(
+                ["scripts/test", *paths, "-m", "not nightly"],
+                cwd=tree,
+                stdin=None,
+                log=Path(test_handle["log"]),
+                exit_file=Path(test_handle["exit_file"]),
+                env=dict(os.environ),
+                store=ctx.store,
+                work_class="acceptance",
+            )
+        except admission.Refused:
+            # The host is full: stay pending — the next poll pass retries
+            # the launch attempt-free, like every other capacity wait.
+            return None
+        except OSError as exc:
+            return True, f"Devin acceptance tests could not run: {exc}"
+        if sys.platform == "darwin":
+            test_handle["ps_identity"] = _darwin_process_identity(test_handle["pid"])
+        handle["acceptance_handle"] = test_handle
+        ctx.set_meta(compute_handle=handle)
+    code = _read_exit(test_handle)
+    if code is None:
+        if time.time() - test_handle["started"] >= _ACCEPTANCE_TEST_TIMEOUT_S:
+            _kill_acceptance(handle)
+            return True, "Devin acceptance tests timed out"
+        if _session_alive(test_handle):
+            return None
+        # The run may have written its receipt between the read above and
+        # the liveness probe: re-read before calling it vanished.
+        code = _read_exit(test_handle)
+        if code is None:
+            return True, "Devin acceptance tests vanished without an exit receipt"
+    if code != 0:
+        tail = "\n".join(_read_log(test_handle).splitlines()[-60:])
+        return True, f"Devin acceptance tests failed (exit {code})\n{tail}"
     return True, None
+
+
+def _kill_acceptance(handle: dict[str, Any]) -> None:
+    """Stop only the detached acceptance group; never wait in a worker pass."""
+    test_handle = handle.get("acceptance_handle")
+    if isinstance(test_handle, dict) and _session_alive(test_handle):
+        try:
+            pgid = _handle_pgid(test_handle)
+            if pgid:
+                _signal_group(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def skills_named(text: str | None) -> tuple[str, ...] | None:
+    """Read the last builder drift marker; None means absent or malformed."""
+    markers = re.findall(r"^skills:\s*([^\n]*)$", text or "", re.MULTILINE)
+    if not markers:
+        return None
+    value = markers[-1].strip()
+    if value == "none":
+        return ()
+    ids = [s.strip() for s in value.split(",")]
+    if not all(re.fullmatch(r"[a-z0-9][a-z0-9-]*", s) and s != "none" for s in ids):
+        return None
+    return tuple(dict.fromkeys(ids))
+
+
+SKILL_WRITE_PATHS = ("src/precis/data/skills/**", "src/precis/data/skill-evals/**")
+
+
+def _skill_allow_only(store: Any, todo_id: int) -> tuple[str, ...] | None:
+    ref = store.get_ref(kind="todo", id=todo_id)
+    return (
+        SKILL_WRITE_PATHS
+        if ref is not None and (ref.meta or {}).get("task_class") == "skill"
+        else None
+    )
 
 
 def tests_ran(text: str | None) -> bool:
@@ -3676,6 +6354,56 @@ def tests_ran(text: str | None) -> bool:
     for match in _TESTS_MARKER_RE.finditer(text):
         last = match
     return last is not None and last.group(1).lower() == "ran"
+
+
+#: The declared "could not run in this sandbox" receipt — the marker's
+#: ``tests: NOT RUN — <why>`` form; the gap between ``not`` and ``run``
+#: takes spaces, a hyphen or an em-dash (gr674798).
+_TESTS_NOT_RUN_RE = re.compile(r"\btests:\s*not[\s\-—]*run\b", re.IGNORECASE)
+
+
+def tests_not_run(text: str | None) -> bool:
+    """``True`` when the LAST ``tests:`` marker in ``text`` declares
+    ``NOT RUN`` — the session's explicit "this sandbox could not run
+    the step" receipt (gr674798). Same last-marker-wins read as
+    :func:`tests_ran`. Distinct from no marker at all: on a code run
+    the declaration is an honest non-observation the every-run gate
+    records as unobservable (``tests_observed=None``), so the run does
+    not burn the retry ladder; its land mints ``checked`` — honoured
+    as ``--checked`` only when ``ship_flag``'s spot selection allows,
+    else ``--quick`` leaves the suite to the release gate's CI
+    (gr599427). A marker-free hand-off still owes the receipt."""
+    if not text:
+        return False
+    last = None
+    for match in _TESTS_MARKER_RE.finditer(text):
+        last = match
+    return last is not None and _TESTS_NOT_RUN_RE.match(text, last.start()) is not None
+
+
+def _gate_why(name: str, task_class: str) -> str:
+    """Why a ``task_class`` run owed gate ``name`` — appended to the
+    gate-failure comment so a reader can tell a skipped test from a
+    docs read (gr685988): the gate name alone never said which class's
+    obligation tripped."""
+    if name == "tests_ran":
+        if task_class == _outcome.TEST_TASK_CLASS:
+            return (
+                "a validate run owes a `tests: ran` receipt or a "
+                "`validated:`/`moot:` first-line verdict — the test "
+                "session's deliverable IS its verdict; it gave neither"
+            )
+        return (
+            f"a {task_class!r} run that left commits owes the "
+            "`tests: ran` receipt — the every-run gate; it gave none"
+        )
+    if name == "compiled":
+        return "the slice's changed .py files did not byte-compile"
+    if name == "no_exceptions":
+        return "the adapter reported an error or the worktree vanished"
+    if name == "within_step_cap":
+        return "the session reached the turn cap"
+    return "required of this run"
 
 
 #: The ``compiled`` gate's probe: byte-compile the slice's changed
@@ -3738,6 +6466,11 @@ _FIX_VERIFIED_GREEN_RE = re.compile(
 #: Bound on the moot fallback's clean-tree pytest run (gr638658): a cold
 #: ``uv`` env sync plus the named test files.
 _MOOT_TEST_TIMEOUT_S = 1200.0
+#: Bound on the Devin acceptance run (gr681385): a release fix node's
+#: acceptance set can span every file the release diff touches (69 files
+#: on r316), which outran 1200 s on a loaded builder host and discarded a
+#: finished fix. One hour stays well inside run_slice's wall deadline.
+_ACCEPTANCE_TEST_TIMEOUT_S = 3600.0
 
 
 def _moot_line(result: str | None) -> str | None:
@@ -3840,7 +6573,11 @@ def _fetch_main(tree: Path, base: str = "origin/main") -> None:
 
 
 def _tests_green_on_main(
-    tree: Path, tests: list[str], base: str = "origin/main"
+    tree: Path,
+    tests: list[str],
+    base: str = "origin/main",
+    *,
+    store: Any = None,
 ) -> bool:
     """``True`` only when every named ``tests/…​.py`` passes in a clean
     detached worktree at ``origin/main`` — the moot fallback's
@@ -3849,31 +6586,47 @@ def _tests_green_on_main(
     there (a release fix's ``base`` is its release branch instead). An
     empty list, a ``worktree add`` that fails or raises
     (td638767), a missing ``uv``, a red run or a timeout is ``False`` —
-    fail closed. The probe tree is always removed."""
+    fail closed. The probe tree is always removed.
+
+    The pytest run is admitted (gr657245) when a ``store`` is at hand:
+    the probe burns real CPU/memory on this host, and a capacity
+    refusal fails the verification closed — an unproven moot is no
+    proof — without touching the job's attempt accounting."""
     if not tests:
         return False
     scratch = Path(tempfile.mkdtemp(prefix="precis-moot-"))
     probe = scratch / "tree"
     uv = os.environ.get("PRECIS_UV_BIN") or "uv"
+    host = admission.local_host()
+    footprint = admission.Footprint(
+        cpu_milli=4000,
+        mem_mb=8192,
+        wall_s=_MOOT_TEST_TIMEOUT_S,
+    )
+    holder = f"{host}:{os.getpid()}"
     try:
         add = _git(["worktree", "add", "--detach", str(probe), base], tree)
         if add.returncode != 0:
             return False
         try:
-            proc = _run(
-                [
-                    uv,
-                    "run",
-                    "pytest",
-                    "-q",
-                    "-n0",
-                    "-p",
-                    "no:cacheprovider",
-                    *tests,
-                ],
-                probe,
-                _MOOT_TEST_TIMEOUT_S,
-            )
+            try:
+                with admission.hold(store, host, footprint, holder):
+                    proc = _run(
+                        [
+                            uv,
+                            "run",
+                            "pytest",
+                            "-q",
+                            "-n0",
+                            "-p",
+                            "no:cacheprovider",
+                            *tests,
+                        ],
+                        probe,
+                        _MOOT_TEST_TIMEOUT_S,
+                    )
+            except admission.Refused:
+                return False
         except (OSError, subprocess.TimeoutExpired):
             return False
         return proc.returncode == 0
@@ -4001,7 +6754,7 @@ def _verified_moot(
         if "release-pass" in _open_tag_values(store, root):
             sha = ancestors[0]
             release_proof = True
-        elif _tests_green_on_main(tree, sorted(named_tests), base):
+        elif _tests_green_on_main(tree, sorted(named_tests), base, store=store):
             sha = ancestors[0]
     if sha is None:
         return None
@@ -4163,6 +6916,256 @@ def _fix_declared(
     return out
 
 
+#: Commits of upstream history a carried-check scans for the landing sha
+#: — bounded so an old branch's ``git log -p | git patch-id`` stays
+#: cheap; a carry the scan cannot name still reports (the equivalence
+#: is the proof, the sha the record).
+_CARRIED_SCAN_CAP = 600
+
+
+def _patch_id(diff_text: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """``git patch-id --stable`` reading ``diff_text`` on stdin — the
+    consumer half of the ``git log -p``/``git diff`` pipes the carried
+    check runs (:func:`_patch_id_table`, :func:`_diff_patch_id`). Never
+    raises on a non-zero exit."""
+    return subprocess.run(
+        ["git", "patch-id", "--stable"],
+        input=diff_text,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=120,
+    )
+
+
+def _patch_id_table(tree: Path, *log_args: str) -> dict[str, str] | None:
+    """``{patch-id: sha}`` of every commit ``git log -p <log_args>``
+    selects — the upstream carriers :func:`_carried_on_base` names.
+    ``None`` when either half of the pipe fails (the caller treats
+    unjudged like unproven); the ``setdefault`` keeps the NEWEST
+    duplicate carrier, log order being newest-first."""
+    proc = _git(["log", "-p", "--format=commit %H", *log_args], tree)
+    if proc.returncode != 0:
+        return None
+    ids = _patch_id(proc.stdout, tree)
+    if ids.returncode != 0:
+        return None
+    table: dict[str, str] = {}
+    for ln in ids.stdout.splitlines():
+        parts = ln.split()
+        if len(parts) >= 2 and parts[1] != "0" * 40:
+            table.setdefault(parts[0], parts[1])
+    return table
+
+
+def _diff_patch_id(tree: Path, spec: str) -> str | None:
+    """The stable patch-id of ``git diff <spec>`` as one patch — the net
+    diff a squash land reproduces. ``None`` on a git error or an empty
+    diff (an empty diff carries nothing)."""
+    proc = _git(["diff", spec], tree)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    ids = _patch_id(proc.stdout, tree)
+    if ids.returncode != 0:
+        return None
+    for ln in ids.stdout.splitlines():
+        parts = ln.split()
+        if parts and parts[0] != "0" * 40:
+            return parts[0]
+    return None
+
+
+def _remains_on_base(tree: Path, base: str, tip: str) -> bool:
+    """``True`` when a three-way merge of ``tip`` into ``base`` is a
+    no-op — the tree ``git merge-tree --write-tree`` writes IS
+    ``base``'s, so every change the branch introduced is still on it
+    (gr674785 review, td675373): a carrier REVERTED upstream still
+    patch-matches — the patch-id rides the history forever — but the
+    merge would reintroduce the change, so historical equivalence alone
+    is no proof the fix remains. ``False`` on anything else — a merge
+    that would add work, a conflict (``merge-tree`` exits 1), or git
+    not answering: unproven, like the carry itself."""
+    merged = _git(["merge-tree", "--write-tree", base, tip], tree)
+    if merged.returncode != 0:
+        return False
+    written = next((ln.strip() for ln in merged.stdout.splitlines() if ln.strip()), "")
+    if not written:
+        return False
+    base_tree = _git(["rev-parse", f"{base}^{{tree}}"], tree)
+    return base_tree.returncode == 0 and written == base_tree.stdout.strip()
+
+
+def _carried_on_base(
+    tree: Path, base: str, tip: str = "HEAD"
+) -> dict[str, str | None] | None:
+    """``{"how", "sha"}`` when ``tip``'s change already sits on ``base``
+    (gr674785): every commit ahead patch-equivalent to an upstream one
+    (``git cherry`` all ``-`` — a cherry-picked or merged land), or the
+    branch's NET diff patch-identical to a single upstream commit (the
+    squash land — invisible to per-commit equivalence, so the combined
+    ``<mb>..<tip>`` patch-id is matched against the bounded upstream
+    scan) — AND the change remains on the base
+    (:func:`_remains_on_base`; patch equivalence is history, a carrier
+    reverted upstream still matches while the fix itself is gone).
+    ``tip`` wholly contained in ``base`` carries by ``"ancestor"`` with
+    ``sha`` = ``tip`` itself, gated the same way by the tree match (the
+    merge check is a no-op by construction there — ``tip`` IS the merge
+    base — so a merged tip proves its tree sits on ``base``'s
+    wholesale; drift and a post-merge revert read alike, as unproven).
+    ``sha`` is the landing commit the scan found — ``None`` when it did
+    not (a ``git cherry``-proved carry needs no scan to stand).
+    ``None`` when ``tip`` holds novel work, the change no longer sits
+    on ``base``, or git cannot judge — the caller's own ruling then
+    decides."""
+    _fetch_main(tree, base)
+    cherry = _git(["cherry", base, tip], tree)
+    if cherry.returncode != 0:
+        return None
+    lines = [ln for ln in cherry.stdout.splitlines() if ln.strip()]
+    if not lines:
+        anc = _git(["merge-base", "--is-ancestor", tip, base], tree)
+        if anc.returncode != 0:
+            return None
+        if _git(["diff", "--quiet", tip, base], tree).returncode != 0:
+            return None
+        rev = _git(["rev-parse", tip], tree)
+        tip_sha = rev.stdout.strip() if rev.returncode == 0 else tip
+        return {"how": "ancestor", "sha": tip_sha}
+    merge = _git(["merge-base", base, tip], tree)
+    if merge.returncode != 0 or not merge.stdout.strip():
+        return None
+    mb = merge.stdout.splitlines()[0].strip()
+    upstream = (
+        _patch_id_table(
+            tree, "--first-parent", f"-n{_CARRIED_SCAN_CAP}", f"{mb}..{base}"
+        )
+        or {}
+    )
+    combined = _diff_patch_id(tree, f"{mb}..{tip}")
+    if any(not ln.startswith("-") for ln in lines):
+        # Novel per-commit work: a carry stands only when the branch's
+        # NET diff is patch-identical to one upstream commit — the
+        # squash land per-commit equivalence cannot see.
+        if (
+            combined is not None
+            and combined in upstream
+            and _remains_on_base(tree, base, tip)
+        ):
+            return {"how": "squash", "sha": upstream[combined]}
+        return None
+    if not _remains_on_base(tree, base, tip):
+        return None
+    sha: str | None = upstream.get(combined) if combined else None
+    if sha is None:
+        own = _patch_id_table(tree, "-n1", tip) or {}
+        sha = next((upstream[pid] for pid in own if pid in upstream), None)
+    return {"how": "cherry", "sha": sha}
+
+
+def _route_ahead_branch(
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    base: str,
+    lane: str | None,
+    *,
+    other_repo: bool = False,
+    rebuild: bool = False,
+) -> bool:
+    """Judge the branch a retry reuses BEFORE a session spends a rung
+    re-discovering its state (gr674785 — td665126 burned all five rungs
+    handing off "nothing left" on a fix a sibling had landed).
+    ``base`` is the ``origin/<target>`` ref the land measures against.
+
+    ``True`` when the node was disposed of without a launch: a change
+    already on ``base`` (:func:`_carried_on_base`) closes the node done
+    tagged ``verdict:moot`` with the landing sha on the job — the same
+    close ``poll``'s verified-moot arm lands — and commits ahead with
+    novel work go to their land (the pre-land reviewer when one gates
+    it, gr570506; else a ``land_slice`` mint) — either way the job ends
+    ``attempt_free``, no attempt burned, no ladder rung spent. ``False``
+    when the branch is empty, git cannot judge, the route could not be
+    taken (the session's own poll then mints the land as before), or a
+    steer asking for the session stands (``rebuild``) — the lander's
+    failure brief, the pre-land reviewer's FIX/REVERT back-to-builder
+    (gr674785 review, td675373), or the tick's mechanical-red ``brief:``
+    posted after the lander's handoff (gr705291): the branch is mid-fix
+    by design and wants the rebuild that steer asked for, not a route
+    back into the same review or land."""
+    try:
+        _fetch_main(tree, base)
+        cherry = _git(["cherry", base, "HEAD"], tree)
+        if cherry.returncode != 0:
+            return False
+        lines = [ln for ln in cherry.stdout.splitlines() if ln.strip()]
+        if not lines:
+            return False
+        carried = _carried_on_base(tree, base)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if carried is not None:
+        sha = str(carried.get("sha") or "")
+        line = f"{slice_branch(todo_id)}'s change is already on {base}" + (
+            f" — patch-equivalent to {sha[:12]}" if sha else ""
+        )
+        try:
+            close_todo(ctx.store, todo_id, lane, tags=(MOOT_TAG,))
+            _append_comment(ctx.store, todo_id, f"moot: {line}")
+        except Exception:  # the job still ends; the close may have landed
+            log.warning("run_slice: carried close on td%d failed", todo_id)
+        ctx.set_meta(
+            **{
+                MOOT_VERIFIED_KEY: {"sha": sha, "line": line[:300]},
+                ATTEMPT_FREE_KEY: "already-on-main",
+            }
+        )
+        ctx.record_failure(
+            f"run_slice: {line}; td{todo_id} closed done — "
+            "no build attempt burned (gr674785)"
+        )
+        return True
+    if rebuild:
+        return False
+    try:
+        if other_repo:
+            from precis.workers.job_types import land_slice as _ls
+
+            refused = _ls.validate_submit(
+                ctx.store,
+                params=_land_params(ctx, todo_id, tree, lane, True),
+            )
+            if refused:
+                _append_comment(
+                    ctx.store,
+                    todo_id,
+                    f"{_LANDER_HANDOFF_PREFIX} land FAILED: {refused}",
+                )
+                raise RuntimeError(refused)
+        preland = None if other_repo else _preland_reviewer(ctx.store, todo_id)
+        if preland is not None:
+            note = _defer_land_for_review(ctx, todo_id, tree, lane, True, preland)
+            ctx.set_meta(preland_review=preland)
+            what = f"held for the pre-land review td{preland} ({note})"
+        else:
+            land_job = _mint_land(ctx, todo_id, tree, lane, checked=True)
+            ctx.set_meta(land_job=land_job)
+            what = f"land_slice job:{land_job} minted"
+    except Exception:
+        log.warning(
+            "run_slice: ahead-branch route for td%d failed", todo_id, exc_info=True
+        )
+        return False
+    ctx.set_meta(**{ATTEMPT_FREE_KEY: "branch-ahead"})
+    ctx.record_failure(
+        f"run_slice: {slice_branch(todo_id)} already holds "
+        f"{len(lines)} commit(s) ahead of {base} — {what}; "
+        "the land, not another session, is next (gr674785)"
+    )
+    return True
+
+
 def changed_paths(tree: Path, base: str = "origin/main") -> list[str] | None:
     """Repo-relative paths the slice touched: the branch diff from its
     merge base with ``base`` — ``origin/main``, or a release fix's
@@ -4170,11 +7173,13 @@ def changed_paths(tree: Path, base: str = "origin/main") -> list[str] | None:
     fixes are not this slice's (renames split into delete + add) plus
     every working-tree change, untracked files included. ``None`` when git
     cannot answer (the deny check then fails closed)."""
-    diff = _git(["diff", "--name-only", "--no-renames", f"{base}...HEAD"], tree)
+    # -z on both: without it git C-quotes a path holding a non-ASCII byte, a
+    # tab or a quote, and the quoted form matches no deny glob.
+    diff = _git(["diff", "--name-only", "-z", "--no-renames", f"{base}...HEAD"], tree)
     status = _git(["status", "--porcelain", "-z", "--untracked-files=all"], tree)
     if diff.returncode != 0 or status.returncode != 0:
         return None
-    paths = {ln.strip() for ln in diff.stdout.splitlines() if ln.strip()}
+    paths = {p for p in diff.stdout.split("\0") if p}
     entries = status.stdout.split("\0")
     i = 0
     while i < len(entries):
@@ -4190,8 +7195,25 @@ def changed_paths(tree: Path, base: str = "origin/main") -> list[str] | None:
     return sorted(p for p in paths if p)
 
 
+def _poll_deny_paths(store: Any, repo: str) -> tuple[str, ...]:
+    """The deny globs ``poll`` checks the branch against (td659522 R5): the
+    profile's own ``deny_paths`` for a non-default repo that sets some, else
+    :func:`lanes.deny_paths_for` exactly as before. The human-only set holds
+    either way (:func:`deny_violations`)."""
+    profile = _lanes.repo_profile(repo)
+    if repo != _lanes.DEFAULT_REPO and profile is not None:
+        if profile.deny_paths is not None:
+            return profile.deny_paths
+    return _lanes.deny_paths_for(store)
+
+
 def _deny_reason(
-    tree: Path, deny_paths: tuple[str, ...], base: str = "origin/main"
+    tree: Path,
+    deny_paths: tuple[str, ...],
+    base: str = "origin/main",
+    *,
+    governed_scan: bool = True,
+    allow_only: tuple[str, ...] | None = None,
 ) -> tuple[str | None, list[str]]:
     """``(why the branch breaks the deny paths, human-only paths hit)``.
     The check still runs on an empty ``deny_paths`` — human-only paths
@@ -4201,7 +7223,8 @@ def _deny_reason(
     retrying a forbidden edit (td658272).
     ``governs:factory`` skills (gr657066) join the set at ``base`` so a
     branch cannot un-tag the fence; the scan failing closes like an
-    unreadable diff."""
+    unreadable diff. ``governed_scan=False`` (another repo's slice,
+    td659522) skips it: governed skills are precis files."""
     paths = changed_paths(tree, base)
     if paths is None:
         return (
@@ -4209,7 +7232,11 @@ def _deny_reason(
             "failing closed",
             [],
         )
-    governed = _governs.governed_skill_paths_at_ref(tree, base, git=_git)
+    governed = (
+        _governs.governed_skill_paths_at_ref(tree, base, git=_git)
+        if governed_scan
+        else ()
+    )
     if governed is None:
         return (
             f"governed-skill scan could not read {base} in {tree} (git failed); "
@@ -4218,9 +7245,20 @@ def _deny_reason(
         )
     gov_paths = sorted(set(paths) & set(governed))
     hits = deny_violations(paths, deny_paths)
-    if not hits and not gov_paths:
+    outside = (
+        sorted(
+            p for p in paths if not any(fnmatch.fnmatchcase(p, g) for g in allow_only)
+        )
+        if allow_only is not None
+        else []
+    )
+    if not hits and not gov_paths and not outside:
         return None, []
     parts: list[str] = []
+    if outside:
+        parts.append(
+            "touched paths outside skill-editor scope: " + ", ".join(outside[:50])
+        )
     if hits:
         parts.append(
             "touched deny_write_paths: " + ", ".join(f"`{p}`" for p in hits[:50])
@@ -4597,7 +7635,10 @@ def _adapter_usage(
     ctx: Any, handle: dict[str, Any], log_text: str = ""
 ) -> dict[str, Any] | None:
     """The usage the session's adapter reports, stamped onto
-    ``meta.usage`` — a live job's reported usage is real spend.
+    ``meta.usage`` — a live job's reported usage is real spend. When
+    the usage names the model the CLI resolved and the job recorded no
+    launch model, the report is stamped onto ``meta.model`` too, so the
+    run's later test session reads a concrete model (gr702143).
     ``log_text`` is the session log; the live check passes ``""`` (only
     devin's ATIF exists mid-run — every other vendor's usage lands at
     the end)."""
@@ -4620,6 +7661,17 @@ def _adapter_usage(
             "checked_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         ctx.set_meta(usage=stamped)
+        reported = stamped.get("model")
+        if (
+            isinstance(reported, str)
+            and reported.strip()
+            and not str((ctx.meta or {}).get("model") or "").strip()
+        ):
+            # gr702143: the submit could not name the launch model (the
+            # account default was unrecorded) — the CLI's own report is
+            # the concrete record, so a later test session reads a named
+            # model off this job instead of an avoid-by-adapter fallback.
+            ctx.set_meta(model=reported.strip())
         return stamped
     return None
 
@@ -4821,7 +7873,46 @@ def _release_mint_holds(ctx: Any, handle: dict[str, Any], todo_id: int) -> list[
 
 def poll(ctx: Any, handle: Any) -> bool:
     """Detached poll half: ``False`` while the session runs; once it has
-    exited, the handoff, the branch state and the terminal status."""
+    exited, the handoff, the branch state and the terminal status. A
+    second-repo reviewer's detached tree (``handle["review"]``) is removed
+    once the run is over, whatever its outcome (td659522 step 5)."""
+    done = _poll_session(ctx, handle)
+    if done and isinstance(handle, dict):
+        acceptance = handle.get("acceptance_handle")
+        if isinstance(acceptance, dict) and _read_exit(acceptance) is None:
+            # A deny-path violation or vanished tree can end the job while
+            # its detached tests still run. Do not leave that group behind.
+            _kill_acceptance(handle)
+    if done and isinstance(handle, dict) and isinstance(handle.get("review"), dict):
+        _drop_review_tree(handle)
+    return done
+
+
+def _review_violation(
+    tree: Path, review: dict[str, Any], dirty: int | None, commits: list[str]
+) -> str | None:
+    """Why a second-repo reviewer broke its read-only brief, else ``None``:
+    it moved the detached tree's ``HEAD`` (a commit, a checkout), left
+    commits ahead of the base, or left uncommitted paths."""
+    parts: list[str] = []
+    want = review.get("head")
+    now = _git(["rev-parse", "HEAD"], tree)
+    head = now.stdout.strip() if now.returncode == 0 else ""
+    if want and head and head != want:
+        parts.append(f"HEAD moved to {head[:12]}")
+    if commits:
+        parts.append(f"{len(commits)} commit(s) ahead of the base")
+    if dirty:
+        parts.append(f"{dirty} uncommitted path(s)")
+    if not parts:
+        return None
+    return (
+        "the review session left " + ", ".join(parts) + " in its detached "
+        "tree, against a read-only brief; nothing is landed"
+    )
+
+
+def _poll_session(ctx: Any, handle: Any) -> bool:
     if not isinstance(handle, dict):
         _drop_submit_key(ctx)
         ctx.record_failure(f"run_slice: malformed handle {handle!r}")
@@ -4844,8 +7935,6 @@ def poll(ctx: Any, handle: Any) -> bool:
             or _budget_bound(ctx) > 0
         ):
             return False
-    ctx.set_meta(compute_handle_released=True)
-
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
     lane = (ctx.meta or {}).get("lane")
@@ -4924,7 +8013,19 @@ def poll(ctx: Any, handle: Any) -> bool:
     # whether the session honoured its deny rules (Bash writes included).
     # release-train T1: a release fix measures against its release branch.
     base = _land_base(ctx.store, todo_id)
-    denied, human_hits = _deny_reason(tree, _lanes.deny_paths_for(ctx.store), base)
+    # td659522 R5: the repo the slice built in, from the handle (submit
+    # stamps it for a non-default repo only). The precis-shaped steps
+    # below are gated on it; a handle without the key polls as before.
+    repo = str(handle.get("repo") or job_repo(ctx.meta or {}))
+    other_repo = repo != _lanes.DEFAULT_REPO
+    denied, human_hits = _deny_reason(
+        tree,
+        _poll_deny_paths(ctx.store, repo),
+        base,
+        # Governed skills are precis files: nothing to scan in another repo.
+        governed_scan=not other_repo,
+        allow_only=_skill_allow_only(ctx.store, todo_id),
+    )
     # Deny paths and commit lines are session text too (the session names
     # its files and writes its messages): the same scrub applies — redact
     # the known values; when a value could not be re-read, the entries
@@ -4950,6 +8051,82 @@ def poll(ctx: Any, handle: Any) -> bool:
         handoff = f"attempt FAILED, {denied}.\n\n{handoff}".strip()
     elif budget_note is not None:
         handoff = f"attempt FAILED, {budget_note}.\n\n{handoff}".strip()
+
+    committed = None
+    test_failure = None
+    worker_tests_ran = False
+    verdict = generator_verdict(result)
+    no_commit = _no_commit_kind(ctx.store, todo_id)
+    if (
+        exit_code == 0
+        and not is_error
+        and not denied
+        and not vanished
+        and budget_note is None
+    ):
+        if not _is_generator(ctx.store, todo_id):
+            if adapter.name == "devin_tree" and no_commit is None:
+                if other_repo:
+                    # The worker env carries credentials: for another repo
+                    # only the session and the lander run its code.
+                    worker_tests_ran, test_failure = False, None
+                else:
+                    acceptance = _devin_acceptance_tests(tree, handle, ctx)
+                    if acceptance is None:
+                        return False
+                    worker_tests_ran, test_failure = acceptance
+                if worker_tests_ran and test_failure is None:
+                    after_denied, after_human_hits = _deny_reason(
+                        tree,
+                        _lanes.deny_paths_for(ctx.store),
+                        base,
+                        allow_only=_skill_allow_only(ctx.store, todo_id),
+                    )
+                    if after_denied:
+                        test_failure = (
+                            "Devin acceptance tests left a failing deny_write_paths "
+                            "check; refusing worker commit"
+                        )
+                        if after_human_hits:
+                            ctx.set_meta(**{HUMAN_ONLY_KEY: after_human_hits})
+                paths = changed_paths(tree, base) if verdict is not None else None
+                preserve_verdict = paths is not None and all(
+                    p.startswith("tests/") for p in paths
+                )
+                if test_failure is None and not preserve_verdict:
+                    committed = _commit_for_session(
+                        tree,
+                        todo_id,
+                        fallback_message=_session_commit_fallback(ctx.store, todo_id),
+                    )
+                ctx.set_meta(
+                    acceptance_tests={
+                        "paths": handle.get("acceptance_tests", []),
+                        "passed": test_failure is None if worker_tests_ran else None,
+                    }
+                )
+            else:
+                paths = (
+                    changed_paths(tree, base)
+                    if adapter.name == "devin_tree" and verdict is not None
+                    else None
+                )
+                if paths is None or any(not p.startswith("tests/") for p in paths):
+                    committed = _commit_for_session(
+                        tree,
+                        todo_id,
+                        # gr702644: a session that says its commit was
+                        # blocked gets the worker's commit under a
+                        # generated subject even without
+                        # scratch/commit-msg.txt; a commit that still
+                        # fails park-saves the tree on the failure path
+                        # (_slice_park.save_at_job_end).
+                        fallback_message=(
+                            _session_commit_fallback(ctx.store, todo_id)
+                            if _commit_blocked(result)
+                            else None
+                        ),
+                    )
     if unscrubbed:
         # The raw result may quote a key the poll cannot name — the todo
         # gets the withheld comment instead of any session text (review
@@ -4970,58 +8147,7 @@ def poll(ctx: Any, handle: Any) -> bool:
         except Exception:  # pragma: no cover — the job outcome still lands
             log.warning("run_slice: handoff comment on td%d failed", todo_id)
 
-    committed = None
-    test_failure = None
-    worker_tests_ran = False
-    verdict = generator_verdict(result)
-    no_commit = _no_commit_kind(ctx.store, todo_id)
-    if (
-        exit_code == 0
-        and not is_error
-        and not denied
-        and not vanished
-        and budget_note is None
-    ):
-        if not _is_generator(ctx.store, todo_id):
-            if adapter.name == "devin_tree" and no_commit is None:
-                worker_tests_ran, test_failure = _devin_acceptance_tests(tree, handle)
-                if worker_tests_ran and test_failure is None:
-                    after_denied, after_human_hits = _deny_reason(
-                        tree, _lanes.deny_paths_for(ctx.store), base
-                    )
-                    if after_denied:
-                        test_failure = (
-                            "Devin acceptance tests left a failing deny_write_paths "
-                            "check; refusing worker commit"
-                        )
-                        if after_human_hits:
-                            ctx.set_meta(**{HUMAN_ONLY_KEY: after_human_hits})
-                paths = changed_paths(tree, base) if verdict is not None else None
-                preserve_verdict = paths is not None and all(
-                    p.startswith("tests/") for p in paths
-                )
-                if test_failure is None and not preserve_verdict:
-                    refs = _fixes_refs(ctx.store, todo_id)
-                    handles = ", ".join([*refs[1:], refs[0]])
-                    committed = _commit_for_session(
-                        tree,
-                        todo_id,
-                        fallback_message=f"fix(slice): complete ({handles})\n",
-                    )
-                ctx.set_meta(
-                    acceptance_tests={
-                        "paths": handle.get("acceptance_tests", []),
-                        "passed": test_failure is None if worker_tests_ran else None,
-                    }
-                )
-            else:
-                paths = (
-                    changed_paths(tree, base)
-                    if adapter.name == "devin_tree" and verdict is not None
-                    else None
-                )
-                if paths is None or any(not p.startswith("tests/") for p in paths):
-                    committed = _commit_for_session(tree, todo_id)
+    ctx.set_meta(compute_handle_released=True)
     if test_failure:
         if pairs:
             test_failure = _redact(test_failure, pairs)
@@ -5038,18 +8164,34 @@ def poll(ctx: Any, handle: Any) -> bool:
     if unscrubbed:
         commits = [ln for ln in commits if not any(n in ln for n in _KIMI_ENV_NAMES)]
     ctx.set_meta(exit_code=exit_code, branch_dirty=dirty, branch_commits=commits[:50])
+    # A second-repo reviewer has no branch and no commits to land; its tree
+    # is the landed commit, read-only. A session that changed it is noted
+    # and still posts its verdict (posted above); a generator never lands.
+    review = handle.get("review")
+    review_note = (
+        _review_violation(tree, review, dirty, commits)
+        if isinstance(review, dict) and not vanished
+        else None
+    )
     vendor = "claude" if adapter.name == "claude_p" else adapter.name
     error_note = (
         f", {vendor} reported an error" if is_error and result is not None else ""
+    )
+    tree_label = (
+        "Detached review tree"
+        if isinstance(review, dict)
+        else f"Branch {slice_branch(todo_id)}"
     )
     summary = [
         f"run_slice td{todo_id} on lane {lane}: exit "
         f"{'unknown (process gone, no exit status)' if exit_code is None else exit_code}"
         f"{error_note}.",
-        f"Branch {slice_branch(todo_id)} in {tree}: "
+        f"{tree_label} in {tree}: "
         f"{'?' if dirty is None else dirty} uncommitted path(s), "
         f"{len(commits)} commit(s) ahead of {base}.",
     ]
+    if review_note:
+        summary.append(f"Read-only violation: {review_note}.")
     if denied:
         summary.append(f"Deny check: {denied}.")
     if budget_note is not None:
@@ -5060,6 +8202,11 @@ def poll(ctx: Any, handle: Any) -> bool:
         summary.append(f"Tests: {test_failure}.")
     elif worker_tests_ran:
         summary.append("Tests: supplied acceptance tests passed on the worker.")
+    elif tests_not_run(result):
+        # gr674798: legible on the summary either way the rule lands —
+        # a code run's checked mint, a validate verdict's close, or a
+        # verdict-less validate's failed gate.
+        summary.append("Tests: session declared `tests: NOT RUN` (gr674798).")
     clean = (
         exit_code == 0
         and not is_error
@@ -5093,10 +8240,11 @@ def poll(ctx: Any, handle: Any) -> bool:
     # ladder either way.
     gate_ok = True
     gate_failed: list[str] = []
+    gate_reasons: dict[str, str] = {}
     compiled = None
     corrected = False
     tests_expected = False
-    tests_observed = bool(worker_tests_ran or tests_ran(result))
+    tests_observed: bool | None = bool(worker_tests_ran or tests_ran(result))
     # ``ctx.meta`` is the claim-time snapshot: the usage this terminal
     # pass just stamped (claude's whole envelope lands only here —
     # ``num_turns`` included) is invisible to ``_job_num_turns`` unless
@@ -5115,6 +8263,18 @@ def poll(ctx: Any, handle: Any) -> bool:
         branch_paths = changed_paths(tree) if not vanished else None
         if task_class == _outcome.TEST_TASK_CLASS:
             tests_expected = True
+            if not tests_observed:
+                # gr685988: a validate run that delivered its verdict —
+                # ``validated:``/``moot:`` on the final message's first
+                # line, or anywhere in the result the way the close arms
+                # read it — owes no test receipt on top: the brief's
+                # re-run-or-LLM-read IS the validation, and a docs or
+                # skill fix has no test to run. ``tests: NOT RUN`` is
+                # recorded (``None``), not a failure; a validate run
+                # carrying no verdict still owes the receipt.
+                closing = verdict or any_verdict(result)
+                if closing is not None and closing[0] in ("validated", "moot"):
+                    tests_observed = None
         elif task_class == _DEFAULT_TASK_CLASS:
             # Every code run that produced owes the tests receipt —
             # the every-run gate (review td655142): a brief naming no
@@ -5123,6 +8283,19 @@ def poll(ctx: Any, handle: Any) -> bool:
             # that left no commits owes none — the empty/no-commit
             # arms own that shape.
             tests_expected = bool(commits) and no_commit is None
+            if not tests_observed and tests_not_run(result):
+                # gr674798: a code run that declared ``tests: NOT RUN —
+                # <why>`` honestly reported its sandbox could not run
+                # a step — an unobservable gate (``None``), not the
+                # refused receipt a marker-free hand-off still fails
+                # on. Its evidence comes from the checked mint below —
+                # ``--checked`` when ``ship_flag``'s spot selection
+                # allows, else ``--quick`` and the release gate's CI
+                # run (gr599427). A validate run declares through its
+                # verdict instead (the ``validated:``/``moot:`` waiver
+                # above, gr685988); a validate NOT RUN carrying no
+                # verdict stays the failed gate it always was.
+                tests_observed = None
         compiled = _compile_gate(tree, branch_paths)
         corrected = any(not p.startswith("tests/") for p in branch_paths or ())
         gates = _outcome.hard_gates(
@@ -5141,10 +8314,32 @@ def poll(ctx: Any, handle: Any) -> bool:
             test_failure=test_failure,
         )
         gate_failed = sorted(k for k, v in gates.items() if v is False)
+        gate_reasons = {name: _gate_why(name, task_class) for name in gate_failed}
     except Exception:  # pragma: no cover — a gate fault does not convict
         log.warning("run_slice: hard-gate eval on td%d failed", todo_id)
         gate_ok = True
-    if land and not commits and gate_ok:
+    if (terminal := _terminal_status(ctx.store, todo_id)) is not None:
+        # gr663909: a terminal STATUS set while the run was in flight is a
+        # ruling on the work itself and outranks the run's own close —
+        # the whole writeback is discarded: no land mint (the ruling may
+        # be exactly "do not land this"), no verdict close, no reopen.
+        # The lease functions below carry the same guard; this arm stops
+        # the arms that would act on the run's result at all.
+        summary.append(
+            f"Close: none — td{todo_id} was already STATUS:{terminal} when "
+            "the run ended; the run's result was discarded."
+        )
+        # The run is over either way, so its lease still drops — a
+        # ``claimed-by:`` tag outliving its run on a terminal todo never
+        # ages out (hygiene skips closed nodes). Only this run's lane
+        # claim goes, the same drop the lease functions make.
+        if lane:
+            ctx.store.remove_tag(todo_id, Tag.open(f"claimed-by:lane-{lane}"))
+        try:
+            _discarded_writeback(ctx.store, todo_id, terminal)
+        except Exception:  # pragma: no cover — the job outcome still lands
+            log.warning("run_slice: discarded-run comment on td%d failed", todo_id)
+    elif land and not commits and gate_ok:
         # A ``moot:`` claim on a CODE task must verify before it may
         # close the plan (td584381 S1d): first line or anywhere in the
         # result — the ``handoff:`` comment's source text, already
@@ -5154,11 +8349,17 @@ def poll(ctx: Any, handle: Any) -> bool:
         # node untagged: the release plan is not moot, so
         # ``_verified_moot``'s ``verdict:moot`` + gripe stamp would kill
         # the pass the loop is fixing.
-        fix_node = no_commit is None and _fix_node(ctx.store, todo_id)
+        # The fix-node rulings read precis main (`_fetch_main`): precis-only.
+        fix_node = (
+            no_commit is None and not other_repo and _fix_node(ctx.store, todo_id)
+        )
         fix_moot = _fix_moot(tree, result, base) if fix_node else None
+        # Another repo's `moot:` cannot be checked against precis main (nor
+        # its tests run on the worker): never verified, so it fails closed
+        # below like an unverified devin claim.
         verified = (
             _verified_moot(ctx.store, tree, result, todo_id, base)
-            if no_commit is None and not fix_node
+            if no_commit is None and not fix_node and not other_repo
             else None
         )
         if verified is not None and verified.get("release_pass"):
@@ -5213,6 +8414,15 @@ def poll(ctx: Any, handle: Any) -> bool:
             # A bare claim cannot bypass the SHA-bearing code-build grammar
             # via the position-free fallback after _verified_moot refuses it.
             found = None
+        if (
+            other_repo
+            and no_commit is None
+            and found is not None
+            and found[0] == "moot"
+        ):
+            # td659522: the same fail-closed path for another repo, any
+            # adapter — an unverifiable `moot:` must not close the todo.
+            found = None
         # gr648125 (r288/r290): the fix node's declared ``moot:``/``no-op:``
         # close when ``_fix_moot``'s sha gates could not verify it — the
         # branch's empty diff against ``origin/main`` is itself the proof
@@ -5223,6 +8433,34 @@ def poll(ctx: Any, handle: Any) -> bool:
             _fix_declared(tree, result, base)
             if fix_node and fix_moot is None and norepro is None
             else None
+        )
+        # gr674785 (td665126 burned all five rungs on this): before the
+        # arms below rule on what the session SAID, re-judge the branch
+        # it INHERITED — the submit-time ``branch_tip``/``branch_ahead``
+        # the job meta recorded. A session that rebases its slice branch
+        # onto main drops the already-carried commits itself; the tree
+        # then reads empty and its "nothing left" is the carry, not a
+        # failure. Patch-equivalence of that tip on the base is the same
+        # proof the verified-moot arm lands.
+        tip = str((ctx.meta or {}).get("branch_tip") or "")
+        ahead = (ctx.meta or {}).get("branch_ahead")
+        carried_tip = (
+            _carried_on_base(tree, base, tip)
+            if (
+                tip
+                and isinstance(ahead, int)
+                and not isinstance(ahead, bool)
+                and ahead > 0
+                and no_commit is None
+                and not vanished
+            )
+            else None
+        )
+        # gr681208: the verdict arms re-hold a live pre-land gate rather
+        # than close bare; the flag mirrors the land arm's ``checked``
+        # for the fallback land params (no worker commit exists here).
+        checked = not tests_ran(result) or (
+            adapter.name == "devin_tree" and not worker_tests_ran
         )
         if verified is not None:
             # td584381 S1d (td584601): the session found the fix already
@@ -5331,18 +8569,26 @@ def poll(ctx: Any, handle: Any) -> bool:
             kind_, why = verdict
             moot = kind_ == "moot"
             land = False
-            close_todo(
-                ctx.store,
-                todo_id,
-                str(lane) if lane else None,
-                tags=(MOOT_TAG,) if moot else (),
+            hold = (
+                _preland_verdict_hold(ctx, todo_id, tree, lane, checked, kind_, base)
+                if no_commit is None and not other_repo
+                else None
             )
-            summary.append(
-                f"Land: none, by verdict "
-                f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
-                f"td{todo_id} "
-                f"closed{' and tagged for the tick to close the plan' if moot else ''}."
-            )
+            if hold is not None:
+                summary.append(hold)
+            else:
+                close_todo(
+                    ctx.store,
+                    todo_id,
+                    str(lane) if lane else None,
+                    tags=(MOOT_TAG,) if moot else (),
+                )
+                summary.append(
+                    f"Land: none, by verdict "
+                    f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
+                    f"td{todo_id} "
+                    f"closed{' and tagged for the tick to close the plan' if moot else ''}."
+                )
         elif found is not None:
             # gr602896: a verdict anywhere — a ``moot:`` the sha gates
             # could not verify (a cross-plan fix names its own plan's td,
@@ -5353,17 +8599,68 @@ def poll(ctx: Any, handle: Any) -> bool:
             kind_, why = found
             moot = kind_ == "moot"
             land = False
+            hold = (
+                _preland_verdict_hold(ctx, todo_id, tree, lane, checked, kind_, base)
+                if no_commit is None and not other_repo
+                else None
+            )
+            if hold is not None:
+                summary.append(hold)
+            else:
+                close_todo(
+                    ctx.store,
+                    todo_id,
+                    str(lane) if lane else None,
+                    tags=(MOOT_TAG,) if moot else (),
+                )
+                summary.append(
+                    f"Land: none, by verdict "
+                    f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
+                    f"td{todo_id} "
+                    f"closed{' and tagged for the tick to close the plan' if moot else ''}."
+                )
+        elif carried_tip is not None:
+            # gr674785: the work this run inherited was already on the
+            # base — the session's rebase dropped the carried commits,
+            # so its "nothing left" was the carry, not a failure. The
+            # verified close: done + tag + the landing sha for
+            # ``_step_moot`` to resolve the gripe on, exactly like the
+            # verified-moot arm — no attempt, no ask, no rescue. A
+            # release-fix node takes the same close UNTAGGED like its
+            # other rulings: the release plan is not moot.
+            land = False
+            sha = str(carried_tip.get("sha") or "")
+            line_ = (
+                f"{slice_branch(todo_id)}'s pre-session tip is already "
+                f"on {base}" + (f" — patch-equivalent to {sha[:12]}" if sha else "")
+            )
             close_todo(
                 ctx.store,
                 todo_id,
                 str(lane) if lane else None,
-                tags=(MOOT_TAG,) if moot else (),
+                tags=() if fix_node else (MOOT_TAG,),
             )
+            try:
+                _append_comment(ctx.store, todo_id, f"moot: {line_}")
+            except Exception:  # pragma: no cover — the close still stands
+                log.warning("run_slice: carried-moot note on td%d failed", todo_id)
+            if fix_node:
+                ctx.set_meta(
+                    **{
+                        FIX_VERIFIED_KEY: {
+                            "kind": "carried",
+                            "sha": sha,
+                            "line": line_[:300],
+                        }
+                    }
+                )
+            else:
+                ctx.set_meta(**{MOOT_VERIFIED_KEY: {"sha": sha, "line": line_[:300]}})
             summary.append(
-                f"Land: none, by verdict "
-                f"`{kind_}: {_WITHHELD_TEXT if unscrubbed else why[:200]}`; "
-                f"td{todo_id} "
-                f"closed{' and tagged for the tick to close the plan' if moot else ''}."
+                f"Land: none — {line_} ({carried_tip['how']}); "
+                f"td{todo_id} closed"
+                + ("" if fix_node else " and tagged for the tick to close the plan")
+                + " (gr674785)."
             )
         elif no_commit is not None:
             # gr570534 / jo570327: a brief-writer (or any node whose
@@ -5426,13 +8723,22 @@ def poll(ctx: Any, handle: Any) -> bool:
         # checked when the worker committed the tree the builder left
         # or the hand-off carries no green marker. Supplied acceptance tests
         # cover the ask, not the impacted-test gate after a worker commit.
-        # ``--checked`` re-runs the impacted tests before land.
+        # ``--checked`` re-runs the impacted tests before land — but
+        # only when ``ship_flag``'s spot selection allows; a wider
+        # answer lands ``--quick`` and the release gate's CI run is
+        # the gate (gr599427).
+        # gr674798: a declared ``tests: NOT RUN — <why>`` reaches here —
+        # the code run's gate read it unobservable, not refused, so this
+        # checked mint asks for the run's missing test evidence.
         checked = (
             (committed is not None and committed.startswith(WORKER_COMMITTED))
             or not tests_ran(result)
             or (adapter.name == "devin_tree" and not worker_tests_ran)
         )
-        preland = _preland_reviewer(ctx.store, todo_id)
+        # The pre-land review (its branch push needs the credential) stays
+        # precis-only: a second repo's reviewer runs after the land, in a
+        # detached tree at the landed sha (td659522 step 5).
+        preland = None if other_repo else _preland_reviewer(ctx.store, todo_id)
         if preland is not None:
             # gr570506 (Reto 2026-11-12): the review gates the land — the
             # squash onto main is the LAST step, minted by the tick on the
@@ -5443,6 +8749,30 @@ def poll(ctx: Any, handle: Any) -> bool:
                 )
             except Exception as exc:
                 log.warning("run_slice: pre-land defer for td%d failed", todo_id)
+                # gr663738: the branch never reached origin — the work
+                # sits only in this worktree. Stamp the tip that failed
+                # to push so the tick neither closes the node on a stale
+                # `validated:` handoff nor sweeps its chain won't-do
+                # without an ask; a later successful defer clears it.
+                from precis.plans.templates import PRELAND_DEFER_FAILED_KEY
+
+                tip = (
+                    _git(
+                        ["rev-parse", f"refs/heads/{slice_branch(todo_id)}"],
+                        tree,
+                    ).stdout
+                    or ""
+                ).strip()
+                try:
+                    ctx.store.stamp_ref_meta(
+                        todo_id, {PRELAND_DEFER_FAILED_KEY: tip or True}
+                    )
+                except Exception:
+                    log.warning(
+                        "run_slice: preland_defer_failed stamp for td%d failed",
+                        todo_id,
+                        exc_info=True,
+                    )
                 nothing = f"exited clean but the pre-land defer failed ({exc})"
             else:
                 ctx.set_meta(preland_review=preland)
@@ -5453,6 +8783,23 @@ def poll(ctx: Any, handle: Any) -> bool:
                 )
         else:
             try:
+                if other_repo:
+                    # The mint runs no validate_submit; ask the lander now
+                    # so a refusal is this attempt's legible failure, not a
+                    # dead land job the todo never hears about (td659522).
+                    from precis.workers.job_types import land_slice as _ls
+
+                    refused = _ls.validate_submit(
+                        ctx.store,
+                        params=_land_params(ctx, todo_id, tree, lane, checked),
+                    )
+                    if refused:
+                        _append_comment(
+                            ctx.store,
+                            todo_id,
+                            f"{_LANDER_HANDOFF_PREFIX} land FAILED: {refused}",
+                        )
+                        raise RuntimeError(refused)
                 land_job = _mint_land(ctx, todo_id, tree, lane, checked=checked)
             except Exception as exc:
                 log.warning("run_slice: land_slice mint for td%d failed", todo_id)
@@ -5466,8 +8813,14 @@ def poll(ctx: Any, handle: Any) -> bool:
         # and the no-commit close alike. The run is a failed attempt on
         # the ladder, the outcome record saying which gate the "done"
         # lied about; a validate run's gate failure is no exemption.
+        # gr685988: each failed gate names why the node's class owed it,
+        # so a skipped test never reads as a docs read.
         nothing = "exited clean but failed the hard gate(s): " + (
-            ", ".join(gate_failed) or "unrecorded"
+            ", ".join(
+                f"{name} — {gate_reasons.get(name) or 'required of this run'}"
+                for name in gate_failed
+            )
+            or "unrecorded"
         )
         summary.append(f"Close: none — {nothing}.")
     # gr595545: eval-run-spine's two columns on the job row — the
@@ -5528,6 +8881,18 @@ def poll(ctx: Any, handle: Any) -> bool:
         return True
 
     _revoke_slice_grant(ctx, todo_id, grant, "failed")
+    if not vanished and not isinstance(review, dict) and not other_repo:
+        # Park = save (_slice_park): whether this failure ends in a retry
+        # or a park is the tick's call, made on another host — so the
+        # work is saved here, on the host that holds the tree, before the
+        # tick sees the failure. Never blocks or masks the failure.
+        _slice_park.save_at_job_end(
+            ctx,
+            tree,
+            todo_id,
+            budget_note or denied or test_failure or nothing or f"exit {exit_code}",
+            base=base,
+        )
     attempt = None
     try:
         attempt = release_todo(ctx.store, todo_id, str(lane) if lane else None)
@@ -5548,10 +8913,13 @@ def poll(ctx: Any, handle: Any) -> bool:
         or gone
         or f"failed (exit {exit_code})"
     )
-    reason = (
-        f"run_slice: session for td{todo_id} {what}; todo back to open, "
-        f"attempt:{attempt}"
-    )
+    if attempt is not None:
+        lease_note = f"todo td{todo_id} back to open, attempt:{attempt}"
+    elif (standing := _terminal_status(ctx.store, todo_id)) is not None:
+        lease_note = f"todo td{todo_id} stays STATUS:{standing} (result discarded)"
+    else:
+        lease_note = f"todo td{todo_id} lease released (no attempt recorded)"
+    reason = f"run_slice: session for td{todo_id} {what}; {lease_note}"
     if tail:
         reason = f"{reason}\n--- log tail ---\n{tail}"
     ctx.record_failure(reason)
@@ -5569,11 +8937,19 @@ def release(ctx: Any, handle: Any) -> None:
             _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         except Exception:  # pragma: no cover — the lease still releases
             log.warning("run_slice: slice-token revoke on release failed")
+    if isinstance(handle, dict) and isinstance(handle.get("review"), dict):
+        _drop_review_tree(handle)
     lane = meta.get("lane")
     if lane and f"claimed-by:lane-{lane}" not in _open_tag_values(ctx.store, todo_id):
         return
-    if todo_id and _todo_status(ctx.store, todo_id) == "doing":
-        release_todo(ctx.store, todo_id, str(lane) if lane else None)
+    if todo_id:
+        # ``doing`` takes the ordinary release; a ruling (gr663909 — not
+        # the machine's own pre-land hold) drops only the dead claim.
+        if (
+            _todo_status(ctx.store, todo_id) == "doing"
+            or _terminal_ruling(ctx.store, todo_id) is not None
+        ):
+            release_todo(ctx.store, todo_id, str(lane) if lane else None)
 
 
 def kill(ctx: Any, handle: Any) -> None:
@@ -5581,6 +8957,7 @@ def kill(ctx: Any, handle: Any) -> None:
     _drop_submit_key(ctx)
     if not isinstance(handle, dict):
         return
+    _kill_acceptance(handle)
     grant = _handle_grant(handle)
     if grant is not None:
         params = (getattr(ctx, "meta", None) or {}).get("params") or {}
@@ -5612,6 +8989,7 @@ __all__ = [
     "factory_off",
     "kill",
     "parse_result",
+    "path_with_user_uv",
     "poll",
     "release",
     "release_todo",

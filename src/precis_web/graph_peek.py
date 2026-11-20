@@ -1,5 +1,5 @@
 """Per-node peek cards for the graph focus page
-(``docs/backlog/web-graph-navigation.md`` items 8 and 8b).
+(`me694223` items 8 and 8b).
 
 Hover or keyboard focus on a ring node shows a short summary of that
 node: its hook line and kind, its per-relation link counts (stored

@@ -7,8 +7,9 @@
 > holds four things and nothing else: what each pillar is for, which thread
 > files carry it, where declared activity is listed, and the retirement rules.
 > **Pointers and intent only** — the same rule as a thread file. An item's
-> content lives in `docs/backlog/<slug>.md`; a thread's order lives in its
-> thread file; the mission prose lives in `docs/mission.md`.
+> content lives in its graph spec or gripe (`precis-spec-help`, hub
+> `me568215`); a thread's order lives in its thread file; the mission prose
+> lives in `docs/mission.md`.
 >
 > Update at the same four moments as a thread file, plus one: when the
 > fleet roster changes.
@@ -57,12 +58,12 @@ Reto, 2026-10-17: Pillar 1 winds down to maintenance once memory P4 and
 conventions-as-findings land; Pillar 2's intent → realize loop is active,
 driven by spec `me628986` (pocket-from-molecule); Pillar 5 (Operations) takes the deploy,
 security, monitoring, gate and serving threads, all active. Gripe waves
-remain the execution model. The November catpath paper and castor
+remain the execution model. The November catpath paper and local-serving
 medium-tier routing are open decisions; their threads keep their rank.
 
 Pillars describe enduring outcomes; programmes coordinate related threads;
 threads own the next build and its acceptance. Read only the owning thread
-and linked spec for a task. The [programme review](backlog/parallel-programme-cycle.md)
+and linked spec for a task. The programme review (me690317)
 maps current next steps and blockers; these are the durable ownership seams:
 
 | Programme | Owning threads | Build → dogfood outcome |
@@ -77,7 +78,7 @@ maps current next steps and blockers; these are the durable ownership seams:
 | Paper + catalysis | [Nanobuds paper](backlog/threads/nanobuds-paper.md), [catalysis](backlog/threads/catalysis-selectivity.md) | Export with evidence pins; compare complete reaction networks under the existing research holds. |
 | Pocket from molecule (intent → realize) | [Nanoreactor](backlog/threads/nanoreactor.md), [machine design](backlog/threads/se-machine-design.md) | Paint a posed molecule's surface with properties, invert it into a region-property pocket spec and realise a wall that meets it. |
 | Operations | [Deploy](backlog/threads/deploy-fleet-ops.md), [security](backlog/threads/security-hardening.md), [monitors](backlog/threads/monitors-that-go-quiet.md), [ship gate](backlog/threads/ship-gate-ci.md), [serving](backlog/threads/serving-programme.md), [session MCP](backlog/threads/session-mcp-shared-server.md) | A deploy, a gate verdict and an alert each arrive on time and say what they did; no leaked credential stays live. |
-| Agent surface + Drive | [Agent surface](backlog/threads/agent-surface.md); [Drive spec](backlog/drive-filter-hierarchy.md) | A misused call refuses with its fix; a new user finds a known object through a bounded set of visible choices. |
+| Agent surface + Drive | [Agent surface](backlog/threads/agent-surface.md); Drive spec (me690816) | A misused call refuses with its fix; a new user finds a known object through a bounded set of visible choices. |
 
 Every programme uses the [build/release/dogfood cycle](runbooks/release-cycle.md).
 Each task has its own branch and worktree; integration and release work also
@@ -99,20 +100,20 @@ below). `docs/mission.md` §"Memory is the graph" carries the one-paragraph
 statement agents read.
 
 **Where it stands.** The substrate half is threaded and moving under
-`knowledge-mesh.md`: `backlog/knowledge-mesh.md` (Reto's own statement of
-this pillar), `backlog/measures-substrate.md`, `backlog/graph-gardener-value.md`,
-`backlog/corpus-quantitative-extraction.md`. The consumer half was entirely
+`knowledge-mesh.md`: me693314 (Reto's own statement of
+this pillar), me693370, me693885,
+me694248. The consumer half was entirely
 unthreaded at the review and is now `graph-memory-consumers.md`. The
 review's evidence that the mission had not sunk in: a paper session did its
 proposal in a temp file and its write checks in SQL because the surface had
 no affordance (shipped 2026-10-02 as draft `view='history'`/`'proposals'`
 and the landed-sha edit ack); the memory
 skill declares precis memory a different system from the harness files
-(`backlog/file-mirror.md`); fisheye raises `Unsupported` on paper and
+(me693606); fisheye raises `Unsupported` on paper and
 memory, and no human graph browse existed (the eye-ladder item, since
 shipped 2026-10-12 — `/eye/<handle>` is that surface). The same day a sibling session
-given the same goal filed `backlog/experiment-loop.md` (hypothesis → test
-→ measure → verdict through the verbs), `backlog/draft-linearization.md`
+given the same goal filed me693311 (hypothesis → test
+→ measure → verdict through the verbs), me693562
 (a draft is a render of a subgraph) and relation constraints (shipped
 2026-10-02 as columns on `relations`); the open two are ranked in
 `knowledge-mesh.md`.
@@ -130,7 +131,7 @@ the taproot umbrella vs its defect cluster, recorded in `threads/INDEX.md`.
 Top priority (Reto, 2026-10-07, "cut over soon"): the cutover sequence.
 Done: recall/walk/keep, the mirror (`cli/memory_mirror.py`), the real
 import, and the hook; `MEMORY.md` has been a pointer to the mesh root
-memory node since 2026-10-13. Open: `backlog/memory-native-authoring.md` as
+memory node since 2026-10-13. Open: me690866 as
 the primary write path, then skills into the mesh. One write path (the
 graph); files are derived.
 Wind-down (Reto, 2026-10-17): once memory P4 (landed 2026-10-18) and
@@ -154,16 +155,16 @@ scaffolding, pockets with patterned regions) and macroscale (PCBs,
 microfluidic cartridges, motors, mechanics) are children of one design.
 
 **North-star specs.** spec `me628475` (Reto's system spec, in graph
-memory) with `backlog/multiscale-design-architecture.md` as the map;
-`backlog/se-kind.md`; spec `me628986` (pocket-from-molecule, carries the
+memory) with me694206 as the map;
+me694842; spec `me628986` (pocket-from-molecule, carries the
 non-geometric region layer, decided 2026-09-30).
 
 **Named test pieces**, in build order: the **box** and the **rotary
 ratchet valve** (`hexfold` spec §28); the **T-handle bearing**
-(`backlog/hexfold-t-handle-bearing.md`, third piece, Reto 2026-09-30); the
+(me689752, third piece, Reto 2026-09-30); the
 **torus with an instrumentation leg**
 (spec `me630357` in graph memory); **DNA scaffold around a carbon
-part** (`backlog/se-chain-wrap-around-part.md`); the cross-scale flagship,
+part** (me694058); the cross-scale flagship,
 a bistable azobenzene driving a folding-chair tensegrity switched by two
 wavelengths (spec `me628475` Addendum A1); the running mechanical example, the
 unicycle. Authored smooth surfaces and their carbon tiling are tracked by the
@@ -178,7 +179,7 @@ per-region property layer, the DNA wrap, and one assembly across scales
 (spec `me630082`; microfluidic cartridges,
 parked 2026-09-12, unparked to the horizon only). Pockets as defined
 classes and pick-and-join as a membership query are
-`backlog/class-lattice-similarity-spaces-and-laws.md` (owned by
+me692057 (owned by
 knowledge-mesh, consumed here) and spec `me629033` (pocket-from-molecule slice 4).
 The intent → realize loop is active (Reto, 2026-10-17), driven by
 spec `me628986` (pocket-from-molecule) through `nanoreactor.md` (owner) and
@@ -195,6 +196,9 @@ by the catalysis quests.
 2026-10-02, ranked high by Reto: NO→NH₃ must win every fork,
 thermodynamically and kinetically, over a U/pH window, on a complete
 network; plus the explorer's one-step-per-change diagram) ·
+`catpath.md` (created and activated 2026-11-14, Reto, gr635804: the
+catpath engine's validation and backlog get their own thread and
+coordinator session) ·
 `hexfold-toolkit.md` · `se-3d-viewer.md` ·
 `se-nucleic-chain.md` (dormant 2026-10-17: blocked on hexfold
 integration) · `ewod-pcb.md` (also owns the general PCB items —
@@ -211,7 +215,7 @@ code-first structure and pcb workspaces). Dormant: `multiscale-design-core.md`.
 **Direction** (Reto, 2026-10-22): designs are built by Python scripts run
 in sandboxed workspaces, every row carrying its call-site frame and
 `script_sha`; MCP keeps inspection, place/route and small edits
-(`backlog/structure-workspaces.md`, `backlog/pcb-workspace-code.md`,
+(me693174, me693071,
 thread `structure-workspaces.md`).
 
 **Surfaces.** Agent: a design reads out as the workspace script that built
@@ -234,20 +238,20 @@ tier ladder moved to cloud at every rung on 2026-08-15 and the local
 servers returned in October. The share is measured by `get(kind='llm',
 id='/placement')`: landed (`placement`) and routed (`placement_routed`,
 migration 0179, recorded from the round-1 deploy on). No monitor
-answers "is capacity idle", and `backlog/cluster-scheduling.md` tears
+answers "is capacity idle", and me695459 tears
 servers down when the backlog drains — the inverse of this pillar, now
-superseded by `backlog/graph-gardener-value.md` slice 5 (idle filler). The embedder is the
+superseded by me693885 slice 5 (idle filler). The embedder is the
 current bottleneck (`src/precis/embedder_service.py` (capacity decided 2026-10-02)). Reto
 2026-10-01: bring local compute back — summariser first
-(the shipped local summarise chain (`workers/job_types/derived_drain.py`)), then the model that fits one spark
-(`backlog/vllm-per-node-serving.md` Slice 0).
+(the shipped local summarise chain (`workers/job_types/derived_drain.py`)), then the model that fits one GPU node
+(me695305 Slice 0).
 
 **Compute reserve: Meluxina** (Reto, 2026-10-02: "we should use compute
 there"). An external Slurm HPC allocation. Two uses, coordinated by
 `local-compute.md`: LLM operations through `slullama`, as
-a placement-chain rung (`backlog/slullama-hpc-placement.md`: the card is
+a placement-chain rung (me695656: the card is
 shipped dark, the rung waits on the tunnel key being registered with the
-provider; td345845 as written is about melchior reaching castor/pollux,
+provider; td345845 as written is about the agent host reaching the DGX nodes,
 not the Meluxina login); and catpath
 runs and ML-potential/DFT batches, with chemistry and hexfold as consumers.
 Batch stage/submit/poll/fetch is a separate runner from LLM tunnel serving.
@@ -259,16 +263,16 @@ space is about 97% full by bytes and by inodes, so the only footprint that
 fits is one Apptainer image per workload on project space, every per-job
 write on the node-local scratch, results pulled back and the stage
 deleted. The next integration slice needs its own spec once a local GPAW
-relax is verified (see the [programme review](backlog/parallel-programme-cycle.md)).
+relax is verified (see the programme review (me690317)).
 How it shows in the local-versus-cloud share
 (its own row, or folded into local) is undecided. No hostname, address or
 account id for it goes in this repo; coordinates live in the gitignored
 overlay.
 
 **Threads.** `local-compute.md` (owns local serving: the summariser
-and the single-spark model, and what they do). The MCP serving threads
+and the single-GPU-node model, and what they do). The MCP serving threads
 (`session-mcp-shared-server.md`, `serving-programme.md`) moved to Pillar 5
-on 2026-10-17. Castor medium-tier routing is an open decision.
+on 2026-10-17. Local-model medium-tier routing is an open decision.
 
 **Surfaces.** One console row answers busy or idle per tier
 (`get(kind='llm', id='/placement')` for the share;
@@ -281,19 +285,19 @@ calendar. Not started, by decision (Reto 2026-09-30): user privacy and
 per-user management come first.
 
 **Gate**, both before any personal data enters the graph:
-`backlog/identity-and-access.md` + `backlog/per-user-library-link.md`
-(who is this row for), and `backlog/content-sensitivity-placement.md`
+me690624 + me693087
+(who is this row for), and gr695234
 (what may never reach a cloud model). The `SPACE:` axis pillar 1 designs
 must carry a per-user value from the start, or this pillar redoes it.
 
 **Parked under it** (files stay; no thread, no ranking):
-`backlog/anki-card-quality.md`, `backlog/reading-prep-loop.md` (back under
-the hold, Reto 2026-10-01), `backlog/email-kind.md`,
-`backlog/voice-kind-spec.md`, `backlog/briefing-audio-flat-hourly-backoff.md`,
-`backlog/slide-photo-capture-to-pres.md`, `backlog/asa-ops-residuals.md`,
-`backlog/session-history-into-precis.md` (also a pillar-1 consumer),
-`backlog/asa-voice-register.md`, `backlog/cast-followups.md`,
-`backlog/briefing-combine-verify.md`, `backlog/document-timeline-index.md`
+gr690043, me690334 (back under
+the hold, Reto 2026-10-01), me690001,
+me693173, me689852,
+gr690256, gr690073,
+me694237 (also a pillar-1 consumer),
+gr690094, gr690199,
+gr690105, me690285
 (its own non-graph index; placed when the pillar opens).
 Moved out 2026-10-01: web-basic-auth-users → platform, chem-name-lookup-verb
 → chemistry, ms-teams-paper-feed → ingest-and-fetch; remarkable-pairing
@@ -312,7 +316,7 @@ releases stay with the coordinator; the threads build and verify.
 **Where it stands.** Release rounds (`release/r<N>`, `scripts/round`) and
 the `--checked` lane are on main. CI runner starvation is the top gate
 problem: main runs wait ~70 min for shard runners (gr495187). The leaked
-credentials in `backlog/rotate-credentials.md` are not yet rotated. Alert
+credentials in me690976 are not yet rotated. Alert
 delivery is built and awaits a deploy. One `precis serve` tops out near
 28 calls/s. The fleet authority work (`.claude/fleet/authority.md` v2 and
 its generator) may land in parallel.
@@ -335,15 +339,15 @@ pillar, with two surfaces (agents over MCP, Reto over the web), judged per
 pillar by the surface lines above. Shared invariants:
 
 - One graph, one address scheme; MCP and web render the same object the
-  same way (`backlog/universal-short-codes.md`, `backlog/unified-item-view`
+  same way (gr693825, `backlog/unified-item-view`
   history).
 - A capability is discoverable from where it is needed
-  (`backlog/capability-discovery-on-a-sprawling-surface.md`).
+  (me690491).
 - No silent accept: a value the system takes and then ignores is a defect
-  (`backlog/pcb-keepout-does-not-bind.md` is the pattern).
+  (me692901 is the pattern).
 
 Metrics: agent surface = the tool-ledger friction detector and the
-measured surface error rate in `backlog/mcp-surface-economy.md`, plus the
+measured surface error rate in me691324, plus the
 14-day `surface-review` pass. Human surface = Reto's own friction filed as
 gripes; `precis_web` has no usage instrumentation and none is planned for
 one user. Surface work is ranked inside the pillar thread that owns the
@@ -351,14 +355,17 @@ object. The cross-kind MCP contract (errors that carry the fix as
 `next=`/`options=`, guards against silent misuse, tool-description
 budgets) and the Drive items are ranked in `threads/agent-surface.md`
 (created 2026-10-17; owns gr494831's family and
-`backlog/tool-description-budgets.md`). Reto approved Drive task entry
+me692313). Reto approved Drive task entry
 points and a shared searchable picker
-(`backlog/drive-filter-hierarchy.md`). Storage/API details remain in owning-spec review.
+(me690816). Storage/API details remain in owning-spec review.
 
 ## Where an item says which pillar it serves
 
-Every `docs/backlog/*.md` carries `pillar:` in its front matter and the
-generated `docs/backlog/INDEX.md` groups by it. Pillar values:
+A thread file carries `pillar:` in its front matter, as does the one
+remaining backlog file (`docs/backlog/README.md`); the generated
+`docs/backlog/INDEX.md` groups by it. A graph spec serves the pillar its
+programme root serves; there is no `pillar:` field on a spec node. Pillar
+values:
 `memory-graph`, `3d-design`, `local-compute`, `personal`, `operations`
 (deploy, gate, CI, MCP serving, monitors, credentials). Two values are
 buckets rather than pillars: `quests` (A — the quest content, campaigns
@@ -389,14 +396,14 @@ Two rules, both "when implemented", both tested:
    `## Horizon` `(none)` retires the file (`threads/README.md`); this page
    drops it from the active set in the same commit.
 2. **Text memory retires when the graph serves it.** Each file class has a
-   retirement condition, held in `backlog/file-mirror.md` §"Pillar-review
+   retirement condition, held in me693606 §"Pillar-review
    deltas":
    the harness memory index, the skill listing, the repo conventions.
    Parallel copies are the failure mode this pillar exists to end; a
-   design transferred from another assistant's memory into a backlog
-   item retires the copy there (first instance:
-   `backlog/class-lattice-similarity-spaces-and-laws.md`,
-   `backlog/materials-molecular-substitution-db.md`).
+   design transferred from another assistant's memory into a graph spec
+   retires the copy there (first instance:
+   me692057,
+   gr695283).
 
 ## Review cadence
 
@@ -430,7 +437,7 @@ Newest first; one line per pass (`/pillar-review` writes it).
   target 2026-10-24, Reto's citation pass after r46 deploys the export
   fix). P2 intent → realize is active, driven by spec `me628986`.
   Gripe waves stay the execution model; a wave close writes its gripe ids
-  into the owning thread file. Open: the November catpath paper and castor
+  into the owning thread file. Open: the November catpath paper and local-serving
   medium-tier routing (ranks unchanged). reading-prep-loop back to idea
   (P4 on hold).
 - 2026-10-17 housekeeping pass (no-pillar items, expired snoozes, drive-ux,
@@ -450,8 +457,8 @@ Newest first; one line per pass (`/pillar-review` writes it).
   machine is useless machine" — local serving is never idle; when nothing
   routes to it, librarian work drains (classify, link, merge, make things
   discoverable and comparable for fisheye), measured against the
-  auto-apply bar in `backlog/local-mesh-upkeep.md`. Coding helpers on
-  castor are the other half (`backlog/claude-code-on-local-serving.md`).
+  auto-apply bar in me693504. Coding helpers on
+  the local-serving node are the other half (me695114).
 
 - 2026-10-03 — not a full pass: `ship-gate-ci` activated (Reto: "push
   should not break build"); main's CI runs cancelled each other at ~8
@@ -470,7 +477,7 @@ Newest first; one line per pass (`/pillar-review` writes it).
   the month's output; which call fits which paper. Meluxina added to
   Pillar 3 as a compute reserve for LLM and catpath work (Reto, same
   route); open on Reto: registering the tunnel key with the provider
-  (td345845 is the castor/pollux RPC key, a different item).
+  (td345845 is the DGX-node RPC key, a different item).
 - 2026-10-02 — platform pass closed the 2026-10-01 pillar review: three
   dormant threads created (`ship-gate-ci`, `deploy-fleet-ops`,
   `security-hardening`) and the factory, session-mcp, chemistry, ingest,

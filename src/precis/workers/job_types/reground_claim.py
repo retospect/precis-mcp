@@ -1,5 +1,5 @@
 """``reground_claim`` job_type — dispatch glue for the taproot reground
-pass (``docs/backlog/taproot-reground.md``).
+pass (`gr693791`).
 
 **Thin on purpose.** Every line of the actual mechanism lives in
 :mod:`precis.workers.hub_refine` (audit, strict judge, deeper

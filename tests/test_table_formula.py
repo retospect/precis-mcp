@@ -86,6 +86,49 @@ def test_strict_compile_names_dropped_column() -> None:
         compile_formula("quanity * 2", live, strict=True, retired={qty_id})
 
 
+def test_one_arg_fold_refused_on_the_strict_path() -> None:
+    """gr685375: ``sum(qty)`` reads as a column total to anyone coming
+    from a spreadsheet but folds the row's own cell — a declared
+    (new/changed) formula spelling a one-column min/max/sum/avg refuses
+    at compile like an unknown name, naming the footer and the
+    row-wise form."""
+    cols = _table()["columns"]
+    for f in ("sum(qty)", "avg(qty)", "min(qty)", "max(qty)", "sum(qty,)"):
+        with pytest.raises(BadInput, match="one column") as e:
+            compile_formula(f, cols, strict=True)
+        assert "footer=" in str(e.value.next)
+    # nested inside a larger expression — the gr685375 repro shape
+    with pytest.raises(BadInput, match="one column"):
+        compile_formula(
+            "round(unit_price / sum(unit_price) * 100, 1)", cols, strict=True
+        )
+    # the row-wise fold over two columns stays legal
+    assert compile_formula("sum(qty, unit_price)", cols, strict=True)
+    # lenient (stored-formula) path still compiles — a stored fault is
+    # never a refusal (it may predate the strict check)
+    assert compile_formula("sum(qty)", cols)
+
+
+def test_one_arg_fold_stored_formula_degrades_and_warns() -> None:
+    """A stored one-column fold keeps landing (data errors never refuse
+    an edit): its cells degrade to #VALUE — never a plausible-looking
+    identity value like the old ``sum(qty) == qty`` — and a warning
+    note names the footer way out."""
+    t = _table("sum(qty)")
+    t, notes = evaluate_table(t)
+    assert all(r[2] == "#VALUE" for r in t["rows"])
+    assert any("column total" in n and "footer=" in n for n in notes)
+    t = _table("avg(qty)")
+    t, notes = evaluate_table(t)
+    assert all(r[2] == "#VALUE" for r in t["rows"])
+    assert any("avg()" in n for n in notes)
+    # min/max on one column already stored #VALUE; now they warn too
+    t = _table("max(qty)")
+    t, notes = evaluate_table(t)
+    assert all(r[2] == "#VALUE" for r in t["rows"])
+    assert any("max()" in n for n in notes)
+
+
 def test_compile_unknown_name_is_the_ref_path() -> None:
     """An unresolved name is NOT a declaration fault on the lenient
     (stored-formula) path (spec §4): a column a stored formula names

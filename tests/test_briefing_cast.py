@@ -623,7 +623,7 @@ class TestAlertRecencyLane:
 
     def test_fresh_critical_included_even_if_old(self, monkeypatch: Any) -> None:
         old_critical = _alert(
-            "dead-worker: agent on melchior", "critical", self._NOW - timedelta(days=30)
+            "dead-worker: agent on maple", "critical", self._NOW - timedelta(days=30)
         )
         monkeypatch.setattr(
             "precis.alerts.list_open_alerts", lambda store, limit=200: [old_critical]
@@ -742,13 +742,13 @@ class TestDoctorReportLine:
         # first-paragraph read produced the bare word "Classification".
         body = (
             "## Classification\n\n"
-            "- **melchior job_claude_inproc handler** — broken pass (P0): dark.\n"
+            "- **maple job_claude_inproc handler** — broken pass (P0): dark.\n"
             "- **embed_batch** — noisy-but-working.\n\n"
             "## Diagnosis\n\n- upstream healthy."
         )
         report = _fake_doctor_report(body=body)
         assert _doctor_report_line(report) == (
-            "Classification: **melchior job_claude_inproc handler** — "
+            "Classification: **maple job_claude_inproc handler** — "
             "broken pass (P0): dark."
         )
 

@@ -7,10 +7,11 @@ the shared registry in tools/__init__.py.
 Personal identity binds anew from the trusted HTTP request's ASGI scope
 for each dispatch, including an explicit anonymous scope for stdio and
 unbound callers. Session state, wire metadata and revision attribution
-cannot authorize personal records. Learning calls never log payloads.
-Personal tokens reach only learning calls and the exact learning-help read.
-OAuth app grants either preserve that narrow boundary or explicitly consent
-to full MCP tool access, while keeping their account and app attribution.
+cannot authorize personal records. Private calls never log payloads.
+Personal tokens reach only private-kind calls and each kind's exact help
+read. OAuth app grants either preserve that narrow boundary or explicitly
+consent to full MCP tool access, while keeping their account and app
+attribution.
 Their live account and legacy revision actor are still revalidated before
 the scope check; install, slice and in-process callers retain their scope.
 """
@@ -19,18 +20,22 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import inspect
 import json
 import logging
 import threading
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from precis import principal, serve_ledger
 from precis.handlers._interpret import PREFIX as _INTERPRETED_PREFIX
-from precis.learning_privacy import is_learning_call
+from precis.private_kinds import private_kind_of
 from precis.runtime.handle_deref import TEXT_PAYLOAD_MAX_BYTES
+from precis.store.types import _CATEGORIZER_AXES, _KIND_ALLOWED_AXES
 from precis.user_context import current_principal, user_actor_scope
 
 if TYPE_CHECKING:
+    from precis.errors import Denied
     from precis.runtime import PrecisRuntime
 
 # Conditional imports for MCP types (not available in all environments)
@@ -207,10 +212,11 @@ def _log_tool_call(
             return v[:limit] + "…"
         return v
 
-    if is_learning_call(payload):
+    private = private_kind_of(payload)
+    if private is not None:
         # Private notes, identifiers, forged fields and their error text
         # must not enter the generic shared audit stream on either path.
-        payload = {"kind": "learning"}
+        payload = {"kind": private}
 
     sample: dict[str, Any] = {}
     for key in _SCALAR_KEYS:
@@ -427,23 +433,26 @@ def _dispatch_as_user(
                 key: value for key, value in payload.items() if value is not None
             }
             _require_personal_scope(verb, filtered)
+            _require_capability_scope(verb, filtered, ctx)
             _require_slice_grant_scope(verb, filtered, ctx)
             # Bind the per-call image sink so a handler's Response.images
             # (the figure render check's PNG, gr592765) reach the wire
             # as ImageContent blocks — ``dispatch_with_status`` itself
             # stays text-only for CLI/in-process callers.
-            from precis.runtime.dispatch import _RESPONSE_IMAGES
+            from precis.runtime.dispatch import _KIND_GATE, _RESPONSE_IMAGES
 
             images: list[Any] = []
             _img_token = _RESPONSE_IMAGES.set(images)
+            _gate_token = _KIND_GATE.set(_capability_kind_gate(ctx))
             try:
                 body, is_error = runtime.dispatch_with_status(
                     verb,
                     payload,
                     fold=_ctx_session(ctx) is not None
-                    and not is_learning_call(payload),
+                    and private_kind_of(payload) is None,
                 )
             finally:
+                _KIND_GATE.reset(_gate_token)
                 _RESPONSE_IMAGES.reset(_img_token)
         if is_error:
             result: _ToolReturn = CallToolResult(
@@ -497,47 +506,42 @@ def _dispatch_as_user(
 
 
 def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
-    """Apply PAT's private-learning boundary or an OAuth app's capabilities."""
+    """Apply PAT's private-kind boundary or an OAuth app's capabilities."""
+    from precis import private_kinds
     from precis.whoami import CALL as WHOAMI
 
+    verbs = {"get", "search", "put", "edit", "delete", "tag", "link"}
     owner = current_principal()
     oauth = owner.oauth if owner is not None else None
     if oauth is not None:
         if "mcp:full" in oauth.scopes:
-            return verb in {"get", "search", "put", "edit", "delete", "tag", "link"}
-        if is_learning_call(payload):
-            return "learning" in oauth.scopes and verb in {
-                "get",
-                "search",
-                "put",
-                "edit",
-                "delete",
-                "tag",
-                "link",
-            }
+            return verb in verbs
+        private = private_kind_of(payload)
+        if private is not None:
+            entry = private_kinds.PRIVATE_KINDS[private]
+            return entry.oauth_scope in oauth.scopes and verb in verbs
         return verb == "get" and payload in (
-            {"kind": "skill", "id": "precis-learning-help"},
+            *(
+                {"kind": "skill", "id": entry.help_skill}
+                for entry in private_kinds.PRIVATE_KINDS.values()
+                if entry.oauth_scope in oauth.scopes
+            ),
             {"kind": "skill", "id": "precis-oauth-help"},
             WHOAMI,
         )
-    if verb in {
-        "get",
-        "search",
-        "put",
-        "edit",
-        "delete",
-        "tag",
-        "link",
-    } and is_learning_call(payload):
+    if verb in verbs and private_kind_of(payload) is not None:
         # dispatch_with_status uses this same classifier before any other
-        # routing. Malformed/mixed learning calls refuse in dispatch_learning;
-        # they cannot fall through to a non-learning handler or batch.
+        # routing. Malformed/mixed private calls refuse in dispatch_private;
+        # they cannot fall through to a non-private handler or batch.
         return True
-    # These two public, read-only documents let a personal client discover
+    # These public, read-only documents let a personal client discover
     # its permitted surface and its own identity without opening skill
     # search, toc or other views.
     return verb == "get" and payload in (
-        {"kind": "skill", "id": "precis-learning-help"},
+        *(
+            {"kind": "skill", "id": entry.help_skill}
+            for entry in private_kinds.PRIVATE_KINDS.values()
+        ),
         WHOAMI,
     )
 
@@ -545,6 +549,7 @@ def _personal_call_allowed(verb: str, payload: dict[str, Any]) -> bool:
 def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
     """Refuse personal MCP calls outside the allowlist without echoing input."""
     if current_principal() is not None and not _personal_call_allowed(verb, payload):
+        from precis import private_kinds
         from precis.errors import Denied
 
         owner = current_principal()
@@ -553,11 +558,111 @@ def _require_personal_scope(verb: str, payload: dict[str, Any]) -> None:
                 "this operation is outside the OAuth connection's permissions",
                 next="review the connection at /account/connections and reconnect with the required permissions",
             )
-        raise Denied(
-            "personal MCP tokens permit learning calls, learning help and whoami only",
-            next="get(kind='learning'); get(kind='skill', id='precis-learning-help'); "
-            "get(kind='profile', id='me')",
+        entries = tuple(private_kinds.PRIVATE_KINDS.values())
+        kinds = ", ".join(entry.kind for entry in entries)
+        helps = ", ".join(f"{entry.kind} help" for entry in entries)
+        calls = "; ".join(f"get(kind='{entry.kind}')" for entry in entries)
+        reads = "; ".join(
+            f"get(kind='skill', id='{entry.help_skill}')" for entry in entries
         )
+        raise Denied(
+            f"personal MCP tokens permit {kinds} calls, {helps} and whoami only",
+            next=f"{calls}; {reads}; get(kind='profile', id='me')",
+        )
+
+
+def _capability_refusal(cap: Any, verb: str, payload: dict[str, Any]) -> Denied | None:
+    """Judge ``(verb, payload)`` against a capability stamp's allow-list —
+    ``None`` inside it, the :class:`Denied` to raise or render otherwise.
+
+    Shared by the dispatch backstop (:func:`_require_capability_scope`,
+    post-normalization) and the request boundary
+    (``server._capability_request_refusal``, pre-normalization), so a
+    slim-verb ``args=`` shape and its flattened form judge identically.
+    A stamp that isn't a
+    :class:`~precis.mcp_identity.CapabilityIdentity` fails closed — no
+    mint could have written it.
+    """
+    from precis.errors import Denied
+    from precis.mcp_identity import CapabilityIdentity, capability_call_allowed
+
+    if not isinstance(cap, CapabilityIdentity):
+        return Denied(
+            "invalid capability token stamp",
+            next="authenticate with a capability token minted at /account",
+        )
+    raw_kind = payload.get("kind") if isinstance(payload, dict) else None
+    kinds = (
+        {k.strip() for k in str(raw_kind).split(",") if k.strip()}
+        if raw_kind is not None
+        else None
+    )
+    if kinds is not None and not kinds:
+        kinds = None
+    if kinds:
+        # Judge the canonical kind the handler will see: a ``dr`` handle
+        # code is ``draft`` by dispatch time, so the allow-list names
+        # resolved kinds only. Expansion failure keeps the raw name —
+        # unknown kinds fail closed either way.
+        try:
+            expand = _get_runtime()._expand_kind_code
+            kinds = {expand(k) for k in kinds}
+        except Exception:
+            pass
+    if capability_call_allowed(cap.scopes, verb, kinds):
+        return None
+    return Denied(
+        f"capability token {cap.label!r} does not permit this call",
+        next="its allow-list is "
+        + ",".join(cap.scopes)
+        + " — mint a broader token at /account or stay inside it",
+    )
+
+
+def _require_capability_scope(
+    verb: str, payload: dict[str, Any], ctx: Context | None
+) -> None:
+    """Refuse calls outside a capability token's own kinds/verbs allow-list.
+
+    The stamp is a validated consumer identity (gr595554), never a
+    personal principal — a token minted for ``read`` reaches the whole
+    ``get``/``search`` surface, ``read:<kind>``/``write:<kind>`` narrow
+    or widen per kind, and ``feed`` grants no MCP verb at all. Every
+    kind the call names must be covered; a call naming no kind is the
+    whole surface and only ``read`` covers it.
+    """
+    from precis.mcp_identity import SCOPE_CAPABILITY
+
+    cap = _asgi_scope(ctx).get(SCOPE_CAPABILITY)
+    if cap is None:
+        return
+    denied = _capability_refusal(cap, verb, payload)
+    if denied is not None:
+        raise denied
+
+
+def _capability_kind_gate(
+    ctx: Context | None,
+) -> Callable[[str, dict[str, Any]], None] | None:
+    """The runtime's post-resolution recheck for a capability stamp.
+
+    Handle routing can rewrite ``kind=`` after the request-boundary and
+    :func:`_require_capability_scope` checks (a converted ``pa<id>``
+    handle resolves to its new kind), so the runtime calls this with the
+    resolved ``args`` before invoking a handler.
+    """
+    from precis.mcp_identity import SCOPE_CAPABILITY
+
+    cap = _asgi_scope(ctx).get(SCOPE_CAPABILITY)
+    if cap is None:
+        return None
+
+    def gate(verb: str, args: dict[str, Any]) -> None:
+        denied = _capability_refusal(cap, verb, args)
+        if denied is not None:
+            raise denied
+
+    return gate
 
 
 def _require_slice_grant_scope(
@@ -935,7 +1040,12 @@ def _ctx_principal(ctx: Context | None, store: Any, verb: str) -> str | None:
     ``worker:<source>`` in-process stamp.
     """
     from precis import slice_tokens
-    from precis.mcp_identity import SCOPE_OAUTH_IDENTITY, SCOPE_TOKEN_ID
+    from precis.mcp_identity import (
+        SCOPE_CAPABILITY,
+        SCOPE_OAUTH_IDENTITY,
+        SCOPE_TOKEN_ID,
+        CapabilityIdentity,
+    )
     from precis.oauth.store import OAuthIdentity
 
     scope = _asgi_scope(ctx)
@@ -961,6 +1071,9 @@ def _ctx_principal(ctx: Context | None, store: Any, verb: str) -> str | None:
     token_id = scope.get(SCOPE_TOKEN_ID)
     if type(token_id) is int and token_id > 0:
         return f"personal:{token_id}"
+    cap = scope.get(SCOPE_CAPABILITY)
+    if isinstance(cap, CapabilityIdentity):
+        return f"cap:{cap.token_id}"
     return None
 
 
@@ -999,7 +1112,8 @@ def get(
     spec: str | None = None,
     # skill: get(kind='skill',
     # id='<slug>', full=true) forces a full re-serve past the have=<rev>
-    # stub (``have`` rides args=, see precis-addressing-help); tag=/kinds= narrow the *catalogue*
+    # stub — the deprecated spelling of extent='verbatim' (gr568808;
+    # ``have`` rides args=, see precis-addressing-help); tag=/kinds= narrow the *catalogue*
     # listing (get(kind='skill', id='toc') or a bare get(kind='skill'))
     # to one tags:/kinds: frontmatter axis value — distinct from a
     # per-ref smart-toc (see precis-toc-help), which these don't touch.
@@ -1028,13 +1142,14 @@ def get(
     kinds — and expands a `fisheye+2hop` group (`extent=` below).
     `args=` holds typed extras for views that need them; an
     unknown key fails the call with `[error:BadInput]` listing the keys.
-    `extent=` is a fisheye rung: 'fisheye' (node + surroundings),
-    'fisheye+1hop' (linked neighbours), 'fisheye+2hop' (second hop as
-    counts; expand with `q='<kind>:<label>'`); any rung + '+recall'
-    (similar unlinked refs).
+    `extent=` is a fisheye rung: 'fisheye' (node +
+    surroundings), 'fisheye+1hop' (linked neighbours), 'fisheye+2hop'
+    (second hop as counts; expand with `q='<kind>:<label>'`); any rung
+    + '+recall' (similar unlinked refs).
     `project=`: draft's owning todo. `spec=`: component bom. `full=`,
-    `tag=`, `kinds=`: skill (`full` folds to `view='full'` on other
-    kinds). NotFound "unknown kind" with "routes through
+    `tag=`, `kinds=`: skill (`full`, deprecated for `extent=`, folds to
+    `view='full'` on other kinds). NotFound
+    "unknown kind" with "routes through
     host(s)": see the full reference.
 
     Full reference: get(kind='skill', id='precis-get-help').
@@ -1055,14 +1170,13 @@ def get(
                 and (id == "/traces" or id.startswith("/traces?"))
             )
             # view='logbook' (gr592279) reads args['q'] as its in-window
-            # text filter — the one documented args= key that shares a
-            # name with an explicit kwarg. Top-level q= on get() stays
+            # text filter. Top-level q= on get() stays
             # find-in-ref's door, so the two never collide inside the
             # handler — but a call passing both is ambiguous and refuses.
             logbook_q = kind == "quest" and view == "logbook"
             reserved = (
                 ("id", "view", "q")
-                if trace_filters
+                if trace_filters or kind == "handle"
                 else ("kind", "id", "view")
                 if logbook_q
                 else ("kind", "id", "view", "q")
@@ -1298,6 +1412,14 @@ def search(
     # strict-schema clients don't strip them.
     platform: str | None = None,
     role: str | None = None,
+    # Labelled independent memory searches (see precis-search-help):
+    # ``batch=[{'key': 'jane', 'q': 'Jane'}, ...]`` runs 1–8 ordinary
+    # searches in one call, each labelled — a JSON envelope preserves
+    # every item's own ranking and error. Declared at the verb level so
+    # the schema advertises it (gr568808 — it used to hide inside
+    # ``args=``); nested ``args={'batch': …}`` hoists to here, and a
+    # kind that doesn't implement it refuses ``not on <kind> yet``.
+    batch: list[dict[str, Any]] | None = None,
     # Typed extras, mirroring ``get``'s ``args=``: rides ``__extras__`` so a
     # handler declaring ``args`` (todo's view='doable' reads ``args['under']``)
     # gets the dict, others get the keys flattened and whitelist-checked.
@@ -1327,10 +1449,15 @@ def search(
     per-hit rows — `scope=` implies it, and `per_paper=` caps hits per
     paper there); `queries=`/`answers=` (HyDE) fuse legs; `good=True`
     queues a deep search; `title=`/`author=` by byline.
+    skill: `queries=` (≤5 phrasings, one intent) fuses section rows by
+    rank with per-query attribution — never a page; memory `batch=`
+    stays its labelled envelope.
     finding: `trust='verified'|'signed'|'disputed'|'any'`; `status=`.
     `uncited=<draft>` drops already-cited sources. se: `wants=` ranked
     library search (never a filter); `compose=` proposer over it.
     measure: `property=`+`min=`/`max=` in `unit=` (e.g. 'Å'), `q=` conditions.
+    memory: `batch=[{key, q, ...}]` runs 1–8 labelled independent
+    searches in one call — a JSON envelope, never fused.
 
     Full docs: get(kind='skill', id='precis-search-help').
     """
@@ -1348,7 +1475,7 @@ def search(
 
     # Alias acknowledgments are prose prefixed to an ordinary result.
     # The labelled batch envelope must remain complete JSON instead.
-    if args is not None and "batch" in args:
+    if batch is not None or (args is not None and "batch" in args):
         batch_aliases = [
             name
             for name, value in (("k", k), ("limit", limit), ("offset", offset))
@@ -1417,7 +1544,11 @@ def search(
                 BadInput(
                     f"page_size={page_size} exceeds maximum {_SEARCH_PAGE_SIZE_MAX}",
                     next=(
-                        f"narrow with scope= or refine q=; "
+                        f"retry with page_size={_SEARCH_PAGE_SIZE_MAX}; "
+                        "use args={'under': '<taxon>', 'depth': 1, 'axis': '<axis>'} "
+                        "to narrow descendants, or refine q="
+                        if kind == "taxon"
+                        else f"narrow with scope= or refine q=; "
                         f"max page_size is {_SEARCH_PAGE_SIZE_MAX}"
                     ),
                 )
@@ -1728,6 +1859,9 @@ def search(
         payload["platform"] = platform
     if role is not None:
         payload["role"] = role
+    # memory batch — forwarded only when set, same discipline.
+    if batch is not None:
+        payload["batch"] = batch
     if args:
         err = _check_reserved_args(args, reserved=("kind", "q", "view"))
         if err is not None:
@@ -1931,7 +2065,8 @@ def put(
     # todo plan mint (put(kind='todo', mode='plan'), see precis-plan-help):
     # template= names the plan template, gripe_id=/section=/board= are its
     # arguments, lane= the optional build-lane pin of the gripe-fix forms,
-    # iterations=/after=/context= the route-loop's.
+    # iterations=/after=/context= the route-loop's, repo=/slices=/glue=/bump=
+    # the repo-batch's.
     # Declared at the verb level (the gr262482 pattern) so strict-schema MCP
     # clients don't strip them; read only under mode='plan'.
     template: str | None = None,
@@ -1942,6 +2077,10 @@ def put(
     iterations: int | None = None,
     after: str | None = None,
     context: str | None = None,
+    repo: str | None = None,
+    slices: str | list[Any] | None = None,
+    glue: str | list[Any] | None = None,
+    bump: str | None = None,
     # presentation (see precis-pres-help):
     pos: int | None = None,
     meta: dict[str, Any] | None = None,
@@ -1971,6 +2110,13 @@ def put(
     # position). Declared at the verb level (the gr262482 pattern) so
     # strict-schema MCP clients don't strip it.
     terms: list[dict[str, Any]] | None = None,
+    # draft chunk batch: put(kind='draft', id=<slug>, chunks=[{'text': …,
+    # 'chunk_kind': …, 'meta': {…}, 'at': {…}}, ...]) writes many chunks of
+    # any kind in one transaction (≤50; a rejected entry rolls the call
+    # back and names chunks[i]). Verb-level chunk_kind=/meta=/at= are
+    # per-batch defaults. Declared at the verb level (gr262482 pattern).
+    # Keep entries raw so the draft handler can report indexed shape errors.
+    chunks: list[Any] | None = None,
     # draft data/table chunk (chunk_kind='table'): canonical data
     # in table={header,rows}; the markdown text is derived. caption= is the
     # legend; regen= records how the data was produced (provenance, inert).
@@ -2044,7 +2190,7 @@ def put(
     status: str | None = None,
     error: str | None = None,
     # quest logbook (see precis-quest-help): append a dated WORM entry —
-    # put(kind='quest', id=N, text='…', entry='hypothesis'[, by='agent', cost=…]).
+    # put(kind='quest', id=N, text='…', args={'entry': 'hypothesis'[, 'by': 'agent', 'cost': …]}).
     # entry= is the type (note/observation/hypothesis/result/decision/dead-end/
     # milestone/reflection/cost — a milestone is a deed); cost= feeds the tote.
     entry: str | None = None,
@@ -2164,17 +2310,11 @@ def put(
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
-    put(kind='gripe'|'todo', id=N, text=...) appends a comment — todo takes
-    only `text=`/`tags=`/`untags=` (link edits stay on `link`); gripe also
-    takes `link=`/`unlink=`/`rel=` same call. Omit `id=` to mint — required
-    fields are per kind (precis-put-help). `mode=`: file kinds 'create';
-    paid-import kinds 'import'; numeric-ref kinds omit it. `text=`/`body=`
-    alias a kind's single prose field (finding says `body=`; both at once
-    errors); `todo` declares both — `text=` title, `body=` details, either or
-    both. `tags=`/`untags=` add/remove; `link=`/`unlink=` use
-    `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
-    `text={'$ref': '<handle>'}` = that handle's body (needs a same-session
-    `get`).
+    Omit `id=` to mint a numeric ref. `mode=` and required fields vary by
+    kind. Use `tags=` or `link=` to annotate on create.
+    For gripe or todo, `id=` with `text=` appends a comment and can update
+    tags in the same call. Gripe comments can also update links.
+    `text={'$ref': '<handle>'}` reuses the body after a recent exact `get`.
 
     Full reference: get(kind='skill', id='precis-put-help').
     """
@@ -2271,6 +2411,10 @@ def put(
                 "iterations": iterations,
                 "after": after,
                 "context": context,
+                "repo": repo,
+                "slices": slices,
+                "glue": glue,
+                "bump": bump,
                 "pos": pos,
                 "meta": meta,
                 "ref_meta": ref_meta,
@@ -2281,6 +2425,7 @@ def put(
                 "until": until,
                 "scratch_for": scratch_for,
                 "terms": terms,
+                "chunks": chunks,
                 "table": table,
                 "caption": caption,
                 "regen": regen,
@@ -2456,7 +2601,7 @@ def edit(
     # is_abbrev= is the inverse — un-silences them.
     not_abbrev: list[str] | None = None,
     is_abbrev: list[str] | None = None,
-    # draft regex substitute (see precis-draft-help "Search a draft"):
+    # Draft regex substitute (see precis-draft-reference-help "Regex find and substitute"):
     # sub={'find':…,'replace':…,'flags':…} (or a 's/find/replace/'
     # string) rewrites every match across the id= scope (a draft slug or a
     # dc<id> section/chunk). Previews by default; apply=True commits.
@@ -2488,6 +2633,10 @@ def edit(
     # which Kokoro voice + language phonemizer speaks this chunk on export.
     voice: str | None = None,
     lang: str | None = None,
+    # draft document language (see precis-draft-help "Document metadata"):
+    # language='en-GB' sets the draft-level tag the Word export writes into
+    # w:lang / dc:language; '' clears it (gr725247).
+    language: str | None = None,
     # draft data/table chunk (chunk_kind='table'): replace the
     # canonical data (table={header,rows}) / legend (caption=) / provenance
     # (regen=); the markdown text re-derives. Field-level edits (the shipped
@@ -2622,15 +2771,15 @@ def edit(
     `append` / `replace` need `text=`.
     `replace` with `id='slug~selector'` rewrites one chunk.
 
-    `mode=` defaults to `find-replace`; kinds whose edit_modes
-    exclude it refuse with options. todo uses `text=`/`body=`, memory also
-    takes `ops=[{find,text,...}]`; quest requires `mode='replace'`; draft
-    takes `'replace-content'`; paper, structure ignore it.
+    todo: `mode='replace', body=...` updates details; `text=` updates title.
+    quest needs explicit `mode='replace'`. memory accepts `ops=`.
+    Draft `replace-content` rewrites a block; `insert` edits around an anchor
+    within a chunk. To add an adjacent paragraph, use draft `put` with
+    `args={'at': {'before': 'dc<id>'}}` (or `after`).
 
-    Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
-    / `nth=`. `base_sha=` (python `~L` ranges: the read's `sha=`) refuses
-    the edit if content changed. `dry_run=True` previews; `reason=` why.
-    `text={'$ref': '<handle>'}` = its body (after a same-session `get`).
+    Anchors: `before=`, `after=`, `match=`, `nth=`. `base_sha=` guards
+    against stale edits. `dry_run=True` previews; `reason=` records why.
+    `text={'$ref': '<handle>'}` uses the body from a recent exact `get`.
 
     Full reference: get(kind='skill', id='precis-edit-help').
     """
@@ -2681,6 +2830,7 @@ def edit(
         "permission": permission,
         "voice": voice,
         "lang": lang,
+        "language": language,
         "table": table,
         "caption": caption,
         "regen": regen,
@@ -2756,8 +2906,8 @@ def delete(
     # numeric-ref kinds: why it goes — a 'deleted' ref_events row so a
     # later get()'s Gone names the survivor ('merged into meNNN').
     reason: str | None = None,
-    # memory: preview prose mentions, name any-kind successor, or explicitly
-    # leave successor-less mentions for the gardener. Other kinds are unchanged.
+    # memory/finding: preview memory prose mentions, name any-kind successor,
+    # or explicitly leave successor-less mentions for the gardener.
     dry_run: bool | None = None,
     superseded_by: str | None = None,
     force: bool | None = None,
@@ -2815,7 +2965,7 @@ def delete(
 def tag(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
-    # A list is the batch form (gripe/alert/todo): the same edit on every
+    # A list is the batch form (e.g. paper/gripe/alert/todo): the same edit on every
     # id in one transaction.
     id: str | int | list[str | int] | None = None,
     add: list[str] | None = None,
@@ -2834,7 +2984,7 @@ def tag(
     # verb-level story as meta= above — the handlers took ``prio=`` all
     # along but it never reached the MCP schema or the dispatch payload.
     prio: int | None = None,
-    # numeric-ref kinds (gr504803): why the tag change — recorded as an
+    # paper and numeric-ref kinds: why the tag change — recorded as an
     # ``agent/retagged`` ref_events row per affected ref (view='log'),
     # so a mass fold/cleanup says why. Same handler-declared door as
     # delete()'s reason= (gr503546); kinds whose tag doesn't declare it
@@ -2846,26 +2996,21 @@ def tag(
 ) -> str:
     """Add and/or remove tags on an existing ref (atomic).
 
-    Closed UPPERCASE prefixes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`)
-    replace within the prefix on add; flag tags toggle; open tags
-    are free-form. Bad axis on a kind raises
+    An added closed UPPERCASE tag replaces the value for its prefix.
+    Flags toggle. Open tags are free-form. A disallowed axis raises
     `[error:BadInput] axis not allowed on kind 'K'`.
 
     Per-kind closed-prefix gating (summary):
-    todo: STATUS+PRIO+AUDIT. gripe: STATUS+PRIO.
-    finding: unrestricted. job: STATUS (lifecycle subsets).
-    memory: SPACE+MOVE (DREAM/STALE are system-set).
-    anki/conv: none. paper: SRC+CACHE+DREAM+categorizer axes; patent: SRC+CACHE.
-    web/perplexity-*/websearch/youtube: CACHE+WATCH.
-    oracle/skill: none. python/calc/math: tag unsupported.
+    {kind_allowed_axes}
+    finding: unrestricted. python/calc/math: tag unsupported.
+    Prefix ownership still applies to axes listed here.
 
-    `meta=` (todo only): promotes an allowlisted key (e.g. `llm_tier`)
-    onto the ref's meta dict — see precis-todo-tree-help.
-    `prio=` (todo/gripe/quest/job): priority column, 1..10, lower=hotter.
+    `meta=` (todo only) promotes allowlisted keys such as `llm_tier`.
+    `prio=` (todo/gripe/quest/job) sets priority (1..10, lower=hotter).
 
-    Full reference: get(kind='skill', id='precis-tag-help'), or
-    search(kind='skill', q='classifying refs') for a topical lookup.
-    `precis-tags` is the authoritative axis matrix.
+    get(kind='skill', id='precis-tag-help') for recipes or
+    search(kind='skill', q='add remove tags refs') for discovery.
+    `precis-tags` has the full axis matrix.
     """
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
@@ -2885,6 +3030,29 @@ def tag(
         )
     finally:
         serve_ledger.unbind(token)
+
+
+def _tag_axis_summary() -> str:
+    """Group matching sets and abbreviate paper's categorizer axes to fit tools/list."""
+    groups: dict[str, list[str]] = {}
+    for kind, axes in sorted(_KIND_ALLOWED_AXES.items()):
+        if not axes:
+            continue
+        categorizer_axes = (
+            axes.intersection(_CATEGORIZER_AXES) if kind == "paper" else set()
+        )
+        labels = sorted(axes - categorizer_axes)
+        if categorizer_axes:
+            labels.append("categorizer axes")
+        groups.setdefault("+".join(labels), []).append(kind)
+    return "\n".join(f"{'/'.join(kinds)}: {axes}." for axes, kinds in groups.items())
+
+
+# Normalize the template before expanding it on both Python 3.12 and 3.13.
+tag.__doc__ = (inspect.getdoc(tag) or "").replace(
+    "{kind_allowed_axes}",
+    _tag_axis_summary(),
+)
 
 
 def link(
@@ -2921,19 +3089,19 @@ def link(
 ) -> str:
     """Add or remove a typed link between two refs.
 
-    `target=` uses canonical `kind:identifier[~selector]` form
-    (kind prefix required). A bare handle (`pa5`, `td158`) works
-    wherever the kind is self-identifying; the `kind:` form is
-    required for file-backed kinds (markdown/plaintext/tex), which
-    have no handle — get/edit/delete take that same handle in `id=`.
+    `target=` accepts a universal handle (`pa5`, `td158`) or
+    `kind:identifier[~selector]`. For file-backed targets, only the
+    `python` and `md` indexes require slug addressing with a kind
+    prefix. Stored `markdown`, `plaintext`, and `tex` refs accept
+    `md<N>`, `pl<N>`, and `tx<N>` handles, respectively.
     `mode='add'` (default) creates;
     `mode='remove'` with `rel=` removes one (target, rel) pair,
     without `rel=` removes every link to the target. `rel=` defaults
     to `related-to` on add.
 
     Full reference: get(kind='skill', id='precis-link-help'), or
-    search(kind='skill', q='connecting refs') for a topical lookup.
-    `precis-relations` lists every rel (cites, blocks, ...).
+    search(kind='skill', q='typed links between refs') for a topical lookup.
+    `precis-relations` lists the rels agents write by hand (cites, blocks, ...).
     """
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
@@ -3001,14 +3169,20 @@ _SEARCH_HELP: dict[str, str] = {
     "page_size= or refine q= to reach more hits).",
     "uncited": "Drop every source a draft (handle/slug/id) already cites, "
     "directly or via a cited claim hub's supporters.",
+    "batch": "Memory only: 1–8 labelled independent searches — a JSON "
+    "list like "
+    '\'[{"key": "jane", "q": "Jane"}, {"key": "bill", "q": "Bill"}]\'.',
 }
 
 _PUT_HELP: dict[str, str] = {
     "kind": "Which kind to write to.",
     "mode": "File kinds (markdown/plaintext/tex/python): 'create' (only). "
     "Paid-cache kinds (websearch/perplexity-reasoning/perplexity-research): "
-    "'import' registers a free web-UI answer. Numeric-ref kinds "
-    "(memory/todo/gripe/...): omit — an explicit mode= is rejected.",
+    "'import' registers a free web-UI answer. paper 'fetch-si'; structure "
+    "rerun/neb/md/analyze/trust; machine sync. Numeric-ref kinds "
+    "mostly omit mode=. Exceptions: gripe create/comment (confirm id= selection); "
+    "job retry/retarget/setting/wake/extend/garden-reject; memory process; "
+    "measure recheck; fleet report; todo plan (outside the declared gate).",
     "id": "Target ref. Omit to create on numeric-ref kinds.",
     "text": "Content for create.",
     "tags": "Tags to add.",
@@ -3022,12 +3196,13 @@ _EDIT_HELP: dict[str, str] = {
     "kind": "Which kind to edit.",
     "id": "Existing ref id, optionally with selector for region edits.",
     "mode": "File kinds (markdown/plaintext/tex/python): 'find-replace' "
-    "(default) | 'append' | 'insert' | 'replace'. todo/quest: "
-    "'replace' only — the default 'find-replace' is rejected there; "
-    "memory: 'replace' | 'find-replace' | 'insert' | 'append' — or "
-    "ops=[{find,text,...}] for several anchored ops in one call. "
-    "Most other kinds don't branch on mode= (silently ignored) or don't "
-    "support edit at all.",
+    "(default) | 'append' | 'insert' | 'replace'. todo: "
+    "replace/find-replace/insert/delete/gate; quest: replace (explicit)/pause/resume; "
+    "memory: replace/find-replace/insert/append/delete — or "
+    "ops=[{find,text,...}] for several anchored ops in one call; "
+    "finding: replace/find-replace; fleet/learning: replace. "
+    "Draft: replace-content or insert (requires find=, text= and where=); "
+    "paper/structure ignore mode=.",
     "text": "Replacement / inserted content. Required for every mode "
     "except 'reorder'. Pass text='' on find-replace to delete "
     "the matched span.",

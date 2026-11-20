@@ -23,10 +23,10 @@ So the correct procedure for a feature with a migration is just a deploy (it
 migrates, then bounces every `com.precis.*` daemon —
 [`cluster-deploy`](./cluster-deploy.md)); no separate manual step.
 
-**Manual fallback** (migrate without a full redeploy): run on caspar as the
+**Manual fallback** (migrate without a full redeploy): run on the database host as the
 `deploy` role over the local socket, which has DDL rights (`agent_rw` does not):
 
-    ssh caspar '/opt/precis/venv/bin/precis migrate \
+    ssh <db-host> '/opt/precis/venv/bin/precis migrate \
       --database-url "postgresql://deploy@/precis_prod?host=/tmp"'
 
 Add `--dry-run` to preview. Verify after: `precis migrate --dry-run` →
@@ -38,9 +38,9 @@ A migration deploy that lands in this window hangs ~48 min on `precis_web :
 Apply pending precis DB migrations` (the migrate-first play, early in the run),
 then proceeds on its own.
 
-- 03:00Z: caspar (the prod DB node) reboots nightly
+- 03:00Z: the database host (the prod DB node) reboots nightly
   (`daily-update-reboot.sh`; graceful PG drain first).
-- 03:30Z: `pg_dump --jobs=4` starts (cron on caspar). It holds **ACCESS SHARE
+- 03:30Z: `pg_dump --jobs=4` starts (cron on the database host). It holds **ACCESS SHARE
   on every table** for its whole run, ~48 min (03:30→04:18Z, very stable). An
   `ALTER TABLE … ADD COLUMN` needs **ACCESS EXCLUSIVE**, which conflicts.
 
@@ -73,7 +73,7 @@ and decides exactly as above. Code-only deploys are never probed.
 `pg_stat_activity` for the waiting pid → `pg_blocking_pids(<pid>)` → blockers
 show `application_name='pg_dump'`. `agent_rw` sees
 `<insufficient privilege>` for their query text, so confirm from the OS side
-with `ps -eo pid,etime,args | grep pg_dump` on caspar. Backup schedule detail:
+with `ps -eo pid,etime,args | grep pg_dump` on the database host. Backup schedule detail:
 [`prod-db-backup-and-timezone`](./prod-db-backup-and-timezone.md).
 
 ## The window, step by step
@@ -102,7 +102,7 @@ with `ps -eo pid,etime,args | grep pg_dump` on caspar. Backup schedule detail:
 6. **Ship** `scripts/ship --mutate` (full gate). Watch the search-verb 1 KB
    description budget — MCP docstring growth trips `test_token_budget`.
 7. **Quiesce:** `ssh <host> 'sudo touch /opt/precis/worker.drain'` on every
-   host running workers (melchior, balthazar, caspar, castor, pollux, spark as
+   host running workers (the agent host, the sandbox host, the database host, the local-serving node, the second DGX node, the GPU node as
    applicable), then poll `STATUS:running` with a live lease down to 0
    (~2 min). Drain stops **claims** only — heartbeats keep running and can hit
    a renamed column in the migrate→bounce gap (bounded, self-heals).
@@ -111,11 +111,11 @@ with `ps -eo pid,etime,args | grep pg_dump` on caspar. Backup schedule detail:
    [`cluster-deploy`](./cluster-deploy.md)). The first ansible ping can time out
    on a host right after Tailscale starts — `tailscale ping <host>` warms the
    path; re-run. The playbook removes drain flags only on hosts in the bounce
-   play's scope: **clean caspar/spark by hand afterwards.**
+   play's scope: **clean the database host and the GPU node by hand afterwards.**
 9. **MCP image:** `scripts/precis-shell --rebuild true` (threads `GH_TOKEN`
    itself). An exit 1 on the trailing TTY attach is fine — check
    `docker image inspect precis-mcp:dev` Created time. Then `/mcp` reconnect.
    (Image lineages: [`dev-image-rebuild`](./dev-image-rebuild.md).)
 10. **Verify:** the `_migrations` ledger on prod; venv `direct_url.json`
-    `commit_id` on melchior (`/opt/precis/venv`; caspar runs no worker —
+    `commit_id` on the agent host (`/opt/precis/venv`; the database host runs no worker —
     decommissioned 2026-08-14Z); the worker log's first claim cycle.

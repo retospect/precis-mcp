@@ -56,6 +56,8 @@ it. Refuse when the "concept" is:
   the source merely mentions in passing (a *"World Heritage Site"* named inside
   a dedication; an invented acronym like *"ESB"*). Not the subject you're
   learning.
+- **Common vocabulary** — a word any educated reader already knows. Add
+  vocabulary cards only for genuinely complex or domain-specific terms.
 - **So generic the definition is its own answer** — if every cloze you can
   imagine just echoes words already printed on the card, there's no fact under
   it.
@@ -83,6 +85,11 @@ cards split your reviews and corrode the schedule.
 Each card tests **one** idea-cluster — an etymology, a mechanism, a definition, a
 cultural contrast, a usage. Not two. If you're tempted to cram, make a second
 card.
+
+Definitional clozes of one concept share **one** combined card, not several
+near-copies: fold *"X is {{c1::a}}"* and *"X is {{c2::b}}"* into one cloze
+set. When the answer is one item of a long list, don't cloze a single item;
+use the terse shape `{{c1::Topic}} includes {{c2::item1}} {{c3::item2}}`.
 
 If the same answer text appears more than once in the sentence, cloze
 **every** occurrence under the **same** cN. An unclozed repeat leaks the
@@ -225,15 +232,9 @@ the **raw LaTeX** (what you'd type) at the highest index, hinted `::latex`.
   answer, not just the first. Delimiters work whether they sit inside or
   outside a cloze; put them *inside* (`{{c2::\(^\top\)::latex}}`) if you want
   the reveal itself to render the glyph rather than show the raw source.
-- **Gotcha — adjacent `}` truncates the cloze.** Anki (and precis) find a
-  cloze's end by scanning for the first literal `}}`. If your LaTeX answer's
-  own closing braces land next to each other — nested groups like
-  `\sqrt{x^{2}}` or `\frac{a}{b}`-style constructs — that inner `}}` is
-  indistinguishable from the cloze's own closer and the answer gets silently
-  truncated (confirmed: `{{c1::\sqrt{x^{2}}::latex}}` stores as
-  `\sqrt{x^{2` — a hint alone does **not** save you here, only the character
-  spacing does). Break up any `}}` inside the answer with a space or `\,`:
-  `\sqrt{x^{2} }` is safe, `\sqrt{x^{2}}` is not.
+- Nested LaTeX braces inside an answer are safe: `{{c1::\sqrt{x^{2}}::latex}}`
+  is stored with a space between the touching `}`, so Anki shows the whole
+  answer.
 
 ## See also
 

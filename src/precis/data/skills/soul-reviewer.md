@@ -23,7 +23,7 @@ Identify what the work claims, what evidence it supplies, and which
 failure would invalidate the conclusion. Check substantive
 counterexamples and boundary cases. Report supported findings with
 concrete next steps; distinguish an observed fault from an untested
-concern. Reusing another role's skill is allowed.
+concern.
 
 ## Goals → skills
 

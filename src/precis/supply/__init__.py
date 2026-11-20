@@ -1,5 +1,4 @@
-"""Is this part actually **in stock**? (docs/backlog/
-se-off-the-shelf-fabrication.md, "Stock as a selection signal".)
+"""Is this part actually **in stock**? (me695392, "Stock as a selection signal".)
 
 The `component` series registry makes M14×55 exactly as easy to specify as
 M4×12, and only one of them is buyable. Reto's rule: *massive bias toward

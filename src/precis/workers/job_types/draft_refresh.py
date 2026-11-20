@@ -1,5 +1,5 @@
 """``draft_refresh`` job_type — one bounded, section-scoped refresh of a
-living draft (docs/backlog/draft-refresh.md, Part 1: the job + skill; the
+living draft (me693762, Part 1: the job + skill; the
 scheduler cadence that mints these jobs is a separate, later round).
 
 Given ``{'draft': '<slug>', 'scope': 'dc<id>'}`` (``scope`` a heading
@@ -506,7 +506,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     gate = narrative_growth_gate(prev_words, new_words, progress_evidence)
     if not gate.ok:
         # The section is left untouched on a gate refusal. Its idem_key (the
-        # scheduler side, docs/backlog/draft-refresh.md) encodes the
+        # scheduler side, me693762) encodes the
         # section's current min chunk created_at, so THIS exact job never
         # re-fires until the chunks actually change — a refused rewrite
         # does not naturally re-arm on the next cadence tick. Acceptable
@@ -549,12 +549,22 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             chunk_kind="paragraph",
             text=new_body_text,
             at={"into": heading.dc, "first": True},
+            # Machine-written prose: derived events stay out of the draft's
+            # updated_at clock so scheduled refreshes don't top "recent
+            # changes" (gr687836).
+            source={"reason": "draft_refresh", "derived": True},
         )
         for c in retire_targets:
-            ctx.store.drafts.retire_chunk(c.handle, mode="cascade")
+            ctx.store.drafts.retire_chunk(
+                c.handle,
+                mode="cascade",
+                source={"reason": "draft_refresh", "derived": True},
+            )
         if new_heading_text and new_heading_text != (heading.text or "").strip():
             ctx.store.drafts.edit_text(
-                heading.handle, new_heading_text, source={"reason": "draft_refresh"}
+                heading.handle,
+                new_heading_text,
+                source={"reason": "draft_refresh", "derived": True},
             )
         draft_handler.sync_draft_links(ref_id)
         draft_handler._attribute_touch([c.chunk_id for c in new_chunks])

@@ -1,5 +1,5 @@
 """``get(kind='se', view='inspect')`` — the one inspect family on a block
-(molecular-workspace-code slice 6, docs/backlog/molecular-workspace-code.md
+(molecular-workspace-code slice 6, me694745
 §Inspect).
 
 ``args={'block', 'probe': 'ray'|'section'|'overlap'|'thickness', ...}``

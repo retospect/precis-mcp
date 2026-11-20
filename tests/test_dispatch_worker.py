@@ -356,7 +356,7 @@ def test_plan_tick_served_model_stamps_llm_requires(
     monkeypatch.setattr(
         router, "planner_rung0_model", lambda alias, job_type=None: "qwen-served-x"
     )
-    store.sync_host_resource_slots("melchior", {"llm:qwen-served-x": 1})
+    store.sync_host_resource_slots("maple", {"llm:qwen-served-x": 1})
 
     r = handler.put(text="planner brief, served model", meta={"llm_tier": "local"})
     rid = id_of(r.body)
@@ -420,7 +420,7 @@ def test_non_plan_tick_job_never_gets_served_model_requires(
     monkeypatch.setattr(
         router, "planner_rung0_model", lambda alias, job_type=None: "qwen-served-x"
     )
-    store.sync_host_resource_slots("melchior", {"llm:qwen-served-x": 1})
+    store.sync_host_resource_slots("maple", {"llm:qwen-served-x": 1})
 
     r = handler.put(
         text="a fix_gripe job, not a planner tick",

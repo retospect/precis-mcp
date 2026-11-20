@@ -56,6 +56,13 @@ meta={'executor': 'claude_inproc', 'job_type': 'taproot_backfill',
 cites to `[fi<id>]` claim-hub cites on the cluster worker; poll
 `get(kind='job', id='jo<id>')`. See `precis-taproot-backfill-help`.
 
+**A retitled hub drifts every cite of it.** A `[fi<id>]` cite pins the
+hub's wording at write time; a later hub reword marks each citing chunk
+*drifted* (`view='hygiene'` quotes old and new) and **blocks export**
+until the passage is rewritten to the hub's current sentence — a
+whole-chunk `mode='replace'` re-pins even when the prose still stands.
+The reword side: [[precis-taproot-hub-edit-help]].
+
 ## Cite a software / dataset record — the one whole-ref exception
 
 A **record** — a paper ref typed `record_type` `software` or `dataset`
@@ -98,8 +105,9 @@ escape a literal dollar as `\$`.
 
 ## Cite by handle, not by arXiv id or DOI
 
-Do not type an arXiv id or DOI into prose: cite `[pa<id>]` / `[pc<id>]`
-and the export renders the identifier and link. A raw id never resolves,
+Do not type an arXiv id or DOI into prose: cite the claim's hub
+`[fi<id>]` (a software or dataset record: `[pa<id>]`) and the export
+renders the identifier and link. A raw id never resolves,
 joins the cite graph, or follows a preprint to its published version. A
 bare id trips a `⚠ bare identifier in prose` hint on write (a hint, not a
 refusal; ignore it when a chunk quotes an identifier format on purpose).

@@ -186,35 +186,22 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
         "precis-taproot-backfill-help": 1,
         "precis-taproot-help": 2,
     },
-    "backlog": {
-        "precis-link-help": 1,
-        "precis-md-help": 1,
-        "precis-nanopub-help": 3,
-        "precis-overview": 1,
-        "precis-relations": 1,
-        "precis-rxn-help": 1,
-        "precis-taproot-help": 1,
-        "precis-taproot-mint-help": 1,
-        "precis-toolpath-help": 1,
-    },
+    # Emptied 2026-11-15: the backlog specs moved into graph memory (me568168),
+    # so every skill that named a docs/backlog path now names a handle.
+    "backlog": {},
     "operator": {
         "precis-anki-help": 2,
         "precis-auto-todo-help": 2,
         "precis-doi-extract-help": 1,
         "precis-files-help": 5,
         "precis-finding-help": 1,
-        "precis-inner-life-help": 2,
         "precis-md-help": 1,
-        "precis-nursery-help": 2,
         "precis-paper-help": 2,
         "precis-patent-power": 9,
         "precis-perplexity-help": 3,
-        "precis-preflight": 3,
         "precis-provenance-help": 4,
         "precis-python-help": 2,
         "precis-recurring-help": 1,
-        "precis-session-context-help": 2,
-        "precis-startup-skills-help": 2,
         "precis-wikipedia-help": 1,
     },
     "unfenced_verb": {
@@ -222,7 +209,7 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
     },
     "alias_overrun": {
         "precis-anki-help": 1,
-        "precis-status-help": 7,
+        "precis-status-help": 6,
     },
 }
 

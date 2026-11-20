@@ -1,8 +1,9 @@
 # Claude Code — project brief
 
 This repo is the precis MCP server. The session `precis` tools and
-`get(kind='skill')` skills are the product's runtime surface for cluster
-agents, not dev docs for this code.
+`get(kind='skill')` skills are the product's runtime surface for every
+agent, this session included: the workflow skills are served there too.
+They teach using the product, not how this code is built.
 
 Start with memory: `search(kind='memory', tags=['SPACE:repo-dev'],
 q='<your task>')`, then `docs/codebase.md` and the owning package's

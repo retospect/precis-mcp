@@ -1,5 +1,5 @@
 """The se side of force-density form-finding — the ``formfind`` op
-(docs/backlog/structural-solution-space.md build order slice 2).
+(me695531 build order slice 2).
 
 This module is the bridge between the design vocabulary and the pure
 solver: it reads the tree's **axial subgraph** (the same members

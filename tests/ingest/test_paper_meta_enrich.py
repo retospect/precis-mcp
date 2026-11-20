@@ -12,6 +12,7 @@ import pytest
 
 import precis.ingest.paper_meta_enrich as paper_meta_enrich
 from precis.identity import PLACEHOLDER_TITLE
+from precis.ingest import journal_record
 from precis.ingest.paper_meta_enrich import (
     RESOLVED_AT_KEY,
     SOURCE_KEY,
@@ -20,6 +21,11 @@ from precis.ingest.paper_meta_enrich import (
 from precis.store import Store
 
 _VALID_ORCID = "0000-0002-1825-0097"
+
+
+@pytest.fixture(autouse=True)
+def _journal_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(journal_record, "fetch_journal", lambda issn, mailto: None)
 
 
 def _paper(
@@ -784,6 +790,108 @@ class TestDoiLessHeuristic:
         assert ref.authors == [{"given": "Alice", "family": "Jones"}]
 
 
+class TestVenueTitleOfRecord:
+    """gr685099: one ISSN prints one venue name, whatever the per-paper
+    ``container-title`` casing says."""
+
+    def _enrich(self, store: Store, slug: str, doi: str, journal: str) -> dict:
+        rid = _paper(store, slug=slug, doi=doi)
+        msg = _crossref_msg(doi=doi, journal=journal)
+        msg["ISSN"] = ["2575-0356"]
+        enrich_paper(
+            store,
+            rid,
+            doi=doi,
+            crossref_fn=lambda d, m: msg,
+            openalex_fn=lambda d, **k: None,
+        )
+        return _ref(store, rid).meta or {}
+
+    def test_issn_title_of_record_replaces_variants(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[str] = []
+
+        def fetch(issn: str, mailto: str) -> dict[str, Any]:
+            calls.append(issn)
+            return {"ISSN": [issn], "title": "Energy & Environmental Materials"}
+
+        monkeypatch.setattr(journal_record, "fetch_journal", fetch)
+        a = self._enrich(
+            store, "v1", "10.1002/eem2.1", "ENERGY & ENVIRONMENTAL MATERIALS"
+        )
+        b = self._enrich(
+            store, "v2", "10.1002/eem2.2", "Energy and Environmental Materials"
+        )
+        assert a["journal"] == b["journal"] == "Energy & Environmental Materials"
+        assert "ENERGY & ENVIRONMENTAL MATERIALS" in a["journal_aliases"]
+        assert calls == ["2575-0356"]
+        assert a["journal_source"] == "crossref-journals"
+        from precis.export.docx import _resolve_source, _venue_runs
+        from precis.export.latex import build_bib
+
+        ref = store.get_ref(kind="paper", id="v1")
+        assert ref is not None
+        store.update_paper_fields(ref.id, meta_patch={"venue": "RAW VENUE"})
+        source = _resolve_source(store, "v1")
+        assert source is not None
+        assert source["journal"] == a["journal"]
+        runs = _venue_runs({**a, "venue": "RAW VENUE"}, "article")
+        assert "Energy & Environmental Materials" in "".join(t for t, _ in runs)
+        bib = build_bib(store, ["v1", "v2"], [])
+        assert bib.count("journaltitle = {Energy \\& Environmental Materials}") == 2
+        assert "RAW VENUE" not in bib
+
+    def test_unrelated_record_files_one_review_todo(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            journal_record,
+            "fetch_journal",
+            lambda issn, mailto: {"ISSN": [issn], "title": "Some Other Journal"},
+        )
+        meta = self._enrich(store, "v3", "10.1002/eem2.3", "ENERGY MATERIALS")
+        assert meta["journal"] == "ENERGY MATERIALS"
+        self._enrich(store, "v4", "10.1002/eem2.4", "Energy Materials")
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind='todo' AND meta->>'source'='journal-record'"
+            ).fetchall()
+        assert len(rows) == 1
+
+    def test_metrics_title_is_not_a_journal_record(self, store: Store) -> None:
+        store.upsert_venue_metrics(
+            [{"issn": "2575-0356", "year": 2024, "sjr": 1.5, "title": "Wrong Title"}]
+        )
+        meta = self._enrich(store, "v5", "10.1002/eem2.5", "ENERGY MATERIALS")
+        assert meta["journal"] == "ENERGY MATERIALS"
+
+    def test_escaped_all_caps_container_title_converges(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr685099's exact shape: Crossref works serves the container
+        title escaped and ALL CAPS; the ISSN record settles it without a
+        human todo."""
+        monkeypatch.setattr(
+            journal_record,
+            "fetch_journal",
+            lambda issn, mailto: {
+                "ISSN": [issn],
+                "title": "Energy & Environmental Materials",
+            },
+        )
+        meta = self._enrich(
+            store, "v6", "10.1002/eem2.6", "ENERGY &amp; ENVIRONMENTAL MATERIALS"
+        )
+        assert meta["journal"] == "Energy & Environmental Materials"
+        assert "ENERGY &amp; ENVIRONMENTAL MATERIALS" in meta["journal_aliases"]
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind='todo' AND meta->>'source'='journal-record'"
+            ).fetchall()
+        assert rows == []
+
+
 class TestJournalCrossrefPrecedence:
     """gr606459: Crossref's ``container-title`` is authoritative for a
     DOI-registered work — an S2 ``venue`` minted onto the stub (or any
@@ -971,7 +1079,9 @@ class TestStampOrdering:
     side-effect chain (author/meta write, ORCID mint+link, card rebuild)
     must leave the ref unstamped so the next pass retries it, even though
     already-committed side effects (like the author replace here) stay
-    durable."""
+    durable. A placeholder's recovered title rides in the same final
+    transaction as the stamp (gr658887 review — the sentinel title is
+    the recovery leg's claim key), so it stays unwritten too."""
 
     def test_card_rebuild_failure_leaves_ref_unstamped(
         self, monkeypatch: pytest.MonkeyPatch, store: Store
@@ -979,7 +1089,7 @@ class TestStampOrdering:
         rid = _paper(store, slug="p12", doi="10.1234/ord")
         msg = _crossref_msg(doi="10.1234/ord")
 
-        def _boom(store_: Store, ref_id: int) -> None:
+        def _boom(store_: Store, ref_id: int, **kw: Any) -> None:
             raise RuntimeError("card rebuild blew up")
 
         monkeypatch.setattr(paper_meta_enrich, "_rebuild_cards", _boom)
@@ -1322,3 +1432,178 @@ class TestJunkCiteKeyRemint:
         ]
         assert store.find_ref_by_identifier("cite_key", "goldsmith20") == rid
         assert store.events_for(rid, event="cite_key_changed") == []
+
+
+def _chunk(store: Store, ref_id: int, ord_: int, text: str) -> None:
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, %s, 'paragraph', %s)",
+                (ref_id, ord_, text),
+            )
+
+
+class TestFrontMatterTitleFill:
+    """gr658887: a placeholder Crossref couldn't fill still has the
+    answer in the paper's own front matter — the same title-head +
+    multi-name-byline signature the junk-title cascade's last leg
+    persists. ``repair_junk_title_papers`` delegates DOI'd placeholders
+    to this pass, so the leg must live here too or that class sits
+    blank forever."""
+
+    def test_crossref_miss_fills_title_from_front_matter(self, store: Store) -> None:
+        rid = _paper(store, slug="fm1", title=PLACEHOLDER_TITLE, doi="10.1234/gone")
+        _chunk(
+            store,
+            rid,
+            0,
+            "**Varieties of Helmholtz Machine**\n\nG. E. Hinton & P. Dayan",
+        )
+        _chunk(store, rid, 1, "The Helmholtz machine learns. " * 4)
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/gone",
+            crossref_fn=lambda doi, mailto: None,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled == "Varieties of Helmholtz Machine"
+        ref = _ref(store, rid)
+        assert ref.title == "Varieties of Helmholtz Machine"
+        events = store.events_for(rid, event="title_front_matter")
+        assert len(events) == 1
+        assert events[0].payload["title"] == "Varieties of Helmholtz Machine"
+
+    def test_doi_less_placeholder_fills_from_front_matter(self, store: Store) -> None:
+        rid = _paper(store, slug="fm2", title="")
+        _chunk(
+            store,
+            rid,
+            0,
+            "**Adaptive routing in mesh networks**\n\nJ. Doe & R. Roe",
+        )
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi=None,
+            crossref_fn=lambda doi, mailto: None,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled == "Adaptive routing in mesh networks"
+        assert _ref(store, rid).title == "Adaptive routing in mesh networks"
+
+    def test_no_byline_signature_leaves_the_placeholder(self, store: Store) -> None:
+        """A lone title-like first line is not confident enough — the
+        sentinel survives for the human queue rather than a guess."""
+        rid = _paper(store, slug="fm3", title=PLACEHOLDER_TITLE)
+        _chunk(
+            store,
+            rid,
+            0,
+            "An Obscure Machine Learning Result\n\n"
+            + "The experiment proceeded as follows. " * 4,
+        )
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi=None,
+            crossref_fn=lambda doi, mailto: None,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled is None
+        assert _ref(store, rid).title == PLACEHOLDER_TITLE
+        assert store.events_for(rid, event="title_front_matter") == []
+
+    def test_real_title_is_never_clobbered_by_front_matter(self, store: Store) -> None:
+        rid = _paper(
+            store, slug="fm4", title="The Author's Own Title", doi="10.1234/gone2"
+        )
+        _chunk(
+            store,
+            rid,
+            0,
+            "**A Different Front Matter Title**\n\nJ. Doe & R. Roe",
+        )
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/gone2",
+            crossref_fn=lambda doi, mailto: None,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled is None
+        assert _ref(store, rid).title == "The Author's Own Title"
+
+    def test_crossref_title_still_wins_over_front_matter(self, store: Store) -> None:
+        """The registry hit is the stronger source — the leg only runs
+        when Crossref produced no title."""
+        rid = _paper(store, slug="fm5", title=PLACEHOLDER_TITLE, doi="10.1234/hit")
+        _chunk(
+            store,
+            rid,
+            0,
+            "**A Different Front Matter Title**\n\nJ. Doe & R. Roe",
+        )
+        msg = _crossref_msg(doi="10.1234/hit")
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1234/hit",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert outcome.title_filled == "A Paper"
+        assert _ref(store, rid).title == "A Paper"
+        assert store.events_for(rid, event="title_front_matter") == []
+
+
+class TestTitleRecoveryPin:
+    """gr658887 bound: a visit that *read* a placeholder title pins
+    ``meta.title_recovery_v`` at the current recovery version — the
+    worker claim's recovery leg re-selects a stamped placeholder only
+    while that pin is behind. A real-titled visit carries no pin."""
+
+    def test_placeholder_visit_pins_the_recovery_version(self, store: Store) -> None:
+        rid = _paper(store, slug="pin1", title=PLACEHOLDER_TITLE, doi="10.1/x")
+        msg = _crossref_msg(doi="10.1/x")
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1/x",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        meta = _ref(store, rid).meta or {}
+        assert meta["title_recovery_v"] == paper_meta_enrich._TITLE_RECOVERY_VERSION
+
+    def test_unfixable_placeholder_still_pins(self, store: Store) -> None:
+        """The pin lands even when no leg could fill the title — it's the
+        bound that keeps a dead end from being reclaimed every pass."""
+        rid = _paper(store, slug="pin2", title="")
+        outcome = enrich_paper(store, rid, doi=None)
+        assert outcome is not None
+        ref = _ref(store, rid)
+        assert ref.title == ""
+        assert (ref.meta or {})["title_recovery_v"] == (
+            paper_meta_enrich._TITLE_RECOVERY_VERSION
+        )
+
+    def test_real_title_visit_pins_nothing(self, store: Store) -> None:
+        rid = _paper(store, slug="pin3", title="A Real Title", doi="10.1/y")
+        msg = _crossref_msg(doi="10.1/y")
+        outcome = enrich_paper(
+            store,
+            rid,
+            doi="10.1/y",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        assert outcome is not None
+        assert "title_recovery_v" not in (_ref(store, rid).meta or {})

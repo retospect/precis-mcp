@@ -93,7 +93,20 @@ gated on the same ``service_config`` row (``conflict_search`` prio > 0 on
 any host) — a dark service mints no jobs, so enabling the pass is the
 one switch for all three populations. The enqueue is idempotent on
 ``meta.idem_key`` (``conflict_sweep:<hub>:v<version>:<reason>``), so a
-mint and a same-day approve-page refresh never queue two sweeps.
+mint and a same-day approve-page refresh never queue two sweeps. The
+key check runs under the key's ``pg_advisory_xact_lock`` — two
+same-key enqueues never both insert — and a terminal job in
+:data:`_REQUEUE_STATUSES` frees it (``failed``/``timed-out``: the
+attempt died unstamped), so a lost sweep re-queues through the same
+door while a ``succeeded``/``cancelled`` one keeps holding it and the
+day's refresh ask stays deduped. The mint door is also fan-out
+bounded (gr637060): a ``reason="mint"`` enqueue past
+:data:`_DEFAULT_MINT_JOB_CAP` live sweep jobs is skipped — the hub
+keeps its missing watermark and the standing pass reaches it in
+cohort order — and the backlog count + insert serialize on a shared
+advisory lock so concurrent mints can't overshoot the cap. One
+session minting hubs through taproot cannot bury ``claude_inproc``
+in queued sweeps.
 
 **The counter-claim backstop** (:func:`mint_counter_claim`, item 1 —
 the review-sitting door). A ``disputes``-verdict covered row means the
@@ -182,10 +195,16 @@ from precis.taproot.hub import HUB_ROLES, link_claims
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.env import env_float
+from precis.utils.idem import idem_lock_key
 from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.utils.relations import validate_relation
 from precis.workers._chase_llm import _verify_support_with_caveats
-from precis.workers._mint import mint_background_job
+from precis.workers._mint import (
+    JOB_TERMINAL_STATUSES,
+    active_job_id,
+    latest_job_for_idem,
+    mint_background_job,
+)
 
 log = logging.getLogger(__name__)
 
@@ -232,6 +251,37 @@ _SERVICE_NAME = "conflict_search"
 #: system-minted maintenance jobs use (``draft_refresh_scan``,
 #: ``diagnose_scan``: ``_MINT_PRIO = 8``).
 _SWEEP_JOB_PRIO = 8
+
+#: Live (non-terminal STATUS) ``conflict_sweep`` jobs a ``reason="mint"``
+#: enqueue adds to before deferring to the standing pass — the fan-out
+#: bound of gr637060. One taproot session minting findings queued ~14
+#: sweeps/minute on ``claude_inproc`` (95 deep in 7 minutes) while the
+#: lane was saturated on higher-class work. The mint enqueue is a
+#: promptness hint, never the only door: a hub skipped at the cap keeps
+#: its missing ``conflict_search`` watermark, so
+#: :func:`run_conflict_search_pass` sweeps it in cohort order — a
+#: deferred sweep, not a lost one. ``0`` switches mint enqueues off;
+#: refresh asks (a human clicked, one per hub per day by idem key) are
+#: never capped.
+_DEFAULT_MINT_JOB_CAP = 32
+
+#: ``pg_advisory_xact_lock`` key (hashed by :func:`~precis.utils.idem.
+#: idem_lock_key`) serializing a ``reason="mint"`` enqueue's backlog
+#: count and insert into one critical section — without it two
+#: concurrent hub mints can both read ``live < cap`` and overshoot
+#: :data:`_DEFAULT_MINT_JOB_CAP` (gr637060 review). Same shared-lock
+#: shape ``paper_ingest.ensure_queued`` uses for its daily get cap.
+_MINT_CAP_LOCK_IDEM = f"{CONFLICT_SWEEP_JOB_TYPE}:mint-cap"
+
+#: Terminal STATUSes that FREE the sweep idem key for a re-queue —
+#: the last attempt died without stamping the hub (``failed`` covers
+#: gr637060's parked-then-failed cohort; ``timed-out`` loses the work
+#: the same way). ``succeeded`` keeps holding it — the sweep ran, so
+#: the ``refresh:<UTC date>`` one-per-hub-per-day ask still dedupes
+#: (:func:`precis.nanopub.freshness.request_conflict_resweep`,
+#: ``precis_web.routes.nanopub.nanopub_sweep``) — and ``cancelled``
+#: keeps it too: an operator stop is not a retry ask.
+_REQUEUE_STATUSES: tuple[str, ...] = ("failed", "timed-out")
 
 #: Upper bound on ``meta.conflict_search.covered`` rows kept per hub —
 #: oldest rows fall off first (and so become re-verifiable). Six verify
@@ -309,6 +359,17 @@ def _topk() -> int:
         return int(os.environ.get("PRECIS_CONFLICT_SEARCH_TOPK", str(_DEFAULT_TOPK)))
     except ValueError:
         return _DEFAULT_TOPK
+
+
+def _mint_job_cap() -> int:
+    try:
+        return int(
+            os.environ.get(
+                "PRECIS_CONFLICT_SEARCH_MINT_CAP", str(_DEFAULT_MINT_JOB_CAP)
+            )
+        )
+    except ValueError:
+        return _DEFAULT_MINT_JOB_CAP
 
 
 def _verify_budget() -> int:
@@ -1627,6 +1688,26 @@ def _sweep_idem_key(hub_ref_id: int, reason: str) -> str:
     return f"{CONFLICT_SWEEP_JOB_TYPE}:{hub_ref_id}:v{CONFLICT_SEARCH_VERSION}:{reason}"
 
 
+def _live_sweep_jobs(c: Any) -> int:
+    """Live ``conflict_sweep`` job rows — every non-terminal STATUS
+    counts (``queued``, ``running``, a quota-parked ``waiting_time``):
+    a parked job is still owed a sweep, so it holds a cap slot. This is
+    the backlog the mint fan-out bound (:data:`_DEFAULT_MINT_JOB_CAP`)
+    measures itself against."""
+    row = c.execute(
+        "SELECT count(*) FROM refs r "
+        "WHERE r.kind = 'job' AND r.retired_at IS NULL "
+        "AND r.meta->>'job_type' = %s "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        "  WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' "
+        "  AND t.value = ANY(%s)"
+        ")",
+        (CONFLICT_SWEEP_JOB_TYPE, list(JOB_TERMINAL_STATUSES)),
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 def enqueue_conflict_sweep(
     store: Store,
     hub_ref_id: int,
@@ -1644,24 +1725,59 @@ def enqueue_conflict_sweep(
     ``reason`` scopes the idem key (``conflict_sweep:<hub>:v<version>:
     <reason>``): ``"mint"`` from :func:`precis.taproot.hub.mint_hub`,
     ``"refresh:<UTC date>"`` from the approve surface (at most one
-    refresh per hub per day). Same direct-``insert_ref`` + idem-guarded
-    shape as ``draft_refresh_scan._mint`` / ``diagnose_scan._mint``:
-    parentless, ``STATUS:queued``, ``claude_inproc``. ``conn=`` joins the
-    caller's transaction (the mint savepoint) so a rolled-back mint
-    leaves no orphan job.
+    refresh per hub per day). The key is held by a live job and by a
+    terminal ``succeeded``/``cancelled`` one — a ``failed`` or
+    ``timed-out`` attempt frees it (:data:`_REQUEUE_STATUSES`), so a
+    sweep that died unstamped re-queues through this same door
+    (gr637060's parked-then-failed cohort) while a same-day refresh ask
+    after success stays deduped. ``"mint"`` enqueues are also fan-out
+    bounded: at :func:`_mint_job_cap` live sweep jobs the mint defers
+    and returns ``None`` — the hub keeps its missing watermark and the
+    standing pass sweeps it in cohort order. Both checks serialize on
+    ``pg_advisory_xact_lock`` — the per-key lock lands before any read
+    (``paper_ingest.ensure_queued``'s shape), and the shared
+    :data:`_MINT_CAP_LOCK_IDEM` lock makes the backlog count + insert
+    one critical section so concurrent mints can't overshoot the cap.
+    Same direct-``insert_ref`` + idem-guarded shape as
+    ``draft_refresh_scan._mint`` / ``diagnose_scan._mint``: parentless,
+    ``STATUS:queued``, ``claude_inproc``. ``conn=`` joins the caller's
+    transaction (the mint savepoint) so a rolled-back mint leaves no
+    orphan job.
     """
 
     def _do(c: Any) -> int | None:
         if not conflict_search_enabled(store, conn=c):
             return None
         idem_key = _sweep_idem_key(hub_ref_id, reason)
-        existing = c.execute(
-            "SELECT ref_id FROM refs WHERE kind = 'job' AND retired_at IS NULL "
-            "AND meta->>'idem_key' = %s LIMIT 1",
-            (idem_key,),
-        ).fetchone()
-        if existing is not None:
-            return int(existing[0])
+        # The per-key lock lands BEFORE any read — two concurrent
+        # same-key enqueues serialize on it and the second re-reads.
+        c.execute("SELECT pg_advisory_xact_lock(%s)", (idem_lock_key(idem_key),))
+        live_id = active_job_id(c, idem_key)
+        if live_id is not None:
+            return live_id
+        last = latest_job_for_idem(c, idem_key)
+        if last is not None and last[1] not in _REQUEUE_STATUSES:
+            return last[0]
+        if reason == "mint":
+            # The shared cap lock makes the backlog count and the
+            # insert below one critical section — concurrent hub mints
+            # can't both slip under _mint_job_cap (gr637060 review).
+            c.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (idem_lock_key(_MINT_CAP_LOCK_IDEM),),
+            )
+            cap = _mint_job_cap()
+            live = _live_sweep_jobs(c)
+            if live >= cap:
+                log.info(
+                    "conflict_search: mint sweep for fi%d deferred — %d live "
+                    "%s jobs at cap %d; the standing pass covers the hub",
+                    hub_ref_id,
+                    live,
+                    CONFLICT_SWEEP_JOB_TYPE,
+                    cap,
+                )
+                return None
         ref = mint_background_job(
             store,
             conn=c,

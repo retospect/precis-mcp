@@ -1,5 +1,5 @@
 """Free-molecular (Knudsen) test-particle Monte Carlo — slice 3 of
-docs/backlog/se-flow-kernel.md.
+me695207.
 
 Where the continuum kernel holds only at ``Kn <= 0.01``, the same
 dimension-free claim is made by a test-particle propagator with diffuse

@@ -3,7 +3,7 @@
 The `meta` shape, the embeddable card text, and name/definition parsing — used by
 both the concept handler (manual put) and the promotion pass (rich write) so they
 build byte-identical nodes. Pure (no DB, no I/O). See
-docs/backlog/reading-prep-loop.md.
+me690334.
 """
 
 from __future__ import annotations
@@ -16,10 +16,11 @@ STATE_CANDIDATE = "candidate"
 STATE_ACTIVE = "active"
 STATE_MASTERED = "mastered"
 
-#: Separator between a concept name and its definition, in priority order:
-#: em-dash, en-dash, or a newline. A colon is deliberately NOT a separator —
+#: Separator between a concept name and its definition: em-dash, a spaced
+#: en-dash, or a newline. Preserve internal en-dashes in names (Lennard–Jones).
+#: A colon is deliberately NOT a separator —
 #: definitions frequently contain them ("REST: an architectural style…").
-_NAME_DEF_RE = re.compile(r"\s*[—–]\s*|\n")
+_NAME_DEF_RE = re.compile(r"[ \t]*—[ \t]*|[ \t]+–[ \t]+|\n")
 
 
 def normalize_name(name: str) -> str:
@@ -31,8 +32,8 @@ def normalize_name(name: str) -> str:
 
 def split_name_def(text: str) -> tuple[str, str]:
     """Parse concept ``text`` into ``(name, definition)``. Splits on the first
-    em/en-dash or newline; with no separator the whole string is the name and
-    the definition is empty."""
+    em-dash, spaced en-dash or newline; with no separator the whole string is
+    the name and the definition is empty."""
     if not text:
         return "", ""
     parts = _NAME_DEF_RE.split(text.strip(), maxsplit=1)

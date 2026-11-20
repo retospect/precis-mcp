@@ -76,7 +76,7 @@ case "$DB" in
             exit 1
         fi
         # The stored DSN is container-oriented (host.docker.internal = the
-        # Mac's autossh tunnel to caspar's pgbouncer); this process runs
+        # Mac's autossh tunnel to the database host's pgbouncer); this process runs
         # directly on the host (like scripts/prod-precis), so rewrite to
         # 127.0.0.1. Also swap the DSN user to agent_ro — pgbouncer rejects
         # the PGOPTIONS read-only startup param (see header); the ro role's

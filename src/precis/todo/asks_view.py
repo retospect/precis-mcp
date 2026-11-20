@@ -3,7 +3,7 @@
 ``search(kind='todo', view='asks')`` and the web ``/asks`` + Needs-you
 landing read one model (:func:`asks_model`): rows grouped by class, then
 by quest, then by thread. Dark-factory step 1b (td540847,
-``docs/backlog/dark-factory.md``). A question for the owner is an
+`me692430`). A question for the owner is an
 ``ask-user`` todo carrying ``meta.ask`` (td541979); there is no file
 source — the review-queue directory is retired.
 
@@ -24,16 +24,48 @@ Quest grouping: :func:`quest_of` walks ``refs.parent_id`` up from the
 row to its root and takes the first ``serves`` link to a quest on the
 way (the row itself first). Argument happens as comments on the row —
 every row starts with its handle so it is a ``get``.
+
+Triage (gr652333): the ``asks_triage`` pass stamps every row it handles
+with an ``asks-triage:<outcome>`` open tag + ``meta.asks_triage``. A row
+stamped ``resolved`` or ``routed`` leaves this list — it is closed,
+parked on the coordinator queue (``waiting-for:coordinator`` —
+``view='coordinator'``; also where an ``uncertain-halt-outcome`` row
+whose prior attempt fails the re-arm audit lands), or folded —
+parked ``waiting-for:chore-batch`` so a member carrying a dispatch
+signal can't run its own copy — into a ``chore:<kind>`` worker
+batch; ``kept`` and ``rearmed`` rows stay and
+carry their stamp. Both rendered headers report the rows still WITHOUT
+a stamp as ``N untriaged`` — the spec's done-check: after a sweep every
+row is stamped, and the ones that aren't are counted out loud.
+
+The Reto queue (gr653289). ``view='reto-queue'`` is every non-discussion
+row — showstoppers, asks and bare ``waiting-for:reto`` — plus three
+sources the asks tag set never covered: ``STATUS:needs_spec`` gripes
+carrying ``reto:ask``/``fix:reto`` (a ruling only Reto can give), open
+alerts at ``severity:warn`` or higher outside
+:data:`_NOISY_ALERT_SOURCES` (a human condition, not hygiene noise), and
+one synthetic ``kind='release'`` row per release pass whose landed main
+shas the recorded prod head doesn't cover (the deploy is a shell job).
+Every row carries ``needs`` — ``terminal`` (shell / vault / host),
+``hands`` (physical or browser work) or ``chat`` (a ruling said in
+words) — derived from open tags (:func:`_needs_of`); the render groups
+TERMINAL / CHAT / HANDS in that order, and ``view='asks'`` marks a
+terminal row ``[terminal]``.
 """
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import BadInput
+from precis.plans.gates import MIN_SHA_LEN, read_prod_head
 from precis.response import Response
 from precis.todo import blocker_terminal_sql
+from precis.todo.blocked import open_blocked_by
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
@@ -71,6 +103,42 @@ _TAGS = (
 #: generic needs-spec an agent can write); ``<answer>`` is what he must give.
 RETO_TAG = "for-reto:"
 RETO_ANSWERS: tuple[str, ...] = ("ruling", "spec", "review", "other")
+#: The ``asks_triage`` stamp (gr652333): ``asks-triage:<outcome>`` —
+#: ``kept`` stays, ``rearmed`` is a released halt park, ``resolved`` /
+#: ``routed`` are hidden by the model.
+TRIAGE_PREFIX = "asks-triage:"
+#: Stamp outcomes :func:`asks_model` hides — a resolved or routed row
+#: left the owner's list; kept/rearmed stay visible with their stamp.
+TRIAGE_HIDDEN: frozenset[str] = frozenset({"resolved", "routed"})
+#: A routed row's coordinator tag — ``view='coordinator'`` lists it.
+COORDINATOR_TAG = "waiting-for:coordinator"
+#: ``needs`` values — where a row resolves (gr653289): ``terminal``
+#: wants a shell, vault or host login; ``hands`` physical or browser
+#: work; ``chat`` a ruling, choice or spec said in words.
+NEED_TERMINAL = "terminal"
+NEED_CHAT = "chat"
+NEED_HANDS = "hands"
+#: Group order for :func:`render_reto_queue` — terminal first (the
+#: shell jobs), then the chat answers, then hands.
+NEED_ORDER: tuple[str, ...] = (NEED_TERMINAL, NEED_CHAT, NEED_HANDS)
+#: Open tags putting a row in ``needs='hands'``: ``needs-hands`` is the
+#: generic mark, ``want-paper`` the hand-fetch convention
+#: (precis-user-queue-help).
+_HANDS_TAGS: frozenset[str] = frozenset({"needs-hands", "want-paper"})
+#: Alert severities that wait on a human — ``warn`` or higher
+#: (``precis.alerts.SEVERITIES`` is the axis); info stays hygiene noise.
+_QUEUE_SEVERITIES: frozenset[str] = frozenset({"warn", "critical"})
+#: Warn-or-higher alert sources still too noisy for the queue
+#: (gr653289 — the exclusion list gets a review after a week; the two
+#: nursery names are info-level today and already excluded by severity,
+#: pinned so a severity bump can't page the owner).
+_NOISY_ALERT_SOURCES: frozenset[str] = frozenset(
+    {"nursery:stale-halt", "nursery:long-wait"}
+)
+#: Open gripe tags that put a ``STATUS:needs_spec`` gripe on the queue —
+#: only a ``reto:ask``/``fix:reto`` needs-spec waits on Reto (the rest
+#: are the spec pass's job).
+_RETO_GRIPES: frozenset[str] = frozenset({"reto:ask", "fix:reto"})
 #: Ancestor hops when walking ``parent_id``.
 _MAX_HOPS = 20
 _QUESTION_CAP = 160
@@ -106,6 +174,18 @@ class AskRow:
     #: Open rows blocked-by this one — ``meta.ask.blocks`` already writes
     #: that link, so the slice it names is counted, not added on top.
     blocked: int = 0
+    #: Open ``blocked-by`` targets of THIS row — the other direction of
+    #: the gr656970 sequencing edge: an ask itself held by live work
+    #: names its blocker like the work board's ``after`` column.
+    after: tuple[str, ...] = ()
+    #: The ``asks-triage:<outcome>`` stamp's outcome, ``""`` when the row
+    #: was never triaged (gr652333 — ``asks_model`` drops ``resolved`` /
+    #: ``routed``; the header counts what's left unstamped).
+    triage: str = ""
+    #: Where the row resolves — ``terminal`` | ``chat`` | ``hands``
+    #: (:func:`_needs_of`; the queue groups on it, asks marks
+    #: ``[terminal]``).
+    needs: str = NEED_CHAT
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -325,6 +405,17 @@ def _reto_answer(tags: list[str]) -> str:
     return ""
 
 
+def _needs_of(tags: list[str]) -> str:
+    """The row's ``needs`` bucket (gr653289): ``needs-terminal`` →
+    terminal, ``needs-hands``/``want-paper`` → hands, else chat.
+    Terminal wins when both stick — a shell job is never only hands."""
+    if "needs-terminal" in tags:
+        return NEED_TERMINAL
+    if _HANDS_TAGS.intersection(tags):
+        return NEED_HANDS
+    return NEED_CHAT
+
+
 def _blocked_counts(store: Store, ids: list[int]) -> dict[int, int]:
     """Open refs that carry a ``blocked-by`` link to each of ``ids`` —
     retired, resolved and terminal-STATUS srcs no longer wait."""
@@ -353,10 +444,15 @@ def _blocked_counts(store: Store, ids: list[int]) -> dict[int, int]:
 
 
 def _classify(
-    kind: str, tags: list[str], ask: dict[str, Any] | None = None
+    kind: str,
+    tags: list[str],
+    ask: dict[str, Any] | None = None,
+    status: str = "open",
 ) -> tuple[str, tuple[str, ...]] | None:
-    """``(class, reasons)`` for a todo/gripe's open tags and ``meta.ask``;
-    ``None`` when no tag puts it on the list."""
+    """``(class, reasons)`` for a todo/gripe/alert's open tags and
+    ``meta.ask``; ``None`` when no tag puts it on the list. ``status``
+    is the row's effective STATUS — a gripe earns the
+    ``reto:ask``/``fix:reto`` reason only at ``needs_spec``."""
     classes: list[str] = []
     reasons: list[str] = []
     if kind == "todo" and any(
@@ -393,6 +489,29 @@ def _classify(
     if rescue is not None:
         classes.append(SHOWSTOPPER)
         reasons.append(rescue)
+    if kind == "gripe" and status == "needs_spec":
+        # gr653289: a reto:ask/fix:reto needs-spec is a ruling for Reto,
+        # not a job the spec pass writes. On any other status the tag is
+        # parked context — the row lists only if another tag admits it.
+        reto = [t for t in tags if t in _RETO_GRIPES]
+        if reto:
+            classes.append(DECISION)
+            reasons.extend(reto)
+    if kind == "alert" and "alert-state:open" in tags:
+        # gr653289: a warn-or-higher open alert is a human condition —
+        # info is hygiene noise, and _NOISY_ALERT_SOURCES stays out even
+        # at warn.
+        sev = next(
+            (t[len("severity:") :] for t in tags if t.startswith("severity:")),
+            "warn",
+        )
+        src = next(
+            (t[len("alert-source:") :] for t in tags if t.startswith("alert-source:")),
+            "",
+        )
+        if sev in _QUEUE_SEVERITIES and src not in _NOISY_ALERT_SOURCES:
+            classes.append(DECISION)
+            reasons.append(f"severity:{sev}")
     if not classes:
         return None
     return min(classes, key=_RANK.__getitem__), tuple(reasons)
@@ -413,18 +532,49 @@ def _ref_rows(store: Store) -> list[AskRow]:
         cands = conn.execute(
             """
             SELECT r.ref_id, r.kind, r.title, r.meta->'ask', r.created_at,
-                   r.updated_at
+                   r.updated_at,
+                   COALESCE(
+                         (SELECT t3.value FROM ref_tags rt3
+                            JOIN tags t3 ON t3.tag_id = rt3.tag_id
+                           WHERE rt3.ref_id = r.ref_id
+                             AND t3.namespace = 'STATUS'
+                           LIMIT 1),
+                         'open') AS status
               FROM refs r
              WHERE r.kind IN ('todo', 'gripe', 'alert') AND r.retired_at IS NULL
                -- only alerts ever stamp resolved_at: a resolved alert
                -- leaves the list even without a terminal STATUS tag
                AND r.resolved_at IS NULL
-               AND EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
-                      AND (t.value = ANY(%s) OR t.value LIKE 'ask-user:%%'
-                           OR t.value LIKE 'for-reto:%%'
-                           OR t.value LIKE 'rescue:%%'))
+               AND (EXISTS (
+                       SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                        WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                          AND (t.value = ANY(%s) OR t.value LIKE 'ask-user:%%'
+                               OR t.value LIKE 'for-reto:%%'
+                               OR t.value LIKE 'rescue:%%'))
+                    -- gr653289: a needs_spec gripe carrying reto:ask /
+                    -- fix:reto waits on Reto's ruling, spec pass or not
+                    OR (r.kind = 'gripe'
+                        AND EXISTS (
+                            SELECT 1 FROM ref_tags rt JOIN tags t
+                              ON t.tag_id = rt.tag_id
+                             WHERE rt.ref_id = r.ref_id
+                               AND t.namespace = 'OPEN'
+                               AND t.value IN ('reto:ask', 'fix:reto'))
+                        AND EXISTS (
+                            SELECT 1 FROM ref_tags rt JOIN tags t
+                              ON t.tag_id = rt.tag_id
+                             WHERE rt.ref_id = r.ref_id
+                               AND t.namespace = 'STATUS'
+                               AND t.value = 'needs_spec'))
+                    -- every open alert is a candidate; _classify keeps
+                    -- warn-or-higher outside _NOISY_ALERT_SOURCES
+                    OR (r.kind = 'alert'
+                        AND EXISTS (
+                            SELECT 1 FROM ref_tags rt JOIN tags t
+                              ON t.tag_id = rt.tag_id
+                             WHERE rt.ref_id = r.ref_id
+                               AND t.namespace = 'OPEN'
+                               AND t.value = 'alert-state:open')))
                AND COALESCE(
                      (SELECT t2.value FROM ref_tags rt2
                         JOIN tags t2 ON t2.tag_id = rt2.tag_id
@@ -437,11 +587,11 @@ def _ref_rows(store: Store) -> list[AskRow]:
         ).fetchall()
     tags_by_ref = _open_tags(store, [int(c[0]) for c in cands])
     rows: list[AskRow] = []
-    for ref_id, kind, title, ask_meta, created, updated in cands:
+    for ref_id, kind, title, ask_meta, created, updated, status in cands:
         rid = int(ref_id)
         tags = tags_by_ref.get(rid, [])
         ask = ask_meta if isinstance(ask_meta, dict) else None
-        verdict = _classify(str(kind), tags, ask)
+        verdict = _classify(str(kind), tags, ask, status=str(status))
         if verdict is None:
             continue
         klass, reasons = verdict
@@ -477,12 +627,30 @@ def _ref_rows(store: Store) -> list[AskRow]:
                 blocks=blocks,
                 context=str((ask or {}).get("context") or ""),
                 answer=_reto_answer(tags),
+                triage=next(
+                    (
+                        t[len(TRIAGE_PREFIX) :]
+                        for t in tags
+                        if t.startswith(TRIAGE_PREFIX)
+                    ),
+                    "",
+                ),
+                needs=_needs_of(tags),
                 created_at=created,
                 updated_at=updated,
             )
         )
-    blocked = _blocked_counts(store, [r.ref_id for r in rows if r.ref_id])
-    return [replace(r, blocked=blocked.get(r.ref_id or 0, 0)) for r in rows]
+    ids = [r.ref_id for r in rows if r.ref_id]
+    blocked = _blocked_counts(store, ids)
+    holds = open_blocked_by(store, ids)
+    return [
+        replace(
+            r,
+            blocked=blocked.get(r.ref_id or 0, 0),
+            after=tuple(_h(k, i) for k, i in holds.get(r.ref_id or 0, ())),
+        )
+        for r in rows
+    ]
 
 
 def _thread_of(tags: list[str], chain: list[int], store: Store) -> str:
@@ -504,10 +672,22 @@ def _thread_of(tags: list[str], chain: list[int], store: Store) -> str:
 
 def asks_model(store: Store) -> AsksModel:
     """Every row that waits on the human, classed and quest-resolved —
-    sorted most-blocked first within a class (gr595189)."""
-    rows = _ref_rows(store)
+    sorted most-blocked first within a class (gr595189). A row stamped
+    ``asks-triage:resolved``/``:routed`` already left the owner's plate
+    (closed, parked on the coordinator queue, or folded into a chore
+    batch) — the model drops it (gr652333)."""
+    rows = [r for r in _ref_rows(store) if r.triage not in TRIAGE_HIDDEN]
     rows.sort(key=lambda r: (_RANK[r.klass], *_blocked_key(r), r.kind, r.ref_id or 0))
     return AsksModel(rows=tuple(rows))
+
+
+def untriaged_count(rows: Iterable[AskRow]) -> int:
+    """Todo rows without an ``asks-triage:`` stamp — the header's
+    done-check (gr652333): after a sweep every row is stamped; these
+    aren't. The count covers exactly what the sweep can stamp —
+    ``asks_triage`` handles ``kind='todo'`` rows only, so gripe, alert
+    and synthetic ``kind='release'`` rows never count (gr653289)."""
+    return sum(1 for r in rows if r.kind == "todo" and not r.triage)
 
 
 def _age(age_days: float) -> str:
@@ -521,9 +701,15 @@ def _age(age_days: float) -> str:
 
 
 def _line(r: AskRow, indent: str) -> str:
-    out = f"{' '.join((r.handle, *r.reasons))} — {r.title} · {_age(r.age_days)}"
+    # gr653289: a terminal row wears its mark in view='asks' — the same
+    # convention precis-user-queue-help's needs-terminal tag fixes.
+    mark = "[terminal]" if r.needs == NEED_TERMINAL else ""
+    head = " ".join(b for b in (r.handle, mark, *r.reasons) if b)
+    out = f"{head} — {r.title} · {_age(r.age_days)}"
     if r.blocked:
         out += f" · blocks {r.blocked}"
+    if r.after:
+        out += f" · after {','.join(r.after)}"
     if r.question and r.question != r.title:
         out += f"\n{indent}  ? {r.question}"
     if r.ask_kind:
@@ -540,6 +726,8 @@ def render_asks(store: Store) -> Response:
     model = asks_model(store)
     counts = model.counts()
     head = " · ".join(f"{counts[c]} {c}" for c in CLASSES)
+    if untriaged := untriaged_count(model.rows):
+        head += f" · {untriaged} untriaged"
     out = [f"# asks — {head}" if model.rows else "# asks — nothing waits on you"]
     for g in model.groups():
         out += ["", f"{g.klass} ({g.count}) — {CLASS_HINTS[g.klass]}"]
@@ -569,18 +757,144 @@ def render_asks(store: Store) -> Response:
 # ── the Reto queue ────────────────────────────────────────────────
 
 
-def reto_queue(store: Store) -> list[AskRow]:
-    """Everything that waits on Reto (showstoppers and asks across todos,
-    gripes and alerts — plus a bare ``waiting-for:reto`` row, a DECISION
-    ``default_rows()`` drops while Reto is exactly who it waits on), most
-    blocked first, then oldest first."""
+def _q_haystack(r: AskRow) -> str:
+    """The text ``q`` narrows a queue row on — every field the render
+    shows plus the classification vocabulary (handle, title, ask
+    question/context/options, ``for-reto:`` answer, class, reasons,
+    thread/quest), not ``refs.title`` alone, so ``q='ruling'`` keeps the
+    ``for-reto:ruling`` rows (gr673370)."""
+    return " ".join(
+        str(p)
+        for p in (
+            r.handle,
+            r.answer or r.ask_kind or "decision",
+            r.title,
+            r.question,
+            r.context,
+            r.klass,
+            r.kind,
+            r.ask_kind,
+            r.answer,
+            r.thread,
+            r.quest_title,
+            r.needs,
+            *r.reasons,
+            *r.options,
+            *r.after,
+        )
+        if p
+    ).lower()
+
+
+def _on_prod(rec: dict[str, Any] | None, sha: str) -> bool:
+    """``sha`` (any hex prefix) is the recorded prod head or one of the
+    shas it landed — the coverage test ``gripe_validate.sha_live``
+    applies to the same ``release.prod_head`` record."""
+    if rec is None or not sha:
+        return False
+
+    def match(a: str, b: str) -> bool:
+        n = min(len(a), len(b))
+        return n >= MIN_SHA_LEN and a[:n] == b[:n]
+
+    sha = sha.lower()
+    if match(sha, str(rec.get("head") or "").lower()):
+        return True
+    return any(
+        match(sha, str(s).lower())
+        for s in rec.get("landed") or []
+        if isinstance(s, str)
+    )
+
+
+def _pending_release_rows(store: Store) -> list[AskRow]:
+    """One synthetic row per release pass whose pinned main head the
+    recorded prod head doesn't cover (gr653289): a pass root's
+    ``meta.release_target = {sha, upto}`` names the newest reviewed main
+    head its release ships and the sha12s ahead of prod it carries
+    (``release_poll``/``mint_release_pass``). Prod covering ``sha`` —
+    the head itself or a ``landed`` entry — means the release rolled
+    out; a ``meta.release.confirmed`` stamp or a terminal STATUS settles
+    it the same way. ``needs='terminal'``: the deploy is a shell job,
+    not a chat answer."""
+    with store.pool.connection() as conn:
+        cands = conn.execute(
+            """
+            SELECT r.ref_id, r.meta -> 'release_target', r.meta -> 'release',
+                   r.created_at
+              FROM refs r
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND r.meta ? 'release_target'
+               AND COALESCE(
+                     (SELECT t2.value FROM ref_tags rt2
+                        JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                       WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open') <> ALL(%s)
+             ORDER BY r.ref_id
+            """,
+            (list(_TERMINAL),),
+        ).fetchall()
+    rec = read_prod_head(store)
+    head9 = str(rec.get("head") or "").lower()[:9] if rec else ""
+    rows: list[AskRow] = []
+    for ref_id, target, rel, created in cands:
+        tgt = target if isinstance(target, dict) else {}
+        sha = str(tgt.get("sha") or "").strip().lower()
+        if not sha or _on_prod(rec, sha):
+            continue
+        rel = rel if isinstance(rel, dict) else {}
+        if isinstance(rel.get("confirmed"), dict):
+            continue
+        upto = [s for s in tgt.get("upto") or [] if isinstance(s, str)]
+        n = len(upto) or 1
+        label = str(rel.get("rN") or "").strip() or sha[:12]
+        rows.append(
+            AskRow(
+                klass=DECISION,
+                kind="release",
+                ref_id=int(ref_id),
+                handle=_h("todo", int(ref_id)),
+                title=_first_line(
+                    f"release {label} pending — {n} "
+                    f"sha{'s' if n != 1 else ''} on main await deploy"
+                ),
+                reasons=("release-pending",),
+                ask_kind="deploy",
+                context=f"prod head {head9 or 'unrecorded'} — deploy to prod",
+                needs=NEED_TERMINAL,
+                created_at=created,
+            )
+        )
+    return rows
+
+
+def reto_queue(store: Store, *, q: str | None = None) -> list[AskRow]:
+    """Everything that waits on Reto — every classed row that isn't a
+    pure ``discussion``: showstoppers, asks (``ask-user``,
+    ``needs:ruling``, ``for-reto:``), a bare ``waiting-for:reto`` row, a
+    needs-spec gripe carrying ``reto:ask``/``fix:reto`` and a
+    warn-or-higher open alert — plus one synthetic row per release pass
+    whose landed main shas the prod head doesn't cover (gr653289).
+    TERMINAL first, then CHAT, then HANDS (:data:`NEED_ORDER`); most
+    blocked first, then oldest first inside a group. The walk order is
+    group-major so a page boundary can never pull a later group ahead of
+    an earlier one.
+
+    ``q=`` narrows the set before ordering: every whitespace-split term
+    must appear in :func:`_q_haystack` — the same every-term-must-match
+    reading ``websearch_to_tsquery`` gives the ref-level ``q=``, as a
+    case-insensitive substring check over the fields this view renders."""
     rows = [
-        r
-        for r in asks_model(store).rows
-        if r.klass == SHOWSTOPPER or r.is_ask or "waiting-for:reto" in r.reasons
-    ]
+        r for r in asks_model(store).rows if r.klass != DISCUSSION
+    ] + _pending_release_rows(store)
+    if q and q.strip():
+        terms = q.lower().split()
+        rows = [r for r in rows if all(t in _q_haystack(r) for t in terms)]
+    need_rank = {n: i for i, n in enumerate(NEED_ORDER)}
     rows.sort(
         key=lambda r: (
+            need_rank.get(r.needs, len(NEED_ORDER)),
             -r.blocked,
             r.created_at.timestamp() if r.created_at else float("inf"),
             r.ref_id or 0,
@@ -589,28 +903,116 @@ def reto_queue(store: Store) -> list[AskRow]:
     return rows
 
 
-def render_reto_queue(store: Store) -> Response:
+def render_reto_queue(
+    store: Store,
+    *,
+    q: str | None = None,
+    page_size: Any = None,
+    page: Any = 1,
+) -> Response:
     """``search(kind='todo', view='reto-queue')`` — the prioritized queue,
-    read top to bottom: context, options (recommended first), impact."""
-    rows = reto_queue(store)
+    read top to bottom: context, options (recommended first), impact.
+
+    ``q=`` narrows the queue (:func:`reto_queue`), ``page_size=`` caps the
+    window and ``page=`` (via ``args={'page': N}``) walks it — all three
+    were silently dropped at the view dispatch (gr673370), which is what
+    made a flooded head of the queue unreachable past the render cap."""
+    try:
+        size = int(page_size) if page_size is not None else 0
+        page_n = int(page)
+    except (TypeError, ValueError):
+        raise BadInput(
+            "page/page_size must be positive integers, got "
+            f"page={page!r}, page_size={page_size!r}",
+            next="search(kind='todo', view='reto-queue', page_size=40)",
+        ) from None
+    if page_n < 1 or size < 0:
+        raise BadInput(
+            "page/page_size must be positive integers, got "
+            f"page={page!r}, page_size={page_size!r}",
+            next="search(kind='todo', view='reto-queue', page_size=40)",
+        )
+    if page_n > 1 and not size:
+        raise BadInput(
+            "page= needs page_size= to bound the window",
+            next="search(kind='todo', view='reto-queue', "
+            "page_size=40, args={'page': 2})",
+        )
+    rows = reto_queue(store, q=q)
+    total = len(rows)
+    offset = (page_n - 1) * size
+    window = rows[offset : offset + size] if size else rows
+    if not rows:
+        body = (
+            f"# reto-queue — nothing matching q={q!r} waits on you"
+            if q and q.strip()
+            else "# reto-queue — nothing waits on you"
+        )
+        body += render_next_section(
+            [("search(kind='todo', view='reto-queue')", "the unfiltered queue")]
+            if q and q.strip()
+            else []
+        )
+        return Response(body=body, result_count=0)
+    if not window:
+        body = f"# reto-queue — page {page_n} is past the end ({total} waiting)"
+        body += render_next_section(
+            [
+                (
+                    "search(kind='todo', view='reto-queue', "
+                    f"page_size={size}, args={{'page': 1}})",
+                    "back to the head of the queue",
+                )
+            ]
+        )
+        return Response(body=body, result_count=0)
+    shown = len(window)
+    if page_n > 1:
+        frag = f"rows {offset + 1}-{offset + shown} of {total}"
+    elif shown < total:
+        frag = f"{shown} of {total}"
+    else:
+        frag = str(total)
+    untriaged = untriaged_count(rows)
     out = [
-        f"# reto-queue — {len(rows)} waiting, most blocked first"
-        if rows
-        else "# reto-queue — nothing waits on you"
+        f"# reto-queue — {frag} waiting, most blocked first"
+        + (f" (q={q!r})" if q and q.strip() else "")
+        + (f" · {untriaged} untriaged" if untriaged else "")
     ]
     now = datetime.now(UTC)
-    for i, r in enumerate(rows, 1):
-        needs = r.answer or r.ask_kind or "decision"
-        out.append("")
-        out.append(f"{i}. {r.handle} [{needs}] — {r.title}")
-        if r.context:
-            out.append(f"   context: {r.context}")
-        if r.question and r.question != r.title:
-            out.append(f"   ask: {r.question}")
-        for n, opt in enumerate(r.options, 1):
-            out.append(f"   option {n}{' (recommended)' if n == 1 else ''}: {opt}")
-        age = f"{(now - r.created_at).days}d old" if r.created_at else "age unknown"
-        out.append(f"   impact: blocks {r.blocked} · {age} · {r.klass}")
+    # gr653289: the queue is already group-ordered (:func:`reto_queue`),
+    # so the window's TERMINAL / CHAT / HANDS sections stay contiguous —
+    # a page-2 CHAT row can't precede a page-1 TERMINAL one. A header
+    # counts the whole group, not just what this page shows; numbering
+    # stays continuous across groups and pages.
+    totals = Counter(r.needs for r in rows)
+    i = offset
+    for need in NEED_ORDER:
+        grows = [r for r in window if r.needs == need]
+        if not grows:
+            continue
+        out += ["", f"{need.upper()} ({totals[need]})"]
+        for r in grows:
+            i += 1
+            want = r.answer or r.ask_kind or "decision"
+            out.append(f"{i}. {r.handle} [{want}] — {r.title}")
+            if r.context:
+                out.append(f"   context: {r.context}")
+            if r.question and r.question != r.title:
+                out.append(f"   ask: {r.question}")
+            for n, opt in enumerate(r.options, 1):
+                out.append(f"   option {n}{' (recommended)' if n == 1 else ''}: {opt}")
+            age = f"{(now - r.created_at).days}d old" if r.created_at else "age unknown"
+            hold = f" · after {','.join(r.after)}" if r.after else ""
+            out.append(f"   impact: blocks {r.blocked} · {age} · {r.klass}{hold}")
+    remaining = total - offset - shown
+    if remaining > 0:
+        q_frag = f", q={q!r}" if q and q.strip() else ""
+        out += [
+            "",
+            f"… {remaining} more — search(kind='todo', view='reto-queue'"
+            f"{q_frag}, page_size={size}, args={{'page': {page_n + 1}}})",
+        ]
     body = "\n".join(out)
     body += render_next_section(
         [
@@ -618,4 +1020,80 @@ def render_reto_queue(store: Store) -> Response:
             ("search(kind='todo', view='asks')", "the same rows grouped by quest"),
         ]
     )
-    return Response(body=body)
+    return Response(
+        body=body,
+        result_count=shown,
+        result_ids=[r.ref_id for r in window if r.ref_id is not None],
+    )
+
+
+# ── the coordinator queue ──────────────────────────────────────────
+
+
+def coordinator_model(store: Store) -> list[AskRow]:
+    """``waiting-for:coordinator`` rows — the queue ``asks_triage``
+    routes coordinator-bound work onto (gr652333). These are NOT asks:
+    the tag is outside the owner-facing ``_TAGS`` set, so a routed row
+    leaves :func:`asks_model` and waits here for the coordinator lane.
+    Oldest first — the longest wait surfaces first."""
+    with store.pool.connection() as conn:
+        cands = conn.execute(
+            """
+            SELECT r.ref_id, r.title, r.created_at, r.updated_at
+              FROM refs r
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND r.resolved_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                      AND t.value = %s)
+               AND COALESCE(
+                     (SELECT t2.value FROM ref_tags rt2
+                        JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                       WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open') <> ALL(%s)
+             ORDER BY r.created_at, r.ref_id
+            """,
+            (COORDINATOR_TAG, list(_TERMINAL)),
+        ).fetchall()
+    return [
+        AskRow(
+            klass="coordinator",
+            kind="todo",
+            ref_id=int(ref_id),
+            handle=_h("todo", int(ref_id)),
+            title=_first_line(title),
+            reasons=(COORDINATOR_TAG,),
+            created_at=created,
+            updated_at=updated,
+        )
+        for ref_id, title, created, updated in cands
+    ]
+
+
+def render_coordinator(store: Store) -> Response:
+    """``search(kind='todo', view='coordinator')`` — the coordinator's own
+    queue: asks rows ``asks_triage`` routed away from the owner."""
+    rows = coordinator_model(store)
+    if not rows:
+        body = "# coordinator — nothing waits on the coordinator"
+        body += render_next_section(
+            [("search(kind='todo', view='asks')", "the owner-facing list")]
+        )
+        return Response(body=body, result_count=0)
+    out = [f"# coordinator — {len(rows)} waiting, oldest first"]
+    for r in rows:
+        out.append(f"{r.handle} — {r.title} · {_age(r.age_days)}")
+    body = "\n".join(out)
+    body += render_next_section(
+        [
+            ("get(kind='todo', id=N)", "a row with its comment timeline"),
+            ("search(kind='todo', view='asks')", "the owner-facing list"),
+        ]
+    )
+    return Response(
+        body=body,
+        result_count=len(rows),
+        result_ids=[r.ref_id for r in rows if r.ref_id is not None],
+    )

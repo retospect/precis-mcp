@@ -998,7 +998,7 @@ def extract_rules(board: EproDocument) -> RuleTable:
             f"{undecoded} RULE record(s) are preserved verbatim but their id "
             "is not the [RULE, category, name] shape precis decodes — any "
             "keepout/rule-area among them would bind nothing on the precis "
-            "side (docs/backlog/pcb-keepout-does-not-bind.md)"
+            "side (me692901)"
         )
     if unmapped:
         out.warnings.append(
@@ -2544,7 +2544,7 @@ def extract_mounting_holes(
         x, y = frame.xy(float(b.get("centerX") or 0.0), float(b.get("centerY") or 0.0))
         # No ``fixed`` flag: ``pcb_features.fixed`` is an unconstrained
         # text column that NOTHING reads (the same inertness
-        # docs/backlog/pcb-keepout-does-not-bind.md reports for
+        # me692901 reports for
         # ftype='keepout'), so setting it would store a freeze that binds
         # nothing and reads as if it did. Mounting holes are already
         # immovable in practice — no placer or router touches features.
@@ -2608,7 +2608,7 @@ def extract_keepouts(
     flags copper inside its polygon on the scoped layers and the topo
     router treats it as an obstacle — so importing the region is how the
     .epro2 board keeps the rule it was authored with, where before this
-    it was dropped silently (docs/backlog/pcb-keepout-does-not-bind.md).
+    it was dropped silently (me692901).
     Region-family records that are NOT keep-outs (fills, cutouts,
     constraints) and keepout records with no decodable polygon are
     warned about, never guessed at."""

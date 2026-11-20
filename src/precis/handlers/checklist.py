@@ -1,7 +1,7 @@
 """ChecklistHandler — Checklist-Manifesto gates for LLM agents (``checklist``
 kind).
 
-Design-of-record: ``docs/backlog/checklist-kind.md`` (slice 1: "checklist
+Design-of-record: `me693927` (slice 1: "checklist
 kind core"). A checklist is a named, versioned set of **items**; any ref
 (pcb, cad, se, ...) can be explicitly **assigned** one or more checklists,
 and per-target, per-item **verdicts** accumulate in an append-only ledger
@@ -25,7 +25,9 @@ instead of restarting on every re-check.
   a verdict whose ``item_rev`` is behind the item's current rev is "stale
   (item revised)"; a verdict whose stored fingerprint disagrees with the
   target's current one — computed by the kind's bridge over the verdict's
-  ``anchors`` (pcb), or the caller-supplied opaque ``fingerprint=`` for
+  ``anchors`` (pcb: over the named sub-objects; memory: over the root's
+  body plus its ``part-of`` subtree, anchors refused), or the
+  caller-supplied opaque ``fingerprint=`` for
   kinds without a bridge — is "stale (target changed)"; a ``tool`` item
   with a registered checker shows the checker's LIVE result (or ``not run
   (<reason>)``); otherwise the recorded verdict. Below the table, the
@@ -48,8 +50,13 @@ from typing import Any, ClassVar
 
 from precis.checklist import ItemStatus, bridge_for, compute_statuses
 from precis.checklist.status import NOT_CHECKABLE, VERDICTS, default_applies
+from precis.corrected_call import retry_call
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound
+from precis.errors import (
+    BadInput,
+    NotFound,
+    nearest_option,
+)
 from precis.format import render_agent_table
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -517,17 +524,22 @@ class ChecklistHandler(Handler):
         fp = str(fingerprint).strip() if fingerprint else None
         note = ""
         bridge = bridge_for(ref.kind)
-        if fp is None and bridge is not None:
+        if bridge is not None and (fp is None or anchor_list):
+            # A supplied fingerprint= never bypasses anchor validation —
+            # the bridge alone decides which anchor names exist (memory
+            # resolves none), so an unvalidated anchor would record a
+            # verdict that reads stale from the moment it lands.
             computed = bridge.fingerprint(self.store, ref.id, anchor_list)
             if computed.missing:
                 raise NotFound(
                     f"anchors not found on {ref.kind}:{ref.label}: "
                     f"{', '.join(computed.missing)}",
-                    next="anchors= names refdes or nets as they appear on the target",
+                    next=_anchors_next(ref.kind),
                 )
-            fp = computed.digest
-            scope = ", ".join(anchor_list) if anchor_list else "whole target"
-            note = f"; fingerprint over {scope}"
+            if fp is None:
+                fp = computed.digest
+                scope = ", ".join(anchor_list) if anchor_list else "whole target"
+                note = f"; fingerprint over {scope}"
         elif anchor_list and bridge is None:
             raise BadInput(
                 f"anchors= needs a kind with a fingerprint bridge (pcb); "
@@ -743,7 +755,18 @@ class ChecklistHandler(Handler):
     ) -> Response:
         v = (view or "").strip().lower()
         if v and v != "page":
-            raise BadInput(f"unknown checklist view {view!r}", next="omit view=")
+            # gr613469: 'page' is the only view — lead with the
+            # caller's own get (target=/fingerprint= preserved, review
+            # td680653) re-spelled with it, else "omit view=" stands.
+            near = nearest_option(v, ("page",))
+            corrected = (
+                retry_call("get", kind="checklist", id=id, view="page")
+                if near
+                else None
+            )
+            nexts = [corrected] if corrected else []
+            nexts.append("omit view=")
+            raise BadInput(f"unknown checklist view {view!r}", next=nexts)
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             if target is not None:
                 return self._render_for_target(self._resolve_target(target))
@@ -978,9 +1001,10 @@ class ChecklistHandler(Handler):
     # ── target resolution ────────────────────────────────────────────────
 
     def _resolve_target(self, target: str | int | None) -> _Target:
-        """Resolve ``target=`` (``'<kind>:<id>'`` or a bare ref id) to a
-        uniform handle — checklist targets are generic (pcb, cad, se, ...),
-        unlike ``rxn``'s closed ``_SOURCE_KINDS`` list."""
+        """Resolve ``target=`` (``'<kind>:<id>'``, ``'<kind>:<handle>'``
+        — e.g. ``memory:me676794``, gr677471 — or a bare ref id) to a
+        uniform handle — checklist targets are generic (pcb, cad, se,
+        memory, ...), unlike ``rxn``'s closed ``_SOURCE_KINDS`` list."""
         if target is None or not str(target).strip():
             raise BadInput(
                 "target=<kind>:<id> (or a bare ref id) is required",
@@ -998,9 +1022,25 @@ class ChecklistHandler(Handler):
                 except ValueError:
                     ref = None
             if ref is None:
+                # Handle form (gr677471): ``memory:me676794`` — the ident
+                # is a universal handle, not a slug or a bare number.
+                handle = self.store.resolve_handle(ident)
+                if (
+                    handle is not None
+                    and handle.chunk_id is None
+                    and handle.kind == kind
+                ):
+                    return _Target(
+                        id=handle.ref_id,
+                        kind=handle.kind,
+                        label=handle.public_id or str(handle.ref_id),
+                    )
                 raise NotFound(
                     f"target {t!r} not found",
-                    next=f"search(kind={kind!r}, q='<name>') to find the ref",
+                    next=(
+                        f"search(kind={kind!r}, q='<name>') to find the ref"
+                        + _handle_hint(kind)
+                    ),
                 )
             return _Target(id=ref.id, kind=ref.kind, label=ref.slug or str(ref.id))
         try:
@@ -1076,6 +1116,31 @@ def _evidence_summary(st: ItemStatus) -> str:
         # content — the fixing agent reads it here, not the reason keys.
         return f"fix: {str(correction)[:80]}"
     return keys[:60]
+
+
+def _anchors_next(kind: str) -> str:
+    """The ``next=`` on a verdict's anchors NotFound — per bridged kind,
+    since the anchor vocabulary is the kind's own (a memory node has no
+    named sub-objects at all)."""
+    if kind == "memory":
+        return (
+            "a memory target takes no anchors= — its fingerprint covers "
+            "the root plus its part-of subtree"
+        )
+    return "anchors= names refdes or nets as they appear on the target"
+
+
+def _handle_hint(kind: str) -> str:
+    """The ``", or pass its handle: target='<kind>:<code><id>'"`` clause
+    for the target NotFound — kinds with a universal handle code name the
+    handle form (memory nodes have no slug, only ``me<id>``)."""
+    from precis.utils import handle_registry
+
+    try:
+        code = handle_registry.code_for_kind(kind)
+    except KeyError:
+        return ""
+    return f", or pass its handle: target='{kind}:{code}<id>'"
 
 
 def _validate_kinds(raw: Any) -> list[str]:

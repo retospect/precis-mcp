@@ -1,5 +1,5 @@
 """``intent='manufacture'`` — print-in-place: one mixed analytic+field
-root per print group (docs/backlog/structural-solution-space.md §Slice 4
+root per print group (me695531 §Slice 4
 bridge, the print ``intent`` table's second row; round B2, the mixed
 root of 2026-09-19).
 

@@ -1,5 +1,5 @@
 """Currency tokens in measure units — slice 1 of
-``docs/backlog/measure-currency-units.md`` (gr510555).
+`me691533` (gr510555).
 
 :func:`split_currency` reads the currency part of a printed unit: an ISO code
 the ECB euro reference rates quote (:data:`ECB_CURRENCIES`, plus ``EUR``

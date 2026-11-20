@@ -68,10 +68,11 @@ from precis.workers.executors._common import (
     WAITING as _WAITING,
 )
 from precis.workers.executors._common import (
-    append_chunk as _append_chunk,
+    _error_meta,
+    claim_executor_jobs,
 )
 from precis.workers.executors._common import (
-    claim_executor_jobs,
+    append_chunk as _append_chunk,
 )
 from precis.workers.executors._common import (
     classify_transient_backoff_hours as _classify_transient_backoff_hours,
@@ -114,16 +115,15 @@ _EXECUTOR_NAME = "claude_inproc"
 # Chunk kind specific to this executor's gripe-comment timeline.
 _GRIPE_COMMENT_KIND = "gripe_comment"
 
-# Cap on the error text mirrored into ``refs.meta.error`` for the
-# hand-rolled dispatch arms below (``_run_plan_tick``'s exception branch,
+# The error text mirrored into ``refs.meta.error`` for the hand-rolled
+# dispatch arms below (``_run_plan_tick``'s exception branch,
 # ``_run_doctor_tick``'s exception branch, and its non-zero-exit branch
 # — gr338602 item 3c: the exception branch didn't stamp this until it
-# was found to be the odd one out — mirrors ``_common.record_failure``'s
-# ``_ERROR_META_CAP`` breadcrumb convention). The full text always lands
-# in the ``job_event``/``job_result`` chunk either way; this is just a
-# bounded copy so ops digests that only read ``meta`` aren't left with
-# an empty error field (gr338335).
-_ERROR_META_CAP = 500
+# was found to be the odd one out) goes through ``_common._error_meta``
+# — the same head+tail breadcrumb ``record_failure`` stamps (gr635381).
+# The full text always lands in the ``job_event``/``job_result`` chunk
+# either way; this is just a bounded copy so ops digests that only read
+# ``meta`` aren't left with an empty error field (gr338335).
 
 
 # ── Claim ─────────────────────────────────────────────────────────
@@ -604,7 +604,15 @@ def _build_dispatch_context(
         # Park the job (STATUS:waiting_time + meta.wake_when at_time) —
         # this lane's Yield; wake_runner re-queues it at the instant.
         with store.pool.connection() as conn:
-            parked = _park_job_until(store, conn, ref_id, wake_at, note)
+            parked = _park_job_until(
+                store,
+                conn,
+                ref_id,
+                wake_at,
+                note,
+                submit_attempt=meta.get("submit_attempt"),
+                temporary_submit_pin=bool(meta.get("temporary_submit_pin")),
+            )
             conn.commit()
         return parked
 
@@ -709,7 +717,7 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                 conn,
                 ref_id,
                 wall_seconds=wall,
-                error=repr(exc)[:_ERROR_META_CAP],
+                error=_error_meta(repr(exc)),
             )
             conn.commit()
             from precis.utils.job_bubble import bubble_job_failure
@@ -1067,7 +1075,7 @@ def _run_plan_tick(store: Store, ref_id: int, spec: Any) -> None:
                     retry_after=(
                         datetime.now(UTC) + timedelta(hours=backoff_hours)
                     ).isoformat(),
-                    error=(outcome.stderr or "")[:_ERROR_META_CAP],
+                    error=_error_meta(outcome.stderr or ""),
                 )
             _set_status(store, ref_id, _FAILED, conn=conn)
             conn.commit()
@@ -1260,7 +1268,7 @@ def _parent_todo_id(store: Store, job_ref_id: int) -> int | None:
 
 
 # ── Review-ledger writeback (rung 3b — pass-only, "no record = not
-# passed" per docs/backlog/paper-writing-pipeline.md §"Review — the
+# passed" per me689904 §"Review — the
 # memoized approval ledger") ───────────────────────────────────────────
 #
 # A review-mode plan_tick's parent todo carries meta.review=<persona> +
@@ -1855,7 +1863,7 @@ def _run_doctor_tick(store: Store, ref_id: int, spec: Any) -> None:
                 conn,
                 ref_id,
                 wall_seconds=wall,
-                error=repr(exc)[:_ERROR_META_CAP],
+                error=_error_meta(repr(exc)),
             )
             from precis.utils.job_bubble import bubble_job_failure
 
@@ -1915,7 +1923,7 @@ def _run_doctor_tick(store: Store, ref_id: int, spec: Any) -> None:
         else:
             _set_status(store, ref_id, _FAILED, conn=conn)
             error_text = outcome.error or f"exit={outcome.exit_code}"
-            _set_meta(conn, ref_id, error=error_text[:_ERROR_META_CAP])
+            _set_meta(conn, ref_id, error=_error_meta(error_text))
             # Same transient mirror as plan_tick's failure arm (gr657599):
             # a retryable cause stamps ``meta.retry_after`` so any parked
             # parent re-arms on the real backoff, not the 12h·2ᴺ cool-down.

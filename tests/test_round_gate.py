@@ -141,6 +141,8 @@ def _env(**extra: str) -> dict[str, str]:
             "GIT_COMMITTER_EMAIL": "t@example.invalid",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_SYSTEM": os.devnull,
+            # The rigs stand in for the factory release pass (gr675506).
+            "PRECIS_RELEASE_PASS": "td1",
         }
     )
     for k in ("PRECIS_ENV_POINTERS", "PRECIS_ROUND_MAX_CANDIDATE_HOURS"):
@@ -594,18 +596,33 @@ def test_cut_refuses_while_a_release_branch_exists_on_origin(rig: Rig) -> None:
     assert not _live(_round_json(rig))
 
 
-def test_cut_ignores_a_stale_release_branch_main_already_contains(
+def test_cut_refuses_a_release_branch_main_contains_but_prod_does_not(
     rig: Rig,
 ) -> None:
-    """gr544044: an unrecorded release/* whose head is an ancestor of
-    origin/main is a leftover — named with the delete command, never cut
-    or deleted, and it must not stall the cut."""
+    """gr675506: a head on main is not retired — every fresh cut is main's
+    tip, so another cutter's live release looks exactly like that."""
     _open_round(rig)
     _push_branch(rig, "release/r0", rig.shas["c0"])
     out = rig.round("cut", **_fresh(rig, "c2"))
+    assert out.returncode == 1
+    assert "release branch release/r0 exists on origin" in out.stderr
+    assert rig.origin_ref("release/r1") == ""
+    assert rig.origin_ref("release/r0") == rig.shas["c0"]
+
+
+def test_cut_ignores_a_stale_release_branch_prod_already_contains(
+    rig: Rig,
+) -> None:
+    """gr544044/gr675506 (e): an unrecorded release/* whose head is an
+    ancestor of origin/prod (deployed) is a leftover — named with the
+    delete command, never cut or deleted, and it must not stall the cut."""
+    _open_round(rig)
+    _push_branch(rig, "release/r0", rig.shas["c0"])
+    _push_branch(rig, "prod", rig.shas["c0"])
+    out = rig.round("cut", **_fresh(rig, "c2"))
     assert out.returncode == 0, out.stderr
     assert (
-        "release/r0: head on main, stale — ignored; "
+        "release/r0: head on prod, stale — ignored; "
         "delete with: git push origin --delete release/r0" in out.stdout
     )
     assert rig.origin_ref("release/r1") == rig.shas["c2"]

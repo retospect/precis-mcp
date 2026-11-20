@@ -1,4 +1,4 @@
-"""Inspection probes — ray / section / overlap / thickness (docs/backlog/cad-inspect.md).
+"""Inspection probes — ray / section / overlap / thickness (me691872).
 
 One verb family, four probes, named by what they **output**, not by the
 probe's shape — the naming is the non-confusion: a plane and a swept ribbon

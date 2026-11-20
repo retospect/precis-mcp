@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from precis.plans import route, templates
+from precis.plans import lanes, route, templates
 
 _DENY = (
     "scripts/ship",
@@ -27,26 +27,6 @@ _DENY = (
     "*/CLAUDE.md",
     ".mcp.json",
 )
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "add a --remote flag to scripts/ship",
-        "the fix touches `scripts/ship`",
-        "edit ./scripts/ship so it takes --remote",
-        "the land broke; fix Scripts/Ship",
-        "the new rule lives in src/precis/plans/lanes.py",
-        "CI needs .github/workflows/test.yml updated",
-        "rotate the host in deploy/inventory-prod/hosts.yml",
-        "fix CLAUDE.md's stale rule",
-        "the slice rules moved to .claude/CLAUDE.md",
-        "refresh .mcp.json's server list",
-    ],
-)
-def test_deny_path_mention_routes(text: str) -> None:
-    why = route.coordinator_route(text, _DENY)
-    assert why is not None and why.startswith("names deny path")
 
 
 @pytest.mark.parametrize(
@@ -147,7 +127,7 @@ def test_empty_text_never_routes(text: str | None) -> None:
 def test_direct_head_never_routes_but_the_report_does() -> None:
     head = "Fix gr1 directly: find the code it names. " + templates.DIRECT_HEAD_END
     assert route.coordinator_route(head + "\nclean the cache", _DENY) is None
-    why = route.coordinator_route(head + "\nfix scripts/ship", _DENY)
+    why = route.coordinator_route(head + "\nFix: edit scripts/ship", _DENY)
     assert why is not None and "scripts/ship" in why
 
 
@@ -203,8 +183,8 @@ def test_factory_land_mechanics_never_route(text: str) -> None:
         pytest.param(
             "`scripts/round open` refuses the next cut. "
             "Round open has no step that reruns failed soak legs.",
-            "scripts/round",
-            id="gr639737-round-target",
+            None,
+            id="gr639737-prose-only",
         ),
         pytest.param(
             "Goal: enumerate every code path through scripts/ship and its gate "
@@ -278,11 +258,6 @@ def test_multiline_and_multiple_intent_paragraphs_keep_deny_targets() -> None:
         "scripts/ship to verify the worker's confirmation."
     )
     why = route.coordinator_route(text, _DENY)
-    assert why is not None and "`scripts/ship`" in why
-
-
-def test_evidence_without_intent_keeps_whole_text_fallback() -> None:
-    why = route.coordinator_route("Symptom: scripts/ship cannot land a branch.", _DENY)
     assert why is not None and "`scripts/ship`" in why
 
 
@@ -372,30 +347,9 @@ def test_cited_deny_mention_does_not_route(mention: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "path"),
-    [
-        ("the fix is in scripts/lib/lock-holder.sh", "scripts/lib/lock-holder.sh"),
-        ("edit .github/workflows/check.yml", ".github/workflows/check.yml"),
-        # a negated mention elsewhere hides no requested target
-        (
-            "no deploy paths; the fix is in scripts/lib/lock-holder.sh",
-            "scripts/lib/lock-holder.sh",
-        ),
-        (
-            "The fix is not in guards.py, it's in scripts/lib/lock-holder.sh",
-            "scripts/lib/lock-holder.sh",
-        ),
-    ],
-)
-def test_requested_deny_edit_still_routes(text: str, path: str) -> None:
-    why = route.coordinator_route(text, _DENY)
-    assert why is not None and f"`{path}`" in why
-
-
-@pytest.mark.parametrize(
     ("body", "brief", "routes"),
     [
-        ("Goal: repair release confirmation", "Update scripts/ship", True),
+        ("Goal: repair release confirmation", "Fix: update scripts/ship", True),
         (
             "Goal: repair release confirmation\n\nEvidence: scripts/ship reported success",
             "Update the release confirmation worker",
@@ -403,7 +357,7 @@ def test_requested_deny_edit_still_routes(text: str, path: str) -> None:
         ),
         ("Goal: update scripts/ship", "Repair release confirmation", True),
         # One document's write set cannot hide the other's requested target.
-        ("File set: worker.py", "Update scripts/ship", True),
+        ("File set: worker.py", "Fix: update scripts/ship", True),
         ("Goal: update scripts/ship", "File set: worker.py", True),
         # Graph-only still means the whole task names no repo work.
         ("remove the stale edge from me123456", "Update worker.py", False),
@@ -417,3 +371,292 @@ def test_body_and_brief_keep_separate_deny_path_scopes(
     # An iterable deny set must remain available for both documents.
     why = route.coordinator_route(body, iter(_DENY), brief=brief)
     assert (why is not None) is routes
+
+
+# --- gr663138 / gr658931: run invocations, rescue evidence, checkout paths ---
+#
+# The fixtures are real prod texts, trimmed to the lines that tripped the
+# router (the irrelevant middle cut, cluster addresses kept out).
+
+#: td675895: gr665602's rescue report. ``scripts/test`` appears only inside
+#: the log tail, as the command the dead builder ran.
+_RESCUE_REPORT = """\
+rescue class: builder
+signature key: ! [rejected] slice/# -> slice/# (non-fast-forward)
+first node: td664398
+job: jo665497
+step: retry cap 5: the lane ladder is spent (5 attempts; rungs tried: None/default → devin/swe-2-high → claude-sub/claude-opus-5-5)
+branch: slice/664398
+head: e47a116ad
+
+log tail:
+run_slice: session for td664398 exited clean but the pre-land defer failed (branch push of slice/664398: FAILED (To https://example.invalid/org/repo
+ ! [rejected]            slice/664398 -> slice/664398 (non-fast-forward)
+hint: U)); todo back to open, attempt:5
+--- log tail ---
+- **Tests:** new cases in `tests/test_run_slice.py`. I never ran `scripts/test tests/test_pla…`.
+- **Step 14:** `scripts/test` on `tests/test_run_slice.py`, `tests/test_land_slice.py` gave 819 passed, 1 failed.
+"""
+
+#: td665622/td666424: a diagnose brief naming the slice's checkout path.
+_DIAGNOSE_BRIEF = """\
+You are a read-only diagnosis of td664398, rescued under class builder.
+
+## The rescued todo
+td664398: Build the fix for gr663909
+Fix gr663909 directly: no triage and no brief ran. Touch nothing under the lane's deny paths. The land (land_slice, `scripts/ship --quick`) squash-merges onto main.
+
+## Its newest brief:/handoff: comment
+brief: rebase on origin/main and resolve tests/test_land_slice.py, keeping main's side for others' changes — mechanical red on jo665010: ✖ rebase conflict onto origin/main — resolve in /Users/deploy/precis-fix-repo/.claude/worktrees/slice-td664398, then 'git add -A && GIT_EDITOR=true git rebase --continue' and re-run scripts/ship
+
+## The rescue evidence
+rescue: builder
+job: jo665497
+step: retry cap 5: the lane ladder is spent
+branch: slice/664398 @ e47a116ad
+log tail:
+run_slice: session for td664398 exited clean but the pre-land defer failed
+--- log tail ---
+w goes ahead only on that machine-set `done`.
+
+## The signature gripe
+gr665602: [rescue] builder: ! [rejected] slice/# -> slice/# (non-fast-forward)
+rescue class: builder
+log tail:
+run_slice: session for td664398 exited clean
+
+## What you may do
+Read through the precis MCP and run read-only git.
+"""
+
+#: td663618: gr663138's own text, which names the harness only as examples
+#: of commands to run.
+_GR663138 = """\
+deny-path router trips on the factory's own brief text: any brief that says "run scripts/test" routes to the coordinator
+Observed 2026-11-13 (coordinator): td663028 routed td662214 to a coordinator showstopper because its rescue brief says "Run `scripts/test tests/…`" — a command to run, not a path to edit. Same false positive on open asks td659029, td652980, td647766 ("names deny path scripts/test"), and the .claude/worktrees variant gr658931.
+Goal: the router matches only paths the brief asks to EDIT (diff targets, "edit/modify/change <path>"), never paths named as commands to run (`scripts/test`, `scripts/ship`) or quoted in logs; a test pins "Run scripts/test tests/x.py" as not routed. Related: router fix 2c191a6ff (td647766), gr658931, gr645163.
+"""
+
+#: td674827: gr663864 — the hand pre-land check runs the tree's own harness.
+_GR663864 = """\
+Skills: re-land-a-slice runbook lives in memory
+
+New skill `reland-slice` (trigger: a land_slice job is red with no assertion):
+- Local pre-land check: bundle `origin/main..slice/<id>`, fetch it into a scratch branch, add a worktree, run the branch tests plus the schema-baseline and dispatch ratchet tests through that tree's own `scripts/test`; edit through EnterWorktree(path=…); then quick-ship with the todo handle in the subject.
+- A new `args` verb must also be listed in the dispatch passthrough roster test.
+"""
+
+#: td652980: gr623589 — a reproduce line that runs the harness on one test.
+_GR623589 = """\
+Cross-kind fan-out repeats the dispatch query embedding
+
+Observed during OAuth verification. tests/test_cross_kind_fanout_bound.py::test_fan_out_shares_the_dispatch_query_embedding expects one embedding call and gets two.
+
+Reproduce with scripts/test tests/test_cross_kind_fanout_bound.py::test_fan_out_shares_the_dispatch_query_embedding. Expected: one embedding computation shared by the dispatch fan-out. Actual: emb.calls == 2. Root cause is not established; do not relax the assertion merely to make the gate green.
+"""
+
+#: td674828: gr663867 asks for a new section IN a factory-governed skill
+#: (``governs: factory``), but has no declared write set (gr702295).
+_GR663867 = """\
+Skills: gripe-fleet lacks the pre-dispatch overlap check
+
+Add a short section "Before you dispatch" to `gripe-fleet` (src/precis/data/skills/gripe-fleet.md and its .claude mirror):
+- Run `scripts/inflight` and read the `.claude/purpose` lines for the gripe id or file.
+- `scripts/fleet-wave cites ID…` lists unlanded branch commits naming it.
+"""
+_GOVERNED = ("src/precis/data/skills/gripe-fleet.md",)
+#: the router's real deny set: strict deny plus the governed skills
+_ALL_DENY = lanes.STRICT_DENY + _GOVERNED
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _RESCUE_REPORT,
+        _DIAGNOSE_BRIEF,
+        _GR663138,
+        _GR663864,
+        _GR623589,
+        # bare run cues and the "on <files>" form
+        "Fix: the pooled fixture leaks. Run scripts/test when done.",
+        "Goal: stop the flake in guards.py; re-run `scripts/test` on tests/test_x.py",
+        "Fix: guards.py flakes; step 14 ran scripts/test on `tests/test_x.py`.",
+        "Fix: guards.py flakes (never ran `scripts/ship`).",
+        "scripts/round --quick on src/precis/todo/guards.py",
+        # a checkout location is not a write target
+        "resolve in /Users/deploy/work/repo/.claude/worktrees/slice-td1 and retry",
+        "the tree at .claude/worktrees/agent-a1b2c3 is dirty; fix guards.py",
+        "`.claude/worktrees` holds the slice checkouts",
+    ],
+)
+def test_run_invocation_evidence_and_checkout_never_route(text: str) -> None:
+    assert route.coordinator_route(text, _ALL_DENY) is None
+
+
+# --- gr685970: write-intent routing -------------------------------------
+#
+# The four gripes that routed on a prose mention alone (asks td677375,
+# td680452, td680555, td685658, 2026-11-14/15): each names a deny path as
+# an example, a mechanism or an out-of-scope note — never as the write
+# target — and stalled on hold:no-dispatch. Fixtures paraphrase their
+# reports (the prod bodies are not in the tree).
+
+#: gr574149 (a paraphrase, not the report's verbatim text — the prod
+#: body is not in the tree): ``scripts/release`` is the example of a
+#: script too large for the python kind — the fix is in
+#: ``python_index``.
+_GR574149 = """\
+python_index drops the big drivers: the python kind finds no symbol in them
+
+Observed: `search(kind='python', q='release_cut')` returns nothing — the
+python_index chunker skips files over its line cap, so the release-round
+script `scripts/release` (about 700 lines of bash) yields no symbols.
+The fix is in `src/precis/ingest/python_index.py`'s cap, not the script.
+"""
+
+#: gr681901 (paraphrase — not verbatim): the Docker test runner
+#: (``scripts/test``) is the mechanism a fix node's acceptance needs —
+#: named as the constraint, not the edit.
+_GR681901 = """\
+factory: a fix node whose acceptance needs the Docker test runner must
+not land on a sandbox that cannot run it
+
+Want:
+1. The mint marks a fix node whose acceptance needs the Docker test
+   runner (`scripts/test` inside the container harness).
+2. Such a node must not land on a sandbox that cannot run it; the fix
+   is in `plans/release` and `plan_dispatch.py`.
+"""
+
+#: gr606462 (paraphrase — not verbatim): the runner running the eval
+#: YAML is the behaviour being reported; the spec puts that integration
+#: out of scope.
+_GR606462 = """\
+skill evals: the test runner runs the eval YAML as acceptance — spec says out of scope
+
+`scripts/test` runs `src/precis/data/skill-evals/<skill>.yaml` as a
+skill's acceptance while the spec comment in
+`src/precis/plans/templates.py` puts that integration out of scope.
+Fix: the runner and its tests — `scripts/skill-eval` and
+`tests/test_skill_evals.py`.
+"""
+
+#: gr613096 (paraphrase — not verbatim): the agent-remit edits are
+#: explicitly out of scope; the buildable slices are the skill files.
+_GR613096 = """\
+agent remits drifted from the slice prompts: refresh the skill files
+
+The buildable slices are the skill files under `src/precis/data/skills/`
+and their tests.
+
+Out of scope: the agent-remit edits under `.claude/agents/**` — the
+spec marks those a human step.
+"""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [_GR574149, _GR681901, _GR606462, _GR613096, _GR663867],
+)
+def test_mention_only_reports_never_route(text: str) -> None:
+    """gr685970: the four reports that stalled on hold:no-dispatch —
+    their deny paths are examples, mechanisms or out-of-scope notes,
+    not requested writes."""
+    assert route.coordinator_route(text, _ALL_DENY) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # a spec write-target line names the path
+        "Seam: `src/precis/plans/route.py` and `scripts/ship`",
+        "Anchors: `scripts/ship::main`; the gate check needs a flag.",
+        "Files: `src/precis/workers/gripe_dispatch.py`, `scripts/ship`",
+        "- Targets: `scripts/ship`, `scripts/test`",
+        # a list the write-target label introduces
+        "Files:\n- `src/precis/workers/gripe_dispatch.py`\n- `scripts/ship`\n\nDone.",
+        "Files: `src/precis/a.py`,\n    `scripts/ship`\n\nDone.",
+    ],
+)
+def test_write_intent_deny_path_routes(text: str) -> None:
+    why = route.coordinator_route(text, (*_ALL_DENY, "scripts/round"))
+    assert why is not None and why.startswith("names deny path")
+
+
+def test_route_reason_quotes_the_matching_sentence() -> None:
+    """gr685970 want 3: the reviewer sees why the route fired."""
+    why = route.coordinator_route(
+        "Fix: repair the widget; edit `scripts/ship` too", _DENY
+    )
+    assert why is not None
+    assert 'in "edit `scripts/ship` too"' in why
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # a passive demand names the actor's limitation, not the edit
+        "`scripts/release` cannot be indexed by the python kind; fix "
+        "`src/precis/ingest/python_index.py`.",
+        # a test-fixture path is data, not the denied file
+        "add a fixture at `tests/fixtures/deploy/inventory-prod/hosts.yml` "
+        "for the deny-check test",
+        "the fixture `tests/data/.mcp.json` seeds the parser test",
+        # the fix lives elsewhere; the path is an example
+        "the parser drops `scripts/ship` calls — the fix is in the parser",
+    ],
+)
+def test_mention_shapes_never_route(text: str) -> None:
+    assert route.coordinator_route(text, _ALL_DENY) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "path"),
+    [
+        # a genuine edit request on the harness still routes
+        ("Fix: edit deploy/group_vars/all.yml", "deploy/group_vars/all.yml"),
+        # a run cue does not hide a later edit request in the same text
+        ("Run scripts/test first.\n\nFix: edit scripts/test", "scripts/test"),
+        ("Fix: make scripts/ship quieter, then run scripts/test", "scripts/ship"),
+        # only the repo-relative remainder of a checkout path is judged
+        (
+            "Fix: edit /Users/deploy/work/repo/.claude/worktrees/slice-td1/scripts/ship",
+            "scripts/ship",
+        ),
+        ("Goal: edit .claude/worktrees/t1/CLAUDE.md", "CLAUDE.md"),
+        # a rescue report's non-evidence lines still classify
+        (
+            _RESCUE_REPORT.replace(
+                "head: e47a116ad\n",
+                "head: e47a116ad\nFix: edit scripts/ship so the push retries\n",
+            ),
+            "scripts/ship",
+        ),
+        # a target ending its sentence keeps its glob match
+        ("Fix: please edit scripts/ship.", "scripts/ship"),
+    ],
+)
+def test_genuine_edit_request_still_routes(text: str, path: str) -> None:
+    why = route.coordinator_route(text, _ALL_DENY)
+    assert why is not None and f"`{path}`" in why
+
+
+@pytest.mark.parametrize("language", ["log", "console", "output"])
+@pytest.mark.parametrize("label", ["File set", "Files", "Seam", "Anchors", "Targets"])
+def test_write_set_inside_evidence_fence_never_routes(
+    language: str, label: str
+) -> None:
+    text = f"Fix: repair worker.py.\n```{language}\n{label}: scripts/ship\n```"
+    assert route.coordinator_route(text, _DENY) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "scripts/ship cannot land a branch. Repair worker.py.",
+        "edit scripts/ship",
+        "Goal: scripts/ship should refuse a dirty tree",
+    ],
+)
+def test_prose_without_declared_write_never_routes(text: str) -> None:
+    assert route.coordinator_route(text, _DENY) is None

@@ -136,10 +136,30 @@ def test_put_refuses_non_paper(paper, store):
     assert _jobs(store) == []
 
 
-def test_put_refuses_complete_ref(paper, store):
-    """A ref holding BOTH a body and a PDF can't take a pull — its drop
-    would mint a duplicate rather than fold (gr519746)."""
+def test_put_accepts_held_preview(paper: PaperHandler, store: Any) -> None:
+    """gr715554: a held one-page preview permits a fuller public copy."""
     ref_id = _stub(store, body=True, pdf=True)
+    paper.put(id=ref_id, args={"pdf_url": _URL})
+    assert _jobs(store) == [{"ref_id": ref_id, "url": _URL}]
+
+
+def test_put_refuses_complete_ref_long_held_pdf(paper, store):
+    """The gr715554 preview exception is narrow: a body-plus-PDF ref whose
+    held PDF runs past 2 pages is still a complete ref and refuses."""
+    ref_id = _stub(store, body=True, pdf=True)
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE pdfs SET page_count = 20")
+        conn.commit()
+    with pytest.raises(BadInput, match="already has a body"):
+        paper.put(id=ref_id, args={"pdf_url": _URL})
+    assert _jobs(store) == []
+
+
+def test_put_refuses_complete_ref_non_article_preview(paper, store):
+    """A short held PDF of a non-article entry type (book, thesis, …) is
+    not the article-preview signature, so a bodied ref holding one still
+    refuses."""
+    ref_id = _stub(store, body=True, pdf=True, entry_type="book")
     with pytest.raises(BadInput, match="already has a body"):
         paper.put(id=ref_id, args={"pdf_url": _URL})
     assert _jobs(store) == []
@@ -203,6 +223,9 @@ def test_pull_refuses_non_pdf_response(store, serve, inbox):
 
 def test_pull_rechecks_target_state(store, serve, inbox):
     ref_id = _stub(store, body=True, pdf=True)
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE pdfs SET page_count = 20")
+        conn.commit()
     rec = paper_pull.pull(store, ref_id, _URL)
     assert rec["reason"] == "bad_target"
     assert list(inbox.glob("*.pdf")) == []
@@ -459,3 +482,44 @@ def test_suspect_previews_backscan(store):
     rows = suspect_previews(store)
     assert [r[0] for r in rows] == [short]
     assert rows[0][1:] == ("Short one", 1, 0)
+
+
+def test_preview_pull_pins_hashes_without_dropping_body(
+    paper: PaperHandler, store: Any, serve: Any, inbox: Any
+) -> None:
+    ref_id = _stub(store, body=True, pdf=True)
+    paper.put(id=ref_id, args={"pdf_url": _URL})
+    rec = paper_pull.pull(store, ref_id, _URL)
+    assert rec["status"] == "dropped"
+    ref = store.get_ref(kind="paper", id=ref_id)
+    pin = ref.meta["pdf_preview_refetch"]
+    assert pin["from"] == "ab" * 32
+    assert pin["to"] == rec["sha256"]
+    assert pin["url"] == _URL
+    assert ref.pdf_sha256 == "ab" * 32
+    sc = read_sidecar(next(inbox.glob("*.pdf")))
+    assert sc is not None and not sc.printable_only
+    with store.pool.connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = 0", (ref_id,)
+            ).fetchone()[0]
+            == "body"
+        )
+
+
+def test_pull_failed_drop_clears_preview_pin(
+    store: Any, serve: Any, inbox: Any, monkeypatch: Any
+) -> None:
+    """The pin is written before the drop; a failed drop must not leave it
+    behind for an unrelated same-hash file to claim the replacement."""
+
+    def _boom(*_a: Any, **_k: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(paper_pull, "write_sidecar", _boom)
+    ref_id = _stub(store, body=True, pdf=True)
+    with pytest.raises(OSError, match="disk full"):
+        paper_pull.pull(store, ref_id, _URL)
+    assert "pdf_preview_refetch" not in store.get_ref(kind="paper", id=ref_id).meta
+    assert list(inbox.glob("*.pdf")) == []

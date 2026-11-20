@@ -9,6 +9,10 @@ rides the same ingest path ``put(kind='paper', doi=…)`` uses
 (``Store.upsert_stub_paper`` + ``Store.pin_stub_for_fetch`` → the
 ``fetch_oa`` worker), and the ack names the job instead of apologising.
 
+Only single or batch paper gets without a view can mint this job.
+An explicit view requests stored data, including default-renderer
+aliases such as ``meta``, ``text``, ``body``, and ``full`` (gr715493).
+
 The get does no network work and no fetch: minting the row is the whole
 call — idem key ``paper_ingest:<canonical doi>`` makes repeat gets
 dedupe onto the same row, and a terminal job inside
@@ -34,7 +38,13 @@ rather than called. S2 first, then the DOI registries on a miss; a
 resolver *fault* mints unverified (a fault is not evidence of a bad
 DOI); a genuine miss everywhere fails the job — that failure is what
 the get-side gate reports and what stops the hallucination from
-littering the stub backlog.
+littering the stub backlog. An S2 hit is also checked for the gr710828
+poisoned cluster before its aliases are adopted: when the record would
+hand the stub other ids (arXiv / S2 paperId) while the registry names a
+different work, the S2 record is dropped and the registry record that
+established the mismatch is reused as the DOI's own verification —
+re-asking the registries can miss on a second pass and fail a job the
+first pass confirmed.
 """
 
 from __future__ import annotations
@@ -45,6 +55,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import Conflict
 from precis.store.types import Tag
 from precis.workers.job_types import JobTypeSpec
 
@@ -230,7 +241,7 @@ def _s2_lookup(doi: str) -> dict[str, Any] | None:
 
 
 def _registry_lookup(doi: str) -> dict[str, Any] | None:
-    """Crossref/DataCite record for the DOI (propagates registry faults —
+    """Crossref/DataCite/JaLC record for the DOI (propagates registry faults —
     mirrors ``handlers.paper._lookup_doi_registry``; patched in tests)."""
     from precis import settings
     from precis.ingest.doi_registry import resolve_registry_doi
@@ -238,6 +249,54 @@ def _registry_lookup(doi: str) -> dict[str, Any] | None:
     return resolve_registry_doi(
         doi, mailto=settings.get_str("contact.crossref_mailto") or ""
     )
+
+
+def _registry_disagreement(
+    doi: str, meta: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Mirror of ``handlers.paper._registry_disagreement``: ``(registry
+    record, its title)`` when the registry clearly names another work
+    than ``meta``; ``(record, None)`` when it corroborates ``meta``;
+    ``(None, None)`` when inconclusive (registry miss/fault, tokenless
+    titles, unjudgeable bylines). The record returns with the verdict so
+    the poisoned-cluster check's caller reuses it instead of re-asking
+    the registries."""
+    s2_title = str(meta.get("title") or "").strip()
+    if not s2_title:
+        return None, None
+    try:
+        reg = _registry_lookup(doi)
+    except Exception:
+        return None, None
+    reg_title = str((reg or {}).get("title") or "").strip()
+    if not reg_title:
+        return reg, None
+    from precis.ingest.verify_metadata import title_overlap
+    from precis.utils.title_merge import content_tokens, first_author_agreement
+
+    if not content_tokens(reg_title) or not content_tokens(s2_title):
+        return reg, None
+    if (
+        title_overlap(reg_title, s2_title) > 0
+        and first_author_agreement(meta.get("authors"), (reg or {}).get("authors"))
+        is not False
+    ):
+        return reg, None
+    return reg, reg_title
+
+
+def _poisoned_s2_cluster_registry(
+    meta: dict[str, Any], doi: str
+) -> dict[str, Any] | None:
+    """Mirror of ``handlers.paper._poisoned_s2_cluster_registry``: the
+    registry record establishing that ``doi``'s S2 cluster belongs to
+    another work (gr710828 — S2 echoes the DOI back onto a mis-merged
+    cluster, and adopting that cluster's arXiv / S2 aliases would mint
+    the poisoned alias set onto this DOI's stub), else ``None``."""
+    if not (meta.get("arxiv_id") or meta.get("s2_id")):
+        return None
+    reg, disagree = _registry_disagreement(doi, meta)
+    return reg if disagree is not None else None
 
 
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
@@ -264,6 +323,22 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         meta = _s2_lookup(doi)
     except Exception as exc:
         resolver_err = exc
+    poisoned_reg: dict[str, Any] | None = None
+    if meta and (meta.get("arxiv_id") or meta.get("s2_id")):
+        # gr710828, mirrored from acquire: S2 echoes the DOI back onto a
+        # cluster that actually belongs to another work — adopt none of
+        # its aliases, and reuse the registry record that established
+        # the mismatch as the DOI's own verification (a second registry
+        # ask can miss and fail a job the first ask confirmed).
+        poisoned_reg = _poisoned_s2_cluster_registry(meta, doi)
+        if poisoned_reg is not None:
+            log.info(
+                "paper_ingest: doi %s resolved to a mismatched S2 cluster "
+                "(registry names %r) — using the registry record",
+                doi,
+                (poisoned_reg.get("title") or ""),
+            )
+            meta = None
     if meta:
         from precis.ingest.semantic_scholar import s2_stub_meta
 
@@ -286,13 +361,19 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 if pair not in identifiers:
                     identifiers.append(pair)
     else:
-        # S2 miss or fault — the DOI registries arbitrate (acquire's DOI
-        # rule: S2's index lags fresh records and skips whole registries,
-        # so a clean miss still asks Crossref/DataCite before refusing).
-        try:
-            registry_meta = _registry_lookup(doi)
-        except Exception as exc:
-            resolver_err = resolver_err or exc
+        # S2 miss, fault, or poisoned cluster — the DOI registries
+        # arbitrate (acquire's DOI rule: S2's index lags fresh records
+        # and skips whole registries, so a clean miss still asks
+        # Crossref/DataCite before refusing). A poisoned cluster already
+        # stashed the registry record, so don't ask again here.
+        if poisoned_reg is not None:
+            registry_meta = poisoned_reg
+            resolver_err = None
+        else:
+            try:
+                registry_meta = _registry_lookup(doi)
+            except Exception as exc:
+                resolver_err = resolver_err or exc
         if registry_meta is not None:
             resolver_err = None
             stub_title = (registry_meta.get("title") or "").strip() or None
@@ -321,73 +402,80 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
 
     from psycopg.types.json import Jsonb
 
-    with ctx.store.tx() as conn:
-        ref_id, created = ctx.store.upsert_stub_paper(
-            identifiers=identifiers,
-            title=stub_title,
-            year=year,
-            authors=authors,
-            set_by="agent",
-            s2_meta=s2_meta,
-            conn=conn,
-        )
-        if created:
-            ctx.store.add_tag(
-                ref_id,
-                Tag.open("discovered-via:get"),
-                set_by="system",
+    try:
+        with ctx.store.tx() as conn:
+            ref_id, created = ctx.store.upsert_stub_paper(
+                identifiers=identifiers,
+                title=stub_title,
+                year=year,
+                authors=authors,
+                set_by="agent",
+                s2_meta=s2_meta,
                 conn=conn,
             )
-            if unverified:
+            if created:
                 ctx.store.add_tag(
                     ref_id,
-                    Tag.open("acquire:unverified"),
-                    set_by="agent",
+                    Tag.open("discovered-via:get"),
+                    set_by="system",
                     conn=conn,
                 )
-                patch: dict[str, Any] = {"acquire_unverified": True}
-                if resolver_err is not None:
-                    patch["acquire_unverified_reason"] = str(resolver_err)[:300]
-                conn.execute(
-                    "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
-                    (Jsonb(patch), ref_id),
-                )
-            if registry_meta is not None:
-                # The registry-verified stub carries its bibliographic
-                # fields on mint — same patch acquire applies (gr514384).
-                reg_patch: dict[str, Any] = {}
-                reg_source = str(registry_meta.get("source") or "")
-                if reg_source:
-                    reg_patch["acquire_registry"] = reg_source
-                journal = registry_meta.get("journal")
-                if isinstance(journal, str) and journal.strip():
-                    reg_patch["journal"] = journal.strip()
-                for key in ("record_type", "version", "publisher", "entry_type"):
-                    val = registry_meta.get(key)
-                    if isinstance(val, str) and val.strip():
-                        reg_patch[key] = val.strip()
-                abstract = registry_meta.get("abstract")
-                if isinstance(abstract, str) and abstract.strip():
-                    reg_patch["abstract"] = abstract.strip()
-                ctx.store.update_paper_fields(
-                    ref_id,
-                    authors=registry_meta.get("authors") or None,
-                    meta_patch=reg_patch,
-                    source=f"acquire:{reg_source or 'registry'}",
-                    # ``paper_authors.source`` has no ``datacite`` tier —
-                    # ``pdf`` is the sanctioned programmatic fallback.
-                    authors_source=("crossref" if reg_source == "crossref" else "pdf"),
-                    conn=conn,
-                )
-        # Explicit semantics (restamp_min_hours=None): a get-asked DOI is
-        # a "fetch NOW" — the job's own idem gate is the rate limit, so
-        # the pin always re-arms one immediate fetch retry.
-        ctx.store.pin_stub_for_fetch(ref_id, conn=conn, restamp_min_hours=None)
+                if unverified:
+                    ctx.store.add_tag(
+                        ref_id,
+                        Tag.open("acquire:unverified"),
+                        set_by="agent",
+                        conn=conn,
+                    )
+                    patch: dict[str, Any] = {"acquire_unverified": True}
+                    if resolver_err is not None:
+                        patch["acquire_unverified_reason"] = str(resolver_err)[:300]
+                    conn.execute(
+                        "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                        (Jsonb(patch), ref_id),
+                    )
+                if registry_meta is not None:
+                    # The registry-verified stub carries its bibliographic
+                    # fields on mint — same patch acquire applies (gr514384).
+                    reg_patch: dict[str, Any] = {}
+                    reg_source = str(registry_meta.get("source") or "")
+                    if reg_source:
+                        reg_patch["acquire_registry"] = reg_source
+                    journal = registry_meta.get("journal")
+                    if isinstance(journal, str) and journal.strip():
+                        reg_patch["journal"] = journal.strip()
+                    for key in ("record_type", "version", "publisher", "entry_type"):
+                        val = registry_meta.get(key)
+                        if isinstance(val, str) and val.strip():
+                            reg_patch[key] = val.strip()
+                    abstract = registry_meta.get("abstract")
+                    if isinstance(abstract, str) and abstract.strip():
+                        reg_patch["abstract"] = abstract.strip()
+                    ctx.store.update_paper_fields(
+                        ref_id,
+                        authors=registry_meta.get("authors") or None,
+                        meta_patch=reg_patch,
+                        source=f"acquire:{reg_source or 'registry'}",
+                        # ``paper_authors.source`` has no ``datacite`` tier —
+                        # ``pdf`` is the sanctioned programmatic fallback.
+                        authors_source=(
+                            "crossref" if reg_source == "crossref" else "pdf"
+                        ),
+                        conn=conn,
+                    )
+            # Explicit semantics (restamp_min_hours=None): a get-asked DOI is
+            # a "fetch NOW" — the job's own idem gate is the rate limit, so
+            # the pin always re-arms one immediate fetch retry.
+            ctx.store.pin_stub_for_fetch(ref_id, conn=conn, restamp_min_hours=None)
+
+    except Conflict as exc:
+        ctx.record_failure(f"paper_ingest {doi}: {exc}", failure_class="input")
+        return
 
     state = "minted stub" if created else "already tracked"
     ctx.append_chunk(
         "job_summary",
-        f"paper_ingest {doi}: {state} paper id={ref_id}"
+        f"paper_ingest {doi}: {state} paper id=pa{ref_id}"
         + (" (unverified)" if unverified else "")
         + " — pinned to front of fetch queue",
     )

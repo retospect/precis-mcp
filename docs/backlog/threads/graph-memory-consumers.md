@@ -34,7 +34,7 @@ its provenance; scratch preparation filled 32 names (me472973), and the
 synthetic dev rehearsal passed (fi472896). No real-copy import has run.
 
 - **Pre-flight 2026-10-07 (read-only on prod):** the 146 legacy nodes carry the 2026-10-03/04 index bullet titles and `meta.slug`, not file names; only 5 match a current file by title or slug, and a body-shingle comparison against the current topic files also pairs only 5 cleanly (the files were rewritten since). `--legacy refresh` therefore adopts almost nothing; the honest round-7 run is `--legacy retire` (Reto's stated fallback, "retire or rewrite, fine") unless Reto wants the 5 adopted first. Needs his confirmation via the coordinator before the run. Prod dogfood of slices 1-3 done 2026-10-07 on fc8ad08f7: index render, fisheye+1hop+recall with the SPACE filter, anchored-edit dry run all pass; recall is lexical-leaning (a paraphrase missed the target in the top 5), measure again after the real import. The anchored-edit dogfood is done (td470292, R15).
-- Historical (closed): the revert-cause precondition, superseded by Reto's 2026-10-07 ruling and the completed cutover. At the time: Mac-side forensics are exhausted (no version history in the memory dir, no consolidation-log entry between 2026-10-03 and 10-07, no transcript); places left to look are the melchior-side Codex transcripts and fleet inbox from 2026-10-03/04. The spec's decisions log proposes a self-recording, self-detecting re-cut as the fallback, which needs Reto's go. **Handoff 2026-10-07 15:25Z (session exited on Reto's order):** everything is on main (slice 5 = afa814bd9); the round-7 cutover owner is the melchior Codex graph-memory agent. The import reads Reto's harness memory dir on the Mac (`~/.claude/projects/-Users-reto-work-projects-code-precis-mcp/memory/`), so it runs from the Mac or from a copy of that dir; 33 of its 147 files lack a `name:` or `description:` and the importer refuses them, so fix that frontmatter first (name = file stem, description = the index hook). Command shape: `precis memory mirror import <dir> --namespace <ns> --legacy retire` (or `refresh` first for the 5 matching nodes), against prod with the overlay DSN. <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
+- Historical (closed): the revert-cause precondition, superseded by Reto's 2026-10-07 ruling and the completed cutover. At the time: Mac-side forensics are exhausted (no version history in the memory dir, no consolidation-log entry between 2026-10-03 and 10-07, no transcript); places left to look are the agent-host-side Codex transcripts and fleet inbox from 2026-10-03/04. The spec's decisions log proposes a self-recording, self-detecting re-cut as the fallback, which needs Reto's go. **Handoff 2026-10-07 15:25Z (session exited on Reto's order):** everything is on main (slice 5 = afa814bd9); the round-7 cutover owner is the agent host Codex graph-memory agent. The import reads Reto's harness memory dir on the Mac (`~/.claude/projects/-Users-reto-work-projects-code-precis-mcp/memory/`), so it runs from the Mac or from a copy of that dir; 33 of its 147 files lack a `name:` or `description:` and the importer refuses them, so fix that frontmatter first (name = file stem, description = the index hook). Command shape: `precis memory mirror import <dir> --namespace <ns> --legacy retire` (or `refresh` first for the 5 matching nodes), against prod with the overlay DSN. <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
 
 ## Thread context
 
@@ -43,14 +43,14 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 **Status:** ends when an agent never leaves the graph to do its work — no
 temp file for a proposal, no SQL for a write check, no guessing which
 capability exists — and text-file memory it replaces is retired per
-`docs/roadmap.md`. North-star: `backlog/context-navigation.md §8`; the
+`docs/roadmap.md`. North-star: me690580 §8`; the
 nanobuds draft evidence (proposal in /tmp, history by SQL, write checks by
 SQL) was closed 2026-10-02 by draft `view='history'`/`'proposals'` and the
 landed-sha edit ack. Both views were dogfooded 2026-10-03 on the live
 server (63301c5c) against dr173020, and both rendered. The edit ack was
 not exercised on that live review draft. The memory
 half (file-mirror, context hierarchy, session history) and the surfaces
-(the eye ladder — shipped 2026-10-12, draft-linearization) are ranked in `knowledge-mesh.md`
+(the eye ladder — shipped 2026-10-12, draft-linearization) are ranked in `knowledge-mesh (me693314)`
 since 2026-09-30; this thread ranks the agent-side affordances only, by
 what a live consumer is already going without.
 **Last reviewed:** 2026-10-07
@@ -81,7 +81,7 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
 - **Next step:** review that branch's diff. Run its memory handler test
   file with `scripts/test`, merge it into this worktree and qland. If the
   branch is gone or empty, redo the change from the
-  `memory-native-authoring.md` decisions-log entry dated 2026-10-03.
+  `memory-native-authoring (me690866)` decisions-log entry dated 2026-10-03.
 - **Reconsolidation:** 2026-10-04 pass logged; no node edits.
 
 ## Do next
@@ -94,7 +94,7 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
 2. **memory-file-mirror** — SHIPPED and deployed, backlog doc deleted
    2026-10-15. Legacy refresh (8993c22e6) and native export (afa814bd9)
    landed; the real import is live (namespace `repo-dev-harness-20261007`).
-3. **backlog/memory-native-authoring.md** — Reto 2026-10-01: top priority,
+3. **me690866** — Reto 2026-10-01: top priority,
    ahead of td458720's sequencing. **State:** the cutover completed;
    `MEMORY.md` has been a pointer to the mesh root since 2026-10-13 and the
    real import is live. The SPACE axis, `meta.hook`, the hook script and
@@ -133,9 +133,9 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
      neighbours, and found no node carrying a section tag.
    - **Next on this item:** memory `edit` needs `find-replace` (decisions
      log, 2026-10-03).
-   - **Blocked:** tests 4b/4c, which need `backlog/file-mirror.md`
+   - **Blocked:** tests 4b/4c, which need me693606
      (knowledge-mesh Do-next 7).
-4. **backlog/vocab-align-to-literature.md** — ruled 2026-10-01 (both
+4. **me693845** — ruled 2026-10-01 (both
    tiers, throughout code and comments, no compatibility path); gates the
    January paper (td459587), so it lands before January even though
    item 1 outranks it on value. Tier 1 glosses shipped 2026-10-02. The
@@ -150,7 +150,7 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
      prod 2026-10-03. The CHECK is validated and allows claim, composite
      and hypothesis; the one `compound` row is now `composite`.
      `nanopub_artifacts` is append-only and was not rewritten.
-5. **backlog/context-navigation.md §7–§8** — twin + Mode B loop, owned by thread context-navigation; seam only.
+5. **me690580 §7–§8** — twin + Mode B loop, owned by thread context-navigation; seam only.
 6. **Memory-architecture gripe set (2026-11-01):** the build chain and
    the independent fixes shipped and their gripes are closed (search
    traces, gap cut, memory fusion, tokens-per-hit, canon pre-pass, sub-hub
@@ -163,57 +163,57 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
    remain operator-owned. Open: gr548275 SPACE backfill (the glossary
    mirror is superseded — the vocabulary lives as taxa under tn559460).
    Specs:
-   `memory-retrieval-learning.md` (idea, decision rule),
-   `dreaming-classify-rehome.md` (draft). Reto's call: S4 in
-   `context-memory-hierarchy.md` (resident block, largest token lever).
+   `memory-retrieval-learning (gr690890)` (idea, decision rule),
+   `dreaming-classify-rehome (me693172)` (draft). Reto's call: S4 in
+   `context-memory-hierarchy (me692173)` (resident block, largest token lever).
 
 ## Horizon
 
 Surface metric for this thread's end state: the tool-ledger friction detector
-in `backlog/mcp-surface-economy.md` — an agent that leaves the graph for SQL
+in me691324 — an agent that leaves the graph for SQL
 or a temp file shows up there as friction (no retag; that item stays put).
 
 Search cluster, ranked here as the consumer side of navigation (retrieval is
 how an agent reaches the graph; `fisheye-*` is how it moves within it):
 
-- **backlog/paper-evidence-selection-fisher-rao.md** — what a search
+- **gr690845** — what a search
   returns shapes every consumer's first read (its
   `paper-search-unique-per-paper` sibling shipped 2026-10-12).
-- **backlog/embed-freshness.md** · **backlog/improve-hnsw-recall-check.md** —
+- **me693238** · **gr690288** —
   silent recall loss is invisible to the agent that suffers it.
-- **backlog/uncited-facet-patent-edgar-wiring.md** ·
-  **backlog/patent-search-parity.md** — kinds the facet cannot see.
-- **backlog/search-notation-symmetric-fold-index.md** ·
-  **backlog/search-future-filters.md** · **backlog/good-search-coordinator.md**
-- **backlog/vocab-compaction.md**
+- **me693790** ·
+  **gr690848** — kinds the facet cannot see.
+- **me693759** ·
+  **me693699** · **gr690822**
+- **me694027**
   — triage first; order inside the group is provisional.
 
-1. **backlog/quest-graph-as-dossier.md** — Reto 2026-10-01: a quest's
+1. **me692487** — Reto 2026-10-01: a quest's
    graph "is" the dossier and a writer agent linearises it. Specified by
-   `retire-dossier.md` (draft, ranked in roadmap-quest Horizon 5); its
+   `retire-dossier (me692487)` (draft, ranked in roadmap-quest Horizon 5); its
    experiment memory cards are the quest loop's memory
    consumer: one `memory` per candidate structure, `serves` the quest,
    `part-of` its direction todo, every line a quoted source. Same
    principle as Do-next 1 (graph is truth, text is a render).
-2. **backlog/source-code-ingest.md** — the claude-context retire it was
+2. **gr693760** — the claude-context retire it was
    sequenced with shipped 2026-10-10 (Milvus stack torn down; a
    natural-language `search(kind='python')` returns hits).
-3. **backlog/capability-discovery-on-a-sprawling-surface.md**
-4. **backlog/docs-and-skills-redesign.md**
+3. **me690491**
+4. **gr690464**
 5. **backlog/skill-eval-executed-runner.md** — the harness + corpus
    shipped; the open item is the executed (dev-DB) runner.
-6. **backlog/skill-bundled-scripts.md**
-7. **backlog/turn-routing-and-context-dsl.md**
+6. **gr693721**
+7. **me695177**
 8. **Context-audit tail** — the catalog lives in
    `scripts/context-audit/`; the fisheye study is carried in
-   `backlog/context-navigation.md` §1 measures (its render residuals: halt-reason + numeric-handle items shipped
+   me690580 §1 measures (its render residuals: halt-reason + numeric-handle items shipped
    2026-10-21; quest-frontier objective and recency N-of-K items stay
    with `handlers/quest.py` / `runtime/search.py` owners).
 
 ## Parked
 
-- **backlog/contextual-chunk-embeddings.md** — small enabler.
-- **backlog/universal-short-codes.md** — small enabler.
+- **gr690343** — small enabler.
+- **gr693825** — small enabler.
 
 ## No action needed
 

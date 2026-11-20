@@ -26,7 +26,7 @@ itself just dispatched.
 ``at_time`` heartbeat (not bare ``children_done``) so a sim stuck
 ``STATUS:queued`` can't park the loop forever. No new batch is proposed
 while the previous is in flight (per-quest backpressure); a slice of a
-compute-lane quest defers when spark's compute queue is already deep
+compute-lane quest defers when the GPU node's compute queue is already deep
 (starvation gate) — a weave or lit-only quest (``meta.compute_lane ==
 "off"``) has no stake in that queue and is never deferred by it.
 
@@ -142,7 +142,7 @@ def _heartbeat_s() -> int:
 
 
 def _max_queued_sims() -> int:
-    """Starvation gate: defer a new batch when spark's compute queue already has
+    """Starvation gate: defer a new batch when the GPU node's compute queue already has
     at least this many non-terminal sims *across all quests* (default 6)."""
     return env_int("PRECIS_QUEST_TICK_MAX_QUEUED", 6, lo=1, hi=1000)
 
@@ -1010,8 +1010,7 @@ def _phase_roadmap_tick(
     state: dict[str, Any],
     slice_count: int,
 ) -> Any:
-    """Roadmap-root leg of ``_phase_tick`` (docs/backlog/bootstrap-roadmap-
-    quest.md In-scope 1): one :func:`precis.quest.roadmap_tick.roadmap_tick`
+    """Roadmap-root leg of ``_phase_tick`` (me691652 In-scope 1): one :func:`precis.quest.roadmap_tick.roadmap_tick`
     call — one role (demand / supply / bridge) on one capability axis.
 
     **The role picks the tier, in code** (the 2026-09-28 model-tiers

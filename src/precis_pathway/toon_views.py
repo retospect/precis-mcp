@@ -156,7 +156,7 @@ def steps_toon(meta: dict[str, Any]) -> str:
 _NUM_RE = re.compile(r"(?<![A-Za-z])[0-9]+(?:\.[0-9]+)?")
 
 #: Cap on distinct message templates rendered by ``warnings_toon``'s
-#: "messages" section (docs/backlog/pathway-conditions-effects-report.md
+#: "messages" section (me692126
 #: "Warnings" fix 1) — a long tail of one-off templates still shows as a
 #: trailing "(+K more templates)" count rather than being silently dropped.
 _MESSAGE_TEMPLATE_CAP = 25
@@ -301,7 +301,7 @@ def _warnings_summary(meta: dict[str, Any]) -> str:
 
 def warnings_toon(meta: dict[str, Any]) -> str:
     """Severity- and route-aware warnings view (spec:
-    docs/backlog/pathway-conditions-effects-report.md "Warnings" fix 1):
+    me692126 "Warnings" fix 1):
     the flat ``meta['warnings']`` prose list mixes informational marginal
     notes, a repeated data gap, off-route notes, and the few fatal on-route
     blockers, so on prod (2026-09-16, n=24) 16/24 pathways showed >10
@@ -384,7 +384,7 @@ def trust_toon(
     """The barrier trust gate, replayed from stored trust records
     (``trust_schema`` 1-2): one row per gating check with its input,
     threshold and verdict, then the per-state/per-seed endpoint table.
-    The verdict line quotes the stored ``trust_summary.barrier`` and
+    The PASS/WARN/FAIL verdict respects stored barrier refusals and
     re-derives the blocked set from the records via
     :mod:`precis.utils.trust_gate` — a disagreement between the two says
     the stored summary no longer matches its records. A check that
@@ -594,6 +594,19 @@ def trust_toon(
         )
     if verdict == "PASS" and ea_row is not None and ea_row["verdict"] == "not-run":
         verdict += f" (vacuous: endpoint agreement not run — {ea_row['input']})"
+    assurance, assurance_reasons = trust_gate.barrier_assurance(
+        rows,
+        trusted=verdict.startswith("PASS"),
+        records=records,
+        scope=scope,
+        engine=engine,
+    )
+    strict_verdict = verdict
+    if seed_lookup_failed or available is False or union_blk is not None:
+        assurance = "FAIL"
+    verdict = strict_verdict if assurance == "PASS" else assurance
+    if assurance == "WARN":
+        verdict += " ≈ " + ", ".join(assurance_reasons)
     replay = (
         "replay agrees with stored trust_summary"
         if sorted(stored_blocked) == record_blocked
@@ -686,7 +699,15 @@ def trust_toon(
         head.append(
             toon.dump(
                 erows,
-                schema=["state", "seed", "e_eV", "Δ meV", "fingerprint", "verdict"],
+                schema=[
+                    "state",
+                    "seed",
+                    "e_eV",
+                    "Δ meV",
+                    "min",
+                    "fingerprint",
+                    "verdict",
+                ],
             )
         )
     if folded:
@@ -1123,7 +1144,7 @@ def analysis_text(
 
 def step_view(meta: dict[str, Any], pw_handle: str, edge: dict[str, Any]) -> str:
     """Focused single-step view for a ``pw<id>~<source>→<target>`` selector
-    (Simulation step deep-links, docs/backlog/quest-dossier-dialectic.md).
+    (Simulation step deep-links, me690849).
     ``edge`` is one row of ``meta['graph']['links']`` — see
     :func:`precis.utils.reaction_graph._reaction_edges` for the shape."""
     refs = meta.get("structure_refs") or {}
@@ -1298,7 +1319,7 @@ def _v2_status_lines(v2: dict[str, Any], product: str | None) -> list[str]:
 
 def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     """Microkinetics digest for a computed pathway (Simulation step deep-links,
-    docs/backlog/quest-dossier-dialectic.md): Eyring rates + residence times +
+    me690849): Eyring rates + residence times +
     the largest electronic barrier, so a dossier can cite ``pw<id>~<label>``.
     A barrier maximum alone cannot establish rate control of the solved cycle.
 

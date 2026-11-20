@@ -92,7 +92,7 @@ def test_j2_template_is_never_a_secret_even_when_named_like_one() -> None:
     [
         "cat /Users/deploy/.claude/mcp.json",
         "head -20 /Users/deploy/.claude/mcp.json",
-        "ssh melchior 'true'; cat ~/.vault-pass",
+        "ssh maple 'true'; cat ~/.vault-pass",
         "cat /Users/deploy/.claude/mcp.json | sed 's/x/y/'",  # dump-then-filter still leaks
         "xxd /Users/deploy/.pgpass",
     ],
@@ -127,7 +127,7 @@ def test_redacting_and_metadata_reads_are_allowed(command: str) -> None:
         "docker inspect --format='{{json .}}' precis-mcp-http",
         "docker exec precis-mcp-http env",
         "docker exec -it precis-mcp-http printenv",
-        "ssh melchior true; docker inspect x | jq .",
+        "ssh maple true; docker inspect x | jq .",
         "cat /proc/1/environ",
     ],
 )

@@ -25,18 +25,14 @@ Preserve evidence and history, add context when a statement is
 conditional, and keep unresolved ambiguity visible. Published procedures
 belong in skills; experience and learned facts belong in memory.
 
-Exploratory memory navigation follows the one canonical procedure —
-the second-hop section of [[precis-fisheye-help]]
-(`precis-fisheye-help~10`).
-
 ## Goals → skills
 
 | Goal | Skill |
 |---|---|
-| Recall relevant knowledge | precis-memory-help~11 |
-| Explore memory hubs and indexes | precis-fisheye-help~10 |
-| Choose update versus duplicate | precis-memory-help~22 |
-| Repair a misleading memory | precis-memory-help~30 |
+| Recall relevant knowledge | [[precis-memory-help]] § "Recall what I already know" |
+| Explore memory hubs and indexes | [[precis-fisheye-help]] § "The second hop" |
+| Choose update versus duplicate | [[precis-memory-help]] § "Update or new node?" |
+| Repair a misleading memory | [[precis-memory-help]] § "A recalled memory misled me" |
 | Improve titles and retrieval hooks | [[precis-firstline-help]] |
 | Distinguish claims, relationships, scope and disagreement | [[precis-research-analysis]] |
 | Integrate knowledge while preserving scope, disagreement and provenance | [[precis-research-synthesis]] |

@@ -33,6 +33,13 @@ value and named in the reply — data errors never refuse an edit, and an
 error-marker operand propagates its marker to dependents (the first
 error operand wins, as in Excel/Sheets — ``#REF`` stays ``#REF``;
 ``#VALUE`` is only a fresh type error).
+
+``min``/``max``/``sum``/``avg`` fold two-or-more columns of the SAME row
+(``sum(qty, shipping)``); a one-column call (``sum(qty)``) reads as a
+column total to anyone coming from a spreadsheet, and it can never be
+one — a NEW or CHANGED formula spelling it is refused at strict compile
+(the footer is the column-total surface), while a stored one predating
+the refusal degrades to ``#VALUE`` cells plus a warning note (gr685375).
 """
 
 from __future__ import annotations
@@ -60,14 +67,18 @@ from precis.utils.table_data import FOOTER_FUNCS  # noqa: F401  (re-export)
 #: compile). ``if_`` evaluates both branches eagerly; the lazy form is the
 #: ``x if cond else y`` IfExp, also allowed.
 def _vsum(*args: Any) -> Any:
+    if len(args) < 2:
+        # ``sum(one_column)`` folds the row's own cell — a misread column
+        # total (gr685375); refused at strict compile, #VALUE on a stored
+        # formula, matching ``min(x)``/``max(x)``'s TypeError.
+        raise ValueError("sum() folds two or more columns of a row")
     return sum(args)
 
 
 def _vavg(*args: Any) -> Any:
-    vals = [a for a in args]
-    if not vals:
-        raise ValueError("avg() needs at least one argument")
-    return sum(vals) / len(vals)
+    if len(args) < 2:
+        raise ValueError("avg() folds two or more columns of a row")
+    return sum(args) / len(args)
 
 
 def _safe_round(x: Any, ndigits: Any = 0) -> Any:
@@ -105,6 +116,13 @@ _FORMULA_FUNCTIONS: dict[str, Any] = {
     "exp": math.exp,
     "if_": lambda cond, a, b: a if cond else b,
 }
+
+#: The row-fold functions, mapped to their ``footer`` counterpart —
+#: ``avg``'s footer spelling is ``mean``. A call with under two
+#: positional args is a misread column total (``sum(qty)``), never a
+#: sensible per-row fold: refused at strict compile, ``#VALUE`` plus a
+#: warning note on a stored formula.
+_AGG_FUNCS: dict[str, str] = {"sum": "sum", "avg": "mean", "min": "min", "max": "max"}
 
 #: Allowed AST node types in a formula — anything else is refused at
 #: compile time. Deliberately excludes Attribute, Subscript, JoinedStr/
@@ -367,6 +385,18 @@ def compile_formula(
                     f"formula {formula!r}: only whitelisted functions may be "
                     f"called ({sorted(_FORMULA_FUNCTIONS)})",
                     next=nxt,
+                )
+            if strict and node.func.id in _AGG_FUNCS and len(node.args) < 2:
+                # ``sum(qty)`` reads as a column total but folds the
+                # row's own cell — refuse like an unknown name, with the
+                # two real spellings named (gr685375).
+                raise BadInput(
+                    f"formula {formula!r}: {node.func.id}() on one column "
+                    "folds the row's own cell — a column total is a "
+                    "footer, not a per-row formula",
+                    next=f"footer={{'<name>': '{_AGG_FUNCS[node.func.id]}'}} "
+                    f"for a column total, or {node.func.id}(a, b) to fold "
+                    "columns within a row",
                 )
             func_nodes.add(id(node.func))
     for node in ast.walk(tree):
@@ -650,6 +680,25 @@ def _unresolved_names(compiled: str, columns: list[dict[str, Any]]) -> list[str]
     return out
 
 
+def _one_arg_folds(compiled: str) -> list[str]:
+    """Fold functions called with under two positional args in a compiled
+    formula — ``sum(<col>)`` is a misread column total, refused at strict
+    compile for a NEW formula; on a stored one (declared before the
+    refusal existed) the cells degrade to ``#VALUE`` and this names the
+    pattern for the reply's warning note (deduped, walk order)."""
+    out: list[str] = []
+    for node in ast.walk(ast.parse(compiled, mode="eval")):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _AGG_FUNCS
+            and len(node.args) < 2
+            and node.func.id not in out
+        ):
+            out.append(node.func.id)
+    return out
+
+
 def evaluate_table(
     table: dict[str, Any], *, declared: set[str] | None = None
 ) -> tuple[dict[str, Any], list[str]]:
@@ -694,6 +743,16 @@ def evaluate_table(
                 f"formula {label} names unknown "
                 f"{', '.join(repr(n) for n in unresolved)} — cells store "
                 "#REF; next: fix formula= or restore the column"
+            )
+        folds = _one_arg_folds(c["formula"])
+        if folds:
+            label = c.get("name") or c.get("id") or i
+            notes.append(
+                f"warning: formula {label} calls "
+                f"{', '.join(f'{f}()' for f in folds)} on one column — "
+                "folds the row's own cell, not a column total; next: "
+                "footer={'<name>': 'sum|mean|min|max'} for a column "
+                "total, or fold two or more columns within a row"
             )
 
     if compiled:

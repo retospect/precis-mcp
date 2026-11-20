@@ -34,7 +34,7 @@ from __future__ import annotations
 #:   ``ask-user:<freeform>`` = the question itself, so the attention
 #:   view can render it inline. (The pre-rename ``asking-reto`` alias
 #:   was removed 2026-06-19 — see
-#:   ``docs/backlog/identity-and-access.md``.)
+#:   `me690624`.)
 _DOABLE_EXCLUSION_TAGS: tuple[str, ...] = (
     "halt",
     "halt:",

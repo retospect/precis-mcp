@@ -69,7 +69,7 @@ _ROLLUP_WATERMARK_KEY = "route_log:rollup_watermark"
 _ROLLUP_HOURS_BUDGET = 48
 
 #: ``autoskill_sessions`` retention (days, migration 0264; spec
-#: docs/backlog/autoskill.md) and its per-statement / per-pass row limits.
+#: me691549) and its per-statement / per-pass row limits.
 #: Rows are small and ts-indexed, so the same batched-delete shape as the
 #: call-log phase applies.
 AUTOSKILL_RETENTION_DAYS = 60
@@ -367,6 +367,16 @@ def _write(store: Store, rec: LlmCallRecord) -> str | None:
                 rec.attempt,
             ),
         )
+        # Fold the call's *actual* real-money cost into the breaker's shared
+        # pending counter in the same transaction (gr732477): a cap crossed
+        # here gates every process at its next read, not one meter baseline
+        # later. The filter mirrors the meter's spend query exactly —
+        # notional OAuth rows and unpriced calls note nothing.
+        if rec.cost_usd is not None and rec.cost_usd > 0:
+            from precis.budget import meter
+
+            if rec.transport not in meter.OAUTH_TRANSPORTS:
+                meter.note_spend(conn, rec.cost_usd)
         conn.commit()
     return req_hash
 
@@ -422,7 +432,7 @@ def spend_rollup(
     calls (full rows) **and** the corpus batch passes (``llm_summarize`` /
     ``classify`` / ``paper_glossary``), which write **lite** metadata rows — so
     local-vs-cloud volume + wall-clock is answerable here. What's *not* here:
-    non-LLM compute (spark DFT / relax / fold, container jobs) never touches
+    non-LLM compute (GPU-node DFT / relax / fold, container jobs) never touches
     ``dispatch``, so a placement view over those still needs its own counter."""
     col = _GROUP_COLS.get(group_by)
     if col is None:

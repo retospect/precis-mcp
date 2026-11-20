@@ -1,5 +1,5 @@
 """The ``roadmap`` tick body — one role per tick, chosen from the gap set
-(docs/backlog/bootstrap-roadmap-quest.md §Design "The roadmap tick").
+(me691652 §Design "The roadmap tick").
 
 A roadmap **root** quest (``meta.quest_body == "roadmap"``) is served by
 *capability* quests (same marker + ``rubric_objectives``) and *pathway*

@@ -70,7 +70,7 @@ _BBOX_MARGIN_MM = 2.0
 #: patterns are prefix-anchored, a trailing ``-`` suffix always matches
 #: (``\b`` sits before a non-word char), and the chip rows also accept a
 #: ``_`` tail — that is what ``R_0603_1608Metric`` rides. See
-#: ``docs/backlog/pcb-se-binding.md`` §Rough box v0 / Change 1.
+#: `me692932` §Rough box v0 / Change 1.
 HEIGHT_TABLE: tuple[tuple[str, float, str], ...] = (
     # match: R402, R0402, C_0402, CHIP-0402, RES-0402, CAP-0402-100nF,
     #        R_0402_1005Metric

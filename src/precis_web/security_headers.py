@@ -61,7 +61,7 @@ _HEADERS: tuple[tuple[bytes, bytes], ...] = (
     (b"referrer-policy", b"same-origin"),
     # Funnel is HTTPS-only and there is no HTTP listener to downgrade to,
     # so this is belt-and-braces. Scoped to this host: sibling tailnet
-    # names (caspar.<tailnet>.ts.net) are NOT subdomains of this one, so
+    # names (<db-host>.<tailnet>.ts.net) are NOT subdomains of this one, so
     # includeSubDomains cannot reach them.
     (
         b"strict-transport-security",

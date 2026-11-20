@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 #: A candidate whose host phase dissolves across the whole operating
 #: window stops consuming selectivity budget
-#: (``docs/backlog/pourbaix-quest-gate.md`` §Rule-out / lift slice). The
+#: (`me692864` §Rule-out / lift slice). The
 #: prefix is what ``harvest_measures``' ``already_out`` guard and every
 #: ``ruled-out:`` surface (tick, status, explore, frontier lineage) match.
 RULED_OUT_TAG = "ruled-out:pourbaix-dissolved"

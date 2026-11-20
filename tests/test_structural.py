@@ -104,7 +104,7 @@ def test_recent_digest_returns_false_when_none(store: Store) -> None:
     assert _recent_digest_exists(store, 6) is False
 
 
-# ── failure backoff (the spark 124k/24h spin-loop guard) ──────────
+# ── failure backoff (the spruce 124k/24h spin-loop guard) ──────────
 
 
 def _err_result() -> object:
@@ -127,7 +127,7 @@ def test_dispatch_failure_backs_off_instead_of_spinning(
 ) -> None:
     """A non-paused dispatch error must NOT re-dispatch every tick: it records a
     cooldown marker and the next pass within the interval backs off. Without
-    this, one persistent config gap (spark's agent container missing
+    this, one persistent config gap (spruce's agent container missing
     PRECIS_DATABASE_URL) spun review[structural] into 124k ERROR/24h."""
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
     from precis.workers.review import _recent_failure
@@ -165,7 +165,7 @@ def test_interrupted_review_writes_no_failure_marker(
     deduped, so the next tick re-attempts for free.
 
     Regression for the false 5h markers a rolling deploy / jetsam cull spun onto
-    spark's structural reviewer during the Phase-2 cutover churn."""
+    spruce's structural reviewer during the Phase-2 cutover churn."""
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
     from precis.workers.review import _recent_failure
     from precis.workers.structural import STRUCTURAL

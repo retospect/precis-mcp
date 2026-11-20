@@ -271,6 +271,19 @@ satellites: [[precis-job-types-help]] (agent + internal lanes),
 intake), [[precis-job-release-help]] (release pass +
 release-fix), [[precis-job-observe-help]] (compute + code).
 
+## Roll up job duration and cost or read recent worker logs
+
+```python
+search(kind='job', view='count', args={
+    'job_type': 'run_slice', 'group_by': 'meta.lane,meta.model,state',
+    'agg': 'avg:meta.wall_seconds,sum:meta.usage.usd',
+})
+get(kind='job', id='/logs?since=30m&counts=1')
+```
+
+Each aggregate reports its numeric sample size as `n=`. Add
+`payload=1` to include the scrubbed payload on each displayed log row.
+
 ## See also
 
 - [[precis-job-types-help]] — the non-factory `job_type` registry
@@ -282,5 +295,5 @@ release-fix), [[precis-job-observe-help]] (compute + code).
 - [[precis-minter-help]] — the `meta.executor` → job bridge in full
 - [[precis-factory-submit-help]] — mint a whole plan (build + reviewer + land)
 - [[precis-gripe-help]] — the bug tracker
-- [[precis-fix-gripe-help]] — fix_gripe recipe
+- [[precis-fix-gripe-help]] — reading existing `fix_gripe` jobs (lane OFF)
 - [[precis-search-help]] — find jobs by link/status

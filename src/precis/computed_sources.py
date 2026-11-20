@@ -1,6 +1,6 @@
 """Computed-evidence producer adapters — one source contract from a frozen
 producer output to a citable value (gr564183, plan td564174 under
-``docs/backlog/catpath-repro-bundle.md``).
+`me690648`).
 
 A manuscript value that came out of a computation is only as citable as the
 chain someone can re-walk: which run produced it, which exact output bytes,

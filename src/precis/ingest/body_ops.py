@@ -477,6 +477,40 @@ def _repoint_chunk_links(conn: Any, *, src_ref_id: int, dst_ref_id: int) -> int:
     return len(moved)
 
 
+def _repoint_consideration_pins(conn: Any, *, src_ref_id: int, dst_ref_id: int) -> int:
+    """Re-anchor ``considerations`` judgment pins whose chunk endpoint
+    sits on a donor body chunk — the ledger mirror of
+    :func:`_repoint_chunk_links` (gr662069, review td662210).
+
+    The judgment's ref pin follows its chunk exactly as the link
+    endpoint does: ``source_ref_id`` / ``scope_ref_id`` move to
+    ``dst_ref_id`` with the pin, so a passage judgment keeps naming the
+    canonical text it was checked against instead of dangling on the
+    donor chunk the delete below removes. A pin on a retired donor
+    chunk has no copy to land on and stays as audit — history is not
+    append-only-fragile the way a live edge is, so a dead pin there is
+    evidence, not a broken FK. Runs inside the same transaction so the
+    ord join still sees the donor rows."""
+    n = 0
+    for ref_col, chunk_col in (
+        ("scope_ref_id", "scope_chunk_id"),
+        ("source_ref_id", "source_chunk_id"),
+    ):
+        cur = conn.execute(
+            f"UPDATE considerations j SET {chunk_col} = n.chunk_id, "
+            f"{ref_col} = %(dst)s "
+            "FROM chunks o "
+            "JOIN chunks n ON n.ref_id = %(dst)s AND n.ord = o.ord "
+            " AND n.retired_at IS NULL "
+            f"WHERE j.{chunk_col} = o.chunk_id "
+            " AND o.ref_id = %(src)s AND o.ord >= 0 "
+            " AND o.retired_at IS NULL",
+            {"src": src_ref_id, "dst": dst_ref_id},
+        )
+        n += cur.rowcount or 0
+    return n
+
+
 def _restore_link_stamp(conn: Any, link_id: int) -> bool:
     """Re-apply a link's own prior trust stamp after a chunk re-anchor.
 
@@ -626,6 +660,10 @@ def move_body(*, src_ref_id: int, dst_ref_id: int, conn: Any) -> BodyReport:
     _copy_body_chunks(conn, src_ref_id=src_ref_id, dst_ref_id=dst_ref_id)
     _copy_derived_rows(conn, src_ref_id=src_ref_id, dst_ref_id=dst_ref_id)
     repointed = _repoint_chunk_links(conn, src_ref_id=src_ref_id, dst_ref_id=dst_ref_id)
+    # Judgment pins re-anchor with the edges they were judged against;
+    # a dead pin on the donor's deleted chunk would read the carried
+    # verdict as stale against the copy's id-derived sha (gr662069).
+    _repoint_consideration_pins(conn, src_ref_id=src_ref_id, dst_ref_id=dst_ref_id)
     conn.execute("DELETE FROM chunks WHERE ref_id = %s AND ord >= 0", (src_ref_id,))
     report = replace(report, chunk_links=repointed)
 

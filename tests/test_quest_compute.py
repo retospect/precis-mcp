@@ -1029,6 +1029,43 @@ class TestRejectedProposalFeedback:
         assert len(scene.atoms) == 12
         assert {a.element for a in scene.atoms.values()} == {"Pd"}
 
+    def test_null_cell_with_slab_op_materialises(self, store: Any) -> None:
+        """gr681307: a proposal spec carrying ``"cell": null`` used to crash
+        inside ``_build_cell(None)``, so the logbook's ``rejected proposal``
+        note carried the raw ``'NoneType' object has no attribute 'get'``
+        instead of a reason. An explicit null cell is "absent" — the slab
+        op establishes it."""
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A NO→NH₃ catalyst")
+        spec = {
+            "cell": None,
+            "ops": [{"op": "slab", "element": "Pd", "size": [2, 2, 3]}],
+        }
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd(111)", "structure": spec}
+        )
+        assert sid is not None
+        scene, _ = store.structure_load(sid)
+        assert len(scene.atoms) == 12
+        # a null-cell proposal is never a silent crash — no rejection note
+        assert self._observations(store, qid) == []
+
+    def test_null_cell_without_a_cell_op_rejects_with_a_reason(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        step = compute_mod.run_compute_step(
+            store,
+            qid,
+            [{"name": "x", "structure": {"cell": None, "ops": []}}],
+            dispatch=False,
+        )
+        assert step.candidates_created == 0
+        notes = self._observations(store, qid)
+        assert len(notes) == 1
+        assert "cell" in notes[0]
+        assert "NoneType" not in notes[0]
+
 
 class TestDeriveFromSpec:
     """``spec.derive_from`` (gr552641): a candidate cloned off an existing
@@ -1271,6 +1308,34 @@ class TestDeriveFromSpec:
         ]
         assert len(notes) == 1
         assert "no-such-design" in notes[0]
+
+    def test_null_op_entry_is_rejected_with_a_note(self, store: Any) -> None:
+        """gr681307's other ``'NoneType' … 'get'`` site: ``derive``'s relax
+        pre-check called ``o.get('op')`` on a ``null`` ops entry before the
+        malformed-op validation ran — the proposal must be refused with a
+        reason, not a raw AttributeError."""
+        pytest.importorskip("ase.build")
+        qid = _mk_quest(store, "A dopant series")
+        self._parent(store)
+        spec = {
+            "derive_from": self._PARENT_SLUG,
+            "ops": [
+                {"op": "set_element", "atom": "aPd10", "element": "Co"},
+                None,
+            ],
+        }
+        assert (
+            compute_mod.ensure_candidate(store, qid, {"name": "x", "structure": spec})
+            is None
+        )
+        notes = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log" and b.text.startswith("rejected proposal:")
+        ]
+        assert len(notes) == 1
+        assert "NoneType" not in notes[0]
+        assert "op" in notes[0]
 
     def test_retired_derive_from_is_rejected_with_a_note(self, store: Any) -> None:
         pytest.importorskip("ase.build")
@@ -1650,7 +1715,7 @@ class TestHarvest:
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """gr309200: the auto-filed gripe must name the job's actual
-        ``lease_host`` (not a hardcoded "spark/executor"), and its detail
+        ``lease_host`` (not a hardcoded "spruce/executor"), and its detail
         must carry the failure ``error`` text that ``record_failure`` now
         mirrors onto ``refs.meta`` alongside ``failure_class``."""
         from precis.store import Tag
@@ -1669,7 +1734,7 @@ class TestHarvest:
                 "job_type": "struct_relax",
                 "failure_class": "infra",
                 "error": "container exited 137",
-                "lease_host": "pollux",
+                "lease_host": "poplar",
             },
             parent_id=sid,
         )
@@ -1693,8 +1758,8 @@ class TestHarvest:
         compute_mod.harvest_measures(store, qid, hub=object())
         assert len(gripe_calls) == 1
         text = gripe_calls[0]["text"]
-        assert "pollux" in text
-        assert "spark/executor" not in text
+        assert "poplar" in text
+        assert "spruce/executor" not in text
         assert "container exited 137" in text
 
     def test_infra_gripe_falls_back_to_generic_executor_when_no_lease_host(
@@ -1791,7 +1856,7 @@ class TestHarvest:
         store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
 
     _OFF_LANE_ERR = (
-        "unclaimable: pinned to target_node=castor, which has left the "
+        "unclaimable: pinned to target_node=cedar, which has left the "
         "ssh_node lane: no job_ssh_node pass has run there since "
         "2026-10-16T10:58Z (62.2h, budget 4.0h) and every claim path "
         "node-gates on the pin. Failed as infra so the bounded retry "
@@ -1857,18 +1922,18 @@ class TestHarvest:
     def test_ordinary_infra_aggregate_failure_gets_no_amnesty(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Budget spent + a real infra failure: no re-dispatch (gripe-filed
-        dedup path), counter untouched."""
+        """An ordinary infra failure obeys the mechanical budget."""
         qid, sid, calls = self._off_lane_harness(
             store,
             monkeypatch,
             {"failure_class": "infra", "error": "OOM: killed by the kernel"},
         )
+        store.stamp_ref_meta(qid, {"fidelity_mechanical_gpu_h_budget": 0})
         step = compute_mod.harvest_measures(store, qid, hub=object())
         assert calls == []
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta.get("quest_autocatpath_infra_retries") == 2
-        assert not any("amnesty" in n for n in step.notes)
+        assert any("GPU-h budget" in n for n in step.notes)
 
     def test_failed_autocatpath_never_rules_out_candidate(self, store: Any) -> None:
         """A failed legacy ``autocatpath_explore`` (retired pre-fan-out shape,
@@ -2359,6 +2424,7 @@ class TestHarvest:
 
         def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
             calls.append(structure_ref_id)
+            _kw["minted_by_node"]["gpu"] = 1
             return "autocatpath[ml]"
 
         class _FakeGripeHandler:
@@ -2583,7 +2649,7 @@ class TestHarvest:
         assert calls == [sid]
         assert gripes == []
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
-        assert meta.get("quest_seed_infra_retries") == 1
+        assert meta.get("barrier_mechanical_reruns") == 1
         assert not any("timed out" in n for n in step.notes)
 
     @pytest.mark.parametrize(
@@ -2636,6 +2702,7 @@ class TestHarvest:
 
         def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
             calls.append(structure_ref_id)
+            _kw["minted_by_node"]["gpu"] = 1
             return "autocatpath[ml]"
 
         class _FakeGripeHandler:
@@ -2655,14 +2722,14 @@ class TestHarvest:
         assert calls == [sid]
         assert gripes == []
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
-        assert meta.get("quest_seed_infra_retries") == 1
+        assert meta.get("barrier_mechanical_reruns") == 1
         assert "quest_seed_timeout_noted" not in meta
         assert not any("timed out" in n for n in step.notes)
 
     def test_non_timeout_failed_seed_still_retries_with_pinned_wall(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """failure_class='infra' at an unraised wall: the old retry path."""
+        """failure_class='infra' at an unraised wall: the bounded mechanical retry path."""
         qid = self._reaction_quest(store)
         sid = compute_mod.ensure_candidate(
             store, qid, {"name": "Fe", "structure": _SPEC}
@@ -2673,13 +2740,14 @@ class TestHarvest:
 
         def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
             calls.append(structure_ref_id)
+            _kw["minted_by_node"]["gpu"] = 1
             return "autocatpath[ml]"
 
         monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_dispatch)
         compute_mod.harvest_measures(store, qid, hub=object())
         assert calls == [sid]
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
-        assert meta.get("quest_seed_infra_retries") == 1
+        assert meta.get("barrier_mechanical_reruns") == 1
         assert "quest_seed_timeout_noted" not in meta
 
     def test_stuck_seed_with_hub_retries_once_then_gripes_on_recurrence(
@@ -10234,11 +10302,11 @@ class TestDispatchAutocatpath:
         assert self._agg_todo_ids(store, first) == []
 
     def test_redispatch_node_refuses_an_unknown_host(self, store: Any) -> None:
-        store.sync_host_resource_slots("spark-x", {"gpu": 1})
+        store.sync_host_resource_slots("spruce-x", {"gpu": 1})
         qid, first, _second = self._two_candidates(store)
         note = compute_mod.redispatch_candidates(store, qid, node="typo-node")
         assert note.startswith("redispatch refused")
-        assert "typo-node" in note and "spark-x" in note
+        assert "typo-node" in note and "spruce-x" in note
         assert self._agg_todo_ids(store, first) == []
 
     def test_redispatch_node_and_spread_are_alternatives(self, store: Any) -> None:
@@ -10419,7 +10487,7 @@ class TestDispatchAutocatpath:
         ``mlip.dtype=mixed`` injected (autocatpath defaults to cpu/float64 → the
         GPU sits idle and every eval runs full float64 otherwise); the caller's
         config dict is not mutated and its other keys are preserved."""
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spruce")
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
@@ -10445,7 +10513,7 @@ class TestDispatchAutocatpath:
         """gr491506: a GPU-routed MACE run carries a fixed
         ``search.neb_pool_size`` — 'auto' pooled 37 bands into one MACE
         forward on jo489257 and OOM-killed the GB10 host."""
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spruce")
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX_MACE)
@@ -10459,7 +10527,7 @@ class TestDispatchAutocatpath:
     ) -> None:
         """Non-MACE backends keep the engine default — EMT allocates no
         driver memory, so the GB10 guard must not touch it."""
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spruce")
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)  # no mlip → emt
@@ -10485,7 +10553,7 @@ class TestDispatchAutocatpath:
     ) -> None:
         """A per-quest ``search.neb_pool_size`` is a hand-tuned choice —
         the guard fills a default, it never overwrites one."""
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spruce")
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         cfg_in = {**self._RX_MACE, "search": {"neb_pool_size": 8}}
@@ -10685,14 +10753,14 @@ class TestDispatchAutocatpath:
         the out-of-daemon caller (e.g. ``precis quest redispatch`` from a
         plain shell) no longer null-routes onto random EMT."""
         monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
-        store.sync_host_resource_slots("spark", {"gpu": 1})
+        store.sync_host_resource_slots("spruce", {"gpu": 1})
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
         assert note.startswith("autocatpath[")
         _job_id, jmeta = self._seed_jobs(store, sid)[0]
         params = jmeta.get("params") or {}
-        assert params["target_node"] == "spark"
+        assert params["target_node"] == "spruce"
         assert params["force_backend"] != "emt"  # routed → the config's own backend
         assert params["config"]["mlip"]["device"] == "cuda"
 
@@ -10704,16 +10772,16 @@ class TestDispatchAutocatpath:
         the whole tree to the first-sorted host, and the (cheap) aggregate
         pins to that first host."""
         monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
-        store.sync_host_resource_slots("castor", {"gpu": 1})
-        store.sync_host_resource_slots("pollux", {"gpu": 1})
-        store.sync_host_resource_slots("spark", {"gpu": 1})
+        store.sync_host_resource_slots("cedar", {"gpu": 1})
+        store.sync_host_resource_slots("poplar", {"gpu": 1})
+        store.sync_host_resource_slots("spruce", {"gpu": 1})
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
         seed_jobs = self._seed_jobs(store, sid)
         targets = [(j.get("params") or {})["target_node"] for _id, j in seed_jobs]
         # default fan-out: 3 seeds × 1 model — one per host, sorted order
-        assert targets == ["castor", "pollux", "spark"]
+        assert targets == ["cedar", "poplar", "spruce"]
         for _id, jmeta in seed_jobs:
             params = jmeta.get("params") or {}
             assert params["force_backend"] != "emt"  # every seed stays routed
@@ -10727,7 +10795,7 @@ class TestDispatchAutocatpath:
                 """,
                 (sid,),
             ).fetchone()
-        assert (row[0]["params"] or {})["target_node"] == "castor"
+        assert (row[0]["params"] or {})["target_node"] == "cedar"
 
     def test_env_pin_accepts_comma_separated_node_list(
         self, store: Any, monkeypatch: Any
@@ -10735,7 +10803,7 @@ class TestDispatchAutocatpath:
         """The env pin accepts a comma-separated list and round-robins the
         fan-out across it in the operator's order, without consulting
         resource_slots."""
-        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark, castor")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spruce, cedar")
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
@@ -10743,7 +10811,7 @@ class TestDispatchAutocatpath:
             (j.get("params") or {})["target_node"]
             for _id, j in self._seed_jobs(store, sid)
         ]
-        assert targets == ["spark", "castor", "spark"]
+        assert targets == ["spruce", "cedar", "spruce"]
 
     @staticmethod
     def _ssh_node_pass_log(store: Any, node: str, *, age_hours: float) -> None:
@@ -10834,8 +10902,8 @@ class TestDispatchAutocatpath:
         spans a real multi-node cluster — this is a prod misconfiguration, not
         dev. Refuse loudly instead of silently minting an unrouted EMT job."""
         monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
-        store.sync_host_resource_slots("caspar", {"cpu": 4})
-        store.sync_host_resource_slots("melchior", {"cpu": 4})
+        store.sync_host_resource_slots("birch", {"cpu": 4})
+        store.sync_host_resource_slots("maple", {"cpu": 4})
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         with pytest.raises(RuntimeError, match="gr172886"):
@@ -14039,6 +14107,74 @@ class TestEnvFrontier:
             }
         assert fr.frontier[0].flags["env_best_J_untrusted_value"] == 1.0
         assert fr.dominated[0].flags["env_best_J_untrusted_value"] == 9.0
+
+    def test_env_footing_cohort_is_mutually_compatible(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """A digestless basis matches two different digests by template,
+        but the two digests never match each other: the plurality
+        (digestless) reference must not let both enter one Pareto split
+        (review td659951)."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.25.0")
+        qid = self._quest(store)
+        bare = {"template": "coadsorbed", "version": "0.25.0"}
+        da = {**bare, "digest": "dA"}
+        db = {**bare, "digest": "dB"}
+        specs = (_SPEC, _SPEC_B, _SPEC_C)
+        sids = [
+            _env_candidate(store, qid, spec, name, -5.0)
+            for spec, name in zip(specs, ("Fe", "Ni", "Cu"), strict=True)
+        ]
+        more = _env_candidate(
+            store,
+            qid,
+            {
+                "cell": _SPEC["cell"],
+                "ops": [{"op": "add_atom", "element": "Co", "frac": [0, 0, 0.5]}],
+            },
+            "Co",
+            -5.0,
+        )
+        for sid, basis, j in (
+            (sids[0], da, 3.0),
+            (sids[1], db, 2.0),
+            (sids[2], bare, 1.0),
+            (more, bare, 1.5),
+        ):
+            store.stamp_ref_meta(
+                sid,
+                {
+                    "env_best": _env_best(j),
+                    "env_best_J": j,
+                    "network_basis_by_key": {"env_best_J": basis},
+                },
+            )
+        fr = quest_frontier(store, qid)
+        ranked = {c.ref_id for c in [*fr.frontier, *fr.dominated]}
+        assert not {sids[0], sids[1]} <= ranked
+        assert len({sids[0], sids[1]} & ranked) == 1
+        assert {sids[2], more} <= ranked
+
+    def test_dropped_environment_space_hides_stale_stamps(self, store: Any) -> None:
+        """A quest that dropped ``environment_space`` but whose candidates
+        keep env stamps shows no env columns and no env text."""
+        from precis.quest.frontier import (
+            _env_footing_text,
+            _env_limiting_text,
+            leaderboard,
+        )
+
+        qid = _mk_quest(store, "No env striving")
+        sid = _env_candidate(store, qid, _SPEC, "Fe", -5.0)
+        store.stamp_ref_meta(sid, {"env_best": _env_best(1.2), "env_best_J": 1.2})
+        fr = quest_frontier(store, qid)
+        c = fr.frontier[0] if fr.frontier else fr.provisional[0].candidate
+        assert c.flags["env_best"]["J"] == 1.2
+        assert _env_limiting_text(c) == ""
+        assert _env_footing_text(c) == ""
+        _rows, schema = leaderboard(fr)
+        assert "env_limiting" not in schema
+        assert "env_footing" not in schema
 
     def test_explicit_objectives_bypass_env_rule(self, store: Any) -> None:
         """An explicit objective override is exactly that — the env rule

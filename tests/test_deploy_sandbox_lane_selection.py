@@ -1,7 +1,7 @@
 """Deploy-lint: play 35's sandbox lane host selection (gr485861).
 
 r35: ``agent_sandbox_hosts`` was empty (emptied 2026-09-10, lane dark), so
-plays 34/35 logged "no hosts matched" while castor still ran an installed,
+plays 34/35 logged "no hosts matched" while cedar still ran an installed,
 enabled ``precis-worker-sandbox.service`` on pre-deploy code. Play 35 now
 opens with a selection play that puts every declared member, plus any Linux
 host where the unit is installed, into ``agent_sandbox_lane``. The lane play
@@ -82,19 +82,19 @@ _INSTALLED = "precis-worker-sandbox.service enabled enabled\n"
 @pytest.mark.parametrize(
     ("host", "declared", "probe_stdout", "expected"),
     [
-        # r35: group emptied, unit still installed on castor -> adopted.
-        ("castor", [], _INSTALLED, True),
+        # r35: group emptied, unit still installed on cedar -> adopted.
+        ("cedar", [], _INSTALLED, True),
         # Declared member joins whether or not the unit exists yet (first
         # provisioning run installs it).
-        ("castor", ["castor"], "", True),
+        ("cedar", ["cedar"], "", True),
         ("node-gpu", ["node-gpu"], None, True),
         # Neither declared nor installed: never selected, so an
         # unprovisioned host cannot redden the deploy (the 2026-09-10
         # reason the group was emptied).
-        ("pollux", [], "", False),
+        ("poplar", [], "", False),
         # Adoption off / darwin: the probe is skipped, only the declared
         # group counts.
-        ("castor", [], None, False),
+        ("cedar", [], None, False),
     ],
 )
 def test_selection_cases(

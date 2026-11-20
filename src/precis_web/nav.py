@@ -10,7 +10,7 @@ The nav shows three live counts:
   Discussions and a bare ``waiting-for:reto`` are on the ``/asks`` page
   but not the badge. (The chunkless paper-stub *fetch* backlog is
   deliberately excluded — the fetcher works that automatically; it lives
-  under Browse, not here.) The ``Needs you`` tab
+  in Drive's ``state=stub`` queue, not here.) The ``Needs you`` tab
   (:mod:`precis_web.routes.needs_you`) lands on both.
 * **Gripes** — live ``kind='gripe'`` rows in the ``attention`` cohort
   (``gripes.BADGE_STATUSES``: ``open`` + ``triaged`` + ``auto_verify``,

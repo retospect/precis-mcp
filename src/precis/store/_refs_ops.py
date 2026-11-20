@@ -76,7 +76,11 @@ from precis.store._tag_filter import (
 )
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import gripe_order, handle_registry
-from precis.utils.authors import author_row_from_entry, entry_from_author_row
+from precis.utils.authors import (
+    author_row_from_entry,
+    entry_from_author_row,
+    normalize_authors,
+)
 from precis.utils.canon import lexical_q
 from precis.utils.title_views import title_plain_sql
 
@@ -84,6 +88,66 @@ from precis.utils.title_views import title_plain_sql
 #: LaTeX noise stripped) — titles are stored raw, so the normalisation
 #: happens at query time.
 _TITLE_PLAIN_SQL = title_plain_sql("r.title")
+
+#: Terminal ``STATUS`` values a ``closed_*`` window reads when the
+#: caller doesn't name a set — the gripe family closers (gr592737).
+_CLOSED_VALUES_DEFAULT: tuple[str, ...] = ("done", "wontfix")
+
+
+def _closed_status_at_sql(ref_alias: str = "r") -> str:
+    """Scalar SQL: the set-time of the ref's newest live ``STATUS`` tag
+    whose value is in the bound closed set.
+
+    Carries one ``%s`` — the closed-value list (``ANY(%s)``). ``NULL``
+    when the ref carries no live in-set status tag, so ``>=``/``<``
+    comparisons drop it and ``IS NOT NULL`` reads "is closed". The
+    ``max()`` is the "newest live STATUS tag in that set" rule — a
+    closed → reopened → reclosed ref counts only its latest close
+    (gr592737; ``replace_prefix`` deletes the old row, so the live
+    row's ``ref_tags.created_at`` is that close).
+    """
+    return (
+        "(SELECT max(rt.created_at) FROM ref_tags rt "
+        "JOIN tags t ON t.tag_id = rt.tag_id "
+        f"WHERE rt.ref_id = {ref_alias}.ref_id "
+        "AND t.namespace = 'STATUS' AND t.value = ANY(%s) "
+        "AND (rt.expires_at IS NULL OR rt.expires_at > now()))"
+    )
+
+
+def _closed_window_clauses(
+    closed_after: Any,
+    closed_before: Any,
+    closed_values: Any,
+    *,
+    ref_alias: str = "r",
+) -> tuple[list[str], list[Any]]:
+    """``(clauses, params)`` for the closed-window filter shared by
+    :meth:`RefsMixin.list_refs`, :meth:`RefsMixin.count_refs` and
+    :func:`filtered_ref_clauses`.
+
+    Engaged by any of the three args; empty otherwise. A lone
+    ``closed_values`` (no bounds) reads "currently closed"
+    (``IS NOT NULL``); ``closed_values`` itself defaults to
+    :data:`_CLOSED_VALUES_DEFAULT` once any bound engages it.
+    """
+    if closed_after is None and closed_before is None and closed_values is None:
+        return [], []
+    values = sorted(set(closed_values or _CLOSED_VALUES_DEFAULT))
+    expr = _closed_status_at_sql(ref_alias)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if closed_after is not None:
+        clauses.append(f"{expr} >= %s")
+        params.extend([values, closed_after])
+    if closed_before is not None:
+        clauses.append(f"{expr} < %s")
+        params.extend([values, closed_before])
+    if closed_after is None and closed_before is None:
+        clauses.append(f"{expr} IS NOT NULL")
+        params.append(values)
+    return clauses, params
+
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -213,6 +277,7 @@ class FacetSpan(NamedTuple):
     max_ref_id: int
     min_created: Any
     max_created: Any
+    aggregates: tuple[tuple[float | None, int], ...] = ()
 
 
 def _paper_author_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -289,7 +354,7 @@ def project_paper_authors(
     conn: Connection, ref_id: int, authors: Any, *, source: str
 ) -> list[dict[str, Any]]:
     """The one write choke point for a paper's byline table + jsonb
-    projection (precis.utils.authors module docstring): DELETE+INSERT
+    projection (precis.utils.authors module docstring): replace
     ``paper_authors`` from *authors* (any ``refs.authors``-shaped input —
     a list of dict/str entries, or a semicolon-packed string, same
     tolerance as :func:`~precis.utils.authors.normalize_authors`), then
@@ -312,6 +377,9 @@ def project_paper_authors(
 
     Caller owns the transaction (no commit here).
     """
+    # Lock the parent before reading or writing its byline, in the same
+    # order as update_paper_fields and verify_paper_author.
+    conn.execute("SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,))
     existing = _fetch_paper_author_rows(conn, ref_id)
     if source != "human" and any(r["source"] == "human" for r in existing):
         # The caller (``update_paper_fields``) may already have written
@@ -327,13 +395,31 @@ def project_paper_authors(
     else:
         raw_entries = []
 
+    existing_by_position = {r["position"]: r for r in existing}
+    kept_positions: list[int] = []
     rows: list[dict[str, Any]] = []
+    position = 0
     for entry in raw_entries:
-        row = author_row_from_entry(entry, len(rows) + 1, source=source)
-        if row is not None:
+        row = author_row_from_entry(entry, position + 1, source=source)
+        if row is None:
+            continue
+        position += 1
+        old = existing_by_position.get(position)
+        if (
+            source == "human"
+            and old is not None
+            and normalize_authors([entry_from_author_row(old)])
+            == normalize_authors([entry_from_author_row(row)])
+            and row["openalex_author_id"] in (None, old["openalex_author_id"])
+        ):
+            kept_positions.append(position)
+        else:
             rows.append(row)
 
-    conn.execute("DELETE FROM paper_authors WHERE ref_id = %s", (ref_id,))
+    conn.execute(
+        "DELETE FROM paper_authors WHERE ref_id = %s AND position <> ALL(%s)",
+        (ref_id, kept_positions),
+    )
     for row in rows:
         person_ref_id: int | None = None
         if row["orcid"]:
@@ -975,12 +1061,20 @@ class RefsMixin:
 
         Mirrors ``workers/chase._resolve_or_create_stub`` but takes
         explicit identifier pairs so the gated dream ``acquire`` tool can
-        reuse it (docs/backlog/dreaming.md, §Acquire).
+        reuse it (gr690614, §Acquire).
+
+        Raises:
+            Conflict: An identifier or twin DOI matches a row whose title
+                conflicts with the requested title. The guard abstains on
+                placeholders and refuses only when both titles have at least
+                four distinct content tokens and share none.
         """
         from precis.identity import (
             PLACEHOLDER_TITLE,
             _byline_key_word,
             _title_key_word,
+            doi_twins,
+            is_placeholder_title,
             make_cite_key,
             normalize_doi,
         )
@@ -996,15 +1090,64 @@ class RefsMixin:
             if _val:
                 norm.append((_k, _val))
 
+        def check_title(ref_id: int, held_title: str | None) -> None:
+            # An identifier is strong evidence, but cannot make a corrupt
+            # corpus row the requested work (gr710296). Abstain on sparse
+            # titles and placeholders; refuse only disjoint, substantial
+            # titles, leaving repair to an operator rather than rewriting
+            # the existing paper's body, links or identity here.
+            from precis.utils.title_merge import content_tokens
+
+            if is_placeholder_title(title) or is_placeholder_title(held_title):
+                return
+            wanted = content_tokens(title or "")
+            held = content_tokens(held_title or "")
+            if min(len(wanted), len(held)) >= 4 and wanted.isdisjoint(held):
+                raise Conflict(
+                    f"paper identifier/title conflict on pa{ref_id}: "
+                    f"requested {title!r}; stored {held_title!r}",
+                    next=(
+                        f"inspect get(kind='paper', id='pa{ref_id}') and its "
+                        "identifiers; repair the mismatched identity before retrying"
+                    ),
+                )
+
         def _do(c: Connection) -> tuple[int, bool]:
             for id_kind, id_value in norm:
                 row = c.execute(
-                    "SELECT ref_id FROM ref_identifiers "
-                    "WHERE id_kind = %s AND id_value = %s",
+                    "SELECT r.ref_id, r.title FROM ref_identifiers ri "
+                    "JOIN refs r ON r.ref_id = ri.ref_id "
+                    "WHERE ri.id_kind = %s AND ri.id_value = %s",
                     (id_kind, id_value),
                 ).fetchone()
                 if row is not None:
+                    check_title(int(row[0]), row[1])
                     return int(row[0]), False
+
+            # Twin DOIs (Wiley anie/ange): one work, two DOIs. A hit
+            # collapses onto the twin's ref and registers the requested
+            # DOI there as a second doi row.
+            for id_kind, id_value in norm:
+                if id_kind != "doi":
+                    continue
+                for twin in doi_twins(id_value):
+                    row = c.execute(
+                        "SELECT pi.ref_id, r.title FROM ref_identifiers pi "
+                        "JOIN refs r ON r.ref_id = pi.ref_id "
+                        "WHERE pi.id_kind = 'doi' AND pi.id_value = %s "
+                        "AND r.retired_at IS NULL "
+                        "ORDER BY pi.ref_id LIMIT 1",
+                        (twin,),
+                    ).fetchone()
+                    if row is not None:
+                        check_title(int(row[0]), row[1])
+                        c.execute(
+                            "INSERT INTO ref_identifiers "
+                            "(id_kind, id_value, ref_id, source) "
+                            "VALUES ('doi', %s, %s, %s) ON CONFLICT DO NOTHING",
+                            (id_value, row[0], set_by),
+                        )
+                        return int(row[0]), False
 
             # Title-only fuzzy guard (dup-of-held prevention). With no
             # external identifier to collapse on, a stub for a paper we
@@ -2449,11 +2592,12 @@ class RefsMixin:
 
         No-ops (returns ``[]``) when the ref isn't a live ``kind='paper'``
         — non-paper kinds (draft/patent/datasheet/...) keep ``authors``
-        jsonb-only, as scoped. Otherwise DELETE+INSERTs ``paper_authors``
+        jsonb-only, as scoped. Otherwise replaces ``paper_authors``
         from *authors* (any ``refs.authors``-shaped input — see
         :func:`~precis.utils.authors.normalize_authors`'s tolerance),
         regenerates ``refs.authors`` jsonb from the rows just written,
-        and logs a ``ref_events`` ``authors_set`` row.
+        and logs a ``ref_events`` ``authors_set`` row. Human edits retain
+        unchanged rows at their existing positions.
 
         **Human guard**: a paper already carrying any ``source='human'``
         row is left untouched by a subsequent non-human write (returns
@@ -2513,6 +2657,7 @@ class RefsMixin:
         """
 
         def _do(c: Connection) -> None:
+            c.execute("SELECT ref_id FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,))
             sets = ["verified_at = now()", "updated_at = now()"]
             params: list[Any] = []
             if given is not None:
@@ -3614,6 +3759,15 @@ class RefsMixin:
             row = conn.execute(sql, params).fetchone()
         return None if row is None else str(row[0])
 
+    def ref_kinds_present(self) -> set[str]:
+        """Distinct ``refs.kind`` values owning at least one row — live or
+        retired. Retired rows count on purpose: a trash view (Drive's
+        ``state=deleted``) can still return them, so a kind whose only
+        rows are deleted is not a guaranteed-empty selection (gr664402)."""
+        with self.pool.connection() as conn:
+            rows = conn.execute("SELECT DISTINCT kind FROM refs").fetchall()
+        return {str(r[0]) for r in rows}
+
     #: Whitelisted ``ORDER BY`` clauses for :meth:`list_refs`. Keys are
     #: the safe identifiers a caller (e.g. the web Refs tab) may pass as
     #: ``order_by``; values are the literal SQL (column already aliased
@@ -3719,6 +3873,61 @@ class RefsMixin:
                 if won is not None:
                     return int(won.id)
                 raise
+
+    def ensure_python_ref(
+        self,
+        qualname: str,
+        *,
+        alias: str | None = None,
+        file: str | None = None,
+    ) -> int:
+        """Find-or-mint the lazy anchor ``refs(kind='python', slug=<qualname>)``.
+
+        gr702978: python symbols are file-backed — the code stays in git,
+        the anchor row exists only so notes can link a symbol and the
+        inbound edges have something to point at. Chunkless, so the
+        embed/summary cascade never sees it. The CALLER validates the
+        qualname against the live code index (``mint_python_mentions`` /
+        the python handler's ``symbol_anchor``) — an unknown qualname
+        must never mint. ``alias``/``file`` stamp where the symbol was
+        seen, so a later "gone" read can say what vanished. Race: two
+        first mentions both miss the probe and both insert; the loser's
+        ``cite_key`` claim is refused (:meth:`insert_ref`'s
+        ``Conflict``), its savepoint rolls back and it re-probes onto the
+        winner (as :meth:`ensure_skill_ref`). A retired anchor's slug is
+        reclaimed by ``insert_ref`` on re-mention, so a symbol that went
+        away and came back re-anchors cleanly.
+        """
+        with self.pool.connection() as conn:
+            hit = self.get_ref(kind="python", id=qualname)
+            if hit is not None:
+                return int(hit.id)
+            meta: dict[str, Any] = {"set_by": "system"}
+            if alias:
+                meta["alias"] = alias
+            if file:
+                meta["file"] = file
+            try:
+                with conn.transaction():
+                    ref = self.insert_ref(
+                        kind="python",
+                        slug=qualname,
+                        title=qualname,
+                        meta=meta,
+                        conn=conn,
+                    )
+                    return int(ref.id)
+            except Conflict:
+                won = self.get_ref(kind="python", id=qualname)
+                if won is not None:
+                    return int(won.id)
+                raise
+
+    def python_symbol_ref_id(self, qualname: str) -> int | None:
+        """The live anchor ref id for a python qualname — probe only,
+        never mints (the write doors mint; read-side callers stay pure)."""
+        ref = self.get_ref(kind="python", id=qualname)
+        return int(ref.id) if ref is not None else None
 
     def _open_gripe_sql(self) -> tuple[str, list[Any]]:
         """WHERE fragment (alias ``g``) for a gripe that is not yet closed."""
@@ -3958,6 +4167,9 @@ class RefsMixin:
         year_to: int | None = None,
         created_after: datetime | None = None,
         created_before: datetime | None = None,
+        closed_after: datetime | None = None,
+        closed_before: datetime | None = None,
+        closed_values: Iterable[str] | None = None,
         order_by: str = "updated_desc",
         limit: int = 50,
         offset: int = 0,
@@ -3968,11 +4180,21 @@ class RefsMixin:
         the source-search primitive's filtered listing passes its whole
         resolved kind set.
 
+        ``closed_after``/``closed_before`` bound the *closure* clock —
+        the set-time of the ref's newest live ``STATUS`` tag whose
+        value is in ``closed_values`` (default
+        :data:`_CLOSED_VALUES_DEFAULT`; ``closed_before`` exclusive) —
+        instead of mint time (gr592737). A lone ``closed_values``
+        filters to refs currently carrying an in-set status tag.
+        ``order_by='closed_desc'``/``'closed_asc'`` sorts on that same
+        closure clock, ``NULLS LAST`` so unclosed refs trail.
+
         ``meta_has=`` keeps refs whose ``meta`` carries that top-level key
         (``meta ? key`` — the generalised ``has_schedule``); the gripe-fix
         queue views select the gripes in the loop by ``meta_has='fix'``.
         ``order_by`` is one of :attr:`_LIST_ORDER_BY`'s keys (default
-        ``updated_desc``); an unknown key falls back rather than erroring
+        ``updated_desc``) or ``'closed_desc'``/``'closed_asc'``; an
+        unknown key falls back rather than erroring
         (a stale client bookmark can't 500). ``has_pdf``/``has_chunks``
         are tri-state presence filters (``None``=don't filter) keying off
         ``refs.pdf_sha256``/body-chunk existence — back the Papers tab's
@@ -4054,6 +4276,11 @@ class RefsMixin:
         if created_before is not None:
             params.append(created_before)
             clauses.append("r.created_at < %s")
+        closed_clauses, closed_params = _closed_window_clauses(
+            closed_after, closed_before, closed_values
+        )
+        clauses.extend(closed_clauses)
+        params.extend(closed_params)
 
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
@@ -4064,9 +4291,24 @@ class RefsMixin:
             clauses.append(f"NOT ({excluded_frag})")
             params.extend(excluded_params)
 
-        order_sql = self._LIST_ORDER_BY.get(
-            order_by, self._LIST_ORDER_BY["updated_desc"]
-        )
+        order_params: list[Any] = []
+        if order_by in ("closed_desc", "closed_asc"):
+            # The closure clock is a correlated subquery, not a column —
+            # it can't sit in ``_LIST_ORDER_BY`` (those values carry no
+            # binds). ``NULLS LAST`` keeps unclosed refs at the tail
+            # under DESC (Postgres's NULLS-FIRST default would bury the
+            # closed set it was asked to list).
+            direction = "DESC" if order_by == "closed_desc" else "ASC"
+            order_sql = (
+                f"{_closed_status_at_sql('r')} {direction} NULLS LAST, "
+                f"r.ref_id {direction}"
+            )
+            order_params.append(sorted(set(closed_values or _CLOSED_VALUES_DEFAULT)))
+        else:
+            order_sql = self._LIST_ORDER_BY.get(
+                order_by, self._LIST_ORDER_BY["updated_desc"]
+            )
+        params.extend(order_params)
         params.append(limit)
         params.append(offset)
         sql = (
@@ -4727,6 +4969,9 @@ class RefsMixin:
         exclude_tags: list[str] | None = None,
         created_before: datetime | None = None,
         created_after: datetime | None = None,
+        closed_after: datetime | None = None,
+        closed_before: datetime | None = None,
+        closed_values: Iterable[str] | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
         include_ref_ids: list[int] | None = None,
@@ -4744,7 +4989,8 @@ class RefsMixin:
         :meth:`list_refs`; runtime callers must validate via
         :meth:`Tag.parse_strict` before this point. ``created_before=``
         keeps refs created strictly before that instant (the gripe open
-        view's "older than 3d" count).
+        view's "older than 3d" count). ``closed_*`` is the
+        :meth:`list_refs` closure-clock filter (gr592737).
         """
         clauses = [
             "r.retired_at IS NULL",
@@ -4781,6 +5027,11 @@ class RefsMixin:
         if year_to is not None:
             params.append(year_to)
             clauses.append("r.year <= %s")
+        closed_clauses, closed_params = _closed_window_clauses(
+            closed_after, closed_before, closed_values
+        )
+        clauses.extend(closed_clauses)
+        params.extend(closed_params)
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
             clauses.append(tag_frag)
@@ -4811,9 +5062,13 @@ class RefsMixin:
         include_ref_ids: list[int] | None = None,
         exclude_ref_ids: list[int] | None = None,
         facets: list[tuple[str, str]] | None = None,
+        aggs: list[tuple[str, str]] | None = None,
         group_limit: int = 200,
         since: Any = None,
         until: Any = None,
+        closed_after: Any = None,
+        closed_before: Any = None,
+        closed_values: Iterable[str] | None = None,
         meta_eq: tuple[str, str] | None = None,
         has_body: bool | None = None,
         year_from: int | None = None,
@@ -4843,7 +5098,10 @@ class RefsMixin:
         the cross-kind source-search primitive uses (mcp-introspection
         gap closures 2026-10-14): "jobs in the last 24h" means minted in
         that window. Both are tz-aware datetimes (parsed at the handler
-        boundary); ``until`` is exclusive.
+        boundary); ``until`` is exclusive. ``closed_after``/
+        ``closed_before`` bound the *closure* clock instead — the
+        set-time of the ref's newest live ``STATUS`` tag in
+        ``closed_values`` (gr592737: "gripes closed between A and B").
 
         ``facets`` is a list of ``(facet_kind, key)`` pairs from the
         handler's ``group_by=`` parse:
@@ -4888,6 +5146,9 @@ class RefsMixin:
             exclude_ref_ids=exclude_ref_ids,
             since=since,
             until=until,
+            closed_after=closed_after,
+            closed_before=closed_before,
+            closed_values=closed_values,
             meta_eq=meta_eq,
             has_body=has_body,
             year_from=year_from,
@@ -4973,6 +5234,40 @@ class RefsMixin:
                     f"GROUP BY {ordinals} "
                     f"ORDER BY {n + 1} DESC, {ordinals} LIMIT %s"
                 )
+                if aggs:
+                    # A tag join can repeat a ref within one group. Deduplicate
+                    # group membership before aggregating, preserving equal
+                    # numeric values from different refs.
+                    facet_cols = [f"facet_{i}" for i in range(n)]
+                    projected = [
+                        f"{expr} AS {col}"
+                        for expr, col in zip(select_exprs, facet_cols, strict=True)
+                    ]
+                    aggregates: list[str] = []
+                    for i, (fn, path) in enumerate(aggs):
+                        col = f"value_{i}"
+                        projected.append(
+                            "CASE WHEN jsonb_typeof(r.meta #> %s::text[]) = 'number' "
+                            f"THEN (r.meta #>> %s::text[])::float END AS {col}"
+                        )
+                        keys = path.split(".")
+                        select_params.extend((keys, keys))
+                        sql_fn = {
+                            "avg": "AVG",
+                            "sum": "SUM",
+                            "min": "MIN",
+                            "max": "MAX",
+                        }[fn]
+                        aggregates.extend((f"{sql_fn}({col})", f"COUNT({col})"))
+                    sql = (
+                        f"SELECT {', '.join(facet_cols)}, COUNT(*), "
+                        "min(ref_id), max(ref_id), min(created_at), max(created_at), "
+                        f"{', '.join(aggregates)} FROM ("
+                        f"SELECT DISTINCT {', '.join(projected)}, r.ref_id, r.created_at "
+                        f"FROM refs r {' '.join(joins)} WHERE {where}"
+                        f") members GROUP BY {ordinals} "
+                        f"ORDER BY {n + 1} DESC, {ordinals} LIMIT %s"
+                    )
                 # Bind order follows textual %s order: SELECT exprs,
                 # JOIN subqueries, WHERE clauses, then the LIMIT.
                 rows = conn.execute(
@@ -4982,7 +5277,15 @@ class RefsMixin:
                     (
                         tuple(r[:n]),
                         int(r[n]),
-                        FacetSpan(int(r[n + 1]), int(r[n + 2]), r[n + 3], r[n + 4]),
+                        FacetSpan(
+                            int(r[n + 1]),
+                            int(r[n + 2]),
+                            r[n + 3],
+                            r[n + 4],
+                            tuple(
+                                (r[i], int(r[i + 1])) for i in range(n + 5, len(r), 2)
+                            ),
+                        ),
                     )
                     for r in rows
                 ]
@@ -5082,6 +5385,9 @@ def filtered_ref_clauses(
     exclude_ref_ids: list[int] | None = None,
     since: Any = None,
     until: Any = None,
+    closed_after: Any = None,
+    closed_before: Any = None,
+    closed_values: Iterable[str] | None = None,
     meta_eq: tuple[str, str] | None = None,
     has_body: bool | None = None,
     year_from: int | None = None,
@@ -5117,6 +5423,10 @@ def filtered_ref_clauses(
     ``refs.created_at`` for card-only), unlike ``since``/``until`` which
     bound ref creation. Both are tz-aware datetimes parsed at the
     handler boundary; ``ingested_before`` is exclusive.
+
+    ``closed_after``/``closed_before``/``closed_values`` are the
+    closure-clock filter (gr592737) — same semantics as
+    :meth:`RefsMixin.list_refs`.
     """
     clauses = ["r.retired_at IS NULL", "r.kind = %s"]
     params: list[Any] = [kind]
@@ -5222,6 +5532,11 @@ def filtered_ref_clauses(
     if ingested_before is not None:
         clauses.append(f"{ingested_at_sql('r')} < %s")
         params.append(ingested_before)
+    closed_clauses, closed_params = _closed_window_clauses(
+        closed_after, closed_before, closed_values
+    )
+    clauses.extend(closed_clauses)
+    params.extend(closed_params)
     return clauses, params
 
 

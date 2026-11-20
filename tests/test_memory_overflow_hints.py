@@ -123,3 +123,65 @@ def test_index_search_without_q_lists_by_recency(
     assert [ln.split(" (")[0] for ln in lines] == ["- New one", "- Old one"]
     assert _h(other) not in out
     assert _h(new) in lines[0]
+
+
+def test_body_read_over_cap_pages_to_end(
+    runtime: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685357: an over-cap ``~body`` read pages by character offset —
+    the cut footer names the next offset, following it reassembles the
+    whole body, and an offset at the end refuses naming the size."""
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1200")
+    handler = MemoryHandler(hub=runtime.hub)
+    body = "café λ\n" * 750
+    big = _note(handler, "Big body", body)
+    ref = store.get_ref(kind="memory", id=big)
+    assert ref is not None
+    expected = handler._display_body(ref, handler._body_text(ref))
+
+    for view in (None, "full"):
+        args = {"kind": "memory", "id": _h(big)}
+        if view is not None:
+            args["view"] = view
+        whole = runtime.dispatch("get", args)
+        assert f"next: get(kind='memory', id='{_h(big)}~body')" in whole
+        assert "q='<more specific terms>'" not in whole
+
+    out = runtime.dispatch("get", {"kind": "memory", "id": f"{_h(big)}~body"})
+    assert "args={'offset':" in out
+    alias = runtime.dispatch("get", {"kind": "memory", "id": _h(big), "view": "body"})
+    assert re.search(r"rest: get\(kind='memory'.*args=\{'offset': \d+\}\)", alias)
+
+    parts: list[str] = []
+    offset = 0
+    for _ in range(20):
+        head = re.search(r"# memory \d+~body \(chars (\d+)\.\.(\d+) of (\d+)\)", out)
+        assert head is not None, out
+        start, end, total = (int(g) for g in head.groups())
+        assert start == offset
+        assert end > start
+        assert total == len(expected)
+        assert len(out.encode("utf-8")) <= 1200
+        page = out.split("\n\n", 1)[1]
+        if "\n\n… showing" in page:
+            page = page.rsplit("\n\n… showing", 1)[0]
+        parts.append(page)
+        if "rest: " not in out:
+            break
+        nxt = re.search(
+            r"rest: get\(kind='memory', id='[^']+', args=\{'offset': (\d+)\}\)", out
+        )
+        assert nxt is not None, out
+        assert int(nxt[1]) == end
+        offset = end
+        out = runtime.dispatch(
+            "get", {"kind": "memory", "id": f"{_h(big)}~body", "offset": offset}
+        )
+    else:
+        pytest.fail("body paging did not finish")
+    assert "".join(parts) == expected
+
+    past = runtime.dispatch(
+        "get", {"kind": "memory", "id": f"{_h(big)}~body", "offset": len(expected)}
+    )
+    assert f"{len(expected)} characters" in past

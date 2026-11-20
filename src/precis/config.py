@@ -72,7 +72,7 @@ class PrecisConfig(BaseSettings):
     Defaults to ``"reto"`` (Reto ruling on gr508499, 2026-10-23): the
     earlier ``"owner"`` placeholder meant owner-routed work — e.g.
     title-fix todos' ``waiting-for:<login>`` tag — filed to a login
-    nobody claims. See ``docs/backlog/identity-and-access.md``.
+    nobody claims. See `me690624`.
 
     Set via ``PRECIS_OWNER`` in the env.
     """
@@ -106,7 +106,7 @@ class PrecisConfig(BaseSettings):
     """Per-call HTTP deadline (seconds) for ``embedder="remote"``.
 
     300s (not the old 30s, embedder-wedge-hardening.md §5): the
-    2026-08-10 caspar/balthazar incident was the embedder finishing a
+    2026-08-10 database-host incident was the embedder finishing a
     slow CPU-host batch while a 30s client timeout had already hung up
     and retried, recomputing (and re-timing-out on) the same batch
     forever. Set via ``PRECIS_EMBEDDER_TIMEOUT`` in the env.
@@ -241,7 +241,7 @@ class PrecisConfig(BaseSettings):
     ``memory`` at ``work/foo.md`` is addressed ``memory/work--foo``; a
     ``:ro`` root refuses put/edit/delete. Alias ``workspace`` stands in
     for ``root`` when ``PRECIS_ROOT`` is unset. Set via ``PRECIS_ROOTS``
-    (``docs/backlog/file-mirror.md``).
+    (`me693606`).
     """
 
     python_roots: str | None = None
@@ -287,18 +287,6 @@ class PrecisConfig(BaseSettings):
 
     Set via ``PRECIS_STARTUP_SKILLS`` in the env. See
     ``precis-startup-skills-help`` for the full discovery model.
-    """
-
-    startup_skills_cap_kb: int = 50
-    """Cap on the total resolved-body size of pinned startup skills.
-
-    Defensive guard against operator misconfiguration (pinning the
-    entire skill corpus inflates context for every connecting agent).
-    Skills whose cumulative body bytes would exceed the cap are
-    dropped from the tail with a banner notice. Set to ``0`` to
-    disable the cap (not recommended — leaves the budget unbounded).
-
-    Set via ``PRECIS_STARTUP_SKILLS_CAP_KB`` in the env.
     """
 
     default_tags: str | None = None
@@ -517,7 +505,7 @@ def load_config() -> PrecisConfig:
 # directory (and edgar on a User-Agent string) via ``KindSpec.requires_env``
 # — so a kind that a host could trivially do showed as "unavailable" only
 # because a cache dir any host can create wasn't wired. These are the
-# *incidental* class (docs/backlog/factory-console-and-scheduling.md §3): not
+# *incidental* class (gr690514 §3): not
 # real scarcity, so we default them and drop the gate. The genuinely-scarce
 # gates stay (patent still needs the EPO OPS credentials, which resolve
 # through the secrets vault). Callers read these instead of the raw env.

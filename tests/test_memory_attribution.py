@@ -143,6 +143,22 @@ def test_chunk_level_cite_uses_chunk_evidence(world):
     assert [m.token for m in _check("film is 8 nm thick (pc995663)")] == ["8 nm"]
 
 
+@pytest.mark.parametrize(
+    "evidence, value",
+    [
+        ("cutoff 3**.**9 eV", "3.9 eV"),
+        ("threshold **0.01** eV/Å", "0.01 eV/Å"),
+        ("threshold 0*.*05 _eV/Å_", "0.05 eV/Å"),
+    ],
+)
+def test_chunk_evidence_unwraps_emphasis(
+    world: dict[tuple[int, int | None], str], evidence: str, value: str
+) -> None:
+    world[(995663, 4)] = evidence
+    assert _check(f"Setup used {value} [pc995663].") == []
+    assert [m.token for m in _check("Setup used 9 eV [pc995663].")] == ["9 eV"]
+
+
 def test_unresolvable_cite_reported_not_a_failure(world):
     out = _check("value 3 nm per websearch:999999999")
     assert out == [UngroundedNumber("3 nm", "websearch:999999999", None)]
@@ -240,6 +256,13 @@ def test_unit_aware_comparison(world):
     assert _check("thickness 10 um [pa12]") == []
 
 
+def test_tex_angstrom_macro_grounds_utf8_claim(world):
+    """gr716055: the passage prints ``6 \AA``; a ``6 Å`` claim must ground."""
+    world[(12, None)] = r"binding is negligible beyond the 6 \AA cutoff"
+    assert _check("stated 6 Å cutoff [pa12]") == []
+    assert [m.token for m in _check("stated 7 Å cutoff [pa12]")] == ["7 Å"]
+
+
 def test_bare_digit_run_never_grounds_a_unit_claim(world):
     # The first prod dogfood write (2026-10-09) passed because the cited
     # websearch body carried "10." as a DOI prefix and nothing in nm.
@@ -274,6 +297,22 @@ def test_range_claim_checked_against_both_ends(world):
     assert _check("layers of 10-20 nm [pa12]") == []
     world[(12, None)] = "spans 10 nm only"
     assert [m.token for m in _check("layers of 10-20 nm [pa12]")] == ["20 nm"]
+
+
+def test_voltage_windows_with_zero_width_and_tex_duplication(
+    world: dict[tuple[int, int | None], str],
+) -> None:
+    """gr716214: all four lower endpoints inherit the source's trailing V."""
+    windows = [("1.2", "3.4"), ("1.5", "3.7"), ("1.8", "4.1"), ("2.1", "4.4")]
+    glue = "\u200b"
+    world[(12, None)] = "; ".join(
+        f"{lo}{glue}–{glue}{hi} V " + rf"${lo}{glue}–{hi}$ \mathrm{{V}}"
+        for lo, hi in windows
+    )
+    body = "; ".join(f"{lo}–{hi} V [pa12]" for lo, hi in windows)
+    assert _check(body) == []
+    assert [m.token for m in _check("window 1.1–3.4 V [pa12]")] == ["1.1 V"]
+    assert [m.token for m in _check("window 1.2 mV [pa12]")] == ["1.2 mV"]
 
 
 def test_empty_evidence_is_nothing_to_check(world):
@@ -340,6 +379,20 @@ def test_decade_is_not_seconds(world):
     world[(12, None)] = "nothing"
     assert _check("any 2010s rotaxane-pump motif [pa12] re-expressed") == []
     assert [m.token for m in _check("ran for 2010 s [pa12]")] == ["2010 s"]
+
+
+def test_s_orbital_labels_are_not_seconds(
+    world: dict[tuple[int, int | None], str],
+) -> None:
+    world[(995663, 4)] = "Four indium s-shell projectors and a 2 eV gap."
+    assert _check("The In 5s orbitals sit below a 2 eV gap [pc995663].") == []
+    assert _check("The In 5s projectors accompany a 2 eV gap [pc995663].") == []
+    world[(995663, 4)] = "Four In 5s projectors and a 2 eV gap."
+    assert [m.token for m in _check("The scan took 5s [pc995663].")] == ["5 s"]
+    assert [m.token for m in _check("The scan took 5 s [pc995663].")] == ["5 s"]
+    assert [m.token for m in _check("A 5s orbital period [pc995663].")] == ["5 s"]
+    world[(995663, 4)] += " The scan took 5s."
+    assert _check("The scan took 5s [pc995663].") == []
 
 
 def test_chunk_cite_falls_back_to_the_document(world):

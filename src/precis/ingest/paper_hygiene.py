@@ -40,7 +40,11 @@ ingestion/edit bugs that the current code no longer produces:
   until it was taught to; clearing its ``meta.authors_resolved_at``
   idempotency stamp is the whole heal — the ref falls back into
   ``_claim_batch``'s predicate and the (now title-filling) pass re-runs
-  over it. No network here: this only re-arms.
+  over it. No network here: this only re-arms. Since the claim's
+  recovery leg (gr658887) re-selects a stamped placeholder once per
+  ``title_recovery_v`` version on its own, this is now the operator's
+  *extra* re-arm — a forced re-visit for a dead end the version already
+  spent.
 * :func:`repair_front_matter_metadata` — a paper whose title the
   junk-title cascade repaired off chunk 0 but whose ``year``/``authors``
   kept ingest's guesses (ingestion year, blank or ``Nature User``
@@ -1889,6 +1893,13 @@ def requeue_placeholder_title_papers(
     (hourly by default), which now fills the title. Nothing is fetched
     here — the re-fetch is the worker's, under its existing rate budget.
 
+    Since the claim learned its bounded placeholder-recovery leg
+    (gr658887 — a stamped placeholder whose ``meta.title_recovery_v`` is
+    below the current version re-enters on its own, then pins out), the
+    residual need for this is an *extra* re-arm beyond the one the
+    version already grants: a still-blank dead end an operator wants
+    retried now rather than after the next capability bump.
+
     Only papers carrying a DOI are selected: a DOI-less placeholder has
     nothing for Crossref to resolve, so re-arming it would burn a claim
     slot to reach the same no-op. Those rows need a human or a fresh
@@ -2322,8 +2333,9 @@ def _merge_into_doi_owner(
 ) -> TitleRepairOutcome | None:
     """Fold a junk stub into the live paper already holding its DOI (gr658635).
 
-    A registry hit whose DOI another live paper owns means the stub is a
-    duplicate the ingest failed to link: writing the DOI would collide, so
+    A registry hit whose DOI another live paper owns — or whose Wiley
+    anie/ange twin DOI (``identity.doi_twins``) it owns — means the stub is
+    a duplicate the ingest failed to link: writing the DOI would collide, so
     the true fix is ``merge_into`` the owner. Gated like that door — the
     registry title must corroborate the owner's title/year/byline under the
     same floors (``_DOI_OWNER_MERGE_SIM`` / ``_DOI_OWNER_MERGE_UNKNOWN_YEAR_SIM``)
@@ -2349,7 +2361,15 @@ def _merge_into_doi_owner(
     doi = getattr(res, "doi", None)
     if not doi:
         return None
+    from precis.identity import doi_twins
+
     owner_id = store.find_ref_by_identifier("doi", str(doi), kind="paper")
+    if owner_id is None or owner_id == ref.id:
+        owner_id = None
+        for twin in doi_twins(str(doi)):
+            owner_id = store.find_ref_by_identifier("doi", twin, kind="paper")
+            if owner_id is not None:
+                break
     if owner_id is None or owner_id == ref.id:
         return None
     owner = store.fetch_refs_by_ids([owner_id]).get(owner_id)

@@ -43,7 +43,7 @@ link in the ``/drafts`` reader and is stripped entirely from the spoken/audio
 path (``narrate.speakable`` drops the ``[[…]]`` form), so the cast reads clean
 aloud while the page carries in-text citations back to the paper.
 
-See docs/backlog/reading-prep-loop.md (§The briefing, Slice 5) and
+See me690334 (§The briefing, Slice 5) and
 ``quest-layer`` (git-only).
 """
 

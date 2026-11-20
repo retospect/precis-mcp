@@ -1,18 +1,18 @@
 """``precis cast`` — compose + schedule the daily audio *casts*.
 
 Two standing casts ride the produce → narrate → publish spine (see
-docs/backlog/reading-prep-loop.md §Audio):
+me690334 §Audio):
 
 - ``reading`` — the morning situational-awareness brief (voice ``bm_george``).
 - ``nidra``   — the evening conceptual-walk meditation (voice ``af_nicole``).
 
     precis cast run reading            # compose today's morning-brief draft
-    precis cast run nidra --publish    # compose + narrate + publish (on melchior)
+    precis cast run nidra --publish    # compose + narrate + publish (on the TTS host)
     precis cast schedule --now         # install the daily watches + cast both now
 
 ``run`` is the writer organ (node-agnostic — store + LLM → a draft); ``--publish``
 additionally narrates it inline via the shipped audio path (needs Kokoro / the
-precis-tts image, i.e. the TTS host, melchior). ``schedule`` idempotently installs the two
+precis-tts image, i.e. the TTS host). ``schedule`` idempotently installs the two
 recurring (``meta.schedule`` set) watches that drive the ``reading_brief`` /
 ``meditation`` coordinator job_types on a daily cron; ``--now`` also composes both immediately so
 the first episodes don't wait for the next cron boundary (a never-fired daily cron
@@ -194,7 +194,7 @@ def install_cast_watches(store: Store) -> list[int]:
                     "cron": sched.cron,
                     "backfill_missed": sched.backfill_missed,
                 },
-                # claude_inproc (melchior) — the compose uses Sonnet 5 (pinned,
+                # claude_inproc (agent host) — the compose uses Sonnet 5 (pinned,
                 # claude_agent transport, FRONTIER band); TTS is a separate
                 # downstream pass on the same host, so this once-a-day
                 # compute is fine.

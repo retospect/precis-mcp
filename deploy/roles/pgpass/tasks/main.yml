@@ -82,6 +82,43 @@
   when: item not in ['precis_system', 'precis_ingress', 'precis_owner'] or _var in vars
   no_log: true
 
+# Refuse, never silently drop (gr678654 want 1, gr680328 want 3). pgpass.j2
+# guards each db-own line with `is defined`, so an overlay missing a role's
+# password var rendered a pgpass WITHOUT that role on every node (2026-11-14:
+# precis_system, four hours of fe_sendauth on the factory's workers). Same
+# assembled-name / presence-only pattern as the newline assert above.
+- name: Refuse to render pgpass while a role in postgres_roles has no password var
+  ansible.builtin.assert:
+    that:
+      - "_var in vars"
+    fail_msg: >-
+      postgres_roles names {{ item.name }} but {{ _var }} is undefined — the
+      render would drop the role's pgpass line and every unit logging in as
+      {{ item.name }} would lose DB auth (2026-11-14, gr678654). Define it in
+      the overlay vault (ansible-vault encrypt_string, tr -d '\n' first —
+      gr583810) or remove the role from postgres_roles.
+  vars:
+    _var: "{{ 'vault_' ~ item.password_var }}"
+  loop: "{{ postgres_roles | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Refuse to render pgpass while the db-own roles are missing from postgres_roles
+  ansible.builtin.assert:
+    that:
+      - "'precis_system' in _role_names"
+      - "'precis_ingress' in _role_names"
+      - "'precis_owner' in _role_names"
+    fail_msg: >-
+      precis_db_own_cutover_done is true but postgres_roles ({{ _role_names | join(', ') }})
+      lacks one of precis_system / precis_ingress / precis_owner — the units
+      whose DSN uses the missing role would get no pgpass line and lose DB
+      auth (2026-11-14, gr678654). Add { name: <role>, password_var:
+      pg_<role>_pass } with its vault password to the overlay.
+  vars:
+    _role_names: "{{ postgres_roles | default([]) | map(attribute='name') | list }}"
+  when: precis_db_own_cutover_done | default(false) | bool
+
 - name: Deploy .pgpass for deploy user
   ansible.builtin.template:
     src: pgpass.j2

@@ -13,9 +13,9 @@ CLAUDE.md carries the short form of the ship path and the hard rules;
 this file is the mechanics. The skills (`/land`, `/go`, `/qland`, `/qgo`,
 `/round`) carry the step-by-step.
 
-When a backlog item ships and its file is deleted, append a shipping comment
-to each associated gripe naming the landed **main commit SHA**, instead of
-using the deleted backlog path as the resolution pointer; the coordinator
+When specced work ships and its spec section retires, append a shipping
+comment to each associated gripe naming the landed **main commit SHA**,
+instead of a path or handle that is about to go away; the coordinator
 adds this after landing if a task branch is handed off. Preserve earlier
 comments as history. Audit stale citations with
 `scripts/gripe-dangling-backlog --comments comments.jsonl` from the checkout
@@ -291,7 +291,7 @@ leaves runtime proof to the session: verify boot shas and the session MCP,
 then `round deploy --confirm-runtime S --runtime-evidence …` tags
 `deployed/r<N>`, deletes the branch, and `round close` ends the round.
 
-When the factory is armed, `release_poll` ticks every 10 minutes and mints a `release-pass` plan only when `origin/main` is ahead of `origin/prod`, no pass, round or release branch is already in flight, and the clock sits outside `release.no_release_windows`. The minted plan runs the same cut → gate → approval → deploy → confirm shape as `/go`: `release_cut` cuts, `ci_verdict_poll` polls check.yml, and a red verdict runs up to 2 automatic `release-fix` loops (`ci_red_digest` digests the failure, a fix lands, `release_cut` recuts; `plan_dispatch._RELEASE_FIX_AUTO_CAP` caps this at 2 — a third red is a human call; a test red of 1-2 low-risk ids is instead waived under `release.red_waiver` — deploy anyway, file a top-priority `broken-build` gripe, auto-revert if it is still open after the next release). A green verdict reaches the `approval` ask, which `release.auto_deploy` (default off, DB-only) auto-answers `deploy r<N>` once CI is green on the cut's exact sha and `release.round` names an open round on it; otherwise a human answers. `release_deploy` then deploys pinned, and `release_confirm` attests the runtime — mechanical evidence, no rollback. The same pass also files a stuck-release ruling ask when a stage runs longer than `release.stage_deadlines` allows; answering it executes nothing. Detail: `docs/runbooks/dark-factory-arming.md` §Release pass, §Standing approval, §Stuck watchdog; the stage table is `docs/runbooks/release-cycle.md` §Factory loop.
+When the factory is armed, `release_poll` ticks every 10 minutes and mints a `release-pass` plan only when `origin/main` is ahead of `origin/prod`, no pass, round or release branch is already in flight, and the clock sits outside `release.no_release_windows`. The minted plan runs the same cut → gate → approval → deploy → confirm shape as `/go`: `release_cut` cuts, `ci_verdict_poll` polls check.yml, and a red verdict runs up to 2 automatic `release-fix` loops (`ci_red_digest` digests the failure, a fix lands, `release_cut` recuts; `plan_dispatch._RELEASE_FIX_AUTO_CAP` caps this at 2 — a third red is a human call; a test red of 1-2 low-risk ids is instead waived under `release.red_waiver` — deploy anyway, file a top-priority `broken-build` gripe, auto-revert if it is still open after the next release). With `release.auto_deploy` on (default off, DB-only), minting skips the approval node entirely; `may_release(deploy)` gates deployment on the window, other in-flight releases, prod/main ancestry, cleared reviews and green CI on the exact head. GitHub read failures hold deployment. With it off, a green verdict reaches the unchanged manual `approval` ask. `release_deploy` then deploys pinned, and `release_confirm` attests the runtime — mechanical evidence, no rollback. The same pass also files a stuck-release ruling ask when a stage runs longer than `release.stage_deadlines` allows; answering it executes nothing. Detail: `docs/runbooks/dark-factory-arming.md` §Release pass, §Standing approval, §Stuck watchdog; the stage table is `docs/runbooks/release-cycle.md` §Factory loop.
 
 Main pushes after the cut never reach the release. One *open* release at a
 time, but the train pipelines (release-train §5): once release N is deploying,
@@ -299,7 +299,7 @@ time, but the train pipelines (release-train §5): once release N is deploying,
 a differing tree). A `/go` whose sha an in-flight release contains exits 0
 (rides along); any other exits 0 with "rides the next cut" — the driver cuts
 N+1 at deploy start, there is no queue. Release CI has no diff-coverage gate or mutation pass yet
-(`docs/backlog/release-ci-diff-coverage.md`); the local full gate with
+(gr692382); the local full gate with
 both is still `scripts/ship --mutate --full` + `scripts/deploy <.ship-sha>
 --pinned`, now off the `/go` path. Exit-code table: `.claude/commands/go.md`
 step 7.
@@ -664,7 +664,7 @@ reports the *filter's* status, so a red gate reads as exit 0. Redirect to a
 log, or `set -o pipefail`.
 
 **Commit messages: `type(scope): what changed`** (aim ≤72 chars, hard limit 120;
-feat/fix/docs/test/chore/refactor…; `docs(backlog)` for specs), optional
+feat/fix/docs/test/chore/refactor…; `docs(backlog)` for thread files), optional
 short why as body, then the required Co-Authored-By/session footer. Write
 the message to a file and `git commit -F <file>` — the `-m "$(cat <<'EOF'
 …)"` recipe trips the shell rules and breaks on apostrophes (gr513763).

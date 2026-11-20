@@ -13,7 +13,12 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from precis.workers.scheduler import Cadence, _run_cron_tick, run_scheduler_pass
+from precis.workers.scheduler import (
+    GATEWAY_AFFINITY,
+    Cadence,
+    _run_cron_tick,
+    run_scheduler_pass,
+)
 
 
 def _cad(run, interval: int = 60) -> Cadence:
@@ -122,9 +127,9 @@ def test_host_affinity_non_pinned_host_never_claims(store) -> None:
     lease stays unadvanced (still due) so the pinned host can claim it later,
     catch-up-late-not-lost rather than lost to a wrong-host steal."""
     ran: list[str] = []
-    cad = _pinned_cad(lambda s, b: ran.append("fired"), host_affinity="melchior")
+    cad = _pinned_cad(lambda s, b: ran.append("fired"), host_affinity="maple")
 
-    r_wrong_host = run_scheduler_pass(store, host="caspar", cadences=(cad,))
+    r_wrong_host = run_scheduler_pass(store, host="birch", cadences=(cad,))
     assert (r_wrong_host.claimed, r_wrong_host.ok, r_wrong_host.failed) == (0, 0, 0)
     assert ran == []
     # gr194430: the row IS seeded (health_digest's staleness check needs it
@@ -134,9 +139,44 @@ def test_host_affinity_non_pinned_host_never_claims(store) -> None:
     assert lease.last_fired_at is None
     assert lease.last_host is None
 
-    r_right_host = run_scheduler_pass(store, host="melchior", cadences=(cad,))
+    r_right_host = run_scheduler_pass(store, host="maple", cadences=(cad,))
     assert (r_right_host.claimed, r_right_host.ok, r_right_host.failed) == (1, 1, 0)
     assert ran == ["fired"]
+
+
+def test_gateway_affinity_resolves_to_the_setting(store, monkeypatch) -> None:
+    """The GATEWAY_AFFINITY sentinel resolves to ``cluster.gateway_host``:
+    only that host attempts the cadence, and the sentinel is never compared
+    to a host name unresolved."""
+    monkeypatch.setenv("PRECIS_GATEWAY_HOST", "maple")
+    ran: list[str] = []
+    cad = _pinned_cad(lambda s, b: ran.append("fired"), host_affinity=GATEWAY_AFFINITY)
+
+    r_other = run_scheduler_pass(store, host="birch", cadences=(cad,))
+    assert (r_other.claimed, r_other.ok, r_other.failed) == (0, 0, 0)
+    r_literal = run_scheduler_pass(store, host=GATEWAY_AFFINITY, cadences=(cad,))
+    assert (r_literal.claimed, r_literal.ok, r_literal.failed) == (0, 0, 0)
+    assert ran == []
+
+    r_gw = run_scheduler_pass(store, host="maple", cadences=(cad,))
+    assert (r_gw.claimed, r_gw.ok, r_gw.failed) == (1, 1, 0)
+    assert ran == ["fired"]
+
+
+def test_gateway_affinity_unset_runs_on_no_host(store, monkeypatch) -> None:
+    """With ``cluster.gateway_host`` unset the sentinel cadence is attempted
+    on no host (the lease row is still seeded, never advanced)."""
+    monkeypatch.delenv("PRECIS_GATEWAY_HOST", raising=False)
+    ran: list[str] = []
+    cad = _pinned_cad(lambda s, b: ran.append("fired"), host_affinity=GATEWAY_AFFINITY)
+
+    for host in ("maple", "birch", GATEWAY_AFFINITY):
+        r = run_scheduler_pass(store, host=host, cadences=(cad,))
+        assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
+    assert ran == []
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
+    assert lease.last_fired_at is None
+    assert lease.last_host is None
 
 
 def test_ineligible_worker_skips_without_advancing_lease(store) -> None:
@@ -203,15 +243,15 @@ def test_service_gated_cadence_resolves_prio_per_host(store) -> None:
     assert ran == []
 
     set_service_prio(store, "*", "svc_x", 5)
-    set_service_prio(store, "balthazar", "svc_x", 0)
-    r2 = run_scheduler_pass(store, host="balthazar", cadences=(cad,))
+    set_service_prio(store, "alder", "svc_x", 0)
+    r2 = run_scheduler_pass(store, host="alder", cadences=(cad,))
     assert (r2.claimed, r2.ok, r2.failed) == (0, 0, 0)
     assert ran == []
     # Seeded (health_digest sees it) but never claimed by the dimmed host.
     lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
     assert lease.last_fired_at is None and lease.last_host is None
 
-    r3 = run_scheduler_pass(store, host="melchior", cadences=(cad,))
+    r3 = run_scheduler_pass(store, host="maple", cadences=(cad,))
     assert (r3.claimed, r3.ok, r3.failed) == (1, 1, 0)
     assert ran == ["fired"]
 
@@ -237,21 +277,21 @@ def test_claim_when_dark_skips_only_while_another_host_is_lit(store) -> None:
     r = run_scheduler_pass(store, host="h", cadences=(mk("svc_cwd_a", ran),))
     assert (r.claimed, r.ok, r.failed) == (1, 1, 0) and ran == ["fired"]
 
-    # melchior lit: the row-less host skips without claiming, and the
+    # maple lit: the row-less host skips without claiming, and the
     # lit host then takes the same fire.
-    set_service_prio(store, "melchior", "svc_cwd_b", 1)
+    set_service_prio(store, "maple", "svc_cwd_b", 1)
     ran = []
     cad = mk("svc_cwd_b", ran)
     r2 = run_scheduler_pass(store, host="h", cadences=(cad,))
     assert (r2.claimed, r2.ok, r2.failed) == (0, 0, 0) and ran == []
-    r3 = run_scheduler_pass(store, host="melchior", cadences=(cad,))
+    r3 = run_scheduler_pass(store, host="maple", cadences=(cad,))
     assert (r3.claimed, r3.ok, r3.failed) == (1, 1, 0) and ran == ["fired"]
 
     # A `*` light dimmed on one host: that host skips, the fleet is lit.
     set_service_prio(store, "*", "svc_cwd_c", 1)
-    set_service_prio(store, "balthazar", "svc_cwd_c", 0)
+    set_service_prio(store, "alder", "svc_cwd_c", 0)
     ran = []
-    r4 = run_scheduler_pass(store, host="balthazar", cadences=(mk("svc_cwd_c", ran),))
+    r4 = run_scheduler_pass(store, host="alder", cadences=(mk("svc_cwd_c", ran),))
     assert r4.claimed == 0 and ran == []
 
 
@@ -433,7 +473,7 @@ def test_dream_agent_cadence_interval_resolves_the_g_knob(store) -> None:
 
     dream_cad = next(c for c in CADENCES if c.name == "dream_agent")
     assert dream_cad.resolve_interval is not None
-    assert dream_cad.host_affinity == "melchior"
+    assert dream_cad.host_affinity == GATEWAY_AFFINITY
 
     # compiled default (no DB row, no env).
     assert dream_cad.resolve_interval(store) == int(
@@ -734,14 +774,15 @@ def test_anki_sync_cadence_ineligible_by_default(store, monkeypatch) -> None:
     """``PRECIS_ANKI_ENABLED`` unset (the test default) ⇒ the ``anki_sync``
     cadence's ``eligible`` gate is False, so it never claims."""
     monkeypatch.delenv("PRECIS_ANKI_ENABLED", raising=False)
+    monkeypatch.setenv("PRECIS_GATEWAY_HOST", "maple")
     from precis.workers.scheduler import CADENCES
 
     anki_cad = next(c for c in CADENCES if c.name == "anki_sync")
-    assert anki_cad.host_affinity == "melchior"
+    assert anki_cad.host_affinity == GATEWAY_AFFINITY
     assert anki_cad.eligible is not None
     assert anki_cad.eligible() is False
 
-    r = run_scheduler_pass(store, host="melchior", cadences=(anki_cad,))
+    r = run_scheduler_pass(store, host="maple", cadences=(anki_cad,))
     assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
     # gr194430: seeded (visible to health_digest) but never claimed.
     lease = {ln.name: ln for ln in store.scheduler_leases()}[anki_cad.name]

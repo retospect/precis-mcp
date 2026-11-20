@@ -6,13 +6,17 @@ place, the SessionStart node cache, the nightly dump.
 
 ## 0. Outage (MCP down): outage-memory.md
 
-Emergency measure (Reto 2026-10-22). Read the node copies under
-`~/.cache/precis/memory-nodes*` as stale scratch; they are overwritten. To keep
-a fact, append `## <UTC timestamp> <session name>` plus the fact to
+Reto 2026-10-22, 2026-11-14. While the MCP is down the task stops: retry the
+connection with growing waits and resume when it answers. Read the node copies
+under `~/.cache/precis/memory-nodes*` as stale scratch; they are overwritten.
+To keep a fact, append a heading that starts with the UTC date and time,
+`## 2026-11-14T19:35Z <session name>`, plus the fact to
 `<harness memory dir>/outage-memory.md` (nothing else in that file). When the
 graph is back the SessionStart hook prints `outage-memory.md has N entries`;
-integrate them (remember skill), then empty the file. A per-node restore tool
-was considered and not built (Reto 2026-10-22).
+the session that wrote an entry integrates it (remember skill) and removes that
+entry, leaving other sessions' entries alone. An entry older than 24 hours, or
+one with no date and time, may be integrated by any interactive session. A
+per-node restore tool was considered and not built (Reto 2026-10-22).
 
 ## 1. Undelete a soft-deleted node (prod, in place)
 

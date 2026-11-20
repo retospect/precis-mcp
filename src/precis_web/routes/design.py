@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 
 router = APIRouter(tags=["design"])
 
-#: Browse-surface cap on the number of se DESIGNS rendered (mirrors
+#: List-surface cap on the number of se DESIGNS rendered (mirrors
 #: structure.py/blocktree_view.py's ``_LIST_LIMIT`` convention) — a
 #: design's own block count is never capped, only how many trees this
 #: page draws.

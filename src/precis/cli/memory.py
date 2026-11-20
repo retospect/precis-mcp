@@ -1,6 +1,6 @@
 """``precis memory import | index`` — harness memory as ``SPACE:repo-dev`` nodes.
 
-The write and load halves of ``docs/backlog/memory-native-authoring.md``:
+The write and load halves of `me690866`:
 
 - ``precis memory import <dir>`` seeds the graph from a harness memory
   directory: ``<dir>/MEMORY.md`` plus the topic files its bullets name.
@@ -554,8 +554,9 @@ def bullet_line(
     renders (``--q`` and ``search(view='index')``) pass ``filename=True`` so a
     hit matches the topic file the harness may also have recalled, and
     ``fallback_hook`` (the body's first line) for a node with no ``meta.hook``.
-    ``size`` (a ``size_cell`` label) appends `` · <n>kB`` when the body
-    is big enough to matter — its caller already holds the text.
+    ``size`` (a rendered ``row_size_cell``) appends `` · <n>kB`` —
+    decimal kB at every scale; only a ~1kB default cell comes back
+    empty (gr573411). Its caller already holds the text.
     """
     from precis.utils import handle_registry
 

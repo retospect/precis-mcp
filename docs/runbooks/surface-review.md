@@ -191,9 +191,9 @@ Miner caveats, to discount before trusting a card:
   usually a default `view`, not a new one.
 - **Capability** — `detour_census` ranks missing verbs by demand. A recurring
   psql detour is a feature request with usage data attached; see
-  `docs/backlog/mcp-surface-economy.md` §"MCP aggregate surface gaps".
+  me691324 §"MCP aggregate surface gaps".
 - **Argument names** — `vocab_near_miss` on `input_keys`. Feeds
-  `docs/backlog/vocab-compaction.md`.
+  me694027.
 
 ## The strongest lever we are not pulling
 
@@ -202,7 +202,7 @@ self-reporting for exactly the soft friction that dominates here — "no verb
 for what I wanted, N calls where one should have worked, a result shape that
 forced a re-query". It is **default-OFF** behind `PRECIS_FRICTION_REFLECT`,
 blocked on a grouping/dedup lane so raw wishes do not pile up untriaged
-(`docs/backlog/friction-reflection-enable.md`).
+(gr690545).
 
 Turning it on converts this retrospective into a continuous feed. Until then
 this pass is the only thing looking. Re-read that item each pass and say in

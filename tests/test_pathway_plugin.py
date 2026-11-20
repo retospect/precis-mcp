@@ -271,12 +271,118 @@ def test_seed_fanout_matches_monolith_run() -> None:
     # monolith does (regression guard — this was silently empty, which is
     # why fan-out pathways rendered "no geometry linked" for every state).
     assert fanout["structures_extxyz"], "fan-out dropped all per-state geometry"
-    assert set(fanout["structures_extxyz"]) == set(monolith["structures_extxyz"])
+    # Both execution paths retain the same relaxed-site minimum entries.
+    assert set(monolith["structures_extxyz"]) == set(fanout["structures_extxyz"])
 
     # and the scalar summary quest.compute.harvest_measures reads matches too
     from precis_pathway._dispatch_common import summarize
 
     assert summarize(fanout) == summarize(monolith)
+
+
+def test_step_only_minimum_reaches_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr593139: a landing unique to step 2 must survive into the score graph."""
+    from autocatpath.pipeline import Results
+    from autocatpath.uncertainty import aggregate
+
+    from precis.utils import trust_gate
+
+    steps = {
+        "NO->NO2": {"reactant": "NO", "product": "NO2", "barrier": 0.4, "delta_e": 0.0},
+        "NO2->NO3": {
+            "reactant": "NO2",
+            "product": "NO3",
+            "barrier": 0.8,
+            "delta_e": -0.5,
+        },
+    }
+    records = [
+        {
+            "check": "endpoint_identity",
+            "id": f"{state}#{step}#s0#endpoint_identity",
+            "verdict": "pass",
+            "severity": "warn",
+            "state": state,
+            "seed": 0,
+            "step": step,
+            "evidence": {"fingerprint": fp, "e_eV": energy},
+        }
+        for state, step, fp, energy in (
+            ("NO", "NO->NO2", "root", -10.0),
+            ("NO2", "NO->NO2", "minimum-a", -10.0),
+            ("NO2", "NO2->NO3", "minimum-b", -9.5),
+            ("NO3", "NO2->NO3", "product", -10.0),
+        )
+    ]
+    units: list[dict[str, Any]] = [
+        {
+            "model_index": 0,
+            "model": "emt",
+            "seed": 0,
+            "partial": {
+                "states": {"NO": -10.0, "NO2": -10.0, "NO3": -10.0},
+                "steps": steps,
+            },
+        }
+    ]
+    results = Results(
+        node_energies={s: aggregate([-10.0], 0.3) for s in ("NO", "NO2", "NO3")},
+        edges=[
+            {
+                "name": name,
+                **{
+                    k: aggregate([v], 0.3) if isinstance(v, float) else v
+                    for k, v in ent.items()
+                },
+            }
+            for name, ent in steps.items()
+        ],
+        pathway=["NO", "NO2", "NO3"],
+        models=["emt"],
+        trust=records,
+    )
+    minima = trust_gate.endpoint_minima(records, (None, set()))
+    assert minima["NO2"]["minimum-a"] == {(0, "NO->NO2"): -10.0}
+    assert minima["NO2"]["minimum-b"] == {(0, "NO2->NO3"): -9.5}
+    _, block, wiring = runner._endpoint_minima_payload(results, units)
+    assert block["barriers"]["NO->NO2"]["m0->m0"]["barrier"] == 0.4
+    assert block["barriers"]["NO2->NO3"]["m1->m0"]["barrier"] == 0.8
+    assert block["states"]["NO2"]["m1"]["state_entry"] == "NO2@m1"
+    unwired = copy.deepcopy(results)
+    runner._wire_minima_results(results, units, wiring, energy_thresh=0.3)
+    assert results.node_energies["NO2@m1"].mean == pytest.approx(-9.5)
+    measured = [e for e in results.edges if e.get("barrier").n]
+    assert [(e["reactant"], e["product"]) for e in measured] == [
+        ("NO", "NO2"),
+        ("NO2@m1", "NO3"),
+    ]
+    cfg = runner.Config.from_dict(_yaml_dict(FANOUT))
+    summary, graph = runner._analysis_payloads(cfg, results)
+    assert "NO2@m1" in summary["nodes"]
+    assert any(n["id"] == "NO2@m1" for n in graph["nodes"])
+    assert "NO2@m1" in str(summary["traps"])
+    assert summary["score"]
+
+    # Exercise the production orchestration too: moving wiring after
+    # _analysis_payloads would leave this score/trap report pooled.
+    monkeypatch.setattr(runner, "run", lambda *a, **k: unwired)
+    monkeypatch.setattr(
+        runner,
+        "_capture_run_units",
+        lambda module: (
+            [
+                {
+                    "model_index": 0,
+                    "partial": {**units[0]["partial"], "seed": 0, "model": "emt"},
+                    "collect": {},
+                }
+            ],
+            lambda: None,
+        ),
+    )
+    artifact = runner.run_pathway(_yaml_dict(FANOUT))
+    for key in ("nodes", "edges", "score", "traps", "selectivity"):
+        assert _json_eq(artifact["results_json"][key], summary[key])
 
 
 def test_endpoint_agreement_records_carry_tol() -> None:
@@ -1355,7 +1461,7 @@ def test_put_typo_mode_raises_and_mints_no_job(
     EMT run."""
     from precis.errors import BadInput
 
-    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spark")
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spruce")
     h = _handler(pathway_store)
 
     with pytest.raises(BadInput) as exc_info:
@@ -1930,18 +2036,18 @@ def test_put_dispatches_job_when_route_node_set(
 ) -> None:
     """A configured route node ⇒ mint an `autocatpath_explore` job parented on
     the pathway (compute lane, via `can_own_jobs`), not an inline run."""
-    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spark")
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spruce")
     hub = Hub(store=pathway_store)
     h = _try(PathwayHandler, hub=hub)
     assert h is not None
 
     r = h.put(id="route_test", text=SMOKE)
-    assert "dispatched autocatpath compute" in r.body and "spark" in r.body, r.body
+    assert "dispatched autocatpath compute" in r.body and "spruce" in r.body, r.body
 
     ref = pathway_store.get_ref(kind="pathway", id="route-test")
     assert ref is not None
     assert ref.meta["status"] == "computing"
-    assert ref.meta["route_node"] == "spark"
+    assert ref.meta["route_node"] == "spruce"
 
     with pathway_store.pool.connection() as c:
         rows = c.execute(
@@ -1953,7 +2059,7 @@ def test_put_dispatches_job_when_route_node_set(
     _job_id, jmeta = rows[0]
     assert jmeta["job_type"] == "autocatpath_explore"
     assert jmeta["executor"] == "ssh_node"
-    assert jmeta["params"]["target_node"] == "spark"
+    assert jmeta["params"]["target_node"] == "spruce"
 
 
 def test_put_route_node_env_list_pins_first_node(
@@ -1964,7 +2070,7 @@ def test_put_route_node_env_list_pins_first_node(
     """The multi-node deploy renders the env as the comma-joined capability
     list; this single-job surface must pin the FIRST node — the raw CSV
     string would match no worker's ``PRECIS_NODE`` and wedge unclaimed."""
-    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spark, castor, pollux")
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spruce, cedar, poplar")
     hub = Hub(store=pathway_store)
     h = _try(PathwayHandler, hub=hub)
     assert h is not None
@@ -1972,7 +2078,7 @@ def test_put_route_node_env_list_pins_first_node(
     h.put(id="route_list_test", text=SMOKE)
     ref = pathway_store.get_ref(kind="pathway", id="route-list-test")
     assert ref is not None
-    assert ref.meta["route_node"] == "spark"
+    assert ref.meta["route_node"] == "spruce"
 
     with pathway_store.pool.connection() as c:
         rows = c.execute(
@@ -1980,7 +2086,7 @@ def test_put_route_node_env_list_pins_first_node(
             "AND retired_at IS NULL",
             (ref.id,),
         ).fetchall()
-    assert rows and rows[0][0]["params"]["target_node"] == "spark"
+    assert rows and rows[0][0]["params"]["target_node"] == "spruce"
 
 
 def test_autocatpath_explore_dispatch_writes_back(pathway_store: Store) -> None:
@@ -2013,7 +2119,7 @@ def test_autocatpath_explore_dispatch_writes_back(pathway_store: Store) -> None:
             "pathway_ref_id": ref.id,
             "config": _yaml_dict(SMOKE),
             "force_backend": "emt",
-            "target_node": "spark",
+            "target_node": "spruce",
         },
     )
     pathway_job._dispatch(ctx, pathway_job.SPEC)
@@ -2024,7 +2130,7 @@ def test_autocatpath_explore_dispatch_writes_back(pathway_store: Store) -> None:
     assert got is not None
     assert got.meta["results"]["nodes"], "results not written back"
     assert got.meta["produced_by"] == "autocatpath_explore"
-    assert got.meta["ran_on"] == "spark"
+    assert got.meta["ran_on"] == "spruce"
     blocks = pathway_store.chunks.list_chunks_for_ref(got.id)
     assert blocks[0].text.startswith("# Methods")
 
@@ -2063,7 +2169,7 @@ def test_seed_job_dispatch_writes_partial_onto_its_own_meta(
             "seed": 1,
             "model_index": 0,
             "content_key": "deadbeef",
-            "target_node": "spark",
+            "target_node": "spruce",
         },
     )
     seed_job._dispatch(ctx, seed_job.SPEC)
@@ -3461,7 +3567,7 @@ def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
             "pathway_slug": ref.slug,
             "config": cfg,
             "force_backend": "emt",
-            "target_node": "spark",
+            "target_node": "spruce",
         },
     )
     ctx.meta["dispatched_from_todo"] = agg_todo_id
@@ -3474,7 +3580,7 @@ def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
     assert got is not None
     assert got.meta["results"]["nodes"], "results not written back"
     assert got.meta["produced_by"] == "autocatpath_aggregate"
-    assert got.meta["ran_on"] == "spark"
+    assert got.meta["ran_on"] == "spruce"
     assert got.meta["n_seed_partials"] == 2
     blocks = pathway_store.chunks.list_chunks_for_ref(got.id)
     assert blocks[0].text.startswith("# Methods")

@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# ~{{ pgpass_user }}/.pgpass — only the DB login this account's worker uses.
+# Format: hostname:port:database:username:password
+{% for role in pgpass_user_roles %}
+{% set pw = lookup('vars', 'vault' ~ '_pg_' ~ role ~ '_pass') %}
+{{ pgpass_host }}:{{ pgpass_port }}:{{ pgpass_database }}:{{ role }}:{{ pw }}
+{{ pgpass_host }}:{{ pgpass_port }}:*:{{ role }}:{{ pw }}
+{% endfor %}

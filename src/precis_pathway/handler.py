@@ -12,7 +12,7 @@ autocatpath pipeline **in-process on EMT** (cheap, qualitative), and persists:
 Regen is content-addressed: re-``put``ting an unchanged config is a no-op
 cache hit. Fan-out across ``(model, seed)`` and heavy backends move to the
 precis compute lane in later slices (see
-``docs/backlog/autocatpath-integration.md`` in precis-mcp). Native `structure`
+`me690505` in precis-mcp). Native `structure`
 refs per intermediate (the ``pathway-node`` link) are slice 1 — deferred
 here because link relations are a closed `Relation` Literal in precis core
 and need a core edit to extend.
@@ -48,7 +48,7 @@ from .persist import BODY_KIND, pathway_title, persist_result, quest_minted_slug
 
 #: When set, `put` routes the compute to a `autocatpath_explore` job pinned to this
 #: node instead of running autocatpath in-process (slice 1). The gateway sets it to
-#: the GPU node's PRECIS_NODE (e.g. 'spark'); unset → in-process EMT (slice 0).
+#: the GPU node's PRECIS_NODE (e.g. '<gpu-node>'); unset → in-process EMT (slice 0).
 _ROUTE_NODE_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
 
 #: mode='verify' seed-count bounds (gr543165): default 3 independent
@@ -61,9 +61,9 @@ log = logging.getLogger(__name__)
 
 
 #: Views that accept the CHE potential lever ``args={'U': <V vs RHE>}``
-#: (docs/backlog/pathway-conditions-effects-report.md Phase 1 item 1;
+#: (me692126 Phase 1 item 1;
 #: 'staircase' re-tilts the affine export — SPSO slice 3).
-_POTENTIAL_VIEWS = ("analysis", "profile", "compare", "staircase")
+_POTENTIAL_VIEWS = ("analysis", "profile", "mermaid", "compare", "staircase")
 
 #: The ladder rungs ``args={'tier'}`` accepts — the same vocabulary
 #: ``precis.quest.compute._TIERS`` declares, duplicated here (with
@@ -254,6 +254,12 @@ class PathwayHandler(Handler):
                 "offset",
                 # view='bundle-plan'/'export' seed-job selector
                 "job",
+                "route_only",
+                "top_n_barriers",
+                "hide_supply",
+                "label_threshold_eV",
+                "size",
+                "kinetics",
             }
         ),
         # kinetics v2 D1 blocks, overlaid onto the YAML body (_env_overlay);
@@ -1358,6 +1364,13 @@ class PathwayHandler(Handler):
         point_args = {
             k: val for k, val in (args or {}).items() if k not in ("environment", "job")
         }
+        if (view or "").lower() in ("profile", "mermaid"):
+            from precis.utils.pathway_figure import OPTIONS
+
+            self._figure_options(args)
+            point_args = {
+                k: val for k, val in point_args.items() if k not in OPTIONS or k == "U"
+            }
         gate = _gate_arg(point_args)
         if gate is not None and (view or "").lower() != "compare":
             raise BadInput(
@@ -1582,7 +1595,13 @@ class PathwayHandler(Handler):
                 body = f"{body}\n\n{extra}" if body else extra
             return Response(body=body or "(no methods)")
         if v == "mermaid":
-            return Response(body=self._mermaid(meta))
+            return Response(
+                body=self._mermaid(
+                    meta,
+                    **self._figure_options(args),
+                    **({"U": U} if U is not None else {}),
+                )
+            )
         if v == "manifest":
             from .manifest import manifest_text
 
@@ -1737,7 +1756,8 @@ class PathwayHandler(Handler):
         if v == "network":
             return Response(body=self._render_network(ref.title, meta))
         if v == "profile":
-            return Response(body=self._render_profile(ref.title, meta, U=U))
+            options = self._figure_options(args)
+            return Response(body=self._render_profile(ref.title, meta, U=U, **options))
         # default (no view): analysis if computed, else the preview/profile text
         if computed:
             from .toon_views import analysis_text
@@ -2204,12 +2224,38 @@ class PathwayHandler(Handler):
             )
         )
 
-    def _mermaid(self, meta: dict[str, Any]) -> str:
-        from . import runner
+    @staticmethod
+    def _figure_options(args: dict[str, Any] | None) -> dict[str, Any]:
+        from precis.utils.pathway_figure import figure_options
+
+        try:
+            return figure_options({k: v for k, v in (args or {}).items() if k != "U"})
+        except ValueError as exc:
+            raise BadInput(
+                str(exc),
+                next="use route_only/hide_supply/kinetics booleans, top_n_barriers a positive integer, size=[width,height]",
+            ) from exc
+
+    def _mermaid(self, meta: dict[str, Any], **options: Any) -> str:
         from .text_views import graph_to_mermaid, topology_to_mermaid
 
         if meta.get("graph"):
-            return "```mermaid\n" + graph_to_mermaid(meta["graph"]) + "\n```"
+            from precis.quest.figures import _profile_root_target
+            from precis.utils.pathway_figure import selected_graph
+
+            root, target = _profile_root_target(
+                meta["graph"], meta.get("results") or {}
+            )
+            graph = selected_graph(meta["graph"], root, target, **options)
+            return (
+                "```mermaid\n"
+                + graph_to_mermaid(
+                    graph, label_threshold_eV=options.get("label_threshold_eV", 0.0)
+                )
+                + "\n```"
+            )
+        from . import runner
+
         topo: NetworkTopology | None = meta.get("topology") or (
             runner.network_topology(meta["config"]) if meta.get("config") else None
         )
@@ -2276,8 +2322,52 @@ class PathwayHandler(Handler):
 
     @staticmethod
     def _render_profile(
-        title: str, meta: dict[str, Any], *, U: float | None = None
+        title: str, meta: dict[str, Any], *, U: float | None = None, **options: Any
     ) -> str:
+        if meta.get("graph"):
+            from precis.quest.figures import (
+                _profile_positions,
+                _profile_root_target,
+                kinetics_annotation_text,
+                pathway_kinetics_annotation,
+            )
+
+            graph = meta["graph"]
+            root, target = _profile_root_target(graph, meta.get("results") or {})
+            rows = _profile_positions(
+                graph,
+                root,
+                target,
+                kinetics=options.get("kinetics", True),
+                **{k: v for k, v in options.items() if k != "kinetics"},
+                **({"U": U} if U is not None else {}),
+            )
+            lines = [f"# {title}", "Relative energies and activation barriers (eV)"]
+            for row in rows:
+                value = (
+                    row.get("barrier") if row["kind"] == "ts" else row.get("rel_energy")
+                )
+                if (
+                    row["kind"] == "ts"
+                    and isinstance(value, (int, float))
+                    and value < options.get("label_threshold_eV", 0)
+                ):
+                    continue
+                lines.append(f"{row['label']}: {value} ± {row.get('sigma', '?')}")
+            if options.get("kinetics", True):
+                lines.append(
+                    kinetics_annotation_text(pathway_kinetics_annotation(meta))
+                )
+            from precis.utils.pathway_conditions import conditions_note
+
+            note = conditions_note(meta)
+            if note:
+                lines.append(note)
+            if U is not None:
+                lines.append(
+                    f"Profile at U={U} V vs RHE; kinetics at stored conditions"
+                )
+            return "\n".join(lines)
         r = meta.get("results", {})
         lines = [f"# {title}", ""]
         ref_name = r.get("pathway", [None])[0]

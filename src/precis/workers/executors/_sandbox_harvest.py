@@ -745,7 +745,7 @@ def summarize(result: HarvestResult) -> str:
     gr333438: the count that leads ("N file(s)") used to be
     ``n_projected`` alone — the ``PRECIS_ROOT``-gated DB projection.
     That's skipped by design on any host without ``PRECIS_ROOT`` set
-    (e.g. castor), so the summary read "harvested folder:N (0
+    (e.g. the local-serving node), so the summary read "harvested folder:N (0
     file(s))" on every green run there even though the artifact
     tarball — the REAL harvest — was non-empty. Two green-looking
     smokes read as failures for ~2.5h on 2026-09-10 because of exactly

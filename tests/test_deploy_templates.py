@@ -240,8 +240,8 @@ def test_collapsed_worker_chase_env_renders_on_every_darwin_host() -> None:
     system pass (``default_profiles=_SYS``, no ``capability_env`` gate), so
     it runs on every one of them regardless. The old per-host
     ``precis_worker_taproot_chase`` opt-in (mirrored here by simply never
-    passing it) left balthazar, also darwin, without the LLM-verifier hook
-    even though its collapsed unit runs the identical pass melchior's does —
+    passing it) left alder, also darwin, without the LLM-verifier hook
+    even though its collapsed unit runs the identical pass maple's does —
     the taproot forward-bridge never fired there. Deliberately omits
     ``precis_worker_taproot_chase`` from the render vars so a regression
     back to host_var-gating (undefined → ``default(false)`` → absent) would
@@ -285,8 +285,8 @@ def _render_sandbox_worker_env() -> dict[str, str]:
         precis_identity_env={},
         _sb_venv="/opt/precis/venv",
         _sb_dsn="postgresql://agent_rw@203.0.113.10:6432/precis_prod",
-        inventory_hostname="castor",
-        groups={"agent_sandbox_hosts": ["castor"]},
+        inventory_hostname="cedar",
+        groups={"agent_sandbox_hosts": ["cedar"]},
         nas_root="/mnt/archive/nas0",
     )
     assert isinstance(rendered, dict), f"service_unit_env rendered to {type(rendered)}"
@@ -294,7 +294,7 @@ def _render_sandbox_worker_env() -> dict[str, str]:
 
 
 def test_sandbox_worker_env_sets_precis_root() -> None:
-    """gr333438 (ops half): castor's sandbox_run lane must export
+    """gr333438 (ops half): cedar's sandbox_run lane must export
     PRECIS_ROOT (utils/workspace.py) so a sandboxed job can resolve its
     workspace files — the value must track the same fleet-wide
     ``nas_root``-derived path every other node uses (roles/asa_bot's
@@ -374,7 +374,7 @@ def test_agentlane_carries_the_embedder_env_its_job_inproc_lane_needs() -> None:
     (``embed_batch``) resolves the embedder through ``load_config()`` —
     whose default is the non-production ``mock`` backend. Without
     PRECIS_EMBEDDER/PRECIS_EMBEDDER_URL in this unit's env every
-    embed_batch it won (41 on melchior, 2026-09-22 → 09-25) died on
+    embed_batch it won (41 on maple, 2026-09-22 → 09-25) died on
     ``chunk_embeddings_embedder_fkey`` (``Key (embedder)=(mock)``), the
     gr346813 shape one env key over. Same pair as 20b's §F-b block; the
     role defaults are out of scope here, so the play-level ``default``
@@ -448,16 +448,56 @@ def test_collapsed_worker_slice_root_renders_on_the_gateway_unarmed() -> None:
     no slice root and every factory land queued fleet-wide (gripe 570787).
     Off the gateway the block is empty — there is no checkout to advertise.
     ``precis_slice_root`` overrides the fix lane's clone path."""
-    expected = {"PRECIS_SLICE_ROOT": "/Users/deploy/precis-fix-repo"}
-    assert _render_collapsed_worker_slice_env(gateway=True, fix_lane=False) == expected
-    assert _render_collapsed_worker_slice_env(gateway=True, fix_lane=True) == expected
+
+    def root(env: dict[str, str]) -> str | None:
+        return env.get("PRECIS_SLICE_ROOT")
+
+    expected = "/Users/deploy/precis-fix-repo"
+    assert (
+        root(_render_collapsed_worker_slice_env(gateway=True, fix_lane=False))
+        == expected
+    )
+    assert (
+        root(_render_collapsed_worker_slice_env(gateway=True, fix_lane=True))
+        == expected
+    )
     assert _render_collapsed_worker_slice_env(gateway=False, fix_lane=True) == {}
-    assert _render_collapsed_worker_slice_env(
-        gateway=True, fix_lane=False, precis_fix_repo_dir="/srv/fix-repo"
-    ) == {"PRECIS_SLICE_ROOT": "/srv/fix-repo"}
-    assert _render_collapsed_worker_slice_env(
-        gateway=True, fix_lane=False, precis_slice_root="/srv/slices"
-    ) == {"PRECIS_SLICE_ROOT": "/srv/slices"}
+    assert (
+        root(
+            _render_collapsed_worker_slice_env(
+                gateway=True, fix_lane=False, precis_fix_repo_dir="/srv/fix-repo"
+            )
+        )
+        == "/srv/fix-repo"
+    )
+    assert (
+        root(
+            _render_collapsed_worker_slice_env(
+                gateway=True, fix_lane=False, precis_slice_root="/srv/slices"
+            )
+        )
+        == "/srv/slices"
+    )
+
+
+def test_collapsed_worker_advertises_the_devin_lane_on_the_gateway() -> None:
+    """The heartbeat's ``devin_bin`` lane token (capability_probe,
+    gr676054) is probed from 20b's env, the gateway's only heartbeating
+    unit. The CLI sits in ``~/.local/bin``, off that unit's PATH, so without
+    ``PRECIS_DEVIN_BIN`` the probe deletes the host's row and every
+    devin-lane run_slice queues unplaceable (r317 restart, 2026-11-15,
+    td684896). Same value as 20g's slices lane; off the gateway, nothing."""
+    env = _render_collapsed_worker_slice_env(gateway=True, fix_lane=False)
+    assert env["PRECIS_DEVIN_BIN"] == "/Users/deploy/.local/bin/devin"
+    assert (
+        _render_collapsed_worker_slice_env(
+            gateway=True, fix_lane=False, precis_devin_bin="/opt/devin"
+        )["PRECIS_DEVIN_BIN"]
+        == "/opt/devin"
+    )
+    assert "PRECIS_DEVIN_BIN" not in _render_collapsed_worker_slice_env(
+        gateway=False, fix_lane=False
+    )
 
 
 def _render_drain_base_env(**extra: object) -> dict[str, str]:
@@ -566,6 +606,64 @@ def test_collapsed_worker_slice_token_dir_renders_only_when_the_host_var_is_set(
     assert (
         _render_collapsed_worker_slice_token_env(
             gateway=False, precis_mcp_slice_token_dir=token_dir
+        )
+        == {}
+    )
+
+
+def _render_collapsed_worker_slice_repos_env(
+    *, gateway: bool, **extra: object
+) -> dict[str, str]:
+    """Render 20b's ``_l_b_slice_repos_env`` (a second repo's clone path) —
+    same stub idiom as :func:`_render_collapsed_worker_slice_token_env`, plus
+    a stand-in for Ansible's ``to_json`` filter."""
+    import json
+
+    import yaml
+    from jinja2.nativetypes import NativeEnvironment
+
+    play_src = (
+        _REPO_ROOT / "deploy" / "playbooks" / "20b-precis-worker-collapsed.yml"
+    ).read_text(encoding="utf-8")
+    plays = yaml.safe_load(play_src)
+    play_vars = plays[0]["vars"]
+    assert "combine(_l_b_slice_repos_env)" in play_vars["_l_b_env"]
+
+    env = NativeEnvironment(undefined=jinja2.ChainableUndefined)
+    env.filters["to_json"] = json.dumps
+    rendered = env.from_string(play_vars["_l_b_slice_repos_env"]).render(
+        inventory_hostname="host-a",
+        groups={"gateway": ["host-a"] if gateway else ["host-b"]},
+        **extra,
+    )
+    assert isinstance(rendered, dict), (
+        f"_l_b_slice_repos_env rendered to {type(rendered)}"
+    )
+    return rendered
+
+
+def test_collapsed_worker_slice_repos_render_only_when_the_host_var_is_set() -> None:
+    """``PRECIS_SLICE_REPOS`` is the JSON object ``run_slice.slice_root_for``
+    parses (repo name -> absolute clone path). The collapsed worker runs
+    ``job_ssh_node`` in its rotation, so a second-repo slice it claims needs
+    the same value 20g renders (td659522). The clone is the operator's to
+    place, so there is no default: unset or empty, or off the gateway, the
+    key is omitted."""
+    import json
+
+    repos = {"catpath": "/Users/deploy/catpath"}
+    rendered = _render_collapsed_worker_slice_repos_env(
+        gateway=True, precis_slice_repos=repos
+    )
+    assert json.loads(rendered["PRECIS_SLICE_REPOS"]) == repos
+    assert _render_collapsed_worker_slice_repos_env(gateway=True) == {}
+    assert (
+        _render_collapsed_worker_slice_repos_env(gateway=True, precis_slice_repos={})
+        == {}
+    )
+    assert (
+        _render_collapsed_worker_slice_repos_env(
+            gateway=False, precis_slice_repos=repos
         )
         == {}
     )

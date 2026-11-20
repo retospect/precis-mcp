@@ -177,19 +177,19 @@ def test_builds_view_reports_the_build_per_host_and_process(
     commit that had been live for 11 hours. Every claim already stamps
     ``meta.lease_code``; this view aggregates it."""
     _seed_leased_job(
-        store, host="melchior", process="precis-worker", lease_code="8.35.1@4db6836b"
+        store, host="maple", process="precis-worker", lease_code="8.35.1@4db6836b"
     )
     _seed_leased_job(
         store,
-        host="melchior",
+        host="maple",
         process="precis-worker-agentlane",
         lease_code="8.35.1@aaaaaaaa",
     )
 
     resp = jobs.get(id="/builds")
 
-    assert "melchior precis-worker 8.35.1@4db6836b" in resp.body
-    assert "melchior precis-worker-agentlane 8.35.1@aaaaaaaa" in resp.body
+    assert "maple precis-worker 8.35.1@4db6836b" in resp.body
+    assert "maple precis-worker-agentlane 8.35.1@aaaaaaaa" in resp.body
 
 
 def test_builds_view_keeps_two_processes_on_one_host_apart(
@@ -198,11 +198,11 @@ def test_builds_view_keeps_two_processes_on_one_host_apart(
     """The 20b/20e split is the whole point of grouping by process: an env or
     code difference between two units of one host must not average away."""
     _seed_leased_job(
-        store, host="melchior", process="precis-worker", lease_code="8.35.1@newer"
+        store, host="maple", process="precis-worker", lease_code="8.35.1@newer"
     )
     _seed_leased_job(
         store,
-        host="melchior",
+        host="maple",
         process="precis-worker-agentlane",
         lease_code="8.35.1@older",
     )
@@ -219,7 +219,7 @@ def test_builds_view_window_excludes_older_claims(
     now; the default day-long window drops it, a wider one finds it."""
     _seed_leased_job(
         store,
-        host="castor",
+        host="cedar",
         process="precis-worker-compute",
         lease_code="8.30.0@ancient",
         hours_ago=72,
@@ -410,12 +410,12 @@ def test_host_filter(jobs: JobHandler, store: Store) -> None:
 def test_process_filter(jobs: JobHandler, store: Store) -> None:
     _insert_log(
         store,
-        host="melchior",
+        host="maple",
         process="precis-worker-agentlane",
         message="agentlane message",
     )
     _insert_log(
-        store, host="melchior", process="precis-worker-drain-1", message="drain message"
+        store, host="maple", process="precis-worker-drain-1", message="drain message"
     )
 
     resp = jobs.get(id="/logs?process=precis-worker-agentlane")
@@ -428,7 +428,7 @@ def test_process_filter(jobs: JobHandler, store: Store) -> None:
 def test_process_filter_empty_says_so_explicitly(
     jobs: JobHandler, store: Store
 ) -> None:
-    _insert_log(store, host="melchior", process="precis-worker", message="irrelevant")
+    _insert_log(store, host="maple", process="precis-worker", message="irrelevant")
 
     resp = jobs.get(id="/logs?process=precis-worker-drain-2")
 
@@ -560,26 +560,26 @@ def _seed_throughput_job(
 def test_throughput_counts_claims_outcomes_and_queue(
     jobs: JobHandler, store: Store
 ) -> None:
-    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=1)
-    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=2)
-    _seed_throughput_job(store, host="castor", status="failed", started_hours_ago=3)
-    _seed_throughput_job(store, host="melchior", status="running", started_hours_ago=1)
+    _seed_throughput_job(store, host="cedar", status="succeeded", started_hours_ago=1)
+    _seed_throughput_job(store, host="cedar", status="succeeded", started_hours_ago=2)
+    _seed_throughput_job(store, host="cedar", status="failed", started_hours_ago=3)
+    _seed_throughput_job(store, host="maple", status="running", started_hours_ago=1)
     _seed_throughput_job(store, host=None, status="queued", executor="ssh_node")
     # Finished before the window: counted nowhere.
-    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=72)
+    _seed_throughput_job(store, host="cedar", status="succeeded", started_hours_ago=72)
 
     body = jobs.get(id="/throughput").body
 
-    assert "castor precis-worker claimed=3 succeeded=2 failed=1 running=0" in body
-    assert "melchior precis-worker claimed=1 succeeded=0 failed=0 running=1" in body
+    assert "cedar precis-worker claimed=3 succeeded=2 failed=1 running=0" in body
+    assert "maple precis-worker claimed=1 succeeded=0 failed=0 running=1" in body
     assert "4 claim(s) across 2 host/process row(s)." in body
     assert "queued now by executor: ssh_node=1" in body
 
 
 def test_throughput_window_widens(jobs: JobHandler, store: Store) -> None:
-    _seed_throughput_job(store, host="castor", status="succeeded", started_hours_ago=72)
-    assert "castor" not in jobs.get(id="/throughput").body
-    assert "castor precis-worker claimed=1" in jobs.get(id="/throughput?since=168").body
+    _seed_throughput_job(store, host="cedar", status="succeeded", started_hours_ago=72)
+    assert "cedar" not in jobs.get(id="/throughput").body
+    assert "cedar precis-worker claimed=1" in jobs.get(id="/throughput?since=168").body
 
 
 def test_throughput_queue_depth_ignores_retired_jobs(
@@ -645,12 +645,12 @@ def _seed_run_job(store: Store, *, host: str, minutes_ago: float) -> int:
 
 def test_logs_job_window_filters_time_and_host(jobs: JobHandler, store: Store) -> None:
     # job ran from 120 to 110 minutes ago (window: 125..105 min ago)
-    job_id = _seed_run_job(store, host="melchior", minutes_ago=120)
+    job_id = _seed_run_job(store, host="maple", minutes_ago=120)
     for msg, host, hours in [
-        ("inside window", "melchior", 115 / 60),
-        ("too early", "melchior", 3.0),
-        ("too late", "melchior", 1.0),
-        ("other host", "caspar", 115 / 60),
+        ("inside window", "maple", 115 / 60),
+        ("too early", "maple", 3.0),
+        ("too late", "maple", 1.0),
+        ("other host", "birch", 115 / 60),
     ]:
         _insert_log(store, message=msg, host=host, hours_ago=hours)
 
@@ -662,7 +662,7 @@ def test_logs_job_window_filters_time_and_host(jobs: JobHandler, store: Store) -
     assert "other host" not in resp.body
     assert "since= ignored" in resp.body
     # explicit host= overrides the job's host; bare numeric id accepted
-    other = jobs.get(id=f"/logs?job={job_id}&host=caspar")
+    other = jobs.get(id=f"/logs?job={job_id}&host=birch")
     assert "other host" in other.body
     assert "inside window" not in other.body
 
@@ -678,13 +678,13 @@ def test_logs_job_window_follows_last_reclaim(jobs: JobHandler, store: Store) ->
         meta={
             "job_type": "fake",
             "executor": "coordinator",
-            "lease_host": "melchior",
+            "lease_host": "maple",
             "started_at": started.isoformat(),
             "wall_seconds": 600,
             "reclaims": [{"at": reclaimed.isoformat(), "why": "expiry"}],
         },
     )
-    _insert_log(store, message="final attempt", host="melchior", hours_ago=55 / 60)
+    _insert_log(store, message="final attempt", host="maple", hours_ago=55 / 60)
 
     resp = jobs.get(id=f"/logs?job=jo{ref.id}")
 
@@ -881,6 +881,77 @@ def _insert_job(store: Store, *, meta: dict, status: str) -> int:
     return ref.id
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "hint"),
+    [
+        (
+            {"__extras__": {"executor": "codex"}},
+            "search(kind='job', view='count', args={'group_by': 'meta.executor,state'})",
+        ),
+        (
+            {"__extras__": {"state": "failed"}},
+            "search(kind='job', view='count', args={'group_by': 'meta.executor,state'})",
+        ),
+        (
+            {"__extras__": {"parent": "td123"}},
+            "search(kind='job', under='td123')",
+        ),
+        (
+            {"sort": "oldest"},
+            "search(kind='job', view='count', args={'group_by': 'state'})",
+        ),
+        (
+            {"__extras__": {"sort": "newest"}},
+            "search(kind='job', view='count', args={'group_by': 'state'})",
+        ),
+    ],
+)
+def test_job_search_refusals_name_working_call(
+    runtime_with_store: PrecisRuntime, kwargs: dict[str, Any], hint: str
+) -> None:
+    body = runtime_with_store.dispatch("search", {"kind": "job", **kwargs})
+    assert "[error:BadInput]" in body, body
+    assert "next:" in body and hint in body, body
+
+
+@pytest.mark.parametrize("extras", [{"job_type": "run_slice"}, {"since": "2000-01-01"}])
+def test_sort_recency_accepted_on_job_type_listing(
+    runtime_with_store: PrecisRuntime, store: Store, extras: dict[str, str]
+) -> None:
+    _insert_job(store, meta={"job_type": "run_slice"}, status="running")
+    query = {"kind": "job", "status": "*", "__extras__": extras}
+    default = runtime_with_store.dispatch("search", query)
+    sorted_body = runtime_with_store.dispatch("search", {**query, "sort": "recency"})
+    assert "# 1 job entry" in default, default
+    assert "# 1 job entry" in sorted_body, sorted_body
+    assert default.splitlines()[0] == sorted_body.splitlines()[0]
+
+
+@pytest.mark.parametrize("view", ["error", "body"])
+def test_view_error_aliases_status_card(
+    runtime_with_store: PrecisRuntime, store: Store, view: str
+) -> None:
+    job_id = _insert_job(store, meta={"error": "seed failure"}, status="failed")
+    body = runtime_with_store.dispatch(
+        "get", {"kind": "job", "id": job_id, "view": view}
+    )
+    assert "error: seed failure" in body, body
+    assert f"view={view!r} read as the default status card" in body, body
+
+
+def test_under_listing_footer_has_no_page_arg(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    parent = store.insert_ref(kind="todo", slug=None, title="parent", meta={})
+    for title in ("first", "second"):
+        store.insert_ref(kind="job", slug=None, title=title, parent_id=parent.id)
+    body = runtime_with_store.dispatch(
+        "search", {"kind": "job", "under": f"td{parent.id}", "page_size": 1}
+    )
+    assert "raise page_size= or narrow with job_type=/since=" in body, body
+    assert "page=" not in body, body
+
+
 def test_job_card_leads_with_describe_sentence(jobs: JobHandler, store: Store) -> None:
     """The card's first content line is the per-type sentence (td573331),
     with ``job_type:`` still present below it."""
@@ -1044,6 +1115,77 @@ def test_wake_args_reach_handler(
     assert f"woke jo{job_id}" in body
     assert "quota restored" in body
     assert {str(t) for t in store.tags_for(job_id)} == {"STATUS:queued"}
+
+
+def test_failed_card_states_error_once(jobs: JobHandler, store: Store) -> None:
+    job_id = _insert_job(
+        store, meta={"job_type": "fake", "error": "error text"}, status="failed"
+    )
+    append_chunk(store, job_id, "job_event", "error text")
+    append_chunk(store, job_id, "job_summary", "Short summary")
+    body = jobs.get(id=job_id).body
+    assert body.count("error text") == 1
+    assert body.count("Short summary") == 1
+    assert "## event" not in body
+
+
+def test_succeeded_card_keeps_summary_and_events(
+    jobs: JobHandler, store: Store
+) -> None:
+    job_id = _insert_job(store, meta={"job_type": "fake"}, status="succeeded")
+    append_chunk(store, job_id, "job_event", "Progress report")
+    append_chunk(store, job_id, "job_summary", "Short summary")
+    body = jobs.get(id=job_id).body
+    assert "## summary\nShort summary" in body
+    assert "Progress report" in body
+
+
+@pytest.mark.parametrize("status", ["failed", "timed-out"])
+def test_batch_get_shows_error_for_failed_jobs(
+    jobs: JobHandler, store: Store, status: str
+) -> None:
+    failed = _insert_job(store, meta={"error": "batch reason"}, status=status)
+    succeeded = _insert_job(store, meta={"error": "stale reason"}, status="succeeded")
+    body = jobs.get(id=[failed, succeeded]).body
+    assert body.count("error: batch reason") == 1
+    assert "stale reason" not in body
+
+
+def test_batch_get_uses_failure_boundary_event(jobs: JobHandler, store: Store) -> None:
+    job_id = _insert_job(
+        store, meta={"finished_at": datetime.now(UTC).isoformat()}, status="failed"
+    )
+    append_chunk(store, job_id, "job_event", "boundary failure")
+    body = jobs.get(id=[job_id]).body
+    assert "error: boundary failure" in body
+
+
+def test_job_type_listing_drops_dead_columns_and_tallies(
+    jobs: JobHandler, store: Store
+) -> None:
+    for status in ("queued", "failed", "failed"):
+        _insert_job(store, meta={"job_type": "listing_fixture"}, status=status)
+    _insert_job(store, meta={"job_type": "other_fixture"}, status="running")
+    body = jobs.search(job_type="listing_fixture", page_size=1).body
+    assert "failed 2" in body
+    assert "queued 1" in body
+    assert "running 1" not in body
+    table_header = next(line for line in body.splitlines() if "summary" in line)
+    for column in ("remaining_words", "links", "age", "size"):
+        assert column not in table_header
+
+    filtered = jobs.search(job_type="listing_fixture", status="failed").body
+    assert "failed 2" in filtered
+    assert "queued 1" not in filtered
+
+
+def test_job_listing_keeps_nonzero_columns(jobs: JobHandler, store: Store) -> None:
+    ref = store.insert_ref(
+        kind="job", slug=None, title="First line\nAdditional detail", meta={}
+    )
+    table = jobs._render_hits_table([ref])
+    assert "remaining_words" in table.splitlines()[0]
+    assert "links" not in table.splitlines()[0]
 
 
 class TestJobCardErrorLine:
@@ -1249,3 +1391,30 @@ class TestRunningJobCardBudget:
             status="succeeded",
         )
         assert "step_budget:" not in jobs.get(id=job_id).body
+
+
+def test_throughput_names_a_dark_lane(jobs: JobHandler, store: Store) -> None:
+    """gr592838 want (b): claimable work aged past the dark floor with no
+    claimer and nothing running renders as a ``lane alert:`` — raw queue
+    depth alone read the same for a busy lane and a dead one."""
+    jid = _seed_throughput_job(store, host=None, status="queued", executor="ssh_node")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - interval '20 minutes' "
+            "WHERE ref_id = %s",
+            (jid,),
+        )
+        conn.commit()
+
+    body = jobs.get(id="/throughput").body
+
+    assert "queued now by executor: ssh_node=1" in body
+    assert "lane alert: 'ssh_node' reads dark" in body
+    assert "no open alert or gripe names this lane" in body
+
+
+def test_throughput_fresh_queue_is_not_dark(jobs: JobHandler, store: Store) -> None:
+    _seed_throughput_job(store, host=None, status="queued", executor="ssh_node")
+    body = jobs.get(id="/throughput").body
+    assert "queued now by executor: ssh_node=1" in body
+    assert "lane alert" not in body

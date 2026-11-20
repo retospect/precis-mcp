@@ -1,6 +1,6 @@
 """``good_search`` — agentic broad-retrieval as a coordinator campaign.
 
-Thin slice of ``docs/backlog/good-search-coordinator.md`` (Phasing step
+Thin slice of `gr690822` (Phasing step
 1): fuse → fan out triage children → heartbeat gather → ``Done`` with a
 merged verdict. No verify rung, no ``kind='citation'`` writes, no
 query/HyDE self-expansion — those are phase 2.
@@ -110,7 +110,7 @@ def _triage_batch() -> int:
 
 def _default_max_children() -> int:
     """Fan-out ceiling when ``params.max_children`` is unset (thin
-    slice default 4 — melchior's agent worker is the one queue)."""
+    slice default 4 — the agent host's agent worker is the one queue)."""
     return env_int("PRECIS_GOOD_SEARCH_MAX_CHILDREN", 4, lo=1, hi=64)
 
 

@@ -258,20 +258,22 @@ def stamp_environment_results(
     }
 
     basis = compute_mod._network_basis(dict(pathway_meta) if pathway_meta else None)
+    env_keys = ("env_best_J", "env_pareto_fraction")
     if basis is not None:
-        present = {
-            k: desired[k]
-            for k in ("env_best_J", "env_pareto_fraction")
-            if desired[k] is not None
-        }
+        present = {k: desired[k] for k in env_keys if desired[k] is not None}
         by_key = compute_mod._network_basis_by_key(existing, present, basis)
-        # A cleared measure keeps no basis entry — its stale stamp must
-        # not mark the candidate network_stale on a value it no longer
-        # carries.
-        for k in ("env_best_J", "env_pareto_fraction"):
-            if desired[k] is None:
-                by_key.pop(k, None)
-        desired["network_basis_by_key"] = by_key
+    else:
+        # No basis this write: the previous evaluation's provenance must
+        # not carry over to the new value.
+        by_key = dict(existing.get("network_basis_by_key") or {})
+    # A cleared measure keeps no basis entry — its stale stamp must
+    # not mark the candidate network_stale on a value it no longer
+    # carries.
+    for k in env_keys:
+        if desired[k] is None or basis is None:
+            by_key.pop(k, None)
+    if by_key or existing.get("network_basis_by_key"):
+        desired["network_basis_by_key"] = by_key or None
 
     changed = {
         k: v

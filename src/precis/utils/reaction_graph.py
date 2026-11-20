@@ -3,7 +3,7 @@
 Lives in core rather than in ``precis_pathway`` because ``precis.quest``
 (:mod:`~precis.quest.figures`, :mod:`~precis.quest.results_table`) reads
 these scalars for any quest whose candidates carry a graph, and core must
-not import a plugin — see ``docs/backlog/plugin-split-runtime-shell.md``.
+not import a plugin — see `me690684`.
 Nothing here touches the store, a handler or the engine; it is stdlib-only
 graph math over the dict shape described below.
 

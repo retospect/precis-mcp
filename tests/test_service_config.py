@@ -28,7 +28,7 @@ from precis.workers.service_config import (
 
 def test_resolver_defaults_when_table_empty(store) -> None:
     """No row ⇒ the env/profile default decides (byte-identical to today)."""
-    r = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+    r = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
     # default_on carries the env/profile verdict through untouched.
     assert r.enabled("classify", default_on=True) is True
     assert r.enabled("classify", default_on=False) is False
@@ -38,9 +38,9 @@ def test_resolver_defaults_when_table_empty(store) -> None:
 
 def test_prio_zero_disables_and_nonzero_enables(store) -> None:
     """prio 0 forces off even when default_on; prio>=1 forces on when off."""
-    set_service_prio(store, "melchior", "classify", 0, actor="test")
-    set_service_prio(store, "melchior", "llm_reconcile", 3, actor="test")
-    r = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+    set_service_prio(store, "maple", "classify", 0, actor="test")
+    set_service_prio(store, "maple", "llm_reconcile", 3, actor="test")
+    r = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
     # a default-on pass turned off by the row
     assert r.enabled("classify", default_on=True) is False
     # a default-off pass turned on by the row
@@ -51,19 +51,19 @@ def test_prio_zero_disables_and_nonzero_enables(store) -> None:
 def test_exact_host_wins_over_wildcard(store) -> None:
     """A concrete-host row overrides the ``*`` all-hosts default."""
     set_service_prio(store, "*", "classify", 7, actor="test")
-    set_service_prio(store, "melchior", "classify", 0, actor="test")
-    r_mel = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
-    r_cas = ServiceConfigResolver(store, host="caspar", ttl_s=0.0)
-    # melchior has an exact 0 → off; caspar falls to the wildcard 7 → on.
+    set_service_prio(store, "maple", "classify", 0, actor="test")
+    r_mel = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
+    r_cas = ServiceConfigResolver(store, host="birch", ttl_s=0.0)
+    # maple has an exact 0 → off; birch falls to the wildcard 7 → on.
     assert r_mel.prio("classify", default=DEFAULT_PRIO) == 0
     assert r_cas.prio("classify", default=DEFAULT_PRIO) == 7
 
 
 def test_ttl_cache_holds_then_invalidate_refreshes(store) -> None:
     """A long TTL caches the first read; invalidate() forces a re-read."""
-    r = ServiceConfigResolver(store, host="melchior", ttl_s=3600.0)
+    r = ServiceConfigResolver(store, host="maple", ttl_s=3600.0)
     assert r.prio("classify", default=DEFAULT_PRIO) == DEFAULT_PRIO  # warms cache
-    set_service_prio(store, "melchior", "classify", 0, actor="test")
+    set_service_prio(store, "maple", "classify", 0, actor="test")
     # still cached (TTL not expired) → old value
     assert r.prio("classify", default=DEFAULT_PRIO) == DEFAULT_PRIO
     r.invalidate()
@@ -71,35 +71,35 @@ def test_ttl_cache_holds_then_invalidate_refreshes(store) -> None:
 
 
 def test_set_clear_and_list_roundtrip(store) -> None:
-    set_service_prio(store, "melchior", "classify", 2, actor="reto")
-    set_service_model(store, "melchior", "briefing", "claude-opus-5-5", actor="reto")
+    set_service_prio(store, "maple", "classify", 2, actor="reto")
+    set_service_model(store, "maple", "briefing", "claude-opus-5-5", actor="reto")
     rows = list_service_config(store)
     by_key = {(r["host"], r["service"]): r for r in rows}
-    assert by_key[("melchior", "classify")]["prio"] == 2
-    assert by_key[("melchior", "briefing")]["model_pref"] == "claude-opus-5-5"
+    assert by_key[("maple", "classify")]["prio"] == 2
+    assert by_key[("maple", "briefing")]["model_pref"] == "claude-opus-5-5"
     # model set didn't disturb prio (defaulted to DEFAULT_PRIO for the new row)
-    assert by_key[("melchior", "briefing")]["prio"] == DEFAULT_PRIO
+    assert by_key[("maple", "briefing")]["prio"] == DEFAULT_PRIO
 
-    assert clear_service_config(store, "melchior", "classify") is True
-    assert clear_service_config(store, "melchior", "classify") is False  # gone now
+    assert clear_service_config(store, "maple", "classify") is True
+    assert clear_service_config(store, "maple", "classify") is False  # gone now
     left = {(r["host"], r["service"]) for r in list_service_config(store)}
-    assert ("melchior", "classify") not in left
-    assert ("melchior", "briefing") in left
+    assert ("maple", "classify") not in left
+    assert ("maple", "briefing") in left
 
 
 def test_set_prio_rejects_out_of_range(store) -> None:
     with pytest.raises(ValueError):
-        set_service_prio(store, "melchior", "classify", 11)
+        set_service_prio(store, "maple", "classify", 11)
     with pytest.raises(ValueError):
-        set_service_prio(store, "melchior", "classify", -1)
+        set_service_prio(store, "maple", "classify", -1)
 
 
 def test_model_pin_survives_prio_flip(store) -> None:
     """`service prio` must not wipe a separately-set model_pref."""
-    set_service_model(store, "melchior", "briefing", "claude-opus-5-5")
-    set_service_prio(store, "melchior", "briefing", 0)  # no model_pref supplied
+    set_service_model(store, "maple", "briefing", "claude-opus-5-5")
+    set_service_prio(store, "maple", "briefing", 0)  # no model_pref supplied
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
-    row = rows[("melchior", "briefing")]
+    row = rows[("maple", "briefing")]
     assert row["prio"] == 0
     assert row["model_pref"] == "claude-opus-5-5"  # preserved by COALESCE
 
@@ -112,26 +112,26 @@ def test_model_pin_survives_prio_flip(store) -> None:
 def test_concurrency_defaults_when_no_row_or_value(store) -> None:
     """No row, or a row with ``concurrency`` left NULL, both fall through to
     the caller-supplied default (1, serial) — byte-identical to today."""
-    r = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+    r = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
     assert r.concurrency("classify", default=1) == 1
     # a row that only sets prio (concurrency stays NULL) still defaults.
-    set_service_prio(store, "melchior", "classify", 3, actor="test")
+    set_service_prio(store, "maple", "classify", 3, actor="test")
     r.invalidate()
     assert r.concurrency("classify", default=1) == 1
 
 
 def test_concurrency_override_roundtrip(store) -> None:
-    set_service_concurrency(store, "melchior", "classify", 6, actor="test")
-    r = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+    set_service_concurrency(store, "maple", "classify", 6, actor="test")
+    r = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
     assert r.concurrency("classify", default=1) == 6
 
 
 def test_concurrency_exact_host_wins_over_wildcard(store) -> None:
     """Same exact-host-over-``*`` precedence as ``prio``."""
     set_service_concurrency(store, "*", "classify", 4, actor="test")
-    set_service_concurrency(store, "melchior", "classify", 8, actor="test")
-    r_mel = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
-    r_cas = ServiceConfigResolver(store, host="caspar", ttl_s=0.0)
+    set_service_concurrency(store, "maple", "classify", 8, actor="test")
+    r_mel = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
+    r_cas = ServiceConfigResolver(store, host="birch", ttl_s=0.0)
     assert r_mel.concurrency("classify", default=1) == 8
     assert r_cas.concurrency("classify", default=1) == 4  # falls to the wildcard
 
@@ -139,25 +139,25 @@ def test_concurrency_exact_host_wins_over_wildcard(store) -> None:
 def test_concurrency_clear_reverts_to_default(store) -> None:
     """Setting ``concurrency=None`` reverts to the default without touching
     a separately-set prio."""
-    set_service_prio(store, "melchior", "classify", 3, actor="test")
-    set_service_concurrency(store, "melchior", "classify", 6, actor="test")
-    set_service_concurrency(store, "melchior", "classify", None, actor="test")
-    r = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+    set_service_prio(store, "maple", "classify", 3, actor="test")
+    set_service_concurrency(store, "maple", "classify", 6, actor="test")
+    set_service_concurrency(store, "maple", "classify", None, actor="test")
+    r = ServiceConfigResolver(store, host="maple", ttl_s=0.0)
     assert r.concurrency("classify", default=1) == 1
     assert r.prio("classify", default=DEFAULT_PRIO) == 3  # untouched
 
 
 def test_set_service_concurrency_rejects_non_positive(store) -> None:
     with pytest.raises(ValueError):
-        set_service_concurrency(store, "melchior", "classify", 0)
+        set_service_concurrency(store, "maple", "classify", 0)
     with pytest.raises(ValueError):
-        set_service_concurrency(store, "melchior", "classify", -1)
+        set_service_concurrency(store, "maple", "classify", -1)
 
 
 def test_list_service_config_reports_concurrency(store) -> None:
-    set_service_concurrency(store, "melchior", "classify", 5, actor="reto")
+    set_service_concurrency(store, "maple", "classify", 5, actor="reto")
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
-    assert rows[("melchior", "classify")]["concurrency"] == 5
+    assert rows[("maple", "classify")]["concurrency"] == 5
 
 
 # ---------------------------------------------------------------------------
@@ -166,26 +166,26 @@ def test_list_service_config_reports_concurrency(store) -> None:
 
 
 def test_seed_inserts_when_absent(store) -> None:
-    inserted = seed_service_prio(store, "melchior", "classify", 5, actor="deploy")
+    inserted = seed_service_prio(store, "maple", "classify", 5, actor="deploy")
     assert inserted is True
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
-    assert rows[("melchior", "classify")]["prio"] == 5
+    assert rows[("maple", "classify")]["prio"] == 5
 
 
 def test_seed_never_clobbers_an_existing_row(store) -> None:
     """The whole point of ``seed`` vs ``set_service_prio``: a console
     operator's override must survive a redeploy re-running the seed task."""
-    set_service_prio(store, "melchior", "classify", 0, actor="console-operator")
-    inserted = seed_service_prio(store, "melchior", "classify", 5, actor="deploy")
+    set_service_prio(store, "maple", "classify", 0, actor="console-operator")
+    inserted = seed_service_prio(store, "maple", "classify", 5, actor="deploy")
     assert inserted is False
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
-    assert rows[("melchior", "classify")]["prio"] == 0  # untouched
-    assert rows[("melchior", "classify")]["actor"] == "console-operator"
+    assert rows[("maple", "classify")]["prio"] == 0  # untouched
+    assert rows[("maple", "classify")]["actor"] == "console-operator"
 
 
 def test_seed_rejects_out_of_range_prio(store) -> None:
     with pytest.raises(ValueError):
-        seed_service_prio(store, "melchior", "classify", 11)
+        seed_service_prio(store, "maple", "classify", 11)
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +303,7 @@ def test_dark_switch_states_dark_lit_off(store) -> None:
 
     assert state("conflict_search")["state"] == "dark"
     set_service_prio(store, "*", "conflict_search", 4, actor="test")
-    set_service_prio(store, "melchior", "inbound_chase", 0, actor="test")
+    set_service_prio(store, "maple", "inbound_chase", 0, actor="test")
     cs = state("conflict_search")
     assert cs["state"] == "lit"
     assert cs["setting"] == "*=4"

@@ -543,6 +543,20 @@ class TestTick:
         assert "project:precis" in _open_tag_values(store, gid)
         assert not any(c.startswith("project:") for c in _comments(store, gid))
 
+    @pytest.mark.parametrize("override", [False, True])
+    def test_triage_stamps_origin_class(self, store: Store, override: bool) -> None:
+        _light(store)
+        gid = _gripe(store, "quest-need: missing capability")
+        if override:
+            store.add_tag(gid, Tag.open("origin-class:human"), set_by="agent")
+        _run(store, llm=_llm({"verdicts": [_verdict(gid)]}))
+        origins = {
+            t for t in _open_tag_values(store, gid) if t.startswith("origin-class:")
+        }
+        assert origins == {
+            "origin-class:human" if override else "origin-class:self-improvement"
+        }
+
     def test_writes_tags_prio_status_and_clears_lease(self, store: Store) -> None:
         gid = _gripe(store, "router pours fail", age_days=7, body="it pours")
         _light(store)
@@ -1186,6 +1200,253 @@ class TestVerdictSemantics:
         assert r.extra["reto"] == 0
         assert "reto:ask" not in _open_tag_values(store, gid)
 
+    def test_refused_model_ask_falls_back_to_recommend(self, store: Store) -> None:
+        """gr673371: a model ask that parses but fails the meta.ask
+        lint (an oversized stored option) retries as the fallback ask —
+        and option 1 states triage's recommendation, never the
+        reason's problem statement."""
+        recommend = "bulk-close the duplicate stale-node asks now"
+        reason = (
+            "duplicate stale-node asks are flooding the ask-user queue "
+            "instead of asking once per live node, so real questions drown"
+        )
+        oversized = [
+            {
+                "option": "bulk-close every stale-node ask " + "x" * 150,
+                "cost": "clears the queue",
+                "recommended": True,
+            },
+            {"option": "leave them", "cost": "the queue stays flooded"},
+        ]
+        gid = _gripe(store, "stale-node asks flood the queue")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            reason=reason,
+                            recommend=recommend,
+                            ask=_ask(options=oversized),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 1
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        options = (_meta(store, todos[0]).get("ask") or {}).get("options") or []
+        assert options[0] == f"{recommend} — triage's recommendation"
+        assert "flooding the ask-user queue" not in options[0]
+
+    def test_refused_model_ask_uses_its_recommended_option(self, store: Store) -> None:
+        """gr673371: with no ``recommend`` line the fallback still shows
+        triage's recommendation — the model's own recommended option —
+        never the reason."""
+        reason = "the asks are flooding the queue instead of asking once"
+        recommended = "bulk-close the stale asks, then cap new ones per live node"
+        oversized = [
+            {"option": recommended, "cost": "one batch close", "recommended": True},
+            {"option": "y" * 190, "cost": "the flood continues"},
+        ]
+        gid = _gripe(store, "stale-node asks flood the queue")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            reason=reason,
+                            ask=_ask(options=oversized),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 1
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        options = (_meta(store, todos[0]).get("ask") or {}).get("options") or []
+        assert options[0] == f"{recommended} — triage's recommendation"
+
+    def test_long_recommendation_word_cut_not_refused(self, store: Store) -> None:
+        """An over-cap recommendation still lands as option 1 — cut on
+        a word boundary inside the option budget, not mid-word at a
+        bare character limit — while the ask's context and the todo
+        body carry it in full, so the owner reads the whole call they
+        are approving (gr673371)."""
+        recommend = (
+            "bulk-close the duplicate stale-node asks, ship the "
+            "one-ask-per-live-node cap inside factory_rescue_tick, and "
+            "sweep every older duplicate ask the queue still holds open "
+            "for the owner"
+        )
+        assert len(recommend) > gripe_triage._ASK_OPTION_TEXT_CAP
+        oversized = [
+            {"option": "z" * 200, "cost": "dear", "recommended": True},
+            {"option": "leave", "cost": "the flood continues"},
+        ]
+        gid = _gripe(store, "stale-node asks flood the queue")
+        _light(store)
+        _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            recommend=recommend,
+                            ask=_ask(options=oversized),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        ask_meta = _meta(store, todos[0]).get("ask") or {}
+        options = ask_meta.get("options") or []
+        assert options[0].startswith("bulk-close the duplicate stale-node asks")
+        assert options[0].endswith("… — triage's recommendation")
+        assert len(options[0]) <= 200
+        assert "…" in options[0]
+        # The bounding is the option's alone — the complete
+        # recommendation stays readable in the ask's context and on
+        # the todo body.
+        assert recommend in (ask_meta.get("context") or "")
+        assert recommend in _body(store, todos[0])
+
+    def test_spaceless_context_keeps_the_model_ask(self, store: Store) -> None:
+        """gr673371: ``excerpt`` returns ``limit + 1`` on a spaceless
+        token — the ellipsis rides past the cut — so a long-token
+        context excerpted at the full 600-char budget lint-refused the
+        model's whole ask and swapped its priced options for the
+        fallback's. The budget reserves the ellipsis: the original
+        ask survives and the body keeps the context whole."""
+        long_url = "https://tickets.example.invalid/" + "q" * 700
+        gid = _gripe(store, "validator loop wants a carve-out")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {"verdicts": [_verdict(gid, fix="reto", ask=_ask(context=long_url))]}
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 1
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        ask_meta = _meta(store, todos[0]).get("ask") or {}
+        options = ask_meta.get("options") or []
+        # The model's own priced options survived the lint — a
+        # fallback mint would read "… — triage's recommendation".
+        assert options[0] == "grant the carve-out — ~$20 and one night"
+        context = ask_meta.get("context") or ""
+        assert len(context) <= 600
+        assert context.endswith("…")
+        # The ellipsis bounds only the meta.ask surface — the todo
+        # body carries the context whole.
+        assert long_url in _body(store, todos[0])
+
+    def test_recommend_restating_reason_falls_back_to_option(
+        self, store: Store
+    ) -> None:
+        """gr652284: a ``recommend`` that just re-says the reason is no
+        recommendation — the recommended option's action takes its
+        place on the minted ask's option 1 and the ``recommend:``
+        comment."""
+        reason = (
+            "plan_tick worker session lacked PRECIS_ROOT and any "
+            "filesystem/DB access path, blocking the todo's required "
+            "file access"
+        )
+        recommended = "make plan_tick set PRECIS_ROOT"
+        options = [
+            {
+                "option": recommended,
+                "cost": "one provisioning patch",
+                "recommended": True,
+            },
+            # Oversized — the model's own ask fails the meta.ask lint,
+            # so the minted todo is the fallback framed on the
+            # recommendation (gr673371): option 1 proves WHICH text the
+            # recommendation property returned.
+            {
+                "option": "leave provisioning unchanged " + "x" * 200,
+                "cost": "every tick fails",
+            },
+        ]
+        gid = _gripe(store, "plan_tick session lacked PRECIS_ROOT")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            reason=reason,
+                            recommend=reason,
+                            ask=_ask(options=options),
+                        )
+                    ]
+                }
+            ),
+            notify=True,
+        )
+        assert r.extra["reto"] == 1
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        minted = (_meta(store, todos[0]).get("ask") or {}).get("options") or []
+        assert minted[0] == f"{recommended} — triage's recommendation"
+        assert f"recommend: {recommended}" in _comments(store, gid)
+
+    def test_action_recommend_kept(self, store: Store) -> None:
+        """gr652284: a ``recommend`` that names a real action — not a
+        restatement of the problem — is used verbatim."""
+        reason = (
+            "plan_tick worker session lacked PRECIS_ROOT and any "
+            "filesystem/DB access path, blocking the todo's required "
+            "file access"
+        )
+        recommend = (
+            "dispatch infra fix: make plan_tick session provisioning "
+            "always set PRECIS_ROOT, and fail the tick early with a "
+            "clear error when it is missing"
+        )
+        gid = _gripe(store, "plan_tick session lacked PRECIS_ROOT")
+        _light(store)
+        r = _run(
+            store,
+            llm=_llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            fix="reto",
+                            reason=reason,
+                            recommend=recommend,
+                            ask=_ask(),
+                        )
+                    ]
+                }
+            ),
+        )
+        assert r.extra["reto"] == 1
+        assert f"recommend: {recommend}" in _comments(store, gid)
+
     def test_needs_spec_and_recommend_dedup(self, store: Store) -> None:
         """gr595189: when the needs-spec note and the recommend note
         would carry the same text, only one comment is written — a
@@ -1480,6 +1741,22 @@ class TestVerdictSemantics:
         )
         assert "pcb-router" in prompts[0]
         assert "ship-gate-ci" in prompts[0]
+
+    def test_prompt_demands_action_recommend(self, store: Store) -> None:
+        """gr652284: the verdict schema tells the model ``recommend``
+        is an imperative action, not a restatement of the problem."""
+        _gripe(store, "fresh")
+        _light(store)
+        prompts: list[str] = []
+
+        def spy(prompt: str) -> LlmResult:
+            prompts.append(prompt)
+            return _llm({"verdicts": []})(prompt)
+
+        _run(store, llm=spy)
+        assert "an imperative action, not a restatement of the problem" in " ".join(
+            prompts[0].split()
+        )
 
 
 # ── flood control ─────────────────────────────────────────────────────────
@@ -2491,18 +2768,18 @@ def test_enabled_resolves_per_host(store: Store) -> None:
     row dims only that host — the dimmed host stays dark while the rest
     of the fleet runs the tick."""
     _light(store, prio=5)
-    assert gripe_triage.gripe_triage_enabled(store, host="melchior")
-    _light(store, prio=0, host="balthazar")
-    assert not gripe_triage.gripe_triage_enabled(store, host="balthazar")
-    assert gripe_triage.gripe_triage_enabled(store, host="melchior")
+    assert gripe_triage.gripe_triage_enabled(store, host="maple")
+    _light(store, prio=0, host="alder")
+    assert not gripe_triage.gripe_triage_enabled(store, host="alder")
+    assert gripe_triage.gripe_triage_enabled(store, host="maple")
 
 
 def test_enabled_host_row_lights_only_that_host(store: Store) -> None:
     """A host-only row lights that host and no other — the old
     any-row-anywhere query lit the whole fleet."""
-    _light(store, host="melchior")
-    assert gripe_triage.gripe_triage_enabled(store, host="melchior")
-    assert not gripe_triage.gripe_triage_enabled(store, host="caspar")
+    _light(store, host="maple")
+    assert gripe_triage.gripe_triage_enabled(store, host="maple")
+    assert not gripe_triage.gripe_triage_enabled(store, host="birch")
 
 
 def test_dimmed_host_skips_the_tick(
@@ -2512,8 +2789,8 @@ def test_dimmed_host_skips_the_tick(
     is a dark no-op here and still runs on a lit host."""
     gid = _gripe(store, "dimmed host")
     _light(store, prio=5)
-    _light(store, prio=0, host="balthazar")
-    monkeypatch.setenv("PRECIS_HOST_NAME", "balthazar")
+    _light(store, prio=0, host="alder")
+    monkeypatch.setenv("PRECIS_HOST_NAME", "alder")
     called: list[str] = []
 
     def spy(prompt: str) -> LlmResult:
@@ -2525,7 +2802,7 @@ def test_dimmed_host_skips_the_tick(
     assert called == []
     assert _status(store, gid) == "open"
     # … and the same config still runs the tick on a lit host.
-    monkeypatch.setenv("PRECIS_HOST_NAME", "melchior")
+    monkeypatch.setenv("PRECIS_HOST_NAME", "maple")
     r2 = _run(store, llm=_llm({"verdicts": [_verdict(gid)]}))
     assert (r2.claimed, r2.ok) == (1, 1)
 
@@ -2548,14 +2825,14 @@ def test_cadence_skips_a_dimmed_host_without_claiming(
     monkeypatch.setattr(gripe_triage, "run_gripe_triage_pass", _fake_pass)
     cad = next(c for c in CADENCES if c.name == "gripe_triage")
     _light(store, prio=5)
-    _light(store, prio=0, host="balthazar")
-    r = run_scheduler_pass(store, host="balthazar", cadences=(cad,))
+    _light(store, prio=0, host="alder")
+    r = run_scheduler_pass(store, host="alder", cadences=(cad,))
     assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
     assert fired == []
     lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
     assert lease.last_fired_at is None and lease.last_host is None
     # The fire was left claimable: a lit host takes it and runs.
-    r2 = run_scheduler_pass(store, host="melchior", cadences=(cad,))
+    r2 = run_scheduler_pass(store, host="maple", cadences=(cad,))
     assert (r2.claimed, r2.ok, r2.failed) == (1, 1, 0)
     assert fired == [store]
 
@@ -3366,3 +3643,20 @@ class TestCloseOutcomes:
         head = prompts[0].split("\n### gr", 1)[0]
         for v in ("not-a-bug", "working-as-designed", "noise", "fixed"):
             assert f'"{v}"' in head
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_triage_stamps_goal(store: Store, override: bool) -> None:
+    """gr592749: the tick stamps ``goal:<value>`` off the freshly
+    written ``cluster:`` tag; a filer-set ``goal:`` is never
+    overwritten."""
+    _light(store)
+    gid = _gripe(store, "router pours fail")
+    if override:
+        store.add_tag(gid, Tag.open("goal:other"), set_by="agent")
+    _run(
+        store,
+        llm=_llm({"verdicts": [_verdict(gid, cluster="pcb-router")]}),
+    )
+    goals = {t for t in _open_tag_values(store, gid) if t.startswith("goal:")}
+    assert goals == {"goal:other" if override else "goal:pcb"}

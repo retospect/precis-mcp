@@ -28,7 +28,7 @@ import logging
 import math
 import re
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from typing import TYPE_CHECKING, Any, cast
@@ -169,6 +169,35 @@ class FrontierResult:
     #: fallback cohort's columns: ``objectives`` is then
     #: :data:`ENV_OBJECTIVES`, which names none of them.
     run_point_objectives: list[tuple[str, str]] = field(default_factory=list)
+    #: Strict PASS-only set, alongside the working PASS+WARN frontier.
+    pass_frontier: list[Candidate] = field(default_factory=list)
+
+
+def assurance_note(c: Candidate) -> str:
+    """Carry the approximation marker and its cause across frontier readers."""
+    if c.flags.get("barrier_assurance") == "WARN":
+        return "≈ WARN: " + ", ".join(c.flags.get("barrier_assurance_reasons") or [])
+    return str(c.flags.get("barrier_assurance") or "")
+
+
+def _warn_barrier(flags: Mapping[str, Any]) -> bool:
+    """Only an explicitly verified WARN stamp can relax the binary rank gate."""
+    return (
+        flags.get("barrier_assurance") == "WARN"
+        and not any(
+            flags.get(k)
+            for k in (
+                "barrier_absurd",
+                "barrier_neb_failed",
+                "barrier_desorbed",
+                "barrier_wrong_site",
+                "barrier_twin_disagreement",
+                "barrier_trust_note",
+            )
+        )
+        and flags.get("barrier_seed_blocker")
+        in (None, "seeds:1-independent", "engine:stale")
+    )
 
 
 #: Quest hub v2 / Cycle C J4 — the Pareto-scatter axis choice. A starter pick
@@ -471,6 +500,37 @@ def viridis_color(t: float) -> str:
     g = round(g0 + (g1 - g0) * frac)
     b = round(b0 + (b1 - b0) * frac)
     return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def pareto_axes(
+    quest_meta: dict[str, Any] | None,
+    objectives: list[tuple[str, str]],
+    x: str | None,
+    y: str | None,
+) -> tuple[str, str, str, str]:
+    """``(x_key, y_key, x_label, y_label)`` — an explicit ``x=``/``y=`` pair
+    honored over :func:`~precis.quest.frontier.plot_axes_for`'s quest-default
+    pick. Both or neither must be given; each must be one of the quest's
+    resolved rubric objective keys (a ``ValueError`` naming the keys
+    otherwise)."""
+    if x is None and y is None:
+        return plot_axes_for(quest_meta, objectives)
+    keys = [k for k, _s in objectives]
+    if x is None or y is None:
+        raise ValueError(
+            f"x and y must be passed together (got x={x!r}, y={y!r}); "
+            f"rubric objective keys: {keys}"
+        )
+    bad = sorted({str(a) for a in (x, y) if a not in keys})
+    if bad:
+        raise ValueError(
+            f"unknown objective axis(es) {bad}; rubric objective keys: {keys}"
+        )
+    if x == y:
+        raise ValueError(
+            f"x and y must be different axes, both were {x!r}; rubric objective keys: {keys}"
+        )
+    return x, y, axis_label_for(x), axis_label_for(y)
 
 
 def plot_axes_for(
@@ -1103,6 +1163,8 @@ def build_frontier_scatter(
             "y": y,
             "converged": c.converged,
             "band": "confirmed",
+            "assurance": c.flags.get("barrier_assurance"),
+            "assurance_note": assurance_note(c),
             "on_frontier": bool(frontier_ref_ids and c.ref_id in frontier_ref_ids),
             "cx": round(_cx(x), 2),
             "cy": round(_cy(y), 2),
@@ -1267,7 +1329,9 @@ def pareto_split(
     evaluated = [
         c
         for c in candidates
-        if c.converged and all(c.measures.get(k) is not None for k in keys)
+        if c.converged
+        and c.flags.get("barrier_assurance") != "FAIL"
+        and all(c.measures.get(k) is not None for k in keys)
     ]
     unevaluated = [c for c in candidates if c not in evaluated]
 
@@ -1288,6 +1352,16 @@ def pareto_split(
         dominated=dominated,
         unevaluated=unevaluated,
         optional=optional,
+        pass_frontier=[
+            c
+            for c in evaluated
+            if c.flags.get("barrier_assurance") != "WARN"
+            and not any(
+                _dominates(o, c, objectives, optional)
+                for o in evaluated
+                if o.ref_id != c.ref_id and o.flags.get("barrier_assurance") != "WARN"
+            )
+        ],
     )
 
 
@@ -1502,7 +1576,7 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         # stamps per trust-stamp correction (gr592893) — a list of dicts,
         # already dropped by ``_numeric``; listed for clarity.
         "trust_stamp_log",
-        # substrate-variant provenance (docs/backlog/pd-hydride-substrate.md):
+        # substrate-variant provenance (me692729):
         # the bare candidate this one was derived from (a ref id — numeric,
         # so it would otherwise rank as a measure) and the substrate level
         # dict ({phase, x, a, U_step}).
@@ -1548,6 +1622,25 @@ def _numeric(v: Any) -> float | None:
     return None
 
 
+def _run_computed_a_descriptor(run: Mapping[str, Any]) -> bool:
+    """Did an ``electronic_analysis`` run row compute at least one
+    descriptor? The same ``status == 'computed'`` envelope rule as the
+    job's ``_descriptor_present`` and the view's verdict — a converged
+    run whose families all came back ``unavailable`` is not evidence."""
+    params = run.get("params") or {}
+    desc = params.get("descriptors") or {}
+    for key in ("bader", "dband", "pdos", "cohp"):
+        block = desc.get(key)
+        if not isinstance(block, dict):
+            continue
+        if block.get("status") == "computed" or any(
+            isinstance(v, dict) and v.get("status") == "computed"
+            for v in block.values()
+        ):
+            return True
+    return False
+
+
 def _candidate_from_structure(
     store: Store, s: Any, *, runs: list[Any] | None = None
 ) -> Candidate:
@@ -1578,6 +1671,25 @@ def _candidate_from_structure(
     """
     from precis.utils import handle_registry
 
+    # Existing harvested rows predate assurance stamps. Replay only the
+    # barrier's named source, never the latest (possibly barrierless) run.
+    meta = getattr(s, "meta", None) or {}
+    source = meta.get("barrier_pathway_ref_id")
+    if (
+        "barrier_assurance" not in meta
+        and meta.get("barrier_seed_blocker") in ("seeds:1-independent", "engine:stale")
+        and isinstance(source, int)
+        and not isinstance(source, bool)
+    ):
+        from precis.quest.compute import _stamp_barrier_assurance
+
+        try:
+            pathway = store.fetch_refs_by_ids({source}).get(source)
+            if pathway is not None and pathway.kind == "pathway":
+                meta = dict(meta)
+                _stamp_barrier_assurance(pathway.meta or {}, meta)
+        except Exception:
+            log.warning("assurance source unavailable for %s", s.id, exc_info=True)
     handle = handle_registry.try_format("structure", s.id) or f"structure:{s.id}"
     name = (s.title or "").splitlines()[0] if s.title else handle
     if runs is None:
@@ -1603,7 +1715,6 @@ def _candidate_from_structure(
             if fv is not None:
                 measures[k] = fv
 
-    meta = getattr(s, "meta", None) or {}
     for k, v in meta.items():
         if k == "params" or k in _META_NON_MEASURE:
             continue
@@ -1638,9 +1749,45 @@ def _candidate_from_structure(
         params["origin"] = f"search:{search_meta['algo']}#{search_meta['rank']}"
 
     flags: dict[str, Any] = {}
+    # gr592999: does this candidate carry orbital-level descriptors *on
+    # the current geometry*? The ``electronic_analysis`` job's write-back
+    # is the versioned ``last_electronic`` stamp — ``present`` requires a
+    # run on THIS version that actually computed a descriptor (a
+    # converged-but-all-unavailable run, or one describing a superseded
+    # geometry, is absent — never assumed present). An electronic run
+    # row that computed at least one descriptor on the current version
+    # is direct evidence too (covers a stamp write lost to a version
+    # race). A flag, not a measure — it must never rank.
+    _el_version = int(meta.get("version") or 0)
+    _last_el = meta.get("last_electronic")
+    flags["mechanism_evidence"] = (
+        "present"
+        if (
+            isinstance(_last_el, dict)
+            and _last_el.get("run_id") is not None
+            and bool(_last_el.get("present"))
+            and int(_last_el.get("on_version") or -1) == _el_version
+        )
+        or any(
+            r.get("fidelity") == "electronic"
+            and r.get("converged")
+            and int(r.get("on_version") or -1) == _el_version
+            and (r.get("charges") or _run_computed_a_descriptor(r))
+            for r in runs
+        )
+        else "absent"
+    )
     if "barrier_trusted" in meta:
         flags["barrier_trusted"] = bool(meta.get("barrier_trusted"))
-    elif any(
+    for key in (
+        "barrier_assurance",
+        "barrier_assurance_reasons",
+        "barrier_absurd",
+        "barrier_twin_disagreement",
+    ):
+        if key in meta:
+            flags[key] = meta[key]
+    if any(
         abs(measures[k]) > _BARRIER_ABSURD_EV
         for k in ("barrier", "span")
         if k in measures
@@ -1868,7 +2015,17 @@ def _candidate_from_structure(
     # trust_flags` pins it), except the absurd-magnitude preguard fires
     # above and stamps an explicit False for exactly the qu164903-shaped
     # gap (gr356741): a no-key row whose barrier/span is nonphysical.
-    if flags.get("barrier_trusted") is False:
+    if flags.get("barrier_assurance") == "FAIL":
+        flags["barrier_trusted"] = False
+    if (
+        flags.get("barrier_assurance") == "PASS"
+        and flags.get("barrier_trusted") is False
+    ):
+        flags["barrier_assurance"] = "FAIL"
+    if flags.get("barrier_assurance") == "WARN" and not _warn_barrier(flags):
+        flags["barrier_assurance"] = "FAIL"
+        flags["barrier_trusted"] = False
+    if flags.get("barrier_trusted") is False and not _warn_barrier(flags):
         excluded_barrier = measures.pop("barrier", None)
         measures.pop("span", None)
         if excluded_barrier is not None:
@@ -2365,7 +2522,11 @@ def _provisional_split(
     pool: list[tuple[int, dict[str, float]]] = [
         (c.ref_id, c.measures) for c in confirmed
     ]
-    pool += [(pc.candidate.ref_id, pc.measures) for pc in provisional]
+    pool += [
+        (pc.candidate.ref_id, pc.measures)
+        for pc in provisional
+        if pc.candidate.flags.get("barrier_assurance") != "FAIL"
+    ]
 
     def _is_dominated(ref_id: int, measures: dict[str, float]) -> bool:
         return any(
@@ -2375,7 +2536,13 @@ def _provisional_split(
         )
 
     final: list[ProvisionalCandidate] = [
-        replace(pc, on_frontier=not _is_dominated(pc.candidate.ref_id, pc.measures))
+        replace(
+            pc,
+            on_frontier=(
+                pc.candidate.flags.get("barrier_assurance") != "FAIL"
+                and not _is_dominated(pc.candidate.ref_id, pc.measures)
+            ),
+        )
         for pc in provisional
     ]
     return final, still_unevaluated
@@ -2504,10 +2671,14 @@ def _env_footing_demotion(cands: Sequence[Candidate]) -> dict[str, Any] | None:
         for k, b in _key_bases(c).items()
         if k in _ENV_BASIS_KEYS and k in c.measures
     ]
-    ref = None
+    # Compatibility under same_network_basis is not transitive (a digestless
+    # stamp matches two different digests by template), so one reference is
+    # not enough: build the cohort greedily in priority order, admitting a
+    # basis only when it is compatible with EVERY basis already admitted.
+    kept: list[dict[str, Any]] = []
     if env_bases:
         counts = Counter(_env_footing_key(b) for b in env_bases)
-        ref = max(
+        ordered = sorted(
             env_bases,
             key=lambda b: (
                 counts[_env_footing_key(b)],
@@ -2516,7 +2687,12 @@ def _env_footing_demotion(cands: Sequence[Candidate]) -> dict[str, Any] | None:
                 bool(b.get("digest")),
                 _env_footing_key(b),
             ),
+            reverse=True,
         )
+        for b in ordered:
+            if all(same_network_basis(b, k) for k in kept):
+                kept.append(b)
+    ref = kept[0] if kept else None
     for c in cands:
         stale: list[str] = []
         bases = _key_bases(c)
@@ -2524,7 +2700,11 @@ def _env_footing_demotion(cands: Sequence[Candidate]) -> dict[str, Any] | None:
             if k not in c.measures:
                 continue
             basis = bases.get(k)
-            if basis is not None and ref is not None and same_network_basis(basis, ref):
+            if (
+                basis is not None
+                and kept
+                and all(same_network_basis(basis, kb) for kb in kept)
+            ):
                 continue
             v = c.measures.pop(k, None)
             if v is not None:
@@ -2579,13 +2759,18 @@ def _env_frontier(
         provisional=[*env_prov, *run_prov],
         unevaluated=[*env_unev, *run_unev],
         optional=env_optional,
+        pass_frontier=env_res.pass_frontier,
         run_point_objectives=run_objectives,
     )
 
 
 def _env_limiting_text(c: Candidate) -> str:
     """The limiting term of the candidate's ``env_best`` stamp (the
-    leaderboard's ``env_limiting`` column), ``""`` when it carries none."""
+    leaderboard's ``env_limiting`` column), ``""`` when it carries none or
+    the candidate was not ranked at env_best (a quest that dropped its
+    environment space keeps stale stamps that must not surface)."""
+    if c.flags.get("rank_basis") != "env_best":
+        return ""
     env = c.flags.get("env_best")
     if isinstance(env, dict):
         return str(env.get("limiting") or "")
@@ -2595,13 +2780,83 @@ def _env_limiting_text(c: Candidate) -> str:
 def _env_footing_text(c: Candidate) -> str:
     """The footing of the value the candidate ranked on — the ``env_best``
     stamp's ``footing`` (``"computed"``/``"interpolated"``), ``"run-point"``
-    on a run-point fallback row, ``""`` outside the env surface."""
-    if c.flags.get("rank_basis") == "run_point":
+    on a run-point fallback row, ``""`` outside the env surface (no
+    ``rank_basis``: the quest does not rank on env_best)."""
+    basis = c.flags.get("rank_basis")
+    if basis == "run_point":
         return "run-point"
+    if basis != "env_best":
+        return ""
     env = c.flags.get("env_best")
     if isinstance(env, dict):
         return str(env.get("footing") or "")
     return ""
+
+
+#: :func:`evidence_ladder`'s last tie-break — a candidate measured at a
+#: higher rung of the tier ladder (``flags['tier']``) has more evidence
+#: behind it, so it sorts closer to trusted; an unstamped (pre-ladder or
+#: opted-out) candidate ranks last.
+_LADDER_TIER_RANK: dict[str, int] = {"verify": 0, "neb": 1, "screening": 2}
+
+
+@dataclass(frozen=True)
+class LadderRow:
+    """One rung of :func:`evidence_ladder` — a provisional candidate plus
+    the single blocker it must clear next on the way to trusted."""
+
+    provisional: ProvisionalCandidate
+    blocker: str
+
+
+def evidence_ladder(fr: FrontierResult, *, top_n: int = 10) -> list[LadderRow]:
+    """Rank ``fr.provisional`` closest-to-trusted first (gr592563).
+
+    The answer to "which candidate are we most certain about" when NOTHING
+    is trusted: the confirmed frontier is empty (today's qu164903 — every
+    barrier and |U_L| carried untrusted) and the bare "no candidates pass"
+    line leaves the reader to re-derive the order by hand. Closeness to
+    trust is read off the SAME signals :func:`_provisional_reasons` already
+    renders — a network-stale candidate (engine version vs current: all
+    its values are demoted pending re-measurement) is furthest, then the
+    count of failed checks (untrusted gates, missing objectives, no
+    converged relax — the reasons list's own length), then position on the
+    provisional frontier, then tier as a last tie-break. Each rung names
+    exactly ONE blocker — the single check the candidate must clear next:
+    the network re-measure for a stale row, else its first (highest-priority)
+    reason. Pure over :class:`FrontierResult`, trivially testable; the
+    handler renders the top ``top_n`` rungs and says how to widen.
+    """
+
+    def _rank(pc: ProvisionalCandidate) -> tuple[bool, int, bool, int, int]:
+        c = pc.candidate
+        return (
+            bool(c.flags.get("network_stale")),
+            len(pc.reasons) or len(pc.untrusted_keys),
+            not pc.on_frontier,
+            _LADDER_TIER_RANK.get(str(c.flags.get("tier") or ""), 3),
+            c.ref_id,
+        )
+
+    def _blocker(pc: ProvisionalCandidate) -> str:
+        c = pc.candidate
+        if c.flags.get("network_stale"):
+            stale = next((r for r in pc.reasons if "older reaction network" in r), None)
+            if stale is not None:
+                return stale
+            keys = c.flags.get("network_stale_keys")
+            named = (
+                f" ({', '.join(str(k) for k in keys)})"
+                if isinstance(keys, list) and keys
+                else ""
+            )
+            return f"re-measure on the current engine/network{named}"
+        if pc.reasons:
+            return pc.reasons[0]
+        return "awaiting an affirmative trust verdict"
+
+    ranked = sorted(fr.provisional, key=_rank)
+    return [LadderRow(provisional=pc, blocker=_blocker(pc)) for pc in ranked[:top_n]]
 
 
 #: Tier-ladder glyph column (tier-ladder UX item 4) — one character per rung,
@@ -2712,7 +2967,8 @@ def leaderboard(
             }
             for key in col_keys:
                 v = c.measures.get(key)
-                row[key] = f"{v:g}" if isinstance(v, (int, float)) else "—"
+                mark = "≈" if c.flags.get("barrier_assurance") == "WARN" else ""
+                row[key] = f"{mark}{v:g}" if isinstance(v, (int, float)) else "—"
             row["$/rate"] = _rate_readout(c.measures) or "—"
             row["graduated"] = "★" if c.ref_id in graduated else ""
             row["validity"] = _validity_text(c)
@@ -2731,6 +2987,8 @@ def leaderboard(
             if c.flags.get("energy_twin_of"):
                 quality = f"{quality} etwin".strip()
             row["quality"] = quality
+            if assurance_note(c):
+                row["quality"] = assurance_note(c)
             out.append(row)
         return out
 
@@ -2785,6 +3043,17 @@ def leaderboard(
         + _prov_rows(fr.provisional)
         + _rows(fr.unevaluated, "awaiting")
     )
+    if any(c.flags.get("barrier_assurance") for c in (*fr.frontier, *fr.dominated)):
+        pass_ids = {c.ref_id for c in fr.pass_frontier}
+        combined_ids = {c.ref_id for c in fr.frontier}
+        by_handle = {c.handle: c for c in (*fr.frontier, *fr.dominated)}
+        for row in rows:
+            c = by_handle.get(row["design"])
+            row["PASS-only"] = "★" if c and c.ref_id in pass_ids else ""
+            row["PASS+WARN"] = "★" if c and c.ref_id in combined_ids else ""
+        assurance_cols = ["PASS-only", "PASS+WARN"]
+    else:
+        assurance_cols = []
     # The validity column exists only when some candidate carries the
     # stamp — a quest that never opted into the window objectives gets a
     # bit-identical leaderboard.
@@ -2808,6 +3077,7 @@ def leaderboard(
         *col_keys,
         "$/rate",
         "band",
+        *assurance_cols,
         "graduated",
         *validity_col,
         *env_cols,
@@ -2965,7 +3235,9 @@ def _candidate_lineage_markers(store: Store, c: Candidate) -> list[str]:
     )
     if ruled is not None:
         markers.append(ruled)
-    if c.flags.get("barrier_trusted") is False:
+    if assurance_note(c):
+        markers.append(assurance_note(c))
+    elif c.flags.get("barrier_trusted") is False:
         markers.append("untrusted")
     dup_of = c.flags.get("duplicate_of")
     if dup_of:
@@ -3144,6 +3416,10 @@ def quest_frontier(
     _flag_energy_twins(candidates, structures)
     _apply_rubric_composite(candidates, _rubric_composite_for(store, quest_id))
     optional = frozenset() if strict else _optional_objectives_for(store, quest_id)
+    if strict:
+        candidates = [
+            c for c in candidates if c.flags.get("barrier_assurance") != "WARN"
+        ]
     if env_space:
         _env_footing_demotion(candidates)
         for c in candidates:
@@ -3185,6 +3461,7 @@ __all__ = [
     "Candidate",
     "FrontierResult",
     "FrontierScatter",
+    "LadderRow",
     "ProvisionalCandidate",
     "apply_network_demotion",
     "axis_label_for",
@@ -3192,6 +3469,7 @@ __all__ = [
     "build_frontier_scatter",
     "candidate_trusted",
     "current_network_basis",
+    "evidence_ladder",
     "leaderboard",
     "pareto_split",
     "plot_axes_for",

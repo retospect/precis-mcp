@@ -1,6 +1,6 @@
 """Budget guardrails — a lightweight spend backstop.
 
-Two deliverables (see ``docs/backlog/budget-guardrails.md``):
+Two deliverables (see `me690560`):
 
 * **A "sense" of cost** — :mod:`precis.budget.bands` maps every router
   :class:`~precis.utils.llm.router.Tier` (and any dollar figure) to a
@@ -9,7 +9,12 @@ Two deliverables (see ``docs/backlog/budget-guardrails.md``):
 * **A global circuit breaker** — :mod:`precis.budget.meter` rolls the
   existing cost ledger (``llm_call_log`` + ``cache_state``) into an hourly +
   24h spend total; :mod:`precis.budget.breaker` refuses *new paid* work
-  once a cap is crossed. Only free local work always flows.
+  once a cap is crossed. Only free local work always flows. The meter is
+  a shared ``app_state`` snapshot re-baselined fleet-wide on a
+  status-scaled horizon, plus a ``pending`` counter every ledger write
+  bumps inside its own transaction (gr732477) — a cap crossed by one
+  process gates the whole fleet at its next gate read, and spend accrues
+  only on *committed actuals*, never on pre-call estimates.
 
 The claude-OAuth lane is gated on *subscription quota*, not dollars
 (:mod:`precis.budget.quota`): the ``claude_quota_snapshot`` the probe

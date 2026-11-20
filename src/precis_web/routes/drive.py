@@ -46,15 +46,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlparse
 
-from fastapi import APIRouter, Form, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from precis.handlers._citations_view import draft_fetch_ref_ids
 from precis.handlers._query_identifier import resolve_query_identifier
 from precis.store._stub_predicate import NO_OA_MIN_PASSES
+from precis.store._tag_filter import tag_filter_string
 from precis.workers.fetch_oa import run_oa_fetch_pass
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
-from precis_web.item_view import artifact_kinds, display_title, presenter_for
+from precis_web.drive_tree import _TREE_EDGES, build_tree
+from precis_web.drive_views import DRIVE_VIEW_LINKS, DRIVE_VIEWS, active_view
+from precis_web.item_view import (
+    artifact_kinds,
+    display_title,
+    presenter_for,
+    tag_display_label,
+)
 from precis_web.ref_urls import ref_url
 from precis_web.routes.drafts import _DOC_TYPES, _draft_ref
 from precis_web.routes.flags import (
@@ -66,14 +74,15 @@ from precis_web.routes.items import (
     _DEFAULT_SOURCE_KINDS,
     _DESIGN_KINDS,
     _PAGE_SIZE,
+    _doable_queue_rows,
     _folder_options,
     _parse_date,
     _recent_rows,
     _run_search,
-    _tag_filter_string,
 )
 from precis_web.routes.items import tags_suggest as _tags_suggest
 from precis_web.routes.papers_needed import _KIND_DROPZONES, _watch_dir_from_plist
+from precis_web.routes.tags import _PROTECTED_NAMESPACES
 from precis_web.timefmt import ago as _ago
 
 if TYPE_CHECKING:
@@ -219,8 +228,8 @@ def _qualifier_completions(store: Store, word: str) -> list[dict[str, str]]:
         if name == "tag":
             return [
                 {
-                    "name": _tag_filter_string(ns, val),
-                    "insert": f"tag:{_tag_filter_string(ns, val)}",
+                    "name": tag_display_label(ns, val),
+                    "insert": f"tag:{tag_filter_string(ns, val)}",
                     "desc": f"tag filter — {n} refs",
                 }
                 for ns, val, n in store.suggest_tags(word[4:], limit=10)
@@ -239,10 +248,11 @@ async def complete(request: Request, text: str = "", pos: int = -1) -> JSONRespo
 
     ``text`` is the whole input value, ``pos`` the caret. Completions
     answer only when the head ends in a ``/token`` still being typed —
-    one row per known kind, the same roster ``_split_kind_tokens``
-    resolves against (bucket kinds + the ``items_kinds`` cookie's saved
-    set, mirroring ``index``'s ``all_kind_defs``), with ``_kind_help``
-    one-liners, so the popdown can't drift from the parser — or in a bare
+    one row per offered kind (the bucket roster, minus the never-row
+    "Other" kinds the facet drops — gr664402: ``_split_kind_tokens``
+    still *resolves* a typed dead kind, the popdown just doesn't offer
+    it — plus the ``items_kinds`` cookie's saved set, mirroring
+    ``index``), with ``_kind_help`` one-liners — or in a bare
     qualifier word (``is:``/``has:``/``tag:``/``since:`` — slice 2, no
     leading slash), served by ``_qualifier_completions`` with ``tag:``
     values off the same roster ``/drive/tags/suggest`` uses. Anything else
@@ -264,7 +274,12 @@ async def complete(request: Request, text: str = "", pos: int = -1) -> JSONRespo
     prefix = m.group(1).lower()
     saved = [x for x in (request.cookies.get("items_kinds") or "").split(",") if x]
     hub = getattr(get_runtime(request), "hub", None)
-    kinds = {kk for bucket in _kind_buckets(hub).values() for kk in bucket} | set(saved)
+    buckets = _kind_buckets(hub)
+    # Same "Other"-bucket row-source filter as the facet (gr664402): a
+    # never-row kind stays completable only via the cookie-saved set.
+    row_kinds = await asyncio.to_thread(_ref_backed_kinds, get_store(request))
+    buckets["other"] = [kk for kk in buckets["other"] if kk in row_kinds or kk in saved]
+    kinds = {kk for bucket in buckets.values() for kk in bucket} | set(saved)
     items = [
         {"name": k, "insert": f"/{k}", "desc": _kind_help(k)}
         for k in sorted(kinds)
@@ -515,6 +530,24 @@ def _kind_roster(hub: Any, fallback: list[str]) -> list[str]:
     return sorted(set(loaded).union(fallback))
 
 
+#: Kinds with a Drive row source outside ``refs``: ``tag`` lists from its
+#: own table (gr636493, ``_tag_rows``). Every other registered kind must
+#: have a ``refs`` row or its facet chip is a guaranteed-empty selection
+#: (gr664402 — compute kinds like calc/random/time and file-backed kinds
+#: like skill/python/md store no refs and can never return a row).
+_NON_REF_ROW_KINDS = frozenset({"tag"})
+
+
+def _ref_backed_kinds(store: Store) -> set[str]:
+    """Every kind with at least one row in ``refs``, plus ``tag``.
+
+    Retired rows count on purpose (``Store.ref_kinds_present`` reports
+    them too): the ``state=deleted`` trash view lists them, so a
+    kind whose only rows are deleted can still return them.
+    """
+    return set(store.ref_kinds_present()) | _NON_REF_ROW_KINDS
+
+
 def _kind_buckets(hub: Any) -> dict[str, list[str]]:
     """Partition the live/compatibility roster without retiring any kind.
 
@@ -652,7 +685,13 @@ def _tag_rows(
     Each link pins ``ref_kinds`` as explicit ``k=`` params: the landing
     resolves the ``items_kinds`` cookie when the URL names no ``k=``, so
     a bare ``?tag=`` link would re-list tags (a saved ``k=tag``) instead
-    of the refs the tag matches."""
+    of the refs the tag matches.
+
+    Rows carry the cluster-wide tag delete (``POST /tags/delete``) for
+    every namespace outside ``_PROTECTED_NAMESPACES`` — the action set
+    the retired ``/tags`` leaderboard offered, so the redirect loses
+    no capability. The form's ``back`` is stamped by the caller once
+    ``return_to`` exists."""
     offset = (page - 1) * _PAGE_SIZE
     if q:
         found = store.suggest_tags(q, limit=offset + _PAGE_SIZE + 1)
@@ -664,7 +703,23 @@ def _tag_rows(
     kind_params = [("k", kk) for kk in ref_kinds]
     rows: list[dict[str, Any]] = []
     for ns, value, n in found[:_PAGE_SIZE]:
-        flt = _tag_filter_string(ns, value)
+        flt = tag_filter_string(ns, value)
+        actions: list[dict[str, Any]] = []
+        if ns not in _PROTECTED_NAMESPACES:
+            actions.append(
+                {
+                    "type": "post",
+                    "url": "/tags/delete",
+                    "fields": {"namespace": ns, "value": value},
+                    "label": "delete",
+                    "cls": "text-danger-strong",
+                    "title": f"Delete tag {ns}:{value} everywhere",
+                    "confirm": (
+                        f"Delete {ns}:{value} from every ref? "
+                        "This cannot easily be undone."
+                    ),
+                }
+            )
         rows.append(
             {
                 "id": None,
@@ -673,7 +728,7 @@ def _tag_rows(
                 "open_url": "/drive?" + urlencode([("tag", flt), *kind_params]),
                 "preview": f"{n} ref{'' if n == 1 else 's'}",
                 "thumbnail": None,
-                "actions": [],
+                "actions": actions,
                 "created_at": None,
                 "updated_at": None,
                 "state": [],
@@ -687,6 +742,43 @@ def _tag_rows(
             }
         )
     return rows, has_next
+
+
+#: Chips in the "matching tags" strip above the ref rows when ``tag``
+#: shares the kind selection — a preview of the roster, not a second
+#: listing; the full set stays one click away at ``k=tag``.
+_TAG_STRIP_SIZE = 12
+
+
+def _tag_chips(store: Any, q: str, ref_kinds: list[str]) -> list[dict[str, Any]]:
+    """The mixed-kind "matching tags" strip (gr636493): the top
+    ``_TAG_STRIP_SIZE`` tags — usage order, or the ``q`` substring
+    matches — as chips linking to the drive scoped to refs carrying
+    that tag. Kinds pin exactly like ``_tag_rows`` so a saved
+    ``k=tag`` cookie can't bounce the click back to the tag listing.
+    An "all tags →" tail chip points at the full ``k=tag`` roster
+    when the strip truncates."""
+    if q:
+        found = store.suggest_tags(q, limit=_TAG_STRIP_SIZE + 1)
+    else:
+        found = store.list_all_tags(page=1, page_size=_TAG_STRIP_SIZE + 1)
+    chips = [
+        {
+            "label": f"{ns}:{value}",
+            "n": n,
+            "href": "/drive?"
+            + urlencode(
+                [
+                    ("tag", tag_filter_string(ns, value)),
+                    *[("k", kk) for kk in ref_kinds],
+                ]
+            ),
+        }
+        for ns, value, n in found[:_TAG_STRIP_SIZE]
+    ]
+    if len(found) > _TAG_STRIP_SIZE:
+        chips.append({"label": "all tags →", "n": None, "href": "/drive?k=tag"})
+    return chips
 
 
 def _row(r: tuple, *, kinds_with_slug: bool = True) -> dict[str, Any]:
@@ -762,6 +854,39 @@ def _unfiled(store: Store, artifact_kinds: list[str]) -> list[dict[str, Any]]:
     return [_row(r) for r in rows]
 
 
+#: ``serves=`` accepts ``<qid>`` or the ``qu<qid>`` handle form — the
+#: same grammar ``routes/todo.py``'s ``_SERVES_RE`` gives the workbench's
+#: ``?serves=`` filter (an unparseable value degrades to no filter).
+_TODO_SERVES_RE = re.compile(r"(?:qu)?(\d+)")
+
+
+def _subtree_ids(store: Store, root_ids: list[int]) -> list[int]:
+    """Every live descendant of ``root_ids``, roots included — the
+    ``focus=``/``serves=`` scope set for the todo Drive preset
+    (gr664410). One recursive walk over ``refs.parent_id`` of any kind,
+    so a todo's job children count as in-scope rows too — mirroring the
+    workbench's own subtree walk (``routes/todo.py``'s ``_subtree_rows``).
+    Empty input returns ``[]`` (a resolved-but-empty scope still scopes:
+    it shows nothing, not the corpus)."""
+    if not root_ids:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH RECURSIVE sub(ref_id) AS (
+                SELECT ref_id FROM refs
+                 WHERE ref_id = ANY(%s) AND retired_at IS NULL
+                UNION
+                SELECT c.ref_id FROM refs c JOIN sub s ON c.parent_id = s.ref_id
+                 WHERE c.retired_at IS NULL
+            )
+            SELECT ref_id FROM sub
+            """,
+            (root_ids,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def _breadcrumb(store: Store, folder_id: int) -> list[dict[str, Any]]:
     """(ref_id, title) pairs root→here, walking up folder parents."""
     crumbs: list[dict[str, Any]] = []
@@ -799,6 +924,11 @@ async def index(
     task: str = "",
     folder: str = "",
     cited_by: str = "",
+    queue: str = "",
+    focus: str = "",
+    serves: str = "",
+    layout: str = "",
+    rel: str = "",
     page: int = 1,
     submitted: str = "",
     requeued: int = 0,
@@ -837,7 +967,23 @@ async def index(
     each reload naturally surfaces the next un-attempted batch once "Open
     all downloads" marks the current page tried); ``since=``/``until=``
     bound the date window; ``page=`` pages past the ``_PAGE_SIZE`` cap.
-    With no ``q`` the landing shows the recent list. ``requeued=`` is the
+    With no ``q`` the landing shows the recent list.
+
+    The todo preset (gr664410 — what the retired dashboard list's nav
+    slot points at): ``queue=doable`` swaps the recency list for the
+    doable leaf rotation in its own order (prio, then least-picked —
+    the same ``precis.todo.views._doable_rows`` the workbench's doable
+    panel reads); ``focus=<todo id>`` scopes either list to that subtree
+    (root included, job children too) and ``serves=<qid>`` (``qu<qid>``
+    accepted) to the union of todos serving that quest — the dashboard's
+    own two filters, now facet chips. The ``tag=`` chips narrow the
+    doable rotation too — they ride the same leaf filter
+    ``search(kind='todo', view='doable')`` runs, applied before
+    pagination — while ``state``/``sort``/``folder`` stay browse-only
+    since the queue owns its ordering. All three params are browse-only
+    like ``cited_by`` — a text ``q`` already scopes to matched chunks —
+    and ride the filter form as hidden inputs so a facet resubmit
+    keeps the queue and subtree scope. ``requeued=`` is the
     stamped-count round-trip from the "Fetch next N" button
     (``POST /drive/requeue-stubs``) — a redirect-only query param, not a
     facet, so it renders one notice banner and doesn't otherwise change
@@ -845,6 +991,24 @@ async def index(
     redirect-only round-trip from the "Fetch next batch" button
     (``POST /drive/fetch-next-batch``), which runs an actual bounded
     ``fetch_oa`` pass in-request rather than just reordering the queue.
+
+    ``layout=tree&rel=<name>`` (gr664408) renders the filtered rows as a
+    nested ``<ul>`` instead of the flat list: each row hangs under every
+    parent the named edge source (``precis_web.drive_tree._TREE_EDGES`` —
+    ``serves`` links, ``parent_id``) gives it, roots are rows whose
+    parents the filter cut. Pagination applies to **roots**: the page
+    fetches the whole filtered set (the browse path exactly — one count
+    query then the full read; the search path bounded by live refs of the
+    selected kinds), builds the forest once, and ``page`` steps through its top
+    level — each root rides with its filtered descendants, so a branch
+    never splits across pages and totals count top-level nodes, not
+    flat rows. In tree mode the default top-level ``unfiled_only``
+    yields like it does for a focus/serves scope — hiding
+    ``parent_id``-carrying children would empty the very hierarchy the
+    layout exists to show. An unknown ``layout``/``rel`` is a 400
+    naming the valid set. The doable queue keeps its already-paginated
+    leaves and pager state; tree mode never slices that page again.
+    A stray ``rel`` without ``layout=tree`` is inert.
 
     Discover (``task=discover``, also a cookie-free bare landing) defaults
     to created order across folders and content/work kinds including findings.
@@ -885,6 +1049,26 @@ async def index(
     _user = current_user(request)
     viewer = _user.login if _user is not None else None
     q = (q or "").strip()
+
+    # layout=tree&rel=<rel> (gr664408): nest the filtered rows under a
+    # named edge source instead of the flat list. Unknown values are a
+    # 400 naming the valid set — the preset links pin exact spellings,
+    # and a silent fallthrough to flat would hide a typo'd deep link.
+    layout = (layout or "").strip().lower()
+    if layout not in ("", "flat", "tree"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown layout {layout!r} — one of: flat, tree",
+        )
+    rel = (rel or "").strip().lower()
+    if layout == "tree" and rel not in _TREE_EDGES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown rel {rel!r} — layout=tree takes one of: "
+                + ", ".join(sorted(_TREE_EDGES))
+            ),
+        )
 
     # A query that *is* an identifier (a lone record or chunk handle, or a
     # DOI whole or as a unique prefix) goes straight to that item's page
@@ -935,14 +1119,17 @@ async def index(
     if not request.query_params and cookie is None:
         task = "discover"
     all_kind_defs = sorted(kk for kinds in kind_buckets.values() for kk in kinds)
-    discover_kinds = [kk for kk in all_kind_defs if kk not in _DISCOVER_EXCLUDED]
+    # Kinds that can return a Drive row (gr664402): a ``refs`` row or a
+    # table of their own — filters the "Other" facet below and keeps
+    # never-row kinds out of the Discover default scope too.
+    row_kinds = await asyncio.to_thread(_ref_backed_kinds, store)
+    discover_kinds = [
+        kk for kk in all_kind_defs if kk not in _DISCOVER_EXCLUDED and kk in row_kinds
+    ]
     # A stale/custom saved kind remains selectable without becoming part of
     # Discover's default roster merely because one browser named it.
     all_kind_defs = sorted(set(all_kind_defs).union(saved_kinds, url_kinds))
     classified = {kk for kinds in kind_buckets.values() for kk in kinds}
-    kind_buckets["other"] = sorted(
-        set(kind_buckets["other"]).union(set(all_kind_defs) - classified)
-    )
     _scope_kinds = {
         "sources": kind_buckets["sources"],
         "mine": [*artifact_kind_defs, *design_kind_defs, *work_kind_defs],
@@ -1000,6 +1187,20 @@ async def index(
             paper_chunks = qual_pc
         if qual_since is not None:
             since = qual_since
+    # gr664402: the "Other" catch-all must not offer kinds that can never
+    # return a row — compute/stateless kinds (calc/random/time/…) and
+    # file-backed kinds (skill/python/md/…) are registered, so they land
+    # here, but nothing they make reaches ``refs`` (nor, unlike ``tag``, a
+    # table of its own): their checkbox was a guaranteed-empty selection.
+    # Restrict roster "Other" kinds to ref-backed ones. A *selected* dead
+    # kind keeps its chip — and unclassified saved/URL kinds keep theirs —
+    # so a deep-linked scope still serializes through the next submit.
+    # Runs after ``_split_kind_tokens`` reassigns ``selected_kinds``: a
+    # typed ``/calc`` selects the same dead kind and needs the same chip.
+    kind_buckets["other"] = sorted(
+        {kk for kk in kind_buckets["other"] if kk in row_kinds or kk in selected_kinds}
+        | (set(all_kind_defs) - classified)
+    )
     tags = [t.strip() for t in tag if t.strip()] + qual_tags
     # ``tag=level:recurring`` is the "Schedules" preset link (base.html.j2 /
     # drive/index.html.j2's nav chip) — kept as a familiar URL even though
@@ -1097,6 +1298,44 @@ async def index(
             )
             selected_kinds = ["paper"]  # the worklist is papers, whatever the chips say
 
+    # The todo preset's narrowing (gr664410). ``focus=`` scopes to one
+    # todo's subtree; ``serves=`` resolves the quest's serving todos and
+    # scopes to their union — the dashboard's own two filters as Drive
+    # facets. ``scope_roots`` feeds the doable queue's ``under=``;
+    # ``scope_ids`` the plain browse's ``ref_ids=`` allow-list (intersected
+    # with ``fetch_ref_ids`` when both scopes are active — a cited_by
+    # worklist inside a todo subtree still intersects, never unions).
+    queue = (queue or "").strip().lower()
+    queue = "doable" if queue == "doable" else ""
+    focus = (focus or "").strip()
+    serves = (serves or "").strip()
+    scope_roots: list[int] | None = None
+    if not q:
+        focus_id = int(focus) if focus.isdigit() else None
+        serves_m = _TODO_SERVES_RE.fullmatch(serves) if serves else None
+        if focus_id is not None:
+            scope_roots = [focus_id]
+        elif serves_m is not None:
+            scope_roots = [
+                int(ln.src_ref_id)
+                for ln in await asyncio.to_thread(
+                    store.links_for,
+                    int(serves_m.group(1)),
+                    direction="in",
+                    relation="serves",
+                )
+            ]
+    scope_ids: list[int] | None = (
+        await asyncio.to_thread(_subtree_ids, store, scope_roots)
+        if scope_roots is not None
+        else None
+    )
+    ref_id_scope: list[int] | None = scope_ids
+    if fetch_ref_ids is not None and scope_ids is not None:
+        ref_id_scope = sorted(set(fetch_ref_ids) & set(scope_ids))
+    elif fetch_ref_ids is not None:
+        ref_id_scope = fetch_ref_ids
+
     # A deep link can scope to a kind that has no chip — Status's "Refs by
     # kind" lists every kind in ``refs`` (job, finding, citation, …), not
     # just the browsable facets. Render those as an "Other" chip row so the
@@ -1119,10 +1358,11 @@ async def index(
     # ``tag`` is not a ref kind (gr636493): the ref queries run on the rest.
     want_tags = "tag" in selected_kinds and not fetch_ref_ids
     ref_kinds = [kk for kk in selected_kinds if kk != "tag"]
-    # Tag-row links pin the ref kinds as explicit ``k=`` params (the
-    # bare-``?tag=`` link would resolve a saved ``k=tag`` cookie and list
-    # tags again, td650230). A tag-only selection falls back to the
-    # fresh-landing scope so the click still lands on matching refs.
+    # Tag-row links and per-row tag chips pin the ref kinds as explicit
+    # ``k=`` params (the bare-``?tag=`` link would resolve a saved
+    # ``k=tag`` cookie and list tags again, td650230/gr664407). A
+    # tag-only selection falls back to the fresh-landing scope so the
+    # click still lands on matching refs.
     tag_row_kinds = ref_kinds or [
         *_DEFAULT_SOURCE_KINDS,
         *artifact_kind_defs,
@@ -1130,6 +1370,7 @@ async def index(
         *kind_buckets["derived"],
         "concept",
     ]
+    queue_page = False
     result_total: int | None = None
     # Whether ``result_total`` is exact (the browse path — a plain filtered
     # count) or a ≈lexical approximation (the fused-search path). Gates the
@@ -1155,7 +1396,9 @@ async def index(
             since=since_dt,
             until=until_dt,
             tags=tags,
-            offset=offset,
+            offset=0 if layout == "tree" else offset,
+            tag_kinds=tag_row_kinds,
+            fetch_all=layout == "tree",
         )
         if ambiguous_ids and offset == 0:
             # An ambiguous DOI prefix: list the matching papers first.
@@ -1168,36 +1411,38 @@ async def index(
                 None,
                 0,
                 ref_ids=ambiguous_ids,
+                tag_kinds=tag_row_kinds,
             )
             seen = {r["id"] for r in first}
             rows = [*first, *(r for r in rows if r.get("id") not in seen)]
-        # Total-match count for the "showing N of ~K" header — a lexical
-        # approximation (the fused semantic+lexical ranking that actually
-        # populates ``rows`` has no cheap exact total), but it's the
-        # difference between finding 5 of 50 and 5 of 50,000. Skip the
-        # query when no kind is selected — it can only match nothing (``q``
-        # is already guaranteed non-blank by the outer ``if q:``).
-        if ref_kinds:
-            result_total = await asyncio.to_thread(
-                store.chunks.count_chunks_lexical,
-                q=q,
-                kinds=ref_kinds,
-                tags=tags,
-                distinct_refs=True,
-                since=since_dt,
-                until=until_dt,
-            )
-        else:
-            result_total = 0
-        # Floor to what's actually on the page: the fused ranking can surface
-        # semantic-only hits the lexical count misses, so without this the
-        # header could read the absurd "showing 30 of ~5".
-        # (store is untyped Any, so mypy can't see
-        # ``store.chunks.count_chunks_lexical``'s `-> int` — nor, for the
-        # same reason, that it lives on the composed ChunkStore rather than
-        # on Store; both branches above always set an int, never None.)
-        assert isinstance(result_total, int)
-        result_total = max(result_total, offset + len(rows))
+        if layout != "tree":
+            # Total-match count for the "showing N of ~K" header — a lexical
+            # approximation (the fused semantic+lexical ranking that actually
+            # populates ``rows`` has no cheap exact total), but it's the
+            # difference between finding 5 of 50 and 5 of 50,000. Skip the
+            # query when no kind is selected — it can only match nothing (``q``
+            # is already guaranteed non-blank by the outer ``if q:``).
+            if ref_kinds:
+                result_total = await asyncio.to_thread(
+                    store.chunks.count_chunks_lexical,
+                    q=q,
+                    kinds=ref_kinds,
+                    tags=tags,
+                    distinct_refs=True,
+                    since=since_dt,
+                    until=until_dt,
+                )
+            else:
+                result_total = 0
+            # Floor to what's actually on the page: the fused ranking can surface
+            # semantic-only hits the lexical count misses, so without this the
+            # header could read the absurd "showing 30 of ~5".
+            # (store is untyped Any, so mypy can't see
+            # ``store.chunks.count_chunks_lexical``'s `-> int` — nor, for the
+            # same reason, that it lives on the composed ChunkStore rather than
+            # on Store; both branches above always set an int, never None.)
+            assert isinstance(result_total, int)
+            result_total = max(result_total, offset + len(rows))
     else:
         # The default top level hides anything filed into a folder — a
         # folder's contents live only inside it (still findable via search,
@@ -1205,60 +1450,104 @@ async def index(
         # children instead; the trash view (``deleted``) and the "Anywhere"
         # sentinel (``folder=*``) show every ref regardless of where it was
         # filed.
-        unfiled_only = folder_id is None and not show_deleted and not folder_any
-        recent, has_next = await asyncio.to_thread(
-            _recent_rows,
-            store,
-            ref_kinds,
-            tags,
-            has_pdf,
-            folder_id,
-            offset,
-            has_chunks=has_chunks,
-            unfiled_only=unfiled_only,
-            has_schedule=has_schedule,
-            has_external_id=has_external_id,
-            no_oa=no_oa,
-            ref_ids=fetch_ref_ids,
-            deleted=show_deleted,
-            oldest=(sort == "oldest"),
-            created=(sort == "created"),
-            untried=(sort == "untried"),
-            downloadable_first=(state == "stub"),
-            viewer=viewer,
+        # A focus/serves subtree scope *is* the filing — hiding
+        # ``parent_id``-carrying children would empty it, so
+        # ``unfiled_only`` yields to an active scope the way a folder
+        # selection does. Tree mode yields the same way (gr664408):
+        # ``layout=tree&rel=parent`` needs the children on the page to
+        # nest them.
+        unfiled_only = (
+            folder_id is None
+            and not show_deleted
+            and not folder_any
+            and scope_ids is None
+            and layout != "tree"
         )
-        # Exact total for the browse "showing N of K" header + last-page
-        # jump — the no-query list is a plain filtered ``refs`` query, so
-        # unlike the fused-search path this count is exact, not a ≈lexical
-        # approximation. Deliberately *not* floored to ``offset + len(recent)``
-        # (the search path does that to correct lexical *under*counting): here
-        # the count is already exact, and on a stale/overshoot ``page=`` — a
-        # bookmarked deep page of a set that has since shrunk — that floor
-        # would clobber the true total up to the empty page's offset ("0 of
-        # 30" for a set of 10). The honest count stands; the pager below hides
-        # the "of Y" once you're past the real last page. ``unfiled_only`` is
-        # threaded through so the denominator counts the same filed-hiding set
-        # the page shows.
-        result_total = await asyncio.to_thread(
-            store.count_recent_refs,
-            ref_kinds,
-            tags=tags,
-            has_pdf=has_pdf,
-            has_chunks=has_chunks,
-            has_schedule=has_schedule,
-            has_external_id=has_external_id,
-            no_oa=no_oa,
-            parent_id=folder_id,
-            unfiled_only=unfiled_only,
-            ref_ids=fetch_ref_ids,
-            deleted=show_deleted,
-            viewer=viewer,
-        )
-        total_exact = True
+        if queue == "doable" and "todo" in ref_kinds and not show_deleted:
+            # The todo preset (gr664410): the doable leaf rotation in its
+            # own order, not the recency list — the folder/sort/state
+            # browse facets don't apply to a queue that owns its ordering,
+            # but the ``tag=`` chips do: they ride the same leaf filter
+            # ``search(kind='todo', view='doable')`` runs, narrowing the
+            # queue before pagination. Its total is the same cheap
+            # ``offset + len + next`` estimate the search path uses (no
+            # exact count for a ranking query).
+            queue_page = True
+            recent, has_next = await asyncio.to_thread(
+                _doable_queue_rows,
+                store,
+                under=scope_roots,
+                offset=offset,
+                tags=tags,
+                tag_kinds=tag_row_kinds,
+            )
+            result_total = offset + len(recent) + (1 if has_next else 0)
+        else:
+            recent, has_next = await asyncio.to_thread(
+                _recent_rows,
+                store,
+                ref_kinds,
+                tags,
+                has_pdf,
+                folder_id,
+                offset,
+                has_chunks=has_chunks,
+                unfiled_only=unfiled_only,
+                has_schedule=has_schedule,
+                has_external_id=has_external_id,
+                no_oa=no_oa,
+                ref_ids=ref_id_scope,
+                deleted=show_deleted,
+                oldest=(sort == "oldest"),
+                created=(sort == "created"),
+                untried=(sort == "untried"),
+                downloadable_first=(state == "stub"),
+                viewer=viewer,
+                tag_kinds=tag_row_kinds,
+                fetch_all=layout == "tree",
+            )
+            if layout == "tree":
+                # Root pagination (below) owns the total, and the
+                # fetch-all already ran the same count for its bound —
+                # skip the flat recount.
+                result_total = None
+            else:
+                # Exact total for the browse "showing N of K" header + last-page
+                # jump — the no-query list is a plain filtered ``refs`` query, so
+                # unlike the fused-search path this count is exact, not a ≈lexical
+                # approximation. Deliberately *not* floored to ``offset + len(recent)``
+                # (the search path does that to correct lexical *under*counting): here
+                # the count is already exact, and on a stale/overshoot ``page=`` — a
+                # bookmarked deep page of a set that has since shrunk — that floor
+                # would clobber the true total up to the empty page's offset ("0 of
+                # 30" for a set of 10). The honest count stands; the pager below hides
+                # the "of Y" once you're past the real last page. ``unfiled_only`` is
+                # threaded through so the denominator counts the same filed-hiding set
+                # the page shows.
+                result_total = await asyncio.to_thread(
+                    store.count_recent_refs,
+                    ref_kinds,
+                    tags=tags,
+                    has_pdf=has_pdf,
+                    has_chunks=has_chunks,
+                    has_schedule=has_schedule,
+                    has_external_id=has_external_id,
+                    no_oa=no_oa,
+                    parent_id=folder_id,
+                    unfiled_only=unfiled_only,
+                    ref_ids=ref_id_scope,
+                    deleted=show_deleted,
+                    viewer=viewer,
+                )
+            total_exact = True
 
+    # Mixed selection (``tag`` plus ref kinds): a compact "matching
+    # tags" chip strip above the ref rows, not rows interleaved into
+    # the list — the strip previews the top of the roster and defers
+    # to ``k=tag`` for the rest (gr636493).
+    matching_tags: list[dict[str, Any]] = []
     if want_tags and not tag_only and page == 1:
-        tag_rows, _ = await asyncio.to_thread(_tag_rows, store, q, 1, ref_kinds)
-        (rows if q else recent).extend(tag_rows)
+        matching_tags = await asyncio.to_thread(_tag_chips, store, q, ref_kinds)
 
     # The manual-retrieval section under the stub queue: the cooled no-OA
     # bucket as a buy-list (DOI, title, year, cites; newest request first),
@@ -1278,6 +1567,47 @@ async def index(
     return_to = request.url.path + (
         f"?{request.url.query}" if request.url.query else ""
     )
+
+    # Tag-row deletes post to ``/tags/delete`` (routes/tags.py): stamp
+    # the ``back`` now that ``return_to`` exists so the bounce lands on
+    # this filtered view, not the plain ``k=tag`` listing.
+    for tag_row in [*rows, *recent]:
+        if tag_row["kind"] == "tag":
+            for action in tag_row["actions"]:
+                action["fields"]["back"] = return_to
+
+    # The tree layout (gr664408): the same filtered rows, nested under
+    # the named edge source — the registry's ``{child: [parents]}`` map
+    # plus ``build_tree``'s root/DAG/cycle rules. Pagination applies to
+    # **roots**: the fetch above returned the whole filtered set (the
+    # browse and search paths using live-ref counts), so the forest is
+    # built once and ``page`` steps
+    # through its top level — a page is ``_PAGE_SIZE`` top-level nodes
+    # with their filtered descendants, so a branch can't split across
+    # pages and a child never promotes to root because its parent fell
+    # on another page. Totals count top-level nodes, not flat rows.
+    tree: list[dict[str, Any]] | None = None
+    if layout == "tree":
+        listed = rows if q else recent
+        row_ids = [r["id"] for r in listed if isinstance(r.get("id"), int)]
+        forest = build_tree(
+            listed, await asyncio.to_thread(_TREE_EDGES[rel], store, row_ids)
+        )
+        if queue_page:
+            # The queue source already paginated its leaves. Preserve its
+            # rows, estimated total and next-page probe without slicing again.
+            tree = forest
+        elif row_ids:
+            tree = forest[offset : offset + _PAGE_SIZE]
+            result_total = len(forest)
+            has_next = len(forest) > offset + _PAGE_SIZE
+            total_exact = not q
+        else:
+            # Id-less rows only (a ``k=tag`` tree): every row is already
+            # its own root, so the flat page the row source applied IS
+            # the root page — the forest renders whole and the flat
+            # pager state stands.
+            tree = forest
 
     # Pager links preserve every filter, only ``page`` changes. ``submitted``
     # rides along only when this request was one: paging a deep-linked scope
@@ -1299,6 +1629,15 @@ async def index(
         _pager_params.append(("folder", folder_raw))
     if cited_by:
         _pager_params.append(("cited_by", cited_by))
+    if queue:
+        _pager_params.append(("queue", queue))
+    if focus:
+        _pager_params.append(("focus", focus))
+    if serves:
+        _pager_params.append(("serves", serves))
+    if layout == "tree":
+        _pager_params.append(("layout", "tree"))
+        _pager_params.append(("rel", rel))
     if scope:
         # Round-trips the active Mine/Sources/Machine highlight across
         # pagination — ``k=`` (appended below) already carries the real
@@ -1354,15 +1693,29 @@ async def index(
         ("until", until, f"Created until {until}"),
         ("cited_by", cited_by, f"Cited by {cited_by}"),
         ("scope", scope, f"Preset: {scope}"),
+        ("queue", queue, "Queue: doable"),
+        ("focus", focus, f"Todo subtree #{focus}"),
+        ("serves", serves, f"Serves {serves}"),
+        ("layout", "tree" if layout == "tree" else "", f"Tree by {rel}"),
     ):
         if (
             value
             and not (name == "state" and value == "all")
             and not (name == "paper_chunks" and value == "both")
         ):
-            if (q and name in ("folder", "state", "paper_chunks", "cited_by")) or (
-                not q and name in ("since", "until")
-            ):
+            if (
+                q
+                and name
+                in (
+                    "folder",
+                    "state",
+                    "paper_chunks",
+                    "cited_by",
+                    "queue",
+                    "focus",
+                    "serves",
+                )
+            ) or (not q and name in ("since", "until")):
                 label += " (browse only)" if q else " (search only)"
             active_facets.append({"label": label, "url": facet_url(name, "")})
 
@@ -1440,6 +1793,15 @@ async def index(
         "drive/index.html.j2",
         {
             "active_tab": "drive",
+            "drive_views": DRIVE_VIEWS,
+            "drive_view_links": DRIVE_VIEW_LINKS,
+            # Match the resolved filters, not the raw URL params: a ``/kind``
+            # token or ``tag:`` qualifier in ``q`` overrides/extends the
+            # ``k=``/``tag=`` params, and the Schedules sentinel is
+            # translated back into ``tags`` for paging above — highlighting
+            # the raw params would light CAD on a page showing papers
+            # (review td703478).
+            "drive_view_active": active_view(selected_kinds, tags),
             "q": q,
             "kind_defs": list(_DEFAULT_SOURCE_KINDS),
             "artifact_kind_defs": artifact_kind_defs,
@@ -1475,6 +1837,12 @@ async def index(
             "folder": folder_raw,
             "cited_by": cited_by,
             "cited_by_title": cited_by_title,
+            "queue": queue,
+            "focus": focus,
+            "serves": serves,
+            "layout": layout,
+            "rel": rel,
+            "tree": tree,
             "folder_options": await asyncio.to_thread(_folder_options, store),
             "folders": flat,
             "current": current,
@@ -1483,6 +1851,7 @@ async def index(
             "unmatched_doi": unmatched_doi,
             "rows": rows,
             "recent": recent,
+            "matching_tags": matching_tags,
             "result_total": result_total,
             "manual_rows": manual_rows,
             "manual_total": manual_total,

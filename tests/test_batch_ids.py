@@ -93,6 +93,34 @@ def test_get_batch_marks_deleted_and_accepts_handles(hub: Hub) -> None:
     assert f"gr{ids[1]}  deleted" in body
 
 
+@pytest.mark.parametrize("stale", ["deleted", "missing", "foreign"])
+def test_get_batch_read_hint_selects_first_live(hub: Hub, stale: str) -> None:
+    handler, ids = _gripes(hub, 2)
+    if stale == "deleted":
+        handler.delete(id=ids[0])
+        stale_id = ids[0]
+    elif stale == "foreign":
+        stale_id = id_of(TodoHandler(hub=hub).put(text="foreign batch row").body)
+    else:
+        stale_id = max(ids) + 100_000
+    body = handler.get(id=_batch(stale_id, ids[1])).body
+    assert f"get(kind='gripe', id={ids[1]}, view='full')" in body
+    assert f"get(kind='gripe', id={stale_id}" not in body
+    # The advertised read must succeed instead of raising Gone/NotFound.
+    assert f"# gripe {ids[1]}" in handler.get(id=ids[1], view="full").body
+
+
+def test_get_batch_without_live_rows_omits_actions(hub: Hub) -> None:
+    handler, ids = _gripes(hub, 1)
+    handler.delete(id=ids[0])
+    missing = ids[0] + 100_000
+    body = handler.get(id=_batch(ids[0], missing)).body
+    assert f"gr{ids[0]}  deleted" in body
+    assert f"gr{missing}  not found" in body
+    assert "get(kind=" not in body
+    assert "tag(kind=" not in body
+
+
 def test_get_batch_alert_shows_state(store: Store, hub: Hub) -> None:
     a, _ = raise_alert(store, source="s", fingerprint="fp-a", title="alert A\ndetail")
     b, _ = raise_alert(store, source="s", fingerprint="fp-b", title="alert B")
@@ -258,7 +286,38 @@ def test_get_batch_memory_renders_full_bodies_in_order(hub: Hub) -> None:
     assert body.index(f"me{missing}  not found") < body.index("long tail line one")
     assert "\n---\n" in body
     assert body.count("Next:") == 1
-    assert f"get(kind='memory', id={second}, view='fisheye+1hop')" in body
+    assert f"get(kind='memory', id={second}, extent='fisheye+1hop')" in body
+
+
+@pytest.mark.parametrize("stale", ["deleted", "missing", "foreign"])
+def test_get_batch_memory_hint_selects_first_live(hub: Hub, stale: str) -> None:
+    handler = MemoryHandler(hub=hub)
+    first = id_of(handler.put(text="stale memory").body)
+    second = id_of(handler.put(text="live memory\nbody to read").body)
+    if stale == "deleted":
+        handler.delete(id=first)
+        stale_id = first
+    elif stale == "foreign":
+        stale_id = id_of(TodoHandler(hub=hub).put(text="foreign batch row").body)
+    else:
+        stale_id = max(first, second) + 100_000
+    body = handler.get(id=_batch(stale_id, second)).body
+    assert f"get(kind='memory', id={second}, extent='fisheye+1hop')" in body
+    assert f"get(kind='memory', id={stale_id}" not in body
+    assert "body to read" in handler.eye(id=second, extent="fisheye+1hop").body
+
+
+def test_get_batch_memory_without_live_rows_omits_next(hub: Hub) -> None:
+    handler = MemoryHandler(hub=hub)
+    first = id_of(handler.put(text="retired memory").body)
+    handler.delete(id=first)
+    foreign = id_of(TodoHandler(hub=hub).put(text="foreign batch row").body)
+    missing = max(first, foreign) + 100_000
+    body = handler.get(id=_batch(first, missing, foreign)).body
+    assert f"me{first}  deleted" in body
+    assert f"me{missing}  not found" in body
+    assert f"me{foreign}  not found" in body
+    assert "Next:" not in body
 
 
 def test_get_batch_memory_dedupes_title_echo(hub: Hub) -> None:
@@ -609,6 +668,49 @@ def test_edit_batch_memory_replaces_bodies(hub: Hub) -> None:
         assert "the new body" in handler.get(id=rid).body
 
 
+def test_edit_batch_carries_dependants_lines(hub: Hub) -> None:
+    """Review td681243 / gr626866: the per-id first-line trim dropped
+    the ``dependants:`` ack every real edit appends — it now rides
+    indented under the id's outcome line."""
+    handler = MemoryHandler(hub=hub)
+    m1 = id_of(handler.put(text="first cited note").body)
+    m2 = id_of(handler.put(text="second uncited note").body)
+    dep = handler.store.insert_ref(
+        kind="finding", slug=None, title="claim relying on m1"
+    ).id
+    handler.store.add_link(src_ref_id=dep, dst_ref_id=m1, relation="cites")
+    body = handler.edit(id=_batch(m1, m2), mode="replace", text="new body").body
+    assert body.startswith("edited 2 memory in one transaction")
+    # the cited memory reports its dependant, the plain one reports 0 —
+    # neither line may silently vanish.
+    assert "dependants: 1 shown of 1" in body
+    assert "dependants: 0 shown of 0" in body
+
+
+def test_edit_batch_dry_run_keeps_dependants_block(hub: Hub) -> None:
+    """The batch's dry-run previews likewise carry their
+    ``## Dependants`` block, indented under each per-id outcome."""
+    handler = MemoryHandler(hub=hub)
+    m1 = id_of(handler.put(text="alpha one").body)
+    m2 = id_of(handler.put(text="alpha two").body)
+    dep = handler.store.insert_ref(
+        kind="finding", slug=None, title="claim relying on m1"
+    ).id
+    handler.store.add_link(src_ref_id=dep, dst_ref_id=m1, relation="cites")
+    body = handler.edit(
+        id=_batch(m1, m2),
+        mode="find-replace",
+        find="alpha",
+        text="omega",
+        dry_run=True,
+    ).body
+    assert body.count("## Dependants") == 2
+    assert f"fi{dep}" in body
+    # nothing written: the bodies keep their alpha
+    for rid in (m1, m2):
+        assert "alpha" in handler.get(id=rid).body
+
+
 def test_edit_batch_todo_retitles_all(hub: Hub) -> None:
     handler = TodoHandler(hub=hub)
     ids = [rid for i in range(2) if (rid := handler.put(text=f"batch todo {i}").ref_id)]
@@ -853,3 +955,67 @@ def test_edit_id_list_refused_on_file_kind(store: Store, tmp_path: Path) -> None
     assert "call edit once per id" in body
     assert "edit(kind='markdown', id='a'" in body
     assert "# A" in (tmp_path / "a.md").read_text(encoding="utf-8")
+
+
+def test_batch_tag_prefixes(hub: Hub) -> None:
+    handler, ids = _gripes(hub, 2)
+    for rid in ids:
+        for tag in ("thread:x", "fix:code", "cluster:y"):
+            handler.store.add_tag(rid, Tag.open(tag), set_by="system")
+    assert "[thread:x]" not in handler.get(id=_batch(*ids)).body
+    body = handler.get(id=_batch(*ids), tag_prefixes="thread,fix").body
+    assert body.count("[thread:x]") == 2
+    assert body.count("[fix:code]") == 2
+    assert "[cluster:y]" not in body
+    assert "[thread:x]" not in handler.get(id=_batch(*ids)).body
+
+
+@pytest.mark.parametrize("handler_type", [GripeHandler, MemoryHandler])
+@pytest.mark.parametrize("view", ["list", "ids"])
+def test_batch_list_view_300(hub: Hub, handler_type: Any, view: str) -> None:
+    handler = handler_type(hub=hub)
+    first = id_of(handler.put(text="compact first\nbody detail").body)
+    deleted = id_of(handler.put(text="compact deleted").body)
+    handler.delete(id=deleted, reason="batch test")
+    other = id_of(TodoHandler(hub=hub).put(text="foreign kind").body)
+    missing = first + 100_000
+    ids = [first, deleted, other, *range(missing, missing + 117)]
+    lines = handler.get(id=ids, view=view).body.splitlines()
+    assert len(lines) == 120
+    prefix = "gr" if handler_type is GripeHandler else "me"
+    assert [line.split()[0] for line in lines] == [f"{prefix}{rid}" for rid in ids]
+    assert lines[1] == f"{prefix}{deleted}  deleted"
+    assert lines[2] == f"{prefix}{other}  not found"
+    assert lines[3] == f"{prefix}{missing}  not found"
+    assert ("compact first" in lines[0]) == (view == "list")
+    assert "body detail" not in "\n".join(lines)
+    assert (
+        len(
+            handler.get(
+                id=list(range(missing, missing + 300)), view=view
+            ).body.splitlines()
+        )
+        == 300
+    )
+
+
+@pytest.mark.parametrize("handler_type", [GripeHandler, MemoryHandler])
+def test_batch_default_cap_still_50(hub: Hub, handler_type: Any) -> None:
+    handler = handler_type(hub=hub)
+    with pytest.raises(BadInput, match="at most 50"):
+        handler.get(id=list(range(1, 52)))
+    for view in ("list", "ids"):
+        with pytest.raises(BadInput, match="at most 300") as exc:
+            handler.get(id=list(range(1, 302)), view=view)
+        assert f"view={view!r}" in str(exc.value.next)
+
+
+def test_batch_list_tag_prefixes(hub: Hub) -> None:
+    handler, ids = _gripes(hub, 1)
+    handler.tag(id=ids[0], add=["topic:compact", "project:batch"])
+    body = handler.get(id=_batch(*ids), view="list", tag_prefixes="topic").body
+    assert "compact" in body and "project:batch" not in body
+    assert (
+        "compact"
+        not in handler.get(id=_batch(*ids), view="list", tag_prefixes="other").body
+    )

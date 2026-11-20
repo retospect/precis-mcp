@@ -10,10 +10,14 @@ explicit ``kind=`` path.
 from __future__ import annotations
 
 import importlib.util
+from typing import Any
 
 import pytest
 
+from precis.errors import BadInput, Denied
+from precis.response import Response
 from precis.runtime import PrecisRuntime
+from precis.runtime.dispatch import _KIND_GATE
 from precis.store import Store
 from precis.utils import handle_registry
 from tests._refs import insert_gripe
@@ -172,8 +176,36 @@ def test_plan_node_handle_reads_back_through_dispatch(
     assert pe1 != pe2
 
 
+def test_plan_eye_takes_a_node_handle_and_refuses_the_plan(
+    runtime_with_store: PrecisRuntime, store: Store, hub
+) -> None:
+    """``extent=`` on a plan handle names the pe<id> form; on a pe<id> it
+    renders the eye."""
+    import re
+
+    from precis.handlers.plan import PlanHandler
+
+    plan = PlanHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    plan.put(id="p1", title="P", project=proj)
+    r1 = plan.put(id="p1", text="first step", at={"last": True})
+    m1 = re.search(r"pe\d+", r1.body)
+    assert m1 is not None
+    pe1 = m1.group(0)
+
+    out, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "plan", "id": pe1, "extent": "fisheye+1hop"}
+    )
+    assert not err and "first step" in out, out
+    out, err = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "plan", "id": "p1", "extent": "fisheye"}
+    )
+    assert err and "pass a pe<id> handle" in out, out
+    assert "extent='fisheye+1hop'" in out, out
+
+
 @_NEEDS_PAPER_EXTRA
-def test_surface_get_handle_list_mixed_kinds_refused(
+def test_surface_get_handle_list_mixed_kinds(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
     m = store.insert_ref(kind="memory", slug=None, title="m")
@@ -182,8 +214,102 @@ def test_surface_get_handle_list_mixed_kinds_refused(
         handle_registry.format_handle("memory", m.id),
         handle_registry.format_handle("todo", other.id),
     ]
-    out = runtime_with_store.dispatch("get", {"id": hs})
-    assert "mixes kinds" in out and "memory" in out and "todo" in out, out
+    out, error = runtime_with_store.dispatch_with_status("get", {"id": hs})
+    assert not error, out
+    assert all(handle in out for handle in hs), out
+    assert out.index(hs[0]) < out.index(hs[1])
+
+
+@_NEEDS_PAPER_EXTRA
+@pytest.mark.parametrize("reverse", [False, True])
+def test_surface_get_finding_and_paper_chunk_batch(
+    runtime_with_store: PrecisRuntime, store: Store, reverse: bool
+) -> None:
+    """gr720467: finding and paper-chunk handles resolve independently."""
+    finding = store.insert_ref(kind="finding", slug=None, title="Mixed batch claim")
+    paper = store.insert_ref(kind="paper", slug="mixed-batch-paper", title="Paper")
+    chunk_id = _insert_chunk(store, paper.id)
+    handles = [
+        handle_registry.format_handle("finding", finding.id),
+        handle_registry.format_handle("paper", chunk_id, chunk=True),
+    ]
+    if reverse:
+        handles.reverse()
+    out, error = runtime_with_store.dispatch_with_status("get", {"id": handles})
+    assert not error, out
+    assert "Mixed batch claim" in out and "chunk body" in out, out
+    assert out.index(handles[0]) < out.index(handles[1])
+
+
+def test_mixed_get_checks_every_kind_before_reading(
+    runtime_stateless: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mixed batch cannot use an allowed first kind to read a denied kind."""
+    checked: list[str] = []
+
+    def gate(verb: str, args: dict[str, Any]) -> None:
+        checked.append(args["kind"])
+        if args["kind"] == "handle":
+            raise Denied("handle scope required", next="use a handle credential")
+
+    def refuse_read(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("a mixed batch read before checking all resolved kinds")
+
+    monkeypatch.setattr(runtime_stateless, "_dispatch_resolved_kind", refuse_read)
+    token = _KIND_GATE.set(gate)
+    try:
+        with pytest.raises(Denied, match="handle scope required"):
+            # time:/handle: are the dep-free kinds live on a storeless hub.
+            runtime_stateless._dispatch_inner_core(
+                "get", {"id": ["time:1", "handle:2"]}
+            )
+    finally:
+        _KIND_GATE.reset(token)
+    assert checked == ["time", "handle"]
+
+
+@pytest.mark.parametrize("size", [51, 300, 301])
+def test_mixed_get_batch_cap(
+    runtime_stateless: PrecisRuntime, monkeypatch: pytest.MonkeyPatch, size: int
+) -> None:
+    """Mixed reads accept 300 addresses regardless of the scalar view."""
+    reads: list[str] = []
+
+    def read(verb: str, args: dict[str, Any]) -> Response:
+        reads.append(args["id"])
+        return Response(body=args["id"])
+
+    monkeypatch.setattr(runtime_stateless, "_dispatch_inner_core", read)
+    handles = ["time:1"] * (size - 1) + ["handle:2"]
+    if size > 300:
+        with pytest.raises(BadInput, match="at most 300 IDs"):
+            runtime_stateless._dispatch_mixed_get({"id": handles})
+        assert reads == []
+    else:
+        response = runtime_stateless._dispatch_mixed_get({"id": handles})
+        assert response is not None and response.result_count == size
+        assert reads == handles
+
+
+@_NEEDS_PAPER_EXTRA
+def test_mixed_get_preserves_handle_shaped_public_id(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr720467 review: a resolved slug must not be resolved as a handle again."""
+    decoy = store.insert_ref(kind="paper", slug="mixed-decoy", title="Wrong target")
+    slug = handle_registry.format_handle("paper", decoy.id)
+    target = store.insert_ref(kind="paper", slug=slug, title="Intended target")
+    memory = store.insert_ref(kind="memory", slug=None, title="Other kind")
+    handle = handle_registry.format_handle("paper", target.id)
+    scalar, scalar_error = runtime_with_store.dispatch_with_status(
+        "get", {"id": handle}
+    )
+    out, error = runtime_with_store.dispatch_with_status(
+        "get", {"id": [handle, handle_registry.format_handle("memory", memory.id)]}
+    )
+    assert not scalar_error and not error, (scalar, out)
+    assert "Intended target" in scalar and "Intended target" in out
+    assert "Wrong target" not in out
 
 
 # --- chunk handles (universal handles — computed from chunk_id) -------------------

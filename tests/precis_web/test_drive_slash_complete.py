@@ -141,7 +141,9 @@ def test_complete_tag_values_come_from_the_roster(client) -> None:
     """``tag:<partial>`` completes from the tag roster (``suggest_tags`` —
     the FakeStore pool holds topic:co2-capture and topic:graphene)."""
     items = client.get("/drive/complete", params={"text": "tag:graph"}).json()
-    assert [i["insert"] for i in items] == ["tag:topic:graphene"]
+    # a lowercase axis spells the exact-axis escape (``=ns:value``): plain
+    # ``topic:graphene`` would parse as the OPEN/FLAG pair (b77d43be3)
+    assert [i["insert"] for i in items] == ["tag:=topic:graphene"]
     assert items[0]["name"] == "topic:graphene"
 
 

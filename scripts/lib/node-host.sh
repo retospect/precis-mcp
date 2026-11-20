@@ -5,7 +5,7 @@
 # Mirrors scripts/lib/pgb-host.sh, including its worktree → main-checkout
 # fallback (the overlay exists only in the primary checkout).
 #
-# Usage:  . "$(dirname "$0")/lib/node-host.sh"; ADDR="$(resolve_node_host castor)"
+# Usage:  . "$(dirname "$0")/lib/node-host.sh"; ADDR="$(resolve_node_host <node>)"
 #         NODE_HOST_<NAME>=<addr> (upper-cased node name) overrides the lookup.
 #         resolve_node_var <node> <key> reads any per-host key (lan_ip, …);
 #         its override is NODE_<KEY>_<NAME> (upper-cased).

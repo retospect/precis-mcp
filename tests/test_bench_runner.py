@@ -20,6 +20,7 @@ import pytest
 from precis.bench import (
     cli,
     corpus,
+    figure,
     gold,
     layers,
     planted,
@@ -767,6 +768,16 @@ def test_index_markdown_pages_with_a_next_call(tmp_path: Path):
         raw.index_markdown(tmp_path, offset=-1)
 
 
+def test_index_markdown_carries_the_retention_line(tmp_path: Path):
+    """gr660413 — the listing is also the retention doc: an empty or
+    filtered-empty index still says what absence means (a run not
+    listed survives only on the host+checkout that ran it)."""
+    assert raw.RETENTION_LINE in raw.index_markdown(tmp_path)
+    assert raw.RETENTION_LINE in raw.index_markdown(tmp_path, match="zzz")
+    _index_results(tmp_path / "20261109Z-aaaa111-quick-triage.json")
+    assert raw.RETENTION_LINE in raw.index_markdown(tmp_path)
+
+
 def test_index_cli_lists_runs(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: Any
 ):
@@ -1245,6 +1256,8 @@ def test_run_cli_writes_a_results_file_whose_header_pins_everything(
     assert (
         h["caller"]["ladder"] == list(runner.LADDER)
         and h["caller"]["read_k"] == runner.READ_K
+        and h["caller"]["gold_probe_page_size"] == runner.GOLD_PROBE_PAGE_SIZE
+        and h["caller"]["upper_bound"] is False
     )
     assert h["models"] is None and h["judge"] is None
     for key in (
@@ -1576,9 +1589,9 @@ def test_rowkw_without_the_keyword_layer_has_no_signal_and_opens_in_rank_order(
     assert _verbatims(rt) == ["pc3"]
 
 
-def test_rowkw_and_triage_never_ask_for_a_removed_rung_in_any_arm(stub_gold):
+def test_scored_callers_never_ask_for_a_removed_rung_in_any_arm(stub_gold):
     for arm in ("all-on", *ARMS, *runner.COMBINED_ARMS):
-        for caller in ("triage", "rowkw"):
+        for caller in ("triage", "rowkw", "rank-order", "oracle"):
             rt = _StubRuntime(list(_HITS), {}, dict(_ROWS))
             row = runner.run_scripted(
                 rt, _StubCatalog(), _stub_task(), arm, caller=caller, threshold=0.0
@@ -1632,8 +1645,8 @@ def test_a_combined_arm_is_vacuous_only_when_every_layer_it_removes_is_empty():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("caller", ["triage", "rowkw"])
-def test_triage_callers_are_deterministic_and_refusal_free_on_the_real_runtime(
+@pytest.mark.parametrize("caller", ["triage", "rowkw", "rank-order", "oracle"])
+def test_scripted_callers_are_deterministic_and_refusal_free_on_the_real_runtime(
     world, caller
 ):
     tasks, _ = runner.select_tasks(world["rows"])
@@ -1873,9 +1886,11 @@ def test_run_cli_provisions_worlds_and_records_them(
     res = runner.load_results(path)
     h = res["header"]
     assert calls == ["no-links", "chunk-fixed-512"]
-    assert h["schema"] == runner.RESULTS_SCHEMA == 5
+    assert h["schema"] == runner.RESULTS_SCHEMA == 6
     # schema 5: the todo the run was launched under (gr660023)
     assert h["todo"] == "td604857"
+    # schema 6: the gold-rank probe's page size (td664608)
+    assert h["caller"]["gold_probe_page_size"] == runner.GOLD_PROBE_PAGE_SIZE
     assert set(h["worlds"]) == {"no-links", "chunk-fixed-512"}
     assert h["worlds"]["chunk-fixed-512"]["variant"]["chunker"] == "fixed-512"
     assert h["worlds"]["no-links"]["variant"]["links"] is False
@@ -1891,3 +1906,471 @@ def test_run_cli_provisions_worlds_and_records_them(
     assert ("chunk-fixed-512", "planted") not in pairs
     md = runner.report_markdown(res)
     assert "precis_test" in md and "worlds:" in md
+
+
+# ---------------------------------------------------------------------------
+# the gold ranks, and the rank-order / oracle callers (td664608)
+# ---------------------------------------------------------------------------
+
+
+class _PagedStubRuntime:
+    """``search`` returns the caller-page hit list below the probe's page
+    size and the page-100 list at it; ``get`` returns scripted texts and
+    is logged (searches are not — a probe call would show in the row's
+    ``call_log``, never here)."""
+
+    def __init__(
+        self,
+        hits10: list[str],
+        hits100: list[str],
+        texts: dict[tuple[str, str], str] | None = None,
+    ) -> None:
+        self.hits10, self.hits100, self.texts = hits10, hits100, texts or {}
+        self.log: list[tuple[str, str]] = []
+
+    def dispatch_with_status(self, verb, args, fold=True):
+        if verb == "search":
+            hits = (
+                self.hits100
+                if int(args.get("page_size") or 0) >= runner.GOLD_PROBE_PAGE_SIZE
+                else self.hits10
+            )
+            rows = "\n".join(f"{h}\tkw\t" for h in hits)
+            return f"# hits\n{rows}\nNext:\n x", False
+        handle, ext = args["id"], args["extent"]
+        self.log.append((handle, ext))
+        return self.texts.get((handle, ext), f"{handle} {ext}"), False
+
+
+def _rank_chunk(cid: int, *, gold: bool) -> runner.ChunkInfo:
+    """A chunk info overlapping the stub task's ``p0`` evidence in doc
+    ``d`` exactly when ``gold`` — the test :func:`item_overlaps` runs."""
+    text = f"text of pc{cid}"
+    meta = (
+        {"para_id": "p0", "para_char_start": 0, "para_char_end": len(text)}
+        if gold
+        else {}
+    )
+    return runner.ChunkInfo(
+        cid, 1, text, " ".join(text.split()), meta, "d" if gold else "x"
+    )
+
+
+class _RankCatalog(_StubCatalog):
+    """``chunks`` answers real infos with fixed gold membership."""
+
+    def __init__(self, gold_ids: set[int]) -> None:
+        super().__init__()
+        self._gold_ids = set(gold_ids)
+
+    def chunks(self, ids: Iterable[int]) -> dict[int, runner.ChunkInfo]:
+        return {i: _rank_chunk(i, gold=i in self._gold_ids) for i in ids}
+
+
+def _paged_run(
+    hits10: list[str],
+    hits100: list[str],
+    gold_ids: set[int],
+    caller: str,
+    texts: dict[tuple[str, str], str] | None = None,
+    **kw: Any,
+):
+    rt = _PagedStubRuntime(hits10, hits100, texts)
+    row = runner.run_scripted(
+        rt, _RankCatalog(gold_ids), _stub_task(), "all-on", caller=caller, **kw
+    )
+    return row, rt
+
+
+def test_gold_ranks_record_the_first_hit_overlapping_gold():
+    hits = ["pc1", "pc2", "pc3", "pc4", "pc5"]
+    row, _rt = _paged_run(hits, hits, {3}, "rank-order")
+    assert row["gold_rank_page"] == 3 and row["gold_rank_100"] == 3
+
+
+def test_gold_rank_100_sees_gold_the_callers_page_missed():
+    hits10 = [f"pc{i}" for i in range(1, 11)]
+    hits100 = [f"pc{i}" for i in range(1, 41)]  # the gold is pc40, rank 40
+    row, _rt = _paged_run(hits10, hits100, {40}, "rank-order")
+    assert row["gold_rank_page"] is None and row["gold_rank_100"] == 40
+
+
+def test_no_gold_hit_leaves_both_ranks_null():
+    row, _rt = _paged_run(["pc1", "pc2"], ["pc1", "pc2", "pc3"], set(), "rank-order")
+    assert row["gold_rank_page"] is None and row["gold_rank_100"] is None
+
+
+def test_the_page_100_probe_costs_the_row_nothing():
+    hits = ["pc1", "pc2", "pc3"]
+    row, _rt = _paged_run(
+        hits,
+        hits + [f"pc{i}" for i in range(4, 30)],
+        {3},
+        "oracle",
+        texts={("pc3", "verbatim"): "text of pc3"},
+    )
+    # one search (the caller's own page) and one get: the probe's search
+    # is nowhere in tokens, calls or call_log
+    assert [c["verb"] for c in row["call_log"]] == ["search", "get"]
+    assert row["calls"] == len(row["call_log"]) == 2
+    assert row["tokens_total"] == pytest.approx(
+        sum(c["tokens"] for c in row["call_log"]), abs=0.2
+    )
+    assert row["gold_rank_page"] == 3
+
+
+def test_oracle_opens_the_first_gold_hit_verbatim_once_and_stops():
+    hits = ["pc1", "pc2", "pc3", "pc4"]
+    row, rt = _paged_run(
+        hits, hits, {3}, "oracle", texts={("pc3", "verbatim"): "text of pc3"}
+    )
+    assert row["gold_rank_page"] == 3
+    assert row["found"] is True and row["stop"] == "found"
+    assert rt.log == [("pc3", "verbatim")] and row["verbatim_opens"] == 1
+    # found exactly when gold_rank_page is not null: gold beyond the page
+    # is never opened
+    row2, rt2 = _paged_run(
+        ["pc1", "pc2"], [f"pc{i}" for i in range(1, 41)], {40}, "oracle"
+    )
+    assert row2["gold_rank_page"] is None and row2["gold_rank_100"] == 40
+    assert row2["found"] is False and row2["censored"] is True
+    assert rt2.log == [] and row2["verbatim_opens"] == 0
+    assert row2["calls"] == 1  # the search alone
+
+
+def test_rank_order_opens_in_search_rank_order_capped_at_read_k():
+    hits10 = [f"pc{i}" for i in range(1, 9)]
+    row, rt = _paged_run(hits10, hits10, set(), "rank-order")
+    assert _verbatims(rt) == hits10[: runner.READ_K]
+    assert row["verbatim_opens"] == runner.READ_K
+    # a miss is followed by fisheye then +recall on the first opened hit
+    assert rt.log[-2:] == [("pc1", "fisheye"), ("pc1", "+recall")]
+    assert row["caller"] == "rank-order" and row["refusals"] == 0
+    # fewer hits than read_k: all of them and no more
+    _row2, rt2 = _paged_run(["pc1", "pc2"], ["pc1", "pc2"], set(), "rank-order")
+    assert _verbatims(rt2) == ["pc1", "pc2"]
+    # the gold stops the climb where it sits
+    row3, rt3 = _paged_run(
+        hits10,
+        hits10,
+        {3},
+        "rank-order",
+        texts={("pc3", "verbatim"): "text of pc3"},
+    )
+    assert _verbatims(rt3) == ["pc1", "pc2", "pc3"] and row3["found"] is True
+
+
+def test_report_bins_the_first_gold_rank_per_arm_and_source():
+    def gr(
+        arm: str, task: str, page: int | None, g100: int | None, **kw: Any
+    ) -> dict[str, Any]:
+        return _row(task, arm, "s", gold_rank_page=page, gold_rank_100=g100, **kw)
+
+    rows = [
+        gr("all-on", "t1", 3, 3),
+        gr("all-on", "t2", None, 40),
+        gr("all-on", "t3", 8, 8),
+        gr("no-kwd", "t1", None, None),
+        gr("no-kwd", "t2", 55, 55),
+        gr("no-kwd", "t3", 2, 90, source="planted"),
+    ]
+    results = {
+        "header": {"set": "quick", "caller": {"name": "triage"}},
+        "rows": rows,
+    }
+    md = runner.report_markdown(results)
+    assert "### First gold rank — all answerable tasks" in md
+    assert "### First gold rank — qasper tasks only" in md
+    assert "### First gold rank — planted tasks only" in md
+    # all-on: page hits at 3 and 8; probe ranks 3/8 -> 1-10, 40 -> 21-50
+    assert "| all-on | 3 | 2 | 2 | 0 | 1 | 0 | 0 |" in md
+    # no-kwd: 55 and 90 -> 51-100, the null -> beyond 100
+    assert "| no-kwd | 3 | 2 | 0 | 0 | 0 | 2 | 1 |" in md
+    qasper = md.split("### First gold rank — qasper tasks only", 1)[1].split(
+        "### First gold rank — planted tasks only", 1
+    )[0]
+    assert "| no-kwd | 2 | 1 | 0 | 0 | 0 | 1 | 1 |" in qasper
+    assert "no-kwd 50.0%" in qasper
+    planted = md.split("### First gold rank — planted tasks only", 1)[1]
+    assert "| no-kwd | 1 | 1 | 0 | 0 | 0 | 1 | 0 |" in planted
+    assert "| all-on |" not in planted
+    # the past-page share — printed, not judged (the parked drill-down gate)
+    assert "all-on 33.3%" in md and "no-kwd 66.7%" in md
+    assert "21-100" in md
+
+
+def test_an_old_schema_results_file_still_loads_and_reports(tmp_path: Path):
+    res = _raw_results()  # pre-schema-6 rows: no gold_rank fields
+    p = tmp_path / "old.json"
+    p.write_text(json.dumps(res), encoding="utf-8")
+    loaded = runner.load_results(p)
+    md = runner.report_markdown(loaded)
+    assert "| all-on |" in md and "First gold rank" not in md
+    assert "gold@" not in raw.raw_markdown(loaded)
+
+
+def test_raw_row_header_prints_the_gold_ranks_when_present():
+    head = raw.row_header(_row("t1", "all-on", "s", gold_rank_page=3, gold_rank_100=40))
+    assert "gold@page 3" in head and "gold@100 40" in head
+    assert "gold@" not in raw.row_header(_row("t1", "all-on", "s"))
+    assert "gold@" not in raw.row_header(
+        _row("t1", "all-on", "s", gold_rank_page=None, gold_rank_100=None)
+    )
+
+
+def test_oracle_is_labelled_an_upper_bound_wherever_it_is_reported():
+    res = {
+        "header": {
+            "set": "quick",
+            "caller": {"name": "oracle", "upper_bound": True},
+        },
+        "rows": [_row("t1", "all-on", "s")],
+    }
+    assert "UPPER BOUND" in runner.report_markdown(res)
+    assert "oracle (upper bound)" in runner.compare_markdown([res])
+
+
+def test_oracle_takes_the_early_stop_when_the_search_page_renders_the_gold():
+    """td664442: oracle stops at the search page like every other caller —
+    under the cost model a spent get would price the "upper bound" above a
+    caller that stopped at the page."""
+
+    class _Rendering(_PagedStubRuntime):
+        def dispatch_with_status(self, verb, args, fold=True):
+            if verb == "search":
+                return "# hits\npc3\ttext of pc3\t\nNext:\n x", False
+            return super().dispatch_with_status(verb, args, fold)
+
+    rt = _Rendering(["pc3"], ["pc3"], {("pc3", "verbatim"): "text of pc3"})
+    row = runner.run_scripted(
+        rt, _RankCatalog({3}), _stub_task(), "all-on", caller="oracle"
+    )
+    assert rt.log == [] and row["verbatim_opens"] == 0
+    assert row["found"] is True and row["gold_rank_page"] == 1
+    assert row["calls"] == 1  # the search alone
+    # the early stop costs oracle what it costs any caller that stopped at
+    # the page: identical tokens and calls to a triage row on this task
+    tri = runner.run_scripted(
+        _Rendering(["pc3"], ["pc3"], {}),
+        _RankCatalog({3}),
+        _stub_task(),
+        "all-on",
+        caller="triage",
+        threshold=0.0,
+    )
+    assert (row["tokens_total"], row["calls"], row["found"]) == (
+        tri["tokens_total"],
+        tri["calls"],
+        tri["found"],
+    )
+
+
+def test_oracle_upper_bound_label_reaches_figure_raw_and_index(tmp_path: Path):
+    res = {
+        "header": {
+            "set": "quick",
+            "caller": {"name": "oracle", "upper_bound": True},
+        },
+        "rows": [_row("t1", "all-on", "s")],
+    }
+    assert "upper bound" in raw.raw_markdown(res).splitlines()[0]
+    for runs in ([res], [res, res]):  # a single file keeps the label too
+        pts = figure.figure_points(runs)
+        assert pts and all("upper bound" in p["label"] for p in pts)
+    p = tmp_path / "20260101T000000Z-abc-quick-oracle.json"
+    p.write_text(json.dumps(res), encoding="utf-8")
+    lines = raw.index_lines(tmp_path)
+    assert any("(upper bound)" in ln for ln in lines)
+
+
+# ---------------------------------------------------------------------------
+# the cost model and the found-within-budget primary metric (td664442)
+# ---------------------------------------------------------------------------
+
+
+def _clog(*tokens: float) -> list[dict[str, Any]]:
+    """A ``call_log`` of ``len(tokens)`` calls with those token counts."""
+    return [
+        {
+            "n": i,
+            "verb": "get",
+            "what": f"pc{i} verbatim",
+            "tokens": t,
+            "refusal": False,
+        }
+        for i, t in enumerate(tokens, 1)
+    ]
+
+
+def _cost(task: str, arm: str, found: bool, **kw: Any) -> dict[str, Any]:
+    """An answerable row: found at ``tokens`` in ``calls`` calls, or
+    censored at the 12000 budget."""
+    return _row(
+        task,
+        arm,
+        "s",
+        found=found,
+        censored=not found,
+        tokens_to_first_gold=kw.pop("tokens", 500.0) if found else 12000.0,
+        calls=kw.pop("calls", 2),
+        **kw,
+    )
+
+
+def test_cost_to_gold_is_tokens_plus_c_per_call_up_to_the_gold_call():
+    row = _cost(
+        "t1", "all-on", True, tokens=80.0, calls=3, call_log=_clog(50.0, 30.0, 20.0)
+    )
+    # the log prices only up to the call that rendered the gold: 50 + 30 = 80,
+    # so call 3 is not counted even though the row spent it
+    assert runner.cost_to_gold(row, per_call=0) == 80.0
+    assert runner.cost_to_gold(row, per_call=100) == 280.0
+    assert runner.cost_to_gold(row, per_call=500) == 1080.0
+    assert runner.cost_to_gold(row) == 280.0  # the default C is the headline 100
+    assert runner.COST_PER_CALL == 100 and runner.COST_SENSITIVITY == (0, 500)
+    # a row without call_log prices the row's own calls field
+    nolog = _cost("t1", "all-on", True, tokens=80.0, calls=3)
+    assert runner.cost_to_gold(nolog, per_call=100) == 380.0
+    # a row that did not reach the gold has no cost to first gold
+    missed = _cost("t1", "all-on", False, calls=9, call_log=_clog(*[100.0] * 9))
+    assert runner.cost_to_gold(missed) is None
+    assert runner.cost_to_gold(missed, per_call=0) is None
+
+
+def test_found_within_budget_prices_the_calls_into_the_budget():
+    # found at 11,900 tokens in 3 calls: inside a 12,000 budget at C = 0,
+    # outside it at C = 100 (11,900 + 300 = 12,200)
+    row = _cost(
+        "t1",
+        "all-on",
+        True,
+        tokens=11900.0,
+        calls=3,
+        call_log=_clog(4000.0, 4000.0, 3900.0),
+    )
+    assert runner.found_within_budget(row, 12000, per_call=0) is True
+    assert runner.found_within_budget(row, 12000, per_call=100) is False
+    nolog = _cost("t1", "all-on", True, tokens=11900.0, calls=3)
+    assert runner.found_within_budget(nolog, 12000, per_call=0) is True
+    assert runner.found_within_budget(nolog, 12000, per_call=100) is False
+    # a censored row is outside every budget, even at C = 0
+    missed = _cost("t1", "all-on", False)
+    assert runner.found_within_budget(missed, 12000, per_call=0) is False
+
+
+def test_paired_within_budget_and_sign_test_on_a_hand_checked_example():
+    rows = [
+        # both found within budget: t1, t2
+        _cost("t1", "all-on", True),
+        _cost("t1", "no-kwd", True),
+        _cost("t2", "all-on", True),
+        _cost("t2", "no-kwd", True),
+        # arm only: t3-t6 (all-on missed them)
+        *(_cost(f"t{i}", "no-kwd", True) for i in range(3, 7)),
+        *(_cost(f"t{i}", "all-on", False) for i in range(3, 7)),
+        # baseline only: t7
+        _cost("t7", "all-on", True),
+        _cost("t7", "no-kwd", False),
+        # neither: t8
+        _cost("t8", "all-on", False),
+        _cost("t8", "no-kwd", False),
+        # missing: t9 only the arm ran, t10 only the baseline ran
+        _cost("t9", "no-kwd", True),
+        _cost("t10", "all-on", True),
+    ]
+    arms = runner._answerable_by_group_and_arm(rows)[("qasper", None)]
+    p = runner.paired_within_budget(
+        arms["no-kwd"], arms["all-on"], budget=12000, per_call=100
+    )
+    assert (p["paired"], p["missing"]) == (8, 2)
+    assert (p["both"], p["arm_only"], p["baseline_only"], p["neither"]) == (2, 4, 1, 1)
+    assert p["net"] == 3
+    # 5 discordant pairs, k = 1: 2 * (C(5,0) + C(5,1)) / 2^5 = 12/32
+    assert p["sign_p"] == pytest.approx(0.375)
+    assert runner._sign_test_p(0, 0) is None
+    assert runner._sign_test_p(5, 0) == pytest.approx(2 / 32)
+    md = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows}
+    )
+    assert "### Found within budget — qasper tasks" in md
+    assert "cost = tokens + 100 × calls" in md and "vs `all-on`" in md
+    assert "| no-kwd | 8 | 2 | 4 | 1 | 1 | +3 | 0.375 | 2 |" in md
+    # the baseline against itself: all 9 of its tasks pair, the 4 found
+    # count as both, t9 is not missing (it never ran it)
+    assert "| all-on (baseline) | 9 | 4 | 0 | 0 | 5 | +0 | — | 0 |" in md
+
+
+def test_recall_cost_and_sensitivity_tables_per_arm():
+    rows = [
+        _cost("t1", "all-on", True, tokens=400.0, calls=1),
+        _cost("t2", "all-on", True, tokens=3000.0, calls=2),
+        _cost("t3", "all-on", False),
+        _cost("t1", "no-kwd", True, tokens=900.0, calls=2),
+        _cost("t2", "no-kwd", False),
+        _cost("t3", "no-kwd", True, tokens=9000.0, calls=3),
+    ]
+    md = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows}
+    )
+    assert "### Recall vs cost — qasper tasks" in md
+    # all-on: t1 costs 500 (≤500..≤2000), t2 costs 3200 (≤4000 up), t3 censored
+    assert "| all-on | 3 | 0.333 | 0.333 | 0.333 | 0.667 | 0.667 | 0.667 |" in md
+    # no-kwd: t1 costs 1100 (≤2000 up), t3 costs 9300 (≤12000), t2 censored
+    assert "| no-kwd | 3 | 0.000 | 0.000 | 0.333 | 0.333 | 0.333 | 0.667 |" in md
+    assert "### Sensitivity — qasper tasks" in md
+    # at C=0 all-on finds 2/3 within budget (all its found rows cost <= 12000);
+    # at C=500 the 3200-cost row still fits; the net vs itself is 0
+    assert "| all-on | 3 | 0.667 | +0 | 0.667 | +0 |" in md
+
+
+def test_headline_tables_never_pool_sources_or_scopes():
+    rows = [
+        _cost("t1", "all-on", True, source="qasper"),
+        _cost("t2", "all-on", True, source="planted"),
+        _cost("t3", "all-on", True, source="qasper", scope="chapter"),
+        _cost("t1", "no-kwd", True, source="qasper"),
+        _cost("t2", "no-kwd", False, source="planted"),
+        _cost("t3", "no-kwd", True, source="qasper", scope="chapter"),
+    ]
+    md = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows}
+    )
+    assert md.count("### Found within budget") == 3
+    assert "### Found within budget — qasper tasks" in md
+    assert "### Found within budget — planted tasks" in md
+    assert "### Found within budget — qasper tasks · scope chapter" in md
+    # a baseline with no rows in the group still reports: every task is missing
+    rows2 = [_cost("t1", "no-kwd", True)]
+    md2 = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows2},
+        baseline="all-on",
+    )
+    assert "| no-kwd | 0 | 0 | 0 | 0 | 0 | +0 | — | 1 |" in md2
+    assert "ran no tasks in this group" in md2
+    # a named baseline compares against it instead
+    rows3 = rows2 + [_cost("t1", "all-on", True), _cost("t1", "rowkw", False)]
+    md3 = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows3},
+        baseline="rowkw",
+    )
+    assert "vs `rowkw`" in md3 and "rowkw only" in md3
+
+
+def test_paired_table_lists_an_arm_absent_from_a_whole_group_as_missing():
+    # no-kwd ran only the planted task: in the qasper group its line still
+    # lists, both baseline qasper tasks counting as missing rather than
+    # the comparison dropping out of the table (td684910)
+    rows = [
+        _cost("q1", "all-on", True, source="qasper"),
+        _cost("q2", "all-on", False, source="qasper"),
+        _cost("p1", "all-on", True, source="planted"),
+        _cost("p1", "no-kwd", True, source="planted"),
+    ]
+    md = runner.report_markdown(
+        {"header": {"set": "quick", "token_budget": 12000}, "rows": rows}
+    )
+    qasper = md.split("### Found within budget — qasper tasks")[1].split("###")[0]
+    assert "| all-on (baseline) | 2 | 1 | 0 | 0 | 1 | +0 | — | 0 |" in qasper
+    assert "| no-kwd | 0 | 0 | 0 | 0 | 0 | +0 | — | 2 |" in qasper
+    planted = md.split("### Found within budget — planted tasks")[1].split("###")[0]
+    assert "| no-kwd | 1 | 1 | 0 | 0 | 0 | +0 | — | 0 |" in planted

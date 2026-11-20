@@ -245,6 +245,33 @@ def _d_struct_relax(
     return bits
 
 
+def _d_electronic_analysis(
+    *,
+    params: dict[str, Any],
+    meta: dict[str, Any],
+    status: str | None,
+    summary: str | None,
+    last_event: str | None,
+    quest_headline: str | None,
+    error: str | None,
+) -> str:
+    # gr592999: DFT single point → descriptors. Same shape as the relax
+    # describer: formula names the structure; a terminal summary already
+    # carries the verdict.
+    if status in ("succeeded", "failed", "cancelled") and summary:
+        return f"electronic analysis: {_first_line(summary)}"
+    formula = _first_line(params.get("poscar"))
+    sid = _as_int(params.get("structure_ref_id"))
+    what = formula or (f"st{sid}" if sid is not None else "a structure")
+    bits = f"analysing electronic structure of {what}"
+    host = meta.get("node") or params.get("target_node")
+    if host:
+        bits += f" on {host}"
+    if status in ("running", "queued"):
+        bits += f" ({status})"
+    return bits
+
+
 def _d_derived_drain(
     *,
     params: dict[str, Any],
@@ -373,6 +400,50 @@ def _d_land_slice(
     return what
 
 
+def _d_repo_release(
+    *,
+    params: dict[str, Any],
+    meta: dict[str, Any],
+    status: str | None,
+    summary: str | None,
+    last_event: str | None,
+    quest_headline: str | None,
+    error: str | None,
+) -> str:
+    tid = _as_int(params.get("todo_id"))
+    repo = params.get("repo")
+    what = f"releasing {repo}" if repo else "releasing a repo"
+    if tid is not None:
+        what += f" (td{tid})"
+    if status == "failed" and error:
+        return f"{what}: failed — {_first_line(error)}"
+    if status in ("succeeded", "failed", "cancelled") and summary:
+        return _first_line(summary)
+    return what
+
+
+def _d_pin_bump(
+    *,
+    params: dict[str, Any],
+    meta: dict[str, Any],
+    status: str | None,
+    summary: str | None,
+    last_event: str | None,
+    quest_headline: str | None,
+    error: str | None,
+) -> str:
+    tid = _as_int(params.get("todo_id"))
+    repo = params.get("pin_repo")
+    what = f"moving the {repo} pin" if repo else "moving a pin"
+    if tid is not None:
+        what += f" (td{tid})"
+    if status == "failed" and error:
+        return f"{what}: failed — {_first_line(error)}"
+    if status in ("succeeded", "failed", "cancelled") and summary:
+        return _first_line(summary)
+    return what
+
+
 def _d_sandbox_run(
     *,
     params: dict[str, Any],
@@ -480,12 +551,15 @@ def _const(sentence: str) -> Callable[..., str]:
 DESCRIBERS: dict[str, Callable[..., str]] = {
     "quest_tick": _d_quest_tick,
     "struct_relax": _d_struct_relax,
+    "electronic_analysis": _d_electronic_analysis,
     "derived_drain": _d_derived_drain,
     "embed_batch": _d_embed_batch,
     "gripe_validate": _d_gripe_validate,
     "fix_gripe": _d_fix_gripe,
     "run_slice": _d_run_slice,
     "land_slice": _d_land_slice,
+    "repo_release": _d_repo_release,
+    "pin_bump": _d_pin_bump,
     "sandbox_run": _d_sandbox_run,
     "devin_task": _d_devin_task,
     "paper_pull": _d_paper_pull,
@@ -714,12 +788,15 @@ def job_row_sentence(
     meta: dict[str, Any] | None,
     status: str | None,
     blocks: list[Any] | None = None,
+    error: Any = ...,
 ) -> str:
     """Store-touching convenience for single-job renders (the MCP card):
     pulls the newest ``job_summary`` / ``job_event`` text off ``blocks``
     (``ChunkRow``-likes with ``.chunk_kind`` / ``.text``) and resolves the
     quest headline through :func:`quest_id_from_meta` plus one
     ``kind='quest'`` read. Never raises on a thin row.
+    Pass ``error=None`` when the caller already prints a separate error line;
+    omission keeps the stored error for existing callers.
     """
     meta = meta or {}
     summary = last_event = None
@@ -756,5 +833,5 @@ def job_row_sentence(
         summary=summary,
         last_event=last_event,
         quest_headline=headline,
-        error=meta.get("error"),
+        error=meta.get("error") if error is ... else error,
     )

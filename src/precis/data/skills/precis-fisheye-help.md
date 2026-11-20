@@ -39,12 +39,14 @@ get(kind="paper", id="mao18", extent="fisheye")  # the cluster map; pc<id> rows 
 get(id="pc13234", extent="fisheye")  # a chunk, bare handle: the split within its cluster
 get(kind="draft", id="dc41", extent="fisheye+1hop")  # a section + reading order + reference ring
 get(kind="skill", id="precis-get-help", extent="verbatim")  # a skill: the body alone
-get(kind="skill", id="precis-get-help", extent="fisheye+1hop")  # body + its wikilink ring
+get(kind="skill", id="precis-get-help", extent="verbatim", q="find")  # search the body (find-in-ref)
+get(kind="skill", id="precis-get-help", extent="fisheye+1hop")  # a skill: the section map + its wikilink ring
 ```
 
-`extent=` selects the rung; `view='fisheye'` (and the other rung labels
-on `view=`) means the same thing — the ladder shipped on that door
-first. Passing both with different values is a `BadInput`. A kind with
+`extent=` is the one size dial. A rung label on `view=` (`view='fisheye'`,
+`view='fisheye+1hop'`, …) is the deprecated spelling — it still routes,
+naming the read on the `interpreted:` line, and it goes away after the
+transition. Passing both with different values is a `BadInput`. A kind with
 no graph node answers `Unsupported` with the reason in one sentence,
 never a silent fall-back to the lone chunk.
 
@@ -56,7 +58,7 @@ Each rung **strictly contains** the previous one:
 |---|---|
 | `kwd` | one-line bookmark (a section: under its ancestor path) |
 | `summary` | the node's gloss (summary → keywords → first line) — alone |
-| `verbatim` | the node's full text — alone |
+| `verbatim` | the node's full text — alone (with `q=` on a skill: the matching passages, not fisheye groups) |
 | `fisheye` | verbatim center **+ the spatial neighborhood** |
 | `fisheye+1hop` | `fisheye` **+ the ring**: what it points at / what points at it, one edge out |
 | `fisheye+2hop` | `fisheye+1hop` **+ the second hop as counts** (not on draft/plan) |
@@ -84,15 +86,33 @@ only at `fisheye` and up.
 | Family | Kinds | `fisheye` shows | `fisheye+1hop` adds |
 |---|---|---|---|
 | Tree | `draft`, `plan` — **section handles** `dc<id>` / `pe<id>` / `¶…` | the reading-order span under the ancestor heading | the reference ring (Cited / Cross-refs / Notes / Claims) |
-| Document | `paper`, `patent`, `datasheet`, `cfp`, `edgar` — whole handle or chunk handle | whole: the cluster map; chunk: the split within its cluster | the link neighborhood of the ref |
-| Link | everything else with a handle — `memory`, `finding`, `quest`, `todo`, `taxon`, `concept`, `component`, `structure`, `gripe`, `folder`, `job`, … | the card (title → gist → body) | the link neighborhood by ring |
-| Skill | `skill` (`sk:<slug>`) | the verbatim body; `kwd` a bookmark | the wikilink ring — `see-also` out, `see-also-by` in |
+| Document | `paper`, `patent`, `datasheet`, `cfp`, `edgar`, `web`, `youtube` — whole handle or chunk handle | whole: the cluster map; chunk: the split within its cluster | the link neighborhood of the ref |
+| Link | everything else with a handle — `memory`, `finding`, `quest`, `todo`, `taxon`, `concept`, `component`, `structure`, `gripe`, `folder`, `job`, `websearch`, `perplexity-*`, … | the card (title → gist → body) | the link neighborhood by ring |
+| Skill | `skill` (`sk:<slug>` or a section `sk:<slug>~N`) | whole: the **section map** — one `~N` row per H2, never the body; section: the reading-order span | the wikilink ring — `see-also` out, `see-also-by` in |
+
+A **chunk eye** (the split within a cluster) exists only where chunks
+mint a handle — `paper`/`patent`/`datasheet`/`cfp`/`edgar` chunks do;
+`web`/`youtube` chunks don't (gr702962: their cluster-map rows print
+`<ref>~<ord>` selectors instead). Read one with a plain `get` —
+`get(kind='web', id='wb<N>~3')`; under `extent=` that selector is
+refused, because an eye focuses the *whole* ref.
+
+A skill is an H2 tree, so its eye is a tree eye (gr568475): focus one
+section with `sk:<slug>~N` and the `fisheye` rung renders the same
+graduated reading-order span a draft section gets — verbatim center,
+summary neighbours, `kwd` rim — over the skill's sections. A whole-skill
+eye at `fisheye` renders the section map instead: one `~N` row per
+section (heading, targeting questions, size), never the body — read a
+section by focusing its `~N` handle. `verbatim` on either eye still
+renders the text whole. A plain `get(kind='skill', id='<slug>')` over
+~6 kB likewise serves the section index first; `extent='verbatim'`
+fetches the body (`full=true` is the deprecated spelling).
 
 `Unsupported`, with the reason: a **whole draft or plan** (the eye
 focuses one section — `view='toc'` lists the `dc<id>` handles); a
 **measure** (a row of a run, not a node — fish-eye its paper or quest);
-**`web`** and the other query/URL-addressed providers (`calc`, `math`,
-`wikipedia`, `youtube`, …: no stored ref, no handle); **`md`**
+the stateless compute providers (`calc`, `math`,
+`provenance`, `random`: no stored ref, no handle); **`md`**
 (file-backed, no refs row); **`tag`** (a vocabulary row). **`python`**
 has its own code eye (callers/callees/module members/tests at the same
 rungs — `precis-python-help`).
@@ -165,7 +185,21 @@ the target's sha) — re-read the target, then re-link to clear
 
 Parallel edges to the **same** neighbour collapse into one row:
 `<-corroborates: pa5 — …  ×4 (pc11 ~29 · pc12 ~28 · +2 more)`. `×N`
-counts edges; the handles are passages to `get`.
+counts edges; the handles are the neighbour's passages to `get`. A
+chunk-grounded edge also names the *focus's own* chunk it pins on this
+side — `via pc118 ~12` — so a rolled-up relationship keeps a route back
+to the passage that carries it; a ref-level edge has no `via`. Group
+headers count targets and edges apart when they differ —
+`<-corroborates (1 target · 2 edges):` — and a capped block's
+`… +N more` line states `showing S of T` so a partial ring never reads
+as complete.
+
+A row's why is composed: a link's `reason` appends ` — <reason>` (also in
+the Links table and `view='links'`); a `considered` edge appends its
+verdict, depth, date and reason. With more than one `considered` edge the
+label line is count-first, `considered (3: 2 not useful · 1 uncertain):`,
+then at most 3 rows and `… +K more · get(kind='memory', id='me<N>',
+view='considerations')` — the ledger. `precis-link-reason-help`.
 
 ## The ring groups — relation → heading
 
@@ -179,9 +213,12 @@ counts edges; the handles are passages to `get`.
 | **Parts** | `contains`, `part-of`, `made-of`, `used-in` | `get(kind='component', id='cp3', extent='fisheye+1hop')` → `Parts:` · `contains: cp7 — Bipolar plate`; on `cp7` the same row reads `part-of: cp3`; a memory section `part-of` its file reads `contains:` on the file's eye |
 | **Argument** | `entails`, `entailed-by`, `qualifies`, `qualified-by`, `derived-from`, `derived-into` | `get(kind='memory', id='me12', extent='fisheye+1hop')` → `Argument:` · `derived-from: me3 — …` (the proof tree itself: `view='argument'`, `precis-memory-help`) |
 | **Notes & links** | `related-to`, `see-also`, `supports`, `cites`, `generalises`, `corrects` | `get(kind='paper', id='pa5', extent='fisheye+1hop')` → `Notes & links:` · `related-to: me77 — Read this for the floppy modes`; a finding joins a quest by `serves` (a `supports` edge on a quest is refused), so it reads `served-by:` under `Roadmap` on the quest, listed after sub-quests and before papers |
+| **Considered** (listed last) | `considered` (an inbound edge reads `<-considered`) | `get(kind='memory', id='me42', extent='fisheye+1hop')` → `Considered:` · `considered: pa5 — <title> — not useful (abstract, 2026-11-14): lithium-only; question is sodium`; on `pa5` the same edge reads `<-considered: me42 — … — not useful (abstract, 2026-11-14): …` |
 
 A relation outside these groups (`parent`, `draft-of`, `touched`, …) is
-structural and not in the ring; `view='links'` lists everything.
+structural and not in the ring; `view='links'` lists everything — a page
+of rows, then `next:` with the exact `args={'cursor': …}` continuation
+until `complete`.
 
 ## Narrowing the rings — kinds, space, tags
 
@@ -272,6 +309,14 @@ not proof of absence. A second-hop group pools links from the whole
 direct ring: verify a member's provenance path before attributing it
 to the focus.
 
+For **mutation review** — "who relies on this ref before I edit or
+delete it" — `view='dependants'` is the paged answer, not the eye:
+`get(kind=..., id=N, view='dependants', args={'depth': 2, 'limit': 25})`
+lists rely-side refs (direct + transitive) with an explicit `complete` /
+`INCOMPLETE` footer and a `next:` cursor call. The fisheye rings stay
+the exploratory read — they fold at render caps and never claim a
+rely-side census.
+
 ## Read the same neighborhood in a browser
 
 `/eye/<handle>?extent=<rung>` renders the same text the `get` returns,
@@ -296,3 +341,4 @@ its immediate surroundings rendered around it.
 - [[precis-relations]] — link relation vocabulary (cites, see-also, …)
 - [[precis-taproot-help]] — the Claims group's claim hubs, evidence edges
 - [[precis-memory-help]] — the memory walk, view='argument'
+- [[precis-link-reason-help]] — the why on a ring row

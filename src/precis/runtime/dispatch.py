@@ -38,6 +38,7 @@ import textwrap
 import time
 import urllib.error
 from collections import OrderedDict
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -45,6 +46,11 @@ import psycopg
 
 from precis import search_feedback
 from precis.agentlog import current_from_env, write_search_trace
+from precis.corrected_call import (
+    IN_FLIGHT_CALL,
+    drop_wrapper_defaults,
+    verb_top_level,
+)
 from precis.errors import (
     BadInput,
     Denied,
@@ -55,6 +61,8 @@ from precis.errors import (
     RateLimited,
     Unsupported,
     Upstream,
+    nearest_option,
+    render_corrected_call,
 )
 from precis.filing_origin import writer_stamp
 from precis.protocol import (
@@ -90,12 +98,17 @@ from precis.runtime.trust_verb import (
     pop_trust_payload,
     pop_writer_payload,
     producer_kwargs,
-    trust_line,
+    trust_footer,
     written_line,
 )
 from precis.runtime.under_facet import UNDER_NEXT
 from precis.store._review_ops import trust_refusal
 from precis.store._salience import current_background_actor
+from precis.store.pool_health import (
+    UNREACHABLE_CAUSE,
+    UNREACHABLE_NEXT,
+    diagnose_pool,
+)
 from precis.store.revision_context import (
     current_revision_context,
     process_actor,
@@ -125,6 +138,15 @@ _VERBS: tuple[Verb, ...] = _ALL_VERBS
 #: (``None``) on every in-process caller, where binary has no consumer.
 _RESPONSE_IMAGES: contextvars.ContextVar[list[Any] | None] = contextvars.ContextVar(
     "precis_response_images", default=None
+)
+
+#: Post-resolution kind gate. The MCP tool layer binds a callable
+#: ``(verb, args)`` that raises when the call, *after* handle routing has
+#: rewritten ``args['kind']`` (a converted ``pa<id>`` handle becomes its
+#: new kind), leaves a capability token's allow-list. ``None`` on every
+#: in-process caller.
+_KIND_GATE: contextvars.ContextVar[Callable[[str, dict[str, Any]], None] | None] = (
+    contextvars.ContextVar("precis_kind_gate", default=None)
 )
 
 #: Top-level ``tools/core.py`` verb kwargs whose declared default is
@@ -160,6 +182,34 @@ _WRAPPER_DEFAULTED_KWARGS: dict[str, frozenset[str]] = {
 }
 _DROPPABLE_TOP_LEVEL_KWARGS = frozenset({"mode", "verdict", "page", "page_size"})
 
+
+def _nearest_swapped(
+    keys: dict[str, Any], unknown: list[str], accepted: Iterable[str]
+) -> dict[str, Any] | None:
+    """``keys`` with each ``unknown`` name swapped for its nearest
+    accepted spelling — the corrected call's argument dict (gr613469).
+
+    ``None`` unless *every* unknown name has a difflib near-match in
+    ``accepted`` — a partial swap would leave the unmatched invalid
+    key in the suggested retry, so it still would not run (mcp-authoring
+    rule 2; review td680653). A typo'd key whose nearest spelling is
+    already present is dropped rather than shadowing the correctly
+    spelt value.
+    """
+    swaps = {k: nearest_option(k, accepted) for k in unknown}
+    if not all(swaps.values()):
+        return None
+    out: dict[str, Any] = {}
+    for k, v in keys.items():
+        tgt = swaps.get(k)
+        if tgt is not None:
+            if tgt not in keys:
+                out[tgt] = v
+        else:
+            out[k] = v
+    return out
+
+
 #: ``search``'s one-release legacy paging spellings (gr530420). The verb
 #: wrapper reads ``k``/``limit`` as ``page_size`` aliases and no-ops
 #: ``offset=0`` (an item count into a paging model that no longer
@@ -173,6 +223,14 @@ _SEARCH_PAGING_ALIASES: dict[str, str] = {
 _SEARCH_PAGING_SPELLINGS: frozenset[str] = frozenset(_SEARCH_PAGING_ALIASES) | {
     "offset"
 }
+
+#: Verb-level ``search`` knobs hoisted onto every kind's top level and
+#: out of ``args=`` (gr568808): a kind whose handler can't apply one
+#: refuses ``not on <kind> yet`` at the top-level kwargs gate, not with
+#: the generic kwargs report. ``batch`` never reaches that gate — the
+#: labelled-memory-batch route consumes it first and owns its own
+#: ``not on <kind> yet`` refusal.
+_SEARCH_VERB_LEVEL_PARAMS: frozenset[str] = frozenset({"queries", "answers"})
 
 
 def _search_paging_alias_next(alias: str, value: Any) -> str:
@@ -243,6 +301,13 @@ _DRAFT_DC_RE = re.compile(r"^dc(\d+)(.*)$")
 #: Same shape for plan chunk handles ``pe<id>`` — plans have their own
 #: handle grammar (``pe<N>`` + relative ops), never ``slug~ord``.
 _PLAN_PE_RE = re.compile(r"^pe(\d+)(.*)$")
+
+#: Bare-DOI grammar (``10.1021/ja01019a011``) — a kindless
+#: ``get(id='10.…')`` self-identifies as kind='paper' (gr676949). The
+#: full DOI stays on ``id=``: suffixes contain ``/``, so the id is never
+#: split for this shape. Same grammar as
+#: ``precis.ingest.provenance``/``semanticscholar``.
+_BARE_DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
 
 #: Matches the ``[error:ClassName]`` prefix :meth:`ErrorMixin.render_error`
 #: always emits — the tool-call ledger (:mod:`precis.tool_ledger`) reads the
@@ -506,14 +571,16 @@ def _forwards_catchall(func: Any, catchall_name: str) -> bool:
     return False
 
 
-def _eye_extent(args: dict[str, Any]) -> str | None:
-    """The ladder rung a ``get`` asks for, or ``None`` for an ordinary get.
+def _eye_extent(args: dict[str, Any]) -> tuple[str | None, str | None]:
+    """The ladder rung a ``get`` asks for, plus its alias reading.
 
     ``extent=`` is the one argument (popped here, top-level or inside
     ``args=``, so the kwargs gate never sees it); a ladder label in
-    ``view=`` means the same, because the ladder shipped on that door first
-    (``precis-fisheye-help``). Both given and disagreeing is a ``BadInput``
-    — the rung is one argument, not two.
+    ``view=`` means the same — the deprecated spelling the ladder
+    shipped on first (gr568808): it still routes, and the returned
+    reading is announced on the ``interpreted:`` line for a release.
+    Both given and disagreeing is a ``BadInput`` — the rung is one
+    argument, not two.
     """
     from precis.handlers._eye import is_eye_view
 
@@ -522,6 +589,12 @@ def _eye_extent(args: dict[str, Any]) -> str | None:
     if extent is None and isinstance(extras, dict):
         extent = extras.pop("extent", None)
     view = args.get("view")
+    reading = (
+        f"'view={view!r}' read as 'extent={view!r}' — the deprecated "
+        "alias; 'extent=' is canonical"
+        if view is not None and is_eye_view(str(view))
+        else None
+    )
     if extent is not None:
         extent = str(extent).strip()
         if view is not None and str(view) != extent:
@@ -529,8 +602,8 @@ def _eye_extent(args: dict[str, Any]) -> str | None:
                 f"extent={extent!r} and view={view!r} both given; the rung is one argument",
                 next=f"get(kind=…, id=…, extent={extent!r})",
             )
-        return extent
-    return str(view) if is_eye_view(view if view is None else str(view)) else None
+        return extent, reading
+    return (str(view), reading) if reading is not None else (None, None)
 
 
 def _asks_for_eye(args: dict[str, Any]) -> bool:
@@ -610,7 +683,10 @@ def _alias_prose_field(
     handler declaring both keeps them distinct (todo put: ``text=`` the
     title, ``body=`` the details; finding put runs its own text→body
     alias), and both spellings supplied to a single-spelling handler is
-    a BadInput: two prose values can't collapse into one slot silently.
+    a BadInput: two prose values can't collapse into one slot silently —
+    except when creating a memory, where the pair reads as ``text=`` the
+    title and ``body=`` the prose. Updates and other kinds keep the
+    collision error so no supplied prose is silently discarded.
     """
     accepted = _handler_accepted_kwargs(cls, verb)
     declared = [s for s in _PROSE_FIELD_SPELLINGS if s in accepted]
@@ -621,6 +697,20 @@ def _alias_prose_field(
     if alias not in clean:
         return
     if canon in clean:
+        if (
+            kind == "memory"
+            and verb == "put"
+            and clean.get("id") is None
+            and canon == "text"
+            and "title" in accepted
+            and clean.get("title") is None
+            and isinstance(clean[canon], str)
+        ):
+            # Memory creation alone reads the todo-style pair as a short
+            # title plus prose (gr702039); existing refs keep both protected.
+            clean["title"] = clean.pop("text")
+            clean["text"] = clean.pop("body")
+            return
         raise BadInput(
             f"{verb}(kind={kind!r}): {canon}= and {alias}= are the same "
             "prose field on this kind — pass one, not both",
@@ -762,7 +852,7 @@ def _fold_get_full_flag(
     kind: str,
     args: dict[str, Any],
     extras: dict[str, Any] | None,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, str | None]:
     """Fold a caller's ``full=`` flag onto ``view='full'`` (gr593337).
 
     ``full`` is get's verb-declared skill knob (``tools/core.py::get`` —
@@ -781,11 +871,23 @@ def _fold_get_full_flag(
     kwargs (random) keeps it untouched; ``full=false`` asserts nothing
     and drops. ``full=true`` against an explicit ``view=`` other than
     'full' refuses — two readings can't collapse silently.
+
+    Either way the flag is the deprecated spelling of the one size dial
+    (gr568808): the returned reading rides the ``interpreted:`` line
+    for a release, then ``full=`` goes.
     """
     if getattr(
         method, TOLERATES_EXTRA_KWARGS_ATTR, False
     ) or "full" in _handler_accepted_kwargs(cls, "get"):
-        return extras
+        flag = args.get("full")
+        if flag is None and isinstance(extras, dict):
+            flag = extras.get("full")
+        return extras, (
+            "'full' is the deprecated spelling — 'extent=' is the one "
+            "size dial (the complete read is extent='verbatim')"
+            if _flag_truthy(flag)
+            else None
+        )
     flag = args.pop("full", None)
     if isinstance(extras, dict) and "full" in extras:
         extras = dict(extras)
@@ -803,7 +905,7 @@ def _fold_get_full_flag(
         if flag is None:
             flag = nested
     if not _flag_truthy(flag):
-        return extras
+        return extras, None
     if args.get("view") not in (None, "full"):
         raise BadInput(
             f"full=True conflicts with view={args['view']!r} — "
@@ -811,7 +913,10 @@ def _fold_get_full_flag(
             next=f"get(kind={kind!r}, id=<ref>, view='full')",
         )
     args["view"] = "full"
-    return extras
+    return extras, (
+        "'full' read as 'view='full'' — the deprecated spelling; "
+        "'extent=' is the one size dial"
+    )
 
 
 def _flag_truthy(value: Any) -> bool:
@@ -872,6 +977,13 @@ CORE_PARAMS: dict[str, tuple[str, ...]] = {
         "scope",
         "status",
         "sort",
+        # gr568808: a knob that means the same on more than one kind is a
+        # verb param advertised on the slim schema, not an args= key —
+        # ``queries``/``answers`` (fused legs on paper and the dated
+        # source search) and ``batch`` (memory's labelled multi-search).
+        "queries",
+        "answers",
+        "batch",
         "args",
     ),
 }
@@ -1559,10 +1671,26 @@ def _transient_db_classes() -> tuple[type[BaseException], ...]:
     )
 
 
-def _is_transient_db_fault(exc: BaseException) -> bool:
+def _is_pool_timeout(exc: BaseException) -> bool:
+    import psycopg_pool
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, psycopg_pool.PoolTimeout):
+            return True
+        cur = cur.__cause__
+    return False
+
+
+def _is_transient_db_fault(
+    exc: BaseException, classes: tuple[type[BaseException], ...] | None = None
+) -> bool:
     """True when ``exc`` or an explicit ``raise ... from`` cause is one of
     the retryable database faults."""
-    classes = _transient_db_classes()
+    if classes is None:
+        classes = _transient_db_classes()
     seen: set[int] = set()
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
@@ -1595,7 +1723,9 @@ def _retry_sleep(attempt: int) -> None:
 class DispatchMixin(RuntimeShape):
     """Verb dispatch, kind/handler resolution, and handler invocation."""
 
-    def _dispatch_with_retry(self, verb: str, args: dict[str, Any]) -> Response:
+    def _dispatch_with_retry(
+        self, verb: str, args: dict[str, Any], *, batch_child: bool = False
+    ) -> Response:
         """:meth:`_dispatch_inner` with transient database faults retried.
 
         A persisting fault surfaces as ``Upstream`` whose text says how many
@@ -1614,7 +1744,24 @@ class DispatchMixin(RuntimeShape):
             except Exception as exc:
                 if not _is_transient_db_fault(exc):
                     raise
-                if not safe or attempt >= _RETRY_ATTEMPTS:
+                if (
+                    _is_pool_timeout(exc)
+                    and diagnose_pool(getattr(self.store, "pool", None))
+                    == "unreachable"
+                ):
+                    # The pool cannot open connections (DB host down,
+                    # Tailscale stopped): each replay burns another pool
+                    # wait for nothing (gr663490).
+                    raise Upstream(
+                        f"{UNREACHABLE_CAUSE} ({type(exc).__name__})",
+                        next=UNREACHABLE_NEXT,
+                    ) from exc
+                max_attempts = _RETRY_ATTEMPTS
+                if batch_child and _is_transient_db_fault(
+                    exc, (psycopg.errors.LockNotAvailable,)
+                ):
+                    max_attempts += 1
+                if not safe or attempt >= max_attempts:
                     if attempt == 1:
                         raise
                     mapped = map_boundary_exception(exc)
@@ -1629,7 +1776,7 @@ class DispatchMixin(RuntimeShape):
                     type(exc).__name__,
                     verb,
                     attempt,
-                    _RETRY_ATTEMPTS - 1,
+                    max_attempts - 1,
                 )
                 _retry_sleep(attempt)
                 attempt += 1
@@ -1727,12 +1874,13 @@ class DispatchMixin(RuntimeShape):
     def _dispatch_with_status(
         self, verb: str, args: dict[str, Any], *, fold: bool = False
     ) -> tuple[str, bool]:
-        from precis.learning_privacy import is_learning_call
+        from precis.private_kinds import private_kind_of
 
-        if is_learning_call(args):
-            from precis.runtime.learning import dispatch_learning
+        private = private_kind_of(args)
+        if private is not None:
+            from precis.runtime.private import dispatch_private
 
-            return dispatch_learning(self, verb, args)
+            return dispatch_private(self, verb, args, private)
         if (
             verb != "search"
             or self.store is None
@@ -1769,7 +1917,12 @@ class DispatchMixin(RuntimeShape):
             search_trace.CURRENT.reset(token)
 
     def _dispatch_status(
-        self, verb: str, args: dict[str, Any], *, fold: bool = False
+        self,
+        verb: str,
+        args: dict[str, Any],
+        *,
+        fold: bool = False,
+        batch_child: bool = False,
     ) -> tuple[str, bool]:
         """Run one verb call and report whether it errored.
 
@@ -1808,8 +1961,12 @@ class DispatchMixin(RuntimeShape):
         # from args, and the shape is a property of the caller's spelling.
         shape = read_shape(verb, args)
         extras = args.get(_EXTRAS_KEY)
-        memory_batch = (
-            verb == "search" and isinstance(extras, dict) and "batch" in extras
+        # ``batch`` is a verb-level search param (gr568808): top-level or
+        # nested in ``args=`` (``_dispatch_inner`` hoists it either way —
+        # this flag runs before that hoist, so check both spellings).
+        memory_batch = verb == "search" and (
+            args.get("batch") is not None
+            or (isinstance(extras, dict) and "batch" in extras)
         )
         with self.hub.request_scope(verb=verb):
             try:
@@ -1845,7 +2002,12 @@ class DispatchMixin(RuntimeShape):
                 dispatch_args, deref_ack = self._dereference_write_args(verb, args)
                 _refuse_envelope_denied_verb(verb, dispatch_args, self.hub)
                 _refuse_agent_secrets(verb, dispatch_args, self.hub)
-                response = self._dispatch_with_retry(verb, dispatch_args)
+                if batch_child:
+                    response = self._dispatch_with_retry(
+                        verb, dispatch_args, batch_child=True
+                    )
+                else:
+                    response = self._dispatch_with_retry(verb, dispatch_args)
                 if deref_ack is not None:
                     response = replace(response, body=f"{deref_ack}\n{response.body}")
                 # gr515633 ask 2: a ``tags=`` that names a categorizer
@@ -1921,7 +2083,7 @@ class DispatchMixin(RuntimeShape):
                     from precis.runtime.handle_deref import memory_search_gripe_hint
 
                     try:
-                        hint = memory_search_gripe_hint()
+                        hint = memory_search_gripe_hint(store=self.store)
                         if hint is not None:
                             # The optional line never takes space from the result.
                             cap = _env_cap(
@@ -2048,13 +2210,20 @@ class DispatchMixin(RuntimeShape):
                 arg_sample,
                 current_client,
                 error_head,
+                next_call_summary,
                 record_call,
             )
 
             error_type: str | None = None
+            err_next: tuple[bool, str | None, str | None] = (False, None, None)
             if is_error:
                 m = _ERROR_TYPE_RE.match(body)
                 error_type = m.group(1) if m else "Unknown"
+                # 0325 (gr613469): whether the rendered ack carried a
+                # concrete corrected call — error_head only keeps the
+                # first line, so this is the ledger's whole next: uptake
+                # signal.
+                err_next = next_call_summary(body)
             elif scope_verdict is not None:
                 error_type = principal.WOULD_REFUSE
             elif budget_fitted:
@@ -2115,6 +2284,9 @@ class DispatchMixin(RuntimeShape):
                     ),
                     arg_sample=arg_sample(args),
                     client=current_client(),
+                    error_next_concrete=err_next[0] if is_error else None,
+                    error_next_verb=err_next[1],
+                    error_next_kind=err_next[2],
                 ),
             )
         except Exception:
@@ -2276,7 +2448,7 @@ class DispatchMixin(RuntimeShape):
         extras = args.get(_EXTRAS_KEY)
         if not isinstance(extras, dict):
             return
-        for key in ("uncited", "cited", "hubbed"):
+        for key in ("uncited", "cited", "hubbed", "novel_for"):
             if extras.get(key) is None:
                 continue
             if args.get(key) is not None:
@@ -2337,6 +2509,81 @@ class DispatchMixin(RuntimeShape):
             )
         args["folder"] = extras.pop("folder")
 
+    def _hoist_memory_handle_scope(self, args: dict[str, Any]) -> None:
+        """``search(kind='memory', scope='me123')`` → ``under='me123'``.
+
+        ``scope=`` on memory only picks title vs body, but agents reach for
+        it to narrow a search to a hub's subtree — the ``under=`` job (gr688476).
+        A memory handle or numeric id in ``scope=`` (top-level or inside ``args=``)
+        moves to ``under=`` so the call does what it plainly meant; any other
+        value falls through to the handler's own scope check."""
+        kind = args.get("kind")
+        if (
+            not isinstance(kind, str)
+            or self._expand_kind_code(kind.strip()) != "memory"
+        ):
+            return
+        extras = args.get(_EXTRAS_KEY)
+        holder = args if args.get("scope") is not None else extras
+        if not isinstance(holder, dict):
+            return
+        scope = holder.get("scope")
+        if not isinstance(scope, str):
+            return
+        raw = scope.strip()
+        parsed = handle_registry.parse(raw)
+        if raw.isascii() and raw.isdecimal():
+            scope_id = int(raw)
+        elif parsed is not None and parsed[0] == "memory" and not parsed[1]:
+            scope_id = parsed[2]
+        else:
+            return
+        for source in (args, extras):
+            if not isinstance(source, dict) or source.get("under") is None:
+                continue
+            under = str(source["under"]).strip()
+            parsed_under = handle_registry.parse(under)
+            same = (
+                under.isascii() and under.isdecimal() and int(under) == scope_id
+            ) or parsed_under == ("memory", False, scope_id)
+            if not same:
+                raise BadInput(
+                    "scope= names a memory handle and under= names a different subtree",
+                    next="pass the same hub in scope= and under=, or use under= alone",
+                )
+        holder.pop("scope")
+        if isinstance(extras, dict):
+            extras.pop("under", None)
+        args["under"] = handle_registry.format_handle("memory", scope_id)
+
+    @staticmethod
+    def _hoist_fused_args(args: dict[str, Any]) -> None:
+        """``args={'queries'/'answers'/'batch': …}`` → the top-level knob.
+
+        ``queries=``/``answers=`` (paper's fused broad retrieval and the
+        dated source search's legs) and ``batch=`` (memory's labelled
+        multi-search) are verb-level ``search`` params — never a kind's
+        ``args=`` key. Nested, ``queries`` died at the extras gate as
+        ``keys ['queries'] not accepted by skill.search`` while the same
+        spelling flattened fine on paper — three answers to "where does
+        queries go" depending on which surface you read (gr568808).
+        Hoist like ``sort=``/``folder=`` so the nested call IS the
+        top-level call on every kind: kinds that support the knob apply
+        it, the rest refuse ``not on <kind> yet``. A knob at both
+        levels is ambiguous — refuse it rather than pick a winner."""
+        extras = args.get(_EXTRAS_KEY)
+        if not isinstance(extras, dict):
+            return
+        for key in ("queries", "answers", "batch"):
+            if extras.get(key) is None:
+                continue
+            if args.get(key) is not None:
+                raise BadInput(
+                    f"{key}= was passed twice — top-level and inside args=",
+                    next=f"pass {key}= once, at the top level",
+                )
+            args[key] = extras.pop(key)
+
     def _dispatch_inner(self, verb: str, args: dict[str, Any]) -> Response:
         """``search(uncited=/cited=/hubbed=...)`` resolution wrapper around
         :meth:`_dispatch_inner_core`.
@@ -2354,13 +2601,6 @@ class DispatchMixin(RuntimeShape):
         The note is **prepended** so it leads the complete bounded result
         rather than appearing after all hits.
         """
-        extras = args.get(_EXTRAS_KEY)
-        if verb == "search" and isinstance(extras, dict) and "batch" in extras:
-            from precis.runtime.memory_batch import dispatch_memory_batch
-
-            return dispatch_memory_batch(
-                args, lambda child: self._dispatch_status("search", child)
-            )
         note: str | None = None
         listing_kinds: tuple[list[str] | None] | None = None
         canon_state = None
@@ -2370,6 +2610,21 @@ class DispatchMixin(RuntimeShape):
             self._hoist_source_facet_args(args)
             self._hoist_sort_arg(args)
             self._hoist_folder_arg(args)
+            self._hoist_memory_handle_scope(args)
+            # gr568808: the promoted cross-kind knobs (``queries``/
+            # ``answers``/``batch``) hoist out of ``args=`` so the
+            # nested spelling IS the top-level call — then the batch
+            # route itself reads the canonical ``args['batch']``.
+            self._hoist_fused_args(args)
+            if args.get("batch") is not None:
+                from precis.runtime.memory_batch import dispatch_memory_batch
+
+                return dispatch_memory_batch(
+                    args,
+                    lambda child: self._dispatch_status(
+                        "search", child, batch_child=True
+                    ),
+                )
             # ``q='*'`` is the match-all spelling (gr538071): fold
             # before any routing decision (under= listing,
             # source-search gate) reads it as a real query.
@@ -2380,6 +2635,7 @@ class DispatchMixin(RuntimeShape):
             args.get("uncited") is not None
             or args.get("cited") is not None
             or args.get("hubbed") is not None
+            or args.get("novel_for") is not None
         ):
             self._reject_source_facet_unfiltered_shape(args)
             facet_note = self._resolve_source_facets(args)
@@ -2669,9 +2925,10 @@ class DispatchMixin(RuntimeShape):
         return Response(body="\n".join(lines))
 
     def _reject_source_facet_unfiltered_shape(self, args: dict[str, Any]) -> None:
-        """Refuse ``uncited=``/``cited=``/``hubbed=`` on the search shapes
-        that :meth:`_dispatch_inner_core` intercepts and returns from
-        *before* any ``exclude_ref_ids``/``include_ref_ids`` is consulted.
+        """Refuse ``uncited=``/``cited=``/``hubbed=``/``novel_for=`` on the
+        search shapes that :meth:`_dispatch_inner_core` intercepts and
+        returns from *before* any
+        ``exclude_ref_ids``/``include_ref_ids`` is consulted.
 
         ``view='dreamable'``, ``view='chase-queue'`` and
         the ``angle=``/``like=`` spray each pick their own seed and target
@@ -2684,7 +2941,11 @@ class DispatchMixin(RuntimeShape):
         this must fail loudly. Same stance as the ``UNCITED_UNSUPPORTED_KINDS``
         guard, for the same reason.
         """
-        facets = [f for f in ("uncited", "cited", "hubbed") if args.get(f) is not None]
+        facets = [
+            f
+            for f in ("uncited", "cited", "hubbed", "novel_for")
+            if args.get(f) is not None
+        ]
         if not facets:
             return
         view = str(args.get("view") or "").strip()
@@ -2761,6 +3022,8 @@ class DispatchMixin(RuntimeShape):
             notes.append(self._resolve_cited_include(args))
         if args.get("hubbed") is not None:
             notes.append(self._resolve_hubbed_facet(args))
+        if args.get("novel_for") is not None:
+            notes.append(self._resolve_novel_for_exclude(args))
         return "\n".join(notes) if notes else None
 
     def _resolve_uncited_exclude(self, args: dict[str, Any]) -> str:
@@ -2900,6 +3163,91 @@ class DispatchMixin(RuntimeShape):
         args["exclude_ref_ids"] = sorted(merged)
         return f"_(hubbed=false: {n} hubbed paper{'s' if n != 1 else ''} excluded)_"
 
+    def _resolve_novel_for_exclude(self, args: dict[str, Any]) -> str:
+        """Resolve ``search(args={'novel_for': <scope>})`` into
+        ``args['exclude_ref_ids']`` — the novelty leg (gr662069,
+        spec me626852).
+
+        ``<scope>`` is a memory-or-question handle (any live ref — a quest
+        works for the lit-search consumer, gr592951). Sources carrying a
+        *valid* ``not-useful`` ``considered`` verdict for that scope are
+        merged into the shared exclusion channel every retrieval leg
+        reads, so a judged-out candidate never resurfaces for the same
+        question while staying reachable for every other scope. Verdicts
+        whose scope or source changed since judgment are NOT excluded —
+        they are reported as reopened for reconsideration, as are
+        ``edge-lost`` judgments whose ``considered`` edge died in a
+        chunk-replacement cascade — and ``depth='none'`` rows are
+        acquisition markers, never exclusions.
+        Refuses (never silently unfiltered) when the scope doesn't
+        resolve, so a typo can't make judged-out hits look "new".
+        """
+        from precis.store._consideration_ops import CONSIDERATION_LEDGER_KINDS
+        from precis.utils import handle_registry
+        from precis.utils.link_target import parse_link_target
+
+        token = args.pop("novel_for")
+        store = self.store
+        if store is None:
+            raise Unsupported("novel_for= needs a store-backed deployment")
+        try:
+            scope = parse_link_target(str(token), store=store)
+        except PrecisError as exc:
+            raise BadInput(
+                f"novel_for={token!r} does not resolve to a live scope ref ({exc})",
+                next="pass a memory/question handle, e.g. args={'novel_for': 'me<N>'}",
+            ) from exc
+        found = store.consideration_exclusions(scope.ref_id)
+        self._note_channel_value(args, "exclude_ref_ids")
+        self._note_facet_origin(args, "exclude_ref_ids", "novel_for", token)
+        merged: set[int] = set(args.get("exclude_ref_ids") or ())
+        merged |= found.excluded
+        args["exclude_ref_ids"] = sorted(merged)
+        scope_handle = (
+            handle_registry.try_format(scope.kind, scope.ref_id)
+            or f"{scope.kind}:{scope.ref_id}"
+        )
+        parts = [
+            f"{len(found.excluded)} considered-not-useful "
+            f"source{'s' if len(found.excluded) != 1 else ''} excluded"
+        ]
+        shown = [
+            handle_registry.try_format(v.dst_kind, v.dst_ref_id)
+            or f"{v.dst_kind}:{v.dst_ref_id}"
+            for v in found.verdicts
+            if v.verdict == "not-useful" and v.valid
+        ][:5]
+        if shown:
+            parts[0] += f" ({', '.join(shown)})"
+        if found.stale:
+            stale_handles = ", ".join(
+                (
+                    handle_registry.try_format(v.dst_kind, v.dst_ref_id)
+                    or f"{v.dst_kind}:{v.dst_ref_id}"
+                )
+                + f" — {v.stale}"
+                for v in found.stale[:3]
+            )
+            parts.append(
+                f"{len(found.stale)} verdict"
+                f"{'s' if len(found.stale) != 1 else ''} stale — "
+                f"reconsider ({stale_handles})"
+            )
+        if found.needs_text:
+            parts.append(
+                f"{len(found.needs_text)} awaiting text (acquisition, not rejection)"
+            )
+        inspect_hint = (
+            f"get(kind={scope.kind!r}, id={scope_handle!r}, view='considerations')"
+            if scope.kind in CONSIDERATION_LEDGER_KINDS
+            else f"get(kind={scope.kind!r}, id={scope_handle!r}, "
+            "view='links', args={'rel': 'considered', 'direction': 'out'})"
+        )
+        return (
+            f"_(novel_for={scope_handle}: {'; '.join(parts)} — "
+            f"inspect: {inspect_hint})_"
+        )
+
     @staticmethod
     def _intersect_include_ref_ids(args: dict[str, Any], ids: set[int]) -> None:
         """Merge ``ids`` into ``args['include_ref_ids']`` by intersection —
@@ -2962,6 +3310,10 @@ class DispatchMixin(RuntimeShape):
           3. Handler invocation with extras whitelist + defaulted-kind
              error annotation.
         """
+        if verb == "get" and args.get("kind") is None:
+            mixed = self._dispatch_mixed_get(args)
+            if mixed is not None:
+                return mixed
         # D1: accept URI-style ``id='kind:slug[~sel]'`` on input. Extract
         # the kind prefix into ``args['kind']`` (if not already set) and
         # leave the unprefixed identifier in ``args['id']``. Validation
@@ -2971,9 +3323,18 @@ class DispatchMixin(RuntimeShape):
         # grammar already used by ``link=`` / ``unlink=``.
         if verb == "delete":
             self._refuse_superseded_delete(args)
+        pre_kind = args.get("kind")
         self._maybe_split_prefixed_id(args, verb=verb)
+        gate = _KIND_GATE.get()
+        if gate is not None and pre_kind is not None and args.get("kind") != pre_kind:
+            gate(verb, args)
         if verb == "get" and not _wants_retired_view(args):
+            pre_redirect = (args.get("kind"), args.get("id"))
             self._redirect_retired_memory(args)
+            # A tombstone's successor can live in another kind (md, python,
+            # a converted handle): re-judge the capability allow-list on it.
+            if gate is not None and (args.get("kind"), args.get("id")) != pre_redirect:
+                gate(verb, args)
         redirect_note = args.pop("_memory_redirect_note", None)
         response = self._dispatch_resolved_kind(verb, args)
         if redirect_note is not None:
@@ -2993,7 +3354,7 @@ class DispatchMixin(RuntimeShape):
             self._maybe_hint_tag_shaped_q(args)
 
         # Focus region: ``search(view='dreamable')`` is the salience
-        # seed + its ANN ring (docs/backlog/dreaming.md, §view='dreamable'),
+        # seed + its ANN ring (gr690614, §view='dreamable'),
         # not the lexical+RRF path. Intercept before kind resolution —
         # it picks its own seed and cross-kind target set.
         if verb == "search" and str(args.get("view") or "").strip() == "dreamable":
@@ -3088,14 +3449,11 @@ class DispatchMixin(RuntimeShape):
         # An id-less ``get(kind=K, view='meta'|'tags')`` is the same
         # question asked on the wrong verb (gr492452) — serve it here
         # instead of each numeric-ref handler rejecting the view.
-        if (verb == "search" or (verb == "get" and args.get("id") is None)) and str(
-            args.get("view") or ""
-        ).strip() in (
-            "meta",
-            "tags",
-            "flow",
+        view_name = str(args.get("view") or "").strip()
+        if view_name in ("meta", "tags", "flow") and (
+            verb == "search"
+            or (verb == "get" and self._is_idless_introspection_get(kind, args))
         ):
-            view_name = str(args.get("view") or "").strip()
             # ``folder=`` folds into the include_ref_ids channel the
             # flow view reads — same trick as view='count' above,
             # otherwise it would route to the cross-kind fan-out.
@@ -3114,7 +3472,7 @@ class DispatchMixin(RuntimeShape):
             return self._dispatch_search_plan(kind, dict(args))
 
         # Angle spray: ``search`` with ``angle=`` or ``like=`` is the
-        # diverse-cone semantic sampler (docs/backlog/dreaming.md), not
+        # diverse-cone semantic sampler (gr690614), not
         # the lexical+RRF path. Intercept before kind resolution — it
         # owns its own seed resolution and cross-kind target set.
         if verb == "search" and ("angle" in args or "like" in args):
@@ -3138,6 +3496,7 @@ class DispatchMixin(RuntimeShape):
         # when a single ``kind=`` was named (it becomes a one-kind
         # "comma list").
         if verb == "search" and args.get("folder") is not None:
+            self._refuse_folder_on_unmergeable_kind(kind)
             return self._dispatch_cross_kind(
                 (
                     self._expand_kind_code(str(kind))
@@ -3268,6 +3627,22 @@ class DispatchMixin(RuntimeShape):
         elif hint not in exc.next:
             exc.next.append(hint)
 
+    def _is_idless_introspection_get(
+        self, kind: str | None, args: dict[str, Any]
+    ) -> bool:
+        if args.get("id") is not None:
+            return False
+        # A taxon subtree selects rows for the handler's metadata table.
+        extras = args.get(_EXTRAS_KEY)
+        return not (
+            args.get("view") == "meta"
+            and self._expand_kind_code(kind or "") == "taxon"
+            and (
+                args.get("under") is not None
+                or (isinstance(extras, dict) and extras.get("under") is not None)
+            )
+        )
+
     def _resolve_kind(
         self,
         verb: str,
@@ -3348,6 +3723,24 @@ class DispatchMixin(RuntimeShape):
             ),
         )
 
+    def _refuse_folder_on_unmergeable_kind(self, kind: Any) -> None:
+        """A folder-scoped search naming one kind that cannot join the merge.
+
+        The caller asked for a single kind, so the generic "kind(s) do not
+        support cross-kind search" would name something they never asked
+        for; the cause is ``folder=``. Comma-lists, wildcards and aliases
+        keep the generic refusal.
+        """
+        if not isinstance(kind, str) or self._is_cross_kind_request(kind):
+            return
+        single = self._expand_kind_code(kind.strip())
+        if single in self.hub.kinds and single not in self._cross_kind_kinds():
+            raise BadInput(
+                f"search(kind={single!r}) has no folder scope: folder= does not "
+                "apply to this kind",
+                next=f"drop folder=: search(kind={single!r}, q='...')",
+            )
+
     def _expand_kind_code(self, kind: str) -> str:
         """Accept a 2-char handle code as ``kind=``.
 
@@ -3375,7 +3768,7 @@ class DispatchMixin(RuntimeShape):
         """Kind of the live ref a bare positive int ``id`` names, else None."""
         if isinstance(raw, bool):
             return None
-        if isinstance(raw, str) and raw.strip().isdigit():
+        if isinstance(raw, str) and raw.strip().isdecimal():
             raw = int(raw)
         if not isinstance(raw, int) or raw <= 0:
             return None
@@ -3439,6 +3832,12 @@ class DispatchMixin(RuntimeShape):
         per-verb help-skill pointer is still appended by
         :meth:`_maybe_add_skill_hint` after this.
         """
+        if verb == "get" and self._is_id_empty(args.get("id")):
+            return [
+                "pass kind=<one of the listed options> and omit the blank id= "
+                "to open that kind's landing page",
+                "get(kind='skill', id='precis-overview') explains which kind to use",
+            ]
         if verb == "link":
             # gr518636: link(mode='add', rel='…') with no kind=/id=/target=
             # bounced on bare "missing kind=" — the refusal must name the
@@ -3484,7 +3883,7 @@ class DispatchMixin(RuntimeShape):
             return None
         if isinstance(raw, str):
             stripped = raw.strip()
-            if stripped.isdigit():
+            if stripped.isdecimal():
                 raw = int(stripped)
             else:
                 return self._file_shape_hint(stripped)
@@ -3722,6 +4121,12 @@ class DispatchMixin(RuntimeShape):
                 for h in (
                     self._generic_ref_hint(kind, raw_id),
                     _RETIRED_KINDS.get(kind),
+                    (
+                        "tables are chunks of kind='draft': "
+                        "get(kind='skill', id='precis-table-help')"
+                        if kind in {"table", "spreadsheet", "sheet"}
+                        else None
+                    ),
                 )
                 if h is not None
             ]
@@ -3913,14 +4318,29 @@ class DispatchMixin(RuntimeShape):
         specific kind that was tried.
         """
         method = getattr(handler, verb)
+        readings: list[str] = []
 
         # The eye ladder is one door on every kind (fisheye-everywhere
         # in-scope 2): a ``get`` carrying ``extent=`` — or a ladder label
-        # in ``view=``, the spelling the ladder shipped on — goes to
-        # ``Handler.eye`` instead of ``get``, so no handler has to accept
-        # the kwarg and the kwargs gate below never sees it.
+        # in ``view=``, the deprecated spelling the ladder shipped on —
+        # goes to ``Handler.eye`` instead of ``get``, so no handler has
+        # to accept the kwarg and the kwargs gate below never sees it.
         if verb == "get":
-            extent = _eye_extent(args)
+            extent, reading = _eye_extent(args)
+            if reading is not None:
+                readings.append(reading)
+            # A verbatim skill read with a query scans the served skill body.
+            # Neighbor-group queries still use the eye ladder.
+            skill_id = args.get("id")
+            if (
+                kind == "skill"
+                and extent == "verbatim"
+                and args.get("q") is not None
+                and isinstance(skill_id, str)
+                and skill_id.strip()
+            ):
+                extent = None
+                args.pop("view", None)
             if extent is not None:
                 # ``ring=`` narrows the rings a link/doc eye renders
                 # (``fisheye-everywhere.md`` in-scope 1); popped like
@@ -3955,7 +4375,9 @@ class DispatchMixin(RuntimeShape):
                     )
                     self._stamp_recalled(kind, args.get("id"))
                     self._bump_ref_read(kind, args.get("id"))
-                    return response
+                    from precis.handlers._interpret import interpreted
+
+                    return interpreted(response, readings)
                 except PrecisError as exc:
                     if kind_was_defaulted:
                         exc.cause = f"(searched kind={kind!r}) {exc.cause}"
@@ -4015,7 +4437,9 @@ class DispatchMixin(RuntimeShape):
             self._bump_ref_read(kind, args.get("id"))
             if kind_was_defaulted:
                 response = self._tag_defaulted_kind(response, kind)
-            return response
+            from precis.handlers._interpret import interpreted
+
+            return interpreted(response, readings)
 
         # Creation identity is server-owned, including on edits and through
         # args={meta: ...}. Reject before any handler can merge caller data.
@@ -4108,7 +4532,25 @@ class DispatchMixin(RuntimeShape):
                     )
                 args["view"] = "retired"
         if verb == "get":
-            extras = _fold_get_full_flag(type(handler), method, kind, args, extras)
+            extras, reading = _fold_get_full_flag(
+                type(handler), method, kind, args, extras
+            )
+            if reading is not None:
+                readings.append(reading)
+        skill_selector_hints = {"section", "heading", "lines", "offset"}
+        if (
+            verb == "get"
+            and kind == "skill"
+            and skill_selector_hints.intersection({*(extras or {}), *args})
+        ):
+            slug = str(args.get("id") or "<slug>").split("~", 1)[0]
+            raise BadInput(
+                "skill sections are addressed in id=, not section/heading/lines/offset",
+                next=(
+                    f"get(kind='skill', id='{slug}~<heading>') opens a section; "
+                    f"get(kind='skill', id='{slug}/toc') lists headings"
+                ),
+            )
         if extras:
             accepted = self._accepted_kwargs(method)
             # Handlers that opt into an explicit ``args: dict``
@@ -4151,21 +4593,61 @@ class DispatchMixin(RuntimeShape):
                         if k != "args"
                         and k in _handler_accepted_kwargs(type(handler), verb)
                     ]
+                    # Snapshots for the corrected-call render (gr613469,
+                    # review td680653): the hint replays the caller's own
+                    # args={…} — a key the promotion lifts stays nested,
+                    # never hoisted top-level where the verb's wire
+                    # schema may not declare it.
+                    caller_extras = dict(extras)
+                    pre_promotion_args = dict(args)
                     if promotable:
                         promoted = _coerce_extras(
                             type(handler),
                             verb,
                             {k: extras.pop(k) for k in promotable},
                         )
+                        # A top-level value the verb wrapper defaulted (not
+                        # typed by this caller — search's ``page=1`` can't be
+                        # passed at the top level over MCP at all) must not
+                        # shadow the same key arriving explicitly through
+                        # args=; otherwise the windowed views' advertised
+                        # continuation ``args={'page': N}`` is silently
+                        # dropped and the caller loops on page 1 (gr673370).
+                        wrapper_defaulted = _WRAPPER_DEFAULTED_KWARGS.get(verb, ())
                         for k, v in promoted.items():
-                            if k not in args or args[k] is None:
+                            if (
+                                k not in args
+                                or args[k] is None
+                                or k in wrapper_defaulted
+                            ):
                                 args[k] = v
                         unknown = sorted(set(unknown) - set(promotable))
                     if unknown:
+                        swapped = _nearest_swapped(caller_extras, unknown, declared)
                         raise BadInput(
                             f"keys {unknown!r} not accepted by {kind}.{verb}; "
                             f"its args= keys are listed below",
                             options=_typed_kwargs(type(handler), verb, declared),
+                            next=(
+                                render_corrected_call(
+                                    verb,
+                                    {
+                                        "kind": kind,
+                                        **drop_wrapper_defaults(
+                                            verb,
+                                            {
+                                                k: v
+                                                for k, v in pre_promotion_args.items()
+                                                if v is not None
+                                            },
+                                        ),
+                                    },
+                                    extras=swapped,
+                                    top_level=verb_top_level(verb),
+                                )
+                                if swapped is not None
+                                else None
+                            ),
                         )
                 # Keys that shadow a named parameter of the handler (python.get
                 # folds them back in) get the same JSON-string coercion as the
@@ -4186,7 +4668,18 @@ class DispatchMixin(RuntimeShape):
                 # gr635829: ``args={'title': …}`` is the same near-miss
                 # one layer down — fold it onto text='s first line.
                 _fold_title_kwarg(handler, verb, accepted, extras, args)
-                unknown = self._unknown_extras(method, extras)
+                # gr676945: the args= key gate must use the same MRO-aware
+                # accepted set as the top-level strictness gate (gr593341) —
+                # a key the override forwards through its **kw catch-all to
+                # a base declaring it (memory.search → NumericRefHandler.
+                # search's id_min=/id_max=) is a real kwarg, not an unknown
+                # args= key. Own-signature-only checking refused the list
+                # footer's advertised args={'id_min': N, 'id_max': M} on
+                # every numeric-ref kind.
+                mro_accepted = _handler_accepted_kwargs(
+                    type(handler), verb
+                ) | self._accepted_kwargs(method)
+                unknown = self._unknown_extras(method, extras, mro_accepted)
                 if unknown:
                     # Core params are top-level on the slim schema; list
                     # only what belongs inside args=.
@@ -4202,21 +4695,54 @@ class DispatchMixin(RuntimeShape):
                         (k for k in unknown if k in _SEARCH_PAGING_SPELLINGS),
                         None,
                     )
+                    # gr613469: lead with the corrected call — the same
+                    # call, nearest accepted args= key swapped in — ahead
+                    # of the shape-specific prose hint.
+                    swapped = _nearest_swapped(extras, unknown, accepted)
+                    corrected = (
+                        render_corrected_call(
+                            verb,
+                            {
+                                "kind": kind,
+                                **drop_wrapper_defaults(
+                                    verb,
+                                    {k: v for k, v in args.items() if v is not None},
+                                ),
+                            },
+                            extras=swapped,
+                            top_level=verb_top_level(verb),
+                        )
+                        if swapped is not None
+                        else None
+                    )
+                    # gr478557: gripe/todo comment via id= + text=, not args=.
+                    shape_hint = (
+                        f"to comment: put(kind={kind!r}, id=N, text='...') with no args"
+                        if verb == "put" and getattr(handler, "supports_comment", False)
+                        else (
+                            _search_paging_alias_next(alias, extras[alias])
+                            if verb == "search" and alias is not None
+                            else None
+                        )
+                    )
+                    job_hints = []
+                    if kind == "job" and verb == "search":
+                        if {"executor", "state"}.intersection(unknown):
+                            job_hints.append(
+                                "search(kind='job', view='count', "
+                                "args={'group_by': 'meta.executor,state'})"
+                            )
+                        if "parent" in unknown:
+                            job_hints.append(
+                                f"search(kind='job', under={extras['parent']!r})"
+                            )
                     raise BadInput(
                         f"keys {unknown!r} not accepted by {kind}.{verb}; "
                         f"its args= keys are listed below",
                         options=accepted_kwargs,
-                        # gr478557: gripe/todo comment via id= + text=, not args=.
                         next=(
-                            f"to comment: put(kind={kind!r}, id=N, text='...') "
-                            "with no args"
-                            if verb == "put"
-                            and getattr(handler, "supports_comment", False)
-                            else (
-                                _search_paging_alias_next(alias, extras[alias])
-                                if verb == "search" and alias is not None
-                                else None
-                            )
+                            job_hints + [h for h in (corrected, shape_hint) if h]
+                            or None
                         ),
                     )
                 args.update(_coerce_extras(type(handler), verb, extras))
@@ -4287,18 +4813,49 @@ class DispatchMixin(RuntimeShape):
                     )
                     if scope_takers:
                         hint = " — kinds accepting scope=: " + ", ".join(scope_takers)
+                if not hint and verb == "search":
+                    # gr568808: a verb-level search knob on a kind that
+                    # can't apply it refuses "not on <kind> yet" —
+                    # never a silent drop, never a per-kind respelling.
+                    not_yet = sorted(
+                        k for k in unknown_top if k in _SEARCH_VERB_LEVEL_PARAMS
+                    )
+                    if not_yet:
+                        hint = (
+                            " — "
+                            + " and ".join(f"{k}=" for k in not_yet)
+                            + (" is" if len(not_yet) == 1 else " are")
+                            + f" not on {kind} yet"
+                        )
                 dropped = [k for k in unknown_top if k in _DROPPABLE_TOP_LEVEL_KWARGS]
+                # gr613469: lead with the corrected call — the same call,
+                # each typo'd kwarg swapped for its nearest accepted
+                # spelling — ahead of the drop-it prose.
+                swapped_top = _nearest_swapped(clean, unknown_top, accepted_top)
+                corrected = (
+                    render_corrected_call(
+                        verb,
+                        {
+                            "kind": kind,
+                            **drop_wrapper_defaults(verb, swapped_top),
+                        },
+                        top_level=verb_top_level(verb),
+                    )
+                    if swapped_top is not None
+                    else None
+                )
+                dropped_hint = (
+                    f"{dropped} has no effect on {verb}(kind={kind!r}) — "
+                    "drop it (paging/mode belong to search and the verbs "
+                    "that list them)"
+                    if dropped
+                    else None
+                )
                 raise BadInput(
                     f"{verb}(kind={kind!r}) does not accept {unknown_top!r}"
                     f"{hint}; its args= keys are listed below",
                     options=accepted_list,
-                    next=(
-                        f"{dropped} has no effect on {verb}(kind={kind!r}) — "
-                        "drop it (paging/mode belong to search and the verbs "
-                        "that list them)"
-                        if dropped
-                        else None
-                    ),
+                    next=([h for h in (corrected, dropped_hint) if h] or None),
                 )
 
         # F7: catch handler-signature-required kwargs that the caller
@@ -4337,7 +4894,16 @@ class DispatchMixin(RuntimeShape):
                 store=self.store if verb in _WRITE_VERBS else None,
                 claim=writer_claim,
             ) as wctx:
-                response = method(**clean)
+                # gr613469: record the call as dispatched so a refusal
+                # raised inside the handler can re-render the caller's
+                # own args (``corrected_call.retry_call`` / ``IN_FLIGHT_CALL``)
+                # — a corrected call that dropped them would aim the
+                # retry somewhere else.
+                call_ctx = IN_FLIGHT_CALL.set((verb, kind, dict(clean)))
+                try:
+                    response = method(**clean)
+                finally:
+                    IN_FLIGHT_CALL.reset(call_ctx)
             response = self._nudge_writer(kind, verb, wctx, response)
             act = getattr(wctx, "trust_act", None)
             if act is not None and act.target_id is None:
@@ -4388,7 +4954,9 @@ class DispatchMixin(RuntimeShape):
             response = self._tag_defaulted_kind(response, kind)
         if verb == "get" and self._is_id_empty(args.get("id")):
             response = self._maybe_append_kind_skill_footer(response, kind)
-        return response
+        from precis.handlers._interpret import interpreted
+
+        return interpreted(response, readings)
 
     def _append_trust_line(
         self, handler: Handler, kind: str, ident: Any, response: Response
@@ -4408,19 +4976,28 @@ class DispatchMixin(RuntimeShape):
         if store is None:
             return response
         try:
-            line = trust_line(store, kind, ident)
-            written = written_line(store, kind, ident) if line is not None else None
+            footer = trust_footer(store, kind, ident)
+            written = written_line(store, kind, ident) if footer is not None else None
         except Exception:
             log.debug("trust line for %s %r failed", kind, ident, exc_info=True)
             return response
-        if line is None:
+        if footer is None:
             return response
-        # gr499041: the identical stamp+sha footer on a re-read carries no
-        # new information; suppress it for a session that saw it recently.
-        from precis.utils.hint_ledger import was_shown
+        line = footer.line
+        if footer.recipe is not None:
+            # gr499041 (reopened): the runnable consider call is one
+            # template — keying the ledger on the whole line let the
+            # per-node sha make every read "new", and a per-kind key
+            # re-served it on the session's first read of each kind.
+            # Serve it once per session across kinds, and never in a
+            # read-scoped run that cannot run it. The stamp and sha stay
+            # on every footer because edit(mode='trust') needs
+            # expected_sha; a sessionless caller always gets the full
+            # line.
+            from precis.utils.hint_ledger import was_shown
 
-        if was_shown(line):
-            return response
+            if _put_denied() or was_shown("trust recipe"):
+                line = footer.short
         # The trust line stays last: the web lifts it off the end of the body.
         lead = f"{written}\n\n" if written else ""
         return replace(response, body=f"{response.body.rstrip()}\n\n{lead}{line}")
@@ -4688,9 +5265,20 @@ class DispatchMixin(RuntimeShape):
         }
 
     @classmethod
-    def _unknown_extras(cls, method: Any, extras: dict[str, Any]) -> list[str]:
-        """Return the args= keys that aren't on the handler's signature."""
-        accepted = cls._accepted_kwargs(method)
+    def _unknown_extras(
+        cls,
+        method: Any,
+        extras: dict[str, Any],
+        accepted: set[str] | frozenset[str] | None = None,
+    ) -> list[str]:
+        """Return the args= keys the handler verb doesn't accept.
+
+        ``accepted`` defaults to the resolved method's own explicit names;
+        pass the MRO-aware set (gr676945) to also admit keys a ``**kw``
+        catch-all forwards up the cooperative-inheritance chain.
+        """
+        if accepted is None:
+            accepted = cls._accepted_kwargs(method)
         return sorted(k for k in extras if k not in accepted)
 
     @staticmethod
@@ -4880,6 +5468,42 @@ class DispatchMixin(RuntimeShape):
         owners = self._file_id_kinds(ident, "owns_existing_file")
         if len(owners) == 1:
             args["kind"] = owners[0]
+
+    def _maybe_infer_get_address_kind(self, args: dict[str, Any], ident: str) -> None:
+        """Pin ``kind`` for three kindless-``get`` id shapes (gr676949):
+        a bare kind word, a served skill slug, a bare DOI.
+
+        Runs in the no-``:`` branch of :meth:`_maybe_split_prefixed_id`
+        after the ref-slug and file probes above, so a real ref slug or
+        file that collides with one of these shapes still wins (refs
+        checked first — a slug is an address; a kind word is not). Get
+        only: ``put``/``edit``/… stay kind-required.
+        """
+        if self.hub is None:
+            return
+        live_kinds = set(self.hub.kinds)
+        stripped = ident.strip()
+        # ``id=`` that IS a live kind word — ``get(id='skill', q='gripe')``
+        # reads as kind='skill'. The id moves to nothing (``q=``/``view=``
+        # stay); a kind that needs an id gets its own refusal downstream.
+        if stripped in live_kinds:
+            args["kind"] = stripped
+            args.pop("id", None)
+            return
+        # A served skill slug — ``get(id='precis-get-help')`` reads the
+        # skill. The id stays whole (the handler parses a ``~N`` /
+        # ``/view`` suffix itself).
+        base = re.split(r"[~/?]", stripped, maxsplit=1)[0].strip()
+        if base:
+            from precis.taproot.notation import is_served_skill_slug
+
+            if is_served_skill_slug(base):
+                args["kind"] = "skill"
+                return
+        # A bare DOI — ``get(id='10.1021/x')`` reads the paper; the full
+        # DOI stays on ``id=`` (never split on ``/`` for this shape).
+        if "paper" in live_kinds and _BARE_DOI_RE.match(stripped):
+            args["kind"] = "paper"
 
     def _maybe_route_draft_chunk(self, args: dict[str, Any], ident: str) -> bool:
         """Universal handles: route a draft chunk handle ``dc<id>`` (optionally with a
@@ -5176,7 +5800,39 @@ class DispatchMixin(RuntimeShape):
             # like another kind's handle (``dr00``, gr524004).
             args["id"] = str(resolved.ref_id) + suffix
             return True
-        args["id"] = resolved.public_id + suffix
+        handler = self.hub.handler_for(resolved.kind) if self.hub else None
+        if getattr(handler, "handle_routes_by_ref_id", False) is True:
+            if verb == "get":
+                # The rewrite below turns the handle into bare ref-id
+                # digits — to the cache handler a query-shaped string.
+                # Under ``args={'literal': True}`` its stored-row guard
+                # steps aside and those digits go upstream as a fresh
+                # (possibly PAID) query — reject the contradictory pair
+                # before it can spend (review td707055, gr702962).
+                extras = args.get(_EXTRAS_KEY)
+                if bool(args.get("literal")) or (
+                    isinstance(extras, dict) and extras.get("literal")
+                ):
+                    raise BadInput(
+                        f"args={{'literal': True}} contradicts the resolved "
+                        f"handle {normalized!r} — it names stored ref "
+                        f"{resolved.ref_id}, but as a literal query its "
+                        "digits would go upstream as a fresh call",
+                        next=(
+                            f"drop literal to read {normalized}, or pass the "
+                            "query text itself with args={'literal': True}"
+                        ),
+                    )
+            # A query-derived slug (wikipedia's) reads as a fresh query on
+            # the cache handler; the ref id is the exact stored row (gr702974).
+            # Keep handle selectors distinct from legacy numeric slugs.
+            args["id"] = (
+                f"{resolved.kind}:{resolved.ref_id}{suffix}"
+                if suffix.startswith("~") and verb == "get"
+                else str(resolved.ref_id) + suffix
+            )
+        else:
+            args["id"] = resolved.public_id + suffix
         parsed = handle_registry.parse(normalized)
         if (
             verb == "get"
@@ -5425,13 +6081,74 @@ class DispatchMixin(RuntimeShape):
             ),
         )
 
+    def _dispatch_mixed_get(self, args: dict[str, Any]) -> Response | None:
+        """Read heterogeneous self-identifying addresses through scalar routing."""
+        idents = args.get("id")
+        if not isinstance(idents, (list, tuple)) or not idents:
+            return None
+        kinds: list[str] = []
+        for ident in idents:
+            if not isinstance(ident, str):
+                return None
+            probe = {"id": ident}
+            self._maybe_split_prefixed_id(probe, verb="get")
+            if probe.get("kind") is None:
+                return None
+            kinds.append(probe["kind"])
+        # The common kindless batch is same-kind — it falls through to
+        # ``_infer_batch_kind`` for the handler's native batch path, so
+        # probe first and only build per-address calls on a real mix.
+        if len(set(kinds)) < 2:
+            return None
+        from precis.handlers._numeric_ref import COMPACT_BATCH_ID_CAP
+
+        if len(idents) > COMPACT_BATCH_ID_CAP:
+            raise BadInput(
+                f"mixed-kind get accepts at most {COMPACT_BATCH_ID_CAP} IDs",
+                next=f"split id= into batches of at most {COMPACT_BATCH_ID_CAP} handles",
+            )
+        children: list[dict[str, Any]] = []
+        for ident, kind in zip(idents, kinds, strict=True):
+            child = copy.deepcopy(args)
+            child["id"] = ident
+            # Scalar dispatch must resolve the original address exactly once:
+            # a public slug may itself look like another live handle.
+            child["kind"] = kind
+            children.append(child)
+        gate = _KIND_GATE.get()
+        if gate is not None:
+            for child in children:
+                gate("get", child)
+        responses = [self._dispatch_inner_core("get", child) for child in children]
+        return Response(
+            body="\n\n".join(
+                f"{ident}\n{self._render(response)}"
+                for ident, response in zip(idents, responses, strict=True)
+            ),
+            result_count=len(responses),
+            result_ids=[
+                ref_id
+                for response in responses
+                for ref_id in (
+                    response.result_ids
+                    if response.result_ids is not None
+                    else [response.ref_id]
+                    if response.ref_id is not None
+                    else []
+                )
+            ],
+            transient=any(response.transient for response in responses),
+            images=tuple(image for response in responses for image in response.images),
+        )
+
     def _infer_batch_kind(
         self, args: dict[str, Any], idents: Any, *, verb: str | None = None
     ) -> None:
         """``get(id=['pc1', 'pc2'])`` with no ``kind=``: infer the kind per
         handle via the single-id path. One shared kind → that kind's batch
-        get with the rewritten public ids; mixed kinds → ``BadInput``
-        naming them. Items that don't self-identify leave the call as is."""
+        get with the rewritten public ids. Mixed reads fan out before this
+        path; mixed writes refuse. Items that don't self-identify leave
+        the call as is."""
         if args.get("kind") is not None or not idents:
             return
         if not all(isinstance(i, str) for i in idents):
@@ -5610,6 +6327,47 @@ class DispatchMixin(RuntimeShape):
             return False
         return kind is None or found in {k.strip() for k in kind.split(",")}
 
+    def _refuse_disabled_kind_prefix(self, prefix: str) -> None:
+        """Raise ``Unsupported`` for a ``kind:id`` whose kind this build
+        disabled at boot (gr676949 slice 3).
+
+        ``get(id='tex:chapters/intro')`` on a host without ``PRECIS_ROOT``
+        used to fall through to the bare ``missing kind=`` refusal, which
+        named neither the id's kind nor the way out. The cause says the
+        kind is disabled on this host (with the boot-time reason); the
+        breadcrumb defers to the disabled-kinds skill rather than
+        duplicating its per-kind guidance, and — when the deployment
+        serves the kind from another host — names that host, the
+        read-only fallback ``precis-get-help`` documents for a kind this
+        process lacks. No-op when the prefix is not a registered kind.
+        """
+        if self.hub is None:
+            return
+        verdict = getattr(self.hub, "loadabilities", {}).get(prefix)
+        if verdict is None or verdict.loaded:
+            return
+        reason = verdict.reason or "disabled"
+        hints: list[str] = []
+        store = getattr(self.hub, "store", None)
+        if store is not None:
+            try:
+                hosts = store.find_kind_providers(prefix)
+            except Exception:  # pragma: no cover - missing table / DB error
+                hosts = []
+            if hosts:
+                hints.append(
+                    f"kind {prefix!r} routes through host(s): {', '.join(hosts)} "
+                    "— read it there (read-only here)"
+                )
+        hints.append(
+            "see get(kind='skill', id='precis-kinds-disabled-help') "
+            "and precis-overview Needs column"
+        )
+        raise Unsupported(
+            f"kind {prefix!r} is disabled on this host ({reason})",
+            next=hints,
+        )
+
     def _maybe_split_prefixed_id(
         self, args: dict[str, Any], *, verb: str | None = None
     ) -> None:
@@ -5674,6 +6432,10 @@ class DispatchMixin(RuntimeShape):
             # names its kind via the extension of the file it addresses
             # (gr648740).
             self._maybe_infer_file_kind(args, ident)
+            # gr676949: a bare kind word (``get(id='skill', q='gripe')``),
+            # a served skill slug, or a bare DOI self-identifies too.
+            if verb == "get" and args.get("kind") is None:
+                self._maybe_infer_get_address_kind(args, ident)
             return
         # Only honour a colon that comes before any selector / view
         # path separator. ``markdown:notes/a.md`` is fine; ``foo/bar:x``
@@ -5687,6 +6449,11 @@ class DispatchMixin(RuntimeShape):
             return
         live_kinds = set(self.hub.kinds) if self.hub is not None else set()
         if prefix not in live_kinds:
+            # A prefix naming a registered-but-disabled kind is not an
+            # unknown id — name the disabled kind instead of bouncing on
+            # the bare "missing kind=" (gr676949: ``get(id='tex:<slug>')``
+            # on a host without PRECIS_ROOT).
+            self._refuse_disabled_kind_prefix(prefix)
             # Not a recognised kind prefix — but ``<alias>::<qualname>``
             # is the python kind's address grammar and no other live
             # kind uses ``::``, so when the alias names a configured
@@ -5710,6 +6477,17 @@ class DispatchMixin(RuntimeShape):
                 ),
             )
         args["kind"] = prefix
+        base, selector, _ = rest.partition("~")
+        handler = self.hub.handler_for(prefix) if self.hub else None
+        if (
+            verb == "get"
+            and selector
+            and base.isascii()
+            and base.isdecimal()
+            and getattr(handler, "handle_routes_by_ref_id", False) is True
+        ):
+            # An explicit ref selector must not become a bare numeric slug.
+            return
         args["id"] = rest
         # Only memory reads need nested handles (memory:meN). Other
         # kinds and writes retain literal identifiers, including conv:co123.

@@ -1,5 +1,4 @@
-"""precis.structsolve — in-tree structural solvers (docs/backlog/
-structural-solution-space.md).
+"""precis.structsolve — in-tree structural solvers (me695531).
 
 The *generator* side of the generator/checker split: these modules
 propose geometry; :mod:`precis_se.stability` (and, later, nm's
@@ -19,7 +18,7 @@ Modules:
   coordinates, one linear solve per axis returns node geometry in
   equilibrium.
 - :mod:`precis.structsolve.complementarity` — active-set unilateral
-  analysis (docs/backlog/complementarity-solver.md slices 1-3, core):
+  analysis (me694137 slices 1-3, core):
   given topology, per-member axial rate/free-length/sign-idiom and
   supports, finds the small-displacement equilibrium in which every
   tension-only, compression-only and must-contact member obeys its
@@ -42,7 +41,7 @@ Modules:
   an additive-manufacturing overhang filter. Same lattice also carries
   the naive gyroid fill.
 - :mod:`precis.structsolve.continuation` — geometrically nonlinear
-  snap-through / continuation (structural-solution-space.md slice 5's
+  snap-through / continuation (me695531 slice 5's
   CORE): traces the equilibrium branch as a member's free length (or a
   prescribed coordinate, or a load) sweeps 0 -> 1, with member
   directions re-evaluated at the CURRENT displaced geometry every
@@ -53,7 +52,7 @@ Modules:
   controlled reaction extremum) and reports a real energy barrier when
   the branch folds, honestly reporting none for a monostable sweep.
 - :mod:`precis.structsolve.preferred` — the preferred-number term
-  (multiscale-optimisation-method.md §4, slice 1): differentiable
+  (me694543 §4, slice 1): differentiable
   round-value wells over declared measurements — bilateral-Huber
   tiers combined by softmin, tier pitches from part size rounded to
   1-2-5, coefficients as fixed rules rather than per-design

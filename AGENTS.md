@@ -11,9 +11,12 @@ loads late on its own.
 lifecycle, seams) → the owning package's `__init__.py` docstring →
 the repo-dev vocabulary taxonomy for an unfamiliar or overloaded term
 (`search(kind='taxon', q='<term>', args={'under': 'tn559460'})`) →
-`docs/backlog/INDEX.md` (generated, gitignored —
-run `scripts/docs-index` if absent). Runtime kinds and verbs:
-`get(kind='skill', id='precis-overview')`.
+the specs for planned work (`search(kind='memory', tags=['spec:*'],
+view='toc')`; hub `me568215`, format
+`get(kind='skill', id='precis-spec-help')`). Runtime kinds and verbs:
+`get(kind='skill', id='precis-overview')`. Conduct, the same for every
+agent: `get(kind='skill', id='soul')` — open only the entries the task
+touches.
 
 ## Rules by pointer
 
@@ -48,8 +51,12 @@ run `scripts/docs-index` if absent). Runtime kinds and verbs:
   your tree with `scripts/round in <sha>|none|eta <text>`. The mark is the
   status report; message the coordinator only for a question, blocker or
   decision. Details: `docs/conventions/shipping.md`.
-- **Plans**: non-trivial changes get a spec in `docs/backlog/<slug>.md`
-  first; it is deleted in the shipping commit.
+- **Plans**: non-trivial changes get a spec in graph memory first — a spec
+  root plus section nodes under the Specifications hub `me568215`, state on
+  its plan todo (`get(kind='skill', id='precis-spec-help')`; ruling
+  `me568168`). A small item is a gripe instead. A built section retires in
+  the shipping commit's wake, superseded by its code handle; specs are not
+  files (`docs/backlog/README.md` names the one legacy exception).
 
 ## Repo-dev graph memory
 
@@ -82,10 +89,9 @@ source. At task start, recall relevant knowledge with
 `search(kind='memory', tags=['SPACE:repo-dev'], q='<task>', view='index')`.
 For exploratory memory/hub/index reads, prefer
 `get(kind='memory', id='<handle>', extent='fisheye+2hop')`; explicit narrow
-reads stay narrow. Canonical procedure: staged Structure me563920 (via
-Curator me563916 or soul index me563907), for selective group expansion
-and truncation reporting; ordinary-skill migration gr563975. Mechanics:
-`precis-fisheye-help`, "The second hop".
+reads stay narrow. Canonical procedure: `get(kind='skill',
+id='soul-structure')`, for selective group expansion and truncation
+reporting. Mechanics: `precis-fisheye-help`, "The second hop".
 This browsing preference does not change runtime defaults.
 Use the bootstrap's verified root when orientation is needed; do not load
 the entire graph or use a filename as a native ID.
@@ -160,13 +166,19 @@ Files are explicit mirror/export artifacts after cutover. Native edits and
 operator CLI mirror commands are distinct: never import/export at task
 start, to answer a question, or automatically on an MCP outage.
 
-Outage (emergency measure, Reto 2026-10-22): MCP down → read the node copies
-under `~/.cache/precis/memory-nodes*` as stale scratch (never edit them as
-memory; they are overwritten). Anything that must be remembered is appended to
-`<harness memory dir>/outage-memory.md` (`## <UTC timestamp> <session name>`,
-then the fact); the SessionStart hook flags it once the graph is back and the
-session integrates then empties it. No other memory writes, no replay tooling.
-`docs/runbooks/memory-restore.md`.
+Outage (Reto 2026-10-22, 2026-11-14): MCP down → stop the task. Retry the
+connection with growing waits (1, 2, 4, 8 minutes, then every 15) and resume
+when it answers; do not work the task without skills and memory, and do not
+carry on through `scripts/prod-precis` (that is the release owner's recovery
+tool). The node copies under `~/.cache/precis/memory-nodes*` are stale scratch
+(never edit them as memory; they are overwritten). Anything that must be
+remembered is appended to `<harness memory dir>/outage-memory.md`, each entry
+under a heading that starts with the UTC date and time
+(`## 2026-11-14T19:35Z <session name>`, then the fact). Once the graph is back
+the session that wrote an entry integrates it and removes that entry; it leaves
+other sessions' entries alone. An entry older than 24 hours, or one with no
+date and time, may be integrated by any interactive session. No other memory
+writes, no replay tooling. `docs/runbooks/memory-restore.md`.
 
 ## Definition of done
 
@@ -214,7 +226,8 @@ gripe. `docs/codebase.md` (shape, lifecycle, seams) → the owning package's
 `__init__.py` docstring. Runtime kinds/affordances: skills
 `precis-overview`, `precis-toolpath-help`. Coined terms: taxa under
 `tn559460` (`search(kind='taxon', q='<term>', args={'under': 'tn559460'})`).
-Planned work: `docs/backlog/` (open items only, delete-on-ship); pillars +
+Planned work: graph specs under `me568215` (`precis-spec-help`) and open
+gripes; thread order: `docs/backlog/threads/`; pillars +
 the active thread set: `docs/roadmap.md`. Dated history: `git log` (no
 CHANGELOG). Schema: `docs/reference/schema.md` (generated). Mission:
 `docs/mission.md`. Replicate this setup: `docs/how-to-setup-like-this.md`.
@@ -245,7 +258,10 @@ point: the `se-design` skill. Missing one → gripe.
 - **No cluster addresses anywhere — the repo is PUBLIC.** Tailnet/LAN IPs
   and vault blobs are gated across the *whole* tree
   (`tests/test_deploy_tree_no_secrets.py`); real node hostnames are gated
-  under `deploy/` only (there they mean an un-parameterised role). Prod
+  under `deploy/`, `docker/`, `docs/`, `src/`, `tests/` and the `.claude/`
+  prompt files: write the role or a placeholder (in tests a made-up name such
+  as `maple`), the names live in repo-dev memory. The rule is none anywhere;
+  `scripts/` is not yet clean. Prod
   coordinates come from the gitignored overlay via
   `scripts/lib/pgb-host.sh` — use `scripts/prod-psql`, never a literal.
   Genuine ranges/samples take a `secret-gate: allow — <reason>` marker.
@@ -259,11 +275,13 @@ point: the `se-design` skill. Missing one → gripe.
 - Container-first; shell cwd is already this worktree — never `cd`. Other
   trees are NOT reachable by `git -C` (the harness refuses it) — read them
   with `scripts/inflight --json`. → `docs/conventions/container-ops.md`
-- One plain command per Bash call: no loops, heredocs, `$(…)`,
-  `&&`/`;`/`||` chains, or shell variables holding paths — the harness's
-  worktree-isolation guard refuses them (gr456287, ~127/12 h); a chain
-  another driver tolerates is still off-rule (gr514492). Write a script
-  with the Write tool, then run it as one plain command.
+- Prefer one plain command per Bash call. The harness guard refuses what
+  it cannot prove stays inside this tree — anything with git in a
+  loop/pipeline/`$(…)`/chain, `git -C`, a heredoc or program whose text
+  names git, `X=1; cmd "$X"` — and passes some other shapes; do not rely
+  on either (gr456287, gr514492). Write a script with the Write tool,
+  then run it as one plain command. Table:
+  `docs/conventions/container-ops.md` §Refused shapes.
 - Text IO names `encoding="utf-8"` (ruff PLW1514 + AST-walk test; also
   `subprocess(..., text=True)`).
 - MCP handler errors: a call does what its ack says or refuses with a next
@@ -284,9 +302,9 @@ point: the `se-design` skill. Missing one → gripe.
   its own tree as `wt-<tree name>::<qualname>` (git-registered worktrees,
   read-only; Grep if the alias doesn't resolve) — Grep is truth for code
   you changed here. Skill `precis-python-help`. Repo prose the same way:
-  the md kind (`get(kind='md', id='main/docs/backlog/<item>.md')` for the
-  heading outline, `~<heading>` for one section, `search(kind='md', q=...,
-  scope='main/docs/backlog')`) before cat/grep on docs; roots are `main`
+  the md kind (`get(kind='md', id='main/docs/conventions/<name>.md')` for
+  the heading outline, `~<heading>` for one section, `search(kind='md',
+  q=..., scope='main/docs')`) before cat/grep on docs; roots are `main`
   (live main), `repo` (the image checkout) and `wt-<tree name>` (the same
   read-only worktree aliases as the python kind — Grep if the alias doesn't
   resolve). Skill `precis-md-help`.

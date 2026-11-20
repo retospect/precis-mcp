@@ -38,14 +38,14 @@ drains that file into job events (plus one heartbeat per quiet poll) so a
 long sweep no longer reads as stalled (gr549807). ``ssh_node`` claims
 ``limit=1`` and a blocking dispatch held its worker thread for up to an
 hour; the detached job holds none, and ``requires={}`` takes no gpu slot,
-so it may share pollux/spark with seed and aggregate work. ``_dispatch``
+so it may share the GPU compute nodes with seed and aggregate work. ``_dispatch``
 stays as the blocking fallback for an executor build that only knows
 ``dispatch``.
 
 Gas references: the solve, TPD and sweep rebuild the net and call
 ``autocatpath.pipeline.ledger_refs``, which re-measures gas / bare-slab
 energies with the config's MLIP backend. The host therefore needs that
-backend loadable (pollux and spark do). A reference that fails to measure
+backend loadable (the GPU compute nodes do). A reference that fails to measure
 is omitted with a log line and the term falls back to the legacy zero
 bookkeeping — the same behaviour the aggregate and the sweep already have.
 

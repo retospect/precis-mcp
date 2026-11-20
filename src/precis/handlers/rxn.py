@@ -1,6 +1,6 @@
 """RxnHandler — the sourced reaction-fact store (``rxn`` kind).
 
-Design-of-record: ``docs/backlog/reaction-kind-and-synthesis-cost.md``.
+Design-of-record: `me694355`.
 
 The point of this kind is one property, inherited from ``material``: **many
 rows per (reaction, property) is the feature.** Twelve reported yields for one
@@ -34,7 +34,7 @@ in the design doc.
 
 Duplication note: the registry/value machinery is deliberately the ``material``
 shape. Factoring the three copies (material, component, rxn) onto a shared core
-is tracked in ``docs/backlog/codereview-residuals.md`` — doing it
+is tracked in `me690495` — doing it
 here would mean editing two shipped kinds to land a third.
 
 See ``precis-rxn-help``.

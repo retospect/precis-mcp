@@ -4,7 +4,7 @@
 *is* the failure id — but until this module existed it was implicit:
 f-string conventions scattered across a dozen producers, nothing
 enumerable, nothing an agent could ask about by name. This is the
-catalogue (``docs/backlog/alert-failure-id-registry.md``; the model is
+catalogue (`gr690110`; the model is
 PCB DRC's stable rule id + located subject):
 
 * a **rule** is a *source pattern* (``nursery:dead-worker``,
@@ -14,7 +14,7 @@ PCB DRC's stable rule id + located subject):
   The spelling ``<source>/<fingerprint>`` is the addressable id —
   sources never contain ``/`` (enforced in :func:`precis.alerts.raise_alert`),
   fingerprints may (``pass-dead:{host}/{process}/{handler}``,
-  ``caspar:/``), so ``id.split("/", 1)`` round-trips.
+  ``<host>:/``), so ``id.split("/", 1)`` round-trips.
 * :func:`resolve` maps a concrete ``(source, fingerprint)`` to its rule
   by pattern match; ``raise_alert`` stamps the result as ``meta.rule_id``
   on every row it writes, so a raised alert carries its rule.
@@ -399,6 +399,16 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         budget="per probe",
         service="health_digest",
     ),
+    _watchdog(
+        "condition",
+        "llm-tier-regression:{tier}/{rung}",
+        "A ladder offering's weekly gold-set pass rate (passed over "
+        "attempted — errors count) dropped against the last recorded "
+        "run, or a previously-scored offering came back void — model, "
+        "wire or provider drift (a silent model-id swap reads the same).",
+        budget="per probe",
+        service="health_digest",
+    ),
     # ── nursery detectors (workers/nursery.py) ─────────────────────────
     _nursery(
         "spin-loop",
@@ -637,8 +647,11 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "The Claude OAuth credential on a host is expired or unreadable.",
         "critical",
         "quota_check",
-        triage="Re-login on <host> (`claude login`); agent ticks there are "
-        "failing until then.",
+        triage="The vault token CLAUDE_CODE_OAUTH_TOKEN is expired or "
+        "revoked: mint a new one with `claude setup-token` on a machine "
+        "that is logged in and store it with `precis secret set "
+        "CLAUDE_CODE_OAUTH_TOKEN`; do not log in on the worker host. "
+        "Agent ticks there are failing until then.",
     ),
     AlertRule(
         "review:empty:{reviewer}",
@@ -832,6 +845,31 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "run_slice",
         triage="The alert detail carries the refusal's own next step; the "
         "lane probes again after the backoff, and a launch resolves this.",
+    ),
+    AlertRule(
+        "repo_lease",
+        "stale-holder:{repo}/{job_id}",
+        "A job still holds a second repo's land/release lease but its "
+        "deadline passed over 15 minutes ago; the lease is ignored.",
+        "warn",
+        "land_slice",
+        triage="get(kind='job', id=<job_id>): cancel or reap the dead job; "
+        "its terminal status clears the lease row for good.",
+    ),
+    AlertRule(
+        "pin_bump",
+        "stale-open:{todo}",
+        "A pin-bump node is still open over six hours after its release node "
+        "tagged, with no live job (a succeeded pin_bump whose land never "
+        "appeared counts).",
+        "warn",
+        "pin_bump",
+        triage="get(kind='todo', id=<todo>, view='comments'): the pin_bump "
+        "job failed, was never dispatched, handed off a land that never "
+        "ran, or its gate image wait was cancelled (meta.pin_bump.image "
+        "says what it last saw); clear the cause (an ask, a held land, "
+        "scripts/build-image precis-dev on the land host) or move the pin "
+        "by hand and close the node.",
     ),
     AlertRule(
         "lane_health",

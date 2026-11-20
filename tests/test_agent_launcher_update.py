@@ -6,6 +6,7 @@ run a vendor installer, fetch from a remote, or touch the real user's links.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -396,6 +397,11 @@ def test_role_check_mode_reports_and_only_updates_count_as_changed(
         for task in tasks
         if "ansible.builtin.set_fact" in task
     )
+    launcher = next(
+        task
+        for task in tasks
+        if task.get("name", "").startswith("Add the agent-start launcher")
+    )
     operation = next(task for task in tasks if "ansible.builtin.script" in task)
     environment = Environment()
     environment.filters.update(bool=bool, to_json=json.dumps, quote=shlex.quote)
@@ -404,12 +410,16 @@ def test_role_check_mode_reports_and_only_updates_count_as_changed(
         ansible_check_mode=check_mode, agent_cli_mode="update"
     )
     assert effective == ("report" if check_mode else "update")
-    assert (
+    environment.filters["combine"] = lambda a, b: {**a, **b}
+    merged = ast.literal_eval(
         environment.from_string(
-            facts["agent_cli_config"]["launcher"]["checkout"]
-        ).render(agent_cli_launcher_checkout="/configured/stable")
-        == "/configured/stable"
+            launcher["ansible.builtin.set_fact"]["agent_cli_config"]
+        ).render(
+            agent_cli_config={"clis": {}},
+            agent_cli_launcher_checkout="/configured/stable",
+        )
     )
+    assert merged["launcher"] == {"checkout": "/configured/stable"}
     command = environment.from_string(
         operation["ansible.builtin.script"]["cmd"]
     ).render(

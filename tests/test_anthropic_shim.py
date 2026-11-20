@@ -41,7 +41,7 @@ def test_system_folds_into_first_user_turn(shim):
 
 
 def test_gpt_oss_system_goes_out_as_system_message(shim):
-    # castor probe 2026-10-22: a system message called a tool on turn 1 in
+    # cedar probe 2026-10-22: a system message called a tool on turn 1 in
     # 4/5 requests vs 2/5 folded, so gpt-oss defaults to a system message.
     body = {
         "model": "openai/gpt-oss-120b",
@@ -624,7 +624,7 @@ def test_stream_no_tools_turn_streams_through(shim):
 
 # --- salvage: dropped call read back from raw harmony ----------------------------
 #
-# castor 2026-10-22, raw mode (separate_reasoning false, skip_special_tokens
+# cedar 2026-10-22, raw mode (separate_reasoning false, skip_special_tokens
 # false, no_stop_trim): the dropped call came back verbatim in content, with
 # the tool name lowercased.
 

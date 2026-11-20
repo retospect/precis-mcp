@@ -1,6 +1,6 @@
 """Directions — a quest's attempt tree as ``todo`` refs.
 
-Retire-dossier slice 2 (``docs/backlog/retire-dossier.md``): the pinned
+Retire-dossier slice 2 (`me692487`): the pinned
 ledger's attempt tree moves off dossier chunks (``meta.pinned='ledger-node'``
 + ``ATTEMPT:<status>`` chunk tags) onto real todos — a **direction** is a
 todo ``part-of`` the quest (a root) or nested under a direction by

@@ -25,7 +25,7 @@ edge's origin is ``mention`` when the row carries
 age is ``created_at``.
 
 The smell pass is the reviewer's side of the garden detectors
-(``docs/backlog/memory-gardener.md``): computed over the gathered set,
+(`me693812`): computed over the gathered set,
 each finding naming its evidence handles. Nothing is proposed, tagged
 or written — these are observations, never a gate. Thresholds follow
 the 2026-11-05 ``SPACE:repo-dev`` export analysis on the gripe.
@@ -942,7 +942,7 @@ def render_environment(store: Store, ref: Ref, *, hops: int, mermaid: bool) -> R
                     "roll these smells up over a hub scope",
                 ),
                 (
-                    f"get(kind='memory', id={ref.id}, view='fisheye+2hop')",
+                    f"get(kind='memory', id={ref.id}, extent='fisheye+2hop')",
                     "read the prose, not the stats",
                 ),
             ]

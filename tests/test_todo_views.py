@@ -385,6 +385,104 @@ def test_doable_under_wrong_kind_refused(handler: TodoHandler, hub: Hub) -> None
         handler.search(view="doable", args={"under": f"gr{gid}"})
 
 
+# ── q={'under': N} misroute (gr678249) ─────────────────────────────
+
+
+def test_doable_q_dict_under_folds_to_args(handler: TodoHandler) -> None:
+    """gr678249: ``q={'under': N}`` on view='doable' used to drop the
+    filter silently and return the global queue. The dict reads as a
+    misrouted args= — the subtree scope applies and the reading is
+    announced."""
+    root_a_id = _id_of(
+        handler.put(text="Strategic A.", meta={"rotation_root": True}).body
+    )
+    handler.put(text="A leaf.", parent_id=root_a_id)
+    root_b_id = _id_of(
+        handler.put(text="Strategic B.", meta={"rotation_root": True}).body
+    )
+    handler.put(text="B leaf.", parent_id=root_b_id)
+    q_dict: Any = {"under": root_a_id}
+    out = handler.search(view="doable", q=q_dict)
+    assert out.body.startswith(f"interpreted: q={{'under': {root_a_id}}}")
+    assert "A leaf." in out.body
+    assert "B leaf." not in out.body
+
+
+def test_doable_q_json_string_under_folds_to_args(handler: TodoHandler) -> None:
+    """The wire shape: ``_coerce_str_arg`` re-serializes a dict q= to
+    the JSON string before dispatch — it decodes to the same reading."""
+    root_a_id = _id_of(
+        handler.put(text="Strategic A.", meta={"rotation_root": True}).body
+    )
+    handler.put(text="A leaf.", parent_id=root_a_id)
+    root_b_id = _id_of(
+        handler.put(text="Strategic B.", meta={"rotation_root": True}).body
+    )
+    handler.put(text="B leaf.", parent_id=root_b_id)
+    out = handler.search(view="doable", q=f'{{"under": {root_a_id}}}')
+    assert "interpreted:" in out.body
+    assert "A leaf." in out.body
+    assert "B leaf." not in out.body
+
+
+def test_doable_under_via_q_dict_search_verb(
+    runtime_with_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr678249's exact repro through the ``search`` verb itself — the
+    dict q= arrives re-serialized and still scopes the subtree."""
+    from precis.tools import core
+
+    rt = runtime_with_store
+    monkeypatch.setattr(core, "_get_runtime", lambda: rt)
+    h = rt.hub.handler_for("todo")
+    root_a_id = _id_of(h.put(text="Strategic A.", meta={"rotation_root": True}).body)
+    h.put(text="A1 leaf.", parent_id=root_a_id)
+    root_b_id = _id_of(h.put(text="Strategic B.", meta={"rotation_root": True}).body)
+    h.put(text="B1 leaf.", parent_id=root_b_id)
+    out = core.search(kind="todo", view="doable", q={"under": root_a_id})
+    body = out if isinstance(out, str) else str(out)
+    assert "A1 leaf." in body
+    assert "B1 leaf." not in body
+
+
+def test_doable_q_dict_unknown_key_refused(handler: TodoHandler) -> None:
+    """A q= dict key that is no declared args= key refuses like a
+    nested args= key — no silent drop."""
+    from precis.errors import BadInput
+
+    q_dict: Any = {"bogus": 1}
+    with pytest.raises(BadInput, match="not accepted by todo.search"):
+        handler.search(view="doable", q=q_dict)
+
+
+def test_doable_q_dict_and_args_under_disagree(handler: TodoHandler) -> None:
+    from precis.errors import BadInput
+
+    q_dict: Any = {"under": 1}
+    with pytest.raises(BadInput, match="disagree"):
+        handler.search(view="doable", q=q_dict, args={"under": 2})
+
+
+def test_args_under_on_non_doable_view_refused(handler: TodoHandler) -> None:
+    """``args={'under': N}`` on a view that never read it used to be
+    dropped silently — refuse like the under= kwarg already does."""
+    from precis.errors import BadInput
+
+    for view in ("active", None):
+        with pytest.raises(BadInput, match="requires view='doable'"):
+            handler.search(view=view, args={"under": 1})
+
+
+def test_q_dict_under_on_non_doable_view_refused(handler: TodoHandler) -> None:
+    """``q={'under': N}`` folds to args= first, so a non-doable view
+    gets the same refusal as the args= spelling."""
+    from precis.errors import BadInput
+
+    q_dict: Any = {"under": 1}
+    with pytest.raises(BadInput, match="requires view='doable'"):
+        handler.search(view="active", q=q_dict)
+
+
 # ── view='waiting' ────────────────────────────────────────────────
 
 
@@ -821,7 +919,12 @@ def test_get_view_meta_in_unknown_view_options(handler: TodoHandler) -> None:
     with pytest.raises(Unsupported) as exc:
         handler.get(id=rid, view="metta")
     assert "meta" in (exc.value.options or [])
-    assert "view='meta'" in (exc.value.next or "")
+    # gr613469: next is a list — the corrected call leads, the prose
+    # follows; either may carry the view='meta' spelling.
+    next_text = " ".join(
+        [exc.value.next] if isinstance(exc.value.next, str) else (exc.value.next or [])
+    )
+    assert "view='meta'" in next_text
 
 
 # ── gr547804: get view aliases and the unknown-view vocabulary ─────
@@ -838,6 +941,17 @@ def test_get_view_brief_and_tags_read_as_the_card(handler: TodoHandler) -> None:
         assert f"interpreted: view={view!r} read as the default view" in body
         assert "Tagged todo." in body
         assert "project:x" in body
+
+
+def test_get_view_status_reads_as_the_card(handler: TodoHandler) -> None:
+    todo_id = _id_of(handler.put(text="Check todo status.").body)
+    handler.tag(id=todo_id, add=["STATUS:doing"])
+    plain = handler.get(id=todo_id)
+    assert "STATUS:doing" in plain.body
+    status = handler.get(id=todo_id, view="status")
+    assert status.body == (
+        "interpreted: view='status' read as the default view\n" + plain.body
+    )
 
 
 def test_get_unknown_view_names_the_todo_get_views(handler: TodoHandler) -> None:
@@ -887,6 +1001,7 @@ def test_get_every_served_view_still_serves(handler: TodoHandler) -> None:
         "full",
         "brief",
         "tags",
+        "status",
         # Todo's own get views.
         "comments",
         "tree",
@@ -1522,3 +1637,14 @@ def test_direction_todos_not_in_open_todo_servers(
     m = quest_momentum(store, qid)
     assert dir_id in direction_ref_ids(store, qid)
     assert m.open_todo_servers == 0
+
+
+def test_recent_lists_handles(store: Store) -> None:
+    from precis.dispatch import Hub
+    from precis.handlers.todo import TodoHandler
+
+    h = TodoHandler(hub=Hub(store=store))
+    h.put(text="recent handle probe")
+    body = h.get(id="/recent").body
+    rows = [ln.strip() for ln in body.splitlines() if "recent handle probe" in ln]
+    assert rows and rows[0].startswith("td"), body

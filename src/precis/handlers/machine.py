@@ -49,7 +49,7 @@ Linkable like every other slug kind: ``link(kind='job', id=…,
 target='machine:ma_<host>')`` resolves through the normal link-target
 path — no new relation. Capability sourcing (deploy config,
 service_config, worker lanes) is slice 2 — see
-``docs/backlog/machine-capabilities.md``.
+`gr692107`.
 """
 
 from __future__ import annotations
@@ -268,6 +268,8 @@ class MachineHandler(Handler):
         q: str | None = None,
         rel: str | None = None,
         of_kind: str | None = None,
+        limit: Any = None,
+        cursor: str | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None:
@@ -313,6 +315,8 @@ class MachineHandler(Handler):
                 sense="machine",
                 rel=rel,
                 of_kind=of_kind,
+                limit=limit,
+                cursor=cursor,
             )
         ref = self._resolve_ref(id)
         hb = self._heartbeat_map().get((ref.meta or {}).get("host", ""))

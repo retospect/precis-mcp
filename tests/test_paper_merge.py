@@ -433,3 +433,89 @@ class TestMergeDispatch:
         # Neither ref got folded by accident.
         assert not _is_retired(store, survivor)
         assert not _is_retired(store, other)
+
+
+class TestIdentifierCollisionPointer:
+    """gr634191: a live identifier collision's ``next=`` is the
+    paste-ready ``merge_into`` call — not a web-UI chore."""
+
+    def test_identifier_collision_points_at_merge_into(self, store: Store) -> None:
+        owner = _seed_paper(store, "collowner2040", year=2020)
+        other = _seed_paper(store, "collother2040", year=2020)
+        store.set_ref_identifier(owner, "doi", "10.1234/coll.2040", source="test")
+        with pytest.raises(BadInput, match="already belongs") as exc:
+            store.set_ref_identifier(other, "doi", "10.1234/coll.2040", source="test")
+        nxt = str(exc.value.next)
+        assert "merge_into" in nxt
+        assert f"pa{owner}" in nxt
+        assert "web" not in nxt
+
+    def test_identical_short_title_refusal_names_missing_leg(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """An identical-title ``short-title`` refusal names the waiver
+        leg that failed — the missing first author, and the ``edit``
+        that supplies it."""
+        loser = _seed_paper(
+            store, "legloser2005", title="The rise of graphene", year=2004
+        )
+        winner = _seed_paper(
+            store, "legwinner2005", title="The rise of graphene", year=2004
+        )
+        with pytest.raises(BadInput, match="short-title") as exc:
+            _call(handler, loser, winner)
+        msg = str(exc.value)
+        assert "no first author" in msg
+        assert f"pa{loser}" in msg and f"pa{winner}" in msg
+        assert "authors" in str(exc.value.next)
+        assert not _is_retired(store, loser)
+
+        # The year leg names its handle the same way.
+        loser2 = _seed_paper(
+            store,
+            "legloser2006",
+            title="The rise of graphene",
+            year=2004,
+            authors=[{"family": "Novoselov"}],
+        )
+        winner2 = _seed_paper(
+            store,
+            "legwinner2006",
+            title="The rise of graphene",
+            authors=[{"family": "Novoselov"}],
+        )
+        with pytest.raises(BadInput, match="short-title") as exc2:
+            _call(handler, loser2, winner2)
+        msg2 = str(exc2.value)
+        assert "year unknown" in msg2 and f"pa{winner2}" in msg2
+        assert "year=" in str(exc2.value.next)
+
+    def test_under_token_floor_describes_limit_not_retire(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Review fix: a fully-populated identical pair below the
+        waiver's 2-content-token floor still refuses — no field edit
+        lifts the gate — but the hint must describe the limitation and
+        name the human merge door, never ``retire`` (a retire folds
+        nothing and leaves no supersede redirect)."""
+        loser = _seed_paper(
+            store,
+            "floorloser2007",
+            title="In Memoriam",
+            year=2004,
+            authors=[{"family": "Novoselov"}],
+        )
+        winner = _seed_paper(
+            store,
+            "floorwinner2007",
+            title="In Memoriam",
+            year=2004,
+            authors=[{"family": "Novoselov"}],
+        )
+        with pytest.raises(BadInput, match="short-title") as exc:
+            _call(handler, loser, winner)
+        assert "token floor" in str(exc.value)
+        nxt = str(exc.value.next)
+        assert "retire" not in nxt
+        assert "human" in nxt
+        assert not _is_retired(store, loser)

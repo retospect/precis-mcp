@@ -53,6 +53,39 @@ def test_a_corrective_for_a_land_inside_the_release_targets_its_branch(
     assert pd._release_scope_target(store, []) is None
 
 
+def test_a_corrective_for_a_main_commit_the_branch_repeats_targets_its_branch(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mint = _cut(store)
+    x, m = "a" * 40, "b" * 40
+    monkeypatch.setattr(release_poll, "_open_pass_id", lambda store: mint.root_id)
+    monkeypatch.setattr(
+        release_poll,
+        "_release_lands",
+        lambda rel: [
+            release_poll._GitLand(
+                sha=x,
+                subject="",
+                committed_at=None,
+                paths=("src/precis/plans/release.py",),
+                branch_only=True,
+            )
+        ],
+    )
+    main_land = release_poll._GitLand(
+        sha=m, subject="", committed_at=None, paths=("src/precis/plans/release.py",)
+    )
+    monkeypatch.setattr(
+        release_poll, "_branch_carries", lambda rel, lands: ({x: main_land}, set(), [])
+    )
+    assert pd._release_scope_target(store, [m[:12]]) == "release/r7"
+    # Control: with nothing picked, M is outside the release's scope.
+    monkeypatch.setattr(
+        release_poll, "_branch_carries", lambda rel, lands: ({}, set(), [])
+    )
+    assert pd._release_scope_target(store, [m[:12]]) is None
+
+
 def test_a_started_deploy_sends_the_corrective_to_main(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -146,20 +179,38 @@ class _Ctx:
 
 
 @pytest.mark.parametrize(
-    ("log", "cleared"),
+    ("log", "exit_code", "cleared"),
     [
-        ("backup-window guard refused this deploy — no host was touched.", True),
-        ("rollout failed on worker-b", False),
+        ("backup-window guard refused this deploy — no host was touched.", 1, True),
+        ("rollout failed on worker-b", 1, False),
+        # gr730609: the exit code alone says no host was touched.
+        (
+            "install-from-tree: no overlay — this checkout's deploy/inventory is empty",
+            75,
+            True,
+        ),
+        (
+            "install-from-tree: no overlay — this checkout's deploy/inventory is empty",
+            1,
+            False,
+        ),
     ],
+    ids=["window-text", "rollout-failed", "exit-75-no-text", "same-text-exit-1"],
 )
 def test_a_deploy_refused_before_any_host_clears_the_deploy_start(
-    store: Store, monkeypatch: pytest.MonkeyPatch, log: str, cleared: bool
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    log: str,
+    exit_code: int,
+    cleared: bool,
 ) -> None:
     mint = _cut(store)
     deploy = mint.ids["deploy"]
     R.mark_deploy_started(store, deploy)
     assert R.deploy_started(store, deploy) is not None
-    monkeypatch.setattr(rd._rc, "finish_run", lambda ctx, handle, name: (1, log))
+    monkeypatch.setattr(
+        rd._rc, "finish_run", lambda ctx, handle, name: (exit_code, log)
+    )
     monkeypatch.setattr(
         rd._rc, "fail_with_tail", lambda ctx, msg, tail: ctx.failures.append(msg)
     )
@@ -167,3 +218,65 @@ def test_a_deploy_refused_before_any_host_clears_the_deploy_start(
     assert rd.poll(ctx, {"pid": 1}) is True
     assert ctx.failures
     assert (R.deploy_started(store, deploy) is None) is cleared
+
+
+# ── gr697664: a backup-window refusal burns no retry attempt ──────────
+
+
+@pytest.mark.parametrize(
+    ("log", "exit_code", "attempts"),
+    [
+        (
+            "backup-window guard refused this deploy (see above) — no host was touched.",
+            1,
+            0,
+        ),
+        (
+            "overlay sync refused this deploy (see above) — no host was touched.",
+            1,
+            1,
+        ),
+        ("rollout failed on worker-b", 1, 1),
+        # gr730609: exit 75 with other wording is not attempt-free.
+        (
+            "install-from-tree: no overlay — this checkout's deploy/inventory is empty",
+            75,
+            1,
+        ),
+    ],
+    ids=["window", "overlay-sync", "rollout-failed", "exit-75-other-wording"],
+)
+def test_a_window_refusal_leaves_the_retry_budget_unchanged(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    log: str,
+    exit_code: int,
+    attempts: int,
+) -> None:
+    from precis.workers._mint import mint_background_job
+
+    mint = _cut(store)
+    deploy = mint.ids["deploy"]
+    with store.tx() as conn:
+        job = mint_background_job(
+            store,
+            conn=conn,
+            job_type="release_deploy",
+            executor="ssh_node",
+            title="release_deploy",
+            params={"todo_id": deploy},
+            parent_id=deploy,
+            status="failed",
+        )
+    monkeypatch.setattr(
+        rd._rc, "finish_run", lambda ctx, handle, name: (exit_code, log)
+    )
+    monkeypatch.setattr(rd._rc, "fail_with_tail", lambda ctx, msg, tail: None)
+
+    class _JobCtx(_Ctx):
+        def set_meta(self, **kw: Any) -> None:
+            store.stamp_ref_meta(job.id, kw)
+
+    assert rd.poll(_JobCtx(store, deploy), {"pid": 1}) is True
+    plan = pd._load(store)
+    assert pd._attempts(plan, plan.nodes[deploy]) == attempts

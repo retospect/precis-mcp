@@ -8,6 +8,12 @@ private notes do not enter shared ref, tool-result or mastery ledgers.
 ``LearningPrivacyMiddleware`` sits outside the Basic gate, giving even an
 authentication or validation refusal the page's no-store policy. The existing
 Basic gate also checks Origin/Referer before any state-changing request.
+
+The page's *current context* panel (gr664414) reuses the card forge's grouping
+(``precis_web.routes.anki._forge_groups``): this login's live forge-authored
+cards grouped by their ``represents`` concept. That read is owner-scoped by
+``refs.owner_login`` and never touches the private learning ledger; the card
+writes it offers (drop / known / boost) are the ``/anki`` routes' own.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ from precis.user_context import user_scope
 from precis.users import WebUser
 from precis_web.auth import current_user
 from precis_web.deps import get_store, templates
+from precis_web.routes.anki import _forge_groups
 
 router = APIRouter(prefix="/learning", tags=["learning"])
 _NO_STORE = {"Cache-Control": "no-store"}
@@ -97,6 +104,7 @@ def _refusal(request: Request, detail: str, status: int) -> HTMLResponse:
 def _render(
     request: Request,
     *,
+    user: WebUser,
     event: str = "",
     error: str = "",
     notice: str = "",
@@ -105,6 +113,11 @@ def _render(
     learning = LearningStore(get_store(request))
     settings = learning.settings()
     activity = learning.activity(days=84)
+    # Live forge cards as the page's "current context" (gr664414): owned,
+    # non-retired anki refs grouped by concept — the same grouping /anki
+    # renders, scoped to this login. Cards carry no private learning data,
+    # and the panel's per-row writes go to the /anki routes.
+    groups = _forge_groups(get_store(request), user.login)
     selected = None
     if event:
         try:
@@ -122,6 +135,7 @@ def _render(
             "active_tab": "learning",
             "settings": settings,
             "activity": activity,
+            "groups": groups,
             "selected": selected,
             "timezones": timezone_choices(settings.timezone),
             "error": error,
@@ -172,7 +186,10 @@ def _page(request: Request, user: WebUser) -> HTMLResponse:
                 "settings": "Learning preferences saved.",
             }.get(saved, "")
             return _render(
-                request, event=request.query_params.get("event", ""), notice=notice
+                request,
+                user=user,
+                event=request.query_params.get("event", ""),
+                notice=notice,
             )
         except (BadInput, Denied, NotFound) as exc:
             return _refusal(request, str(exc), _error_status(exc))

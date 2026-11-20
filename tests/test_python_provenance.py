@@ -801,3 +801,262 @@ def test_aliases_of_mutable_root_keep_independent_file_snapshots(
     assert old_digest[:8] in one_block and new_digest[:8] not in one_block
     assert new_digest[:8] in two_block and old_digest[:8] not in two_block
     assert "one::m.hello" in body and "two::m.changed_name" in body
+
+
+# ── dependency-pin comparison (gr569538) ────────────────────────────────
+
+
+def _pinned_root(root: Path, package: str = "fixturepkg") -> None:
+    """A git checkout providing ``package``: one module + a pyproject."""
+    _git(root, "init")
+    _git(root, "config", "user.name", "Fixture")
+    _git(root, "config", "user.email", "fixture@example.invalid")
+    _source(root)
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "{package}"\nversion = "0.0.1"\n', encoding="utf-8"
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "fixture")
+
+
+def _pin_file(tmp_path: Path, body: str) -> Path:
+    pin_dir = tmp_path / "pinning-project"
+    pin_dir.mkdir(exist_ok=True)
+    pyproject = pin_dir / "pyproject.toml"
+    pyproject.write_text(body, encoding="utf-8")
+    return pyproject
+
+
+@pytest.fixture
+def _isolate_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = tmp_path / "isolated.gitconfig"
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
+    if shutil.which("git") is None:
+        pytest.skip("Git not installed")
+
+
+def test_pin_mismatch_loud_on_summary_and_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_git: None
+) -> None:
+    """gr569538: a mounted checkout at a stale rev must not read as the
+    pinned engine — the provenance line names the mismatch."""
+    root = tmp_path / "root"
+    root.mkdir()
+    _pinned_root(root)
+    head = _git(root, "rev-parse", "HEAD")
+    pinned = "0" * 40
+    pin = _pin_file(
+        tmp_path,
+        '[tool.uv.sources]\nfixturepkg = { git = "https://example.invalid/r", '
+        f'rev = "{pinned}" }}\n',
+    )
+    monkeypatch.setenv(provenance.PIN_PYPROJECT_ENV, str(pin))
+    handler = _handler(root)
+    line = next(ln for ln in handler.get(id="r").body.splitlines() if "checkout:" in ln)
+    assert "PIN MISMATCH fixturepkg" in line
+    assert head[:8] in line
+    detail = handler.get(id="r", view="provenance").body
+    assert "verdict=MISMATCH" in detail
+    assert "index does not reflect the pinned engine" in detail
+    assert head in detail and pinned[:12] in detail
+
+
+@pytest.mark.parametrize("pinlen", [40, 12])
+def test_pin_match_silent_in_summary_named_in_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_git: None, pinlen: int
+) -> None:
+    """A matching rev pin (full or short sha) stays off the one-line
+    summary; the drill-down records that the check ran and matched."""
+    root = tmp_path / "root"
+    root.mkdir()
+    _pinned_root(root)
+    head = _git(root, "rev-parse", "HEAD")
+    pin = _pin_file(
+        tmp_path,
+        '[tool.uv.sources]\nfixturepkg = { git = "https://example.invalid/r", '
+        f'rev = "{head[:pinlen]}" }}\n',
+    )
+    monkeypatch.setenv(provenance.PIN_PYPROJECT_ENV, str(pin))
+    handler = _handler(root)
+    assert "PIN" not in handler.get(id="r").body
+    detail = handler.get(id="r", view="provenance").body
+    assert "verdict=match" in detail
+    assert f"pinned rev '{head[:pinlen]}'" in detail
+
+
+def test_pin_tag_resolves_in_local_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_git: None
+) -> None:
+    """A tag pin resolves through the checkout's own refs: HEAD at the
+    tag matches, a moved HEAD mismatches, an unknown tag is UNVERIFIED."""
+    root = tmp_path / "root"
+    root.mkdir()
+    _pinned_root(root)
+    _git(root, "tag", "-a", "-m", "v1", "v1.0.0")
+    pin = _pin_file(
+        tmp_path,
+        '[tool.uv.sources]\nfixturepkg = { git = "https://example.invalid/r", '
+        'tag = "v1.0.0" }\n',
+    )
+    monkeypatch.setenv(provenance.PIN_PYPROJECT_ENV, str(pin))
+    handler = _handler(root)
+    assert "verdict=match" in handler.get(id="r", view="provenance").body
+    _source(root, "def hello(): return 2\n")
+    _git(root, "commit", "-am", "move")
+    assert "PIN MISMATCH fixturepkg" in handler.get(id="r").body
+    _git(root, "tag", "-d", "v1.0.0")
+    assert "pin fixturepkg UNVERIFIED" in handler.get(id="r").body
+
+
+def test_pin_branch_verifies_commit_identity_not_branch_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_git: None
+) -> None:
+    """A branch pin names remote lineage: sitting on the named branch is
+    not verification (a stale commit on that branch must not read as
+    match). Commit identity comes from the clone's remote-tracking refs;
+    without one the verdict is UNVERIFIED, and a HEAD off the recorded
+    remote head is MISMATCH."""
+    root = tmp_path / "root"
+    root.mkdir()
+    _pinned_root(root)
+    head = _git(root, "rev-parse", "HEAD")
+    pin = _pin_file(
+        tmp_path,
+        '[tool.uv.sources]\nfixturepkg = { git = "https://example.invalid/r", '
+        'branch = "release" }\n',
+    )
+    monkeypatch.setenv(provenance.PIN_PYPROJECT_ENV, str(pin))
+    handler = _handler(root)
+    _git(root, "checkout", "-b", "release")
+    assert "pin fixturepkg UNVERIFIED" in handler.get(id="r").body
+    detail = handler.get(id="r", view="provenance").body
+    assert "verdict=UNVERIFIED" in detail and "remote head" in detail
+    # A fetched remote head for the pinned branch establishes identity.
+    _git(root, "update-ref", "refs/remotes/origin/release", head)
+    detail = handler.get(id="r", view="provenance").body
+    assert "verdict=match" in detail
+    assert "refs/remotes/origin/release" in detail
+    # HEAD moved past the recorded remote head: mismatch, on-branch or not.
+    _source(root, "def hello(): return 2\n")
+    _git(root, "commit", "-am", "move")
+    assert "PIN MISMATCH fixturepkg" in handler.get(id="r").body
+    moved = _git(root, "rev-parse", "HEAD")
+    _git(root, "checkout", "--detach", "HEAD")
+    assert "PIN MISMATCH fixturepkg" in handler.get(id="r").body
+    # Two remote-tracking refs in agreement still verify; in conflict
+    # the verdict falls back to UNVERIFIED rather than picking one.
+    _git(root, "update-ref", "refs/remotes/origin/release", moved)
+    _git(root, "update-ref", "refs/remotes/upstream/release", moved)
+    assert "verdict=match" in handler.get(id="r", view="provenance").body
+    _git(root, "update-ref", "refs/remotes/upstream/release", head)
+    assert "pin fixturepkg UNVERIFIED" in handler.get(id="r").body
+
+
+def test_pin_branch_matches_complete_branch_path_after_remote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_git: None
+) -> None:
+    """Review td663785: the pin must equal the whole branch path after
+    the remote component. ``refs/remotes/origin/feature/release`` is
+    ``origin``'s ``feature/release`` head — suffix matching let a
+    ``release`` pin borrow it and report a false match; a slashed pin
+    still resolves by its complete path."""
+    root = tmp_path / "root"
+    root.mkdir()
+    _pinned_root(root)
+    head = _git(root, "rev-parse", "HEAD")
+    pin = _pin_file(
+        tmp_path,
+        '[tool.uv.sources]\nfixturepkg = { git = "https://example.invalid/r", '
+        'branch = "release" }\n',
+    )
+    monkeypatch.setenv(provenance.PIN_PYPROJECT_ENV, str(pin))
+    handler = _handler(root)
+    _git(root, "update-ref", "refs/remotes/origin/feature/release", head)
+    # The only remote-tracking ref names a different branch.
+    assert "pin fixturepkg UNVERIFIED" in handler.get(id="r").body
+    detail = handler.get(id="r", view="provenance").body
+    assert "no remote-tracking ref for branch 'release'" in detail
+    # A slashed pin still verifies against its complete path.
+    pin.write_text(
+        '[tool.uv.sources]\nfixturepkg = { git = "https://example.invalid/r", '
+        'branch = "feature/release" }\n',
+        encoding="utf-8",
+    )
+    detail = handler.get(id="r", view="provenance").body
+    assert "verdict=match" in detail
+    assert "refs/remotes/origin/feature/release" in detail
+
+
+def test_pinning_pyproject_finds_project_above_venv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wheel install lives at ``<proj>/.venv/lib/pythonX/site-packages/
+    precis`` — deeper than the generic walk reaches from the package dir.
+    Discovery locates the venv root by ``pyvenv.cfg`` and continues the
+    pyproject search above it."""
+    import precis
+
+    project = tmp_path / "proj"
+    venv = project / ".venv"
+    pkg = venv / "lib" / "python3.12" / "site-packages" / "precis"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (venv / "pyvenv.cfg").write_text("home = /somewhere\n", encoding="utf-8")
+    pyproject = project / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "precis"\n', encoding="utf-8")
+    monkeypatch.setattr(precis, "__file__", str(pkg / "__init__.py"))
+    assert provenance._pinning_pyproject() == pyproject
+    pyproject.unlink()
+    assert provenance._pinning_pyproject() is None
+
+
+def test_pin_unpinned_unchecked_and_missing_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_git: None
+) -> None:
+    """No git pin for the package, no package name at the root, and no
+    pinning pyproject at all each get an honest — and quiet — verdict."""
+    root = tmp_path / "root"
+    root.mkdir()
+    _pinned_root(root)
+    pin = _pin_file(tmp_path, "[tool.uv.sources]\nother = { git = 'x' }\n")
+    monkeypatch.setenv(provenance.PIN_PYPROJECT_ENV, str(pin))
+    handler = _handler(root)
+    detail = handler.get(id="r", view="provenance").body
+    assert "no git pin" in detail and "PIN MISMATCH" not in detail
+    (root / "pyproject.toml").unlink()
+    assert "Pin: unchecked" in handler.get(id="r", view="provenance").body
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "fixturepkg"\nversion = "0.0.1"\n', encoding="utf-8"
+    )
+    monkeypatch.setenv(provenance.PIN_PYPROJECT_ENV, str(tmp_path / "nonexistent.toml"))
+    assert "no pinning pyproject" in handler.get(id="r", view="provenance").body
+    assert "PIN" not in handler.get(id="r").body
+
+
+def test_pin_direct_git_requirement_and_head_unobserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_git: None
+) -> None:
+    """A ``pkg @ git+url@ref`` requirement pins like ``rev``; an
+    unobserved HEAD reports UNVERIFIED rather than guessing."""
+    root = tmp_path / "root"
+    root.mkdir()
+    _pinned_root(root)
+    head = _git(root, "rev-parse", "HEAD")
+    pin = _pin_file(
+        tmp_path,
+        "[project]\ndependencies = [\n"
+        f'    "fixturepkg @ git+https://example.invalid/r@{head}",\n'
+        "]\n",
+    )
+    monkeypatch.setenv(provenance.PIN_PYPROJECT_ENV, str(pin))
+    handler = _handler(root)
+    assert "verdict=match" in handler.get(id="r", view="provenance").body
+    monkeypatch.setattr(
+        provenance, "_observe_git", lambda *a, **k: provenance.GitFacts()
+    )
+    assert "pin fixturepkg UNVERIFIED (indexed HEAD unobserved)" in (
+        handler.get(id="r").body
+    )

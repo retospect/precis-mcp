@@ -17,7 +17,7 @@ This module is that plumbing, once:
   a numeric id, a slug, a universal handle or a ``slug~ord`` chunk selector
   (the shape the dispatcher rewrites a ``pc<id>`` handle into). Refuses,
   with one sentence each, the kinds that have no graph node to focus: the
-  codeless providers (``web``, ``calc``, …), the file-backed kinds
+  codeless providers (``calc``, ``math``, …), the file-backed kinds
   (``python``, ``md``) and ``tag``; and a whole draft/plan, whose eye is a
   section handle.
 - :func:`eye_response` — the render, with the renderer's ``ValueError``
@@ -35,7 +35,11 @@ well, so a direct handler call and the MCP door render the same thing.
 ``skill`` is the one kind whose eye is not refs-backed: ``sk:<slug>`` renders
 straight from the skill corpus (no spatial neighborhood — a file has no
 corpus position; its ring is the derived ``[[slug]]`` wikilink graph), which
-the renderer already handles by prefix.
+the renderer already handles by prefix. ``SkillHandler`` overrides ``eye``
+so a ``<wt-alias>/<slug>`` id renders its tree's corpus (gr541511): it
+resolves the worktree registry itself and passes the ``{slug: raw}`` map
+through as ``corpus``; served aliases and the read-scope write fence are
+honoured inside the renderer.
 """
 
 from __future__ import annotations
@@ -118,6 +122,17 @@ def _chunk_handle_for_ord(store: Store, kind: str, ref_id: int, ord_: int) -> st
             f"{kind} chunk ~{ord_} not found on {rec}",
             next=f"get(kind='{kind}', id='{rec}') lists the current chunk ords",
         )
+    if handle_registry.try_format(kind, 0, chunk=True) is None:
+        # The chunk exists but mints no handle (memory, the gr702962
+        # cache kinds — records coded, chunks not): a ``~<ord>`` selector
+        # has no eye node to focus. Without this the format_handle below
+        # raised a bare KeyError.
+        rec = handle_registry.format_handle(kind, ref_id)
+        raise BadInput(
+            f"kind={kind!r} chunks carry no handle — an eye focuses the "
+            f"whole ref {rec}",
+            next=f"get(kind={kind!r}, id='{rec}', extent='fisheye+1hop')",
+        )
     return handle_registry.format_handle(kind, int(row[0]), chunk=True)
 
 
@@ -127,7 +142,7 @@ def _resolve_ref_id(store: Store, kind: str, ident: str) -> int:
     parsed = handle_registry.parse(ident)
     if parsed is not None and parsed[0] == kind and not parsed[1]:
         ref = store.get_ref(kind=kind, id=parsed[2])
-    elif ident.isdigit():
+    elif ident.isdecimal():
         ref = store.get_ref(kind=kind, id=int(ident))
     if ref is None:
         ref = store.get_ref(kind=kind, id=ident)
@@ -193,7 +208,8 @@ def eye_handle(
         return handle_registry.normalize(base)
     ref_id = _resolve_ref_id(store, kind, base)
     if sep:
-        if not ord_s.strip().lstrip("-").isdigit():
+        ordinal = ord_s.strip().removeprefix("-")
+        if not ordinal.isdecimal():
             if kind in ("structure", "se"):
                 # The spatial eyes consume ``~<focus>`` in their own eye()
                 # overrides before this path; a miss that lands here still

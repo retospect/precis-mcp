@@ -13,7 +13,7 @@ the fcc metals here.
 These six are the *only* metals vendored: they are the ones the surrounding
 autocatpath/EMT toolchain already treats as its standard set (real
 effective-medium-theory support: Ni/Cu/Pd/Ag/Pt/Au — see
-`docs/backlog/estimate-kind-ms-chemistry-workup.md` "Toolbox"), and the only
+me690660 "Toolbox"), and the only
 ones this author holds with high confidence to the specific published
 digit. Per the design doc's own instruction — omit rather than guess — every
 other transition metal (Fe, Co, Ru, Rh, Ir, Ti, ... ) is deliberately left

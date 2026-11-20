@@ -213,10 +213,10 @@ class TestLoopParams:
         assert target_node is None
 
     def test_env_sets_target_node(self, store: Store, monkeypatch: Any) -> None:
-        monkeypatch.setenv("PRECIS_QUEST_LOOP_NODE", "melchior")
+        monkeypatch.setenv("PRECIS_QUEST_LOOP_NODE", "maple")
         q = _mk_quest(store, "A striving")
         _tier, target_node = loop_mod._loop_params(store, q)
-        assert target_node == "melchior"
+        assert target_node == "maple"
 
     def test_empty_env_reads_as_unset(self, store: Store, monkeypatch: Any) -> None:
         monkeypatch.setenv("PRECIS_QUEST_LOOP_NODE", "")
@@ -227,16 +227,16 @@ class TestLoopParams:
     def test_quest_meta_override_wins_over_env(
         self, store: Store, monkeypatch: Any
     ) -> None:
-        monkeypatch.setenv("PRECIS_QUEST_LOOP_NODE", "melchior")
+        monkeypatch.setenv("PRECIS_QUEST_LOOP_NODE", "maple")
         q = _mk_quest(store, "A striving")
         with store.pool.connection() as conn:
             conn.execute(
                 "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
-                (Jsonb({"loop": {"target_node": "caspar"}}), q),
+                (Jsonb({"loop": {"target_node": "birch"}}), q),
             )
             conn.commit()
         _tier, target_node = loop_mod._loop_params(store, q)
-        assert target_node == "caspar"
+        assert target_node == "birch"
 
 
 class TestEnsureQuestLoop:
@@ -288,7 +288,7 @@ class TestEnsureQuestLoop:
             conn.execute(
                 "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
                 (
-                    Jsonb({"loop": {"tier": "frontier", "target_node": "melchior"}}),
+                    Jsonb({"loop": {"tier": "frontier", "target_node": "maple"}}),
                     q,
                 ),
             )
@@ -299,7 +299,7 @@ class TestEnsureQuestLoop:
         assert job_id is not None
         meta = _job_meta(store, job_id)
         assert meta["params"]["tier"] == "frontier"
-        assert meta["params"]["target_node"] == "melchior"
+        assert meta["params"]["target_node"] == "maple"
 
     def test_never_raises_on_a_bad_quest_id(self, store: Store) -> None:
         job_id, created = loop_mod.ensure_quest_loop(store, -1)
@@ -520,7 +520,7 @@ class TestReapOrphanedLoop:
         only wake_runner's re-queue did). On a rotation-starved host the
         wake sits far past the 600 s grace, so parked jobs matched
         (b) expired lease + (c) no fresh chunk and were cancelled
-        mid-campaign — 27 quest_tick jobs in 24 h on melchior. A
+        mid-campaign — 27 quest_tick jobs in 24 h on maple. A
         ``waiting_*`` status means "parked, no claim held": the lease
         residue is not a dead claimant, and the job's liveness is the
         wake_runner's, so the orphan arm must not apply at all."""

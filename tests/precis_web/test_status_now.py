@@ -34,7 +34,7 @@ def test_now_hosts_reads_running_and_idle_activity_from_heartbeat_meta(
         conn.execute(
             """
             INSERT INTO host_heartbeat (host, ts, load1, meta)
-            VALUES ('melchior-now', now(), 0.5, %s::jsonb)
+            VALUES ('maple-now', now(), 0.5, %s::jsonb)
             """,
             (
                 '{"activity": {'
@@ -48,7 +48,7 @@ def test_now_hosts_reads_running_and_idle_activity_from_heartbeat_meta(
         conn.commit()
 
     hosts = {h["host"]: h for h in _now_hosts(store)}
-    row = hosts["melchior-now"]
+    row = hosts["maple-now"]
     by_process = {p["process"]: p for p in row["processes"]}
 
     running = by_process["precis-worker"]
@@ -66,11 +66,11 @@ def test_now_hosts_handles_no_activity_key(store: Any) -> None:
     with store.pool.connection() as conn:
         conn.execute(
             "INSERT INTO host_heartbeat (host, ts, load1, meta) "
-            "VALUES ('melchior-bare', now(), 0.1, '{}'::jsonb)"
+            "VALUES ('maple-bare', now(), 0.1, '{}'::jsonb)"
         )
         conn.commit()
     hosts = {h["host"]: h for h in _now_hosts(store)}
-    assert hosts["melchior-bare"]["processes"] == []
+    assert hosts["maple-bare"]["processes"] == []
 
 
 def test_now_jobs_running_queued_stalled_and_terminal(store: Any) -> None:
@@ -80,7 +80,7 @@ def test_now_jobs_running_queued_stalled_and_terminal(store: Any) -> None:
         title="running job",
         meta={
             "job_type": "struct_relax",
-            "lease_host": "melchior",
+            "lease_host": "maple",
             "lease_until": "2099-01-01T00:00:00+00:00",
         },
     )
@@ -121,7 +121,7 @@ def test_now_jobs_running_queued_stalled_and_terminal(store: Any) -> None:
     assert running.id in running_ids
     running_row = next(j for j in jobs["running"] if j["ref_id"] == running.id)
     assert running_row["job_type"] == "struct_relax"
-    assert running_row["lease_host"] == "melchior"
+    assert running_row["lease_host"] == "maple"
     assert running_row["lease_expired"] is False
     assert running_row["lease_remaining_s"] is not None
     assert running_row["lease_remaining_s"] > 0
@@ -152,7 +152,7 @@ def test_now_jobs_lease_expired_flag(store: Any) -> None:
         kind="job",
         slug=None,
         title="expired lease",
-        meta={"lease_host": "melchior", "lease_until": "2000-01-01T00:00:00+00:00"},
+        meta={"lease_host": "maple", "lease_until": "2000-01-01T00:00:00+00:00"},
     )
     _set_status(store, expired.id, "running")
 
@@ -248,7 +248,7 @@ def test_now_jobs_row_without_job_type_keeps_title(store: Any) -> None:
         kind="job",
         slug=None,
         title="mystery worker",
-        meta={"lease_host": "melchior"},
+        meta={"lease_host": "maple"},
     )
     _set_status(store, job.id, "running")
     row = next(j for j in _now_jobs(store)["running"] if j["ref_id"] == job.id)

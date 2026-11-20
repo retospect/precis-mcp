@@ -45,7 +45,9 @@ Mint one plan; the armed `plan_dispatch` tick drives it:
 The nodes run in order: `cut` (`release_cut`: `scripts/release --cut-only`
 in the slice host's checkout, then `meta.release = {rN, sha, range, repo}`
 on the plan root) → `poll` (`ci_verdict_poll`: records check.yml's verdict
-in `release.ci_verdicts`, parked between polls while CI runs) → `gate`
+in `release.ci_verdicts`, parked between polls while CI runs; the verdict
+is `lint` plus the `gate-fast` legs, so the deploy does not wait for the
+run's soak legs and a red soak is not a red release) → `gate`
 (`tests-green` on the cut's range) and `loop` (a red verdict mints the
 `release-fix` body: `digest` (`ci_red_digest`: `scripts/ci-failed` on the
 red run, the digest posted as a `brief:` on the fix) → fix → `recut`
@@ -71,6 +73,13 @@ deploys"). Without it `release_deploy` fails with "install-from-tree: no
 overlay" and the round record is "not published: no prod DSN on this host".
 The deploy account then holds the same deploy authority as the operator.
 
+The first `release_cut` of a pass has no `meta.release.host` to pin to, and
+the cut's checkout is the deploy's, so name the host that holds the overlay:
+`put(kind='job', mode='setting', args={'key': 'release.cut_host', 'value':
+'<node>', 'reason': '...'})` (the node's `PRECIS_NODE`; DB-only). Unset, the
+tick holds the cut with a note instead of letting any `ssh_node` host claim
+it (gr713351), and `release_cut` itself refuses a checkout with no overlay.
+
 The job types also write the shared `release.round` record through the
 store (gr575362): the cut creates the row (`state: cut`, the script's own
 per-clone publish may have skipped on the slice host), the deploy merges
@@ -81,7 +90,8 @@ forward moves only, best-effort, never a job failure. This row is what
 
 The cut also clears the clone's own stale record: before `--cut-only`
 launches, `release_cut` supersedes the checkout's local `round.json`
-record when it is the one `deploying`/`deployed` record (a pinned sha,
+record when it is the one `deploying`/`deployed` record, or a `failed`
+one whose rollout launched (a pinned sha,
 no pending cut, no runtime confirm), the shared row proves prod moved
 past it (`confirmed` at the same or a later number), and no
 `release_deploy` job is live. It runs `scripts/round supersede r<N>`
@@ -91,6 +101,17 @@ then launches the cut on exit 0; a refusal fails the job with the log
 tail so the retry-cap ask still fires. Any other shape (an open
 `cut`/`gating`/`fixing`/`green` local record, a shared row that does not
 prove the release) is left alone for the ask.
+
+A `RELEASE_CUT` line is not believed on its word (gr724696):
+`scripts/release --cut-only --sha S` prints it only for a release that
+ships S — a resumed record that lacks S answers "release in flight", one
+prod moved past exits 4 naming `scripts/round supersede r<N>` — and
+`release_cut` fails the job (`stale-record`, nothing recorded) when the
+reported sha does not contain the asked one or already sits in
+origin/prod. The cut launch passes the shared row's number as
+`PRECIS_ROUND_FLOOR`, so an abandoned release's number is not minted
+again, and a cut that does reuse a dead row's number replaces the row
+(gr714067).
 
 The `approval` node is an `ask-user` todo (`meta.ask.kind = approval`,
 options `deploy r<N>` | `hold`); it shows on `/asks` once the plan exists
@@ -104,11 +125,31 @@ refuses unless the newest `answer:` names `deploy r<N>` for the cut this plan
 recorded, and the tick notes "not dispatched" each pass. To deploy later,
 add a new `answer: deploy r<N>` comment.
 
+A deploy that `scripts/deploy` refuses ahead of its reachability ping,
+before any rollout step — the backup window, a checkout with no overlay,
+the overlay sync, the rollback guard, the deploy lock — exits 75 through
+`scripts/round deploy` and `scripts/release` (gr730609). The local record
+goes back to what it was before the leg. On a first leg that is open with
+no journal: the job fails, the release takes fixes again, a retry deploys
+it, and a dropped pass's record is one `scripts/round cut --abandon` (or
+the next cut's own abandon phase) can retire. A resumed leg returns to its
+prior state and journal, so an earlier launched rollout stays a partial
+rollout. A leg adds the launch marker only when it reaches the ping.
+One thing does survive the refused leg: it had already moved
+`origin/gated` to the release head, and the record keeps that sha
+(`gated_seen` in the local `round.json`). A retry refuses when
+`origin/gated` has since been deleted or moved back; the bound belongs
+to the record, so `scripts/round cut --abandon` is what drops it.
+
 The `confirm` node (`release_confirm`, `retries: 0`, pinned to the cut's
 host like the deploy) then attests the runtime: every live worker's
 heartbeat `code_sha`, read from the store with no network, must equal the
 release sha, and when `release.health_url` is set the live web's
-`X-Precis-Boot-Sha` header must too. On pass it runs `scripts/round deploy
+`X-Precis-Boot-Sha` header must too. On pass it first waits for the pass's
+`merge_back` node to record `merged` or `noop` (up to two hours): the
+script below merges the release head into main itself and stops on a
+conflict that only the merge-back's resolver can settle. Then it runs
+`scripts/round deploy
 --confirm-runtime <sha> --runtime-evidence "<text>"` then `scripts/round
 close`, stamps the evidence on the plan root and `release.round`, and the
 release is tagged `deployed/r<N>`; a failed close still succeeds the job —
@@ -145,33 +186,27 @@ owner). `ci_verdict_poll` needs only the DB and api.github.com; set
 
 ### Standing approval (release.auto_deploy)
 
-`release.auto_deploy` (bool, default off, DB-only — no env fallback, so
-a drifted host cannot arm it) is the owner's standing approval for the
-deploy ask. While it is on, the plan tick answers a release-pass
-`approval` node itself once the newest recorded CI verdict on the cut's
-exact sha is green *and* `release.round` names an open round on that
-head sha:
+`release.auto_deploy` (bool, default off, DB-only — no env fallback) is
+standing approval for deployment. When armed at mint, the release pass
+contains no approval node. Its deploy depends on the CI gate and is gated
+by `precis.plans.release::may_release(deploy)`: no release window, no other
+open pass, round or branch, prod not ahead of main, cleared engine reviews,
+and a green verdict on the exact release head. GitHub ancestry and branch
+reads fail closed; an outage holds deployment until the next successful tick.
+The clock is checked at dispatch only. Once running, the script's window
+guard refuses without spending a retry. Malformed windows hold cuts but
+leave deployment to the script's guard.
 
     scripts/prod-precis settings set release.auto_deploy true
     scripts/prod-precis settings set release.auto_deploy false
 
-The answer is an audit comment on the approval node — the node stays,
-it is not removed:
-
-    answer: deploy r<N> (auto-answered under release.auto_deploy; sha
-    <sha12>; range <prev>..<sha12>; CI green run <id> at <ts>; round
-    record r<N> <state>; answered <ts>Z)
-
-It covers every range — migrations, `safe_fetch.py` and harness diffs
-included (me573231: no range inspection). It fails closed and leaves the
-ask for a human when anything is off: the setting off or unreadable, no
-green verdict recorded on the cut's exact sha (a sha prod already covers
-or another sha's green does not count), `release.round` absent,
-unreadable, or naming another release, state or head, and any existing
-`answer:` — a human `hold` is never overwritten. These always still ask
-a human: rollback, superseding a partial rollout, and the exhausted
-release-fix loop — two red fix iterations run unattended, the second red
-files the ruling ask and no third starts by itself.
+With the setting off or unreadable at mint, the manual approval ask stays
+unchanged: answer `deploy r<N>` or `hold`. Turning it off also holds an
+already minted unattended pass. Existing legacy asks retain their answer
+handling and never overwrite a human hold. The standing approval covers
+every range, including migrations and harness diffs (me573231).
+Rollback, superseding a partial rollout and exhausted release-fix loops
+remain human decisions.
 
 ### Red-test waiver (release.red_waiver)
 
@@ -435,7 +470,22 @@ ancestor (gr576258): a `terminal-root` rescue, or any class with a
 closes the node `STATUS:won't-do` with one note (`root td<N> is
 <state>; closed by the watchdog`), closes any live ask blocking it,
 and files no ask; a bounded batch of `ORPHAN_BATCH` (20) closes a pass
-drains an old backlog in a few ticks.
+drains an old backlog in a few ticks. The same bounded close — drawing
+the same batch — applies to an already-old rescue (gr666159): a node
+whose last real signal (its own tags/comments/events other than the
+rescue pass's `rescue:` bookkeeping — a human comment or a `brief:`
+update after the tag keeps it live — plus every child job's claims,
+events and log stamps, a live job keeps it live) predates
+`STALE_ASK_AFTER` (24h) is dead work, so
+it closes `won't-do` (`silent since <ts> (> 24h); stale rescue closed
+by the watchdog`) instead of minting a diagnose or filing an ask —
+one ask per LIVE node, no stale-ask flood. Live engagement is never
+closed over: a node with an episode ask, an open same-class ask or an
+in-flight diagnose keeps its own path — and so does a node with a
+nonterminal child job: every one of the job's signals can predate the
+bound while it still runs, and the job may still land, so the stale
+close (like the orphan close) defers until the job is terminal
+(td673697 review).
 
 The session replies on the task with one first line: `rescue: REARM —
 <corrected brief>` or `rescue: NOFIX — <why>` (a `handoff:` prefix
@@ -561,8 +611,13 @@ The probes, re-run every heartbeat:
   templates, and a hand-added value vanishes with it (2026-11-05, r222:
   every factory land queued "no host advertises repo_checkout", gr570787).
 - `claude_bin`: `claude` on the worker's `PATH`, or `PRECIS_CLAUDE_BIN`
-  set to a name on `PATH` or an absolute path (a launchd `PATH` often
-  misses it).
+  set to a name on `PATH` or an executable absolute path (a launchd `PATH`
+  often misses it), **and** credentials available to the worker user:
+  `CLAUDE_CODE_OAUTH_TOKEN` from the environment or vault/bootstrap lookup,
+  `.credentials.json` under `CLAUDE_CONFIG_DIR` (default `~/.claude`), or
+  the macOS `Claude Code-credentials` keychain item. Installing the CLI or
+  creating `~/.claude` alone does not advertise the token; log in as the
+  worker user first. This checks credential presence, not upstream validity.
 - `git`: `git` on the worker's `PATH`.
 
 Set the env vars in the worker's service environment and restart it; the
@@ -605,7 +660,7 @@ The other settings a slice host reads:
 - `PRECIS_MCP_SLICE_TOKEN_DIR`: the shared session MCP's per-slice grant
   registry (`<mcp-http state dir>/slice-tokens`, created by the ensure
   script). Needed when the worker runs as a different user from the one
-  running the server (melchior: launchd `deploy` vs the operator): the
+  running the server (the agent host: launchd `deploy` vs the operator): the
   default is under the *worker's* home, where no server reads, so the
   session would start on the worker's `PRECIS_MCP_TOKEN` — and a service
   account has none, which the session sees as `401 AUTH_HEADER_REJECTED`
@@ -639,6 +694,315 @@ The other settings a slice host reads:
   (`PRECIS_SLICE_OPS_DIR` overrides the parent), not the service account's
   `~/.cache/uv` — the checkout's hooks run through `uv`, and a root-owned
   home cache (a `sudo` bootstrap) killed every Bash hook in jo546987.
+- A todo's repo is its own `repo:<name>` tag, else its nearest tagged
+  ancestor's; no tag means precis. `plan_dispatch` skips a node whose repo
+  is not buildable and open (`lanes.repo_refusal`) and stamps
+  `params.repo` on the `run_slice` job for a non-default repo; submit
+  refuses a `params.repo` that differs from the todo's tag, and later
+  phases read the job, not the tag. `land_slice` lands a non-default repo
+  only when the job's `params.repo` names it, the profile's `lander` is
+  `land_slice`, `factory.open_repos` lists it and the todo's `repo:` tag
+  agrees (`land_slice._repo_refusal`); it then hands the land to
+  `src/precis/workers/repo_land.py`. For a non-default repo the only
+  generator admitted is a reviewer (`templates.mint_reviewer(repo=)`),
+  and only when the profile sets `reviewer` (catpath does, td659522 step
+  5): it runs read-only in a detached tree of the repo's clone at the
+  landed sha (`run_slice._cut_review_tree`) and leaves one verdict. Every
+  other generator node stays refused there. Its review target is checked
+  at launch, not at submit: a target that does not resolve yet is an
+  attempt-free `review-wait`, backed off under the attempt-free cap.
+- A non-default repo builds from its `lanes.RepoProfile`
+  (`lanes.REPO_PROFILES`). `run_slice.submit` finds the clone through
+  `PRECIS_SLICE_REPOS`, writes the profile's exclude lines into the
+  clone's `.git/info/exclude`, fetches the base (`run_slice.fetch_base_tip`: a fresh
+  ops gitdir outside the clone under the factory git credential, so no
+  credential-bearing git runs inside the clone) and refuses unless the
+  rev the precis `origin/main` `uv.lock` pins for the package is an
+  ancestor of the repo's `origin/<base>` (`run_slice._prepare_repo`). The
+  session gets a repo-specific brief (`run_slice._render_repo_brief`:
+  read-first files, setup and lint commands, touched tests only, the
+  profile's deny paths, and rules that beat the task text: no fetch,
+  rebase, push, version bump, tag or pull request; after a lander conflict
+  handoff, one `git merge origin/<base>` is allowed), those deny paths, the
+  profile's `UV_PYTHON` and no precis MCP.
+
+Opening a second repo, in order:
+
+1. Clone it once on the slice host with an https origin and no
+   credentials in the URL. The worker never clones; it refuses a missing
+   clone, an `origin` that is not the profile's https remote, or one with
+   userinfo.
+2. Set `PRECIS_SLICE_REPOS` in the worker's environment: a JSON object,
+   repo name to absolute clone path on that host, e.g.
+   `{"<repo>": "/path/to/clone"}`. The slice lane (playbook 20g) and the
+   collapsed worker (20b, which also runs `job_ssh_node`) render it from
+   the host var `precis_slice_repos` (a dict, set in the overlay for the
+   gateway; unset, the key is omitted). A host advertises
+   `repo_checkout_<name>` only when its heartbeating worker unit has
+   `PRECIS_SLICE_REPOS` naming an existing clone, and a second-repo
+   `run_slice` / `land_slice` job is placed only on such a host. With no
+   such host the job stays queued with the usual "no host advertises"
+   note. The builder-host lane (20i) does not render the variable, so
+   builder hosts do not take second-repo slices. After the first deploy,
+   read the rendered units and check the value is valid JSON.
+3. Prove the factory git token from that host against the repo:
+   `git ls-remote` under the credential, plus one API read.
+4. The repo's profile must have a lander: `lanes.known_repos()` lists
+   only those and the setting cannot open any other. catpath's `lander`
+   is `land_slice`, so it is openable.
+5. If the profile has a `releaser` (catpath does), prove the token's
+   Actions read and write as "How a second-repo release is cut" says.
+6. List the repo in the DB-only setting `factory.open_repos`
+   (`lanes.open_repos`: the setting intersected with `known_repos()`).
+
+catpath is openable but closed by default: it builds and lands only once
+the operator lists it in `factory.open_repos`.
+
+How a second-repo slice lands (`src/precis/workers/repo_land.py`), in order:
+
+1. Take the repo's lease (`src/precis/workers/repo_lease.py`). A land that
+   finds it taken parks and tries again every two minutes.
+2. Fetch the base tip (`run_slice.fetch_base_tip`).
+3. Squash the slice branch into one commit in a throwaway land tree cut on
+   that tip.
+4. Refuse the profile's deny paths and any change of `[project].version`
+   in `pyproject.toml`.
+5. Launch the profile's setup, lint and test commands detached, under an
+   env with no credential (no ssh agent, gh config or docker endpoint).
+   The commands are registry constants, never read from the tree.
+6. On a green gate, re-check the lease (this job still holds it), the
+   handle's sha (its parent is the tip, the diff still clears the deny
+   paths), re-read the factory switch and the
+   admission rules (`land_slice._repo_refusal`: the lander, `factory.open_repos`,
+   the todo's tag against the job's repo), stamp `meta.landed_repo`, then
+   push that sha as a plain fast-forward (`factory_git_mirror.push_cas`).
+7. Write `landed: <sha>`, close the todo, remove the land tree, the slice
+   tree and the local branch, release the lease.
+
+On the todo: a `landed: <sha>` comment on success. A `handoff: lander:`
+comment marks a charged attempt: a red gate, a merge conflict, a deny-path
+hit or a version change. The todo reopens with `attempt:<n>` and the branch
+stays for the next build. These are attempt-free and the land is minted
+again: a raced or unverifiable push, a gate that was killed or died without
+an exit code, a setup failure with no dependency file in the diff, a repo
+closed or a todo retagged during the gate, and the wall deadline.
+
+The lander never force-pushes, opens a pull request, resolves a gripe,
+changes the version, cuts a release or tags. A release is the separate
+`repo_release` node below.
+
+Kill switches: remove the repo from `factory.open_repos`, or set
+`PRECIS_FACTORY=off`. Both are re-read right before the push, so a land
+whose gate is running is not pushed.
+
+How a second-repo release is cut (`src/precis/workers/job_types/repo_release.py`):
+
+A release node is one mechanical todo per batch, minted with
+`templates.mint_repo_release(store, plan_root, repo, blocked_by=[reviewer
+ids], bump=None)` under the plan root: tagged `plan:<root>` and
+`repo:<repo>`, `blocked-by` each reviewer, `meta.retries = 1` (a blind retry
+would spend a version; submit refuses any other value). It never carries
+the `release-pass` tag, so the precis release pass never sees it. It
+refuses a repo whose profile names no `releaser` (catpath's is
+`repo_release`), an empty `blocked_by` and a `bump` outside
+`auto`/`minor`/`patch`.
+
+It dispatches when all hold: the reviewers are done; no open slice or
+reviewer node of the repo remains under the plan root (a `holding: N open
+slice or reviewer node(s)` note names them, and nodes that wait on the
+release, directly or through a phase, do not hold it); the repo is in
+`factory.open_repos`; a host advertises `repo_checkout_<repo>`.
+
+In order:
+
+1. Take the repo lease as kind `release`. Lands of the repo queue behind
+   it, and a waiting release outranks new lands.
+2. Pick the version: bump `[project].version` by minor when a `feat`
+   commit landed since the previous tag, else patch, never major; the
+   `bump` param overrides. A tip that is already tagged is a no-op
+   success (`released: ... (no-op: ...)`).
+3. Edit `pyproject.toml` and the project's `uv.lock` entry as text (one
+   line each), commit in a detached release tree.
+4. Run the profile's `release_check_cmds` (catpath: `uv lock --check`)
+   under an env with no credential.
+5. Stamp `meta.repo_release` `state: pushed`, then push the commit as a
+   plain fast-forward. A raced push prepares again on the new tip, at most
+   3 rounds.
+6. Wait for the profile's `ci_workflow` (catpath: `ci.yml`) run on that
+   exact commit: one read every 120 s; the wait ends attempt-free after
+   6000 s; GitHub unreadable for 1800 s ends it too.
+7. A cancelled run is re-run, at most 2 times, only once no other run of
+   the workflow is active on the branch.
+8. Green: create the annotated tag `<tag_prefix><version>` (catpath
+   `v`), write the `released: <tag> <sha> (CI run <id>)` comment and
+   `meta.repo_release` with `state: tagged`, free the lease.
+
+Failures, as the operator sees them (the node's `handoff:` comment has the
+reason):
+
+- Red CI: no tag. The commit stays on main. The record is `red`; the node
+  asks; the next try takes a new version.
+- The tag exists elsewhere (`tag-conflict`): tags are never moved, a human
+  decides whether the version is spent.
+- No CI run appeared 1800 s after the push (the push event was dropped;
+  `ci.yml` has no manual trigger), or the re-runs are spent (a third
+  cancel): the version is spent, a human decides.
+- The token lacks Actions access (404 on the run read, 401/403/404 on the
+  re-run): a human grants it. These three carry `meta.coordinator_ask`,
+  so the node's cap ask goes to the coordinator.
+- Attempt-free infrastructure (`meta.attempt_free = infra-release`,
+  retried by itself) by `red_class`: `origin-fetch`, `tag-oracle`,
+  `release-tree`, `release-read`, `release-record`, `tag-push`,
+  `github-unreadable`, `ci-wall`, `batch-open`, plus the land classes it
+  shares: `origin-raced`, `origin-push`, `land-handle`, `repo-closed`,
+  `repo-held`, `gate infrastructure`, `gate setup`, `timed-out`.
+
+Record states: `pushed` (committed and pushed, not tagged: the next job
+resumes it, waits on the same commit and tags it; never recut), `red`
+(CI failed; the next job starts fresh at a new version), `tag-conflict`
+(a human), `tagged` (done). A resumed `pushed` record whose tag already
+sits at its sha is recorded and closed.
+
+Before listing a repo in `factory.open_repos`, prove from the slice host,
+as the worker's user and with the factory git token, that the token can
+read and re-run the repo's Actions runs. The read half, run in the
+worker's environment (the vault lookup needs `PRECIS_DATABASE_URL`; a
+plain login shell has none) and with `GH_TOKEN` unset:
+
+    uv run python -c "import httpx
+    from precis.workers import factory_git as g
+    t = g.factory_git_token()
+    assert t, 'the factory git token did not resolve'
+    u = 'https://api.github.com/repos/<owner>/<repo>/actions/runs?per_page=1'
+    h = {'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + t}
+    print(httpx.get(u, headers=h).status_code)"
+
+It must print 200; 404 means the token has no Actions read on the repo
+(GitHub hides what it cannot read). The assert matters: with no token the
+request goes out unauthenticated and a private repo answers the same 404,
+and a control read against a public repo passes without any token. Nothing
+prints the token, keep it that way. The write half can only be proven by
+re-running a real cancelled or completed run of the repo (the "Re-run"
+button's API call as the same token: `POST .../actions/runs/<id>/rerun`);
+there is no dry run. Without Actions read a release can never tag; without
+write a cancelled run needs a human.
+
+Known limits:
+
+- A release job that dies between its push and its tag frees the lease. A
+  land may then push and cancel the release commit's CI run; the next
+  release job resumes the `pushed` record and spends one re-run.
+- The check and the gate run as the worker's OS user: no credential, not
+  sandboxed.
+- `v*` tags cannot be deleted or moved on the remote, so a wrong tag
+  cannot be fixed.
+
+How a second-repo batch is minted (`templates.mint_repo_batch`, the
+`repo-batch` plan template):
+
+    put(kind='todo', mode='plan', args={'template': 'repo-batch',
+        'repo': '<repo>', 'slices': 'td1, td2', 'glue': 'td3, td4'})
+
+- `slices` names existing build todos. Each must be open, a leaf with no
+  live job, carry its own `repo:<repo>` tag, and carry no tag that parks it
+  for the dispatcher (`waiting-for:`, `ask-user`, `halt`,
+  `hold:no-dispatch`, a claim): remove such a tag before the mint.
+- The dispatcher also reads holds through ancestors. A slice whose old
+  parent chain carries such a tag, is paused, or is blocked-by an open
+  todo is refused, because the move would lift that hold unseen: lift it,
+  or detach the slice first (`link rel='parent', mode='remove'`).
+- A slice that already carries a `plan:` tag is refused, so a retried
+  mint cannot build a second batch over the same slices. A slice that
+  waits (`blocked-by`) on a glue todo is refused: glue waits on the pin,
+  so that batch could never start.
+- The batch is its own plan: its parent, if any, sits outside every live
+  plan and is none of the named todos.
+- The mint moves each slice under a new root, which carries no repo tag.
+  The slice keeps its body, its repo tag and its links; `meta.llm_tier` is
+  dropped, and a comment on the slice records where it was moved from.
+- Under the root it adds one reviewer per slice (blocked-by the slice),
+  one release node (blocked-by every reviewer) and one pin-bump node
+  (blocked-by the release, tagged for the default repo).
+- `glue` names the todos that must wait for the new engine: the
+  precis-side halves, a wave pointer. Each gets a `blocked-by` edge to the
+  pin node and stays where it is, outside the root.
+- `bump` (`auto`, `minor`, `patch`) is passed to the release node.
+- The mint is one transaction: a refusal leaves nothing behind.
+- It refuses until the repo's profile names a lander, a releaser and a
+  pinner. catpath names all three (its pinner since 2026-11-15, after the
+  arming proof below). Minting dispatches nothing by itself in a closed
+  repo: the slices still wait on `factory.open_repos`.
+- If the door fails, a dev session calls `mint_repo_batch` with the same
+  arguments on prod (Reto 2026-11-15).
+
+Gate image wait (F7, Reto 2026-11-15): the pin-bump node does not close on
+its land. The land writes `landed:` and leaves the node open; ship's
+land_notify is held for a pin land, mirrored or not, and the lander writes
+the subject's other handles itself. The dispatcher's next tick mints a
+`pin_bump` pinned to the land's host (`target_node`), which goes straight
+to the wait. A no-op bump waits in the same job. Every 2 minutes the job
+runs `docker image inspect precis-dev` on that host with the land env (no
+credential) and reads the `precis.autocatpath_rev` label. The node closes,
+and the glue unblocks, when that label is one of these:
+
+- the pinned sha;
+- the sha that precis origin/main's `uv.lock` pins, when this pin's land
+  is under that main (a later pin of the same package landed first);
+- a commit that the job's catpath mirror, as fetched when the bump ran,
+  says descends from the pinned sha.
+
+The job reads these locally and fetches nothing. A stale, unlabelled or
+missing image files one ask, "td<pin>: rebuild the gate image on <host>",
+under the plan root. The ask does not block the node, because the open
+node already holds the glue. Docker that does not answer files the ask
+after 6 h. If the ask is closed while the image still lacks the pin, it is
+filed again, at most once an hour. A wait behind for over 6 h also raises
+the `pin_bump` `stale-open` alert, even while its job is parked. To clear
+it, run
+`scripts/build-image precis-dev` on that host from a precis checkout at or
+after the pin's land (pull first). The node and the ask close by themselves
+within about 2 minutes. The factory never builds the image. Only the land
+host's image is checked. A hand close of the node, or a hand
+`scripts/ship … (td<pin>)` that closes it, ends the wait; the job then
+succeeds quietly and the dispatcher closes the open ask.
+
+Arming a pinner: before a profile names `pin_bump`, run the job's derive
+step once on the slice host against today's pin. As the worker's user, in
+the worker's environment, in a throwaway directory: a `git archive` of
+origin/prod, a throwaway catpath mirror filled by
+`factory_git_mirror.fetch_source_mirror`, the env from
+`pin_bump._detached_env`, then `uv lock --check`,
+`uv sync --frozen --extra catalyst` and `pin_bump.DERIVE_SCRIPT_PY` with
+the pinned version. The key it writes must equal the anchor literal
+committed in `tests/test_coverage_job.py`. catpath passed on 2026-11-15
+(autocatpath 0.50.0, 15 s).
+
+Known limits:
+
+- A parked image wait is a running `ssh_node` job: it holds one of the
+  land host's executor slots until the image is rebuilt.
+
+- Second-repo lands hold a per-repo lease for the whole gate
+  (`src/precis/workers/repo_lease.py`). A land that finds it taken parks and
+  retries every two minutes without charging the builder; after six hours
+  it fails attempt-free (`repo-held`) and is minted again. A hand push to
+  the repo's main can still race: the push is a plain fast-forward and a
+  raced push is retried.
+- A `landed:` sha on such a todo belongs to the other repo
+  (`meta.landed_repo`, `lanes.LANDED_REPO_KEY`). A plan for it must carry
+  no `sha-in-prod` gate.
+- Of the generator nodes, a second repo admits only a reviewer, read-only
+  in a detached tree at the landed sha, on a profile that sets `reviewer`;
+  every other generator stays refused there. The read-only part is
+  advisory: the session runs with permissions bypassed like a builder,
+  and a commit or a dirty tree (`run_slice._review_violation`) only adds
+  a line to the job summary. Nothing is landed from the tree, and it is
+  removed after the run. "No credential" means the session's environment
+  only (no token, no MCP grant): `HOME` and `SSH_AUTH_SOCK` still pass,
+  the same exposure a builder has.
+- The gate runs as the worker's OS user: it holds no credential but is not
+  sandboxed.
+
 - The session runs `--permission-mode bypassPermissions` with the lane's
   `deny_write_paths` (`STRICT_DENY` in `src/precis/plans/lanes.py` — the
   full `FACTORY_DENY_WRITE_PATHS` plus the never-relaxable
@@ -674,9 +1038,35 @@ The other settings a slice host reads:
   once only where minting cannot run (no review-fit lane, the mint
   raised), where `plan_dispatch` itself is switched
   off, or the wait can never resolve — a dead verdict, a dead root,
-  a fix that ended unlanded — and an answered ask clears that one
+  a fix that ended unlanded, a reviewer parked in rescue (an open
+  `rescue:` tag) — and an answered ask clears that one
   land. An ask closed without an `answer:` comment holds nothing:
   the next pass refiles it and the blocker names the live ask's id.
+  A land cleared on a corrective commit that is not on `release/r<N>`
+  files the same ask at once: answering it deploys the release without
+  that commit, landing the commit on the release branch clears the hold
+  without an answer. While the gate holds a deploy, the tick writes the
+  refusal as a comment on the `release_deploy` node, once per distinct
+  text (gr702442). Two kinds of commit on `release/r<N>` bring no code
+  of their own and get no review of their own (Reto 2026-11-19): a
+  commit that repeats a main commit patch for patch (a cherry-pick) is
+  judged by that main land's review, and carries it for the hold above;
+  an exact revert of a commit of the same release drops out together
+  with the commit it undoes. Both are proved on the trees, not read
+  from a subject or trailer: replaying the main commit onto the branch
+  commit's parent (or the undone commit backwards) must give the branch
+  commit's tree exactly. A revert of code prod already runs, a revert of
+  a revert, and any commit with a change of its own — an indentation
+  change included — keep their review.
+- The file-overlap hold is bounded. A started, unlanded build keeps
+  other builds that touch its files out of the claim (td603849), but
+  only for `factory.overlap_hold_max_runs` ended `run_slice` runs
+  (default 3; cancelled runs, host refusals and attempt-free failures
+  leave the hold budget intact).
+  After that it holds only while its `land_slice` is live, and a real
+  conflict with the work that went ahead rebuilds at its land. `0`
+  restores the unbounded hold. The hold writes nothing on the held job:
+  the tick's `file-overlap hold — waits on td<N>` note names the holder.
 - The session's env is an allowlist (`ENV_ALLOWLIST` in `run_slice.py`):
   no DB DSN or vault variable reaches it. It needs `PRECIS_MCP_TOKEN`
   (env or the mounted secret) to reach the precis MCP, and the claude

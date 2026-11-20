@@ -7,6 +7,7 @@ from domain mixins, each owning one slice of the persistence surface:
 * :class:`precis.store._refs_ops.RefsMixin`               — ref CRUD + title search
 * :class:`precis.store._tags_ops.TagsMixin`               — three tag tables
 * :class:`precis.store._links_ops.LinksMixin`             — link graph
+* :class:`precis.store._dependants.DependantsMixin`       — bounded rely-side walk (``dependants``)
 * :class:`precis.store._taxon_ops.TaxonMixin`             — taxon hierarchy traversal (recursive CTEs)
 * :class:`precis.store._cache_ops.CacheMixin`             — paid-tool cache state
 * :class:`precis.store._identifiers_ops.IdentifiersMixin` — ``ref_identifiers`` alias lookup
@@ -17,11 +18,12 @@ from domain mixins, each owning one slice of the persistence surface:
 * :class:`precis.store._measures_ops.MeasuresMixin`         — ``measures`` (sourced numbers, append-only runs; migration 0187)
 * :class:`precis.store._venue_ops.VenueMixin`               — ``venue_metrics`` (per-ISSN SJR + OpenAlex venue stats; migration 0293)
 * :class:`precis.store._jobs_ops.JobsMixin`                 — job observability (per-(job_type,size) ``meta.footprint`` rollup)
+* :class:`precis.store._receipt_ops.ReceiptsMixin`          — durable owner-keyed exact-read receipts (migration 0325)
 
 ``drafts`` (:class:`precis.store._draft_ops.DraftStore`) is the first
 domain carved *out* of the mixin stack into a composed sub-store —
 reached **only** as ``store.drafts.*``; the flat delegations are gone
-(see ``docs/backlog/codereview-store-decomposition.md``). ``chunks``
+(see `me690468`). ``chunks``
 (:class:`precis.store._chunks_ops.ChunkStore`) is the second —
 reached **only** as ``store.chunks.*``.
 
@@ -64,6 +66,8 @@ from precis.store._checklist_ops import ChecklistMixin
 from precis.store._chunks_ops import ChunkStore
 from precis.store._claude_quota_ops import ClaudeQuotaMixin
 from precis.store._component_ops import ComponentMixin
+from precis.store._consideration_ops import ConsiderationMixin
+from precis.store._dependants import DependantsMixin
 from precis.store._draft_ops import DraftStore
 from precis.store._drive_state_ops import DriveStateMixin
 from precis.store._email_ops import EmailAccountMixin
@@ -98,6 +102,7 @@ from precis.store._nanopub_mirror_ops import NanopubMirrorMixin
 from precis.store._nanopub_ops import NanopubMixin
 from precis.store._pcb_ops import PcbMixin
 from precis.store._pdf_ops import PdfMixin
+from precis.store._receipt_ops import ReceiptsMixin
 from precis.store._refs_ops import RefsMixin
 from precis.store._resource_slots_ops import ResourceSlotsMixin
 from precis.store._review_ops import ReviewsMixin
@@ -133,6 +138,8 @@ class Store(
     TagsMixin,
     TaxonMixin,
     LinksMixin,
+    DependantsMixin,
+    ConsiderationMixin,
     CacheMixin,
     IdentifiersMixin,
     IntegrationLedgerMixin,
@@ -151,6 +158,7 @@ class Store(
     PdfMixin,
     VenueMixin,
     JobsMixin,
+    ReceiptsMixin,
 ):
     """High-level handle. Owns the psycopg connection pool (via
     :class:`~precis.store.core.StoreCore`, see ``self.core``).
@@ -235,7 +243,7 @@ class Store(
     def drafts(self) -> DraftStore:
         """The drafts domain, composed rather than mixed in — see the
         module docstring and
-        ``docs/backlog/codereview-store-decomposition.md``. Cached so
+        `me690468`. Cached so
         every access returns the same :class:`DraftStore` instance
         (it's stateless beyond the shared ``core``/``host``
         references, but a fresh instance per call would be wasteful)."""

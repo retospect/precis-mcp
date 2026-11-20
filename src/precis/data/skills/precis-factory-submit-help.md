@@ -89,15 +89,20 @@ a `plan_tick` ([[precis-todo-tree-help]]). Never give a builder node
 
 1. **build** — `run_slice` launches the lane's vendor in a worktree on
    `slice/<todo id>` with the body as its brief. A clean committed
-   exit pushes the branch to origin and, when a `preland_review`
-   reviewer gates it, stamps `meta.pending_land` and closes the todo —
-   the land is held, not minted.
+   exit pushes the branch to origin as the hidden ref
+   `refs/factory/slice/<id>` (no GitHub branch, no PR) and, when a
+   `preland_review` reviewer gates it, stamps `meta.pending_land` and
+   closes the todo — the land is held, not minted.
 2. **review** — the released reviewer (another vendor than the
-   builder) reads `git diff origin/main...origin/slice/<id>` and posts
+   builder) fetches that ref by name (`git fetch origin
+   +refs/factory/slice/<id>:refs/remotes/origin/slice/<id>` — a plain
+   fetch skips it), reads `git diff origin/main...origin/slice/<id>` and posts
    one verdict comment: `review: LAND` · `review: FIX — <findings>` ·
    `review: REVERT — <why>`. LAND mints the held `land_slice`;
    FIX/REVERT send the branch back to the builder with the findings as
-   its handoff — nothing is on main to fix or revert.
+   its handoff — nothing is on main to fix or revert. Three send-backs
+   in a row, or the same finding twice running, stop the loop: the
+   build is held on an `ask-coordinator` ask instead of rebuilding.
 3. **land** — `land_slice` runs `scripts/ship --quick`: rebase, lint,
    squash-merge onto main, `landed: <sha>` on the todo, then deletes
    branch and worktree. **No pull requests, ever** — `gh pr` is denied
@@ -152,7 +157,10 @@ Every `run_slice` job ends with a `meta.outcome` record — the cheap,
 every-run layer: the mechanical gates (the changed `.py` files
 compile, the tests the run owed ran — a code run that left commits
 owes the `tests: ran` receipt whether or not its brief named test
-paths, no exceptions, within the step cap), the outcome word
+paths, within the step cap; a code run's `tests: NOT RUN — <why>`
+leaves that gate unobserved and lands `--checked`, whose own test run
+is the evidence, while a validate run's NOT RUN still fails it), the
+outcome word
 (`completed`, `completed_empty`, `halted_step_cap`,
 `halted_wall_clock`, `error`, `abandoned`), the lane, model, cost and
 wall seconds. The gates decide, not just record: a clean exit that

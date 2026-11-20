@@ -19,7 +19,7 @@ Real coordinates live in the gitignored overlay `deploy/inventory/hosts.yml`.
 
 ## Bare `ssh <host>` works — no `-o IdentityAgent=none`
 
-`ssh melchior` / `balthazar` / `caspar` / `castor` / `pollux` / `spark` just
+`ssh <host>` for any cluster host just
 works as user `deploy`. `~/.ssh/config` sets `IdentityAgent none` on the
 cluster `Host` block, which forces ssh to read the passphraseless on-disk key
 `~/.ssh/cluster` (ed25519) instead of the flaky macOS/1Password agent. The
@@ -38,17 +38,17 @@ specific host blocks first, `Host *` last. Diagnose with
 socket. Verify an override with `SSH_AUTH_SOCK= ssh -o IdentityAgent=none <host>`.
 
 Boot-safe by construction: the controller's launchd autossh tunnels (one to
-melchior, one forwarding caspar's pgbouncer and Postgres ports locally) use
-the on-disk key, so they come up with no 1Password and no human. `balthazar`
+the agent host, one forwarding the database host's pgbouncer and Postgres ports locally) use
+the on-disk key, so they come up with no 1Password and no human. A worker host
 has ssh but no tunnel plist.
 
-**hermes.** `hermes` is a live macOS user on melchior: it runs the agent-lane
+**hermes.** `hermes` is a live macOS user on the agent host: it runs the agent-lane
 daemons and asa-bot, and isolates the Claude OAuth / `~/.claude` login from
-the deploy fleet identity. Keep it. There is no `ssh hermes@melchior` block —
+the deploy fleet identity. Keep it. There is no `ssh hermes@<agent-host>` block —
 nothing automated ssh's in as hermes, and `deploy` has passwordless sudo.
 Reach it with:
 
-    ssh melchior 'sudo -u hermes -H bash -lc "<cmd>"'
+    ssh <agent-host> 'sudo -u hermes -H bash -lc "<cmd>"'
 
 **Ansible has its own `ssh_args`** (`ansible.cfg`) that bypass
 `~/.ssh/config`, so it can still fail every host `UNREACHABLE` with
@@ -93,8 +93,8 @@ that keeps the LAN address and jumps through the on-LAN Mac:
         IdentitiesOnly yes
         IdentityFile ~/.ssh/cluster
 
-(Earlier configs pinned `HostName` to a LAN address on `castor` and `pollux`;
-removed 2026-09-08Z. They now resolve by name via MagicDNS exactly like `spark`,
+(Earlier configs pinned `HostName` to a LAN address on the DGX nodes;
+removed 2026-09-08Z. They now resolve by name via MagicDNS exactly like the GPU node,
 which never had a pin.)
 
 Use these only for bulk transfer. Latency is dominated by physical distance, so

@@ -1,6 +1,6 @@
 """Acquisition-mode (claim-first) mint — ``put(kind='finding', wants=...)``.
 
-Split out of ``finding.py`` (docs/backlog/codereview-residuals.md):
+Split out of ``finding.py`` (me690495):
 this was the single largest cohesive block in that handler (~290 lines) and
 touches nothing from ``NumericRefHandler``'s CRUD contract — only the store
 and a small callback for the pub_id-collision response, both passed in
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg.errors import UniqueViolation
 
-from precis.errors import BadInput
+from precis.errors import BadInput, Conflict
 from precis.handlers._finding_common import cap_finding_title
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.response import Response
@@ -312,19 +312,24 @@ def put_acquiring(
                     conn=conn,
                 )
             stub_lines: list[str] = []
+            conflicts: list[Conflict] = []
             for w in parsed_wants:
                 identifiers: list[tuple[str, str]] = []
                 if w.doi:
                     identifiers.append(("doi", w.doi))
                 if w.arxiv:
                     identifiers.append(("arxiv", w.arxiv))
-                stub_ref_id, created = store.upsert_stub_paper(
-                    identifiers=identifiers,
-                    title=w.title,
-                    year=w.year,
-                    set_by="dream",
-                    conn=conn,
-                )
+                try:
+                    stub_ref_id, created = store.upsert_stub_paper(
+                        identifiers=identifiers,
+                        title=w.title,
+                        year=w.year,
+                        set_by="dream",
+                        conn=conn,
+                    )
+                except Conflict as exc:
+                    conflicts.append(exc)
+                    continue
                 if created:
                     store.add_tag(
                         stub_ref_id,
@@ -355,6 +360,8 @@ def put_acquiring(
                 stub_lines.append(
                     f"  {stub_handle} ({'minted' if created else 'already tracked'})"
                 )
+            if not stub_lines and conflicts:
+                raise conflicts[0]
     except UniqueViolation:
         # Collision on pub_id: this finding already exists.
         return collision_response(pub_id)
@@ -365,8 +372,8 @@ def put_acquiring(
             f"title: {title_clean}\n"
             f"provenance: {provenance_target.raw}\n"
             f"status: STATUS:{_STATUS_ACQUIRING}\n"
-            f"awaiting evidence from {len(parsed_wants)} paper(s):\n"
-            + "\n".join(stub_lines)
+            f"awaiting evidence from {len(stub_lines)} paper(s):\n"
+            + "\n".join(stub_lines + [f"  skipped: {exc}" for exc in conflicts])
             + "\n"
             f"placeholder: [{pub_id}] (use in text; precis resolve "
             f"substitutes the primary cite_key once STATUS:established)"

@@ -1,7 +1,7 @@
 """Rescue passes keep a bounded wait under a saturated rotation.
 
 Repro for ``docs/backlog/worker-rotation-starves-rescue-passes.md``
-(melchior 2026-08-14): ``run_loop`` is strictly serial, so a rescue pass
+(maple 2026-08-14): ``run_loop`` is strictly serial, so a rescue pass
 (``sweeper`` / ``nursery`` / ``quest_loop_reconcile``) waits a full
 rotation between runs — the sum of every other pass's duration, with no
 bound when long job and background passes always have work.
@@ -82,7 +82,7 @@ def _simulate(
         "nursery": [],
         "quest_loop_reconcile": [],
     }
-    # Melchior's 2026-08-14 shape: the job lane opens each rotation with a
+    # Maple's 2026-08-14 shape: the job lane opens each rotation with a
     # multi-job claude_inproc batch, then back-to-back background batches.
     # The rescue passes sit where the priority sort puts them.
     long_passes = [
@@ -164,7 +164,7 @@ def test_job_coordinator_claim_wait_is_bounded_under_flood(
 ) -> None:
     """gr493226: the coordinator executor sits in the job lane at the head
     of the rotation, so on a saturated host a parked ``quest_tick`` was only
-    claimed once per full rotation (~85 min on melchior) despite its 5-min
+    claimed once per full rotation (~85 min on maple) despite its 5-min
     heartbeat. It is interleaved on the rescue budget now."""
     sim = _SimTime()
     monkeypatch.setattr(runner, "time", sim)

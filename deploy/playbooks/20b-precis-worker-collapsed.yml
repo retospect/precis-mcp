@@ -413,10 +413,18 @@
     # re-rendered from these templates and a hand-set value vanished — this
     # var, not the plist, is the place to set it). Gateway-only (the checkout
     # lives there) and NOT gated on precis_fix_lane_enabled: the slice lanes
-    # share the fix lane's clone (precis_fix_repo_dir) but not its arming. ──
+    # share the fix lane's clone (precis_fix_repo_dir) but not its arming.
+    # PRECIS_DEVIN_BIN rides along for the same reason: the heartbeat's
+    # `devin_bin` lane token (capability_probe.LANE_BIN_TOKENS, gr676054)
+    # resolves the CLI from THIS unit's env, and the CLI lives in
+    # ~/.local/bin, which is not on this unit's PATH. Unset, the probe
+    # deletes the host's devin_bin row and every devin-lane run_slice queues
+    # "no host advertises devin_bin" (r317 restart, 2026-11-15, td684896).
+    # Same value as 20g's slices lane. ──
     _l_b_slice_env: >-
       {{ (
-        {'PRECIS_SLICE_ROOT': precis_slice_root | default(precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo'))}
+        {'PRECIS_SLICE_ROOT': precis_slice_root | default(precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo')),
+         'PRECIS_DEVIN_BIN': precis_devin_bin | default('/Users/deploy/.local/bin/devin')}
       ) if inventory_hostname in groups['gateway'] else {} }}
     # ── slice tokens (dark factory). PRECIS_MCP_SLICE_TOKEN_DIR is the shared
     # MCP server's per-slice grant registry (the mcp-http ensure script's
@@ -433,6 +441,18 @@
       {{ {'PRECIS_MCP_SLICE_TOKEN_DIR': precis_mcp_slice_token_dir}
          if (inventory_hostname in groups['gateway']
              and ((precis_mcp_slice_token_dir | default('')) | length > 0)) else {} }}
+    # ── slice repos (dark factory, td659522). PRECIS_SLICE_REPOS maps a second
+    # repo's name to its clone on this host (run_slice.slice_root_for); the
+    # worker never clones or guesses the path. job_ssh_node runs in this
+    # unit's rotation too, and the heartbeat's per-repo probe reads the value
+    # from THIS unit, so it renders the same host var as 20g: a dict
+    # precis_slice_repos (name -> absolute path, no default), set in the
+    # overlay for the gateway; unset or empty the key is omitted and every
+    # second repo stays unbuildable here. Gateway-only, like the slice root. ──
+    _l_b_slice_repos_env: >-
+      {{ {'PRECIS_SLICE_REPOS': precis_slice_repos | to_json}
+         if (inventory_hostname in groups['gateway']
+             and ((precis_slice_repos | default({})) | length > 0)) else {} }}
     # ── tts render (darwin only, gated on topology.yml tts_render — the
     # GPU-node-retirement rehome, 2026-08-29): launchd has no
     # EnvironmentFile, so the same vars roles/tts's tts.env.j2 drops for the
@@ -460,7 +480,7 @@
       {{ _l_b_base_env | combine(_l_b_review_env) | combine(_l_b_container_env)
          | combine(_l_b_dream_env) | combine(_l_b_anki_env) | combine(_l_b_gateway_extras_env)
          | combine(_l_b_fix_env) | combine(_l_b_slice_env) | combine(_l_b_slice_token_env)
-         | combine(_l_b_tts_env) }}
+         | combine(_l_b_slice_repos_env) | combine(_l_b_tts_env) }}
     # ── dedicated OA-fetch lane env (header's option-A block) ──
     # The collapsed-unit union minus everything `fetch` never reads, PLUS the
     # shared/identity env verbatim — that is what carried PRECIS_WATCH_INBOX,

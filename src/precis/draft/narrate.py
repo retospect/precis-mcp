@@ -13,7 +13,8 @@ layer reads three things off a draft and never writes back:
   notation pulled verbatim from a title/abstract is deterministically
   respoken (:func:`precis.draft.chem_speak.speak_chemistry` — ``Zn(NO3)2·6H2O``
   → "zinc nitrate hexahydrate", ``MOF-74`` → "MOF 74") *after* the lexicon so
-  a user override of a specific formula's surface form wins. Once
+  a user override of a specific formula's surface form wins. The formula
+  table lives in the ``chemistry`` section of ``data/tts_lexicon.json``. Once
   :func:`split_by_script` has settled a span's language, its numerals are
   spelled out deterministically (:func:`precis.draft.verbalize.verbalize_text`:
   abbreviations per ``data/tts_lexicon.json``, relative dates anchored to
@@ -40,6 +41,7 @@ from typing import Any
 
 from precis.draft.chem_speak import speak_chemistry
 from precis.draft.verbalize import verbalize_text
+from precis.utils import adsorbate_star
 
 # Chunk kinds skipped for the ear (v1): structural containers, and
 # figures/tables/code/glossary that don't read aloud as prose.
@@ -64,7 +66,12 @@ _DISPLAY_MATH = re.compile(r"\$\$.+?\$\$", re.DOTALL)
 _INLINE_MATH = re.compile(r"\$[^$]+\$")
 _CODE = re.compile(r"`([^`]+)`")
 _BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
-_ITALIC = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
+#: Same shape as the export/linkify italic rule — a ``*`` touching an
+#: element symbol is adsorbate notation, not emphasis (gr674905).
+_ITALIC = re.compile(
+    rf"(?<![*\w\\])\*(?!\s){adsorbate_star.STAR_NOT_FOLLOWED_BY_ELEMENT}"
+    rf"([^*]+?)(?<![\s\\]){adsorbate_star.STAR_NOT_PRECEDED_BY_ELEMENT}\*(?!\w)"
+)
 _SUBSUP = re.compile(r"</?su[bp]>")
 # Stray backslashes that leak into prose — a LaTeX line-break ``\\``, a
 # control-space ``\ ``, an escaped char (``\%`` / ``\_``), or a leaked macro

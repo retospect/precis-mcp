@@ -1,6 +1,6 @@
 """The decentralized recurring-work trigger — one scheduler, no singleton.
 
-Design: ``docs/backlog/factory-console-and-scheduling.md`` §15i (Slice 10)
+Design: `gr690514` §15i (Slice 10)
 — its exactly-once guarantee belongs in Postgres, not a designated node
 (a SPOF: down when a fire is due ⇒ missed fire).
 
@@ -10,7 +10,7 @@ conditional advance on ``scheduler_leases`` (:meth:`Store.claim_scheduler_lease`
 Only one worker wins each due cadence; a down worker never drops a fire; a
 fleet-wide outage collapses to one catch-up fire on recovery. Retires the
 standalone launchd thin-timers (``cron-tick``, ``watch-poll``, ``dream``,
-``anki-sync``, caspar's ``reconcile`` plist) it replaced.
+``anki-sync``, the database host's ``reconcile`` plist) it replaced.
 
 Runs by default on both worker profiles (registry's ``scheduler``
 ``ServiceSpec``, ``_SYS + _AGT``) — the agent profile must run it too, or
@@ -20,7 +20,9 @@ claimant.
 **Host affinity + local eligibility.** A cadence pinned via
 ``host_affinity`` is only *attempted* on that host — elsewhere the claim
 call is skipped, so the lease is never advanced by a host that can't do
-the work. A cadence's ``eligible`` callable is a cheaper local gate
+the work. The sentinel :data:`GATEWAY_AFFINITY` stands for the gateway host
+(``cluster.gateway_host``) and is resolved at compare time; with that setting
+unset the cadence is attempted on no host. A cadence's ``eligible`` callable is a cheaper local gate
 (env/file presence) checked before the claim attempt, so an ineligible
 worker never wins the lease over the truly-capable one. A cadence naming
 ``service`` gates the same way on that service's per-host resolved
@@ -55,6 +57,7 @@ argument as the heartbeat thread vs its in-rotation pass.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -63,6 +66,7 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from precis import settings
 from precis.utils.deadline import DeadlineExceeded, call_with_deadline
 from precis.utils.env import env_float
 from precis.workers.runner import BatchResult, _emit_handler
@@ -73,6 +77,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+#: ``Cadence.host_affinity`` sentinel: "the gateway host", resolved from the
+#: ``cluster.gateway_host`` setting when the scheduler loop compares it.
+GATEWAY_AFFINITY = "@gateway"
+
 
 @dataclass(frozen=True, slots=True)
 class Cadence:
@@ -82,7 +90,9 @@ class Cadence:
 
     ``host_affinity`` (§A) pins the cadence to one host name — every other
     host skips the claim attempt entirely (see the module docstring's
-    affinity contract). ``eligible`` (§A) is a cheap local-process gate
+    affinity contract). The value :data:`GATEWAY_AFFINITY` means "the
+    gateway host" (``cluster.gateway_host``), resolved when compared; unset,
+    no host attempts the cadence. ``eligible`` (§A) is a cheap local-process gate
     (env/file presence) checked before the claim; an ineligible worker skips
     without touching the lease, so a later eligible claimant still gets the
     fire (drop-no-fire, not a stolen one). ``resolve_interval`` (§A), when
@@ -167,7 +177,7 @@ def _run_watch_poll(store: Store, batch_size: int) -> None:
 
 
 def _run_dream_agent(store: Store, batch_size: int) -> None:
-    """One dream tick, fired from the melchior-pinned ``dream_agent`` cadence
+    """One dream tick, fired from the agent-host-pinned ``dream_agent`` cadence
     (§A) instead of the retired standalone 15-min hermes LaunchDaemon.
     ``batch_size`` is unused — ``run_dream_pass`` dispatches exactly one
     reflective-memory tick per fire, same as the old ``--batch-size 1`` the
@@ -187,7 +197,7 @@ def _run_dream_agent(store: Store, batch_size: int) -> None:
 
 
 def _run_draft_refresh_scan(store: Store, batch_size: int) -> None:
-    """One draft_refresh scan tick (docs/backlog/draft-refresh.md Part 2),
+    """One draft_refresh scan tick (me693762 Part 2),
     fired from the host-agnostic ``draft_refresh_scan`` cadence — any live
     worker can win it, same as ``health_digest``/``materialize``.
     ``batch_size`` caps how many jobs get minted this fire (defensive;
@@ -222,7 +232,7 @@ def _run_gripe_parked(store: Store, batch_size: int) -> None:
 
 def _run_gripe_parents(store: Store, batch_size: int) -> None:
     """Fill ``meta.dup_parents`` on freshly embedded gripes — pipeline
-    v2 slice 2 (``docs/backlog/gripe-pipeline-v2.md`` §Intake). Host-
+    v2 slice 2 (`me691700` §Intake). Host-
     agnostic like ``materialize``: the lease is the fleet-singleton
     throttle, and the pass itself is one indexed ANN query per claimed
     gripe — ``spends`` stays False, no LLM and no embedder call."""
@@ -407,6 +417,27 @@ def _run_gripe_triage(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_asks_triage(store: Store, batch_size: int) -> None:
+    """One asks triage tick (gr652333): the gate on the owner's
+    needs-you list — take up to 10 untriaged asks rows, one model
+    call each on the registered ``asks_triage.tier`` (default
+    ``big``), resolve/route/rewrite and stamp.
+    Dark unless ``service_config`` lights ``asks_triage`` for this host
+    — gated per host on the cadence (``service=``) and again inside the
+    pass. ``batch_size`` is unused — the pass's own batch cap is the
+    throttle. spends=True: the tick bills per-row model calls."""
+    del batch_size
+    from precis.workers.asks_triage import run_asks_triage_pass
+
+    result = run_asks_triage_pass(store)
+    log.info(
+        "scheduler: asks_triage inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_pool_refresh(store: Store, batch_size: int) -> None:
     """Copy pool signals; the pass checks its dark-by-default gate."""
     del batch_size
@@ -530,7 +561,7 @@ def _anki_clear_backoff(store: Store) -> None:
 
 
 def _run_anki_sync(store: Store, batch_size: int) -> None:
-    """One AnkiWeb sync tick, fired from the melchior-pinned ``anki_sync``
+    """One AnkiWeb sync tick, fired from the agent-host-pinned ``anki_sync``
     cadence (§A) instead of the retired standalone 30-min launchd timer.
     Reads the fix/project flags from config (env), matching the plist's
     ``PRECIS_ANKI_FIX_ENABLED`` / ``PRECIS_ANKI_PROJECT_ENABLED``; the
@@ -584,7 +615,7 @@ def _run_health_digest(store: Store, batch_size: int) -> None:
 
 
 def _run_materialize(store: Store, batch_size: int) -> None:
-    """One demand-materializer tick (§F cycle a, ``docs/backlog/cluster-scheduling.md`` §F), fired from the host-agnostic
+    """One demand-materializer tick (§F cycle a, `me695459` §F), fired from the host-agnostic
     ``materialize`` cadence (any live worker can win it — unpinned, like
     ``health_digest``). ``batch_size`` is unused. DARK unless
     ``PRECIS_MATERIALIZE_EMBED=1`` — see workers/materialize.py."""
@@ -928,6 +959,28 @@ def _run_quest_traps(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_llm_tier_regression(store: Store, batch_size: int) -> None:
+    """One weekly tier-ladder regression (``precis.workers.tier_regression``,
+    gr595546), fired from the weekly host-agnostic ``llm_tier_regression``
+    cadence — any live worker can win it, except the ``eligible`` gate
+    (:func:`_llm_tier_regression_eligible`) keeps a host that cannot
+    dispatch every ladder rung from claiming a fire it could only fail
+    (drop-no-fire; a capable host reaches LAN-served local offerings too).
+    ``batch_size`` is unused —
+    the pass scores the whole fixed set through every ladder rung each
+    fire. See workers/tier_regression.py; spends=True: each task bills a
+    routed model call."""
+    from precis.workers.tier_regression import run_tier_regression_pass
+
+    result = run_tier_regression_pass(store)
+    log.info(
+        "scheduler: llm_tier_regression inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_memory_recall_harvest(store: Store, batch_size: int) -> None:
     """Propose trace-backed pairs only when the service_config gate is lit."""
     from precis.workers.memory_recall_harvest import run_memory_recall_harvest_pass
@@ -1069,6 +1122,15 @@ def _gripe_triage_eligible() -> bool:
     return capability_probe.claude_bin_present()
 
 
+def _asks_triage_eligible() -> bool:
+    """Same strict ``claude_bin_present`` probe as
+    :func:`_gripe_triage_eligible` — the per-row calls route through the
+    same claude-class transports (gr652333)."""
+    from precis.workers import capability_probe
+
+    return capability_probe.claude_bin_present()
+
+
 def _structural_eligible() -> bool:
     """The SAME gate ``run_structural_pass`` checks internally
     (``precis.workers.review._gate_enabled``) AND the claude-agent lane
@@ -1130,6 +1192,69 @@ def _quest_traps_eligible() -> bool:
     it skips instead and a capable host still gets the fire (drop-no-fire,
     gr518089 — the same probe the other spends=True cadences share)."""
     return _claude_agent_lane()
+
+
+#: How long a computed ``llm_tier_regression`` eligibility verdict is
+#: reused. The probes it walks are TTL-cached reads, not network calls —
+#: ``live_config`` settings 15s; the ``served_by`` sets, ``get_secret``,
+#: ``codex login status`` and the container capability probe 60s — but a
+#: profile-gated rung costs an uncached ``service_config`` SELECT and the
+#: tick is 5s, so the verdict itself is memoized. Eligibility moves on
+#: deploy/credential timescales; a stale verdict costs at most one claim
+#: window on a real change.
+_LLM_TIER_REGRESSION_GATE_TTL_S = 30.0
+_llm_tier_regression_gate: tuple[float, bool] | None = None
+
+
+def _llm_tier_regression_eligible(_now: float | None = None) -> bool:
+    """gr595546/td663780: whether THIS host can dispatch **every rung** the
+    weekly regression pins — the actual transports the run needs, not the
+    claude-agent lane. ``_claude_agent_lane`` accepts the container rescue,
+    but the container carries ``claude_agent`` transports only: a
+    container-only host would claim the fire, error every ``claude_p``
+    completion rung (the router's ``_claude_rung_unavailable`` rescue does
+    not apply to it), and record a fabricated dark week — errored tasks
+    now count against the rate. So: each cloud rung must clear the
+    router's own :func:`~precis.utils.llm.router._rung_unavailable`
+    (binary + credential + endpoint, incl. the container carve-out for
+    ``claude_agent``); each non-cloud rung needs a reachable ``served_by``
+    slot for its model (:func:`~precis.utils.llm.local_serving.served_locally`)
+    — the exact requirement ``pinned_dispatch(..., 'local')`` has at
+    dispatch. A host missing any skips the claim so a capable host still
+    gets the fire (drop-no-fire); fleet-wide incapacity surfaces through
+    the seeded lease's cadence-staleness check, never as a scored run.
+    The verdict is memoized for :data:`_LLM_TIER_REGRESSION_GATE_TTL_S`
+    (see above); ``_now`` is the test seam."""
+    global _llm_tier_regression_gate
+    now = _now if _now is not None else time.monotonic()
+    if (
+        _llm_tier_regression_gate is not None
+        and now - _llm_tier_regression_gate[0] < _LLM_TIER_REGRESSION_GATE_TTL_S
+    ):
+        return _llm_tier_regression_gate[1]
+    ok = _llm_tier_regression_probe()
+    _llm_tier_regression_gate = (now, ok)
+    return ok
+
+
+def _llm_tier_regression_probe() -> bool:
+    """The uncached walk behind :func:`_llm_tier_regression_eligible`."""
+    from precis.llm_eval.regression import ladder_rungs
+    from precis.utils.llm import local_serving
+    from precis.utils.llm.router import (
+        _rung_is_cloud,
+        _rung_unavailable,
+        resolve_model,
+    )
+
+    for tier, rung in ladder_rungs():
+        model = rung.model or resolve_model(tier)
+        if _rung_is_cloud(rung):
+            if _rung_unavailable(rung, model) is not None:
+                return False
+        elif not local_serving.served_locally(model):
+            return False
+    return True
 
 
 def _dream_resolve_interval(store: Store) -> int:
@@ -1194,16 +1319,55 @@ def _over_daily_budget(store: Store, cadence: str) -> bool:
     return True
 
 
+def _weekly_report_eligible() -> bool:
+    return os.environ.get("PRECIS_WEEKLY_REPORT_ENABLED", "0") == "1"
+
+
+def _run_weekly_report(store: Store, batch_size: int) -> None:
+    """Mint one report per UTC week; retries retain the same activity bounds."""
+    del batch_size
+    from precis.workers._mint import mint_background_job
+
+    now = datetime.now(UTC)
+    until = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    since = until - timedelta(days=7)
+    key = f"weekly_report:{until.date().isoformat()}"
+    params = {"since": since.isoformat(), "until": until.isoformat()}
+    draft = os.environ.get("PRECIS_WEEKLY_REPORT_DRAFT")
+    section = os.environ.get("PRECIS_WEEKLY_REPORT_SECTION")
+    if draft and section:
+        params.update(draft=draft, section=section)
+    with store.pool.connection() as conn:
+        if conn.execute(
+            "SELECT 1 FROM refs WHERE kind='job' AND meta->>'idem_key' = %s AND retired_at IS NULL",
+            (key,),
+        ).fetchone():
+            return
+        mint_background_job(
+            store,
+            conn=conn,
+            job_type="weekly_report",
+            executor="job_inproc",
+            title=f"Weekly report {since.date()} to {until.date()} UTC",
+            params=params,
+            idem_key=key,
+            prio=8,
+        )
+        conn.commit()
+
+
 #: The folded cadences. ``cron_tick``/``watch_poll`` intervals mirror the
 #: launchd timers they retire (``precis-cron-tick`` 60s, ``precis-watch-poll``
 #: 3600s) — host-agnostic, no affinity/eligibility needed. ``dream_agent`` /
-#: ``anki_sync`` (§A) are host-pinned to melchior (the OAuth/anki-wheel host)
+#: ``anki_sync`` (§A) are host-pinned to the agent host (the OAuth/anki-wheel host)
 #: with an ``eligible`` gate so only the *agent*-profile process there (which
-#: carries the env) ever wins them — melchior's system-profile worker is
+#: carries the env) ever wins them — the agent host's system-profile worker is
 #: ineligible and skips without touching the lease. ``dream_agent``'s
 #: interval is resolved live from the §G knob (DB > env > compiled 15min) via
 #: ``resolve_interval``; ``interval_s`` below is just its documented default.
-#: ``reconcile`` (the caspar nightly duplicate sweep) has **no** cadence here
+#: ``reconcile`` (the database-host nightly duplicate sweep) has **no** cadence here
 #: — its plist is redundant with the existing ``paper_reconcile`` worker pass
 #: (its own 24h ``app_state`` throttle + advisory lock, already fleet-safe),
 #: so folding it is a pure *retirement* of the plist, not a new cadence.
@@ -1218,12 +1382,19 @@ def _over_daily_budget(store: Store, cadence: str) -> bool:
 #: ``cron_tick`` only *spawns child todos* — those become dispatch candidates
 #: and are gated there, at mint, so marking this cadence too would double-gate
 #: the same spend.
+#: ``weekly_report`` is disabled by default; ``PRECIS_WEEKLY_REPORT_ENABLED=1`` opts in.
 CADENCES: tuple[Cadence, ...] = (
+    Cadence(
+        name="weekly_report",
+        interval_s=7 * 24 * 3600,
+        run=_run_weekly_report,
+        eligible=_weekly_report_eligible,
+    ),
     Cadence(name="recipe_gap", interval_s=6 * 3600, run=_run_recipe_gap),
     Cadence(name="llm_suitability", interval_s=24 * 3600, run=_run_llm_suitability),
     Cadence(name="cron_tick", interval_s=60, run=_run_cron_tick),
     Cadence(name="watch_poll", interval_s=3600, run=_run_watch_poll),
-    # docs/backlog/self-healing-spine.md Layer 2: the liveness-net digest.
+    # me691477 Layer 2: the liveness-net digest.
     # Host-agnostic like cron_tick/watch_poll — any live worker can win it;
     # §A's lease machinery IS the fleet-singleton throttle, so
     # workers/health_digest.py doesn't invent its own.
@@ -1233,7 +1404,7 @@ CADENCES: tuple[Cadence, ...] = (
     # opts out (workers/materialize.py::_materialize_enabled); this cadence
     # firing every 5 min is itself harmless — the pass no-ops when disabled.
     Cadence(name="materialize", interval_s=300, run=_run_materialize),
-    # docs/backlog/gripe-pipeline-v2.md §Intake: the duplicate-parent
+    # me691700 §Intake: the duplicate-parent
     # backfill. Same 300 s as materialize — a filed gripe's embedding
     # lands inside that pass's window, so this rides the same latency
     # band the spec budgets (~5 min busy). Host-agnostic; spends=False
@@ -1275,7 +1446,7 @@ CADENCES: tuple[Cadence, ...] = (
         name="dream_agent",
         interval_s=15 * 60,
         run=_run_dream_agent,
-        host_affinity="melchior",
+        host_affinity=GATEWAY_AFFINITY,
         eligible=_dream_agent_eligible,
         resolve_interval=_dream_resolve_interval,
         spends=True,
@@ -1290,10 +1461,10 @@ CADENCES: tuple[Cadence, ...] = (
         name="anki_sync",
         interval_s=24 * 3600 + 29 * 60,
         run=_run_anki_sync,
-        host_affinity="melchior",
+        host_affinity=GATEWAY_AFFINITY,
         eligible=_anki_sync_eligible,
     ),
-    # docs/backlog/draft-refresh.md Part 2: the living-draft staleness
+    # me693762 Part 2: the living-draft staleness
     # scanner. Host-agnostic like health_digest/materialize — the lease
     # IS the fleet-singleton throttle. Off the exact hour (4h7m) so it
     # doesn't pile onto the same tick as the hourly cadences above.
@@ -1408,6 +1579,21 @@ CADENCES: tuple[Cadence, ...] = (
         service="gripe_triage",
         spends=True,
     ),
+    # gr652333: the asks ("needs you") triage tick — same 15-minute
+    # shape as gripe_triage's, one model call per untriaged row
+    # (cap 10/fire, tier from the registered `asks_triage.tier`).
+    # `service` gates the claim on the host's resolved
+    # asks_triage prio and the pass re-checks inside; `eligible` is the
+    # same strict claude-binary probe. spends=True: each row bills one
+    # model call, so the daily ceiling gates the fire.
+    Cadence(
+        name="asks_triage",
+        interval_s=15 * 60,
+        run=_run_asks_triage,
+        eligible=_asks_triage_eligible,
+        service="asks_triage",
+        spends=True,
+    ),
     Cadence(
         name="pool_refresh",
         interval_s=600,
@@ -1435,7 +1621,7 @@ CADENCES: tuple[Cadence, ...] = (
     # own lane at dispatch. spends=False: no model call.
     # Ships DISABLED: the pass no-ops until a `service_config` row lights
     # `gripe_dispatch` (prio > 0) for the host — `precis service prio
-    # melchior gripe_dispatch 1`. The cadence is `service=`-gated with
+    # <agent-host> gripe_dispatch 1`. The cadence is `service=`-gated with
     # `claim_when_dark`: a host with no live row skips WITHOUT claiming
     # while another host is lit (a lit host takes the fire; 6 of 18 fires
     # over 3 h were burnt as dark no-ops on a row-less host), but with no
@@ -1587,6 +1773,25 @@ CADENCES: tuple[Cadence, ...] = (
         interval_s=7 * 24 * 3600 + 41 * 60,
         run=_run_quest_traps,
         eligible=_quest_traps_eligible,
+        spends=True,
+    ),
+    # gr595546: the weekly tier-ladder regression — run the packaged
+    # ~30-task gold set through every rung of every tier's resolved chain
+    # (local and cloud offerings alike, pinned one rung at a time), record
+    # each offering's pass rate in app_settings, and let the
+    # `llm-tier-regression` condition row fire on a week-over-week drop —
+    # model, wire or provider drift, including a silent model-id swap.
+    # Host-agnostic, off the exact week (+67m, clear of the other weekly
+    # fires). `eligible` gates on the rungs the run will actually pin —
+    # a host that cannot dispatch one (e.g. a container-only lane against
+    # claude_p rungs, or no reachable served_by slot for a local rung)
+    # skips the claim so a capable host still gets the fire.
+    # spends=True: every task bills a routed model call.
+    Cadence(
+        name="llm_tier_regression",
+        interval_s=7 * 24 * 3600 + 67 * 60,
+        run=_run_llm_tier_regression,
+        eligible=_llm_tier_regression_eligible,
         spends=True,
     ),
     # The /secrets stored-status refresher: mints one `secret_status`
@@ -1764,8 +1969,16 @@ def _scheduler_pass(
             store.seed_scheduler_lease(cad.name, cad.interval_s)
         except Exception:  # pragma: no cover — a seed blip must not wedge the loop
             log.warning("scheduler: lease seed failed for %s", cad.name, exc_info=True)
-        if cad.host_affinity is not None and host != cad.host_affinity:
-            continue
+        if cad.host_affinity is not None:
+            # GATEWAY_AFFINITY resolves to cluster.gateway_host; unset (None)
+            # never equals a host name, so the cadence runs nowhere.
+            pinned = (
+                settings.gateway_host()
+                if cad.host_affinity == GATEWAY_AFFINITY
+                else cad.host_affinity
+            )
+            if pinned is None or host != pinned:
+                continue
         if cad.eligible is not None:
             try:
                 is_eligible = cad.eligible()

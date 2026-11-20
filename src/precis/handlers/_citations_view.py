@@ -41,7 +41,7 @@ pub_id_lookup.PLACEHOLDER_RE` for base32 ``[pub_id]`` placeholders),
 scanned in text order and span-deduped so a pub_id shaped like a handle
 (e.g. ``fi2345``) is never double-counted.
 
-**DOI completeness line** (docs/backlog/draft-doi-completeness-check.md):
+**DOI completeness line** (gr690484):
 a header line summarizing DOI presence/validity across every distinct
 paper this view enumerates (direct cites + evidence-demand additions),
 reusing the identifier/ref lookups :func:`_build_rows` already fetched —
@@ -368,8 +368,7 @@ def _build_rows(
                     }
                 )
 
-    # DOI completeness/validity line (docs/backlog/
-    # draft-doi-completeness-check.md) — over the papers this draft
+    # DOI completeness/validity line (gr690484) — over the papers this draft
     # actually *cites* (direct paper/patent cite tokens only), reusing the
     # identifier/ref lookups already fetched above rather than a second
     # walk. Deliberately excludes ``evidence_rows_paper_ids`` — those are

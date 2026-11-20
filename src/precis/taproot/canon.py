@@ -1,6 +1,6 @@
 """Taproot Phase 1 — flat claim canonicalization (the gate).
 
-Design: ``docs/backlog/taproot.md`` §"The crux — canonicalization = flat
+Design: `me694691` §"The crux — canonicalization = flat
 claim dedup". Acceptance bar: the fixture eval scores **zero over-merges**
 (``tests/test_taproot_eval_canon.py``). Four functions, one cascade:
 
@@ -36,7 +36,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict
 
 from precis.embedder import EmbedderUnavailable
 from precis.errors import BadInput, Upstream
@@ -131,7 +131,7 @@ def not_hypothesis_predicate_sql(*, ref_alias: str = "r") -> str:
     apart — for *reading* the corpus a hypothesis is a claim hub. It
     matters for passes that go looking for supporting evidence: widening a
     conjecture (``hub_refine``) is a confirmation engine
-    (``docs/backlog/nanopub-corpus-remediation.md``) — it manufactures the
+    (`me691969`) — it manufactures the
     evidence a hypothesis's own gates refuse it.
 
     Reads ``refs.meta->>'artifact_type'``
@@ -214,6 +214,14 @@ class Verdict(TypedDict):
     verdict: Verdict3 | Literal["error"]
     confidence: float
     rationale: str
+    #: ``"<rung transport>:<model>"`` — the chain rung that judged the
+    #: verdict, stamped by :func:`dedup_judge` off the dispatch result
+    #: (``LlmResult.rung_transport``/``model``), so a dedup decision can be
+    #: audited back to the wire that produced it (gr639347 — the judge's
+    #: quota fallback can land the call on a different rung than rung 0).
+    #: Unset on ``"error"`` verdicts (nothing judged) and on
+    #: :func:`merge_confirm` outcomes.
+    judge: NotRequired[str]
 
 
 @dataclass(frozen=True)
@@ -235,25 +243,33 @@ class CanonicalClaim:
     claim_type: str | None = None
 
 
-#: The closed claim-sort set (``docs/backlog/taproot-claim-model-v2.md``).
+#: The closed claim-sort set (`me690796`).
 #: Defined here, not in :mod:`precis.taproot.claim_type`, because the
 #: extractor prompt below embeds the definitions and ``claim_type`` imports
 #: this module. The strings are stored verbatim in ``refs.meta.claim_type``.
 CLAIM_TYPES: tuple[str, ...] = (
     "measurement",
+    "calculation",
     "definition",
     "capability",
     "mechanism",
     "landscape",
 )
+CLAIM_TYPE_CHOICES = "|".join(CLAIM_TYPES)
 
 #: Definitions shared verbatim by :data:`_EXTRACT_PROMPT` (mint path) and
 #: ``claim_type._PROMPT_CLASSIFY`` (backfill), so both sort the same way.
 CLAIM_TYPE_DEFINITIONS = """\
 type = the sort of claim, exactly one of:
-  measurement — a stated quantity, trend, or observed result of one study
-    under its method/regime ("…tensile strength of ~130 GPa", "…reduces the
-    binding energy from 1.5 to 0.74 eV").
+  measurement — an experimentally measured quantity, trend, or observed
+    result ("…a work function of 4.9 eV measured by photoemission").
+  calculation — a result or prediction obtained from a calculation,
+    simulation, or theoretical model ("…DFT with PBE predicts an adsorption
+    energy of −0.74 eV"; "…NEGF yields a current of 5 μA at 0.1 V").
+    Classify by how the result was obtained, even when the same quantity
+    can be measured experimentally. A value derived from experimental
+    observations (e.g. a fit to measured data) is still a measurement
+    when the claim reports the experimental result.
   definition — what a term, structure, or class is: identity, composition,
     classification ("A carbon nanobud is a fullerene covalently bonded to
     the sidewall of a nanotube").
@@ -694,13 +710,22 @@ Rules — the claim will be read ALONE, without this passage:
    states only the practice, claim = null.
 3. Specific: keep the numbers, materials, and conditions the passage
    states; drop empty intensifiers ("extraordinary", "remarkable").
+   A value that depends on a state variable carries that variable in the
+   claim when the passage (or its surrounding context) states it: applied
+   potential WITH its reference electrode ("-0.6 V vs RHE"; for computed
+   free energies the potential and model, "at U = 0 V vs RHE
+   (computational hydrogen electrode)"), electrolyte and concentration or
+   pH, illumination (source, wavelength) for photo results, temperature
+   for thermal catalysis. Field defaults (room temperature, ambient
+   pressure, adsorption descriptors at 0 V) need not be stated. Never
+   invent a condition the text does not state.
 4. Plain text, no TeX: the claim renders without a math engine — write
    formulas with UTF-8 sub/superscripts ("C60" -> "C₆₀", "g-C$_3$N$_4$"
    -> "g-C₃N₄", "cm$^2$/Vs" -> "cm²/Vs")."""
 
 #: Why the prompt's mechanism rule is "its own atom + an ``explains`` pair"
 #: (P2-13, then the 2026-10-03 causal split,
-#: ``docs/backlog/taproot-compound-migration.md``): "X because Y" says one
+#: `me691011`): "X because Y" says one
 #: fact (X) and its explanation (Y). P2-13 first kept the clause folded into
 #: the atom it explains, because the only relation :mod:`precis.taproot.migrate`
 #: minted between atoms of a split was ``conjunct-of`` — "these are peers of
@@ -797,6 +822,12 @@ Examples:
 - "Single-wall carbon nanocones were observed with opening angles of
   approximately 19, 39, 60, 85, and 113 degrees."  -> GOOD (specific,
   self-contained).
+- "Ammonia was produced with a Faradaic efficiency of 85% at -0.5 V vs
+  RHE in 0.5 M K₂SO₄ with 0.1 M KNO₃."  -> BAD "The catalyst reaches a
+  Faradaic efficiency of 85% for ammonia." (drops potential, reference
+  electrode, electrolyte); GOOD "The catalyst reaches a Faradaic
+  efficiency of 85% for ammonia at -0.5 V vs RHE in 0.5 M K₂SO₄ with
+  0.1 M KNO₃."
 - "Graphene exhibits extraordinary tensile strength."  -> weak; if the
   passage states the value, prefer "Graphene exhibits a tensile strength
   of ~130 GPa."
@@ -833,7 +864,10 @@ Examples:
 For each claim you emit: give the normalized sentence, its type, plus any
 of material/method/quantity/regime it names (omit keys it doesn't name).
 material = the substance/compound the claim is about; method = the named
-technique, procedure, or instrument; quantity = a numeric measure with
+technique, procedure, or instrument. For a calculation keep the reported
+computational method and model (e.g. DFT with PBE, MD with the named force
+field) together in method, and retain them in the sentence when they qualify
+the result. Do not infer missing details. quantity = a numeric measure with
 units ("130 GPa", "450 h⁻¹", "92% yield") — never a bare description or
 label; regime = the named condition the claim holds under ("RT", "under
 UV", "homogeneous solution"). If the passage asserts nothing groundable at
@@ -855,7 +889,9 @@ Respond with EXACTLY ONE JSON object, nothing else:
   "claims": [
     {{
       "claim": "<one normalized, atomic sentence>",
-      "type": "<measurement|definition|capability|mechanism|landscape>",
+      "type": "<"""
+    + CLAIM_TYPE_CHOICES
+    + """>",
       "material": "<optional>",
       "method": "<optional>",
       "quantity": "<optional>",
@@ -1005,7 +1041,7 @@ def extract_claim_strict(chunk_text: str) -> ClaimExtraction:
     on a dispatch error instead of degrading to the empty extraction.
 
     Conflating an infra failure with a semantic NO-CLAIM produced the
-    melchior dry-run's all-``no-claim`` garbage report when every call
+    agent-host dry-run's all-``no-claim`` garbage report when every call
     ECONNREFUSED'd. Unparseable-but-successful output still degrades to
     the empty extraction — the model *did* respond, so that is a genuine
     no-claim — except a cut-off reply (:class:`ExtractionTruncated`), which
@@ -1455,8 +1491,15 @@ SAME       — they state the exact same fact under the same conditions
              numeric value, or named mechanism that one claim asserts and
              the other does not — that added specificity is a narrower
              claim (see DIFFERENT).
-CONTRADICTS — they share the same scope (same material/method/regime) but
-             assert opposite conclusions.
+CONTRADICTS — they assert mutually exclusive conclusions about the same
+             material and quantity under shared conditions and with
+             comparable methods. For ranges (pressure, temperature, ...),
+             check whether both conclusions apply within the overlap.
+             Trends over adjacent intervals can coexist even if the
+             intervals share an endpoint. A claim about a trend and a
+             calculation explaining that trend can also coexist. Use
+             DIFFERENT when the regimes or methods make the claims
+             incomparable.
 DIFFERENT  — anything else: a genuinely distinct claim, a broader/narrower
              claim, a different scope, or claims about different things
              entirely (even if they sound superficially similar or share a
@@ -1466,9 +1509,10 @@ DIFFERENT  — anything else: a genuinely distinct claim, a broader/narrower
              specific formula that quantifies it are DIFFERENT, not the same
              fact stated in more detail.
 
-Default to DIFFERENT unless you are confident the claims are the SAME fact
-under the SAME conditions. A merge of two claims that are not really the
-same is the dangerous error here — when in doubt, DIFFERENT.
+When in doubt about equivalence or contradiction, use DIFFERENT.
+For example, measured negative c-axis compressibility from 0 to 0.15 GPa
+and positive c-axis compressibility explained by a calculated angle plateau
+from 0.15 to 0.6 GPa are DIFFERENT.
 
 CLAIM A: {claim_a}
 
@@ -1513,9 +1557,11 @@ def dedup_judge(a: str, b: str) -> Verdict:
     """THE crux call — is claim ``a`` the same as claim ``b``, different, or
     a contradiction? MEDIUM tier, one bounded pairwise judgment.
 
-    Merges only on genuinely the same fact + same conditions; any real
-    difference -> ``"different"``; opposite polarity at the same scope ->
-    ``"contradicts"``. Biased hard toward ``"different"`` — a dispatch
+    Returns ``"same"`` for the same fact under the same conditions.
+    ``"contradicts"`` requires mutually exclusive conclusions about the
+    same material and quantity under overlapping conditions and with
+    comparable methods. Use ``"different"`` for other pairs, including
+    trends over adjacent intervals that only share an endpoint. A dispatch
     response that is unparseable degrades to ``"different"`` at
     confidence 0.0, never a silent ``"same"``. A dispatch error is NOT a
     verdict: it returns ``verdict="error"`` (confidence 0.0) so a transient
@@ -1526,6 +1572,13 @@ def dedup_judge(a: str, b: str) -> Verdict:
     "different" silently switched dedup off. A non-empty but unparseable
     reply stays "different": the model did answer, just not in a shape we
     can read, and the bias is toward not merging.
+
+    A judged verdict records the rung that produced it: ``judge`` is
+    ``"<rung transport>:<model>"`` off the dispatch result, and the same
+    marker is appended to ``rationale`` as `` [judge: <judge>]`` so a
+    persisted rationale names its judge — the audit trail for the
+    ``taproot:dedup`` quota fallback (gr639347), which can land the call
+    on a different rung than rung 0.
     """
     prompt = _DEDUP_PROMPT.format(claim_a=a, claim_b=b)
     res = route(
@@ -1550,7 +1603,19 @@ def dedup_judge(a: str, b: str) -> Verdict:
         log.warning("taproot: dedup_judge got an empty model reply")
         return Verdict(verdict="error", confidence=0.0, rationale="empty model reply")
     data = res.data or _parse_json_object(res.text)
-    return _coerce_verdict(data, default_rationale="unparseable model output")
+    v = _coerce_verdict(data, default_rationale="unparseable model output")
+    # Stamp the rung that judged it — ``rung_transport`` names the wire the
+    # failover walk actually landed (``None`` when no ladder stamped it);
+    # ``model`` the rung's own model. ``getattr`` tolerates a partial
+    # result stub; an absent field reads "?". Error verdicts above return
+    # early and carry no judge — nothing judged.
+    judge = (
+        f"{getattr(res, 'rung_transport', None) or '?'}:"
+        f"{getattr(res, 'model', None) or '?'}"
+    )
+    v["judge"] = judge
+    v["rationale"] = f"{v['rationale']} [judge: {judge}]"
+    return v
 
 
 # Prod MEDIUM dedup runs cloud haiku over the ``claude_p`` transport: one
@@ -1567,6 +1632,7 @@ def judge_candidates(
     judge_fn: Callable[[str, str], Verdict] = dedup_judge,
     *,
     max_workers: int = JUDGE_MAX_WORKERS,
+    on_retry: Callable[[], None] | None = None,
 ) -> list[tuple[MergeCandidate, Verdict]]:
     """Run ``judge_fn(sentence, cand.claim)`` for every candidate
     concurrently and return ``(candidate, verdict)`` pairs in candidate
@@ -1579,11 +1645,14 @@ def judge_candidates(
     task runs in its own copy of the caller's :mod:`contextvars` context so
     the router still sees the caller's session / tick attribution. An
     exception from any judgment propagates, as the serial loop did.
+    ``on_retry`` observes each scheduled retry, including concurrent calls.
     """
 
     def judge_once(claim: str) -> Verdict:
         v = judge_fn(sentence, claim)
         if v["verdict"] == "error":
+            if on_retry is not None:
+                on_retry()
             log.warning(
                 "taproot: dedup judgment errored, retrying once: %s", v["rationale"]
             )
@@ -1610,7 +1679,7 @@ def judge_candidates(
 #: Hub-mint (agent put door) neighbours farther than this cosine distance
 #: are not offered to :func:`containment_judge` (same-passage neighbours
 #: bypass it). 0.30 covers the calibration pair fi530867/fi350175 (0.294);
-#: recalibrate with docs/backlog/hub-duplicate-reconcile.md item 3.
+#: recalibrate with me690507 item 3.
 CONTAINMENT_MAX_DISTANCE = 0.30
 #: At most this many ANN neighbours go to the containment judge per put.
 CONTAINMENT_MAX_CANDIDATES = 3
@@ -1636,15 +1705,23 @@ SAME           — the same fact under the same conditions, differing only in
                  wording or restated detail.
 COMPONENT      — NEW CLAIM is one atomic piece of EXISTING CLAIM: the
                  existing claim is a compound that asserts NEW CLAIM
-                 together with other findings.
+                 together with other findings. The existing claim must
+                 itself state NEW CLAIM's content; sharing a dataset,
+                 calculation campaign, material or paper does not make one
+                 claim a component of the other.
 GENERALIZATION — NEW CLAIM is a broader or narrower statement of the same
                  finding (one contains the other, same subject and
                  conditions family), so that two hubs would double-count it.
 DIFFERENT      — a genuinely distinct claim, a different scope, or only
                  topically related.
 
-Default to DIFFERENT unless the overlap is clear. A different material,
-method, quantity or regime makes the claims DIFFERENT.
+Default to DIFFERENT unless the overlap is clear. If each claim could be
+true while the other is false, the claims are DIFFERENT. For example,
+reproducing an experimental peak splitting and reporting how many spectra
+were simulated are DIFFERENT, even for the same simulation campaign. If the
+existing claim asserts both the reproduction and the count, reproduction
+alone is a COMPONENT. A different material, method, quantity or regime
+makes the claims DIFFERENT.
 
 NEW CLAIM: {new}
 
@@ -1722,16 +1799,20 @@ def judge_containment(
     judge_fn: Callable[[str, str], ContainmentVerdict] = containment_judge,
     *,
     max_workers: int = JUDGE_MAX_WORKERS,
+    on_retry: Callable[[], None] | None = None,
 ) -> list[tuple[MergeCandidate, ContainmentVerdict]]:
     """Run ``judge_fn(sentence, cand.claim)`` per candidate concurrently, one
     retry on ``error`` (as :func:`judge_candidates`); candidate order kept.
     A candidate still errored after the retry raises :class:`Upstream` —
     an unjudged neighbour must not read as "different" and mint a duplicate.
+    ``on_retry`` observes each scheduled retry, including concurrent calls.
     """
 
     def once(claim: str) -> ContainmentVerdict:
         v = judge_fn(sentence, claim)
         if v["verdict"] == "error":
+            if on_retry is not None:
+                on_retry()
             v = judge_fn(sentence, claim)
         return v
 

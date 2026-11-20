@@ -1,5 +1,5 @@
 """precis_geom.pcb — typed Python builder for pcb workspace scripts
-(docs/backlog/pcb-workspace-code.md §Q1; slice 0: "Builder + goldens, no
+(me693071 §Q1; slice 0: "Builder + goldens, no
 container, no DB").
 
 A board script builds ``Board``/``Net``/``Part``/``Pin``/``Footprint``

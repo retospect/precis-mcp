@@ -1,5 +1,5 @@
 """Regression for gr486952: the precis-aizynth image failed to build on
-castor (aarch64) — ``pip install linchemin`` pulls hdbscan, which publishes
+cedar (aarch64) — ``pip install linchemin`` pulls hdbscan, which publishes
 no aarch64 wheel, so pip compiles it from source and ``python:3.11-slim``
 ships no C/C++ toolchain (``gcc: No such file or directory``).
 

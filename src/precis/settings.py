@@ -1,6 +1,6 @@
 """DB-resident settings — the non-secret sibling of :mod:`precis.secrets`.
 
-Why (``docs/backlog/db-resident-settings.md``): non-secret config reaches
+Why (`gr690347`): non-secret config reaches
 code as env vars, and env has to survive a chain of launchers before code
 sees it — ansible template → launchd plist / systemd unit → asa's stdio MCP
 ``env`` block → spawned ``precis serve`` → sometimes a ``claude -p`` child.
@@ -68,8 +68,12 @@ import logging
 import os
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
+
+from psycopg import Connection
+from psycopg.pq import TransactionStatus
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -469,6 +473,22 @@ REGISTRY: dict[str, SettingSpec] = {
             "ask a human.",
         ),
         SettingSpec(
+            key="release.cut_host",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="The node (PRECIS_NODE) the first release_cut of a pass "
+            "is pinned to (gr713351): the cut's checkout is also the "
+            "deploy's, and only a host holding the private deploy "
+            "overlay (deploy/inventory + .vault-pass) can deploy from "
+            "it. Later cut-pinned jobs follow meta.release.host; this "
+            "names where the first cut runs, before that exists. Unset: "
+            "plan_dispatch holds the cut with a note (fail closed) "
+            "rather than let any ssh_node host claim it. A params."
+            "target_node on the node still wins. DB-only — no env "
+            "fallback, so a drifted host cannot redirect the cut.",
+        ),
+        SettingSpec(
             key="pr.factory_builders",
             type="str",
             env_var=None,
@@ -539,10 +559,25 @@ REGISTRY: dict[str, SettingSpec] = {
             type="int",
             env_var="PRECIS_FACTORY_FREE_LANE_WAIT_MIN",
             default=20,
-            doc="Minutes a run_slice submit parks for a free builder lane "
-            "at its cap before a paid lane may take the pick (gr573563; "
+            doc="Minutes a run_slice submit parks while every fit "
+            "flat-rate (free or subscription) builder lane is at its cap "
+            "before a metered lane may take the pick (gr573563; free and "
+            "subscription share the pick's tier 0 since gr685753, "
             "measured in wait_parks * LANE_FULL_BACKOFF). 0 pays "
             "immediately, a negative value reads as 0.",
+        ),
+        SettingSpec(
+            key="factory.overlap_hold_max_runs",
+            type="int",
+            env_var="PRECIS_FACTORY_OVERLAP_HOLD_MAX_RUNS",
+            default=3,
+            doc="Ended run_slice runs after which a build that has not "
+            "landed stops holding the file-overlap lock (td603849) while "
+            "it rebuilds or waits for its pre-land review; it still holds "
+            "while its land_slice is live. Builds that did not converge "
+            "with their reviewers held 30 queued builds for up to 23 h "
+            "(2026-11-19). 0 never lifts the hold, a negative value reads "
+            "as 0.",
         ),
         SettingSpec(
             key="factory.deny_relaxed",
@@ -559,6 +594,17 @@ REGISTRY: dict[str, SettingSpec] = {
             "deployed.",
         ),
         SettingSpec(
+            key="factory.open_repos",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="DB-only. Comma-separated repos besides precis the factory "
+            "may build slices in (lanes.open_repos, td659522). A name "
+            "counts only when lanes.known_repos() has a build profile "
+            "with a lander for it. Unset, absent or unreadable: a todo tagged repo:<other> "
+            "is skipped by plan_dispatch and refused by run_slice.",
+        ),
+        SettingSpec(
             key="factory.gripe_trust",
             type="str",
             env_var=None,
@@ -573,6 +619,69 @@ REGISTRY: dict[str, SettingSpec] = {
             "reads as 'filer'.",
         ),
         SettingSpec(
+            key="factory.gripe_dispatch.queue_depth",
+            type="int",
+            env_var=None,
+            default=2,
+            doc="DB-only. Target queued, unclaimed build jobs per free executor "
+            "slot on live code-capable hosts. Bounds how far ahead gripe text "
+            "is frozen into chains; host claim loops alone admit running work.",
+        ),
+        SettingSpec(
+            key="factory.gripe_dispatch.max_parked",
+            type="int",
+            env_var=None,
+            default=500,
+            doc="DB-only. Last-resort backstop on gripe fix chains whose "
+            "build is not live (no running job or claim: queued, "
+            "file-overlap held, paused, blocked, ask-user, waiting-for:*, "
+            "child-failed:*) in the gripe_dispatch intake "
+            "(precis.workers.gripe_dispatch); the queued queue_depth "
+            "buffer counts here. Such work holds no running slot and is never closed by a timer, so the count of "
+            "parked chains is no longer a brake; at this many the pass "
+            "still mints nothing and logs why. The brake is the cause-based "
+            "breaker (factory.gripe_dispatch.breaker_parks).",
+        ),
+        SettingSpec(
+            key="factory.gripe_dispatch.breaker_parks",
+            type="int",
+            env_var=None,
+            default=5,
+            doc="DB-only. K of the cause-based breaker "
+            "(precis.plans.lane_breaker): when the newest K ended "
+            "run_slice builds on one lane or one host all failed of the "
+            "same engine cause (lane auth, HTTP 401/403, quota/rate/"
+            "transport, failure_class=infra, host refusal) across at "
+            "least two build nodes, one ask-user todo names it and new "
+            "builds stop going there until the ask is closed. Every other "
+            "lane and host keeps dispatching.",
+        ),
+        SettingSpec(
+            key="factory.gripe_dispatch.stall_hours",
+            type="int",
+            env_var=None,
+            default=6,
+            doc="DB-only. Hours a gripe fix chain's whole plan may sit "
+            "untouched (build not live, nothing live in the plan, no open "
+            "ask-user todo in it) before the gripe_dispatch pass opens ONE "
+            "ask-user todo on the chain: resume, start over, or drop. The "
+            "chain is never closed by the sweep; the open ask keeps it "
+            "parked and out of the sweep. The gripe counts the asks "
+            "(chain-stalls:<n>).",
+        ),
+        SettingSpec(
+            key="asks_triage.tier",
+            type="str",
+            env_var="PRECIS_ASKS_TRIAGE_TIER",
+            default="big",
+            doc="LLM tier for the asks_triage pass's per-row triage call "
+            "(precis.workers.asks_triage, gr652333): a router tier name "
+            "(frontier|big|medium) or a retired alias. Default 'big' — "
+            "the spec's recommended Sonnet-class posture; 'frontier' is "
+            "the 'clever' upgrade for a stubborn backlog, 'medium' the "
+            "cheap downgrade. Unknown values fall back to 'big'.",
+        ),
+        SettingSpec(
             key="release.red_waiver",
             type="str",
             env_var=None,
@@ -585,6 +694,17 @@ REGISTRY: dict[str, SettingSpec] = {
             "pass proceeds to deploy without a re-cut. 'off': the "
             "release-fix loop runs as before. An unrecognised value "
             "reads as 'off'.",
+        ),
+        SettingSpec(
+            key="cluster.gateway_host",
+            type="str",
+            env_var="PRECIS_GATEWAY_HOST",
+            default=None,
+            doc="Name of the gateway host: the node running the agent-profile "
+            "worker, the web/MCP gateway and the loopback SMALL model server; "
+            "the deploy sets it from the inventory variable gateway_host. "
+            "Unset: sandbox_run refuses every target, the SMALL drain bands "
+            "do not mint and the gateway-pinned cadences run nowhere.",
         ),
     )
 }
@@ -632,10 +752,17 @@ def _db_read_strict(store: Store, key: str) -> str | None:
     the row is genuinely unset, anything else raises. For callers whose
     default-on-error policy must differ from default-on-unset (a security
     control that fails closed)."""
+    # The pool may lend a caller's open transaction. Roll back a failed
+    # query before the best-effort reader catches it and uses its fallback.
     with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT value FROM app_settings WHERE key = %s", (key,)
-        ).fetchone()
+        borrowed = (
+            isinstance(conn, Connection)
+            and conn.info.transaction_status == TransactionStatus.INTRANS
+        )
+        with conn.transaction() if borrowed else nullcontext():
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = %s", (key,)
+            ).fetchone()
     return str(row[0]) if row else None
 
 
@@ -759,6 +886,13 @@ def get_str(
     """Resolve ``key`` as a string. See the module docstring for the order."""
     raw, _layer = _resolve_raw(key, store=store, default=default)
     return None if raw is None else str(raw)
+
+
+def gateway_host(*, store: Store | None = None) -> str | None:
+    """The configured gateway host name (``cluster.gateway_host``), stripped;
+    ``None`` when unset or blank."""
+    value = (get_str("cluster.gateway_host", store=store) or "").strip()
+    return value or None
 
 
 def get_float(
@@ -962,6 +1096,7 @@ __all__ = [
     "advertised_env_presence",
     "bind_store",
     "clear_setting",
+    "gateway_host",
     "get",
     "get_bool",
     "get_float",

@@ -212,13 +212,22 @@ def test_size_cell_threshold() -> None:
     assert size_cell(8700) == "9kB" or size_cell(8700) == "8kB"
 
 
-def test_row_size_cell_reports_sub_kb_bytes() -> None:
-    """Fetchable rows name a size at every scale — 830B, not blank (gr568219)."""
-    assert row_size_cell(500) == "500B"
-    assert row_size_cell(830) == "830B"
-    assert row_size_cell(1023) == "1023B"
-    assert row_size_cell(1024) == "1kB"
-    assert row_size_cell(8192) == "8kB"
+def test_row_size_cell_reports_decimal_kb() -> None:
+    """Fetchable rows name a size at every scale — decimal kB, not blank
+    and not raw bytes (gr568219, gr573411: ``353B`` → ``0.4kB``,
+    ``1006B`` → ``1kB``)."""
+    assert row_size_cell(0) == "0kB"
+    assert row_size_cell(353) == "0.4kB"
+    assert row_size_cell(500) == "0.5kB"
+    assert row_size_cell(830) == "0.8kB"
+    assert row_size_cell(949) == "0.9kB"
+    # The ~1kB default is the one blank cell — the ``size [kB]
+    # (default 1kB)`` column header says what a blank means.
+    assert row_size_cell(1006) == ""
+    assert row_size_cell(1024) == ""
+    assert row_size_cell(1500) == "1.5kB"
+    assert row_size_cell(2000) == "2kB"
+    assert row_size_cell(8192) == "8.2kB"
 
 
 # ── dispatch-level: memory section reads + search/list fitting ──────

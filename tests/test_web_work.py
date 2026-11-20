@@ -110,7 +110,7 @@ def test_work_page_columns_status_agents_stage_age(
     assert "text-success-strong font-semibold" not in b_row
     # age: fresh rows say "<n>s ago" (ref updated_at, created_at fallback)
     assert re.search(r"\d+[smhd] ago", a_row)
-    assert "melchior" in html
+    assert "maple" in html
 
 
 def test_work_page_plan_node_rows(

@@ -477,7 +477,7 @@ def test_kimi_usage_counts_subagents_and_windows(env):
 
 def test_codex_async_question_beats_ready_footer(env):
     # request_user_input_async completes the turn; the footer says Ready while
-    # the question still waits for Reto. Shape seen on melchior 2026-10-09.
+    # the question still waits for Reto. Shape seen on maple 2026-10-09.
     env.panes.write_text(pane_line(env, command="codex"), encoding="utf-8")
     env.capture.write_text(
         "  proj · ~/proj · main · Context 98% left · Ready\n", encoding="utf-8"
@@ -512,7 +512,7 @@ def test_codex_async_question_beats_ready_footer(env):
 
 
 def test_codex_question_modal_on_screen_is_asking(env):
-    # Plan-mode modal, captured on melchior 2026-10-09; no rollout needed.
+    # Plan-mode modal, captured on maple 2026-10-09; no rollout needed.
     env.panes.write_text(pane_line(env, command="codex"), encoding="utf-8")
     env.capture.write_text(
         "  Question 1/1 (1 unanswered)\n"

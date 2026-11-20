@@ -5,6 +5,7 @@ its task done) between passes."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,11 +13,13 @@ from typing import Any
 
 import pytest
 
+from precis import settings as psettings
 from precis.plans import lanes as L
 from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+from precis.workers import job_types as job_types_pkg
 from precis.workers._mint import mint_background_job
 from precis.workers.job_types import get_job_type, known_job_types, run_slice
 from precis.workers.job_types import plan_dispatch as pd
@@ -283,6 +286,132 @@ def test_dict_op_pins_model_and_effort_on_the_job(store: Store) -> None:
         "model": "claude-haiku-5-5",
         "effort": "low",
     }
+
+
+def test_todo_blocked_by_gripe_waits_then_dispatches(store: Store) -> None:
+    """gr656970: a plan todo blocked-by an open gripe mints no job;
+    once the gripe reaches a blocker-terminal STATUS the next pass
+    dispatches it."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    gripe = insert_gripe(store, "The blocker gripe")
+    store.add_link(src_ref_id=task, dst_ref_id=gripe.id, relation="blocked-by")
+    assert pd.run_pass(store).dispatched == 0
+    assert _jobs_under(store, task) == []
+    store.add_tag(
+        gripe.id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    assert pd.run_pass(store).dispatched == 1
+    assert [j[1]["job_type"] for j in _jobs_under(store, task)] == ["run_slice"]
+
+
+def test_todo_blocked_by_todo_waits_then_dispatches(store: Store) -> None:
+    """gr656970: the todo-on-todo combination of the same rule."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    blocker = store.insert_ref(kind="todo", slug=None, title="The blocker todo")
+    store.add_link(src_ref_id=task, dst_ref_id=blocker.id, relation="blocked-by")
+    assert pd.run_pass(store).dispatched == 0
+    assert _jobs_under(store, task) == []
+    store.add_tag(
+        blocker.id,
+        Tag.closed("STATUS", "done"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert pd.run_pass(store).dispatched == 1
+    assert [j[1]["job_type"] for j in _jobs_under(store, task)] == ["run_slice"]
+
+
+def test_a_node_tagged_for_another_repo_is_not_dispatched(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td659522 step 0: the tick skips a node whose ``repo:`` tag — its
+    own or its nearest tagged ancestor's — names a repo the factory has
+    no build profile for, or one ``factory.open_repos`` does not list.
+    ``repo:precis`` dispatches as before."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("glue", "Glue", {"op": "run_slice"}, body="Do it.")
+        m.node("engine", "Engine", {"op": "run_slice"}, body="Do it.")
+        eng = m.node("phase", "Engine phase", {"auto_close": True})
+        m.node("inner", "Inner", {"op": "run_slice"}, parent=eng, body="Do it.")
+
+    mint = T._run(store, None, build)
+    glue, engine, inner = (mint.ids[k] for k in ("glue", "engine", "inner"))
+    store.add_tag(glue, Tag.open("repo:precis"), set_by="system")
+    store.add_tag(engine, Tag.open("repo:catpath"), set_by="system")
+    store.add_tag(mint.ids["phase"], Tag.open("repo:catpath"), set_by="system")
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert [j[1]["job_type"] for j in _jobs_under(store, glue)] == ["run_slice"]
+    assert _jobs_under(store, engine) == [] and _jobs_under(store, inner) == []
+    for held in (engine, inner):
+        assert any(
+            n.startswith(f"td{held}: not dispatched") and "repo:catpath" in n
+            for n in res.notes
+        ), held
+    # A build profile alone opens nothing; the DB setting is the switch.
+    monkeypatch.setitem(
+        L.REPO_PROFILES,
+        "catpath",
+        replace(L.REPO_PROFILES["catpath"], lander="land_slice"),
+    )
+    assert pd.run_pass(store).dispatched == 0
+    psettings.set_setting("factory.open_repos", "catpath", store=store)
+    try:
+        assert pd.run_pass(store).dispatched == 2
+    finally:
+        psettings.clear_setting("factory.open_repos", store=store)
+    assert len(_jobs_under(store, engine)) == 1
+    assert len(_jobs_under(store, inner)) == 1
+    # td659522 step 1: the build in another repo carries it on the job; a
+    # repo:precis node's params stay as they were.
+    for built in (engine, inner):
+        assert _jobs_under(store, built)[0][1]["params"]["repo"] == "catpath"
+    assert "repo" not in _jobs_under(store, glue)[0][1]["params"]
+
+
+def test_a_repo_node_routes_on_the_profile_deny_paths(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td659522 step 1: a brief for another repo that names a precis deny
+    path is not routed to the coordinator; one naming the profile's own
+    deny path (``.github/**``) is."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "plain",
+            "Plain",
+            {"op": "run_slice"},
+            body="Mirror the layout of src/precis/plans/lanes.py in the grid.",
+        )
+        m.node(
+            "ci",
+            "CI",
+            {"op": "run_slice"},
+            body="Fix: edit .github/workflows/ci.yml to add 3.12.",
+        )
+
+    mint = T._run(store, None, build)
+    plain, ci = mint.ids["plain"], mint.ids["ci"]
+    for tid in (plain, ci):
+        store.add_tag(tid, Tag.open("repo:catpath"), set_by="system")
+    monkeypatch.setitem(
+        L.REPO_PROFILES,
+        "catpath",
+        replace(L.REPO_PROFILES["catpath"], lander="land_slice"),
+    )
+    psettings.set_setting("factory.open_repos", "catpath", store=store)
+    try:
+        res = pd.run_pass(store)
+    finally:
+        psettings.clear_setting("factory.open_repos", store=store)
+    assert len(_jobs_under(store, plain)) == 1
+    assert _jobs_under(store, ci) == []
+    assert any(n.startswith(f"td{ci}: routes to the coordinator") for n in res.notes)
 
 
 def test_expired_claim_is_released(store: Store) -> None:
@@ -1258,6 +1387,95 @@ def test_attempt_free_jobs_are_no_attempt(store: Store) -> None:
     assert (res.dispatched, res.asks) == (1, 0)
 
 
+def _index_lock_job(store: Store, task: int) -> int:
+    return _failed_job(
+        store,
+        task,
+        "run_slice: index.lock is kept — a live git holds it",
+        meta={"attempt_free": "index-lock"},
+    )
+
+
+def test_identical_free_failures_back_off_then_recover(store: Store) -> None:
+    """gr662077: a sustained run of identical ``attempt_free`` failures
+    backs off exponentially instead of re-minting a doomed job every
+    tick — the first repeats re-queue at once, then the mint waits out
+    the hold and recovers on its own."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    t0 = datetime.now(UTC)
+    # Under the grace the re-mint stays immediate.
+    for _ in range(pd.FREE_RUN_GRACE - 1):
+        _index_lock_job(store, task)
+    res = pd.run_pass(store, now=t0)
+    assert (res.dispatched, res.asks) == (1, 0)
+    # The re-mint dies the same way: the run hits the grace and the next
+    # mint waits out the backoff.
+    newest, _ = _jobs_under(store, task)[-1]
+    _set_job_status(store, newest, "failed")
+    store.stamp_ref_meta(newest, {"attempt_free": "index-lock"})
+    res = pd.run_pass(store, now=t0)
+    assert (res.dispatched, res.asks) == (0, 0)
+    assert any("index-lock" in n and "held" in n for n in res.notes)
+    # Past the backoff the node re-dispatches on its own.
+    res = pd.run_pass(store, now=t0 + pd.FREE_BACKOFF_BASE + timedelta(seconds=30))
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_free_run_resets_on_a_different_reason(store: Store) -> None:
+    """The run counts only IDENTICAL free reasons (gr662077): a
+    different ``attempt_free`` interleaved restarts the count."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for reason in ("index-lock", "lane-wait", "index-lock", "lane-wait"):
+        _failed_job(store, task, "f", meta={"attempt_free": reason})
+    # The newest tail run is just 1 — under the grace, the re-mint is
+    # immediate.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_free_run_breaks_on_a_real_attempt(store: Store) -> None:
+    """The run is only the consecutive tail (gr662077): a real failed
+    attempt between identical free failures ends it — a build that got
+    far enough to burn an attempt is a different failure class."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for _ in range(pd.FREE_RUN_GRACE):
+        _index_lock_job(store, task)
+    _failed_job(store, task, "build red on the diff")
+    _index_lock_job(store, task)
+    # The tail run is 1 — under the grace the re-mint is immediate.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_identical_free_failures_cap_to_a_coordinator_ask(
+    store: Store,
+) -> None:
+    """gr662077: at :data:`FREE_RUN_CAP` identical free failures the
+    node parks behind a coordinator ask — a wedged holder is a human
+    call, and closing the ask re-arms the node."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    for _ in range(pd.FREE_RUN_CAP):
+        _index_lock_job(store, task)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None and "index-lock" in str(ask_ref.title)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert _blocked_by_ids(store, task) == [ask]
+    # Parked: nothing mints while the ask sits open.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    # Answering re-arms the run — the next tick dispatches fresh.
+    _answer_ask(store, ask, "acknowledged")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
 @pytest.mark.parametrize("no_lanes", [False, True])
 def test_infra_red_land_relands_without_a_builder(
     store: Store, monkeypatch: pytest.MonkeyPatch, no_lanes: bool
@@ -1294,6 +1512,70 @@ def test_infra_red_land_relands_without_a_builder(
     assert meta["params"] == land_params
     assert meta["idem_key"] == f"land_slice:td{task}"
     assert any("infra-land" in n and "not an attempt" in n for n in res.notes)
+
+
+def _open_catpath(store: Store, monkeypatch: pytest.MonkeyPatch, task: int) -> None:
+    """Stand catpath as a landable, opened repo and tag ``task`` for it."""
+    from dataclasses import replace
+
+    from precis.plans import lanes
+
+    profile = replace(lanes.REPO_PROFILES["catpath"], lander="land_slice")
+    monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", profile)
+    monkeypatch.setattr(
+        lanes, "open_repos", lambda _s: frozenset({"precis", "catpath"})
+    )
+    store.add_tag(task, Tag.open("repo:catpath"), set_by="system")
+
+
+def test_infra_red_second_repo_land_relands_with_the_repo_param(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td659522 step 2: the failed second-repo land is re-minted from its own
+    params, so ``params.repo`` rides along and the re-land stays in that repo."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _open_catpath(store, monkeypatch, task)
+    _slice_job(store, task, "run_slice", "succeeded", params={"todo_id": task})
+    land_params = {
+        "todo_id": task,
+        "worktree": f"/checkout/.claude/worktrees/slice-td{task}",
+        "branch": f"slice/{task}",
+        "repo": "catpath",
+    }
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        params=land_params,
+        meta={"attempt_free": "infra-land", "red_class": "origin-raced"},
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["job_type"] == "land_slice"
+    assert meta["params"] == land_params and meta["params"]["repo"] == "catpath"
+    assert meta["idem_key"] == f"land_slice:td{task}"
+
+
+def test_succeeded_second_repo_land_closes_the_task(store: Store) -> None:
+    """The close path reads only the job type and status, so a succeeded land
+    of another repo closes the task the way a precis land does."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "succeeded",
+        params={"todo_id": task, "repo": "catpath"},
+        meta={"landed_sha": "a" * 40},
+    )
+    res = pd.run_pass(store)
+    assert _status(store, task) == "done"
+    assert any(f"task td{task} closed: land_slice" in n for n in res.notes)
 
 
 def test_ordinary_red_land_still_rebuilds(store: Store) -> None:
@@ -1590,8 +1872,9 @@ def test_retry_climbs_across_lanes(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """td561544: with a free vendor lane enabled the ladder is cross-lane —
-    the vendor lane's models from its default up, then the Claude lane's.
-    Each retry climbs one rung above where the last attempt ran."""
+    every lane's first rung, then every lane's second (gr685753
+    round-robin). Each retry climbs one rung above where the last attempt
+    ran."""
     free = L.Lane(
         name="free",
         adapter="devin_tree",
@@ -1614,9 +1897,9 @@ def test_retry_climbs_across_lanes(
     use_lanes(monkeypatch, free, bare, sub)
     assert [(r.lane, r.model) for r in L.ladder("code", store=store)] == [
         ("free", "f-high"),
-        ("free", "f-max"),
         ("bare", None),
         ("claude-sub", "claude-sonnet-5-5"),
+        ("free", "f-max"),
         ("claude-sub", "claude-opus-5-5"),
     ]
 
@@ -1627,9 +1910,9 @@ def test_retry_climbs_across_lanes(
     mint = T._run(store, None, build)
     task = mint.ids["task"]
     expected = [
-        ("free", "f-max"),
         ("bare", None),
         ("claude-sub", "claude-sonnet-5-5"),
+        ("free", "f-max"),
         ("claude-sub", "claude-opus-5-5"),
         ("claude-sub", "claude-opus-5-5"),  # floored at the top
     ]
@@ -1674,8 +1957,8 @@ def test_retry_cap_climbs_the_ladder_then_rescues(
     task = mint.ids["task"]
     rungs = [
         ("devin", "swe-2-high"),
-        ("devin", "swe-2-max"),
         ("claude-sub", "claude-sonnet-5-5"),
+        ("devin", "swe-2-max"),
         ("claude-sub", "claude-opus-5-5"),
     ]
     assert [(r.lane, r.model) for r in L.ladder("code", store=store)] == rungs
@@ -1902,7 +2185,8 @@ def test_unclassified_red_climbs_the_ladder(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An error line no signature knows escalates exactly as before:
-    one rung up, no ``brief:`` comment, no ask."""
+    one rung up (the next lane's first rung, gr685753), no ``brief:``
+    comment, no ask."""
     use_lanes(monkeypatch)
     mint = _one_task_plan(store)
     task = mint.ids["task"]
@@ -1917,7 +2201,10 @@ def test_unclassified_red_climbs_the_ladder(
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     params = _jobs_under(store, task)[-1][1]["params"]
-    assert (params.get("lane"), params.get("model")) == ("devin", "swe-2-max")
+    assert (params.get("lane"), params.get("model")) == (
+        "claude-sub",
+        "claude-sonnet-5-5",
+    )
     assert _brief_comments(store, task) == []
     assert "mech_retries" not in _meta(store, task)
 
@@ -2168,7 +2455,20 @@ def test_spend_cap_allows_below_the_cap(
         seed_lane("claude-sub"),
         entitlements=_fable_caps(),
     )
-    mint = _one_task_plan(store)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        # A lane pin narrows the ladder to the devin lane's two rungs, so
+        # the paid rung is the next climb (the unpinned ladder alternates
+        # lanes, gr685753).
+        m.node(
+            "task",
+            "The task",
+            {"op": {"type": "run_slice", "params": {"lane": "devin"}}},
+            body="Do it.",
+        )
+
+    mint = T._run(store, None, build)
     task = mint.ids["task"]
     _failed_job(
         store,
@@ -2367,8 +2667,9 @@ def test_factory_deny_failure_climbs_then_rescues(
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
     job_id, meta = _jobs_under(store, task)[-1]
-    assert meta["params"]["lane"] == "devin" and meta["params"]["model"] == "swe-2-max"
-    store.stamp_ref_meta(job_id, {"lane": "devin", "model": "swe-2-max"})
+    assert meta["params"]["lane"] == "claude-sub"
+    assert meta["params"]["model"] == "claude-sonnet-5-5"
+    store.stamp_ref_meta(job_id, {"lane": "claude-sub", "model": "claude-sonnet-5-5"})
     _set_job_status(store, job_id, "failed")
     store.chunks.insert_chunks(
         job_id,
@@ -2652,7 +2953,7 @@ def test_no_commit_failure_without_a_verdict_climbs_the_ladder(
     """gr645163 (Reto 2026-11-12, "escalate to next model"): a clean-exit
     failure with no verdict is the builder's can't-finish — it burns one
     attempt and the retry climbs one ladder rung (devin/swe-2-high →
-    swe-2-max); the instant-cap-to-rescue of td584381 S1a F4 is gone."""
+    claude-sub/sonnet, gr685753); the instant-cap-to-rescue of td584381 S1a F4 is gone."""
     use_lanes(monkeypatch)  # the seed table: a four-rung code ladder
     mint = _one_task_plan(store)
     task = mint.ids["task"]
@@ -2669,8 +2970,8 @@ def test_no_commit_failure_without_a_verdict_climbs_the_ladder(
     assert (res.dispatched, res.asks, res.rescued) == (1, 0, 0)
     jobs = _jobs_under(store, task)
     assert len(jobs) == 2
-    assert jobs[-1][1]["params"]["lane"] == "devin"
-    assert jobs[-1][1]["params"]["model"] == "swe-2-max"
+    assert jobs[-1][1]["params"]["lane"] == "claude-sub"
+    assert jobs[-1][1]["params"]["model"] == "claude-sonnet-5-5"
     assert "rescue:builder" not in _open_tags(store, task)
 
 
@@ -2777,7 +3078,7 @@ def test_deny_path_brief_routes_to_the_coordinator(
             "task",
             "Wire the land's remote flag",
             {"op": "run_slice"},
-            body="Add a --remote flag to scripts/ship for harness diffs.",
+            body="Fix: add a --remote flag to scripts/ship for harness diffs.",
         )
 
     mint = T._run(store, None, build)
@@ -2878,9 +3179,9 @@ def test_graph_only_brief_comment_routes_to_the_coordinator(
     [
         pytest.param(
             "Goal: repair release confirmation",
-            ("brief: Update scripts/ship",),
+            ("brief: Fix: update scripts/ship",),
             True,
-            id="unlabelled-brief-deny-target",
+            id="labelled-brief-deny-target",
         ),
         pytest.param(
             "Goal: repair release confirmation\n\nEvidence: scripts/ship reported success",
@@ -2896,7 +3197,10 @@ def test_graph_only_brief_comment_routes_to_the_coordinator(
         ),
         pytest.param(
             "Goal: repair release confirmation",
-            ("brief: Update scripts/ship", "brief: Update release confirmation worker"),
+            (
+                "brief: Fix: update scripts/ship",
+                "brief: Update release confirmation worker",
+            ),
             False,
             id="newest-brief-supersedes-denied-brief",
         ),
@@ -2909,7 +3213,7 @@ def test_body_and_newest_brief_route_independently(
     briefs: tuple[str, ...],
     routes: bool,
 ) -> None:
-    """td651223: labelled body intent must not hide an unlabelled brief;
+    """td651223: body intent must not hide a labelled brief;
     evidence stays non-authoritative and superseded briefs stay out."""
     use_lanes(monkeypatch)
 
@@ -2945,7 +3249,7 @@ def test_hidden_brief_never_routes(
     use_lanes(monkeypatch)
     mint = _one_task_plan(store)
     task = mint.ids["task"]
-    _todo_comment(store, task, "brief: Update scripts/ship")
+    _todo_comment(store, task, "brief: Fix: update scripts/ship")
     hidden = max(int(c.ord) for c in store.chunks.list_chunks_for_ref(task))
     store.stamp_ref_meta(task, {"hidden_comments": [hidden]})
     res = pd.run_pass(store)
@@ -3462,7 +3766,7 @@ def test_escalate_climbs_from_the_last_real_attempt(store: Store) -> None:
     _failed_job(store, task, "real failure", lane="devin", model="swe-2-high")
     # The newest job is a codex host refusal whose window already ended
     # (no backoff): if it counted as the previous rung, the retry would
-    # climb above codex; ignoring it, the retry takes devin's next rung.
+    # climb above codex; ignoring it, the retry takes the rung above devin's.
     past = (datetime.now(UTC) - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     _failed_job(
         store,
@@ -3474,7 +3778,7 @@ def test_escalate_climbs_from_the_last_real_attempt(store: Store) -> None:
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     params = _jobs_under(store, task)[-1][1]["params"]
-    assert params["lane"] == "devin" and params["model"] == "swe-2-max"
+    assert params["lane"] == "claude-sub" and params["model"] == "claude-sonnet-5-5"
 
 
 def test_an_escalated_mint_carries_the_shadow_decision(
@@ -3495,19 +3799,23 @@ def test_an_escalated_mint_carries_the_shadow_decision(
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     job = _jobs_under(store, task)[-1][1]
-    assert job["params"]["lane"] == "devin" and job["params"]["model"] == "swe-2-max"
+    assert job["params"]["lane"] == "claude-sub"
+    assert job["params"]["model"] == "claude-sonnet-5-5"
     stamp = job.get("decision")
     assert stamp is not None and stamp["site"] == "escalate"
     assert stamp["executed"] == "legacy"
     assert stamp["legacy"]["keys"] == [
         "swe-2-high@devin_tree/devin",
-        "swe-2-max@devin_tree/devin",
         "claude-sonnet-5-5@claude_p/claude-sub",
+        "swe-2-max@devin_tree/devin",
         "claude-opus-5-5@claude_p/claude-sub",
     ]
-    assert stamp["legacy"]["chosen"]["lane"] == "devin"
-    # decide()'s free ranking lands on the rung the climb took.
-    assert stamp["agree"] is True
+    assert stamp["legacy"]["chosen"]["lane"] == "claude-sub"
+    # decide()'s free-first ranking still puts devin ahead, while the
+    # legacy ladder now alternates lanes (gr685753): the shadow records the
+    # disagreement it exists to surface.
+    assert stamp["ranked"][0]["lane"] == "devin"
+    assert stamp["agree"] is False
 
 
 def test_a_review_mint_carries_the_shadow_decision(
@@ -4349,7 +4657,12 @@ def test_route_fix_body_shape(store: Store) -> None:
         assert f"plan:{mint.root_id}" in _open_tags(store, todo_id)
     text = _body_text(store, body.ids["measure"])
     assert f"td{loop}" in text and "`measure: <origin/main sha>`" in text
-    assert T.ROUTE_ANSWER in text and T.ROUTE_GATE_CMD in text
+    assert T.ROUTE_ANSWER in text
+    command = (
+        'PRECIS_TEST_ENV="PRECIS_PCB_LONG_BOARDS=1" '
+        'scripts/test tests/test_pcb_examples_route.py -m "slow or not slow"'
+    )
+    assert text.count(f"`{command}`") == 2
     assert "iteration 2 of 6" in text
     assert text.rstrip().endswith("Spec hub: me1.")
     assert "review: LAND" in _body_text(store, body.ids["review"])
@@ -4462,7 +4775,7 @@ def test_done_generator_with_open_child_is_reopened(store: Store) -> None:
     res = pd.run_pass(store, now=datetime.now(UTC))
     assert res.reopened == 1
     assert res.counts()["reopened"] == 1
-    assert res.summary().endswith("dry_run=False reopened=1 reviews=0")
+    assert res.summary().endswith("dry_run=False reopened=1 reviews=0 held=0")
     assert _status(store, gen) == "open"
     # Its dependant stays blocked; the child, not the generator, is dispatched.
     assert _jobs_under(store, after) == []
@@ -4948,6 +5261,109 @@ def test_dead_chain_straggler_closes_once_its_job_ends(store: Store) -> None:
     assert _status(store, validate) == "won't-do"
     assert _status(store, mint.root_id) in pd.TERMINAL_TODO_STATUSES
     assert (res.asks, res.dispatched) == (0, 0)
+
+
+@pytest.mark.parametrize("keyed", ["td", "sha"])
+def test_dead_chain_spares_a_sha_keyed_reviewer(store: Store, keyed: str) -> None:
+    """td704507, td728642: a sha-keyed reviewer reviews a commit already
+    on main, so a blocker of it (a rescue's diagnose task) closing with
+    no ``landed:`` comment is not "nothing landed to review". A
+    td-keyed reviewer whose target closed without landing is still
+    closed won't-do."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("diag", "Diagnose the rescue", {"op": "run_slice"})
+        m.node(
+            "review",
+            "Review",
+            {"generate": {"role": "reviewer", "from": "sha:abc1234def56"}},
+            blocked_by=("diag",),
+        )
+
+    mint = T._run(store, None, build)
+    diag, review = mint.ids["diag"], mint.ids["review"]
+    if keyed == "td":
+        store.stamp_ref_meta(
+            review, {"generate": {"role": "reviewer", "from": f"td{diag}"}}
+        )
+    store.add_tag(
+        diag, Tag.closed("STATUS", "won't-do"), set_by="system", replace_prefix=True
+    )
+    pd.run_pass(store)
+    assert (_status(store, review) == "won't-do") is (keyed == "td")
+
+
+def test_dead_chain_after_failed_defer_asks_not_closes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr663738: a build closed ``done`` on a stale ``validated:`` while
+    its pre-land push never reached origin is a lost push, not a dead
+    land — the sweep files ONE coordinator ask and closes nothing: the
+    reviewer and the never-built dependants stay open, held by the
+    ``meta.preland_defer_failed`` stamp like a held land."""
+    use_lanes(monkeypatch)
+    gid = int(insert_gripe(store, "the lost push", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    gate, validate = mint.ids["gate"], mint.ids["validate"]
+    store.stamp_ref_meta(build, {"preland_defer_failed": "6a1ea506a" + "b" * 31})
+    _mark_done(store, build)
+
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert res.dispatched == 0
+    # Nothing closed — not the review, not the starved chain.
+    for key in ("review", "gate", "validate"):
+        assert _status(store, mint.ids[key]) == "open", key
+    assert _status(store, build) == "done"
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert f"td{build}" in _body_text(store, ask)
+    assert ask in _blocked_by_ids(store, review)
+    assert any("failed pre-land defer" in n and f"td{ask}" in n for n in res.notes)
+
+    # A second pass is quiet: the open ask dedupes, nothing closes.
+    res2 = pd.run_pass(store)
+    assert (res2.asks, res2.dispatched) == (0, 0)
+    assert (
+        len([c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)])
+        == 1
+    )
+    for key in ("review", "gate", "validate"):
+        assert _status(store, mint.ids[key]) == "open", key
+
+
+def test_dead_chain_wontdo_ruling_on_stamped_target_closes_the_rest(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr663738 review td676510 (resolution path): the ask's drop path
+    is the coordinator closing the stamped target ``won't-do``. The
+    ruling must be honored — the stamp stops holding the chain, the
+    sweep closes the review and the starved dependants ``won't-do``,
+    and no further ask is filed."""
+    use_lanes(monkeypatch)
+    gid = int(insert_gripe(store, "the dropped push", status="fixing").id)
+    mint = T.mint_gripe_fix(store, None, gripe_id=gid, direct=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    gate, validate = mint.ids["gate"], mint.ids["validate"]
+    store.stamp_ref_meta(build, {"preland_defer_failed": "6a1ea506a" + "b" * 31})
+    _mark_done(store, build)
+
+    res = pd.run_pass(store)
+    assert res.asks == 1  # the ask stands while the target claims done
+
+    # The coordinator's drop ruling: close the stamped target won't-do.
+    store.add_tag(
+        build, Tag.closed("STATUS", "won't-do"), set_by="system", replace_prefix=True
+    )
+    res2 = pd.run_pass(store)
+    assert res2.asks == 0
+    for key in ("build", "review", "gate", "validate"):
+        assert _status(store, mint.ids[key]) == "won't-do", key
+    assert not any("failed pre-land defer" in n for n in res2.notes)
+    # The hold is gone for good — a third pass stays settled.
+    res3 = pd.run_pass(store)
+    assert (res3.asks, res3.dispatched) == (0, 0)
 
 
 def test_dead_plan_root_closes_its_open_children(store: Store) -> None:
@@ -5464,6 +5880,175 @@ def test_bare_verdict_comment_needs_no_job(store: Store) -> None:
     assert _status(store, mint.root_id) == "won't-do"
 
 
+def test_validated_verdict_ignored_after_failed_preland_defer(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr663738: ``meta.preland_defer_failed`` means the branch never
+    reached origin — a ``validated:`` "the work was already committed"
+    handoff is the failed push's stale read, not proof of a land. The
+    verdict close passes it by and the node re-dispatches for the retry
+    whose lease-guarded push lands the commit."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(task, {"preland_defer_failed": "6a1ea506a" + "b" * 31})
+    _todo_comment(
+        store,
+        task,
+        "handoff: validated: the slice's work was already built and "
+        "committed on its branch.",
+    )
+    res = pd.run_pass(store)
+    assert _status(store, task) == "open"
+    assert not any("closed on verdict" in c for c in _todo_comments(store, task))
+    # Left open, the build re-dispatches — the retry's defer is what
+    # lands the commit (the push is lease-guarded now).
+    assert res.dispatched == 1
+
+
+def test_failed_validate_validated_comment_closes_done(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685988: a validate run marked failed still closes on its
+    posted verdict — the ``handoff:`` ``validated:`` outranks the
+    ``tests_ran`` gate failure it was recorded under; the next tick
+    rules the node done and mints no retry."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Validate the fix",
+            {"op": "run_slice", "task_class": "validate"},
+            body="Re-run the repro; `validated: <why>` first line.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session exited clean but failed the hard gate(s): "
+        "tests_ran; todo back to open, attempt:1",
+    )
+    _todo_comment(
+        store,
+        task,
+        "handoff: validated: the fix holds — the gripe's repro is gone "
+        "on main.\n\ntests: NOT RUN — validation only; docs-only change",
+    )
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    assert _status(store, task) == "done"
+
+
+def test_failed_validate_verdict_masked_by_refused_retry_closes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685988: a validate's run failed the ``tests_ran`` gate but its
+    ``handoff:`` posted ``validated:`` — then the retry the tick minted
+    was refused by the different-model rule. A launch refusal never ran
+    a session, so its mint must not bound the comment read: the next
+    tick still honours the verdict and closes done instead of stranding
+    the chain on the coordinator ask the refusal files."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Validate the fix",
+            {"op": "run_slice", "task_class": "validate"},
+            body="Re-run the repro; `validated: <why>` first line.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session exited clean but failed the hard gate(s): "
+        "tests_ran; todo back to open, attempt:1",
+    )
+    _todo_comment(
+        store,
+        task,
+        "handoff: validated: the fix holds — the gripe's repro is gone "
+        "on main.\n\ntests: NOT RUN — validation only; docs-only change",
+    )
+    why = (
+        "run_slice: the test session must run a different model than the "
+        "run's code session(s) ['swe-2-high']; refusing the launch"
+    )
+    _failed_job(store, task, why + "\n", meta={pd.MODEL_RULE_KEY: why})
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    assert _status(store, task) == "done"
+    assert any(
+        c.startswith("plan_dispatch: closed on verdict `validated:")
+        for c in _todo_comments(store, task)
+    )
+
+
+def test_denied_validate_verdict_masked_by_refused_retry_never_closes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td695902 review (gr685988): the ``human_only_hit`` guard rides the
+    job the verdict is read FROM, not only the newest ended one — a
+    denied session whose failed run sits behind a refused retry
+    (``model_rule_refusal``, a launch that never ran) still owns the
+    human-only ruling; its posted ``validated:`` cannot close the node.
+    The refusal's own routing — the different-model coordinator ask —
+    files instead."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Validate the fix",
+            {"op": "run_slice", "task_class": "validate"},
+            body="Re-run the repro; `validated: <why>` first line.",
+        )
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    _failed_job(
+        store,
+        task,
+        "run_slice: session for td0 touched deny_write_paths: "
+        "`deploy/inventory/x.yml`; todo back to open\n"
+        "--- log tail ---\n"
+        "validated: the fix holds\n",
+        lane="devin",
+        model="swe-2-high",
+        meta={pd.HUMAN_ONLY_KEY: ["deploy/inventory/x.yml"]},
+    )
+    _todo_comment(
+        store,
+        task,
+        "handoff: attempt FAILED, touched deny_write_paths: "
+        "`deploy/inventory/x.yml`.\n\n"
+        "validated: the fix holds — the gripe's repro is gone on main.\n\n"
+        "tests: NOT RUN — validation only; docs-only change",
+    )
+    why = (
+        "run_slice: the test session must run a different model than the "
+        "run's code session(s) ['swe-2-high']; refusing the launch"
+    )
+    _failed_job(store, task, why + "\n", meta={pd.MODEL_RULE_KEY: why})
+    res = pd.run_pass(store)
+    assert _status(store, task) != "done"
+    assert (res.dispatched, res.asks) == (0, 1)
+    assert not any(
+        c.startswith("plan_dispatch: closed on verdict")
+        for c in _todo_comments(store, task)
+    )
+    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert "different model" in _body_text(store, ask)
+
+
 def test_human_only_hit_verdict_never_closes(store: Store) -> None:
     """td604234 (gr602896 review): a denied attempt still posts its
     ``handoff:`` — ``attempt FAILED, touched deny_write_paths: …`` over
@@ -5938,10 +6523,13 @@ def _reviewed_landed(store: Store, verdict: str) -> T.PlanMint:
     return mint
 
 
-def _reviewed_pending(store: Store, verdict: str) -> T.PlanMint:
+def _reviewed_pending(
+    store: Store, verdict: str, head: str | None = None
+) -> T.PlanMint:
     """The pre-land shape (gr570506): the build's clean exit pushed its
     branch, stamped ``meta.pending_land`` and closed done; the review
-    session ran, posted ``verdict`` and left its claim."""
+    session ran, posted ``verdict`` and left its claim. ``head`` is the
+    pushed tip ``run_slice`` stamps in the params (gr688058)."""
     mint = _review_plan(store)
     build, review = mint.ids["build"], mint.ids["review"]
     _job(store, build, lane="claude-sub")
@@ -5960,6 +6548,7 @@ def _reviewed_pending(store: Store, verdict: str) -> T.PlanMint:
                 "worktree": f"/tmp/slice-td{build}",
                 "branch": f"slice/{build}",
                 "lane": "claude-sub",
+                **({"head": head} if head else {}),
             }
         },
     )
@@ -6184,6 +6773,21 @@ def test_parse_verdict_verbatim_glued_tails(
         # with a non-placeholder rest; REVERT never comes from a token.
         ("all done.review: LAND", ("LAND", "")),
         ("wrapped up\nreview: LAND", ("LAND", "")),
+        # gr687501: a streamed text block glued to its narration leaves
+        # ``:`` or ``)`` before the token — those are boundary
+        # punctuation too (the verbatim td686752 handoff tail).
+        (
+            "handoff: Quick syntax sanity check on the two changed files "
+            "(not lint/typecheck — just parse):review: LAND (read-only, "
+            "tests not run)\n\nfindings",
+            ("LAND", "findings"),
+        ),
+        ("all done: review: LAND", ("LAND", "")),
+        ("checked it (see the diff) review: FIX — x", ("FIX", "x")),
+        # … but the same marks still gloss, quote or template out.
+        ("grammar: review: LAND (clean)", None),
+        ("one of: review: LAND | review: FIX — <list>", None),
+        ("verdict: review: REVERT — breaks it", None),
         # Markdown line-start markers still count as a line start — the
         # emphasis that opened the token is stripped off its rest
         # (gr568824).
@@ -6243,7 +6847,7 @@ def test_review_land_closes_the_reviewer(store: Store) -> None:
     review = mint.ids["review"]
     res = pd.run_pass(store)
     assert res.reviews == 1
-    assert res.summary().endswith("reviews=1")
+    assert res.summary().endswith("reviews=1 held=0")
     assert _status(store, review) == "done"
     assert not any(v.startswith("claimed-by:") for v in _open_tags(store, review))
     assert _meta(store, review)["review"]["verdict"] == "LAND"
@@ -6356,6 +6960,47 @@ def test_preland_review_land_mints_the_held_land(store: Store) -> None:
     assert _children(store, mint.root_id) == [build, review]
 
 
+def test_preland_review_land_naming_the_pushed_tip_mints_the_held_land(
+    store: Store,
+) -> None:
+    """td730820: a LAND whose verdict names the stamped pushed tip is the
+    read the hold waited for — the held land mints and the reviewer
+    closes."""
+    h2 = "2" * 40
+    mint = _reviewed_pending(store, f"review: LAND — verified head {h2}", head=h2)
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    land_jobs = [
+        m for _jid, m in _jobs_under(store, build) if m.get("job_type") == "land_slice"
+    ]
+    assert len(land_jobs) == 1
+
+
+def test_preland_review_land_on_a_stale_head_holds_the_land(
+    store: Store,
+) -> None:
+    """td730820: a LAND naming a judged head other than the stamp's pushed
+    tip read a different commit than the held land ships — no land_slice
+    mints, the stamp stands, the reviewer reopens for a fresh read, and
+    the pass records no verdict (the retry cap bounds the re-runs)."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(store, f"review: LAND — verified head {h1}", head=h2)
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 0
+    assert not any(
+        m.get("job_type") == "land_slice" for _jid, m in _jobs_under(store, build)
+    )
+    assert isinstance(_meta(store, build).get("pending_land"), dict)
+    assert _status(store, review) == "open"
+    assert _meta(store, review)["review"]["verdict"] is None
+    assert any("td730820" in n for n in res.notes)
+    # The rejected verdict is not re-read: a second pass makes no note.
+    assert not any("td730820" in n for n in pd.run_pass(store).notes)
+
+
 def test_preland_land_holds_a_phase_root_open(store: Store) -> None:
     """Build done (land held) and reviewer done on LAND, land still
     pending: the phase root must not close on "every child closed"."""
@@ -6393,6 +7038,29 @@ def test_failed_land_rearms_the_preland_reviewer(store: Store) -> None:
     assert _meta(store, build).get("pending_land") is None
     assert _status(store, review) == "open"
     assert run_slice._preland_reviewer(store, build) == review
+
+
+def test_failed_land_never_rearms_a_ruled_preland_reviewer(store: Store) -> None:
+    """gr663909: a ``won't-do`` on the reviewer is a ruling like the
+    build's — the failed land's re-arm skips it; only the machine's own
+    ``done`` reopens."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    store.stamp_ref_meta(review, {"preland_review": True})
+    _job(store, review, lane="claude-sub")
+    store.stamp_ref_meta(
+        build,
+        {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}},
+    )
+    _mark_done(store, build)
+    store.add_tag(
+        review,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert run_slice.rearm_preland_review(store, build) == []
+    assert _status(store, review) == "won't-do"
 
 
 def test_preland_review_land_keeps_the_chain_alive_while_land_runs(
@@ -6447,6 +7115,95 @@ def test_preland_review_revert_sends_the_branch_back_to_the_builder(
     assert any("breaks the API" in c for c in comments)
 
 
+def test_preland_review_fix_never_reopens_a_ruled_build(store: Store) -> None:
+    """gr663909: the coordinator closed the held build ``won't-do`` while
+    the review ran — the FIX verdict drops the machine's
+    ``pending_land`` hold and the dead claim, but the ruling stands: no
+    handoff, no reopen, no fresh builder job, and the reviewer closes
+    with it (nothing is left to re-gate)."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    store.add_tag(
+        build,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, build) == "won't-do"
+    assert _meta(store, build).get("pending_land") is None
+    comments = _todo_comments(store, build)
+    assert not any("handoff:" in c for c in comments)
+    assert any("STATUS:won't-do" in c and "reopens nothing" in c for c in comments)
+    assert _status(store, review) == "won't-do"
+    # No new job mints on the ruled node — the fixture's run_slice is
+    # still its only child.
+    assert len(_jobs_under(store, build)) == 1
+    res2 = pd.run_pass(store)
+    assert len(_jobs_under(store, build)) == 1
+    assert _status(store, build) == "won't-do"
+    assert res2.dispatched == 0
+
+
+def test_review_revert_never_requeues_a_ruled_build(store: Store) -> None:
+    """gr663909: the landed build was closed ``won't-do`` while its
+    post-land review ran — the REVERT verdict still mints its revert
+    task (the sha is on main) but never reopens or re-blocks the ruled
+    node, and the reviewer closes: left open it would re-review the
+    same land and re-mint the revert in a loop."""
+    mint = _reviewed_landed(store, "review: REVERT — breaks the public API")
+    build, review = mint.ids["build"], mint.ids["review"]
+    store.add_tag(
+        build,
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, build) == "won't-do"
+    assert _status(store, review) == "won't-do"
+    comments = _todo_comments(store, build)
+    assert any("STATUS:won't-do" in c and "reopens nothing" in c for c in comments)
+    # The revert task minted — a new sibling — but the ruled node is
+    # not blocked-by it and carries no re-arm floor.
+    siblings = _children(store, mint.root_id)
+    assert len(siblings) == 3
+    revert = [s for s in siblings if s not in (build, review)]
+    assert revert[0] not in _blocked_by_ids(store, build)
+    assert "rearmed_after_job" not in _meta(store, build)
+    # And the closed reviewer never re-dispatches: the next pass mints
+    # nothing under it.
+    res2 = pd.run_pass(store)
+    assert len(_jobs_under(store, review)) == 1
+    assert res2.dispatched == 0
+
+
+def test_rerun_stall_never_rearms_a_ruled_digest(store: Store) -> None:
+    """gr663909: a ``won't-do`` digest is a ruling too — the red-verdict
+    stall drops the fix's wait tag and files its ask, but the ruled
+    digest is neither reopened nor floored for a second
+    ``ci_red_digest``."""
+    mint, it = _parked_release_fix(store)
+    run_slice._append_comment(store, it["fix"], "brief: release r7 is red")
+    pd.run_pass(store)
+    _succeed_rerun(store, it["fix"])
+    pd.run_pass(store)
+    _succeed_newest(store, it["fix"])  # the verdict poll; the run still red
+    store.add_tag(
+        it["digest"],
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    pd.run_pass(store)
+    assert _status(store, it["digest"]) == "won't-do"
+    assert len(_job_ids(store, it["digest"], "ci_red_digest")) == 1
+    assert "rearmed_after_job" not in _meta(store, it["digest"])
+    assert pd.NOREPRO_WAIT_TAG not in _open_tags(store, it["fix"])
+
+
 def test_preland_rebuild_releases_the_reviewer_again(store: Store) -> None:
     """After a pre-land FIX the reopened build re-dispatches; when its
     rebuild defers the land again (fresh ``pending_land``), the reviewer's
@@ -6475,6 +7232,495 @@ def test_preland_rebuild_releases_the_reviewer_again(store: Store) -> None:
     assert len(review_jobs) >= 2
 
 
+def _rebuild_and_review(
+    store: Store, build: int, review: int, verdict: str, head: str | None = None
+) -> pd.PassResult:
+    """One more pre-land cycle after a send-back: the reopened build's
+    newest ``run_slice`` ends clean and defers its land again (``head``
+    the pushed tip it stamps, gr688058), the released reviewer runs and
+    posts ``verdict``; returns the pass that read it."""
+    _set_job_status(store, _run_slice_jobs(store, build)[-1], "succeeded")
+    store.stamp_ref_meta(
+        build,
+        {
+            "pending_land": {
+                "todo_id": build,
+                "branch": f"slice/{build}",
+                **({"head": head} if head else {}),
+            }
+        },
+    )
+    _mark_done(store, build)
+    pd.run_pass(store)
+    _succeed_newest(store, review)
+    _todo_comment(store, review, verdict)
+    return pd.run_pass(store)
+
+
+def _run_slice_jobs(store: Store, todo: int) -> list[int]:
+    return [
+        jid for jid, m in _jobs_under(store, todo) if m.get("job_type") == "run_slice"
+    ]
+
+
+def test_preland_fix_handback_outranks_an_older_brief(store: Store) -> None:
+    """gr684815: the hand-back the tick writes is the one
+    ``run_slice._brief_parts`` keeps above an older ``brief:`` — the two
+    modules share the trailer — and the first round is counted on the
+    build."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build = mint.ids["build"]
+    pd.run_pass(store)
+    handback = next(
+        c for c in _todo_comments(store, build) if c.startswith("handoff: review:")
+    )
+    assert run_slice._outranks_brief(handback)
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 1 and rounds["finding"]
+
+
+def test_preland_fix_rounds_cap_asks_the_coordinator(store: Store) -> None:
+    """gr684815, gr688058: every pre-land send-back re-arms the builder's
+    retry budget, so the loop needs a bound — but the cap is the
+    backstop, not the stop. While every verdict is a new finding the
+    rounds run to ``PRELAND_FIX_CAP``, and only then does the build hold
+    on one coordinator ask, the count clearing so the answer buys a
+    fresh one."""
+    mint = _reviewed_pending(store, "review: FIX — finding one")
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    for i in range(2, pd.PRELAND_FIX_CAP):
+        res = _rebuild_and_review(store, build, review, f"review: FIX — finding {i}")
+        assert res.asks == 0
+        assert _meta(store, build)["preland_fix_rounds"]["count"] == i
+        assert _blocked_by_ids(store, build) == []
+    before = len(_run_slice_jobs(store, build))
+
+    res = _rebuild_and_review(
+        store, build, review, f"review: FIX — finding {pd.PRELAND_FIX_CAP}"
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert f"finding {pd.PRELAND_FIX_CAP}" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    # The finding is still handed back and the build reopened — but no
+    # rebuild job mints while the ask stands.
+    assert _status(store, build) == "open"
+    assert any(
+        f"finding {pd.PRELAND_FIX_CAP}" in c for c in _todo_comments(store, build)
+    )
+    assert len(_run_slice_jobs(store, build)) == before
+    assert _meta(store, build).get("preland_fix_rounds") is None
+    assert _status(store, review) == "open"
+    pd.run_pass(store)
+    assert len(_run_slice_jobs(store, build)) == before
+    assert _blocked_by_ids(store, build) == [ask]
+
+
+def test_preland_same_finding_twice_asks_the_coordinator(store: Store) -> None:
+    """gr684815: the same finding twice running means the rebuild is not
+    reaching the reviewer (or the reviewer repeats itself) — a third
+    identical round tells nothing new, so the ask comes at the second.
+    Whitespace and case do not make a finding new."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    before = len(_run_slice_jobs(store, build))
+    res = _rebuild_and_review(
+        store, build, review, "review: FIX —  A.py misses the  empty case"
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert len(_run_slice_jobs(store, build)) == before
+    assert _meta(store, build).get("preland_fix_rounds") is None
+
+
+def test_preland_distinct_findings_on_new_heads_keep_rebuilding(
+    store: Store,
+) -> None:
+    """gr688058: three FIX verdicts in a row, each a NEW finding on a
+    fresh verified head — the loop is converging, not stuck: no ask
+    fires, the next rebuild mints, and the hand-back carries only the
+    newest finding."""
+    h1, h2, h3, h4 = "1" * 40, "2" * 40, "3" * 40, "4" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}"
+        "\n\nanchors: a.py::f",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g drops the guard; verified head {h2}"
+        "\n\nanchors: b.py::g",
+        head=h2,
+    )
+    assert res.asks == 0
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — c.py::h returns early; verified head {h3}\n\nanchors: c.py::h",
+        head=h3,
+    )
+    assert res.asks == 0
+    assert _meta(store, build)["preland_fix_rounds"]["count"] == 3
+    assert _blocked_by_ids(store, build) == []
+    # The third verdict minted the FOURTH run: the initial job plus one
+    # rebuild per send-back.
+    assert len(_run_slice_jobs(store, build)) == 4
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — d.py::i leaks the handle; verified head {h4}"
+        "\n\nanchors: d.py::i",
+        head=h4,
+    )
+    assert res.asks == 0
+    assert _meta(store, build)["preland_fix_rounds"]["count"] == 4
+    handbacks = [
+        c for c in _todo_comments(store, build) if c.startswith("handoff: review:")
+    ]
+    assert "d.py::i" in handbacks[-1] and "c.py::h" not in handbacks[-1]
+
+
+def test_preland_fix_on_an_unchanged_head_asks_the_coordinator(
+    store: Store,
+) -> None:
+    """gr688058 (a): the pushed tip the second verdict judges is the
+    first's — the rebuild pushed nothing new, so the builder is not
+    acting on the finding. The loop stops on the second verdict, not
+    the cap."""
+    h = "5" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h}",
+        head=h,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    before = len(_run_slice_jobs(store, build))
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g drops the guard; verified head {h}",
+        head=h,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "unchanged head" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    assert len(_run_slice_jobs(store, build)) == before
+    assert _meta(store, build).get("preland_fix_rounds") is None
+    pd.run_pass(store)
+    assert len(_run_slice_jobs(store, build)) == before
+
+
+def test_preland_verdict_on_a_stale_head_asks_the_coordinator(
+    store: Store,
+) -> None:
+    """gr688058 (b): the head the verdict names is not the pushed tip —
+    the reviewer read a stale branch, so its finding is not the
+    branch's state. The tick stops for the coordinator rather than
+    rebuilding against a phantom."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g drops the guard; verified head {h1}",
+        head=h2,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "stale branch" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    assert _meta(store, build).get("preland_fix_rounds") is None
+
+
+def test_preland_stale_read_outranks_the_same_finding(store: Store) -> None:
+    """td707034: a reviewer that read the old head re-reports the old
+    finding. The ask names the stale read — the same-finding stop would
+    send the coordinator to the builder — and the title and body carry
+    the stop reason, so the four stops no longer read alike."""
+    h1, h2 = "1" * 40, "2" * 40
+    verdict = f"review: FIX — a.py::f misses the empty case; verified head {h1}"
+    mint = _reviewed_pending(store, verdict, head=h1)
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(store, build, review, verdict, head=h2)
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None and "loop stopped (stale read)" in str(ref.title)
+    body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(ask))
+    assert "Stop reason: stale read" in body
+    assert "same pre-land" not in body
+
+
+def test_preland_stop_asks_name_their_reason(store: Store) -> None:
+    """gr709688: the same-finding stop's ask says so in its title and
+    gives that reason's reading, not one sentence shared by every stop."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    _rebuild_and_review(
+        store, build, review, "review: FIX — a.py misses the empty case"
+    )
+    (ask,) = _blocked_by_ids(store, build)
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None and "loop stopped (same finding)" in str(ref.title)
+    body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(ask))
+    assert "Stop reason: same finding" in body
+    assert "is not reading the rebuilt branch" not in body
+
+
+def test_preland_same_anchor_twice_asks_the_coordinator(store: Store) -> None:
+    """gr688058 (c), gr702711: the newest finding's ``anchors:`` line
+    names the same ``file::function`` AND its text is highly similar
+    (token Jaccard >= 0.6) on a fresh verified head — the last one's
+    again — so the ask comes at the second round."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}"
+        "\n\nanchors: a.py::f",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — a.py::f misses the empty case still; "
+        f"verified head {h2}\n\nanchors: a.py::f",
+        head=h2,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "same pre-land FIX twice" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    assert "shared active anchor and token Jaccard similarity >= 0.6" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    assert _meta(store, build).get("preland_fix_rounds") is None
+
+
+def test_preland_same_anchor_new_finding_text_keeps_rebuilding(
+    store: Store,
+) -> None:
+    """gr702711: a shared anchor with different finding text is a new
+    finding at the same function — the build rebuilds, no ask."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f scan is unbounded; verified head {h1}"
+        "\n\nanchors: a.py::f",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — the cap does not bound the ILIKE pattern length; "
+        f"verified head {h2}\n\nanchors: a.py::f",
+        head=h2,
+    )
+    assert res.asks == 0
+    assert _blocked_by_ids(store, build) == []
+    assert _meta(store, build)["preland_fix_rounds"]["count"] == 2
+
+
+def test_preland_last_anchors_line_is_the_whole_anchor_set(
+    store: Store,
+) -> None:
+    """gr688058 (td688394 r5): the stamp's anchors are exactly what the
+    verdict's LAST ``anchors:`` line names — lowercased — so an earlier
+    ``anchors:`` line and every prose ``file::function`` cite are
+    ignored."""
+    h1 = "1" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f is fixed; b.py::g drops the guard; "
+        f"verified head {h1}\n\nanchors: a.py::f\n\nanchors: B.py::G",
+        head=h1,
+    )
+    build = mint.ids["build"]
+    pd.run_pass(store)
+    assert _meta(store, build)["preland_fix_rounds"]["anchors"] == ["b.py::g"]
+
+
+def test_preland_no_anchors_line_never_repeats_a_prose_cite(
+    store: Store,
+) -> None:
+    """gr688058 (td688394 r5): a verdict without an ``anchors:`` line
+    anchors nothing — the stamp's set is empty and even the same prose
+    ``file::function`` twice running on advancing heads is not the same
+    finding: the converging loop keeps rebuilding."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _meta(store, build)["preland_fix_rounds"]["anchors"] == []
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — a.py::f still returns early on empty input; verified head {h2}",
+        head=h2,
+    )
+    assert res.asks == 0
+    assert _meta(store, build)["preland_fix_rounds"]["anchors"] == []
+    assert _blocked_by_ids(store, build) == []
+    # The second verdict minted a THIRD run: the initial job plus one
+    # rebuild per send-back.
+    assert len(_run_slice_jobs(store, build)) == 3
+
+
+def test_preland_resolved_prose_cites_stay_off_the_anchors(
+    store: Store,
+) -> None:
+    """gr688058 (td688394 r5): a verdict citing the last round's anchor
+    only to declare it resolved — ``a.py::f is fixed; b.py::g still
+    fails`` — names a new finding when its ``anchors:`` line carries
+    the active set alone. Repeating that active anchor next round stops
+    only when normalized finding text also reaches token Jaccard >= 0.6."""
+    h1, h2, h3 = "1" * 40, "2" * 40, "3" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}"
+        "\n\nanchors: a.py::f",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    # a.py::f is re-cited in prose — as resolved — but only b.py::g
+    # lands on the line: a new finding, not the repeat.
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — a.py::f is fixed; b.py::g still fails; "
+        f"verified head {h2}\n\nanchors: b.py::g",
+        head=h2,
+    )
+    assert res.asks == 0
+    rounds = _meta(store, build)["preland_fix_rounds"]
+    assert rounds["count"] == 2
+    assert rounds["anchors"] == ["b.py::g"]
+    assert _blocked_by_ids(store, build) == []
+    # The active anchor repeats AND the finding text has token Jaccard
+    # similarity 8/13 >= 0.6 after stripping head SHAs: a repeated finding.
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g is not fixed; verified head {h3}\n\nanchors: b.py::g",
+        head=h3,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "same pre-land FIX twice" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+
+
+def test_preland_expected_head_does_not_pass_a_stale_judged_head(
+    store: Store,
+) -> None:
+    """gr688058 (td688394): ``verified head <old>; expected head
+    <current>`` — the judged head is the VERIFIED one; an expected-head
+    mention matching the pushed tip must not clear the stale-read
+    stop."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g drops the guard; verified head {h1}; "
+        f"expected head {h2}",
+        head=h2,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "stale branch" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    assert _meta(store, build).get("preland_fix_rounds") is None
+
+
+def test_preland_expected_before_verified_still_reads_the_judged_head(
+    store: Store,
+) -> None:
+    """gr688058 (td688394 r2): ``expected head <current>; verified head
+    <old>`` — the clauses are reversed, but the judged head is still the
+    VERIFIED one. The sha-before-``verified`` read must stay inside its
+    own clause: reaching back across the semicolon collects the pushed
+    tip and the any-match check bypasses the stale stop."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(
+        store,
+        f"review: FIX — a.py::f misses the empty case; verified head {h1}",
+        head=h1,
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    pd.run_pass(store)
+    res = _rebuild_and_review(
+        store,
+        build,
+        review,
+        f"review: FIX — b.py::g drops the guard; expected head {h2}; "
+        f"verified head {h1}",
+        head=h2,
+    )
+    assert res.asks == 1
+    (ask,) = _blocked_by_ids(store, build)
+    assert "ask-coordinator" in _open_tags(store, ask)
+    assert "stale branch" in "\n".join(
+        str(c.text) for c in store.chunks.list_chunks_for_ref(ask)
+    )
+    assert _meta(store, build).get("preland_fix_rounds") is None
+
+
 def test_preland_reviewer_finds_the_live_gate(store: Store) -> None:
     """``run_slice._preland_reviewer`` — the lookup the build's clean
     exit runs: a live todo ``generate={role: reviewer, from: td<id>}``
@@ -6488,6 +7734,139 @@ def test_preland_reviewer_finds_the_live_gate(store: Store) -> None:
     assert run_slice._preland_reviewer(store, build) == review
     _mark_done(store, review)
     assert run_slice._preland_reviewer(store, build) is None
+
+
+def test_preland_review_fix_stashes_the_held_land(store: Store) -> None:
+    """gr681208: a pre-land FIX still clears ``meta.pending_land`` for
+    the rebuild, but stashes the held land in ``meta.preland_held`` — a
+    rebuild that ends ``validated:`` ("the pushed branch is ready as it
+    stands") re-holds the same land for the still-open reviewer instead
+    of closing with nothing landed."""
+    mint = _reviewed_pending(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, build) == "open"
+    meta = _meta(store, build)
+    assert meta.get("pending_land") is None
+    held = meta["preland_held"]
+    assert held["params"]["branch"] == f"slice/{build}"
+    assert held["params"]["todo_id"] == build
+    assert held["reviewer"] == review
+
+
+def test_validated_rebuild_after_preland_fix_restamps_pending_land(
+    store: Store,
+) -> None:
+    """gr681208 (plan td663459): the rebuild after a pre-land FIX found
+    the finding already fixed and ended ``validated:`` — the tick read
+    it as nothing-to-land and closed the build done, releasing a
+    dependant onto a main missing the code and letting the dead-chain
+    sweep won't-do the review. The verdict is "the branch is ready as
+    it stands": re-stamp ``meta.pending_land`` from the stash and close
+    held, exactly as a fresh defer does."""
+    mint = _held_land_plan(store, "build")
+    build, review, dep = mint.ids["build"], mint.ids["review"], mint.ids["dep"]
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(
+        build,
+        {
+            "pending_land": {
+                "todo_id": build,
+                "worktree": f"/tmp/slice-td{build}",
+                "branch": f"slice/{build}",
+                "lane": "claude-sub",
+            }
+        },
+    )
+    _mark_done(store, build)
+    _job(store, review, lane="claude-sub")
+    store.stamp_ref_meta(review, {"preland_review": True})
+    store.add_tag(review, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    store.add_tag(
+        review, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    _todo_comment(store, review, "review: FIX — a.py misses the empty case")
+    res = pd.run_pass(store)
+    assert _status(store, build) == "open"
+    assert _meta(store, build)["preland_held"]["reviewer"] == review
+    # The rebuild ran, found the finding already fixed on the branch
+    # and ended `validated:` — it left no commit and no fresh defer.
+    newest_run = [
+        jid for jid, m in _jobs_under(store, build) if m.get("job_type") == "run_slice"
+    ][-1]
+    _set_job_status(store, newest_run, "succeeded")
+    _todo_comment(
+        store,
+        build,
+        "handoff: validated: the branch already holds the review fix",
+    )
+    res2 = pd.run_pass(store)
+    assert _status(store, build) == "done"
+    meta = _meta(store, build)
+    assert meta["pending_land"]["branch"] == f"slice/{build}"
+    assert meta["pending_land"]["worktree"] == f"/tmp/slice-td{build}"
+    assert meta.get("preland_held") is None
+    assert any(
+        "land held for review" in c and f"td{review}" in c
+        for c in _todo_comments(store, build)
+    )
+    # The held land releases the reviewer for the re-gate — and nothing
+    # else: the dead-chain sweep stays off and the dependant held.
+    assert len(_jobs_under(store, review)) == 2
+    res3 = pd.run_pass(store)
+    assert _status(store, review) != "won't-do"
+    assert not any("won't-do" in n for n in res2.notes + res3.notes)
+    assert _jobs_under(store, dep) == []
+
+
+def test_bare_verdict_never_closes_a_build_with_a_live_preland_reviewer(
+    store: Store,
+) -> None:
+    """gr681208's residual hole: a ``validated:`` on a build whose
+    pre-land reviewer is still open but which carries neither
+    ``meta.pending_land`` nor a ``meta.preland_held`` stash (a send-back
+    older than the stash) is the same pushed-branch verdict — the tick
+    leaves the build open for the re-gate instead of closing it with
+    nothing landed."""
+    mint = _review_plan(store, preland=True)
+    build = mint.ids["build"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(
+        store,
+        build,
+        "handoff: validated: the branch already holds the review fix",
+    )
+    res = pd.run_pass(store)
+    assert _status(store, build) != "done"
+    assert not any("closed on verdict" in c for c in _todo_comments(store, build))
+    assert any("live pre-land review" in n for n in res.notes)
+    # Left open, the build re-dispatches for the rebuild that re-defers.
+    assert res.dispatched == 1
+
+
+def test_unusable_preland_stash_never_closes_a_gated_build(
+    store: Store,
+) -> None:
+    """A truthy ``meta.preland_held`` that is not a usable stash (no
+    ``params`` dict — a corrupt stamp, a hand edit) is no hold to
+    re-stamp and no pass through to the close either: the same
+    ``validated:`` on a build a live pre-land review still gates stays
+    open, like the no-stash arm."""
+    mint = _review_plan(store, preland=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(build, {"preland_held": {"reviewer": review}})
+    _todo_comment(
+        store,
+        build,
+        "handoff: validated: the branch already holds the review fix",
+    )
+    res = pd.run_pass(store)
+    assert _status(store, build) != "done"
+    assert not any("closed on verdict" in c for c in _todo_comments(store, build))
+    assert any("live pre-land review" in n for n in res.notes)
+    assert res.dispatched == 1
 
 
 def _held_land_plan(store: Store, dep_edge: str) -> T.PlanMint:
@@ -6841,8 +8220,9 @@ def test_brief_hold_releases_on_tag_removal(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The coordinator's path: post the ``brief:`` and remove the tag —
-    the next tick dispatches the fix one rung up the ladder (swe-2-max,
-    not the swe-2-high foot that produced the chain) and closes the ask."""
+    the next tick dispatches the fix one rung up the ladder (claude-sub
+    sonnet, not the devin swe-2-high foot that produced the chain) and
+    closes the ask."""
     use_lanes(monkeypatch)
     mint, fix, ask = _depth2_fix(store)
     _todo_comment(store, fix, "brief: the design call")
@@ -6852,7 +8232,10 @@ def test_brief_hold_releases_on_tag_removal(
     assert _status(store, ask) == "done"
     (_job_id, job_meta) = _jobs_under(store, fix)[-1]
     params = job_meta.get("params") or {}
-    assert (params.get("lane"), params.get("model")) == ("devin", "swe-2-max")
+    assert (params.get("lane"), params.get("model")) == (
+        "claude-sub",
+        "claude-sonnet-5-5",
+    )
 
 
 def test_brief_hold_releases_on_continue(
@@ -6869,7 +8252,10 @@ def test_brief_hold_releases_on_continue(
     assert res.dispatched == 1
     (_job_id, job_meta) = _jobs_under(store, fix)[-1]
     params = job_meta.get("params") or {}
-    assert (params.get("lane"), params.get("model")) == ("devin", "swe-2-max")
+    assert (params.get("lane"), params.get("model")) == (
+        "claude-sub",
+        "claude-sonnet-5-5",
+    )
 
 
 def test_brief_hold_times_out_and_the_ladder_continues(
@@ -6958,6 +8344,40 @@ def test_fix_chain_round_three_escalates_to_the_top_rung(
         (ref := store.get_ref(kind="todo", id=c)) is None
         or "chain depth 3" not in (ref.title or "")
         for c in _children(store, mint.root_id)
+    )
+
+
+def test_fix_chain_round_three_pins_the_table_top_not_the_dealt_last(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr685753: the round-robin ladder ends on whichever lane lists the
+    most models. With a lit kimi lane of four models ahead of claude-sub
+    in the table, ``ladder()[-1]`` is a kimi model, but the third fix
+    round still pins ``top_rung``: the table's last lane's last model
+    (claude-opus-5-5)."""
+    kimi = L.Lane(
+        name="kimi",
+        adapter="kimi_tree",
+        credential_pool="subscription",
+        cap=1,
+        task_classes=frozenset({"code", "review", "validate"}),
+        vendor="moonshot",
+        models=("k-1", "k-2", "k-3", "k-4"),
+        default_model="k-1",
+    )
+    use_lanes(monkeypatch, seed_lane("devin"), kimi, seed_lane("claude-sub"))
+    table = L.load_lanes(store)
+    assert L.ladder("code", lanes=table)[-1] == L.Rung("kimi", "k-4")
+    assert L.top_rung("code", lanes=table) == L.Rung("claude-sub", "claude-opus-5-5")
+    mint, f3 = _depth3_fix(store)
+    fm = _meta(store, f3)
+    assert fm["fix_depth"] == 3
+    assert fm["op"] == {
+        "type": "run_slice",
+        "params": {"model": "claude-opus-5-5"},
+    }
+    assert _todo_comments(store, f3)[-1].startswith(
+        f"plan_dispatch: escalated: round 3 of td{mint.root_id}"
     )
 
 
@@ -7513,6 +8933,73 @@ def test_review_cap_is_the_picked_lanes_rungs(
     assert [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)] == []
 
 
+def test_review_rescue_signs_the_verdict_miss_not_the_launch_line(
+    store: Store,
+) -> None:
+    """gr685880: a reviewer spent at cap exits CLEAN — success writes
+    ``job_summary``, so its newest ``job_event`` is only the submit's
+    launch preamble, and signing it lumped every same-lane no-verdict
+    review into one ``run_slice: launched`` signature gripe. The rescue
+    signs the verdict miss instead."""
+    mint = _reviewed(store, "review: looks fine to me")
+    review = mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    (_old, (retry, _retry_meta)) = _jobs_under(store, review)
+    # The retry's real on-disk shape: the launch preamble is the whole
+    # ``job_event``, the run's account sits in ``job_summary``.
+    store.chunks.insert_chunks(
+        retry,
+        [
+            ChunkInsert(
+                ord=1,
+                text=(
+                    f"run_slice: launched td{review} on lane devin "
+                    "(model swe-2-high, effort high) pid 42 in /work "
+                    "(mcp token: none)"
+                ),
+                meta={"chunk_kind": "job_event"},
+            ),
+            ChunkInsert(
+                ord=2,
+                text=(
+                    f"run_slice td{review} on lane devin: exit 0.\n"
+                    f"branch slice/{review}: up to date with origin"
+                ),
+                meta={"chunk_kind": "job_summary"},
+            ),
+        ],
+    )
+    _set_job_status(store, retry, "succeeded")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks, res.rescued) == (0, 0, 1)
+    assert "rescue:review" in _open_tags(store, review)
+    # The signature gripe names the miss — the launch preamble that used
+    # to be the key is gone from the title, the body and the tag.
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+            "AND relation = 'related-to'",
+            (review,),
+        ).fetchall()
+    (gripe,) = [int(r[0]) for r in rows]
+    ref = store.get_ref(kind="gripe", id=gripe)
+    assert ref is not None
+    gripe_body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(gripe))
+    assert "run_slice: launched" not in ref.title
+    assert "run_slice: launched" not in gripe_body
+    assert "no `review:` comment" in ref.title
+    assert "signature key: review job:# left no `review:` comment" in gripe_body
+    # The step says the cap's shape honestly: a clean exit, not a lane
+    # failure, spent it.
+    assert "exited clean" in gripe_body
+    # The node's own rescue evidence comment carries the miss too.
+    (rescue_comment,) = [
+        c for c in _todo_comments(store, review) if c.startswith("rescue: review")
+    ]
+    assert "no `review:` comment" in rescue_comment
+
+
 def test_review_reads_a_glued_handoff(store: Store) -> None:
     """td573578: a ``handoff:`` that glues ``review: FIX — …`` to the
     narration is the verdict (the LAST token in the comment). The fixture
@@ -7535,6 +9022,24 @@ def test_review_reads_a_glued_handoff(store: Store) -> None:
         "tests/test_work_board_queue.py::test_blocked_row_shows_after_marker "
         "fails on landed main (reproduced in-container)"
     )
+
+
+def test_review_reads_a_paren_glued_handoff(store: Store) -> None:
+    """gr687501: ``…just parse):review: LAND`` — the verdict token glued
+    after ``):`` by a block-concatenating lane is the verdict, not a
+    miss that retries the reviewer into rescue."""
+    mint = _reviewed(
+        store,
+        "handoff: Quick syntax sanity check on the two changed files "
+        "(not lint/typecheck — just parse):review: LAND (read-only, "
+        "tests not run)\n\nfindings",
+    )
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    assert _meta(store, review)["review"]["verdict"] == "LAND"
+    assert sorted(_children(store, mint.root_id)) == sorted([build, review])
 
 
 def test_review_line_comment_beats_a_glued_handoff_token(store: Store) -> None:
@@ -7785,6 +9290,125 @@ def test_dispatch_orders_by_stamped_score_across_roots(store: Store) -> None:
     assert order == [f"td{newer.ids['task']}", f"td{older.ids['task']}"]
 
 
+def test_dispatch_queues_overlapping_build_with_score_and_release_band(
+    store: Store,
+) -> None:
+    """gr702610: overlap changes claim eligibility, never queue admission."""
+    _started_outside_plans(store, ["src/precis/a.py"])
+    waiting = _file_plan(store, "Fix src/precis/a.py")
+    store.stamp_ref_meta(
+        waiting.root_id, {"dispatch_score": 42.0, "claim_band": "release"}
+    )
+    pd.run_pass(store)
+    ((_, meta),) = _jobs_under(store, waiting.ids["task"])
+    assert meta["dispatch_score"] == 42.0
+    assert meta["claim_band"] == "release"
+    assert waiting.ids["task"] not in pd.live_nodes(store, [waiting.root_id])
+
+
+def _scored_review_plan(store: Store, score: float, *, preland: bool) -> T.PlanMint:
+    """A build <- review plan whose root is stamped ``score``, the build
+    done and landed-pending so the next pass mints the review job."""
+    mint = _review_plan(store, preland=preland)
+    store.stamp_ref_meta(mint.root_id, {"dispatch_score": score})
+    return mint
+
+
+def _mint_review(store: Store, mint: T.PlanMint) -> dict[str, Any]:
+    """Mint the review job of ``mint`` (build done first); its meta."""
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    pd.run_pass(store)
+    ((_, meta),) = _jobs_under(store, review)
+    return meta
+
+
+def test_preland_review_job_is_floored_to_finish_first_score(store: Store) -> None:
+    """A finished build holds its files until its review runs, so the
+    review job's stamped score floors at ``FINISH_FIRST_SCORE``."""
+    mint = _scored_review_plan(store, 2.3, preland=True)
+    meta = _mint_review(store, mint)
+    assert meta["dispatch_score"] == 16.0
+
+
+def test_preland_review_job_above_the_floor_keeps_its_score(store: Store) -> None:
+    mint = _scored_review_plan(store, 42.0, preland=True)
+    meta = _mint_review(store, mint)
+    assert meta["dispatch_score"] == 42.0
+
+
+def test_build_job_of_a_preland_plan_keeps_the_plan_score(store: Store) -> None:
+    mint = _scored_review_plan(store, 2.3, preland=True)
+    pd.run_pass(store)
+    ((_, meta),) = _jobs_under(store, mint.ids["build"])
+    assert meta["dispatch_score"] == 2.3
+
+
+def test_reviewer_without_the_preland_marker_keeps_the_plan_score(
+    store: Store,
+) -> None:
+    mint = _scored_review_plan(store, 2.3, preland=False)
+    meta = _mint_review(store, mint)
+    assert meta["dispatch_score"] == 2.3
+
+
+def _held_land_meta(store: Store, mint: T.PlanMint) -> dict[str, Any]:
+    """Drive ``mint`` to a ``review: LAND`` verdict; the held land's meta."""
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(
+        build, {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}}
+    )
+    _mark_done(store, build)
+    pd.run_pass(store)
+    ((review_job, _),) = _jobs_under(store, review)
+    _set_job_status(store, review_job, "succeeded")
+    _todo_comment(store, review, "review: LAND")
+    pd.run_pass(store)
+    (meta,) = [
+        m for _jid, m in _jobs_under(store, build) if m.get("job_type") == "land_slice"
+    ]
+    return meta
+
+
+def test_held_land_job_is_floored_to_finish_first_score(store: Store) -> None:
+    """The land a ``review: LAND`` verdict releases keeps the build's files
+    held until it runs, so it floors at ``FINISH_FIRST_SCORE`` too."""
+    meta = _held_land_meta(store, _scored_review_plan(store, 2.3, preland=True))
+    assert meta["dispatch_score"] == 16.0
+
+
+def test_held_land_job_above_the_floor_keeps_the_plan_score(store: Store) -> None:
+    meta = _held_land_meta(store, _scored_review_plan(store, 42.0, preland=True))
+    assert meta["dispatch_score"] == 42.0
+
+
+@pytest.mark.parametrize(("score", "want"), [(2.3, 16.0), (42.0, 42.0)])
+def test_reland_job_floors_at_finish_first_score(
+    store: Store, score: float, want: float
+) -> None:
+    """The infra-red re-land floors at ``FINISH_FIRST_SCORE`` and keeps a
+    plan score above it."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(mint.root_id, {"dispatch_score": score})
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        params={"todo_id": task, "branch": f"slice/{task}"},
+        meta={"attempt_free": "infra-land", "red_class": "gate infrastructure"},
+    )
+    pd.run_pass(store)
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["job_type"] == "land_slice"
+    assert meta["dispatch_score"] == want
+
+
 def test_file_overlap_hold_waits_for_the_inflight_land(store: Store) -> None:
     """td603849: a run_slice whose brief names the same file an
     in-flight land's brief names is held until that land finishes."""
@@ -7795,9 +9419,1012 @@ def test_file_overlap_hold_waits_for_the_inflight_land(store: Store) -> None:
     res = pd.run_pass(store, dry_run=True)
     notes = "\n".join(res.notes)
     assert f"td{conflict.ids['task']}: file-overlap hold" in notes
-    assert res.dispatched == 1
+    assert res.dispatched == 2  # both queue; overlap admission happens at claim
     dispatched = [n for n in res.notes if "would dispatch" in n]
     assert any(f"td{clean.ids['task']}" in n for n in dispatched)
+
+
+def test_file_overlap_hold_waits_for_a_live_build_and_lifts_when_it_ends(
+    store: Store,
+) -> None:
+    """2026-11-15 (Reto: sequence the slices): a build still building —
+    not yet landing — holds an overlapping build in another plan, the
+    note names the blocker, its state and the shared file; once the
+    blocker's job ends the hold lifts on the next pass."""
+    building = _file_plan(store, "Rebuilt src/precis/workers/run_slice.py")
+    job = _slice_job(store, building.ids["task"], "run_slice", "running")
+    waiting = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    res = pd.run_pass(store, dry_run=True)
+    hold = [n for n in res.notes if "file-overlap hold" in n]
+    assert hold == [
+        f"td{waiting.ids['task']}: file-overlap hold — waits on "
+        f"td{building.ids['task']} (building): both touch "
+        "`workers/run_slice.py`; claims "
+        f"once td{building.ids['task']} is on main"
+    ]
+    _set_job_status(store, job, "failed")
+    res = pd.run_pass(store, dry_run=True)
+    assert not any("file-overlap hold" in n for n in res.notes)
+
+
+def test_file_overlap_hold_reads_a_held_builds_branch_files(store: Store) -> None:
+    """A finished build held for its pre-land review (``pending_land``) is
+    started work: its stamped ``branch_files`` — the real diff — hold a
+    build whose brief names one of them, though its own brief named
+    none."""
+    held = _file_plan(store, "Build the thing.")
+    task = held.ids["task"]
+    store.stamp_ref_meta(
+        task,
+        {
+            "pending_land": {"todo_id": task, "branch": f"slice/{task}"},
+            "branch_files": ["src/precis/plans/templates.py"],
+        },
+    )
+    _mark_done(store, task)
+    waiting = _file_plan(store, "Edit src/precis/plans/templates.py")
+    res = pd.run_pass(store, dry_run=True)
+    notes = "\n".join(res.notes)
+    assert (
+        f"td{waiting.ids['task']}: file-overlap hold — waits on td{task} "
+        "(in pre-land review)"
+    ) in notes
+
+
+def _overlap_note(store: Store, task: int) -> bool:
+    """Whether the dry-run tick holds ``task`` for a file overlap."""
+    res = pd.run_pass(store, dry_run=True)
+    return any(n.startswith(f"td{task}: file-overlap hold") for n in res.notes)
+
+
+def test_file_overlap_hold_matches_the_same_full_path(store: Store) -> None:
+    """gr701628 follow-up: a brief naming the started build's branch file
+    by its full repo path is held."""
+    blocker = _pending_build(store, ["src/precis/workers/job_types/land_slice.py"])
+    waiting = _file_plan(store, "Edit src/precis/workers/job_types/land_slice.py")
+    assert _overlap_note(store, waiting.ids["task"])
+    assert pd._started_slices(store)[blocker].branch_files
+
+
+def test_file_overlap_hold_resolves_an_unambiguous_suffix(store: Store) -> None:
+    """A brief's shorter suffix — ``job_types/land_slice.py`` or a bare
+    ``land_slice.py`` — holds when exactly one branch file ends with it."""
+    _pending_build(store, ["src/precis/workers/job_types/land_slice.py"])
+    suffix = _file_plan(store, "Edit job_types/land_slice.py")
+    bare = _file_plan(store, "Edit land_slice.py")
+    assert _overlap_note(store, suffix.ids["task"])
+    assert _overlap_note(store, bare.ids["task"])
+
+
+def test_file_overlap_hold_ignores_the_same_basename_elsewhere(
+    store: Store,
+) -> None:
+    """Two builds touching different ``dispatch.py`` / ``test_x.py`` files
+    do not wait on each other, though the basename (and last two
+    segments, for the tests) agree."""
+    _pending_build(
+        store,
+        ["src/precis/a/dispatch.py", "tests/a/test_x.py", "src/precis/a/b/conftest.py"],
+    )
+    other = _file_plan(
+        store,
+        "Edit src/precis/b/dispatch.py, tests/b/test_x.py and "
+        "src/precis/c/b/conftest.py",
+    )
+    assert not _overlap_note(store, other.ids["task"])
+
+
+def test_file_overlap_hold_ignores_an_ambiguous_basename(store: Store) -> None:
+    """A bare ``__init__.py`` names several of the started build's files
+    and none in particular — it holds nothing; a bare name the started
+    build does not touch holds nothing either."""
+    _pending_build(store, ["src/precis/a/__init__.py", "src/precis/b/__init__.py"])
+    ambiguous = _file_plan(store, "Edit __init__.py")
+    untouched = _file_plan(store, "Edit conftest.py")
+    assert not _overlap_note(store, ambiguous.ids["task"])
+    assert not _overlap_note(store, untouched.ids["task"])
+
+
+@pytest.mark.parametrize(
+    ("started", "brief"),
+    [
+        # never-key basename: one __init__.py is still no conflict
+        (["src/precis/a/__init__.py"], "Edit __init__.py"),
+        (["tests/a/conftest.py"], "Edit conftest.py"),
+        (["src/precis/a/__main__.py"], "Edit __main__.py"),
+        # a different directory's same basename; a full path has no basename key
+        (["src/precis/runtime/dispatch.py"], "Edit src/precis/workers/dispatch.py"),
+        (["src/precis/workers/dispatch.py"], "Edit runtime/dispatch.py"),
+        # URL fragments, with and without a scheme
+        (["src/precis/api.openai.c"], "see https://api.openai.com/v1/x"),
+        (["src/precis/clients/x.py"], "docs at https://example.org/a/clients/x.py"),
+        # shared ratchet test, in any spelling
+        (
+            ["tests/precis_web/test_colour_ratchet.py"],
+            "Edit src/precis_web/x.py; keep precis_web/test_colour_ratchet.py green",
+        ),
+    ],
+)
+def test_file_overlap_hold_ignores_non_conflicts(
+    store: Store, started: list[str], brief: str
+) -> None:
+    """gr705093: never-key basenames, a different directory's same
+    basename, URL fragments and the shared colour ratchet hold nothing."""
+    _pending_build(store, started)
+    waiting = _file_plan(store, brief)
+    assert not _overlap_note(store, waiting.ids["task"])
+
+
+@pytest.mark.parametrize(
+    ("started", "brief"),
+    [
+        # the same full path
+        (
+            ["src/precis/workers/job_types/land_slice.py"],
+            "Edit src/precis/workers/job_types/land_slice.py",
+        ),
+        # a full ``__init__.py`` path (not bare) still conflicts with itself
+        (["src/precis/a/__init__.py"], "Edit src/precis/a/__init__.py"),
+        # a >=2-segment suffix of the started build's full path
+        (
+            ["src/precis/workers/job_types/land_slice.py"],
+            "Edit job_types/land_slice.py",
+        ),
+    ],
+)
+def test_file_overlap_hold_keeps_full_paths_and_suffixes(
+    store: Store, started: list[str], brief: str
+) -> None:
+    """gr705093: the real conflicts still hold."""
+    _pending_build(store, started)
+    waiting = _file_plan(store, brief)
+    assert _overlap_note(store, waiting.ids["task"])
+
+
+_SHARED = "src/precis/workers/job_types/plan_dispatch.py"
+
+
+def _overlap_target_case(
+    store: Store, started_target: str | None, cand_target: str | None
+) -> bool:
+    """gr688291: whether a candidate on ``cand_target`` (None: main) is
+    held by a started build on ``started_target`` sharing one file."""
+    blocker = _started_outside_plans(store, [_SHARED])
+    if started_target:
+        store.stamp_ref_meta(blocker, {"land_target": started_target})
+    waiting = _file_plan(store, f"Fix {_SHARED}")
+    if cand_target:
+        store.stamp_ref_meta(waiting.ids["task"], {"land_target": cand_target})
+    return _overlap_note(store, waiting.ids["task"])
+
+
+def test_file_overlap_hold_skips_a_release_fix_behind_a_main_build(
+    store: Store,
+) -> None:
+    """gr688291: a release-target fix is not held by a started main build
+    sharing a file, and dispatches on the same tick."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, f"Fix {_SHARED}")
+    store.stamp_ref_meta(waiting.ids["task"], {"land_target": "release/r321"})
+    res = pd.run_pass(store, dry_run=True)
+    assert not any("file-overlap hold" in n for n in res.notes)
+    assert res.held == 0
+    assert any(
+        n.startswith(f"td{waiting.ids['task']}: would dispatch") for n in res.notes
+    )
+
+
+def test_file_overlap_hold_skips_a_main_build_behind_a_release_build(
+    store: Store,
+) -> None:
+    assert not _overlap_target_case(store, "release/r321", None)
+
+
+def test_file_overlap_hold_keeps_two_main_builds_sharing_a_file(
+    store: Store,
+) -> None:
+    assert _overlap_target_case(store, None, None)
+
+
+def test_file_overlap_hold_keeps_two_builds_on_one_release_target(
+    store: Store,
+) -> None:
+    assert _overlap_target_case(store, "release/r321", "release/r321")
+
+
+def test_file_overlap_hold_skips_builds_on_different_release_targets(
+    store: Store,
+) -> None:
+    assert not _overlap_target_case(store, "release/r320", "release/r321")
+
+
+@pytest.mark.parametrize(
+    ("blocker_target", "candidate_target", "held"),
+    [
+        (None, "release/r321", False),
+        ("release/r321", None, False),
+        ("release/r321", "release/r321", True),
+        ("release/r320", "release/r321", False),
+    ],
+)
+def test_file_overlap_hold_uses_brief_only_targets(
+    store: Store, blocker_target: str | None, candidate_target: str | None, held: bool
+) -> None:
+    from precis.workers.executors._common import build_overlap_holds
+
+    blocker = _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    for todo, target in ((blocker, blocker_target), (waiting, candidate_target)):
+        if target is not None:
+            _todo_comment(store, todo, f"brief: Release fix\nland target: {target}")
+
+    assert _overlap_note(store, waiting) == held
+    with store.pool.connection() as conn:
+        assert (waiting in build_overlap_holds(conn, [waiting])) == held
+
+
+def test_file_overlap_hold_uses_body_before_brief_target(store: Store) -> None:
+    blocker = _started_outside_plans(store, [_SHARED])
+    _todo_comment(store, blocker, "brief: Release fix\nland target: release/r321")
+    waiting = _file_plan(store, f"Fix {_SHARED}\nland target: release/r321").ids["task"]
+    _todo_comment(store, waiting, "brief: Other branch\nland target: release/r320")
+
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_uses_retry_brief_over_builder_handoff(store: Store) -> None:
+    blocker = _started_outside_plans(store, [_SHARED])
+    _todo_comment(store, blocker, "brief: Release fix\nland target: release/r321")
+    _todo_comment(store, blocker, "handoff: Attempts ended")
+    waiting = _file_plan(store, f"Fix {_SHARED}\nland target: release/r321").ids["task"]
+
+    assert not _overlap_note(store, waiting)
+    store.add_tag(blocker, Tag.open("attempt:1"), set_by="system")
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_ignores_files_named_in_builder_handoffs(
+    store: Store,
+) -> None:
+    """gr734976: a builder session's plain ``handoff:`` names files it
+    read, ran or found red, not files it edits — two builds whose
+    handoffs mention the same untouched file do not wait on each other.
+    The same sentence as a ``brief:`` still holds."""
+    note = f"handoff: mypy reports import-not-found in {_SHARED}, files I didn't touch"
+    blocker = _started_outside_plans(store, ["src/precis/other.py"])
+    _todo_comment(store, blocker, note)
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(store, waiting, note)
+
+    assert not _overlap_note(store, waiting)
+    # Non-vacuous: the file is named, just not in a declaring comment.
+    _todo_comment(store, blocker, f"brief: also edit {_SHARED}")
+    _todo_comment(store, waiting, f"brief: edit {_SHARED}")
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_queued_builds_brief(store: Store) -> None:
+    """gr734976: a ``brief:`` comment on the queued build declares its
+    files, against the started build's stamped ``branch_files``."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    assert not _overlap_note(store, waiting)
+    _todo_comment(store, waiting, f"brief: rework {_SHARED}")
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_landers_conflict_handoff(store: Store) -> None:
+    """gr734976: the lander's failure handoff is a machine instruction
+    that names the files to fix — a retried build whose land hit a merge
+    conflict in a started build's file is held on it."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(
+        store,
+        waiting,
+        "handoff: lander: land FAILED: Auto-merging "
+        f"{_SHARED}\nCONFLICT (content): Merge conflict in {_SHARED}",
+    )
+    assert _overlap_note(store, waiting)
+
+
+_SHIP_NARRATION = (
+    "handoff: lander: land FAILED on slice/7: ✖ rebase conflict onto origin/main\n\n"
+    "The gate's output before the verdict:\n"
+    "⚠ deploy lag: oldest undeployed commit is 8h old — see docs/runbooks/deploy.md\n"
+    "▶ rebuilding Tailwind CSS (static production build)\n"
+    "\x1b[36m→ src/precis_web/static/tailwind.css\x1b[0m\n"
+    "▶ syncing origin/main\n"
+)
+
+
+def test_file_overlap_hold_ignores_ships_own_narration_in_a_lander_handoff(
+    store: Store,
+) -> None:
+    """gr736403: every lander failure handoff quotes ship's step lines,
+    and every land rebuilds the stylesheet — two builds whose lands
+    failed do not wait on each other through ``tailwind.css``. A file
+    the quoted gate output names outside ship's own lines still holds."""
+    blocker = _started_outside_plans(store, ["src/precis/other.py"])
+    _todo_comment(store, blocker, _SHIP_NARRATION)
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(store, waiting, _SHIP_NARRATION)
+
+    assert not _overlap_note(store, waiting)
+    _todo_comment(
+        store,
+        waiting,
+        _SHIP_NARRATION + "CONFLICT (content): Merge conflict in src/precis/other.py",
+    )
+    assert _overlap_note(store, waiting)
+
+
+def test_a_brief_that_opens_a_line_with_an_arrow_still_declares_its_file(
+    store: Store,
+) -> None:
+    """Only the lander's handoff carries ship's narration: an arrow line
+    in a ``brief:`` is an instruction and names its file."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(store, waiting, f"brief: two steps\n→ {_SHARED}: fix the read")
+    assert _overlap_note(store, waiting)
+
+
+@pytest.mark.parametrize("landing", [False, True])
+@pytest.mark.parametrize("provenance", ["current", "stale", "missing"])
+def test_a_finished_build_holds_only_current_branch_files(
+    store: Store, landing: bool, provenance: str
+) -> None:
+    """gr736403: once a build waits for its pre-land review its stamped
+    branch is the whole diff — a file its brief merely names holds
+    nothing. While it still builds, the brief's file holds too, and a
+    finished build with no stamped branch falls back to what it declares."""
+    finished = _pending_build(store, ["src/precis/other.py"])
+    head = "a" * 40
+    store.stamp_ref_meta(
+        finished,
+        {
+            "pending_land": {
+                "todo_id": finished,
+                "branch": f"slice/{finished}",
+                "head": "c" * 40 if landing else head,
+            }
+        },
+    )
+    if provenance != "missing":
+        stamp_head = head if provenance == "current" else "b" * 40
+        store.stamp_ref_meta(finished, {"branch_files_head": stamp_head})
+    if landing:
+        _slice_job(
+            store,
+            finished,
+            "land_slice",
+            "queued",
+            params={"todo_id": finished, "head": head},
+        )
+    _todo_comment(store, finished, f"brief: green on a full gate, see {_SHARED}")
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    state = "landing" if landing else "in pre-land review"
+    assert pd._started_slices(store)[finished].state == state
+    assert bool(_overlap_note(store, waiting)) == (provenance != "current")
+
+    building = _started_outside_plans(store, ["src/precis/other.py"])
+    _todo_comment(store, building, f"brief: green on a full gate, see {_SHARED}")
+    assert _overlap_note(store, waiting)
+
+
+@pytest.mark.parametrize(
+    ("state", "held"),
+    [
+        ("landing", {"b.py"}),
+        ("in pre-land review", {"b.py"}),
+        ("building", {"a.py", "b.py"}),
+    ],
+)
+def test_held_files_follow_the_builds_state(state: str, held: set[str]) -> None:
+    started = pd._Started(
+        state=state,
+        branch_files=("src/precis/b.py",),
+        repo="precis",
+        branch_files_current=True,
+    )
+    assert pd._held_files(started, frozenset({"a.py"})) == held
+
+
+def test_a_finished_build_without_branch_files_holds_what_it_declares(
+    store: Store,
+) -> None:
+    finished = _pending_build(store, [])
+    _todo_comment(store, finished, f"brief: rework {_SHARED}")
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_retrys_own_branch_files(store: Store) -> None:
+    """gr734976: a retry that already has commits carries its own stamped
+    ``branch_files`` — held on a started build's file though no text of
+    its names one."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    assert not _overlap_note(store, waiting)
+    store.stamp_ref_meta(waiting, {"branch_files": [_SHARED, 7]})
+    assert _overlap_note(store, waiting)
+    # A malformed stamp is no file set, not an error.
+    store.stamp_ref_meta(waiting, {"branch_files": "not-a-list"})
+    assert not _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_preland_handback(store: Store) -> None:
+    """gr734976: the tick's pre-land hand-back names the files the
+    reviewer's finding is about — the rebuild is held on them."""
+    from precis.plans.templates import PRELAND_HANDBACK_MARK
+
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(
+        store,
+        waiting,
+        f"handoff: review: FIX — the check in {_SHARED} is wrong\n\n"
+        f"(review td55, {PRELAND_HANDBACK_MARK} — rebuild on it "
+        "from the brief with this finding in mind)",
+    )
+    assert _overlap_note(store, waiting)
+
+
+def test_mechanical_red_briefs_name_no_file_for_the_overlap_hold() -> None:
+    """gr734976: the skill-size and skill-vocab advice names a test as
+    advice; ``brief:`` comments count for the overlap hold, so the
+    text must carry no path-ish token ``brief_files`` would read."""
+    from precis.utils import dispatch_score as _dscore
+
+    for slug, _pat, brief in pd._MECHANICAL_REDS:
+        if slug in {"skill-size", "skill-vocab"}:
+            assert not _dscore.brief_files(brief), (slug, brief)
+
+
+def test_file_overlap_hold_never_holds_waiting_builds_on_each_other(
+    store: Store,
+) -> None:
+    """Only started work holds: two open builds naming the same file both
+    dispatch (neither has started), so the hold cannot deadlock."""
+    first = _file_plan(store, "Fix src/precis/workers/land_slice.py")
+    second = _file_plan(store, "Also src/precis/workers/land_slice.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert not any("file-overlap hold" in n for n in res.notes)
+    dispatched = "\n".join(n for n in res.notes if "would dispatch" in n)
+    assert f"td{first.ids['task']}" in dispatched
+    assert f"td{second.ids['task']}" in dispatched
+
+
+@pytest.mark.parametrize("ruling", ["won't-do", "auto-timeout"])
+def test_file_overlap_hold_lifts_when_the_held_build_is_ruled_out(
+    store: Store, ruling: str
+) -> None:
+    """review td686685: a pre-land-held build ruled out never clears its
+    ``pending_land`` stamp — only ``_record_land`` /
+    ``_review_back_to_builder`` do — and the ruling means the work never
+    lands, so the stale stamp must stop holding overlapping builds.
+    ``done`` still holds (its land may be in flight)."""
+    held = _file_plan(store, "Build the thing.")
+    task = held.ids["task"]
+    store.stamp_ref_meta(
+        task,
+        {
+            "pending_land": {"todo_id": task, "branch": f"slice/{task}"},
+            "branch_files": ["src/precis/workers/plan_dispatch.py"],
+        },
+    )
+    store.add_tag(
+        task, Tag.closed("STATUS", ruling), set_by="system", replace_prefix=True
+    )
+    waiting = _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert task not in pd._started_slices(store)
+    assert not any("file-overlap hold" in n for n in res.notes)
+    assert any(
+        n.startswith(f"td{waiting.ids['task']}: would dispatch") for n in res.notes
+    )
+
+
+def test_file_overlap_hold_lifts_when_the_running_build_is_ruled_out(
+    store: Store,
+) -> None:
+    """The ruling outranks a live job too: a ``won't-do`` build whose
+    run_slice is still marked running is never landing — it holds
+    nothing."""
+    building = _file_plan(store, "Rebuilt src/precis/workers/run_slice.py")
+    _slice_job(store, building.ids["task"], "run_slice", "running")
+    store.add_tag(
+        building.ids["task"],
+        Tag.closed("STATUS", "won't-do"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    waiting = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    res = pd.run_pass(store, dry_run=True)
+    assert building.ids["task"] not in pd._started_slices(store)
+    assert not any("file-overlap hold" in n for n in res.notes)
+
+
+def _started_outside_plans(
+    store: Store, files: list[str], parent: int | None = None
+) -> int:
+    """A started build sitting outside every loaded plan (the overlap
+    hold finds blockers factory-wide, not only in loaded subtrees)."""
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Outside build",
+        meta={"op": "run_slice", "branch_files": files},
+        parent_id=parent,
+    )
+    _slice_job(store, ref.id, "run_slice", "running")
+    return int(ref.id)
+
+
+def test_file_overlap_hold_resolves_an_out_of_plan_blockers_repo(
+    store: Store,
+) -> None:
+    """review td686685: ``plan.nodes.get`` on an out-of-plan blocker is
+    None, and the repo check used to skip it — a cross-repo started
+    build then falsely held a same-path default-repo candidate. The
+    blocker's governing ``repo:`` tag (its own, else the nearest tagged
+    ancestor's, ``_node_repos``' reach) resolves in the store."""
+    phase = store.insert_ref(
+        kind="todo", slug=None, title="x-repo phase", meta={}, parent_id=None
+    )
+    store.add_tag(phase.id, Tag.open("repo:catpath"), set_by="system")
+    cross = _started_outside_plans(
+        store, ["src/precis/workers/plan_dispatch.py"], parent=phase.id
+    )
+    same = _started_outside_plans(store, ["src/precis/workers/plan_dispatch.py"])
+    waiting = _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    started = pd._started_slices(store)
+    assert (started[cross].repo, started[same].repo) == ("catpath", "precis")
+    res = pd.run_pass(store, dry_run=True)
+    holds = [n for n in res.notes if "file-overlap hold" in n]
+    assert len(holds) == 1
+    assert holds[0].startswith(
+        f"td{waiting.ids['task']}: file-overlap hold — waits on td{same} (building)"
+    )
+
+
+def test_file_overlap_hold_skips_generators(store: Store) -> None:
+    """A generator (triage, brief, reviewer) commits nothing: its live job
+    holds no build, and it is never held itself."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "gen",
+            "Triage it",
+            {"op": "run_slice", "generate": {"role": "triage", "from": "gr1"}},
+            body="Read src/precis/workers/run_slice.py",
+        )
+
+    gen = T._run(store, None, build)
+    _slice_job(store, gen.ids["gen"], "run_slice", "running")
+    waiting = _file_plan(store, "Fix src/precis/workers/run_slice.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert not any(
+        f"td{waiting.ids['task']}: file-overlap hold" in n for n in res.notes
+    )
+    assert pd._started_slices(store) == {}
+
+
+def _pending_build(store: Store, files: list[str], parent: int | None = None) -> int:
+    """A finished build held for its pre-land review (``pending_land``
+    stamped, no job yet), outside every loaded plan."""
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Pending-land build",
+        meta={"op": "run_slice", "branch_files": files},
+        parent_id=parent,
+    )
+    store.stamp_ref_meta(
+        ref.id, {"pending_land": {"todo_id": ref.id, "branch": f"slice/{ref.id}"}}
+    )
+    return int(ref.id)
+
+
+@pytest.mark.parametrize("dead", ["failed", "cancelled", "timed-out"])
+def test_dead_land_releases_the_file_overlap_hold(store: Store, dead: str) -> None:
+    """gr701628: a pending_land build whose newest ``land_slice`` died and
+    that has no live land job holds no overlap lock — only ``_record_land``
+    clears the stamp, and nothing re-mints the land, so it held forever."""
+    build = _pending_build(store, ["src/precis/workers/plan_dispatch.py"])
+    assert pd._started_slices(store)[build].state == "in pre-land review"
+    _slice_job(store, build, "land_slice", dead)
+    assert build not in pd._started_slices(store)
+    waiting = _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 0
+    assert any(
+        n.startswith(f"td{waiting.ids['task']}: would dispatch") for n in res.notes
+    )
+    # A land re-minted behind the dead one is live work again.
+    _slice_job(store, build, "land_slice", "running")
+    assert pd._started_slices(store)[build].state == "landing"
+
+
+def test_a_build_out_of_turns_holds_only_while_landing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The overlap hold is bounded: a build whose ``run_slice`` runs ended
+    ``factory.overlap_hold_max_runs`` times without a land stops holding
+    while it rebuilds or waits for review (three such builds held 30
+    queued ones for up to 23 h), and holds again only while it lands. A
+    cancelled run and an attempt-free failure (a lane wait, a refused
+    launch) are no turn; ``0`` never lifts the hold."""
+    build = _pending_build(store, ["src/precis/workers/plan_dispatch.py"])
+    for _ in range(pd.OVERLAP_HOLD_MAX_RUNS - 1):
+        _slice_job(store, build, "run_slice", "succeeded")
+    _slice_job(store, build, "run_slice", "cancelled")
+    _slice_job(
+        store, build, "run_slice", "failed", meta={pd.ATTEMPT_FREE_KEY: "lane-wait"}
+    )
+    _slice_job(
+        store, build, "run_slice", "failed", meta={"host_refusal": {"lane": "codex"}}
+    )
+    assert pd._started_slices(store)[build].state == "in pre-land review"
+    _slice_job(store, build, "run_slice", "failed")
+    assert build not in pd._started_slices(store)
+    waiting = _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 0
+    assert any(
+        n.startswith(f"td{waiting.ids['task']}: would dispatch") for n in res.notes
+    )
+    # Its next rebuild runs without the lock too.
+    _slice_job(store, build, "run_slice", "running")
+    assert build not in pd._started_slices(store)
+    with monkeypatch.context() as m:
+        m.setattr(pd, "_overlap_hold_max_runs", lambda store: 0)
+        assert build in pd._started_slices(store)
+    # The land itself always holds: two lands on one file must not race.
+    _slice_job(store, build, "land_slice", "running")
+    assert pd._started_slices(store)[build].state == "landing"
+
+
+def test_overlap_claim_survives_a_settings_sql_error(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import settings
+    from precis.workers.executors._common import build_overlap_holds
+
+    key = "factory.overlap_hold_max_runs"
+    settings.invalidate(key)
+    monkeypatch.delenv("PRECIS_FACTORY_OVERLAP_HOLD_MAX_RUNS", raising=False)
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    with store.pool.connection() as conn:
+        # Shadow the real table with one whose SELECT fails in this transaction.
+        conn.execute("CREATE TEMP TABLE app_settings (key text) ON COMMIT DROP")
+        assert waiting in build_overlap_holds(conn, [waiting])
+        assert conn.execute("SELECT 1 FROM pg_temp.app_settings").fetchall() == []
+
+
+def test_overlap_claim_holds_while_another_scan_holds_the_lock(
+    store: Store,
+) -> None:
+    from precis.workers.executors._common import build_overlap_holds
+
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    with store.pool.connection() as other, other.transaction():
+        other.execute(
+            "SELECT pg_advisory_xact_lock(%s)", (pd._STARTED_SLICES_LOCK_KEY,)
+        )
+        with store.pool.connection() as conn:
+            assert waiting in build_overlap_holds(conn, [waiting])
+
+
+def test_dead_land_of_an_earlier_attempt_holds_the_rebuilt_review(
+    store: Store,
+) -> None:
+    """review td701778: the dead-land release is scoped to the current
+    build attempt. A failed land leaves the failed job as the newest
+    ``land_slice``; the rebuild's fresh ``pending_land`` stamps a new
+    ``head``, and that historical failure must not release the
+    file-overlap hold during the rebuilt branch's pre-land review —
+    only a dead land OF THE CURRENT head releases it."""
+    head_a = "a1" * 20
+    head_b = "b2" * 20
+    build = _pending_build(store, ["src/precis/workers/plan_dispatch.py"])
+    store.stamp_ref_meta(
+        build,
+        {
+            "pending_land": {
+                "todo_id": build,
+                "branch": f"slice/{build}",
+                "head": head_a,
+            }
+        },
+    )
+    # Attempt 1: the review LANDed and the minted land died — with no
+    # rebuild behind it, the dead land of the standing stamp releases
+    # the hold (gr701628).
+    _slice_job(
+        store, build, "land_slice", "failed", params={"todo_id": build, "head": head_a}
+    )
+    assert build not in pd._started_slices(store)
+    # The rebuild exits clean; the defer re-stamps pending_land with the
+    # new pushed tip. The historical dead land is still the newest
+    # land_slice job, but it judged the previous attempt's head.
+    store.stamp_ref_meta(
+        build,
+        {
+            "pending_land": {
+                "todo_id": build,
+                "branch": f"slice/{build}",
+                "head": head_b,
+            }
+        },
+    )
+    started = pd._started_slices(store)
+    assert started[build].state == "in pre-land review"
+    _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 1
+    # The review re-LANDs; when THAT land dies, the hold releases.
+    _slice_job(
+        store, build, "land_slice", "failed", params={"todo_id": build, "head": head_b}
+    )
+    assert build not in pd._started_slices(store)
+
+
+def test_started_slices_single_flight_skips_a_concurrent_scan(store: Store) -> None:
+    build = _pending_build(store, ["src/precis/a.py"])
+    with store.pool.connection() as conn, conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (pd._STARTED_SLICES_LOCK_KEY,))
+        assert pd._started_slices(store, single_flight=True) == {}
+        # Claim and rescue callers never skip: the full scan still runs.
+        assert pd._started_slices(store)[build].state == "in pre-land review"
+    assert pd._started_slices(store, single_flight=True)[build].state == (
+        "in pre-land review"
+    )
+
+
+def test_pending_land_key_matches_the_overlap_query_literal() -> None:
+    # _started_slices and migration 0336's partial indexes hard-code it.
+    assert pd._templates.PENDING_LAND_KEY == "pending_land"
+
+
+def test_started_slices_keeps_a_running_land_and_a_pre_land_review(
+    store: Store,
+) -> None:
+    """gr701628: the dead-land release is narrow — a queued or running
+    land job, a pending_land build with no land job yet (its review is
+    still open) and a newest land that succeeded all still hold."""
+    landing = _pending_build(store, ["src/precis/a.py"])
+    _slice_job(store, landing, "land_slice", "failed")
+    _slice_job(store, landing, "land_slice", "running")
+    queued = _pending_build(store, ["src/precis/b.py"])
+    _slice_job(store, queued, "land_slice", "queued")
+    review = _pending_build(store, ["src/precis/c.py"])
+    landed = _pending_build(store, ["src/precis/d.py"])
+    _slice_job(store, landed, "land_slice", "succeeded")
+    started = pd._started_slices(store)
+    assert {i: started[i].state for i in (landing, queued, review, landed)} == {
+        landing: "landing",
+        queued: "landing",
+        review: "in pre-land review",
+        landed: "in pre-land review",
+    }
+
+
+@pytest.mark.parametrize("tag", ["rescue:land", "child-failed:run_slice"])
+@pytest.mark.parametrize("where", ["self", "ancestor"])
+def test_rescue_or_child_failed_pending_build_holds_no_overlap_lock(
+    store: Store, tag: str, where: str
+) -> None:
+    """gr701628: a pending_land build carrying — or sitting under — a
+    ``rescue:`` or ``child-failed:`` tag belongs to the rescue pass and
+    holds nothing; an untagged sibling in the same state still does."""
+    phase = store.insert_ref(
+        kind="todo", slug=None, title="phase", meta={}, parent_id=None
+    )
+    sick = _pending_build(store, ["src/precis/a.py"], parent=phase.id)
+    store.add_tag(sick if where == "self" else phase.id, Tag.open(tag), set_by="system")
+    healthy = _pending_build(store, ["src/precis/b.py"])
+    started = pd._started_slices(store)
+    assert sick not in started
+    assert started[healthy].state == "in pre-land review"
+
+
+def _preland_review_of(
+    store: Store, build: int, *, frm: int | None = None, preland: bool = True
+) -> int:
+    """A reviewer todo gating ``build``'s land: ``generate={role: reviewer,
+    from: td<frm or build>}``, ``meta.preland_review`` unless not ``preland``."""
+    meta: dict[str, Any] = {
+        "generate": {"role": "reviewer", "from": f"td{frm or build}"}
+    }
+    if preland:
+        meta["preland_review"] = True
+    review = store.insert_ref(
+        kind="todo", slug=None, title="Pre-land review", meta=meta, parent_id=None
+    )
+    store.add_link(src_ref_id=review.id, dst_ref_id=build, relation="blocked-by")
+    return int(review.id)
+
+
+@pytest.mark.parametrize("tag", ["rescue:review", "child-failed:run_slice"])
+@pytest.mark.parametrize("shape", ["build", "slice"])
+def test_rescue_tagged_preland_review_releases_the_build_hold(
+    store: Store, tag: str, shape: str
+) -> None:
+    """A stuck pre-land review the rescue pass handed to a human carries
+    the ``rescue:`` tag; its done, stamped build carries none and held
+    the overlap lock forever. A build whose review is untagged, or whose
+    tagged reviewer is no pre-land gate, still holds."""
+    phase = store.insert_ref(
+        kind="todo", slug=None, title="phase", meta={}, parent_id=None
+    )
+    sick = _pending_build(store, ["src/precis/a.py"], parent=phase.id)
+    # A slicer's reviewer names the parent of the slices it gates.
+    review = _preland_review_of(store, sick, frm=phase.id if shape == "slice" else None)
+    healthy = _pending_build(store, ["src/precis/b.py"])
+    _preland_review_of(store, healthy)
+    not_a_gate = _pending_build(store, ["src/precis/c.py"])
+    post = _preland_review_of(store, not_a_gate, preland=False)
+    store.add_tag(post, Tag.open(tag), set_by="system")
+    assert sick in pd._started_slices(store)  # review not tagged yet
+    store.add_tag(review, Tag.open(tag), set_by="system")
+    started = pd._started_slices(store)
+    assert sick not in started
+    assert started[healthy].state == "in pre-land review"
+    assert started[not_a_gate].state == "in pre-land review"
+
+
+def test_rescue_tagged_preland_review_lifts_the_file_overlap_hold(
+    store: Store,
+) -> None:
+    """End to end: the plan dispatcher holds a queued build behind a
+    stamped build until its review is rescue-tagged, then dispatches it."""
+    build = _pending_build(store, ["src/precis/workers/plan_dispatch.py"])
+    review = _preland_review_of(store, build)
+    waiting = _file_plan(store, "Edit src/precis/workers/plan_dispatch.py")
+    assert pd.run_pass(store, dry_run=True).held == 1
+    store.add_tag(review, Tag.open("rescue:review"), set_by="system")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 0
+    assert any(
+        n.startswith(f"td{waiting.ids['task']}: would dispatch") for n in res.notes
+    )
+
+
+def test_rescue_does_not_release_a_live_land(store: Store) -> None:
+    """The tag release is for the bare stamp only: a build with a running
+    land job still holds, rescue tag or not."""
+    build = _pending_build(store, ["src/precis/a.py"])
+    _slice_job(store, build, "land_slice", "running")
+    store.add_tag(build, Tag.open("rescue:land"), set_by="system")
+    assert pd._started_slices(store)[build].state == "landing"
+
+
+def test_brief_files_needs_a_word_boundary_after_the_extension() -> None:
+    """gr701628: ``github.com`` is a host, not ``github.c``; real file
+    names — ``check.yml``, ``src/x.py``, ``a/b.pyi`` — still match."""
+    from precis.utils import dispatch_score as ds
+
+    assert ds.brief_files("see https://github.com/x/y and docs.mdx") == frozenset()
+    keys = ds.brief_files("Edit check.yml and src/x.py, then a/b.pyi.")
+    assert keys == frozenset({"check.yml", "x.py", "a/b.pyi"})
+    assert "github.c" not in ds.brief_files("github.com check.yml")
+    assert ds.brief_files("run src/x.py::main") == frozenset({"x.py"})
+
+
+def test_brief_files_skips_urls_shared_and_ambiguous_names() -> None:
+    """gr705093: URL fragments, bare ``__init__.py``/``conftest.py``/
+    ``__main__.py`` and the colour ratchet are never keys; a full path to
+    them, and a full path in general, is one (and yields no basename)."""
+    from precis.utils import dispatch_score as ds
+
+    assert not ds.brief_files("see https://api.openai.com/v1/x.py")
+    assert not ds.brief_files("github.com/org/repo/foo.py")
+    assert not ds.brief_files("Edit __init__.py, conftest.py, __main__.py")
+    assert ds.brief_files("src/precis/a/__init__.py") == frozenset({"a/__init__.py"})
+    assert not ds.brief_files("tests/precis_web/test_colour_ratchet.py")
+    assert not ds.brief_files("precis_web/test_colour_ratchet.py")
+    assert ds.brief_files("src/precis/runtime/dispatch.py") == frozenset(
+        {"runtime/dispatch.py"}
+    )
+    # a URL does not hide a real path next to it
+    assert ds.brief_files("https://x.org/a.py then src/precis/b.py") == frozenset(
+        {"b.py"}
+    )
+
+
+def test_shared_files_matches_suffixes_and_basenames_narrowly() -> None:
+    from precis.utils import dispatch_score as ds
+
+    full = frozenset({"workers/job_types/land_slice.py", "runtime/dispatch.py"})
+    assert ds.shared_files(frozenset({"workers/job_types/land_slice.py"}), full)
+    assert ds.shared_files(frozenset({"job_types/land_slice.py"}), full)
+    assert ds.shared_files(frozenset({"land_slice.py"}), full)
+    assert not ds.shared_files(frozenset({"workers/dispatch.py"}), full)
+    # the other brief's multi-segment suffix matches; its bare basename does not
+    assert ds.shared_files(frozenset({"x/runtime/dispatch.py"}), full)
+    assert not ds.shared_files(
+        frozenset({"a/runtime/dispatch.py"}), frozenset({"dispatch.py"})
+    )
+
+
+def test_live_nodes_discounts_an_overlap_held_candidate(store: Store) -> None:
+    """gr701628: ``live_nodes`` (gripe_dispatch's slot count) agrees with
+    the dispatch tick — a candidate the file-overlap hold skips is not live;
+    an unheld one is, and the hold lifts with the blocker."""
+    _started_outside_plans(store, ["src/precis/workers/run_slice.py"])
+    held = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    free = _file_plan(store, "Fix tests/test_something_else.py")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 1
+    live = pd.live_nodes(store, [held.root_id, free.root_id])
+    assert held.ids["task"] not in live
+    assert free.ids["task"] not in live  # undispatched work holds no slot
+    # Stall detection still sees the waiting candidate as moving.
+    both = pd.live_nodes(store, [held.root_id], count_held=True)
+    assert held.ids["task"] in both
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET retired_at = now() WHERE kind = 'job'")
+    # The blocker's jobs are gone: the hold lifts, but the node is still
+    # doable work awaiting a claim — moving for stall detection, no running
+    # slot for the census.
+    assert held.ids["task"] in pd.live_nodes(store, [held.root_id], count_held=True)
+    assert held.ids["task"] not in pd.live_nodes(store, [held.root_id])
+
+
+def test_summary_counts_the_overlap_held_candidates(store: Store) -> None:
+    """gr701628: the summary line shows how many candidates the file-overlap
+    hold skipped this pass, so the hold is visible in the dispatch log."""
+    _started_outside_plans(store, ["src/precis/workers/run_slice.py"])
+    _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    _file_plan(store, "Fix src/precis/workers/run_slice.py as well")
+    res = pd.run_pass(store, dry_run=True)
+    assert res.held == 2
+    assert res.summary().endswith("held=2")
+    assert res.counts()["held"] == 2
+
+
+def test_overlap_held_chain_holds_no_slot_but_is_never_swept_as_stalled(
+    store: Store,
+) -> None:
+    """gr701628: a chain whose only open build waits in the file-overlap
+    hold holds no gripe_dispatch slot (``Chain.live`` false) yet reads as
+    moving (``plan_live``): it waits on another build's land, so
+    ``sweep_stalled`` leaves it alone however long the plan sat untouched.
+    Once the blocker is gone the same idle chain is stalled and the sweep
+    opens its ask (it no longer closes the root)."""
+    from precis.workers import gripe_dispatch as gd
+
+    _started_outside_plans(store, ["src/precis/workers/run_slice.py"])
+    held = _file_plan(store, "Fix src/precis/workers/run_slice.py too")
+    gid = int(insert_gripe(store, "the held fix", status="fixing").id)
+    store.add_link(src_ref_id=held.root_id, dst_ref_id=gid, relation="related-to")
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET updated_at = now() - interval '48 hours'")
+        conn.execute("UPDATE ref_tags SET created_at = now() - interval '48 hours'")
+
+    (chain,) = [c for c in gd.chains(store) if c.root_id == held.root_id]
+    assert held.ids["task"] in chain.build_ids
+    assert (chain.live, chain.plan_live) == (False, True)
+    assert gd._idle_hours(store, chain.plan_ids) >= 2 * gd.stall_hours(store)
+    assert gd.sweep_stalled(store, [chain]) == []
+    assert _status(store, held.root_id) != "won't-do"
+
+    # Control: parked for another reason (no overlap hold), the same idle
+    # plan is stalled and asked about.
+    store.add_tag(held.ids["task"], Tag.open("hold:no-dispatch"), set_by="system")
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE ref_tags SET created_at = now() - interval '48 hours'")
+    (chain,) = [c for c in gd.chains(store) if c.root_id == held.root_id]
+    assert (chain.live, chain.plan_live) == (False, False)
+    assert [r["root"] for r in gd.sweep_stalled(store, [chain])] == [held.root_id]
+    # asked about, never closed: parked work is saved, not thrown away
+    assert _status(store, held.root_id) != "won't-do"
+    assert gd._open_ask(store, held.root_id)
 
 
 def _pin_codex_and_sub(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -7944,11 +10571,11 @@ def test_queued_slice_with_no_capable_host_gets_a_note(store: Store) -> None:
     _backdate(store, job, 15)
     # Capabilities split across two hosts: neither can place the slice.
     _advertise(store, "node-a", {"repo_checkout": 1})
-    _advertise(store, "node-b", {"claude_bin": 1, "git": 1})
+    _advertise(store, "node-b", {"builder": 1, "claude_bin": 1, "git": 1})
     res = pd.run_pass(store)
     assert _unplaced_notes(res) == [
         f"td{task}: job jo{job} queued 15 min — no host advertises "
-        "{claude_bin, git, repo_checkout}"
+        "{builder, git, repo_checkout}"
     ]
     # A job still queued is no attempt: no ask, no second dispatch.
     assert (res.asks, res.dispatched) == (0, 0)
@@ -7966,7 +10593,9 @@ def test_queued_slice_with_a_capable_host_gets_no_note(store: Store) -> None:
     mint = _one_task_plan(store)
     job = _slice_job(store, mint.ids["task"], "run_slice", "queued")
     _backdate(store, job, 30)
-    _advertise(store, "node-a", {"repo_checkout": 1, "claude_bin": 1, "git": 1})
+    _advertise(
+        store, "node-a", {"repo_checkout": 1, "builder": 1, "claude_bin": 1, "git": 1}
+    )
     assert _unplaced_notes(pd.run_pass(store)) == []
 
 
@@ -7988,7 +10617,7 @@ def test_queued_slice_asks_after_thirty_minutes(store: Store) -> None:
     mark = _meta(store, task)[pd._UNPLACED_ASK_KEY]
     ask = int(mark["ask"])
     assert mark["job"] == job
-    assert mark["gap"] == ["claude_bin", "git", "repo_checkout"]
+    assert mark["gap"] == ["builder", "git", "repo_checkout"]
     ameta = _meta(store, ask)["ask"]
     assert ameta["kind"] == "ruling"
     assert ameta["blocks"] == f"td{task}"
@@ -8025,7 +10654,9 @@ def test_unplaced_ask_closes_done_when_the_gap_heals(store: Store) -> None:
     _backdate(store, job, 35)
     assert pd.run_pass(store).asks == 1
     ask = int(_meta(store, task)[pd._UNPLACED_ASK_KEY]["ask"])
-    _advertise(store, "node-a", {"repo_checkout": 1, "claude_bin": 1, "git": 1})
+    _advertise(
+        store, "node-a", {"repo_checkout": 1, "builder": 1, "claude_bin": 1, "git": 1}
+    )
     pd.run_pass(store)
     assert _status(store, ask) == "done"
 
@@ -8074,6 +10705,136 @@ def test_unplaced_ask_dry_run_counts_without_writing(store: Store) -> None:
     res = pd.run_pass(store, dry_run=True, reason="params.dry_run")
     assert res.asks == 1
     assert pd._UNPLACED_ASK_KEY not in _meta(store, task)
+
+
+def _dark_advertise(
+    store: Store,
+    host: str,
+    slots: dict[str, int | None],
+    *,
+    minutes_ago: float = 60,
+    meta: dict | None = None,
+) -> None:
+    """``_advertise`` for a host that has since gone dark: the slot map is
+    fossil (a live heartbeat pass is the only retractor) and the heartbeat
+    row is past HOST_DARK_SILENCE_MIN."""
+    import json
+
+    store.sync_host_resource_slots(host, slots)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) "
+            "VALUES (%s, now() - (%s || ' minutes')::interval, %s::jsonb) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts, "
+            "meta = EXCLUDED.meta",
+            (host, str(minutes_ago), json.dumps(meta or {})),
+        )
+        conn.commit()
+
+
+def test_unplaced_ask_waits_on_a_dark_host(store: Store) -> None:
+    """gr681494: a job whose placement tokens fit ONLY a dark host files
+    no provision ask — the one ``host-dark`` alert already names the
+    cause — and the pass notes the wait. A retired host is no host at
+    all: the same gap mints the ask."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    # meta.adapter pins the claude-sub lane's binary: the job's set is
+    # {repo_checkout, claude_bin, git} — exactly node-a's fossil advert.
+    job = _slice_job(store, task, "run_slice", "queued", meta={"adapter": "claude_p"})
+    _backdate(store, job, 35)
+    _dark_advertise(store, "node-a", {"repo_checkout": 1, "claude_bin": 1, "git": 1})
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert pd._UNPLACED_ASK_KEY not in _meta(store, task)
+    assert any("host-dark:node-a" in n for n in res.notes)
+
+    # Control: retired beats excluded — the gap has no dark host to wait on.
+    _dark_advertise(
+        store,
+        "node-a",
+        {"repo_checkout": 1, "claude_bin": 1, "git": 1},
+        meta={"retired": True},
+    )
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert pd._UNPLACED_ASK_KEY in _meta(store, task)
+
+
+def test_unplaced_ask_mints_past_the_host_dark_cap(store: Store) -> None:
+    """td681892: ``host-dark`` pages the 50 stalest hosts only. A job that
+    fits only the 51st dark host gets NO replacement alert, so its ask
+    must still mint — suppression covers exactly the alerted set."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "queued", meta={"adapter": "claude_p"})
+    _backdate(store, job, 35)
+    # 50 darker hosts crowd node-a out of the alert's ORDER BY ts ASC
+    # LIMIT 50 window; node-a is the freshest stale row.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) "
+            "SELECT 'crowd-' || g, now() - make_interval(mins => 100 + g), "
+            "'{}'::jsonb FROM generate_series(1, 50) g",
+        )
+        conn.commit()
+    _dark_advertise(
+        store, "node-a", {"repo_checkout": 1, "claude_bin": 1, "git": 1}, minutes_ago=60
+    )
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    assert pd._UNPLACED_ASK_KEY in _meta(store, task)
+
+
+def test_dark_cap_ties_select_the_alerted_hosts(store: Store) -> None:
+    """td681892 review: both cap queries used to ORDER BY ts alone, so
+    heartbeats tied at the LIMIT-50 boundary could sort into different
+    windows per query — the pass would suppress an ask for a host the
+    ``host-dark`` alert never named. Both now break ties on host: the
+    suppressed set IS the alerted set."""
+    from precis.workers.executors._common import dark_advertised_by_host
+    from precis.workers.nursery import _detect_host_dark
+
+    # 52 stale heartbeats at the same instant — a 52-way tie at the cap,
+    # with 'zz-fit' (the job's only fit) the name-sort loser.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) "
+            "SELECT h.host, now() - make_interval(mins => 100), '{}'::jsonb "
+            "FROM ("
+            "SELECT 'tie-' || g AS host FROM generate_series(1, 51) g "
+            "UNION ALL SELECT 'zz-fit'"
+            ") h",
+        )
+        conn.execute(
+            "INSERT INTO resource_slots (host, resource, capacity, free) "
+            "SELECT 'tie-' || g, 'repo_checkout', 1, 1 "
+            "FROM generate_series(1, 51) g",
+        )
+        conn.commit()
+    store.sync_host_resource_slots(
+        "zz-fit", {"repo_checkout": 1, "claude_bin": 1, "git": 1}
+    )
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "queued", meta={"adapter": "claude_p"})
+    _backdate(store, job, 35)
+
+    res = pd.run_pass(store)
+    # 'zz-fit' fell out of the deterministic window: its ask still mints.
+    assert res.asks == 1
+    assert pd._UNPLACED_ASK_KEY in _meta(store, task)
+    assert not any("host-dark" in n for n in res.notes)
+    # And the suppress map held exactly the 50 the alert pages.
+    with store.pool.connection() as conn:
+        suppressed = set(dark_advertised_by_host(conn))
+    alerted = {
+        str(f.fingerprint_key).removeprefix("host-dark:")
+        for f in _detect_host_dark(store)
+    }
+    assert suppressed == alerted
+    assert len(alerted) == 50
+    assert "zz-fit" not in alerted
 
 
 # ── Tick lock ─────────────────────────────────────────────────────
@@ -8246,6 +11007,10 @@ def test_a_release_cut_refusal_is_logged_once_per_reason(
     the same refusal on the next pass is not repeated."""
     from precis.workers.job_types import release_cut as rc
 
+    # The first cut is pinned to release.cut_host (gr713351); set, so the
+    # refusal under test is the cut target's, not the unset-host hold.
+    psettings.set_setting("release.cut_host", "deploy-host", store=store)
+
     def build(m: T._Minter) -> None:
         m.node("root", "Plan", {"auto_close": True})
         m.node("cut", "Cut the release", {"op": "release_cut"})
@@ -8296,6 +11061,149 @@ def test_a_dry_run_logs_no_cut_refusal(store: Store) -> None:
     assert _meta(store, int(ref.id))[pd.CUT_REFUSAL_LOGGED_KEY] == "td1: refused"
 
 
+# ── gr702442: a refused deploy is visible on its node ───────────────
+
+
+def _refusal_comments(store: Store, todo: int) -> list[str]:
+    return [t for t in _comment_texts(store, todo) if t.startswith("plan_dispatch: td")]
+
+
+def test_a_release_deploy_refusal_is_commented_once_per_text(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine-review gate held r316's deploy nine hours with nothing
+    on the node saying why: each new refusal text is ONE comment, a
+    flap between two texts comments each once, and a ``release_cut``
+    refusal still writes no comment."""
+    from precis.workers.job_types import release_cut as rc
+    from precis.workers.job_types import release_deploy as rd
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("deploy", "Deploy", {"op": "release_deploy"})
+        m.node("cut", "Cut", {"op": "release_cut"})
+
+    mint = T._run(store, None, build)
+    deploy, cut = mint.ids["deploy"], mint.ids["cut"]
+    why = ["first hold"]
+    monkeypatch.setattr(rd, "_refusal", lambda store, params: (why[0], None))
+    monkeypatch.setattr(rc, "_cut_target", lambda store, todo_id: (None, "cut hold"))
+    psettings.set_setting("release.cut_host", "deploy-host", store=store)
+    ctx = SimpleNamespace(
+        store=store,
+        meta={"params": {}},
+        set_meta=lambda **kw: None,
+        append_chunk=lambda kind, text: None,
+    )
+    note = f"td{deploy}: release_deploy not dispatched — first hold"
+    pd._dispatch(ctx, pd.SPEC)
+    assert _refusal_comments(store, deploy) == [f"plan_dispatch: {note}"]
+    assert _comment_texts(store, cut) == []  # release_cut: still no comment
+    pd._dispatch(ctx, pd.SPEC)
+    assert len(_refusal_comments(store, deploy)) == 1  # same text, no repeat
+    why[0] = "second hold"
+    pd._dispatch(ctx, pd.SPEC)
+    why[0] = "first hold"
+    pd._dispatch(ctx, pd.SPEC)  # flaps back: already commented
+    assert len(_refusal_comments(store, deploy)) == 2
+    assert len(_meta(store, deploy)[pd.DEPLOY_REFUSAL_SEEN_KEY]) == 2
+
+
+def test_a_deploy_refusal_seen_list_is_capped_cleared_and_dry_run_silent(
+    store: Store,
+) -> None:
+    ref = store.insert_ref(kind="todo", slug=None, title="deploy", meta=None)
+    node: Any = SimpleNamespace(id=int(ref.id), meta={})
+    dry = pd.PassResult(dry_run=True)
+    pd._comment_deploy_refusal(pd._Writer(store, True), dry, node, "td1: held")
+    assert dry.logged == [] and node.meta == {}
+    assert _comment_texts(store, int(ref.id)) == []
+    res = pd.PassResult(dry_run=False)
+    w = pd._Writer(store, False)
+    for i in range(10):
+        pd._comment_deploy_refusal(w, res, node, f"td1: held {i}")
+    seen = _meta(store, int(ref.id))[pd.DEPLOY_REFUSAL_SEEN_KEY]
+    assert seen == [f"td1: held {i}" for i in range(2, 10)]  # newest 8
+    assert res.logged == [f"td1: held {i}" for i in range(10)]
+    assert len(_comment_texts(store, int(ref.id))) == 10
+    pd._comment_deploy_refusal(w, res, node, None)  # a dispatch clears it
+    assert not _meta(store, int(ref.id)).get(pd.DEPLOY_REFUSAL_SEEN_KEY)
+
+
+# ── gr713351: the first cut is pinned to release.cut_host ───────────
+
+
+def _cut_jobs(store: Store, cut: int) -> list[dict[str, Any]]:
+    return [m for _id, m in _jobs_under(store, cut) if m["job_type"] == "release_cut"]
+
+
+def test_cut_host_setting_is_registered_db_only_no_default() -> None:
+    spec = psettings.REGISTRY["release.cut_host"]
+    assert spec.type == "str"
+    assert spec.default is None
+    assert spec.env_var is None
+    assert spec.doc.strip()
+
+
+def test_first_cut_is_pinned_to_release_cut_host(store: Store) -> None:
+    """r333: the first cut has no meta.release.host, so it went out
+    unpinned and a builder host with no deploy overlay claimed it."""
+    psettings.set_setting("release.cut_host", " deploy-host ", store=store)
+    mint = T.mint_release_pass(store)
+    pd.run_pass(store)
+    jobs = _cut_jobs(store, mint.ids["cut"])
+    assert len(jobs) == 1
+    assert jobs[0]["executor"] == "ssh_node"
+    assert jobs[0]["params"]["target_node"] == "deploy-host"
+    assert R.cut_host(store) == "deploy-host"
+
+
+def test_first_cut_is_held_when_release_cut_host_is_unset(store: Store) -> None:
+    """Fail closed: no dispatch, a note naming the setting write, logged
+    once on the tick's job_result."""
+    mint = T.mint_release_pass(store)
+    res = pd.run_pass(store)
+    cut = mint.ids["cut"]
+    assert _cut_jobs(store, cut) == []
+    held = [n for n in res.notes if f"td{cut}: release_cut held" in n]
+    assert len(held) == 1
+    assert "release.cut_host is unset" in held[0]
+    assert "mode='setting'" in held[0] and "'key': 'release.cut_host'" in held[0]
+    assert res.logged == held
+    assert R.cut_host(store) is None
+    # The same hold on the next pass is not logged again.
+    res2 = pd.run_pass(store)
+    assert _cut_jobs(store, cut) == []
+    assert res2.logged == []
+    # Setting the host releases the hold on the next pass.
+    psettings.set_setting("release.cut_host", "deploy-host", store=store)
+    pd.run_pass(store)
+    assert [m["params"]["target_node"] for m in _cut_jobs(store, cut)] == [
+        "deploy-host"
+    ]
+
+
+def test_recorded_release_host_wins_over_release_cut_host(store: Store) -> None:
+    """A re-cut follows meta.release.host, setting or no setting."""
+    psettings.set_setting("release.cut_host", "other-host", store=store)
+    mint = T.mint_release_pass(store)
+    R.record_cut(
+        store, mint.ids["cut"], "r7", _R_SHA, _R_RNG, repo="o/r", host="node-a"
+    )
+    pd.run_pass(store)
+    jobs = _cut_jobs(store, mint.ids["cut"])
+    assert [m["params"]["target_node"] for m in jobs] == ["node-a"]
+
+
+def test_recorded_release_host_wins_with_the_setting_unset(store: Store) -> None:
+    mint = T.mint_release_pass(store)
+    R.record_cut(
+        store, mint.ids["cut"], "r7", _R_SHA, _R_RNG, repo="o/r", host="node-a"
+    )
+    res = pd.run_pass(store)
+    assert not any("release.cut_host is unset" in n for n in res.notes)
+
+
 def test_hidden_meta_key_matches_the_comment_timeline() -> None:
     """plan_dispatch keeps its own copy of the hidden-comment meta key
     (workers never import handlers); the two must stay one string."""
@@ -8335,3 +11243,1322 @@ def test_pending_land_holds_a_post_land_reviewer(store: Store) -> None:
     store.stamp_ref_meta(build, {"pending_land": None})
     pd.run_pass(store)
     assert len(_jobs_under(store, review)) == 1
+
+
+# ── repo_release nodes (td659522 step 3) ───────────────────────────
+
+
+@pytest.fixture
+def release_op(store: Store, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``repo_release`` is not registered yet: a tiny fake job type stands
+    in for it (this test module only) and ``catpath`` is opened for the
+    factory so the step-0 repo refusal passes."""
+    real = pd.get_job_type
+    fake = SimpleNamespace(
+        params_schema={
+            "properties": {"todo_id": {}, "repo": {}},
+            "required": ["todo_id", "repo"],
+            "additionalProperties": False,
+        },
+        validate_submit=None,
+        compatible_executors=frozenset({"job_inproc"}),
+    )
+
+    def lookup(name: str) -> Any:
+        return fake if name == "repo_release" else real(name)
+
+    # The dispatcher's own lookup, and the one plan-meta validation
+    # (``precis.plans.nodes``) imports from the package at call time.
+    monkeypatch.setattr(pd, "get_job_type", lookup)
+    monkeypatch.setattr(job_types_pkg, "get_job_type", lookup)
+    psettings.set_setting("factory.open_repos", "catpath", store=store)
+    try:
+        yield fake
+    finally:
+        psettings.clear_setting("factory.open_repos", store=store)
+
+
+def _release_plan(
+    store: Store, *, slices: tuple[str, ...] = ("b1",), reviewed: bool = True
+) -> T.PlanMint:
+    """root: slices -> (reviewer each) -> rel (repo_release) -> pin."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        feeds: list[str] = []
+        for s in slices:
+            b = m.node(s, f"Build {s}", {"op": "run_slice"}, body="Build it.")
+            if reviewed:
+                m.node(
+                    f"r{s}",
+                    f"Review {s}",
+                    T._reviewer(b),
+                    body=T._reviewer_brief(b),
+                    blocked_by=(s,),
+                )
+                feeds.append(f"r{s}")
+            else:
+                feeds.append(s)
+        m.node(
+            "rel",
+            "Cut the release",
+            {"op": "repo_release", "retries": 1},
+            blocked_by=tuple(feeds),
+        )
+        m.node("pin", "Bump the pin", {"op": "run_slice"}, blocked_by=("rel",))
+
+    return T._run(store, None, build)
+
+
+def test_repo_release_node_dispatches_with_its_repo(
+    store: Store, release_op: Any
+) -> None:
+    """A ready ``repo_release`` node carries ``repo`` (its own tag, else the
+    nearest tagged ancestor's) and ``todo_id`` on the job; if this fails
+    the release job runs without knowing which repo to tag."""
+    mint = _release_plan(store, reviewed=False)
+    rel = mint.ids["rel"]
+    _mark_done(store, mint.ids["b1"])
+    store.add_tag(rel, Tag.open("repo:catpath"), set_by="system")
+    res = pd.run_pass(store)
+    ((_jid, meta),) = _jobs_under(store, rel)
+    assert meta["job_type"] == "repo_release"
+    assert meta["params"] == {"todo_id": rel, "repo": "catpath"}
+    assert any(f"td{rel}: dispatched repo_release" in n for n in res.notes)
+
+
+def test_repo_release_node_takes_its_ancestors_repo(
+    store: Store, release_op: Any
+) -> None:
+    """The repo tag on the plan root reaches a release node, as for
+    ``run_slice``; if this fails an ancestor-tagged plan never releases."""
+    mint = _release_plan(store, reviewed=False)
+    _mark_done(store, mint.ids["b1"])
+    store.add_tag(mint.root_id, Tag.open("repo:catpath"), set_by="system")
+    pd.run_pass(store)
+    ((_jid, meta),) = _jobs_under(store, mint.ids["rel"])
+    assert meta["params"]["repo"] == "catpath"
+
+
+@pytest.mark.parametrize("tag", [None, "repo:precis"])
+def test_repo_release_node_without_a_second_repo_is_skipped(
+    store: Store, release_op: Any, tag: str | None
+) -> None:
+    """A release node resolving to nothing or to precis never dispatches
+    (precis releases go through ``release_cut``) and leaves a note; if this
+    fails the job would tag precis through the second-repo path."""
+    mint = _release_plan(store, reviewed=False)
+    rel = mint.ids["rel"]
+    _mark_done(store, mint.ids["b1"])
+    if tag:
+        store.add_tag(rel, Tag.open(tag), set_by="system")
+    res = pd.run_pass(store)
+    assert _jobs_under(store, rel) == []
+    assert any(n.startswith(f"td{rel}: repo_release not dispatched") for n in res.notes)
+
+
+def _release_reviewed(store: Store, verdict: str, *, landed_job: bool) -> T.PlanMint:
+    """``_reviewed`` / ``_reviewed_landed`` on the release plan: the build
+    landed, the review ran and posted ``verdict``."""
+    mint = _release_plan(store)
+    build, review = mint.ids["b1"], mint.ids["rb1"]
+    _job(store, build, lane="claude-sub")
+    if landed_job:
+        _slice_job(store, build, "land_slice", "succeeded")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    _job(store, review, lane="claude-sub")
+    store.add_tag(review, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    store.add_tag(
+        review, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    _todo_comment(store, review, verdict)
+    _todo_comment(store, review, "handoff: reviewed the squash diff")
+    return mint
+
+
+@pytest.mark.parametrize(
+    ("verdict", "landed_job"),
+    [
+        ("review: FIX — a.py misses the empty case", False),
+        ("review: REVERT — bad", True),
+    ],
+)
+def test_reviewer_fix_or_revert_gates_the_release_node(
+    store: Store, release_op: Any, verdict: str, landed_job: bool
+) -> None:
+    """The reviewer closes ``done`` at FIX/REVERT; the release node
+    ``blocked-by`` it must also wait on the minted fix/revert todo, a
+    second pass adds no second edge, and a release node not behind that
+    reviewer is untouched. If this fails the release cuts unfixed code."""
+    mint = _release_reviewed(store, verdict, landed_job=landed_job)
+    ids = mint.ids
+    rel, review = ids["rel"], ids["rb1"]
+    store.add_tag(rel, Tag.open("repo:catpath"), set_by="system")
+
+    def other(m: T._Minter) -> None:
+        m.node("other", "Other release", {"op": "repo_release", "retries": 1})
+
+    other_id = T._run_body(store, mint.root_id, mint.root_id, other).ids["other"]
+
+    pd.run_pass(store)
+    (new,) = [
+        c
+        for c in _children(store, mint.root_id)
+        if c not in (ids["b1"], review, rel, ids["pin"], other_id)
+    ]
+    assert _blocked_by_ids(store, rel) == sorted([review, new])
+    assert _blocked_by_ids(store, other_id) == []
+    assert _status(store, new) != "done"
+    assert _jobs_under(store, rel) == []  # not ready while the fix is open
+    pd.run_pass(store)
+    assert _blocked_by_ids(store, rel) == sorted([review, new])
+
+
+def test_gate_release_on_is_idempotent_and_skips_closed_releases(
+    store: Store, release_op: Any
+) -> None:
+    """Calling the helper twice adds one edge; a closed release node is
+    left alone. If this fails a replayed verdict stacks duplicate edges or
+    reopens a cut release's gate."""
+    mint = _release_plan(store, slices=("b1", "b2"))
+    rel, review = mint.ids["rel"], mint.ids["rb1"]
+    gate = mint.ids["pin"]  # any todo id stands in for the fix todo
+    plan = pd._load(store)
+    w = pd._Writer(store, False)
+    now = datetime.now(UTC)
+    pd._gate_release_on(store, plan, w, plan.nodes[review], gate, now)
+    pd._gate_release_on(store, plan, w, plan.nodes[review], gate, now)
+    assert _blocked_by_ids(store, rel) == sorted([review, mint.ids["rb2"], gate])
+    _mark_done(store, rel)
+    plan = pd._load(store)
+    pd._gate_release_on(store, plan, w, plan.nodes[review], mint.ids["b2"], now)
+    assert mint.ids["b2"] not in _blocked_by_ids(store, rel)
+
+
+def test_gate_release_on_matches_the_same_repo_without_a_direct_edge(
+    store: Store, release_op: Any
+) -> None:
+    """A reviewer of a fix has no edge from the release node, so the gate
+    matches on the governing repo: a same-repo release is gated, a release of
+    another repo is not, and the direct-edge rule still holds. If this fails
+    a second-round fix leaves the release free to cut unfixed code."""
+    mint = _release_plan(store)
+    ids = mint.ids
+    review = ids["rb1"]
+
+    def extra(m: T._Minter) -> None:
+        m.node("same", "Same release", {"op": "repo_release", "retries": 1})
+        m.node("far", "Far release", {"op": "repo_release", "retries": 1})
+        m.node("gate", "Fix", {"op": "run_slice"})
+
+    more = T._run_body(store, mint.root_id, mint.root_id, extra).ids
+    for key, repo in (("same", "catpath"), ("far", "hexfold")):
+        store.add_tag(more[key], Tag.open(f"repo:{repo}"), set_by="system")
+    store.add_tag(more["gate"], Tag.open("repo:catpath"), set_by="system")
+    plan = pd._load(store)
+    w = pd._Writer(store, False)
+    pd._gate_release_on(
+        store, plan, w, plan.nodes[review], more["gate"], datetime.now(UTC)
+    )
+    assert _blocked_by_ids(store, more["same"]) == [more["gate"]]
+    assert _blocked_by_ids(store, more["far"]) == []
+    # The direct-edge rule: rel is blocked-by the reviewer, whatever its repo.
+    assert _blocked_by_ids(store, ids["rel"]) == sorted([review, more["gate"]])
+
+
+def test_gate_release_on_falls_back_to_the_reviewers_repo(
+    store: Store, release_op: Any
+) -> None:
+    """A minted todo resolving to no repo takes the reviewer's; if this fails
+    the fallback never gates and an untagged fix lets the release go."""
+    mint = _release_plan(store)
+    review = mint.ids["rb1"]
+
+    def extra(m: T._Minter) -> None:
+        m.node("same", "Same release", {"op": "repo_release", "retries": 1})
+        m.node("gate", "Fix", {"op": "run_slice"})
+
+    more = T._run_body(store, mint.root_id, mint.root_id, extra).ids
+    store.add_tag(more["same"], Tag.open("repo:catpath"), set_by="system")
+    store.add_tag(review, Tag.open("repo:catpath"), set_by="system")
+    plan = pd._load(store)
+    w = pd._Writer(store, False)
+    pd._gate_release_on(
+        store, plan, w, plan.nodes[review], more["gate"], datetime.now(UTC)
+    )
+    assert _blocked_by_ids(store, more["same"]) == [more["gate"]]
+
+
+@pytest.mark.parametrize(
+    ("verdict", "landed_job"),
+    [
+        ("review: FIX — a.py misses the empty case", False),
+        ("review: REVERT — bad", True),
+    ],
+)
+@pytest.mark.parametrize(
+    ("target_tag", "root_tag", "expected"),
+    [
+        ("repo:catpath", None, True),
+        (None, None, False),
+        ("repo:precis", None, False),
+        ("repo:catpath", "repo:catpath", False),
+    ],
+)
+def test_fix_or_revert_todo_carries_the_reviewed_slices_second_repo(
+    store: Store,
+    release_op: Any,
+    verdict: str,
+    landed_job: bool,
+    target_tag: str | None,
+    root_tag: str | None,
+    expected: bool,
+) -> None:
+    """The fix or revert todo is minted under the plan root with only the
+    plan tag; it gets ``repo:<name>`` from the reviewed slice's tag when that
+    is a single non-default repo the root does not already carry. If this
+    fails a second-repo fix builds in the default repo."""
+    mint = _release_reviewed(store, verdict, landed_job=landed_job)
+    ids = mint.ids
+    if target_tag:
+        store.add_tag(ids["b1"], Tag.open(target_tag), set_by="system")
+    if root_tag:
+        store.add_tag(mint.root_id, Tag.open(root_tag), set_by="system")
+    pd.run_pass(store)
+    # A second-repo fix also gets its own reviewer in the same pass (step 5):
+    # pick the fix todo itself.
+    (new,) = [
+        c
+        for c in _children(store, mint.root_id)
+        if c not in (ids["b1"], ids["rb1"], ids["rel"], ids["pin"])
+        and (ref := store.get_ref(kind="todo", id=c)) is not None
+        and (ref.title or "").startswith(("Fix review findings", "Revert"))
+    ]
+    tags = {t for t in _open_tags(store, new) if t.startswith("repo:")}
+    assert tags == ({"repo:catpath"} if expected else set())
+
+
+def _plan_statuses(store: Store, mint: T.PlanMint, *keys: str) -> dict[str, str | None]:
+    return {k: _status(store, mint.ids[k]) for k in keys}
+
+
+def test_release_join_stays_open_while_one_slice_lives(
+    store: Store, release_op: Any
+) -> None:
+    """Two slices feed one release node: one moot slice closes its own
+    reviewer but not the release node nor the pin behind it. If this fails
+    one dropped slice drops the whole release."""
+    mint = _release_plan(store, slices=("b1", "b2"))
+    _moot_tag(store, mint.ids["b1"])
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rb1", "rb2", "rel", "pin")
+    assert got["rb1"] == "won't-do"
+    assert got["rel"] not in pd.TERMINAL_TODO_STATUSES
+    assert got["pin"] not in pd.TERMINAL_TODO_STATUSES
+    assert got["rb2"] not in pd.TERMINAL_TODO_STATUSES
+
+
+def test_release_join_closes_when_every_slice_is_dead(
+    store: Store, release_op: Any
+) -> None:
+    """With every blocker dead the release node closes like any
+    descendant, and the walk continues behind it. If this fails a release
+    of nothing hangs the plan open."""
+    mint = _release_plan(store, slices=("b1", "b2"))
+    _moot_tag(store, mint.ids["b1"])
+    _moot_tag(store, mint.ids["b2"])
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rb1", "rb2", "rel", "pin")
+    assert set(got.values()) == {"won't-do"}
+
+
+def test_plain_chain_still_closes_whole_under_one_dead_slice(store: Store) -> None:
+    """Regression guard: with no release node a single moot slice still
+    closes its whole descendant chain."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("b1", "Build", {"op": "run_slice"})
+        m.node("b2", "Build two", {"op": "run_slice"})
+        m.node("c1", "Chain one", {"op": "run_slice"}, blocked_by=("b1", "b2"))
+        m.node("c2", "Chain two", {"op": "run_slice"}, blocked_by=("c1",))
+
+    mint = T._run(store, None, build)
+    _moot_tag(store, mint.ids["b1"])
+    pd.run_pass(store)
+    assert _plan_statuses(store, mint, "c1", "c2") == {
+        "c1": "won't-do",
+        "c2": "won't-do",
+    }
+
+
+@pytest.mark.parametrize(
+    "line", ["moot: gr1 already fixed", "no-op: nothing to do", "validated: it is cut"]
+)
+def test_verdict_line_never_closes_a_release_node(
+    store: Store, release_op: Any, line: str
+) -> None:
+    """A release node closes only through its succeeded job; the same line
+    on an ordinary task still closes it. If this fails a stray comment
+    closes a release whose tag never reached the remote."""
+    mint = _release_plan(store, reviewed=False)
+    rel, b1 = mint.ids["rel"], mint.ids["b1"]
+    _mark_done(store, b1)
+    store.add_tag(rel, Tag.open("repo:catpath"), set_by="system")
+    _todo_comment(store, rel, line)
+    _todo_comment(store, mint.ids["pin"], line)
+    pd.run_pass(store)
+    assert _status(store, rel) != "done"
+    assert _status(store, mint.ids["pin"]) == "done"
+
+
+def test_minted_repo_release_node_dispatches_for_its_repo(
+    store: Store, release_op: Any
+) -> None:
+    """The node ``templates.mint_repo_release`` mints (own ``repo:`` tag,
+    blocked-by the batch's done reviewer) dispatches one ``repo_release`` job
+    with ``params.repo == 'catpath'``; if this fails R8's node is not the
+    shape the dispatcher reads."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Batch", {"auto_close": True})
+
+    root = T._run(store, None, build).root_id
+    slice_ = T.mint_plan_task(store, root, "Slice", "Build it.")
+    review = T.mint_reviewer(store, root, slice_)
+    _job(store, slice_, lane="claude-sub")
+    _slice_job(store, slice_, "land_slice", "succeeded")
+    _todo_comment(store, slice_, "landed: abc1234 — the slice")
+    _mark_done(store, slice_)
+    _job(store, review, lane="claude-sub")
+    store.add_tag(review, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    store.add_tag(
+        review, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    _todo_comment(store, review, "review: LAND")
+    _todo_comment(store, review, "handoff: reviewed the squash diff")
+    rel = T.mint_repo_release(store, root, "catpath", blocked_by=[review])
+    res = pd.run_pass(store)
+    if not _jobs_under(store, rel):
+        res = pd.run_pass(store)
+    assert _jobs_under(store, rel), (res.notes, _status(store, review))
+    ((_jid, meta),) = _jobs_under(store, rel)
+    assert meta["job_type"] == "repo_release"
+    assert meta["params"] == {"todo_id": rel, "repo": "catpath"}
+    assert any(f"td{rel}: dispatched repo_release" in n for n in res.notes)
+
+
+# ── pin_bump nodes (td659522 step 4) ───────────────────────────────
+
+
+@pytest.fixture
+def pin_op(store: Store, release_op: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """``pin_bump`` is not registered yet: a fake job type stands in for it
+    beside the ``release_op`` stand-in (this test module only)."""
+    real = pd.get_job_type
+    fake = SimpleNamespace(
+        params_schema={
+            "properties": {
+                "todo_id": {},
+                "release_todo": {},
+                "pin_repo": {},
+                "target_node": {},
+            },
+            "required": ["todo_id", "release_todo", "pin_repo"],
+            "additionalProperties": False,
+        },
+        validate_submit=None,
+        compatible_executors=frozenset({"job_inproc"}),
+    )
+
+    def lookup(name: str) -> Any:
+        return fake if name == "pin_bump" else real(name)
+
+    monkeypatch.setattr(pd, "get_job_type", lookup)
+    monkeypatch.setattr(job_types_pkg, "get_job_type", lookup)
+    return fake
+
+
+def _pin_plan(
+    store: Store,
+    *,
+    releases: int = 1,
+    op: Any = "pin_bump",
+    release_tags: tuple[str, ...] = ("repo:catpath",),
+    ready: bool = True,
+    retries: int = 1,
+    glue: bool = False,
+) -> T.PlanMint:
+    """root: b1 -> rel (repo_release, ``release_tags``) -> pin (pin_bump),
+    plus a ``glue`` slice blocked by the pin when asked. ``ready`` closes
+    the slice and every release node so the pin is next; ``releases=0``
+    leaves the pin with no blocker."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("b1", "Build", {"op": "run_slice"}, body="Build it.")
+        names = [f"rel{i}" if releases > 1 else "rel" for i in range(releases)]
+        for name in names:
+            m.node(name, "Cut", {"op": "repo_release"}, blocked_by=("b1",))
+        m.node(
+            "pin",
+            "Bump the pin",
+            {"op": op, "retries": retries},
+            blocked_by=tuple(names),
+        )
+        if glue:
+            m.node(
+                "glue",
+                "Glue",
+                {"op": "run_slice"},
+                body="Glue it.",
+                blocked_by=("pin",),
+            )
+
+    mint = T._run(store, None, build)
+    if ready:
+        _mark_done(store, mint.ids["b1"])
+    for key, ref_id in mint.ids.items():
+        if key.startswith("rel"):
+            for tag in release_tags:
+                store.add_tag(ref_id, Tag.open(tag), set_by="system")
+            if ready:
+                _mark_done(store, ref_id)
+    return mint
+
+
+def test_pin_bump_node_is_stamped_from_its_done_release_blocker(
+    store: Store, pin_op: Any
+) -> None:
+    """A ready pin-bump node dispatches with the release node it is blocked
+    by (done) as ``release_todo`` and that node's repo as ``pin_repo``; if
+    this fails the job cannot find the tag it must pin."""
+    mint = _pin_plan(store)
+    pin = mint.ids["pin"]
+    res = pd.run_pass(store)
+    ((_jid, meta),) = _jobs_under(store, pin)
+    assert meta["job_type"] == "pin_bump"
+    assert meta["params"] == {
+        "todo_id": pin,
+        "release_todo": mint.ids["rel"],
+        "pin_repo": "catpath",
+    }
+    assert any(f"td{pin}: dispatched pin_bump" in n for n in res.notes)
+
+
+def test_pin_bump_op_params_win_over_the_stamped_ones(
+    store: Store, pin_op: Any
+) -> None:
+    """Params already on the op are kept and only the missing ones are
+    stamped; if this fails an explicit ``pin_repo`` is overwritten."""
+    mint = _pin_plan(
+        store,
+        op={"type": "pin_bump", "params": {"pin_repo": "hexfold"}},
+    )
+    pd.run_pass(store)
+    ((_jid, meta),) = _jobs_under(store, mint.ids["pin"])
+    assert meta["params"]["pin_repo"] == "hexfold"
+    assert meta["params"]["release_todo"] == mint.ids["rel"]
+
+
+@pytest.mark.parametrize(
+    ("shape", "why"),
+    [
+        ("no_release", "exactly one"),
+        ("two_releases", "exactly one"),
+        ("release_no_repo", "exactly one non-default repo"),
+        ("release_default_repo", "exactly one non-default repo"),
+        ("release_two_repos", "exactly one non-default repo"),
+        ("pin_inherits_catpath", "builds in precis"),
+    ],
+)
+def test_pin_bump_node_with_a_bad_shape_is_not_dispatched(
+    store: Store, pin_op: Any, shape: str, why: str
+) -> None:
+    """A pin-bump node with no single release blocker, a release node that
+    does not govern exactly one non-default repo, or a pin node resolving
+    to another repo mints nothing and leaves one note; if this fails a
+    mis-planned bump runs against the wrong tag or repo."""
+    if shape == "no_release":
+        mint = _pin_plan(store, releases=0)
+    elif shape == "two_releases":
+        mint = _pin_plan(store, releases=2)
+    elif shape == "release_no_repo":
+        mint = _pin_plan(store, release_tags=())
+    elif shape == "release_default_repo":
+        mint = _pin_plan(store, release_tags=("repo:precis",))
+    elif shape == "release_two_repos":
+        mint = _pin_plan(store, release_tags=("repo:catpath", "repo:hexfold"))
+    else:
+        mint = _pin_plan(store)
+        store.add_tag(mint.root_id, Tag.open("repo:catpath"), set_by="system")
+    pin = mint.ids["pin"]
+    res = pd.run_pass(store)
+    assert _jobs_under(store, pin) == []
+    notes = [n for n in res.notes if n.startswith(f"td{pin}: pin_bump not dispatched")]
+    assert len(notes) == 1 and why in notes[0], res.notes
+
+
+def test_succeeded_pin_bump_without_a_land_keeps_the_node_open(
+    store: Store, pin_op: Any
+) -> None:
+    """A succeeded ``pin_bump`` job is a hand-off, not the bump on main: the
+    node stays open, mints no second ``pin_bump`` and files no cap ask
+    (``retries`` is 1, so a counted attempt would cap it); if this fails
+    the node closes or re-bumps before its land."""
+    mint = _pin_plan(store)
+    pin = mint.ids["pin"]
+    _slice_job(store, pin, "pin_bump", "succeeded")
+    for _ in range(2):
+        res = pd.run_pass(store)
+        assert (res.dispatched, res.asks) == (0, 0)
+    assert [m["job_type"] for _j, m in _jobs_under(store, pin)] == ["pin_bump"]
+    assert _status(store, pin) not in pd.TERMINAL_TODO_STATUSES
+    assert any("waiting for its land_slice" in n for n in res.notes)
+
+
+def _pin_landed(store: Store, pin: int, **image: Any) -> None:
+    """The pin node's record as the land and the image wait leave it:
+    ``landed``, with ``image`` when given."""
+    record: dict[str, Any] = {
+        "state": "landed",
+        "package": "autocatpath",
+        "landed_sha": "d" * 40,
+        "image_rev": "e" * 40,
+    }
+    if image:
+        record["image"] = image
+    store.stamp_ref_meta(pin, {"pin_bump": record})
+
+
+def _landed_pin(store: Store, **kw: Any) -> tuple[T.PlanMint, int]:
+    """A pin node whose bump was handed off and landed on ``spruce``."""
+    mint = _pin_plan(store, **kw)
+    pin = mint.ids["pin"]
+    _slice_job(store, pin, "pin_bump", "succeeded")
+    _slice_job(
+        store,
+        pin,
+        "land_slice",
+        "succeeded",
+        params={"todo_id": pin, "target_node": "spruce"},
+    )
+    _pin_landed(store, pin)
+    return mint, pin
+
+
+def _since(hours: float) -> str:
+    return (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _image_asks(store: Store, root: int, pin: int) -> list[int]:
+    out = []
+    for c in _children(store, root):
+        ref = store.get_ref(kind="todo", id=c)
+        if ref is not None and str(ref.title).startswith(f"td{pin}: rebuild the gate"):
+            out.append(c)
+    return out
+
+
+def test_succeeded_land_after_a_pin_bump_redispatches_the_image_wait(
+    store: Store, pin_op: Any
+) -> None:
+    """F7 (rewrites the land-closes-the-node test): the land leaves the node
+    open and the next tick mints the image wait on the land's host, with no
+    cap ask although ``retries`` is 1. If this fails a landed bump unblocks
+    its glue on a stale image, caps into an ask, or checks another host."""
+    mint, pin = _landed_pin(store)
+    res = pd.run_pass(store)
+    assert _status(store, pin) not in pd.TERMINAL_TODO_STATUSES
+    assert any(f"task td{pin} held open: gate image wait" in n for n in res.notes)
+    assert (res.dispatched, res.asks) == (1, 0)
+    job = _jobs_under(store, pin)[-1][1]
+    assert job["job_type"] == "pin_bump"
+    assert job["params"] == {
+        "todo_id": pin,
+        "release_todo": mint.ids["rel"],
+        "pin_repo": "catpath",
+        "target_node": "spruce",
+    }
+    plan = pd._load(store, [mint.root_id])
+    assert pd._attempts(plan, plan.nodes[pin]) == 0
+
+
+def test_a_pin_node_with_a_ready_image_record_closes(store: Store, pin_op: Any) -> None:
+    """The backstop: a record whose image wait stamped ``image.ready`` closes
+    the node once no job runs, whatever the newest job says. If this fails a
+    wait that died between its stamp and its close strands the glue."""
+    _mint, pin = _landed_pin(store)
+    _slice_job(store, pin, "pin_bump", "failed", meta={"attempt_free": "x"})
+    _pin_landed(store, pin, ready=True, want="e" * 40, host="spruce")
+    res = pd.run_pass(store)
+    assert _status(store, pin) == "done"
+    assert any(f"task td{pin} closed: the gate image carries" in n for n in res.notes)
+
+
+def test_image_wait_files_exactly_one_ask_naming_build_image(
+    store: Store, pin_op: Any
+) -> None:
+    """A stale gate image raises ONE coordinator ask naming the host, both
+    shas, the landed sha, `scripts/build-image precis-dev` and the glue it
+    holds; repeat passes and a later reason change file nothing new. If this
+    fails nobody learns the image must be rebuilt, or the queue floods."""
+    mint, pin = _landed_pin(store, glue=True)
+    _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(
+        store,
+        pin,
+        want="e" * 40,
+        have="a" * 40,
+        reason="stale",
+        host="spruce",
+        since=_since(0.1),
+    )
+    res = pd.run_pass(store)
+    pd.run_pass(store)
+    (ask,) = _image_asks(store, mint.root_id, pin)
+    assert res.asks == 1
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None and ref.title == f"td{pin}: rebuild the gate image on spruce"
+    body = _body_text(store, ask)
+    for text in (
+        "scripts/build-image precis-dev",
+        "spruce",
+        "a" * 9,
+        "e" * 9,
+        "d" * 9,
+        f"td{mint.ids['glue']}",
+        "~2 min",
+    ):
+        assert text in body, (text, body)
+    assert _meta(store, pin)["pin_image_ask"] == {"ask": ask, "want": "e" * 40}
+    # the ask reaches the coordinator queue under the root, and does not
+    # block the pin node (the glue is already blocked by the open node)
+    assert ref.parent_id == mint.root_id
+    assert pd.COORDINATOR_ASK_TAG in _open_tags(store, ask)
+    plan = pd._load(store, [mint.root_id])
+    assert plan.open_asks(plan.nodes[pin]) == []
+    _pin_landed(store, pin, want="e" * 40, reason="absent", host="spruce")
+    pd.run_pass(store)
+    assert _image_asks(store, mint.root_id, pin) == [ask]
+
+
+@pytest.mark.parametrize(("hours", "asks"), [(1, 0), (7, 1)])
+def test_unreachable_docker_asks_only_after_the_stale_window(
+    store: Store, pin_op: Any, hours: float, asks: int
+) -> None:
+    """Docker that cannot answer is infrastructure: no ask until it has
+    lasted ``PIN_STALE_AFTER``. If this fails a docker restart pages the
+    coordinator, or a dead daemon holds the glue silently."""
+    mint, pin = _landed_pin(store)
+    _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(
+        store,
+        pin,
+        want="e" * 40,
+        have=None,
+        reason="unreachable",
+        host="spruce",
+        since=_since(hours),
+    )
+    pd.run_pass(store)
+    assert len(_image_asks(store, mint.root_id, pin)) == asks
+
+
+def test_an_open_image_ask_closes_with_its_pin_node(store: Store, pin_op: Any) -> None:
+    """If this fails a pin node closed by hand (or by its wait before it
+    could close the ask) leaves a rebuild ask open for nobody."""
+    mint, pin = _landed_pin(store)
+    _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(store, pin, want="e" * 40, reason="stale", host="spruce")
+    pd.run_pass(store)
+    (ask,) = _image_asks(store, mint.root_id, pin)
+    _mark_done(store, pin)
+    res = pd.run_pass(store)
+    assert _status(store, ask) == "done"
+    assert _todo_comments(store, ask)[-1].startswith(f"answer: td{pin} is closed")
+    assert any(f"image ask td{ask} closed with its node" in n for n in res.notes)
+    # the mark is cleared once its ask is closed: not re-read every pass
+    assert _meta(store, pin).get("pin_image_ask") is None
+    res = pd.run_pass(store)
+    assert not [n for n in res.notes if "image ask" in n]
+
+
+def test_a_closed_image_ask_without_a_rebuild_asks_again_hourly(
+    store: Store, pin_op: Any
+) -> None:
+    """An ask closed while the image still lacks the pin (acknowledged, a
+    rebuild that did not take) is asked again, at most once an hour after
+    it closed. If this fails the node waits forever with no signal."""
+    mint, pin = _landed_pin(store)
+    _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(store, pin, want="e" * 40, reason="stale", host="spruce")
+    pd.run_pass(store)
+    (ask,) = _image_asks(store, mint.root_id, pin)
+    _mark_done(store, ask)
+    pd.run_pass(store)
+    pd.run_pass(store)
+    assert _image_asks(store, mint.root_id, pin) == [ask]
+    mark = _meta(store, pin)["pin_image_ask"]
+    assert mark["ask"] == ask and mark["closed_at"]
+    store.stamp_ref_meta(pin, {"pin_image_ask": {**mark, "closed_at": _since(2)}})
+    res = pd.run_pass(store)
+    asks = _image_asks(store, mint.root_id, pin)
+    assert len(asks) == 2 and res.asks == 1
+    assert f"td{ask}" in _body_text(store, asks[1])
+    assert _meta(store, pin)["pin_image_ask"] == {"ask": asks[1], "want": "e" * 40}
+
+
+def test_a_parked_image_wait_past_the_window_raises_stale_open(
+    store: Store, pin_op: Any
+) -> None:
+    """A live but parked image wait whose image has been behind for over
+    ``PIN_STALE_AFTER`` still raises the stale-open alert; if this fails the
+    parked job hides a node that will never close."""
+    mint = _pin_plan(store)
+    pin = mint.ids["pin"]
+    _tagged(store, mint.ids["rel"], hours=8)
+    _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(
+        store, pin, want="e" * 40, reason="stale", host="spruce", since=_since(1)
+    )
+    pd.run_pass(store)
+    assert _stale_alerts(store, pin) == []
+    _pin_landed(
+        store, pin, want="e" * 40, reason="stale", host="spruce", since=_since(7)
+    )
+    pd.run_pass(store)
+    (alert,) = _stale_alerts(store, pin)
+    assert "gate image" in alert["detail"]
+
+
+def test_a_failed_image_wait_is_redispatched_while_its_ask_is_open(
+    store: Store, pin_op: Any
+) -> None:
+    """The image ask must not block the pin node: a wait that ended without
+    closing it (a store hiccup, a cancel) is minted again while the ask is
+    open. If this fails nothing re-checks the image and nobody closes the
+    ask: a deadlock."""
+    mint, pin = _landed_pin(store)
+    wait = _slice_job(store, pin, "pin_bump", "running")
+    _pin_landed(store, pin, want="e" * 40, reason="stale", host="spruce")
+    pd.run_pass(store)
+    (ask,) = _image_asks(store, mint.root_id, pin)
+    _set_job_status(store, wait, "failed")
+    store.stamp_ref_meta(wait, {"attempt_free": "infra-pin-bump"})
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    job = _jobs_under(store, pin)[-1][1]
+    assert job["job_type"] == "pin_bump" and job["params"]["target_node"] == "spruce"
+    assert _status(store, ask) == "open"
+
+
+def test_a_rewait_without_a_land_goes_to_the_host_it_was_checking(
+    store: Store, pin_op: Any
+) -> None:
+    """A no-op's wait has no land to name a host: its re-dispatch goes to
+    the host the first image poll stamped. If this fails it checks another
+    host's image."""
+    mint = _pin_plan(store)
+    pin = mint.ids["pin"]
+    _slice_job(store, pin, "pin_bump", "failed", meta={"attempt_free": "x"})
+    store.stamp_ref_meta(
+        pin,
+        {
+            "pin_bump": {
+                "state": "landed",
+                "noop": True,
+                "image": {
+                    "want": "e" * 40,
+                    "reason": "unreachable",
+                    "host": "spruce",
+                    "since": _since(0.1),
+                },
+            }
+        },
+    )
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    job = _jobs_under(store, pin)[-1][1]
+    assert job["job_type"] == "pin_bump" and job["params"]["target_node"] == "spruce"
+
+
+def test_glue_stays_blocked_while_the_pin_waits_for_its_image(
+    store: Store, pin_op: Any
+) -> None:
+    """Reto 2026-11-15: glue blocked by the pin does not unblock on the land
+    alone, only once the gate image carries the pin. If this fails the glue
+    builds against an image without the new engine."""
+    mint, pin = _landed_pin(store, glue=True)
+    glue = mint.ids["glue"]
+    pd.run_pass(store)
+    assert _jobs_under(store, glue) == []
+    plan = pd._load(store, [mint.root_id])
+    assert plan.blocked(plan.nodes[glue])
+    for jid, _m in _jobs_under(store, pin):
+        _set_job_status(store, jid, "succeeded")
+    _pin_landed(store, pin, ready=True, want="e" * 40, host="spruce")
+    pd.run_pass(store)
+    assert _status(store, pin) == "done"
+    plan = pd._load(store, [mint.root_id])
+    assert not plan.blocked(plan.nodes[glue])
+
+
+def test_failed_land_redispatches_pin_bump_as_one_attempt(
+    store: Store, pin_op: Any
+) -> None:
+    """A ``pin_bump`` plus its red ``land_slice`` is one attempt, and the
+    retry is a rebuild (``pin_bump``), not a bare land; with ``retries: 2``
+    a second attempt remains. If this fails the pair counts twice and caps,
+    or the bump lands a stale branch."""
+    mint = _pin_plan(store, retries=2)
+    pin = mint.ids["pin"]
+    _slice_job(store, pin, "pin_bump", "succeeded")
+    _slice_job(store, pin, "land_slice", "failed")
+    plan = pd._load(store, [mint.root_id])
+    assert pd._attempts(plan, plan.nodes[pin]) == 1
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    job = _jobs_under(store, pin)[-1][1]
+    assert job["job_type"] == "pin_bump"
+    assert job["params"]["release_todo"] == mint.ids["rel"]
+
+
+def test_failed_land_at_the_retry_cap_does_not_redispatch_pin_bump(
+    store: Store, pin_op: Any
+) -> None:
+    """With ``retries: 1`` the pair is the one allowed attempt: no new
+    ``pin_bump`` is minted; if this fails the cap does not bind a bump."""
+    mint = _pin_plan(store, retries=1)
+    pin = mint.ids["pin"]
+    _slice_job(store, pin, "pin_bump", "succeeded")
+    _slice_job(store, pin, "land_slice", "failed")
+    pd.run_pass(store)
+    assert [m["job_type"] for _j, m in _jobs_under(store, pin)] == [
+        "pin_bump",
+        "land_slice",
+    ]
+
+
+def _stale_alerts(store: Store, pin: int) -> list[dict[str, Any]]:
+    """The open ``stale-open:<pin>`` alerts: their meta plus ``title`` and
+    ``source``."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta, title, alert_source FROM refs WHERE kind = 'alert' "
+            "AND retired_at IS NULL AND resolved_at IS NULL "
+            "AND meta->>'fingerprint' = %s",
+            (f"stale-open:{pin}",),
+        ).fetchall()
+    return [{**dict(r[0]), "title": r[1], "source": r[2]} for r in rows]
+
+
+def _tagged(store: Store, rel: int, *, hours: float, state: str = "tagged") -> None:
+    at = datetime.now(UTC) - timedelta(hours=hours)
+    store.stamp_ref_meta(
+        rel,
+        {
+            "repo_release": {
+                "state": state,
+                "tag": "v0.50.0",
+                "tagged_at": at.isoformat(),
+            }
+        },
+    )
+
+
+def test_stale_open_pin_bump_node_raises_one_warn_alert(
+    store: Store, pin_op: Any
+) -> None:
+    """An open pin-bump node 7 h past its release tag with no live job raises
+    ``pin_bump``/``stale-open:<todo>`` once (repeat passes dedup) at warn,
+    naming the node, the tag and the hours; if this fails a bump that never
+    landed goes unnoticed."""
+    mint = _pin_plan(store, ready=False)
+    pin, rel = mint.ids["pin"], mint.ids["rel"]
+    _tagged(store, rel, hours=7)
+    res = pd.run_pass(store)
+    pd.run_pass(store)
+    (alert,) = _stale_alerts(store, pin)
+    assert alert["severity"] == "warn" and alert["source"] == "pin_bump"
+    assert alert["seen_count"] >= 1
+    for text in (alert["title"], alert["detail"]):
+        assert f"td{pin}" in text and "v0.50.0" in text and "7 h" in text
+    assert any(f"td{pin}: pin bump still open 7 h" in n for n in res.notes)
+
+
+def test_stale_open_covers_a_succeeded_pin_bump_whose_land_never_appeared(
+    store: Store, pin_op: Any
+) -> None:
+    """A succeeded ``pin_bump`` with no land under it is no live job: the
+    alert covers it; if this fails a lost hand-off waits silently."""
+    mint = _pin_plan(store)
+    pin = mint.ids["pin"]
+    _tagged(store, mint.ids["rel"], hours=8)
+    _slice_job(store, pin, "pin_bump", "succeeded")
+    pd.run_pass(store)
+    assert len(_stale_alerts(store, pin)) == 1
+
+
+@pytest.mark.parametrize("case", ["fresh", "closed", "busy", "untagged", "dry-run"])
+def test_stale_open_stays_quiet_for_a_fresh_closed_busy_or_untagged_node(
+    store: Store, pin_op: Any, case: str
+) -> None:
+    """No alert for a release tagged under 6 h ago, a closed pin node, one
+    with a live job (a land in flight), a release not in state tagged, or a
+    dry run; if this fails the page cries wolf."""
+    mint = _pin_plan(store, ready=False)
+    pin, rel = mint.ids["pin"], mint.ids["rel"]
+    _tagged(store, rel, hours=5 if case == "fresh" else 7)
+    dry = case == "dry-run"
+    if case == "closed":
+        _mark_done(store, pin)
+    elif case == "busy":
+        _slice_job(store, pin, "land_slice", "running")
+    elif case == "untagged":
+        _tagged(store, rel, hours=7, state="pushed")
+    pd.run_pass(store, dry_run=dry)
+    assert _stale_alerts(store, pin) == []
+
+
+@pytest.mark.parametrize(
+    "line", ["moot: gr1 already fixed", "no-op: nothing to do", "validated: it is cut"]
+)
+def test_verdict_line_never_closes_a_pin_bump_node(
+    store: Store, pin_op: Any, line: str
+) -> None:
+    """A verdict line on a pin-bump node does not close it: only its land
+    does; if this fails a stray comment closes a bump that never reached
+    main."""
+    mint = _pin_plan(store, ready=False)
+    pin = mint.ids["pin"]
+    _mark_done(store, mint.ids["b1"], mint.ids["rel"])
+    _todo_comment(store, pin, line)
+    pd.run_pass(store)
+    assert _status(store, pin) not in pd.TERMINAL_TODO_STATUSES
+
+
+def test_pin_bump_node_dies_with_a_dead_release_node(store: Store, pin_op: Any) -> None:
+    """A pin-bump node behind a release node whose only slice is moot is
+    closed with it by the dead-chain walk; if this fails an abandoned
+    release leaves its bump open."""
+    mint = _pin_plan(store, ready=False)
+    _moot_tag(store, mint.ids["b1"])
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rel", "pin")
+    assert set(got.values()) == {"won't-do"}
+
+
+def test_pin_bump_node_lives_while_its_release_node_is_open(
+    store: Store, pin_op: Any
+) -> None:
+    """An open release node (its slice alive) keeps the pin-bump node open;
+    if this fails a bump dies before its release is ruled out."""
+    mint = _pin_plan(store, ready=False)
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rel", "pin")
+    assert all(v not in pd.TERMINAL_TODO_STATUSES for v in got.values())
+
+
+# ── the second-repo reviewer (td659522 step 5, round R4) ───────────
+
+
+def _review_dispatch_plan(
+    store: Store, *, slice_repo: str | None, review_repo: str | None
+) -> T.PlanMint:
+    """root: landed slice b1 -> reviewer rb1, both ready; the slice carries
+    ``meta.landed_repo`` when ``slice_repo`` names one, the reviewer its
+    own ``repo:`` tag when ``review_repo`` does."""
+    mint = _release_plan(store)
+    b1, rb1 = mint.ids["b1"], mint.ids["rb1"]
+    _todo_comment(store, b1, "landed: abc1234 — the slice")
+    _mark_done(store, b1)
+    if slice_repo:
+        store.stamp_ref_meta(b1, {L.LANDED_REPO_KEY: slice_repo})
+        store.add_tag(b1, Tag.open(f"repo:{slice_repo}"), set_by="system")
+    if review_repo:
+        store.add_tag(rb1, Tag.open(f"repo:{review_repo}"), set_by="system")
+    return mint
+
+
+@pytest.mark.parametrize(
+    ("slice_repo", "review_repo"), [("catpath", None), (None, "catpath")]
+)
+def test_a_reviewer_of_another_repos_land_is_not_dispatched(
+    store: Store,
+    release_op: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    slice_repo: str | None,
+    review_repo: str | None,
+) -> None:
+    """A reviewer whose resolved repo differs from the repo its target landed
+    in (an untagged reviewer of a catpath slice, a catpath reviewer of a
+    precis slice) mints no job and leaves one note; if this fails it reviews
+    one repo's sha in the other's tree."""
+    use_lanes(monkeypatch)
+    mint = _review_dispatch_plan(store, slice_repo=slice_repo, review_repo=review_repo)
+    rb1 = mint.ids["rb1"]
+    res = pd.run_pass(store)
+    assert _jobs_under(store, rb1) == []
+    assert [n for n in res.notes if f"td{rb1}: not dispatched — review repo" in n]
+
+
+def test_a_reviewer_in_the_repo_its_target_landed_in_passes_the_guard(
+    store: Store, release_op: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catpath reviewer of a catpath land is not stopped by the repo
+    guard (run_slice may still refuse it elsewhere); if this fails the guard
+    blocks the agreeing pair too."""
+    use_lanes(monkeypatch)
+    _review_dispatch_plan(store, slice_repo="catpath", review_repo="catpath")
+    res = pd.run_pass(store)
+    assert not [n for n in res.notes if "review repo mismatch" in n]
+
+
+def test_a_blocked_catpath_reviewer_is_skipped_without_a_mismatch_note(
+    store: Store, release_op: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catpath reviewer whose catpath slice has not landed yet (no
+    ``landed_repo`` stamp, so it reads as the default repo) is blocked: it
+    is skipped quietly; if this fails every batch reviewer writes a
+    misleading "review repo mismatch" note on every tick until its slice
+    lands."""
+    use_lanes(monkeypatch)
+    mint = _release_plan(store)
+    b1, rb1 = mint.ids["b1"], mint.ids["rb1"]
+    for tid in (b1, rb1):
+        store.add_tag(tid, Tag.open("repo:catpath"), set_by="system")
+    res = pd.run_pass(store)
+    assert _jobs_under(store, rb1) == []
+    assert not [n for n in res.notes if "review repo mismatch" in n]
+
+
+def test_a_precis_reviewer_of_a_precis_land_still_dispatches(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both default: the guard is silent and the reviewer gets its job; if
+    this fails every precis review stops."""
+    use_lanes(monkeypatch)
+    mint = _review_dispatch_plan(store, slice_repo=None, review_repo=None)
+    res = pd.run_pass(store)
+    assert len(_jobs_under(store, mint.ids["rb1"])) == 1
+    assert not [n for n in res.notes if "review repo mismatch" in n]
+
+
+def _catpath_reviewed(store: Store, verdict: str, *, landed_job: bool) -> T.PlanMint:
+    """``_release_reviewed`` for a catpath slice: slice, reviewer and
+    release node tagged ``repo:catpath``, the slice stamped landed there."""
+    mint = _release_reviewed(store, verdict, landed_job=landed_job)
+    for key in ("b1", "rb1", "rel"):
+        store.add_tag(mint.ids[key], Tag.open("repo:catpath"), set_by="system")
+    store.stamp_ref_meta(mint.ids["b1"], {L.LANDED_REPO_KEY: "catpath"})
+    return mint
+
+
+def _minted_children(store: Store, root: int, known: set[int]) -> dict[str, int]:
+    """The todos under ``root`` not in ``known``, keyed ``fix`` / ``revert`` /
+    ``review`` by title."""
+    out: dict[str, int] = {}
+    for c in _children(store, root):
+        ref = store.get_ref(kind="todo", id=c)
+        title = str(ref.title or "") if ref is not None else ""
+        if c in known:
+            continue
+        for key, prefix in (
+            ("fix", "Fix review findings"),
+            ("revert", "Revert"),
+            ("review", "Review the"),
+        ):
+            if title.startswith(prefix):
+                out[key] = c
+    return out
+
+
+def _new_children(store: Store, mint: T.PlanMint) -> dict[str, int]:
+    return _minted_children(store, mint.root_id, set(mint.ids.values()))
+
+
+def test_catpath_fix_is_repo_worded_and_gets_its_own_reviewer(
+    store: Store, release_op: Any
+) -> None:
+    """FIX on a catpath reviewer: the fix is tagged, worded for the repo (no
+    precis main, ship or land target), its reviewer is minted in the same
+    pass (tagged, blocked-by the fix) and the open release waits on both;
+    if this fails a catpath fix lands unreviewed or releases early."""
+    mint = _catpath_reviewed(
+        store, "review: FIX — a.py misses the empty case", landed_job=False
+    )
+    ids = mint.ids
+    pd.run_pass(store)
+    new = _new_children(store, mint)
+    fix, rev = new["fix"], new["review"]
+    assert "repo:catpath" in _open_tags(store, fix)
+    body = _body_text(store, fix)
+    assert (
+        f"Findings of the review td{ids['rb1']} of td{ids['b1']}'s land on "
+        "catpath main. Fix them on a fresh slice in the catpath repo; the "
+        f"factory's lander lands it; td{ids['b1']}'s brief is the intent."
+    ) in body
+    assert "scripts/ship" not in body
+    assert "land target:" not in body
+    assert "land on main" not in body
+    assert "repo:catpath" in _open_tags(store, rev)
+    assert f"plan:{mint.root_id}" in _open_tags(store, rev)
+    assert _meta(store, rev)["generate"]["from"] == f"td{fix}"
+    assert _blocked_by_ids(store, rev) == [fix]
+    assert _blocked_by_ids(store, ids["rel"]) == sorted([ids["rb1"], fix, rev])
+    assert _meta(store, fix)["fix_depth"] == 1
+    pd.run_pass(store)  # idempotent: no second fix, reviewer or edge
+    assert _new_children(store, mint) == new
+    assert _blocked_by_ids(store, ids["rel"]) == sorted([ids["rb1"], fix, rev])
+
+
+def test_catpath_fix_dry_run_mints_nothing(store: Store, release_op: Any) -> None:
+    """A dry run of a catpath FIX mints neither the fix nor its reviewer and
+    adds no release edge; if this fails the read-only tick writes."""
+    mint = _catpath_reviewed(store, "review: FIX — hole", landed_job=False)
+    before = _children(store, mint.root_id)
+    pd.run_pass(store, dry_run=True)
+    assert _children(store, mint.root_id) == before
+    assert _blocked_by_ids(store, mint.ids["rel"]) == [mint.ids["rb1"]]
+
+
+def test_catpath_revert_is_one_tagged_slice_without_a_reviewer(
+    store: Store, release_op: Any
+) -> None:
+    """REVERT on a catpath reviewer: one revert slice tagged with the repo,
+    its body naming `git revert --no-edit <sha>`, no precis ship text, no
+    reviewer of its own, and the release gated on it; if this fails a
+    catpath revert runs precis' release-scope read or reviews itself."""
+    mint = _catpath_reviewed(store, "review: REVERT — bad", landed_job=True)
+    ids = mint.ids
+    pd.run_pass(store)
+    new = _new_children(store, mint)
+    assert set(new) == {"revert"}
+    revert = new["revert"]
+    assert "repo:catpath" in _open_tags(store, revert)
+    body = _body_text(store, revert)
+    assert "`git revert --no-edit abc1234`" in body
+    assert "scripts/ship" not in body
+    assert "land target:" not in body
+    assert "no push" in body and "no version bump" in body
+    assert _blocked_by_ids(store, ids["rel"]) == sorted([ids["rb1"], revert])
+
+
+@pytest.mark.parametrize(
+    ("verdict", "landed_job"),
+    [("review: FIX — hole", False), ("review: REVERT — bad", True)],
+)
+def test_catpath_verdict_never_reads_the_precis_release_scope(
+    store: Store,
+    release_op: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    verdict: str,
+    landed_job: bool,
+) -> None:
+    """A second-repo verdict does not call the precis release-scope read;
+    if this fails a catpath sha is looked up in precis release branches."""
+
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("release scope read for a second repo")
+
+    monkeypatch.setattr(pd, "_release_scope_target", boom)
+    mint = _catpath_reviewed(store, verdict, landed_job=landed_job)
+    pd.run_pass(store)
+    assert _new_children(store, mint)
+
+
+def test_catpath_fix_chain_alternates_and_caps_at_round_four(
+    store: Store, release_op: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fix -> reviewer -> fix through ``generate.from``: each reviewer's FIX
+    reads the depth off the fix it reviewed (1, 2, 3), and the fourth round
+    parks the root with the cap ask instead of minting; if this fails a
+    second-repo chain is unbounded."""
+    use_lanes(monkeypatch)
+    mint = _catpath_reviewed(store, "review: FIX — hole one", landed_job=False)
+    ids = mint.ids
+    root = mint.root_id
+    pd.run_pass(store)
+    new = _new_children(store, mint)
+    for depth in (1, 2, 3):
+        fix, rev = new["fix"], new["review"]
+        assert _meta(store, fix)["fix_depth"] == depth
+        assert _blocked_by_ids(store, rev) == [fix]
+        _land(store, fix, f"{depth}ddd111")
+        _job(store, rev, lane="claude-sub")
+        store.add_tag(rev, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+        _todo_comment(store, rev, f"review: FIX — hole {depth + 1}")
+        known = set(_children(store, root))
+        pd.run_pass(store)
+        assert _status(store, rev) == "done"
+        if depth < 3:
+            new = _minted_children(store, root, known)
+            assert set(new) == {"fix", "review"}
+            assert "repo:catpath" in _open_tags(store, new["review"])
+            assert _blocked_by_ids(store, ids["rel"]).count(new["review"]) == 1
+    assert "waiting-for:coordinator" in _open_tags(store, root)
+    assert _meta(store, rev)["review"]["verdict"] == "FIX"
+    assert "cap_ask" in _meta(store, rev)["review"]
+    assert _status(store, ids["rel"]) not in pd.TERMINAL_TODO_STATUSES
+
+
+def test_precis_fix_body_and_behaviour_are_unchanged(store: Store) -> None:
+    """A precis reviewer's FIX body is byte-identical to the one the chain
+    item test pins, mints no reviewer for the fix and tags no repo; if this
+    fails the second-repo wording leaked into precis."""
+    mint = _reviewed(store, "review: FIX — hole one")
+    pd.run_pass(store)
+    new = _new_children(store, mint)
+    assert set(new) == {"fix"}
+    assert _body_text(store, new["fix"]) == (
+        "hole one\n\n"
+        f"Findings of the review td{mint.ids['review']} of td{mint.ids['build']}'s "
+        "land on main. Fix them on a fresh slice and land it; "
+        f"td{mint.ids['build']}'s brief is the intent."
+    )
+    assert not {t for t in _open_tags(store, new["fix"]) if t.startswith("repo:")}
+
+
+def _dead_catpath_plan(store: Store, *, slices: tuple[str, ...]) -> T.PlanMint:
+    """The release plan with every slice, reviewer and the release node
+    tagged ``repo:catpath``."""
+    mint = _release_plan(store, slices=slices)
+    for key, tid in mint.ids.items():
+        if key != "pin":
+            store.add_tag(tid, Tag.open("repo:catpath"), set_by="system")
+    return mint
+
+
+def test_catpath_slice_that_landed_nothing_closes_the_whole_chain(
+    store: Store, release_op: Any
+) -> None:
+    """One slice done with ``landed: nothing``: its reviewer, the release
+    node and the pin node close won't-do; if this fails a no-diff batch
+    leaves the release waiting forever."""
+    mint = _dead_catpath_plan(store, slices=("b1",))
+    _todo_comment(store, mint.ids["b1"], "landed: nothing — no diff")
+    _mark_done(store, mint.ids["b1"])
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rb1", "rel", "pin")
+    assert set(got.values()) == {"won't-do"}
+
+
+def test_catpath_release_stays_open_while_another_slice_landed(
+    store: Store, release_op: Any
+) -> None:
+    """Two slices, one landed nothing and one landed: only the dead
+    slice's reviewer closes; the release and pin nodes stay open; if this
+    fails one empty slice drops the whole batch."""
+    mint = _dead_catpath_plan(store, slices=("b1", "b2"))
+    _todo_comment(store, mint.ids["b1"], "landed: nothing — no diff")
+    _mark_done(store, mint.ids["b1"])
+    _todo_comment(store, mint.ids["b2"], "landed: abc1234 — the slice")
+    _mark_done(store, mint.ids["b2"])
+    store.stamp_ref_meta(mint.ids["b2"], {L.LANDED_REPO_KEY: "catpath"})
+    pd.run_pass(store)
+    got = _plan_statuses(store, mint, "rb1", "rb2", "rel", "pin")
+    assert got["rb1"] == "won't-do"
+    for key in ("rb2", "rel", "pin"):
+        assert got[key] not in pd.TERMINAL_TODO_STATUSES

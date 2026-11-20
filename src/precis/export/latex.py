@@ -35,7 +35,7 @@ import json
 import re
 import shutil
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -85,7 +85,7 @@ from precis.export._trust_marks import (
     unverified_claims_entries,
 )
 from precis.nanopub import pin_lint
-from precis.utils import handle_registry, mentions
+from precis.utils import adsorbate_star, handle_registry, mentions
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
 from precis.utils.paper_links import doi_url, uol_url
@@ -278,8 +278,13 @@ _LATEX_SPECIALS_RE = re.compile("|".join(re.escape(k) for k in _LATEX_SPECIALS))
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
 #: Single-``*`` emphasis → ``\emph`` (parity with docx ``_SPAN`` / the web
 #: reader). Applied AFTER bold, so a consumed ``**…**`` never reaches it; the
-#: guard excludes ``**bold**``, ``a*b``, and a spaced ``2 * 3`` multiplication.
-_MD_ITALIC = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
+#: guard excludes ``**bold**``, ``a*b``, a spaced ``2 * 3`` multiplication,
+#: an author-escaped ``\*`` (literal star) and the adsorbate star (``*NO``,
+#: ``H*`` — ``utils/adsorbate_star``, gr674905).
+_MD_ITALIC = re.compile(
+    rf"(?<![*\w\\])\*(?!\s){adsorbate_star.STAR_NOT_FOLLOWED_BY_ELEMENT}"
+    rf"([^*]+?)(?<![\s\\]){adsorbate_star.STAR_NOT_PRECEDED_BY_ELEMENT}\*(?!\w)"
+)
 _MD_CODE = re.compile(r"`([^`]+)`")
 _HTML_SUB = re.compile(r"<sub>(.+?)</sub>")
 _HTML_SUP = re.compile(r"<sup>(.+?)</sup>")
@@ -315,6 +320,14 @@ def _math_braces_balanced(span: str) -> bool:
     return depth == 0
 
 
+#: Restrict the arithmetic exception to an operand-shaped body containing
+#: an explicit binary operator. Parentheses alone also occur in numeric
+#: currency prose (e.g. ``$10 (2025) $12 (2026)``). The operand-shaped ends
+#: exclude ranges whose closing dollar cuts off the second operand.
+_MATH_ARITHMETIC = re.compile(r"[+-]?[\d(][\d\s()+*/.-]*[\d)]")
+_MATH_BINARY_OPERATOR = re.compile(r"[\d)]\s*[+*/-]\s*[+-]?[\d.(]")
+
+
 def _math_plausible(span: str) -> bool:
     """Is a ``$…$`` candidate actually math — or a mispairing of two
     currency/stray dollars? LLM-authored prose mixes ``$10–50 per
@@ -324,7 +337,9 @@ def _math_plausible(span: str) -> bool:
     "Display math should end with $$" fatals downstream. A span that is
     long, or wordy without a single mathy character, is not math — its
     dollars fall through to the escaper and render as the literal ``$``
-    the author meant."""
+    the author meant. A numeric arithmetic span such as ``$(6 - 9)$``
+    can bypass the whitespace heuristic when it has an explicit
+    binary operator between operands."""
     body = span.strip("$")
     if len(body) > 120:
         return False
@@ -333,6 +348,9 @@ def _math_plausible(span: str) -> bool:
         # alternation glues two stray author dollars around real spans
         # ($$2^30$ ($∼$$) — verbatim passthrough would emit an unpaired $.
         return False
+    stripped = body.strip()
+    if _MATH_ARITHMETIC.fullmatch(stripped) and _MATH_BINARY_OPERATOR.search(stripped):
+        return True
     return not (body.count(" ") >= 2 and not re.search(r"[\\^_={}<>≈±×·]", body))
 
 
@@ -864,6 +882,19 @@ def _heading_glsadd(ctx: _Ctx) -> str:
 def _gls_use(use: _abbrev.Use, keymap: dict[str, str]) -> str:
     """One :class:`~precis.export._abbrev.Use` as a glossary call."""
     key, pl = keymap[use.short], "pl" if use.plural else ""
+    if use.prefix:
+        # ``word-SHORT``: the word is literal text, the short defines itself
+        # after the compound (the long form cannot replace it mid-word).
+        head = _encode_unicode(_latex_escape(use.prefix)) + "-"
+        if use.mode == "first":
+            o, c = ("{[}", "{]}") if use.bracket else ("(", ")")
+            return (
+                f"{head}\\glsxtrshort{pl}{{{key}}} "
+                f"{o}\\glsxtrlong{pl}{{{key}}}{c}"
+                f"\\glsadd{{{key}}}\\glsunset{{{key}}}"
+            )
+        use = replace(use, prefix="")
+        return head + _gls_use(use, keymap)
     if use.mode == "bare":
         return f"\\glsfmtshort{pl}{{{key}}}"
     if use.mode == "later":
@@ -965,7 +996,16 @@ class _Ctx:
     #: ``\cite`` names its entry, so :func:`_merge_adjacent_cites` can hand
     #: the walker resolved groups. Equal marks share one index, so a repeated
     #: mark renders to an identical string (:class:`walker.RepeatGuard`).
+    #: Print every repeated cite mark (:class:`walker.RepeatMarks` drops a
+    #: mark equal to the previous printed one of its block).
+    repeat_cites: bool = False
+    #: Two records of one DOI cite one bib key (set in ``__post_init__``).
+    doi_aliases: walker.DoiAliases = field(init=False, repr=False)
     _cite_marks: list[walker.CiteGroup] = field(default_factory=list, repr=False)
+    #: The plain text before and after each cite occurrence
+    #: (:func:`walker.mark_context`); the ``\x06<i>\x06`` tag after a
+    #: sentinel names its entry.
+    _cite_contexts: list[tuple[str, str]] = field(default_factory=list, repr=False)
     _cite_mark_ids: dict[walker.CiteGroup, int] = field(
         default_factory=dict, repr=False
     )
@@ -980,6 +1020,11 @@ class _Ctx:
     #: ``dc`` handles of heading chunks that render as unnumbered
     #: ``\\paragraph`` — cross-referenced with ``\\nameref``, not ``\\cref``.
     paragraph_handles: frozenset[str] = frozenset()
+    #: The numbering pre-pass and the chunk being rendered: only used to
+    #: tell a reference into the citing chunk's own section
+    #: (:func:`walker.relative_word`; cleveref still numbers the rest).
+    xref_pass: walker.XrefNumbers | None = None
+    cursor: walker.XrefCursor = field(default_factory=walker.XrefCursor)
     #: Memo for :func:`walker.dead_xref` — a dead cross-ref handle maps to
     #: ``(replacement dc | None, neutral text)`` (gr493181).
     _dead_xref_cache: dict[str, tuple[str | None, str]] = field(
@@ -993,6 +1038,7 @@ class _Ctx:
     poster: bool = False
 
     def __post_init__(self) -> None:
+        self.doi_aliases = walker.DoiAliases(self.store, self.cited, self.warnings)
         if self.trust is None and self.store is not None:
             from precis.export._trust_marks import TrustTracker
 
@@ -1080,6 +1126,10 @@ def _render_gap(text: str, ctx: _Ctx, *, preceding: str | None = None) -> str:
     #     LaTeX ``\$`` (renders "$") instead of letting step 4 escape the
     #     backslash separately into a visible ``\textbackslash{}\$``.
     s = re.sub(r"\\\$", lambda m: _stash(r"\$"), s)
+    # 2c. An author-escaped ``\*`` means a literal star — the escape the
+    #     lint's italic_star advice names (utils/house_style) — stashed as
+    #     ``\textasteriskcentered`` for the same reason as ``\$``.
+    s = re.sub(r"\\\*", lambda m: _stash(r"\textasteriskcentered{}"), s)
     # 3. sub/sup BEFORE escaping (the angle brackets must not be escaped).
     s = _HTML_SUB.sub(
         lambda m: _stash(f"\\textsubscript{{{_latex_escape(m.group(1))}}}"), s
@@ -1101,6 +1151,11 @@ def _render_gap(text: str, ctx: _Ctx, *, preceding: str | None = None) -> str:
     #    Bold first so a ``**…**`` run is consumed before single-* italic.
     s = _MD_BOLD.sub(r"\\textbf{\1}", s)
     s = _MD_ITALIC.sub(r"\\emph{\1}", s)
+
+    # Remaining prose stars are literal (including adsorbate notation).
+    # Use the same glyph as the author's \* escape; math and inline code
+    # remain in the stash so their stars retain their original meaning.
+    s = s.replace("*", r"\textasteriskcentered{}")
 
     # 6b. Two math spans restored back-to-back would abut as ``…$$…`` — TeX
     #     reads that as a display-math opener ("Display math should end with
@@ -1188,6 +1243,8 @@ def _draft_xref(dc: str, surface: str | None, ctx: _Ctx) -> str:
         dead=lambda d: walker.dead_xref(
             ctx.store, d, ctx.known_handles, ctx._dead_xref_cache
         ),
+        placement=ctx.xref_pass,
+        citing=ctx.cursor.dc,
     )
     sink: list[str] = []
     LatexRenderer(ctx).xref(sink, xref)
@@ -1204,7 +1261,7 @@ def _polish_xrefs(s: str) -> str:
     space a ``\\cref`` off a directly preceding ``\\cite`` mark (and its
     ``{\\scriptsize …}`` link run), and capitalise to ``\\Cref`` at the
     start of the chunk or a sentence (the :func:`_glsify` rule)."""
-    if "\\cref{" not in s:
+    if "\\cref{" not in s and "\\precisrel{" not in s:
         return s
     items: list[str | tuple[str, ...]] = []
     last = 0
@@ -1218,7 +1275,7 @@ def _polish_xrefs(s: str) -> str:
     )
     out: list[str] = []
     pos = 0
-    for m in re.finditer(r"\\cref\{", s):
+    for m in re.finditer(r"\\cref\{|\\precisrel\{(above|below)\}", s):
         pre = s[pos : m.start()]
         head = "".join(out) + pre
         if head.endswith("}"):
@@ -1239,7 +1296,10 @@ def _polish_xrefs(s: str) -> str:
                 pre += " "
                 head += " "
         out.append(pre)
-        if _abbrev.at_sentence_start(head):
+        if m.group(1):  # the word for a reference into the own section
+            word = m.group(1)
+            out.append(word.capitalize() if _abbrev.at_sentence_start(head) else word)
+        elif _abbrev.at_sentence_start(head):
             out.append("\\Cref{")
         else:
             out.append("\\cref{")
@@ -1264,14 +1324,17 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
 
 def _resolve_si_slug(slug: str, ctx: _Ctx) -> tuple[str, bool]:
     """A bare cite slug → ``(slug_to_cite, is_si)``
-    (:func:`walker.resolve_si_slug`, memoised on ``ctx``)."""
-    return walker.resolve_si_slug(
+    (:func:`walker.resolve_si_slug`, memoised on ``ctx``); a record whose DOI
+    an already cited record has takes that record's key
+    (:class:`walker.DoiAliases`)."""
+    key, is_si = walker.resolve_si_slug(
         slug,
         ctx.store,
         si_cache=ctx._si_slug_cache,
         target_cache=ctx._cite_target_cache,
         warnings=ctx.warnings,
     )
+    return ctx.doi_aliases.canonical(key), is_si
 
 
 def _conjunct_cite_keys(store: Any, hub_ref_id: int) -> list[str]:
@@ -1354,7 +1417,11 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
         # the hub's full derived evidence — a pin overrides what gets
         # cited, never what the evidence graph holds.
         return _hub_footnote(pk, fc.evidence, ctx)
-    rendered = _cite_keys(keys, ctx) + _trust_mark_latex(ctx, pk)
+    trust = _trust_mark_latex(ctx, pk)
+    # \x05 tells :func:`_merge_adjacent_cites` the mark carries a trust mark
+    # (never dropped as a repeat); it strips the sentinel.
+    cite = _cite_keys(keys, ctx)
+    rendered = cite + (_TRUST_SENTINEL + trust if trust and "\x01<" in cite else trust)
     walker.record_claim_keys(
         seen, rendered_keys, ctx.cited, lambda k: _resolve_si_slug(k, ctx)[0]
     )
@@ -1667,7 +1734,10 @@ class LatexRenderer:
 
     def xref(self, sink: list[str], xref: walker.Xref) -> None:
         """``\\cref`` (cleveref numbers it), ``\\hyperref`` around the
-        author's surface, neutral text for a dead target."""
+        author's surface, neutral text for a dead target; a reference into
+        the citing chunk's own section is the word ``above`` / ``below``
+        (a private mark :func:`_polish_xrefs` turns into text, capitalised
+        at a sentence start)."""
         dc = xref.dc
         if not xref.live:
             sink.append(
@@ -1680,6 +1750,8 @@ class LatexRenderer:
         elif xref.surface:
             surface = _encode_unicode(_latex_escape(xref.surface))
             sink.append(f"\\hyperref[chunk:{dc}]{{{surface}}}")
+        elif xref.relative is not None:
+            sink.append(f"\\precisrel{{{xref.relative}}}")
         elif dc in self.ctx.paragraph_handles:
             # ``\\paragraph`` is unnumbered: ``\\cref`` would print the parent
             # section's number, so name the heading instead.
@@ -1838,8 +1910,16 @@ def _cite_keys(keys: list[str], ctx: _Ctx) -> str:
         return _cite(keys[0], ctx)
     if ctx.patent_mode or ctx.footnote_refs:
         return "".join(_cite(k, ctx) for k in keys)
+
     # Supplement keys cite as their parent; duplicates collapse.
-    pairs = walker.key_group(keys, lambda k: _resolve_si_slug(k, ctx))
+    # Registered one at a time, so a later key whose DOI an earlier key of the
+    # group has (neither cited before) takes that key (:class:`walker.DoiAliases`).
+    def resolve(k: str) -> tuple[str, bool]:
+        key, si = _resolve_si_slug(k, ctx)
+        walker.register(ctx.cited, key)
+        return key, si
+
+    pairs = walker.key_group(keys, resolve)
     if len(pairs) == 1:
         return _cite(pairs[0][0], ctx, si=pairs[0][1])
     return _cite_mark(walker.register_group(pairs, ctx.cited, ctx.si_cited), ctx)
@@ -1891,7 +1971,7 @@ def _source_footnote(slug: str, kind: str, excerpt: str, ctx: _Ctx) -> str:
     entry — so the footnote's ``[N]`` always matches the end bibliography,
     which the preamble numbers in citation order) + the referenced chunk
     excerpt when the ref addresses a specific chunk."""
-    base = slug.split("~", 1)[0]
+    base = ctx.doi_aliases.canonical(slug.split("~", 1)[0])
     walker.register(ctx.cited, base)
     ref = ctx.store.get_ref(kind=kind, id=base) if ctx.store is not None else None
     if kind == "patent":
@@ -2338,7 +2418,7 @@ def _hub_paper_cite_key(paper_ref_id: int, ctx: _Ctx) -> str | None:
         return None
     if not aliases:
         return None
-    key = str(aliases[0])
+    key = ctx.doi_aliases.canonical(str(aliases[0]))
     walker.register(ctx.cited, key)
     return key
 
@@ -2348,9 +2428,13 @@ def _hub_paper_cite_key(paper_ref_id: int, ctx: _Ctx) -> str | None:
 #: biblatex prints a single ``[1, 2]`` bracket rather than ``[1][2]``. The
 #: adjacency comes from folding a multi-key ``\\cite{a,b}`` through the
 #: one-key-per-bracket grammar; cites the author spaced apart keep their
-#: separator and are left alone. ``\\cite[SI]{…}`` never matches.
+#: separator and are left alone. An SI mark joins the run as
+#: ``\\cites{a}[SI]{b}``.
 #: The grouping itself is :func:`walker.merge_adjacent`.
-_CITE_MARKER = re.compile(r"\x01<(\d+)>\x01")
+_CITE_MARKER = re.compile(r"\x01<(\d+)>\x01(?:\x06(\d+)\x06)?")
+#: Leads the trust-mark text that follows a cite mark (see
+#: :func:`_render_finding_cite`).
+_TRUST_SENTINEL = "\x05"
 
 
 def _merge_adjacent_cites(s: str, ctx: _Ctx) -> str:
@@ -2361,17 +2445,40 @@ def _merge_adjacent_cites(s: str, ctx: _Ctx) -> str:
     last = 0
     for m in _CITE_MARKER.finditer(s):
         group = ctx._cite_marks[int(m.group(1))]
+        if m.group(2) is not None:  # the text around this occurrence
+            before, after = ctx._cite_contexts[int(m.group(2))]
+            group = replace(group, before=before, after=after)
         items += [s[last : m.start() - len(_cite_tex(group))], group]
         last = m.end()
     items.append(s[last:])
+    merged = walker.merge_adjacent(items)
     out: list[str] = []
     renderer = LatexRenderer(ctx)
-    for item in walker.merge_adjacent(items):
+    marks = walker.RepeatMarks(enabled=not ctx.repeat_cites)
+    dropped = False  # the last mark was not printed: close the prose up
+    prose = False  # out[-1] is prose, not a mark
+    for i, item in enumerate(merged):
         if isinstance(item, str):
-            out.append(item)
-        else:
+            text = item.removeprefix(_TRUST_SENTINEL)
+            if dropped and prose:
+                out[-1], text = walker.close_up_dropped(out[-1], text)
+            dropped = False
+            if prose:  # prose either side of a dropped mark is one string
+                out[-1] += text
+            else:
+                out.append(text)
+            prose = True
+            continue
+        nxt = merged[i + 1] if i + 1 < len(merged) else ""
+        trusted = isinstance(nxt, str) and nxt.startswith(_TRUST_SENTINEL)
+        if marks.admit(item, trusted=trusted):
             renderer.cite_group(out, item)
-    return "".join(out)
+            dropped, prose = False, False
+        else:
+            dropped = True
+    if dropped and prose:
+        out[-1], _ = walker.close_up_dropped(out[-1], "")
+    return "".join(out).replace(_TRUST_SENTINEL, "")
 
 
 def _verbatim_spans(text: str) -> list[tuple[int, int]]:
@@ -2439,6 +2546,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
             out[dropped_at] = walker.trim_before_dropped(out[dropped_at])
         dropped_at = None
         out.append(_render_gap(gap, ctx, preceding=plain))
+        context = walker.mark_context(plain + gap, text[m.end() :])
         plain += gap + (m.group("disp") or m.group(0))
         ctx.dropped_cite = False
         ref = _render_reference(m, ctx)
@@ -2449,6 +2557,12 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
         # → one paper) collapse to one cite + one link run.
         if not repeat.admit(ref, gap=gap, is_cite=ref.startswith("\\cite")):
             ref = ""
+        if "\x01<" in ref:
+            # Tag each mark's sentinel with the text around this occurrence
+            # (a sentinel is shared by equal marks): the repeat rule reads it.
+            ctx._cite_contexts.append(context)
+            tag = f"\x06{len(ctx._cite_contexts) - 1}\x06"
+            ref = _CITE_MARKER.sub(r"\g<0>" + tag, ref)
         out.append(ref)
         last = m.end()
     tail = text[last:]
@@ -2603,11 +2717,12 @@ def render_body(
     library_links: bool = True,
     withheld_figures: frozenset[str] = frozenset(),
     audience: str = "dev",
+    repeat_cites: bool = False,
 ) -> RenderResult:
     """Render the whole draft body to LaTeX (no preamble/title chrome).
 
     ``doc_type='patent'`` renders prior-art references in-text (no
-    ``\\cite`` / no bibliography) — see ``docs/backlog/patent-authoring-loop.md``.
+    ``\\cite`` / no bibliography) — see `me690333`.
 
     ``footnote_refs=True`` (reMarkable send-to-tablet mode) turns every source
     citation into a self-contained numbered ``\\footnote`` — human cite +
@@ -2618,7 +2733,11 @@ def render_body(
     ``doi_links=False`` / ``library_links=False`` independently turn off the
     external links normal mode otherwise puts on each ``[n]`` (the link
     itself rides on the bib entry, :func:`build_bib`) — no effect in
-    patent/footnote mode, which never emit ``\\cite`` at all."""
+    patent/footnote mode, which never emit ``\\cite`` at all.
+
+    ``repeat_cites=True`` prints every cite mark; by default a mark naming
+    the same references as the previous one in its paragraph (list item,
+    caption, table cell) is dropped (:class:`walker.RepeatMarks`)."""
     from precis.export._ref_cache import RefLookupMemo
     from precis.export.audience import for_export, guard_audience
 
@@ -2663,12 +2782,20 @@ def render_body(
         library_label=cfg.library_label,
         library_search_url=cfg.library_search_url,
         withheld_figures=withheld_figures,
+        repeat_cites=repeat_cites,
         paragraph_handles=walker.named_headings(chunks, depth_of, back_matter),
+        xref_pass=walker.number_xrefs(
+            chunks, getattr(ref, "title", None), equation_of=_standalone_equation
+        ),
     )
+    # Export-level advisories (gr592892: unset PRECIS_WEB_BASE_URL →
+    # every dev record-handle link is path-only).
+    ctx.warnings.extend(ctx.audience.warnings)
     title_tex = _render_document_title(ref, ctx)
     lines = _render_chunk_lines(
         chunks, ctx, depth_of=depth_of, title_dc=title_dc, back_matter=back_matter
     )
+    ctx.warnings.extend(ctx.doi_aliases.same_work_warnings())
     return RenderResult(
         body="\n".join(lines).strip() + "\n",
         supplement=ctx.audience.entries,
@@ -2733,6 +2860,7 @@ def _render_chunk_lines(
         back_matter=back_matter,
         equation_of=_standalone_equation,
         on_chunk=flush_notes,
+        cursor=ctx.cursor,
     )
     lines.extend(_flush_supplement_notes(ctx))
     return lines
@@ -3127,8 +3255,8 @@ def build_bib(
             # source dict) so both renderers agree on the venue string.
             meta = pref.meta or {}
             journal = str(
-                meta.get("venue")
-                or meta.get("journal")
+                meta.get("journal")
+                or meta.get("venue")
                 or meta.get("container_title")
                 or ""
             ).strip()
@@ -3652,6 +3780,7 @@ def _export_poster(
     withheld_figures: frozenset[str],
     record_override: bool = False,
     audience: str = "dev",
+    repeat_cites: bool = False,
 ) -> ExportResult:
     """Render a ``doc_type='poster'`` draft into a compilable A0 project:
     the packaged ``poster.tex`` with the resolved branding profile
@@ -3704,8 +3833,10 @@ def _export_poster(
         library_label=cfg.library_label,
         library_search_url=cfg.library_search_url,
         withheld_figures=withheld_figures,
+        repeat_cites=repeat_cites,
         poster=True,
     )
+    ctx.warnings.extend(ctx.audience.warnings)
 
     document_title = _render_document_title(ref, ctx, thanks=False)
     sections = _poster_sections(chunks, depth_of, title_dc)
@@ -3881,6 +4012,8 @@ def export_draft(
     doc_type: str | None = None,
     remarkable: bool = False,
     retraction_override: list[Any] | None = None,
+    retraction_check: str = "none",
+    retraction_report: Any = None,
     doi_links: bool = True,
     library_links: bool = True,
     bib_style: str | None = None,
@@ -3888,6 +4021,7 @@ def export_draft(
     claim_appendix: bool = True,
     record_override: bool = False,
     audience: str = "dev",
+    repeat_cites: bool = False,
 ) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
@@ -3906,7 +4040,9 @@ def export_draft(
     ``doi_links=False`` / ``library_links=False`` independently turn off the
     external links on each ``[n]`` and the library link in the bibliography
     entry (:func:`build_bib`) — default both on. ``claim_appendix=False`` omits the "Published claim artifacts"
-    appendix.
+    appendix. ``repeat_cites=True`` prints
+    every cite mark (default: a mark equal to the previous one in its
+    paragraph is dropped).
 
     ``bib_style`` picks the biblatex bibliography style (see
     :data:`_BIB_STYLES`): the explicit argument wins, else the draft's own
@@ -3961,6 +4097,7 @@ def export_draft(
             withheld_figures=withheld_figures,
             record_override=record_override,
             audience=audience,
+            repeat_cites=repeat_cites,
         )
     patent_mode = doc_type == _PATENT_DOC_TYPE
     if not (bib_style or "").strip():
@@ -3980,6 +4117,7 @@ def export_draft(
         library_links=library_links,
         withheld_figures=withheld_figures,
         audience=audience,
+        repeat_cites=repeat_cites,
     )
     if style_warning and not patent_mode:
         rendered.warnings.append(style_warning)
@@ -4028,7 +4166,23 @@ def export_draft(
             source_bundle, rendered.warnings, retraction_override=retraction_override
         )
 
+    from precis.export.retraction import (
+        draft_retraction_report,
+        retraction_coverage_entries,
+    )
+
+    coverage = retraction_coverage_entries(
+        retraction_report
+        if retraction_report is not None
+        else draft_retraction_report(mstore, ref, cited_slugs=rendered.cited_slugs),
+        retraction_check,
+    )
     unverified_tex = build_unverified_claims_section(rendered.trust)
+    if coverage:
+        unverified_tex += "\n\\section*{Retraction coverage}\n"
+        for text, red in coverage:
+            line = _tex(text)
+            unverified_tex += ("\\textcolor{red}{" + line + "}" if red else line) + "\n"
     published_tex = (
         build_published_claims_section(mstore, rendered.trust, rendered.claim_cites)
         if claim_appendix

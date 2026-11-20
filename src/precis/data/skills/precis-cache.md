@@ -25,9 +25,12 @@ hits the cache and skips the upstream cost.
 
 | kind        | TTL     | provider               | cost/call    |
 |-------------|---------|------------------------|--------------|
-| `math`      | pinned  | Wolfram Alpha          | free tier    |
+| `math`      | pinned  | Wolfram Alpha          | ~$0.002      |
 | `web`       | 7 days  | direct fetch           | free         |
+| `wikipedia` | 7 days  | Wikipedia              | free         |
 | `youtube`   | 30 days | youtube-transcript-api | free         |
+| `chem`      | 30 days | PubChem                | free         |
+| `news`      | pinned  | direct fetch           | free         |
 | `websearch` | 7 days  | Perplexity Sonar       | ~$0.001      |
 | `perplexity-reasoning` | pinned  | Sonar Reasoning Pro | ~$0.005   |
 | `perplexity-research`  | pinned  | Sonar Deep Research | ~$0.50    |

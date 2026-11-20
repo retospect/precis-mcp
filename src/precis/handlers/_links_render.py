@@ -25,17 +25,20 @@ cite") must never ride ``cites``; it belongs on ``related-to`` +
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from precis import profiles
-from precis._result_budget import row_size_cell
+from precis._result_budget import body_bytes, row_size_cell
+from precis.errors import BadInput, ResultBudgetExceeded
 from precis.handlers._capped_section import DEFAULT_CHILD_ROW_CAP, render_capped_section
 from precis.response import Response
 from precis.utils import handle_registry
-from precis.utils.link_tag_ops import link_reason_suffix
+from precis.utils.link_tag_ops import link_why_suffix
 from precis.utils.surface_scope import masked_ref_placeholder
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from precis.store import Link, Ref, Store
 
 
@@ -54,19 +57,26 @@ _INVERSE_REL: dict[str, str] = {
 }
 
 
-# Change B: rel-priority order for ``priority=True`` — evidential
-# relations (citation/support/contradiction/correction/retraction
-# chains) surface before the catch-all ``related-to``, which always
-# sorts last regardless of this list. Any relation not listed here
+# Change B: rel-priority order for ``priority=True`` — the claim-graph
+# relations first (gr627629: ``establishes``/``corroborates``/``disputes``/
+# ``contradicts``/``refines`` are the edges a paper's link rollup exists
+# to surface, and inbound-citation floods were burying them inside the
+# capped bare-get preview), then citation/support/contradiction/
+# correction/retraction chains, then the catch-all ``related-to``, which
+# always sorts last regardless of this list. Any relation not listed here
 # (a plugin relation, say) sorts after every listed one but still
 # ahead of ``related-to``.
 _REL_PRIORITY: list[str] = [
+    "establishes",
+    "corroborates",
+    "disputes",
+    "contradicts",
+    "contradicted-by",
+    "refines",
     "cites",
     "cited-by",
     "supports",
     "supported-by",
-    "contradicts",
-    "contradicted-by",
     "refutes",
     "refuted-by",
     "corrects",
@@ -116,7 +126,13 @@ def render_links_section(
 ) -> str:
     """F8: render the Links: TOON sub-section for a single-ref get.
 
-    Three columns: ``{related to	keywords	how to get}``. Column 1
+    Reciprocal edges to the same endpoint fold into one row, with distinct
+    relation markers joined by `` / ``. Chunk scope and edge reasons remain
+    distinct so folding never loses grounding. Caps count folded rows.
+    The ``how to get`` column is omitted when all rows address whole refs.
+
+    Columns: ``{related to	keywords	how to get	size [kB]
+    (default 1kB)}``. Column 1
     holds ``<rel-marker> <target>`` — ``--`` for default ``related-to``
     (no semantic relation specified), the literal rel name otherwise.
     Inbound rows use the passive form via :data:`_INVERSE_REL`
@@ -156,14 +172,95 @@ def render_links_section(
             ``NumericRefHandler._render_links_view`` already exposes as
             ``args={'of_kind': …}`` (gr472990).
 
-    Both kwargs default to a no-op so every existing callsite (the
-    numeric-ref per-``get()`` append, ``render_links_view``) renders
-    byte-identical output to before this signature grew.
+    Filters default to a no-op. Default ordering follows the earliest
+    edge in each folded row; priority ordering follows its strongest edge.
     """
+    prepared = _select_link_pairs(store, ref, rel=rel, of_kind=of_kind)
+    if prepared is None:
+        return ""
+    combined, endpoints, ref_sizes, chunk_sizes = prepared
+
+    # Fold before capping: reciprocal storage must not consume the preview.
+    ordered = sorted(
+        combined, key=_priority_sort_key if priority else lambda pair: pair[0].id
+    )
+    folded: dict[tuple[int, str, str], tuple[dict[str, str], list[str], bool]] = {}
+    for lnk, direction in ordered:
+        row = _link_row(
+            lnk,
+            direction,
+            ref=ref,
+            endpoints=endpoints,
+            ref_sizes=ref_sizes,
+            chunk_sizes=chunk_sizes,
+        )
+        outbound = direction == "out"
+        other_id = lnk.dst_ref_id if outbound else lnk.src_ref_id
+        marker = (
+            _format_outbound_rel(lnk.relation)
+            if outbound
+            else _format_inbound_rel(lnk.relation)
+        )
+        target = row["related to"][len(marker) :].lstrip()
+        key = (other_id, target, row["how to get"])
+        needs_call = bool(row["how to get"]) and (
+            endpoints.get(other_id) is None
+            or (lnk.dst_chunk_id if outbound else lnk.src_chunk_id) is not None
+            or (lnk.dst_ord if outbound else lnk.src_ord) is not None
+        )
+        if key not in folded:
+            folded[key] = (row, [], needs_call)
+        markers = folded[key][1]
+        if marker not in markers:
+            markers.append(marker)
+        folded[key][0]["related to"] = f"{' / '.join(markers)} {target}".strip()
+
+    def render(
+        selected: list[tuple[dict[str, str], list[str], bool]], total: int
+    ) -> str:
+        rows = [row for row, _markers, _needs_call in selected]
+        schema = ["related to", "keywords", "size [kB] (default 1kB)"]
+        if any(needs_call for _row, _markers, needs_call in selected):
+            schema.insert(2, "how to get")
+        truncated = len(selected) < total
+
+        from precis.format import render_agent_table
+
+        header = f"Links ({limit} of {total}):" if truncated else "Links:"
+        return f"\n\n{header}\n" + render_agent_table(rows, schema=schema)
+
+    handle = handle_registry.try_format(ref.kind, ref.id) or (
+        ref.slug if ref.slug is not None else ref.id
+    )
+    return render_capped_section(
+        list(folded.values()),
+        limit=limit,
+        key=lambda _row: 0,
+        render=render,
+        overflow=lambda n: (
+            f"\n+{n} more · get(kind={ref.kind!r}, id={handle!r}, view='links')"
+        ),
+    )
+
+
+def _select_link_pairs(
+    store: Store,
+    ref: Ref,
+    *,
+    rel: str | None = None,
+    of_kind: str | None = None,
+) -> (
+    tuple[list[tuple[Link, str]], dict[int, Ref], dict[int, int], dict[int, int]] | None
+):
+    """The ref's ``(link, 'out'|'in')`` pairs after profile/rel/kind
+    filters, plus the render context (endpoint refs, ref body sizes,
+    chunk text sizes) — or ``None`` when no row renders. Shared by
+    :func:`render_links_section` and :func:`render_links_view` so the
+    inline section and the standalone view draw one row set."""
     out_links = store.links_for(ref.id, direction="out")
     in_links = store.links_for(ref.id, direction="in")
     if not out_links and not in_links:
-        return ""
+        return None
 
     endpoint_ids: set[int] = set()
     for link in out_links:
@@ -177,7 +274,7 @@ def render_links_section(
         out_links = [lk for lk in out_links if lk.dst_ref_id not in hidden]
         in_links = [lk for lk in in_links if lk.src_ref_id not in hidden]
         if not out_links and not in_links:
-            return ""
+            return None
 
     if rel is not None:
         out_links = [lk for lk in out_links if lk.relation == rel]
@@ -194,7 +291,7 @@ def render_links_section(
             if getattr(endpoints.get(lk.src_ref_id), "kind", None) == of_kind
         ]
     if not out_links and not in_links:
-        return ""
+        return None
 
     combined = [(lnk, "out") for lnk in out_links] + [(lnk, "in") for lnk in in_links]
 
@@ -217,85 +314,96 @@ def render_links_section(
                 (list(chunk_ids),),
             ).fetchall():
                 chunk_sizes[int(cid)] = int(nbytes)
+    return combined, endpoints, ref_sizes, chunk_sizes
 
-    def render(selected: list[tuple[Link, str]], total: int) -> str:
-        rows: list[dict[str, str]] = []
-        truncated = len(selected) < total
-        for link, direction in selected:
-            if direction == "out":
-                other_id, other_pos = link.dst_ref_id, link.dst_ord
-                other_chunk_id = link.dst_chunk_id
-                rel_marker = _format_outbound_rel(link.relation)
-            else:
-                other_id, other_pos = link.src_ref_id, link.src_ord
-                other_chunk_id = link.src_chunk_id
-                rel_marker = _format_inbound_rel(link.relation)
-            # gr555998 round 3: an endpoint this surface may not read —
-            # an out-of-scope conv or a ref of a gated kind — collapses
-            # to the same opaque placeholder the eye rings print; the
-            # row still shows the edge exists but carries no handle,
-            # title, size or get-call.
-            placeholder = masked_ref_placeholder(endpoints.get(other_id))
-            if placeholder is not None:
-                rows.append(
-                    {
-                        "related to": f"{rel_marker} {placeholder}".strip(),
-                        "keywords": "",
-                        "how to get": "",
-                        "size": "",
-                    }
-                )
-                continue
-            target = _format_target_handle(
-                other_id, other_pos, other_chunk_id, endpoints
-            )
-            teaser = _teaser_for(endpoints.get(other_id))
-            get_call = _get_call_for(
-                endpoints.get(other_id),
-                other_id,
-                pos=other_pos,
-                chunk_id=other_chunk_id,
-            )
-            n_bytes = (
-                chunk_sizes.get(other_chunk_id, 0)
-                if other_chunk_id is not None
-                else ref_sizes.get(other_id, 0)
-            )
-            rows.append(
-                {
-                    "related to": (
-                        f"{rel_marker} {target}"
-                        f"{link_reason_suffix((link.meta or {}).get('reason'))}"
-                    ).strip(),
-                    "keywords": teaser,
-                    "how to get": get_call,
-                    # Every row names a size — sub-kB bodies report raw
-                    # bytes, so a small memory doesn't render sizeless
-                    # next to a sized gripe (gr568219).
-                    "size": row_size_cell(n_bytes),
-                }
-            )
 
-        from precis.format import render_agent_table
+def _link_row(
+    link: Link,
+    direction: str,
+    *,
+    ref: Ref,
+    endpoints: dict[int, Ref],
+    ref_sizes: dict[int, int],
+    chunk_sizes: dict[int, int],
+) -> dict[str, str]:
+    """One ``{related to, keywords, how to get, size [kB] (default 1kB)}``
+    table row.
 
-        header = f"Links ({limit} of {total}):" if truncated else "Links:"
-        out = f"\n\n{header}\n" + render_agent_table(
-            rows, schema=["related to", "keywords", "how to get", "size"]
-        )
-        return out
-
-    handle = handle_registry.try_format(ref.kind, ref.id) or (
-        ref.slug if ref.slug is not None else ref.id
+    The ``related to`` cell names the far endpoint, then ``via`` the
+    focus's own chunk when the edge pins one (gr627629 — a chunk-grounded
+    edge used to prove *where on the neighbour* it lands while hiding
+    *which of this ref's passages* carries the claim), then the edge's
+    why."""
+    if direction == "out":
+        other_id, other_pos = link.dst_ref_id, link.dst_ord
+        other_chunk_id = link.dst_chunk_id
+        own_chunk_id, own_ord = link.src_chunk_id, link.src_ord
+        rel_marker = _format_outbound_rel(link.relation)
+    else:
+        other_id, other_pos = link.src_ref_id, link.src_ord
+        other_chunk_id = link.src_chunk_id
+        own_chunk_id, own_ord = link.dst_chunk_id, link.dst_ord
+        rel_marker = _format_inbound_rel(link.relation)
+    # gr555998 round 3: an endpoint this surface may not read —
+    # an out-of-scope conv or a ref of a gated kind — collapses
+    # to the same opaque placeholder the eye rings print; the
+    # row still shows the edge exists but carries no handle,
+    # title, size or get-call.
+    placeholder = masked_ref_placeholder(endpoints.get(other_id))
+    if placeholder is not None:
+        return {
+            "related to": f"{rel_marker} {placeholder}".strip(),
+            "keywords": "",
+            "how to get": "",
+            "size [kB] (default 1kB)": "",
+        }
+    target = _format_target_handle(other_id, other_pos, other_chunk_id, endpoints)
+    teaser = _teaser_for(endpoints.get(other_id))
+    get_call = _get_call_for(
+        endpoints.get(other_id),
+        other_id,
+        pos=other_pos,
+        chunk_id=other_chunk_id,
     )
-    return render_capped_section(
-        combined,
-        limit=limit,
-        key=_priority_sort_key if priority else lambda pair: pair[0].id,
-        render=render,
-        overflow=lambda n: (
-            f"\n+{n} more · get(kind={ref.kind!r}, id={handle!r}, view='links')"
-        ),
+    n_bytes = (
+        chunk_sizes.get(other_chunk_id, 0)
+        if other_chunk_id is not None
+        else ref_sizes.get(other_id, 0)
     )
+    return {
+        "related to": (
+            f"{rel_marker} {target}"
+            f"{_via_suffix(ref, own_chunk_id, own_ord)}"
+            f"{link_why_suffix(link.meta)}"
+        ).strip(),
+        "keywords": teaser,
+        "how to get": get_call,
+        # Every row names a size — sub-kB bodies report decimal
+        # kB (gr568219, gr573411); the column header names the
+        # unit and the hidden ~1kB default.
+        "size [kB] (default 1kB)": row_size_cell(n_bytes),
+    }
+
+
+def _via_suffix(ref: Ref, chunk_id: int | None, ord_: int | None) -> str:
+    """`` via pc<id> ~<ord>`` — the focus's own chunk handle + position a
+    chunk-pinned edge grounds at on *this* side. Empty for a ref-level
+    edge or a focus kind with no chunk code (memory chunks are not
+    agent-addressable)."""
+    if chunk_id is None:
+        return ""
+    handle = handle_registry.try_format(ref.kind, chunk_id, chunk=True)
+    if handle is None:
+        return ""
+    return f" via {handle} ~{ord_}" if ord_ is not None else f" via {handle}"
+
+
+#: Rows a ``view='links'`` page renders by default (gr627629): before the
+#: cap the unfiltered view grew until the response byte budget truncated
+#: mid-table, with no exact continuation; a row cap keeps the default
+#: call inside the budget and the footer's ``cursor`` resumes exactly
+#: where the page ended.
+_LINKS_VIEW_PAGE = 100
 
 
 def render_links_view(
@@ -305,11 +413,13 @@ def render_links_view(
     sense: str | None = None,
     rel: str | None = None,
     of_kind: str | None = None,
+    limit: Any = None,
+    cursor: str | None = None,
 ) -> Response:
     """``view='links'`` for a ``Handler``-direct kind (paper, draft, …).
 
-    Wraps :func:`render_links_section`'s compact table with a header so
-    it stands alone as a full ``Response`` — the shape every
+    Wraps the same compact table :func:`render_links_section` draws with
+    a header so it stands alone as a full ``Response`` — the shape every
     ``Handler``-direct kind's ``view='links'`` arm delegates to. Numeric-ref
     kinds don't need this: they get the section appended to every
     ``get()`` automatically (see ``NumericRefHandler.get``) plus their
@@ -317,7 +427,14 @@ def render_links_view(
 
     ``rel`` / ``of_kind`` narrow the view (a hot ref's unfiltered graph
     can run to hundreds of KB — gr514335); the header echoes the active
-    filter so a partial graph never reads as the whole graph.
+    filter so a partial graph never reads as the whole graph. Rows page
+    at ``limit`` (``args={'limit': N}``, default
+    :data:`_LINKS_VIEW_PAGE`); when a page leaves rows unshown the footer
+    carries ``next:`` with the exact ``args={'cursor':
+    '<bucket>:<link_id>'}`` continuation — outbound edges first, each
+    bucket in link-id order, so paging covers every row once (gr627629).
+    The footer reports ``shown S of T`` and ends ``complete`` on the last
+    page: a partial response never implies full coverage.
     """
     noun = sense or ref.kind
     filt = ""
@@ -327,8 +444,8 @@ def render_links_view(
         filt += f" kind={of_kind!r}"
     if filt:
         filt = f" ({filt.strip()})"
-    section = render_links_section(store, ref, rel=rel, of_kind=of_kind)
-    if not section:
+    prepared = _select_link_pairs(store, ref, rel=rel, of_kind=of_kind)
+    if prepared is None:
         if filt and (
             store.links_for(ref.id, direction="out")
             or store.links_for(ref.id, direction="in")
@@ -350,7 +467,163 @@ def render_links_view(
                 "target='kind:identifier', rel='related-to')"
             )
         )
-    return Response(body=f"# {noun} {ref.id} - links{filt}" + section)
+    combined, endpoints, ref_sizes, chunk_sizes = prepared
+    ordered = sorted(combined, key=lambda pair: (pair[1] != "out", pair[0].id))
+    total = len(ordered)
+    page_size = _links_page_size(limit, ref)
+    start = _links_page_start(ordered, cursor, ref)
+    page = ordered[start : start + page_size]
+    rows = [
+        _link_row(
+            lnk,
+            d,
+            ref=ref,
+            endpoints=endpoints,
+            ref_sizes=ref_sizes,
+            chunk_sizes=chunk_sizes,
+        )
+        for lnk, d in page
+    ]
+    from precis.format import render_agent_table
+
+    handle = handle_registry.try_format(ref.kind, ref.id) or (
+        ref.slug if ref.slug is not None else ref.id
+    )
+
+    def page_body(shown: int) -> str:
+        """The page body carrying exactly ``shown`` table rows (``1`` to
+        ``len(page)``) — the indivisible unit ``budget_fit`` cuts on. The
+        header, ``shown`` count and ``next:`` cursor are recomputed for
+        the cut so a byte-fitted page still resumes exactly where its
+        last rendered row ended."""
+        end = start + shown
+        table_head = (
+            "Links:" if start == 0 and end == total else f"Links ({shown} of {total}):"
+        )
+        out = f"# {noun} {ref.id} - links{filt}\n\n{table_head}\n"
+        out += render_agent_table(
+            rows[:shown],
+            schema=["related to", "keywords", "how to get", "size [kB] (default 1kB)"],
+        )
+        if end < total:
+            next_args: dict[str, Any] = {
+                "cursor": f"{page[shown - 1][1]}:{page[shown - 1][0].id}"
+            }
+            if limit is not None:
+                next_args["limit"] = page_size
+            if rel is not None:
+                next_args["rel"] = rel
+            if of_kind is not None:
+                next_args["of_kind"] = of_kind
+            out += (
+                f"\nshown {end} of {total} — next: "
+                f"get(kind={ref.kind!r}, id={handle!r}, view='links', "
+                f"args={next_args!r})"
+            )
+        else:
+            out += f"\nshown {end} of {total} — complete"
+        return out
+
+    body = page_body(len(page))
+    return Response(
+        body=body,
+        result_count=len(page),
+        budget_fit=_links_view_fit(
+            page_body, full_body=body, page_rows=len(page), ref=ref, handle=handle
+        ),
+    )
+
+
+def _links_view_fit(
+    render_page: Callable[[int], str],
+    *,
+    full_body: str,
+    page_rows: int,
+    ref: Ref,
+    handle: str | int,
+) -> Callable[[int], str]:
+    """The ``budget_fit`` for an over-cap ``view='links'`` page.
+
+    The row cap keeps a default page under ``PRECIS_MAX_BODY_BYTES`` in
+    the common case, but a page of wide rows (CJK titles and reasons
+    count 3 bytes a character) can still overrun it — and the generic
+    line-fit used to cut the footer, dropping the ``next:`` cursor and
+    restoring the search hint (review td681248). Instead the page cuts
+    at a whole-row boundary, keeps its ``shown S of T — next:`` tail,
+    and the cursor points at the last row that survived the cut, so
+    following it still covers every link once."""
+    total = body_bytes(full_body)
+
+    def fit(cap: int) -> str:
+        if total <= cap:
+            return full_body
+        lo, hi = 0, page_rows
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if body_bytes(render_page(mid)) <= cap:
+                lo = mid
+            else:
+                hi = mid - 1
+        if lo == 0:
+            raise ResultBudgetExceeded(
+                f"get: links page is {total} bytes and even one link row "
+                f"does not fit under the {cap}-byte result budget",
+                next=(
+                    f"get(kind={ref.kind!r}, id={handle!r}, view='links', "
+                    "args={'limit': 1})"
+                ),
+            )
+        return render_page(lo)
+
+    return fit
+
+
+def _links_page_size(limit: Any, ref: Ref) -> int:
+    """``args={'limit': N}`` for ``view='links'`` — a non-integer or
+    non-positive value is a caller error, never a silent full dump (the
+    dump is what overflowed the byte cap, gr627629)."""
+    if limit is None:
+        return _LINKS_VIEW_PAGE
+    try:
+        n = int(str(limit))
+    except (TypeError, ValueError):
+        n = 0
+    if n < 1:
+        raise BadInput(
+            f"links view limit must be a positive integer, got {limit!r}",
+            next=f"get(kind={ref.kind!r}, id={ref.id}, view='links')",
+        )
+    return n
+
+
+def _links_page_start(
+    ordered: list[tuple[Link, str]], cursor: str | None, ref: Ref
+) -> int:
+    """First row index strictly past the ``<bucket>:<link_id>`` cursor —
+    resuming *after* the named row keeps the union of pages equal to the
+    whole set with no repeats. A cursor whose edge was deleted or
+    filtered out since still resumes at its sorted position rather than
+    rewinding to page one."""
+    if cursor is None:
+        return 0
+    bucket, sep, raw = str(cursor).partition(":")
+    link_id: int | None = None
+    if sep and bucket in ("out", "in"):
+        try:
+            link_id = int(raw.strip())
+        except ValueError:
+            link_id = None
+    if link_id is None:
+        raise BadInput(
+            "links cursor must be '<bucket>:<link_id>' with bucket 'out' "
+            f"or 'in', got {cursor!r}",
+            next=f"get(kind={ref.kind!r}, id={ref.id}, view='links')",
+        )
+    mark = (bucket != "out", link_id)
+    for i, (lnk, d) in enumerate(ordered):
+        if (d != "out", lnk.id) > mark:
+            return i
+    return len(ordered)
 
 
 def _format_outbound_rel(relation: str) -> str:

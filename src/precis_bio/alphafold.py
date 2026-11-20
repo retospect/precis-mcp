@@ -5,8 +5,8 @@ builder, and the output parser — so the container's *shape* is validated
 without a GPU or the image (the live run is exercised through the
 ``RUNNER``/``STAGER`` hooks in ``jobs.py``, the ``struct_relax`` pattern).
 
-Grounded on the **real working install on spark** (memory:
-alphafold-spark-facts): AlphaFold3 v3.0.1, image ``alphafold3:ready`` (ARM64,
+Grounded on the **real working install on the GPU node** (repo-dev memory
+holds the install facts): AlphaFold3 v3.0.1, image ``alphafold3:ready`` (ARM64,
 NVIDIA GB10). De-novo / single-sequence mode (``--norun_data_pipeline``, empty
 MSA/templates) — no 300 GB databases, ~10 min/157aa. JSON-in / mmCIF-out.
 
@@ -93,12 +93,12 @@ def build_fold_argv(
     name. ``--gpus all`` (the GB10), the input JSON + models mounted read-only,
     the output tree writable, and (when given) a persistent XLA cache to skip
     the ~5-10 min recompile. The command line mirrors ``run_alphafold3.sh`` on
-    spark verbatim; ``models_dir`` is required (the weights are mounted, never
+    the GPU node verbatim; ``models_dir`` is required (the weights are mounted, never
     baked — chemistry tool-packs).
 
     ``mem_limit`` (a docker size string like ``"100g"``, from
     ``PRECIS_FOLD_MEM_LIMIT``) caps the container's memory so an AF3 XLA-compile
-    spike can't exhaust the node — the GB10 is a DGX Spark with **unified**
+    spike can't exhaust the node — the GB10 has **unified**
     CPU+GPU LPDDR5X, so an uncapped fold can starve the resident worker. It
     feeds ``container_limit_flags(job_limit=…)``, which emits ONE
     ``--memory`` + equal ``--memory-swap`` pair at the minimum of this knob

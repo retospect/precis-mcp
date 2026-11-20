@@ -38,6 +38,6 @@ def test_corpus_roots_from_env_pathsep_and_default() -> None:
 
 
 def test_host_name_env_override() -> None:
-    assert host_name({"PRECIS_HOST_NAME": "melchior"}) == "melchior"
+    assert host_name({"PRECIS_HOST_NAME": "maple"}) == "maple"
     # falls back to the real hostname (non-empty) when unset
     assert host_name({}) != ""

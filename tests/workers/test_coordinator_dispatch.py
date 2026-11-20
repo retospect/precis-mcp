@@ -631,7 +631,7 @@ class TestLeaseKeepalive:
 #
 # One pass may not hold the rotation for as long as its longest slice
 # runs — a >70 min survey_extract starved every other ref-pass on
-# melchior's catch-all. The pass stamps its deadline on each claimed
+# maple's catch-all. The pass stamps its deadline on each claimed
 # job's ctx.pass_deadline and stops claiming once the budget is spent.
 
 

@@ -19,6 +19,8 @@ all:
     # Tailscale — SSH, services, inter-node comms.
     tailscale_subnet: "100.64.0.0/10"  # secret-gate: allow — universal Tailscale CGNAT range, not host-specific
     tailscale_tailnet: "your-tailnet"
+    # MagicDNS suffix of the tailnet: roles build https names from it.
+    tailscale_dns_suffix: "your-tailnet.ts.net"
     nfs_server: node-data
     nfs_export_path: "/opt/nfs"
     # Uniform role-named mount namespace under /mnt (ADR: cluster-mount-
@@ -106,6 +108,12 @@ all:
           # launch on the shared token and a service account sees 401
           # (gr571617). Write the real path in the gitignored overlay.
           # precis_mcp_slice_token_dir: /Users/<operator>/.cache/precis-mcp-http/slice-tokens
+          # A second repo the factory builds (playbooks 20b/20g): repo name
+          # -> absolute path of its clone on this host, rendered as the JSON
+          # env PRECIS_SLICE_REPOS. No default; unset, the repo cannot build
+          # here. Clone it first, https origin, no credentials in the URL.
+          # precis_slice_repos:
+          #   <repo>: /Users/deploy/<repo>-slice-repo
         node-worker:
           ansible_host: 203.0.113.11
           lan_ip: 192.0.2.11
@@ -125,6 +133,14 @@ all:
           ansible_host: 203.0.113.20
           lan_ip: 192.0.2.20
           node_role: compute
+          # scripts/host-ops/os-update (rolling OS + firmware update): the
+          # systemd units it checks after the reboot (comma-separated; a list
+          # containing `sglang` (or `vllm`) gets the LLM health wait) and the peer node
+          # that runs the precis reserve CLI while this host reboots. Both are
+          # required to os-update this host; no default. The peer must be a
+          # second Linux node running precis-worker (this example has none).
+          os_update_units: "docker,precis-worker"
+          os_update_peer: node-worker
       vars:
         os_family: linux
 
@@ -138,12 +154,12 @@ all:
     #     node-serve-a:
     #     node-serve-b:
 
-    # GB10 lane layout (host-lanes): an LLM host is in vllm_serving (or
-    # sglang_serving) and never in compute; science hosts are in compute
+    # GB10 lane layout (host-lanes): an LLM host is in sglang_serving (or
+    # the retired vllm_serving) and never in compute; science hosts are in compute
     # (20c gives them the heartbeat worker + venv, 43 the job_ssh_node lane).
     # roles/hardening sums each host's lane caps + LLM share + OS reserve and
     # fails the play past host_memory_total (tests/test_deploy_memory_budget.py).
-    # vllm_serving:
+    # sglang_serving:
     #   hosts:
     #     node-serve-a:
     # compute:

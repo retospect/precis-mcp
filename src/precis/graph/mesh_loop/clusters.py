@@ -1,7 +1,7 @@
 """Cluster selector for the kg-mesh loop — ``precis mesh loop clusters``.
 
 SQL only, no LLM calls, no writes. The cluster definition and ranking
-are the spec's (``docs/backlog/kg-mesh-loop.md`` §Design, "Cluster
+are the spec's (`me690203` §Design, "Cluster
 selection"): a quest's hub set, a ≥8-hub / <1-stance-edge-per-hub
 qualifier, ordered ``prio`` → stance density → most recent paper.
 

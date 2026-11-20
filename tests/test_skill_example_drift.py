@@ -111,7 +111,8 @@ _CONSUMED: dict[str, frozenset[str]] = {
 #: ``search``'s dispatcher-level params — read and popped by the
 #: pre-handler passes (``_resolve_under``, ``_hoist_source_facet_args``,
 #: ``_hoist_spray_args``, ``_resolve_canon``, the folder/``sort=``/
-#: ``since=``/``until=`` source-search routes and the memory batch),
+#: ``since=``/``until=`` source-search routes, the promoted
+#: ``queries``/``answers``/``batch`` knobs and the memory batch),
 #: legal at the top level or inside ``args=`` on any kind.
 _SEARCH_DISPATCH_KEYS = frozenset(
     {
@@ -121,6 +122,7 @@ _SEARCH_DISPATCH_KEYS = frozenset(
         "uncited",
         "cited",
         "hubbed",
+        "novel_for",
         "canon",
         "angle",
         "like",
@@ -130,17 +132,17 @@ _SEARCH_DISPATCH_KEYS = frozenset(
         "since",
         "until",
         "folder",
+        "queries",
+        "answers",
+        "batch",
     }
 )
 
 #: args= keys the dispatcher pops or aliases before the extras gate:
 #: ``parent``/``title`` are near-miss spellings folded onto real kwargs,
 #: ``retired`` spells view='retired' on get, ``ring`` rides the eye
-#: extras, ``context`` the find-in-ref extras, ``trust``/``writer`` are
-#: the write-side provenance payloads, and ``batch`` is the memory
-#: search batch (``dispatch_memory_batch`` — kind='memory' only, kept in
-#: the shared set here: a batch on another kind refuses inside the
-#: batch dispatcher before the extras gate would see it anyway).
+#: extras, ``context`` the find-in-ref extras, and ``trust``/``writer``
+#: are the write-side provenance payloads.
 _ARGS_ALIASES = frozenset(
     {
         "parent",
@@ -150,7 +152,6 @@ _ARGS_ALIASES = frozenset(
         "context",
         "trust",
         "writer",
-        "batch",
     }
 )
 
@@ -545,6 +546,50 @@ def test_skill_examples_survive_the_verb_gates(full_hub: Hub) -> None:
         f"({len(findings)} finding(s); mark deliberate counter-examples "
         "`# rejected`):\n" + "\n".join(findings)
     )
+
+
+# ── banned example shapes (gr676973) ────────────────────────────────
+#
+# The gate emulation above catches args a live dispatch refuses today;
+# it cannot catch a *reverted skill*: a future edit that teaches a call
+# shape the handlers refuse again. This registry is the pin for the
+# gr676973 fix — each entry is a substring that must never reappear in
+# the named skill. ``precis-edit-help`` scoped ``mode='delete'`` to
+# memory/todo (file kinds refuse it — their working form is
+# ``mode='find-replace', find=…, text=''``) and ``precis-delete-help``
+# demoted the paper delete from ``Unsupported`` to ``BadInput`` with a
+# retire path; either shape creeping back in fails here.
+
+#: ``(skill file → banned substrings)`` — the old, refused call shapes
+#: gr676973 removed, pinned against regression.
+_BANNED_SKILL_STRINGS: dict[str, tuple[str, ...]] = {
+    "precis-edit-help.md": (
+        "edit(kind='markdown', mode='delete'",
+        'edit(kind="markdown", mode="delete"',
+    ),
+    "precis-delete-help.md": (
+        'delete(kind="paper", id="<slug>")  # raises Unsupported',
+    ),
+}
+
+
+def test_skill_examples_banned_call_shapes() -> None:
+    """The call shapes gr676973 removed from the edit/delete skills must
+    not reappear: a file kind's ``edit`` has no ``mode='delete'``, and a
+    paper delete is ``BadInput`` (with its retire path), never
+    ``Unsupported``."""
+    findings: list[str] = []
+    for path in skill_files():
+        needles = _BANNED_SKILL_STRINGS.get(path.name)
+        if not needles:
+            continue
+        text = path.read_text(encoding="utf-8")
+        findings.extend(
+            f"{path.name}: banned shape reappeared: {needle!r}"
+            for needle in needles
+            if needle in text
+        )
+    assert not findings, "\n".join(findings)
 
 
 # ---------------------------------------------------------------------------

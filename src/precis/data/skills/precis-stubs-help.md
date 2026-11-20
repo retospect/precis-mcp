@@ -113,7 +113,7 @@ set on a non-paper kind.
 ## Open a stub to see where it came up
 
 ```python
-get(kind='paper', id=<ref_id>)
+get(kind='paper', id='pa<N>')  # handle from the mint reply
 ```
 
 A stub has no body yet. `get` shows its metadata and inbound links —
@@ -128,15 +128,21 @@ the finding or paper that cited it lives on the other end of a
 put(kind="paper", doi="10.1038/nature10352")  # best — resolvable id
 put(kind="paper", arxiv="2401.00001", title="…")  # or an arXiv id
 put(kind="paper", identifier="s2:<id>")  # or a Semantic Scholar id
+put(kind="paper", identifier="pubmed:<pmid>")  # or a PubMed id
+put(kind="paper", identifier="pmcid:PMC11089570")  # or a PMC id
 put(kind="paper", title="Some Paper With No DOI Yet")  # title-only backlog stub
 ```
 
 `put(kind='paper', …)` mints a **stub only** — it requests the paper
 into this backlog; it never writes a body (paper bodies are
 import-only, via `.acatome` ingest). Idempotent: a paper already held
-or already wanted is a no-op.
+or already wanted is a no-op. An identifier already held by a paper whose
+stored title shares nothing with the `title=` you pass (both ≥4 content
+words) is refused as an identifier/title conflict naming `pa<N>` — the
+stub is not minted and the held row is left for repair; check
+`get(kind='paper', id='pa<N>')`. Placeholder or sparse titles never trip it.
 
-A **DOI / arXiv / S2 id is strongly preferred** — the stub carries the
+A **DOI / arXiv / S2 / PubMed / PMC id is strongly preferred** — the stub carries the
 id, and an explicit `put` jumps the fetch queue: the stub is pinned to
 the front (`prio=1`) so `fetch_oa` tries it on its very next pass —
 re-requesting an already-wanted stub re-pins it, including one
@@ -147,7 +153,7 @@ lit-fetch — instead wait their ranked turn, and their re-requests
 stay under the 24 h re-stamp guard.) A fetch pass whose legs were
 refused by our own limiter or a provider's breaker
 (`rate_limited`/`circuit_open`/`provider_wait`) doesn't count toward
-the fetch backoff — only real provider answers do. An identifier no resolver knows — S2, plus Crossref/DataCite for
+the fetch backoff — only real provider answers do. An identifier no resolver knows — S2, plus Crossref/DataCite/JaLC for
 a DOI — is rejected up front (pass
 `verify=False` to force a known-real preprint S2 hasn't indexed). A **title-only** stub
 just parks in the backlog until someone supplies an identifier — no
@@ -167,12 +173,18 @@ get(kind="semanticscholar", id="<title or topic>")  # search → ranked hits + D
 search(kind="semanticscholar", q="<title or topic>")  # re-query rows already cached above — no live S2 call
 ```
 
-`search(kind='semanticscholar', …)` never calls S2 — it's a
+A free-text `search(kind='semanticscholar', …)` never calls S2 — it's a
 lexical/semantic re-query over whatever `get` has already fetched and
-cached, so a topic never `get`-searched before returns nothing.
+cached, so a topic never `get`-searched before returns nothing. An
+identifier-shaped query (a DOI or arXiv id) is the exception: it is a
+paper lookup, reusing a cached one or fetching live like `get`.
 `reach=` (patent/EDGAR's local-vs-remote knob) has no effect here — it's
-silently swallowed like any unhonoured kwarg — so this *is* the
-local-cache-only leg; `get` is the only way to reach S2 live.
+silently swallowed like any unhonoured kwarg — so free-text
+`search` is the local-cache-only leg; `get` reaches S2 live for any query.
+
+The full title/byline/abstract → verified-publication ladder (when a
+plain S2 search misses or false-positives) is
+[[precis-identify-publication-help]].
 
 ## What don't we have yet, on this topic?
 
@@ -221,10 +233,11 @@ of concern** is only a flag: the worker stamps the status (so the reader
 banner shows it) but still fetches the PDF — so those stubs stay in the
 backlog until acquired, and the gate re-checks them each pass to catch a
 later escalation to `retracted`. Confirm via `get(kind='paper',
-id=<ref_id>)`, which shows the status on the ref.
+id='pa<N>')`, which shows the status on the ref.
 
 ## See also
 
 - [[precis-paper-help]] — read, cite, search held papers (+ S2 nav)
+- [[precis-identify-publication-help]] — abstract/byline/citation to a verified manuscript
 - [[precis-finding-help]] — chasing un-ingested DOIs
 - [[precis-search-help]] — search args incl. view=

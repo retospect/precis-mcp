@@ -88,7 +88,22 @@ def _trust(store: Store, mode: str) -> None:
 
 
 def _light(store: Store, prio: int = 1, host: str = "*") -> None:
+    # Legacy intake cases use a synthetic fleet with the same number of
+    # free executor slots as their configured lanes, and one queued job
+    # per slot. Queue-depth defaults and host caps have separate tests.
+    psettings.set_setting("factory.gripe_dispatch.queue_depth", 1, store=store)
+    store.sync_host_resource_slots("h1", {"builder": 1, "codex_bin": 1})
     with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, meta) VALUES ('h1', now(), '{}') "
+            "ON CONFLICT (host) DO UPDATE SET ts = now()"
+        )
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES "
+            "('claim.executor_cap.ssh_node.h1', %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (str(gd.lane_capacity(store) + 1),),
+        )
         conn.execute(
             "INSERT INTO service_config (host, service, prio) "
             "VALUES (%s, 'gripe_dispatch', %s) "
@@ -234,9 +249,8 @@ def test_each_fix_class_mints_a_code_class_build(
         ).fetchall()
     # one build (code) plus the validate run_slice; nothing is docs-classed
     assert sorted(r[0] for r in rows) == ["code", "validate"]
-    # the minted chain holds a lane slot like a fix:code one (capacity
-    # count and the build's class agree)
-    assert gd.open_chain_count(store) == 1
+    # Minting a queued build consumes no running executor slot.
+    assert gd.open_chain_count(store) == 0
 
 
 def test_non_fix_classes_stay_out(store: Store, two_lanes: Any) -> None:
@@ -257,7 +271,7 @@ def test_mixed_classes_share_the_one_code_capacity(
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert res.extra["lane_capacity"] == 3 and res.extra["slots"] == 3
     assert (res.claimed, res.ok) == (3, 3)
-    assert gd.open_chain_count(store) == 3
+    assert gd.open_chain_count(store) == 0
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert res.extra["slots"] == 0 and res.claimed == 0
 
@@ -266,9 +280,9 @@ def test_pass_mints_within_free_slots_and_is_idempotent(
     store: Store, two_lanes: Any
 ) -> None:
     _light(store)
-    a = _gripe(store, "a", prio=1)
-    b = _gripe(store, "b", prio=2)
-    c = _gripe(store, "c", prio=3)
+    a = _gripe(store, "alpha", prio=1)
+    b = _gripe(store, "beta", prio=2)
+    c = _gripe(store, "gamma", prio=3)
     assert gd.open_chain_count(store) == 0
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     # capacity 3, no held slots: one fire fills every free build slot
@@ -280,10 +294,10 @@ def test_pass_mints_within_free_slots_and_is_idempotent(
     assert note.startswith(
         f"dispatch: minted gripe-fix-direct td{_roots_for(store, a)[0]}"
     )
-    assert gd.open_chain_count(store) == 3
+    assert gd.open_chain_count(store) == 0
 
     # Second fire: all three are linked (skipped) and no slot is free.
-    _gripe(store, "d", prio=1)
+    _gripe(store, "delta", prio=1)
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert (res.claimed, res.ok) == (0, 0) and res.extra["slots"] == 0
     assert len(_roots_for(store, a)) == 1  # never doubled
@@ -434,7 +448,7 @@ def test_one_tick_fills_every_free_build_slot(
     assert res.extra["slots"] == 9 and res.extra["lane_capacity"] == 9
     # equal prios → oldest first
     assert [m["gripe"] for m in res.extra["minted"]] == gripes[:9]
-    assert gd.open_chain_count(store) == 9
+    assert gd.open_chain_count(store) == 0
     # no free slot left: the next fire mints nothing more
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert (res.claimed, res.ok) == (0, 0) and res.extra["slots"] == 0
@@ -464,6 +478,7 @@ def test_landed_build_frees_the_slot_while_the_chain_runs_on(
     b = _gripe(store, "b", prio=2)
     assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
     [root] = _roots_for(store, a)
+    _queue_build(store, _build_node(store, root))
     assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # full
 
     # the build lands: its node goes done while gate/validate/review
@@ -515,10 +530,12 @@ def test_closed_chain_frees_its_slot_and_its_gripe_reenters(
     b = _gripe(store, "b", prio=5)
     assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
     [root] = _roots_for(store, a)
+    _queue_build(store, _build_node(store, root))
     assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # full
-    store.add_tag(
-        root, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
-    )
+    for node in (root, _build_node(store, root)):
+        store.add_tag(
+            node, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+        )
     assert gd.open_chain_count(store) == 0
     assert a in {c.gripe_id for c in gd.candidates(store, 10)}
     res = gd.run_gripe_dispatch_pass(store, host="h1")
@@ -568,9 +585,54 @@ def test_hand_minted_chain_counts(store: Store, two_lanes: Any) -> None:
     _light(store)
     a = _gripe(store, "a")
     mint_gripe_fix_direct(store, gripe_id=a)
-    assert gd.open_chain_count(store) == 1
+    assert gd.open_chain_count(store) == 0
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert res.claimed == 0 and len(_roots_for(store, a)) == 1
+
+
+def test_queue_depth_mints_a_bounded_buffer_from_host_capacity(
+    store: Store,
+    two_lanes: Any,
+) -> None:
+    """gr702610: N free host slots leave at least N queued builds in one fire.
+
+    Lane supply is three, but this host has two build executor slots.
+    Default depth two freezes only four of the ten eligible gripes.
+    """
+    _light(store)
+    psettings.set_setting("factory.gripe_dispatch.queue_depth", 2, store=store)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE app_state SET value = '3' "
+            "WHERE key = 'claim.executor_cap.ssh_node.h1'"
+        )
+    gripes = [_gripe(store, f"buffered {i}") for i in range(10)]
+    assert gd.build_queue_supply(store) == (2, 0)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.ok == 4
+    assert gd.build_queue_supply(store) == (2, 4)
+    assert gd.open_chain_count(store) == 0
+    assert len(gd.candidates(store, 20)) == 6
+    assert not _roots_for(store, gripes[-1])
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0
+
+
+def test_queue_supply_ignores_dark_and_disabled_hosts(
+    store: Store, two_lanes: Any
+) -> None:
+    _light(store)
+    assert gd.build_queue_supply(store)[0] == 3
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE host_heartbeat SET ts = now() - interval '1 day'")
+    assert gd.build_queue_supply(store)[0] == 0
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE host_heartbeat SET ts = now()")
+        conn.execute(
+            "INSERT INTO service_config (host, service, prio) "
+            "VALUES ('h1', 'job_ssh_node', 0) "
+            "ON CONFLICT (host, service) DO UPDATE SET prio = 0"
+        )
+    assert gd.build_queue_supply(store)[0] == 0
 
 
 def test_deny_path_report_routes_to_the_coordinator(
@@ -581,7 +643,7 @@ def test_deny_path_report_routes_to_the_coordinator(
     ask carrying the report, and ``hold:no-dispatch`` keeps the gripe
     out of later picks until a human re-judges it."""
     _light(store)
-    gid = _gripe(store, "add a --remote flag to scripts/ship")
+    gid = _gripe(store, "Fix: add a --remote flag to scripts/ship")
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert (res.claimed, res.ok, res.failed) == (1, 1, 0)
     assert res.extra["minted"] == []
@@ -639,6 +701,39 @@ def test_routing_comment_does_not_reroute(store: Store, two_lanes: Any) -> None:
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert "routed" not in res.extra
     assert [m["gripe"] for m in res.extra["minted"]] == [gid]
+
+
+def test_route_builder_tag_skips_the_deny_path_route(
+    store: Store, two_lanes: Any
+) -> None:
+    """gr685970: ``route:builder`` is the coordinator's read-the-report
+    override — the gripe mints its chain although its report asks to
+    write a deny path (the mint/write gates still guard real writes)."""
+    _light(store)
+    gid = _gripe(
+        store,
+        "Fix: add a --remote flag to scripts/ship",
+        tags=("fix:code", gd.ROUTE_BUILDER_TAG),
+    )
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert "routed" not in res.extra
+    assert [m["gripe"] for m in res.extra["minted"]] == [gid]
+
+
+def test_route_builder_tag_keeps_the_graph_only_route(
+    store: Store, two_lanes: Any
+) -> None:
+    """gr685970: the override skips the deny-path leg only — a
+    prod-graph-only report still has no repo diff for a builder."""
+    _light(store)
+    gid = _gripe(
+        store,
+        "gr630346 me123456 td999",
+        tags=("fix:code", gd.ROUTE_BUILDER_TAG),
+    )
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    (routed,) = res.extra["routed"]
+    assert routed["gripe"] == gid
 
 
 def test_graph_only_report_routes_to_the_coordinator(
@@ -1119,3 +1214,550 @@ def test_waiver_chain_jobs_carry_the_band_ordinary_ones_do_not(
     assert job_meta(plain_mint, "run_slice").get("claim_band") is None
     # a non-build job of the banded chain does not take the band
     assert job_meta(band_mint, "ci_verdict_poll").get("claim_band") is None
+
+
+# ── parked builds hold no slot; stalled chains are swept (gr687946) ──
+
+
+def _one_lane(monkeypatch: pytest.MonkeyPatch, cap: int = 1) -> None:
+    use_lanes(
+        monkeypatch, Lane("codex", "codex_exec", "codex", cap, frozenset({"code"}))
+    )
+
+
+def _chain_for(store: Store, gripe_id: int) -> tuple[int, int]:
+    """Mint the gripe's chain; return ``(root, build node)``."""
+    from precis.plans.templates import mint_gripe_fix_direct
+
+    mint = mint_gripe_fix_direct(store, gripe_id=gripe_id)
+    return int(mint.root_id), _build_node(store, int(mint.root_id))
+
+
+def _age_node(store: Store, node: int, hours: float) -> None:
+    """Make everything in the build node's whole plan (every todo tagged
+    ``plan:<root>``, their tags and their jobs) ``hours`` old."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT parent_id FROM refs WHERE ref_id = %s", (node,)
+        ).fetchone()
+        assert row is not None
+        root = int(row[0])
+        ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT rt.ref_id FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE t.namespace = 'OPEN' AND t.value = %s",
+                (f"plan:{root}",),
+            ).fetchall()
+        ]
+        conn.execute(
+            "UPDATE refs SET updated_at = now() - make_interval(hours => %s) "
+            "WHERE ref_id = ANY(%s) OR parent_id = ANY(%s)",
+            (hours, ids, ids),
+        )
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - make_interval(hours => %s) "
+            "WHERE ref_id = ANY(%s)",
+            (hours, ids),
+        )
+
+
+def _queue_build(store: Store, build: int) -> None:
+    """A queued ``run_slice`` job for the build node (what the dispatch
+    tick queues for a doable build), so the pass sees a full queue."""
+    from precis.workers._mint import mint_background_job
+
+    with store.tx() as conn:
+        mint_background_job(
+            store,
+            conn=conn,
+            job_type="run_slice",
+            executor="ssh_node",
+            title="run_slice",
+            params={"todo_id": build},
+            parent_id=build,
+            status="queued",
+        )
+
+
+def _park(store: Store, node: int, how: str) -> None:
+    if how == "paused":
+        store.add_tag(
+            node, Tag.closed("STATUS", "paused"), set_by="system", replace_prefix=True
+        )
+    else:
+        store.add_tag(node, Tag.open(how), set_by="system")
+
+
+def _ask_in_plan(store: Store, root: int) -> int:
+    ask = store.insert_ref(kind="todo", slug=None, title="a question", parent_id=root)
+    store.add_tag(ask.id, Tag.open(f"plan:{root}"), set_by="system")
+    store.add_tag(ask.id, Tag.open("ask-user"), set_by="system")
+    store.add_tag(ask.id, Tag.closed("STATUS", "open"), set_by="system")
+    return int(ask.id)
+
+
+def _status(store: Store, ref_id: int) -> str | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = %s AND t.namespace = 'STATUS'",
+            (ref_id,),
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
+def _open_tags(store: Store, ref_id: int) -> set[str]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = %s AND t.namespace = 'OPEN'",
+            (ref_id,),
+        ).fetchall()
+    return {str(r[0]) for r in rows}
+
+
+@pytest.fixture(autouse=True)
+def _fresh_parked_cache() -> Any:
+    keys = (gd.MAX_PARKED_KEY, gd.STALL_HOURS_KEY, "factory.gripe_dispatch.queue_depth")
+    for k in keys:
+        psettings.invalidate(k)
+    yield
+    for k in keys:
+        psettings.invalidate(k)
+
+
+@pytest.mark.parametrize(
+    "how", ["paused", "ask-user", "waiting-for:coordinator", "child-failed:td1"]
+)
+def test_parked_build_frees_its_slot(
+    store: Store, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    _one_lane(monkeypatch)
+    _light(store)
+    a = _gripe(store, "a", prio=1)
+    b = _gripe(store, "b", prio=5)
+    _root, build = _chain_for(store, a)
+    assert gd.open_chain_count(store) == 0  # undispatched: no running slot
+    _park(store, build, how)
+    assert gd.open_chain_count(store) == 0 and gd.parked_chain_count(store) == 1
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.ok == 1 and _roots_for(store, b)
+    assert (res.extra["open_chains"], res.extra["parked"]) == (0, 1)
+
+
+def test_live_build_holds_its_slot(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a running job or explicit claim keeps a running slot."""
+    from precis.workers._mint import mint_background_job
+
+    _one_lane(monkeypatch)
+    _light(store)
+    a = _gripe(store, "a", prio=1)
+    b = _gripe(store, "b", prio=5)
+    _root, build = _chain_for(store, a)
+    _queue_build(store, build)
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 0  # queued: target full
+    _park(store, build, "waiting-for:coordinator")
+    assert gd.open_chain_count(store) == 0
+    with store.tx() as conn:
+        mint_background_job(
+            store,
+            conn=conn,
+            job_type="run_slice",
+            executor="ssh_node",
+            title="run_slice",
+            params={"todo_id": build},
+            parent_id=build,
+            status="running",
+        )
+    assert gd.open_chain_count(store) == 1
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.ok == 0 and not _roots_for(store, b) and res.extra["slots"] == 0
+
+    # a claim also counts as live
+    c = _gripe(store, "c", prio=5)
+    _root2, build2 = _chain_for(store, c)
+    _park(store, build2, "paused")
+    assert gd.open_chain_count(store) == 1
+    store.add_tag(build2, Tag.open("claimed-by:agent-x"), set_by="system")
+    assert gd.open_chain_count(store) == 2
+
+
+def test_parked_chains_never_block_minting_below_the_backstop(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old "parked >= 2 x capacity: mint nothing" brake is gone — parked
+    work costs no seat (Reto 2026-11-16). Far more parked chains than twice
+    the lane capacity still leave minting alone."""
+    _one_lane(monkeypatch, cap=1)
+    _light(store)
+    for i in range(4):  # 4 parked chains > 2 x capacity (1)
+        g = _gripe(store, f"parked{i}", tags=("fix:code", "hold:no-dispatch"))
+        _root, build = _chain_for(store, g)
+        _park(store, build, "paused")
+    fresh = _gripe(store, "fresh", prio=5)
+    assert gd.parked_chain_count(store) == 4
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.extra["parked"] == 4 and res.extra["max_parked"] == 500
+    assert res.ok == 1 and _roots_for(store, fresh)
+
+
+def test_max_parked_remains_a_last_resort_backstop(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _one_lane(monkeypatch, cap=3)
+    _light(store)
+    psettings.set_setting(gd.MAX_PARKED_KEY, "1", store=store)
+    a = _gripe(store, "a", prio=1)
+    b = _gripe(store, "b", prio=5)
+    _root, build = _chain_for(store, a)
+    _park(store, build, "paused")
+    assert gd.max_parked(store) == 1
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert (res.claimed, res.ok) == (0, 0) and not _roots_for(store, b)
+    assert res.extra["parked"] == 1 and res.extra["max_parked"] == 1
+    # raise the backstop: minting resumes
+    psettings.set_setting(gd.MAX_PARKED_KEY, "2", store=store)
+    assert gd.run_gripe_dispatch_pass(store, host="h1").ok == 1
+    assert _roots_for(store, b)
+
+
+def test_max_parked_defaults_to_500(store: Store) -> None:
+    assert gd.DEFAULT_MAX_PARKED == 500
+    assert gd.max_parked(store) == 500
+
+
+def _asks_on(store: Store, root: int) -> list[int]:
+    """Open ask todos in the chain's plan."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id FROM refs r JOIN ref_tags pt ON pt.ref_id = r.ref_id "
+            "JOIN tags p ON p.tag_id = pt.tag_id AND p.namespace = 'OPEN' "
+            "AND p.value = %s WHERE r.kind = 'todo' AND jsonb_typeof(r.meta->'ask') "
+            "= 'object' ORDER BY r.ref_id",
+            (f"plan:{root}",),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def test_sweep_asks_about_a_stalled_chain_and_does_not_close_it(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _one_lane(monkeypatch, cap=2)
+    _light(store)
+    a = _gripe(store, "a", prio=1)
+    root, build = _chain_for(store, a)
+    _park(store, build, "waiting-for:coordinator")
+    store.stamp_ref_meta(
+        build,
+        {
+            "parked": {
+                "host": "build-host-1",
+                "worktree": "/srv/wt/slice-td7",
+                "head": "ab" * 20,
+                "reason": "ladder spent",
+                "at": "2026-11-16T10:00:00Z",
+                "job": 1,
+            }
+        },
+    )
+    _age_node(store, build, 7)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    # the root is NOT closed; the gripe does not re-enter dispatch
+    assert _status(store, root) != "won't-do"
+    assert len(_roots_for(store, a)) == 1 and res.ok == 0
+    [z] = res.extra["stalled"]
+    assert z["root"] == root and z["gripes"] == [a] and z["stalls"] == 1
+    assert z["idle_hours"] >= 7
+    [ask] = _asks_on(store, root)
+    assert z["ask"] == ask
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None
+    assert ref.title == f"td{root}: chain stalled 7 h — resume, start over, or drop?"
+    assert ref.meta["ask"]["options"] == ["resume", "start over", "drop"]
+    assert {"ask-user", f"plan:{root}"} <= _open_tags(store, ask)
+    body = next(
+        c.text
+        for c in store.chunks.list_chunks_for_ref(ask)
+        if c.chunk_kind == "todo_body"
+    )
+    # names the state and the parked branch/host
+    assert f"td{build} STATUS:open [waiting-for:coordinator]" in body
+    assert "`build-host-1`" in body and "/srv/wt/slice-td7" in body
+    assert ("ab" * 6) in body and f"refs/factory/slice/{build}" in body
+    # the build is blocked-by the ask: answering it re-arms the build
+    assert ask in {
+        link.dst_ref_id
+        for link in store.links_for(build, direction="out", relation="blocked-by")
+    }
+    # counted on the gripe, but no hold: the open ask is the hold
+    assert "chain-stalls:1" in _open_tags(store, a)
+    assert "hold:no-dispatch" not in _open_tags(store, a)
+    assert any("ask td" in c for c in _comments(store, a))
+    texts = [c.text for c in store.chunks.list_chunks_for_ref(root)]
+    assert any("chain stalled" in t and f"ask td{ask}" in t for t in texts)
+
+
+def test_a_second_sweep_with_the_ask_open_does_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _one_lane(monkeypatch, cap=2)
+    _light(store)
+    a = _gripe(store, "a")
+    root, build = _chain_for(store, a)
+    _park(store, build, "paused")
+    _age_node(store, build, 9)
+    first = gd.run_gripe_dispatch_pass(store, host="h1")
+    [ask] = _asks_on(store, root)
+    assert [z["ask"] for z in first.extra["stalled"]] == [ask]
+    _age_node(store, build, 9)  # even long after: the open ask shields it
+    for _ in range(2):
+        again = gd.run_gripe_dispatch_pass(store, host="h1")
+        assert again.extra["stalled"] == []
+    assert _asks_on(store, root) == [ask]
+    assert "chain-stalls:1" in _open_tags(store, a)
+    assert _status(store, root) != "won't-do"
+
+
+def test_sweep_leaves_recent_and_asked_chains_alone(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _one_lane(monkeypatch, cap=3)
+    _light(store)
+    recent = _gripe(store, "recent", prio=1)
+    asked = _gripe(store, "asked", prio=2)
+    r_root, r_build = _chain_for(store, recent)
+    a_root, a_build = _chain_for(store, asked)
+    for build in (r_build, a_build):
+        _park(store, build, "paused")
+    _age_node(store, a_build, 48)
+    _age_node(store, r_build, 1)
+    ask = _ask_in_plan(store, a_root)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.extra["stalled"] == []
+    assert _status(store, r_root) != "won't-do"
+    assert _status(store, a_root) != "won't-do"
+    # a closed ask no longer shields the chain: it is asked about again
+    store.add_tag(
+        ask, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    _age_node(store, a_build, 48)  # the ask's own stamps count as plan activity
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert [z["root"] for z in res.extra["stalled"]] == [a_root]
+    assert _status(store, a_root) != "won't-do"  # asked, never closed
+    assert _status(store, r_root) != "won't-do"
+
+
+def test_stall_window_is_a_setting(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _one_lane(monkeypatch, cap=3)
+    _light(store)
+    a = _gripe(store, "a")
+    root, build = _chain_for(store, a)
+    _park(store, build, "paused")
+    _age_node(store, build, 3)
+    assert gd.stall_hours(store) == 6
+    assert gd.run_gripe_dispatch_pass(store, host="h1").extra["stalled"] == []
+    psettings.set_setting(gd.STALL_HOURS_KEY, "2", store=store)
+    assert gd.stall_hours(store) == 2
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert [z["root"] for z in res.extra["stalled"]] == [root]
+
+
+def test_every_stall_counts_but_never_holds_the_gripe(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The count stays (``chain-stalls:<n>``, replaced per ask) but the auto
+    ``hold:no-dispatch`` at the second stall is gone: the open ask keeps
+    the chain out of dispatch, and nothing is closed or re-minted."""
+    _one_lane(monkeypatch, cap=2)
+    _light(store)
+    a = _gripe(store, "a")
+    root, build = _chain_for(store, a)
+    _park(store, build, "paused")
+    _age_node(store, build, 8)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")  # stall 1: asked
+    assert res.extra["stalled"][0]["stalls"] == 1
+    [ask1] = _asks_on(store, root)
+    store.add_tag(
+        ask1, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )  # answered ("resume"), the chain stays parked and idle
+    _age_node(store, build, 8)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")  # stall 2: asked again
+    assert res.extra["stalled"][0]["stalls"] == 2
+    tags = _open_tags(store, a)
+    assert "chain-stalls:2" in tags and "chain-stalls:1" not in tags
+    assert "hold:no-dispatch" not in tags
+    assert not any("needs a re-brief" in c for c in _comments(store, a))
+    assert len(_asks_on(store, root)) == 2 and len(_roots_for(store, a)) == 1
+    assert res.ok == 0 and _status(store, root) != "won't-do"
+
+
+def test_sweep_is_capped_per_pass(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _one_lane(monkeypatch, cap=30)
+    _light(store)
+    for i in range(12):
+        g = _gripe(store, f"g{i}", tags=("fix:code", "hold:no-dispatch"))
+        _root, build = _chain_for(store, g)
+        _park(store, build, "paused")
+        _age_node(store, build, 9)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    # ten asked per pass; all twelve stay parked (an ask is not a closure)
+    assert len(res.extra["stalled"]) == 10 and res.extra["parked"] == 12
+
+
+def test_build_blocked_on_a_live_upstream_node_is_not_swept(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stalled is a property of the whole plan: a parked build whose
+    upstream node (a review, a brief) is still live is waiting, however
+    old the build's own stamps are."""
+    _one_lane(monkeypatch, cap=3)
+    _light(store)
+    a = _gripe(store, "alpha")
+    root, build = _chain_for(store, a)
+    up = store.insert_ref(kind="todo", slug=None, title="upstream", parent_id=root)
+    store.add_tag(up.id, Tag.open(f"plan:{root}"), set_by="system")
+    store.add_tag(up.id, Tag.closed("STATUS", "open"), set_by="system")
+    store.add_link(src_ref_id=build, dst_ref_id=up.id, relation="blocked-by")
+    _park(store, build, "paused")
+    _age_node(store, build, 48)
+    [chain] = [c for c in gd.chains(store) if c.root_id == root]
+    assert not chain.live and chain.plan_live  # upstream is doable
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.extra["stalled"] == [] and _status(store, root) != "won't-do"
+    assert res.extra["parked"] == 1
+
+    # the upstream node ends and everything is old: now the chain is stalled
+    store.add_tag(
+        up.id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    with store.pool.connection() as conn:  # its queued job ends with it
+        queued = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s",
+                (up.id,),
+            ).fetchall()
+        ]
+    for job in queued:
+        store.add_tag(
+            job, Tag.closed("STATUS", "cancelled"), set_by="system", replace_prefix=True
+        )
+    _age_node(store, build, 48)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert [z["root"] for z in res.extra["stalled"]] == [root]
+    assert _status(store, root) != "won't-do" and len(_asks_on(store, root)) == 1
+
+
+def test_recent_upstream_activity_shields_a_parked_build(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Old build stamps, but another plan node moved inside the window."""
+    _one_lane(monkeypatch, cap=3)
+    _light(store)
+    a = _gripe(store, "a")
+    root, build = _chain_for(store, a)
+    up = store.insert_ref(kind="todo", slug=None, title="upstream", parent_id=root)
+    store.add_tag(up.id, Tag.open(f"plan:{root}"), set_by="system")
+    store.add_tag(up.id, Tag.closed("STATUS", "done"), set_by="system")
+    _park(store, build, "paused")
+    _age_node(store, build, 48)
+    with store.pool.connection() as conn:  # the finished upstream node: 1 h old
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - interval '1 hour' "
+            "WHERE ref_id = %s",
+            (up.id,),
+        )
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.extra["stalled"] == [] and _status(store, root) != "won't-do"
+
+
+@pytest.mark.parametrize("change", ["rearm", "dispatch", "activity", "ask", "closed"])
+def test_stall_ask_rechecks_after_census(
+    store: Store, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    from precis.workers._mint import mint_background_job
+
+    _one_lane(monkeypatch)
+    _light(store)
+    gripe = _gripe(store, "race")
+    root, build = _chain_for(store, gripe)
+    _park(store, build, "waiting-for:coordinator")
+    _age_node(store, build, 8)
+    ask_about = gd._ask_stalled
+
+    def changed_before_close(
+        store: Store, chain: gd.Chain, idle: float, hours: int
+    ) -> dict[str, Any] | None:
+        if change == "rearm":
+            store.remove_tag(build, Tag.open("waiting-for:coordinator"))
+        elif change == "dispatch":
+            with store.tx() as conn:
+                mint_background_job(
+                    store,
+                    conn=conn,
+                    job_type="run_slice",
+                    executor="ssh_node",
+                    title="run_slice",
+                    params={"todo_id": build},
+                    parent_id=build,
+                    status="queued",
+                )
+        elif change == "activity":
+            store.add_tag(root, Tag.open("recent-activity"), set_by="system")
+        elif change == "ask":
+            _ask_in_plan(store, root)
+            _age_node(store, build, 8)  # Ask alone protects even an old plan.
+        else:
+            store.add_tag(
+                root,
+                Tag.closed("STATUS", "done"),
+                set_by="system",
+                replace_prefix=True,
+            )
+        return ask_about(store, chain, idle, hours)
+
+    monkeypatch.setattr(gd, "_ask_stalled", changed_before_close)
+    result = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert result.extra["stalled"] == []
+    assert _status(store, root) != "won't-do"
+    assert not any(t.startswith(gd.STALL_TAG_PREFIX) for t in _open_tags(store, gripe))
+    assert not _asks_on(store, root)  # no ask raised on the changed plan
+    # A root closed under the sweep frees its gripe to re-enter dispatch
+    # (the minted second chain); every other change leaves the one chain.
+    assert len(_roots_for(store, gripe)) == (2 if change == "closed" else 1)
+
+
+def test_stall_ask_skips_while_plan_tick_holds_lock(store: Store) -> None:
+    from precis.store.advisory import try_xact_advisory_lock
+    from precis.workers.job_types.plan_dispatch import TICK_LOCK_KEY
+
+    gripe = _gripe(store, "locked")
+    root, build = _chain_for(store, gripe)
+    _park(store, build, "paused")
+    _age_node(store, build, 8)
+    parked = gd.chains(store)
+    assert store.dsn is not None
+    with try_xact_advisory_lock(store.dsn, TICK_LOCK_KEY) as got:
+        assert got
+        assert gd.sweep_stalled(store, parked) == []
+    assert _status(store, root) == "open"
+    assert gd.sweep_stalled(store, parked)[0]["root"] == root
+
+
+def test_deny_path_evidence_sentence_mints_build(store: Store, two_lanes: Any) -> None:
+    """gr702295: a harness path opening evidence is no declared write set."""
+    _light(store)
+    gid = _gripe(
+        store,
+        "scripts/ship cannot land a branch, says the guard log. Repair release_deploy.py.",
+    )
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert "routed" not in res.extra
+    assert [m["gripe"] for m in res.extra["minted"]] == [gid]

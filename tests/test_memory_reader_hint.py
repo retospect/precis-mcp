@@ -1,4 +1,4 @@
-"""The memory complaint prompt is scoped to one node in one session."""
+"""The memory complaint prompt is scoped to one offer per session."""
 
 from __future__ import annotations
 
@@ -9,20 +9,25 @@ from unittest.mock import Mock
 
 import pytest
 
-from precis import serve_ledger
+from precis import principal, serve_ledger
 from precis.response import Response
 from precis.runtime import PrecisRuntime, handle_deref
 from precis.runtime import dispatch as dispatch_module
 from precis.runtime.handle_deref import MEMORY_GRIPE_HINT, reset_read_receipts
+from precis.runtime.trust_verb import trust_line
 from precis.store import ChunkInsert, Store
 from precis.tools import core
 
 
 @pytest.fixture(autouse=True)
 def _clean_receipts() -> Iterator[None]:
+    from precis.utils.hint_ledger import _clear_for_tests
+
     reset_read_receipts()
+    _clear_for_tests()
     yield
     reset_read_receipts()
+    _clear_for_tests()
 
 
 def _memory(store: Store) -> int:
@@ -69,7 +74,7 @@ def test_hint_first_read_only_and_per_session(
     if view is None:
         assert first.index("trust:") < first.index(MEMORY_GRIPE_HINT)
     assert MEMORY_GRIPE_HINT not in second
-    assert MEMORY_GRIPE_HINT in another
+    assert MEMORY_GRIPE_HINT not in another
     other_session = core.get(**args, ctx=second_ctx)
     assert isinstance(other_session, str), other_session
     assert MEMORY_GRIPE_HINT in other_session
@@ -82,11 +87,42 @@ def test_hint_absent_without_session(
     assert MEMORY_GRIPE_HINT not in result
 
 
+@pytest.mark.parametrize("stateless", [False, True])
+def test_owner_hints_stay_session_local(
+    store: Store, monkeypatch: pytest.MonkeyPatch, stateless: bool
+) -> None:
+    """Durable exact-read authorization must not persist hint suppression."""
+    monkeypatch.setenv("PRECIS_MCP_STATELESS_HTTP", str(int(stateless)))
+    handle = f"me{_memory(store)}"
+    first, second, third = object(), object(), object()
+    with principal.bind("oauth:7"):
+        with serve_ledger.session_scope(first):
+            assert handle_deref.memory_gripe_hint(handle, store=store)
+            assert handle_deref.record_exact_read(handle, store=store)
+            # The hint ledger is per session object; stateless HTTP hands
+            # every request a fresh one, so nothing suppresses there.
+            assert not handle_deref.memory_gripe_hint(handle, store=store)
+            assert handle_deref.memory_search_gripe_hint(store=store)
+            assert bool(handle_deref.memory_search_gripe_hint(store=store)) is stateless
+        with serve_ledger.session_scope(second):
+            assert handle_deref.memory_gripe_hint(handle, store=store)
+            assert handle_deref.memory_search_gripe_hint(store=store)
+        reset_read_receipts()
+        with serve_ledger.session_scope(third):
+            assert handle_deref.memory_gripe_hint(handle, store=store)
+            assert handle_deref.memory_search_gripe_hint(store=store)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT identity FROM read_receipts WHERE owner_key = 'oauth:7'"
+        ).fetchall()
+    assert rows == [(f"memory:{handle[2:]}:-",)]
+
+
 def test_hint_absent_for_listing_and_other_kind(
     runtime_with_store: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    trust = Mock(wraps=dispatch_module.trust_line)
-    monkeypatch.setattr(dispatch_module, "trust_line", trust)
+    trust = Mock(wraps=dispatch_module.trust_footer)
+    monkeypatch.setattr(dispatch_module, "trust_footer", trust)
     _memory(store)
     paper = store.insert_ref(kind="paper", slug="reader-hint-paper", title="Paper")
     with serve_ledger.session_scope(object()):
@@ -176,7 +212,9 @@ def test_fitted_read_is_identical_without_hint(
     assert MEMORY_GRIPE_HINT not in first
     assert len(first.encode("utf-8")) <= cap
     assert "truncated" not in second
-    assert MEMORY_GRIPE_HINT not in second
+    # The once-per-session offer lands on the first read that can take
+    # it — the fitted read above never offered it (gr499041).
+    assert MEMORY_GRIPE_HINT in second
 
 
 def test_stamped_memory_first_read_fits_without_hint_at_400_bytes(
@@ -187,7 +225,7 @@ def test_stamped_memory_first_read_fits_without_hint_at_400_bytes(
     )
     assert not failed, created
     ref = store.list_refs(kind="memory")[0]
-    line = dispatch_module.trust_line(store, "memory", ref.id)
+    line = trust_line(store, "memory", ref.id)
     assert line is not None and "unstamped" not in line
     monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "400")
     expected, failed = runtime_with_store.dispatch_with_status(
@@ -274,7 +312,9 @@ def test_members_page_is_identical_without_hint(
         second = runtime_with_store.dispatch("get", {"id": f"me{root}"})
     assert result.encode("utf-8") == expected.encode("utf-8")
     assert MEMORY_GRIPE_HINT not in result
-    assert MEMORY_GRIPE_HINT not in second
+    # A members-page read does not offer the hint; the session's one
+    # offer lands on the first plain read that follows (gr499041).
+    assert MEMORY_GRIPE_HINT in second
 
 
 @pytest.mark.parametrize(

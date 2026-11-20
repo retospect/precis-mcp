@@ -9,8 +9,10 @@ without touching a real CLI.
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,7 +28,9 @@ WRAPPER = REPO / "scripts" / "agent-cli-update"
 
 
 def _load(path: Path, name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, path)
+    spec = importlib.util.spec_from_file_location(
+        name, path, loader=importlib.machinery.SourceFileLoader(name, str(path))
+    )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
@@ -45,6 +49,8 @@ class FakeHost:
         self.bad_prompt = bad_prompt or set()
         self.calls: list[list[str]] = []
         self.latest = (0, "2.1.0", "")
+        self.node = "v22.20.0"
+        self.npm_prefix = "/tmp"
 
     def find(self, name: str) -> str | None:
         return f"/bin/{name}" if name in self.versions else None
@@ -56,6 +62,8 @@ class FakeHost:
         if argv[:2] == ["npm", "view"]:
             rc, out, err = self.latest
             return rc, out if stdout_only and rc == 0 else out + err
+        if argv[:3] == ["npm", "prefix", "-g"]:
+            return 0, self.npm_prefix
         if argv[0] == "npm":
             pkg, _, version = argv[-1].rpartition("@")
             cli = {
@@ -65,7 +73,15 @@ class FakeHost:
             }[pkg]
             self.versions[cli] = version
             return 0, "added 1 package"
-        if argv[0] == "devin":
+        if argv[0] == "node":
+            return (0, self.node) if self.node else (127, "node: not found")
+        if argv[:2] == ["bash", "-o"] and "cli.devin.ai/install.sh" in argv[-1]:
+            self.versions["devin"] = "9.9.9"
+            return 0, "installed"
+        if argv[:2] == ["bash", "-o"] and "kimi-code/install.sh" in argv[-1]:
+            self.versions["kimi"] = argv[-1].rsplit("--version ", 1)[1]
+            return 0, "installed"
+        if Path(argv[0]).name == "devin" and argv[1:] == ["update"]:
             self.versions["devin"] = "9.9.9"
             return 0, "updated"
         cli = Path(argv[0]).name
@@ -350,6 +366,165 @@ def test_no_prompt_skips_the_headless_smoke() -> None:
     assert row["action"] == "updated"
 
 
+@pytest.mark.parametrize(
+    ("cli", "message", "command"),
+    [
+        ("claude", "Not logged in · Please run /login", "claude /login"),
+        (
+            "kimi",
+            "No model configured. Run `kimi` and use /login",
+            "kimi (then /login)",
+        ),
+        ("codex", "Please run `codex login`", "codex login"),
+    ],
+)
+@pytest.mark.parametrize("prompt_rc", [0, 1])
+def test_missing_login_keeps_verified_install_and_reports_user(
+    cli: str,
+    message: str,
+    command: str,
+    prompt_rc: int,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    host = FakeHost({cli: "2.0.0"})
+
+    def run(
+        argv: list[str], timeout: float, *, stdout_only: bool = False
+    ) -> tuple[int, str]:
+        if argv[0] == f"/bin/{cli}" and argv[1] != "--version":
+            return prompt_rc, message
+        return host.run(argv, timeout, stdout_only=stdout_only)
+
+    cfg = json.dumps(_config({cli: "2.1.0"}, only=[cli]))
+    assert tool.main(["update", "--config-json", cfg], run, host.find) == 2
+    out = capsys.readouterr().out
+    [row] = json.loads(out.rsplit("AGENT_CLI_JSON ", 1)[1])["rows"]
+    assert row["action"] == "updated-needs-login" and row["ok"] is True
+    assert host.versions[cli] == "2.1.0"
+    assert "installed, needs login" in out and command in out
+    assert f"as user {tool.pwd.getpwuid(os.geteuid()).pw_name}" in out
+    assert "ALERT" not in out
+    assert len([c for c in host.calls if c[:2] == ["npm", "install"]]) == 1
+
+
+def test_version_failure_cannot_be_masked_by_login_text() -> None:
+    host = FakeHost({"claude": "2.0.0"})
+
+    def run(
+        argv: list[str], timeout: float, *, stdout_only: bool = False
+    ) -> tuple[int, str]:
+        if argv == ["/bin/claude", "--version"] and host.versions["claude"] == "2.1.0":
+            return 1, "Not logged in · Please run /login"
+        return host.run(argv, timeout, stdout_only=stdout_only)
+
+    [row] = tool.update(_config({"claude": "2.1.0"}, only=["claude"]), run, host.find)
+    assert row["action"] == "rolled-back" and row["ok"] is False
+    assert host.versions["claude"] == "2.0.0"
+    assert not any(c[1] == "-p" for c in host.calls)
+
+
+def test_codex_smoke_skips_git_trust_check() -> None:
+    host = FakeHost({"codex": "2.0.0"})
+    tool.update(_config({"codex": "2.1.0"}, only=["codex"]), host.run, host.find)
+    assert any(
+        c[:3] == ["/bin/codex", "exec", "--skip-git-repo-check"] for c in host.calls
+    )
+
+
+def test_unknown_cli_has_generic_login_hint() -> None:
+    cfg = {
+        "bin": "other",
+        "pin": "2.1.0",
+        "min": "",
+        "install": "other update",
+        "smoke": ["-p", "OK"],
+    }
+    versions = iter(["2.0.0", "2.1.0", "2.1.0"])
+
+    def run(
+        argv: list[str], timeout: float, *, stdout_only: bool = False
+    ) -> tuple[int, str]:
+        if argv[1] == "--version":
+            return 0, next(versions)
+        return (1, "No model configured") if argv[1] == "-p" else (0, "installed")
+
+    row = tool.update_one(
+        "other",
+        cfg,
+        explicit=True,
+        smoke_prompt=True,
+        run=run,
+        find=lambda name: "/bin/other",
+    )
+    assert row["ok"] and "other (then /login)" in row["detail"]
+
+
+def test_broken_binary_takes_precedence_over_needs_login(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    host = FakeHost({"claude": "2.0.0", "kimi": "2.0.0"}, bad_prompt={"kimi"})
+
+    def run(
+        argv: list[str], timeout: float, *, stdout_only: bool = False
+    ) -> tuple[int, str]:
+        if argv[0] == "/bin/claude" and argv[1] == "-p":
+            return 1, "Not logged in"
+        return host.run(argv, timeout, stdout_only=stdout_only)
+
+    cfg = json.dumps(
+        _config({"claude": "2.1.0", "kimi": "2.1.0"}, only=["claude", "kimi"])
+    )
+    assert tool.main(["update", "--config-json", cfg], run, host.find) == 1
+    out = capsys.readouterr().out
+    assert "installed, needs login" in out and "ALERT kimi: rolled-back" in out
+    assert host.versions == {"claude": "2.1.0", "kimi": "2.0.0"}
+
+
+@pytest.mark.parametrize(
+    ("mode", "rc", "failed"),
+    [
+        ("update", 2, False),
+        ("update", 1, True),
+        ("report", 1, True),
+        ("report", 2, True),
+        ("update", 0, False),
+    ],
+)
+def test_role_to_wrapper_exit_contract(
+    mode: str,
+    rc: int,
+    failed: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jinja2 import Environment
+
+    task = next(
+        t
+        for t in _role_tasks()
+        if "ansible.builtin.fail" in t and "agent_cli_out.rc" in t.get("when", "")
+    )
+    assert (
+        bool(
+            Environment().compile_expression(task["when"])(
+                agent_cli_out={"rc": rc}, agent_cli_effective_mode=mode
+            )
+        )
+        is failed
+    )
+    wrapper = _load(WRAPPER, "agent_cli_wrapper_contract")
+    # Ansible fails a play with rc 2; an accepted needs-login row leaves rc 0.
+    play_rc = 2 if failed else 0
+    monkeypatch.setattr(
+        wrapper.subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(a, play_rc),
+    )
+    assert (
+        wrapper.main(["--host", "maple", *(["--apply"] if mode == "update" else [])])
+        == play_rc
+    )
+
+
 def test_restoring_the_previous_pin_rolls_back_by_pin() -> None:
     host = FakeHost({"claude": "2.0.0"})
     tool.update(_config({"claude": "2.1.0"}, only=["claude"]), host.run, host.find)
@@ -453,3 +628,251 @@ def test_role_defaults_ship_unpinned_and_report_only() -> None:
     assert d["agent_cli_mode"] == "report"
     assert all(d[f"agent_cli_pin_{c}"] == "" for c in tool.CLIS)
     assert set(d["agent_cli_installers"]) == set(tool.CLIS)
+
+
+# ── lane-user detection and installer choice (builder hosts) ──────────────
+
+
+def _lane_cfg(home: Path, pins: dict[str, str] | None = None, **extra: Any) -> Any:
+    """The role's config with ``~`` resolved against a fake user home."""
+    return tool.home_config(_config(pins or {}, **extra), str(home))
+
+
+def _executable(path: Path) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
+    path.chmod(0o755)
+    return str(path)
+
+
+def _versioned_run(versions: dict[str, str]) -> Any:
+    def run(argv: list[str], timeout: float, *, stdout_only: bool = False) -> Any:
+        return 0, f"{Path(argv[0]).name} {versions[argv[0]]}"
+
+    return run
+
+
+def test_devin_in_the_users_local_bin_is_found_off_path(tmp_path: Path) -> None:
+    """The gateway report said devin was missing while the deploy user had
+    ~/.local/bin/devin: the lanes read it there (PRECIS_DEVIN_BIN), ansible's
+    PATH does not carry it."""
+    devin = _executable(tmp_path / ".local" / "bin" / "devin")
+    config = _lane_cfg(tmp_path, only=["devin"])
+    find = tool.make_finder(config, which=lambda name: None)
+    [row] = tool.report(config, _versioned_run({devin: "2026.4.1"}), find)
+    assert (row["path"], row["version"], row["status"]) == (
+        devin,
+        "2026.4.1",
+        "unpinned",
+    )
+    assert find("claude") is None, "only the CLIs with a lane fallback gain one"
+
+
+def test_kimi_in_dot_kimi_code_is_found_and_path_still_wins(tmp_path: Path) -> None:
+    kimi = _executable(tmp_path / ".kimi-code" / "bin" / "kimi")
+    config = _lane_cfg(tmp_path)
+    assert tool.make_finder(config, which=lambda name: None)("kimi") == kimi
+    # kimi on PATH is what the lanes run first: it wins over ~/.kimi-code.
+    assert tool.make_finder(config, which=lambda name: f"/p/{name}")("kimi") == (
+        "/p/kimi"
+    )
+
+
+def test_a_missing_fallback_file_is_still_missing(tmp_path: Path) -> None:
+    config = _lane_cfg(tmp_path)
+    assert tool.make_finder(config, which=lambda name: None)("devin") is None
+
+
+def test_devin_fresh_install_uses_the_vendor_script_not_devin_update() -> None:
+    """`devin update` cannot install on a host without devin."""
+    host = FakeHost({})
+    cfg = _config({"devin": "9.9.9"}, only=["devin"])
+    [row] = tool.update(cfg, host.run, host.find)
+    assert (row["action"], row["ok"], row["version"]) == ("updated", True, "9.9.9")
+    [install] = [c for c in host.calls if c[0] == "bash"]
+    assert install[:3] == ["bash", "-o", "pipefail"]
+    assert install[-1] == "curl -fsSL https://cli.devin.ai/install.sh | bash"
+    assert not any(c[1:] == ["update"] for c in host.calls)
+
+
+def test_devin_present_updates_itself_through_the_path_it_was_found_at() -> None:
+    host = FakeHost({"devin": "1.0.0"})
+    cfg = _config({"devin": "9.9.9"}, only=["devin"])
+    [row] = tool.update(cfg, host.run, host.find)
+    assert row["action"] == "updated"
+    assert ["/bin/devin", "update"] in host.calls
+    assert not any(c[0] == "bash" for c in host.calls)
+
+
+def test_npm_installs_go_to_the_users_prefix_when_the_global_one_is_read_only(
+    tmp_path: Path,
+) -> None:
+    """A least-privilege user (no sudo) cannot write /usr/lib/node_modules."""
+    host = FakeHost({"claude": "2.0.0"})
+    host.npm_prefix = "/proc"
+    cfg = _lane_cfg(tmp_path, {"claude": "2.1.0"}, only=["claude"])
+    tool.update(cfg, host.run, host.find)
+    [npm] = [c for c in host.calls if c[:2] == ["npm", "install"]]
+    assert npm == [
+        "npm",
+        "install",
+        "-g",
+        "--prefix",
+        f"{tmp_path}/.local",
+        "@anthropic-ai/claude-code@2.1.0",
+    ]
+    host.calls.clear()
+    host.npm_prefix = str(tmp_path)  # writable: npm keeps its own prefix
+    host.versions["claude"] = "2.0.0"
+    tool.update(cfg, host.run, host.find)
+    assert ["npm", "install", "-g", "@anthropic-ai/claude-code@2.1.0"] in host.calls
+
+
+def test_detection_and_installs_follow_the_process_users_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The role becomes agent_cli_user; main resolves ~ against that
+    process's passwd home and exports it as HOME for vendor scripts."""
+    monkeypatch.setattr(
+        tool.pwd, "getpwuid", lambda uid: type("P", (), {"pw_dir": str(tmp_path)})()
+    )
+    monkeypatch.setenv("HOME", "/somebody/else")
+    assert tool.user_home() == str(tmp_path)
+    kimi = _executable(tmp_path / ".kimi-code" / "bin" / "kimi")
+    host = FakeHost({})
+    cfg = json.dumps(_config({}, only=["kimi"]))
+    monkeypatch.setattr(tool.shutil, "which", lambda name: None)
+    seen: list[Any] = []
+
+    def report(c: Any, r: Any, f: Any) -> list[Any]:
+        seen.append(f("kimi"))
+        return []
+
+    monkeypatch.setattr(tool, "report", report)
+    tool.main(["report", "--config-json", cfg], host.run)
+    assert seen == [kimi]
+    assert os.environ["HOME"] == str(tmp_path)
+
+
+def test_kimi_uses_npm_when_node_is_new_enough() -> None:
+    host = FakeHost({"kimi": "1.0.0"})
+    [row] = tool.update(_config({"kimi": "2.1.0"}, only=["kimi"]), host.run, host.find)
+    assert row["action"] == "updated"
+    assert ["npm", "install", "-g", "@moonshot-ai/kimi-code@2.1.0"] in host.calls
+    assert not any(c[0] == "bash" for c in host.calls)
+
+
+@pytest.mark.parametrize(
+    "node", ["v20.11.0", "v22.18.0", ""], ids=lambda n: n or "none"
+)
+def test_kimi_uses_the_vendor_script_without_a_new_enough_node(node: str) -> None:
+    host = FakeHost({"kimi": "1.0.0"})
+    host.node = node
+    [row] = tool.update(_config({"kimi": "2.1.0"}, only=["kimi"]), host.run, host.find)
+    assert (row["action"], row["version"]) == ("updated", "2.1.0")
+    [script] = [c for c in host.calls if c[0] == "bash"]
+    assert script[-1] == (
+        "curl -fsSL https://code.kimi.com/kimi-code/install.sh"
+        " | KIMI_NO_MODIFY_PATH=1 bash -s -- --version 2.1.0"
+    )
+    assert not any(c[:2] == ["npm", "install"] for c in host.calls)
+
+
+def test_kimi_living_in_dot_kimi_code_updates_in_place_even_with_node(
+    tmp_path: Path,
+) -> None:
+    """The gateway's kimi is the vendor layout; an npm install would add a
+    second copy on PATH that the lanes then run instead."""
+    kimi = _executable(tmp_path / ".kimi-code" / "bin" / "kimi")
+    host = FakeHost({"kimi": "1.0.0"})
+    config = _lane_cfg(tmp_path, {"kimi": "2.1.0"}, only=["kimi"])
+    tool.update(config, host.run, lambda name: kimi)
+    assert any(c[0] == "bash" and "kimi-code/install.sh" in c[-1] for c in host.calls)
+    assert not any(c[:2] == ["npm", "install"] for c in host.calls)
+
+
+def test_kimi_latest_via_the_script_resolves_with_the_vendor_lookup() -> None:
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], timeout: float, *, stdout_only: bool = False) -> Any:
+        calls.append(argv)
+        if argv[0] == "node":
+            return 127, ""
+        if argv[0] == "bash":
+            return 0, "2.5.3\n"
+        return 0, "kimi 2.0.0"
+
+    [row] = tool.report(
+        _config({"kimi": "latest"}, only=["kimi"]), run, lambda name: "/bin/kimi"
+    )
+    assert (row["pin"], row["pin_source"]) == ("2.5.3", "latest")
+    assert calls[-1][-1] == "curl -fsSL https://code.kimi.com/kimi-code/latest"
+
+
+# ── the agent-start launcher is not for builder hosts ─────────────────────
+
+
+def _role_tasks() -> list[dict[str, Any]]:
+    return yaml.safe_load((ROLE / "tasks" / "main.yml").read_text(encoding="utf-8"))
+
+
+def _launcher_managed(inventory_hostname: str, groups: dict[str, list[str]]) -> str:
+    import jinja2
+
+    d = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text(encoding="utf-8"))
+    return (
+        jinja2.Environment()
+        .from_string(d["agent_cli_launcher_managed"])
+        .render(inventory_hostname=inventory_hostname, groups=groups)
+    )
+
+
+def test_builder_hosts_skip_the_launcher_and_so_its_alert() -> None:
+    groups = {"builder_hosts": ["maple"]}
+    assert _launcher_managed("maple", groups) == "False"
+    assert _launcher_managed("gateway", groups) == "True"
+    assert _launcher_managed("gateway", {}) == "True", "undeclared group: no change"
+    task = next(
+        t for t in _role_tasks() if t.get("name", "").startswith("Add the agent-start")
+    )
+    assert task["when"] == "agent_cli_launcher_managed | bool"
+    # The base config carries no launcher: with the task skipped, no row and
+    # no "set agent_cli_launcher_checkout" ALERT reach the report.
+    base = next(t for t in _role_tasks() if "ansible.builtin.set_fact" in t)
+    assert "launcher" not in base["ansible.builtin.set_fact"]["agent_cli_config"]
+
+
+def test_a_config_without_a_launcher_raises_no_launcher_alert(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    host = FakeHost({"claude": "2.0.0"})
+    cfg = json.dumps(_config({}, only=["claude"]))
+    assert "launcher" not in cfg
+    rc = tool.main(["report", "--config-json", cfg, "--strict"], host.run, host.find)
+    out = capsys.readouterr().out
+    assert rc == 0 and "agent_cli_launcher_checkout" not in out
+    assert "agent-start" not in out
+
+
+def test_the_script_runs_as_agent_cli_user_not_as_the_global_root_become() -> None:
+    """ansible.cfg's default become is root: without become_user the script
+    saw root's home and reported every user-local CLI missing."""
+    task = next(t for t in _role_tasks() if "ansible.builtin.script" in t)
+    assert task["become"] is True
+    assert task["become_user"] == "{{ agent_cli_user }}"
+
+
+def test_builder_hosts_run_the_clis_as_the_builder_user() -> None:
+    import jinja2
+
+    d = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text(encoding="utf-8"))
+    expr = jinja2.Environment().from_string(d["agent_cli_user"])
+
+    def user(host: str, groups: dict[str, list[str]], **hostvars: str) -> str:
+        return expr.render(inventory_hostname=host, groups=groups, **hostvars)
+
+    groups = {"builder_hosts": ["maple"]}
+    assert user("maple", groups, precis_builder_user="coder") == "coder"
+    assert user("maple", groups) == "deploy", "builder user unset: deploy"
+    assert user("gateway", groups, precis_builder_user="coder") == "deploy"
+    assert user("gateway", {}) == "deploy"

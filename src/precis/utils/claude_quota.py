@@ -23,8 +23,8 @@ no ``unifiedWindows``; the ``--output-format json`` envelope carried
 all of those shapes and folds whatever percentages they report into
 the snapshot.
 
-Persists to ``claude_quota_snapshot`` (scope='unified'). The 1-token
-call is cheap; the value is the headers Anthropic returns. Claude Code
+Persists to ``claude_quota_snapshot`` (scope='unified'). The probe is
+one `claude -p` call per refresh interval (its cost is unmeasured); the value is the headers Anthropic returns. Claude Code
 does the same trick under its ``/usage`` slash command (binary strings
 show a dedicated ``WkO`` function with ``source: "quota_check"``).
 
@@ -464,7 +464,7 @@ def refresh_snapshot(
     # was found; this path did not, so the one watchdog built to page on a
     # stale token both missed the signature AND resolved its own alert on
     # the way past (``workers.quota_check`` clears on a non-AUTH_FAILED
-    # outcome). That is how the 2026-09-10 melchior token expiry ran two
+    # outcome). That is how the 2026-09-10 agent-host token expiry ran two
     # days dark, taking every doctor_tick with it.
     if _looks_like_logged_out(res.stdout or ""):
         log.warning(

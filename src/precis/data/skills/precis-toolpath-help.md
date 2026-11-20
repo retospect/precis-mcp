@@ -48,7 +48,7 @@ ever helps the middle case; it never unblocks a blocked or errored call.
 | Goal | Toolpath | Depth |
 |---|---|---|
 | Find content by topic | `search(q='...')` (cross-kind) or `search(kind='paper', q='...')` | `precis-search-help` |
-| Search this repo's own docs/backlog/skills prose | `search(kind='md', q='...')` | `precis-md-help` |
+| Search this repo's own docs and skills prose | `search(kind='md', q='...')` | `precis-md-help` |
 | Read a thing you can name | `get(kind='paper', id='wang2020state')` / `get(kind='todo', id=122)` | `precis-get-help` |
 | Read or tag several gripes/alerts/todos you already hold | `get(kind='gripe', id=[42, 43])` (one summary block per id, ≤50) / `tag(kind='todo', id=[...], add=[...])` (one transaction) | `precis-gripe-help` |
 | Read one section / chunk | `get(id='pa5~40')` or a chunk handle `get(id='pc890282')` | `precis-addressing-help` |
@@ -58,7 +58,7 @@ ever helps the middle case; it never unblocks a blocked or errored call.
 | Deep async paper campaign | `search(kind='paper', q='...', good=True)` → poll the job handle | `precis-search-help` |
 | Which skill do I need? | `get(kind='skill', id='toc')` / `search(kind='skill', q='your goal')` | `precis-overview` |
 | Stumble into something new | `get(kind='random')` | `precis-random-help` |
-| Debug a ref's hidden state | `get(kind='todo', id=122, view='raw')` (dumps full `meta` JSON) | `precis-todo-help` |
+| Debug a ref's hidden state | `get(kind='todo', id=122, view='raw')` (dumps `meta`; oversized values elide) | `precis-todo-help` |
 | Inspect a ref's link graph | `get(kind='todo', id=122, view='links')` | `precis-relations` |
 | Read a ref's event trail | `get(kind='todo', id=122, view='log')` | — |
 
@@ -71,7 +71,7 @@ their own view set instead, is in `precis-overview`.
 |---|---|---|
 | File a task | `put(kind='todo', text='...', tags=['PRIO:high'])` | `precis-todo-help` |
 | File a bug in precis itself | `put(kind='gripe', text='exact command; expected; actual')`; no duplicate search or filing cap; dogfooding adds `tags=['dogfood', 'topic:<area>']`; read-only agents report `FRICTION` for their coordinator to file | `precis-gripe-help` |
-| Batch gripes for a builder, record handoff / verdict / landed sha | `edit(kind='gripe', id=[...], mode='fix', args={'batch': 'x', 'brief': '...'})`; queues `get(kind='gripe', id='/queue')` | `precis-gripe-loop-help` |
+| Run a manual builder wave over gripes: one code todo per gripe carries the brief, handoff and verdict | `put(kind='todo', parent_id=559473, body='<brief>', meta={'llm_tier': None}, link='gripe:N', rel='fixes')`; then `handoff:` / `review:` comments on the todo | `precis-gripe-loop-help` |
 | Run a question round before a flagged build | `search(kind='memory'|'conv'|'paper', q=...)` first, then `put(kind='todo', id=N, text='grill: ...')` for what stays open | `precis-grill-me-help` |
 | Keep a note for later | `put(kind='memory', text='...')` | `precis-memory-help` |
 | Capture a term into the learner's knowledge graph | `put(kind='concept', text='<name> — <definition>')` (`dry_run` previews near-duplicates); typed edges `has-prerequisite`/`analogy-of`/`contrasts-with` | `precis-concept-help` |
@@ -118,12 +118,12 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | What needs my attention | `search(kind='todo', view='attention')` | `precis-todo-tree-help` |
 | Split a task | children via `put(..., parent_id=122)` | `precis-decomposition-help` |
 | Sketch a thread's reasoning outline | `put(kind='plan', id='x-plan', title='…', project=N)`, then add `pe<id>` nodes | `precis-plan-help` |
+| Judge a business idea (go / pivot / no-go) | `search(kind='memory', tags=['bizplan:*'], view='toc')`, then a plan root + assumption nodes | `precis-business-plan-help` |
 | Wait on a condition | leaf with `meta.auto_check` | `precis-auto-todo-help` |
 | Recurring work | `meta.schedule` set | `precis-recurring-help` |
 | Run a job under a todo | set `meta.executor`; `minter` mints a `kind='job'` | `precis-minter-help`, `precis-job-help` |
 | Send an existing todo to a factory lane | `edit(kind='todo', id=N, args={'meta': {'op': {'type': 'run_slice'}}})` + `tag(add=['plan:N'])` | `precis-job-help`, `precis-job-factory-help` |
-| Hand-submit a fix job (lane OFF; sessions fix gripes) | `put(kind='job', link='gripe:42', rel='fixes', args={'parent_id': <todo>, 'job_type': 'fix_gripe'})` | `precis-fix-gripe-help` |
-| Submit code work to the dark factory | `put(kind='todo', mode='plan', args={'template': 'gripe-fix', 'gripe_id': N})`; wait `get(kind='todo', id=N, args={'wait': 900})` | `precis-factory-submit-help` |
+| Get a gripe fixed, or submit other code work to the dark factory | `put(kind='todo', mode='plan', args={'template': 'gripe-fix', 'gripe_id': N})`; wait `get(kind='todo', id=N, args={'wait': 900})` | `precis-factory-submit-help` |
 | Read raw worker_logs (no Bash/SQL) | `get(kind='job', id='/logs?handler=<name>&since=24&level=WARNING')` | `precis-job-observe-help` |
 
 ## Authoring artifacts — models & files

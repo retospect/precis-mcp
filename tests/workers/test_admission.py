@@ -9,13 +9,21 @@ unit bracketed by a TTL ``resource_slot_holds`` lease. ``mem_mb``,
 
 from __future__ import annotations
 
+import os
+import subprocess
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+from precis.budget import meter
+from precis.store.store import Store
+from precis.utils import outbound_policy, rate_limit
+from precis.utils.llm import openai_tools
 from precis.workers import admission
 from precis.workers import capability_probe as cap
 from precis.workers.admission import Footprint
@@ -189,6 +197,11 @@ def _fake_host(
         cap, "_available_cpu_milli", lambda: None if cpus is None else cpus * 1000
     )
     monkeypatch.setattr(cap, "_total_vram_mb", lambda: vram_mb)
+    # Homogeneous-cards stand-in: the per-card ceiling equals the patched
+    # total (one card), None stays unknown.
+    monkeypatch.setattr(
+        cap, "_max_card_vram_mb", lambda: None if vram_mb is None else vram_mb
+    )
 
 
 @pytest.mark.usefixtures("_no_reserve_env")
@@ -200,6 +213,7 @@ def test_capacity_is_measured_total_minus_default_reserve(
         "mem_mb": 32768 - cap.DEFAULT_MEM_RESERVE_MB,
         "cpu_milli": 8000,
         "vram_mb": 0,  # no GPU → definitively absent, row retracted
+        "vram_card_mb": 0,  # no card to fit a model on, row retracted
     }
 
 
@@ -213,6 +227,9 @@ def test_capacity_reserves_come_from_env(monkeypatch: pytest.MonkeyPatch) -> Non
         "mem_mb": 12288,
         "cpu_milli": 3000,
         "vram_mb": 22528,
+        # The per-card ceiling is raw: the host-wide VRAM reserve models
+        # aggregate headroom, per-card fit gets its margin from the claim.
+        "vram_card_mb": 24576,
     }
 
 
@@ -225,6 +242,7 @@ def test_capacity_unknown_measurement_leaves_row(
         "mem_mb": None,
         "cpu_milli": None,
         "vram_mb": None,
+        "vram_card_mb": None,
     }
 
 
@@ -234,6 +252,53 @@ def test_capacity_reserve_above_total_clamps_to_zero(
 ) -> None:
     _fake_host(monkeypatch, mem_mb=4096, cpus=2, vram_mb=0)
     assert cap.probe_host_capacity()["mem_mb"] == 0
+
+
+# ── live free probes: admittable headroom (total minus reserve) ───────────
+
+
+@pytest.mark.usefixtures("_no_reserve_env")
+def test_live_mem_free_nets_the_os_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """td655171 review: the live headroom the claim cross-checks must not
+    spend the OS reserve the static total-minus-reserve ledger protects —
+    an untracked consumer eating into it vetoes, never borrows."""
+    monkeypatch.setattr(cap, "_linux_mem_available_mb", lambda: 32768)
+    assert cap.mem_free_mb() == 32768 - cap.DEFAULT_MEM_RESERVE_MB
+    monkeypatch.setenv("PRECIS_HOST_MEM_RESERVE_MB", "4096")
+    assert cap.mem_free_mb() == 32768 - 4096
+
+
+@pytest.mark.usefixtures("_no_reserve_env")
+def test_live_mem_free_at_or_under_reserve_reads_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Available under the reserve is a real ``0`` — vetoes memory
+    admissions, not the ``None`` that would read as dark."""
+    monkeypatch.setattr(cap, "_linux_mem_available_mb", lambda: 4096)
+    assert cap.mem_free_mb() == 0
+
+
+def test_live_mem_free_unknown_stays_dark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unmeasurable stays ``None`` — admission reads as dark, ledger only."""
+    monkeypatch.setattr(cap, "_linux_mem_available_mb", lambda: None)
+    monkeypatch.setattr(cap.sys, "platform", "linux")
+    assert cap.mem_free_mb() is None
+
+
+@pytest.mark.usefixtures("_no_reserve_env")
+def test_live_vram_free_nets_the_host_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host-wide VRAM reserve comes off the best-card scalar too:
+    ``0`` by default (today's reading), a configured reserve is kept."""
+    monkeypatch.setattr(cap, "vram_free_per_card_mb", lambda: [1024, 81920])
+    assert cap.vram_free_mb() == 81920
+    monkeypatch.setenv("PRECIS_HOST_VRAM_RESERVE_MB", "2048")
+    assert cap.vram_free_mb() == 81920 - 2048
 
 
 def test_darwin_total_mem_from_sysctl(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -255,6 +320,44 @@ def test_vram_sums_nvidia_smi_cards(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *a, **k: SimpleNamespace(returncode=0, stdout="81920\n81920\n"),
     )
     assert cap._total_vram_mb() == 163840
+
+
+@pytest.mark.usefixtures("_no_reserve_env")
+def test_vram_card_ceiling_is_the_largest_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """td655172: the per-card row is the biggest single card, not the
+    host-wide sum — a model must fit ONE card."""
+    monkeypatch.setattr(cap.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def _run(*a: object, **k: object) -> SimpleNamespace:
+        raw = a[0] if a else k.get("args", [])
+        parts = raw if isinstance(raw, (list, tuple)) else [raw]
+        argv = [str(x) for x in parts]
+        field = (
+            "memory.total" if any("memory.total" in x for x in argv) else "memory.free"
+        )
+        out = (
+            "24576\n81920\n"  # two cards: 24 GiB + 80 GiB
+            if field == "memory.total"
+            else "1024\n81920\n"
+        )
+        return SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+    monkeypatch.setattr(cap.subprocess, "run", _run)
+    assert cap._max_card_vram_mb() == 81920
+    assert cap._total_vram_mb() == 106496
+    # Largest single card, not the 82944 sum: a model must fit one card.
+    assert cap.vram_free_mb() == 81920
+    # …and the per-card list the claim binds a card from keeps the
+    # nvidia-smi index order (td655172 card assignment).
+    assert cap.vram_free_per_card_mb() == [1024, 81920]
+
+
+def test_vram_free_absent_without_nvidia_smi(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cap.shutil, "which", lambda name: None)
+    assert cap.vram_free_mb() is None
+    assert cap.vram_free_per_card_mb() is None
 
 
 def test_vram_unparseable_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -514,3 +617,596 @@ def test_concurrent_admits_past_capacity_exactly_one_wins(store) -> None:
         ).fetchone()
     assert row is not None and row[0] >= 0
     assert len(_holds(store, host)) == 2  # the winner's two dimensions only
+
+
+# ── spawn: the one admitted detached launcher (gr657245 S2) ────────────────
+
+
+class _FakeChild:
+    """Stand-in for the Popen'd child: a pid plus a ``wait`` that raises
+    ``TimeoutExpired`` ``timeouts`` times (so the babysit must renew between
+    passes) and then blocks on ``finish`` — the test releases the exit."""
+
+    def __init__(self, pid: int = 4321, timeouts: int = 1) -> None:
+        self.pid = pid
+        self.waits: list[float] = []
+        self.finish = threading.Event()
+        self._timeouts = timeouts
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.waits.append(float(timeout) if timeout is not None else -1.0)
+        if self._timeouts > 0:
+            self._timeouts -= 1
+            raise subprocess.TimeoutExpired(
+                cmd="fake-child", timeout=timeout if timeout is not None else -1.0
+            )
+        assert self.finish.wait(30), "test never released the fake child"
+        return 0
+
+
+def test_spawn_admits_launches_releases(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Holds exist while the child lives (renewed on schedule) and the
+    exit-first babysit frees the footprint promptly at exit."""
+    host = "sp1"
+    store.sync_host_resource_slots(host, {"mem_mb": 8192, "cpu_milli": 4000})
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+    child = _FakeChild(pid=4321, timeouts=1)
+    launched: dict[str, object] = {}
+
+    def popen(argv: list[str], **kwargs: object) -> _FakeChild:
+        launched["argv"] = argv
+        launched["env"] = kwargs["env"]
+        return child
+
+    renewals: list[tuple[int, ...]] = []
+    released = threading.Event()
+    real_renew = admission._renew
+    real_release = admission._release_quietly
+
+    def spy_renew(store_: object, adm: admission.Admission, ttl_s: float) -> None:
+        renewals.append(tuple(h.hold_id for h in adm.holds))
+        real_renew(store_, adm, ttl_s)
+
+    def spy_release(store_: object, adm: admission.Admission) -> None:
+        try:
+            real_release(store_, adm)
+        finally:
+            released.set()
+
+    monkeypatch.setattr(admission, "_renew", spy_renew)
+    monkeypatch.setattr(admission, "_release_quietly", spy_release)
+
+    pid = admission.spawn(
+        store,
+        host,
+        Footprint(cpu_milli=1000, mem_mb=2048, wall_s=30.0),
+        "t:spawn1",
+        ["echo", "hi"],
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin"},
+        stdin=None,
+        log_path=tmp_path / "run.log",
+        exit_file=tmp_path / "exit",
+        popen=popen,
+    )
+    assert pid == 4321
+    assert launched["argv"] == [
+        "/bin/sh",
+        "-c",
+        admission._SPAWN_SCRIPT,
+        "admitted",
+        "echo",
+        "hi",
+    ]
+    env = launched["env"]
+    assert isinstance(env, dict)
+    assert env["RS_IN"] == os.devnull
+    assert env["RS_LOG"] == str(tmp_path / "run.log")
+    assert env["RS_EXIT"] == str(tmp_path / "exit")
+
+    # Admitted: the holds exist and capacity is consumed while the child
+    # lives (the admit committed before spawn returned).
+    assert _holds(store, host) == [("cpu_milli", 1000), ("mem_mb", 2048)]
+    assert _free(store, host) == {"cpu_milli": 3000, "mem_mb": 6144}
+
+    # The babysit renews on schedule after the first wait times out …
+    deadline = time.monotonic() + 10
+    while not renewals and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert renewals, "babysit never renewed the holds"
+    # … and the footprint is still reserved while the child runs.
+    assert _holds(store, host) == [("cpu_milli", 1000), ("mem_mb", 2048)]
+
+    child.finish.set()
+    assert released.wait(10), "babysit never released at child exit"
+    assert _holds(store, host) == []
+    assert _free(store, host) == {"cpu_milli": 4000, "mem_mb": 8192}
+
+
+def test_spawn_refused_when_no_capacity(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A host that publishes rows but cannot fit the footprint refuses —
+    and nothing is launched."""
+    host = "sp2"
+    store.sync_host_resource_slots(host, {"mem_mb": 1024, "cpu_milli": 4000})
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+
+    def popen(*args: object, **kwargs: object) -> object:
+        raise AssertionError("popen called despite the capacity refusal")
+
+    with pytest.raises(admission.Refused):
+        admission.spawn(
+            store,
+            host,
+            Footprint(cpu_milli=1000, mem_mb=2048),
+            "t:spawn2",
+            ["echo", "hi"],
+            log_path=tmp_path / "run.log",
+            exit_file=tmp_path / "exit",
+            popen=popen,
+        )
+    assert _holds(store, host) == []
+    assert _free(store, host) == {"cpu_milli": 4000, "mem_mb": 1024}
+
+
+def test_spawn_unheld_when_host_publishes_nothing(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unadvertised host launches without holds — admission never vetoes
+    a launch it cannot measure."""
+    host = "sp3"
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+    child = _FakeChild(pid=4322, timeouts=0)
+    pid = admission.spawn(
+        store,
+        host,
+        Footprint(cpu_milli=1000, mem_mb=2048),
+        "t:spawn3",
+        ["echo", "hi"],
+        log_path=tmp_path / "run.log",
+        exit_file=tmp_path / "exit",
+        popen=lambda *a, **k: child,
+    )
+    assert pid == 4322
+    assert _holds(store, host) == []
+    child.finish.set()
+
+
+def _hold_identities(
+    store, host: str
+) -> list[tuple[str, str | None, str | None, str | None]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT resource, holder_host, holder_process, holder_boot_id "
+            "FROM resource_slot_holds WHERE host = %s ORDER BY resource",
+            (host,),
+        ).fetchall()
+    return [(str(r), h, p, b) for r, h, p, b in rows]
+
+
+def test_spawn_holds_carry_no_worker_identity(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The detached child outlives the launching worker: its holds carry
+    NO holder identity, so the reaper's epoch arm cannot refund them when
+    the worker's generation is replaced while the child still runs —
+    TTL-only reclaim preserves the accounting through child exit (review
+    td702053)."""
+    host = "sp4"
+    store.sync_host_resource_slots(host, {"mem_mb": 8192, "cpu_milli": 4000})
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+    child = _FakeChild(pid=4323, timeouts=0)
+    pid = admission.spawn(
+        store,
+        host,
+        Footprint(cpu_milli=1000, mem_mb=2048),
+        "t:spawn4",
+        ["echo", "hi"],
+        log_path=tmp_path / "run.log",
+        exit_file=tmp_path / "exit",
+        popen=lambda *a, **k: child,
+    )
+    assert pid == 4323
+    identities = _hold_identities(store, host)
+    assert [r for r, _h, _p, _b in identities] == ["cpu_milli", "mem_mb"]
+    assert all(h is None and p is None and b is None for _r, h, p, b in identities)
+    child.finish.set()
+
+
+def test_spawn_releases_admission_when_popen_raises(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A popen failure after a successful admit releases the just-taken
+    holds before the error propagates — no footprint leaks to its TTL for
+    a child that never started (review td702053)."""
+    host = "sp5"
+    store.sync_host_resource_slots(host, {"mem_mb": 8192, "cpu_milli": 4000})
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+
+    def broken(*args: object, **kwargs: object) -> object:
+        raise OSError("exec format error")
+
+    with pytest.raises(OSError, match="exec format error"):
+        admission.spawn(
+            store,
+            host,
+            Footprint(cpu_milli=1000, mem_mb=2048),
+            "t:spawn5",
+            ["echo", "hi"],
+            log_path=tmp_path / "run.log",
+            exit_file=tmp_path / "exit",
+            popen=broken,
+        )
+    assert _holds(store, host) == []
+    assert _free(store, host) == {"cpu_milli": 4000, "mem_mb": 8192}
+
+
+def test_spawn_writes_the_childs_own_pid_file(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr708457: ``pid_file`` is written by the CHILD's first act, not the
+    caller — a worker dead between ``spawn`` returning and persisting
+    the handle still leaves the compute named on disk. A real /bin/sh
+    here; the fake child never runs the script."""
+    host = "sp6"
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+    pid_file = tmp_path / "child.pid"
+    exit_file = tmp_path / "child.exit"
+    pid = admission.spawn(
+        store,
+        host,
+        Footprint(cpu_milli=1000, mem_mb=2048),
+        "t:spawn6",
+        ["true"],
+        log_path=tmp_path / "run.log",
+        exit_file=exit_file,
+        pid_file=pid_file,
+    )
+    deadline = time.monotonic() + 10
+    while not exit_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert exit_file.read_text(encoding="utf-8").strip() == "0"
+    assert int(pid_file.read_text(encoding="utf-8").strip()) == pid
+
+
+def test_spawn_pid_file_rides_the_env(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The shell writes RS_PID and exposes the same path as its launch marker."""
+    host = "sp7"
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+    captured: dict[str, object] = {}
+
+    def popen(*args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        captured["argv"] = args[0]
+        return _FakeChild(pid=4500, timeouts=0)
+
+    child_pid_file = tmp_path / "c.pid"
+    admission.spawn(
+        store,
+        host,
+        Footprint(cpu_milli=1000, mem_mb=2048),
+        "t:spawn7",
+        ["echo", "hi"],
+        log_path=tmp_path / "run.log",
+        exit_file=tmp_path / "exit",
+        pid_file=child_pid_file,
+        popen=popen,
+    )
+    env = captured["env"]
+    assert isinstance(env, dict) and env["RS_PID"] == str(child_pid_file)
+    argv = captured["argv"]
+    assert isinstance(argv, list) and argv[3] == str(child_pid_file)
+    admission.spawn(
+        store,
+        host,
+        Footprint(cpu_milli=1000, mem_mb=2048),
+        "t:spawn8",
+        ["echo", "hi"],
+        log_path=tmp_path / "run.log",
+        exit_file=tmp_path / "exit",
+        popen=popen,
+    )
+    env = captured["env"]
+    assert isinstance(env, dict) and env["RS_PID"] == os.devnull
+
+
+# ── remote LLM calls: one llm-api slot, counted refusals (gr657245 S2) ─────
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1"
+_LLM_RESOURCE = "llm-api:openrouter"
+
+
+def _seed_api_slot(store, capacity: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM resource_slot_holds WHERE host = 'api' AND resource = %s",
+            (_LLM_RESOURCE,),
+        )
+        conn.execute(
+            "DELETE FROM resource_slots WHERE host = 'api' AND resource = %s",
+            (_LLM_RESOURCE,),
+        )
+        conn.execute(
+            "INSERT INTO resource_slots (host, resource, capacity, free, kind) "
+            "VALUES ('api', %s, %s, %s, 'hard')",
+            (_LLM_RESOURCE, capacity, capacity),
+        )
+        conn.commit()
+
+
+def _api_slot_free(store) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT free FROM resource_slots WHERE host = 'api' AND resource = %s",
+            (_LLM_RESOURCE,),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_remote_llm_call_takes_slot_and_respects_cost_cap(
+    store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One remote call holds one ``llm-api:<provider>`` unit for the whole
+    call via ``admission.admit`` and frees it after; an exhausted slot
+    refuses instead of running unaccounted, and the refusal lands on the
+    provider row's durable cost counter."""
+    prior = meter.active_store()
+    meter.bind_store(store)
+    # The counted-refusal write rides rate_limit's own connection, not the
+    # bound store — point it at this test clone for the refusal half.
+    monkeypatch.setenv("PRECIS_DATABASE_URL", store.dsn)
+    outbound_policy.reset_cache()
+    limit_row = "host:openrouter.ai"
+    try:
+        _seed_api_slot(store, 1)
+        with openai_tools._llm_api_hold(OPENROUTER_URL, 5.0):
+            assert _api_slot_free(store) == 0
+            # The admission ledger records the TTL hold while the call runs.
+            assert _holds(store, "api") == [(_LLM_RESOURCE, 1)]
+        assert _api_slot_free(store) == 1
+        assert _holds(store, "api") == []
+
+        # Exhausted: capacity 0 and a zero wait budget → a counted refusal.
+        _seed_api_slot(store, 0)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM external_rate_limits WHERE provider = %s", (limit_row,)
+            )
+            conn.execute(
+                "INSERT INTO external_rate_limits "
+                "(provider, capacity, refill_per_sec, tokens, daily_cap, max_wait_s) "
+                "VALUES (%s, 1, 1.0, 1, NULL, 0)",
+                (limit_row,),
+            )
+            conn.commit()
+        outbound_policy.reset_cache()
+        with pytest.raises(rate_limit.RateLimited):
+            with openai_tools._llm_api_hold(OPENROUTER_URL, 5.0):
+                pass  # never entered — the hold refuses
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT refused_today FROM external_rate_limits WHERE provider = %s",
+                (limit_row,),
+            ).fetchone()
+        assert row is not None and int(row[0]) >= 1
+    finally:
+        rate_limit.close()
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM external_rate_limits WHERE provider = %s", (limit_row,)
+            )
+            conn.commit()
+        meter.bind_store(prior)
+        outbound_policy.reset_cache()
+
+
+# ── per-site footprints: heavy launch sites admit their work class ─────────
+
+
+def _spy_admit(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Footprint]]:
+    """Wrap ``admission.admit`` (calling through) and record
+    ``(host, footprint)`` per call."""
+
+    seen: list[tuple[str, Footprint]] = []
+    real = admission.admit
+
+    def spy(conn: Any, host: str, footprint: Footprint, holder: str, **kw: Any):
+        seen.append((host, footprint))
+        return real(conn, host, footprint, holder, **kw)
+
+    monkeypatch.setattr(admission, "admit", spy)
+    return seen
+
+
+def _seed_host(store, host: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    store.sync_host_resource_slots(host, {"mem_mb": 32768, "cpu_milli": 16000})
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+
+
+@pytest.fixture
+def bound(store) -> Iterator[object]:
+    """Bind the test store for sites that read ``meter.active_store()``."""
+    prior = meter.active_store()
+    meter.bind_store(store)
+    yield prior
+    meter.bind_store(prior)
+
+
+def test_dep_check_step_admits_its_footprint(
+    store, monkeypatch: pytest.MonkeyPatch, bound
+) -> None:
+    from precis.workers.job_types import dep_check
+
+    host = "dc1"
+    _seed_host(store, host, monkeypatch)
+    seen = _spy_admit(monkeypatch)
+
+    res = dep_check._run(["/bin/true"], Path("/tmp"))
+    assert res.returncode == 0
+    ((h, fp),) = seen
+    assert h == host
+    assert fp.cpu_milli == 2000 and fp.mem_mb == 4096
+    assert fp.wall_s == float(dep_check._STEP_TIMEOUT_S)
+    assert _holds(store, host) == []  # released at block exit
+
+
+def test_boundary_probe_admits_its_footprint(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from precis.workers.job_types import boundary_probe
+
+    host = "bp1"
+    _seed_host(store, host, monkeypatch)
+    seen = _spy_admit(monkeypatch)
+    monkeypatch.setattr(
+        boundary_probe.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            a[0] if a else k.get("args"), 0, "ok", ""
+        ),
+    )
+
+    rc, _out = boundary_probe._run_probe(
+        {"file": "x.py"}, tmp_path, "img", name="n", tag="t", store=store
+    )
+    assert rc == 0
+    ((h, fp),) = seen
+    assert h == host
+    assert fp.cpu_milli == 2000 and fp.mem_mb == 4096
+    assert fp.wall_s == float(boundary_probe._PROBE_TIMEOUT_S)
+    assert _holds(store, host) == []
+
+
+def test_moot_probe_admits_its_footprint(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from precis.workers.job_types import run_slice
+
+    host = "mt1"
+    _seed_host(store, host, monkeypatch)
+    seen = _spy_admit(monkeypatch)
+    monkeypatch.setattr(
+        run_slice,
+        "_git",
+        lambda argv, cwd: subprocess.CompletedProcess(argv, 0, "", ""),
+    )
+    holds_during: list[list[tuple[str, int]]] = []
+
+    def fake_run(argv: list[str], cwd: Path, timeout: float):
+        holds_during.append(_holds(store, host))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(run_slice, "_run", fake_run)
+
+    assert run_slice._tests_green_on_main(tmp_path, ["tests/x.py"], store=store) is True
+    ((h, fp),) = seen
+    assert h == host
+    assert fp.cpu_milli == 4000 and fp.mem_mb == 8192
+    assert fp.wall_s == run_slice._MOOT_TEST_TIMEOUT_S
+    assert holds_during == [[("cpu_milli", 4000), ("mem_mb", 8192)]]
+    assert _holds(store, host) == []
+
+
+def _exit0_stub(tmp_path: Path) -> str:
+    stub = tmp_path / "exit0"
+    stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    stub.chmod(0o755)
+    return str(stub)
+
+
+def test_codex_exec_admits_its_footprint(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bound
+) -> None:
+    from precis.utils import codex_exec
+
+    host = "cx1"
+    _seed_host(store, host, monkeypatch)
+    seen = _spy_admit(monkeypatch)
+
+    res = codex_exec._run_codex(
+        [_exit0_stub(tmp_path)],
+        binary="codex",
+        timeout_s=30.0,
+        env=dict(os.environ),
+        cwd=str(tmp_path),
+    )
+    assert res.returncode == 0
+    ((h, fp),) = seen
+    assert h == host
+    assert fp.cpu_milli == 1000 and fp.mem_mb == 2048 and fp.wall_s == 30.0
+    assert _holds(store, host) == []
+
+
+def test_codex_exec_refusal_maps_to_its_error_cls(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bound
+) -> None:
+    """A full host maps to CodexExecError — the lane's ordinary retry class —
+    never an unaccounted run; the capacity refusal costs no attempt."""
+    from precis.utils import codex_exec
+
+    host = "cx2"
+    store.sync_host_resource_slots(host, {"mem_mb": 1024, "cpu_milli": 16000})
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+
+    with pytest.raises(codex_exec.CodexExecError, match="capacity"):
+        codex_exec._run_codex(
+            [_exit0_stub(tmp_path)],
+            binary="codex",
+            timeout_s=30.0,
+            env=dict(os.environ),
+            cwd=str(tmp_path),
+        )
+    assert _holds(store, host) == []
+
+
+def test_claude_subprocess_admits_its_footprint(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bound
+) -> None:
+    from precis.utils import _claude_subprocess as cs
+
+    host = "cl1"
+    _seed_host(store, host, monkeypatch)
+    seen = _spy_admit(monkeypatch)
+
+    res = cs.run_claude(
+        [_exit0_stub(tmp_path)],
+        binary="claude",
+        label="claude -p (test)",
+        timeout_s=30.0,
+        error_cls=cs.ClaudeProcessError,
+        env={"PATH": os.environ.get("PATH", "")},
+        bootstrap_oauth=False,
+    )
+    assert res.returncode == 0
+    ((h, fp),) = seen
+    assert h == host
+    assert fp.cpu_milli == 1000 and fp.mem_mb == 2048 and fp.wall_s == 30.0
+    assert _holds(store, host) == []
+
+
+def test_claude_subprocess_refusal_maps_to_its_error_cls(
+    store, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bound
+) -> None:
+    from precis.utils import _claude_subprocess as cs
+
+    host = "cl2"
+    store.sync_host_resource_slots(host, {"mem_mb": 1024, "cpu_milli": 16000})
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+
+    with pytest.raises(cs.ClaudeProcessError, match="capacity"):
+        cs.run_claude(
+            [_exit0_stub(tmp_path)],
+            binary="claude",
+            label="claude -p (test)",
+            timeout_s=30.0,
+            error_cls=cs.ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+            bootstrap_oauth=False,
+        )
+    assert _holds(store, host) == []

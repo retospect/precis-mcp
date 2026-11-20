@@ -11,6 +11,11 @@
 # per-worktree secret copies. Chained after a green ship by the /go command.
 #
 # Steps:
+#   0. overlay sync — the overlay is its own git repo mirrored on the gateway
+#                     (`deploy-helper`); fetch, fast-forward when behind, push
+#                     when ahead, refuse on divergence or uncommitted edits
+#                     (scripts/lib/overlay-sync.sh, gr680328). Nothing is
+#                     hashed or rendered before the two copies agree.
 #   1. reachability — `ansible ping` per host. A host that is down is skipped
 #      automatically when it is NOT serving-critical (the `data` + `gateway`
 #      inventory groups — DB/pgbouncer and the web/MCP host — never skip);
@@ -28,6 +33,9 @@
 #                     selects only login/grant/userlist tasks — it can never
 #                     touch postgresql.conf/pg_hba or reach a restart
 #                     handler, so it is safe to run mid-deploy.
+#      owner-preflight — (gr678404) before role-sync: the owner of
+#                     public._migrations on prod must agree with the overlay's
+#                     precis_db_own_cutover_done; an unreadable prod warns.
 #   2. deploy       — run the redeploy playbook for the ref.
 #   3. report       — the play's final debug task prints installed sha +
 #                     bounced daemons; a `failed=`/`unreachable=` on a
@@ -167,7 +175,11 @@ Notable env vars (see the header comment in this script for full docs):
   PRECIS_DEPLOY_NO_LOG, PRECIS_DEPLOY_LOG_DIR, PRECIS_DEPLOY_FROM_TREE,
   PRECIS_OVERLAY_DIR, PRECIS_DEPLOY_SKIP_CATPATH_WHEEL, PRECIS_CATPATH_DIR,
   PRECIS_DEPLOY_SKIP_WHEEL_SMOKE, PRECIS_DEPLOY_LOCK_WAIT, PRECIS_DEPLOY_CANARY,
-  PRECIS_DEPLOY_CANARY_TIMEOUT_S, PRECIS_DEPLOY_CANARY_DB_HOST, DEPLOY_NOW_UTC.
+  PRECIS_DEPLOY_CANARY_TIMEOUT_S, PRECIS_DEPLOY_CANARY_DB_HOST, DEPLOY_NOW_UTC,
+  PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT (render the overlay copy as-is when the
+  sync preflight would refuse: diverged from, or uncommitted against, its
+  deploy-helper remote — scripts/lib/overlay-sync.sh; alias
+  PRECIS_DEPLOY_ALLOW_STALE_OVERLAY).
 USAGE
 }
 for _a in "$@"; do
@@ -220,7 +232,22 @@ if [[ "$REF" =~ ^[0-9a-f]{7,39}$ ]]; then
 fi
 
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
-die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
+# Exit code of a refusal before any rollout step (gr730609). scripts/round
+# journals its launch marker just before it runs this script; on this code
+# it puts the record back, so a refused deploy is not kept as a partial
+# rollout. `die` exits with it until _HOSTS_CONTACTED is set — just before
+# the reachability ping, the first ansible command that reaches the fleet —
+# and with 1 from then on. The guards ahead of the ping only read (the
+# backup-window probe of the prod DB) or reconcile the overlay mirror; none
+# installs or restarts anything. scripts/round, scripts/release and
+# release_deploy.py restate the number (tests/test_round_release.py pins them).
+DEPLOY_RC_UNTOUCHED=75
+_HOSTS_CONTACTED=0
+die() {
+    printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2
+    [[ "$_HOSTS_CONTACTED" == 1 ]] && exit 1
+    exit "$DEPLOY_RC_UNTOUCHED"
+}
 
 # ── which ansible runs ─────────────────────────────────────────────────────
 # scripts/release and scripts/round run under `uv run --no-project`; with a
@@ -319,7 +346,7 @@ _consume_ship_pin() {
 # redeploy-precis.yml runs its residual, non-rollout plays (agent-sandbox
 # image rebuilds etc.) in the SAME invocation as the core rollout (venv
 # installs, daemon bounce, convergence assert) — so a persistent failure on a
-# host those residual plays alone touch (the known balthazar sandbox
+# host those residual plays alone touch (the known sandbox-host
 # podman-pull residual, commit 5fa7ff29) makes the whole command exit non-zero even
 # though every host that matters to "what is the fleet actually running"
 # landed cleanly. Without this graft, step 3 below never runs on that red
@@ -399,7 +426,7 @@ _publish_fleet_deploying() {
 # deploy-fleet-coverage condition compares it against host_heartbeat —
 # the digest runs fleet-wide and cannot read the gitignored overlay, so a
 # host dropped from every deploy group keeps heartbeating while deploys
-# skip it (spark ran r82 through r86). The covered set is the union of the
+# skip it (the GPU node ran r82 through r86). The covered set is the union of the
 # ping-target groups — the same groups the rollout targets — read from
 # the overlay this run resolved, NOT the --limit'd args (a skipped host
 # is still covered; it just did not get this deploy). Called from both
@@ -494,7 +521,7 @@ _write_deploy_state_marker() {
 # best-effort: a refused push is a warning, never a failed deploy. See
 # scripts/lib/env-pointers.sh.
 _move_prod_pointer() {
-    local sha="$1" mode=""
+    local sha="$1" mode="" moved=0 clone=""
     # Both writers run on an all-green deploy; move (and announce) once.
     [[ "${_PROD_POINTER_AT:-}" != "$sha" ]] || return 0
     _PROD_POINTER_AT="$sha"
@@ -503,13 +530,35 @@ _move_prod_pointer() {
     [[ "$FORCE_ROLLBACK" == 1 ]] && mode="force"
     if env_pointer_move "$REPO_ROOT" prod "$sha" "$mode"; then
         say "origin/prod → ${sha:0:8}"
+        moved=1
     fi
     # The clone the shared session MCP serves, when this machine has one.
     if env_prod_checkout_sync "$REPO_ROOT" "$sha"; then
-        say "prod clone → ${sha:0:8} ($(env_prod_checkout_dir "$REPO_ROOT"))"
+        clone="$(env_prod_checkout_dir "$REPO_ROOT")"
+        say "prod clone → ${sha:0:8} (${clone})"
+    fi
+    if [[ "$moved" == 1 ]]; then
+        _record_prod_head "$sha" "$clone"
     fi
     _confirm_prod_clone "$sha"
     return 0
+}
+
+# The sha-in-prod gates read prod's release.prod_head record, not git:
+# moving the ref without it left 180 deployed shas reading "not in prod"
+# and 107 rescue asks (gr666159). Write it from the freshly synced prod
+# clone — it IS the deployed sha, so prod-precis's stale-tree guard passes
+# where this controller checkout may sit behind a release head (td674307)
+# — else from this checkout. Best-effort; never from a test rig, whose
+# fake origin must not reach the prod DSN.
+_record_prod_head() {
+    local sha="$1" clone="$2" tree="$REPO_ROOT"
+    [[ -z "${PYTEST_CURRENT_TEST:-}" ]] || return 0
+    if [[ -n "$clone" ]] && grep -q -- '--record-prod-head' "${clone}/scripts/release" 2>/dev/null; then
+        tree="$clone"
+    fi
+    [[ -x "${tree}/scripts/release" ]] || return 0
+    "${tree}/scripts/release" --record-prod-head "$sha" || true
 }
 
 # Runtime confirmation for the served clone (gr482226). env_prod_checkout_sync
@@ -1005,7 +1054,7 @@ _advise_unrendered() {
 # reclaimed only after PRECIS_DEPLOY_LOCK_STEAL_MIN minutes. The steal is
 # atomic (lock_steal rename-pins the inspected dir and re-judges it before
 # destroying) and the release is ownership-checked (lock_release) — the two
-# halves of the race docs/backlog/deploy-concurrency.md records.
+# halves of the race me690552 records.
 # shellcheck source=scripts/lib/lock-holder.sh
 source "${REPO_ROOT}/scripts/lib/lock-holder.sh"
 _LOCK_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/precis-deploy.lock"
@@ -1048,6 +1097,11 @@ _DEPLOY_TREE=""
 # under `set -euo pipefail` with `exit 0` prints A, never B, and exits 1.
 _deploy_cleanup() {
     local rc=$?
+    # From the reachability ping on nothing may exit with the "no host was
+    # touched" code, whatever command happened to return it (gr730609).
+    if [[ "${_HOSTS_CONTACTED:-0}" == 1 && "$rc" == "${DEPLOY_RC_UNTOUCHED:-75}" ]]; then
+        rc=1
+    fi
     if [[ -n "$_DEPLOY_TREE" ]]; then
         # Unlock first: `worktree remove` refuses a locked tree even with --force.
         git -C "$REPO_ROOT" worktree unlock "$_DEPLOY_TREE" 2>/dev/null || true
@@ -1321,6 +1375,22 @@ if [[ -n "${PRECIS_DEPLOY_FROM_TREE}" ]]; then
     EXTRA_ARGS+=(-e precis_overlay_dir="${_ov_abs}" -e precis_vault_pass_file="${_ov_vault}")
 fi
 
+# ── overlay sync preflight (gr680328) ───────────────────────────────────
+# The overlay is its own git repo, mirrored on the gateway (`deploy-helper`).
+# Reconcile the two BEFORE hashing or rendering anything from it: fast-forward
+# when this copy is behind, push when it is ahead, refuse on divergence or
+# uncommitted edits (PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1 renders this copy
+# as-is). A plain-directory overlay — no .git of its own, no remote — is left
+# alone. The 2026-11-14 fork (a controller deploy rendered the userlist and
+# .pgpass without precis_system, gr678654) is the why. Tolerant of fixture
+# trees that omit the library.
+if [[ -n "$OVERLAY_DIR" && -f "${REPO_ROOT}/scripts/lib/overlay-sync.sh" ]]; then
+    . "${REPO_ROOT}/scripts/lib/overlay-sync.sh"
+    say "overlay sync preflight (${OVERLAY_DIR})"
+    overlay_sync_preflight "$OVERLAY_DIR" overlay \
+        || die "overlay sync refused this deploy (see above) — no host was touched. Reconcile per docs/runbooks/cluster-overlay-sync.md, or set PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1 to render this copy as-is."
+fi
+
 # ── overlay change detection (gr239588) ─────────────────────────────────
 # deploy/inventory is the gitignored private overlay: an edit there moves no
 # sha and touches no tracked path, so the playbook's sha-move gate and its
@@ -1341,7 +1411,10 @@ _overlay_hash() {
     [[ -d "$dir" ]] || return 0
     (
         cd "$dir" || exit 0
-        LC_ALL=C find . \( -type f -o -type l \) ! -name .DS_Store ! -name '*.retry' ! -name '*.swp' ! -name '*~' ! -name '#*#' -print | LC_ALL=C sort \
+        # .git is pruned: the overlay is its own repo and the sync preflight
+        # fetches on every deploy, so FETCH_HEAD and the packed refs move
+        # without a single rendered byte changing (gr680328).
+        LC_ALL=C find . -name .git -prune -o \( -type f -o -type l \) ! -name .DS_Store ! -name '*.retry' ! -name '*.swp' ! -name '*~' ! -name '#*#' -print | LC_ALL=C sort \
             | while IFS= read -r f; do
                 printf '%s ' "$f"
                 _sha256_stdin < "$f"
@@ -1391,7 +1464,7 @@ cd "$CLUSTER_DIR"
 SKIPPED_HOSTS=()
 
 # PRECIS_DEPLOY_SKIP_HOSTS=h1,h2 — deliberately leave named hosts out of the
-# ping and the rollout (Reto 2026-10-09: castor wedged out of memory, the rest
+# ping and the rollout (Reto 2026-10-09: the local-serving node wedged out of memory, the rest
 # of the cluster still gets the fix). The skipped hosts stay on their old sha
 # — mixed versions until the next deploy — so it is loud, never a default.
 if [[ -n "${PRECIS_DEPLOY_SKIP_HOSTS:-}" ]]; then
@@ -1432,7 +1505,7 @@ fi
 # ── 1. reachability ─────────────────────────────────────────────────────
 # Ping only the groups redeploy-precis.yml actually targets, NOT `all` — the
 # inventory can carry bootstrap-only hosts with no `deploy` SSH user that would
-# abort a deploy they play no part in (gripe 196641). `serving` (castor/pollux)
+# abort a deploy they play no part in (gripe 196641). `serving` (the DGX nodes)
 # IS a redeploy target now — 20c provisions the heartbeat-only unit there — so
 # it must be pinged too. Manually skipped hosts are excluded by the
 # --limit already in INV_ARGS (ansible intersects repeated --limit with the
@@ -1443,7 +1516,10 @@ fi
 # host is recorded for catch-up (the r33/r34 lesson: one Tailscale drop
 # used to abort the whole deploy and then the verdict-age guard refused
 # the resume hours later). Critical hosts down still abort the run.
-PING_TARGETS="gateway:scheduler:data:inference:serving:compute:agent_sandbox_hosts"
+PING_TARGETS="gateway:scheduler:data:inference:serving:compute:agent_sandbox_hosts:builder_hosts"
+# The first ansible command that reaches the fleet: every `die` above exits
+# DEPLOY_RC_UNTOUCHED, every one from here exits 1 (gr730609).
+_HOSTS_CONTACTED=1
 say "checking cluster reachability (ansible ping — ${PING_TARGETS})"
 _PING_OUT="/tmp/precis-deploy-ping.$$"
 _ping_rc=0
@@ -1588,12 +1664,56 @@ _roles_synced_stamp() {
         printf ' roles_synced=1'
     fi
 }
+
+# ── 1-rb. owner preflight (gr678404) ──────────────────────────────────────
+# 2026-11-14: a deploy launched from a Mac whose private overlay had lagged
+# its deploy-helper remote for two months rendered pgpass and the pgbouncer
+# userlist without precis_system (the role lived only in the helper's copy),
+# then tried to migrate as agent_rw after the db-own cutover had made
+# precis_owner the owner of public._migrations. Both facts were knowable
+# before any play ran. The overlay half is step 0 above (the sync preflight
+# in scripts/lib/overlay-sync.sh: it fast-forwards or pushes instead of only
+# dying, and runs before the overlay hash so a fetch is not a "change"; the
+# die-only overlay-guard that first shipped here the same day folded into
+# it). The owner half stays here: it dies on a PROVABLE mismatch and warns on
+# anything it cannot read — a failed prod read never blocks a deploy by
+# itself — and runs before role-sync, the first step that renders credentials.
+#
+# owner-preflight: who owns public._migrations on prod must agree with the
+# overlay's precis_db_own_cutover_done (the flag picks the migrate DSN's
+# login — precis_owner when true, agent_rw otherwise). Read via prod-psql
+# --ro (the _db_migration_head pattern); an unreadable owner warns and
+# skips, never fails open as a refusal. Dies on either mismatch.
+_deploy_owner_preflight() {
+    local owner flag
+    [[ -x "${REPO_ROOT}/scripts/prod-psql" ]] || return 0
+    owner="$(PRECIS_PROD_PSQL_OPTS="-At" "${REPO_ROOT}/scripts/prod-psql" --ro \
+        "SELECT c.relowner::regrole::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = '_migrations'" 2>/dev/null \
+        | grep -E '^[a-z_][a-z0-9_]*$' | head -1 || true)"
+    if [[ -z "$owner" ]]; then
+        say "WARNING owner-preflight: could not read the owner of public._migrations via prod-psql — check skipped"
+        return 0
+    fi
+    _deploy_cutover_flag || _CUTOVER_FLAG=""
+    case "${_CUTOVER_FLAG:-}" in
+        [Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|1) flag=true ;;
+        *) flag=false ;;
+    esac
+    if [[ "$owner" == "precis_owner" && "$flag" != true ]]; then
+        die "owner-preflight: public._migrations on prod is owned by precis_owner (the db-own cutover has run) but the overlay does not declare precis_db_own_cutover_done: true — the migrate play would log in as agent_rw and refuse, after the pgpass/userlist renders had already run (2026-11-14, gr678404). Set precis_db_own_cutover_done: true plus the owner/ingress/system password vars in the overlay (me691019 §Owner DSN), then re-run."
+    fi
+    if [[ "$owner" != "precis_owner" && "$flag" == true ]]; then
+        die "owner-preflight: the overlay declares precis_db_own_cutover_done: true but public._migrations on prod is owned by ${owner} — the cutover has not run (or was rolled back); run scripts/db-own-cutover --apply first, or set the flag back to false."
+    fi
+    say "owner-preflight: public._migrations owner ${owner} agrees with precis_db_own_cutover_done=${flag}"
+}
 # END _deploy_role_sync
 export CLUSTER_INVENTORY="${OVERLAY_DIR:+${OVERLAY_DIR}/hosts.yml}"
 if [[ -f "${REPO_ROOT}/scripts/lib/pgb-host.sh" ]]; then
     # shellcheck source=scripts/lib/pgb-host.sh
     . "${REPO_ROOT}/scripts/lib/pgb-host.sh"
 fi
+_deploy_owner_preflight
 _deploy_role_sync
 
 # ── 1-pre. coverage map refresh (gr567471) ──────────────────────────────

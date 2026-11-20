@@ -8,8 +8,8 @@ alongside the capability probe: each worker polls its OWN loopback llama-swap
 model's slot capacity, and reconciles its ``served_by`` entries + slots. There is
 **no feature flag** — a host with no local llama-swap answering is a no-op (the
 probe fails and nothing is written). Decentralised: each host owns only its own
-``served_by`` entry on a shared card, so melchior + spark both serving the same
-27B advertise into one card without clobbering each other's endpoint.
+``served_by`` entry on a shared card, so the agent host + the GPU node both serving
+the same 27B advertise into one card without clobbering each other's endpoint.
 
 Design-of-record: ``local-model-router-integration`` (git-only).
 """

@@ -4,7 +4,8 @@
 The TOON view is the agent-facing grid: a braced header line then one
 tab-separated line per row. Row ids ride a leading ``#`` column; a header
 cell is ``<id>:<name>`` plus the optional suffixes `` [unit]``,
-`` <from>`` and `` =formula`` (in that order):
+`` <from>`` and `` =formula`` (in that order — `` <from>`` renders a
+stored pulled column only; ``from`` refuses on write until pulls ship):
 
     {#	k5f9:vendor	m3qa:part	x7d2:qty	t6ne:line_cost =unit_price*qty}
     r2k7	jlcpcb	C19077769	100	1.23
@@ -1134,7 +1135,8 @@ def _insert_at(
     items: list[dict[str, Any]], at: Any, *, what: str
 ) -> tuple[int, str | None, str | None]:
     """``at='end'|'start'|{'after':id}|{'before':id}`` → ``(index,
-    prev_pos, next_pos)`` for a :func:`key_between` mint."""
+    prev_pos, next_pos)`` for a :func:`key_between` mint. Column anchors
+    also accept names; row anchors remain id-only."""
     if at is None or at == "end":
         return len(items), (items[-1].get("pos") if items else None), None
     if at == "start":
@@ -1142,9 +1144,13 @@ def _insert_at(
     if isinstance(at, dict):
         for key, idx in (("after", 1), ("before", 0)):
             if key in at:
-                i = next(
-                    (i for i, e in enumerate(items) if e.get("id") == at[key]),
-                    None,
+                i = (
+                    _col_index(items, at[key])
+                    if what == "column"
+                    else next(
+                        (i for i, e in enumerate(items) if e.get("id") == at[key]),
+                        None,
+                    )
                 )
                 if i is None:
                     raise BadInput(
@@ -1158,8 +1164,10 @@ def _insert_at(
                     items[j - 1].get("pos") if j else None,
                     items[j].get("pos") if j < len(items) else None,
                 )
+    anchor = "id or name" if what == "column" else "id"
     raise BadInput(
-        f"at={at!r} — use 'end', 'start', {{'after': '<id>'}} or {{'before': '<id>'}}",
+        f"at={at!r} — use 'end', 'start', "
+        f"{{'after': '<{anchor}>'}} or {{'before': '<{anchor}>'}}",
         next="at='end' (default) or at={'after': 'r2k7'}",
     )
 
@@ -1174,9 +1182,9 @@ def _strip_pos(*groups: list[dict[str, Any]]) -> None:
 
 
 def op_add_column(table: dict[str, Any], spec: Any, at: Any = None) -> dict[str, Any]:
-    """``add_column={name, type?, unit?, formula?, from?, role?, key?,
-    align?}`` — append (or ``at=``-position) a column; its cells start
-    ``None``."""
+    """``add_column={name, type?, unit?, formula?, role?, key?, align?}``
+    — append (or ``at=``-position) a column; its cells start ``None``.
+    A ``from`` key (pulled column) refuses — pulls aren't built yet."""
     if not isinstance(spec, dict):
         raise BadInput(
             f"add_column= must be a column spec dict, got {spec!r}",
@@ -1284,10 +1292,15 @@ def op_move_column(table: dict[str, Any], ref: Any, at: Any) -> dict[str, Any]:
     i = _col_index(columns, ref)
     if isinstance(at, dict):
         tgt = at.get("after") or at.get("before")
-        if tgt == columns[i].get("id"):
+        # The anchor may name the moved column, not only id it — the
+        # refusal must not fall through to ``_col_index`` on the rest
+        # list reporting the live column as missing.
+        if tgt is not None and (
+            tgt == columns[i].get("id") or tgt == columns[i].get("name")
+        ):
             raise BadInput(
                 "can't move a column relative to itself",
-                next="at={'after': '<other column id>'}",
+                next="at={'after': '<other column id or name>'}",
             )
     new_cols, j, pos = _move(columns, i, at or "end", what="column")
     new_cols[j]["pos"] = pos
@@ -1325,29 +1338,17 @@ def op_move_row(table: dict[str, Any], ref: Any, at: Any) -> dict[str, Any]:
 
 
 def op_insert_rows(
-    table: dict[str, Any], new_rows: Any, at: Any = None
+    table: dict[str, Any],
+    new_rows: Any,
+    at: Any = None,
+    *,
+    notes: list[str] | None = None,
 ) -> dict[str, Any]:
     """``rows=[[…]]`` + ``at=`` — insert rows (cells in column order);
     ids mint."""
-    columns = table.get("columns") or []
-    width = len(columns)
-    if not isinstance(new_rows, list) or not all(isinstance(r, list) for r in new_rows):
-        raise BadInput(
-            "rows= must be a list of cell lists (column order)",
-            next="rows=[['jlcpcb', 'C1', 100]]",
-        )
-    for i, row in enumerate(new_rows):
-        if len(row) != width:
-            raise BadInput(
-                f"rows[{i}] has {len(row)} cells, table has {width} columns",
-                next="pad missing cells with null",
-            )
-        for cell in row:
-            if not isinstance(cell, str | int | float | bool | type(None)):
-                raise BadInput(
-                    f"rows[{i}] cell {cell!r} is not a JSON scalar",
-                    next="cells are string/number/bool/null",
-                )
+    new_rows = normalize_table(
+        {"columns": table["columns"], "rows": new_rows}, notes=notes
+    )["rows"]
     rowmeta = [dict(r) for r in table.get("rowmeta") or []]
     rows = [list(r) for r in table.get("rows") or []]
     j, prev, nxt = _insert_at(rowmeta, at, what="row")

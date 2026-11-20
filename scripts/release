@@ -29,7 +29,10 @@ leg that ran and exited non-zero marks the record `failed` (via
 `scripts/round fail`) — terminal while its journal shows `scripts/deploy`
 never launched, so the next cut supersedes it; a launched rollout's
 `failed` record stays a live partial rollout the leg resumes. A refusal
-before any work — no deployment journal — never marks it.
+before any work — no deployment journal — never marks it, and neither does
+`scripts/deploy` refusing ahead of its reachability ping, before any rollout
+step (exit 75, passed through): `scripts/round deploy` has put the record
+back, so the release stays live and a later --deploy-only r<N> deploys it.
 
 Steps, in order:
   1. fetch origin main/prod; S = --sha or origin/main; S must sit on
@@ -105,6 +108,17 @@ own record too; clear with `round supersede`); any other =
 `round deploy`'s.
 
 PRECIS_ROUND_ROOT selects the checkout (as for scripts/round).
+
+Catpath wheel preflight relief (gr584832): the deploy's preflight
+(scripts/deploy, gr263082) dies without a controller-side autocatpath wheel
+source, which the fix-lane host can never have (catpath is private). When
+uv.lock's autocatpath pin has no checkout here AND every
+autocatpath_plugin host's wheelhouse already holds the pin-matching wheel,
+this script hands `round deploy` PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 — the
+seed is already done. Anything unproven (a pin below pyproject's floor —
+the gr499104 guard the bypass would skip — a mismatch, an unreadable
+inventory, an unreachable host) changes nothing: the preflight still
+fails loudly.
 """
 
 from __future__ import annotations
@@ -132,6 +146,9 @@ ROUND = HERE / "round"
 OK_CONCLUSIONS = ("success", "skipped", "neutral")
 OPEN_STATES = ("cut", "gating", "fixing", "green")
 DEPLOYING_STATES = ("deploying", "deployed")
+#: `scripts/deploy`'s exit code for a refusal before any rollout step, as
+#: `scripts/round deploy` passes it on (gr730609); a test pins the copies.
+DEPLOY_RC_UNTOUCHED = 75
 # Terminality is a predicate, not a set (gr593418 review): `failed` counts
 # terminal only while its journal shows `scripts/deploy` never launched —
 # no `started_epoch`, no `rollout_at`. A failed record whose rollout
@@ -230,10 +247,14 @@ def release_branches() -> list[str] | None:
     return [ln.split("refs/heads/", 1)[1] for ln in out.splitlines() if "\trefs/" in ln]
 
 
-def rnd(*args: str, stream: bool = False) -> subprocess.CompletedProcess[str]:
+def rnd(
+    *args: str, stream: bool = False, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     argv = [str(ROUND), *args]
     if stream:
-        return subprocess.run(argv, cwd=ROOT, check=False, text=True, encoding="utf-8")
+        return subprocess.run(
+            argv, cwd=ROOT, check=False, text=True, encoding="utf-8", env=env
+        )
     return subprocess.run(
         argv,
         cwd=ROOT,
@@ -241,6 +262,7 @@ def rnd(*args: str, stream: bool = False) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
 
@@ -686,6 +708,28 @@ def _regate_if_stale(args: argparse.Namespace) -> int:
     return _wait_fresh_verdict(head, args)
 
 
+#: ``release_cut`` exports the pass todo id here when it launches the cut
+#: (gr675506, Reto 2026-11-14: exactly one cutter, the system).
+RELEASE_PASS_ENV = "PRECIS_RELEASE_PASS"
+
+
+def release_pass() -> str:
+    """The factory release pass marker, else ``""``."""
+    return os.environ.get(RELEASE_PASS_ENV, "").strip()
+
+
+def hand_cut_warning() -> str | None:
+    """A hand cut's warning, or None under the factory release pass. A
+    later release turns this into a refusal (gr675506)."""
+    if release_pass():
+        return None
+    return (
+        f"warning: {RELEASE_PASS_ENV} is unset — releases are cut only by the"
+        " factory release pass (Reto's ruling 2026-11-14, gr675506); this hand"
+        " cut will be refused in a later release"
+    )
+
+
 def next_line(sha: str) -> str:
     return (
         f"next: verify runtime, then scripts/round deploy --confirm-runtime {sha} "
@@ -695,14 +739,18 @@ def next_line(sha: str) -> str:
 
 
 def live_releases(
-    state: dict[str, Any], shared: dict[str, Any] | None = None
+    state: dict[str, Any],
+    shared: dict[str, Any] | None = None,
+    branches: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Non-terminal records; the shared ``release.round`` row adjudicates a
     forked clone's open records when it is readable (gr582590): an open
     record a higher-numbered row has moved past, or the same release the
     row names terminal or under another branch, is a leftover, not live.
-    The row only subtracts — a release this clone's record lacks shows on
-    origin's branches. A deploying/deployed record is never disputed: its
+    The row also adds (gr675506): given origin's release ``branches``, a
+    non-terminal row naming one of them that no live local record covers
+    is live too — a synthetic record tagged ``from_row`` — whatever this
+    clone's round.json says. A deploying/deployed record is never disputed: its
     journal is a live rollout a pipelined cut legitimately passes. Row
     terminality runs through the same predicate as the local record, so a
     row's `failed` counts only while its journal shows the rollout never
@@ -725,24 +773,35 @@ def live_releases(
                 db_n > n
                 or (
                     db_n == n
-                    and (
-                        db_terminal
-                        or (db_branch and db_branch != r.get("branch"))
-                    )
+                    and (db_terminal or (db_branch and db_branch != r.get("branch")))
                 )
             )
         ):
             continue
         out.append(r)
+    if branches is not None and not db_terminal and db_branch in branches:
+        if db_branch not in {str(r.get("branch")) for r in out}:
+            out.append(
+                {
+                    "n": db_n,
+                    "branch": db_branch,
+                    "base": str(shared.get("base") or ""),
+                    "state": db_state,
+                    "from_row": True,
+                }
+            )
     return out
 
 
 def stale_why(rel: dict[str, Any], prod: str) -> str:
     """The stale-blocker reason for `rel`, or "" when it is not provably
     stale — a deploying/deployed record `round supersede --dry-run`
-    accepts because origin/prod already moved past its pin (gr573151)."""
+    accepts because origin/prod already moved past its pin (gr573151). A
+    `failed` record whose rollout launched is judged the same way
+    (gr724696): prod past its pin makes it a corpse, not a partial rollout
+    to resume; the verb refuses a terminal `failed` one."""
     if not (
-        rel.get("state") in DEPLOYING_STATES
+        rel.get("state") in (*DEPLOYING_STATES, "failed")
         and not rel.get("cut_pending")
         and rel.get("branch")
     ):
@@ -761,9 +820,7 @@ def stale_why(rel: dict[str, Any], prod: str) -> str:
     )
 
 
-def _dead_open_rel(
-    rels: list[dict[str, Any]], prod: str
-) -> dict[str, Any] | None:
+def _dead_open_rel(rels: list[dict[str, Any]], prod: str) -> dict[str, Any] | None:
     """The open record provably dead (gr582590): its branch is absent on
     origin AND origin/prod already contains its base — a forked clone's
     leftover whose payload shipped, not in-flight work. None when nothing
@@ -984,6 +1041,16 @@ def prod_head_record(
     return rec
 
 
+def _record_base(prev: str, previous: dict[str, Any] | None) -> str:
+    """Where this deploy's landed range starts: the old record's head when
+    git has that commit, else ``prev``. ``rev-list base..head`` then names
+    every commit no record covered yet, whatever moved origin/prod since."""
+    old = str((previous or {}).get("head") or "")
+    if old and git("rev-parse", "--verify", "--quiet", f"{old}^{{commit}}"):
+        return old
+    return prev
+
+
 def record_prod_head(
     prev: str,
     head: str,
@@ -999,6 +1066,13 @@ def record_prod_head(
     the same ``scripts/prod-precis settings get`` call path, merges, and
     writes with ``settings set``. Best-effort like :func:`note_gripes`: the
     rollout already happened, so any fault is reported, never raised.
+
+    The landed range starts at the old RECORD's head, not at ``prev``, when
+    git knows that commit (:func:`_record_base`): a deploy that moved
+    origin/prod without writing the record (a raw ``scripts/deploy``) left
+    its shas out of ``landed`` for good, and every sha-in-prod gate on them
+    read "not in prod yet" until the rescue tick filed one ask each
+    (gr666159: 180 deployed shas missing, 107 asks).
     """
     if not head:
         return "prod head not recorded: no head sha"
@@ -1006,7 +1080,6 @@ def record_prod_head(
         return f"prod head not recorded: {why}"
     send = transport or _prod_precis
     when = now or datetime.now(UTC)
-    shas = landed if landed is not None else landed_shas(prev, head)
     try:
         rc, out, _err = send(["settings", "get", PROD_HEAD_KEY])
         if rc and _err.strip():
@@ -1015,6 +1088,10 @@ def record_prod_head(
                 subprocess.CompletedProcess([], rc, out, _err),
             )
         previous = parse_prod_head(out) if rc == 0 else None
+        if landed is not None:
+            shas = landed
+        else:
+            shas = landed_shas(_record_base(prev, previous), head)
         rec = prod_head_record(head, shas, previous, when, release=release)
         value = json.dumps(rec, separators=(",", ":"))
         rc, _out, err = send(["settings", "set", PROD_HEAD_KEY, value])
@@ -1453,6 +1530,300 @@ def _mark_deploy_failed(branch: str) -> None:
         sys.stdout.flush()
 
 
+# ── catpath wheel preflight relief (gr584832) ─────────────────────────────
+# scripts/deploy's preflight (gr263082) dies unless a pin-matching
+# autocatpath wheel is reachable from the controller (a catpath checkout at
+# one of the probe paths, or PRECIS_CATPATH_DIR), because the wheelhouse
+# seed is the only channel to a plugin host. retospect/catpath is a PRIVATE
+# repo: the fix-lane user cannot clone it, so every factory release_deploy
+# died in preflight even with the fleet already seeded at the pinned
+# version (r243: uv.lock pin 0.50.0, plugin hosts already on 0.50.0). The
+# preflight lives in scripts/deploy, which this flow reaches only through
+# `round deploy` — so the relief runs here, where the deploy is launched:
+# when the lock's pin has NO controller-side wheel source and every
+# autocatpath_plugin host's wheelhouse already holds the pin-matching
+# wheel, the seed has nothing left to do; hand the deploy the documented
+# manual bypass PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1 instead of dying. Any
+# doubt — no pin, a lock below pyproject's floor, a checkout present, an
+# unreadable inventory, an unreachable host, a host missing the wheel —
+# changes nothing and the preflight decides as before, so a pin MISMATCH
+# with no wheel source still fails loudly.
+#
+# Probing uses the same overlay inventory scripts/deploy resolves (its own
+# deploy/inventory, else the main checkout's / PRECIS_OVERLAY_DIR) and the
+# same capability map the seed tasks gate on
+# (precis_capabilities.autocatpath_plugin; topology lives in the overlay's
+# group_vars, so ansible-inventory's merged hostvars answer it directly).
+
+
+def _probe_run(
+    argv: list[str], *, cwd: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str] | None:
+    """One probe command; None when the binary is missing or hangs (the
+    relief fails closed and the preflight decides)."""
+    try:
+        return subprocess.run(
+            argv,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            timeout=90,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _ansible_probe_env() -> dict[str, str]:
+    """PATH with every .venv/bin dropped and PRECIS_ANSIBLE_BIN_DIR first —
+    the same choice scripts/deploy's _deploy_sanitize_path makes (a project
+    .venv carrying ansible-core would otherwise shadow the full package),
+    with VIRTUAL_ENV unset for the same reason."""
+    env = dict(os.environ)
+    parts = [
+        p for p in env.get("PATH", "").split(":") if p and not p.endswith("/.venv/bin")
+    ]
+    bin_dir = env.get("PRECIS_ANSIBLE_BIN_DIR", "").strip()
+    if bin_dir:
+        parts.insert(0, bin_dir)
+    env["PATH"] = ":".join(parts)
+    env.pop("VIRTUAL_ENV", None)
+    return env
+
+
+def _autocatpath_lock_pin(lock_text: str) -> tuple[str, str]:
+    """(sha, version) uv.lock pins autocatpath at — the same package-stanza
+    read as scripts/lib/autocatpath-wheel.sh's autocatpath_locked_sha /
+    autocatpath_locked_version, so this and the preflight never disagree
+    about what the lock says."""
+    sha = ""
+    version = ""
+    in_pkg = False
+    for line in lock_text.splitlines():
+        if line == 'name = "autocatpath"':
+            in_pkg = True
+            continue
+        if not in_pkg:
+            continue
+        if line.startswith("[["):
+            break
+        if not sha and line.startswith("source = ") and "#" in line:
+            m = re.search(r'#([0-9a-f]{7,40})"', line)
+            if m:
+                sha = m.group(1)
+        elif not version and line.startswith("version = "):
+            m = re.match(r'version = "([^"]*)"', line)
+            if m:
+                version = m.group(1)
+    return sha, version
+
+
+def _catpath_checkout_present(root: Path, home: Path | None = None) -> bool:
+    """True when the deploy preflight's probe would find a catpath checkout
+    (PRECIS_CATPATH_DIR, else the conventional siblings — the same list
+    scripts/lib/autocatpath-wheel.sh's autocatpath_probe_dirs walks). With a
+    checkout the preflight does its full provenance job (and may build);
+    the relief is only for the no-source case."""
+    env_dir = os.environ.get("PRECIS_CATPATH_DIR", "").strip()
+    if env_dir:
+        return (Path(env_dir) / "pyproject.toml").is_file()
+    main_root = root
+    cp = _probe_run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=root,
+        env=dict(os.environ),
+    )
+    if cp is not None and cp.returncode == 0 and cp.stdout.strip():
+        main_root = Path(cp.stdout.strip()).parent
+    home = home or Path.home()
+    for cand in (
+        main_root.parent / "catpath",
+        home / "work" / "project" / "code" / "catpath",
+        home / "catpath",
+    ):
+        if (cand / "pyproject.toml").is_file():
+            return True
+    return False
+
+
+def _overlay_inv_args(root: Path) -> tuple[list[str], Path] | None:
+    """(extra ansible args, the deploy/ dir to run from) replicating
+    scripts/deploy's overlay resolution; None when no usable overlay exists
+    (the deploy dies on that itself, louder, a moment later)."""
+    cluster = root / "deploy"
+    if (cluster / "inventory").is_dir():
+        # ansible.cfg's relative inventory/vault paths resolve from here.
+        return [], cluster
+    cp = _probe_run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=root,
+        env=dict(os.environ),
+    )
+    main = Path(cp.stdout.strip()).parent if cp and cp.returncode == 0 else root
+    overlay = Path(
+        os.environ.get("PRECIS_OVERLAY_DIR", "").strip()
+        or main / "deploy" / "inventory"
+    )
+    vault = overlay.parent / ".vault-pass"
+    if overlay.is_dir() and vault.is_file():
+        return [
+            "-i",
+            str(overlay / "hosts.yml"),
+            "--vault-password-file",
+            str(vault),
+        ], cluster
+    return None
+
+
+def _plugin_hosts(
+    cluster: Path, inv_args: list[str], env: dict[str, str]
+) -> dict[str, str] | None:
+    """{host: wheelhouse_dir} for every autocatpath_plugin host — the same
+    membership test the seed tasks apply
+    (`inventory_hostname in precis_capabilities.autocatpath_plugin`), read
+    from ansible-inventory's merged hostvars. None when the inventory
+    cannot be read (fail closed: no relief)."""
+    cp = _probe_run(["ansible-inventory", "--list", *inv_args], cwd=cluster, env=env)
+    if cp is None or cp.returncode:
+        return None
+    try:
+        data = json.loads(cp.stdout)
+    except json.JSONDecodeError:
+        return None
+    hostvars = data.get("_meta", {}).get("hostvars", {})
+    if not isinstance(hostvars, dict):
+        return None
+    out: dict[str, str] = {}
+    for host, vars_ in hostvars.items():
+        if not isinstance(vars_, dict):
+            continue
+        caps = vars_.get("precis_capabilities")
+        if not isinstance(caps, dict):
+            continue
+        if host in (caps.get("autocatpath_plugin") or []):
+            out[host] = str(vars_.get("autocatpath_wheelhouse") or "/opt/precis/wheels")
+    return out
+
+
+def _wheelhouse_seeded(
+    cluster: Path,
+    inv_args: list[str],
+    env: dict[str, str],
+    hosts: dict[str, str],
+    version: str,
+) -> bool:
+    """True when EVERY plugin host's wheelhouse holds the pin-matching
+    wheel — the artifact the seed task would have copied, so its absence
+    is exactly what the preflight dies on. One unreachable or missing host
+    fails the whole probe (fail closed)."""
+    for host, wheelhouse in hosts.items():
+        cmd = f"ls -d {shlex.quote(wheelhouse)}/autocatpath-{version}-*.whl 2>/dev/null"
+        cp = _probe_run(
+            ["ansible", host, "-m", "shell", "-a", cmd, *inv_args],
+            cwd=cluster,
+            env=env,
+        )
+        if cp is None or cp.returncode or not cp.stdout.strip():
+            return False
+    return True
+
+
+def _version_ge(a: str, b: str) -> bool:
+    """version_ge's answer for the plain X.Y.Z release numbers both sides
+    are filtered to: numeric segments, a shorter prefix ordering before a
+    longer one (sort -V's order, so "0.50" < "0.50.0"). False on anything
+    with an empty segment — fail closed, never guess."""
+    if (
+        not a
+        or not b
+        or not all(part.isdigit() for v in (a, b) for part in v.split("."))
+    ):
+        return False
+    return tuple(int(p) for p in a.split(".")) >= tuple(int(p) for p in b.split("."))
+
+
+def _autocatpath_floor(pyproject: Path) -> str | None:
+    """The lowest `autocatpath>=X` floor pyproject declares — the same
+    read as scripts/lib/autocatpath-wheel.sh's autocatpath_floor (last
+    match on a line, then the lowest across lines: a wheel only has to
+    clear ONE extra's floor, so the lowest is the gate). None when no
+    floor is declared — the deploy then skips the catpath block
+    entirely, and there is no preflight to relieve."""
+    try:
+        lines = pyproject.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    pat = re.compile(r'autocatpath[^"]*>=([0-9][0-9.]*)')
+    floors = [ms[-1] for line in lines if (ms := pat.findall(line))]
+    if not floors:
+        return None
+    return min(
+        floors,
+        key=lambda v: tuple(int(p) for p in v.split(".") if p.isdigit()),
+    )
+
+
+def catpath_preflight_relief() -> str | None:
+    """The line to print when this deploy should run with
+    PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1, else None. Read the whole story at
+    the section header above (gr584832)."""
+    if os.environ.get("PRECIS_DEPLOY_SKIP_CATPATH_WHEEL"):
+        return None
+    if "autocatpath_wheel" in os.environ.get("PRECIS_DEPLOY_EXTRA_VARS", ""):
+        return None
+    lock = ROOT / "uv.lock"
+    if not lock.is_file():
+        return None
+    try:
+        sha, version = _autocatpath_lock_pin(lock.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    # The version is interpolated into a remote glob — only a plain release
+    # number may reach it.
+    if not version or not re.fullmatch(r"[0-9][0-9.]*", version):
+        return None
+    # The gr499104 guard the bypass would otherwise skip: the locked
+    # version must still clear pyproject's floor. Below it the wheelhouse
+    # holds a wheel no extra can resolve and the on-host install fails
+    # mid-run — exactly what the preflight's die exists to prevent, so it
+    # keeps it. No declared floor means the deploy skips the catpath block
+    # outright and needs no relief.
+    floor = _autocatpath_floor(ROOT / "pyproject.toml")
+    if floor is None or not _version_ge(version, floor):
+        return None
+    if _catpath_checkout_present(ROOT):
+        return None
+    resolved = _overlay_inv_args(ROOT)
+    if resolved is None:
+        return None
+    inv_args, cluster = resolved
+    env = _ansible_probe_env()
+    hosts = _plugin_hosts(cluster, inv_args, env)
+    pin = f"{sha[:12]} (v{version})" if sha else f"v{version}"
+    if hosts is None:
+        say(
+            "catpath preflight relief (gr584832): the inventory could not be "
+            "read — leaving the catpath wheel preflight to decide"
+        )
+        return None
+    if not hosts:
+        return (
+            "catpath preflight relief (gr584832): no autocatpath_plugin hosts "
+            f"in the inventory — nothing to seed for uv.lock pin {pin}; deploy "
+            "runs with PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1"
+        )
+    if not _wheelhouse_seeded(cluster, inv_args, env, hosts, version):
+        return None
+    return (
+        "catpath preflight relief (gr584832): every autocatpath_plugin host "
+        f"({', '.join(sorted(hosts))}) already holds autocatpath-{version} in "
+        f"its wheelhouse — the seed uv.lock pin {pin} needs is done; deploy "
+        "runs with PRECIS_DEPLOY_SKIP_CATPATH_WHEEL=1"
+    )
+
+
 def deploy_and_close(
     args: argparse.Namespace, sha: str, *, finish_pointer: bool = False
 ) -> int:
@@ -1464,7 +1835,12 @@ def deploy_and_close(
     label = release_label(before)
     prev = rev("origin/prod")
     command = ("deploy", "--finish-pointer") if finish_pointer else ("deploy",)
-    rc = rnd(*command, stream=True).returncode
+    deploy_env = None
+    relief = catpath_preflight_relief()
+    if relief:
+        say(relief)
+        deploy_env = {**os.environ, "PRECIS_DEPLOY_SKIP_CATPATH_WHEEL": "1"}
+    rc = rnd(*command, stream=True, env=deploy_env).returncode
     if rc in (0, 3):
         # The rollout ran, so its migrate play did too — name whatever
         # post-migration steps it left pending (gr514955). Best-effort.
@@ -1493,6 +1869,16 @@ def deploy_and_close(
                 rc,
                 "release finish refused — see the reason above; next: resolve it "
                 "and re-run scripts/round deploy --finish-pointer",
+            )
+        if rc == DEPLOY_RC_UNTOUCHED:
+            # gr730609: scripts/deploy refused before any rollout step and
+            # `round deploy` put the record back — there is no failed leg to
+            # mark, and the release must stay live for the re-run.
+            return die(
+                rc,
+                "deploy refused before any rollout — no host was touched and "
+                "the release record is unchanged; resolve the reason above and "
+                "re-run scripts/release (it resumes) or scripts/round deploy",
             )
         if getattr(args, "deploy_only", ""):
             # gr593418: the deploy leg ran and died — `failed` marks it:
@@ -1529,6 +1915,15 @@ def deploy_and_close(
 
 def run(args: argparse.Namespace) -> int:
     warn_hook_drift()  # gr516942: report (never write) ~/.claude hook drift
+    if getattr(args, "record_prod_head", ""):
+        # scripts/deploy's hook: a raw deploy moves origin/prod, so it owes
+        # prod the record too (gr666159). Best-effort; always exit 0.
+        head = rev(args.record_prod_head)
+        if getattr(args, "dry_run", False):
+            say(f"dry-run: would record prod head {(head or '?')[:9]}")
+        else:
+            say(record_prod_head("", head or "", release=None))
+        return 0
     if args.deploy_only:
         return deploy_only(args)
     races = 0
@@ -1579,7 +1974,8 @@ def run(args: argparse.Namespace) -> int:
                 if cp.returncode:
                     sys.stderr.write(cp.stderr)
                 cur = round_state() or cur
-        live = live_releases(cur, read_round_record())
+        shared = read_round_record()
+        live = live_releases(cur, shared)
         open_rel = next((r for r in live if r.get("state") in OPEN_STATES), None)
         if (
             open_rel is not None
@@ -1680,6 +2076,25 @@ def run(args: argparse.Namespace) -> int:
         branches = release_branches()
         if branches is None:
             return die(1, "scripts/release: cannot read origin's branches")
+        # gr675506: the shared row adds as well as subtracts — a live row
+        # naming a branch on origin is in flight whatever round.json says.
+        for r in live_releases(cur, shared, branches):
+            b = str(r.get("branch"))
+            if not r.get("from_row") or b in {str(x.get("branch")) for x in live}:
+                continue
+            head = remote(f"refs/heads/{b}") or ""
+            if head and not rev(head):
+                git("fetch", "-q", "origin", f"refs/heads/{b}")
+            if head and prod and rev(head) and rev(prod) and ancestor(head, prod):
+                # A row stuck non-terminal on a release prod already holds
+                # is a stale row, not in-flight work: the same retire rule
+                # as an unrecorded branch below.
+                say(
+                    f"{b}: head on prod, shared row says {r.get('state')} — "
+                    f"stale row ignored; delete with: git push origin --delete {b}"
+                )
+                continue
+            live.append(r)
         recorded = {
             str(r["branch"]): str(r.get("state") or "")
             for r in cur.get("releases") or []
@@ -1702,12 +2117,14 @@ def run(args: argparse.Namespace) -> int:
                     "(cut by another checkout)"
                 )
                 foreign.append(b)
-            elif head and rev(head) and ancestor(head, "refs/remotes/origin/main"):
-                # gr544044: a terminal record's leftover branch, or a stale
-                # one predating the record fix, is retired — not in flight.
+            elif head and prod and rev(head) and rev(prod) and ancestor(head, prod):
+                # gr544044/gr675506: a leftover branch whose head origin/prod
+                # contains (deployed) is retired — not in flight. A head
+                # merely on main is NOT retired: every fresh cut is main's
+                # tip, so another cutter's live release passes that test.
                 # Deleting it is the operator's call, so name the command.
                 say(
-                    f"{b}: head on main, {recorded.get(b) or 'stale'} — ignored; "
+                    f"{b}: head on prod, {recorded.get(b) or 'stale'} — ignored; "
                     f"delete with: git push origin --delete {b}"
                 )
             elif b not in recorded:
@@ -1748,7 +2165,7 @@ def run(args: argparse.Namespace) -> int:
                 if has:
                     say(f"riding release {r['branch']} at {tip[:9]}: it ships {s9}")
                     return 0
-            for b in foreign:
+            for b in foreign + [str(r["branch"]) for r in live if r.get("from_row")]:
                 tip, has = head_containing(s, b, "")
                 if has:
                     say(f"riding release {b} at {tip[:9]}: it ships {s9}")
@@ -1842,8 +2259,11 @@ def report_cut(branch: str = "") -> int:
         else _release_by_state(cur, OPEN_STATES)
     )
     branch = str(rel.get("branch") or branch or f"release/r{cur.get('n')}")
-    head = remote(f"refs/heads/{branch}") or str(rel.get("base") or "")
+    head = remote(f"refs/heads/{branch}")
+    if head is None:  # origin unreadable: the record's base stands in
+        head = str(rel.get("base") or "")
     if not head:
+        # gr724696: absent on origin is not a cut — never the record's base.
         return die(1, f"scripts/release: {branch} has no head on origin after the cut")
     prev = rev("origin/prod")
     n = LANDED_SHA_LEN
@@ -1854,6 +2274,30 @@ def report_cut(branch: str = "") -> int:
 
 
 _DEPLOY_ONLY_RE = re.compile(r"^(?:release/)?r?(\d+)$")
+
+
+def sync_to_release_head(want: str) -> str:
+    """Fast-forward this checkout to ``origin/<want>`` (gr699137).
+
+    A release that took a fix commit has a head past the cut sha this
+    checkout sits on; once the rollout moves origin/prod there, every
+    ``scripts/prod-precis`` write from the cut sha refuses ("not a
+    descendant of origin/prod"). Best-effort: returns one status line, and
+    a checkout that is not behind (or cannot fast-forward) is left alone.
+    """
+    spec = f"+refs/heads/{want}:refs/remotes/origin/{want}"
+    if git("fetch", "-q", "origin", spec) is None:
+        return f"checkout not moved: cannot fetch origin/{want}"
+    tip = rev(f"origin/{want}")
+    if not tip:
+        return f"checkout not moved: no origin/{want}"
+    if ancestor(tip, "HEAD"):
+        return ""
+    if not ancestor("HEAD", tip):
+        return f"checkout not moved: HEAD is not an ancestor of origin/{want}"
+    if git("merge", "--ff-only", tip) is None:
+        return f"checkout not moved: cannot fast-forward to {tip[:9]}"
+    return f"checkout moved to {want} head {tip[:9]}"
 
 
 def deploy_only(args: argparse.Namespace) -> int:
@@ -1891,6 +2335,8 @@ def deploy_only(args: argparse.Namespace) -> int:
             write_owner(str(rel["branch"]), str(rel["base"]), str(rel.get("cut_at")))
     dep = rel.get("deployment") or {}
     sha = str(rel.get("base") or "")
+    if not args.dry_run and (moved := sync_to_release_head(want)):
+        say(moved)
     if dep.get("converged") and not dep.get("rollout_at"):
         if args.dry_run:
             say("would finish the prod pointer and round without another rollout")
@@ -1924,6 +2370,11 @@ def cut_and_finish(
     if not branch:
         n = next_round_n() or (round_state() or {}).get("n")
         branch = f"release/r{n}"
+    # gr675506: every cut path, a re-cut too, passes here — one line each.
+    if warned := hand_cut_warning():
+        print(f"scripts/release: {warned}", file=sys.stderr, flush=True)
+    else:
+        say(f"cutting under release pass {release_pass()}")
     prod = remote("refs/heads/prod") or ""
     if prod and not rev(prod):
         git("fetch", "-q", "origin", "prod")
@@ -1983,6 +2434,16 @@ def resume(
     branch = str(rel["branch"])
     dep = rel.get("deployment") or {}
     if rel.get("cut_pending"):
+        if getattr(args, "sha", "") and not has:
+            # gr724696: the pending cut pins another sha — reconciling it
+            # would push a branch the caller cannot record as its cut.
+            say(
+                f"release in flight: {branch} (a pending cut at "
+                f"{str(rel.get('base'))[:9]}; drop it with `scripts/round cut "
+                "--abandon`)"
+            )
+            say(f"{s[:9]} rides the next cut")
+            return 0
         say(f"resuming: {branch} has a pending cut — reconciling")
         if args.dry_run:
             say("would reconcile the cut, wait for CI, deploy")
@@ -2047,6 +2508,18 @@ def resume(
                         f"scripts/release: re-cut of {branch} refused — see above",
                     )
             return rc
+        if not has and (
+            getattr(args, "sha", "") or rel.get("state") not in OPEN_STATES
+        ):
+            # gr724696: RELEASE_CUT names the release that ships S. A caller
+            # that asked for S by sha, or a record already past its cut
+            # (deploying, deployed, a failed partial rollout), must not be
+            # handed another release's head as its cut — r333's old base was
+            # gated and nearly deployed that way. Only the no-sha re-run on
+            # this tree's own open release reports it (below).
+            say(f"release in flight: {branch}")
+            say(f"{s[:9]} rides the next cut")
+            return 0
         return 0 if args.dry_run else report_cut(branch)
     if dep.get("converged") and not dep.get("rollout_at"):
         if args.dry_run:
@@ -2105,6 +2578,13 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         metavar="rN",
         help="deploy the recorded release/r<N> this worktree cut; never cuts",
+    )
+    mode.add_argument(
+        "--record-prod-head",
+        default="",
+        metavar="SHA",
+        help="only write prod's release.prod_head record for deployed SHA "
+        "(scripts/deploy calls this after moving origin/prod)",
     )
     return run(ap.parse_args(argv))
 

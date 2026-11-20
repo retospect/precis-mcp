@@ -1,5 +1,5 @@
 """Macro relax v1 — ``method: 'assembly'`` as check-and-report
-(docs/backlog/structure-workspaces.md §Relax, slice 5; ruling W4: no mate
+(me693174 §Relax, slice 5; ruling W4: no mate
 solver, settle or FEA yet). One call, :func:`assembly_check`, runs the
 existing macro checkers over a loaded :class:`~precis_se.ops.SeTree` and
 returns ONE findings list plus the two analyses this slice adds, in the

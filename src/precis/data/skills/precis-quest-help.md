@@ -87,7 +87,7 @@ edit(kind="quest", id=7, mode="resume")  # un-park only the roots it paused
 `resume` lifts `STATUS:paused` and the stamp only from roots carrying
 `paused-by:quest` — a root you paused by hand before the quest pause stays
 paused — and moves the quest back to `STATUS:active`. Neither call cancels
-a running job; `plan_dispatch`'s doable filter already walks
+a running job; the doable filter already walks
 `STATUS:paused` up the tree, so a paused root's leaves leave
 `view='doable'` within one tick. Both calls are idempotent: calling either
 twice in a row writes no tag and no logbook line, and says so. This is the
@@ -99,15 +99,8 @@ quest — completing it would delete the "% done" axis as the wrong
 measure. Progress is a **ledger of deeds**, not a percentage.
 
 Tagging a quest `active` is also the affordance that **starts its
-autonomous loop**: the `quest_loop_reconcile` pass ensures every active
-quest has one live `quest_tick` coordinator loop and re-arms it if it
-rests (gated on `PRECIS_QUEST_LOOP_ENABLED`, dark by default). Moving to
-`dormant` / `abandoned` just stops new loops from being minted — the
-current one winds down on its own. A tick resting with nothing runnable
-raises `quest_tick/quest:dry-rest/<quest_id>` (warn, auto-resolves when
-work appears); a live loop that sits queued or past its `at_time` wake
-beyond the stall budget surfaces as `quest-tick-stalled:<quest_id>`
-(watchdog `condition` group — see `precis-health-digest-help`).
+autonomous loop**; moving it to `dormant` / `abandoned` stops new loops
+from being minted — the current one winds down on its own.
 
 ## Priority — how hard it steers
 
@@ -141,10 +134,8 @@ link(kind="draft", id="<slug>", target="quest:7", rel="serves")
 link(kind="quest", id=12, target="quest:7", rel="serves")  # sub-quest → grand quest
 ```
 
-Always link from the server's side with `rel='serves'` — the inverse
-`link(kind='quest', ..., rel='served-by')` "succeeds" but writes the edge
-backwards: the tree rollup's cycle-guard then renders the quest as its
-*own* server while the real server never appears (gripe 161912).
+Either side works: `rel='serves'` from the server and `rel='served-by'`
+from the quest store the same `serves` edge, server to quest.
 
 A quest may serve a grander quest — a **DAG of strivings** above the
 ordinary tree of deeds. One concept can serve several quests (m2m); the
@@ -178,25 +169,33 @@ A quest keeps an **append-only, dated logbook** (like a lab notebook):
 what happened, when, immutable. Append an entry with a type:
 
 ```python
-put(kind="quest", id=7, text="Try Fe–N₄ single-atom sites", entry="hypothesis")
-put(kind="quest", id=7, text="Second PCET barrier too high", entry="dead-end")
-put(kind="quest", id=7, text="Dual-metal site clears both barriers", entry="milestone")
-put(kind="quest", id=7, text="relax batch A", entry="result", by="agent", cost=1.5)
+put(kind="quest", id=7, text="raised hypothesis [fi42] — try Fe–N₄ single-atom sites", args={"entry": "hypothesis"})
+put(kind="quest", id=7, text="Second PCET barrier too high", args={"entry": "dead-end"})
+put(kind="quest", id=7, text="Dual-metal site clears both barriers", args={"entry": "milestone"})
+put(kind="quest", id=7, text="relax batch A", args={"entry": "result", "by": "agent", "cost": 1.5})
 ```
 
-- `entry=` is one of **note · observation · hypothesis · result ·
-  decision · dead-end · milestone · reflection · cost** (default
-  `note`).
+- `args={'entry': …}` is one of **note · observation · hypothesis ·
+  result · decision · dead-end · milestone · reflection · cost**
+  (default `note`).
+- A `hypothesis` entry is a **dated pointer to a hypothesis finding,
+  never the hypothesis itself**. The living conjecture is a `finding`
+  minted with `hypothesis=True` (`fi<id>`, `serves` the quest — see the
+  Directions table below); the logbook line only records that it was
+  raised, and names the `fi` handle so the pointer resolves.
 - A **`milestone` is a deed** — the honest, medieval sense of progress.
   The deed ledger is a filtered view of the log, not a separate store.
 - **`dead-end` is first-class** — recording *what failed and why* stops
   the whole system re-treading it.
-- `by=` is **human · agent · dream** (default `human`).
-- `cost=` records spend; the **tote** (lifetime spend sunk into the
-  quest) is just a sum over the dated log — no separate cost store.
+- `args={'by': …}` is **human · agent · dream** (default `human`).
+- `args={'cost': …}` records spend; the **tote** (lifetime spend sunk
+  into the quest) is just a sum over the dated log — no separate cost
+  store.
 
-The append path takes only `text`/`entry`/`by`/`cost`; use `tag()` /
-`link()` on the quest itself for status and the serves-graph.
+The append path takes only `text` plus the `args` keys
+`entry`/`by`/`cost` (top-level `entry=`/`by=`/`cost=` still run but
+answer with a deprecation note); use `tag()` / `link()` on the quest
+itself for status and the serves-graph.
 
 ## Read a quest
 
@@ -222,6 +221,7 @@ get(
 search(kind="quest", q="trusted anchor", scope="qu7")  # same retrieval
 # rendered as a hit list — also args={"within": "qu7"}
 get(kind="quest", id=7, view="pourbaix")  # per-candidate surface-Pourbaix validity maps
+get(kind="quest", id=7, view="considerations")  # scoped verdict ledger — rel='considered' judgments, reopen queue + history
 get(
     kind="quest", id=7, view="log"
 )  # raw ref-events audit trail (generic, not logbook-specific)
@@ -233,7 +233,8 @@ get(kind="quest", id=7, q="perovskite")  # passages inside this quest (find-in-r
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·
 leaderboard · results · series · measures · logbook · pourbaix · status ·
-rubric` (quest-specific — `dossier` is deprecated, kept only for
+rubric · served · meta · replay · kinetics-summary · considerations`
+(quest-specific — `dossier` is deprecated, kept only for
 quests not yet converted) plus the generic
 `links · log · raw`, plus the fisheye ladder (`kwd · summary · verbatim ·
 fisheye · fisheye+1hop · fisheye+2hop`, any rung with `+recall`):
@@ -243,7 +244,7 @@ that serve it (`served-by`, sub-quests then findings first) capped at 8
 per group, see
 `precis-fisheye-help`. The table views (`results`, `frontier`, `series`,
 `measures`) are in the next section.
-A *deed* is not a view — it is the milestone-typed slice of the log. Bare
+A *deed* is not a view — the milestone-typed slice of the log. Bare
 `get(id=N)` digests the logbook **tail** (last 10 entries, cheap even on a
 quest with thousands); `view='logbook'` is the append-only
 notebook paged newest-first (default `limit` 50 — `args={'since': '7d',
@@ -255,10 +256,11 @@ ref-events ledger, a different
 line (striving status · priority · horizon) plus the frontier counts —
 candidates by band and fidelity tier, trusted-per-axis coverage
 (including declared axes at zero coverage), the frontier handles — then
-momentum, the open gaps, the last `quest_tick` coordinator tick (real
-tick activity, `never` while every minted job is still queued), and the
-operator holds in force (`fidelity_restale_cap=0`,
-`compute_lane`/`lit_lane` `off`). It replaces a frontier+gaps+results
+momentum, the open gaps, the last `quest_tick` coordinator tick (`never`
+while every minted job is still queued), and the
+operator holds in force (`fidelity_restale_cap=0` — mechanical
+reruns on the pinned engine excepted; `compute_lane`/`lit_lane`
+`off`). It replaces a frontier+gaps+results
 round-trip for "where does this quest stand". `view='rubric'` prints just
 the measured axes (`rubric_objectives` + demand/supply). `view='raw'` shows
 scalars + meta + a capped links section (`view='links'` is the full graph).
@@ -332,6 +334,17 @@ reports its row count and no best. Rows that are ambiguous, flagged
 (`meta.escalation`), anchor-lost or distrusted are left out — never compared
 across groups. See `precis-measure-help`.
 
+## Embed a frontier in a draft
+
+Add a draft figure with `meta={"view": {"source": "quest:<id>#frontier"}}`
+and a caption in `text`. Use the quest handle for `<id>`. Supply `x` and
+`y` together to plot two distinct rubric objective keys, or use the
+default axes. Set `trusted_only=True` to hide provisional candidates,
+`top_n` to a positive count to keep the closest points to the frontier,
+and `label` to `handles`, `names`, or `none`. The draft renders the PNG
+on demand from the quest's stored measurements. See
+`precis-draft-rich-content-help` for the full figure call.
+
 ## Read a quest's numbers — Pourbaix maps and staircase points
 
 `view='pourbaix'` is the resting-state surface-Pourbaix validity map per
@@ -382,8 +395,12 @@ with two read-time, mechanical reads (no `% done`):
 - **gaps** — the exploration queue: **thin-support** (almost nothing
   serves it), **no-literature** (work under way with no `paper`
   grounding), **low-mastery** (a served `concept` you don't understand
-  yet), **open-hypothesis** (a `hypothesis` logbook entry with no later
-  `result`/`dead-end`), **needs-experiment** (a graduated candidate
+  yet), **open-hypothesis** (a hypothesis finding `serves`-linked to the
+  quest that is not yet settled — `STATUS:refuted` or the dialectic's
+  `settle` closes it; **transitional**: a `hypothesis` logbook entry with
+  no later `result`/`dead-end` still counts until the tick stops logging
+  hypotheses as entries, except an `fi`-linked pointer, which defers to
+  its finding), **needs-experiment** (a graduated candidate
   waiting on a real-world experiment), **needs-tool** (an open gripe the
   tick filed for a capability that doesn't exist — see the next section).
   Gaps *are* where to look next.
@@ -411,6 +428,16 @@ fetches a live page through the `web` cache — vendor pricing, changelogs,
 announcements — serves-linked, rendered next tick), `proposals` /
 `reruns` (sim lanes), `dialectic_ops` + `ledger_ops` (structure).
 
+## Non-materials progress — `commits`
+
+An operational quest (a compute scout, say) has deliverables that are not
+structures. Its tick output accepts an optional `commits` list —
+`{"kind", "text", "ref"?}` with `kind` one of `ask` (queued for a human),
+`account` (a row created disabled) or `lead-ruled-out` (`text` carries the
+reason). Each lands on the logbook (`decision` / `dead-end`, stamped
+`meta.commit_kind`) as real forward motion; no slab/structure `proposal`
+is needed. Malformed entries are dropped with one observation.
+
 ## Directions — where attempts and ideas live
 
 A quest keeps *two* records. The **logbook** is episodic (what happened,
@@ -428,8 +455,7 @@ exactly — `open`→`open`, `active`→`doing`, `tried`→`done`,
 `done`/`won't-do` are the do-not-repropose set — a ruled-out branch
 reads as a subtree. **Pending integration:** the tick still takes its
 do-not-repropose list from the dossier's pinned ledger chunks on
-unconverted quests — `quest/tick.py` reads and writes dossier chunks
-only, not direction todos — so the direction tree stops *human and
+unconverted quests, not from direction todos — so the direction tree stops *human and
 graph readers* re-treading a branch today, and stops the tick only
 once the tick's ledger reads switch to it (see "The dossier is
 deprecated" below).
@@ -455,22 +481,24 @@ where (Reto 2026-11-13):
 | an idea / an approach | direction `todo` `part-of` the quest | `STATUS` open→doing→`done`/`won't-do` |
 | the idea's narrative | `memory` `part-of` the direction todo | prose, no state |
 | a check or research step — lit search, acquisition, test run, exploration | `todo` `part-of` the direction | its own `STATUS`; stays ordinary `doable` work |
-| an open question | a `hypothesis` logbook entry | the `open-hypothesis` gap tracks it |
+| a hypothesis / open question | `finding(hypothesis=True)` that `serves` the quest (and the direction, if branch-specific) | its own status and `supports`/`contradicts` edges, updated in place. To record a rejection, link the hypothesis to the negative ruling with `retracted-by` or `superseded-by` and stamp the hypothesis `STATUS:refuted`. See "Record a rejection" in [[precis-nanopub-help]]. |
 | evidence — finding, paper, measure, structure | `serves` the quest | — |
+
+## Directions — state rides `STATUS`, not tags
 
 An idea's state never rides a tag — not `ATTEMPT:`, not
 `DREAM:speculative`: a try that ran its course marks `done`, a
-never-again `won't-do`, and the *why* is a `hypothesis`/`dead-end`
-entry. **Open questions stay out of the striving statement** — the first
+never-again `won't-do`, and the *why* is a `dead-end` entry. **Open
+questions stay out of the striving statement** — the first
 line keeps the one asymptotic sentence ([[precis-quest-writing-help]]); a
-"what if…" is a `hypothesis` entry where the gap list sees it. Nest a
+"what if…" is a hypothesis finding; the logbook only notes that it was
+raised. Nest a
 check with `part-of`, never `parent_id` — a `parent_id` child joins the
 direction tree itself and leaves `doable` with it. Link evidence
 `serves` the **quest**, and the direction too when you want the answer
 pinned to that branch: the quest readers (gaps, momentum, alignment, the
-frontier) still collect `serves` one hop from the quest
-(`gaps._live_servers`), so a direction-only link is invisible to them
-until retire-dossier slice 5 wires `directions.quest_evidence` through.
+frontier) still collect `serves` one hop from the quest, so a
+direction-only link is invisible to them.
 When you search the tree (or the literature) for prior art, phrase the
 query as the thing you expect to find, not as a question — *"subsurface
 H co-doping on Pd(111) lowers NO dissociation barrier"*, not *"does H
@@ -482,7 +510,7 @@ legs are the same move for papers.
 The `dossier-of` `draft` — a narrative **rewritten each tick** plus
 pinned `ATTEMPT:`-tagged ledger chunks — is being retired (Reto
 2026-11-11): everything it held lives in the graph above.
-`view='dossier'` and `precis quest dossier` still render it, and a tick
+`view='dossier'` still renders it, and a tick
 still rewrites it on quests not yet converted, but it is no longer
 where open questions or synthesis live — read it as history.
 `put`/`edit`/`delete` on a `dossier-of` (or `paper-of`) draft remains
@@ -495,29 +523,10 @@ it reads the quest's rolling context (statement + synthesis + gaps +
 momentum + logbook tail), does one increment of reasoning, appends 1–4
 logbook entries, updates its synthesis state (still written to the
 deprecated dossier on quests not yet converted — see above), and may
-**propose candidate materials**. Run one by hand:
-
-```
-precis quest tick 7            # one reasoning tick against quest 7
-precis quest tick 7 --dry-run  # print the assembled context, no LLM call
-precis quest tick 7 --compute  # ALSO simulate proposed candidates (GPU relax)
-precis quest dossier 7         # the deprecated dossier (see above)
-precis quest frontier 7        # the Pareto frontier of candidate materials
-precis quest redispatch 7      # re-score every candidate on the deployed engine
-precis quest backfill-network-basis 7          # dry run: count stampable measures
-precis quest backfill-network-basis 7 --apply  # write the stamps
-```
+**propose candidate materials**.
 
 A tick does not edit repo files. To land prose in a repo file (docs, a
-skill, a backlog spec), file a gripe carrying the text; a session applies it.
-
-`redispatch` re-runs each candidate at its **own highest completed rung**,
-not a blanket neb — a verify-tier candidate costs a full verify pass
-(3+ seeds, ~2 h each/GPU), so use it by hand after an engine deploy,
-not in a loop. It collapses onto existing jobs when the engine token is
-unchanged.
-`reset-compute` nulls derived stamps but keeps `meta.neb_edges`; next
-tick re-stamps off it.
+skill, a spec section), file a gripe carrying the text; a session applies it.
 
 To re-measure ONE named candidate on demand — a deliberate rerun to test a
 credited pass's reproducibility — call
@@ -541,18 +550,9 @@ the `endpoint_agreement` trust check new basins to compare;
 check's verdict, input and threshold — plus per-state `delta_meV`
 beside the `tol_eV` it was judged against (see `precis-pathway-help`).
 
-New seeds round-robin over the live gpu nodes by default. `--node
-<name>` pins them all to that node; `--spread` gives each to the
-least-loaded live node (queued + running gpu jobs, ties by name).
-Neither picks a retired ssh_node lane; the ack names the per-node
-counts. Already-queued seeds stay put (`job` `mode='retarget'` moves
-those).
-
 A margin measured on an older reaction network (another catpath template or
 version) does not rank — it shows provisional with reason "measured on an
 older reaction network (template@version)" until re-measured.
-`backfill-network-basis` stamps the network on pre-stamp candidates, only
-where a completed pathway reproduces the stored value.
 
 ## A research tick — searches and compute
 
@@ -564,9 +564,24 @@ and concepts are linked `serves` (max 3 per query); drafts and memories
 count as hits but are not linked. The logbook line per query reads
 `[local N, acquired M; …]`.
 
+**A relevance gate stands before each link** (gr592951). A candidate
+carrying neither title nor abstract is NEVER linked — the line says
+`pa<id> (no title/abstract)`. The rest are checked against the quest's
+`meta.lit_gate` term lists (below): a miss is logged `seen not linked:
+pa<id> (no host term|no reaction term)` — a per-candidate verdict, capped
+at 12 names per line — and every `ref_id % 5 == 0` rejection links anyway,
+flagged `(sampled past gate)`, so cheap triage is never the only discovery
+path. Neither drop writes a `considered` verdict: the tick's `judgments`
+channel (0–8 entries `{source, verdict, reason, depth}` — `reason`
+required) is the door that records an explicit `useful`/`not-useful`/
+`uncertain` on a source, and a `not-useful` verdict holds the source out
+of every later leg (`view='considerations'` is the ledger). When
+`view='literature'` lands (gr592952) the weekly "new literature" line
+reads it — acquisitions and gate-passing links only.
+
 ## A research tick: compute and the frontier
 
-**Compute.** With `--compute`, each proposal that carries a
+**Compute.** When compute is on, each proposal that carries a
 concrete atomistic `structure` (a periodic cell + atoms) becomes a
 `structure` that `serves` the quest (the graph *is* the memory of
 explored space), content-addressed so re-proposing a material is a cache
@@ -593,8 +608,7 @@ Pareto-ranked separately), and **awaiting a sim** (no measurement at
 all). A `★` marks a graduated candidate (earned the `needs-experiment`
 milestone); `★ would lead` on a provisional row means it would top the
 frontier if its measurement were trusted. The loop dispatches **one
-proposal per tick**
-(`PRECIS_QUEST_MAX_PROPOSALS`, default 1) and waits for its sims before
+proposal per tick** and waits for its sims before
 the next.
 
 ## Skip the guesswork — opt a quest into a structure search
@@ -611,24 +625,17 @@ candidates land as ordinary `serves`-linked `structure` rows with an
 argues them like any other candidate — it never sees the search
 internals.
 
-The autonomous *scheduling* of ticks (a perpetual per-quest coordinator
-loop, not a single step) is dark by default: `PRECIS_QUEST_LOOP_ENABLED`
-gates it, the manual CLI runs regardless, and compute stays off without
-`--compute`.
-
 ## Patch quest meta — lanes and bodies
 
 `edit(kind='quest', id=N, meta={...})` patch-merges an **allowlisted** key
-into `refs.meta` (siblings untouched — never a whole-dict clobber); an
+into the quest's meta (siblings untouched — never a whole-dict clobber); an
 unknown key is refused, naming the allowlist. The write lands as a
-`meta_patched` row in `view='log'`. Same allowlist over the CLI:
-`precis quest set <id> <key> <value>` (`value` is JSON-decoded when it
-parses, so `true`/`[...]` land typed — `off` stays the plain string
-`"off"`) — the lever to reach for when the MCP itself is the thing
-that's wedged.
+`meta_patched` row in `view='log'`. Values are JSON-decoded when
+they parse, so `true`/`[...]` land typed — `off` stays the plain string
+`"off"`.
 
 - **`compute_lane`** — `"off"` makes every armed tick of *this* quest
-  reason-only: no `--compute` dispatch. Any other value, or the key's
+  reason-only: no compute dispatch. Any other value, or the key's
   absence, keeps compute on. Lit-search does NOT gate on this switch
   (gr500282) — it is network, not GPU compute; use `lit_lane` for that.
 - **`lit_lane`** — `"off"` skips the tick's lit-search stage and the
@@ -637,9 +644,17 @@ that's wedged.
   this switch since gr500282, and before that fix `compute_lane=off`
   silently starved a lit-only quest's searches). Any other value, or
   the key's absence, keeps lit-search on.
+- **`lit_gate`** — the lit-search relevance gate's term lists:
+  `{"host": ["Pd", "Pd(111)", "<dopant names>"], "reaction": ["NO",
+  "NH3", "nitric oxide reduction"]}` — a dict with those two keys only,
+  each a list of term strings matched case-insensitively as whole tokens
+  against a candidate's title+abstract. Unset or malformed means the gate
+  is OFF (every candidate passes): the lists are chemistry judgment, so
+  set them deliberately — an absent/empty list skips that side of the
+  check. See the gate paragraph under "searches and compute" above.
 - **`quest_body`** — which tick body runs the loop. Unset (the default) is
   the catalyst/materials-discovery body above, unchanged. `"weave"` routes
-  to the paper-writing body instead; see `mark_weave_quest`. `"inquiry"` is
+  to the paper-writing body instead. `"inquiry"` is
   a third body for a striving that reads, reasons, and synthesises rather
   than searching a materials space — same logbook/dialectic/lit-search
   machinery (and the deprecated dossier until the quest converts), but
@@ -746,11 +761,8 @@ fewer than 2 independent seeds at neb tier (`barrier_seed_blocker`:
 so a rerun re-using a seed re-verifies — or `seeds:unknown` without
 evidence; `barrier_independent_seeds` carries the count), and an older
 engine stamp (`engine:stale`; `engine:unknown` on an unstamped trusted
-edge). A stale edge re-runs on current — struct_neb self-queues,
-autocatpath via restale (opt-in ladder, `fidelity_restale_cap` > 0,
-frontier/top provisional band; `=0` is the master hold on every automatic
-pathway re-mint — promotes and repair re-dispatches included — while
-`put(mode='rerun')` stays the deliberate door). Seeds must agree:
+edge). A stale edge re-runs on the current engine;
+`put(mode='rerun')` is the deliberate door. Seeds must agree:
 `endpoint:union-disagree` / `endpoint:union-not-run`. **A barrier near
 0 eV carries none of these flags** — a broken/degenerate NEB, not a
 record-low — treat as invalid until checked.
@@ -758,7 +770,17 @@ record-low — treat as invalid until checked.
 A refused gate names its blockers (`barrier_seed_blocker`,
 `barrier_blocked_by` check + subject) and points at
 `view='neb' args={'run': N}` / `view='trust'`; logbook results carry
-the same digest.
+the same digest. Every untrusted stamp also carries a
+`barrier_failure_class` (gr593138): **mechanical** — stale engine,
+seed shortfall, infra/timeout markers — re-queues automatically on the
+current engine under a retry cap, a per-quest GPU-h budget
+(`fidelity_mechanical_retry_cap` / `fidelity_mechanical_gpu_h_budget`)
+and a cooldown, and is exempt from the `fidelity_restale_cap=0` hold;
+**science** — endpoint split, detachment, wrong binder, absurd
+magnitude, twin disagreement — never re-queues: the logbook's
+"science failure" entry routes it to you with the blocker named. A
+mechanical stamp parked at its cap or budget is yours again — decide,
+don't expect another automatic rerun.
 
 A single **low** trusted barrier is strong evidence — an upper bound, since
 a path that cheap exists. A single **high** barrier rules nothing out — the
@@ -770,9 +792,7 @@ Same-crystal repeats have disagreed by ~1 eV between two otherwise-identical
 runs (one or both invalid, or genuinely different paths found) — never rank
 two candidates on a margin under ~1 eV without a replicate agreeing.
 
-A proposal rejected with `'NoneType' object has no attribute 'get'` is
-infrastructure noise — resubmit the identical proposal unchanged. A
-rejection naming a real geometry problem ("structure preflight rejected
+A rejection naming a real geometry problem ("structure preflight rejected
 this edit") is a genuine veto — fix the edit, don't resubmit it.
 
 `view='frontier'` lags the system log by hours to days — a barrier logged

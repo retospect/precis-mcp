@@ -30,6 +30,32 @@ of models, or dev tooling re-runs on every source edit. Gate usage:
 
 Everything below describes the `precis-mcp:*` lineage and its seed mechanism.
 
+## Shared session server: what it serves, what restarts it
+
+Operator facts for the shared session MCP kept up by
+`deploy/mcp-http/precis-mcp-http-ensure.sh`:
+
+- **It serves the deployed prod clone** (`${REPO}-prod`, held on
+  `origin/prod` by `scripts/deploy` and followed by the ensure script's
+  `follow_prod`), not main — a `scripts/ship --quick` land moves neither
+  the clone nor the running server.
+- **A code change replaces only the serve child**: the checkout watchdog
+  (or `--restart`) respawns it and the prepare step re-copies `/src` into
+  `/app`. The same respawn also reconciles packaging drift — a new or
+  bumped wheel dependency is synced from `uv.lock` into the image's
+  venv, and a `pyproject.toml` change reinstalls the project metadata —
+  so an ordinary dependency bump needs no recreate either. Rebuild the
+  image (`scripts/mcp-image-refresh`) for what prepare cannot apply: an
+  image-baked dependency (`autocatpath` is skipped — its private repo
+  needs a token the container lacks), a package with no wheel (the sync
+  fails and names the rebuild), or a removal worth enforcing
+  (`--inexact` removes nothing). A supervisor change needs `--recreate`
+  — it runs from its own directory, refreshed only at container start.
+- **Never treat your own session's MCP as evidence about the shared
+  server** — a session can be attached to a worktree server or another
+  rig. The shared server's state is what the ensure script's `--status`
+  prints.
+
 ## Multi-stage layout and the seed
 
 `docker/Dockerfile` is multi-stage with an empty `FROM scratch AS premodels`

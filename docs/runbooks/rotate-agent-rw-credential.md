@@ -74,7 +74,7 @@ resolves through it.
 Postgres port (`postgres_port`, 5432), not pgbouncer's 6432 — you are about to
 invalidate the pooler's copy, and you need a session that doesn't depend on it:
 
-    ssh caspar
+    ssh <db-host>
     psql -h 127.0.0.1 -p 5432 -U admin -d precis_prod
 
 Then, at the `psql` prompt:
@@ -111,7 +111,7 @@ Then confirm nothing is auth-looping. The authoritative worker log is the
 `worker_logs` table — the `/var/log/precis-worker*.log` stdout files only
 carry bootstrap/fallback lines (migration 0015; `docs/runbooks/cluster-logs.md`):
 
-    ssh caspar 'tail -50 /usr/local/var/log/pgbouncer.log' | grep -i "auth\|error"
+    ssh <db-host> 'tail -50 /usr/local/var/log/pgbouncer.log' | grep -i "auth\|error"
     scripts/prod-psql "SELECT to_char(ts,'HH24:MI'), host, process, left(message,110)
       FROM worker_logs
       WHERE ts > now() - interval '15 minutes'
@@ -122,7 +122,7 @@ carry bootstrap/fallback lines (migration 0015; `docs/runbooks/cluster-logs.md`)
 A `fe_sendauth: no password supplied` on a *sandboxed* job is a different,
 known defect (gr196677 — `PGPASSFILE` pinning), not a rotation failure.
 
-**6 — Sync the overlay to melchior** so its checkout matches, or the next
+**6 — Sync the overlay to the agent host** so its checkout matches, or the next
 in-place render there re-writes the OLD password:
 
     git -C <deploy/inventory> push deploy-helper main
@@ -175,16 +175,16 @@ credentialed worker) is the route back to `infra`.
 Two credential locations are deliberately **outside** the automated purge and
 must be handled by hand if you are rotating because of exposure:
 
-- `/var/root/.claude.json` on melchior — Claude Code *config*, root-owned;
+- `/var/root/.claude.json` on the agent host — Claude Code *config*, root-owned;
   deleting it discards settings, so it is a judgement call, not a sweep.
 - any human's `~/.claude/.credentials.json` — an interactive login. Rotating
   the service token does not touch it; re-run `claude` to re-auth if you
   revoke the underlying grant.
 
-To re-verify the fleet is clean (the 2026-08-07 sweep missed spark on the
+To re-verify the fleet is clean (the 2026-08-07 sweep missed the GPU node on the
 first pass by grepping only for `.claude_oauth_token`):
 
-    for h in melchior caspar balthazar spark; do
+    for h in <agent-host> <db-host> <worker-host> <gpu-node>; do
       ssh $h 'sudo find /Users /home /var/root -maxdepth 3 \
         \( -name ".claude_oauth_token" -o -name ".credentials.json" \) 2>/dev/null'
     done

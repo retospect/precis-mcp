@@ -124,7 +124,7 @@ def _proposal(
             },
         ),
         rationale="Identical title and same first author",
-        model="castor",
+        model="cedar",
     )
     assert rid is not None
     return rid

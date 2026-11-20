@@ -4,12 +4,13 @@ Semantic Scholar's index lags fresh records and skips registries it
 doesn't crawl (DataCite-minted proceedings like LIPIcs), so an S2 miss
 is not evidence a DOI is wrong (gr486090). This resolves the DOI
 against the registration agencies directly — Crossref first (the
-dominant RA for journal DOIs), then DataCite — before
-``PaperHandler.acquire`` refuses it as hallucinated.
+dominant RA for journal DOIs), then DataCite, then JaLC (Japan Link
+Center — J-STAGE and other Japanese publications, e.g. 10.69410) —
+before ``PaperHandler.acquire`` refuses it as hallucinated.
 
 The DOI is agent-supplied and rides the URL path, so every fetch goes
 through :func:`precis.utils.safe_fetch.safe_get` on a pinning
-:func:`precis.utils.http.http_client` (the SSRF guard); both hosts are
+:func:`precis.utils.http.http_client` (the SSRF guard); the hosts are
 fixed.
 
 Miss vs. fault follows the acquire split (gr483930): a registry
@@ -41,6 +42,7 @@ log = logging.getLogger(__name__)
 _TIMEOUT_S = 15.0
 _CROSSREF_WORK = "https://api.crossref.org/works/"
 _DATACITE_DOI = "https://api.datacite.org/dois/"
+_JALC_DOI = "https://api.japanlinkcenter.org/dois/"
 
 
 class RegistryLookupError(RuntimeError):
@@ -70,7 +72,9 @@ def _get_json(url: str, *, service: str, params: dict[str, Any] | None = None) -
             user_agent=polite_user_agent((params or {}).get("mailto")),
         ) as client:
             resp = with_backoff(
-                lambda: safe_get(client, url, params=params or {}), service=service
+                lambda: safe_get(client, url, params=params or {}),
+                service=service,
+                url=url,
             )
     except RateLimited as exc:
         # A refusal is "lookup failed", never ``None`` (= registry said 404).
@@ -221,8 +225,145 @@ def _normalize_datacite(attrs: dict[str, Any], doi: str) -> dict[str, Any]:
     return out
 
 
+def _jalc_lang_pick(entries: Any, key: str) -> str:
+    """The ``en`` entry's ``key`` text from a JaLC ``*_list`` field, else
+    the first non-empty (JaLC records often carry ja + en twins)."""
+    if not isinstance(entries, list):
+        return ""
+    first = ""
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        text = str(e.get(key) or "").strip()
+        if not text:
+            continue
+        if str(e.get("lang") or "") == "en":
+            return text
+        if not first:
+            first = text
+    return first
+
+
+def _normalize_jalc(data: dict[str, Any], doi: str) -> dict[str, Any]:
+    """JaLC REST ``data`` record → the crossref/S2-normalized shape.
+
+    JaLC v1 gives per-language lists: ``title_list`` (``lang``/``title``),
+    ``creator_list[].names`` (``lang``/``last_name``/``first_name``) and
+    ``journal_title_name_list`` (``type``/``lang``/
+    ``journal_title_name``). English is preferred, falling back to the
+    first entry — a ja-only record still resolves. JaLC carries no
+    abstract in this schema.
+    """
+    authors: list[dict[str, str]] = []
+    for c in data.get("creator_list") or []:
+        if not isinstance(c, dict):
+            continue
+        picked: dict[str, str] = {}
+        for n in c.get("names") or []:
+            if not isinstance(n, dict):
+                continue
+            family = str(n.get("last_name") or "").strip()
+            given = str(n.get("first_name") or "").strip()
+            plain = str(n.get("name") or "").strip()
+            entry: dict[str, str] = {}
+            if given:
+                entry["given"] = given
+            if family:
+                entry["family"] = family
+            if not entry and plain:
+                entry["name"] = plain
+            if not entry:
+                continue
+            if str(n.get("lang") or "") == "en":
+                picked = entry
+                break
+            if not picked:
+                picked = entry
+        if picked:
+            authors.append(picked)
+
+    year: int | None = None
+    pub = data.get("publication_date")
+    for raw_year in (
+        pub.get("publication_year") if isinstance(pub, dict) else None,
+        data.get("recorded_year"),
+    ):
+        if raw_year is None:
+            continue
+        try:
+            year = int(str(raw_year))
+            break
+        except (TypeError, ValueError):
+            continue
+
+    journal = ""
+    jtl = data.get("journal_title_name_list")
+    if isinstance(jtl, list):
+        for e in jtl:
+            if (
+                isinstance(e, dict)
+                and str(e.get("type") or "") == "full"
+                and str(e.get("journal_title_name") or "").strip()
+            ):
+                journal = str(e["journal_title_name"]).strip()
+                if str(e.get("lang") or "") == "en":
+                    break
+
+    issn = ""
+    for e in data.get("journal_id_list") or []:
+        if isinstance(e, dict) and str(e.get("type") or "") == "ISSN":
+            issn = str(e.get("journal_id") or "").strip()
+            break
+
+    out: dict[str, Any] = {
+        "title": _jalc_lang_pick(data.get("title_list"), "title"),
+        "authors": authors,
+        "year": year,
+        "doi": doi,
+        "journal": journal,
+        "abstract": "",
+        "source": "jalc",
+    }
+    if str(data.get("content_type") or "").strip() == "JA":
+        out["entry_type"] = "article"
+    for key in ("volume", "issue"):
+        text = str(data.get(key) or "").strip()
+        if text:
+            out[key] = text
+    first_page = str(data.get("first_page") or "").strip()
+    last_page = str(data.get("last_page") or "").strip()
+    if first_page and last_page:
+        out["pages"] = f"{first_page}-{last_page}"
+    elif first_page:
+        out["pages"] = first_page
+    if issn:
+        out["issn"] = issn
+    publisher = _jalc_lang_pick(data.get("publisher_list"), "publisher_name")
+    if publisher:
+        out["publisher"] = publisher
+    return out
+
+
+def _jalc_meta(doi: str) -> dict[str, Any] | None:
+    """``GET api.japanlinkcenter.org/dois/<doi>`` → normalized meta, or ``None``.
+
+    The JaLC REST API covers DOIs JaLC registered — its own RA plus
+    Crossref/DataCite DOIs it deposited — which is where J-STAGE records
+    the other two legs miss live (gr625031). An unknown DOI answers a
+    plain 404 after a redirect, so ``_get_json``'s miss-vs-fault split
+    carries over unchanged.
+    """
+    data = _get_json(_JALC_DOI + quote(doi, safe=""), service="jalc")
+    if not isinstance(data, dict) or str(data.get("status") or "") != "OK":
+        return None
+    inner = data.get("data")
+    if not isinstance(inner, dict):
+        return None
+    return _normalize_jalc(inner, doi)
+
+
 def resolve_registry_doi(doi: str, *, mailto: str = "") -> dict[str, Any] | None:
-    """Resolve ``doi`` against the DOI registries: Crossref, then DataCite.
+    """Resolve ``doi`` against the DOI registries: Crossref, DataCite, JaLC.
 
     Returns the normalized metadata dict (``title`` / ``authors`` /
     ``year`` / ``doi`` / ``journal`` / ``abstract`` / ``entry_type`` /
@@ -241,6 +382,12 @@ def resolve_registry_doi(doi: str, *, mailto: str = "") -> dict[str, Any] | None
         fault = exc
     try:
         meta = _datacite_meta(doi)
+        if meta is not None:
+            return meta
+    except Exception as exc:
+        fault = fault or exc
+    try:
+        meta = _jalc_meta(doi)
         if meta is not None:
             return meta
     except Exception as exc:

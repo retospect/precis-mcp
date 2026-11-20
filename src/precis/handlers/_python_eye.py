@@ -393,11 +393,15 @@ def render_eye(
     extent: Extent,
     hits: list[ptests.TestHit],
     placed: list[str] | None = None,
+    notes: str | None = None,
 ) -> str:
     """The python eye on ``sym`` at ``extent`` — the body
     ``PythonHandler.eye`` returns. ``hits`` is the focus's ranked test
     list (``_python_tests.discover_tests``), computed by the handler.
-    ``placed`` is the ws-root Placed group (pre-rendered rows)."""
+    ``placed`` is the ws-root Placed group (pre-rendered rows). ``notes``
+    is the pre-rendered inbound-notes block (``Handler._notes_section``)
+    — the anchor machinery lives in the handler because the eye module
+    stays pure rendering; ``None`` adds nothing (gr702978)."""
     mod = idx.file(sym.file)
     assert mod is not None
     head = f"# eye on {alias}::{sym.qualname} — {extent.label}"
@@ -434,6 +438,10 @@ def render_eye(
         else:
             seeds = _ring1_symbol(lines, alias, sym, mod, idx, hits, placed=placed)
         seen.update(seeds)
+        if notes is not None:
+            # Inbound notes are part of the ring-1 neighbourhood: what
+            # relates to this symbol, from the graph rather than the code.
+            lines.append(notes)
     if extent >= Extent.HOP2:
         if sym.kind == "module":
             _ring2_modules(lines, seeds, seen | {mod.qualname}, idx)

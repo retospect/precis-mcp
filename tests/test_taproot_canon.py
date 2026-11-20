@@ -48,9 +48,20 @@ def _result(
     text: str = "",
     error: str | None = None,
     stop_reason: str | None = None,
+    rung_transport: Any = "claude_p",
+    model: str = "stub-model",
 ) -> Any:
-    """A stand-in carrying the extraction fields of ``LlmResult``."""
-    return SimpleNamespace(text=text, data=data, error=error, stop_reason=stop_reason)
+    """A stand-in carrying the ``LlmResult`` fields the call sites read —
+    ``rung_transport``/``model`` included so ``dedup_judge`` can stamp the
+    judging rung (gr639347)."""
+    return SimpleNamespace(
+        text=text,
+        data=data,
+        error=error,
+        stop_reason=stop_reason,
+        rung_transport=rung_transport,
+        model=model,
+    )
 
 
 def _verdict(v: canon.Verdict3, confidence: float, rationale: str = "") -> Verdict:
@@ -295,7 +306,7 @@ def test_extract_claim_strict_raises_on_dispatch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The strict variant surfaces infra failure as an exception rather
-    than degrading to a silent NO-CLAIM — the melchior-incident guard."""
+    than degrading to a silent NO-CLAIM — the maple-incident guard."""
     monkeypatch.setattr(canon, "route", lambda req: _result(error="ECONNREFUSED"))
     with pytest.raises(ExtractionUnavailable, match="ECONNREFUSED"):
         extract_claim_strict("some passage")
@@ -803,7 +814,12 @@ def test_dedup_judge_parses_a_same_verdict(monkeypatch: pytest.MonkeyPatch) -> N
         ),
     )
     v = dedup_judge("claim A", "claim B")
-    assert v == {"verdict": "same", "confidence": 0.92, "rationale": "identical fact"}
+    assert v == {
+        "verdict": "same",
+        "confidence": 0.92,
+        "rationale": "identical fact [judge: claude_p:stub-model]",
+        "judge": "claude_p:stub-model",
+    }
 
 
 def test_dedup_judge_flags_dispatch_error_not_different(
@@ -850,6 +866,37 @@ def test_dedup_judge_clamps_confidence_to_unit_interval(
     )
     v = dedup_judge("a", "b")
     assert v["confidence"] == 1.0
+
+
+def test_dedup_judge_records_rung(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr639347: a judged verdict names the rung that judged it — ``judge``
+    is ``"<rung transport>:<model>"`` off the dispatch result, and the same
+    marker is appended to ``rationale`` so a persisted rationale shows it.
+    Error verdicts carry neither — nothing judged."""
+    monkeypatch.setattr(
+        canon,
+        "route",
+        lambda req: _result(
+            data={
+                "verdict": "different",
+                "confidence": 0.7,
+                "rationale": "distinct scopes",
+            },
+            rung_transport="openai_compat",
+            model="anthropic/claude-opus",
+        ),
+    )
+    v = dedup_judge("claim A", "claim B")
+    assert v["judge"] == "openai_compat:anthropic/claude-opus"
+    assert v["rationale"] == (
+        "distinct scopes [judge: openai_compat:anthropic/claude-opus]"
+    )
+
+    monkeypatch.setattr(canon, "route", lambda req: _result(error="boom"))
+    v = dedup_judge("claim A", "claim B")
+    assert v["verdict"] == "error"
+    assert "judge" not in v
+    assert v["rationale"] == "dispatch error: boom"
 
 
 def test_merge_confirm_degrades_to_different_on_dispatch_error(
@@ -1621,3 +1668,31 @@ def test_extract_prompt_carries_the_mechanism_split_rule() -> None:
     assert "is listed here as its own assertion" in flat
     # the template still formats: only {excerpt} is a placeholder
     assert "PASSAGE:\nsome text" in canon._EXTRACT_PROMPT.format(excerpt="some text")
+
+
+def test_claim_form_rules_carry_state_variable_conditions() -> None:
+    """Rule 3 keeps the state variables a value depends on (potential with
+    its reference electrode, electrolyte, illumination, temperature), never
+    invents them, and the shared rules reach the extract and qualify prompts."""
+    flat = " ".join(canon.CLAIM_FORM_RULES.split())
+    assert "reference electrode" in flat
+    assert "vs RHE" in flat
+    assert "Never invent a condition" in flat
+    assert "reference electrode" in " ".join(canon._EXTRACT_PROMPT.split())
+    assert "at -0.5 V vs RHE in 0.5 M K₂SO₄" in " ".join(canon._EXTRACT_PROMPT.split())
+
+
+def test_dedup_judge_sends_condition_and_method_rubric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def check_prompt(request: LlmRequest) -> Any:
+        assert request.messages is not None
+        prompt = " ".join(request.messages[-1]["content"].split())
+        assert "comparable methods" in prompt
+        assert "both conclusions apply within the overlap" in prompt
+        assert "intervals share an endpoint" in prompt
+        assert "from 0.15 to 0.6 GPa are DIFFERENT" in prompt
+        return _result(data={"verdict": "different", "confidence": 0.95})
+
+    monkeypatch.setattr(canon, "route", check_prompt)
+    assert dedup_judge("claim A", "claim B")["verdict"] == "different"

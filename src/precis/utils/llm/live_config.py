@@ -21,7 +21,7 @@ nothing set, behavior is byte-identical to before.
 Sourced from the same process-bound store the budget breaker uses
 (:func:`precis.budget.meter.active_store`), read through the generic
 ``app_settings`` KV (:func:`precis.budget.settings.get_setting`, migration
-0070). A short TTL cache (matching the meter's ~15s) bounds per-dispatch DB
+0070). A short TTL cache bounds per-dispatch DB
 overhead and, because ``resolve_model`` is on the dispatch hot path, keeps it
 from querying every call; a flip is picked up within one TTL across every
 process. The budget/meter imports are **lazy** (inside the reads) so the router
@@ -118,8 +118,8 @@ _TRUTHY = {"1", "true", "yes", "on"}
 ENV_CHAIN_PREFIX = "PRECIS_LLM_CHAIN_"
 ENV_MODEL_PREFIX = "PRECIS_LLM_MODEL_"
 
-#: How long a read is reused before re-querying. Matches the budget meter's
-#: cache window; short enough that a console flip is seen promptly.
+#: How long a read is reused before re-querying. Short enough that a
+#: console flip is seen promptly.
 _TTL_S = 15.0
 
 _lock = threading.Lock()

@@ -217,6 +217,10 @@ def _enable_materialize(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_EMBED_BACKLOG_HIGH", raising=False)
     monkeypatch.delenv("PRECIS_EMBED_BACKLOG_AGE_MINUTES", raising=False)
     monkeypatch.delenv("PRECIS_EMBED_BATCH_MAX_JOBS", raising=False)
+    # The SMALL bands pin to the gateway host (made-up name here).
+    monkeypatch.setenv("PRECIS_GATEWAY_HOST", "maple")
+    monkeypatch.delenv(m._SMALL_TARGET_NODE_ENV, raising=False)
+    monkeypatch.setattr(m, "_warned_no_target_node", False)
 
 
 # ── §F cycle b cutover: default-ON, "0" is the opt-out ───────────────────
@@ -737,7 +741,7 @@ def test_band_full_but_nothing_running_warns(
     _small_band_env: None,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Band full of QUEUED jobs that nothing is draining (dead melchior /
+    """Band full of QUEUED jobs that nothing is draining (dead maple /
     target_node misconfig) while backlog remains → the stuck-queue WARNING (the
     band analogue of the high-water liveness signal)."""
     backlog = {"n": 999_999}
@@ -793,7 +797,7 @@ def test_band_full_behind_saturated_lane_is_silent(
         "classify",
         _DRAIN_CAP,
         status="running",
-        lease_host=m._DEFAULT_SMALL_TARGET_NODE,
+        lease_host="maple",
     )
     monkeypatch.setattr(
         m,
@@ -824,7 +828,7 @@ def test_band_warns_when_lane_has_free_capacity(
             "classify",
             _DRAIN_CAP - 1,
             status="running",
-            lease_host=m._DEFAULT_SMALL_TARGET_NODE,
+            lease_host="maple",
         )
     monkeypatch.setattr(
         m,
@@ -949,6 +953,70 @@ def test_small_drain_concurrency_opt_in(monkeypatch: pytest.MonkeyPatch) -> None
     assert "concurrency" not in params
     monkeypatch.setenv("PRECIS_SMALL_DRAIN_CONCURRENCY", "9")
     assert m._small_drain_params("llm_summarize")(0)["concurrency"] == 9
+
+
+def test_small_target_node_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env var (when SET) beats the setting; set-but-empty means unpinned;
+    neither gives ``None`` (the bands then skip)."""
+    assert m._band_target_node() == "maple"
+    assert m._small_drain_params("classify")(0)["target_node"] == "maple"
+
+    monkeypatch.setenv(m._SMALL_TARGET_NODE_ENV, "birch")
+    assert m._band_target_node() == "birch"
+    assert m._small_drain_params("classify")(0)["target_node"] == "birch"
+
+    monkeypatch.setenv(m._SMALL_TARGET_NODE_ENV, "")
+    assert m._band_target_node() == ""
+    assert "target_node" not in m._small_drain_params("classify")(0)
+
+    monkeypatch.delenv(m._SMALL_TARGET_NODE_ENV)
+    monkeypatch.delenv("PRECIS_GATEWAY_HOST")
+    assert m._band_target_node() is None
+
+
+def test_small_band_without_target_node_skips_and_warns_once(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    _small_band_env: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No env pin and no gateway host: the SMALL bands mint NOTHING (never an
+    unpinned job — the SMALL endpoint is loopback-only) and warn once."""
+    monkeypatch.delenv("PRECIS_GATEWAY_HOST")
+    backlog = {"n": 999_999}
+    monkeypatch.setattr(
+        m,
+        "_BACKLOG_SOURCES",
+        (
+            _fake_band_source(backlog, pass_name="llm_summarize"),
+            _fake_band_source(backlog, pass_name="classify"),
+        ),
+    )
+
+    with caplog.at_level("WARNING", logger="precis.workers.materialize"):
+        r1 = m.run_materialize_pass(store)
+        r2 = m.run_materialize_pass(store)
+
+    assert r1.claimed == 0 and r2.claimed == 0
+    assert _queued_derived(store, "llm_summarize") == 0
+    assert _queued_derived(store, "classify") == 0
+    warns = [r for r in caplog.records if "SMALL bands skipped" in r.message]
+    assert len(warns) == 1
+    assert "cluster.gateway_host" in warns[0].getMessage()
+
+
+def test_small_band_empty_env_pin_mints_unpinned(
+    store: Store, monkeypatch: pytest.MonkeyPatch, _small_band_env: None
+) -> None:
+    """An explicitly empty target-node env keeps its meaning: mint unpinned
+    (and the unset-setting skip does not apply)."""
+    monkeypatch.delenv("PRECIS_GATEWAY_HOST")
+    monkeypatch.setenv(m._SMALL_TARGET_NODE_ENV, "")
+    backlog = {"n": 999_999}
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_band_source(backlog),))
+
+    assert m.run_materialize_pass(store).claimed > 0
+    assert _queued_derived(store, "classify") > 0
 
 
 def test_band_source_disabled_mints_nothing(

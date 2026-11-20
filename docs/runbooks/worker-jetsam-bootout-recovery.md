@@ -1,12 +1,12 @@
 # Worker de-domained from launchd (jetsam cull / crash-loop bootout)
 
-**Symptom.** A melchior precis daemon is simply absent: `sudo launchctl
+**Symptom.** An agent-host precis daemon is simply absent: `sudo launchctl
 kickstart -k system/com.precis.worker` →
 `Could not find service "com.precis.worker" in domain for system`. No process,
 no revival. (`launchctl list | grep precis` looks empty as a non-root ssh user
 — system-domain daemons need `sudo`; that is not proof they are unloaded.)
 
-**Cause.** macOS **jetsam** culls low-band precis LaunchDaemons on **melchior**
+**Cause.** macOS **jetsam** culls low-band precis LaunchDaemons on **the agent host**
 under RAM pressure — it co-hosts the llama.cpp servers wiring ~70 GB+, and a
 large Marker ingest on top tips it over (`launchctl print` → `immediate reason
 = inefficient`). When a worker then crash-loops, launchd hits `ThrottleInterval`
@@ -16,31 +16,31 @@ can't help — the service is *unloaded*, not stopped.
 
 ## Recovery
 
-1. Check state: `ssh melchior 'sudo launchctl print system/com.precis.worker'`
+1. Check state: `ssh <agent-host> 'sudo launchctl print system/com.precis.worker'`
    (empty = de-domained).
 2. Re-register:
 
-       ssh melchior 'sudo launchctl bootstrap system /Library/LaunchDaemons/com.precis.worker.plist'
+       ssh <agent-host> 'sudo launchctl bootstrap system /Library/LaunchDaemons/com.precis.worker.plist'
 
    A bootstrap right after a bootout often fails `EIO 5` (label not yet
    released) — retry after a short sleep.
-3. **Without raw sudo** (the permission classifier blocks `ssh melchior sudo
+3. **Without raw sudo** (the permission classifier blocks `ssh <agent-host> sudo
    launchctl bootstrap`): re-run the **dedicated** playbooks, which carry the
    verified reload handler, from the repo `deploy/` tree (`ansible.cfg` has
    key/vault/become):
 
-       ansible-playbook playbooks/20-precis-worker.yml --limit melchior          # system worker
-       ansible-playbook playbooks/37-precis-worker-agent.yml --limit melchior    # agent worker
+       ansible-playbook playbooks/20-precis-worker.yml --limit <agent-host>          # system worker
+       ansible-playbook playbooks/37-precis-worker-agent.yml --limit <agent-host>    # agent worker
 
 ## Don't assume a redeploy fixed it
 
 The `precis_worker` role's reload handler does bootout → bootstrap → kickstart
 with retries and a PID assert. But a `scripts/deploy` (`redeploy-precis.yml`)
-bounce once sent SIGTERM to **both** melchior workers and left both
+bounce once sent SIGTERM to **both** the agent host workers and left both
 un-bootstrapped, silently (`failed=0`) — so the redeploy bounce path is not
 reliable for this. gr162132: make the redeploy bounce reuse the pid-verified
 handler / assert a live pid post-bounce. After any deploy that touched
-melchior, confirm a live pid.
+the agent host, confirm a live pid.
 
 ## Hardening already in place
 
@@ -50,13 +50,13 @@ system worker (embed/summarize/dispatch), the dedicated `fetch_oa` lane
 (`com.precis.worker-fetch`, since 2026-10-21 — the fetch pass moved out of
 the serial rotation; see 20b's option-A block) and asa-bot.
 
-## Consequences of a melchior cull
+## Consequences of the agent host cull
 
-- **`dispatch` effectively runs ONLY on melchior** (7-day `worker_logs`: the
-  other nodes last ran it 2026-07-08Z), so a melchior cull freezes planner
+- **`dispatch` effectively runs ONLY on the agent host** (7-day `worker_logs`: the
+  other nodes last ran it 2026-07-08Z), so the agent host cull freezes planner
   `plan_tick` minting **cluster-wide** with no failover — even though dispatch
   is in every system node's profile and is `SKIP LOCKED`-safe. The outage is
-  silent. gr55748 (PRIO:high): investigate why only melchior runs it, and add a
+  silent. gr55748 (PRIO:high): investigate why only the agent host runs it, and add a
   nursery "no plan_tick in N min while open LLM todos exist" alert.
 - On recovery the worker once **starved `dispatch` behind a slow `fetch_oa`
   backlog** (~25 min/cycle) because the sequential ref-pass loop ran fetch

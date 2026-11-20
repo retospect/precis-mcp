@@ -1,5 +1,5 @@
 """money_refresh — the weekly FX/CPI cache fill (gr510555, slice 2 of
-``docs/backlog/measure-currency-units.md``).
+`me691533`).
 
 The measure currency conversion reads two cache tables — ``fx_rates``
 (daily ECB euro reference quotes, units of the currency per 1 EUR) and

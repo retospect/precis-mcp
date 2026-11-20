@@ -742,7 +742,9 @@ def _cmd_figure(store: Store, args: argparse.Namespace) -> None:
             png, snapshot = figures_mod.quest_pareto_figure(store, target)
             default_caption = f"Pareto frontier for {target.title} ({target_handle})"
         elif target.kind == "pathway":
-            png, snapshot = figures_mod.pathway_profile_figure(store, target)
+            png, snapshot = figures_mod.pathway_profile_figure(
+                store, target, kinetics=False, route_only=True
+            )
             default_caption = f"Energy profile for {target.title} ({target_handle})"
         else:
             print(

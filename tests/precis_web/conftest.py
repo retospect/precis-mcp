@@ -72,6 +72,11 @@ class _FakeConn:
     def execute(self, sql: str, params: Any = None) -> _FakeCursor:
         return _FakeCursor([])
 
+    @contextmanager
+    def transaction(self):
+        # Write paths scope their statements (e.g. /tags/delete).
+        yield self
+
     def commit(self) -> None:  # write paths (e.g. vault set/delete) commit
         return None
 
@@ -98,6 +103,71 @@ class FakeStore(_FakeStoreBase):
     def __init__(self) -> None:
         super().__init__()
         self.pool = _FakePool()
+        #: Kinds the fake's ``ref_kinds_present`` reports as owning
+        #: ``refs`` rows — the /drive "Other" facet drops kinds that can
+        #: never produce a row (gr664402). Seeded as the un-hubbed
+        #: ``_kind_buckets`` fallback roster plus the usual ref-backed
+        #: "other" kinds (a populated corpus); a test shrinks it to
+        #: exercise the drop.
+        self.ref_kinds: set[str] = {
+            "agentlog",
+            "alert",
+            "alias",
+            "anki",
+            "cad",
+            "cfp",
+            "checklist",
+            "citation",
+            "component",
+            "concept",
+            "conv",
+            "datasheet",
+            "draft",
+            "edgar",
+            "figure",
+            "finding",
+            "fleet",
+            "folder",
+            "gripe",
+            "job",
+            "llm",
+            "make",
+            "markdown",
+            "material",
+            "math",
+            "memory",
+            "mermaid",
+            "message",
+            "news",
+            "oracle",
+            "orcid",
+            "paper",
+            "part",
+            "patent",
+            "pathway",
+            "pcb",
+            "perplexity-reasoning",
+            "perplexity-research",
+            "plan",
+            "plaintext",
+            "pres",
+            "profile",
+            "protein",
+            "provenance",
+            "quest",
+            "route",
+            "rxn",
+            "se",
+            "semanticscholar",
+            "structure",
+            "taxon",
+            "tex",
+            "todo",
+            "web",
+            "websearch",
+            "wikipedia",
+            "youtube",
+        }
         #: ref_ids the fake reports as carrying OPEN:needs-triage (tests
         #: populate this to exercise the triage panel / tag-clear paths).
         self.triaged_ref_ids: set[int] = set()
@@ -1276,6 +1346,13 @@ class FakeStore(_FakeStoreBase):
         ``recent_refs``'s filtered set (see ``_recent_src``)."""
         self.count_no_oa = no_oa
         return len(self._recent_src(kinds, deleted=deleted, ref_ids=ref_ids))
+
+    def ref_kinds_present(self) -> set[str]:
+        """Kinds the fake reports as owning ``refs`` rows — reads
+        ``self.ref_kinds`` (seeded in ``__init__``), the same answer the
+        real ``SELECT DISTINCT kind FROM refs`` gives on a populated
+        corpus. Backs the /drive "Other" facet's row-source filter."""
+        return set(self.ref_kinds)
 
     def list_folders(self):
         """Canned folder edges for the /items folder-facet dropdown: a

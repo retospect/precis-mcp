@@ -37,12 +37,17 @@ import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
 from precis.quest.atomcost import atom_cost, dearest
 from precis.quest.correction_policy import correction_policy, policy_era
 from precis.quest.environment_basis import environment_basis
+from precis.quest.failure_class import MECHANICAL as _FAILURE_MECHANICAL
+from precis.quest.failure_class import SCIENCE as _FAILURE_SCIENCE
+from precis.quest.failure_class import classify_untrusted as _classify_untrusted
+from precis.quest.failure_class import untrusted_reasons as _untrusted_reasons
 from precis.quest.frontier import _BARRIER_ABSURD_EV, _UNTRUSTED_VALUE_SUFFIX
 from precis.quest.logbook import MEASURED_BY, append_entry
 from precis.store import Tag
@@ -126,7 +131,7 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
       screening on coadsorbed: a 2026-10-02 replay of 213 neb candidates
       with barriers stripped showed thermo-only margins on coadsorbed rank
       no better (Spearman 0.139 vs the barrier-based margin) at ~1.9× the
-      structures (``docs/backlog/pathway-selectivity-u-ph-window.md``).
+      structures (`me568760`).
     * ``neb`` — straight-to-NEB, overlaid with autocatpath's fast-screening
       NEB stack (three ``search`` knobs, each a *default* an explicit
       caller key overrides; a caller-pinned ``neb_schedule`` suppresses the
@@ -145,7 +150,7 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
       - ``neb_optimizer="neb-ode"`` (0.8): ASE's adaptive NEBOptimizer vs.
         dense-Hessian BFGS — ~5× fewer MLIP evals for the same barrier on
         Pd(111)+N* in the screening regime
-        (docs/backlog/autocatpath-seed-health.md).
+        (gr614723).
       - ``neb_batched=True`` (0.9, MACE-dtype fix 0.9.1, tether-guard fix
         0.11): one MLIP forward per step over all interior images instead
         of serial — physics-identical, runtime self-check degrades to
@@ -738,7 +743,7 @@ def _ensure_candidate_detail(
     # then vary — gr552641's dopant-substitution series off a baseline).
     ops = spec.get("ops") or []
     derive_from = str(spec.get("derive_from") or "").strip()
-    if derive_from and "cell" in spec:
+    if derive_from and spec.get("cell") is not None:
         return (
             None,
             False,
@@ -751,7 +756,7 @@ def _ensure_candidate_detail(
             ),
         )
     has_cell = (
-        "cell" in spec
+        spec.get("cell") is not None
         or bool(derive_from)
         or (
             isinstance(ops, list)
@@ -1219,7 +1224,7 @@ _DEFAULT_VERIFY_WALL_SECONDS = 172800
 #: ``search.neb_pool_size`` precis stamps on a GPU-routed MACE run.
 #: autocatpath's ``"auto"`` governor sizes the pooled-NEB batch by
 #: wall-time-per-graph, not by a hard memory ceiling — on jo489257
-#: (pollux, 2026-10-16) it pooled 37 bands into one MACE forward and the
+#: (the second DGX node, 2026-10-16) it pooled 37 bands into one MACE forward and the
 #: driver's unified-memory allocations (invisible to RSS and the unit's
 #: MemoryMax) triggered a global OOM kill. 4 keeps the batch small until
 #: the engine-side fix (a pending catpath PR) ships; pool width measured
@@ -1847,7 +1852,7 @@ def dispatch_autocatpath(
     machine. The two-level nesting (seed job → seed todo → T_agg, not
     direct) is load-bearing: a bare seed job as T_agg's direct child would
     satisfy ``child_job_succeeded`` on the first seed's success, not the
-    aggregate's. See ``docs/backlog/autocatpath-integration.md`` §3.8.
+    aggregate's. See `me690505` §3.8.
 
     The aggregate job (``precis_pathway.aggregate_job``) combines seed
     partials in-process (pure numpy, ``aggregate_partials``, no ML deps) and
@@ -2205,13 +2210,8 @@ def dispatch_autocatpath(
                 # (docs/backlog — qu164903): re-mint a fresh seed job under
                 # the SAME todo (get-or-create below reuses it) rather than
                 # leaving the candidate wedged behind a dead seed forever.
-                minted += 1
                 if load is not None and nodes:
                     seed_node = min(nodes, key=lambda n: (load.get(n, 0), n))
-                    load[seed_node] = load.get(seed_node, 0) + 1
-                if minted_by_node is not None:
-                    node_key = seed_node or "(unpinned)"
-                    minted_by_node[node_key] = minted_by_node.get(node_key, 0) + 1
                 seed_todo_id = _ensure_autocatpath_todo(
                     store,
                     parent_id=agg_todo_id,
@@ -2222,7 +2222,7 @@ def dispatch_autocatpath(
                     ),
                     meta={"auto_check": {"type": "child_job_succeeded"}},
                 )
-                jobs.put(
+                seed_resp = jobs.put(
                     job_type="autocatpath_seed",
                     executor="ssh_node",
                     parent_id=seed_todo_id,
@@ -2256,6 +2256,18 @@ def dispatch_autocatpath(
                         "resources": dict(seed_resources),
                     },
                 )
+                # Count only a confirmed NEW job: JobHandler.put returns the
+                # active job on an idem hit (``reused``), which is no mint and
+                # no spend. Counted per commit, so a later seed failing
+                # leaves the earlier ones on the books.
+                if getattr(seed_resp, "reused", False):
+                    continue
+                minted += 1
+                if load is not None and seed_node:
+                    load[seed_node] = load.get(seed_node, 0) + 1
+                if minted_by_node is not None:
+                    node_key = seed_node or "(unpinned)"
+                    minted_by_node[node_key] = minted_by_node.get(node_key, 0) + 1
     except Exception as e:
         return f"autocatpath dispatch failed for {ref.slug}: tree mint ({e})"
 
@@ -2478,6 +2490,8 @@ _KINETICS_GATED_STASH_KEYS: tuple[str, ...] = (
 #: flipped ``barrier_trusted`` back to True over the seed-blocked neb
 #: barrier the candidate still carried).
 _BARRIER_SCOPED_QUALITY_KEYS: tuple[str, ...] = (
+    "barrier_assurance",
+    "barrier_assurance_reasons",
     "barrier_trusted",
     "barrier_blocked_by",
     "barrier_marginal_count",
@@ -2493,8 +2507,11 @@ _BARRIER_SCOPED_QUALITY_KEYS: tuple[str, ...] = (
 #: (an absurd 12 eV job's ``barrier_absurd`` would otherwise flag the
 #: kept 0.6 eV trusted value on ``view='trust'``; neb-s6 must-fix 1).
 _LOSING_JOB_FLAG_KEYS: tuple[str, ...] = (
+    "barrier_assurance",
+    "barrier_assurance_reasons",
     "barrier_trusted",
     "barrier_blocked_by",
+    "barrier_failure_class",
     "barrier_marginal_count",
     "barrier_low_confidence",
     "barrier_trust_note",
@@ -2846,9 +2863,13 @@ def _flag_barrier_twin_disagreement(
     The flag is sticky by design (neb-s7, accepted): once stamped it
     holds ``barrier_trusted`` False on every re-selection until an
     explicit :func:`reset_compute` clears it — no later agreeing harvest
-    un-flags it. Defensive like the rest of the harvest loop: any lookup
-    failure is a silent no-op, never a crash (caller wraps this in
-    ``try/except`` too).
+    un-flags it. The demotion also stamps ``barrier_failure_class =
+    "science"`` on BOTH twins: a barrier this pass stamped ``mechanical``
+    (e.g. engine-stale) before the disagreement surfaced must not keep
+    that class — the failure-class rerun arm would dispatch past the
+    science blocker (gr593138 review). Defensive like the rest of the
+    harvest loop: any lookup failure is a silent no-op, never a crash
+    (caller wraps this in ``try/except`` too).
     """
     geom_hash_c = candidate_meta.get("geom_hash_c")
     if not geom_hash_c:
@@ -2899,14 +2920,29 @@ def _flag_barrier_twin_disagreement(
             continue
         store.stamp_ref_meta(
             s.id,
-            {"barrier_trusted": False, "barrier_twin_disagreement": other_handle},
+            {
+                "barrier_trusted": False,
+                "barrier_twin_disagreement": other_handle,
+                # The demotion re-classes the stamp: twin disagreement is a
+                # SCIENCE failure (irreproducibility — the fix changes the
+                # science), and a barrier this pass already stamped
+                # ``mechanical`` (e.g. engine-stale) would otherwise keep
+                # that class and the rerun arm would dispatch past the
+                # blocker (gr593138 review).
+                "barrier_failure_class": _FAILURE_SCIENCE,
+            },
         )
         store.stamp_ref_meta(
             other_ref.id,
-            {"barrier_trusted": False, "barrier_twin_disagreement": handle},
+            {
+                "barrier_trusted": False,
+                "barrier_twin_disagreement": handle,
+                "barrier_failure_class": _FAILURE_SCIENCE,
+            },
         )
         candidate_meta["barrier_trusted"] = False
         candidate_meta["barrier_twin_disagreement"] = other_handle
+        candidate_meta["barrier_failure_class"] = _FAILURE_SCIENCE
         append_entry(
             store,
             quest_id,
@@ -3034,7 +3070,7 @@ def _flag_few_independent_seeds(
     # evidence the current engine never produced, so it names
     # ``engine:stale`` (the dominant reason) rather than a seed count.
     # The restale pass re-dispatches it on the current token.
-    if stale_engine:
+    if stale_engine and (blk is None or blk.startswith("seeds:")):
         blk = "engine:stale"
     if blk is None:
         if "barrier" in measures:
@@ -3043,6 +3079,65 @@ def _flag_few_independent_seeds(
     measures["barrier_trusted"] = False
     measures["barrier_seed_blocker"] = blk
     return blk
+
+
+def _stamp_barrier_assurance(
+    pw_meta: dict[str, Any],
+    measures: dict[str, Any],
+    *,
+    current_engine: str | None = None,
+) -> None:
+    """Attach assurance to this barrier only, without granting strict credit."""
+    if "barrier" not in measures:
+        return
+    # Rows that predate the harvest-time absurd guard reach here unflagged
+    # (frontier's read-time stamp); a nonphysical magnitude is never WARN.
+    _flag_absurd_barrier(measures)
+    results = pw_meta.get("results") or {}
+    records = [r for r in results.get("trust") or [] if isinstance(r, dict)]
+    engine = pw_meta.get("autocatpath_version")
+    scope = trust_gate.route_scope(results)
+    thresholds = trust_gate.thresholds_from(records, pw_meta.get("config"))
+    rows = trust_gate.gate_rows(records, scope, thresholds, results, engine=engine)
+    rows += trust_gate.precis_guard_rows(
+        measures,
+        barrier_ea=_num_measure(measures.get("barrier")),
+        rate_limit_std=None,
+        low_confidence=bool(measures.get("barrier_low_confidence")),
+        thresholds=thresholds,
+        engine=engine,
+        current_engine=current_engine or _autocatpath_current_version(),
+    )
+    blocker = measures.get("barrier_seed_blocker")
+    reasons = []
+    edges = results.get("edges") or {}
+    if isinstance(edges, dict) and any(
+        isinstance(edge, dict) and edge.get("bep") and not edge.get("barrier")
+        for name, edge in edges.items()
+        if scope[0] and name in scope[0]
+    ):
+        reasons.append("bep_estimated")
+    if blocker in ("seeds:1-independent", "engine:stale"):
+        reasons.append(str(blocker))
+    elif blocker:
+        rows.append({"gate": str(blocker), "verdict": "fail", "blocking": 1})
+    for key in ("barrier_neb_failed", "barrier_desorbed", "barrier_wrong_site"):
+        if measures.get(key):
+            rows.append({"gate": key, "verdict": "fail", "blocking": 1})
+    tier, why = trust_gate.barrier_assurance(
+        rows,
+        trusted=measures.get("barrier_trusted") is True,
+        reasons=reasons,
+        records=records,
+        scope=scope,
+        engine=engine,
+    )
+    if tier == "WARN" and not engine:
+        tier, why = "FAIL", ["engine:unknown"]
+    measures["barrier_assurance"] = tier
+    measures["barrier_assurance_reasons"] = why
+    if tier == "FAIL" or tier == "WARN":
+        measures["barrier_trusted"] = False
 
 
 def _barrier_anchor(
@@ -3458,6 +3553,31 @@ def _struct_neb_measures_from_run(
     barrier = _num_measure(run.get("barrier_fwd_ev"))
     if barrier is not None:
         out["barrier"] = barrier
+        assurance_records = [r for r in records if isinstance(r, dict)]
+        # One valid start weakens independence, not saddle verification.
+        without_multistart = [
+            r for r in assurance_records if r.get("check") != "multistart"
+        ]
+        if len(
+            union if union is not None else (own_seeds or {})
+        ) == 1 and not _neb_union_blocked(without_multistart):
+            out["barrier_seed_blocker"] = "seeds:1-independent"
+            out["barrier_trusted"] = False
+            assurance_records = without_multistart
+        _stamp_barrier_assurance(
+            {"autocatpath_version": engine, "results": {"trust": assurance_records}},
+            out,
+            current_engine=current,
+        )
+        if out.get("barrier_assurance") == "WARN" and (
+            not own_seeds
+            or not any(
+                r.get("check") == "frequency" and r.get("verdict") == "pass"
+                for r in assurance_records
+            )
+        ):
+            out["barrier_assurance"] = "FAIL"
+            out["barrier_assurance_reasons"] = ["seed/frequency:unverified"]
     return out
 
 
@@ -3473,6 +3593,8 @@ def _neb_edge_entry(run: Mapping[str, Any], measures: dict[str, Any]) -> dict[st
         "engine": run.get("engine"),
         "barrier": measures["barrier"],
         "trusted": bool(measures.get("barrier_trusted")),
+        "barrier_assurance": measures.get("barrier_assurance"),
+        "barrier_assurance_reasons": measures.get("barrier_assurance_reasons") or [],
         "warnings": list(measures.get("warnings") or []),
         "barrier_neb_failed": int(measures.get("barrier_neb_failed") or 0),
         "barrier_desorbed": int(measures.get("barrier_desorbed") or 0),
@@ -3552,7 +3674,12 @@ def _neb_candidate_stamp(
             and candidate_meta.get("barrier_source") != "struct_neb"
         ):
             return None  # the trusted autocatpath barrier stands
-        pick = max(entries, key=lambda e: int(e.get("neb_run_id") or 0))
+        warning_edges = [e for e in entries if e.get("barrier_assurance") == "WARN"]
+        pick = (
+            max(warning_edges, key=lambda e: float(e["barrier"]))
+            if warning_edges
+            else max(entries, key=lambda e: int(e.get("neb_run_id") or 0))
+        )
     warnings = list(pick.get("warnings") or [])
     unknown_engine = any(e.get("trusted") and _engine(e) is None for e in entries)
     if not trusted_edges:
@@ -3581,6 +3708,16 @@ def _neb_candidate_stamp(
     stamp: dict[str, Any] = {
         "barrier": float(pick["barrier"]),
         "barrier_trusted": bool(trusted_edges),
+        "barrier_assurance": "PASS"
+        if trusted_edges
+        else (pick.get("barrier_assurance") or "FAIL"),
+        "barrier_assurance_reasons": []
+        if trusted_edges
+        else (
+            pick.get("barrier_assurance_reasons")
+            or blocked_by
+            or ["strict gate refused"]
+        ),
         "barrier_source": "struct_neb",
         "barrier_fidelity": "struct_neb",
         "barrier_pathway_ref_id": None,
@@ -3613,6 +3750,16 @@ def _neb_candidate_stamp(
         # self-consistent and the sel_dirty compare quiet.
         stamp["barrier_trusted"] = False
         stamp["barrier_twin_disagreement"] = twin
+        stamp["barrier_assurance"] = "FAIL"
+        stamp["barrier_assurance_reasons"] = ["twin disagreement"]
+    # gr593138: the selection stamp carries the failure class too, so both
+    # barrier lanes stamp it (the struct_neb selection re-runs every pass —
+    # a cleared verdict drops the class with it).
+    stamp["barrier_failure_class"] = (
+        _classify_untrusted({**candidate_meta, **stamp})
+        if stamp.get("barrier_trusted") is False
+        else None
+    )
     return stamp
 
 
@@ -4192,6 +4339,340 @@ def _mark_harvested(store: Store, structure_ref_id: int, upto_run_id: int) -> No
 #: a higher ceiling would let a genuinely wedged executor silently spin.
 _MAX_INFRA_RETRIES = 1
 
+#: Mechanical-rerun limits (gr593138): a candidate whose untrusted barrier
+#: classifies MECHANICAL (:mod:`precis.quest.failure_class`) auto-requeues on
+#: the current engine — EXEMPT from the fidelity_restale_cap=0 hold (Reto
+#: ruling 2026-11-12: the hold covers restale/promote/repair re-mints, not
+#: these failure-class recoveries) — under a per-candidate retry cap, a
+#: per-quest GPU-hour budget charged at 1.5 GPU-h per dispatched seed job
+#: (one per model×seed pair — the budget pre-check estimates that fan-out,
+#: :func:`_mechanical_dispatch`), and a cooldown between reruns (the time
+#: limit). A zero budget holds every mechanical rerun, never bypasses.
+#: Operator overrides: quest meta ``fidelity_mechanical_retry_cap`` (int) and
+#: ``fidelity_mechanical_gpu_h_budget`` (float GPU-h).
+_MECHANICAL_RERUN_GPU_H_PER_SEED = 1.5
+_DEFAULT_MECHANICAL_RETRY_CAP = 2
+_DEFAULT_MECHANICAL_GPU_H_BUDGET = 36.0
+_MECHANICAL_RERUN_COOLDOWN_HOURS = 6.0
+
+
+def _mechanical_rerun_arm(
+    store: Store,
+    quest_id: int,
+    s: Any,
+    *,
+    handle: str,
+    hub: Any,
+    rerun_held: bool,
+    notes: list[str],
+) -> None:
+    """gr593138: auto-requeue a candidate whose untrusted barrier classifies
+    MECHANICAL — stale engine, seed shortfall, infra/timeout markers — on the
+    current (pinned) engine, under the retry/cost/cooldown limits.
+
+    Deliberately NOT gated by :func:`_automatic_rerun_hold`: Reto's ruling
+    (2026-11-12) is that the ``fidelity_restale_cap=0`` hold exempts exactly
+    these mechanical re-runs — science-class stamps never reach this arm, so
+    they still wait for the agent/human under the hold and out of it.
+
+    Limits, per the tutorial's failure-classes rule (retry, cost AND time):
+    a per-candidate retry cap (``fidelity_mechanical_retry_cap``, default
+    :data:`_DEFAULT_MECHANICAL_RETRY_CAP`), a per-quest GPU-hour budget
+    (``fidelity_mechanical_gpu_h_budget``, default
+    :data:`_DEFAULT_MECHANICAL_GPU_H_BUDGET`) charged at
+    :data:`_MECHANICAL_RERUN_GPU_H_PER_SEED` per dispatched seed, and a
+    per-candidate cooldown (:data:`_MECHANICAL_RERUN_COOLDOWN_HOURS`) between
+    reruns. The seed-blocker shapes (``seeds:…`` / ``endpoint:union-not-run``)
+    re-dispatch with the declared seeds plus two fresh numbers past the max —
+    more evidence for the SAME science, the "rerun with fresh seed numbers"
+    the seed gate's logbook already prescribes; engine-stale shapes re-mint
+    everything under the new engine token with no explicit seed list.
+
+    A dispatch that mints nothing (content-addressed dedup, a refused lane)
+    spends no cap slot and no budget — the counters bump only on a landed
+    mint, the same stand-down contract the infra arms honour (gr521073).
+    Silent skips: nothing in flight's way (a computing pathway), dry harvest
+    (``hub=None``), no reaction config, a science class, a trusted barrier.
+    """
+    if hub is None:
+        return
+    # Read the CURRENT stamp: the pass-start snapshot can
+    # predate this harvest's own write — a fresh mechanical stamp would be
+    # missed, and a stamp this harvest just replaced with a trusted or
+    # science verdict would still read mechanical and dispatch.
+    fresh = store.fetch_refs_by_ids({s.id}).get(s.id)
+    if fresh is None:
+        return
+    cur = dict(fresh.meta or {})
+    if cur.get("barrier_trusted") is not False:
+        return
+    # Legacy untrusted stamps carry no stored class: the classifier is pure,
+    # so derive it from the stamped meta when the key is absent.
+    failure_class = cur.get("barrier_failure_class")
+    if failure_class is None:
+        failure_class = _classify_untrusted(cur)
+    if failure_class != _FAILURE_MECHANICAL:
+        return
+    if cur.get("barrier_source") == "struct_neb":
+        # The gr518351 stale-edge block re-queues struct_neb barriers through
+        # enqueue_stale_neb_rerun; an autocatpath fan-out would double-dispatch.
+        return
+    if _num_measure(cur.get("barrier")) is None:
+        return
+    if any(str(t).startswith("ruled-out:") for t in store.tags_for(s.id)):
+        return
+    reaction = _quest_reaction_config(store, quest_id)
+    if reaction is None:
+        return
+    blocker = str(cur.get("barrier_seed_blocker") or "")
+    seeds: Sequence[int] | None = None
+    if blocker.startswith("seeds:") or blocker == "endpoint:union-not-run":
+        declared = _autocatpath_search_seeds(reaction)
+        fresh_seeds = [max(declared, default=-1) + 1 + i for i in range(2)]
+        seeds = [*declared, *fresh_seeds]
+    _mechanical_dispatch(
+        store,
+        quest_id,
+        s,
+        reaction,
+        hub=hub,
+        handle=handle,
+        notes=notes,
+        seeds=seeds,
+        tier=None,
+        created_by="harvest_measures:mechanical-rerun",
+        what="mechanical rerun",
+        rerun_held=rerun_held,
+    )
+
+
+def _mechanical_job_failure(job_meta: Mapping[str, Any]) -> bool:
+    """True iff a failed job's own ``failure_class`` is an infra or timeout
+    kill — the machine problems the mechanical recovery may requeue even
+    under the ``fidelity_restale_cap=0`` hold (gr593138). Off-lane reaps and
+    explore-era amnesties keep their own held branches."""
+    return job_meta.get("failure_class") in ("infra", "timeout") and not (
+        _is_off_lane_reap(dict(job_meta))
+    )
+
+
+def _mechanical_dispatch(
+    store: Store,
+    quest_id: int,
+    s: Any,
+    reaction: dict[str, Any],
+    *,
+    hub: Any,
+    handle: str,
+    notes: list[str],
+    seeds: Sequence[int] | None,
+    tier: str | None,
+    created_by: str,
+    what: str,
+    rerun_held: bool,
+) -> bool:
+    """The shared bounded re-mint of the mechanical recovery: science veto,
+    per-candidate retry cap, per-quest GPU-h budget, cooldown — all read
+    FRESH from the store so sequential candidates in one pass see each
+    other's spend and a stamp landed this same pass still holds.
+
+    The budget pre-check estimates the dispatch's EFFECTIVE fan-out by
+    mirroring :func:`dispatch_autocatpath`'s config pipeline (tier overlay,
+    explicit-seed override, neb multi-seed widening, per-model specs) —
+    estimating from the declared seed count alone would mint widened or
+    multi-model reruns straight past the budget. A zero budget is enforced
+    as a budget (any positive estimate holds), never a bypass.
+
+    Charges 1.5 GPU-h per seed job actually committed (``minted_by_node``
+    counts confirmed new jobs only — a content-addressed reuse is free, and a
+    mint that fails midway still pays for the jobs that landed). Returns True
+    iff at least one new job was minted."""
+    cand = store.fetch_refs_by_ids({s.id}).get(s.id)
+    cur = dict(cand.meta or {}) if cand is not None else {}
+    qref = store.fetch_refs_by_ids({quest_id}).get(quest_id)
+    quest_meta = dict(qref.meta or {}) if qref is not None else {}
+    if _science_retry_veto(cur, handle, notes):
+        return False
+    if _live_computing_pathway(store, s.id) is not None:
+        return False  # a rerun is already in flight — the harvest will lift it
+    reruns = int(cur.get("barrier_mechanical_reruns", 0) or 0)
+    cap = int(
+        quest_meta.get("fidelity_mechanical_retry_cap", _DEFAULT_MECHANICAL_RETRY_CAP)
+        or 0
+    )
+    if reruns >= cap:
+        notes.append(
+            f"mechanical failure for [{handle}] parked: "
+            f"retry cap reached ({reruns}/{cap}) — to the quest agent"
+        )
+        return False
+    last = cur.get("barrier_mechanical_rerun_last_at")
+    if isinstance(last, str) and last:
+        try:
+            age_s = (datetime.now(UTC) - datetime.fromisoformat(last)).total_seconds()
+            if age_s < _MECHANICAL_RERUN_COOLDOWN_HOURS * 3600:
+                return False  # inside the cooldown — the time limit
+        except (ValueError, TypeError):
+            pass  # an unparsable/naive stamp never blocks; the rerun re-stamps it
+    use_tier = tier or _redispatch_tier(
+        store, quest_id, cand if cand is not None else s
+    )
+    # Budget pre-check against the EFFECTIVE fan-out, mirroring
+    # :func:`dispatch_autocatpath`'s config pipeline: the tier overlay can
+    # widen a short declared seed list (neb >= 3 up front, verify >= 3
+    # spread), an explicit caller list wins over the widening, and a
+    # multi-model config mints one job per (model, seed) pair. Estimating
+    # from the DECLARED seed count alone mints past the budget on every
+    # widened or multi-model rerun.
+    est_config = _apply_tier_config(reaction, use_tier)
+    if seeds is not None:
+        est_config = {
+            **est_config,
+            "search": {
+                **(est_config.get("search") or {}),
+                "seeds": [int(x) for x in seeds],
+            },
+        }
+    elif use_tier == _TIER_NEB:
+        est_config = _neb_multiseed_config(est_config)
+    est = (
+        _MECHANICAL_RERUN_GPU_H_PER_SEED
+        * len(_autocatpath_mlip_specs(est_config))
+        * len(_autocatpath_search_seeds(est_config))
+    )
+    budget = float(
+        quest_meta.get(
+            "fidelity_mechanical_gpu_h_budget", _DEFAULT_MECHANICAL_GPU_H_BUDGET
+        )
+        or 0
+    )
+    spent = float(quest_meta.get("barrier_mechanical_gpu_h_spent", 0) or 0)
+    if spent + est > budget:
+        notes.append(
+            f"mechanical rerun for [{handle}] held: quest GPU-h budget "
+            f"{budget:g} exceeded (spent {spent:g}, this rerun {est:g}) "
+            "— to the quest agent"
+        )
+        return False
+    minted_by_node: dict[str, int] = {}
+    note = dispatch_autocatpath(
+        store,
+        s.id,
+        reaction,
+        hub=hub,
+        tier=use_tier,
+        seeds=seeds,
+        minted_by_node=minted_by_node,
+        created_by=created_by,
+    )
+    new_jobs = sum(minted_by_node.values())
+    if new_jobs:
+        # Jobs committed — charge them even when a later seed's mint failed.
+        cost = _MECHANICAL_RERUN_GPU_H_PER_SEED * new_jobs
+        store.stamp_ref_meta(
+            s.id,
+            {
+                "barrier_mechanical_reruns": reruns + 1,
+                "barrier_mechanical_rerun_last_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        store.stamp_ref_meta(quest_id, {"barrier_mechanical_gpu_h_spent": spent + cost})
+    if is_no_live_lane(note):
+        _note_no_live_lane(notes, what, note)
+        return bool(new_jobs)
+    if not _dispatch_landed(note):
+        _note_no_mint(notes, what, note)
+        return bool(new_jobs)
+    if not new_jobs:
+        # Content-addressed onto an existing tree: nothing minted, nothing spent.
+        _note_no_mint(notes, what, note)
+        return False
+    hold_note = " (exempt from the fidelity_restale_cap=0 hold)" if rerun_held else ""
+    notes.append(
+        f"mechanical failure for [{handle}] → re-dispatched on the current "
+        f"engine (retry {reruns + 1}/{cap}, {cost:g} GPU-h of the quest "
+        f"budget){hold_note}"
+    )
+    return True
+
+
+def _is_science_barrier(meta: Mapping[str, Any]) -> bool:
+    if meta.get("barrier_trusted") is not False:
+        return False
+    cls = meta.get("barrier_failure_class")
+    if cls is None:
+        cls = _classify_untrusted(meta)
+    return cls == _FAILURE_SCIENCE
+
+
+def _science_retry_veto(meta: Mapping[str, Any], handle: str, notes: list[str]) -> bool:
+    if not _is_science_barrier(meta):
+        return False
+    notes.append(
+        f"automatic retry for [{handle}] vetoed: barrier stamp is "
+        "science-class — to the quest agent"
+    )
+    return True
+
+
+def _science_routing_key(meta: Mapping[str, Any]) -> str | None:
+    """Fingerprint a science verdict for logbook deduplication."""
+    if not _is_science_barrier(meta):
+        return None
+    blocked_by = meta.get("barrier_blocked_by")
+    blockers = (
+        sorted(str(b) for b in blocked_by) if isinstance(blocked_by, list) else []
+    )
+    barrier = meta.get("barrier")
+    payload = {
+        "r": _untrusted_reasons(meta),
+        "b": blockers,
+        "s": str(meta.get("barrier_seed_blocker") or ""),
+        "v": (
+            float(barrier)
+            if isinstance(barrier, (int, float)) and not isinstance(barrier, bool)
+            else None
+        ),
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _route_science_failure(
+    store: Store,
+    quest_id: int,
+    s_id: int,
+    handle: str,
+    name: str,
+    meta: Mapping[str, Any],
+) -> bool:
+    """gr593138: route a SCIENCE-class untrusted barrier to the quest agent
+    in one deduplicated logbook entry naming the blocker(s) — the tick reads
+    the logbook. Covers every shape of science stamp, not just a freshly
+    harvested autocatpath job: legacy stamps classified from meta (no stored
+    class key) and the ``struct_neb`` selection's stamp, which the rerun arm
+    deliberately never touches. Deduped on :func:`_science_routing_key` —
+    the same stamp routes once; a re-measure that lands a different value or
+    blockers routes again. Returns True iff an entry was appended."""
+    key = _science_routing_key(meta)
+    if key is None:
+        return False
+    if (meta.get("barrier_science_routed_key") or "") == key:
+        return False  # this exact stamp already routed — dedup
+    reasons = ", ".join(_untrusted_reasons(meta)) or "unclassified"
+    append_entry(
+        store,
+        quest_id,
+        text=(
+            f"science failure for [{handle}] ({name}): {reasons} — "
+            "to the quest agent: the fix changes the science, "
+            "decide the next measurement"
+        ),
+        entry_type="result",
+        by=MEASURED_BY,
+    )
+    store.stamp_ref_meta(s_id, {"barrier_science_routed_key": key})
+    return True
+
 
 def _seed_timeout_held(
     store: Store,
@@ -4313,8 +4794,8 @@ def _seed_geometry_held(
     The same candidate fails the same way on every re-dispatch, on every
     node, so the infra ladder would only burn its retry and then file a
     ``quest-infra-failure`` gripe for a fault no executor can fix
-    (gr497198, gr497203: placement H 1.10 A inside the slab, pollux and
-    spark alike). The caller skips the re-dispatch, the gripe and the retry
+    (gr497198, gr497203: placement H 1.10 A inside the slab, the second DGX node and
+    the first GPU node alike). The caller skips the re-dispatch, the gripe and the retry
     counter; the candidate is not ruled out (no physical verdict either).
     The note is appended once per seed job, deduped by stamping the job id
     on the candidate (``quest_seed_geometry_noted``).
@@ -4614,6 +5095,22 @@ def harvest_measures(
       the candidate at once (:func:`_seed_todo_handled`) — closes the
       qu164903 bug class (an infra-killed seed job stuck ``STATUS:failed``
       forever, unwatched).
+    * candidate whose barrier landed but classified MECHANICAL
+      (gr593138, :mod:`precis.quest.failure_class` — stale engine, seed
+      shortfall, infra/timeout markers) → auto-requeued on the current
+      engine by :func:`_mechanical_rerun_arm` under a per-candidate retry
+      cap, a per-quest GPU-h budget (1.5 GPU-h per dispatched seed job,
+      pre-checked against the EFFECTIVE fan-out — models × tier-widened
+      seeds — and a zero budget holds, never bypasses) and a cooldown —
+      EXEMPT from the fidelity_restale_cap=0 hold (Reto ruling
+      2026-11-12). A same-wall timeout / invalid-geometry refusal from
+      the failed-seed branch carries through: the arm does not dispatch
+      past it. SCIENCE-class stamps (endpoint split, detachment, wrong
+      binder, absurd magnitude, twin disagreement) never re-queue: one
+      deduplicated :func:`_route_science_failure` entry names the class
+      and the blockers for the quest agent — for fresh, legacy AND
+      struct_neb-selection stamps — and a capped-out or budget-held
+      mechanical rerun parks the same way.
     * candidate missing ``atom_cost`` (composition-derived, needs no sim) →
       backfilled from its materialised geometry.
 
@@ -4901,6 +5398,21 @@ def harvest_measures(
                     measures["barrier_trusted"] = False
                     blocked = list(measures.get("barrier_blocked_by") or [])
                     measures["barrier_blocked_by"] = [*blocked, "anchor:none"]
+            if not stashed and pw_is_pathway and isinstance(pw_meta, dict):
+                _stamp_barrier_assurance(pw_meta, measures)
+            # Failure class (gr593138): every fresh untrusted stamp carries
+            # its class — mechanical failures re-queue on their own (the arm
+            # below), science failures ride the entry after the refused-gate
+            # log line to the quest agent. A trusted barrier clears the key;
+            # the stashed and barrierless cases never rewrite it (a losing
+            # job's class must not reannotate the kept barrier —
+            # gr592573's barrier-scoped rule).
+            if not stashed and "barrier" in measures:
+                measures["barrier_failure_class"] = (
+                    _classify_untrusted({**candidate_meta, **measures})
+                    if measures.get("barrier_trusted") is False
+                    else None
+                )
             if not stashed:
                 # neb-s7: a stashed losing job earns no ladder rung — its
                 # ``meta.tier`` raise would graduate the candidate on an
@@ -5015,6 +5527,12 @@ def harvest_measures(
                     entry_type="result",
                     by=MEASURED_BY,
                 )
+            # gr593138: a freshly-landed SCIENCE-class untrusted barrier is
+            # routed to the quest agent by the unified, deduplicated routing
+            # site at the end of this candidate's processing (it reads the
+            # stamped class back off the current meta, so a same-pass twin
+            # demotion is covered too). Mechanical-class stamps are picked
+            # up by the rerun arm below instead of waiting for a human.
             harvested += 1
             if absurd:
                 append_entry(
@@ -5441,6 +5959,12 @@ def harvest_measures(
         # FIRST so a stuck newer tree (neb->verify promotion) wins over a
         # succeeded aggregate from an older tree; when the newest tree has an
         # aggregate job it returns None and `_latest_autocatpath_job` decides.
+        # gr593138 carry-through: when the failed-seed guards below refuse
+        # a re-dispatch (same-wall timeout, invalid geometry), the refusal
+        # must also suppress this pass's failure-class rerun arm — an older
+        # mechanical stamp on the candidate would otherwise re-dispatch the
+        # fan-out straight past the hold.
+        mechanical_held = False
         cp_ruled_out = any(
             str(t).startswith("ruled-out:") for t in store.tags_for(s.id)
         )
@@ -5454,6 +5978,10 @@ def harvest_measures(
         ):
             _cp_status, cp_job_meta = autocatpath_job
             reaction = _quest_reaction_config(store, quest_id)
+            mechanical_failure = _mechanical_job_failure(cp_job_meta)
+            # Harvest and twin checks can replace the pass-start verdict.
+            fresh_candidate = store.fetch_refs_by_ids({s.id}).get(s.id)
+            fresh_meta = (fresh_candidate.meta or {}) if fresh_candidate else {}
             # gr191615 amnesty: nothing has minted an `autocatpath_explore` job
             # since the seed/aggregate fan-out landed (47332ad3) — every candidate
             # now runs `autocatpath_aggregate` (see dispatch_autocatpath). So a
@@ -5468,7 +5996,13 @@ def harvest_measures(
             # aggregate lands just collapses onto the same tree rather than
             # double-dispatching; the amnesty stops firing on its own once that
             # aggregate job becomes the latest job under the candidate.
-            if cp_job_meta.get("job_type") == "autocatpath_explore":
+            if (
+                hub is not None
+                and reaction is not None
+                and _science_retry_veto(fresh_meta, handle, notes)
+            ):
+                mechanical_held = True
+            elif cp_job_meta.get("job_type") == "autocatpath_explore":
                 if hub is None or reaction is None:
                     notes.append(
                         f"stale-era autocatpath failure for [{handle}] "
@@ -5515,7 +6049,11 @@ def harvest_measures(
                     notes.append(
                         f"stuck seed for [{handle}] (retry-eligible, not re-dispatched)"
                     )
-                elif rerun_held:
+                elif rerun_held and not mechanical_failure:
+                    # Not an infra/timeout kill (e.g. invalid-geometry): held.
+                    # The refusal carries through — the rerun arm must not
+                    # re-dispatch the fan-out on an older mechanical stamp.
+                    mechanical_held = True
                     notes.append(
                         f"stuck seed for [{handle}] "
                         "(re-dispatch held: fidelity_restale_cap=0)"
@@ -5523,10 +6061,30 @@ def harvest_measures(
                 elif _seed_timeout_held(store, s, handle, cp_job_meta, notes):
                     # Deadline-killed at a wall the retry would not raise: no
                     # dispatch, no gripe, no counter bump (not an infra fault).
-                    pass
+                    mechanical_held = True  # the rerun arm must honour it too
                 elif _seed_geometry_held(store, s, handle, cp_job_meta, notes):
                     # Candidate geometry rejected: deterministic, same hold.
-                    pass
+                    mechanical_held = True  # the rerun arm must honour it too
+                elif mechanical_failure:
+                    mechanical_held = True  # this branch owns the retry
+                    # gr593138: an infra/timeout kill is mechanical — exempt
+                    # from the hold, bounded by the mechanical retry cap, GPU-h
+                    # budget and cooldown (the same-wall timeout and
+                    # invalid-geometry guards above still apply).
+                    _mechanical_dispatch(
+                        store,
+                        quest_id,
+                        s,
+                        reaction,
+                        hub=hub,
+                        handle=handle,
+                        notes=notes,
+                        seeds=None,
+                        tier=_retry_tier(store, cp_job_meta),
+                        created_by="harvest_measures:mechanical-stuck-seed",
+                        what="stuck-seed mechanical retry",
+                        rerun_held=rerun_held,
+                    )
                 else:
                     sk_retries = _seed_infra_retry_count(store, s.id)
                     if sk_retries < _MAX_INFRA_RETRIES:
@@ -5612,11 +6170,35 @@ def harvest_measures(
                         f"autocatpath infra failure for [{handle}] "
                         "(retry-eligible, not ruled out)"
                     )
-                elif rerun_held:
+                elif rerun_held and not mechanical_failure:
+                    # Not an infra/timeout kill (e.g. invalid-geometry): held.
+                    # The refusal carries through — the rerun arm must not
+                    # re-dispatch the fan-out on an older mechanical stamp.
+                    mechanical_held = True
                     notes.append(
                         f"autocatpath infra failure for [{handle}] "
                         "(re-dispatch held: fidelity_restale_cap=0)"
                     )
+                elif mechanical_failure:
+                    mechanical_held = True  # this branch owns the retry
+                    # gr593138: infra/timeout kill → bounded mechanical retry,
+                    # exempt from the hold; a same-wall timeout stays held
+                    # (and carries through to the rerun arm below).
+                    if not _seed_timeout_held(store, s, handle, cp_job_meta, notes):
+                        _mechanical_dispatch(
+                            store,
+                            quest_id,
+                            s,
+                            reaction,
+                            hub=hub,
+                            handle=handle,
+                            notes=notes,
+                            seeds=None,
+                            tier=_retry_tier(store, cp_job_meta),
+                            created_by="harvest_measures:mechanical-infra",
+                            what="autocatpath mechanical retry",
+                            rerun_held=rerun_held,
+                        )
                 elif cp_retries < _MAX_INFRA_RETRIES:
                     cnote = dispatch_autocatpath(
                         store,
@@ -5659,6 +6241,44 @@ def harvest_measures(
                     notes.append(
                         f"autocatpath infra failure persists for [{handle}] (gripe already filed)"
                     )
+
+        # Failure-class routing (gr593138): ANY science-class untrusted stamp
+        # on the candidate — freshly harvested (the per-job class stamp
+        # above), a legacy stamp classified from meta (no stored class key),
+        # or the struct_neb selection's — gets one deduplicated logbook entry
+        # naming the blocker, routed to the quest agent. Reading the CURRENT
+        # stamp (not the pass-start snapshot) catches a twin demotion stamped
+        # mid-pass. Mechanical stamps never reach this: the rerun arm below
+        # owns them.
+        fresh_now = store.fetch_refs_by_ids({s.id}).get(s.id)
+        if fresh_now is not None:
+            _route_science_failure(
+                store,
+                quest_id,
+                s.id,
+                handle,
+                name,
+                dict(fresh_now.meta or {}),
+            )
+
+        # Failure-class recovery (gr593138): a candidate whose untrusted
+        # barrier classifies MECHANICAL re-queues on the current engine under
+        # retry/cost/cooldown limits — NOT held by fidelity_restale_cap=0
+        # (Reto ruling 2026-11-12). Science-class stamps and capped-out
+        # mechanical ones park for the quest agent; the arm notes why. A
+        # refusal already recorded against this candidate's failed seed (the
+        # same-wall timeout / invalid-geometry guards above) carries through:
+        # the arm must not dispatch past it.
+        if not mechanical_held:
+            _mechanical_rerun_arm(
+                store,
+                quest_id,
+                s,
+                handle=handle,
+                hub=hub,
+                rerun_held=rerun_held,
+                notes=notes,
+            )
     _ratchet_frontier_viewport(store, quest_id, viewport_updates)
     return ComputeStep(
         candidates_created=0,
@@ -6475,7 +7095,11 @@ def _automatic_rerun_hold(
     payload's ``reruns`` entries (:func:`apply_reruns`). A NEW candidate's
     first dispatch and the deliberate doors — ``request_rerun``,
     ``redispatch_candidates``, a manual ``put(kind='pathway')`` — are not
-    automatic re-runs; the hold does not reach them."""
+    automatic re-runs; the hold does not reach them. Neither does it reach
+    the failure-class mechanical reruns (gr593138 ruling 2026-11-12):
+    untrusted barriers that classify mechanical requeue on the pinned engine
+    under their own retry/cost caps — see ``harvest_measures``'s
+    mechanical-rerun arm."""
     if qmeta is None:
         qref = store.get_ref(kind="quest", id=quest_id)
         qmeta = qref.meta or {} if qref is not None else {}
@@ -6817,6 +7441,8 @@ def promote_tiers(
 #: reading a stale ``barrier_fidelity="verify"`` and wrongly refusing to
 #: stamp a fresh neb-tier barrier as canonical).
 _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
+    "barrier_assurance",
+    "barrier_assurance_reasons",
     "barrier",
     "span",
     "barrier_trusted",
@@ -6824,6 +7450,13 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier_desorbed",
     "barrier_wrong_site",
     "barrier_low_confidence",
+    # gr593138 failure class + its retry bookkeeping
+    "barrier_failure_class",
+    "barrier_mechanical_reruns",
+    "barrier_mechanical_rerun_last_at",
+    # gr593138 science-routing dedup fingerprint — cleared with the class so
+    # a post-reset stamp routes fresh
+    "barrier_science_routed_key",
     # seed-independence gate stamps (gr517804) — cleared alongside the
     # barrier they annotate
     "barrier_seed_blocker",

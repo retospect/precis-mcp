@@ -25,8 +25,22 @@
     </p>
     {% if trust_stamp %}<p class="mt-1 text-xs text-fg-faint">trust: {{ trust_stamp }}</p>{% endif %}
   </div>
-  {% if not retired %}{% include "gripes/_gripe_status.html.j2" %}{% endif %}
+  {% if not retired %}{% include "gripes/_gripe_status.html.j2" %}{% else %}<span>{{ status }}</span> <span class="text-xs text-fg-faint">Attention: no</span>{% endif %}
 </div>
+
+<div class="mb-4 text-sm" data-gripe-metadata>
+  <p>Tags: {% for tag in tags %}<span class="font-mono">{{ tag }}</span>{% if not loop.last %} · {% endif %}{% else %}none{% endfor %}</p>
+</div>
+<section class="mb-4 text-sm" data-gripe-links>
+  {% for direction, entries in link_groups.items() %}
+  <h2 class="font-semibold">{{ direction }} links</h2>
+  <ul>
+    {% for entry in entries %}
+    <li><span class="font-mono">{{ entry.relation }}</span> · {% if entry.url %}<a class="hover:underline" href="{{ entry.url }}">{{ entry.title }}</a>{% else %}{{ entry.title }}{% endif %}</li>
+    {% else %}<li class="text-fg-faint">None</li>{% endfor %}
+  </ul>
+  {% endfor %}
+</section>
 
 {% if not retired %}
 <div class="mb-4 flex flex-wrap items-center gap-1.5 text-xs" data-prio-controls>

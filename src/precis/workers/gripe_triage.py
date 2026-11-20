@@ -1,6 +1,6 @@
 """``gripe_triage`` — the scheduled LLM triage tick over open gripes.
 
-Gripe pipeline v2 slice 3 (``docs/backlog/gripe-pipeline-v2.md`` §Triage
+Gripe pipeline v2 slice 3 (`me691700` §Triage
 tick; Reto approved 2026-10-25): the old daily comment-only suggestion
 pass became a 15-minute LLM tick, still fired by the ``gripe_triage``
 scheduler Cadence, still dark unless ``service_config`` lights
@@ -127,7 +127,15 @@ verdict's ``memory`` field naming a handle the gripe's text carries
 (:func:`_memory_concern`) — and, when that memory is live, tags the
 gripe ``project:memory`` and links it ``raises-concern-about`` the
 memory. ``project:memory`` keeps it out of the coder wave; the
-gardener's ``griped`` detector takes it first, newest first.
+gardener's ``griped`` detector takes it first, newest first. The
+field path keys on the ask, not on the handle's presence (gr666194):
+a ``fix:<artifact>`` verdict (``docs``/``code``/…) means the change
+lands in the repo, so a ``me<id>`` the text carries is the fix's
+source, not its target — ``project:memory`` strands a repo fix in
+front of a gardener that only edits memories. The field is honoured
+only under a non-artifact fix (``memory``/``spec``/``reto``), and the
+same veto guards the model's ``project`` pick: ``project:memory``
+lands only via a resolved live-memory concern or a non-artifact fix.
 
 ``load_threads`` survives as a ``thread:<slug>`` prompt hint: the live
 thread slugs go into the prompt so cluster naming can reuse them.
@@ -159,6 +167,7 @@ from precis.corpus_layout import host_name
 from precis.utils import dispatch_score as _dscore
 from precis.utils.env import env_float, env_int
 from precis.utils.llm.json_reply import extract_json_object
+from precis.utils.text import excerpt
 from precis.workers.runner import BatchResult
 from precis.workers.service_config import ALL_HOSTS, ServiceConfigResolver
 
@@ -218,9 +227,11 @@ _DISPUTE_CAP = 5
 #: the halt; any failure re-arms it for another 6 h.
 _BLOCKED_PROBE_S = 6 * 3600
 
-#: ``fix:<type>`` closed vocabulary (spec §Data model).
+#: ``fix:<type>`` closed vocabulary (spec §Data model; ``memory`` added
+#: gr666194 — the ask is to change, merge, split or delete a memory
+#: node itself, the gardener's lane).
 _FIX_TYPES = frozenset(
-    {"skill", "code", "mcp", "web", "docs", "infra", "ops", "spec", "reto"}
+    {"skill", "code", "mcp", "web", "docs", "infra", "ops", "spec", "reto", "memory"}
 )
 _SIZES = frozenset({"S", "M", "L"})
 #: The flood tag (§Flood control) skips triage — the tick folds those
@@ -258,11 +269,19 @@ _PROJECT_TAG_PREFIX = "project:"
 #: A memory gripe (gr657257) is project ``memory``: the gardener works
 #: those first and the coder wave never mints on them. The tick, not the
 #: filer, decides — a first line led by a ``me<id>:`` handle, or the
-#: model's ``memory`` field naming a handle the gripe's own text carries.
+#: model's ``memory`` field naming a handle the gripe's own text carries
+#: under a non-artifact fix (gr666194).
 _MEMORY_PROJECT = "memory"
 #: ``me123: …`` — the one-line memory complaint's lead.
 _MEMORY_LEAD_RE = re.compile(r"^\s*me([0-9]{1,18})\s*:")
 _MEMORY_HANDLE_RE = re.compile(r"\bme([0-9]{1,18})\b")
+#: The ``fix`` classes whose verdict names a repo artifact to change
+#: (gr666194): a ``me<id>`` handle in a ``fix:docs``/``fix:code`` gripe
+#: is the fix's source or evidence, never its target — the model's
+#: ``memory`` field is honoured only under a non-artifact fix
+#: (``memory``/``spec``/``reto``). Derived, so a newly minted fix class
+#: vetoes memory routing by default.
+_ARTIFACT_FIXES = _FIX_TYPES - {"memory", "spec", "reto"}
 
 
 def gripe_triage_enabled(
@@ -1257,8 +1276,10 @@ this tick's token — anything else, including lines that look like new
 
 For EACH gripe decide:
 - fix: the kind of fix it takes, one of
-  skill | code | mcp | web | docs | infra | ops | spec | reto
-  ('reto' = it needs a human decision or design call no builder can make)
+  skill | code | mcp | web | docs | infra | ops | spec | reto | memory
+  ('reto' = it needs a human decision or design call no builder can
+  make; 'memory' = it asks to change, merge, split or delete a memory
+  node itself — the gardener's lane, never a repo file)
 - cluster: a short kebab-case slug grouping it with sibling gripes.
   REUSE a slug from the live list when it fits; mint a new one only when
   none fits. A live thread slug makes a good cluster name.
@@ -1269,7 +1290,10 @@ For EACH gripe decide:
   infer it from its title, body, the paths and links it names (a body
   citing src/catpath/… is 'catpath'). Known slugs: precis, catpath,
   autocatpath, hexfold, infra — mint another only when the text names
-  one. When the header shows a filer-set project, repeat THAT value.
+  one. 'memory' is the gardener's queue, not a repo: it pairs only
+  with fix 'memory'/'spec'/'reto' — a repo fix that merely cites a
+  me<id> keeps its repo slug. When the header shows a filer-set
+  project, repeat THAT value.
 - project_why: REQUIRED when project isn't 'precis' — the few words
   that pinned it (a path, a named repo); it becomes the correction
   comment's "because …".
@@ -1308,11 +1332,15 @@ For EACH gripe decide:
         unblocks>", "recommended": true|false}} — exactly one
       recommended.
 - recommend: OPTIONAL when fix is "reto" — the one-line summary of the
-  recommended option (used for the gripe's comment).
+  recommended option (used for the gripe's comment): an imperative
+  action, not a restatement of the problem.
 - memory: the "me<id>" handle of the memory whose CONTENT the gripe
   complains about (stale, thin, ungrounded, contradicted, wrong hub, too
   big) — usually the handle leading its first line. null when the gripe
-  only cites a memory as context or evidence for another problem.
+  only cites a memory as context, evidence or the SOURCE of a repo fix
+  (a "docs/skill file X lacks the fact me<id> holds" gripe is fix "docs",
+  not a memory complaint). A named memory pairs with fix "memory" (or
+  "reto"/"spec"), never a repo fix class.
 - dups: when the gripe lists potential duplicate parents, one entry per
   parent judging "same root cause?" — {{"parent": gr<N>, "same":
   true|false|"unsure", "why": "..."}}. "same": true means the two gripes
@@ -1335,7 +1363,7 @@ per gripe shown, exactly {n} entries:
   "verdicts": [
     {{
       "id": <the gripe's gr<id> number>,
-      "fix": "skill|code|mcp|web|docs|infra|ops|spec|reto",
+      "fix": "skill|code|mcp|web|docs|infra|ops|spec|reto|memory",
       "cluster": "<slug>",
       "size": "S|M|L",
       "project": "<slug — repeat the filer-set value when shown>",
@@ -1533,6 +1561,30 @@ class RetoAsk:
         return next((o for o in self.options if o.recommended), None)
 
 
+#: Token set of a recommendation-shaped string: alphanumeric runs of the
+#: lowercased text (punctuation and underscores split, so ``PRECIS_ROOT``
+#: and ``precis-root`` compare equal).
+_RESTATE_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+#: Fraction of a candidate's tokens that must appear in the compared
+#: text(s) before it reads as a restatement — tolerant of a dropped
+#: clause or an imperative prefix, strict enough to keep a real action
+#: that merely names the same subsystem (gr652284).
+_RESTATE_CONTAINMENT = 0.8
+
+
+def _restates(text: str, *others: str) -> bool:
+    """Does ``text`` just re-say ``others``? True when ≥0.8 of its
+    tokens appear in the others' combined token set — a ``recommend``
+    that re-states the ``reason`` hands the owner the symptom back
+    where the approvable action belongs (gr652284)."""
+    mine = set(_RESTATE_TOKEN_RE.findall(text.lower()))
+    if not mine:
+        return False
+    theirs = {t for o in others for t in _RESTATE_TOKEN_RE.findall(str(o).lower())}
+    return len(mine & theirs) / len(mine) >= _RESTATE_CONTAINMENT
+
+
 @dataclass(frozen=True, slots=True)
 class Verdict:
     """One gripe's validated triage answer."""
@@ -1550,7 +1602,10 @@ class Verdict:
     #: equal to) one of the gripe's collected evidence shas.
     fix_sha: str | None
     #: The judged ``project:<slug>`` suffix (gr543639) — applied only
-    #: on a gripe the filer left at the ``precis`` default.
+    #: on a gripe the filer left at the ``precis`` default. A
+    #: model-picked ``memory`` under an artifact fix is vetoed to the
+    #: default (gr666194 — a repo fix must not strand in the
+    #: gardener's queue).
     project: str = _DEFAULT_PROJECT
     #: The short "because …" for a non-default project correction.
     project_why: str | None = None
@@ -1560,9 +1615,11 @@ class Verdict:
     #: at severity ≥ 4, a held owner-filed dispute).
     ask: RetoAsk | None = None
     #: The memory ref id a memory gripe complains about (gr657257) —
-    #: ``None`` for an ordinary gripe. The write links it
-    #: ``raises-concern-about`` and tags ``project:memory`` when the
-    #: memory is live and the filer set no other project.
+    #: ``None`` for an ordinary gripe, and also under an artifact
+    #: ``fix`` where a ``me<id>`` is evidence, not the target (gr666194).
+    #: The write links it ``raises-concern-about`` and tags
+    #: ``project:memory`` when the memory is live and the filer set no
+    #: other project.
     memory: int | None = None
 
     @property
@@ -1574,11 +1631,16 @@ class Verdict:
     @property
     def recommendation(self) -> str | None:
         """The one-line recommendation: ``recommend`` when the model
-        wrote one, else the recommended ask option's text."""
-        if self.recommend:
+        wrote a real action, else the recommended ask option's text —
+        never a restatement of ``reason`` (gr652284: a recommend that
+        re-says the problem leaves the ask with a symptom where the
+        approvable call belongs)."""
+        if self.recommend and not _restates(self.recommend, self.reason):
             return self.recommend
         rec = self.ask.recommended if self.ask is not None else None
-        return rec.option if rec is not None else None
+        if rec is not None and not _restates(rec.option, self.reason):
+            return rec.option
+        return None
 
 
 def _needs_reto(v: Verdict) -> bool:
@@ -1690,12 +1752,18 @@ def _parse_ask(item: dict[str, Any]) -> RetoAsk | None:
     )
 
 
-def _memory_concern(g: ClaimedGripe, raw: Any) -> int | None:
+def _memory_concern(g: ClaimedGripe, raw: Any, fix: str) -> int | None:
     """The memory ``g`` complains about (gr657257), or ``None``.
 
     A first line — title, else the body's first line — led by
     ``me<id>:`` is the one-line memory complaint and wins outright.
-    Otherwise the model's ``memory`` field counts only when it names a
+    Otherwise the model's ``memory`` field counts only under a
+    non-artifact ``fix`` (gr666194): a ``fix:docs``/``fix:code`` verdict
+    says the change lands in the repo, so a ``me<id>`` the text carries
+    is the fix's source — tagging it ``project:memory`` would strand it
+    outside the gardener's memory-only toolkit and the factory's
+    project:memory-excluding dispatch alike. When the fix is a memory
+    ask (``memory``/``spec``/``reto``) the field must still name a
     ``me<id>`` handle the gripe's own text carries: a handle the model
     invented is dropped, and a gripe whose memory link is mere context
     gets ``null`` from the model and stays ordinary. A filer-set project
@@ -1707,6 +1775,8 @@ def _memory_concern(g: ClaimedGripe, raw: Any) -> int | None:
     )
     if (lead := _MEMORY_LEAD_RE.match(first)) is not None:
         return int(lead.group(1))
+    if fix in _ARTIFACT_FIXES:
+        return None
     named = _MEMORY_HANDLE_RE.search(str(raw or "").strip())
     if named is None:
         return None
@@ -1804,6 +1874,15 @@ def parse_verdicts(
         # gripe's own tag regardless of what the verdict claims.
         if g.project is not None:
             project = g.project
+        elif project == _MEMORY_PROJECT and fix in _ARTIFACT_FIXES:
+            # gr666194: the model's ``project`` pick gets the same veto
+            # as its ``memory`` field — an artifact fix lands in the
+            # repo, and ``project:memory`` would strand it outside both
+            # the gardener's memory-only toolkit and the factory's
+            # project:memory-excluding dispatch. ``project:memory``
+            # still lands when a live memory concern resolves
+            # (``_write_verdict``) or under a non-artifact fix.
+            project = _DEFAULT_PROJECT
         offered = {
             int(p["id"]) for p in g.dup_parents if str(p.get("id", "")).isdigit()
         }
@@ -1842,7 +1921,7 @@ def parse_verdicts(
             project=project,
             project_why=project_why,
             ask=ask,
-            memory=_memory_concern(g, item.get("memory")),
+            memory=_memory_concern(g, item.get("memory"), fix),
         )
     return verdicts, sorted(set(claimed) - set(verdicts))
 
@@ -2055,6 +2134,13 @@ def _write_verdict(
     ``_require_resolved_comment`` convention; Opus review item 6 — the
     old text-dedup could swallow a re-close).
 
+    gr592749: after ``cluster:<slug>`` is written the tick also stamps
+    ``goal:<value>`` — ``goal_of`` over the gripe's ``thread:`` /
+    ``cluster:`` tags — so "fixed gripes by goal" is a real tag
+    facet, not a commit-scope inference. A filer-set ``goal:`` tag is
+    never overwritten; only an absent one is filled (same preservation
+    contract as ``origin-class:``).
+
     Ownership guard (Opus review): the ``FOR UPDATE`` read requires
     ``STATUS:open`` AND ``pipeline.claimed_at`` == the stamp this tick
     wrote. A gripe closed or re-leased while the call ran is skipped —
@@ -2191,6 +2277,38 @@ def _write_verdict(
             g.ref_id, Tag.open(f"cluster:{v.cluster}"), set_by="system", conn=conn
         )
         store.add_tag(g.ref_id, Tag.open(f"size:{v.size}"), set_by="system", conn=conn)
+        from precis.utils.gripe_goal import goal_of
+        from precis.utils.gripe_origin_class import classify_origin
+
+        pairs = conn.execute(
+            "SELECT t.namespace, t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s",
+            (g.ref_id,),
+        ).fetchall()
+        tag_values = [
+            f"{ns}:{value}" if ns not in {"OPEN", "FLAG"} else value
+            for ns, value in pairs
+        ]
+        if not any(t.startswith("origin-class:") for t in tag_values):
+            origin_class = classify_origin(tag_values, g.title)
+            if origin_class:
+                store.add_tag(
+                    g.ref_id,
+                    Tag.open(f"origin-class:{origin_class}"),
+                    set_by="system",
+                    conn=conn,
+                )
+        # gr592749: stamp the goal axis off the freshly written
+        # cluster:/thread: tags. A filer-set ``goal:`` is never
+        # overwritten — only an absent one is filled.
+        if not any(t.startswith("goal:") for t in tag_values):
+            store.add_tag(
+                g.ref_id,
+                Tag.open(f"goal:{goal_of(tag_values)}"),
+                set_by="system",
+                conn=conn,
+            )
+
         # gr657257: a memory gripe names a live memory — it becomes
         # ``project:memory`` (the gardener's queue, never the coder wave)
         # and links the memory ``raises-concern-about`` so the open
@@ -3035,6 +3153,17 @@ def _one_line(text: str) -> str:
     return " ".join(str(text).split())
 
 
+#: A minted ask stores ``<option> — <cost>`` as one ``meta.ask`` option
+#: string under the 200-char cap (``precis.todo.guards._ASK_OPTION_CAP``);
+#: the fixed `` — triage's recommendation`` tail leaves the option text
+#: this much room, ellipsis included — passed to
+#: :func:`precis.utils.text.excerpt` so an over-long recommendation cuts
+#: on a word boundary, never mid-word (gr673371: a mid-word cut reads
+#: as a broken recommendation, and the cap refusal was what dropped a
+#: real recommendation onto the ``[:150]`` fallback).
+_ASK_OPTION_TEXT_CAP = 200 - len(" — triage's recommendation") - 1
+
+
 def _reto_ask(g: ClaimedGripe, v: Verdict) -> RetoAsk:
     """The :class:`RetoAsk` this reto-bound verdict poses — the model's
     own structured ask for ``fix:reto``, else a synthesized one for the
@@ -3089,8 +3218,10 @@ def _reto_ask(g: ClaimedGripe, v: Verdict) -> RetoAsk:
     # Defensive — a reto-bound verdict carrying no ask at all (only a
     # ``fix:reto`` parse can reach here, and that now requires one):
     # frame the recommendation itself as the choice rather than ask
-    # the owner to do the scoping (gr595189).
-    rec = _one_line(v.recommend or v.reason or g.title)
+    # the owner to do the scoping (gr595189). The option text is the
+    # recommendation word-cut to fit — uncapped, a long one refused the
+    # ask lint and the mint fell back onto the reason (gr673371).
+    rec = _one_line(v.recommendation or v.reason or g.title)
     return RetoAsk(
         question=f"Apply this recommendation on gr{g.ref_id}?",
         context=(
@@ -3098,7 +3229,11 @@ def _reto_ask(g: ClaimedGripe, v: Verdict) -> RetoAsk:
             f"recommendation: {rec}. Source: gr{g.ref_id}."
         ),
         options=(
-            AskOption(option=rec, cost="triage's recommendation", recommended=True),
+            AskOption(
+                option=excerpt(rec, limit=_ASK_OPTION_TEXT_CAP),
+                cost="triage's recommendation",
+                recommended=True,
+            ),
             AskOption(
                 option="leave as filed",
                 cost="nothing changes — the gripe stays triaged",
@@ -3209,16 +3344,28 @@ def _gripe_still_reto(conn: Any, gid: int) -> bool:
 def _fallback_ask(gid: int, title: str, rec: str | None) -> RetoAsk:
     """A bounded, lint-safe ask for a ``reto:ask`` gripe whose own ask
     is missing or was refused: frame triage's recommendation as the
-    choice (the same shape as :func:`_reto_ask`'s defensive tail)."""
-    text = _one_line(rec or title)[:150] or f"see gr{gid}"
+    choice (the same shape as :func:`_reto_ask`'s defensive tail).
+    ``rec`` IS the recommendation — the verdict's ``recommend`` line or
+    its recommended option, the ``recommend:`` comment for a stranded
+    gripe — never the reason: the reason is the problem statement, and
+    option 1 cut at a character limit showed it instead of the
+    recommendation (gr673371). Only the option is bounded — the
+    context carries the recommendation whole: ``meta.ask`` word-cuts
+    it at the lint's context cap and the todo body keeps it all, so
+    the owner reads the full call they are approving (gr673371)."""
+    full = _one_line(rec or title) or f"see gr{gid}"
     return RetoAsk(
         question=f"Apply triage's recommendation on gr{gid}?",
         context=(
             f"Triage needs a ruling on gr{gid} ({_one_line(title)[:200]}). "
-            f"Its recommendation: {text}. Source: gr{gid}."
+            f"Its recommendation: {full}. Source: gr{gid}."
         ),
         options=(
-            AskOption(option=text, cost="triage's recommendation", recommended=True),
+            AskOption(
+                option=excerpt(full, limit=_ASK_OPTION_TEXT_CAP),
+                cost="triage's recommendation",
+                recommended=True,
+            ),
             AskOption(
                 option="leave as filed",
                 cost="nothing changes — the gripe stays triaged",
@@ -3382,16 +3529,18 @@ def _drop_ruled_asks(store: Store) -> int:
 
 
 def _write_ask(
-    store: Store, gid: int, gtitle: str, ask: RetoAsk, reason: str | None
+    store: Store, gid: int, gtitle: str, ask: RetoAsk, rec: str | None
 ) -> int | None:
     """Mint or refresh gripe ``gid``'s one ask-user todo and link the
     gripe ``blocked-by`` it (so the asks view counts the waiting work).
-    A lint-refused ask retries once as :func:`_fallback_ask`; ``None``
-    when nothing could be written."""
+    A lint-refused ask retries once as :func:`_fallback_ask`, framed on
+    ``rec`` — the verdict's recommendation, so option 1 still states
+    what triage recommended rather than the reason's problem statement
+    (gr673371); ``None`` when nothing could be written."""
     from precis.errors import PrecisError
     from precis.plans.nodes import finish_mint
     from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
-    from precis.todo.guards import check_ask_meta
+    from precis.todo.guards import _ASK_CONTEXT_CAP, check_ask_meta
 
     def build(a: RetoAsk) -> tuple[str, dict[str, Any]]:
         title = _one_line(a.question or gtitle)[:_ASK_TITLE_CAP]
@@ -3405,7 +3554,13 @@ def _write_ask(
             # The waiting work is a gripe, not a todo: ``blocks`` only
             # names todos, so the dependency rides a ``blocked-by`` link.
             "blocks": "nothing",
-            "context": _one_line(a.context or reason or gtitle)[:600],
+            # The lint caps meta.ask.context — word-cut, never
+            # mid-word; the todo body below keeps the full text. The
+            # budget leaves the ellipsis one char of room: on a
+            # spaceless token excerpt returns limit+1, the lint
+            # refused it, and the model's whole ask — context and
+            # priced options — fell back (gr673371).
+            "context": excerpt(a.context or rec or gtitle, limit=_ASK_CONTEXT_CAP - 1),
         }
         check_ask_meta({"ask": meta_ask}, question=title)
         return title, meta_ask
@@ -3421,7 +3576,7 @@ def _write_ask(
             gid,
             exc_info=True,
         )
-        ask = _fallback_ask(gid, gtitle, reason)
+        ask = _fallback_ask(gid, gtitle, rec)
         try:
             title, meta_ask = build(ask)
         except PrecisError:
@@ -3538,7 +3693,13 @@ def _sync_reto_asks(
     todo_id: int | None = None
     written = 0
     for g, v in items:
-        tid = _write_ask(store, g.ref_id, g.title, _reto_ask(g, v), v.reason)
+        tid = _write_ask(
+            store,
+            g.ref_id,
+            g.title,
+            _reto_ask(g, v),
+            v.recommendation or v.reason,
+        )
         if tid is None:
             continue
         written += 1

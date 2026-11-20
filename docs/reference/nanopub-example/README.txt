@@ -1,5 +1,5 @@
 nanopub-example/ — the 2026-08-14 publication wargame, on real prod data.
-Design of record: docs/backlog/claim-publication-nanopub-ots.md (the
+Design of record: me691903 (the
 "Composition model" + "Mint gates" sections came out of this exercise).
 
 Set 1 — hub fi176435 rejiggered (atoms + prose join, no composite):
@@ -56,7 +56,7 @@ DEFECT LEDGER — kept deliberately; each defect became a mint gate:
      hashing/signing cover canonicalized quads only; strip at mint.
 
 Prod hygiene found en route (filed:
-docs/backlog/pdf-sha256-identifier-hygiene.md): ref 5937 has two
+me694385): ref 5937 has two
 pdf_sha256 rows (dup ingest); ref 42109 has chunks but no sha row.
 
 searchSnip convention: lowercase ASCII tokens, digits and hyphens only —

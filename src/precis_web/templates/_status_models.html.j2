@@ -91,7 +91,7 @@
 
 {# ── macro: the operating points, local first (gr502698) ────────
    A card can carry more than one offering — e.g. a fleet-served model with a
-   cloud fallback. Show them all: `local:castor` names the serving host(s);
+   cloud fallback. Show them all: `local:<host>` names the serving host(s);
    a cloud offering shows its in-price. #}
 {% macro offerings_strip(c) %}
   {% if c.offerings %}

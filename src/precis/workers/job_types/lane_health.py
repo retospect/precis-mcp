@@ -24,9 +24,10 @@ wording verbatim (gr601062): an ``auth`` read on an absent token is a
 host/vault miss, not the lane's verdict, so it applies
 ``unprobed``/``vault-miss`` and the summary attributes ``auth (token
 absent)`` vs ``auth (token rejected)``. Host affinity is the registry
-``placement`` row (``repo_checkout``, ``claude_bin``, ``git`` — the
-same tokens a slice needs), so no worker without the lane CLIs can
-claim the job:
+``placement`` row (``repo_checkout``, ``claude_bin``, ``git`` —
+``claude_bin`` anchors the job to a host that can exercise the claude
+ping; a slice itself needs only the ``builder`` floor since gr676054),
+so no worker without the lane CLIs can claim the job:
 
 * red (``auth``/``outage``) on a healthy lane parks it —
   ``parked_reason = "<outcome>:<key>"`` — held out of dispatch exactly
@@ -70,6 +71,7 @@ from typing import TYPE_CHECKING, Any
 from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert, resolve_alert_by_fingerprint
 from precis.plans import lanes as _lanes
+from precis.workers import admission
 from precis.workers.job_types import JobTypeSpec
 from precis.workers.job_types import release_cut as _rc
 from precis.workers.job_types import run_slice as _rs
@@ -301,9 +303,9 @@ def _probe_codex_exec() -> tuple[str, str | None]:
         )
     except (OSError, subprocess.SubprocessError):
         return "unprobed", "unverifiable"
-    if res.returncode == 0 and "chatgpt" in (res.stdout or "").lower():
-        return "ok", None
     out = f"{res.stdout}\n{res.stderr}".lower()
+    if res.returncode == 0 and "logged in using chatgpt" in out:
+        return "ok", None
     if "not logged in" in out or "logged out" in out:
         return "auth", "not-logged-in"
     return "unprobed", "unverifiable"
@@ -604,7 +606,15 @@ def submit(ctx: Any, spec: Any) -> Any:
             log=log_path,
             exit_file=exit_file,
             env=_probe_child_env(ctx.store, adapters),
+            store=ctx.store,
+            work_class="lane_health",
         )
+    except admission.Refused as exc:
+        # Host capacity, not a lane verdict: fail soft so the scheduler
+        # retries the probe (gr657245).
+        log.warning("%s: probe launch deferred: %s", NAME, exc)
+        ctx.record_failure(f"{NAME}: probe launch deferred, host at capacity: {exc}")
+        return None
     except Exception as exc:
         log.warning("%s: probe launch failed", NAME, exc_info=True)
         ctx.record_failure(f"{NAME}: probe launch failed: {exc}")

@@ -47,7 +47,7 @@ get(kind="job", id="jo<id>")  # poll: job_event stream + [pc]→[fi] as it runs
 `params.scope` is a draft slug (every body chunk), a `dc<id>` heading
 (its section), or a `dc<id>` leaf (one chunk); `params.ref_level`
 (default false) controls the `[pa]` arm (below). The job runs
-**serially and checkpointed** on the melchior agent worker: one chunk
+**serially and checkpointed** on the agent-worker host: one chunk
 at a time (so hub convergence sees a stable committed set — no
 parallel near-duplicate race), progress in `meta.done_chunk_ids`, a
 re-claim resumes where it left off. **No preview** — the prose rewrite

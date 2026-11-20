@@ -1588,7 +1588,7 @@ export async function blocktreeViewer3D({
   }
 
   // ── argue with the design → interview note (the pcb argue box
-  // back-ported, docs/backlog/pcb-argue-backport-se.md). ONE always-present
+  // back-ported, me690276). ONE always-present
   // box, not a per-selection panel: a block pick inserts its name at the
   // caret, so one argument accumulates several anchors in the user's own
   // sentence order and about[] carries them all. se keeps the rewrite step
@@ -2050,7 +2050,7 @@ export async function blocktreeViewer3D({
   //: Bumped per render: a build that yielded across a newer render is stale.
   let renderGen = 0;
 
-  //: The "tool volumes" overlay (docs/backlog/se-mechanical-drc.md
+  //: The "tool volumes" overlay (me694687
   //: rulings 5/6): the server's group of swept volumes for failing
   //: insertion-path findings, appended to whatever scene is drawn while
   //: the toggle is on, so isolate/level/revision re-renders keep it.

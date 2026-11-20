@@ -168,6 +168,7 @@ def _run(
             "PATH": f"{fake}:{os.environ['PATH']}",
             "HOME": str(tmp_path),
             "PGB_HOST": "fake-host",
+            "PRECIS_PROD_SSH_HOST": "fake-host",
             "FAKE_SSH_ARGS": str(ssh_args),
             "FAKE_ARGS": str(psql_args),
             "FAKE_BACKEND": str(tmp_path / "backend.state"),

@@ -254,6 +254,7 @@ def test_no_epistemic_mode_does_not_fire_on_method_tokens() -> None:
         "First-principles calculations predict a direct band gap.",
         "Monte Carlo predicts a critical temperature near 300 K.",
         "Nanoindentation measures a hardness of 12 GPa.",
+        "Atom probe tomography shows boron enrichment at grain boundaries.",
     ]:
         warnings = lint_claim_sentence(sentence)
         assert not any("no-epistemic-mode" in w for w in warnings), sentence
@@ -744,6 +745,25 @@ def test_mixed_point_range_does_not_fire_on_negative_number() -> None:
     # must never be mistaken for one.
     warnings = lint_claim_sentence(
         "DFT predicts a stress of −3.2 GPa near the interface."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)
+
+
+def test_mixed_point_range_does_not_fire_on_model_identifier() -> None:
+    # `6-27b` inside `qwen3.6-27b-q8_0` is a model-id hyphen, not a unit
+    # range -- the same `(?<![-\w.])` guard as notation.py's detectors
+    # (gr695785). Without it `70b` misreads as a stray point beside one.
+    warnings = lint_claim_sentence(
+        "Benchmarks find the qwen3.6-27b-q8_0 model beats the 70b baseline."
+    )
+    assert not any("mixed-point-range" in w for w in warnings)
+
+
+def test_mixed_point_range_does_not_fire_on_identifier_point() -> None:
+    # The bare-point probe is identifier-guarded too: `70b` in `qwen70b`
+    # is part of a model id, not a point beside the 9-12 b range.
+    warnings = lint_claim_sentence(
+        "Benchmarks find throughput spanning 9-12 b, and the qwen70b model leads."
     )
     assert not any("mixed-point-range" in w for w in warnings)
 

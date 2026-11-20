@@ -10,7 +10,7 @@ That is what happened, and the mechanism is subtler than a missing task. 20b DOE
 import `precis_worker_agent`'s provisioning half, and its anki task DID keep
 running — but it installs into `precis_worker_agent_venv` (/opt/mcps/venv), the
 retired agent daemon's venv, while the collapsed `--profile all` worker runs from
-`precis_worker_venv` (/opt/precis/venv). Verified on melchior 2026-08-07: anki
+`precis_worker_venv` (/opt/precis/venv). Verified on maple 2026-08-07: anki
 importable in the former, absent in the latter. The pylib was on the box the
 whole time, just never on the path the live interpreter searched — and
 `PRECIS_ANKI_ENABLED=1` stayed set, which is what made the host look configured.

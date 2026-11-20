@@ -10,6 +10,9 @@ pattern. Module docstrings own the detail; this one only groups them.
 The eye renderer assembles todo ``parent_id`` tree neighbours before its
 empty-hop decision: link edges alone cannot establish an empty first hop.
 
+Mention kinds derive lazily from the handle registry plus codeless caches.
+Lazy discovery avoids cycles when handle-code plugins import mention consumers.
+
 **Groups.**
 
 - *Outbound network + LLM seams.* :mod:`~precis.utils.safe_fetch` (SSRF guard —
@@ -39,7 +42,9 @@ empty-hop decision: link edges alone cannot establish an empty first hop.
   ``draft_regex``, ``house_style``, ``wordcount``).
 - *Identity and addressing.* :mod:`~precis.utils.handle_registry` (the single
   source of universal handles), :mod:`~precis.utils.handles` (opaque draft
-  chunk handles), :mod:`~precis.utils.mentions`, :mod:`~precis.utils.slug`,
+  chunk handles), :mod:`~precis.utils.mentions` (bare prose handles accept
+  either case for autolinks and write receipts, in step with the retirement
+  guard), :mod:`~precis.utils.slug`,
   :mod:`~precis.utils.authors`, :mod:`~precis.utils.short_cite`,
   :mod:`~precis.utils.file_id` / :mod:`~precis.utils.workspace` (prose-file
   kinds under ``PRECIS_ROOT``).
@@ -66,6 +71,19 @@ empty-hop decision: link edges alone cannot establish an empty first hop.
   logs), :mod:`~precis.utils.db_retry`, :mod:`~precis.utils.load_gate`,
   :mod:`~precis.utils.container_limits`, :mod:`~precis.utils.optional_deps`
   (lazy-import guards for extras).
+
+Table rows may omit all formula cells, mapping inputs in data-column order
+to match the documented formula example. Full-width inputs remain valid;
+only caller-supplied formula values produce discard notes, so re-evaluating
+stored results stays quiet. ``table_data.normalize_table`` owns expansion
+and note collection for both creation and row insertion.
+Table reads render canonical cells with verbatim backslashes; stored Markdown
+keeps reversible escaping for fallback recovery without canonical metadata.
+
+Gripe provenance uses ``gripe_origin_class.classify_origin`` at intake, triage
+and operator backfill. A single deterministic rule set preserves explicit
+classifications and leaves unknown origins empty rather than guessing from
+an agent identity.
 
 **Seams.** Most helpers are pure; the DB-touching ones (``db_log_handler``,
 ``rate_limit``, ``handle_registry``) take their connection or store from the

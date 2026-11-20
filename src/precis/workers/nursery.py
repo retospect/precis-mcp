@@ -101,7 +101,7 @@ import logging
 import time
 import weakref
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -116,6 +116,7 @@ from precis.store.types import TODO_BODY_KIND
 from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
 from precis.utils import handle_registry
 from precis.workers._mint import JOB_TERMINAL_STATUSES
+from precis.workers.failure_cause import classify_failure
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -159,7 +160,7 @@ QUEST_LOOP_FAIL_24H = 3
 #: terminal ``STATUS:failed`` for longer than this, with nothing newer minted
 #: since, is dark — not spinning (``quest-loop-failing`` / ``plan-tick-spin``
 #: need repeated re-mints to fire), just silent. That's the blind spot the
-#: 2026-07-26→30 incident exposed: the melchior worker-agent daemon died, so
+#: 2026-07-26→30 incident exposed: the agent-host worker-agent daemon died, so
 #: the reconciler that re-mints coordinator loops never ran at all — one
 #: failed row, zero retry attempts, invisible to every count-based detector.
 #: Sized to the quest lane's RC1 backoff ceiling (``quest/loop.py``'s
@@ -206,7 +207,7 @@ DEAD_WORKER_SILENCE_MIN = 10
 #: into ``precis-worker``, and ``com.precis.worker-agent.plist`` was removed).
 #: It must NOT stay listed: a decommissioned daemon can never log again, so it
 #: matched the dead-worker predicate forever and pinned two false *critical*
-#: alerts (melchior + spark) for the full
+#: alerts (the agent host + the GPU node) for the full
 #: :data:`DEAD_WORKER_LOOKBACK_DAYS` window — noise that buried the real
 #: cast/recurring stalls underneath it.
 WORKER_CONTINUOUS_PROCESSES = ("precis-worker",)
@@ -224,7 +225,7 @@ WORKER_CONTINUOUS_PROCESSES = ("precis-worker",)
 DEAD_WORKER_LOOKBACK_DAYS = 30
 
 #: A host's freshest ``host_heartbeat`` row older than this is dark — gr186752
-#: (``docs/backlog/self-healing-spine.md`` Layer 2). Slightly wider than
+#: (`me691477` Layer 2). Slightly wider than
 #: ``DEAD_WORKER_SILENCE_MIN`` (10 vs the daemon-level 10) since a host-level
 #: verdict should not trip on the same jitter a single-daemon check would;
 #: kept equal for now (no observed need to separate them) but named
@@ -234,7 +235,7 @@ HOST_DARK_SILENCE_MIN = 10
 #: A ``claude_inproc`` job (plan_tick / fix_gripe / news / briefing) sitting
 #: ``STATUS:queued`` longer than this while **nothing** is running is a stalled
 #: planner: minting is cluster-wide but *execution* is agent-profile-only
-#: (melchior), so a jetsam-cull / OAuth-401 / never-started agent worker
+#: (the agent host), so a jetsam-cull / OAuth-401 / never-started agent worker
 #: freezes every minted job with no bubble — the 2026-07 "45 min dark"
 #: incident (gripe 55748). A healthy executor claims within a worker loop
 #: (~seconds), so a multi-minute queued age with zero live claims means the
@@ -288,7 +289,7 @@ KIND_ROSTER_LOOKBACK_DAYS = 30
 #: (a handler's deliberate "clean skip" — e.g. the gr179498 container gate)
 #: is a lane that is DOWN while looking clean — cancelled is not failed, so
 #: no err/warn count, no ``child-failed`` bubble, and the doctor read
-#: melchior's 8-day 90% diagnose_gripe skip rate as "no actual failures"
+#: the agent host's 8-day 90% diagnose_gripe skip rate as "no actual failures"
 #: (gr346813). Fire per job_type when, over the window, at least
 #: :data:`LANE_SKIP_MIN_CANCELLED` runs were cancelled and cancelled
 #: outnumber succeeded by :data:`LANE_SKIP_RATIO`×.
@@ -367,7 +368,7 @@ class Symptom:
     ``ref_id`` + ``category`` is the dedup key for the graph detectors
     (each finding is a specific todo/job ref). The worker-health detectors
     are not ref-scoped — they set ``ref_id=None`` and supply an explicit
-    ``fingerprint_key`` (e.g. ``"worker-restart:melchior:precis-worker-agent"``)
+    ``fingerprint_key`` (e.g. ``"worker-restart:<agent-host>:precis-worker-agent"``)
     so dedup / auto-resolve still work per (host, process).
 
     ``total`` is the category's true pre-``LIMIT`` count (a window-function
@@ -581,6 +582,12 @@ def _detect_orphans(store: Store) -> list[Symptom]:
                -- Rotation fence (retire-dossier): direction todos are a
                -- quest's attempt tree, not work — never orphans.
                AND NOT {direction_todo_sql("r")}
+               -- Backlog-spec placeholders (quest-rollup.md) mark where a
+               -- spec lives under its quest; not strategic work.
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
+                      WHERE rtg.ref_id = rt.root_id AND t.namespace = 'OPEN'
+                        AND t.value = 'backlog-spec')
              ORDER BY r.ref_id
              LIMIT 50
             """,
@@ -964,6 +971,10 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
     its own), so this groups by ``ref_id`` and reports the *oldest* one —
     how long the parent has been parked overall.
 
+    Stored job metadata, tags and the latest event supply a deterministic
+    cause; peer lists cover this pass's bounded result set. No filesystem
+    logs or provider calls run on this SQL watchdog's rotation.
+
     **Excludes ``child-failed-final`` leaves** (parked-leaf-recovery, docs/
     backlog/parked-leaf-recovery.md) — those have exhausted the unpark
     phase's bounded retries and are surfaced instead, in aggregate, by
@@ -974,7 +985,14 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
         rows = conn.execute(
             """
             SELECT sub.ref_id, sub.title, sub.tag, sub.created_at,
-                   COUNT(*) OVER () AS total_count
+                   COUNT(*) OVER () AS total_count,
+                   j.ref_id, j.meta,
+                   ARRAY(SELECT jt.value
+                           FROM ref_tags jrt JOIN tags jt ON jt.tag_id = jrt.tag_id
+                          WHERE jrt.ref_id = j.ref_id),
+                   (SELECT c.text FROM chunks c WHERE c.ref_id = j.ref_id
+                      AND c.retired_at IS NULL AND c.chunk_kind = $$job_event$$
+                    ORDER BY c.created_at DESC, c.chunk_id DESC LIMIT 1)
               FROM (
                 SELECT DISTINCT ON (r.ref_id)
                        r.ref_id, r.title, t.value AS tag, rt.created_at
@@ -1003,13 +1021,25 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
             + """
                  ORDER BY r.ref_id, rt.created_at ASC
               ) sub
+              LEFT JOIN refs j ON j.ref_id = CASE
+                WHEN split_part(sub.tag, chr(58), 2) ~ '^[0-9]{1,18}$'
+                THEN split_part(sub.tag, chr(58), 2)::bigint END
+                AND j.kind = $$job$$ AND j.retired_at IS NULL
              ORDER BY sub.ref_id
              LIMIT 50
             """,
             (f"{CHILD_FAILED_PARKED_HOURS} hours", sorted(TERMINAL_TODO_STATUSES)),
         ).fetchall()
     out: list[Symptom] = []
+    causes: list[str] = []
     for r in rows:
+        cause, evidence = classify_failure(r[6] or {}, r[7], r[8])
+        diagnosis = (
+            f"cause: {cause} — {evidence}"
+            if r[5] is not None
+            else "cause: unknown (job gone)"
+        )
+        causes.append(cause)
         tag = str(r[2])
         hours = _hours_since(r[3])
         out.append(
@@ -1018,6 +1048,7 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
                 ref_id=int(r[0]),
                 title=_first_line(r[1]),
                 detail=(
+                    f"{diagnosis}\n"
                     f"parked {hours:.0f}h behind {tag} — a hard failure, a "
                     f"streak-exhaustion past its one auto-decompose attempt, "
                     f"or a decompose tick still "
@@ -1028,9 +1059,21 @@ def _detect_child_failed_parked(store: Store) -> list[Symptom]:
                     f"ref_events, not job events — the recovery verb is "
                     f"put(kind='job', id=<job>, mode='retry')"
                 ),
-                total=int(r[-1]),
+                total=int(r[4]),
             )
         )
+    for i, (symptom, cause) in enumerate(zip(out, causes, strict=True)):
+        peers = [
+            f"td{other.ref_id}"
+            for other, other_cause in zip(out, causes, strict=True)
+            if other.ref_id != symptom.ref_id and other_cause == cause
+        ]
+        if peers:
+            out[i] = replace(
+                symptom,
+                detail=symptom.detail
+                + f"\nsame cause as {len(peers)} other parked: {', '.join(peers[:5])}",
+            )
     return out
 
 
@@ -1356,7 +1399,7 @@ def _detect_quest_loop_failures(store: Store) -> list[Symptom]:
                 f"{_hours_since(r[3]):.0f}h ago) — a persistent break the RC1 "
                 "backoff is throttling but can't fix: check the "
                 "loop's job_summary / job_event chunks for the failing tick "
-                "(bad tier/endpoint config, a code error, or spark down), then "
+                "(bad tier/endpoint config, a code error, or the GPU node down), then "
                 "fix the cause or pause the quest"
             ),
         )
@@ -1373,7 +1416,7 @@ def _detect_orphaned_coordinator(store: Store) -> list[Symptom]:
     ``_detect_quest_loop_failures`` / ``_detect_plan_tick_spins`` both need
     *repeated* re-mints (a count over a threshold) to fire — they catch a
     spin, not a silence. A reconciler that stopped running entirely (the
-    2026-07-26→30 melchior worker-agent outage) produces exactly one failed
+    2026-07-26→30 agent-host worker-agent outage) produces exactly one failed
     row and then nothing, forever — invisible to either counter. This
     detector instead asks, per **active** coordinator lineage: is the
     *newest* loop terminal ``STATUS:failed``, and has it been that way
@@ -1535,8 +1578,8 @@ def _restart_storm_detail(process: str, host: str, n: int, platform: str | None)
     so it must not assert a cause. A restart storm is one of two things and
     the count alone can't tell them apart: (a) repeated **deploy bounces** (a
     burst of `/go` ship+deploys, each of which restarts every worker
-    unconditionally — the spark 2026-07-06 case), or (b) a **crash / OOM
-    cull** (the melchior jetsam case). The old text hardcoded "not a deploy
+    unconditionally — the 2026-07-06 GPU-node case), or (b) a **crash / OOM
+    cull** (the agent-host jetsam case). The old text hardcoded "not a deploy
     bounce … macOS jetsam" + a `launchctl` command, which was flatly wrong on
     a Linux host. ``platform`` (from the boot row payload; NULL on pre-fix
     boots) selects the right diagnostic command.
@@ -1658,7 +1701,12 @@ def _dead_worker_detail(
     )
 
 
-def _host_dark_detail(host: str, silent_h: float, platform: str | None) -> str:
+def _host_dark_detail(
+    host: str,
+    silent_h: float,
+    platform: str | None,
+    meta: dict[str, Any] | None = None,
+) -> str:
     """Hedged, OS-aware body for a host-dark finding (gr186752).
 
     The complement of :func:`_dead_worker_detail`: since the heartbeat pass
@@ -1669,6 +1717,12 @@ def _host_dark_detail(host: str, silent_h: float, platform: str | None) -> str:
     alert that case still needs. ``platform`` comes from the stale
     heartbeat row's own ``meta->>'platform'``, which persists even though
     the row itself has gone stale.
+
+    gr681494: when the stale row's ``meta.worker_units.units`` snapshot is
+    non-empty — units were up at the last beat — the detail also names the
+    likely cause: a host whose OS is up but whose database credential broke
+    looks exactly like this (its workers cannot authenticate, so nothing
+    writes), which is a different fix than restarting daemons.
     """
     base = (
         f"{host}'s host_heartbeat has been silent {silent_h:.1f}h "
@@ -1678,11 +1732,20 @@ def _host_dark_detail(host: str, silent_h: float, platform: str | None) -> str:
         "liveness signal down with it (gr186752). Every daemon on this host "
         "is presumed dead until the heartbeat resumes. "
     )
-    return (
+    detail = (
         base
         + _platform_recovery_hint(platform)
         + " Or: `scripts/restart-worker-and-watch` (OS-agnostic)."
     )
+    units = ((meta or {}).get("worker_units") or {}).get("units") or {}
+    if units:
+        detail += (
+            " Likely cause: units were running at the last beat; a host "
+            "that is up but silent often cannot authenticate to the "
+            "database — check the worker log for fe_sendauth and the "
+            "credential files."
+        )
+    return detail
 
 
 def _detect_dead_workers(store: Store) -> list[Symptom]:
@@ -1836,7 +1899,7 @@ def _detect_nas_denied(store: Store) -> list[Symptom]:
     top-level ``nas_ok = false`` still alerts — but only when the row carries
     no ``nas_ok_by_process`` entries, so a redeployed host doesn't
     double-alert. Root cause is almost always a Full Disk Access grant broken
-    by a brew python upgrade; see OPEN-ITEMS 'melchior daemon NAS lockout'.
+    by a brew python upgrade; see OPEN-ITEMS 'gateway daemon NAS lockout'.
     """
     with store.pool.connection() as conn:
         att_rows = conn.execute(
@@ -1894,7 +1957,7 @@ def _detect_nas_denied(store: Store) -> list[Symptom]:
                     "changed the venv python's cdhash. Re-grant FDA to the resolved "
                     "python in System Settings > Full Disk Access, then "
                     "`launchctl kickstart -k` the precis daemons. "
-                    "See OPEN-ITEMS 'melchior daemon NAS lockout'."
+                    "See OPEN-ITEMS 'gateway daemon NAS lockout'."
                 ),
             )
         )
@@ -1945,7 +2008,7 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT hh.host, hh.ts, hh.meta->>'platform' AS platform
+            SELECT hh.host, hh.ts, hh.meta
               FROM host_heartbeat hh
              WHERE hh.ts < now() - (%(silence)s || ' minutes')::interval
                AND (hh.meta->>'ephemeral') IS DISTINCT FROM 'true'
@@ -1963,7 +2026,10 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
                    )
                    AND COALESCE(hh.meta->'activity', '{}'::jsonb) = '{}'::jsonb
                )
-             ORDER BY hh.ts ASC
+             -- Tie-break on host (td681892): ``dark_advertised_by_host``
+             -- suppresses unplaced asks for exactly the hosts this window
+             -- selects, so a ts tie at the cap must pick the same 50.
+             ORDER BY hh.ts ASC, hh.host
              LIMIT 50
             """,
             {
@@ -1971,15 +2037,16 @@ def _detect_host_dark(store: Store) -> list[Symptom]:
             },
         ).fetchall()
     out: list[Symptom] = []
-    for host, ts, platform in rows:
+    for host, ts, meta in rows:
         silent = _hours_since(ts)
+        platform = meta.get("platform") if isinstance(meta, dict) else None
         out.append(
             Symptom(
                 category="host-dark",
                 ref_id=None,
                 fingerprint_key=f"host-dark:{host}",
                 title=f"{host} host_heartbeat silent {silent:.1f}h",
-                detail=_host_dark_detail(str(host), silent, platform),
+                detail=_host_dark_detail(str(host), silent, platform, meta),
             )
         )
     return out
@@ -2048,7 +2115,7 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
     """The single agent-profile executor stopped claiming — planner dark.
 
     ``dispatch`` mints ``plan_tick`` (and other ``claude_inproc``) jobs on
-    every node, but only melchior's ``--profile=agent`` worker can *execute*
+    every node, but only the agent host's ``--profile=agent`` worker can *execute*
     them (it needs the hermes ``~/.claude`` OAuth / MCP state). So the
     executor is a cluster-wide single point of failure: if it is culled,
     401s, or never starts, every minted job sits ``STATUS:queued`` forever
@@ -2172,11 +2239,11 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
                 f"{oldest_h:.1f}h, > {DISPATCH_STALL_MINUTES}min) with zero live "
                 "claims and no lane activity for "
                 f">{DISPATCH_STALL_DEBOUNCE_S}s "
-                "— the agent-profile executor (melchior) is not claiming: "
+                "— the agent-profile executor (the agent host) is not claiming: "
                 "dead/culled worker, OAuth-401, or the agent profile never "
                 "started on any node. Minting is cluster-wide but execution is "
-                "melchior-only, so the planner is frozen cluster-wide. Recover: "
-                "check melchior's agent worker (`launchctl kickstart -k "
+                "agent-host-only, so the planner is frozen cluster-wide. Recover: "
+                "check the agent host's agent worker (`launchctl kickstart -k "
                 "system/com.precis.worker.agent`) + `claude` OAuth; longer term, "
                 "run the agent profile on a second host or wire local-model "
                 "tool-calling so execution isn't single-homed."
@@ -2189,7 +2256,7 @@ def _detect_embed_lane_stalled(store: Store) -> list[Symptom]:
     """``embed_batch`` jobs queued with nothing completing — the embed
     lane is down (``docs/backlog/embedder-wedge-hardening.md``).
 
-    The 2026-08-08→10 caspar incident: ``serve-embeddings`` startup dials
+    The 2026-08-08→10 database-host incident: ``serve-embeddings`` startup dials
     HuggingFace Hub for revision metadata even with weights cached; when
     HF is slow/rate-limited the load hangs forever, and the process stays
     alive throughout — a restart-based watchdog just kicks it into the
@@ -2262,7 +2329,7 @@ def _detect_lane_skipping(store: Store) -> list[Symptom]:
     ``fix_gripe`` refusing without a containerized agent path; an OSS-backend
     skip), so it never counts as an error anywhere: no worker-log ERROR, no
     ``child-failed`` bubble, and a doctor reading err/warn sees a healthy
-    fleet. melchior ran 188 cancelled / 8 succeeded diagnose_gripe jobs over
+    fleet. The agent host ran 188 cancelled / 8 succeeded diagnose_gripe jobs over
     9 days that way before a manual outcome histogram caught it. Outcome
     tags are the truthful probe, as with ``embed-lane-stalled``; the window
     is read from ``ref_tags.created_at`` (the transition time).

@@ -1,5 +1,5 @@
 """``realize(strategy='simp')`` — the se → :mod:`precis.structsolve.simp` →
-cad field-leaf bridge (docs/backlog/structural-solution-space.md "Slice 4
+cad field-leaf bridge (me695531 "Slice 4
 bridge", round A: the solve and the binding; print intents are round B).
 
 The analytic ``realize`` (:mod:`precis_se.realize`) seeds a cad design

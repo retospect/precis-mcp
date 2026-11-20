@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, Unsupported
 from precis.handlers.memory import MemoryHandler
 from precis.store import Store
 from tests.conftest import id_of
@@ -182,10 +182,45 @@ def test_tag_toc_requires_a_positive_tag(hub: Hub) -> None:
         h.search(tags=["!spec:other"], view="toc")
 
 
-def test_tag_toc_rejects_query_facets(hub: Hub) -> None:
+def test_tag_toc_q_filters_roots(hub: Hub, forest: dict[str, int]) -> None:
+    """gr702042: ``q=`` with view='toc' now filters the forest instead of
+    BadInput. The filter is root-level — a root stays only when its own
+    chunks match; member counts stay full subtree sizes."""
     h = MemoryHandler(hub=hub)
-    with pytest.raises(BadInput, match="q= is not applied by view='toc'"):
-        h.search(q="routing", tags=["spec:*"], view="toc")
+    out = h.search(q="routing", tags=["spec:*"], view="toc").body
+    assert "Spec: routing (me" in out
+    assert "Spec: other" not in out
+    assert "Spec: alpha" not in out
+    # The count is the untouched subtree size (s1, s2, note).
+    assert "· 3 members" in out
+    # The header and empty page name the q filter.
+    assert "matching 'routing'" in out
+    none = h.search(q="zzz-not-a-topic", tags=["spec:*"], view="toc").body
+    assert "no memory entries tagged ['spec:*'] match 'zzz-not-a-topic'" in none
+
+
+def test_tag_toc_q_does_not_let_members_qualify_a_root(
+    hub: Hub, forest: dict[str, int]
+) -> None:
+    """``q=`` matches the root's own chunks, not its subtree's: 'table'
+    lives only in the Route table section under Spec: routing, so no
+    root qualifies."""
+    out = MemoryHandler(hub=hub).search(q="table", tags=["spec:*"], view="toc").body
+    assert "Spec: routing" not in out
+    assert "match 'table'" in out
+
+
+def test_tag_toc_q_echoes_in_the_next_call(hub: Hub, forest: dict[str, int]) -> None:
+    first = (
+        MemoryHandler(hub=hub)
+        .search(q="spec", tags=["spec:*"], view="toc", page_size=1)
+        .body
+    )
+    assert "'q': 'spec'" in first
+
+
+def test_tag_toc_rejects_unapplied_facets(hub: Hub) -> None:
+    h = MemoryHandler(hub=hub)
     with pytest.raises(BadInput, match="sort= is not applied"):
         h.search(tags=["spec:*"], view="toc", sort="recent")
 
@@ -298,3 +333,93 @@ def test_node_toc_past_the_end_names_the_total(
 ) -> None:
     out = MemoryHandler(hub=hub).get(id=forest["spec_r"], view="toc", offset=9).body
     assert "no members past offset 9 — 3 total" in out
+
+
+# ---------------------------------------------------------------------------
+# get(id='/toc') — the kind-level TOC (gr568237)
+# ---------------------------------------------------------------------------
+
+
+def test_kind_toc_lists_every_root(hub: Hub, forest: dict[str, int]) -> None:
+    """``id='/toc'`` is the whole-graph forest: the one parentless node
+    heads the listing and carries the subtree's member count."""
+    out = MemoryHandler(hub=hub).get(id="/toc").body
+    assert "# memory TOC — 1 root" in out
+    assert f"- Repo root (me{forest['repo']})" in out
+    assert "· 9 members" in out
+
+
+def test_kind_toc_bare_view_is_the_same_door(hub: Hub, forest: dict[str, int]) -> None:
+    """A bare ``get(view='toc')`` (no id) reads as ``id='/toc'`` — the
+    spelling agents reaching for "a toc for memories" (gr568237) type."""
+    out = MemoryHandler(hub=hub).get(view="toc").body
+    assert "# memory TOC — 1 root" in out
+    assert f"- Repo root (me{forest['repo']})" in out
+
+
+def test_kind_toc_ignores_tagged_parents(hub: Hub, forest: dict[str, int]) -> None:
+    """Roots are structural, not tag-defined: the untagged repo root
+    is the only root even though tagged spec nodes hang under it."""
+    out = MemoryHandler(hub=hub).get(id="/toc").body
+    assert "Spec: routing" not in out
+    assert "Spec: other" not in out
+
+
+def test_kind_toc_pages_by_page_size(hub: Hub) -> None:
+    h = MemoryHandler(hub=hub)
+    _put(h, "Zeta root")
+    _put(h, "Alpha root")
+    _put(h, "Mid root")
+    first = h.get(id="/toc", page_size=2).body
+    assert "Alpha root" in first
+    assert "Mid root" in first
+    assert "Zeta root" not in first
+    assert "… 1 more — next: get(kind='memory', id='/toc'" in first
+    second = h.get(id="/toc", page_size=2, page=2).body
+    assert "Zeta root" in second
+    assert "Alpha root" not in second
+
+
+def test_kind_toc_rejects_sort(hub: Hub) -> None:
+    h = MemoryHandler(hub=hub)
+    _put(h, "Solo root")
+    with pytest.raises(BadInput, match="sort= is not applied"):
+        h.get(id="/toc", sort="recent")
+
+
+def test_kind_toc_refuses_view_arg_on_the_list_id(hub: Hub) -> None:
+    """``id='/toc'`` + ``view='toc'`` — the list selectors live in id=;
+    the refusal names the working spelling."""
+    h = MemoryHandler(hub=hub)
+    _put(h, "Solo root")
+    with pytest.raises(Unsupported, match="takes no view"):
+        h.get(id="/toc", view="toc")
+
+
+def test_kind_toc_bare_view_refuses_node_args(hub: Hub) -> None:
+    """``depth=``/``offset=`` belong to a node's own subtree toc, not
+    the paged kind forest — say which call they do bind."""
+    h = MemoryHandler(hub=hub)
+    _put(h, "Solo root")
+    with pytest.raises(BadInput, match="depth=/offset="):
+        h.get(view="toc", depth=1)
+    with pytest.raises(BadInput, match="depth=/offset="):
+        h.get(view="toc", offset=2)
+
+
+def test_node_toc_page_size(hub: Hub, forest: dict[str, int]) -> None:
+    h = MemoryHandler(hub=hub)
+    root = forest["spec_r"]
+    first = h.get(id=root, view="toc", page_size=2)
+    assert first.result_count == 3  # root plus two descendants
+    assert "'offset': 2" in first.body
+    assert "'page_size': 2" in first.body
+
+
+def test_considerations_page_size_aliases_limit(hub: Hub) -> None:
+    h = MemoryHandler(hub=hub)
+    ref_id = _put(h, "Consideration scope")
+    assert (
+        h.get(id=ref_id, view="considerations", page_size=3).body
+        == h.get(id=ref_id, view="considerations", limit=3).body
+    )

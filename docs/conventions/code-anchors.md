@@ -71,7 +71,7 @@ scripts/coderef outline <file.py> --symbol Qual.name  # exact decorated source f
 
 ## No git shas in tracked files
 
-Never write a commit sha into `docs/`, backlog items, docstrings or
+Never write a commit sha into `docs/`, memory spec nodes, docstrings or
 `src/precis/data/skills/` (Reto: "git knows the hash, blame shows, this is just
 churny"). State status qualitatively ("shipped", "landed", "shipped (dark)");
 `git blame`/`git log` carry provenance. A sha rots when the line moves or the

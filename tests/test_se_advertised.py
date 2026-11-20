@@ -18,7 +18,11 @@ def test_se_in_server_overview_and_toc(
     assert "se" in _kinds_loaded_line(runtime).removeprefix("Kinds: ").rstrip(
         "."
     ).split(", ")
-    overview = runtime.dispatch("get", {"kind": "skill", "id": "precis-overview"})
+    # Over ~6 kB a whole-skill read serves the section index first
+    # (gr568475); the kinds table is in the verbatim body.
+    overview = runtime.dispatch(
+        "get", {"kind": "skill", "id": "precis-overview", "extent": "verbatim"}
+    )
     assert "| `se` |" in overview
     toc = runtime.dispatch("get", {"kind": "skill", "id": "toc", "kinds": "se"})
     assert "precis-se-help" in toc

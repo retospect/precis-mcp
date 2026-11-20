@@ -1,5 +1,5 @@
 """Rung 6e-1 of the paper-writing pipeline — ``weave_tick``: the runnable
-loop over a topic dossier (docs/backlog/paper-writing-pipeline.md
+loop over a topic dossier (me689904
 §"Integrate — the tick body" + §"Make/Maintain, one loop").
 
 Composes the already-shipped substrate — placement (rung 6a, :mod:`precis.
@@ -84,7 +84,7 @@ QUEST_BODY_MATERIALS = "materials"
 QUEST_BODY_INQUIRY = "inquiry"
 
 #: The marker value for a capability/pathway/rung roadmap striving
-#: (docs/backlog/bootstrap-roadmap-quest.md) — a fourth ``_phase_tick`` arm
+#: (me691652) — a fourth ``_phase_tick`` arm
 #: running :func:`precis.quest.roadmap_tick.roadmap_tick`, whose one action
 #: per tick is chosen from a gap type (demand / supply / bridge) rather than
 #: from a proposal menu.
@@ -218,7 +218,7 @@ def weave_tick(
     call actually weaves; anything past the cap is simply left for the
     next tick.
 
-    **Rung 6f — the review trigger** (docs/backlog/paper-writing-pipeline.md
+    **Rung 6f — the review trigger** (me689904
     §"Review — the memoized approval ledger"): every successful, applied
     ``weave_section`` call (``ok=True``, ``applied=True``, carrying a
     ``body_handle``) mints its ``flow``/``cites`` review-todos via

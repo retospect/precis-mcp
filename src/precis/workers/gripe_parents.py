@@ -1,5 +1,5 @@
 """``gripe_parents`` — pipeline v2 slice 2: potential-duplicate-parent pass
-(``docs/backlog/gripe-pipeline-v2.md`` §Intake).
+(`me691700` §Intake).
 
 A scheduler :class:`~precis.workers.scheduler.Cadence` (300 s,
 fleet-singleton via the lease claim, mirroring ``materialize``) that

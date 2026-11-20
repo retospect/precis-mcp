@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -72,9 +73,9 @@ def test_resolve_host_ephemeral_flags_bare_container_id(monkeypatch, caplog) -> 
 def test_resolve_host_ephemeral_ignores_named_host(monkeypatch) -> None:
     """A real hostname shape (not 12 lowercase hex chars) is never ephemeral."""
     monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
-    monkeypatch.setattr(socket, "gethostname", lambda: "melchior", raising=False)
+    monkeypatch.setattr(socket, "gethostname", lambda: "maple", raising=False)
     resolved, ephemeral = heartbeat._resolve_host_ephemeral(None)
-    assert resolved == "melchior"
+    assert resolved == "maple"
     assert ephemeral is False
 
 
@@ -124,11 +125,43 @@ def test_collect_and_report_stamps_ephemeral_meta(monkeypatch) -> None:
 
 def test_collect_and_report_no_ephemeral_meta_for_named_host(monkeypatch) -> None:
     monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
-    monkeypatch.setattr(socket, "gethostname", lambda: "melchior", raising=False)
+    monkeypatch.setattr(socket, "gethostname", lambda: "maple", raising=False)
     store = _EphemeralRecordingStore()
     heartbeat.collect_and_report(store)  # type: ignore[arg-type]
     assert store.meta is not None
     assert "ephemeral" not in store.meta
+
+
+def test_collect_and_report_stamps_live_free_headroom(monkeypatch) -> None:
+    """td655172: the per-beat snapshot carries the measured *admittable*
+    RAM/VRAM headroom footprint admission cross-checks reservations
+    against (available less the host's reserve, td655171); absent when
+    the probe has nothing to say."""
+    monkeypatch.delenv("PRECIS_HOST_NAME", raising=False)
+    monkeypatch.setattr(socket, "gethostname", lambda: "maple", raising=False)
+    monkeypatch.setattr(heartbeat, "collect_mem_free_mb", lambda: 51200)
+    monkeypatch.setattr(heartbeat, "collect_vram_free_mb", lambda: 40960)
+    monkeypatch.setattr(heartbeat, "collect_vram_free_cards_mb", lambda: [40960, 1024])
+    monkeypatch.setattr(heartbeat, "collect_vram_reserve_mb", lambda: 2048)
+    store = _EphemeralRecordingStore()
+    heartbeat.collect_and_report(cast("Any", store))
+    assert store.meta is not None
+    assert store.meta["mem_free_mb"] == 51200
+    assert store.meta["vram_free_mb"] == 40960
+    # The per-card list card-bound admission picks from (td655172) —
+    # with the host's own reserve stamped alongside so the pick never
+    # reads the claimer's env (td655172 review).
+    assert store.meta["vram_free_cards_mb"] == [40960, 1024]
+    assert store.meta["vram_reserve_mb"] == 2048
+
+    monkeypatch.setattr(heartbeat, "collect_vram_free_mb", lambda: None)
+    monkeypatch.setattr(heartbeat, "collect_vram_free_cards_mb", lambda: None)
+    store = _EphemeralRecordingStore()
+    heartbeat.collect_and_report(cast("Any", store))
+    assert store.meta is not None
+    assert "vram_free_mb" not in store.meta
+    assert "vram_free_cards_mb" not in store.meta
+    assert "vram_reserve_mb" not in store.meta
 
 
 def _fake_ps(stdout: str, returncode: int = 0):
@@ -451,17 +484,17 @@ def test_report_resource_slots_syncs_and_summarises(monkeypatch) -> None:
     # Deterministic soft signal (6d-deferred) so the test doesn't read real RAM.
     monkeypatch.setattr(capability_probe, "probe_soft_signals", lambda: {"mem": 0})
     store = _RecordingStore()
-    summary = heartbeat._report_resource_slots(store, "melchior")
+    summary = heartbeat._report_resource_slots(store, "maple")
     # Only present (>0) capabilities land in the CLI summary.
     assert summary == "gpu=1"
     # The full verdict (including the 0 and the None) is handed to the store.
     assert store.synced is not None
     host, slots, kinds = store.synced
-    assert host == "melchior"
+    assert host == "maple"
     assert slots == {"gpu": 1, "podman": 0, "tts": None}
     assert kinds == {"gpu": "hard", "podman": "hard", "tts": "hard"}
     # The soft memory gauge is written free-first with the nominal capacity.
-    assert store.soft == [("melchior", "mem", 0, capability_probe.mem_capacity())]
+    assert store.soft == [("maple", "mem", 0, capability_probe.mem_capacity())]
 
 
 def test_report_resource_slots_threads_per_resource_soft_capacity(monkeypatch) -> None:
@@ -479,10 +512,10 @@ def test_report_resource_slots_threads_per_resource_soft_capacity(monkeypatch) -
         lambda: {"mem": 1, "container_agent": 0},
     )
     store = _RecordingStore()
-    heartbeat._report_resource_slots(store, "melchior")
-    assert ("melchior", "mem", 1, capability_probe.soft_capacity("mem")) in store.soft
+    heartbeat._report_resource_slots(store, "maple")
+    assert ("maple", "mem", 1, capability_probe.soft_capacity("mem")) in store.soft
     assert (
-        "melchior",
+        "maple",
         "container_agent",
         0,
         capability_probe.soft_capacity("container_agent"),
@@ -504,15 +537,15 @@ def test_report_resource_slots_retracts_dropped_soft_gauge(monkeypatch) -> None:
     # container_agent + upload_staging have dropped out; only mem remains.
     monkeypatch.setattr(capability_probe, "probe_soft_signals", lambda: {"mem": 2})
     store = _RecordingStore()
-    heartbeat._report_resource_slots(store, "melchior")
+    heartbeat._report_resource_slots(store, "maple")
     # Retraction iterates the RETRACTABLE_SOFT_SIGNALS frozenset — order
     # is hash-dependent, not part of the contract.
     assert sorted(store.deleted) == [
-        ("melchior", "container_agent"),
-        ("melchior", "upload_staging"),
+        ("maple", "container_agent"),
+        ("maple", "upload_staging"),
     ]
     # mem was synced, not deleted.
-    assert ("melchior", "mem") not in store.deleted
+    assert ("maple", "mem") not in store.deleted
 
 
 def test_report_resource_slots_no_retract_when_gauge_present(monkeypatch) -> None:
@@ -528,7 +561,7 @@ def test_report_resource_slots_no_retract_when_gauge_present(monkeypatch) -> Non
         lambda: {"mem": 2, "container_agent": 1, "upload_staging": 1},
     )
     store = _RecordingStore()
-    heartbeat._report_resource_slots(store, "melchior")
+    heartbeat._report_resource_slots(store, "maple")
     assert store.deleted == []
 
 
@@ -538,7 +571,7 @@ def test_report_resource_slots_swallows_failure(monkeypatch) -> None:
 
     monkeypatch.setattr(capability_probe, "probe_host_resources", lambda: {"gpu": 1})
     store = _RecordingStore(boom=True)
-    assert heartbeat._report_resource_slots(store, "melchior") == "n/a"
+    assert heartbeat._report_resource_slots(store, "maple") == "n/a"
 
 
 def test_report_resource_slots_none_when_nothing_present(monkeypatch) -> None:
@@ -549,4 +582,4 @@ def test_report_resource_slots_none_when_nothing_present(monkeypatch) -> None:
     )
     monkeypatch.setattr(capability_probe, "probe_soft_signals", lambda: {"mem": None})
     store = _RecordingStore()
-    assert heartbeat._report_resource_slots(store, "spark") == "none"
+    assert heartbeat._report_resource_slots(store, "spruce") == "none"

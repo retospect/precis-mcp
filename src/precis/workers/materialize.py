@@ -1,5 +1,5 @@
 """The demand materializer — §F cycle a
-(``docs/backlog/cluster-scheduling.md`` §F, ~L280-306).
+(`me695459` §F, ~L280-306).
 
 A scheduler :class:`~precis.workers.scheduler.Cadence` (300s, fleet-
 singleton via the lease claim, mirroring ``health_digest``'s shape) that
@@ -63,6 +63,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from precis import settings
 from precis.utils.env import env_int
 from precis.workers._embed_jobs import targeted_embed_job_sql
 from precis.workers.runner import BatchResult
@@ -114,7 +115,7 @@ _TICK_BUCKET_S = 300
 # ── SMALL-LLM derived-drain bands (docs/backlog/small-llm-derived-drain-band.md)
 # A different minting POLICY from embed's backlog high-water: keep a BAND of
 # 20–50 live `derived_drain` jobs per SMALL queue (summarize / classify) while
-# backlog remains, so melchior's job_inproc always has a next low-prio job to
+# backlog remains, so the agent host's job_inproc always has a next low-prio job to
 # claim. Per-source (each SMALL queue is its own band), default-OFF.
 _SMALL_BAND_SUMMARIZE_ENV = "PRECIS_SMALL_BAND_SUMMARIZE"
 _SMALL_BAND_CLASSIFY_ENV = "PRECIS_SMALL_BAND_CLASSIFY"
@@ -124,7 +125,9 @@ _SMALL_DRAIN_LIMIT_ENV = "PRECIS_SMALL_DRAIN_LIMIT"
 _SMALL_DRAIN_CONCURRENCY_ENV = "PRECIS_SMALL_DRAIN_CONCURRENCY"
 #: The host whose local SMALL model these jobs pin to (params.target_node — a
 #: job_inproc claim-gate node pin). MUST match that host's PRECIS_NODE claim
-#: identity, else the job strands unclaimed. Default melchior (the SMALL server).
+#: identity, else the job strands unclaimed. Unset env: the gateway host
+#: (``cluster.gateway_host``, the SMALL server's host); an explicitly EMPTY env
+#: mints unpinned jobs; with neither, the SMALL bands do not mint at all.
 _SMALL_TARGET_NODE_ENV = "PRECIS_SMALL_DRAIN_TARGET_NODE"
 
 _DEFAULT_BAND_LOW = 20
@@ -137,7 +140,6 @@ _DEFAULT_SMALL_DRAIN_LIMIT = 500  # params.limit per derived_drain job
 #: resolved chain (``derived_drain._derived_concurrency``), so the pool
 #: follows the server's ``--parallel`` instead of a baked constant.
 _DEFAULT_SMALL_DRAIN_CONCURRENCY = 16
-_DEFAULT_SMALL_TARGET_NODE = "melchior"
 
 
 def _small_band() -> tuple[int, int]:
@@ -157,7 +159,7 @@ def _small_drain_limit() -> int:
 
 def _small_drain_params(pass_name: str) -> Callable[[int], dict[str, Any]]:
     """A ``params_fn`` for a SMALL derived_drain source — carries the pass
-    discriminator, the per-job chunk limit, and the melchior host pin.
+    discriminator, the per-job chunk limit, and the agent-host pin.
 
     ``params.concurrency`` is minted ONLY from an explicit
     ``PRECIS_SMALL_DRAIN_CONCURRENCY``: unset → the key is absent and the
@@ -174,7 +176,7 @@ def _small_drain_params(pass_name: str) -> Callable[[int], dict[str, Any]]:
             params["concurrency"] = env_int(
                 _SMALL_DRAIN_CONCURRENCY_ENV, _DEFAULT_SMALL_DRAIN_CONCURRENCY, lo=1
             )
-        target = os.environ.get(_SMALL_TARGET_NODE_ENV, _DEFAULT_SMALL_TARGET_NODE)
+        target = _band_target_node()
         if target:
             params["target_node"] = target
         return params
@@ -431,12 +433,37 @@ def _type_max_running(store: Store, job_type: str) -> int | None:
         return job_type_running_caps(conn).get(job_type)
 
 
-def _band_target_node() -> str:
-    """The host the SMALL bands pin their jobs to — the same env read
+def _band_target_node() -> str | None:
+    """The host the SMALL bands pin their jobs to — what
     :func:`_small_drain_params` mints into ``params.target_node``; the
     stuck check compares this band's running count against the per-host
-    cap on THAT node."""
-    return os.environ.get(_SMALL_TARGET_NODE_ENV, _DEFAULT_SMALL_TARGET_NODE)
+    cap on THAT node.
+
+    The env var named by :data:`_SMALL_TARGET_NODE_ENV` wins when it is SET
+    (an explicitly empty value means "mint unpinned" and returns ``""``);
+    otherwise the ``cluster.gateway_host`` setting. ``None`` when neither
+    gives a value — :func:`_materialize_band` then skips minting (an
+    unpinned drain claimed off the gateway host fails every call: the SMALL
+    endpoint is loopback-only)."""
+    if _SMALL_TARGET_NODE_ENV in os.environ:
+        return os.environ[_SMALL_TARGET_NODE_ENV].strip()
+    return settings.gateway_host()
+
+
+_warned_no_target_node = False
+
+
+def _warn_no_target_node() -> None:
+    """One warning per process that the SMALL bands are skipped."""
+    global _warned_no_target_node
+    if not _warned_no_target_node:
+        _warned_no_target_node = True
+        log.warning(
+            "materialize: SMALL bands skipped — no target node (set the "
+            "cluster.gateway_host setting / PRECIS_GATEWAY_HOST, or %s); "
+            "unpinned jobs would fail off the gateway host",
+            _SMALL_TARGET_NODE_ENV,
+        )
 
 
 def _in_failed_cooldown(
@@ -610,11 +637,14 @@ def _materialize_band(store: Store, src: _BacklogSource, count: int) -> int:
     (each has its own band + its own live/failed counts via ``params_pass``)."""
     if count <= 0:
         return 0
+    if _band_target_node() is None:
+        _warn_no_target_node()
+        return 0
     low, high = _small_band()
     live = _live_jobs(store, src.job_type, params_pass=src.params_pass)
     if live >= low:
         # Band full → not minting. That's NORMAL while jobs drain, but STUCK if
-        # the band is full of jobs NOTHING is claiming (dead melchior worker or
+        # the band is full of jobs NOTHING is claiming (dead agent-host worker or
         # a target_node that no host's claim-gate matches) while backlog remains
         # — the band-policy analogue of the high-water WARN (there's no
         # count-vs-4×HIGH here; "full but 0 running" is the precise signal).
@@ -645,7 +675,7 @@ def _materialize_band(store: Store, src: _BacklogSource, count: int) -> int:
                 "materialize: %s band full (%d live) but 0 running with "
                 "free lane capacity (%d/%s running) and backlog=%d — "
                 "nothing is draining; check target_node pin / the "
-                "melchior worker (band=[%d,%d])",
+                "agent-host worker (band=[%d,%d])",
                 src.name,
                 live,
                 lane_running,

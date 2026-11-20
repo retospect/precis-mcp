@@ -32,7 +32,7 @@ the best one.
 
 The hand holding the tool is modelled for **screwdrivers only**, and only
 by the insertion-path check below (:func:`insertion_path`, rule
-``fastener_insertion_path``, docs/backlog/se-mechanical-drc.md ruling 3): a
+``fastener_insertion_path``, me694687 ruling 3): a
 ``hand`` record on a ``bit_tools`` row adds one provisional cylinder behind
 the handle end. :func:`access` itself, and every tool without a ``hand``
 record (hex keys, ratchet, T-handle), still treat the tool as a bare

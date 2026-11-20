@@ -36,7 +36,7 @@ reconciler's own reboot-orphan reap (requires a non-null expired lease) nor
 the sweeper's ``_enumerate_dead_node_orphans`` (requires
 ``executor='ssh_node'`` + ``STATUS:running``; this loop is
 `executor='coordinator'`, still `queued`) — nothing ever cancelled it, and
-its `idem_key` blocked re-minting indefinitely. This is exactly how spark's
+its `idem_key` blocked re-minting indefinitely. This is exactly how the GPU node's
 decommission (while still the hardcoded default pin) wedged the whole quest
 pipeline for four days. :func:`_reap_dead_node_pinned_loop` closes that gap:
 provably-dead-node predicate mirrored from the sweeper, grace margin against
@@ -47,7 +47,7 @@ backstop for the opt-in per-quest/env pin, not the common path.
 **Grace margin, not the bare ssh_node predicate.** A *coordinator* lease is
 5 min (:mod:`precis.workers.executors.coordinator`'s ``_LEASE_MINUTES``,
 short vs. an ssh_node lease's ~1h), so a live but slow slice (`big`-tier
-review/propose LLM call under spark contention) can outrun the raw lease
+review/propose LLM call under GPU-node contention) can outrun the raw lease
 window even with the coordinator's own mid-slice renewal (``_LeaseKeepalive``,
 gr204309). A loop is reaped only once its lease is stale beyond
 ``PRECIS_QUEST_LOOP_ORPHAN_GRACE_S`` (default 600s) **AND** it has written no
@@ -151,8 +151,8 @@ _DEFAULT_TIER = "big"
 #: worker (``workers/executors/coordinator.py::_claim_jobs``'s node-pin
 #: semantics — absent means unrestricted). The pin exists only for a
 #: coordinator that genuinely needs a node-local resource (e.g. a box-local
-#: OSS model); the earlier hardcoded ``"spark"`` default assumed that box was
-#: permanent infrastructure, and it wasn't — spark's decommission left every
+#: OSS model); the earlier hardcoded node-name default assumed that box was
+#: permanent infrastructure, and it wasn't — the GPU node's decommission left every
 #: freshly-minted loop pinned to a node that no longer existed, and nothing
 #: reaped a never-claimed (``lease_until IS NULL``) pinned loop, wedging the
 #: quest pipeline for four days (gr292747; see
@@ -676,7 +676,7 @@ def _reap_dead_node_pinned_loop(
     cancel-plus-re-mint — so without this arm nothing ever cancelled it, and
     its ``idem_key=quest_tick:<id>`` blocked ``ensure_quest_loop`` from
     re-minting forever. This is exactly what
-    happened prod-wide when spark was decommissioned while still the
+    happened prod-wide when the GPU node was decommissioned while still the
     hardcoded default pin: every loop minted against it wedged for four days
     until this reaper shipped.
 

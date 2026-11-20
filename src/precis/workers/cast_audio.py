@@ -1,10 +1,10 @@
 """cast_audio — narrate the daily *casts* (morning brief + nidra) onto the feed.
 
-The audio organ of the cast pipeline (docs/backlog/reading-prep-loop.md §Audio),
+The audio organ of the cast pipeline (me690334 §Audio),
 sibling to :mod:`precis.workers.briefing_audio`. The cast *producers*
 (:func:`precis.reading.briefing_cast.build_reading_briefing`,
 :func:`precis.reading.meditation.build_meditation`) run on any node and persist a
-standalone dated ``draft`` marked ``meta.cast``. This pass — TTS-host-only (melchior)
+standalone dated ``draft`` marked ``meta.cast``. This pass — TTS-host-only
 — finds the newest cast draft with no audio yet and renders it to speech via
 :func:`precis.tts.render.render_episode` (container-first ``podman/docker run
 precis-tts``), honouring the draft's per-chunk + draft-level voice through
@@ -203,8 +203,13 @@ def _news_lead_in(
     ``gap_after=None`` (the container's gentler 0.45s default), so the news
     wire reads with a wider beat while the brief's prose keeps its original
     pace.
+
+    The wire is narrated through the same personal pronunciation lexicon as
+    the draft body (``load_personal_lexicon``) — the morning report's hard
+    words are lexiconed once and heard right in both halves of the episode
+    (gr690184).
     """
-    from precis.draft.narrate import markdown_segments
+    from precis.draft.narrate import load_personal_lexicon, markdown_segments
     from precis.reading.briefing_cast import _news_brief_text
 
     news_ref = store.get_ref(kind="news", id=f"briefing-{date_tag}")
@@ -227,7 +232,11 @@ def _news_lead_in(
     news_segments = [
         replace(seg, gap_after=_NEWS_LEAD_IN_PAUSE_S)
         for seg in markdown_segments(
-            news_body, voice=voice, lang=default_lang, episode_date=episode_date
+            news_body,
+            voice=voice,
+            lang=default_lang,
+            lexicon=load_personal_lexicon(),
+            episode_date=episode_date,
         )
     ]
     log.info(

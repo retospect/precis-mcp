@@ -56,7 +56,7 @@ been running blocking on the event loop *outside* the 90s budget (now inside the
 thread+budget), and the 504 text blamed Crossref when Crossref measured
 0.34s/DOI.
 
-**Open config gap.** `PRECIS_CROSSREF_MAILTO` is unset on melchior's web
+**Open config gap.** `PRECIS_CROSSREF_MAILTO` is unset on the agent host's web
 process, so Crossref calls go out anonymous and throttling-prone — the likely
 cause of the one observed 90s blowout. Setting it is the fix.
 

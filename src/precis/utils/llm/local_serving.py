@@ -16,11 +16,12 @@ lives in the shared DB, so ``max_parallel`` stays one fleet-wide semaphore —
 and the reserved slot carries the remote endpoint for direct dispatch. This is
 what lets every node send ``llm.chain.big``'s local rung to the DGX-pair
 llama-server (its ``served_by`` publishes a LAN URL) instead of falling back
-to the hosted cloud endpoint; a loopback-only entry (melchior's llama-swap at
+to the hosted cloud endpoint; a loopback-only entry (the agent host's llama-swap at
 ``127.0.0.1``) stays host-private exactly as before. The ``host`` label on a
 ``served_by`` entry is thus an *accounting key* (whose slot row is debited),
 not necessarily the machine the server runs on — see the deepseek card, whose
-label ``caspar`` is historical while the endpoint IP is castor.
+label names the database host for historical reasons while the endpoint IP is
+the local-serving node's.
 
 **Ships dark.** A model that is *not* served on this host — every model today,
 until ``served_by`` is populated at the Phase-2 cutover — is a no-op: dispatch
@@ -100,7 +101,7 @@ _CACHE_TTL_S = 60.0
 #: How long :func:`acquire` waits for a slot to free before returning
 #: ``paused`` — the bounded-wait half of the capacity-backoff fix
 #: (2026-10-14): a saturated local slot used to spill straight to the cloud
-#: rung, which put ~78% of routed-local calls on the cloud at melchior's
+#: rung, which put ~78% of routed-local calls on the cloud at the agent host's
 #: cap-4 slot. A short in-line wait converts that spend into local latency
 #: for bursty callers. ``PRECIS_LOCAL_SLOT_WAIT_S`` overrides; ``0`` restores
 #: the old immediate-pause.
@@ -278,7 +279,7 @@ def _plausibly_served_here(model: str, served_resources: set[str]) -> bool:
 def _routable(endpoint: str | None) -> bool:
     """Whether a ``served_by`` endpoint is reachable from OTHER hosts — a real
     address, not a loopback/wildcard bind. Loopback entries are host-private by
-    construction (melchior's llama-swap publishes ``127.0.0.1``); only a
+    construction (the agent host's llama-swap publishes ``127.0.0.1``); only a
     routable one may be acquired cluster-wide."""
     if not endpoint:
         return False
@@ -291,7 +292,7 @@ def _remote_served(store: object) -> dict[str, list[tuple[str, _Served]]]:
     other hosts behind a LAN-routable endpoint (60s TTL, same discipline as
     the other caches). The declared host is the ``resource_slots`` accounting
     key the cluster-scoped acquire debits — NOT necessarily where the server
-    runs (the module docstring's caspar/castor note). Candidates are sorted
+    runs (the module docstring's host-label note). Candidates are sorted
     by declared host so the pick is deterministic across cache windows; every
     candidate is tried in turn so a second serving host takes the spill when
     the first is saturated. Consulted only after a local-serve miss or a
@@ -573,9 +574,9 @@ def _warn_family_mismatch(
       through the loopback local transport by design, never a reserved
       llama-swap slot, so "falling back to local" is intended. The
       in-process dedup meant this flooded once per short-lived summarize
-      worker (gr178498: 3907 hits/48h on melchior, all ``summarizer``).
+      worker (gr178498: 3907 hits/48h on the agent host, all ``summarizer``).
     * Legitimately-cloud models (``claude-opus-5-5`` and other frontier
-      tiers melchior is never expected to serve) — falling back to the
+      tiers the agent host is never expected to serve) — falling back to the
       cloud is correct, not a misconfiguration (gr178888).
 
     So warn only for a model in the same family as something served here

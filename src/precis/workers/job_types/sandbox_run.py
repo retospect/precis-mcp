@@ -22,7 +22,7 @@ The job_type module is a pure declaration + helpers:
 * ``validate_submit`` — the **fail-closed** submit gate: rejects an
   unsupported ``mode``, ``precis_access:read`` on ``mode:build`` or
   without ``PRECIS_SANDBOX_READ_MCP``, a ``secrets`` list, a non-sandbox
-  / melchior ``target_node``, ``mode:build`` with no ``prompt``,
+  / agent-host ``target_node``, ``mode:build`` with no ``prompt``,
   ``mode:run`` with no ``artifact`` (a prior build's ``folder`` ref
   id), a ``mode:script`` without exactly one of ``code``/``code_ref``,
   with oversize code, a ``code_ref`` or ``inputs`` entry that does not
@@ -55,7 +55,7 @@ the poll lifecycle already is the submit→poll shape those need.
 The container runs Claude with a
 **dedicated** long-lived ``CLAUDE_CODE_OAUTH_TOKEN`` (Max, *not*
 ``--bare`` / ``ANTHROPIC_API_KEY``), no DB creds, cgroup-capped, never a
-GPU. melchior is excluded (it holds OAuth / gateway / creds — an escape
+GPU. The agent host is excluded (it holds OAuth / gateway / creds — an escape
 target); only ``agent_sandbox_host`` nodes may run it. ``mode:run``
 drops the OAuth token entirely — no claude is spawned, so there is
 nothing to authenticate.
@@ -74,16 +74,23 @@ import os
 import re
 from typing import Any
 
+from precis import settings
 from precis.utils.llm.router import Tier, resolve_model
 from precis.workers.executors import _sandbox_inputs
 
 # ── Declared metadata (read by the dispatcher and the executor) ────
 
-#: Nodes that may never be a sandbox host regardless of the allowlist —
-#: melchior holds the OAuth token / gateway / DB creds, so a container
-#: escape there is the whole threat model. Hard-excluded even if an
-#: operator mistakenly lists it in ``PRECIS_SANDBOX_HOSTS``.
-_EXCLUDED_NODES: frozenset[str] = frozenset({"melchior", "melchior.local"})
+
+def _excluded_nodes() -> frozenset[str]:
+    """Nodes that may never be a sandbox host regardless of the allowlist —
+    the gateway host (``cluster.gateway_host``) holds the OAuth token /
+    gateway / DB creds, so a container escape there is the whole threat
+    model. Hard-excluded even if an operator mistakenly lists it in
+    ``PRECIS_SANDBOX_HOSTS``. Empty when the setting is unset; the caller
+    then fails closed."""
+    gw = settings.gateway_host()
+    return frozenset({gw, gw + ".local"}) if gw else frozenset()
+
 
 #: ``build`` (a fresh claude coding task), ``run`` (re-run a prior
 #: build's harvested tarball, no claude) and ``script`` (run a submitted
@@ -272,7 +279,7 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
     unsupported ``precis_access`` value, ``precis_access:read`` on
     ``mode:build``, ``precis_access:read`` without
     ``PRECIS_SANDBOX_READ_MCP``, a non-empty ``secrets`` list, an
-    invalid ``image``, a missing / melchior / non-allowlisted
+    invalid ``image``, a missing / agent-host / non-allowlisted
     ``target_node``, a non-positive ``resources.wall_seconds``, a
     ``mode:build`` with no ``prompt``, a ``mode:run`` with no
     (positive integer) ``artifact``, and a ``mode:script`` that fails
@@ -324,7 +331,14 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
     target_node = params.get("target_node")
     if not target_node or not isinstance(target_node, str):
         return "sandbox_run: params.target_node is required (an agent_sandbox_host)"
-    if target_node in _EXCLUDED_NODES:
+    excluded = _excluded_nodes()
+    if not excluded:
+        return (
+            "sandbox_run: the gateway host is not configured (setting "
+            "cluster.gateway_host / env PRECIS_GATEWAY_HOST), so no node can "
+            "be confirmed safe as a sandbox host (fail-closed)"
+        )
+    if target_node in excluded:
         return (
             f"sandbox_run: target_node {target_node!r} is excluded — it holds "
             "the OAuth token / gateway / DB creds (an escape target), so it is "

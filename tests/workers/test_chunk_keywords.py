@@ -393,6 +393,186 @@ class TestExtractChunkKeywords:
 
 
 # ---------------------------------------------------------------------------
+# gr664574 — markup / citation-residue cleaning before RAKE
+# ---------------------------------------------------------------------------
+
+
+class TestKeywordResidue:
+    """gr664574: ~1 stored keyword in 20 was markup or citation residue
+    on prod — tag tokens, table dumps, 'et al', journal tails,
+    boilerplate headings. The cleaner strips residue before RAKE; the
+    filter drops what cleaning can't reach."""
+
+    def test_tags_strip_before_candidate_generation(self) -> None:
+        """``vinyl<br/>alcohol`` must not yield 'vinyl br alcohol' —
+        tag names leave only as literal markup, joining the words
+        around them."""
+        from precis.workers.chunk_keywords import _prepare_keyword_candidates
+
+        text = (
+            "Vinyl alcohol polymers crosslink readily.<br/>The vinyl<br/>alcohol, "
+            "a water-soluble copolymer, shows high tensile strength and "
+            "the films dissolve in hot water over several hours here."
+        )
+        longs = [long for long, _ in _prepare_keyword_candidates(text, {})]
+        assert all("br" not in cand.split() for cand in longs)
+        # The join is real: 'vinyl alcohol' survives as one phrase.
+        assert any("vinyl alcohol" in cand for cand in longs)
+
+    def test_sub_sup_and_class_attributes_strip(self) -> None:
+        """JATS sub/sup and ``class=`` attribute words ('p block-type
+        text', 'li li block-type listitem') never reach RAKE."""
+        from precis.workers.chunk_keywords import _prepare_keyword_candidates
+
+        text = (
+            "H<sub>2</sub>O activity was measured with a Li<sub>2</sub>O "
+            'reference electrode. <p class="block-type">text describing '
+            "the cell</p> shows the water activity falls steadily during "
+            "discharge cycling at moderate current densities."
+        )
+        longs = [long for long, _ in _prepare_keyword_candidates(text, {})]
+        for cand in longs:
+            assert "sub" not in cand.split()
+            assert "block-type" not in cand.split()
+            assert "p" not in cand.split()
+        assert any("water activity" in cand for cand in longs)
+
+    def test_table_lines_never_reach_rake(self) -> None:
+        """A markdown grid dumped inside a paragraph-kind chunk is
+        dropped whole — its cell words can't fuse into one keyword."""
+        from precis.workers.chunk_keywords import _prepare_keyword_candidates
+
+        text = (
+            "The benchmark results follow from the protocol below.\n"
+            "| Model | r | rho |\n"
+            "|---|---|---|\n"
+            "| bace-v | 0.91 | 0.42 |\n"
+            "| bbbp-v | 0.88 | 0.31 |\n"
+            "The benchmark models outperform every baseline method by a "
+            "wide margin on both regression and classification metrics."
+        )
+        longs = [long for long, _ in _prepare_keyword_candidates(text, {})]
+        assert not any("bace" in cand or "bbbp" in cand for cand in longs)
+        assert not any("|" in cand for cand in longs)
+        assert any("benchmark" in cand for cand in longs)
+
+    def test_unanchored_grid_row_drops(self) -> None:
+        """A row without a leading pipe still drops when it carries
+        ≥2 pipes ('model | r | ρ'); single-pipe prose survives."""
+        from precis.workers.chunk_keywords import _is_table_line
+
+        assert _is_table_line("model | r | rho")
+        assert _is_table_line("| Model | r |")
+        assert _is_table_line("|---|---|")
+        assert not _is_table_line("the union a | b of the two sets")
+        assert not _is_table_line("ordinary prose without any grid")
+
+    def test_et_al_and_journal_tails_are_junk(self) -> None:
+        from precis.workers.chunk_keywords import _is_junk_keyword
+
+        # Citation residue.
+        assert _is_junk_keyword("rahman et al")
+        assert _is_junk_keyword("00151-4 tao et al")
+        assert _is_junk_keyword("jones et al")
+        # Manuscript/DOI ids and year-letter tails.
+        assert _is_junk_keyword("2024a review")
+        # Journal-abbreviation tails — two fragment tokens convict.
+        assert _is_junk_keyword("carbon capture sci technol")
+        assert _is_junk_keyword("j am chem soc")
+        assert _is_junk_keyword("phys rev lett")
+        assert _is_junk_keyword("j mater chem b")
+        assert _is_junk_keyword("acs appl mater")
+        # The same journal name cut by its own abbreviation periods:
+        # a fragment TAIL after ≥2 real words ('Carbon Capture Sci.').
+        assert _is_junk_keyword("carbon capture sci")
+        # A bare fragment alone is never a topic.
+        assert _is_junk_keyword("technol")
+        assert _is_junk_keyword("lett")
+
+    def test_boilerplate_and_url_residue_are_junk(self) -> None:
+        from precis.workers.chunk_keywords import _is_junk_keyword
+
+        for junk in (
+            "keywords",
+            "article info",
+            "supporting information",
+            "references",
+            "figure",
+            "doi org landing",
+            "www example com",
+            "z_ gamma",
+            "li li block-type listitem",
+            # Run-in headings fused with the topic that follows.
+            "keywords polyethylene",
+            "index terms photocatalysis",
+        ):
+            assert _is_junk_keyword(junk)
+
+    def test_two_letter_abbrevs_and_real_phrases_keep(self) -> None:
+        """The dry run's tag-name rule wrongly dropped 'pe', 'ts',
+        'rt' — they stay, as do journal-adjacent real phrases with
+        only one fragment token."""
+        from precis.workers.chunk_keywords import _is_junk_keyword
+
+        for keep in (
+            "pe",
+            "ts",
+            "rt",
+            "metal-organic framework",
+            "vinyl alcohol",
+            "water res",
+            "energy storage",
+            "vitamin c",
+            "e coli",
+            "r d",
+            "b cell",
+            "green chem",
+            "periodic table",
+            "figure of merit",
+            "mof-5",
+            "4h-sic",
+            "langmuir",
+            "langmuir adsorption",
+            "nano lett",
+            # Singular 'keyword' is a real topic word — only the plural
+            # run-in heading is chrome.
+            "keyword extraction",
+        ):
+            assert not _is_junk_keyword(keep), keep
+
+    def test_pass_stores_no_residue(self, store: Store) -> None:
+        """End to end: a chunk carrying every residue class writes a
+        clean canonical ``keywords`` array."""
+        ref_id = seed_ref(store)
+        text = (
+            "Photocatalytic NOx reduction (Rahman et al.<br/>2019) uses "
+            "Z-scheme junctions across two semiconductor stages.\n"
+            "| model | r | rho |\n"
+            "Carbon Capture Sci Technol cites the same mechanism, and "
+            "catalyst stability under visible light irradiance stays "
+            "high across extended cycling tests."
+        )
+        chunk_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=text)
+
+        result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=5)
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT keywords FROM chunks WHERE chunk_id = %s", (chunk_id,)
+            ).fetchone()
+        assert row is not None
+        kws: list[str] = row[0]
+        for kw in kws:
+            assert "et al" not in kw
+            assert "|" not in kw
+            assert "br" not in kw.split()
+            # 'carbon capture sci technol' can never land whole.
+            assert not ({"sci", "technol"} <= set(kw.split()))
+        assert any("z-scheme" in kw or "photocatalytic" in kw for kw in kws)
+
+
+# ---------------------------------------------------------------------------
 # write_chunk_keywords — dual-column write shape
 # ---------------------------------------------------------------------------
 

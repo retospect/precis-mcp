@@ -286,6 +286,41 @@ class TestFlowView:
         body = runtime_with_store.dispatch("search", {"kind": "gripe", "view": "flow"})
         assert "(default)" in body
 
+    def test_count_closed_window_group_by(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        """gr592737 slice 5: ``view='count'`` accepts
+        ``closed_since``/``closed_until`` — the closure window bounds the
+        counted set and every facet group the same way."""
+        t1, t2, t3 = _day(5), _day(3), _day(1)
+        g1 = _gripe(store, "thread:alpha")
+        g2 = _gripe(store, "thread:beta")
+        g3 = _gripe(store, "thread:beta")
+        for g in (g1, g2, g3):
+            _close_gripe(store, g)
+        _backdate_status(store, g1, t1)
+        _backdate_status(store, g2, t2)
+        _backdate_status(store, g3, t3)
+
+        body = runtime_with_store.dispatch(
+            "search",
+            {
+                "kind": "gripe",
+                "view": "count",
+                "status": "done",
+                "__extras__": {
+                    "group_by": "tag:thread",
+                    "closed_since": t2.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "closed_until": t3.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                },
+            },
+        )
+        # [t2, t3) holds only g2's close — the total and the facet agree.
+        assert body.startswith("# 1 gripe entry")
+        assert "closed [" in body
+        assert re.search(r"^  thread:beta: 1", body, re.MULTILINE)
+        assert "thread:alpha" not in body
+
 
 class TestFlowErrors:
     def test_requires_single_kind(self, runtime_with_store: PrecisRuntime) -> None:
@@ -376,3 +411,109 @@ class TestFlowErrors:
             },
         )
         assert "kind='job' only" in body
+
+
+def test_count_goal_closed_window(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr592749 slice 4: ``group_by='tag:goal'`` + the closed window —
+    one row per goal, summing to the windowed-done total."""
+    t1, t2, t3 = _day(5), _day(3), _day(1)
+    g1 = _gripe(store, "goal:pcb")
+    g2 = _gripe(store, "goal:pathway")
+    g3 = _gripe(store, "goal:pcb")
+    g4 = _gripe(store)
+    for g in (g1, g2, g3, g4):
+        _close_gripe(store, g)
+    _backdate_status(store, g1, t2)
+    _backdate_status(store, g2, _day(2))
+    _backdate_status(store, g3, t1)
+    _backdate_status(store, g4, t2)
+    body = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "gripe",
+            "view": "count",
+            "status": "done",
+            "__extras__": {
+                "group_by": "tag:goal",
+                "closed_since": t2.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "closed_until": t3.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        },
+    )
+    # [t2, t3) holds g1 + g2 + g4's closes; g3 closed before the window.
+    assert body.startswith("# 3 gripe entries")
+    assert "closed [" in body
+    assert re.search(r"^  goal:pcb: 1", body, re.MULTILINE)
+    assert re.search(r"^  goal:pathway: 1", body, re.MULTILINE)
+    assert re.search(r"^  \(untagged\): 1", body, re.MULTILINE)
+
+
+def test_count_group_by_origin_class(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    _gripe(store, "origin-class:human")
+    _gripe(store, "origin-class:self-improvement")
+    body = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "gripe",
+            "view": "count",
+            "__extras__": {"group_by": "tag:origin-class"},
+        },
+    )
+    assert "human" in body
+    assert "self-improvement" in body
+
+
+def test_count_view_numeric_aggregates(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    from uuid import uuid4
+
+    tag = f"test:{uuid4().hex}"
+    for fields in (
+        {"wall_seconds": 10, "usage": {"usd": 1.25}},
+        {"wall_seconds": 20, "usage": {"usd": 1.25}},
+        {"wall_seconds": 30, "usage": {"usd": 2.5}},
+        {},
+        {"wall_seconds": "999", "usage": {"usd": True}},
+    ):
+        ref = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="rollup fixture",
+            meta={
+                "job_type": "run_slice",
+                "lane": "codex",
+                "model": "sample",
+                **fields,
+            },
+        )
+        store.add_tag(ref.id, Tag.open(tag), set_by="system")
+        store.add_tag(ref.id, Tag.closed("STATUS", "succeeded"), set_by="system")
+
+    body = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "job",
+            "view": "count",
+            "status": "*",
+            "tags": [tag],
+            "__extras__": {
+                "job_type": "run_slice",
+                "group_by": "meta.lane,meta.model,state",
+                "agg": (
+                    "avg:meta.wall_seconds,sum:meta.usage.usd,"
+                    "min:meta.wall_seconds,max:meta.wall_seconds,sum:meta.absent"
+                ),
+            },
+        },
+    )
+    assert "codex | sample | STATUS:succeeded: 5" in body
+    assert "avg(meta.wall_seconds)=20 (n=3)" in body
+    assert "sum(meta.usage.usd)=5 (n=3)" in body
+    assert "min(meta.wall_seconds)=10 (n=3)" in body
+    assert "max(meta.wall_seconds)=30 (n=3)" in body
+    assert "sum(meta.absent)=None (n=0)" in body

@@ -17,7 +17,7 @@ def test_focus_page_scopes_doable_queue(client, runtime) -> None:
 
 
 def test_unfocused_page_keeps_global_doable_queue(client, runtime) -> None:
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     assert "under" not in _doable_calls(runtime)[-1]
     assert "Doable next" in resp.text

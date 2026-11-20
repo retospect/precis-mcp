@@ -7,9 +7,10 @@ precis_web_port: 8000
 # NAS (the fileserver:/Volume1/botshome) so a producer on any node — e.g. Kokoro
 # TTS on the GPU node — publishes an episode and this gateway serves it, no
 # cross-host copy. base_url is the gateway's Tailscale-serve name so a
-# podcast app on the phone can reach the enclosures.
+# podcast app on the phone can reach the enclosures; the overlay supplies the
+# tailnet's MagicDNS suffix (tailscale_dns_suffix), never this tree.
 precis_web_podcast_dir: "{{ nas_root }}/podcast"
-precis_web_podcast_base_url: "https://{{ inventory_hostname }}.tailded4cf.ts.net"
+precis_web_podcast_base_url: "https://{{ inventory_hostname }}.{{ tailscale_dns_suffix }}"
 # When true, the "Apply pending precis DB migrations" task only reports
 # the pending set (precis migrate --dry-run) instead of applying it.
 # Override per-run: -e precis_migrate_dry_run=true.
@@ -74,6 +75,10 @@ precis_mcp_public_port: 8766
 # Set 443 to share the web listener's HTTPS port through path mappings.
 precis_mcp_public_https_port: 8443
 precis_mcp_public_oauth_env: {}
+# Bearer classes the public MCP accepts (PRECIS_MCP_CREDENTIAL_CLASSES): any of
+# install, slice, personal, capability, oauth, comma/space separated. Listing
+# ``install`` makes the role generate the infrastructure token again.
+precis_mcp_public_credential_classes: oauth
 precis_mcp_public_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
 precis_mcp_public_secrets_dir: /opt/mcps/mcp-public-secrets
 # The same-node embedder service (precis_embedder role). Unset, the process

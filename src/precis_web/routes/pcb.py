@@ -32,7 +32,7 @@ same data:
   (counts, stackup, warnings, dropped nets / unused pins) lands on a
   result page, not the board page.
 * ``POST /pcb/{slug}/note`` — argue with the design
-  (docs/backlog/pcb-argue-with-design.md). The page's one text box
+  (me690151). The page's one text box
   accumulates handles as the user clicks the board render (the fab SVG
   stamps ``data-handle`` per :mod:`precis.pcb.argue`'s grammar); submit
   posts ``{text, handles}``. Every clicked handle must resolve against

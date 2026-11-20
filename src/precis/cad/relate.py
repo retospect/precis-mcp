@@ -42,7 +42,7 @@ parts, both here in :func:`_min_max_sdf`:
 
 Every tolerance here is relative to a governing length (the query region's
 diagonal, or the smaller body's, per the units policy in
-``docs/backlog/multiscale-design-architecture.md``): the same code has to
+`me694206`): the same code has to
 hold at Å and at km, and an absolute epsilon holds at neither.
 
 :func:`clearance` is **deprecated** (gr514448): inside a carved body the

@@ -245,7 +245,7 @@ def build() -> pcb.Board:
         "GATE1",
         current=0.001,
         voltage=20.0,
-        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); P-FET gate, at VBUS off / VBUS-12 V on",
+        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (me695012 §Topology); P-FET gate, at VBUS off / VBUS-12 V on",
     )
     ls1 = b.net(  # board='nano-usb-pd-test-r2'
         "LS1",
@@ -258,13 +258,13 @@ def build() -> pcb.Board:
         cls="power",
         current=5.0,
         voltage=20.0,
-        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); 20 V / 5 A envelope",
+        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (me695012 §Topology); 20 V / 5 A envelope",
     )
     gate2 = b.net(  # board='nano-usb-pd-test-r2'
         "GATE2",
         current=0.001,
         voltage=20.0,
-        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); P-FET gate, at VBUS off / VBUS-12 V on",
+        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (me695012 §Topology); P-FET gate, at VBUS off / VBUS-12 V on",
     )
     ls2 = b.net(  # board='nano-usb-pd-test-r2'
         "LS2",
@@ -277,13 +277,13 @@ def build() -> pcb.Board:
         cls="power",
         current=5.0,
         voltage=20.0,
-        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); 20 V / 5 A envelope",
+        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (me695012 §Topology); 20 V / 5 A envelope",
     )
     gate3 = b.net(  # board='nano-usb-pd-test-r2'
         "GATE3",
         current=0.001,
         voltage=20.0,
-        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); P-FET gate, at VBUS off / VBUS-12 V on",
+        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (me695012 §Topology); P-FET gate, at VBUS off / VBUS-12 V on",
     )
     ls3 = b.net(  # board='nano-usb-pd-test-r2'
         "LS3",
@@ -296,13 +296,13 @@ def build() -> pcb.Board:
         cls="power",
         current=5.0,
         voltage=20.0,
-        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); 20 V / 5 A envelope",
+        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (me695012 §Topology); 20 V / 5 A envelope",
     )
     gate4 = b.net(  # board='nano-usb-pd-test-r2'
         "GATE4",
         current=0.001,
         voltage=20.0,
-        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); P-FET gate, at VBUS off / VBUS-12 V on",
+        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (me695012 §Topology); P-FET gate, at VBUS off / VBUS-12 V on",
     )
     ls4 = b.net(  # board='nano-usb-pd-test-r2'
         "LS4",
@@ -315,7 +315,7 @@ def build() -> pcb.Board:
         cls="power",
         current=5.0,
         voltage=20.0,
-        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); 20 V / 5 A envelope",
+        note="TODO(netlist-review): topology resolved (P-FET + N-FET level shifter, slice 2) but the P-FET / N-FET parts are not selected or verified (me695012 §Topology); 20 V / 5 A envelope",
     )
     cc1 = b.net(  # board='nano-usb-pd-test-r2'
         "CC1",
@@ -3102,7 +3102,7 @@ def build() -> pcb.Board:
 
     b.meta.update(
         {
-            "spec": "docs/backlog/pcb-usb-c-pd-nano-testboard.md",
+            "spec": "me695012",
             "outline_mm": [100.0, 80.0],
             "pd_contract": "STUSB4500 negotiates 20 V; V15/V9/V5 are bucks from VBUS (one contract, "
             "derived rails; fixed PDO set 5/9/15/20)",

@@ -1,6 +1,6 @@
 """Lanes — the scheduler slots ``run_slice`` launches a slice on.
 
-Spec: ``docs/backlog/dark-factory.md`` § "Lanes: capacity shapes". A lane
+Spec: `me692430` § "Lanes: capacity shapes". A lane
 is an adapter plus a credential pool plus a concurrency cap (Reto
 2026-10-30, td541982). Model, effort and temperature are per-job choices
 inside a lane; the lane itself is a field on the job (``meta.lane``),
@@ -25,13 +25,17 @@ an api-adapter account can never mint a lane a submit would die on at
 ``get_adapter``. :func:`pick_lane` never returns a disabled lane.
 
 Pick (:func:`pick_lane`): fit for the task class first, then the
-cheapest fit lane under its cap — cost class (:attr:`Lane.cost_class`,
-free before subscription before metered, gr573563: free compute first)
-before the fewest live ``run_slice`` jobs carrying its ``meta.lane``.
-With ``paid_ok=False`` a fit free lane holds the paid lanes out of the
-pick entirely — a free lane at its cap is a wait, not a paid launch.
-Pacing (the lane most behind its window target) replaces the live-count
-order once the registry carries the window numbers.
+least-loaded fit lane under its cap. A lane's tier is 0 when it is free
+or a flat-rate subscription, 1 when metered; the pick minimises
+``(tier, live / cap, live)``, so the free and subscription lanes (devin,
+codex, claude-sub, kimi) share first attempts by load fraction, not by
+cost class — idle subscription capacity is wasted, not saved (gr685753,
+Reto 2026-11-15: "max out Devin, Kimi and Codex"). A metered lane is
+picked only when no free or subscription lane is open. With
+``paid_ok=False`` a fit free lane holds the paid lanes out of the pick
+entirely — a free lane at its cap is a wait, not a paid launch. Pacing
+(the lane most behind its window target) replaces the load order once
+the registry carries the window numbers.
 
 Backoff (:func:`lane_backoffs`): a launch the lane's host refuses (the
 adapter preflight — binary, login, trust seed) stamps
@@ -41,12 +45,17 @@ while its newest ``run_slice`` job carries a refusal ``until`` in the
 future; ``pick_lane`` skips it, the first submit after the window is the
 probe, and a probe job without the mark clears the lane by being newer.
 A broken host then costs one failed probe per window instead of a
-retry-cap ask per todo.
+retry-cap ask per todo. A lane whose newest builds all died of one engine
+cause is held out the same way until its breaker ask is closed
+(:mod:`precis.plans.lane_breaker`).
 
 Retry (:func:`ladder`): the table in order is also the escalation chain
 ``plan_dispatch`` climbs when a slice fails — each enabled fit lane's
-models from its default upward, free vendor lanes before the Claude
-subscription (Reto td559457).
+models from its default upward, dealt round-robin: every lane's first
+rung, then every lane's second rung, and so on, so a retry moves to
+another vendor's lane before it climbs a model on the same one
+(gr685753; the old chain ran devin's models, then the Claude
+subscription's, and reached kimi last).
 
 Park (gr588221): the account row's ``parked_reason`` set holds the lane
 out of every pick — ``pick_lane``, ``ladder`` and a ``params.lane`` pin
@@ -91,6 +100,10 @@ COST_ORDER: tuple[str, ...] = (COST_FREE, COST_SUBSCRIPTION, COST_METERED)
 #: probe per window, short enough that a fixed login is picked up the
 #: same hour.
 HOST_REFUSAL_BACKOFF = timedelta(minutes=30)
+#: The "until" :func:`lane_backoffs` reports for a lane the cause-based
+#: breaker holds out: no real deadline — the open ask is the hold, closing
+#: it lifts it — so a far one.
+BREAKER_HOLD = timedelta(days=365)
 
 #: Job statuses that no longer hold a lane slot (mirrors
 #: ``precis.workers.executors._common.TERMINAL``; restated so this
@@ -110,6 +123,14 @@ FACTORY_DENY_WRITE_PATHS: tuple[str, ...] = (
     ".github/**",
     # the factory's own modules
     "src/precis/plans/**",
+    # the second-repo lander and its credential boundary (td659522): the
+    # factory must not rewrite the code that holds or scrubs the token
+    "src/precis/workers/repo_land.py",
+    "src/precis/workers/repo_lease.py",
+    "src/precis/workers/job_types/repo_release.py",
+    "src/precis/workers/job_types/pin_bump.py",
+    "src/precis/workers/factory_git.py",
+    "src/precis/workers/factory_git_mirror.py",
     "src/precis/workers/job_types/run_slice.py",
     "src/precis/workers/job_types/plan_dispatch.py",
     "src/precis/workers/job_types/gripe_validate.py",
@@ -150,6 +171,9 @@ HUMAN_ONLY_PATHS: tuple[str, ...] = (
     "deploy/*group_vars*",
     "deploy/*host_vars*",
     "deploy/ansible.cfg",
+    # one content-checked exception at the land: a pin-bump node's own
+    # commit may raise its autocatpath_min_version line (td659522,
+    # ``pin_bump.land_refusal``)
     "deploy/group_vars/all.yml",
     # hardening and the MCP edge
     "deploy/roles/hardening/**",
@@ -182,6 +206,8 @@ HUMAN_ONLY_PATHS: tuple[str, ...] = (
     "deploy/roles/pgbouncer/templates/pgbouncer.ini.j2",
     "deploy/roles/pgbouncer/templates/userlist.txt.j2",
     "deploy/roles/pgpass/templates/pgpass.j2",
+    "deploy/roles/pgpass/templates/pgpass-user.j2",
+    "deploy/roles/pgpass/tasks/user.yml",
     "deploy/roles/postgres/tasks/main.yml",
     "deploy/roles/postgres/templates/channel_prompts.sql.j2",
     "deploy/roles/postgres/templates/pg_hba.conf.j2",
@@ -342,6 +368,210 @@ def deny_paths_for(store: Any) -> tuple[str, ...]:
     return STRICT_DENY
 
 
+#: The repo a slice builds in when neither its todo nor an ancestor
+#: carries a ``repo:`` tag.
+DEFAULT_REPO = "precis"
+
+
+@dataclass(frozen=True)
+class RepoProfile:
+    """How the factory builds one repo's slices (td659522). Data only: the
+    workers look a profile up with :func:`repo_profile` at call time.
+
+    ``name`` is the ``repo:<name>`` tag value. ``remote`` is the https
+    origin URL the host clone must carry, never with userinfo. ``base`` is
+    the branch a slice worktree starts from. ``private`` means the worker
+    fetches under the factory credential and the session is told not to
+    fetch. ``setup_cmds``, ``lint_cmds`` and ``test_cmds`` are the shell
+    commands run in the worktree, in that order. ``deny_paths`` is the
+    write-deny list for the lane; ``None`` means :func:`deny_paths_for`
+    (the precis behaviour). ``read_first`` lists files the brief tells the
+    session to read. ``exclude`` lines are kept in the clone's
+    ``.git/info/exclude``. ``pin`` is ``(lockfile path on precis
+    origin/main, package name)``: the base must contain the git rev the
+    lockfile pins for that package. ``uv_python`` is the ``UV_PYTHON``
+    line for the repo's commands (``None``: the worker's own). ``mcp`` is
+    true when the tree carries the precis ``.mcp.json``. ``lander`` is the
+    job type that lands a slice of this repo; ``None`` means the repo is
+    not buildable end to end. ``releaser`` is the job type that may cut a
+    release of this repo; ``None`` means the factory cannot release it.
+    ``pinner`` is the job type that moves the consumer's (precis's) pin of
+    this repo's package after a release; ``None`` means the pin is moved by
+    hand. ``reviewer`` is true when reviewer generator nodes may run in this
+    repo (a read-only session in a detached tree at the landed sha); false
+    means ``run_slice`` refuses them. ``release_check_cmds`` are run
+    credential-free in the release tree before it pushes. ``ci_workflow`` is the workflow file whose run on the
+    release commit must be green before the tag. ``tag_prefix`` starts the
+    release tag (``v`` plus the version).
+    """
+
+    name: str
+    remote: str = ""
+    base: str = "main"
+    private: bool = False
+    setup_cmds: tuple[str, ...] = ()
+    lint_cmds: tuple[str, ...] = ()
+    test_cmds: tuple[str, ...] = ()
+    deny_paths: tuple[str, ...] | None = None
+    read_first: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    pin: tuple[str, str] | None = None
+    uv_python: str | None = None
+    mcp: bool = False
+    lander: str | None = None
+    releaser: str | None = None
+    pinner: str | None = None
+    reviewer: bool = False
+    release_check_cmds: tuple[str, ...] = ()
+    ci_workflow: str | None = None
+    tag_prefix: str = "v"
+
+
+#: Build profiles by repo name, in registry order. A profile without a
+#: ``lander`` is data only: :func:`known_repos` leaves it out, so the
+#: ``factory.open_repos`` setting cannot open it until a lander exists.
+#: catpath is deliberately not ruff-formatted, so none of its commands
+#: run ``ruff format``.
+REPO_PROFILES: dict[str, RepoProfile] = {
+    DEFAULT_REPO: RepoProfile(name=DEFAULT_REPO, mcp=True, lander="land_slice"),
+    "catpath": RepoProfile(
+        name="catpath",
+        remote="https://github.com/retospect/catpath",
+        private=True,
+        setup_cmds=("uv sync --extra dev",),
+        lint_cmds=("uv run ruff check src tests",),
+        test_cmds=("uv run pytest",),
+        deny_paths=(".github/**",),
+        read_first=("CONTRIBUTING.md",),
+        exclude=("scratch/", ".devin/", ".claude/worktrees/"),
+        pin=("uv.lock", "autocatpath"),
+        # 3.12 is in catpath's CI matrix (3.10-3.12) and is precis's floor.
+        uv_python="3.12",
+        # Landed by ``workers/repo_land.py`` behind the ``land_slice`` job
+        # type (td659522 step 2). Openable, and closed until the operator
+        # lists it in ``factory.open_repos``.
+        lander="land_slice",
+        # Released by ``workers/job_types/repo_release.py`` (td659522 step 3);
+        # the node comes from ``templates.mint_repo_release``.
+        releaser="repo_release",
+        # Precis's pin of autocatpath is moved by
+        # ``workers/job_types/pin_bump.py`` (td659522 step 4, switched on
+        # after the gateway derive proof of 2026-11-15).
+        pinner="pin_bump",
+        # Reviewed after the land by a read-only ``run_slice`` session in a
+        # detached tree at the landed sha (td659522 step 5); the node comes
+        # from ``templates.mint_reviewer(repo=)``, one per slice in a batch.
+        reviewer=True,
+        release_check_cmds=("uv lock --check",),
+        ci_workflow="ci.yml",
+        tag_prefix="v",
+    ),
+}
+
+
+#: ``meta`` key a second-repo land stamps on the todo (``repo_land``): the
+#: ``landed:`` sha of that todo is a sha of THAT repo, not of precis.
+LANDED_REPO_KEY = "landed_repo"
+
+
+def repo_profile(name: str) -> RepoProfile | None:
+    """The build profile for ``name``, looked up at call time."""
+    return REPO_PROFILES.get(name)
+
+
+def repo_checkout_token(name: str) -> str:
+    """The ``resource_slots`` capability a host advertises when it holds a
+    clone of repo ``name`` (``PRECIS_SLICE_REPOS`` names an existing one).
+    The default repo keeps the plain ``repo_checkout`` token; a second-repo
+    ``run_slice`` / ``land_slice`` job is placed only on a host with this one."""
+    return f"repo_checkout_{name}"
+
+
+def known_repos() -> tuple[str, ...]:
+    """Repos ``run_slice`` can build end to end: the :data:`REPO_PROFILES`
+    names whose profile has a ``lander``, in registry order. A ``repo:``
+    value outside this tuple is refused however the setting reads."""
+    return tuple(n for n, p in REPO_PROFILES.items() if p.lander is not None)
+
+
+def releasable_repos() -> tuple[str, ...]:
+    """Repos the factory can cut a release of: the :data:`REPO_PROFILES`
+    names whose profile has a ``releaser``, in registry order."""
+    return tuple(n for n, p in REPO_PROFILES.items() if p.releaser is not None)
+
+
+_REPO_TAG = "repo:"
+
+
+def repo_tags(tags: Iterable[Any]) -> list[str]:
+    """The ``repo:<name>`` values among ``tags`` (tag objects or their
+    string form), in order, deduplicated."""
+    names = [
+        str(t)[len(_REPO_TAG) :].strip() for t in tags if str(t).startswith(_REPO_TAG)
+    ]
+    return list(dict.fromkeys(names))
+
+
+def open_repos(store: Any) -> frozenset[str]:
+    """The repos the factory may build in, resolved at call time:
+    :data:`DEFAULT_REPO` always, plus each :func:`known_repos` name the
+    DB-only setting ``factory.open_repos`` lists (comma-separated).
+
+    ``store is None``, an unreadable store or the row absent all return
+    the default alone. Like :func:`deny_paths_for`, the stored
+    ``app_settings`` row is the ONLY input, so a slice editing
+    ``src/precis/settings.py`` cannot open a repo for itself.
+    """
+    default = frozenset({DEFAULT_REPO})
+    if store is None:
+        return default
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = %s",
+                ("factory.open_repos",),
+            ).fetchone()
+    except Exception:
+        log.warning("lanes.open_repos: setting unreadable; default repo only")
+        return default
+    if row is None:
+        return default
+    listed = {part.strip() for part in str(row[0]).split(",")}
+    return default | (listed & set(known_repos()))
+
+
+def repo_refusal(repos: Iterable[str], store: Any) -> str | None:
+    """Why a slice whose todo resolves to the ``repo:`` values ``repos``
+    may not be built, or ``None`` when it may.
+
+    No tag or ``repo:precis`` builds here. Anything else fails closed:
+    more than one value, a value without a build profile
+    (:func:`known_repos`), or a known repo ``factory.open_repos`` does
+    not list.
+    """
+    names = list(dict.fromkeys(repos))
+    if not names or names == [DEFAULT_REPO]:
+        return None
+    if len(names) > 1:
+        return (
+            f"the todo carries {len(names)} repo: tags "
+            f"({', '.join(names)}); next: split it into one todo per repo"
+        )
+    name = names[0]
+    if name not in known_repos():
+        return (
+            f"repo:{name} has no factory build profile "
+            f"(known: {', '.join(known_repos())}); next: build it by hand in that "
+            "repo, or retag the todo"
+        )
+    if name not in open_repos(store):
+        return (
+            f"repo:{name} is not opened for the factory; next: list it in "
+            "the DB setting factory.open_repos"
+        )
+    return None
+
+
 @dataclass(frozen=True)
 class Lane:
     """One scheduler slot: adapter + credential pool + concurrency cap.
@@ -369,8 +599,8 @@ class Lane:
     (``''`` = ``models`` is exhaustive; a lane with neither accepts no pin,
     so a pinned model never lands on a lane that cannot run it).
     ``cost_class`` is what a launch on the lane costs (one of
-    :data:`COST_ORDER`, cheapest first); :func:`pick_lane` spends free
-    capacity before paid.
+    :data:`COST_ORDER`, cheapest first); :func:`pick_lane` treats free and
+    subscription as one tier and holds metered back until both are full.
     ``parked_reason`` is the lane-health park (gr588221): set, the lane
     is held out of dispatch like ``enabled=False`` without touching the
     human ``enabled`` switch; ``parked_at`` the park's first sighting.
@@ -537,7 +767,9 @@ def lane_backoffs(store: Any, now: datetime | None = None) -> dict[str, datetime
     per ``meta.lane``) carries ``meta.host_refusal.until`` in the future
     (gr571395): a later job on the lane without the mark — a probe that
     launched — clears the backoff by being newer, so no second write
-    path is needed.
+    path is needed. A lane the cause-based breaker holds out (an open
+    breaker ask, :mod:`precis.plans.lane_breaker`) is reported too, with
+    a far deadline: closing the ask lifts it.
     """
     now = now or datetime.now(UTC)
     with store.pool.connection() as conn:
@@ -566,6 +798,18 @@ def lane_backoffs(store: Any, now: datetime | None = None) -> dict[str, datetime
             until = until.replace(tzinfo=UTC)
         if until > now:
             out[str(lane)] = until
+    # The cause-based breaker (:mod:`precis.plans.lane_breaker`) holds a
+    # lane out the same way, until its ask is closed: every picker that
+    # skips a backed-off lane skips it. A blip reads as no breaker.
+    try:
+        from precis.plans import lane_breaker
+
+        held = lane_breaker.tripped_lanes(store)
+    except Exception:
+        log.warning("lanes.lane_backoffs: breaker read failed", exc_info=True)
+        held = set()
+    for lane in held:
+        out.setdefault(lane, now + BREAKER_HOLD)
     return out
 
 
@@ -674,10 +918,13 @@ def pick_lane(
     Fit first (enabled lanes whose ``task_classes`` take the class and,
     with ``model`` -- the slice's ``params.model`` pin -- whose
     :meth:`Lane.accepts_model` takes it: a triage-pinned claude id never
-    lands on the codex lane, which cannot run it), then cost class --
-    :data:`COST_ORDER` order, free before paid (gr573563) -- then the
-    fewest live ``run_slice`` jobs carrying that ``meta.lane``, only
-    lanes under their cap; ties keep table order. ``lanes`` defaults to
+    lands on the codex lane, which cannot run it), then, among lanes
+    under their cap, the minimum of ``(tier, live / cap, live)``: tier 0
+    is a free or subscription lane, tier 1 a metered one (picked only
+    while no tier-0 lane is open), ``live`` the ``run_slice`` jobs
+    carrying that ``meta.lane``. The load fraction means a cap-8 lane at
+    0 live beats a cap-8 lane at 3; ties keep table order (gr685753).
+    ``lanes`` defaults to
     the ``llm_account`` table read at call time (like :func:`ladder`),
     so a row edit is seen;
     ``counts`` skips the live-count DB read (tests, or a caller that
@@ -727,10 +974,16 @@ def pick_lane(
     if not open_lanes:
         return None
     # ``min`` keeps the first of equal keys, so ties keep table order.
-    return min(
-        open_lanes,
-        key=lambda lane: (COST_ORDER.index(lane.cost_class), live.get(lane.name, 0)),
-    )
+    return min(open_lanes, key=lambda lane: _pick_key(lane, live))
+
+
+def _pick_key(lane: Lane, live: Mapping[str, int]) -> tuple[int, float, int]:
+    """The :func:`pick_lane` sort key: ``(tier, live / cap, live)``. Tier
+    0 covers free and subscription lanes, tier 1 metered; ``cap`` is
+    floored at 1 so a zero-cap row cannot divide by zero."""
+    n = live.get(lane.name, 0)
+    tier = 1 if lane.cost_class == COST_METERED else 0
+    return (tier, n / max(lane.cap, 1), n)
 
 
 @dataclass(frozen=True)
@@ -743,6 +996,33 @@ class Rung:
     model: str | None
 
 
+def _lane_rungs(
+    task_class: str, store: Any, lanes: tuple[Lane, ...] | None
+) -> list[list[Rung]]:
+    """Each enabled, unparked fit lane's rungs for ``task_class`` in table
+    order: its ``models`` from ``default_model`` upward, or one model-less
+    rung when it declares none. :func:`ladder` and :func:`top_rung` share
+    it. ``lanes`` or ``store`` is required."""
+    if lanes is None:
+        if store is None:
+            raise TypeError("lanes.ladder: pass store or lanes")
+        lanes = load_lanes(store)
+    per_lane: list[list[Rung]] = []
+    for lane in lanes:
+        if not lane.enabled or lane.parked or not lane.fits(task_class):
+            continue
+        if not lane.models:
+            per_lane.append([Rung(lane.name, None)])
+            continue
+        start = (
+            lane.models.index(lane.default_model)
+            if lane.default_model in lane.models
+            else 0
+        )
+        per_lane.append([Rung(lane.name, m) for m in lane.models[start:]])
+    return per_lane
+
+
 def ladder(
     task_class: str,
     *,
@@ -750,31 +1030,37 @@ def ladder(
     lanes: tuple[Lane, ...] | None = None,
 ) -> tuple[Rung, ...]:
     """The cross-lane retry ladder for ``task_class`` (Reto td559457: a
-    failed slice climbs before the cap asks): every enabled fit lane in
-    table order, each contributing its ``models`` from ``default_model``
-    upward, or one model-less rung when it declares none. With today's
-    table that is devin high → devin max → sonnet → opus (codex carries
-    no ``code`` class — a lane that cannot run the test gate, gr573563).
-    The table is ``lanes`` or the ``llm_account`` read — one of them is
-    required."""
-    if lanes is None:
-        if store is None:
-            raise TypeError("lanes.ladder: pass store or lanes")
-        lanes = load_lanes(store)
+    failed slice climbs before the cap asks). Every enabled fit lane
+    contributes its ``models`` from ``default_model`` upward, or one
+    model-less rung when it declares none; the rungs are dealt
+    round-robin -- every lane's first rung in table order, then every
+    lane's second rung, and so on (gr685753) -- so consecutive attempts
+    alternate lanes. With today's table that is devin high → sonnet →
+    devin max → opus (codex carries no ``code`` class — a lane that
+    cannot run the test gate, gr573563 — and kimi joins once lit).
+    Rungs are positions on this list: :func:`rung_index` and the
+    climbers read them as such. The table is ``lanes`` or the
+    ``llm_account`` read — one of them is required."""
+    per_lane = _lane_rungs(task_class, store, lanes)
     out: list[Rung] = []
-    for lane in lanes:
-        if not lane.enabled or lane.parked or not lane.fits(task_class):
-            continue
-        if not lane.models:
-            out.append(Rung(lane.name, None))
-            continue
-        start = (
-            lane.models.index(lane.default_model)
-            if lane.default_model in lane.models
-            else 0
-        )
-        out.extend(Rung(lane.name, m) for m in lane.models[start:])
+    for depth in range(max((len(rs) for rs in per_lane), default=0)):
+        out.extend(rs[depth] for rs in per_lane if depth < len(rs))
     return tuple(out)
+
+
+def top_rung(
+    task_class: str,
+    *,
+    store: Any = None,
+    lanes: tuple[Lane, ...] | None = None,
+) -> Rung | None:
+    """The last rung of the last fit lane in table order -- the model a
+    fix born escalated is pinned to (gr604629) -- or ``None`` with no fit
+    lane. Not ``ladder(...)[-1]``: the dealt order ends on whichever lane
+    has the most models, so a lit lane with a long model list would move
+    the top (gr685753). Today's table: claude-sub opus."""
+    per_lane = _lane_rungs(task_class, store, lanes)
+    return per_lane[-1][-1] if per_lane else None
 
 
 def rung_index(
@@ -879,6 +1165,7 @@ __all__ = [
     "pick_lane",
     "record_lane_health",
     "rung_index",
+    "top_rung",
     "unpark_lane",
     "wake_lane_waiter",
 ]

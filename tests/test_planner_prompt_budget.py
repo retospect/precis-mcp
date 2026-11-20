@@ -24,10 +24,27 @@ import re
 
 from precis.workers.planner_prompt import _build_skill_index
 
-#: Generous ceiling — ~141 slugs at ~20 chars plus the header. The point is to
-#: catch a regression back to per-entry prose (which was 7× this), not to
+#: Generous ceiling — ~300 slugs at ~22 chars plus the header. The point is to
+#: catch a regression back to per-entry prose (which was 3× this), not to
 #: police a few hundred bytes as the skill set grows.
-_MENU_BUDGET_CHARS = 6000
+_MENU_BUDGET_CHARS = 10000
+
+
+def test_skill_corpus_fits_under_the_index_cap() -> None:
+    """Overflow must be a red test, not a silent alphabetical drop."""
+    from precis.workers.planner_prompt import (
+        _SKILL_INDEX_MAX,
+        _eligible_skill_entries,
+    )
+
+    eligible = len(_eligible_skill_entries())
+    assert eligible <= _SKILL_INDEX_MAX, (
+        f"{eligible} eligible skills exceed _SKILL_INDEX_MAX={_SKILL_INDEX_MAX}: "
+        "the planner index would silently drop the alphabetical tail. Raise the cap."
+    )
+    menu = _build_skill_index()
+    assert "precis-put-help" in menu
+    assert "precis-todo-help" in menu
 
 
 def test_skill_menu_stays_within_budget() -> None:

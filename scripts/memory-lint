@@ -10,7 +10,7 @@
 # precis-mcp repo git log + ADRs are its record) — no ARCHIVE.md.
 #
 # GRAPH MODE (MEMORY.md carries the graph marker; cutover 2026-10-03, see
-# docs/backlog/memory-native-authoring.md): the index is rendered from
+# me690866): the index is rendered from
 # SPACE:repo-dev memory nodes and the memory dir's topic files are a frozen
 # snapshot, so checks 2, 3b, 5 and 6 read the NODE bodies instead — the
 # `precis memory index --export-dir` cache that scripts/hooks/session-start-
@@ -232,7 +232,7 @@ fi
 INDEX="$MEMDIR/MEMORY.md"
 problems=0
 
-# Graph mode (docs/backlog/memory-native-authoring.md, cutover 2026-10-03).
+# Graph mode (me690866, cutover 2026-10-03).
 # MEMORY.md is then a pointer carrying GRAPH_MARKER, and the index is rendered
 # from SPACE:repo-dev memory nodes by scripts/hooks/session-start-memory.sh,
 # which saves its last good render to the same cache path computed here. The
@@ -736,7 +736,7 @@ if (( GRAPH )) && [[ -n "$MANIFEST" && -n "$SCAN_DIR" ]]; then
 fi
 
 # Bands (--bands, graph mode, manifest + node bodies): one recency band per
-# node, grouped by hub — docs/backlog/context-memory-hierarchy.md S1. ACTIVE:
+# node, grouped by hub — me692173 S1. ACTIVE:
 # edited or recalled < 7 days ago, or a threads node with open-work words.
 # SPENT: a threads node landed_body() flags (the check 2 oracle). Else SETTLED.
 # Open work and SPENT are threads-only: runbooks and gotchas cite landed shas

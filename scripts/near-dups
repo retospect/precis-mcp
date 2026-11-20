@@ -1,0 +1,223 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/near-dups — PROTOTYPE for gr676789: rank the most similar
+unreviewed node pairs of one kind (memory | finding) on prod, read-only.
+
+Exact nearest-neighbour scan in pgvector (same shape as the gardener's
+``candidates.py::_dup_embedding_pairs``, but over every live ref of the
+kind instead of a rotating window), then grouped into A≈B≈C clusters.
+
+Skipped pairs:
+  * a part-of edge between the two (hub and its own child look alike);
+  * a reviewed-distinct marker: a ``distinct-from`` link, or any link
+    whose meta (note or reason) says "reviewed … distinct" (interim
+    spelling until the rel ships; finding links take reason=, not note=).
+
+Usage:
+  scripts/near-dups --kind memory --space repo-dev --top 10
+  scripts/near-dups --kind finding --top 20 --max-distance 0.2
+  scripts/near-dups --kind memory --sql        # print the SQL, run nothing
+
+Runs through ``scripts/prod-psql --ro`` (agent_ro role, BEGIN READ ONLY).
+The scan is n² over the kind; it runs as one prod call per --batch
+left-side refs so each stays under agent_ro's statement timeout.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+#: Which chunk's vector stands for the node, per kind (the gardener uses
+#: memory_body for memories; findings keep their claim in finding_body).
+VECTOR_CHUNK = {"memory": "memory_body", "finding": "finding_body"}
+HANDLE = {"memory": "me", "finding": "fi"}
+
+REPO = Path(__file__).resolve().parent.parent
+
+
+def _space_join(space: str | None) -> str:
+    return (
+        "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+        "JOIN tags t ON t.tag_id = rt.tag_id "
+        f"AND t.namespace = 'SPACE' AND t.value = '{space}'"
+        if space
+        else ""
+    )
+
+
+def ids_sql(kind: str, space: str | None) -> str:
+    return (
+        f"SELECT r.ref_id FROM refs r {_space_join(space)} "
+        f"WHERE r.retired_at IS NULL AND r.kind = '{kind}' ORDER BY r.ref_id;"
+    )
+
+
+def build_sql(
+    kind: str,
+    space: str | None,
+    top: int,
+    max_d: float,
+    k: int,
+    span: tuple[int, int] | None = None,
+) -> str:
+    """One scan. ``span`` limits the left side ``a`` to a ref_id range so a
+    whole-kind scan can run as several calls under agent_ro's statement
+    timeout (the first unscoped finding run, 7k × 7k, was cancelled)."""
+    space_join = _space_join(space)
+    a_span = f"AND a.ref_id BETWEEN {span[0]} AND {span[1]}" if span else ""
+    return f"""
+WITH kind_vecs AS MATERIALIZED (
+  SELECT DISTINCT ON (r.ref_id) r.ref_id, ce.vector
+    FROM refs r
+    {space_join}
+    JOIN chunks c ON c.ref_id = r.ref_id
+                 AND c.chunk_kind = '{VECTOR_CHUNK[kind]}'
+                 AND c.retired_at IS NULL
+    JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id
+                            AND ce.status = 'ok' AND ce.vector IS NOT NULL
+    JOIN embedders em ON em.name = ce.embedder AND em.is_default
+   WHERE r.retired_at IS NULL AND r.kind = '{kind}'
+   ORDER BY r.ref_id, c.ord
+),
+pairs AS (
+  SELECT LEAST(a.ref_id, b.ref_id) AS lo, GREATEST(a.ref_id, b.ref_id) AS hi,
+         min(a.vector <=> b.vector) AS dist
+    FROM kind_vecs a
+    JOIN LATERAL (
+      SELECT b.ref_id, b.vector FROM kind_vecs b
+       WHERE b.ref_id <> a.ref_id
+       ORDER BY b.vector <=> a.vector
+       LIMIT {k}
+    ) b ON TRUE
+   WHERE a.vector <=> b.vector < {max_d} {a_span}
+   GROUP BY 1, 2
+)
+SELECT p.lo, p.hi, round(p.dist::numeric, 4) AS dist,
+       left(ra.title, 90) AS lo_title, left(rb.title, 90) AS hi_title
+  FROM pairs p
+  JOIN refs ra ON ra.ref_id = p.lo
+  JOIN refs rb ON rb.ref_id = p.hi
+ WHERE NOT EXISTS (
+   SELECT 1 FROM links l
+    WHERE ((l.src_ref_id = p.lo AND l.dst_ref_id = p.hi)
+        OR (l.src_ref_id = p.hi AND l.dst_ref_id = p.lo))
+      AND (l.relation IN ('part-of', 'distinct-from')
+           OR l.meta::text ILIKE '%reviewed%distinct%'))
+ ORDER BY p.dist
+ LIMIT {top * 5};
+"""
+
+
+def run(sql: str) -> list[dict[str, str]]:
+    env = dict(os.environ, PRECIS_PROD_PSQL_OPTS="--csv")
+    out = subprocess.run(
+        [str(REPO / "scripts" / "prod-psql"), "--ro", sql],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    if out.returncode != 0:
+        sys.exit(f"prod-psql exit {out.returncode}:\n{out.stderr.strip()}")
+    # --ro wraps the query in BEGIN READ ONLY … COMMIT; keep the CSV block.
+    lines = [ln for ln in out.stdout.splitlines() if ln not in ("BEGIN", "COMMIT")]
+    return list(csv.DictReader(io.StringIO("\n".join(lines))))
+
+
+def scan(a: argparse.Namespace) -> list[dict[str, str]]:
+    """Run the scan in ref_id spans of ``--batch`` left-side refs, then
+    merge: a pair found from both ends keeps one row, sorted by distance."""
+    ids = [int(r["ref_id"]) for r in run(ids_sql(a.kind, a.space))]
+    best: dict[tuple[str, str], dict[str, str]] = {}
+    for i in range(0, len(ids), a.batch):
+        part = ids[i : i + a.batch]
+        sql = build_sql(
+            a.kind, a.space, a.top, a.max_distance, a.k, (part[0], part[-1])
+        )
+        for r in run(sql):
+            key = (r["lo"], r["hi"])
+            if key not in best or float(r["dist"]) < float(best[key]["dist"]):
+                best[key] = r
+        print(f"… scanned {min(i + a.batch, len(ids))}/{len(ids)}", file=sys.stderr)
+    return sorted(best.values(), key=lambda r: float(r["dist"]))[: a.top * 5]
+
+
+def clusters(
+    rows: list[dict[str, str]], top: int, group_cut: float
+) -> list[list[dict[str, str]]]:
+    """Union-find the pairs into groups, ordered by their closest pair, and
+    keep the first ``top`` groups (a node with three twins is one group).
+    Only pairs closer than ``group_cut`` join groups: at looser distances
+    related-but-distinct claims chain into one blob (first prod run,
+    2026-11-14), so those stay one pair per group."""
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for r in rows:
+        if float(r["dist"]) < group_cut:
+            parent[find(r["lo"])] = find(r["hi"])
+    groups: dict[str, list[dict[str, str]]] = {}
+    for r in rows:  # rows arrive sorted by distance
+        tight = float(r["dist"]) < group_cut
+        key = find(r["lo"]) if tight else f"{r['lo']}-{r['hi']}"
+        groups.setdefault(key, []).append(r)
+    return list(groups.values())[:top]
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--kind", choices=sorted(VECTOR_CHUNK), default="memory")
+    ap.add_argument("--space", help="SPACE tag value, e.g. repo-dev or research")
+    ap.add_argument("--top", type=int, default=10, help="groups to show")
+    ap.add_argument(
+        "--max-distance",
+        type=float,
+        default=0.25,
+        help="cosine distance cutoff (gardener DUP_MAX_DISTANCE)",
+    )
+    ap.add_argument(
+        "--group-distance",
+        type=float,
+        default=0.08,
+        help="pairs below this join A≈B≈C groups (likely duplicates)",
+    )
+    ap.add_argument("--k", type=int, default=5, help="neighbours per node")
+    ap.add_argument(
+        "--batch",
+        type=int,
+        default=1000,
+        help="left-side refs per prod call (keeps each under the timeout)",
+    )
+    ap.add_argument("--sql", action="store_true", help="print the SQL only")
+    a = ap.parse_args()
+    if a.space and not a.space.replace("-", "").replace("_", "").isalnum():
+        sys.exit(f"bad --space {a.space!r}")
+
+    sql = build_sql(a.kind, a.space, a.top, a.max_distance, a.k)
+    if a.sql:
+        print(sql)
+        return
+    h = HANDLE[a.kind]
+    for i, group in enumerate(clusters(scan(a), a.top, a.group_distance), 1):
+        likely = float(group[0]["dist"]) < a.group_distance
+        label = "likely duplicate" if likely else "related — review"
+        print(f"## group {i}  (closest {group[0]['dist']}, {label})")
+        for r in group:
+            print(f"  {h}{r['lo']} ≈ {h}{r['hi']}  d={r['dist']}")
+            print(f"     {h}{r['lo']}: {r['lo_title']}")
+            print(f"     {h}{r['hi']}: {r['hi_title']}")
+
+
+if __name__ == "__main__":
+    main()

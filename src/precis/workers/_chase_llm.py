@@ -37,6 +37,7 @@ import logging
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
+from precis.taproot.support import setup_mismatch
 from precis.utils.llm.router import LlmRequest, Tier, route
 
 if TYPE_CHECKING:
@@ -154,6 +155,11 @@ First decide the chunk's STANCE toward the claim as stated: does it give
 evidence FOR the claim, evidence AGAINST it (an opposite result or
 tendency), or neither (on-topic but doesn't test the claim)?
 
+The system/material AND observable must match: numerical similarity or a
+shared term across unrelated systems is not corroboration. Compare nanotube
+stiffness with nanotube stiffness, never membrane transport or MOF porosity.
+If same_setup is false, supports must be no, even if the numbers agree.
+
 Definitions:
   supports = "yes"      : the chunk affirmatively states or demonstrates
                           the claim as stated (verbatim or close paraphrase).
@@ -171,12 +177,12 @@ Definitions:
                           a result that runs COUNTER to the claim.
   caveats               : conditions, regimes, applicability limits that
                           qualify genuine support.
-  claim_setup           : the system/sample, material, method and
+  claim_setup           : the observable, system/sample, material, method and
                           conditions the claim is about (read it off the
                           claim and its own source passage above).
   passage_setup         : the same for the result THIS chunk reports.
   same_setup            : true iff claim_setup and passage_setup are the
-                          same system, material, method and conditions;
+                          same observable, system, material, method and conditions;
                           false iff they differ; "unclear" when the chunk
                           does not say enough to tell. Decide this BEFORE
                           contradicts.
@@ -221,7 +227,7 @@ _VERIFY_VERDICT_SCHEMA = """\
   "supports": "yes" | "partial" | "no",
   "support_reason": "<one sentence>",
   "caveats": ["<caveat 1>", ...],
-  "claim_setup": "<system/sample, material, method, conditions the claim is about>",
+  "claim_setup": "<observable, system/sample, material, method, conditions the claim is about>",
   "passage_setup": "<the same for the result this chunk reports>",
   "same_setup": true | false | "unclear",
   "contradicts": true | false,
@@ -279,7 +285,7 @@ its "item" number):
       "supports": "yes" | "partial" | "no",
       "support_reason": "<one sentence>",
       "caveats": ["<caveat 1>", ...],
-      "claim_setup": "<system/sample, material, method, conditions the claim is about>",
+      "claim_setup": "<observable, system/sample, material, method, conditions the claim is about>",
       "passage_setup": "<the same for the result this chunk reports>",
       "same_setup": true | false | "unclear",
       "contradicts": true | false,
@@ -580,6 +586,8 @@ def _verify_supports_batch(
 def is_corroborating(verification: dict[str, Any]) -> bool:
     """True iff a verify verdict should attach as corroborating evidence.
 
+    An explicit setup mismatch vetoes support, including a model reply
+    that inconsistently says ``yes``. Missing comparisons remain unknown.
     A ``yes``, or a ``partial`` whose caveats *scope* the support rather than
     negate it (``contradicts`` false). A ``no``, or a ``partial`` flagged
     ``contradicts`` (the chunk reports a result counter to the claim), is NOT
@@ -587,6 +595,8 @@ def is_corroborating(verification: dict[str, Any]) -> bool:
     by ``hub_refine``'s write door and ``taproot.slice_refine_eval``'s
     would-attach replay so the pass and its eval harness never diverge.
     """
+    if setup_mismatch(verification):
+        return False
     supports = verification.get("supports")
     if supports == "yes":
         return True

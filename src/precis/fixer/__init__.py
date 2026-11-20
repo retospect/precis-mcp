@@ -7,8 +7,10 @@ fix-forward, reporting by exception.
 
 This is the **repo-dev** lane's scheduler. It deliberately does *not*
 ride precis dispatch (which is content-only); precis
-is touched as both a source and a sink. As a source: proposals under
-``docs/backlog/`` always, plus — behind the ``PRECIS_FIXER_GRIPE_DB``
+is touched as both a source and a sink. As a source: the retired
+file-proposal lane under ``docs/backlog/`` (specs moved to graph
+memory — it can only ever surface the deliberately-untransferred
+legacy file, gr696034), plus — behind the ``PRECIS_FIXER_GRIPE_DB``
 dial — promoted (open + ``auto-fix``-tagged + diagnosed) gripes, one
 normalized queue via ``intake.all_items``. As a sink: the report/status
 surface always, plus — for a gripe-kind item — ``writeback.py`` reflects

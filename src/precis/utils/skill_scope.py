@@ -1,6 +1,6 @@
 """Skill write-fence filter — :func:`render` + :func:`is_write_call`.
 
-gr512233 slice 1 (``docs/backlog/read-scope-skill-fencing.md``): one
+gr512233 slice 1 (`me691026`): one
 source file per skill, marked with write fences, filtered at serve time
 by the connection scope (:func:`precis.runtime.scope.current_scope`).
 

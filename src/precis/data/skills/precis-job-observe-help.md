@@ -43,7 +43,7 @@ way (`put(kind='job', parent_id=…, job_type=…, params=…)`).
 
 | `job_type`          | Executor        | What it does                                  |
 |---------------------|-----------------|-----------------------------------------------|
-| `sandbox_run`       | `claude_docker` | Run an open-ended coding task (`mode:build`) or re-run a prior build's harvested tarball (`mode:run`, no claude/OAuth) in a throwaway, cgroup-capped container on an `agent_sandbox_host`. **Dark** — the `job_claude_docker` pass runs only where its `service_config` row (seeded from `agent_sandbox_hosts` group membership at deploy) has `prio>=1`; a human operator flips it live via the service-prio command. A put on a host without it queues a job nothing claims. Params: `mode` (`build` default \| `run`), `prompt` (`mode:build`, required), `artifact` (`mode:run` — a prior build's harvested `folder` ref id, required), `precis_access` (`none` default \| `read` — `mode:script` only, a per-run token'd read-only MCP (get/search/more) on a unix socket the script reaches through `/work/precis_client.py`, needs the `PRECIS_SANDBOX_READ_MCP` env flag on the daemon; `mode:build` refuses it), `target_node` (required — an `agent_sandbox_host`, never melchior), `resources` (required — `{'wall_seconds': <positive int>}`). Minimal build: `put(kind='job', args={'job_type': 'sandbox_run', 'params': {'mode': 'build', 'prompt': '…', 'target_node': '<sandbox host>', 'resources': {'wall_seconds': 600}}})`. `validate_submit` rejects an unsupported `mode`, `precis_access:read` on `mode:build` or without `PRECIS_SANDBOX_READ_MCP`, `secrets`, a non-sandbox target, `mode:build` with no `prompt`, `mode:run` with no `artifact`, and (`mode:build` only) a missing `CLAUDE_CODE_OAUTH_TOKEN`. Recurring `mode:run` (e.g. a dated pipeline) just wraps the same params in a `meta.schedule` todo — no special-casing, see `precis-recurring-help`. `image` (`code-task:<git-sha>`, default `code-task:latest` — the ansible play's movable tag; per-job override via `params.image`) is pinned in the launch argv and recorded as provenance in three places: the job's `meta.image`, the terminal `job_summary` text, and the harvest folder's `meta.image`. |
+| `sandbox_run`       | `claude_docker` | Run an open-ended coding task (`mode:build`) or re-run a prior build's harvested tarball (`mode:run`, no claude/OAuth) in a throwaway, cgroup-capped container on an `agent_sandbox_host`. **Dark** — the `job_claude_docker` pass runs only where its `service_config` row (seeded from `agent_sandbox_hosts` group membership at deploy) has `prio>=1`; a human operator flips it live via the service-prio command. A put on a host without it queues a job nothing claims. Params: `mode` (`build` default \| `run`), `prompt` (`mode:build`, required), `artifact` (`mode:run` — a prior build's harvested `folder` ref id, required), `precis_access` (`none` default \| `read` — `mode:script` only, a per-run token'd read-only MCP (get/search/more) on a unix socket the script reaches through `/work/precis_client.py`, needs the `PRECIS_SANDBOX_READ_MCP` env flag on the daemon; `mode:build` refuses it), `target_node` (required — an `agent_sandbox_host`, never the agent-worker host), `resources` (required — `{'wall_seconds': <positive int>}`). Minimal build: `put(kind='job', args={'job_type': 'sandbox_run', 'params': {'mode': 'build', 'prompt': '…', 'target_node': '<sandbox host>', 'resources': {'wall_seconds': 600}}})`. `validate_submit` rejects an unsupported `mode`, `precis_access:read` on `mode:build` or without `PRECIS_SANDBOX_READ_MCP`, `secrets`, a non-sandbox target, `mode:build` with no `prompt`, `mode:run` with no `artifact`, and (`mode:build` only) a missing `CLAUDE_CODE_OAUTH_TOKEN`. Recurring `mode:run` (e.g. a dated pipeline) just wraps the same params in a `meta.schedule` todo — no special-casing, see `precis-recurring-help`. `image` (`code-task:<git-sha>`, default `code-task:latest` — the ansible play's movable tag; per-job override via `params.image`) is pinned in the launch argv and recorded as provenance in three places: the job's `meta.image`, the terminal `job_summary` text, and the harvest folder's `meta.image`. |
 
 ## Compute lane + plugin job types
 
@@ -81,12 +81,12 @@ get(kind='job', id='/logs')
 
 get(kind='job', id='/logs?handler=dispatch&since=24&level=WARNING')
 # handler= takes the short pass name ('dispatch', 'embed', ...), the full
-# dotted logger ('precis.workers.dispatch'), or the pass named in the
-# runner's per-cycle `worker: <pass> claimed=N ok=N failed=N` INFO row
-# (payload.handler) — so level=INFO shows a quiet pass's heartbeat too
+# dotted logger ('precis.workers.dispatch'), or the per-cycle
+# `worker: <pass> claimed=N ok=N failed=N` INFO row's pass (payload.handler)
+# — so level=INFO shows a quiet pass's heartbeat too
 
-get(kind='job', id='/logs?host=caspar&level=INFO&q=timeout&since=168&page_size=50')
-# host=, q= (substring on message), since= (hours, max 168),
+get(kind='job', id='/logs?host=<db-host>&level=INFO&q=timeout&since=168&page_size=50')
+# host=, q= (substring on message), since= (hours or a duration, max one week),
 # page_size= (default 100, cap 200; limit= the deprecated alias) all compose
 
 get(kind='job', id='/logs?job=jo123')
@@ -94,21 +94,41 @@ get(kind='job', id='/logs?job=jo123')
 # it (host= overrides); since= is ignored. Errors if never claimed.
 
 get(kind='job', id='/logs?process=precis-worker-agentlane')
-# process= is an exact match on the PRECIS_PROCESS env the plist sets
-# (NULL unless set); a host with several worker units needs this —
+# process= exactly matches the PRECIS_PROCESS env the plist sets
+# (NULL unless set); a host with several worker units needs it —
 # host= alone can't tell them apart
 
 # top-level q= works too (id's query string wins on conflict)
 get(kind='job', id='/logs', q='timeout')
-# filters are also real kwargs; since= is hours
+# filters are also real kwargs; bare since= numbers are hours
 get(kind='job', id='/logs', args={'handler': 'dispatch', 'level': 'INFO', 'since': 6})
 ```
 
 Read-only view over the centralised `worker_logs` table (migration
 0015) — the same table an operator reads via `precis logs` on the
-CLI. Header line states the resolved filter + UTC cutoff; each row is
+CLI. The header states the resolved filter + UTC cutoff; each row is
 `ts host handler LEVEL message`; the trailer says `N rows shown of M
-matching`; no other agent surface reads this table (no Bash, no raw SQL).
+matching`.
+
+The runner logs one line per pass completion; a long pass is silent:
+completion line is not liveness. Before calling a worker starved, read
+unfiltered recent logs (include INFO, omit handler and message filters),
+check the worker's age or restart, and list jobs leased to that host.
+A starvation claim needs a pass with known cadence that stopped meeting
+it, corroborated by a condition alert.
+
+A recurrence of a fixed flood or spin loop means older code is still
+running somewhere: check the deployed sha and enumerate every worker
+(see the `/builds` view below).
+
+Executors that reclaim stale running jobs heal an orphan; the
+`coordinator` executor does not reclaim stale running jobs itself.
+Do not restart workers mid-coordinator run; if a restart is unavoidable,
+re-mint afterwards once the orphan is terminal.
+
+Use `/logs?since=30m&counts=1` for a minute window and tallies by level
+and handler across all matches. Add `payload=1` for scrubbed JSON on the
+displayed rows.
 
 ## Read garden review counts
 
@@ -119,10 +139,14 @@ latest non-skipped `graph_garden` job with recorded results in that
 window. Omit `since` for 7d; a positive age (`24h`, `14d`) or ISO UTC
 timestamp works, as does `/garden?since=7d`.
 
-These are dated ledger events, not current pending-proposal counts:
-an approved proposal still has its original proposal event. Held
-consumer rows are separated from proposed; sampled reviewer actors
-are excluded. This view is read-only.
+These are dated ledger events, not current pending counts: an
+approved proposal keeps its original event; held consumer rows are
+separated from proposed; sampled reviewer actors are excluded. Read-only.
+The same call reports `gardener: on|dark` and `cooling: yes|no`. For the
+pending queue itself — review id, action, target, stale flag, hold and
+next step per proposal — use
+`get(kind='job', id='/garden/proposals', args={'action': 'merge',
+'limit': 20})` ([[precis-gardener-help]]).
 
 ## Is the external rate limiter pacing a provider?
 
@@ -146,8 +170,8 @@ unless `hosts=1` or `provider=host:<netloc>`; the trailer is host-row
 occupancy.
 
 `effective:` is the resolved `EffectivePolicy`
-(`precis.utils.outbound_policy`): `cls`, `rate` (`-` =
-rate-less class), `concurrency` (a `resource_slots` resource — `slots`
+(`precis.utils.outbound_policy`): `cls`, `rate` (`-` = rate-less),
+`concurrency` (a `resource_slots` resource; `slots`
 shows `free/capacity`), `max_wait_s`, `connect_s`/`read_s`/`total_s`,
 `on_refuse` (wait/defer/fail), `retry`; `(layer)` names who set each
 field (class/code/db/inferred/deadline). `state:` = `parked` (live
@@ -158,7 +182,7 @@ Overrides (operator, no deploy — never hand SQL):
 --on-refuse|--concurrency RESOURCE|N [--clear FIELD] [--create]
 [--dry-run]`; a bare N edits the hold row's `resource_slots` capacity.
 A write audits to `worker_logs` and lands fleet-wide in ~60 s (30 s
-snapshot TTL).
+TTL).
 
 ## Storage and health quick facts
 
@@ -174,9 +198,9 @@ get(kind='job', id='/facts')
 The "how big is the corpus" block the weekly report's quick-facts line
 reads (gr593053) — one call, read-only, no Bash. Everything is SQL over
 tables this server owns; the backup line says `no in-DB record` until
-the dir-dump leg's stamp lands rather than reporting a stale figure. Pair with
+the dir-dump leg stamps it, never a stale figure. Pair with
 `get(kind='skill', id='precis-status')` for build staleness and
-`search(kind=K, view='count')` for filtered totals on one kind.
+`search(kind=K, view='count')` for one-kind totals.
 
 ## What changed since the last doctor tick?
 
@@ -191,7 +215,7 @@ One read that answers "what moved since the last doctor_tick job ran":
 nothing new — the baseline-noise candidates) / `NEW GRIPES` /
 `GRIPE COMMENTS`, each row naming the ref to drill into. The cutoff
 comes from the last *succeeded* `doctor_tick` job's `meta.started_at`
-(falls back to the latest finished tick, then to 8h ago). This is the
+(fallback: latest finished tick, then 8h ago). This is the
 doctor's gather entry point — the static `/rules` catalogue and
 unchanged threads don't need re-reading.
 
@@ -211,9 +235,9 @@ where. Each row is
 
 The stamp is taken at claim time — `/builds` shows what a process ran
 on its last claim, not what it runs now; an idle lane keeps its
-pre-restart build and `last=` still moves (polls update old jobs). An
-old build is "no claim since the restart", not "deploy did not land" —
-the deploy's post-bounce check (playbook 43) is the authority there.
+pre-restart build and `last=` still moves. An old build is "no claim
+since the restart", not "deploy did not land" — the deploy's
+post-bounce check (playbook 43) is the authority there.
 
 A fix is live on a process when that process's newest build sha is the fix
 or a descendant of it. Do not judge that by eye: pass the fix's commit as
@@ -238,8 +262,16 @@ Rows are `host process claimed=N succeeded=N failed=N running=N
 last_claim=<UTC>`, from the same lease stamps as `/builds`; hosts that
 heartbeat but claimed nothing show `claimed=0`. The trailer gives the queue
 depth now by executor. Read the two together: no claims beside an empty
-queue is a healthy idle; no claims beside queued work is the fault.
-Measurement only — no alert reads it; GPU busy fraction isn't measured.
+queue is a healthy idle; no claims beside queued work is the fault —
+an executor whose claimable queue has aged ~15m+ with no claim and nothing
+running shows as `lane alert: '<executor>' reads dark` there and on queued
+job cards, with `outage refs:` naming the open alert/gripe that owns the
+outage (or a prompt to file one). "Claimable" is what the lane's own claim
+would take — on a parent-gated executor (`ssh_node`, `claude_docker`,
+`devin_api`) a job behind a paused non-terminal parent counts for neither
+the dark read nor the queue evidence that ties a `lane-parked:<lane>`
+alert to the executor. Measurement only — no alert reads it;
+GPU busy fraction isn't measured.
 
 ## When does a cadence fire next?
 
@@ -249,8 +281,8 @@ get(kind="job", id="/cadence")                # every scheduler_leases row
 ```
 
 Each recurring cadence holds a `scheduler_leases` row — the lease clock
-the decentralized scheduler claims. `next_fire_at` in the past means the
-cadence is due, not broken (any live worker may claim it).
+the scheduler claims. `next_fire_at` in the past means due, not broken (any live
+worker may claim it).
 
 ## Is a live switch set? — /settings
 
@@ -268,9 +300,8 @@ withheld count), unknown key segments render as `<name>`, and values
 render only as typed scalars (bool, number, timestamp, duration,
 vetted enum word — anything else is `(withheld: string, N chars)`).
 `service_config.host` is masked. Read-only — writes stay with
-a human operator (the service/settings surfaces and the web pages).
-The Dark switches table on [[precis-status]] covers only `enable_env`
-services; this is every row.
+a human operator. The Dark switches table on [[precis-status]] covers
+only `enable_env` services; this is every row.
 
 ## Which claim.* overrides are set? — /claim
 
@@ -278,19 +309,11 @@ services; this is every row.
 get(kind="job", id="/claim")
 ```
 
-The `claim.*` `app_state` knobs the claim substrate reads live, next
-to their code defaults: `claim.max_running.<job_type>` (per-host
-running cap, `0` suspends the type; code default
-`_MAX_RUNNING_DEFAULTS`, absent = uncapped),
-`claim.slicing.<executor>` (per-lane slicing flip — default off
-unless `PRECIS_JOB_SLICING`), `claim.slice_s.<executor>` (per-claim
-wall budget seconds — `PRECIS_JOB_SLICE_S`, else `DEFAULT_SLICE_S`),
-`claim.executor_cap.<executor>` (per-host executor running cap —
-`ssh_node` defaults to 8, gr603792) and `claim.reserve.<executor>`
-(JSON `{<job_type>: <slots>}` held back inside the cap for those
-types). The view also shows live per-`job_type` occupancy for the
-capped executors. Writes go through
-`put(kind='job', mode='setting', …)` — see [[precis-job-ops-help]].
+The `claim.*` `app_state` knobs the claim substrate reads live
+(`max_running`, `slicing`, `slice_s`, `executor_cap`, `reserve`), next
+to their code defaults, plus live per-`job_type` occupancy for the
+capped executors. What each knob means and how to set it:
+[[precis-job-ops-help]].
 
 ## How healthy is the secrets vault? — /secrets
 
@@ -304,8 +327,8 @@ The stored credential check as counts, never names or values:
 but unverified, missing = absent, invalid = rejected, unknown =
 inconclusive), plus when the hourly `secret_status` job last wrote
 the snapshot and whether a re-check is queued. The web `/secrets`
-page is the editor and shows the same snapshot per row; this view is
-the reportable one-liner.
+page is the editor (same snapshot per row); this view is the
+reportable one-liner.
 
 ## See also
 

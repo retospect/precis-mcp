@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Regenerate docs/reference/schema.md from the live (prod) database.
 #
-# Prod's pgbouncer password lives in caspar's ~/.pgpass, and a tunnel
+# Prod's pgbouncer password lives in the database host's ~/.pgpass, and a tunnel
 # from a dev host hits "fe_sendauth: no password supplied". So the
-# introspection runs ON caspar via ssh (where auth works) and the rows
+# introspection runs ON the database host via ssh (where auth works) and the rows
 # are piped into `precis schema-doc --from-tsv -`, which renders the
 # Mermaid ER diagram locally. The introspection SQL is sourced from the
 # command module so there's a single source of truth.
@@ -13,16 +13,16 @@
 #   scripts/gen-schema path/to/out.md       # → custom path
 #
 # Override the connection via env (defaults target precis_prod):
-#   PRECIS_SCHEMA_SSH_HOST  (default: caspar)
+#   PRECIS_SCHEMA_SSH_HOST  (default: the overlay's postgres_host)
 #   PRECIS_SCHEMA_DB_HOST / _DB_PORT / _DB_USER / _DB_NAME
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-SSH_HOST="${PRECIS_SCHEMA_SSH_HOST:-caspar}"
 # Resolved from the gitignored cluster overlay — the address must not live in
 # this public repo (see scripts/lib/pgb-host.sh).
 . "$(dirname "$0")/lib/pgb-host.sh"
+SSH_HOST="${PRECIS_SCHEMA_SSH_HOST:-$(resolve_inventory_var postgres_host)}"
 DB_HOST="${PRECIS_SCHEMA_DB_HOST:-$(resolve_pgb_host)}"
 DB_PORT="${PRECIS_SCHEMA_DB_PORT:-6432}"
 DB_USER="${PRECIS_SCHEMA_DB_USER:-agent_rw}"

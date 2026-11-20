@@ -68,7 +68,7 @@ def test_focus_page_renders_the_mcp_eye_with_linked_handles(
     # the ladder row names every rung, the current one marked
     for rung in ("kwd", "summary", "verbatim", "fisheye", "fisheye+2hop", "+recall"):
         assert f">{rung}</a>" in page.text
-    assert f"/todo?focus={todo.id}" in page.text  # the native reader link
+    assert f"/todo/{todo.id}" in page.text  # the native reader link
 
 
 def test_focus_page_takes_the_rung_and_the_group_filter(

@@ -505,3 +505,28 @@ def test_gripe_tags_classification(store: Any) -> None:
     gid = _cluster_gripes(store, _fp("put", f"zz{tag}", head))[0][0]
     tags = _gripe_tags(store, gid)
     assert "callerr:mcp" in tags
+
+
+def test_aggregate_followthrough_reports_concrete_share() -> None:
+    """0325 (gr613469): the sixth SQL field (``error_next_concrete``)
+    splits each family — the share of acks that named a runnable
+    corrected call, and how often the follow-up call succeeded after
+    one. Legacy five-field rows read as not-concrete."""
+    head = "[error:BadInput] keys ['scop'] not accepted"
+    fams = call_errors.aggregate_followthrough(
+        [
+            # Two concrete acks: one followed ok, one followed error.
+            ("search", "paper", "BadInput", head, "ok", True),
+            ("search", "paper", "BadInput", head, "error", True),
+            # One pointer-only ack, followed ok — counts in ok but not
+            # concrete_ok.
+            ("search", "paper", "BadInput", head, "ok", False),
+            # A legacy 5-field row (pre-0325 shape) is not-concrete.
+            ("search", "paper", "BadInput", head, "ok"),
+        ]
+    )
+    (f,) = fams
+    assert f.errors == 4
+    assert f.followed_ok == 3 and f.followed_error == 1
+    assert f.concrete == 2 and f.concrete_ok == 1
+    assert f.concrete_share == 0.5

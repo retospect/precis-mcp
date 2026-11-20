@@ -337,6 +337,30 @@ _SPEC_PIN_MAX_NAMES = 24
 #: (``ref_id``, ``supports_edit``), not a pin — dropped.
 _SPEC_PIN_MAX_FILES = 12
 
+# Same word boundaries as the per-seed match; retain only possible pin names.
+_SPEC_PIN_TOKEN_RE = re.compile(r"\b[a-z][a-z0-9_]*_[a-z0-9_]{2,}\b")
+_SPEC_PIN_FILES_MEMO: tuple[RepoIndex, dict[str, list[str]]] | None = None
+
+
+def _spec_pin_files(idx: RepoIndex) -> dict[str, list[str]]:
+    """Index test-source names once per immutable repository snapshot.
+
+    Like the reverse-call memo, retain the index itself to prevent identity
+    reuse and replace the cache when a new snapshot is queried.
+    """
+    global _SPEC_PIN_FILES_MEMO
+    if _SPEC_PIN_FILES_MEMO is not None and _SPEC_PIN_FILES_MEMO[0] is idx:
+        return _SPEC_PIN_FILES_MEMO[1]
+    files: dict[str, list[str]] = defaultdict(list)
+    for mod in idx.modules.values():
+        if not is_test_path(mod.file) or mod.source is None:
+            continue
+        for name in {m.group(0) for m in _SPEC_PIN_TOKEN_RE.finditer(mod.source)}:
+            files[name].append(mod.file)
+    out = dict(files)
+    _SPEC_PIN_FILES_MEMO = (idx, out)
+    return out
+
 
 def _spec_pin_names(sym: Symbol, mod: ModuleIndex) -> list[str]:
     """The symbol's spec/tuple ``snake_case`` names to pin-match:
@@ -567,14 +591,9 @@ def discover_tests(
     names = _spec_pin_names(sym, mod)
     if names:
         hit_files = {hit.file for hit in best.values()}
-        pin_re = re.compile(r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\b")
-        files_by_name: dict[str, list[str]] = {n: [] for n in names}
-        for tmod in idx.modules.values():
-            if not is_test_path(tmod.file) or tmod.source is None:
-                continue
-            for n in {m.group(0) for m in pin_re.finditer(tmod.source)}:
-                files_by_name[n].append(tmod.file)
-        for name, files in files_by_name.items():
+        files_by_name = _spec_pin_files(idx)
+        for name in names:
+            files = files_by_name.get(name, [])
             if not files or len(files) > _SPEC_PIN_MAX_FILES:
                 continue
             for f in files:

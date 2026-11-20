@@ -465,6 +465,13 @@ def enter_rescue(
 # hand-worked node the dispatch tick could never mint for (gr659982),
 # and a live job parked on ``not_before`` — a run_slice outage park or
 # a land_slice deferral — whose owning poll owns the wake (gr643076).
+# The dispatcher's own deliberate silences are holds too (gr681342,
+# review td688453): a queued job the ``parent_not_paused`` gate refuses
+# (a ``_DOABLE_EXCLUSION_TAGS`` tag or a live ``claimed-by:`` lease on
+# the parent), the coordinator's ``hold:no-dispatch``, the td603849
+# file-overlap sequence (its mint queues; the claim loop skips the job
+# until the blocker lands, gr702610), the free-failure backoff and a
+# ``child-failed:``-latched transient park's ``retry_after``.
 # Release plans belong to
 # ``release_poll::watch_stuck`` and are skipped. Read-only (kill switch
 # or ``dry_run``) it lists ``would_rescue`` and writes nothing.
@@ -796,9 +803,10 @@ def _node_signals(
     """``(newest ts, its label, the log lines)`` — the newest signal of a
     node is the latest of its created_at, its tag set times, its newest
     comment chunk, its newest event, per child job its created_at,
-    STATUS stamp, newest chunk, session-log mtime
-    (:func:`_job_log_at`) and park relaunch instant
-    (:func:`_job_parked_until`, gr643076), and ``unblocked_at`` — when its
+    STATUS stamp, newest chunk, newest event and park relaunch instant
+    (:func:`_job_parked_until`, gr643076), the node's session-log mtime
+    once (:func:`_job_log_at`, the newest over its jobs — one per-todo
+    log, gr681342), and ``unblocked_at`` — when its
     newest ``blocked-by`` predecessor finished (the idle clock starts
     when the node became dispatchable, not when it was created)."""
     signals: list[tuple[str, datetime]] = []
@@ -812,6 +820,7 @@ def _node_signals(
         signals.append(("newest comment", chunk_at))
     if event_at is not None:
         signals.append(("newest event", event_at))
+    node_log_at: datetime | None = None
     for j in jobs:
         jrow = rows.get(j.id)
         jcreated = jrow[0] if jrow else j.created_at
@@ -820,12 +829,19 @@ def _node_signals(
             signals.append((f"job jo{j.id} status set", jrow[1]))
         if jrow is not None and jrow[2] is not None:
             signals.append((f"job jo{j.id} newest comment", jrow[2]))
+        if jrow is not None and jrow[3] is not None:
+            signals.append((f"job jo{j.id} newest event", jrow[3]))
         log_at = _job_log_at(j)
-        if log_at is not None:
-            signals.append((f"job jo{j.id} log mtime", log_at))
+        if log_at is not None and (node_log_at is None or log_at > node_log_at):
+            node_log_at = log_at
         parked_at = _job_parked_until(j)
         if parked_at is not None:
             signals.append((f"job jo{j.id} parked until", parked_at))
+    if node_log_at is not None:
+        # One per-todo session log (run_slice.log) serves every job of the
+        # node, so each job "reading" the same mtime was one signal
+        # repeated and read as per-job liveness (gr681342).
+        signals.append(("node log mtime", node_log_at))
     label, ts = max(signals, key=lambda s: s[1])
     lines = [f"signals for td{n.id}:"] + [f"- {lbl}: {_iso(t)}" for lbl, t in signals]
     return ts, label, lines
@@ -957,6 +973,160 @@ def _lane_verdict(
     return f"no enabled lane fits {task_class}"
 
 
+#: How long past a dispatcher hold's end (free backoff, a transient
+#: ``child-failed:`` park's ``retry_after``) the node still reads as
+#: waiting: the tick runs about once a minute, so a node this far past
+#: its ready time with no job minted is a real stall.
+#: The idle clock restarts at the hold's end with this window, not the
+#: 20-minute stage deadline (gr681342).
+DISPATCH_GRACE = timedelta(minutes=5)
+
+
+def _retry_after(j: Any) -> datetime | None:
+    """The job's ``meta.retry_after`` (ISO, stamped by ``record_failure``
+    on a transient failure), or ``None`` when absent or unreadable."""
+    raw = j.meta.get("retry_after")
+    if not isinstance(raw, str):
+        return None
+    try:
+        stamp = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)
+
+
+def _transient_park(n: Any, jobs: list[Any]) -> tuple[datetime, str] | None:
+    """``(wake, reason)`` for ``n``'s ``child-failed:``-latched transient
+    park, or ``None``.
+
+    ``meta.retry_after`` binds ONLY this park — mirror of
+    :func:`precis.workers.sweeper._transient_retry_after`: every job a
+    live ``child-failed:<id>`` tag names must be one of the node's jobs
+    and carry the stamp; the wake is the latest of them, and one named
+    job without it returns to the exponential cool-down's rules. The
+    dispatch tick never reads the stamp — ``plan_dispatch._EXCLUSIONS``
+    drops ``child-failed:`` precisely so the tick owns plan retries —
+    so a bare ``retry_after`` on the newest job is no hold; honouring
+    one parked a genuinely stalled node for the stamp's whole horizon
+    (review td688453)."""
+    latched = [v for v in n.open_tags if v.startswith("child-failed:")]
+    if not latched:
+        return None
+    by_id = {j.id: j for j in jobs}
+    stamps: list[datetime] = []
+    for v in sorted(latched):
+        tail = v.split(":", 1)[1]
+        job = by_id.get(int(tail)) if tail.isdigit() else None
+        stamp = _retry_after(job) if job is not None else None
+        if stamp is None:
+            return None
+        stamps.append(stamp)
+    ids = [v.split(":", 1)[1] for v in sorted(latched)]
+    return max(stamps), f"retry_after on {', '.join(f'jo{i}' for i in ids)}"
+
+
+def _dispatcher_hold(
+    now: datetime, plan: Any, n: Any, jobs: list[Any]
+) -> tuple[datetime, str] | None:
+    """``(ready time, reason)`` while the dispatcher is deliberately not
+    minting for this node, or ``None``. Two holds: the free-failure
+    backoff (:func:`plan_dispatch.free_backoff_ready_at`, the dispatch
+    step's own formula) and a ``child-failed:``-latched transient park
+    (:func:`_transient_park`, the sweeper's own wake time — the only
+    place ``meta.retry_after`` binds). The later ready time wins, and a
+    hold still counts for :data:`DISPATCH_GRACE` after its end (the
+    idle clock restarts there)."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    newest = jobs[-1] if jobs else None
+    if newest is None:
+        return None
+    holds: list[tuple[datetime, str]] = []
+    free_reason, run = pd._free_run(plan, n)
+    if free_reason is not None:
+        ready = pd.free_backoff_ready_at(newest.created_at, run)
+        if ready is not None:
+            holds.append((ready, f"free-backoff: '{free_reason}' x{run}"))
+    retry = _transient_park(n, jobs)
+    if retry is not None:
+        holds.append(retry)
+    live = [h for h in holds if now < h[0] + DISPATCH_GRACE]
+    return max(live, key=lambda h: h[0]) if live else None
+
+
+def _no_dispatch_hold(plan: Any, n: Any) -> str | None:
+    """``hold:no-dispatch`` on ``n`` or an ancestor — the coordinator's
+    park rides the whole subtree through the tick's exclusion walk
+    (``plan_dispatch._excluded``; gr645524). The reason names the tag's
+    holder."""
+    for node in (n, *plan.ancestors(n)):
+        if "hold:no-dispatch" in node.open_tags:
+            return "hold:no-dispatch" + (f" on td{node.id}" if node is not n else "")
+    return None
+
+
+def _overlap_hold(store: Store, plan: Any, n: Any) -> str | None:
+    """The td603849 file-overlap hold's reason while a started, unlanded
+    build in the same repo touches a file this build's brief names (the
+    same repo-relative path; ``dispatch_score.shared_files``) — the mint
+    is not refused: the build's job queues and the executor claim loop
+    skips it until the blocker is on main (gr702610). The claim's own
+    read (``plan_dispatch._overlap_holds``) for this one candidate, so
+    the reason never names a hold the claim does not apply (gr734976:
+    this used to read file names from builder handoffs and ignored the
+    land target): only ``run_slice`` tasks wait (generators commit
+    nothing), a node never holds itself, and the blocker's governing
+    ``repo:`` and land target must match."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    started = pd._started_slices(store)
+    started.pop(n.id, None)
+    if not started:
+        return None
+    hit = pd._overlap_holds(plan, store, started, [n]).get(n.id)
+    if hit is None:
+        return None
+    hid, shared = hit
+    named = sorted(p for p in shared if "/" in p) or sorted(shared)
+    return (
+        f"file-overlap hold — waits on td{hid} ({started[hid].state}): both "
+        f"touch {', '.join(f'`{p}`' for p in named[:3])}"
+        f"{' …' if len(named) > 3 else ''}; claims once td{hid} "
+        "is on main"
+    )
+
+
+def _parent_gate_tag(store: Store, now: datetime, n: Any) -> str | None:
+    """The open tag on ``n`` that makes ``parent_not_paused`` refuse to
+    claim its jobs, or ``None`` — the shared ``_DOABLE_EXCLUSION_TAGS``
+    set plus a live ``claimed-by:`` lease (``ref_tags.expires_at`` in
+    the future, matching the clause's lease arm; an unstamped legacy
+    claim row does not gate). A terminal parent is exempt, as in the
+    gate itself (gr575883)."""
+    from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
+
+    if n.status in TERMINAL_TODO_STATUSES:
+        return None
+    for v in n.open_tags:
+        for t in _DOABLE_EXCLUSION_TAGS:
+            if v == t or (t.endswith(":") and v.startswith(t)):
+                return str(v)
+    if not any(v.startswith("claimed-by:") for v in n.open_tags):
+        return None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+             WHERE rt.ref_id = %s AND t.namespace = 'OPEN'
+               AND t.value LIKE 'claimed-by:%%'
+               AND rt.expires_at IS NOT NULL AND rt.expires_at > %s
+             ORDER BY rt.expires_at DESC LIMIT 1
+            """,
+            (n.id, now),
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
 def _stage_for(
     store: Store, now: datetime, plan: Any, n: Any, is_gate: bool
 ) -> tuple[str, str, Any, str] | None:
@@ -1003,6 +1173,17 @@ def _stage_for(
                 f"job jo{live.id} parked until {_iso(parked_at)}{why}",
             )
         if live.status == "queued":
+            gate_tag = _parent_gate_tag(store, now, n)
+            if gate_tag is not None:
+                # The claim gate (``parent_not_paused``) refuses this job
+                # until the tag clears — its silence is the gate's, and
+                # the operator should see which tag holds it (gr681342).
+                return (
+                    "parked",
+                    "parked",
+                    live,
+                    f"waiting (job jo{live.id} queued, gated by {gate_tag})",
+                )
             return (
                 "stalled",
                 "queued",
@@ -1020,6 +1201,18 @@ def _stage_for(
                 "stage review silent past its deadline",
             )
         return "stalled", "build", live, "stage build silent past its deadline"
+    tag_hold = _no_dispatch_hold(plan, n)
+    if tag_hold is not None:
+        # The coordinator's no-dispatch hold (or one on an ancestor) —
+        # the tick's first exclusion, before lanes or mints: the node's
+        # silence is the hold's (review td688453).
+        return "parked", "parked", j, f"waiting ({tag_hold})"
+    overlap = _overlap_hold(store, plan, n)
+    if overlap is not None:
+        # The td603849 sequence: a started, unlanded build owns the
+        # shared files first; the claim loop re-checks the hold until
+        # the blocker is on main.
+        return "parked", "parked", j, f"waiting ({overlap})"
     job_type, params = pd._resolve_op(n)
     if job_type == pd.DEFAULT_OP:
         verdict = _lane_verdict(store, now, plan, n, params)
@@ -1027,6 +1220,22 @@ def _stage_for(
             if verdict.startswith("parked"):
                 return "parked", "parked", j, verdict
             return "stalled", "idle", j, verdict
+    hold = _dispatcher_hold(now, plan, n, jobs)
+    if hold is not None:
+        ready, why = hold
+        if ready > now:
+            return (
+                "parked",
+                "parked",
+                j,
+                f"held by the dispatcher until {_iso(ready)} ({why})",
+            )
+        return (
+            "parked",
+            "parked",
+            j,
+            f"waiting ({why}; dispatch due since {_iso(ready)})",
+        )
     return "stalled", "idle", j, "stage idle silent past its deadline"
 
 
@@ -1097,8 +1306,18 @@ def _landed_sha(store: Store, plan: Any, gate: Any) -> tuple[int, str] | None:
     gate's ``blocked-by`` targets names — the write land_slice owed the
     gate (gr576154); ``None`` when no landed comment parses to a sha.
     Comments older than the reset/rearm boundary are skipped
-    (:func:`_landed_lines`, td626034)."""
+    (:func:`_landed_lines`, td626034). A build landed in another repo
+    (``meta.landed_repo``) names a sha that repo owns, never one the
+    precis ``sha-in-prod`` gate waits on: it is skipped."""
+    from precis.plans import lanes as _lanes
+
     for bid, line in _landed_lines(store, plan, gate):
+        ref = store.get_ref(kind="todo", id=bid)
+        other = ((ref.meta or {}) if ref is not None else {}).get(
+            _lanes.LANDED_REPO_KEY
+        )
+        if other not in (None, "", _lanes.DEFAULT_REPO):
+            continue
         m = _LANDED_SHA_RE.match(line)
         if m is not None and m.group(1).lower() != PENDING_SHA:
             return bid, m.group(1).lower()
@@ -1249,6 +1468,16 @@ def _judge_node(
                 f"(executor {ex}); a wait, not a stall"
             )
             return
+        if jt == "run_slice":
+            # gr702610: the mint now queues held builds — a job the
+            # claim-time overlap hold skips never claims, so its queue
+            # can sit still past the deadline while the holder builds.
+            # (Only run_slice claims skip; a queued land is never held.)
+            overlap = _overlap_hold(store, plan, n)
+            if overlap is not None:
+                res.held += 1
+                res.notes.append(f"td{n.id}: {overlap} — a wait, not a stall")
+                return
     branch = head_sha = None
     head = _branch_head(plan, n)
     if head is not None:
@@ -1700,7 +1929,14 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 # to retry (every such ask came back "won't do"), so the pass closes
 # the node ``STATUS:won't-do`` with one note and files no ask — a
 # bounded batch of ``ORPHAN_BATCH`` closes per pass, so an old orphan
-# backlog drains in a few ticks instead of one ask a tick. A rescued
+# backlog drains in a few ticks instead of one ask a tick. The same
+# bounded close applies to an already-old rescue (gr666159): a node
+# whose last real signal predates ``STALE_ASK_AFTER`` is dead work —
+# one ask per LIVE node, so the stale node closes ``won't-do`` and any
+# ask still open on it is superseded with it, never a flood — but a
+# nonterminal child job defers the close even when every signal
+# predates the bound (the orphan path's live-job guard, td673697
+# review): the job may still land. A rescued
 # gripe is skipped with a note (``meta.ask.blocks`` takes a todo handle
 # only). Read-only while the factory is switched off; ``dry_run`` lists
 # ``would`` and writes nothing.
@@ -1746,6 +1982,13 @@ _ASK_WHY_CAP = 60
 #: (gr576258): a closed-root backlog drains at this many nodes a tick —
 #: no longer one ask a tick — without one pass writing unbounded.
 ORPHAN_BATCH = 20
+
+#: A rescued node whose last real signal is older than this is
+#: "already-old" (gr666159): the stall it reports is ancient — every
+#: ask filed on one came back "drop it", and ~62 of them flooded the
+#: queue in one night. One ask per LIVE node: stale nodes close
+#: ``won't-do`` in the bounded batch like orphans, never a showstopper.
+STALE_ASK_AFTER = timedelta(hours=24)
 
 _DIAGNOSIS_RE = re.compile(
     r"rescue:\s*(REARM|NOFIX)\b[\s:]*(?:[—–-]+\s*)?(.*)",
@@ -2578,6 +2821,28 @@ def _ask_node(
     stamp ``meta.rescue`` (an existing ``n`` kept; ``n=1`` when a
     diagnose ran this episode) and comment the node. Returns the ask's
     id, or ``None`` read-only / when a racer filed first."""
+    # gr666159, the same rule on every ask path — the diagnose branches
+    # reach here without ``_judge_rescued``'s stale check: never mint an
+    # ask on a node whose last real signal is already old; it closes
+    # ``won't-do`` in the bounded batch instead — and like every close,
+    # never under a live child job (the orphan path's guard, td673697
+    # review).
+    last_at = _stall_activity_at(store, plan, n)
+    if now - last_at > STALE_ASK_AFTER:
+        if any(j.status not in pd._JOB_TERMINAL for j in plan.jobs(n)):
+            # The orphan path's live-job guard (td673697 review): a
+            # nonterminal child job may still land — every one of its
+            # signals can predate the bound while it runs — so deferring
+            # beats closing won't-do under it.
+            res.waiting += 1
+            res.notes.append(f"td{n.id}: live job with stale signals; not closed")
+            return None
+        if len(res.closed) >= ORPHAN_BATCH:
+            res.waiting += 1
+            res.notes.append(f"td{n.id}: stale; close batch full this pass")
+        else:
+            _close_stale(store, now, res, n, cls, last_at)
+        return None
     if res.dry_run:
         res.would.append((n.id, "ask"))
         res.notes.append(f"td{n.id}: would ask ({_line1(why)})")
@@ -2810,24 +3075,62 @@ def _rearm_answered(
     res.notes.append(f"td{n.id}: re-armed (ask td{ask} already answered){suffix}")
 
 
-def _close_orphan(
+def _stall_activity_at(store: Store, plan: Any, n: Any) -> datetime:
+    """The node's last real activity. On the node itself every signal
+    counts except the rescue pass's own bookkeeping — the OPEN
+    ``rescue:*`` tag rows and comment chunks opening ``rescue:`` (the
+    evidence comment and every note the pass leaves; the
+    ``_newest_comment(…, "rescue:")`` convention) — so a human comment,
+    a re-armed ``brief:`` or a fresh STATUS after the tag keeps the
+    node live instead of reading as silence (gr666159 review). A child
+    job's signals are unfiltered — a job still claimed or still logging
+    means the node is live regardless — and a nonterminal job defers
+    the stale close even when every one of its signals predates the
+    bound (the guard both stale paths share with the orphan path,
+    td673697 review)."""
+    jobs = plan.jobs(n)
+    ids = [n.id, *[j.id for j in jobs]]
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.created_at,
+                   (SELECT max(rt.created_at) FROM ref_tags rt
+                      JOIN tags t ON t.tag_id = rt.tag_id
+                     WHERE rt.ref_id = r.ref_id
+                       AND (r.kind = 'job' OR t.namespace <> 'OPEN'
+                            OR t.value NOT LIKE 'rescue:%%')),
+                   (SELECT max(c.created_at) FROM chunks c
+                     WHERE c.ref_id = r.ref_id
+                       AND (r.kind = 'job'
+                            OR c.chunk_kind
+                               NOT IN ('todo_comment', 'gripe_comment')
+                            OR c.text NOT LIKE 'rescue:%%')),
+                   (SELECT max(e.ts) FROM ref_events e
+                     WHERE e.ref_id = r.ref_id)
+              FROM refs r WHERE r.ref_id = ANY(%s)
+            """,
+            (ids,),
+        ).fetchall()
+    signals = {int(r[0]): tuple(r[1:]) for r in rows}
+    newest, _label, _lines = _node_signals(
+        n, jobs, signals, _unblocked_at(store, plan, n)
+    )
+    return newest
+
+
+def _close_wont_do(
     store: Store,
     now: datetime,
     res: RescuePassResult,
     n: Any,
     cls: str,
-    term: tuple[int, str],
+    note: str,
 ) -> None:
-    """Close the orphan ``STATUS:won't-do`` — there is nothing to retry
-    under a done or won't-do root, and every ask the pass filed on one
-    came back "won't do" (gr576258): one note, ``meta.rescue`` stamped
-    (an existing ``n`` kept — the count is about re-arms, not closes),
-    and every live ask on the node closed with it so none is left
-    orphaned. The ``rescue:<cls>`` tag stays — the record of why the
-    node died."""
-    aid, astatus = term
-    label = "root" if aid == _plan_root_of(n) else "ancestor"
-    note = f"{label} td{aid} is {astatus}; closed by the watchdog"
+    """The won't-do close shared by the orphan and stale paths: STATUS +
+    one audit comment + ``meta.rescue`` stamped (an existing ``n`` kept
+    — the count is about re-arms, not closes), and every live ask on
+    the node closed with it so none is left orphaned. The
+    ``rescue:<cls>`` tag stays — the record of why the node died."""
     if res.dry_run:
         res.would.append((n.id, "close"))
         res.notes.append(f"td{n.id}: would close won't-do ({note})")
@@ -2876,6 +3179,47 @@ def _close_orphan(
     root = _plan_root_of(n)
     if root is not None:
         log_plan_event(store, n.id, note, root=root)
+
+
+def _close_orphan(
+    store: Store,
+    now: datetime,
+    res: RescuePassResult,
+    n: Any,
+    cls: str,
+    term: tuple[int, str],
+) -> None:
+    """Close the orphan ``STATUS:won't-do`` — there is nothing to retry
+    under a done or won't-do root, and every ask the pass filed on one
+    came back "won't do" (gr576258)."""
+    aid, astatus = term
+    label = "root" if aid == _plan_root_of(n) else "ancestor"
+    _close_wont_do(
+        store, now, res, n, cls, f"{label} td{aid} is {astatus}; closed by the watchdog"
+    )
+
+
+def _close_stale(
+    store: Store,
+    now: datetime,
+    res: RescuePassResult,
+    n: Any,
+    cls: str,
+    last_at: datetime,
+) -> None:
+    """Close the stale rescue ``STATUS:won't-do`` — the node's last real
+    signal predates ``STALE_ASK_AFTER``, so the stall it reports is
+    already-old work with nothing left to rule on (gr666159)."""
+    hours = int(STALE_ASK_AFTER.total_seconds() // 3600)
+    _close_wont_do(
+        store,
+        now,
+        res,
+        n,
+        cls,
+        f"silent since {_iso(last_at)} (> {hours}h); stale rescue "
+        "closed by the watchdog",
+    )
 
 
 def _close_diagnose(
@@ -3214,9 +3558,12 @@ def _judge_rescued(
     the ``terminal-root`` class, or a ``won't-do`` anywhere up the
     node's own parent chain — → close won't-do, no ask (gr576258, a
     bounded ``ORPHAN_BATCH`` closes a pass); an ask already filed
-    this episode → skip; a diagnose task → judge it; an engine class,
-    an unknown class or a second rescue → the ask directly; else mint
-    the diagnose task."""
+    this episode → skip; a diagnose task → judge it; an already-old
+    rescue with none of those live — the last real signal older than
+    ``STALE_ASK_AFTER`` — → the same bounded close, one ask per live
+    node (gr666159), deferred while a child job is nonterminal
+    (td673697 review); an engine class, an unknown class or a second
+    rescue → the ask directly; else mint the diagnose task."""
     plan = _subtree_plan(store, ref_id)
     n = plan.nodes.get(ref_id)
     if n is None:
@@ -3267,6 +3614,34 @@ def _judge_rescued(
         return
     if task_id is not None:
         _judge_diagnose(store, now, res, plan, n, cls, tag_at, task_id, pd)
+        return
+    # gr666159: one ask per LIVE node — a stall whose last real signal
+    # is already older than ``STALE_ASK_AFTER`` has nothing left to rule
+    # on (every ask on an already-old node comes back "drop it"). Close
+    # it won't-do in the same bounded batch as orphans, before any new
+    # diagnose or ask is minted — but never under a live child job: its
+    # signals can all predate the bound while it still runs, and the job
+    # may still land (the orphan path's guard, td673697 review). Live
+    # engagement — an episode ask, an open same-class ask, an in-flight
+    # diagnose — was judged above and keeps its own path.
+    last_at = _stall_activity_at(store, plan, n)
+    if now - last_at > STALE_ASK_AFTER:
+        if any(j.status not in pd._JOB_TERMINAL for j in plan.jobs(n)):
+            # The orphan path's live-job guard (td673697 review): a
+            # nonterminal child job may still land — every one of its
+            # signals can predate the bound while it runs — so deferring
+            # beats closing won't-do under it.
+            res.waiting += 1
+            res.notes.append(f"td{ref_id}: live job with stale signals; not closed")
+            return
+        if len(res.closed) >= ORPHAN_BATCH:
+            res.waiting += 1
+            res.notes.append(
+                f"td{ref_id}: stale close batch full "
+                f"({ORPHAN_BATCH} this pass); next tick"
+            )
+            return
+        _close_stale(store, now, res, n, cls, last_at)
         return
     bound = BOUNDS.get(cls)
     if bound is None or bound.engine:
@@ -3355,6 +3730,7 @@ __all__ = [
     "DIAGNOSE_TASK_CLASS",
     "ORPHAN_BATCH",
     "STAGE_DEADLINES",
+    "STALE_ASK_AFTER",
     "TICK_SILENT_AFTER",
     "Bound",
     "RescueEvidence",

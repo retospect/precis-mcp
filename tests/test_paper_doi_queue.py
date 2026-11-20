@@ -10,7 +10,9 @@ untouched non-DOI/malformed/held paths, and the job's own dispatch
 does no network work. The review pass adds the spend/refusal bounds:
 the fleet rolling-24h mint cap, the 5-per-batch cap, the read-only and
 retired doors, and the real-dispatch ``finished_at`` stamp the requeue
-window reads.
+window reads. gr715493 adds the view door: a get naming a view is a
+read, so an unheld DOI answers the NotFound (no mint) — plain and
+batch, including aliases for the default renderer.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ def _seed_paper(
         provider="manual",
         authors=[{"name": "Held, P."}],
         year=2020,
-        meta={"doi": doi, "journal": "JNC"},
+        meta={"doi": doi, "journal": "JNC", "abstract": "An existing abstract."},
     )
     store.insert_ref_identifiers(ref.id, [("doi", doi, "manual")])
     store.chunks.insert_chunks(
@@ -135,7 +137,49 @@ def _mint_terminal_job(
 # ---------------------------------------------------------------------------
 
 
+def test_doi_status_reports_availability_without_queuing(
+    store: Store, handler: PaperHandler
+) -> None:
+    held_doi = "10.1111/jnc.13915"
+    ref_id = _seed_paper(store, doi=held_doi)
+
+    held = handler.get(id=f"https://doi.org/{held_doi}", view="status")
+    missing = handler.get(id=DOI, view="status")
+
+    assert f"https://doi.org/{held_doi} -> pa{ref_id}" in held.body
+    assert "full-text" in held.body
+    assert f"{DOI}  unresolved" in missing.body
+    assert not _jobs(store)
+    assert _stub_for_doi(store, DOI) is None
+
+
 class TestUnheldDoiGetQueues:
+    def test_held_abstract_still_reads(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed_paper(store, doi=DOI)
+        assert "An existing abstract." in handler.get(id=DOI, view="abstract").body
+        assert _jobs(store) == []
+
+    def test_abstract_miss_does_not_queue(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr717456: inspecting an abstract must not launch acquisition."""
+        with pytest.raises(NotFound):
+            handler.get(id=DOI, view="abstract")
+        assert _jobs(store) == []
+        assert _stub_for_doi(store, DOI) is None
+
+    @pytest.mark.parametrize("confirm_bulk", [False, True])
+    def test_batch_abstract_misses_do_not_queue(
+        self, store: Store, handler: PaperHandler, confirm_bulk: bool
+    ) -> None:
+        ids: list[str | int] = [f"10.1234/abstract-miss-{i}" for i in range(7)]
+        resp = handler.get(id=ids, view="abstract", args={"confirm_bulk": confirm_bulk})
+        assert resp.body.count("not found") == len(ids)
+        assert "confirm_bulk" not in resp.body
+        assert _jobs(store) == []
+
     def test_queues_job_and_names_it(self, store: Store, handler: PaperHandler) -> None:
         resp = handler.get(id=DOI)
         jobs = _jobs(store)
@@ -245,6 +289,80 @@ class TestUnheldDoiGate:
         assert len(_jobs(store)) == 1
         assert "STATUS:cancelled" in resp.body
         assert "not requeueing" in resp.body
+
+
+class TestViewGetDoesNotQueue:
+    """gr715493: a get that names a view is a read of stored data — for
+    an unheld DOI there is nothing to render, so the miss answers the
+    NotFound with the acquire hint ("does not queue") and no job row
+    lands. The gr551840 queue door opens only for a view-less get."""
+
+    def test_bibtex_view_miss_does_not_queue(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        with pytest.raises(NotFound, match="not ingested") as excinfo:
+            handler.get(id=DOI, view="bibtex")
+        nxt = excinfo.value.next
+        assert isinstance(nxt, str)
+        assert "does not queue" in nxt
+        assert f"put(kind='paper', doi='{DOI}')" in nxt
+        assert _jobs(store) == []
+
+    def test_view_path_alias_does_not_queue(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        with pytest.raises(NotFound, match="not ingested"):
+            handler.get(id=DOI, view="cite/bib")
+        assert _jobs(store) == []
+
+    @pytest.mark.parametrize("view", ["meta", "text", "body", "full"])
+    def test_default_renderer_alias_does_not_queue(
+        self, store: Store, handler: PaperHandler, view: str
+    ) -> None:
+        with pytest.raises(NotFound, match="not ingested") as excinfo:
+            handler.get(id=DOI, view=view)
+        assert "does not queue" in (excinfo.value.next or "")
+        assert _jobs(store) == []
+
+    def test_find_in_ref_with_view_does_not_queue(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """``q=`` plus a view is refused by the find-in-ref preflight
+        before any DOI resolution, so no job can be minted."""
+        with pytest.raises(BadInput, match="doesn't combine with view"):
+            handler.get(id=DOI, view="bibtex", q="x")
+        assert _jobs(store) == []
+
+    def test_view_get_on_retired_doi_shows_tombstone(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The tombstone answer is a read too — a view get on a retired
+        DOI still gets it, without queueing anything."""
+        ref_id = _seed_paper(store, doi=DOI)
+        store.retire_ref(ref_id)
+        resp = handler.get(id=DOI, view="bibtex")
+        assert "deleted paper" in resp.body
+        assert f"pa{ref_id}" in resp.body
+        assert _jobs(store) == []
+
+    @pytest.mark.parametrize("view", ["bibtex", "meta", "text", "body", "full"])
+    def test_batch_with_view_does_not_queue_or_ask_confirm(
+        self, store: Store, handler: PaperHandler, view: str
+    ) -> None:
+        """A view batch is a read: no confirm_bulk pre-scan demand and
+        no per-element mints — every unheld DOI reads as not-found."""
+        dois: list[str | int] = [f"10.1021/viewcap{i}" for i in range(7)]
+        resp = handler.get(id=dois, view=view)
+        assert "confirm_bulk" not in resp.body
+        assert resp.body.count("not found") == 7
+        assert _jobs(store) == []
+
+    def test_batch_without_view_still_queues(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        resp = handler.get(id=[DOI])
+        assert "queued ingest job" in resp.body
+        assert len(_jobs(store)) == 1
 
 
 class TestUnaffectedGetPaths:
@@ -400,6 +518,66 @@ class TestDispatch:
         assert stub is not None
         assert stub["meta"].get("acquire_unverified") is True
         assert stub["prio"] == 1
+        assert not any(ev[0] == "fail" for ev in out)
+
+    def test_s2_echo_of_poisoned_cluster_uses_registry_record(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr710828, mirrored from acquire: S2 echoes the DOI back onto a
+        mis-merged cluster — the stub must not adopt the cluster's arXiv /
+        S2 aliases, and the registry record that established the mismatch
+        is reused (the registries are asked exactly once, so a second-ask
+        miss cannot fail a job the first ask confirmed)."""
+        foreign = "10.9728/dcs.2024.25.7.1847"
+        calls: list[str] = []
+        monkeypatch.setattr(
+            paper_ingest,
+            "_s2_lookup",
+            lambda doi: {
+                "title": "A Unified Approach to Interpreting Model Predictions",
+                "year": 2017,
+                "doi": doi,
+                "arxiv_id": "1705.07874",
+                "s2_id": "442e10a3c6640ded9408622005e3c2a8906ce4c2",
+                "authors": [{"name": "Scott M. Lundberg"}],
+            },
+        )
+
+        def _registry(doi: str) -> dict[str, Any]:
+            calls.append(doi)
+            return {
+                "title": "Exploration of Digital Divide Factors Affecting "
+                "Life Satisfaction in Older People: Using Tree-Based "
+                "Ensemble Machine Learning and SHAP",
+                "authors": [{"given": "Jeong-Seon", "family": "Lee"}],
+                "year": 2024,
+                "source": "crossref",
+            }
+
+        monkeypatch.setattr(paper_ingest, "_registry_lookup", _registry)
+        out: list = []
+        ctx = fake_ctx(
+            store, {"job_type": "paper_ingest", "params": {"doi": foreign}}, out
+        )
+        _dispatch(ctx)
+
+        stub = _stub_for_doi(store, foreign)
+        assert stub is not None
+        assert stub["meta"].get("acquire_registry") == "crossref"
+        assert stub["title"] == (
+            "Exploration of Digital Divide Factors Affecting Life "
+            "Satisfaction in Older People: Using Tree-Based Ensemble "
+            "Machine Learning and SHAP"
+        )
+        assert calls == [foreign]
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT id_kind FROM ref_identifiers WHERE ref_id = %s",
+                (stub["id"],),
+            ).fetchall()
+        kinds = [r[0] for r in rows]
+        assert "doi" in kinds
+        assert not any(k in ("arxiv", "s2") for k in kinds)
         assert not any(ev[0] == "fail" for ev in out)
 
     def test_empty_doi_fails(

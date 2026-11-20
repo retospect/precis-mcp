@@ -1072,11 +1072,31 @@ def test_drive_rows_show_per_item_tags(client) -> None:
     source of these links is the per-row chips."""
     resp = client.get("/drive?q=query")
     assert resp.status_code == 200
-    # Paper #10's topical tag renders as a chip linking to the pivot.
-    assert "/tags/refs?namespace=topic&amp;value=co2-capture" in resp.text
+    # Paper #10's topical tag renders as a chip linking to Drive filtered
+    # to it — the label urlencoded, the listing's ref kinds pinned. The
+    # lowercase axis carries the ``=ns:value`` exact escape (gr636493).
+    assert "/drive?tag=%3Dtopic%3Aco2-capture&amp;k=paper" in resp.text
     # Its flag + machine tags do NOT appear as chips.
     assert "namespace=OPEN&amp;value=read-later" not in resp.text
     assert "namespace=DREAM&amp;value=spec" not in resp.text
+
+
+def test_drive_row_tag_chips_pin_ref_kinds(runtime, client) -> None:
+    """gr664407: a bare ``/drive?tag=…`` chip resolves the saved
+    ``items_kinds`` cookie, so a saved ``k=tag`` would bounce the click
+    back to a tag listing instead of the refs the tag matches. The chip
+    pins the listing's ref kinds as explicit ``k=`` params — the same
+    pin ``routes/drive.py::_tag_rows`` puts on tag-row links."""
+    # Save a tag-only kind cookie first: it must not leak into the chip.
+    client.get("/drive?submitted=1&k=tag")
+    resp = client.get("/drive?q=query&k=paper")
+    assert resp.status_code == 200
+    assert 'href="/drive?tag=%3Dtopic%3Aco2-capture&amp;k=paper"' in resp.text
+    # Following the pinned link lands on matching refs, not the tag
+    # listing the saved cookie would have produced for a bare ?tag=.
+    client.get("/drive?tag==topic:co2-capture&k=paper")
+    assert runtime.store.recent_kinds == ["paper"]
+    assert runtime.store.recent_tags == ["=topic:co2-capture"]
 
 
 def test_drive_has_new_button(client) -> None:
@@ -1191,14 +1211,16 @@ def test_drive_tag_suggest_endpoint(client) -> None:
     """The autocomplete backend substring-matches tags; <2 chars is empty."""
     assert client.get("/drive/tags/suggest?q=c").json() == []
     hits = client.get("/drive/tags/suggest?q=co2").json()
-    assert {"label": "topic:co2-capture", "tag": "topic:co2-capture"} in hits
+    # The label displays ns:value; the submitted filter carries the
+    # lowercase axis's exact escape (gr636493).
+    assert {"label": "topic:co2-capture", "tag": "=topic:co2-capture"} in hits
 
 
 def test_items_tags_suggest_alias_still_works(client) -> None:
     """The legacy ``/items/tags/suggest`` path (same function, two mounted
     routes) still answers — old callers/bookmarks aren't broken."""
     hits = client.get("/items/tags/suggest?q=co2").json()
-    assert {"label": "topic:co2-capture", "tag": "topic:co2-capture"} in hits
+    assert {"label": "topic:co2-capture", "tag": "=topic:co2-capture"} in hits
 
 
 def test_drive_tag_filter_flows_to_search(runtime, client) -> None:
@@ -1667,164 +1689,151 @@ def test_drive_item_actions_block_open_redirect(runtime, client) -> None:
 # with_filters_preserved) is the surviving pagination surface for stubs.
 
 
-# ── tags browser ───────────────────────────────────────────────────
+# ── tags: the leaderboard and refs listing moved into /drive (gr636493) ──
 
 
-def test_tags_index_renders_empty_state(client) -> None:
-    """``/tags`` returns 200 even on a fresh DB (the FakeConn yields no rows)."""
-    resp = client.get("/tags")
-    assert resp.status_code == 200
-    assert "Tags" in resp.text
-    # Empty-state copy.
-    assert "No tags match" in resp.text
+def test_tags_index_redirects_to_drive_tag_kind(client) -> None:
+    """``/tags`` is a 302 into the drive's ``k=tag`` view — the same
+    roster (most-used first), same substring ``q`` filter, same pager."""
+    resp = client.get("/tags", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/drive?k=tag"
+    # The landing renders the drive tag listing.
+    assert client.get("/tags").status_code == 200
 
 
-def test_tags_index_accepts_query_filter(client) -> None:
-    """``?q=foo`` flows through the route without crashing."""
-    resp = client.get("/tags?q=tier")
-    assert resp.status_code == 200
-    # Query value echoed in the search box.
-    assert 'value="tier"' in resp.text
+def test_tags_index_redirect_preserves_query_and_page(client) -> None:
+    resp = client.get("/tags?q=tier&page=2", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/drive?k=tag&q=tier&page=2"
 
 
-# ── tags/refs pagination ───────────────────────────────────────────
+def test_tags_refs_redirects_tag_filter_to_drive(client) -> None:
+    """``?namespace=NS&value=V`` lands on the drive's ``tag=`` facet,
+    every row-backed kind pinned (the old listing was kind-agnostic)
+    and ``folder=*`` (it was folder-agnostic too)."""
+    resp = client.get(
+        "/tags/refs?namespace=DREAM&value=speculative", follow_redirects=False
+    )
+    assert resp.status_code == 302
+    loc = resp.headers["location"]
+    assert loc.startswith("/drive?tag=DREAM%3Aspeculative")
+    assert "folder=%2A" in loc
+    # kind-agnostic → every kind the fake reports as ref-backed is pinned
+    for kind in ("memory", "todo", "paper"):
+        assert f"k={kind}" in loc
 
 
-def _paging_client(total: int):
-    """A TestClient whose store pages a synthetic ``total``-row result.
-
-    The ``/tags/refs`` route fires two queries: a ``count(*)`` and a
-    ``... LIMIT %s OFFSET %s`` page fetch. This fake answers the count
-    from ``total`` and slices a descending-id row list by the trailing
-    (limit, offset) params, so the route's offset/limit arithmetic is
-    what's under test — not the DB.
-    """
-    from contextlib import contextmanager
-
-    from fastapi.testclient import TestClient
-
-    from precis_web.app import create_app
-    from precis_web.config import WebConfig
-
-    from .conftest import FakeRuntime, FakeStore
-
-    all_rows = [
-        (("think"), rid, f"thought {rid}", False) for rid in range(total, 0, -1)
-    ]
-
-    class _PagingConn:
-        def execute(self, sql: str, params):
-            if "count(" in sql.lower():
-                return _Cur([(total,)])
-            limit, offset = int(params[-2]), int(params[-1])
-            return _Cur(all_rows[offset : offset + limit])
-
-    class _Cur:
-        def __init__(self, rows):
-            self._rows = rows
-
-        def fetchall(self):
-            return self._rows
-
-        def fetchone(self):
-            return self._rows[0] if self._rows else None
-
-    class _PagingPool:
-        @contextmanager
-        def connection(self):
-            yield _PagingConn()
-
-    store = FakeStore()
-    store.pool = _PagingPool()
-    rt = FakeRuntime(store)
-    rt.store = store
-    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=None))
-    return TestClient(app)
+def test_tags_refs_redirect_maps_open_namespace_to_bare_value(client) -> None:
+    resp = client.get(
+        "/tags/refs?namespace=OPEN&value=read-later", follow_redirects=False
+    )
+    assert resp.status_code == 302
+    assert resp.headers["location"].startswith("/drive?tag=read-later")
 
 
-def test_refs_by_tag_first_page_has_next_not_prev() -> None:
-    client = _paging_client(total=250)
-    resp = client.get("/tags/refs?namespace=DREAM&value=speculative")
-    assert resp.status_code == 200
-    assert "250 refs tagged" in resp.text
-    assert "Page 1 of 3" in resp.text
-    assert 'rel="next"' in resp.text
-    # First page: prev is the disabled span, not an anchor.
-    assert 'rel="prev"' not in resp.text
-    # Range readout.
-    assert "1–100 of 250" in resp.text
+def test_tags_refs_redirect_maps_kind_only(client) -> None:
+    resp = client.get("/tags/refs?kind=todo", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/drive?k=todo&folder=%2A"
 
 
-def test_refs_by_tag_has_numbered_window_with_last_jump() -> None:
-    # A many-page result renders numbered page links and a jump to the
-    # last page (…) — not just Prev/Next stepping.
-    client = _paging_client(total=2000)  # 20 pages at 100/page
-    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page=10")
-    assert resp.status_code == 200
-    assert "Page 10 of 20" in resp.text
-    # Window around page 10 plus first/last anchors.
-    assert "page=7" in resp.text and "page=13" in resp.text
-    assert "page=1" in resp.text and "page=20" in resp.text
-    # Current page is rendered as a non-link marker, not an anchor.
-    assert "page=10" not in resp.text
+def test_tags_refs_redirect_maps_tag_and_kind(client) -> None:
+    resp = client.get(
+        "/tags/refs?namespace=STATUS&value=open&kind=todo&page=2",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert (
+        resp.headers["location"] == "/drive?tag=STATUS%3Aopen&k=todo&folder=%2A&page=2"
+    )
 
 
-def test_refs_by_tag_middle_page_has_both_arrows() -> None:
-    client = _paging_client(total=250)
-    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page=2")
-    assert resp.status_code == 200
-    assert "Page 2 of 3" in resp.text
-    assert 'rel="prev"' in resp.text
-    assert 'rel="next"' in resp.text
-    assert "101–200 of 250" in resp.text
-    # Filters are preserved in the pager links.
-    assert "namespace=DREAM" in resp.text
-    assert "value=speculative" in resp.text
+def test_tags_refs_redirect_resolves_chip_text(client) -> None:
+    """``?tag=<chip text>`` (the eye ``[ns:value]`` link shape): the
+    FakeConn finds no stored row, so the prefix heuristic applies —
+    lowercase prefix → OPEN whole-text."""
+    resp = client.get("/tags/refs?tag=section%3Aindex", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"].startswith("/drive?tag=section%3Aindex")
 
 
-def test_refs_by_tag_last_page_has_no_next() -> None:
-    client = _paging_client(total=250)
-    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page=3")
-    assert resp.status_code == 200
-    assert "Page 3 of 3" in resp.text
-    assert 'rel="prev"' in resp.text
-    assert 'rel="next"' not in resp.text
-    assert "201–250 of 250" in resp.text
+def test_tags_refs_redirect_maps_lowercase_namespace_to_exact_axis(client) -> None:
+    """gr636493 review (td697200): ``?namespace=tier&value=…`` keeps the
+    stored pair — the ``=ns:value`` escape — instead of the plain
+    ``ns:value`` spelling that would filter the OPEN/FLAG pair and
+    match nothing."""
+    resp = client.get(
+        "/tags/refs?namespace=tier&value=synthetic-insight",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert resp.headers["location"].startswith("/drive?tag=%3Dtier%3Asynthetic-insight")
 
 
-def test_refs_by_tag_past_end_shows_back_link() -> None:
-    client = _paging_client(total=250)
-    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page=9")
-    assert resp.status_code == 200
-    assert "past the end" in resp.text
-    assert "back a page" in resp.text
+def test_tags_refs_without_params_is_a_400(client) -> None:
+    resp = client.get("/tags/refs", follow_redirects=False)
+    assert resp.status_code == 400
 
 
-def test_refs_by_tag_page_size_is_clamped() -> None:
-    client = _paging_client(total=250)
-    # 9999 clamps to the 500 ceiling → everything fits on one page.
-    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page_size=9999")
-    assert resp.status_code == 200
-    assert "250 refs tagged" in resp.text
-    # Single page → no pager rendered.
-    assert "Page 1 of 1" not in resp.text
-    assert 'aria-label="Pagination"' not in resp.text
+# ── /tags/delete ─────────────────────────────────────────────────
 
 
-def test_refs_by_tag_custom_page_size_preserved_in_links() -> None:
-    client = _paging_client(total=250)
-    resp = client.get("/tags/refs?namespace=DREAM&value=speculative&page_size=50")
-    assert resp.status_code == 200
-    assert "Page 1 of 5" in resp.text
-    # Non-default page_size rides along in the next link.
-    assert "page_size=50" in resp.text
+def test_tags_delete_redirects_back_to_the_calling_page(client) -> None:
+    """A valid local ``back`` becomes the 303's Location — the drive
+    tag rows stamp the filtered URL they were posted from."""
+    resp = client.post(
+        "/tags/delete",
+        data={"namespace": "OPEN", "value": "carbon", "back": "/drive?k=tag&q=carb"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/drive?k=tag&q=carb"
+
+
+def test_tags_delete_without_back_falls_back_to_k_tag_with_q(client) -> None:
+    resp = client.post(
+        "/tags/delete",
+        data={"namespace": "OPEN", "value": "carbon", "q": "carb"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/drive?k=tag&q=carb"
+
+
+def test_tags_delete_rejects_external_back(client) -> None:
+    """gr541794's open-redirect guard applies to ``back``: ``//`` and
+    ``/\\`` hosts, schemes and netlocs never become the Location."""
+    for bad in (
+        "//evil.example/path",
+        "/\\evil.example/path",
+        "https://evil.example/",
+        "javascript:alert(1)",
+        "evil.example",
+    ):
+        resp = client.post(
+            "/tags/delete",
+            data={"namespace": "OPEN", "value": "carbon", "back": bad},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/drive?k=tag", bad
+
+
+def test_tags_delete_protected_namespace_is_a_400(client) -> None:
+    resp = client.post(
+        "/tags/delete",
+        data={"namespace": "STATUS", "value": "open"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
 
 
 # ── todo ──────────────────────────────────────────────────────────
 
 
 def test_todo_dashboard_renders_tree(client) -> None:
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     assert "Build the thing" in resp.text
     assert "Draft the spec" in resp.text
@@ -3954,7 +3963,7 @@ def test_env_missing_plist_surfaces_red_banner(client, monkeypatch) -> None:
 
 def test_env_in_base_nav(client) -> None:
     """The Env tab is reachable from base.html.j2 nav."""
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     assert 'href="/env"' in resp.text
 
@@ -3962,7 +3971,7 @@ def test_env_in_base_nav(client) -> None:
 def test_loupe_in_base_nav(client) -> None:
     """The 🔍 loupe form posts to /drive (WS1b repoint) so cross-kind
     search lands on the unified Drive surface."""
-    resp = client.get("/todo")  # any page; loupe is in base
+    resp = client.get("/todo?show_jobs=active")  # any page; loupe is in base
     assert resp.status_code == 200
     assert 'action="/drive"' in resp.text
 
@@ -4473,7 +4482,7 @@ def test_console_conversion_error_is_inline_with_working_example(
 
     from precis_web.routes.console import _parse_args
 
-    request_data = {"verb": "search", "args_text": f"kind=memory q=spark {argument}"}
+    request_data = {"verb": "search", "args_text": f"kind=memory q=spruce {argument}"}
     if method == "post":
         resp = client.post("/console/run", data=request_data)
     else:
@@ -4484,7 +4493,7 @@ def test_console_conversion_error_is_inline_with_working_example(
     assert "[input error]" in rendered
     assert f"Example: {example}" in rendered
     assert not runtime.calls
-    assert _parse_args("search", f"kind=memory q=spark {example}")[key] == expected
+    assert _parse_args("search", f"kind=memory q=spruce {example}")[key] == expected
 
 
 @pytest.mark.parametrize("method", ["post", "get"])
@@ -4498,7 +4507,7 @@ def test_console_conversion_error_is_inline_with_working_example(
 def test_console_dict_argument_dispatches(
     client, runtime, method: str, argument: str
 ) -> None:
-    request_data = {"verb": "search", "args_text": f"kind=memory q=spark {argument}"}
+    request_data = {"verb": "search", "args_text": f"kind=memory q=spruce {argument}"}
     if method == "post":
         resp = client.post("/console/run", data=request_data)
     else:
@@ -4506,7 +4515,7 @@ def test_console_dict_argument_dispatches(
 
     assert resp.status_code == 200
     assert runtime.calls == [
-        ("search", {"kind": "memory", "q": "spark", "args": {"under": "me1"}})
+        ("search", {"kind": "memory", "q": "spruce", "args": {"under": "me1"}})
     ]
     assert "[search] ok" in resp.text
 
@@ -4516,8 +4525,8 @@ def test_console_dict_argument_dispatches(
     ("args_text", "expected"),
     [
         pytest.param(
-            r"kind=memory q=spark args={\"under\":\"me1\"}",
-            {"kind": "memory", "q": "spark", "args": {"under": "me1"}},
+            r"kind=memory q=spruce args={\"under\":\"me1\"}",
+            {"kind": "memory", "q": "spruce", "args": {"under": "me1"}},
             id="legacy-escaped-json",
         ),
         pytest.param(
@@ -4531,8 +4540,8 @@ def test_console_dict_argument_dispatches(
             id="dict-only",
         ),
         pytest.param(
-            "args={'under': 'me1', 'depth': 1} q=spark",
-            {"args": {"under": "me1", "depth": 1}, "q": "spark"},
+            "args={'under': 'me1', 'depth': 1} q=spruce",
+            {"args": {"under": "me1", "depth": 1}, "q": "spruce"},
             id="dict-with-following-query",
         ),
         pytest.param(
@@ -4579,18 +4588,18 @@ def test_console_failed_dict_rescue_preserves_first_error(args_text: str) -> Non
     ("args_text", "expected"),
     [
         pytest.param(
-            "args={'filter': {'tags': ['one', 'two']}} q=spark",
-            {"args": {"filter": {"tags": ["one", "two"]}}, "q": "spark"},
+            "args={'filter': {'tags': ['one', 'two']}} q=spruce",
+            {"args": {"filter": {"tags": ["one", "two"]}}, "q": "spruce"},
             id="nested-dict-and-list",
         ),
         pytest.param(
-            "args={'note': 'two words } { here'} q=spark",
-            {"args": {"note": "two words } { here"}, "q": "spark"},
+            "args={'note': 'two words } { here'} q=spruce",
+            {"args": {"note": "two words } { here"}, "q": "spruce"},
             id="spaces-and-braces-in-dict-string",
         ),
         pytest.param(
-            r"args={'note': 'author\'s words'} q=spark",
-            {"args": {"note": "author's words"}, "q": "spark"},
+            r"args={'note': 'author\'s words'} q=spruce",
+            {"args": {"note": "author's words"}, "q": "spruce"},
             id="escaped-apostrophe-in-dict-string",
         ),
         pytest.param(
@@ -4609,8 +4618,8 @@ def test_console_failed_dict_rescue_preserves_first_error(args_text: str) -> Non
             id="bare-brace-in-string-argument",
         ),
         pytest.param(
-            '"kind=memory" "q"=spark',
-            {"kind": "memory", "q": "spark"},
+            '"kind=memory" "q"=spruce',
+            {"kind": "memory", "q": "spruce"},
             id="quoted-key-and-whole-token",
         ),
         pytest.param(
@@ -5081,6 +5090,9 @@ def test_gripes_status_change_htmx_swaps_fragment(runtime, client) -> None:
     assert resp.status_code == 200
     assert 'id="gripe-status-96"' in resp.text
     assert "wontfix" in resp.text
+    # Attention rides inside the swapped fragment (gr695933 review): a
+    # terminal status re-renders it, so the metadata line can't go stale.
+    assert "Attention: no" in resp.text
     # The now-active status no longer offers its own transition button.
     assert 'value="wontfix"' not in resp.text
     assert (
@@ -5341,7 +5353,7 @@ def test_status_telemetry_panels_render_data(client, monkeypatch) -> None:
         "_heartbeats",
         lambda store: [
             {
-                "host": "caspar",
+                "host": "birch",
                 "ago": "2m ago",
                 "stale": False,
                 "temp_c": 91.5,
@@ -5355,7 +5367,7 @@ def test_status_telemetry_panels_render_data(client, monkeypatch) -> None:
         status_mod,
         "_hosts",
         lambda store: [
-            {"host": "caspar", "ago": "1m ago", "stale": False, "problems": 4}
+            {"host": "birch", "ago": "1m ago", "stale": False, "problems": 4}
         ],
     )
     monkeypatch.setattr(
@@ -5374,7 +5386,7 @@ def test_status_telemetry_panels_render_data(client, monkeypatch) -> None:
     # The Machines strip deferred onto the lazy panels fragment (gr518161).
     resp = client.get("/status/health-panels")
     assert resp.status_code == 200
-    assert "caspar" in resp.text
+    assert "birch" in resp.text
     assert "91.5 °C" in resp.text  # hot temp rendered
     assert "4 err/warn 24h" in resp.text
 
@@ -5397,7 +5409,7 @@ def test_status_background_health_panel_renders_anomalies(client, monkeypatch) -
             ],
             "failed_passes": [
                 {
-                    "host": "melchior",
+                    "host": "maple",
                     "handler": "deep_review",
                     "failed": 3,
                     "ago": "5m ago",
@@ -5476,10 +5488,12 @@ def test_status_services_tab_lists_registry_services(client) -> None:
     assert 'action="/factory/prio"' in resp.text
 
 
-def test_status_services_tab_host_selector_scopes_page(client) -> None:
-    resp = client.get("/status?tab=services&host=melchior")
+def test_status_services_tab_unknown_host_falls_back_to_all(client) -> None:
+    """A ``host=`` the fleet does not know is not an editing scope: the
+    selector falls back to all hosts."""
+    resp = client.get("/status?tab=services&host=no-such-host")
     assert resp.status_code == 200
-    assert "melchior" in resp.text
+    assert '<option value="*" selected>' in resp.text
 
 
 def test_status_services_tab_renders_llm_chain_editor(client) -> None:
@@ -6092,7 +6106,7 @@ def test_dashboard_hides_closed_jobs_by_default(client, runtime) -> None:
     todo_mod._load_tags = load_tags
     try:
         # Default: closed job hidden.
-        resp = client.get("/todo")
+        resp = client.get("/todo?show_jobs=active")
         assert resp.status_code == 200
         assert "plan_tick attempt" not in resp.text
         # show_jobs=all: closed job visible.
@@ -6144,7 +6158,7 @@ def test_dashboard_child_failed_shows_reason_and_retry(
     monkeypatch.setattr(todo_mod, "_load_tags", load_tags)
     monkeypatch.setattr(todo_mod, "_load_freeform_tags", load_freeform)
     monkeypatch.setattr(todo_mod, "_job_notes", job_notes)
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     # The reason is surfaced inline…
     assert "⚠ failed" in resp.text
@@ -6223,7 +6237,7 @@ def test_dashboard_child_failed_prefers_job_summary_over_job_event(
     monkeypatch.setattr(todo_mod, "_load_tags", load_tags)
     monkeypatch.setattr(todo_mod, "_load_freeform_tags", load_freeform)
     monkeypatch.setattr(todo_mod, "_job_notes", job_notes)
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     assert "API Error: Claude Code is unable to respond" in resp.text
     assert "runner: killed at wall-clock deadline" not in resp.text
@@ -6295,7 +6309,7 @@ def test_dashboard_child_failed_falls_back_to_job_event_reason(
     monkeypatch.setattr(todo_mod, "_load_tags", load_tags)
     monkeypatch.setattr(todo_mod, "_load_freeform_tags", load_freeform)
     monkeypatch.setattr(todo_mod, "_job_notes", job_notes)
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     assert (
         "autocatpath_seed: run failed: child process exited without "
@@ -6306,7 +6320,7 @@ def test_dashboard_child_failed_falls_back_to_job_event_reason(
 
 def test_dashboard_status_badge_is_clickable_filter(client) -> None:
     """STATUS / level badges render as ``<a>`` links that filter on click."""
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     # Fake store seeds two open todos; the open badge should be a link
     # to ?require=STATUS:open. The kind:todo badge isn't rendered (only
@@ -6436,7 +6450,7 @@ def test_dashboard_truncates_title_first_line_with_hover_tooltip(
     runtime.store.todos = [
         make_ref(id=1, kind="todo", title=long_body),
     ]
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     # First line shows.
     assert "First line summary that should stand alone in the row." in resp.text
@@ -6596,7 +6610,7 @@ def test_memory_detail_omits_chunks_section(client) -> None:
 def test_template_missing_key_does_not_500(client, monkeypatch) -> None:
     """A context dict missing a key the template references must render.
 
-    The melchior incident: a stale process omitted ``usage`` and the
+    The maple incident: a stale process omitted ``usage`` and the
     page 500'd on ``usage.get(...)``. ``ChainableUndefined`` keeps
     chained access silent.
     """
@@ -6941,6 +6955,45 @@ def test_needs_you_renders_asks_inline(client, monkeypatch) -> None:
     assert 'action="/asks/14634/answer"' in resp.text
 
 
+def test_needs_you_every_item_has_fisheye_link(client, runtime, monkeypatch) -> None:
+    """gr595061: answerable asks, folded rows and papers expose their context."""
+    from precis.todo.asks_view import AskRow, AsksModel
+    from precis_web.routes import asks as asks_mod
+    from precis_web.routes import needs_you as needs_you_mod
+
+    monkeypatch.setattr(needs_you_mod, "_load_asks", lambda store, **kw: [_ASK_14634])
+    model = AsksModel(
+        rows=(
+            AskRow(
+                klass="decision",
+                kind="gripe",
+                ref_id=88,
+                handle="gr88",
+                title="Ruling on lane rule",
+                reasons=("needs:ruling",),
+            ),
+        )
+    )
+    monkeypatch.setattr(asks_mod, "asks_model", lambda store: model)
+
+    resp = client.get("/needs-you")
+    assert resp.status_code == 200
+    for handle in ("td14634", "gr88"):
+        assert f'href="/eye/{handle}"' in resp.text
+    paper_rows = 0
+    for paper in runtime.store.papers:
+        title_pos = resp.text.find(f'href="/papers/{paper.id}?triage=1"')
+        if title_pos < 0:
+            continue
+        row = resp.text[
+            resp.text.rindex("<li", 0, title_pos) : resp.text.index("</li>", title_pos)
+        ]
+        assert f'href="/eye/pa{paper.id}"' in row
+        assert ">fisheye</a>" in row
+        paper_rows += 1
+    assert paper_rows > 0
+
+
 @pytest.mark.parametrize("path", ["/asks", "/needs-you"])
 def test_queue_items_show_filed_and_updated_times(
     client, runtime, monkeypatch, path
@@ -7125,11 +7178,11 @@ def test_nav_badge_counts_on_every_page(client) -> None:
     The badge processor sums asks (0 under the empty-cursor fake) and
     the needs-triage paper count, so the rose badge shows on /todo.
     """
-    resp = client.get("/todo")
+    resp = client.get("/todo?show_jobs=active")
     assert resp.status_code == 200
     # New nav structure is present site-wide.
     assert "Needs you" in resp.text
-    assert "Browse" in resp.text
+    assert 'href="/refs/quest"' in resp.text
     # Rose attention badge carrying the combined count.
     assert re.search(r"bg-danger-solid(?![\w-])", resp.text)
 
@@ -7806,3 +7859,17 @@ def test_ask_followup_quota_failure_defers_instead_of_storing_a_turn(
     assert params["args"]["question"] == "What does this imply?"
     assert params["args"]["request"]["tier"] == "frontier"
     assert "A decision" in params["args"]["request"]["prompt"]
+
+
+def test_nav_has_no_browse_menu(client) -> None:
+    """The Browse ▾ dropdown is gone; Quests and Clusters are plain links."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert "Browse" not in resp.text
+    assert 'href="/refs/quest"' in resp.text
+    assert 'href="/clusters"' in resp.text
+    resp = client.get("/refs/quest")
+    assert resp.status_code == 200
+    # The Quests tab keys on refs:quest, so its highlight actually fires.
+    m = re.search(r'<a href="/refs/quest" class="([^"]*)"', resp.text)
+    assert m and "bg-chrome-hover" in m.group(1)

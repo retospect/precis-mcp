@@ -1820,7 +1820,7 @@ def test_dispatch_acquires_slot_under_chain_rung_model_not_tier_alias(
         acquired.append(model)
         # Serve only the rung's real id — the alias must never reach here.
         return ls.LocalSlot(
-            host="melchior",
+            host="maple",
             resource=f"llm:{model}",
             reserved=True,
             paused=False,
@@ -1905,7 +1905,7 @@ def test_drain_refusal_names_the_served_rung_not_the_tier_alias(
         ls,
         "acquire",
         lambda model: ls.LocalSlot(
-            host="melchior",
+            host="maple",
             resource=f"llm:{model}",
             reserved=False,
             paused=True,
@@ -4656,7 +4656,7 @@ def test_skip_unserved_local_rung_drops_unserved_local_rung_0(
 def test_skip_unserved_local_rung_kept_when_served_locally(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The melchior case: this host DOES serve the model → the rung stays."""
+    """The maple case: this host DOES serve the model → the rung stays."""
     monkeypatch.setattr(
         "precis.utils.llm.local_serving.served_locally", lambda model: True
     )
@@ -7230,6 +7230,84 @@ def test_quota_fallback_cap_reached_stays_paused(
     assert recorded == ["paused"]
 
 
+# ── taproot:dedup quota fallback (gr639347) ─────────────────────────────
+#
+# The judge's opt-in is its OpDefault (``quota_fallback=True`` — the
+# 2026-11-11 window that paused every mint for ~17 h), so an
+# ``llm.op.taproot:dedup`` ``chain`` carrying a non-subscription rung is
+# all the escape needs. Here: a ``claude_p`` Opus rung pausing on quota
+# walks to Opus over OpenRouter and returns its text.
+
+_DEDUP_QUOTA_CHAIN = [
+    {
+        "transport": "claude_p",
+        "model": "claude-opus-4-5",
+        "placement": "cloud",
+    },
+    {
+        "transport": "openai_compat",
+        "model": "anthropic/claude-opus",
+        "placement": "openrouter",
+    },
+]
+
+
+def test_dedup_quota_paused_walks_to_openrouter_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``taproot:dedup`` arms the escape from its code default — the op row
+    carries only a ``chain``, no ``quota_fallback`` key — so a quota-paused
+    ``claude_p`` rung 0 dispatches the chain's next non-subscription rung
+    and returns its text."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.op_override",
+        lambda source: (
+            {"chain": _DEDUP_QUOTA_CHAIN} if source == "taproot:dedup" else None
+        ),
+    )
+    monkeypatch.setattr(router, "_quota_fallback_spent_usd", lambda _source: 0.0)
+    # Host-independent: the claude rung's availability probe must not prune
+    # it before the gate sees it (a claude-less host would skip rung 0).
+    monkeypatch.setattr(
+        router, "_drop_unavailable_rungs", lambda ladder, model: (ladder, [])
+    )
+    sub, openrouter = _Rec("subscription"), _Rec("openrouter opus")
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_P, sub)
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, openrouter)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.delenv("PRECIS_SUMMARIZE_LLM_URL", raising=False)
+    _serving(monkeypatch, served=False)
+    gated: list[str] = []
+
+    def gate(
+        tier: Tier, *, transport: str, local: bool, bare: bool, **_kw: Any
+    ) -> str | None:
+        gated.append(transport)
+        if transport == "claude_p":
+            return "claude quota window exhausted — paused"
+        return None
+
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", gate)
+    monkeypatch.setattr("precis.utils.llm.admit.check_dispatch", lambda req, **kw: None)
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x", source="taproot:dedup"))
+
+    assert out.text == "openrouter opus"
+    assert out.error is None and out.paused is False
+    assert sub.calls == [] and openrouter.calls == [("anthropic/claude-opus", None)]
+    # Gated twice: the subscription rung tripped, then the fallback rung
+    # was re-gated on the resource IT spends before dispatch.
+    assert gated == ["claude_p", "openai_compat"]
+    fb = recorded[0].features["quota_fallback"]
+    assert fb["paused_rung"] == "claude_p"
+    assert fb["transport"] == "openai_compat"
+    assert fb["model"] == "anthropic/claude-opus"
+
+
 def test_quota_fallback_env_cap_zero_disables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7425,7 +7503,7 @@ def test_parse_chain_rungs_rejects_bad_max_tokens() -> None:
 def test_failover_rung_timeout_applies_and_loses_to_a_caller_pin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A rung's ``timeout_s`` fills an unset request timeout (the castor
+    """A rung's ``timeout_s`` fills an unset request timeout (the cedar
     gpt-oss rung needs ~60 s, not the SMALL 30 s cap); a caller pin wins;
     a rung with none leaves the request untouched (gr489474)."""
     seen: list[float | None] = []
@@ -8044,7 +8122,7 @@ def test_retried_walk_superseded_row_charges_the_terminal_rungs_clock(
 
 # ── gr500371: host-availability gate — skip rungs this host can't run ─────
 #
-# A host with no claude binary (balthazar) resolved its BIG chain to claude_p
+# A host with no claude binary (alder) resolved its BIG chain to claude_p
 # and every card_describe item failed "claude binary not found" in ~50 ms.
 # route()/dispatch_async now drop a rung whose transport's binary, credential
 # or endpoint is absent on THIS host — derived from the same probes the

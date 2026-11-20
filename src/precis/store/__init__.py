@@ -19,6 +19,16 @@ trust itself; ``precis garden restore`` supplies the operator context and
 resolves the raw loser. No MCP/web restore door is exposed, and the store
 and worker layers never import handlers.
 
+Grouped ref counts deduplicate facet membership per ref before aggregating
+numeric JSON values. Repeated join rows from tag facets therefore cannot
+weight a ref's contribution, and absent or non-numeric JSON values leave
+the member count intact while reducing the numeric sample size.
+
+Lowercase paper facet filters match both the classifier's uppercase axis and
+literal tags with the same spelling, preserving existing manually tagged refs.
+The alias list follows the documented paper facets independently of the
+classifier registry, which also contains chunk and bookkeeping axes.
+
 Typing the seam: functions that need only a sliver of the Store take a
 role protocol from :mod:`precis.store.protocols` (import-light, no
 cycles) instead of ``Store`` or ``Any``. ``Hub.store`` is typed
@@ -30,11 +40,35 @@ and reason commit together; filesystem moves remain best-effort, keeping
 the old storage path on failure because a database transaction cannot
 roll back a corpus filesystem operation.
 
+Stub acquisition refuses an identifier hit with substantial, disjoint title
+tokens. An identifier on a corrupt row must not silently claim another work
+is held; sparse or placeholder titles provide too little evidence to refuse.
+This guard preserves the row for operator repair rather than guessing which
+of its metadata, body and links belongs to the requested paper.
+
+Human byline edits keep rows with the same normalized name and ORCID at
+the same position. The edit form omits OpenAlex IDs, so a missing ID on
+an otherwise unchanged row preserves its index link alongside its
+source tier and verification stamp. Retention by position avoids moving
+identity evidence between co-authors with the same name.
+
+Lexical chunk ranks use logarithmic document-length normalization in both
+standalone and fused search. This discounts large chunks with scattered
+matches while retaining strict-AND eligibility and the existing RRF weights;
+multi-query search inherits the same ranking through its lexical legs.
+Taxon lexical legs fetch chunks by ref first so an OR retry over common
+terms only tests taxon chunks.
+
 Drive date ordering uses existing ref timestamps: ``recent_refs(created=True)``
 orders browse by creation; cross-kind chunk search accepts ``created`` and
 ``modified`` alongside legacy ``recency``. Explicit new names avoid changing
 existing callers' modification-first browse or creation-first search order;
 both new orders use ref id ties and require no derived clock or schema.
+
+Unscoped paper verbatim search checks whole phrases within a capped pool of
+the newest live TSV candidates. This recovers source phrases KeyBERT omitted
+(gr681521) while bounding substring checks. Older or unindexed phrase hits
+can be missed. Search and count share the pool.
 
 Capped paper search opts into ``search_chunks_multi(prefer_body=True)``:
 discard a synthetic card when the fused candidate pool contains a body hit
@@ -68,6 +102,10 @@ successor; its predecessor obligation survives and reattaches atomically on
 restaging. No signed bytes or timestamp proofs are rewritten.
 
 The schema is defined in `src/precis/migrations/0001_initial.sql`.
+Missing-rationale link scans use physical edge IDs rather than offsets, so
+backfilling a page cannot shift the remaining queue. They are live reads:
+higher IDs can join later pages; late lower-ID commits need a fresh scan.
+Reason and legacy why payloads are inspected without refreshing fingerprints.
 Part-selection records are memory refs linked by ``selects`` / ``rejects``
 to parts or components. Link admission requires a nonblank rejection reason
 so a rejected candidate remains reusable evidence. PCB instance reads resolve
@@ -78,6 +116,10 @@ record's links but are omitted from this current-selection view.
 Generated baselines provision every extension prerequisite and load the full
 seed vocabulary with a transaction-local public search path, so sealed seed
 triggers resolve their helpers without changing function bodies or permissions.
+
+Lexical counts and chunk retrieval optionally report the executed OR fallback
+through call-local metadata, preserving integer count returns. Search notes
+use this signal because any-word matches can cover most of a scope.
 
 Body word counts derive from current chunks in a batched read, so existing
 refs need no counter backfill. POSIX whitespace avoids double interpretation
@@ -92,6 +134,14 @@ distinguish eligible values from approved ones without another ledger read.
 Measure paper/quest searches match subjects and anchor-chunk owners so
 promoting a subject does not hide its source evidence. Quest filtering
 shares the recursive inbound ``serves`` closure with measure ranking.
+
+A measure anchor's ``extraction_status`` check matches the literal on
+number boundaries after the markup fold; a duplicate math rendering of the
+same value glued to the literal (``3651±31$3651\\pm31$``) welds both copies
+into one digit run. The retry blanks only math spans that render the entire
+literal, preserving intervening math such as ``$\\times 2$``. Ordinary
+literals allow optional whitespace around non-word tokens. Adjacent word
+tokens require whitespace, and decimal points stay glued to their digits.
 
 Hybrid automatic recall uses ``_search_cut.gap_cut_distance``: best semantic
 distance plus one delta, capped at the 0.65 corpus floor. Absolute per-kind

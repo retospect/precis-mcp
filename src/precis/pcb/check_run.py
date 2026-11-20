@@ -887,7 +887,7 @@ def run(
         )
 
     copper = [] if claimed_phase == "placed" else store.pcb_copper_list(board_id)
-    # Round-4 contract change (docs/backlog/pcb-ewod-multitile.md's
+    # Round-4 contract change (me692460's
     # decisions log): this used to bail whenever `copper` (router
     # output) was empty, full stop — but a board whose every net is
     # fanout-1 (an `ewod_pad_array` standalone board is the motivating

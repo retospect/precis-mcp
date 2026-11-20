@@ -32,6 +32,8 @@ import pytest
 from precis import settings as psettings
 from precis.plans import lanes
 from precis.store import Store
+from precis.store.types import Tag
+from precis.workers.job_types import run_slice
 from tests._policy_scan import (
     ScanIncomplete,
     gitignore_matcher,
@@ -59,6 +61,16 @@ _DEPLOY_SCAN_ALLOWLIST: dict[str, frozenset[str]] = {
     ),
     "deploy/roles/vllm/tasks/main.yml": frozenset({"vllm_tiktoken_dir"}),
     "deploy/roles/vllm/templates/vllm.service.j2": frozenset({"vllm_tiktoken_dir"}),
+    # The pgbouncer/pgpass refusal asserts (gr678654) ASSEMBLE a vault var
+    # name from `item.password_var` to test its presence (`_var in vars`);
+    # they never resolve it, so the file places no credential. The scan
+    # keeps the whole expression because no bare identifier leads it.
+    "deploy/roles/pgbouncer/tasks/main.yml": frozenset(
+        {"{{ 'vault_' ~ item.password_var }}"}
+    ),
+    "deploy/roles/pgpass/tasks/main.yml": frozenset(
+        {"{{ 'vault_' ~ item.password_var }}"}
+    ),
 }
 
 
@@ -146,6 +158,45 @@ def test_deny_set_is_human_only_union_interim(store: Store) -> None:
         )
     finally:
         psettings.clear_setting("factory.deny_relaxed", store=store)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/precis/workers/repo_land.py",
+        "src/precis/workers/repo_lease.py",
+        "src/precis/workers/job_types/repo_release.py",
+        "src/precis/workers/factory_git.py",
+        "src/precis/workers/factory_git_mirror.py",
+    ],
+)
+def test_second_repo_lander_and_credential_modules_are_factory_denied(
+    path: str,
+) -> None:
+    """td659522: the lander and the credential boundary code are listed, and
+    a slice touching one is a deny violation under the strict set."""
+    assert path in lanes.FACTORY_DENY_WRITE_PATHS
+    assert (_REPO_ROOT / path).is_file()
+    assert path in lanes.STRICT_DENY
+    assert run_slice.deny_violations([path], lanes.STRICT_DENY) == [path]
+
+
+def test_pin_bump_job_is_factory_denied_before_it_exists() -> None:
+    """If this fails, the factory could rewrite the pin-bump job (td659522
+    step 4) once it lands: the deny entry is in place ahead of the file."""
+    path = "src/precis/workers/job_types/pin_bump.py"
+    assert path in lanes.FACTORY_DENY_WRITE_PATHS
+    assert path in lanes.STRICT_DENY
+    assert run_slice.deny_violations([path], lanes.STRICT_DENY) == [path]
+
+
+def test_only_catpath_names_a_pinner() -> None:
+    """If this fails, a profile arms the pin bump without its own switch
+    round (td659522 R7 armed catpath only): ``pinner`` defaults to None."""
+    assert lanes.RepoProfile(name="x").pinner is None
+    assert {n: p.pinner for n, p in lanes.REPO_PROFILES.items() if p.pinner} == {
+        "catpath": "pin_bump"
+    }
 
 
 @pytest.mark.db
@@ -398,3 +449,105 @@ def test_human_only_matching_is_case_insensitive() -> None:
         "Docs/Guide/CLAUDE.MD",
     ):
         assert lanes.human_only_hits([path]) == [path], path
+
+
+# ── repo: guard (td659522 step 0) ──────────────────────────────────
+
+
+def test_open_repos_setting_is_db_only() -> None:
+    spec = psettings.REGISTRY["factory.open_repos"]
+    assert spec.env_var is None and spec.default is None
+
+
+def test_repo_tags_reads_tag_objects_and_strings() -> None:
+    tags = [
+        Tag.closed("STATUS", "open"),
+        Tag.open("repo:catpath"),
+        "repo:catpath",
+        "thread:factory",
+        Tag.open("repo:precis"),
+    ]
+    assert lanes.repo_tags(tags) == ["catpath", "precis"]
+
+
+def test_repo_refusal_fails_closed() -> None:
+    # No tag and repo:precis build here; the store is not even read.
+    assert lanes.repo_refusal([], object()) is None
+    assert lanes.repo_refusal(["precis"], object()) is None
+    # A repo without a build profile is refused whatever the setting says.
+    unknown = lanes.repo_refusal(["hexfold"], None)
+    assert unknown is not None and "no factory build profile" in unknown
+    # A repo with a profile and a lander is still closed until it is listed.
+    closed = lanes.repo_refusal(["catpath"], None)
+    assert closed is not None and "factory.open_repos" in closed
+    both = lanes.repo_refusal(["both"], None)
+    assert both is not None and "repo:both" in both
+    two = lanes.repo_refusal(["precis", "catpath"], None)
+    assert two is not None and "2 repo: tags" in two
+
+
+def test_a_known_repo_stays_closed_without_a_readable_setting() -> None:
+    assert "catpath" in lanes.known_repos()
+    for s in (None, object()):
+        assert lanes.open_repos(s) == frozenset({"precis"})
+        err = lanes.repo_refusal(["catpath"], s)
+        assert err is not None and "factory.open_repos" in err
+
+
+@pytest.mark.db
+def test_open_repos_lists_only_known_names(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert lanes.open_repos(store) == frozenset({"precis"})
+    psettings.set_setting("factory.open_repos", "catpath, hexfold", store=store)
+    try:
+        landed = lanes.REPO_PROFILES["catpath"]
+        # Listed but lander-less: the setting alone opens nothing.
+        monkeypatch.setitem(
+            lanes.REPO_PROFILES, "catpath", replace(landed, lander=None)
+        )
+        assert lanes.open_repos(store) == frozenset({"precis"})
+        assert lanes.repo_refusal(["catpath"], store) is not None
+        monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", landed)
+        assert lanes.open_repos(store) == frozenset({"precis", "catpath"})
+        assert lanes.repo_refusal(["catpath"], store) is None
+        assert lanes.repo_refusal(["hexfold"], store) is not None
+    finally:
+        psettings.clear_setting("factory.open_repos", store=store)
+
+
+def test_catpath_profile_is_fenced_and_landed_by_land_slice() -> None:
+    prof = lanes.REPO_PROFILES["catpath"]
+    cmds = prof.setup_cmds + prof.lint_cmds + prof.test_cmds
+    assert cmds and not any("ruff format" in c for c in cmds)
+    assert prof.deny_paths == (".github/**",)
+    assert prof.lander == "land_slice"
+    assert prof.remote.startswith("https://") and "@" not in prof.remote
+
+
+def test_profile_lookup_and_known_repos() -> None:
+    assert lanes.known_repos() == ("precis", "catpath")
+    precis = lanes.repo_profile("precis")
+    assert precis is not None and precis.lander == "land_slice"
+    assert lanes.repo_profile("nope") is None
+
+
+@pytest.mark.db
+def test_real_catpath_profile_opens_only_under_the_setting(store: Store) -> None:
+    assert lanes.open_repos(store) == frozenset({"precis"})
+    assert lanes.repo_refusal(["catpath"], store) is not None
+    psettings.set_setting("factory.open_repos", "catpath", store=store)
+    try:
+        assert lanes.open_repos(store) == frozenset({"precis", "catpath"})
+        assert lanes.repo_refusal(["catpath"], store) is None
+    finally:
+        psettings.clear_setting("factory.open_repos", store=store)
+
+
+def test_every_profile_builds_from_main() -> None:
+    """``run_slice`` still takes a slice's base from the todo's land target
+    (``main`` unless a release fix): a profile with another base would be
+    refused at submit and measured against the wrong ref at poll. Carry the
+    base on the job before adding one."""
+    for name, profile in lanes.REPO_PROFILES.items():
+        assert profile.base == "main", name

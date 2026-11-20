@@ -4,7 +4,7 @@ kind).
 The catalyst sibling of ``precis_pathway``: a first-party **plugin** on the
 precis substrate, snapping in through the ``precis.handlers`` /
 ``precis.handle_codes`` entry-point groups declared in the precis-mcp
-``pyproject.toml`` (ADR: `docs/backlog/estimate-kind-ms-chemistry-workup.md`).
+``pyproject.toml`` (ADR: me690660).
 
 **What it is.** An `estimate` ref is a citable, cache-backed semi-empirical
 workup — undergrad-ish non-ML chemistry (element-property lookups, tight-

@@ -1,0 +1,38 @@
+# Discovery eval task for the draft family (gr634773): phrased WITHOUT
+# skill names — the discovery condition sees only the task and the tool
+# surface. Two wording variants limit overfitting. The write target
+# carries {run} so paired/parallel executed passes can't collide on the
+# shared eval DB; expect matches the minted slug, the fake the -0-0 form.
+family: draft
+skill: precis-draft-help
+tasks:
+  - id: start-a-writeup
+    variants:
+      - |
+        Start the write-up in precis: a draft called
+        'perovskite-roundup-{run}' with the title 'Perovskite stability
+        roundup'.
+      - |
+        I want to begin a write-up in precis titled 'Perovskite stability
+        roundup'; name the draft 'perovskite-roundup-{run}'.
+    expect:
+      calls:
+        - verb: put
+          kind: draft
+          args:
+            id: 're:perovskite-roundup-\d+-\d+'
+            title: 're:(?i)perovskite stability roundup'
+      record: {kind: draft, id: 're:perovskite-roundup-\d+-\d+'}
+    forbid:
+      calls:
+        - {verb: tag, kind: draft}       # drafts are not taggable as a whole
+        - {verb: link, kind: draft}
+    fake:
+      calls:
+        - verb: put
+          kind: draft
+          args: {id: perovskite-roundup-0-0, title: Perovskite stability roundup}
+      record: {kind: draft, id: perovskite-roundup-0-0}
+      answer: >
+        put(kind='draft', id='perovskite-roundup-0-0', title='Perovskite
+        stability roundup') creates the draft and its title heading.

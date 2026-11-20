@@ -630,3 +630,73 @@ def test_put_through_tool_boundary_records_session_and_client(
     assert row[0] is not None, "session_id is NULL on the write path"
     assert row[1] is not None and row[1] >= 1
     assert row[2] == "boundary-test/3"
+
+
+def test_error_call_records_error_next_columns(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """0325 (gr613469): an error ack carrying a concrete corrected call
+    lands ``error_next_concrete`` + the suggested verb/kind on its
+    ``tool_calls`` row; a pointer-only ack records ``False``; an ok row
+    keeps the three columns NULL."""
+    tag = uuid4().hex[:8]
+    # Concrete-next ack: todo's unknown-view refusal names the corrected
+    # get before the vocabulary walk-through (fires pre-resolution, so
+    # the id need not exist).
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "todo", "id": 424242, "view": "comment"}
+    )
+    assert is_error and "[error:" in body
+
+    # Pointer-only ack: an extras key with no near match leaves just the
+    # skill pointer + prose hints.
+    body2, is_error2 = runtime_with_store.dispatch_with_status(
+        "search",
+        {"kind": "job", "q": f"zzq-{tag}", "__extras__": {"zzzz_nothing": 1}},
+    )
+    assert is_error2 and "[error:" in body2
+
+    # Ok row: NULLs.
+    body3, is_error3 = runtime_with_store.dispatch_with_status(
+        "put", {"kind": "memory", "text": f"ok-{tag}", "title": f"ok-{tag}"}
+    )
+    assert is_error3 is False
+
+    store = runtime_with_store.store
+    assert store is not None
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT verb, kind, outcome, error_next_concrete, "
+            "error_next_verb, error_next_kind, error_head "
+            "FROM tool_calls WHERE ts > now() - interval '1 minute' "
+            "ORDER BY call_id DESC LIMIT 30"
+        ).fetchall()
+    view_err = [
+        r
+        for r in rows
+        if r[0] == "get"
+        and r[1] == "todo"
+        and r[2] == "error"
+        and "'comment'" in (r[6] or "")
+    ]
+    assert view_err, f"no ledger row for the todo view refusal: {rows!r}"
+    assert view_err[0][3] is True
+    assert view_err[0][4] == "get"
+    assert view_err[0][5] == "todo"
+
+    extras_err = [
+        r
+        for r in rows
+        if r[0] == "search"
+        and r[1] == "job"
+        and r[2] == "error"
+        and "zzzz_nothing" in (r[6] or "")
+    ]
+    assert extras_err, f"no ledger row for the job extras refusal: {rows!r}"
+    assert extras_err[0][3] is False
+    assert extras_err[0][4] is None
+    assert extras_err[0][5] is None
+
+    ok_row = [r for r in rows if r[0] == "put" and r[1] == "memory" and r[2] == "ok"]
+    assert ok_row, f"no ledger row for the ok put: {rows!r}"
+    assert (ok_row[0][3], ok_row[0][4], ok_row[0][5]) == (None, None, None)

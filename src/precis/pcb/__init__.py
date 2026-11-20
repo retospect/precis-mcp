@@ -44,7 +44,7 @@ absolute position, or the part moves and it stays behind.
 
 Map, in pipeline order (design spec ``pcb-guided-place-route`` retired
 2026-10-25, deleted 2026-11 — git history; open items
-``docs/backlog/pcb-place-route-residuals.md``):
+`gr689738`):
 
 * **IR** — :mod:`~precis.pcb.ir` (L0-L5 enrichment levels, per-net rules
   via :mod:`~precis.pcb.rules`, objective vectors in
@@ -169,7 +169,7 @@ ROUTE_RETIRED_NEXT = (
 )
 
 #: The closed §1i electrical-role vocabulary a pin may declare (Slice 5 of
-#: docs/backlog/pcb-lazy-netlist-and-checks.md): ``power_in``/``power_out``
+#: me693232): ``power_in``/``power_out``
 #: (supply pins), ``input``/``output``, ``bidi``, ``passive`` (two-pin
 #: passives), ``open_drain``/``tristate`` (drive-shareable),
 #: ``analog_in``/``analog_out`` (gr520810 — direction stays one axis, so
@@ -231,7 +231,7 @@ MAX_FOOTPRINT_GRAPHICS = 500
 MAX_GRAPHIC_POINTS = 2000
 
 #: Ceramic-capacitor dielectric classes, ranked by capacitance stability —
-#: lower number is better (docs/backlog/pcb-datasheet-review.md in-scope
+#: lower number is better (me692814 in-scope
 #: 5: "dielectric rank C0G > X7R > X5R > Y5V/Z5U"). ``np0`` is the IEC
 #: spelling of the same C0G material and shares its rank. A ``min_
 #: dielectric`` pin annotation (``op='pins'``) is validated against these

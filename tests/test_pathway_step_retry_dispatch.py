@@ -99,7 +99,7 @@ def _agg_params(pathway_ref_id: int) -> dict[str, Any]:
         "config": CONFIG,
         "force_backend": "emt",
         "content_key": BASE_KEY,
-        "target_node": "spark",
+        "target_node": "spruce",
         "resources": {"wall_seconds": 5400},
     }
 
@@ -112,7 +112,7 @@ def _seed_params(seed: int, model_index: int = 0, **extra: Any) -> dict[str, Any
         "model_index": model_index,
         "force_backend": "emt",
         "content_key": f"seed{seed}",
-        "target_node": "spark",
+        "target_node": "spruce",
         "pathway_ref_id": 0,
         "resources": {"wall_seconds": 5400, "cpuset": "0-4"},
         **extra,

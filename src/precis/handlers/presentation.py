@@ -139,6 +139,8 @@ class PresentationHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
+        limit: Any = None,
+        cursor: str | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None or (isinstance(id, str) and id.startswith("/")):
@@ -166,9 +168,16 @@ class PresentationHandler(Handler):
         if effective_view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
+            # args={'limit'|'cursor'} page it (gr627629).
             from precis.handlers._links_render import render_links_view
 
-            return render_links_view(self.store, ref, sense="pres")
+            return render_links_view(
+                self.store,
+                ref,
+                sense="pres",
+                limit=limit,
+                cursor=cursor,
+            )
         if effective_view is not None:
             raise Unsupported(
                 f"unknown pres view {effective_view!r}",

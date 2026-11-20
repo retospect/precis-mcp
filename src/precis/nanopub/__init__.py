@@ -7,7 +7,7 @@ nanopub is the published identity + wire format for an approved claim hub:
 minted locally, signed, OpenTimestamps-anchored, pushed to the registry
 only at release — verifiable offline by a third party (trusty URI +
 signature + anchored timestamp), no server of ours required. Design spec:
-``docs/backlog/claim-publication-nanopub-ots.md``; this docstring is
+`me691903`; this docstring is
 present state.
 
 Module map (detail lives in each module's own docstring):
@@ -130,7 +130,7 @@ Slices 4-5 — publish path (POST gated, CLI-only):
   sentence + trusty URI + status) in both exporters; unminted hubs
   leave the export byte-identical (``precis.export._nanopub_appendix``,
   fed by the trust tracker's cited-set). First slice of the fi->np
-  migration (``docs/backlog/retire-fi-go-nanopub.md``).
+  migration (`me694493`).
 
 Registry mirror (dark, nothing pulled):
 

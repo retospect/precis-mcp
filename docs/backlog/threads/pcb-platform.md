@@ -10,7 +10,7 @@ effort: medium
 - **Next:** The lazy-netlist item's open slices (Do next 3: Slice 1's Reto decision and the `ewod-dogfood-2` re-run, then Slice 6).
 - **Blocked by:** Sequence shared generator and DRC work behind the active PCB threads.
 - **Unblocks:** A coherent component model and agent PCB interface.
-- **Acceptance:** Use [pcb-lazy-netlist-and-checks](../pcb-lazy-netlist-and-checks.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use pcb-lazy-netlist-and-checks (me693232) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `pcb-platform`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -21,7 +21,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 
 **Status:** ends when the pcb kind's component model, agent interface and
 reuse layer are as solid as its routing engine — the platform half of
-`backlog/pcb-global-codesign-north-star.md`, pillar 3d-design. Today
+me569391, pillar 3d-design. Today
 sequenced BEHIND `ewod-pcb` on `src/precis/pcb/generators.py`, `drc.py` and
 `realize.py`/`maze.py` (the same rule as the easyeda seam — sequence, do
 not merge). Peer session EWOD reported 17 open pcb items with no thread
@@ -33,37 +33,37 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 ## Do next
 
 Reto's 2026-11-04 TAZ preview follow-up is scoped in
-[pcb-preview-connectivity](../pcb-preview-connectivity.md): actual GND
+pcb-preview-connectivity (me569143): actual GND
 fanouts, component-aware airwires, visible-layer picking and footprint intake
 verification, followed by bounded bundle/blocker experiments. The campaign's
 current evidence and local intake gate remain in memory me562868.
 
-1. **backlog/pcb-workspace-code.md** — `status: ready` (Reto 2026-10-22,
+1. **me693071** — `status: ready` (Reto 2026-10-22,
    Q1–Q6 approved); construction moves to a Python script in a workspace,
    place/route/move/rip/import_epro/views/DRC stay in MCP. Ranked first
    because it retires or reshapes items 6 and 7 and constrains 4 and 5. Its
-   ordered slices live in thread [structure-workspaces](structure-workspaces.md);
+   ordered slices live in thread structure-workspaces (me693174);
    this thread owns only the pcb-side checks (DRC `frame` column, request
    lanes) when they touch `drc.py`/`realize.py`.
-2. **backlog/pcb-topo-place.md** — `draft/high`: the topo
+2. **me569095** — `draft/high`: the topo
    placer/router campaign — pairwise part map, solver-side pin
    assignment, corridor shove and its own realiser. `blocked-by` 1 per
    its front matter (the pcb-ws4 gate), though slices 0–1c are already
    on main through r107 and it builds on its own worktree; ranked here
    so the thread sees the engine work its items serve. Its routing gap
-   has a fix order in **backlog/topo-route-review.md** (2026-11-01
+   has a fix order in **me569095** (2026-11-01
    design review on taz-leaf: slices A → E1 → C → B → D), its D-b/D-c
-   superseded by **backlog/topo-route-geometry-truth.md**. G4 changes what
+   superseded by **me569095**. G4 changes what
    stored boards mean: a re-put of a script with `b.plane()` now pours
    that net in the next job instead of routing it as a tree.
    Examples gate: `tests/test_pcb_examples_route.py` requires every routable net and DRC 0.
-3. **backlog/source-bundles.md** — `draft/normal`, filed 2026-10-29 from
+3. **me695350** — `draft/normal`, filed 2026-10-29 from
    gr520323 (Reto 2026-10-26): a design owns an immutable, hash-keyed
    source snapshot via the signed upload door. Unblocks the 36 KB inline
    batch now and answers the storage half structure-workspaces §1b still
    has open; ranked under 1 because its shape must stay compatible with
    the workspace run contract 1 owns.
-4. **backlog/pcb-lazy-netlist-and-checks.md** — `status: ready`; the
+4. **me693232** — `status: ready`; the
    netlist/role/one-check-surface model the rest of this list assumes
    exists. **Slices 2–3 shipped 2026-10-13** (one commit on worktree
    `bl-pcb-netlist-s23`, committed not landed): every footprint pad is a
@@ -80,39 +80,39 @@ current evidence and local intake gate remain in memory me562868.
    `ewod-dogfood-2`; Slice 6's open list (congestion cost,
    rip-up-and-reassign, spare channels) and Slice 7. Slices 9 and 6 core
    shipped 2026-10-15.
-5. **backlog/pcb-component-model.md** — `draft/high`; the
+5. **me692617** — `draft/high`; the
    Component/LandPattern/Instance reframe that agent-interface-gaps and
    pinout-view-and-connector-intake build on. Check against the workspace
    builder API (`pcb.part`/`pcb.Footprint`) before building.
-6. **backlog/pcb-pinout-view-and-connector-intake.md** — `draft/high`;
+6. **me690480** — `draft/high`;
    consumes 4's port/pad contract for prose-to-connector capture; also
    feeds the paper (its own §CONSIDER FOR THE PAPER cross-ref). Check
    against the workspace builder API before building.
-7. **backlog/pcb-agent-interface-gaps.md** — `draft/high`; the removal path
+7. **me690625** — `draft/high`; the removal path
    (Gap 5) is superseded by the workspace (removal = delete the script
    line; `op='remove'`/`'disconnect'` stay unbuilt). The other gaps stay,
    re-read against the workspace surface before building.
-8. **backlog/pcb-meta-blocks.md** — superseded by the workspace (meta
+8. **me692969** — superseded by the workspace (meta
    blocks = a `@pcb.module`; `op='instantiate_block'` stays unbuilt);
    level 2 (pre-routed bundles) is pcb-workspace-code slice 3.
-9. **backlog/pcb-card-edge-outline.md** — `draft/medium`; footprint-driven
+9. **me692491** — `draft/medium`; footprint-driven
    outline modification, buildable now on today's footprint dict (Reto
    2026-10-21), independent of 4's split.
-10. **backlog/pcb-usb-c-pd-nano-testboard.md** — `draft/normal`;
+10. **me695012** — `draft/normal`;
    deliberately filed to be built only after the engine gaps close —
    waits on ewod-pcb's routing work, not on anything in this file.
-11. **backlog/pcb-paper-benchmark-selection.md** — `draft/normal`;
+11. **me690254** — `draft/normal`;
    sequenced after 9 by the item's own stated order.
-12. **backlog/pcb-place-route-residuals.md** §From pcb-0042-implementation —
+12. **gr689738** §From pcb-0042-implementation —
     ADR 0042 web ratsnest/BOM, the phase machine and the deploy binaries
     (merged 2026-10-21; the rest of that file is ewod-pcb's).
-13. **backlog/pcb-graph-routing-fattens-traces.md** — `draft/normal`,
+13. **me569135** — `draft/normal`,
     filed 2026-10-23 (Reto's no-flood-fill ruling, me507871): the
     pour-removal half landed in `g4-pours-off`; the survey inside says
     what "fatten traces by net property" already has (current→width
     via IPC-2221) and lacks (impedance→width, return-path→geometry,
     per-edge widths). Do not build without a further ruling.
-14. **backlog/design-rerun-pull.md** — `draft/normal`: a run
+14. **me694208** — `draft/normal`: a run
     archive, content-keyed replay and elite warm starts so a re-run
     pulls from prior successes. Its record layer feeds 1's §3 request
     cache and its route leg waits on 2's realiser; every open question
@@ -120,7 +120,7 @@ current evidence and local intake gate remain in memory me562868.
 
 ## Horizon
 
-- **backlog/pcb-unified-place-route.md** — `draft/high`, Reto 2026-10-18
+- **me695289** — `draft/high`, Reto 2026-10-18
   ("anneal the totality of placement (including labels) routing and so on
   in one smooth space"): one smooth cost over poses, labels, track
   vertices and vias (money out), basin hopping with discrete topology
@@ -173,7 +173,7 @@ current evidence and local intake gate remain in memory me562868.
   se adoption — se 2D on `viewport.js` (`se-2d.js`), se 3D f/0/+/− keys
   + the gesture table (`blocktree-3d.js`)) and the Proposed items
   (part cards + cached thumbnails, `pcb_parts.py`) shipped with them.
-- **backlog/pcb-datasheet-review.md** — `in-progress/high`, filed
+- **me692814** — `in-progress/high`, filed
   2026-10-13 from the taz15-blank dogfood: shared part facts, design
   intent in graph memory, re-derivable verdicts, review job, shortlist
   selection with lifecycle, design from facts, human review. Absorbed
@@ -186,17 +186,17 @@ current evidence and local intake gate remain in memory me562868.
   `.inputs`, `stale (input changed: …)`, `op='forget'` (machine verdicts
   only) — with per-net "… unknown: ask the user" rows throughout. Slice
   1 (epro import keeps part identity) landed from `p1-epro` as
-  `a7863eda3`; slice 5 waits on `datasheet-facts-mesh.md`.
+  `a7863eda3`; slice 5 waits on `datasheet-facts-mesh (me693194)`.
 - **Pin-level datasheet provenance + the two-source pin-name
   cross-check.** Filed 2026-09-30 on Reto's word. The `datasheet` kind and
   `link(rel='datasheet-of')` already bind a datasheet to a PART; what is
   missing is a pin-level link target (links are
   `kind:identifier[~selector]` and pcb has no pin selector), an extraction
   pass, and the cross-check between the footprint's pad->function and the
-  datasheet's. Sequenced behind Do-next 4 (`pcb-component-model.md`), which
+  datasheet's. Sequenced behind Do-next 4 (`pcb-component-model (me692617)`), which
   owns pin roles/capabilities and already rules that the pass only unlocks
   "with provenance"; this is WHERE that provenance lives. Extend
-  `pcb-argue-with-design.md`'s existing anchor grammar, do not mint a second
+  `pcb-argue-with-design (me690151)`'s existing anchor grammar, do not mint a second
   scheme.
 - **The prod `parts` catalog was EMPTY** — recorded and closed;
   the Open API walk has since populated ~2.0M rows and refills the low
@@ -214,12 +214,12 @@ current evidence and local intake gate remain in memory me562868.
 
 ## No action needed — ranked in ewod-pcb
 
-- **backlog/pcb-always-valid-board-invariant.md** — ewod-pcb Do-next 2.
-- **backlog/pcb-footprint-pad-layer-unvalidated.md** — ewod-pcb Horizon 4.
+- **me569109** — ewod-pcb Do-next 2.
+- **me693015** — ewod-pcb Horizon 4.
 
 ## No action needed — ranked in pcb-easyeda-round-trip
 
-- **backlog/pcb-flexboard.md** — that thread's Horizon 9.
-- **backlog/pcb-engine-plan.md** §5 — that thread's Horizon 7 (2-layer and
+- **gr689726** — that thread's Horizon 9.
+- **me692624** §5 — that thread's Horizon 7 (2-layer and
   n-layer stackups specifically; the rest of the file is unclaimed and
   folds into this thread's Do-next 12).

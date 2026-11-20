@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+#!/usr/bin/env -S uv run python
 """Friction detectors over the normalized event stream (`schema.Event`).
 
 Each detector is a pure function ``list[Event] -> list[Candidate]``,
@@ -1067,7 +1067,7 @@ def detect_vocab_near_miss(events: Sequence[Event]) -> list[Candidate]:
     within edit distance 2 of a value/name seen on a SUCCESSFUL call
     (``search`` vs ``serach``, ``q`` vs ``qq``, ...). Naming that fights the
     caller's intuition. Fix class: doc fix — rename or alias, and document
-    the accepted spelling; feeds ``docs/backlog/vocab-compaction.md``.
+    the accepted spelling; feeds `me694027`.
     """
     success_kinds: set[str] = set()
     success_argkeys: set[str] = set()

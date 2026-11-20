@@ -1,5 +1,5 @@
 // se flow player — the three.js half of the Flow tab
-// (docs/backlog/se-flow-kernel.md slice 2b; route routes/se_flow.py).
+// (me695207 slice 2b; route routes/se_flow.py).
 // Particles are one InstancedMesh of spheres whose positions interpolate
 // between the payload's recorded frames; one directional light casts the
 // particles' shadows onto the chamber floor (holes and pockets); walls

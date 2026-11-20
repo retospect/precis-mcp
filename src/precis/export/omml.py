@@ -29,6 +29,17 @@ _M = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 _MATHRM_ONE = re.compile(r"\\mathrm\{([A-Za-z0-9])\}")
 
 
+#: latex2mathml's ``<mspace width>`` for the LaTeX spacing macros → the space
+#: character: thin ``\,`` U+2009; medium ``\:`` and thick ``\;`` both U+205F
+#: (medium mathematical space). ``\ `` arrives as an ``mtext`` no-break space.
+_SPACE_BY_WIDTH = {"0.167em": "\u2009", "0.222em": "\u205f", "0.278em": "\u205f"}
+
+
+#: Operator-name text from latex2mathml: two or more ASCII letters, optionally
+#: with the thin space it puts inside ``\limsup`` (``lim`` U+2006 ``sup``).
+_OPERATOR_NAME = re.compile(r"[A-Za-z]{2,}(?:\u2006[A-Za-z]{2,})*")
+
+
 def latex_to_omml(latex: str) -> Any | None:
     """``LaTeX`` math (no ``$``) → an ``<m:oMath>`` lxml element, or
     ``None`` if conversion isn't possible (missing dep / parse error /
@@ -99,8 +110,23 @@ def _convert(node: Any, parent: Any, etree: Any) -> None:
         return
     if name in ("mi", "mn", "mo", "mtext", "ms"):
         # \mathrm{…} → mathvariant="normal"; \text{…} → mtext: both upright.
+        text = node.text or ""
         upright = name == "mtext" or node.get("mathvariant") == "normal"
-        _run(parent, node.text or "", etree, upright=upright)
+        # A named operator (``\sin`` → mi, ``\max``/``\lim`` → mo) arrives as a
+        # multi-letter name; single letters are variables and stay italic.
+        if (
+            name in ("mi", "mo")
+            and node.get("mathvariant") in (None, "normal")
+            and _OPERATOR_NAME.fullmatch(text)
+        ):
+            upright = True
+        _run(parent, text, etree, upright=upright)
+        return
+    if name == "mspace":
+        # ``\,`` ``\:`` ``\;`` carry a width; ``\!`` (negative) and wider
+        # spaces stay dropped.
+        space = _SPACE_BY_WIDTH.get(node.get("width", ""), "")
+        _run(parent, space, etree, upright=True)
         return
     kids = list(node)
     if name == "msup":

@@ -22,6 +22,13 @@ cut sha and host). The run id is ALWAYS the newest ``red``
 never another sha's run, and never a caller-supplied id: a supplied
 ``params.run_id`` is refused outright (only ``scripts/ci-rerun
 --probe`` takes a run id — a read-only 404 POST that fires nothing).
+And only while the run's head IS the current release head
+(:func:`ci_verdict_poll.release_branch_head`, gr685062): a superseded
+run — the branch moved after it started — fails the job with a
+``superseded`` reason and no script, since rerunning it cancels the
+live gate run on the current head through the branch concurrency
+group; an unreadable release head fails soft (the tick retries),
+firing nothing either way.
 
 ``gh run rerun --failed`` needs the Actions write permission where the
 digest needed read only — a credential that cannot write gets a 403
@@ -52,6 +59,7 @@ from typing import Any
 
 from precis.plans import release as _release
 from precis.utils.secret_scan import mask_secrets
+from precis.workers.job_types import ci_verdict_poll as _cvp
 from precis.workers.job_types import release_cut as _rc
 
 log = logging.getLogger(__name__)
@@ -167,9 +175,30 @@ def submit(ctx: Any, spec: Any) -> Any:
             f"{NAME}: td{todo_id}'s plan has no recorded cut (meta.release)"
         )
         return None
-    run_id = _release.newest_red_run(ctx.store, str(rel.get("sha") or "")) or ""
+    row = _release.newest_red_run_row(ctx.store, str(rel.get("sha") or ""))
+    run_id = str(row["run_id"]).strip() if row else ""
     if not run_id:
         ctx.record_failure(f"{NAME}: no red verdict with a run id for {rel['rN']}")
+        return None
+    # gr685062: the rerun may only fire on the current release head. A
+    # superseded run (the branch moved after it started) gets no rerun —
+    # rerunning it cancels the live gate run on the current head through
+    # the branch concurrency group — and an unreadable head fails soft so
+    # the tick retries, firing nothing either way.
+    run_head = str((row or {}).get("sha") or "").lower()
+    head = _cvp.release_branch_head(ctx.store, rel)
+    if head is None:
+        ctx.record_failure(
+            f"{NAME}: release/{rel['rN']}'s head is unreadable — cannot "
+            f"verify run {run_id} is on the current head; the plan tick "
+            "retries, then files the ask"
+        )
+        return None
+    if run_head and not (run_head.startswith(head) or head.startswith(run_head)):
+        ctx.record_failure(
+            f"{NAME}: run {run_id} is at {run_head[:9]}, release head is "
+            f"{head[:9]} — superseded; no rerun fired"
+        )
         return None
     handle = _rc.launch_script(ctx, NAME, [run_id], script="ci-rerun")
     if isinstance(handle, dict):

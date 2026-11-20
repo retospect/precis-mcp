@@ -23,7 +23,7 @@ def _mk_running(store: Store, *, lease_offset_s: int = 60) -> int:
             "job_type": "x",
             "lease_boot_id": "gen-1",
             "lease_process": "precis-worker",
-            "lease_host": "melchior",
+            "lease_host": "maple",
         },
     )
     store.add_tag(ref.id, Tag.parse_strict("STATUS:running"), set_by="agent")

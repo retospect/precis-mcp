@@ -1,8 +1,9 @@
 """``precis-dft-run`` — the container's command dispatcher.
 
 One console entry point, subcommands per workload. The host side
-(`precis_dft.jobs.gpaw_relax.build_docker_argv`) invokes this as
-``precis-dft-run gpaw-relax --in /work/in --out /work/out``.
+(``precis.workers.job_types.struct_relax.build_run_argv`` /
+``electronic_analysis``) invokes this as
+``precis-dft-run gpaw-relax|gpaw-analysis --in /work/in --out /work/out``.
 """
 
 from __future__ import annotations
@@ -19,10 +20,21 @@ def main(argv: list[str] | None = None) -> int:
     relax.add_argument("--in", dest="in_dir", required=True)
     relax.add_argument("--out", dest="out_dir", required=True)
 
+    anal = sub.add_parser(
+        "gpaw-analysis",
+        help="single-point electronic analysis (Bader/d-band/PDOS/COHP)",
+    )
+    anal.add_argument("--in", dest="in_dir", required=True)
+    anal.add_argument("--out", dest="out_dir", required=True)
+
     args = parser.parse_args(argv)
 
     if args.cmd == "gpaw-relax":
         from precis_dft._container.gpaw_relax import run_cli
+
+        return run_cli(args.in_dir, args.out_dir)
+    if args.cmd == "gpaw-analysis":
+        from precis_dft._container.gpaw_analysis import run_cli
 
         return run_cli(args.in_dir, args.out_dir)
     return 2

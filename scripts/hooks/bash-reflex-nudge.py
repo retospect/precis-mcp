@@ -5,14 +5,17 @@ purpose-built tool.
 ``coderef-nudge.py`` only ever sees the native ``Grep`` tool, but a symbol
 search run via ``Bash`` (``rg``/``grep``/``egrep``) is invisible to it — and
 in practice that's most of the traffic. This hook fills that gap plus a
-second, unrelated reflex: cluster ops (``ssh melchior|caspar|balthazar``,
+second, unrelated reflex: cluster ops (``ssh <cluster node>``,
 ``scripts/prod-psql``) run inline on the main loop instead of delegated to
 the cheaper ``cluster-ops``/``cluster-admin`` agents.
 
-Both rules are NON-BLOCKING (``additionalContext`` only, exit 0) and
+The nudge rules are NON-BLOCKING (``additionalContext`` only, exit 0) and
 deliberately narrow — a nudge that fires too often gets tuned out, same
 rationale as ``coderef-nudge.py``'s own docstring. When extraction is
-ambiguous, both rules stay silent rather than guess.
+ambiguous, they stay silent rather than guess. Two shell traps are DENIED
+instead (``permissionDecision: deny``, the shape ``read-dedup.py`` and the
+``guard-*`` hooks emit), because the command can only fail (gr570091):
+Rule E's unquoted glob, and a bare ``timeout`` on macOS.
 
 - **Rule A (python kind).** An ``rg``/``grep``/``egrep`` invocation
   (optionally after a single leading ``cd <path> &&``) whose search pattern
@@ -36,8 +39,9 @@ ambiguous, both rules stay silent rather than guess.
   excluded (``rg -c`` already skips zeros); single-file counts stay silent.
 
 - **Rule B (cluster-ops).** The command starts with (or contains, after a
-  leading ``cd``) ``ssh melchior|caspar|balthazar`` or invokes
-  ``scripts/prod-psql`` — nudges toward the read-only ``cluster-ops`` agent
+  leading ``cd``) ``ssh <cluster node>`` (node names come from the
+  gitignored cluster overlay at run time; no overlay, no ssh nudge) or
+  invokes ``scripts/prod-psql`` — nudges toward the read-only ``cluster-ops`` agent
   (or ``cluster-admin`` for a documented write/runbook step) so raw log/psql
   dumps land in the sub-agent's cheap context, not the caller's.
 
@@ -52,6 +56,20 @@ ambiguous, both rules stay silent rather than guess.
   without quotes is expanded by ZSH against the cwd BEFORE the command
   runs — a non-match aborts the whole line with ``no matches found``, so
   the grep never executed (gr514326). Nudges toward the quoted form.
+  On top of that note, ``_glob_deny`` DENIES (message carries the quoted
+  form) when a tokenizer that understands quotes/escapes proves zsh would
+  abort: an unquoted word argument with a ``*``/``?``/``[..]`` that matches
+  nothing in the payload cwd (a leading ``-`` flag word needs no cwd). Any
+  doubt leaves today's note in place: ``$(...)``/backticks/``${``, ``(``/``)``
+  (case patterns, glob qualifiers, subshells), ``[[``, ``case``/``select``,
+  ``setopt``/``noglob``, heredocs, comments, ``cd`` before a path glob,
+  ``$var``/brace/``**`` words, assignment words (``X=*.py``), redirect
+  targets, and ``for``/``test``/``[``/``export``-family commands.
+
+- **Rule T (timeout on macOS).** ``timeout`` is not installed on macOS (26
+  ``command not found`` in 14 days, gr570091). A ``timeout <N> cmd`` at
+  command position is denied with the alternatives, unless ``timeout`` is on
+  PATH (coreutils gnubin) or the platform is not Darwin.
 
 - **Dedup delegate.** Before its own rules run, this hook hands the
   payload to ``read-dedup.py``'s ``hook_output`` — the same script the
@@ -67,11 +85,14 @@ Wired in .claude/settings.json (PreToolUse, matcher "Bash").
 
 from __future__ import annotations
 
+import glob
 import importlib.util
 import json
 import os
 import re
 import shlex
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -120,7 +141,76 @@ _TYPE_RE = re.compile(r"(?:--type=|-t\s+)(\S+)")
 
 _SHELL_BREAK = {"|", "||", "&&", ";"}
 
-_SSH_RE = re.compile(r"\bssh\s+(?:-\S+\s+)*(melchior|caspar|balthazar)\b")
+_BARE_KEY = re.compile(r"^\s*([A-Za-z0-9_.-]+):\s*$")
+_ANSIBLE_HOST = re.compile(r"^\s*ansible_host:\s*\S")
+
+
+def _overlay_path() -> Path | None:
+    """The gitignored cluster overlay, resolved like scripts/lib/pgb-host.sh:
+    $CLUSTER_INVENTORY, else this checkout's copy, else the main checkout's
+    (the overlay exists only there when running from a worktree)."""
+    env = os.environ.get("CLUSTER_INVENTORY")
+    if env:
+        return Path(env)
+    repo = Path(__file__).resolve().parents[2]
+    own = repo / "deploy" / "inventory" / "hosts.yml"
+    if own.is_file():
+        return own
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    common = proc.stdout.strip()
+    if proc.returncode != 0 or not common:
+        return None
+    common_path = Path(common)
+    if not common_path.is_absolute():
+        common_path = repo / common_path
+    main = (common_path / "..").resolve() / "deploy" / "inventory" / "hosts.yml"
+    return main if main.is_file() else None
+
+
+def _cluster_hosts() -> list[str]:
+    """Host names from the overlay: each bare ``<name>:`` key whose block
+    carries an ``ansible_host:`` (the shape list_cluster_hosts reads). Empty
+    when there is no readable overlay — the ssh rule then stays silent."""
+    path = _overlay_path()
+    if path is None:
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    hosts: list[str] = []
+    key = ""
+    for line in lines:
+        m = _BARE_KEY.match(line)
+        if m:
+            key = m.group(1)
+        elif key and _ANSIBLE_HOST.match(line):
+            if key not in hosts:
+                hosts.append(key)
+            key = ""
+    return hosts
+
+
+def _ssh_match(body: str) -> re.Match[str] | None:
+    """An ``ssh [flags] <overlay host>`` invocation, or None (fail open)."""
+    if "ssh" not in body:
+        return None
+    hosts = _cluster_hosts()
+    if not hosts:
+        return None
+    alt = "|".join(re.escape(h) for h in hosts)
+    return re.search(rf"\bssh\s+(?:-\S+\s+)*({alt})\b", body)
+
 
 # A leading ``cd <path>`` segment for the redundant-own-tree check. Tolerates a
 # trailing redirect (``2>/dev/null``) and either ``;`` or ``&&`` separator — the
@@ -215,8 +305,9 @@ def _rule_a(command: str, cwd: str = "") -> str | None:
 
 def _rule_b(command: str) -> str | None:
     body = _CD_PREFIX.sub("", command, count=1)
-    if _SSH_RE.search(body):
-        host = _SSH_RE.search(body).group(1)  # type: ignore[union-attr]
+    ssh = _ssh_match(body)
+    if ssh:
+        host = ssh.group(1)
         return (
             f"[cluster-ops] ssh to `{host}` inline burns main-loop context on "
             "raw log/journal output. For a read-only check, the `cluster-ops` "
@@ -237,7 +328,7 @@ def _rule_b(command: str) -> str | None:
 # aborts the line with ``no matches found`` (gr514326).
 _GLOB_FLAG_ARG = re.compile(
     r"(?<![-\w])(?P<flag>--(?:include|exclude|glob|iglob)|-[g]|--?i?name)"
-    r"(?P<sep>=|\s+)(?P<q>['\"]?)(?P<val>[^\s'\"|&;]*[*?\[][^\s'\"|&;]*)"
+    r"(?P<sep>=|\s+)(?P<q>['\"]?)(?P<val>[^\s'\"|&;\\]*[*?\[][^\s'\"|&;]*)"
 )
 
 
@@ -255,6 +346,304 @@ def _rule_e(command: str) -> str | None:
             f"Quote it: `{quoted}`."
         )
     return None
+
+
+# ── shell tokenizer for the deny rules ──────────────────────────────────────
+# Just enough of a shell lexer to tell a quoted glob from an unquoted one and
+# to find command position. Anything it cannot place with certainty makes it
+# bail (``ok=False``) and the deny rules stay out of the way (gr570091).
+
+
+class _Word:
+    __slots__ = ("dyn", "glob", "raw", "redirect")
+
+    def __init__(self, raw: str, glob: bool, dyn: bool, redirect: bool) -> None:
+        self.raw = raw
+        self.glob = glob  # unquoted * ? or [..] present
+        self.dyn = dyn  # unquoted $var / brace / ~user: expansion unknown
+        self.redirect = redirect  # target of < or >
+
+
+def _lex(command: str) -> tuple[list[list[_Word]], bool]:
+    """Split ``command`` into simple commands of words.
+
+    Returns ``(commands, ok)``; ``ok`` is False when the lexer bailed on a
+    construct it will not interpret (the commands parsed so far, including
+    the words of the one in progress, are still returned).
+    """
+    cmds: list[list[_Word]] = []
+    cur: list[_Word] = []
+    n = len(command)
+    i = 0
+    start = -1
+    glob_f = dyn_f = False
+    redirect_next = False
+    word_redirect = False
+
+    def end_word(at: int) -> None:
+        nonlocal start, glob_f, dyn_f, word_redirect
+        if start < 0:
+            return
+        cur.append(_Word(command[start:at], glob_f, dyn_f, word_redirect))
+        start = -1
+        glob_f = dyn_f = False
+        word_redirect = False
+
+    def begin(at: int) -> None:
+        nonlocal start, redirect_next, word_redirect
+        if start < 0:
+            start = at
+            word_redirect = redirect_next
+            redirect_next = False
+
+    def end_cmd() -> None:
+        nonlocal cur
+        if cur:
+            cmds.append(cur)
+        cur = []
+
+    def bail(at: int) -> tuple[list[list[_Word]], bool]:
+        end_word(at)
+        end_cmd()
+        return cmds, False
+
+    while i < n:
+        ch = command[i]
+        if ch in " \t":
+            end_word(i)
+            i += 1
+        elif ch == "\n":
+            end_word(i)
+            end_cmd()
+            i += 1
+        elif ch == "\\":
+            if i + 1 >= n:
+                return bail(i)
+            if command[i + 1] == "\n":
+                i += 2
+                continue
+            begin(i)
+            i += 2
+        elif ch == "'":
+            close = command.find("'", i + 1)
+            if close < 0:
+                return bail(i)
+            begin(i)
+            i = close + 1
+        elif ch == '"':
+            j = i + 1
+            while j < n and command[j] != '"':
+                if command[j] == "\\":
+                    j += 2
+                elif command[j] == "`" or command.startswith("$(", j):
+                    return bail(i)
+                else:
+                    j += 1
+            if j >= n:
+                return bail(i)
+            begin(i)
+            i = j + 1
+        elif ch == "$":
+            nxt = command[i + 1 : i + 2]
+            if nxt in ("(", "{", "'", "`"):
+                return bail(i)
+            begin(i)
+            dyn_f = True
+            i += 2 if nxt and (nxt in "?*@#!$-" or nxt.isdigit()) else 1
+        elif ch in "`()" or (ch == "#" and start < 0):
+            return bail(i)
+        elif ch in "<>":
+            if command.startswith("<<", i):
+                return bail(i)
+            end_word(i)
+            redirect_next = True
+            i += 1
+            while i < n and command[i] in "<>&|":
+                i += 1
+        elif ch in ";&|":
+            end_word(i)
+            end_cmd()
+            redirect_next = False
+            i += 1
+            while i < n and command[i] in ";&|":
+                i += 1
+        elif ch in "*?":
+            begin(i)
+            glob_f = True
+            i += 1
+        elif ch == "[":
+            nxt = command[i + 1 : i + 2]
+            if start < 0 and (nxt == "" or nxt in " \t\n"):
+                begin(i)  # the `[` test builtin
+                i += 1
+                continue
+            if not re.match(r"\[[^\s'\"\\\]]+\]", command[i:]):
+                return bail(i)  # unclosed/odd bracket: maybe a zsh bad pattern
+            begin(i)
+            glob_f = True
+            i += 1
+        elif ch == "{":
+            begin(i)
+            if i + 1 < n and command[i + 1] not in " \t\n":
+                dyn_f = True
+            i += 1
+        elif ch == "~" and start < 0 and not command.startswith("~/", i):
+            begin(i)
+            if i + 1 < n and command[i + 1] not in " \t\n;&|":
+                dyn_f = True
+            i += 1
+        else:
+            begin(i)
+            i += 1
+    end_word(n)
+    end_cmd()
+    return cmds, True
+
+
+_ASSIGN_WORD = re.compile(r"^[A-Za-z_]\w*\+?=")
+# Words that open a command but are not it: ``if x`` / ``do x`` / ``! x``.
+_RESERVED_LEAD = {
+    "if",
+    "then",
+    "elif",
+    "else",
+    "while",
+    "until",
+    "do",
+    "!",
+    "time",
+    "{",
+}
+# A command with one of these as head is not checked for glob args.
+_SKIP_HEADS = {
+    "for",
+    "test",
+    "[",
+    "export",
+    "typeset",
+    "declare",
+    "local",
+    "readonly",
+    "integer",
+    "float",
+    "alias",
+    "eval",
+    "trap",
+    "function",
+}
+# Their presence anywhere means the glob semantics are not the default.
+_ABORT_HEADS = {"[[", "case", "select", "setopt", "unsetopt", "noglob", "coproc"}
+_CD_HEADS = {"cd", "pushd", "popd", "chdir"}
+
+
+def _head_index(cmd: list[_Word]) -> int | None:
+    """Index of the command word (after assignments / ``if`` / ``do``)."""
+    for idx, w in enumerate(cmd):
+        if w.redirect or _ASSIGN_WORD.match(w.raw) or w.raw in _RESERVED_LEAD:
+            continue
+        return idx
+    return None
+
+
+def _quoted_form(raw: str) -> str:
+    if raw.startswith("-") and "=" in raw:
+        flag, _, val = raw.partition("=")
+        return f"{flag}='{val}'"
+    return f"'{raw}'"
+
+
+def _glob_matches_nothing(raw: str, cwd: str) -> bool | None:
+    """True/False when decidable, None when not (no usable cwd, ``**``...)."""
+    if "**" in raw or any(c in raw for c in "'\"\\"):
+        return None
+    pattern = os.path.expanduser(raw) if raw.startswith("~/") else raw
+    root = cwd if cwd and os.path.isdir(cwd) else None
+    if root is None and not os.path.isabs(pattern):
+        # No cwd to look in: a flag word (``--include=*.py``) cannot name a
+        # file; a path glob could.
+        return True if raw.startswith("-") else None
+    try:
+        return next(glob.iglob(pattern, root_dir=root), None) is None
+    except (OSError, ValueError):
+        return None
+
+
+def _glob_deny(cmds: list[list[_Word]], cwd: str) -> str | None:
+    """Deny reason when zsh would abort with ``no matches found``, else None."""
+    has_cd = False
+    candidates: list[_Word] = []
+    for cmd in cmds:
+        idx = _head_index(cmd)
+        if idx is None:
+            continue
+        head = cmd[idx].raw
+        if head in _ABORT_HEADS or any(w.raw == "[[" for w in cmd):
+            return None
+        if head in _CD_HEADS:
+            has_cd = True
+        if head in _SKIP_HEADS or head in _CD_HEADS:
+            continue
+        for w in cmd[idx + 1 :]:
+            if w.glob and not (w.dyn or w.redirect or _ASSIGN_WORD.match(w.raw)):
+                candidates.append(w)
+    for w in candidates:
+        if has_cd and not w.raw.startswith("-"):
+            continue  # the shell's cwd is not the payload's after a cd
+        if _glob_matches_nothing(w.raw, cwd):
+            return (
+                f"[zsh] `{w.raw}` is an unquoted glob that matches nothing "
+                "here — zsh aborts the whole line with `no matches found` "
+                "before the command runs, so nothing would execute. If the "
+                "tool should receive the pattern (grep --include, find -name, "
+                f"git ref patterns), quote it: `{_quoted_form(w.raw)}`. If you "
+                "meant a file glob, check the path and cwd."
+            )
+    return None
+
+
+def _on_macos() -> bool:
+    return sys.platform == "darwin"
+
+
+def _has_timeout() -> bool:
+    return shutil.which("timeout") is not None
+
+
+_TIMEOUT_WRAPPERS = {"env", "nohup", "command", "builtin"}
+
+
+def _timeout_deny(cmds: list[list[_Word]]) -> str | None:
+    """Deny a ``timeout <N> cmd`` at command position on macOS (no binary)."""
+    if not _on_macos() or _has_timeout():
+        return None
+    for cmd in cmds:
+        idx = _head_index(cmd)
+        while idx is not None and cmd[idx].raw in _TIMEOUT_WRAPPERS:
+            idx = idx + 1 if idx + 1 < len(cmd) else None
+        if idx is None or cmd[idx].raw != "timeout" or idx + 1 >= len(cmd):
+            continue
+        rest = " ".join(w.raw for w in cmd[idx + 1 :])
+        alt = (
+            f"`gtimeout` (installed): `gtimeout {rest}`"
+            if shutil.which("gtimeout")
+            else "`gtimeout` from coreutils, if installed"
+        )
+        return (
+            "[macos] `timeout` is not installed on macOS — the command would "
+            "die with `command not found: timeout`. Run it with "
+            "`run_in_background=true` and read the output when it finishes, "
+            f"set the Bash tool's own `timeout` parameter, or use {alt}."
+        )
+    return None
+
+
+def _precheck_deny(command: str, cwd: str) -> str | None:
+    """Reason to deny the command before it runs, or None."""
+    cmds, ok = _lex(command)
+    reason = _timeout_deny(cmds)
+    if reason is None and ok:
+        reason = _glob_deny(cmds, cwd)
+    return reason
 
 
 # ``sed -n '12,40p' path`` / ``sed -n "12,40 p" path`` / ``sed -n 12p path``;
@@ -380,6 +769,13 @@ def main() -> int:
             out = _READ_DEDUP.hook_output(payload)
         except Exception:
             out = None
+    if out is None:
+        try:
+            reason = _precheck_deny(command, cwd)
+        except Exception:
+            reason = None  # fail open: a lexer bug must never block a command
+        if reason is not None:
+            out = {"permissionDecision": "deny", "permissionDecisionReason": reason}
     if out is None:
         note = (
             _rule_e(command)

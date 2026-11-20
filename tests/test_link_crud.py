@@ -528,16 +528,18 @@ class TestStoreMergeRefs:
         self, store: Store
     ) -> None:
         """gr450133: the collision's ``next=`` must name the concrete
-        remedy (``merge_duplicate`` + the skill section), not just say
-        "resolve the duplicate" with no pointer to how."""
+        remedy — since gr634191 that is the paste-ready ``merge_into``
+        dry-run call carrying the owner's handle, not just "resolve the
+        duplicate" with no pointer to how."""
         owner = _seed_paper(store, slug="alive2025a")
         other = _seed_paper(store, slug="alive2025b")
         store.set_ref_identifier(owner, "doi", "10.1234/live.2025")
         with pytest.raises(BadInput, match="already belongs to ref") as exc_info:
             store.set_ref_identifier(other, "doi", "10.1234/live.2025")
-        next_hint = exc_info.value.next
-        assert next_hint is not None and "merge_duplicate" in next_hint
-        assert "precis-paper-help" in next_hint
+        next_hint = str(exc_info.value.next)
+        assert "merge_into" in next_hint
+        assert f"pa{owner}" in next_hint
+        assert "web" not in next_hint
 
     def test_merge_into_self_rejected(self, store: Store) -> None:
         a = _seed_paper(store, slug="self2023")
@@ -1122,8 +1124,8 @@ class TestNeighbourhood:
         store.add_link(src_ref_id=citer, dst_ref_id=focus, relation="cites")
         store.add_link(src_ref_id=focus, dst_ref_id=mem_out, relation="related-to")
         store.add_link(src_ref_id=mem_in, dst_ref_id=focus, relation="related-to")
-        # a literally stored inverse-slug row (``cited-by``) is kept as-is
-        # on the out side, same as ``links_for`` returns it.
+        # the passive spelling (``cited-by``) is stored as ``mem_in cites
+        # focus``, which the neighbourhood presents as ``cited-by`` inbound.
         store.add_link(src_ref_id=focus, dst_ref_id=mem_in, relation="cited-by")
 
         nb = store.neighbourhood("paper", focus)

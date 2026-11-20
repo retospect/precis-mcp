@@ -353,33 +353,32 @@ def _llm_api_hold(
     outbound_policy.parked_gate(effective, parked_until=fresh_park)
 
     wait_deadline = time.monotonic() + max(0.0, budget)
-    hold_id: int | None = None
     holder = (
         f"{os.environ.get('PRECIS_HOST_NAME') or socket.gethostname()}:{os.getpid()}"
     )
+    from precis.workers import admission as _admission
+
+    adm: _admission.Admission | None = None
     while True:
         row_exists = True
         try:
             with store.pool.connection() as conn:
                 with conn.transaction():
-                    from precis.store._resource_slots_ops import (
-                        insert_slot_hold,
-                        reserve_resource_slots,
+                    from precis.liveness import worker_identity
+
+                    # The single admission entry point (gr657245): one
+                    # llm-api:<provider> unit on the shared 'api' rows, TTL
+                    # bracketing the call — same reserve + TTL-hold shape
+                    # this loop always had, now via admission.admit().
+                    adm = _admission.admit(
+                        conn,
+                        "api",
+                        _admission.Footprint(llm={resource: 1}),
+                        holder,
+                        ttl_s=timeout_s + 60.0,
+                        holder_identity=worker_identity(),
                     )
-
-                    if reserve_resource_slots(conn, "api", {resource: 1}):
-                        from precis.liveness import worker_identity
-
-                        hold_id = insert_slot_hold(
-                            conn,
-                            "api",
-                            resource,
-                            1,
-                            holder,
-                            timeout_s + 60.0,
-                            holder_identity=worker_identity(),
-                        )
-                    else:
+                    if adm is None:
                         # Reserve failing means the row is full OR missing —
                         # distinguish in the same connection's round trip.
                         row_exists = (
@@ -391,12 +390,12 @@ def _llm_api_hold(
                             is not None
                         )
         except Exception:
-            hold_id = None  # commit failed — the tx rolled back, nothing held
+            adm = None  # commit failed — the tx rolled back, nothing held
             rate_limit._warn_fail_open(resource, "llm-api slot reserve")
             with _fallback_slot(resource, budget, row=effective.row):
                 yield
             return
-        if hold_id is not None:
+        if adm is not None:
             break
         if not row_exists:
             rate_limit._warn_unpaced(
@@ -428,13 +427,7 @@ def _llm_api_hold(
         try:
             with store.pool.connection() as conn:
                 with conn.transaction():
-                    from precis.store._resource_slots_ops import (
-                        delete_slot_hold,
-                        release_resource_slots,
-                    )
-
-                    if delete_slot_hold(conn, hold_id):
-                        release_resource_slots(conn, "api", {resource: 1})
+                    _admission.release(conn, adm)
         except Exception:  # pragma: no cover — the TTL reaper reclaims it
             log.warning(
                 "openai_tools: llm-api hold release failed; TTL reaper reclaims",

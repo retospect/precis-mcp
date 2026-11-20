@@ -2,6 +2,21 @@
 
 The packaged preamble loads ``fontspec``, so PDF compilation and the CLI's
 manual compile hint use LuaLaTeX (``latexmk -lualatex``).
+Adsorbate stars share the literal-star decision with Word and house-style
+lint. LaTeX emits remaining prose stars with an explicit centered-star
+command so automatic notation and author-escaped stars use the same glyph;
+protected math and code keep their original star syntax.
+Draft lint and both exporters share the same math plausibility check.
+Its numeric arithmetic exception requires a binary operator so a price
+followed by a parenthesized year still gets the currency check.
+PDF exports allow five minutes by default for large drafts and their
+bibliography/glossary passes (gr684953); ``PRECIS_LATEXMK_TIMEOUT_S`` or
+an explicit compile timeout can override that budget.
+
+PDF jobs optionally refresh persisted retraction checks (30-day TTL) before
+reapplying the retracted-citation gate. Word stays read-only; both formats
+place shared coverage warnings after Unverified claims so an unchecked
+citation cannot silently read as clean.
 
 End-matter sections (each vanishes byte-identically when empty): trust
 marks ("Unverified claims", :mod:`._trust_marks`), nanopub "Published
@@ -43,6 +58,37 @@ from precis.errors import BadInput
 #: thread's todo-list + notes, ``corpus_role='none'`` — and is deliberately
 #: **not** here: it is rendered whole for the model but never exported.
 EXPORTABLE_KINDS: frozenset[str] = frozenset({"draft"})
+
+#: The Word export's "citation machinery" choices, value -> label (the
+#: export panel's dropdown text). Only the modes in
+#: :data:`IMPLEMENTED_CITATION_MODES` can be built; each later mode lands by
+#: adding its value there.
+CITATION_MODES: dict[str, str] = {
+    "endnote": "EndNote fields",
+    "word": "Word citations",
+    "zotero": "Zotero fields",
+    "plain": "plain text",
+}
+IMPLEMENTED_CITATION_MODES: tuple[str, ...] = (
+    "endnote",
+    "word",
+    "zotero",
+    "plain",
+)
+
+
+def guard_citation_mode(mode: str) -> None:
+    """Refuse an unknown ``citations`` value, or a known one not built yet."""
+    if mode not in CITATION_MODES:
+        raise BadInput(
+            f"unknown citations mode {mode!r}",
+            next="use one of " + ", ".join(IMPLEMENTED_CITATION_MODES),
+        )
+    if mode not in IMPLEMENTED_CITATION_MODES:
+        raise BadInput(
+            f"citations={mode!r} ({CITATION_MODES[mode]}) is not available yet",
+            next="use one of " + ", ".join(IMPLEMENTED_CITATION_MODES),
+        )
 
 
 def guard_exportable(ref: Any) -> None:

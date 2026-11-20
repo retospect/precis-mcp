@@ -1,0 +1,106 @@
+---
+# Rootless docker for the builder user (Linux, non-deploy). The docker
+# group is root-equivalent (a member mounts / into a container), so the
+# builder user gets its own unprivileged daemon instead: socket
+# /run/user/<uid>/docker.sock, images and containers under its home.
+# Included by main.yml when precis_builder_rootless_docker; needs
+# builder_user.yml's `_builder_uid`.
+#
+# Prerequisite: Docker's apt repository on the host (docker-ce-rootless-extras
+# is not in the distro archive). DGX OS ships it; elsewhere add the repo
+# first — the apt task below fails by name when it is missing.
+
+- name: Rootless docker prerequisites (uidmap, user session bus)
+  ansible.builtin.apt:
+    name:
+      - uidmap
+      - dbus-user-session
+    state: present
+    lock_timeout: 120
+  become: true
+  register: _builder_rootless_apt
+  until: _builder_rootless_apt is succeeded
+  retries: 3
+  delay: 10
+
+- name: Probe for the rootless setup tool
+  ansible.builtin.shell: command -v dockerd-rootless-setuptool.sh
+  args:
+    executable: /bin/bash
+  register: _builder_setuptool
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install docker-ce-rootless-extras (only when absent)
+  when: _builder_setuptool.rc != 0
+  ansible.builtin.apt:
+    name: docker-ce-rootless-extras
+    state: present
+    lock_timeout: 120
+  become: true
+  register: _builder_rootless_extras
+  until: _builder_rootless_extras is succeeded
+  retries: 3
+  delay: 10
+
+# Subordinate id ranges: the next free block after every range already
+# handed out, so rootless containers never overlap another user's.
+- name: Grant the builder user subordinate uid/gid ranges
+  ansible.builtin.shell: |
+    set -eu
+    for f in /etc/subuid /etc/subgid; do
+      touch "$f"
+      if ! grep -q '^{{ precis_builder_user }}:' "$f"; then
+        start=$(awk -F: '{e=$2+$3; if (e>m) m=e} END {print (m<100000) ? 100000 : m}' "$f")
+        echo "{{ precis_builder_user }}:${start}:{{ precis_builder_subid_count }}" >> "$f"
+        echo "added $f"
+      fi
+    done
+  args:
+    executable: /bin/bash
+  register: _builder_subid
+  changed_when: "'added' in _builder_subid.stdout"
+  become: true
+
+# linger keeps the user's systemd manager (and /run/user/<uid>) alive with
+# nobody logged in — the worker is a system unit, the docker daemon a user one.
+- name: Enable linger for the builder user
+  ansible.builtin.command: loginctl enable-linger {{ precis_builder_user }}
+  args:
+    creates: /var/lib/systemd/linger/{{ precis_builder_user }}
+  become: true
+
+- name: Start the builder user's systemd manager
+  ansible.builtin.systemd:
+    name: "user@{{ _builder_uid }}.service"
+    state: started
+  become: true
+
+# --force: the setup tool refuses while a rootful daemon answers on
+# /var/run/docker.sock (a DGX runs one); the two daemons do not share state.
+- name: Install the rootless docker daemon as the builder user
+  ansible.builtin.command: dockerd-rootless-setuptool.sh install --force
+  args:
+    creates: "{{ precis_builder_home }}/.config/systemd/user/docker.service"
+  environment:
+    HOME: "{{ precis_builder_home }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ _builder_uid }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ _builder_uid }}/bus"
+  become: true
+  become_user: "{{ precis_builder_user }}"
+
+- name: The rootless daemon starts at boot and now
+  ansible.builtin.systemd:
+    name: docker
+    scope: user
+    enabled: true
+    state: started
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ _builder_uid }}"
+  become: true
+  become_user: "{{ precis_builder_user }}"
+
+- name: Record the rootless docker socket
+  ansible.builtin.set_fact:
+    _builder_docker_host: "unix:///run/user/{{ _builder_uid }}/docker.sock"

@@ -1,5 +1,5 @@
 """Rung 3a of the paper-writing pipeline — the whole-draft review fanout
-(docs/backlog/paper-writing-pipeline.md §"Review — the memoized approval
+(me689904 §"Review — the memoized approval
 ledger"; the review-status UI work added incremental re-check + scope +
 the document-altitude persona).
 

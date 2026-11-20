@@ -346,6 +346,7 @@ async def reader(
         {
             "active_tab": "smartdraft",
             "ident": ident,
+            "citation_modes": _citation_mode_options(),
             "ref": _ref_view(ref),
             "view": view,
             "relevance": rel_on,
@@ -571,6 +572,16 @@ async def blocks(
     )
 
 
+def _citation_mode_options() -> list[tuple[str, str]]:
+    """The export panel's citation-machinery choices: ``(value, label)`` for
+    each mode the Word export can build."""
+    from precis.export import CITATION_MODES, IMPLEMENTED_CITATION_MODES
+
+    return [
+        (m, t) for m, t in CITATION_MODES.items() if m in IMPLEMENTED_CITATION_MODES
+    ]
+
+
 def _hub_and_citation_stats(
     request: Request, store: Store, nodes: list[Any]
 ) -> dict[str, Any]:
@@ -600,7 +611,7 @@ def _hub_and_citation_stats(
     try:
         handler = get_runtime(request).hub.handler_for("draft")
         # ``_taproot_hub_scoreboard`` takes resolved cited-paper ref_ids
-        # (docs/backlog/draft-doi-completeness-check.md's Hygiene-footer
+        # (gr690484's Hygiene-footer
         # refactor shares the chunk-token mining with the DOI line) —
         # mine once via the same helper the outline's own scoreboard uses.
         cited_ref_ids = handler._cited_paper_ref_ids(nodes)

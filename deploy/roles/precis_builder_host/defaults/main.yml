@@ -1,0 +1,92 @@
+---
+# precis_builder_host — turn a Linux or macOS host into a builder: a
+# `precis worker --only job_ssh_node` claimant that runs run_slice /
+# land_slice jobs (gr676054). Linux renders a systemd unit, macOS a
+# launchd LaunchDaemon — both through the service_unit role.
+#
+# What the role does NOT do: install the lane CLIs (agent_clis is the one
+# door, driven by scripts/agent-cli-update), lay ~/.pgpass (19-pgpass),
+# or install colima on a Mac (precis_worker_agent's provision half).
+# Those are playbook/coordinator steps — see
+# me691785.
+
+# The account the worker unit, the lane CLIs, the checkout and the tunnel run
+# as. `deploy` (the default) is the gateway's account and is provisioned by
+# 00-users. Any other name (the dedicated least-privilege builder user,
+# `coder`) is created by this role: no password, no sudo, no groups beyond
+# its own, home 0700, its own ~/.pgpass, rootless docker (Linux) or its own
+# colima (macOS) instead of the root-equivalent docker group.
+precis_builder_user: deploy
+# The user's home, per OS family — clone parent, ssh-key dir, pgpass.
+precis_builder_home: "{{ ('/Users/' if os_family == 'darwin' else '/home/') ~ precis_builder_user }}"
+
+# Create the account and wire its docker/pgpass (everything above). Off for
+# deploy: 00-users and 19-pgpass own that account.
+precis_builder_manage_user: "{{ precis_builder_user != 'deploy' }}"
+
+# Postgres roles whose ~/.pgpass lines the builder user gets: only the one the
+# worker's DSN logs in as (agent_rw until the db-own cutover, then
+# precis_system) — never the admin / read-only / owner lines deploy holds.
+precis_builder_pg_roles:
+  - "{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}"
+
+# Linux: docker for this user is rootless docker (its own daemon, socket under
+# /run/user/<uid>), not the docker group. Only for a managed non-deploy user.
+precis_builder_rootless_docker: "{{ precis_builder_manage_user | bool and os_family == 'linux' }}"
+# Subordinate id range size handed to the user for rootless docker.
+precis_builder_subid_count: 65536
+
+# The checkout slices build in (PRECIS_SLICE_ROOT): a primary clone of the
+# public repo this worker keeps at origin/main — run_slice worktrees hang
+# off it. Parameterised like the gateway's (precis_fix_repo_dir), never a
+# literal home.
+precis_fix_repo_dir: "{{ precis_builder_home }}/precis-fix-repo"
+
+# The venv the worker unit execs — provisioned by precis_worker/provision
+# (imported ahead of this role in 20i); the name mirrors that role's
+# default so an override lands on both.
+precis_builder_venv: "{{ precis_worker_venv | default('/opt/precis/venv') }}"
+
+# Worker DSN — same expression as precis_worker_dsn (agent_rw pre-cutover,
+# precis_system after); password resolution rides ~deploy/.pgpass (§L).
+precis_builder_dsn: "postgresql://{{ 'precis_system' if ((precis_db_own_cutover_done | default(false)) in [true, 'true', 'True', 'yes', 1, '1']) else 'agent_rw' }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+
+# The host serving the slice session MCP (mcp-http). Its Caddy proxy
+# binds 127.0.0.1 only, so every OTHER builder host reaches it through a
+# persistent ssh -L: the checkout's .mcp.json (127.0.0.1:8765) then
+# resolves identically everywhere and the bearer surface stays loopback.
+# Inventory name. Required when inventory_hostname is not itself the MCP
+# host; the tunnel tasks skip on the server host.
+precis_builder_mcp_host: ""
+
+# Loopback ports both ends — the tunnel binds 127.0.0.1 only.
+precis_builder_mcp_port: 8765
+
+# Dedicated tunnel identity (like ssh_tunnels' tunnel_ed25519): the pubkey
+# lands in the MCP host's deploy authorized_keys via delegate_to.
+precis_builder_tunnel_key: "{{ precis_builder_home }}/.ssh/precis_builder_tunnel_ed25519"
+
+# The fleet identity a MANAGED (non-deploy) builder user advertises and
+# claims under (gr695674): <host>-<user>, e.g. <builder-host>-coder. The
+# placement gate reads resource_slots[host] rows the heartbeat pass
+# writes, and the
+# claim's default_host / lease_host / executor-cap key all derive from the
+# same name — so the builder must NOT share the deploy unit's <host> rows:
+# its probes see a different home, two heartbeat passes under one name
+# would retract each other's tokens every cycle, and deploy-run lanes
+# would place against lane bins they cannot exec. The builder unit instead
+# runs `heartbeat` itself under this name (PRECIS_HOST_NAME), and
+# PRECIS_NODE pins to it likewise so a minted land_slice routes back to
+# the worktree's host. <host> is the heartbeat's own base — an overlay
+# PRECIS_HOST_NAME when set, else the inventory name. The per-host cap key
+# follows it: claim.executor_cap.ssh_node.<host>-<user>. Only rendered
+# when precis_builder_manage_user — a `deploy` builder rides the host's
+# own heartbeat, whose probes already see the same home.
+precis_builder_slots_host: "{{ ((precis_shared_env | default({})).PRECIS_HOST_NAME | default(inventory_hostname)) ~ '-' ~ precis_builder_user }}"
+
+# Slice worker unit knobs. --batch-size bounds NEW claims per tick, not
+# concurrency — the running pool is `claim.executor_cap.ssh_node[.<host>]`
+# (code default 8; the coordinator sets per-host values through the
+# claim-setting door, see the spec's coordinator steps).
+precis_builder_idle_seconds: 5
+precis_builder_batch_size: 4

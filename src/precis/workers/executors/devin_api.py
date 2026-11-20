@@ -102,10 +102,11 @@ from precis.workers.executors._common import (
     SUCCEEDED as _SUCCEEDED,
 )
 from precis.workers.executors._common import (
-    append_chunk as _append_chunk,
+    _error_meta,
+    claim_executor_jobs,
 )
 from precis.workers.executors._common import (
-    claim_executor_jobs,
+    append_chunk as _append_chunk,
 )
 from precis.workers.executors._common import (
     park_job_until as _park_job_until,
@@ -463,12 +464,14 @@ def _fail(
     failure_class: str | None = None,
 ) -> None:
     """Terminal fail before/without a session — event chunk +
-    STATUS:failed (+ optional ``failure_class`` meta) + failure bubble.
-    Mirrors ``claude_docker._fail``."""
+    STATUS:failed + ``meta.error`` crumb (+ optional ``failure_class``
+    meta) + failure bubble. Mirrors ``claude_docker._fail``."""
     with store.pool.connection() as conn:
         _append_chunk(store, ref_id, _JOB_EVENT_KIND, reason, conn=conn)
+        marks: dict[str, Any] = {"error": _error_meta(reason)}
         if failure_class is not None:
-            _set_meta(conn, ref_id, failure_class=failure_class, error=reason[:500])
+            marks["failure_class"] = failure_class
+        _set_meta(conn, ref_id, **marks)
         _set_status(store, ref_id, _FAILED, conn=conn)
         conn.commit()
     from precis.utils.job_bubble import bubble_job_failure

@@ -67,7 +67,7 @@ the reverted commits show the wiring (8e94e8c33-era, pre-drop sha).
 feeds it. First real `--checked` ship is the dogfood; watch for the
 `coverage-db` job's artifact + selector drift on missing evidence.
 Left: gripe-filing from a red soak leg is deliberately out of scope
-(job summary only); `release-ci-diff-coverage.md` now has its DB produced
+(job summary only); `release-ci-diff-coverage (gr692382)` now has its DB produced
 nightly — the diff-cover verdict is still open.
 
 2026-11-07 me580555: supersedes the 2026-10-15 "keep the full suite on
@@ -102,12 +102,12 @@ counts `lint`, `test-linux`, `gate-fast`; `round`/`release` also count
 
 ## Do next
 
-0. **[`test-loop-speed.md`](../test-loop-speed.md)** (draft, Reto
+0. **`test-loop-speed (me692006)`** (draft, Reto
    2026-10-24: the top friction theme goes first) — single-file
    `scripts/test` measured 17.9 s no-DB / 40.6 s DB; the cost is xdist
    `-n6`, a ~6 s preflight and ~4.5 s per-process DB setup, not Docker.
    7 slices; four questions for Reto at its end.
-0. **[`release-train.md`](../release-train.md)** (draft, Reto 2026-10-23
+0. **`release-train (me692603)`** (draft, Reto 2026-10-23
    ruling) — qland everything, harness-only `--remote`, one 10-shard
    release gate fixed in place, next cut at deploy start. 7 slices; two
    questions open for Reto at its end. Supersedes the "one release at a
@@ -161,7 +161,7 @@ counts `lint`, `test-linux`, `gate-fast`; `round`/`release` also count
    started (a pending run replaced by a newer push, as designed). Ruled
    2026-10-12 (Reto): the max candidate age stays 6 h
    (`DEFAULT_MAX_CANDIDATE_HOURS` in `scripts/round`); nothing open.
-4. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
+4. **gr692372** — auto-reap deleted
    live sessions' trees; fixes 1–3, the grace/purpose guards and the
    two-sessions-in-one-tree process-table check shipped,
    the harness kill/SessionEnd coupling (proposal 4) is open. Its sibling
@@ -179,12 +179,12 @@ counts `lint`, `test-linux`, `gate-fast`; `round`/`release` also count
    project down at exit (ae5084ae3), and colima's docker pools were widened
    from ~31 to 256 networks (Reto, review-queue ship-gate-ci-2, done by
    the orchestrator 19:01Z).
-5. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
+5. **gr692283** — a subagent
    exiting without reaping `scripts/test` holds a slot forever, starving the
    slot-capped gate for every tree.
-6. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
+6. **me691286** — py-spy cannot run inside the gate
    container; the tooling that makes 5 diagnosable.
-7. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
+7. **gr692096** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
 8. **gate-s2 leftovers** (me580555, lands with tree `gate-s2`):
    `scripts/ship --remote` waits on the soak before the CAS merge —
@@ -199,26 +199,26 @@ counts `lint`, `test-linux`, `gate-fast`; `round`/`release` also count
 
 ## Horizon
 
-3. **backlog/gate-concurrency.md** — serialised template clones add
+3. **gr690557** — serialised template clones add
    suite-setup tax; speed, not correctness.
-4. **backlog/idle-test-dbs-hold-vm-ram.md** — live worktree test DBs hold VM
+4. **gr690589** — live worktree test DBs hold VM
    RAM; Tier 2 reaping deferred.
-5. **backlog/per-agent-green-is-not-integrated-green.md** — six subagents
+5. **gr692288** — six subagents
    each green, the integrated run red; a workflow gap, not a defect.
-6. **backlog/ops-gate-hygiene.md** — service_config rollback gates need
+6. **me690837** — service_config rollback gates need
    expiry and review; a housekeeping grab-bag.
-7. **backlog/worktree-path-guard-false-positives.md** — the brief tells
+7. **gr456287** — the brief tells
    agents to read other worktrees; the harness refuses.
-8. **backlog/ruff-is-unpinned-across-worktrees.md** — a `ruff>=0.11` floor
+8. **gr692393** — a `ruff>=0.11` floor
    lets trees format differently, so qland lint drifts.
-9. **backlog/piped-exit-guard-tuning.md** — guard-piped-exit-code
+9. **gr676936** — guard-piped-exit-code
     false-positive rate vs value; a decision, not a defect.
-10. **backlog/token-review-hook-gaps.md** — the bash-reflex nudge misses
+10. **me692225** — the bash-reflex nudge misses
     real traffic; compact-thrash re-reads.
-11. **backlog/fleet-coordination-via-precis.md** — peer messages and
+11. **me690606** — peer messages and
     wakeups cost a full ~250k-context turn each; consider moving the
     status relay into precis.
-12. **backlog/compact-handoff.md** — `/next` writes a handoff node and a
+12. **me690567** — `/next` writes a handoff node and a
     pointer, a SessionStart(compact) hook injects it; ends the copy-paste
     restart. Draft, waits on Reto's ruling on its open questions.
 
@@ -233,7 +233,7 @@ counts `lint`, `test-linux`, `gate-fast`; `round`/`release` also count
 `monitors-that-go-quiet` owns signals that lie; this thread owns the gate,
 the reaper and the qland drift guard that feeds that thread's "is main
 green" answer. `deploy-fleet-ops` owns the
-rest of `deploy-async-task-controller-filenotfounderror.md` (whether a
+rest of `deploy-async-task-controller-filenotfounderror (gr690411)` (whether a
 vanished play file should abort a running play; the apt stall).
 
 `backlog/backlog-lint-flags-ticked-subitems-as-shipped.md` was named by the

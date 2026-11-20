@@ -10,7 +10,7 @@ effort: medium
 - **Next:** Close the SMALL-tier breaker and hourly runaway-check gaps in budget-guardrails (Do next 1).
 - **Blocked by:** Nothing; active from 2026-10-17 (Reto: already landing).
 - **Unblocks:** Reliable autonomous execution lanes.
-- **Acceptance:** Use [budget-guardrails](../budget-guardrails.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use budget-guardrails (me690560) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `factory`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -33,29 +33,29 @@ quality-of-life and container items.
 
 ## Do next
 
-1. **backlog/budget-guardrails.md** — the SMALL-tier breaker hole and the
+1. **me690560** — the SMALL-tier breaker hole and the
    unscheduled hourly runaway check are filed here as open scope; SMALL is
    all-cloud, so a tripped cap does not stop it.
-2. **backlog/bare-rung-billing-accounting.md** — bare chain rungs spend
+2. **me690531** — bare chain rungs spend
    dollars the meter never counts; the meter half of the gate that
    shipped, and 1 cannot bound what it cannot see.
-3. **backlog/sandbox-python-script.md** — `prio: high`; arbitrary Python
+3. **me692178** — `prio: high`; arbitrary Python
    in a no-network container (`sandbox_run mode:script`), from a job or a
    `run:python` todo. Needs no OAuth, so it does not wait on OAuth;
    started 2026-10-18 on Reto's ask. Slice 1 (job-path `mode:script`:
    inline `code`, PyPI wheel lock, `--network none`, harvest on any exit)
    shipped 2026-10-18, slice 2 (`inputs`, `code_ref`, a read-only MCP
    on a unix socket) the same day; next is slice 3 (todo sugar). Not
-   live until slice 4 lights castor + pollux, which first needs async
+   live until slice 4 lights both DGX nodes, which first needs async
    staging and the package allow-list review.
-4. **backlog/relax-slices.md** — `STATUS:yielded` + a per-claim wall
+4. **me692466** — `STATUS:yielded` + a per-claim wall
    budget so a checkpointed long relax gives the lane a turn; in
    progress on `worktree-g8-relax-slices`, flag-gated off until r91
    shows a real checkpoint resume on prod.
 
 ## Horizon
 
-0. **backlog/dark-factory.md** — the frame for this thread's end state
+0. **me692430** — the frame for this thread's end state
    (Reto 2026-10-30): precis holds work state, picks the builder lane,
    keeps the build cadence, shows one hierarchy. Landed as a spec
    2026-10-30; its work lives in prod: platform quest qu540835, root
@@ -73,6 +73,8 @@ quality-of-life and container items.
    the build body. First run (jo565335): codex built the fix but
    its workspace-write sandbox keeps `.git` read-only, so `run_slice.poll`
    now commits a clean session's tree with its `scratch/commit-msg.txt`
+   — or a generated `fix(slice): complete (<handles>)` subject when the
+   session reported the commit blocked without one (gr702644) —
    instead of widening codex's writable roots. Its escalation then burned
    an attempt on the Claude weekly 429: a quota or rate result
    now parks the slice with no attempt, resubmitting at once on another
@@ -87,38 +89,38 @@ quality-of-life and container items.
    to child-minting generators, inlines the reviewed todo's `landed:` sha
    and brief into a reviewer's brief, the validate body carries the gripe
    report, and the codex and devin lanes fit `review` and `validate`.
-1. **backlog/worker-rotation-starves-rescue-passes.md** — the rescue
+1. **gr692436** — the rescue
    starvation shipped (overdue rescue passes age to the front of the
    rotation); left is the one unbounded job pass still inside the wait.
-2. **backlog/claude-inproc-lane-starves-old-jobs.md** — the starvation
+2. **me690527** — the starvation
    shipped (claim ageing); left are plan_tick's failure rate, quiet claim
    skips and request timeouts on the crossref/enrich passes.
-3. **backlog/coordinator-crash-recovery.md** — the coordinator executor has
+3. **gr690269** — the coordinator executor has
    only the wall-clock sweep for crash recovery; later by choice, the
    backstop works.
-4. **backlog/infra-failure-tag-classification-gaps.md** — two failure paths
+4. **gr692015** — two failure paths
    skip the infra tag and mis-class as content failures.
-5. **backlog/agent-container-capability-probe.md** — deploy the probe
+5. **gr690066** — deploy the probe
    before the container flip; safety net for 6.
-6. **backlog/agent-workspace-containers.md** — `prio: high`; persistent
+6. **me691434** — `prio: high`; persistent
    workspaces and disposable containers for coder agents; behind 5's probe.
-7. **backlog/factory-console-and-scheduling.md** — the remaining console
+7. **gr690514** — the remaining console
    and registry scope; the scheduling half lives in
-   `backlog/cluster-scheduling.md`.
-8. **backlog/tick-tool-lists-and-discovery-reflex.md** — per-job tool lists
+   me695459.
+8. **me692159** — per-job tool lists
    in tick prompts; prompt economy, not a failure mode.
-9. **backlog/friction-reflection-enable.md** — flip the default-off friction
+9. **gr690545** — flip the default-off friction
    footer once a grouping lane exists to absorb its gripes.
-10. **backlog/plan-tick-health.md** — plan_tick (the todo planner) spins and
+10. **me690502** — plan_tick (the todo planner) spins and
    exhausts silently; zero-output turn-exhausted ticks log as success.
-11. **backlog/plan-tick-context-cut.md** — pre-fetch to shrink planner turns,
+11. **me690455** — pre-fetch to shrink planner turns,
    exponential re-tick cooldown; overdue since 2026-08-24, needs one healthy
    baseline first (10).
-12. **backlog/fixer-salvage-failed-builds.md** — push failed fixer build
+12. **me690554** — push failed fixer build
     branches instead of discarding them.
-13. **backlog/prioritization-auto-scoring.md** — severity x frequency
+13. **gr692314** — severity x frequency
     auto-score plus a human triage loop.
-14. **backlog/backlog-groomer-items-half.md** — groomer for work items;
+14. **gr690197** — groomer for work items;
     blocked on two prereqs.
 15. **Factory release loop (td570415)** — `release_cut` → `ci_verdict_poll`
     / `ci_red_digest` → approval → `release_deploy` → `release_confirm`,
@@ -156,10 +158,10 @@ quality-of-life and container items.
 
 - **The fix_gripe lane and the gripe-loop arming ladder** — closed by Reto
   2026-10-02 (td460703, "Drop the lane, we run locally session here"). Lane
-  OFF: prod `service_config` melchior/`backlog_groom` prio 5 to 0 at
+  OFF: prod `service_config` <agent-host>/`backlog_groom` prio 5 to 0 at
   2026-10-02 22:04Z; re-arm only on Reto's say with
-  `precis service prio melchior backlog_groom 5`. Code stays;
-  `diagnose_scan` is off too (melchior prio 0, Reto 2026-10-02); owning thread sessions fix gripes. Deleted
+  `precis service prio <agent-host> backlog_groom 5`. Code stays;
+  `diagnose_scan` is off too (<agent-host> prio 0, Reto 2026-10-02); owning thread sessions fix gripes. Deleted
   `backlog/fix-gripe-oauth-instead-of-api-key.md` and
   `backlog/dark-factory-arming.md` as moot. `fixer-salvage-failed-builds`,
   `prioritization-auto-scoring` and `backlog-groomer-items-half` presume the
@@ -169,7 +171,7 @@ quality-of-life and container items.
 
 `monitors-that-go-quiet` owns signals that lie; this thread owns the lanes
 that stop. `local-compute` consumes the budget and accounting items
-(`backlog/llm-cost-accounting.md` stays there).
+(gr695291 stays there).
 
 ## G1 (slice-g1, 2026-11-06Z)
 

@@ -20,6 +20,8 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.runtime import PrecisRuntime
+from precis.tools import core
 
 pytestmark = pytest.mark.db
 
@@ -61,7 +63,13 @@ class TestTaxonMetaView:
         assert "# 2 taxon meta" in batch
         assert "site time yield" in batch
 
-    def test_under_lists_descendants_with_axis(self, store: Any) -> None:
+    def test_under_lists_descendants_with_axis(
+        self,
+        store: Any,
+        runtime_with_store: PrecisRuntime,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(core, "_runtime", runtime_with_store)
         h = _taxon(store)
         parent = _tn(h.put(text="catalysis metric — a metric"))
         child = _tn(h.put(text="selectivity — fraction to the wanted product"))
@@ -71,14 +79,43 @@ class TestTaxonMetaView:
             rel="specialises",
             meta={"axis": "metric"},
         )
-        body = h.get(under=f"tn{parent}", view="meta").body
-        assert "under" in body
-        assert "selectivity" in body and "selectivity" in body
-        assert "metric" in body
+        body = core.get(kind="taxon", view="meta", args={"under": "catalysis metric"})
+        assert f"# 1 taxon meta under tn{parent} catalysis metric" in body
         # the header names the parent; the parent itself is never a row
         rows = body.split("\n\n", 1)[1]
         assert f"tn{child}" in rows
         assert f"tn{parent}" not in rows
+        assert "selectivity" in rows
+        assert "metric" in rows
+        assert "# meta keys in use — taxon" in core.get(kind="taxon", view="meta")
+
+    def test_children_lists_only_direct_children(
+        self,
+        store: Any,
+        runtime_with_store: PrecisRuntime,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(core, "_runtime", runtime_with_store)
+        h = _taxon(store)
+        root = _tn(h.put(text="measurement device — instruments for measurements"))
+        child = _tn(h.put(text="balance — an instrument for weighing"))
+        leaf = _tn(h.put(text="beam balance — uses a lever to compare masses"))
+        h.link(
+            id=child, target=f"taxon:{root}", rel="specialises", meta={"axis": "device"}
+        )
+        h.link(id=leaf, target=f"taxon:{child}", rel="specialises")
+        body = core.get(kind="taxon", id="measurement device", view="children")
+        assert f"# 1 direct children under tn{root} measurement device" in body
+        rows = body.split("\n\n", 1)[1]
+        assert f"tn{child}" in rows
+        assert f"tn{leaf}" not in rows
+        assert f"tn{root}" not in rows
+        assert "device" in rows
+        assert "# 0 direct children" in core.get(
+            kind="taxon", id=f"tn{leaf}", view="children"
+        )
+        with pytest.raises(BadInput, match="only apply with view='facets'"):
+            h.get(id=f"tn{root}", view="children", sort="name")
 
     def test_cap_and_under_gating(self, store: Any) -> None:
         h = _taxon(store)

@@ -15,7 +15,10 @@ import json
 import logging
 import math
 import os
+from collections.abc import Mapping
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -38,11 +41,12 @@ from precis.store._todo_sql import (
     parent_gate_exclusion_sql,
 )
 from precis.store.types import ChunkInsert, Tag
-from precis.todo import TERMINAL_TODO_STATUSES
+from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
 from precis.utils import dispatch_score as _dscore
 from precis.utils import job_footprint
 from precis.utils.llm.failure import backoff_hours as _failure_backoff_hours
 from precis.utils.secret_scan import mask_secrets, mask_secrets_deep
+from precis.workers import footprint_admission as _footprint_admission
 from precis.workers.executors import suspended_job_types
 from precis.workers.nursery import HOST_DARK_SILENCE_MIN
 from precis.workers.registry import SERVICES_BY_NAME
@@ -191,14 +195,17 @@ _RELEASE_LEG_TYPES_SQL = (
 #: class they rank ahead of bulk seed/drain work — jo656686's
 #: ``run_slice`` sat FIFO behind 58 queued ``autocatpath_seed`` rows for
 #: 51+ min on ``ssh_node``: the class order ties them (both
-#: ``background``) and the share term only prefers the fewer-running
-#: share, so a fresh pipeline op can still lose an equal-share pick to
-#: every older bulk row. The ``release_*`` ops are listed for
-#: completeness — the 2.5 band already outranks background, so their
+#: ``background``) and the lane-deficit term only prefers the lane the
+#: host has under-served, so a fresh pipeline op can still lose an
+#: equal-deficit pick to every older bulk row. The ``release_*`` ops
+#: are listed for completeness — the 2.5 band already outranks
+#: background, so their
 #: membership is a no-op today that keeps the set self-describing.
 FACTORY_PIPELINE_JOB_TYPES: tuple[str, ...] = (
     "run_slice",
     "land_slice",
+    "repo_release",
+    "pin_bump",
     "release_cut",
     "release_deploy",
     "release_confirm",
@@ -287,7 +294,7 @@ def _executor_lane_lock_key(executor: str, host: str) -> str:
     return f"claim-exec-cap:{executor}:{host}"
 
 
-# ── Job slicing (docs/backlog/relax-slices.md) ────────────────────────
+# ── Job slicing (me692466) ────────────────────────
 #: Feature flag — OFF by default until r91 shows a real checkpoint
 #: resume on prod. Enabled per lane by env OR ``app_state``
 #: ``claim.slicing.<executor>`` (a live flip, no redeploy). Off ⇒ no
@@ -365,8 +372,8 @@ def lane_has_waiters(
     Lane gates mirror :func:`claim_executor_jobs` for this host: same
     ``meta.executor``, the ``target_node`` pin check, a claimable
     status, a free lease, not operator-suspended. The ranking compares
-    each waiter's full claim key — ``(claim_rank, factory_pref,
-    aged_prio, queued_since, ref_id)`` from :func:`_claim_order_sql` and
+    each waiter's claim key — ``(claim_rank, factory_pref, aged_prio,
+    queued_since, ref_id)`` from :func:`_claim_order_sql` and
     :data:`FACTORY_PIPELINE_JOB_TYPES` — against the running job's key
     evaluated as-if-just-yielded: its base class (the yield re-stamps
     the tag, so no accumulated age or promotion; ``-1`` for prio 1), its
@@ -376,7 +383,12 @@ def lane_has_waiters(
     jobs already waiting" rule. The factory element lets a queued
     ``run_slice``/``land_slice`` preempt a running bulk seed at its next
     slice boundary (gr657333) — a bulk waiter never preempts a running
-    factory op."""
+    factory op. The lane-deficit share term (gr595541) and the
+    Python-only scarcity/affinity terms are not mirrored here — the
+    predicate tracks only the SQL rank keys, so it can miss a yield a
+    starved lane's waiter would earn on deficit, or take one the real
+    order's deficit term would deny; yield checks stay heuristic by
+    design."""
     age_step = claim_age_step_s()
     class_age = claim_class_age_s()
     class_rank = claim_class_rank_enabled()
@@ -558,15 +570,18 @@ def job_type_running_caps(conn: Connection) -> dict[str, int]:
 
 
 def executor_lane_limits(
-    conn: Connection, executor: str
+    conn: Connection, executor: str, host: str | None = None
 ) -> tuple[int | None, dict[str, int]]:
     """``(running cap, {job_type: reserved slots})`` for ``executor``
     on this host (gr603792).
 
     The cap is the code-shipped :data:`_EXECUTOR_CAP_DEFAULTS` entry
-    overlaid with ``app_state`` ``claim.executor_cap.<executor>``; the
-    reserve map is :data:`_EXECUTOR_RESERVE_DEFAULTS` REPLACED wholesale
-    by ``app_state`` ``claim.reserve.<executor>`` (a JSON
+    overlaid with ``app_state`` ``claim.executor_cap.<executor>`` — and
+    with ``claim.executor_cap.<executor>.<host>`` when ``host`` is given
+    (gr676054: per-host caps on a builder fleet — the host-suffixed key
+    replaces the unsuffixed one wholesale); the reserve map is
+    :data:`_EXECUTOR_RESERVE_DEFAULTS` REPLACED wholesale by
+    ``claim.reserve.<executor>[.<host>]`` (a JSON
     ``{"<job_type>": <slots>}``). ``cap=None`` means uncapped — the
     reserve map is then inert (an unbounded pool has no slots to hold
     back). Read live per claim pass, same as
@@ -578,18 +593,22 @@ def executor_lane_limits(
         f"{_EXECUTOR_CAP_KEY_PREFIX}{executor}",
         f"{_RESERVE_KEY_PREFIX}{executor}",
     ]
+    host_keys = [f"{key}.{host}" for key in keys] if host else []
     rows: dict[str, str] = dict(
         conn.execute(
-            "SELECT key, value FROM app_state WHERE key = ANY(%s)", (keys,)
+            "SELECT key, value FROM app_state WHERE key = ANY(%s)",
+            (keys + host_keys,),
         ).fetchall()
     )
-    raw_cap = rows.get(keys[0])
+    cap_key = host_keys[0] if host_keys and host_keys[0] in rows else keys[0]
+    raw_cap = rows.get(cap_key)
     if raw_cap is not None:
         try:
             cap = max(0, int(str(raw_cap)))
         except ValueError:
-            log.warning("claim: %s=%r is not an int; ignored", keys[0], raw_cap)
-    raw_reserve = rows.get(keys[1])
+            log.warning("claim: %s=%r is not an int; ignored", cap_key, raw_cap)
+    reserve_key = host_keys[1] if host_keys and host_keys[1] in rows else keys[1]
+    raw_reserve = rows.get(reserve_key)
     if raw_reserve is not None:
         try:
             parsed = json.loads(str(raw_reserve))
@@ -597,7 +616,7 @@ def executor_lane_limits(
         except (ValueError, TypeError, AttributeError):
             log.warning(
                 "claim: %s=%r is not a {job_type: slots} map; ignored",
-                keys[1],
+                reserve_key,
                 raw_reserve,
             )
     return cap, reserve
@@ -617,7 +636,112 @@ def _share_key_of(job_type: str, params_pass: Any) -> str:
 def _share_key(meta: dict[str, Any]) -> str:
     params = meta.get("params")
     params_pass = params.get("pass") if isinstance(params, dict) else None
+    stamped = meta.get("share_key")
+    if isinstance(stamped, str) and stamped:
+        return stamped
     return _share_key_of(str(meta.get("job_type") or ""), params_pass)
+
+
+#: SQL twin of :func:`_share_key` over ``refs`` alias ``{a}``.
+_LANE_KEY_SQL = (
+    "COALESCE(NULLIF({a}.meta->>'share_key', ''),"
+    " COALESCE({a}.meta->>'job_type', '')"
+    " || COALESCE(':' || ({a}.meta->'params'->>'pass'), ''))"
+)
+
+#: ``app_state`` prefix of a lane's share weight (default 1.0 — equal).
+_SHARE_WEIGHT_KEY_PREFIX = "claim.share."
+CLAIM_SHARE_WINDOW_ENV = "PRECIS_CLAIM_SHARE_WINDOW_S"
+DEFAULT_CLAIM_SHARE_WINDOW_S = 3600.0
+#: Lane-seconds a claim inside one batch is charged, so a multi-claim
+#: call interleaves the lanes instead of draining one lane's prefix.
+_BATCH_CLAIM_CHARGE_S = 60.0
+
+
+def claim_share_window_s() -> float:
+    """Sliding window (seconds) the lane deficit is measured over."""
+    raw = os.environ.get(CLAIM_SHARE_WINDOW_ENV)
+    if not raw:
+        return DEFAULT_CLAIM_SHARE_WINDOW_S
+    try:
+        v = float(raw)
+    except ValueError:
+        v = 0.0
+    if v <= 0:
+        log.warning(
+            "claim: %s=%r is not a positive number; using %gs",
+            CLAIM_SHARE_WINDOW_ENV,
+            raw,
+            DEFAULT_CLAIM_SHARE_WINDOW_S,
+        )
+        return DEFAULT_CLAIM_SHARE_WINDOW_S
+    return v
+
+
+def lane_share_weights(conn: Connection) -> dict[str, float]:
+    """``lane -> share weight`` from ``app_state`` ``claim.share.<lane>``;
+    a lane without a row weighs 1.0 (equal shares)."""
+    out: dict[str, float] = {}
+    for key, value in conn.execute(
+        "SELECT key, value FROM app_state WHERE key LIKE %s",
+        (f"{_SHARE_WEIGHT_KEY_PREFIX}%",),
+    ).fetchall():
+        try:
+            w = float(str(value))
+        except ValueError:
+            log.warning("claim: %s=%r is not a number; ignored", key, value)
+            continue
+        if w > 0:
+            out[str(key)[len(_SHARE_WEIGHT_KEY_PREFIX) :]] = w
+    return out
+
+
+def lane_seconds_in_window(
+    conn: Connection, executor: str, host: str, window_s: float
+) -> dict[str, float]:
+    """``lane -> lane-seconds`` this host gave each lane over the last
+    ``window_s`` (gr595541). A job row counts from its ``started_at`` (the
+    ``RUNNING`` tag stamp when absent) to now while running, else to the
+    stamp of the status it left running for, clipped to the window. A
+    yielded/reclaimed row keeps its first ``started_at``, so its queued gap
+    reads as service — a small over-credit that errs toward the lane that
+    already held the host."""
+    key = _LANE_KEY_SQL.format(a="r2")
+    rows = conn.execute(
+        f"""
+        SELECT {key} AS lane,
+               sum(GREATEST(0, EXTRACT(EPOCH FROM (
+                   LEAST(CASE WHEN st.value = %s THEN now() ELSE st.stamp END,
+                         now())
+                   - GREATEST(COALESCE(
+                         precis_try_timestamptz(r2.meta->>'started_at'),
+                         st.stamp),
+                       now() - make_interval(secs => %s))))))::float8
+          FROM refs r2
+          CROSS JOIN LATERAL (
+                SELECT t2.value, rt2.created_at AS stamp
+                  FROM ref_tags rt2 JOIN tags t2 USING (tag_id)
+                 WHERE rt2.ref_id = r2.ref_id AND t2.namespace = %s
+                 ORDER BY rt2.created_at DESC LIMIT 1
+              ) st
+         WHERE r2.kind = 'job' AND r2.retired_at IS NULL
+           AND r2.meta->>'executor' = %s
+           AND r2.meta->>'lease_host' = %s
+           AND (st.value = %s
+                OR st.stamp > now() - make_interval(secs => %s))
+         GROUP BY 1
+        """,
+        (
+            RUNNING,
+            window_s,
+            STATUS_NAMESPACE,
+            executor,
+            host,
+            RUNNING,
+            window_s,
+        ),
+    ).fetchall()
+    return {str(lane): float(sec or 0.0) for lane, sec in rows}
 
 
 def claim_age_step_s() -> float:
@@ -674,8 +798,8 @@ LLM_AFFINITY_GRACE_MIN = 10
 #: requires-bearing job whose non-``llm:`` resources aren't advertised on
 #: the reservation host defers instead of claiming unreserved while that
 #: host's heartbeat is stale-but-recent (gr491098: a post-restart claim
-#: burst on castor dropped every ``gpu:1`` gate — heartbeat dark → the slot
-#: map read empty — and co-claimed five cpuset-pinned NEB seeds onto one
+#: burst on the local-serving node dropped every ``gpu:1`` gate — heartbeat dark →
+#: the slot map read empty — and co-claimed five cpuset-pinned NEB seeds onto one
 #: GPU box, all deadline-killed). Past this the host reads as fossil and
 #: the unadvertised-requires fallback fires as before, so a permanently
 #: dark advertisement can't strand the queue.
@@ -860,17 +984,75 @@ def _coordinator_capability_ok(
     return requires <= advertised.get(host, set())
 
 
-def placement_requires(meta: dict[str, Any]) -> frozenset[str]:
+#: Lane adapter → the ``resource_slots`` token its binary advertises
+#: (gr676054). Restated rather than imported: ``job_types`` modules
+#: pull this file, not the reverse — keep it in sync with
+#: ``_slice_adapters.ADAPTERS`` (a test pins it).
+_ADAPTER_PLACEMENT_TOKENS: dict[str, str] = {
+    "claude_p": "claude_bin",
+    "codex_exec": "codex_bin",
+    "kimi_tree": "kimi_bin",
+    "devin_tree": "devin_bin",
+}
+
+
+def lane_adapter_map(conn: Connection) -> dict[str, str]:
+    """``{lane name: adapter}`` from ``llm_account`` — the lane→adapter
+    resolution ``placement_requires`` needs to turn a ``params.lane``
+    pin into its binary token (gr676054)."""
+    return {
+        str(name): str(adapter)
+        for name, adapter in conn.execute(
+            "SELECT name, adapter FROM llm_account"
+        ).fetchall()
+    }
+
+
+def placement_requires(
+    meta: dict[str, Any], lane_adapters: Mapping[str, str] | None = None
+) -> frozenset[str]:
     """The job_type's ``ServiceSpec.placement`` tokens (td543917): host
     capabilities checked at claim, never reserved. Empty for a job_type with
-    no spec or none declared — every job_type but the dark-factory ops."""
+    no spec or none declared — every job_type but the dark-factory ops.
+
+    A ``run_slice`` job swaps the ``builder`` floor for the adapter's
+    bin token when the job names its lane: ``meta.adapter`` (stamped by
+    a prior submit) or a ``params.lane`` pin resolved through
+    ``lane_adapters`` ({lane: adapter}, :func:`lane_adapter_map`; absent
+    or unresolved → the ``builder`` floor stands).
+
+    A ``run_slice`` / ``land_slice`` / ``repo_release`` job for a second repo
+    (``params.repo`` a non-empty name other than the default) also needs
+    that repo's ``repo_checkout_<name>`` token, so only a host holding a
+    clone claims it. A name with no profile still adds its token: no host
+    advertises it, so the job waits (fail closed)."""
+    from precis.plans import lanes
+
     job_type = meta.get("job_type")
     spec = SERVICES_BY_NAME.get(str(job_type)) if job_type else None
-    return spec.placement if spec is not None else frozenset()
+    if spec is None:
+        return frozenset()
+    tokens = set(spec.placement)
+    if str(job_type) in ("run_slice", "land_slice", "repo_release"):
+        repo = (meta.get("params") or {}).get("repo")
+        if isinstance(repo, str) and repo and repo != lanes.DEFAULT_REPO:
+            tokens.add(lanes.repo_checkout_token(repo))
+    if str(job_type) != "run_slice" or "builder" not in tokens:
+        return frozenset(tokens)
+    adapter = meta.get("adapter")
+    if not adapter:
+        lane = (meta.get("params") or {}).get("lane")
+        adapter = (lane_adapters or {}).get(str(lane)) if lane else None
+    tokens.discard("builder")
+    tokens.add(_ADAPTER_PLACEMENT_TOKENS.get(str(adapter), "builder"))
+    return frozenset(tokens)
 
 
 def _placement_ok(
-    meta: dict[str, Any], advertised: dict[str, set[str]], default_host: str
+    meta: dict[str, Any],
+    advertised: dict[str, set[str]],
+    default_host: str,
+    lane_adapters: Mapping[str, str] | None = None,
 ) -> bool:
     """Check-only placement gate (td543917): ``True`` when the job_type
     declares no :func:`placement_requires` tokens, or the host that would
@@ -880,7 +1062,7 @@ def _placement_ok(
     ``JobTypeSpec.requires`` of an ``ssh_node`` job (``has_gpaw``) is not a
     ``resource_slots`` token, so ``ssh_node`` cannot opt into
     ``check_job_type_requires`` without stranding every GPU job."""
-    tokens = placement_requires(meta)
+    tokens = placement_requires(meta, lane_adapters)
     if not tokens:
         return True
     params = meta.get("params") or {}
@@ -895,13 +1077,15 @@ def advertised_by_host(conn: Connection) -> dict[str, set[str]]:
 
 
 def placement_gap(
-    meta: dict[str, Any], advertised: dict[str, set[str]]
+    meta: dict[str, Any],
+    advertised: dict[str, set[str]],
+    lane_adapters: Mapping[str, str] | None = None,
 ) -> frozenset[str]:
     """The job's :func:`placement_requires` tokens when NO live host in
     ``advertised`` (``host -> tokens``) offers all of them at once, else
     empty. A ``target_node`` pin narrows the search to that host. Shared by
     the sweeper's unschedulable alert and the plan tick's queued note."""
-    tokens = placement_requires(meta)
+    tokens = placement_requires(meta, lane_adapters)
     if not tokens:
         return frozenset()
     pin = (meta.get("params") or {}).get("target_node")
@@ -996,6 +1180,54 @@ def _advertised_by_host(conn: Connection) -> dict[str, set[str]]:
         "SELECT rs.host, rs.resource FROM resource_slots rs "
         "JOIN host_heartbeat hh ON hh.host = rs.host "
         "WHERE hh.ts > now() - %(silence)s::interval",
+        {"silence": f"{HOST_DARK_SILENCE_MIN} minutes"},
+    ).fetchall()
+    out: dict[str, set[str]] = {}
+    for host, resource in rows:
+        out.setdefault(str(host), set()).add(str(resource))
+    return out
+
+
+def dark_advertised_by_host(conn: Connection) -> dict[str, set[str]]:
+    """``host -> {resources it last advertised}`` for hosts whose
+    ``host_heartbeat`` is stale — the dark complement of
+    :func:`_advertised_by_host` (gr681494).
+
+    A dark host's ``resource_slots`` rows are fossil, not retracted — only
+    a *live* heartbeat pass retracts them — so they still describe what the
+    host would offer were it alive. ``plan_dispatch._step_unplaced`` reads
+    the map to collapse its "job unplaceable — provision a host?" asks: a
+    job whose placement tokens fit only a dark host waits on the ONE
+    ``host-dark`` alert instead of fanning out a per-job ask.
+
+    The heartbeat predicate mirrors ``nursery._detect_host_dark`` exactly
+    (stale ``ts``, not ``meta.retired``, not ``meta.ephemeral``, not a
+    12-hex container id, not an empty-probe dev checkout): an ask is only
+    safe to suppress for a host that alert will actually page. That
+    includes its coverage cap — the detector pages the 50 stalest hosts
+    (``ORDER BY ts, host LIMIT 50``), so this map holds the same 50
+    (td681892): suppressing the ask of a host past the cap would hide a
+    gap no alert names. The ``host`` tie-break keeps the two windows
+    identical on equal timestamps — without it Postgres could return
+    different boundary rows for each query, suppressing an ask for a
+    host the alert never named.
+    """
+    rows = conn.execute(
+        "SELECT rs.host, rs.resource FROM resource_slots rs "
+        "JOIN ("
+        "SELECT hh.host FROM host_heartbeat hh "
+        "WHERE hh.ts < now() - %(silence)s::interval "
+        "AND (hh.meta->>'ephemeral') IS DISTINCT FROM 'true' "
+        "AND (hh.meta->>'retired') IS NULL "
+        "AND hh.host !~ '^[0-9a-f]{12}$' "
+        "AND NOT ("
+        "hh.meta ? 'worker_units' "
+        "AND (hh.meta->'worker_units' = '{}'::jsonb "
+        "OR hh.meta->'worker_units'->'units' = '{}'::jsonb) "
+        "AND COALESCE(hh.meta->'activity', '{}'::jsonb) = '{}'::jsonb"
+        ") "
+        "ORDER BY hh.ts ASC, hh.host LIMIT 50"
+        ") hh ON hh.host = rs.host",
         {"silence": f"{HOST_DARK_SILENCE_MIN} minutes"},
     ).fetchall()
     out: dict[str, set[str]] = {}
@@ -1175,6 +1407,203 @@ def _service_pin_hosts_for(
         return None
     hosts = pinned.get(spec.service_pin)
     return hosts if hosts else None
+
+
+def _plan_reader(conn: Connection) -> Any:
+    """A ``store``-shaped borrower for plan_dispatch's reads: they run
+    inside the claim transaction, so earlier claims in a batch are
+    visible as holders too."""
+    return SimpleNamespace(pool=SimpleNamespace(connection=lambda: nullcontext(conn)))
+
+
+def _queued_build_plan(
+    conn: Connection, parent_ids: list[int] | None
+) -> tuple[Any | None, set[int]]:
+    """``(_Plan, wanted)`` — the in-memory plans above the queued
+    ``run_slice`` parents (every queued build's when ``parent_ids`` is
+    ``None``); ``plan`` is ``None`` when no live plan root covers them,
+    with ``wanted`` still resolved for the fallback read. One load,
+    shared by the overlap and sequencing holds — it covers only the
+    plan roots above those queued builds, not every plan subtree."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    if parent_ids is None:
+        parent_ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT DISTINCT parent_id FROM refs j"
+                " WHERE j.kind = 'job' AND j.retired_at IS NULL"
+                " AND j.parent_id IS NOT NULL"
+                " AND j.meta->>'job_type' = 'run_slice'"
+                " AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)"
+                "  WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'"
+                "  AND t.value = 'queued')"
+            ).fetchall()
+        ]
+    if not parent_ids:
+        return None, set()
+    ancestors = {
+        int(r[0])
+        for r in conn.execute(
+            "WITH RECURSIVE up(ref_id, parent_id) AS ("
+            " SELECT ref_id, parent_id FROM refs WHERE ref_id = ANY(%s)"
+            " UNION SELECT r.ref_id, r.parent_id FROM refs r"
+            "  JOIN up ON r.ref_id = up.parent_id)"
+            " SELECT ref_id FROM up",
+            (parent_ids,),
+        ).fetchall()
+    }
+    roots = [r for r in pd._candidate_roots(conn) if r in ancestors]
+    if not roots:
+        return None, set(parent_ids)
+    return pd._load(_plan_reader(conn), roots), set(parent_ids)
+
+
+def build_overlap_holds(
+    conn: Connection,
+    parent_ids: list[int] | None = None,
+    *,
+    shared: tuple[Any | None, set[int]] | None = None,
+) -> set[int]:
+    """Build todo ids held by started work, read in the claim transaction.
+
+    Reusing the planner's file and repo resolution keeps pending pre-land
+    reviews and branch diffs in the same exclusion set. The reader borrows
+    this connection without committing it, so earlier claims in a batch
+    are visible as holders too. Cheap on the claim path: no started build
+    or no queued ``run_slice`` job (or none in ``parent_ids``) returns
+    before any plan load, and the load covers only the plan roots above
+    those queued builds, not every plan subtree. ``shared`` is an
+    already-loaded :func:`_queued_build_plan` result on this conn — the
+    claim pass loads once and hands it to both hold reads (gr656970
+    review).
+    """
+    from precis.workers.job_types import plan_dispatch as pd
+
+    reader = _plan_reader(conn)
+    started = pd._started_slices(reader)
+    if not started:
+        return set()
+    plan, wanted = shared or _queued_build_plan(conn, parent_ids)
+    if plan is not None:
+        return set(
+            pd._overlap_holds(
+                plan, reader, started, [n for n in plan.todos() if n.id in wanted]
+            )
+        )
+    return set()
+
+
+def _blocked_parents_sql(conn: Connection, parent_ids: list[int]) -> set[int]:
+    """``parent_ids`` — or an ancestor of one — carrying a ``blocked-by``
+    link to a live target whose STATUS is not blocker-terminal. The
+    plain sequencing read for a build parent no loaded plan covers (the
+    land-held nuance needs the plan model, so it is the fallback only)."""
+    if not parent_ids:
+        return set()
+    rows = conn.execute(
+        f"""
+        WITH RECURSIVE up(origin, ref_id, parent_id) AS (
+            SELECT ref_id, ref_id, parent_id FROM refs
+             WHERE ref_id = ANY(%s)
+            UNION
+            SELECT up.origin, r.ref_id, r.parent_id FROM refs r
+              JOIN up ON r.ref_id = up.parent_id
+        )
+        SELECT DISTINCT origin FROM up
+         WHERE EXISTS (
+            SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
+             WHERE l.src_ref_id = up.ref_id AND l.relation = 'blocked-by'
+               AND b.retired_at IS NULL
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt
+                        JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open'
+                   ) NOT IN {blocker_terminal_sql()})
+        """,
+        (parent_ids,),
+    ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def _source_blocked_sql(conn: Connection, parent_ids: list[int]) -> set[int]:
+    """``parent_ids`` whose chain's source gripe has an open
+    ``blocked-by`` target of its own.
+
+    The source sits outside the plan: ``templates._run`` hangs it off a
+    ``related-to`` edge from the root, so neither ``plan.blocked`` nor
+    the ancestors read above reaches it — a blocker linked on the gripe
+    after the chain minted is rechecked here instead, on the parent and
+    every ancestor (gr656970 review)."""
+    if not parent_ids:
+        return set()
+    rows = conn.execute(
+        f"""
+        WITH RECURSIVE up(origin, ref_id, parent_id) AS (
+            SELECT ref_id, ref_id, parent_id FROM refs
+             WHERE ref_id = ANY(%s)
+            UNION
+            SELECT up.origin, r.ref_id, r.parent_id FROM refs r
+              JOIN up ON r.ref_id = up.parent_id
+        )
+        SELECT DISTINCT up.origin FROM up
+         JOIN links rel ON rel.src_ref_id = up.ref_id
+                      AND rel.relation = 'related-to'
+         JOIN refs g ON g.ref_id = rel.dst_ref_id
+        WHERE g.kind = 'gripe' AND g.retired_at IS NULL
+          AND EXISTS (
+             SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
+              WHERE l.src_ref_id = g.ref_id AND l.relation = 'blocked-by'
+                AND b.retired_at IS NULL
+                AND COALESCE(
+                      (SELECT t.value FROM ref_tags rt
+                        JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                      'open'
+                    ) NOT IN {blocker_terminal_sql()})
+        """,
+        (parent_ids,),
+    ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+def build_blocked_holds(
+    conn: Connection,
+    parent_ids: list[int] | None = None,
+    *,
+    shared: tuple[Any | None, set[int]] | None = None,
+) -> set[int]:
+    """Queued ``run_slice`` parents a ``blocked-by`` edge still holds,
+    read in the claim transaction (gr656970 review).
+
+    Dispatch's ``_Plan.blocked`` check decides at mint time; a blocker
+    linked AFTER the job queued never passed it, so the claim re-runs
+    the same read — the build stays queued while any blocked-by target
+    on the todo or an ancestor is live, while a ``done`` blocker's
+    land is still held (the gr659981 hold dispatch applies), and while
+    the chain's source gripe — a ``related-to`` hop off the ancestor
+    chain, outside the plan model — carries an open blocked-by of its
+    own (:func:`_source_blocked_sql`). A parent no live plan covers — a
+    ``run_slice`` minted outside plan_dispatch — falls back to the
+    direct ancestors read, which lacks the land nuance but still
+    honours the edge. ``shared`` is the claim pass's already-loaded
+    :func:`_queued_build_plan` result — one load feeds both holds.
+    """
+    plan, wanted = shared or _queued_build_plan(conn, parent_ids)
+    covered = {n.id for n in plan.todos()} if plan is not None else set()
+    held = (
+        {n.id for n in plan.todos() if n.id in wanted and plan.blocked(n)}
+        if plan is not None
+        else set()
+    )
+    uncovered = wanted - covered
+    if uncovered:
+        held |= _blocked_parents_sql(conn, sorted(uncovered))
+    held |= _source_blocked_sql(conn, sorted(wanted))
+    return held
 
 
 def _claim_order_sql(
@@ -1408,9 +1837,20 @@ def claim_executor_jobs(
     **Claim ordering (slice 6a, FIFO fix 2026-09-25, ageing 2026-10-15;
     class rank 2026-10-23, job-scheduling-fairness D2/D3; share term
     2026-10-24, D4 share half; release band 2026-11-07, gr584136;
-    factory sub-priority 2026-11-13, gr657333).**
-    ``ORDER BY claim_rank ASC, factory_pref ASC,
-    share_running ASC, aged_prio ASC, queued_since ASC, ref_id ASC``
+    factory sub-priority 2026-11-13, gr657333; model affinity
+    2026-11-13, gr595542; lane deficit, gr595541; dispatch_score,
+    gr702610).**
+    ``ORDER BY claim_rank ASC, factory_pref ASC, dispatch_score DESC,
+    lane_deficit DESC, aged_prio ASC, queued_since ASC, ref_id ASC``
+    (``dispatch_score`` = the ``meta.dispatch_score`` stamp, hot-first;
+    an unstamped ``land_slice`` floors at
+    :data:`~precis.utils.dispatch_score.FINISH_FIRST_SCORE` — see
+    ``score_order_sql`` below; lane deficit = the lane's weighted share — its
+    ``claim.share.<lane>``
+    weight over the eligible lanes' weights — minus the fraction of the
+    sliding window's lane-seconds this host gave it, gr595541; the same
+    deficit orders the pre-LIMIT window so truncation can't exclude the
+    owed lane, td655978)
     where ``claim_rank`` is the row's class (human 0 < agent 1 <
     recurring 2 < release 2.5 < background 3 — the release band from
     :data:`RELEASE_LEG_JOB_TYPES` ``job_type``s, not ``origin``; a
@@ -1452,11 +1892,68 @@ def claim_executor_jobs(
     all-unset queue collapses to ``ref_id`` ASC — the pre-6a FIFO. The
     capability-rarity term (§5.3) is layered on in 6d.
 
-    **Reserve-at-claim (slices 6c/6d).** A job's resource requirements —
-    explicit ``meta.requires`` or *derived* from its ``job_type`` via the
-    registry (:func:`effective_requires`; ``struct_relax``/``fold`` →
-    ``{"gpu": 1}``) — are reserved in this transaction before the job is
-    handed back: the conditional decrement is the lock. The reservation
+    The Python re-rank over the locked candidates adds, in key order:
+    capability scarcity (6d, ``-scarcity`` first, ahead of the SQL's own
+    ``claim_rank``/``factory_pref`` order the key then mirrors), the D4
+    share half
+    (the lane deficit, re-read per pick as each claim charges its lane
+    ``_BATCH_CLAIM_CHARGE_S`` so a batch round-robins), and —
+    gr595542 — **model affinity**, a tiebreak between ``aged_prio`` and
+    ``queued_since``: a row whose effective model (``params.model`` else
+    the job_type's declared default) matches the
+    reservation host's fresh last-used-model stamp
+    (:func:`~precis.workers.footprint_admission.last_models`, stamped by
+    :func:`~precis.workers.footprint_admission.note_model_use` at claim
+    time) sorts ahead of rows the fairness keys tied with it. It never
+    overrides class, share, prio or age — warm weights win the reload
+    race only among equals, and the stamp decays after
+    ``PRECIS_MODEL_AFFINITY_TTL_MIN`` (default 30 min) so a cold host
+    steers nothing.
+
+    **Reserve-at-claim (slices 6c/6d; footprint admission gr595542).** A
+    job's resource requirements — explicit ``meta.requires`` or *derived*
+    from its ``job_type`` via the registry (:func:`effective_requires`;
+    ``struct_relax``/``fold`` → ``{"gpu": 1}``) — are reserved in this
+    transaction before the job is handed back: the conditional decrement
+    is the lock. The reservation set is merged with the footprint units
+    :func:`precis.workers.footprint_admission.admission_units` computes —
+    a GPU job whose *effective* model (``params.model``, else the
+    job_type's declared default — ``struct_relax`` → ``mace_mp``)
+    reserves the model's learned ``vram_mb`` (footprint + margin) and a
+    science-lane (``ssh_node``) job with enough measured runs reserves
+    its predicted peak RSS as ``mem_mb`` — one all-or-nothing decrement,
+    so a job never holds its ``gpu`` token without its VRAM headroom.
+    Right after the decrement (refunding it on a veto),
+    :func:`~precis.workers.footprint_admission.admission_block` vets the
+    units against live state the static ledger can't see (td655172): the
+    footprint must fit the host's largest single card (``vram_card_mb`` —
+    the host-wide sum would admit models no card can hold), and the
+    host's latest measured *admittable* free headroom
+    (``host_heartbeat.meta``'s ``vram_free_mb``/``mem_free_mb``, per beat
+    — available less the measured host's own reserve, the same
+    subtraction the static rows carry, td655171) must cover the units less
+    the still-pending holds the beat can't have captured, so untracked
+    consumers (LLM serving, interactive use) can't over-admit or spend
+    the reserve. Holds count in
+    full until their reservations release: the measured free is
+    aggregate, so a drop can't be attributed to the reserved job over an
+    untracked consumer — releasing on drops could free a hold whose job
+    never allocated (td655171 review), and the residual under-admission
+    is the safe direction.
+    When the beat carries the per-card list (``vram_free_cards_mb`` —
+    raw free per card) the
+    vetoes become a pick: the claim admits onto one card with headroom
+    under its concurrency cap, still net of the host's
+    ``PRECIS_HOST_VRAM_RESERVE_MB`` reserve off the card under test —
+    read from the beat's own ``vram_reserve_mb`` stamp, since the
+    reservation host can be remote (``target_node``) and the claimer's
+    env would subtract the wrong host's (td655172 review) — and stamps
+    ``meta.reserved.gpu_card``, so
+    the dispatch binds execution to the admitted card rather than
+    exposing every card.
+    Both dimensions are dark until the footprint data and the host's
+    capacity rows exist; a claim that can't fit them is dropped this
+    cycle the same way a full token slot drops it. The reservation
     host is the job's ``target_node`` if pinned (the resource lives where
     the job runs — an ssh_node GPU job reserves on the GPU box), else this
     host (``reserve_host_id`` / :func:`reserve_host`). Reservation
@@ -1468,6 +1965,12 @@ def claim_executor_jobs(
     for capacity). What was actually reserved is stamped on
     ``meta.reserved`` for :func:`release_job_reservation` to refund at
     terminal. Jobs needing nothing are unaffected — the common path.
+
+    A successful claim whose job has an effective model (explicit or by
+    job_type default) also stamps the reservation host's last-used model
+    (:func:`~precis.workers.footprint_admission.note_model_use`) — the
+    write half of the pull's model-affinity sort key (gr595542; see
+    "Claim ordering" below).
 
     When ``exclude_paused`` is True, also exclude rows carrying an
     open-namespace pause tag (``ask-user:*`` / ``halt:*`` /
@@ -1616,6 +2119,38 @@ def claim_executor_jobs(
     # Only fetched when needed — a caller that never reclaims running rows
     # (``coordinator``) never re-claims, so there's nothing to classify.
     advertised_boot_ids = _advertised_boot_ids(conn) if reclaim_stale_running else {}
+    # Footprint-admission lookup cache, one per claim pass: dedupes the
+    # model-VRAM and predicted-RSS reads across the pick loop's candidates
+    # (gr595542 — same key asked again for the next row hits the dict).
+    fp_cache: dict[tuple[Any, ...], Any] = {}
+    # The lane→adapter map, read once per claim pass and only when a
+    # lane-named run_slice row actually reaches the placement gate
+    # (gr676054) — most passes carry no such row.
+    _lane_adapters_cache: dict[str, str] | None = None
+
+    def lane_adapters() -> dict[str, str]:
+        nonlocal _lane_adapters_cache
+        if _lane_adapters_cache is None:
+            try:
+                _lane_adapters_cache = lane_adapter_map(conn)
+            except Exception:
+                # The map is a refinement, not a gate: an unreadable lane
+                # table falls back to the ``builder`` floor — same as a
+                # lane pin that resolves to nothing.
+                log.warning("claim: lane→adapter map read failed", exc_info=True)
+                _lane_adapters_cache = {}
+        return _lane_adapters_cache
+
+    def lane_adapters_for(meta: dict[str, Any]) -> dict[str, str] | None:
+        """The lane→adapter map, only when THIS row's placement consults
+        it — a ``run_slice`` carrying ``params.lane`` and no stamped
+        ``meta.adapter`` (the adapter stamp resolves the token without
+        the table, and an unpinned row takes the ``builder`` floor)."""
+        if meta.get("job_type") != "run_slice" or meta.get("adapter"):
+            return None
+        if not (meta.get("params") or {}).get("lane"):
+            return None
+        return lane_adapters()
 
     def _stamp_lease_identity(
         ref_id: int, meta: dict[str, Any], status_value: str | None
@@ -1718,8 +2253,10 @@ def claim_executor_jobs(
     ) -> tuple[int, str, dict[str, Any]] | None:
         """Reserve resources (if any) + stamp lease identity for one row
         already locked by the caller's ``FOR UPDATE`` select. Returns the
-        claimable tuple, or ``None`` if a live resource slot is full / the
-        reservation host is memory-pressured / the row is still within its
+        claimable tuple, or ``None`` if a live resource slot is full —
+        counted token or gr595542 footprint headroom, the decrement is
+        all-or-nothing over the merged set — / the reservation host is
+        memory-pressured / the row is still within its
         ``llm:`` affinity grace window on a non-serving host (the row's lock
         frees at commit either way, so it's retried next cycle). ``created_at``
         (the row's ``refs.created_at``) is the "queued since" signal for that
@@ -1730,6 +2267,35 @@ def claim_executor_jobs(
         reclaimed row and a freshly-queued row go through identical
         bookkeeping.
         """
+        if meta.get("job_type") == "run_slice" and status_value != RUNNING:
+            # The claim stamps no STATUS:running (dispatch does, after the
+            # batch), so a second build picked in this batch could not see
+            # the first as a holder: one fresh build per claim batch. Cheap
+            # first — it saves the lock and the overlap read below.
+            if fresh_builds:
+                return None
+            # Serialize overlap read + running stamp across hosts. A loser
+            # leaves work queued; no lease or resource reservation was made.
+            locked = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtext(%s)::bigint)",
+                ("factory:build-overlap",),
+            ).fetchone()
+            if not (locked and locked[0]):
+                return None
+            parent = conn.execute(
+                "SELECT parent_id FROM refs WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+            shared = _shared_build_plan()
+            if parent and parent[0] in (
+                build_overlap_holds(conn, shared=shared)
+                # gr656970: a blocked-by edge minted after the job queued
+                # holds it here too — dispatch's check saw it once, the
+                # claim re-runs it so a late blocker still sequences,
+                # on the todo's ancestors and on the source gripe the
+                # chain is related-to.
+                | build_blocked_holds(conn, shared=shared)
+            ):
+                return None
         pin_hosts = _service_pin_hosts_for(meta, service_pinned)
         if pin_hosts is not None and default_host not in pin_hosts:
             # Placement pin (gr506045): the service's host-scoped enabled
@@ -1752,14 +2318,14 @@ def claim_executor_jobs(
             # capability-less host never reaches (and never reserves against)
             # the resource_slots path below for this row.
             return None
-        if not _placement_ok(meta, advertised, default_host):
+        if not _placement_ok(meta, advertised, default_host, lane_adapters_for(meta)):
             # Placement gate (td543917): a dark-factory op on a host without
-            # its checkout / claude / git stays queued for a capable host.
+            # its checkout / lane binary / git stays queued for a capable host.
             log.debug(
                 "claim: skip job %s on %s — placement %s not advertised",
                 ref_id,
                 default_host,
-                sorted(placement_requires(meta)),
+                sorted(placement_requires(meta, lane_adapters_for(meta))),
             )
             return None
         if reclaim_stale_running and meta.get("reserved"):
@@ -1768,10 +2334,15 @@ def claim_executor_jobs(
             # don't leak on the reserving host. No-op for fresh queued work.
             release_job_reservation(conn, ref_id)
             meta.pop("reserved", None)
+        if meta.get("job_type") == "run_slice" and status_value != RUNNING:
+            from precis.workers.admission import launch_fits
+            from precis.workers.job_types.run_slice import _WORK_FOOTPRINTS
+
+            # Launch runs locally, even if params carry a target_node.
+            # Check the exact spawn ledger, not learned RSS or executor cap.
+            if not launch_fits(conn, default_host, _WORK_FOOTPRINTS["slice"]):
+                return None
         requires = effective_requires(meta)
-        if not requires:
-            _stamp_lease_identity(ref_id, meta, status_value)
-            return (ref_id, title, meta)
         # The resource lives where the job runs: its target_node (an
         # ssh_node GPU job reserves on the GPU box, not the claimer), else
         # this host. Self-gate to what that host actually advertises — an
@@ -1779,13 +2350,40 @@ def claim_executor_jobs(
         # stall in the window before the probe populates the slot map).
         params = meta.get("params") or {}
         res_host = str(params.get("target_node") or default_host)
+        advertised_here = advertised.get(res_host, set())
+        # Footprint admission (gr595542): extra mem_mb/vram_mb units the
+        # claim must fit alongside its counted tokens — a GPU job whose
+        # effective model (``params.model``, else the job_type's declared
+        # default — ``struct_relax`` → ``mace_mp``) has a learned
+        # footprint reserves footprint + margin; a science-lane
+        # (ssh_node) job with enough measured runs reserves its predicted
+        # peak RSS × margin. Dark (no units) until the model row /
+        # rollup key / host capacity rows exist, so a bare queue is
+        # byte-identical to the token-only claim. The conditional
+        # decrement below refuses the claim when the headroom isn't
+        # there; ``admission_block`` vets the units against live state
+        # (per-card fit, measured free headroom) after the decrement,
+        # refunding it on a veto.
+        footprint = _footprint_admission.admission_units(
+            conn,
+            executor=executor,
+            meta=meta,
+            res_host=res_host,
+            requires=requires,
+            advertised_here=advertised_here,
+            cache=fp_cache,
+        )
+        if not requires and not footprint:
+            _footprint_admission.note_model_use(conn, meta=meta, res_host=res_host)
+            _stamp_lease_identity(ref_id, meta, status_value)
+            return (ref_id, title, meta)
         # Soft memory-pressure veto (6d-deferred): a heavy job's reservation
         # host is out of RAM headroom → skip it this round (the lock frees at
         # commit; it retries once pressure clears). Dark until a ``mem`` row
-        # with free=0 exists.
+        # with free=0 exists. Covers footprint-bearing jobs too — a predicted
+        # RSS is exactly the "heavy" signal the veto exists for.
         if res_host in pressured:
             return None
-        advertised_here = advertised.get(res_host, set())
         # An ``llm:``-prefixed requirement is a soft *affinity*, not a hard
         # host gate: the job prefers to run where its served model lives, but
         # the model is also reachable from any host over the LLM router HTTP
@@ -1850,8 +2448,8 @@ def claim_executor_jobs(
             # slot map dropped out of ``advertised`` mid-outage, so claiming
             # now would run the job UNRESERVED into a co-claimed pile-up
             # (gr491098: five gpu:1 autocatpath seeds claimed on a dark
-            # castor in 25s, all pinned to the same cpuset; the 5400s-wall
-            # pair was deadline-killed while their pollux twins finished in
+            # local-serving node in 25s, all pinned to the same cpuset; the
+            # 5400s-wall pair was deadline-killed while their second-DGX-node twins finished in
             # ~72min). Defer: the lock frees at commit and the job re-gates
             # once the heartbeat/probe repopulates. ``_host_recently_dark``'s
             # staleness ceiling keeps a permanently dark host fall-through.
@@ -1863,12 +2461,48 @@ def claim_executor_jobs(
                 dropped,
             )
             return None
-        if reservable and not reserve_resource_slots(conn, res_host, reservable):
-            # A live slot is full → drop it; the lock frees at commit and
-            # the job waits for capacity on that host.
+        to_reserve = {**reservable, **footprint}
+        if to_reserve and not reserve_resource_slots(conn, res_host, to_reserve):
+            # A live slot is full (token or footprint headroom) → drop it;
+            # the lock frees at commit and the job waits for capacity on
+            # that host. All-or-nothing: a GPU job never holds its token
+            # without its VRAM, nor its VRAM without its token.
             return None
-        if reservable:
-            reserved = {"host": res_host, "slots": reservable}
+        gpu_card: int | None = None
+        if footprint:
+            # Vetted after the decrement: it row-locks the ledger, so a
+            # concurrent claimer's committed admissions are visible to the
+            # pending-headroom sum (td655172). A veto refunds in this txn;
+            # an admitted VRAM claim also carries the card index the veto
+            # picked onto the reservation below, binding the dispatch.
+            blocked, gpu_card = _footprint_admission.admission_block(
+                conn, host=res_host, units=footprint, cache=fp_cache
+            )
+            if blocked is not None:
+                release_resource_slots(conn, res_host, to_reserve)
+                # td655172: the ledger rows are static capacity minus
+                # reservations — a per-card misfit (footprint > any single
+                # card), a live-free shortfall (untracked consumers the
+                # ledger can't see, plus holds the last beat can't have
+                # captured and that stay pending until their reservations
+                # release — td655171) or every eligible card at its job
+                # cap would over-admit past the decrement. Skip this
+                # round; the lock frees at commit and the claim retries.
+                log.debug(
+                    "claim: skip job %s on %s — footprint admission "
+                    "blocked (%s, units %s)",
+                    ref_id,
+                    res_host,
+                    blocked,
+                    footprint,
+                )
+                return None
+        if to_reserve:
+            reserved: dict[str, Any] = {"host": res_host, "slots": to_reserve}
+            if gpu_card is not None:
+                # The admitted card — dispatch binds execution to it
+                # (struct_relax --gpus device=<i> / cuda:<i> in-proc).
+                reserved["gpu_card"] = gpu_card
             conn.execute(
                 "UPDATE refs SET meta = (meta - 'requires_dropped') || "
                 "jsonb_build_object('reserved', %s::jsonb) WHERE ref_id = %s",
@@ -1889,10 +2523,27 @@ def claim_executor_jobs(
                 (json.dumps(dropped), ref_id),
             )
             meta["requires_dropped"] = dropped
+        _footprint_admission.note_model_use(conn, meta=meta, res_host=res_host)
         _stamp_lease_identity(ref_id, meta, status_value)
         return (ref_id, title, meta)
 
     claimed: list[tuple[int, str, dict[str, Any]]] = []
+    fresh_builds: list[int] = []
+    # One ``_queued_build_plan`` load per claim pass, shared by the
+    # overlap and sequencing holds — the ssh_node queue filter below and
+    # the per-job ``_finish_claim`` gate (gr656970 review: each hold used
+    # to load its own copy, so the same plan subtrees were fetched twice
+    # per pass, and twice again under the claim lock). Loaded lazily — a
+    # pass that claims no ``run_slice`` (and isn't ssh_node's) never pays
+    # for it. The load covers every queued build's parent, so
+    # ``_finish_claim`` needs no narrower read of its own.
+    _build_plan_shared: tuple[Any | None, set[int]] | None = None
+
+    def _shared_build_plan() -> tuple[Any | None, set[int]]:
+        nonlocal _build_plan_shared
+        if _build_plan_shared is None:
+            _build_plan_shared = _queued_build_plan(conn, None)
+        return _build_plan_shared
 
     # ── Reclaim-only pre-pass (starvation fix — see the docstring's
     # "Starvation-bound reclaim pre-pass") ──────────────────────────────
@@ -1998,14 +2649,15 @@ def claim_executor_jobs(
     # running rows forever, so the cap silently never binds and a bulk
     # band can occupy every in-proc slot on the host (gr592211: 49-queued
     # ``derived_drain`` starved release_poll/factory_rescue_tick off
-    # melchior's lanes for 15+ min per turnover).
+    # the agent host's lanes for 15+ min per turnover).
     cap_sql = ""
     cap_params: tuple[Any, ...] = ()
     reserve_block_sql = ""
     reserve_block_params: tuple[Any, ...] = ()
     caps: dict[str, int] = {}
     running_by_type: dict[str, int] = {}
-    running_by_share: dict[str, int] = {}
+    lane_usage: dict[str, float] = {}
+    lane_weights: dict[str, float] = {}
     claim_host = default_host
     executor_cap: int | None = None
     executor_reserve: dict[str, int] = {}
@@ -2013,7 +2665,9 @@ def claim_executor_jobs(
     running_total = 0
     if claim_host is not None:
         caps = job_type_running_caps(conn)
-        executor_cap, executor_reserve = executor_lane_limits(conn, executor)
+        executor_cap, executor_reserve = executor_lane_limits(
+            conn, executor, host=claim_host
+        )
         reserve_total = sum(executor_reserve.values())
         if executor_cap is not None:
             # Serialize this lane's count+claim (td604572 review of
@@ -2038,11 +2692,10 @@ def claim_executor_jobs(
             ).fetchone()
             if not (held and held[0]):
                 contested.add(jt)
-        # One grouped read feeds both the per-type cap counts and the
-        # D4-share-half fair-share counts (the ``params.pass`` band
-        # discriminator — :func:`_share_key_of`).
+        # One grouped read feeds the per-type cap counts; the lane
+        # deficit reads its own windowed usage below (gr595541).
         running_by_type = {}
-        for jt, ps, cnt in conn.execute(
+        for jt, _ps, cnt in conn.execute(
             "SELECT r2.meta->>'job_type', r2.meta->'params'->>'pass', "
             "count(*) FROM refs r2 "
             "WHERE r2.kind = 'job' AND r2.retired_at IS NULL "
@@ -2056,8 +2709,12 @@ def claim_executor_jobs(
         ).fetchall():
             jt_s = str(jt)
             running_by_type[jt_s] = running_by_type.get(jt_s, 0) + int(cnt)
-            running_by_share[_share_key_of(jt_s, ps)] = int(cnt)
         running_total = sum(running_by_type.values())
+        if claim_class_rank_enabled():
+            lane_usage = lane_seconds_in_window(
+                conn, executor, claim_host, claim_share_window_s()
+            )
+            lane_weights = lane_share_weights(conn)
         if executor_cap is not None and running_total >= executor_cap:
             # Lane already full under the lane lock — no fresh claim can
             # pass this cycle, so the candidate query is skipped too.
@@ -2112,44 +2769,85 @@ def claim_executor_jobs(
         class_rank=class_rank_on,
         release_freeze=True,
     )
-    # D4 share half (job-scheduling-fairness slice 5, activated by the
-    # gr506754 measurement): among candidates of the winning class, prefer
-    # the share — ``job_type`` refined by the ``params.pass`` band
-    # discriminator (:func:`_share_key_of`) — with the FEWEST running rows
-    # on this lane, *then* the aged-prio/queued_since/ref_id key. The
-    # materialize SMALL bands share one ``derived_drain`` job_type, so a
-    # job_type-granular share can't separate them: the sibling band that
-    # holds the capped lane starves the other for hours. The join feeds the
-    # ORDER BY so the overfetch window actually contains the under-running
-    # share's rows; the Python re-rank reads the same counts through
-    # ``running_by_share``. Runs only under the class order — the
+    # The full eligibility gate, shared by the eligible-lane read (the
+    # deficit denominator below) and the candidate query — one definition,
+    # so the two can never disagree.
+    where_sql = f"""
+         WHERE r.kind = 'job'
+           AND r.retired_at IS NULL
+           AND r.meta->>'executor' = %s
+           AND (
+                (r.meta->'params'->>'target_node') IS NULL
+             OR (r.meta->'params'->>'target_node') = %s
+           )
+           AND EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %s AND t.value = ANY(%s)
+               )
+           AND (
+                (r.meta->>'lease_until') IS NULL
+             OR (r.meta->>'lease_until')::timestamptz < now()
+           )
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %s
+                    AND t.value = ANY(%s)
+               ){exclusion_sql}{parent_sql}{suspend_sql}{cap_sql}{reserve_block_sql}"""
+    where_params: tuple[Any, ...] = (
+        executor,
+        node,
+        STATUS_NAMESPACE,
+        list(CLAIMABLE),
+        STATUS_NAMESPACE,
+        list(TERMINAL),
+        *parent_params,
+        *suspend_params,
+        *cap_params,
+        *reserve_block_params,
+    )
+    # D4 share half, deficit form (gr595541): inside the winning class the
+    # lane (``meta.share_key``, else ``job_type[:pass]`` —
+    # :func:`_share_key`) this host has served LEAST of its weighted share
+    # over the sliding window goes first, then aged-prio/queued_since/
+    # ref_id. The SQL emits the SAME ``w/W - frac`` deficit the Python
+    # re-rank applies, ordered before the LIMIT so the overfetch window
+    # always contains the owed lane's rows: ``W`` is the weight total
+    # over the eligible lanes, read with a DISTINCT pass over the same
+    # gates (td655978 review — a ``frac/weight`` key tied at zero usage,
+    # so three older weight-1 rows could fill a ``limit=1`` window while
+    # the weight-3 lane owed 75% never reached the re-rank). The window's
+    # lane-seconds arrive as a JSON map; a lane absent from both maps
+    # reads as weight 1 / no service, the same formula a raced-in row
+    # gets. Runs only under the class order — the
     # ``PRECIS_CLAIM_CLASS_RANK=0`` kill switch keeps the pre-slice-2
-    # ORDER BY verbatim.
-    share_join_sql = ""
+    # ORDER BY verbatim. Skipped when weights are all default AND the
+    # window is empty — every deficit is then identical.
     share_col_sql = "0"
     share_order_sql = ""
     share_params: tuple[Any, ...] = ()
-    if class_rank_on and claim_host is not None:
-        share_col_sql = "COALESCE(s.n, 0)"
-        share_order_sql = "share_running ASC, "
-        share_join_sql = """
-          LEFT JOIN (
-                SELECT r2.meta->>'job_type' AS sjt,
-                       COALESCE(r2.meta->'params'->>'pass', '') AS sps,
-                       count(*) AS n
-                  FROM refs r2
-                 WHERE r2.kind = 'job' AND r2.retired_at IS NULL
-                   AND r2.meta->>'executor' = %s
-                   AND r2.meta->>'lease_host' = %s
-                   AND EXISTS (
-                         SELECT 1 FROM ref_tags rt2 JOIN tags t2 USING (tag_id)
-                          WHERE rt2.ref_id = r2.ref_id
-                            AND t2.namespace = %s AND t2.value = %s
-                       )
-                 GROUP BY 1, 2
-              ) s ON s.sjt = r.meta->>'job_type'
-                 AND s.sps = COALESCE(r.meta->'params'->>'pass', '')"""
-        share_params = (executor, claim_host, STATUS_NAMESPACE, RUNNING)
+    eligible_lanes: set[str] = set()
+    if class_rank_on and claim_host is not None and (lane_weights or lane_usage):
+        lane_key = _LANE_KEY_SQL.format(a="r")
+        eligible_lanes = {
+            str(lane)
+            for (lane,) in conn.execute(
+                f"SELECT DISTINCT {lane_key} FROM refs r {where_sql}",
+                where_params,
+            ).fetchall()
+        }
+        lane_w_total = (
+            sum(lane_weights.get(lane, 1.0) for lane in eligible_lanes) or 1.0
+        )
+        total_s = sum(lane_usage.values())
+        fracs = {k: v / total_s for k, v in lane_usage.items()} if total_s > 0 else {}
+        share_col_sql = (
+            f"COALESCE((%s::jsonb->>{lane_key})::float8, 1) / %s"
+            f" - COALESCE((%s::jsonb->>{lane_key})::float8, 0)"
+        )
+        share_order_sql = "lane_deficit DESC, "
+        share_params = (json.dumps(lane_weights), lane_w_total, json.dumps(fracs))
     # Factory-pipeline sub-priority (gr657333): within a claim class the
     # dark-factory ops (:data:`FACTORY_PIPELINE_JOB_TYPES`) outrank bulk
     # seed/drain work — a ``run_slice`` must not FIFO-wait an hour behind
@@ -2168,12 +2866,40 @@ def claim_executor_jobs(
             f"CASE WHEN r.meta->>'job_type' IN {_FACTORY_TYPES_SQL} THEN 0 ELSE 1 END"
         )
         factory_order_sql = "factory_pref ASC, "
+    # Filter existing holds before LIMIT: even a queue longer than the
+    # overfetch window cannot hide an unrelated build behind held jobs.
+    if executor == "ssh_node":
+        shared = _shared_build_plan()
+        held_builds = build_overlap_holds(conn, shared=shared) | build_blocked_holds(
+            conn, shared=shared
+        )
+        if held_builds:
+            where_sql += (
+                " AND (r.meta->>'job_type' <> 'run_slice' "
+                "OR r.parent_id IS NULL OR r.parent_id <> ALL(%s))"
+            )
+            where_params = (*where_params, sorted(held_builds))
+    # dispatch_score DESC (gr702610, hot-first), with the unstamped-land
+    # floor (td736734 review of 8d0cd009): the stamp floors NEW
+    # ``land_slice`` mints at ``FINISH_FIRST_SCORE``, but a land already
+    # queued when the stamp shipped — a direct land, a review-released
+    # land, an infrastructure retry — carries no ``dispatch_score`` and
+    # read as 0, so fresh builds with a stamped plan score passed it
+    # while its build's files stayed held. An unstamped land floors at
+    # the same ``FINISH_FIRST_SCORE`` a stamped one carries, so the
+    # rollout leaves already-queued lands exactly where new ones land.
+    # Mirrors :func:`_row_score` in the Python re-rank below.
+    score_order_sql = (
+        f"COALESCE((r.meta->>'{_dscore.SCORE_META_KEY}')::float8,"
+        f" CASE WHEN r.meta->>'job_type' = 'land_slice'"
+        f" THEN {_dscore.FINISH_FIRST_SCORE} ELSE 0 END) DESC, "
+    )
     fresh_sql = f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
                q.qs AS queued_since,
                {claim_rank_sql} AS claim_rank,
                {aged_prio_sql} AS aged_prio,
-               {share_col_sql} AS share_running,
+               {share_col_sql} AS lane_deficit,
                {factory_col_sql} AS factory_pref
           FROM refs r
           CROSS JOIN LATERAL (
@@ -2200,60 +2926,30 @@ def claim_executor_jobs(
                             AND t3.namespace = %s AND t3.value = ANY(%s)
                        )
                    AND COALESCE(r3.prio, %s)::float8 <> 1
-              ) t{share_join_sql}
-         WHERE r.kind = 'job'
-           AND r.retired_at IS NULL
-           AND r.meta->>'executor' = %s
-           AND (
-                (r.meta->'params'->>'target_node') IS NULL
-             OR (r.meta->'params'->>'target_node') = %s
-           )
-           AND EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s AND t.value = ANY(%s)
-               )
-           AND (
-                (r.meta->>'lease_until') IS NULL
-             OR (r.meta->>'lease_until')::timestamptz < now()
-           )
-           AND NOT EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s
-                    AND t.value = ANY(%s)
-               ){exclusion_sql}{parent_sql}{suspend_sql}{cap_sql}{reserve_block_sql}@@BG_WHERE@@
+              ) t
+          {where_sql}@@BG_WHERE@@
          ORDER BY @@ORDER_BY@@
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """
     fresh_params: tuple[Any, ...] = (
         *order_params,
-        STATUS_NAMESPACE,
-        list(CLAIMABLE),
-        _DEFAULT_JOB_PRIO,
-        _DEFAULT_JOB_PRIO,
-        _DEFAULT_JOB_PRIO,
-        executor,
-        STATUS_NAMESPACE,
-        list(CLAIMABLE),
-        _DEFAULT_JOB_PRIO,
         *share_params,
-        executor,
-        node,
         STATUS_NAMESPACE,
         list(CLAIMABLE),
+        _DEFAULT_JOB_PRIO,
+        _DEFAULT_JOB_PRIO,
+        _DEFAULT_JOB_PRIO,
+        executor,
         STATUS_NAMESPACE,
-        list(TERMINAL),
-        *parent_params,
-        *suspend_params,
-        *cap_params,
-        *reserve_block_params,
+        list(CLAIMABLE),
+        _DEFAULT_JOB_PRIO,
+        *where_params,
     )
     rows = conn.execute(
         fresh_sql.replace("@@BG_WHERE@@", "").replace(
             "@@ORDER_BY@@",
-            f"claim_rank ASC, {factory_order_sql}{share_order_sql}"
+            f"claim_rank ASC, {factory_order_sql}{score_order_sql}{share_order_sql}"
             "aged_prio ASC, q.qs ASC, r.ref_id ASC",
         ),
         (*fresh_params, fresh_limit * _CLAIM_OVERFETCH),
@@ -2335,6 +3031,20 @@ def claim_executor_jobs(
     def _row_prio(r: Any) -> float:
         return float(r[3] if r[3] is not None else _DEFAULT_JOB_PRIO)
 
+    def _row_score(r: Any) -> float:
+        """The dispatch_score claim key, with the unstamped-land floor —
+        the Python twin of ``score_order_sql`` above (td736734 review of
+        8d0cd009): a ``land_slice`` queued before the score stamp carries
+        no ``dispatch_score``; it floors at the same
+        :data:`~precis.utils.dispatch_score.FINISH_FIRST_SCORE` a stamped
+        land carries, instead of reading as 0 and losing to every fresh
+        build with a stamped plan score."""
+        meta = dict(r[2] or {})
+        raw = meta.get(_dscore.SCORE_META_KEY)
+        if raw is None and str(meta.get("job_type") or "") == "land_slice":
+            return _dscore.FINISH_FIRST_SCORE
+        return float(raw or 0)
+
     top_class = min((_row_base(r) for r in rows if _row_prio(r) != 1.0), default=0)
     # Release-band freeze (gr584136): while a release leg is among the
     # claimable non-prio-1 candidates, no row class-promotes — mirrors the
@@ -2351,7 +3061,50 @@ def claim_executor_jobs(
             qs = qs.replace(tzinfo=UTC)
         return max(0.0, (now_utc - qs).total_seconds())
 
-    def _order_key(r: Any) -> tuple[float, float, float, float, float, Any, int]:
+    # The deficit denominator is the eligible lane set the SQL used when
+    # it ordered before LIMIT (td655978); empty when the share path
+    # didn't run — fall back to the fetched lanes.
+    cand_lanes = eligible_lanes or {_share_key(dict(r[2] or {})) for r in rows}
+    lane_w_total = sum(lane_weights.get(k, 1.0) for k in cand_lanes) or 1.0
+
+    def _lane_deficit(lane: str) -> float:
+        """``share - fraction`` of the window's lane-seconds, the share
+        being this lane's weight over the eligible lanes' weights."""
+        used = sum(lane_usage.values())
+        frac = lane_usage.get(lane, 0.0) / used if used > 0 else 0.0
+        return lane_weights.get(lane, 1.0) / lane_w_total - frac
+
+    # Model affinity (gr595542): the host each model-carrying candidate
+    # would load its model on (its target_node pin, else this host — the
+    # ``_finish_claim`` reservation-host derivation), narrowed to hosts
+    # whose last-used-model stamp is still fresh. The model is the row's
+    # EFFECTIVE model — ``params.model`` else the job_type's declared
+    # default (``struct_relax`` → ``mace_mp``) — so an implicit default
+    # steers exactly like an explicit one (td655172). Read once per pass;
+    # a queue with no model-carrying rows costs no query.
+    _pref_hosts = {
+        str((dict(r[2] or {}).get("params") or {}).get("target_node") or default_host)
+        for r in rows
+        if _footprint_admission.effective_model(dict(r[2] or {}))
+    }
+    model_pref = _footprint_admission.last_models(conn, _pref_hosts)
+
+    def _row_affinity(r: Any) -> int:
+        """``0`` when the job's effective model matches the host's fresh
+        last-used-model stamp (warm weights — claim it first), else ``1``.
+        A pure tiebreak: it lands after aged prio and before queue age, so
+        it reorders only rows the fairness keys already tied."""
+        meta = dict(r[2] or {})
+        model = _footprint_admission.effective_model(meta)
+        if not model:
+            return 1
+        params = meta.get("params") or {}
+        host = str(params.get("target_node") or default_host)
+        return 0 if model_pref.get(host) == str(model) else 1
+
+    def _order_key(
+        r: Any,
+    ) -> tuple[float, float, float, float, float, float, int, Any, int]:
         prio = _row_prio(r)
         age = _row_age_s(r)
         if class_rank_on and prio == 1.0:
@@ -2372,14 +3125,9 @@ def claim_executor_jobs(
             rank, floor = 0.0, 1.5
         aged = max(prio - age / age_step, min(prio, floor)) if age_step > 0 else prio
         scarcity = _scarcity(effective_requires(dict(r[2] or {})), host_count)
-        # D4 share half: reads ``running_by_share`` as it stands NOW (the
-        # pick loop bumps it per claim), so a multi-claim batch
-        # round-robins the shares instead of draining one share's prefix.
-        share = (
-            float(running_by_share.get(_share_key(dict(r[2] or {})), 0))
-            if class_rank_on
-            else 0.0
-        )
+        # D4 share half: the lane's deficit as it stands NOW (the pick loop
+        # charges each claim to its lane), larger deficit first.
+        deficit = _lane_deficit(_share_key(dict(r[2] or {}))) if class_rank_on else 0.0
         # Factory sub-priority (gr657333): sits between class rank and
         # the share term, exactly like the SQL ORDER BY.
         factory = (
@@ -2394,7 +3142,17 @@ def claim_executor_jobs(
         # rule the SQL ORDER BY applies — see the "Claim ordering" note in
         # :func:`claim_executor_jobs`. Never NULL for a row the EXISTS above
         # admitted, but ``or r[4]`` keeps the key total if a race retags it.
-        return (-scarcity, rank, factory, share, aged, r[5] or r[4], int(r[0]))
+        return (
+            -scarcity,
+            rank,
+            factory,
+            -_row_score(r),
+            -deficit,
+            aged,
+            _row_affinity(r),
+            r[5] or r[4],
+            int(r[0]),
+        )
 
     def _oldest_background(cands: list[Any]) -> int | None:
         """Index of the oldest queued background-class row — the reserved
@@ -2456,11 +3214,13 @@ def claim_executor_jobs(
         if claim is None:
             continue
         claimed.append(claim)
+        if job_type == "run_slice":
+            fresh_builds.append(ref_id)
         fresh_claimed += 1
         running_total += 1
         running_by_type[job_type] = running_by_type.get(job_type, 0) + 1
         share_key = _share_key(meta)
-        running_by_share[share_key] = running_by_share.get(share_key, 0) + 1
+        lane_usage[share_key] = lane_usage.get(share_key, 0.0) + _BATCH_CLAIM_CHARGE_S
     _bg_share_ticks[executor] = bg_ticks
     return claimed
 
@@ -2636,7 +3396,7 @@ def _finite_json(value: Any) -> Any:
     (e.g. an empty-set ``min()`` seeded with ``inf``) fails the whole write
     with ``InvalidTextRepresentation``. That once discarded 48 finished GPU
     seed results and misclassified them as ``infra:child-killed``
-    (docs/backlog/autocatpath-seed-health.md). ``None`` is
+    (gr614723). ``None`` is
     the honest jsonb spelling of "no finite value here".
     """
     if isinstance(value, float) and not math.isfinite(value):
@@ -2684,6 +3444,32 @@ def classify_transient_backoff_hours(reason: str) -> float | None:
 #: actionable without risking a huge traceback bloating ``refs.meta``.
 _ERROR_META_CAP = 500
 
+#: Head/tail spans :func:`_error_meta` keeps when a ``reason`` outgrows
+#: :data:`_ERROR_META_CAP` (gr635381): a traceback's cause is its LAST
+#: line, which a bare head-truncation always cut — head for context,
+#: the tail for the actual exception. 200 + " … " + 300 = 503 chars.
+_ERROR_META_HEAD = 200
+_ERROR_META_TAIL = 300
+
+
+def _error_meta(reason: str) -> str:
+    """The ``refs.meta.error`` breadcrumb for a failure ``reason`` —
+    the reason itself under :data:`_ERROR_META_CAP`; head
+    :data:`_ERROR_META_HEAD` + ``" … "`` + tail :data:`_ERROR_META_TAIL`
+    past it, so a long traceback's final line (the exception class and
+    message, the exit reason) survives the cap instead of being the
+    first thing dropped (gr635381). Every executor ``meta.error``
+    stamp routes through here — ``record_failure``, ``poison_guard``,
+    and the hand-rolled failure arms in ``claude_inproc``/
+    ``claude_docker``/``job_inproc``/``ssh_node``/``devin_api`` — so no
+    caller re-introduces a head-only cut. (The sweeper's own stamps are
+    short one-line reasons it composes itself, not captured text, so
+    they stay direct.)"""
+    if len(reason) <= _ERROR_META_CAP:
+        return reason
+    return f"{reason[:_ERROR_META_HEAD]} … {reason[-_ERROR_META_TAIL:]}"
+
+
 #: Park horizon when a window-scoped pause names no retry instant — the
 #: quota wording's own two-hour fallback
 #: (:data:`precis.utils.llm.failure.DEFAULT_HORIZON`).
@@ -2703,6 +3489,9 @@ def park_job_until(
     ref_id: int,
     wake_at: datetime | None,
     note: str,
+    *,
+    submit_attempt: str | None = None,
+    temporary_submit_pin: bool = False,
 ) -> bool:
     """Park a running job until ``wake_at`` — the non-coordinator lane's
     Yield (gr482938): ``STATUS:waiting_time`` + ``meta.wake_when``
@@ -2731,10 +3520,12 @@ def park_job_until(
     job was waiting on (gr592789).
     """
     row = conn.execute(
-        "SELECT COALESCE((meta->>'pause_parks')::int, 0) FROM refs WHERE ref_id = %s",
-        (ref_id,),
+        "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,)
     ).fetchone()
-    parks = int(row[0]) if row and row[0] is not None else 0
+    meta = row[0] if row else {}
+    if submit_attempt is not None and meta.get("submit_attempt") != submit_attempt:
+        return False
+    parks = int(meta.get("pause_parks") or 0)
     if parks >= MAX_PAUSE_PARKS:
         return False
     at = wake_at if wake_at is not None else datetime.now(UTC) + PAUSE_BACKOFF
@@ -2751,6 +3542,17 @@ def park_job_until(
         },
         pause_parks=parks + 1,
     )
+    if submit_attempt is not None:
+        # The wake can start another submit immediately after this commit.
+        # Remove this attempt's launch intent and pin before exposing the park.
+        conn.execute(
+            "UPDATE refs SET meta = (CASE WHEN %s"
+            " AND meta->'params'->>'target_node' = %s"
+            " THEN meta #- '{params,target_node}' ELSE meta END)"
+            " - ARRAY['submit_started_at', 'submit_attempt', 'submit_host']"
+            " WHERE ref_id = %s",
+            (temporary_submit_pin, os.environ.get("PRECIS_NODE"), ref_id),
+        )
     release_job_reservation(conn, ref_id)
     set_status(store, ref_id, WAITING_TIME, conn=conn)
     return True
@@ -2774,12 +3576,16 @@ def record_failure(
     physical/numeric failure) — stamped onto ``refs.meta.failure_class`` so a
     downstream harvest can tell "couldn't run" apart from "ran and failed"
     instead of laundering both into the same bare ``STATUS:failed``. When
-    ``failure_class`` is given, ``reason`` (truncated to
-    ``_ERROR_META_CAP``) is also stamped onto ``refs.meta.error`` alongside
-    it — the full, untruncated ``reason`` always lands in the ``job_event``
-    chunk either way; the meta copy exists so a downstream consumer that
-    only reads ``meta`` (e.g. an auto-filed infra gripe) isn't stuck with
-    a bare ``failure_class`` and no idea what actually happened.
+    ``failure_class`` is given, ``reason`` (through :func:`_error_meta`)
+    is also stamped onto ``refs.meta.error`` alongside it — the full,
+    untruncated ``reason`` always lands in the ``job_event`` chunk
+    either way; the meta copy exists so a downstream consumer that only
+    reads ``meta`` (e.g. an auto-filed infra gripe, or ``view='raw'``'s
+    leading ``failure:`` line — gr635381) isn't stuck with a bare
+    ``failure_class`` and no idea what actually happened. gr635381 made
+    the stamp unconditional: an unclassified failure deserves the same
+    visible reason, and past ``_ERROR_META_CAP`` the crumb keeps the
+    reason's *tail* — the actual exception — not just its head.
 
     ``open_tag`` (optional, parked-leaf-recovery,
     docs/backlog/parked-leaf-recovery.md) stamps an ``OPEN:<open_tag>`` tag
@@ -2805,13 +3611,13 @@ def record_failure(
             store.add_tag(ref_id, Tag.open(open_tag), set_by="system", conn=conn)
         append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
         set_status(store, ref_id, FAILED, conn=conn)
+        # gr635381: ``meta.error`` is stamped for EVERY failure, not only
+        # classified ones — a bare ``STATUS:failed`` with no breadcrumb
+        # forced the reader into the full job_event chunk for the cause.
+        meta_fields: dict[str, Any] = {"error": _error_meta(reason)}
         if failure_class is not None:
-            set_meta(
-                conn,
-                ref_id,
-                failure_class=failure_class,
-                error=reason[:_ERROR_META_CAP],
-            )
+            meta_fields["failure_class"] = failure_class
+        set_meta(conn, ref_id, **meta_fields)
         # Transient classification (docs/backlog/
         # todo-parked-transient-failures.md): a retryable cause stamps
         # ``meta.retry_after`` (ISO) on the job — the tag shape the bubble
@@ -2827,7 +3633,6 @@ def record_failure(
             }
             if failure_class is None:
                 transient_fields["failure_class"] = "transient"
-                transient_fields["error"] = reason[:_ERROR_META_CAP]
             set_meta(conn, ref_id, **transient_fields)
         if gripe_rollback is not None:
             set_status(store, gripe_rollback, "open", conn=conn)
@@ -2920,7 +3725,7 @@ def poison_guard(
             f"last reclaim: {cause}) — failing"
         )
     append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
-    set_meta(conn, ref_id, failure_class="infra", error=reason[:_ERROR_META_CAP])
+    set_meta(conn, ref_id, failure_class="infra", error=_error_meta(reason))
     set_status(store, ref_id, FAILED, conn=conn)
     from precis.utils.job_bubble import bubble_job_failure
 
@@ -2956,9 +3761,11 @@ __all__ = [
     "append_chunk",
     "claim_executor_jobs",
     "current_status",
+    "dark_advertised_by_host",
     "effective_requires",
     "is_cancel_requested",
     "job_type_requires",
+    "lane_adapter_map",
     "max_job_attempts",
     "maybe_reset_gpu_after_kill",
     "parent_pause_gaps",

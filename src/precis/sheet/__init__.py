@@ -6,7 +6,7 @@ PCB's mechanical layers (edge cuts, NPTH drills, the EWOD gasket). Reto's
 three 2-D machines want the same object — a job of **layers**, each layer
 exactly one operation, with settings per machine — so the exporters are
 written once against this model instead of once per emitter
-(docs/backlog/flatpack-furniture-generator.md, se-machine-design-7 option 1).
+(me694692, se-machine-design-7 option 1).
 
 **Neutral by contract.** Pure data and pure functions: no DB, no handler, and
 no import from ``precis.pcb`` or ``precis_se`` — both of those emit *into*

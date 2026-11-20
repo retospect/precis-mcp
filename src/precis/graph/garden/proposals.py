@@ -63,6 +63,8 @@ GARDEN_ACTOR = "graph-garden"
 #: readable.
 GARDEN_VERSION = "garden.v1"
 
+DEFAULT_PENDING_PROPOSAL_LIMIT = 200
+
 #: Shared with the consumer so reviewer evidence needs no consumer import.
 MEMORY_APPLY_ACTIONS = frozenset({"rewrite", "supersede", "retire", "compact", "split"})
 
@@ -537,7 +539,7 @@ def pending_proposals(
     store: Store,
     *,
     action: str | None = None,
-    limit: int = 200,
+    limit: int = DEFAULT_PENDING_PROPOSAL_LIMIT,
 ) -> list[GardenProposal]:
     """The read view: garden proposals still awaiting a verdict.
 
@@ -553,6 +555,9 @@ def pending_proposals(
     out of the scan: no proposal precedes them, so they decide nothing
     here, and they would crowd the over-read window.
     """
+    # A filtered read must examine the same recent ledger window as the
+    # full listing even when the caller asks for fewer matching rows.
+    scan_limit = limit if action is None else max(limit, DEFAULT_PENDING_PROPOSAL_LIMIT)
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT review_id, target_kind, target_id, model, content_sha, "
@@ -563,28 +568,29 @@ def pending_proposals(
             "   AND NOT (actor = %s AND verdict = 'rejected' AND note LIKE %s) "
             " ORDER BY at DESC, review_id DESC LIMIT %s",
             # over-read; superseded keys fold below
-            ('%"garden"%', GARDEN_ACTOR, '%"proposer_reject": true%', limit * 4),
+            ('%"garden"%', GARDEN_ACTOR, '%"proposer_reject": true%', scan_limit * 4),
         ).fetchall()
-    decided: set[str] = set()
+    seen_keys: set[str] = set()
     out: list[GardenProposal] = []
     for rid, tkind, tid, model, _sha, verdict, note, at, current in rows:
         g = _parse_note(note)
         if g is None:
             continue
         key = str(g.get("key") or "")
-        if key in decided:
-            continue  # a later verdict already resolved this key
+        if key in seen_keys:
+            continue  # the newest row already determined this key's state
+        seen_keys.add(key)
         if verdict != "proposed":
-            decided.add(key)  # newest garden row for the key is terminal
             continue
-        if action is not None and g.get("action") != action:
+        stored_action = str(g.get("action") or "")
+        if action is not None and stored_action != action:
             continue
         out.append(
             GardenProposal(
                 review_id=int(rid),
                 target_kind=str(tkind),
                 target_id=int(tid),
-                action=str(g.get("action") or ""),
+                action=stored_action,
                 key=key,
                 detector=str(g.get("detector") or ""),
                 title=str(g.get("title") or ""),
@@ -596,10 +602,44 @@ def pending_proposals(
                 current=bool(current),
             )
         )
-        decided.add(key)
         if len(out) >= limit:
             break
     return out
+
+
+def proposal_holds(store: Store, review_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Consumer holds on ``review_ids``, keyed by proposal id.
+
+    A hold is the consumer's non-terminal ``garden_review`` note
+    (``actor='garden-consumer'``, ``verdict='proposed'``) carrying
+    ``held``/``why``/``apply`` — why the proposal waits on a human and
+    what the follow-up is. The newest hold per proposal wins; notes that
+    fail to parse or name a different ``proposal`` are skipped. Shared by
+    the CLI's proposals/reject commands and the MCP
+    ``/garden/proposals`` view + ``mode='garden-reject'`` door."""
+    from precis.graph.garden.consumer import CONSUMER_ACTOR
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT p.review_id, h.note FROM reviews p JOIN reviews h "
+            "ON h.target_kind = p.target_kind AND h.target_id = p.target_id "
+            "WHERE p.review_id = ANY(%s) AND h.actor = %s AND h.note LIKE %s "
+            "ORDER BY h.review_id DESC",
+            (review_ids, CONSUMER_ACTOR, '%"garden_review"%'),
+        ).fetchall()
+    holds: dict[int, dict[str, Any]] = {}
+    for review_id, note in rows:
+        try:
+            hold = json.loads(note).get("garden_review")
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if (
+            isinstance(hold, dict)
+            and hold.get("proposal") == review_id
+            and hold.get("held")
+        ):
+            holds.setdefault(review_id, hold)
+    return holds
 
 
 @dataclass(frozen=True, slots=True)
@@ -790,6 +830,7 @@ __all__ = [
     "memory_successor_refusal",
     "merge_ledger",
     "pending_proposals",
+    "proposal_holds",
     "proposal_key_pending",
     "record_rejection",
     "resolve_proposal",

@@ -178,8 +178,8 @@ def render_single(result: ProvenanceResult) -> str:
 
     if result.status == "unknown":
         lines.append(
-            "**Status**: unknown — Crossref has no record for this DOI. "
-            "Likely a hallucinated or mistyped identifier."
+            "**Status**: unverified — Crossref has no record for this DOI. "
+            "It may be registered with another agency, such as DataCite."
         )
         if result.candidates:
             lines.append("")
@@ -299,7 +299,7 @@ def render_exists(results: list[ProvenanceResult]) -> str:
             title = f" — _{r.paper_title}_" if r.paper_title else ""
             lines.append(f"- ✓ {prefix}`{r.doi}`{title}")
         elif r.status == "unknown":
-            lines.append(f"- ✗ {prefix}`{r.doi}` — unknown (Crossref 404)")
+            lines.append(f"- ✗ {prefix}`{r.doi}` — unverified (not in Crossref)")
         elif r.status == "malformed":
             lines.append(f"- ✗ {prefix}`{r.doi}` — malformed")
         else:
@@ -445,7 +445,7 @@ _BUCKET_GLYPH_LABEL: dict[str, tuple[str, str]] = {
     "note": ("🟡", "Correction"),
     "info_notice": ("🟢", "Informational notice"),
     "info_clean": ("🟢", "Clean"),
-    "unknown": ("⚪", "Unknown DOI (Crossref 404)"),
+    "unknown": ("⚪", "Unverified DOI (not in Crossref)"),
     "malformed": ("⚪", "Malformed DOI"),
     "check_failed": ("⚠️", "Check failed (transport error)"),
 }

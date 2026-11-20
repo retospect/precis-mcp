@@ -9,7 +9,7 @@ answers:
   - how do I find every caller of a function?
   - how do I trace the call path from a console script entry point to a function?
   - how do I replace a function body by its qualname?
-applies-to: get/search/put/edit/delete (kind='python')
+applies-to: get/search/put/edit/delete/link (kind='python')
 tags: orientation, addressing
 kinds: python
 status: active
@@ -102,6 +102,13 @@ Reads of exactly one file add ` file <path> <8-hex digest>`. Non-default states
 are upper-cased in the line: `DIRTY`, `dirty=UNKNOWN`, `git UNAVAILABLE`,
 `PARTIAL` (Git), `PARTIAL WALK`, `PARSE ERRORS n`, `root UNAVAILABLE`,
 `freshness UNKNOWN`; `(expected_root ok)` appears when you asserted one.
+When the root's pyproject names a package the server's own pyproject
+git-pins (`[tool.uv.sources]` `rev`/`tag`/`branch`, or a `pkg @ git+…@ref`
+requirement), the line compares observed HEAD to the pin:
+`PIN MISMATCH <pkg>: pinned <kind> <pin> indexed <head>` or
+`pin <pkg> UNVERIFIED (<reason>)`; a match stays silent. A branch pin
+verifies against remote-tracking refs — the complete branch path after
+the remote name — never the local branch tip.
 When the call itself paid a full corpus (re)build, the line also carries
 `cold corpus: built in N s` (or `corpus refresh: reparsed n files in N s`,
 `checked n files in N s` when the stat-walk was the cost) followed by
@@ -111,7 +118,8 @@ Drill down with `view='provenance'` on an alias, file or symbol id: it renders
 the full block (alias/root, corpus framing and full SHA256, freshness window,
 reparsed/reused counts, index limitations, parse-error count, the exact
 `Indexed file:` raw-byte hash and `indexed_at` for that file/symbol, and the
-full Git state with branch, dirty scope and observation window). The corpus
+full Git state with branch, dirty scope and observation window, and the
+`Pin:` verdict when the root names a pinned package). The corpus
 hash frames sorted paths and exact indexed raw-byte SHA256 values; it excludes
 non-Python files, symlinks and hidden/skip directories, and is not a Git tree
 hash. File/symbol source comes from the indexed snapshot; reused modules are
@@ -314,6 +322,22 @@ The same eye renders in the browser at `/python/<alias>::<qualname>`
 the identical handler output with every caller/callee/test/member a
 link that re-centres the eye, plus the rung row, a `view='source'`
 toggle and a `mode='pattern'` search box at `/python/` (gr499107).
+
+## Link a note to a Python symbol
+
+Write `python:<qualname>` (e.g. `python:precis.handlers.python.PythonHandler`)
+in a note or draft body to cite a symbol (a dotted qualname — a bare
+`python:word` stays prose). The qualname is validated
+against the live index and an anchor ref is minted on first mention;
+`link(kind='python', id='<qualname>', target=…)` adds or removes an edge
+by hand. Citing notes show as a `notes citing this symbol` section at
+`extent='fisheye+1hop'` and on a plain symbol get (capped at 8 rows;
+the rest are counted, not listed).
+
+When the code is renamed or purged the anchor survives: get on the old
+qualname returns a `gone` stub with did-you-mean renames and the notes
+that still cite it, instead of a bare NotFound. Quote `python:<qualname>`,
+never the anchor's `py<N>` handle — it does not decode.
 
 ## What does this change touch?
 

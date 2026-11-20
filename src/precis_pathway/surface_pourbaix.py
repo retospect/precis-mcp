@@ -1,7 +1,7 @@
 """Surface-Pourbaix slice 1 — the inner CHE sweep over coverage anchors, with
 its two error bands kept apart.
 
-Design of record: ``docs/backlog/surface-pourbaix-staircase-optimizer.md``
+Design of record: `me692414`
 (the index of Reto's transfer prompt). The outer loop pays DFT/MLIP once per
 slab for *anchors* — the clean surface plus each adsorbate at a few
 coverages. Everything here is the inner loop: a potential sweep that costs

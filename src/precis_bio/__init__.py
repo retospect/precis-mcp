@@ -17,7 +17,7 @@ a **container** on the GPU fold node — jax/CUDA + the model weights live in th
 image + a mounted models dir, never on the always-on workers; a deterministic
 in-process ``stub`` engine proves the compute-lane round-trip + the
 content-addressed cache without a GPU or the image (grounded on the real
-AlphaFold3 v3.0.1 install on spark — memory: alphafold-spark-facts).
+AlphaFold3 v3.0.1 install on the GPU node — repo-dev memory holds the install facts).
 
 See the ``precis_chem`` package docstring (and git-only ADR
 0056-chemistry-tool-packs-plugin-route-kind) for the canonical-kind decision

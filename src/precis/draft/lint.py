@@ -163,7 +163,7 @@ def write_abbrev_hints(
 ) -> str:
     """Abbreviation feedback for one write, scoped to what it *introduced*
     (so editing a chunk doesn't re-nag about acronyms it already
-    contained). Two disjoint hints:
+    contained). Three disjoint hints:
 
     * **undefined** — acronym-shaped tokens with no definition anywhere
       in the draft (and new in this write): define or silence them.
@@ -171,6 +171,14 @@ def write_abbrev_hints(
       but lives only in this chunk's prose and isn't yet a glossary
       ``term``: offer to formalise it (durable across edits). The two
       never overlap — an inline-defined token isn't "undefined".
+    * **authored** — an inline definition of a registered term export
+      will define itself (gr725250). Fires on any such definition this
+      write introduces, even when it is the term's first and only use:
+      export collapses the authored span either way — at the first use
+      the glossary's canonical long form replaces the authored one, and
+      after an earlier use the authored span stays verbatim and repeats
+      the generated definition — so "write the short alone" holds in
+      both cases.
     """
     from precis.utils.abbreviations import find as _find
     from precis.utils.abbreviations import find_acronyms as _acr
@@ -186,7 +194,37 @@ def write_abbrev_hints(
         for short, long in _find(new_text).items()
         if short not in old_pairs and short not in terms
     }
-    return abbrev_hint(slug, undefined) + promote_hint(slug, promote)
+    duplicate = sorted((_find(new_text).keys() - old_pairs.keys()) & terms)
+    return (
+        abbrev_hint(slug, undefined)
+        + promote_hint(slug, promote)
+        + authored_abbrev_hint(duplicate)
+    )
+
+
+def authored_abbrev_hint(shorts: list[str]) -> str:
+    """Warn about authored definitions of glossary terms (gr725250).
+
+    Export owns first use across paragraphs. Fires even when the authored
+    ``long form (SHORT)`` is the term's first and only use — export
+    collapses the authored span either way: at the first use the
+    glossary's canonical long form replaces the authored wording
+    (``export/_abbrev.py::expand``'s stashed-span branch), and after an
+    earlier use the authored span prints verbatim, repeating the
+    definition the export already emitted. Narrowing the condition to
+    "has an earlier use" would need a whole-draft scan on the write
+    path; the advice — write the short alone — is the same in both
+    cases, so the hint fires on the authored definition itself.
+    """
+    if not shorts:
+        return ""
+    return (
+        "\n\n⚠ hand-written abbreviation definition(s): "
+        + ", ".join(shorts)
+        + ". Use the short alone: the glossary already defines it, and export "
+        "expands its first use automatically; an authored long form (SHORT) "
+        "can duplicate that definition."
+    )
 
 
 def promote_hint(slug: str, promote: dict[str, str]) -> str:
@@ -355,6 +393,15 @@ def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
     ``hub_ref_id`` — a paper grounding the same hub via two cite
     tokens in one chunk gets one nudge line.
 
+    Chunk-aware steering (gr553454): a ``[pc<id>]``/``[pk<id>]``
+    chunk cite names a *passage*, so it is steered only to hubs whose
+    evidence edge pins that exact chunk (``links.src_chunk_id``) —
+    never to every hub the paper grounds (one mis-pinned edge — an ASE
+    passage on a graphene hub — used to misdirect every draft citing
+    any ASE chunk). A ref-level ``[pa<id>]``/``[pt<id>]`` cite keeps
+    the whole-paper read and renders ``paper [pa<id>] grounds …`` so
+    the line doesn't pretend a passage was named.
+
     Each line also carries the hub's posture (:func:`_hub_posture_marker`)
     when it's ``refuted``/``disputed``/``drifted`` — steering a writer onto
     a bad-posture hub at the exact moment of citing would otherwise be
@@ -370,22 +417,38 @@ def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
     decoration from an advisory hint, so degrading to "no posture shown"
     is honest, not a masked correctness bug. Do not "fix" this to raise."""
     from precis.taproot.lookup import hubs_grounded_by_paper
-    from precis.utils.mentions import resolve_handle_target
 
     seen_hub_ref_ids: set[int] = set()
-    hits: list[tuple[str, int, str, str]] = []
+    hits: list[tuple[str, str, int, str, str, str]] = []
     for tok in find_paper_cite_tokens(text):
-        target = resolve_handle_target(store, tok)
-        if target is None:
+        try:
+            resolved = store.resolve_handle(tok)
+        except Exception:  # advisory — a resolve hiccup never blocks a write
+            log.debug(
+                "pc_cite_claim_hub_hint: resolve_handle failed for %r",
+                tok,
+                exc_info=True,
+            )
             continue
-        for hub in hubs_grounded_by_paper(store, target.dst_ref_id):
+        if resolved is None:
+            continue
+        if resolved.chunk_id is not None:
+            src_label, pin_label = tok, "this passage"
+        else:
+            src_label, pin_label = (
+                f"{resolved.kind} [{tok}]",
+                f"this {resolved.kind}",
+            )
+        for hub in hubs_grounded_by_paper(
+            store, resolved.ref_id, chunk_id=resolved.chunk_id
+        ):
             hub_ref_id = hub["hub_ref_id"]
             if hub_ref_id in seen_hub_ref_ids:
                 continue
             seen_hub_ref_ids.add(hub_ref_id)
             claim = hub["claim"] or ""
             hub_handle = handle_registry.format_handle("finding", hub_ref_id)
-            hits.append((tok, hub_ref_id, hub_handle, claim))
+            hits.append((src_label, tok, hub_ref_id, hub_handle, claim, pin_label))
     if not hits:
         return ""
 
@@ -400,24 +463,26 @@ def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
         log.warning("pc_cite_claim_hub_hint: posture read failed", exc_info=True)
 
     lines: list[str] = []
-    for tok, hub_ref_id, hub_handle, claim in hits:
+    for src_label, tok, hub_ref_id, hub_handle, claim, pin_label in hits:
         marker = _hub_posture_marker(postures.get(hub_ref_id))
         lines.append(
-            f"\n\n◆ taproot: {tok} grounds claim hub [{hub_handle}] "
+            f"\n\n◆ taproot: {src_label} grounds claim hub [{hub_handle}] "
             f'("{claim}")'
             f"{marker}"
             f" — cite [{hub_handle}] for living "
-            f"resolution, or [{hub_handle}>{tok}] to pin this passage."
+            f"resolution, or [{hub_handle}>{tok}] to pin {pin_label}."
         )
     return "".join(lines)
 
 
 def glyph_cite_hint(store: Store, text: str) -> str:
     """Warn per paper cited in ``text`` whose ingest flagged glyph damage
-    (``meta.glyph_health.suspected``, gr228652): Greek/\u03bc characters may
-    have been dropped or substituted in the extracted text, so quoted
-    numbers/units can be off by 10^3-10^6x. Advisory only. Scoped to the
-    cites present in the touched text; one batched ref fetch, deduped by ref.
+    (``meta.glyph_health.suspected``, gr228652): Greek/\u03bc characters
+    may have been dropped or substituted in the extracted text, so quoted
+    numbers/units can be off by 10^3-10^6x. A sign-damage-only record
+    (gr685717) instead warns about lost minus signs / mangled \u00b1.
+    Advisory only. Scoped to the cites present in the touched text; one
+    batched ref fetch, deduped by ref.
     """
     from precis.utils.glyph_health import glyph_suspected
     from precis.utils.mentions import resolve_handle_target
@@ -433,11 +498,26 @@ def glyph_cite_hint(store: Store, text: str) -> str:
     for rid, ref in sorted(store.fetch_refs_by_ids(ids, include_deleted=False).items()):
         if ref.kind == "paper" and glyph_suspected(ref.meta):
             handle = handle_registry.try_format("paper", rid) or ids[rid]
-            lines.append(
-                f"\n\n\u25c6 glyphs: cites {handle}, whose extracted text may "
-                "have lost Greek/\u03bc characters \u2014 check quoted "
-                "numbers/units against the PDF"
+            rec = ref.meta.get("glyph_health") if isinstance(ref.meta, dict) else None
+            sign_only = (
+                isinstance(rec, dict)
+                and isinstance(rec.get("sign_damage"), dict)
+                and rec["sign_damage"].get("detected") is True
+                and not rec.get("modes")
+                and not rec.get("suspect_fonts")
             )
+            if sign_only:
+                lines.append(
+                    f"\n\n\u25c6 glyphs: cites {handle}, whose extracted "
+                    "text may have lost minus signs or \u00b1 characters "
+                    "\u2014 check quoted numbers against the PDF"
+                )
+            else:
+                lines.append(
+                    f"\n\n\u25c6 glyphs: cites {handle}, whose extracted text may "
+                    "have lost Greek/\u03bc characters \u2014 check quoted "
+                    "numbers/units against the PDF"
+                )
     return "".join(lines)
 
 
@@ -747,7 +827,23 @@ def concept_label_hint(
     return out
 
 
-def pin_hint(store: Store, new_text: str, old_text: str = "") -> str:
+def _table_pin_regions(text: str) -> list[str]:
+    """A table row (including its source column) is one citation scope."""
+    from precis.utils.table_data import table_payload
+
+    payload = table_payload(None, text)
+    if payload is None:
+        return text.splitlines()
+    return [
+        payload.get("caption") or "",
+        " | ".join(payload["header"]),
+        *(" | ".join(row) for row in payload["rows"]),
+    ]
+
+
+def pin_hint(
+    store: Store, new_text: str, old_text: str = "", *, table: bool = False
+) -> str:
     """Pin warnings for a write (G3 coverage, G4 pin rule — see
     :mod:`precis.nanopub.pin_lint`): a ``[fi<hub>>pc<chunk>]`` /
     ``[fi<hub>+pc<chunk>]`` whose pinned passage(s) no longer carry a term
@@ -755,15 +851,19 @@ def pin_hint(store: Store, new_text: str, old_text: str = "") -> str:
     frozen grounding. Fires only on what this write *changed* — a new pin,
     or a sentence edit that uncovered a term — so re-saving a chunk never
     re-nags about pins it left alone. Advisory; a failing check degrades to
-    no hint rather than taking the write path down."""
+    no hint rather than taking the write path down. With ``table=True``,
+    check the caption, header and each data row separately
+    (:func:`_table_pin_regions`)."""
     if "[fi" not in new_text:
         return ""
     try:
         from precis.nanopub import pin_lint
 
+        new = _table_pin_regions(new_text) if table else new_text
+        old = _table_pin_regions(old_text) if table else old_text
         lines = [
             line
-            for f in pin_lint.edit_findings(store, new_text, old_text)
+            for f in pin_lint.edit_findings(store, new, old)
             for line in pin_lint.render_finding(f)
         ]
     except Exception:  # pragma: no cover — advisory, not correctness
@@ -1300,7 +1400,7 @@ def newly_dangling(
     debt, not this edit's regression, so they are excluded.
 
     This is the shared core of the inline-editor validation gate
-    (``docs/backlog/draft-inline-editor.md``): the web editor turns the same
+    (`me694007`): the web editor turns the same
     old-vs-new diff into a **hard** save-block ("comes back at you if you
     broke something serious"), while the MCP/CLI edit path
     (`dangling_edit_hint`) surfaces it as a **non-blocking** ⚠ so an
@@ -1709,6 +1809,79 @@ def find_drifted_cites(store: Store, draft: str | int) -> tuple[list[DriftedCite
             )
         )
     return drifted, unstamped
+
+
+@dataclass(frozen=True)
+class ConditionGapCite:
+    """One draft chunk citing a claim hub whose title leaves out must-state
+    conditions (:func:`precis.taproot.conditions.check_conditions`)."""
+
+    dc: str  # citing chunk handle, e.g. "dc4821"
+    chunk_id: int
+    hub_ref_id: int
+    title: str
+    gaps: tuple[Any, ...]  # tuple[ConditionGap, ...]
+
+
+def find_condition_gap_cites(store: Store, draft_ref_id: int) -> list[ConditionGapCite]:
+    """Every (chunk, hub) ``cites`` edge from the draft to a live finding hub
+    whose TITLE the conditions checker flags. Advisory only. One batched
+    ref fetch; the checker runs once per distinct hub."""
+    from precis.taproot.conditions import check_conditions
+
+    links = store.links_for(draft_ref_id, direction="out", relation="cites")
+    if not links:
+        return []
+    refs_by_id = store.fetch_refs_by_ids(
+        list({link.dst_ref_id for link in links}), include_deleted=False
+    )
+    # Only live TAPROOT:claim hubs: the conditions-sweep cohort, so the fix
+    # hint applies (a chase-tree finding is not a hub).
+    from precis.taproot.canon import CLAIM_HUB_PREDICATE_PARAMS, claim_hub_predicate_sql
+
+    with store.pool.connection() as conn:
+        hub_ids = {
+            int(r[0])
+            for r in conn.execute(
+                "SELECT r.ref_id FROM refs r WHERE r.ref_id = ANY(%(ids)s) "
+                f"AND r.kind = 'finding' AND r.retired_at IS NULL "
+                f"AND {claim_hub_predicate_sql()}",
+                {"ids": list(refs_by_id), **CLAIM_HUB_PREDICATE_PARAMS},
+            ).fetchall()
+        }
+    cache: dict[int, tuple[Any, ...]] = {}
+    out: list[ConditionGapCite] = []
+    seen: set[tuple[int, int]] = set()
+    for link in links:
+        ref = refs_by_id.get(link.dst_ref_id)
+        if (
+            ref is None
+            or ref.kind != "finding"
+            or link.dst_ref_id not in hub_ids
+            or link.src_chunk_id is None
+        ):
+            continue
+        key = (link.src_chunk_id, link.dst_ref_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        gaps = cache.get(link.dst_ref_id)
+        if gaps is None:
+            gaps = tuple(check_conditions(ref.title or ""))
+            cache[link.dst_ref_id] = gaps
+        if gaps:
+            out.append(
+                ConditionGapCite(
+                    dc=handle_registry.format_handle(
+                        "draft", link.src_chunk_id, chunk=True
+                    ),
+                    chunk_id=link.src_chunk_id,
+                    hub_ref_id=link.dst_ref_id,
+                    title=ref.title or "",
+                    gaps=gaps,
+                )
+            )
+    return out
 
 
 def _resolve_draft_ref_id(store: Store, draft: str | int) -> int:

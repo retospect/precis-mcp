@@ -110,7 +110,6 @@ article, use `get` (which runs the live search + extract).
 get(kind="wikipedia", id="Photosynthesis")  # populate cache first
 
 tag(kind="wikipedia", id="photosynthesis", add=["bookmark", "topic:co2"])
-tag(kind="wikipedia", id="photosynthesis", add=["CACHE:pinned"])  # never expire
 ```
 
 Open tags (`bookmark`, `topic:x`, …) and `CACHE:` always allowed. The

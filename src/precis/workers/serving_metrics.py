@@ -19,7 +19,7 @@ model pressure too; elsewhere it costs one file read.
 column sealed in 0232 before the real ``/metrics`` surface was read,
 and the only retraction series SGLang v0.5.21 exposes is the GAUGE
 ``sglang:num_retracted_reqs`` — requests held retracted at scrape time
-(confirmed against castor's live capture). The column keeps the
+(confirmed against the local-serving node's live capture). The column keeps the
 ``_total`` name (renaming takes a migration) and stores the level; the
 condition fires on the level, so a server restart needs no delta
 clamping.

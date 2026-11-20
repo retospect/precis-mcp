@@ -320,7 +320,7 @@ def test_blind_judge_only_disagreements_max_twenty(shadow: Any) -> None:
     assert calls.count("judge") == 20
     assert summary["judge_n"] == 20 and summary["agreement"] == 0
     for prompt in judged_prompts:
-        assert "castor" not in prompt and "Sonnet" not in prompt
+        assert "cedar" not in prompt and "Sonnet" not in prompt
         assert "local-first-shadow" not in prompt
     for record in records:
         if record["kind"] == "judge":

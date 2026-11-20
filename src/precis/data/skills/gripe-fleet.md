@@ -19,13 +19,16 @@ governs: factory
 
 # gripe-fleet — run a builder wave (repo-dev mechanics)
 
+A wave is the manual form; for one fix the factory is the default
+([[precis-factory-submit-help]]).
+
 **The loop is in the product skill:** [[precis-gripe-loop-help]] — triage,
 mint the code todo, assign, handoff, review verdict, land, close on
 deploy. Work state lives on the gripe's `fixed-by` code todo under
 `td559473` (`put`/`tag`/`link` on the todo, `work:` mirrors on the gripe)
 and the queue is `get(kind='todo', id=559473, view='tree')`; a crashed
 coordinator resumes from that view alone. The old gripe-side
-`edit(mode='fix')` state stays readable (the skill's legacy appendix).
+`edit(mode='fix')` state stays readable; nothing writes it for new work.
 This file is what that skill cannot know — this repo's tmux, scripts and
 authority tiers. Steps 3–8 and the two sections after them are
 authority-gated text: change them only with Reto's typed go.
@@ -41,6 +44,35 @@ the tier, with its UTC time).
 Harness-neutral: where a step names a Monitor/SendMessage/subagent
 runtime, do that step yourself (or map to your runtime's equivalent)
 when none exists; Kimi maps commands via `/skill:<name>`.
+
+## Before you dispatch
+
+Sibling sessions race a new dispatch to main; the loser's merge is a semantic
+conflict (two designs), not a textual one. Each check is point-in-time —
+rerun it just before launch.
+
+1. `scripts/inflight`, then the `.claude/purpose` lines: look for the gripe
+   id or the file. A tree with no purpose line defeats this check.
+2. `git log --grep=gr<N>`, `git log -S gr<N>`, `grep -rn gr<N> src tests
+   docs`. A gr id ending a squash subject means that commit fixes it;
+   `refs gr<N>` means it only touches it; older commits often never named
+   the gripe. A gripe's STATUS can lag the code.
+3. The gripe's code todo and its `claimed-by:` holder. A same-day campaign
+   tag means the campaign session is probably fixing it: treat it as claimed.
+4. `scripts/fleet-wave cites ID...` lists unlanded branch commits naming
+   the id. A queued unlanded branch owns its gripes until it lands or is
+   dropped; check every id before writing a brief.
+5. Claim before spawning, in the parent session, and list the id in
+   `.claude/purpose`:
+
+   ```
+   tag(kind='gripe', id=N, add=['claimed-by:<tree>'])   # STATUS:fixing, 4 h lease
+   ```
+
+   Re-issue the tag to refresh the lease; drop it to release.
+6. Two sessions on one gripe: the first to reach main wins. Adopt main's
+   version and keep only your delta (extra tests, hardening the other
+   lacked); judge on the merits only when main's version is defective.
 
 ## Loop step → script — mint & launch
 
@@ -135,9 +167,11 @@ name the allowed functions, what a cap measures) are in
    `--permission-mode dangerous` — Reto's always-bypass ruling; both modes
    live in `fleet_panes.LAUNCH_PERMISSION_MODE`), `--kimi` for
    `scripts/kimi-tree`. `--dry-run` prints the
-   argv. Launch fails if a footer placeholder is unfilled. When the brief
-   names a spec file in the backlog dir (`<slug>.md`), launch claims it
-   for the tree:
+   argv. Launch fails if a footer placeholder is unfilled. Specs live in
+   graph memory ([[precis-spec-help]]), so a slice is claimed on its
+   **plan todo** — the `claimed-by:` lease and `STATUS:` — and the file
+   claim below fires only for a brief naming the one remaining spec file
+   in the backlog dir (`<slug>.md`): launch claims it for the tree,
    `status: ready` → `in-progress` + `claimed-by: NAME` in one pushed
    commit on main, the tree's `.claude/purpose` seeded with the claim,
    and a row in `$FLEET_STATE/claims.tsv` (gr509461). `close` flips the

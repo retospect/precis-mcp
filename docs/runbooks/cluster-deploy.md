@@ -20,17 +20,17 @@ and recorded, and `scripts/round deploy --catch-up` installs it later
 ## Hosts and venvs (ownership)
 
 Roles and logs: [`cluster-logs`](./cluster-logs.md). Inventory groups:
-gateway = melchior, scheduler = balthazar, data = caspar.
+gateway = the agent host, scheduler = the second worker host, data = the database host.
 
 | venv | where | notes |
 |------|-------|-------|
-| `/opt/precis/venv` (worker) | melchior, balthazar, castor, pollux | root-owned. Macs use pip; Linux venvs are **uv-created with NO pip module**. |
+| `/opt/precis/venv` (worker) | the agent host, the second worker host, the local-serving node, the second DGX node | root-owned. Macs use pip; Linux venvs are **uv-created with NO pip module**. |
 | `/opt/precis/embedder-venv` | hosts that run the embedder | same ownership. |
-| `/opt/mcps/venv` (web + agent worker) | **melchior only** (gateway) | py3.14 vs `/opt/precis/venv` py3.12. |
+| `/opt/mcps/venv` (web + agent worker) | **the agent host only** (gateway) | py3.14 vs `/opt/precis/venv` py3.12. |
 
-- **caspar (data) gets neither the worker venv nor the embedder venv** —
+- **The database host (data) gets neither the worker venv nor the embedder venv** —
   `redeploy-precis.yml` builds `_precis_venv_refs` to skip it ("it runs no
-  precis daemon"). Any leftover caspar `/opt/precis/embedder-venv`, or a
+  precis daemon"). Any leftover database-host `/opt/precis/embedder-venv`, or a
   loaded `com.precis.embedder-watchdog` plist failing a restart cycle against a
   nonexistent job, is **vestigial** — it never converges and is not a deploy
   failure (cleanup tracked in gr260308).
@@ -56,7 +56,12 @@ it (step 1 = `ansible all -m ping`).
   `git --git-common-dir`), else `$PRECIS_OVERLAY_DIR` — so a deploy works from
   any worktree. **`deploy/.vault-pass` is the only key to the
   ansible-encrypted `vault.yml` — no git history, no remote. Back it up
-  (password manager) or the vault is unrecoverable.**
+  (password manager) or the vault is unrecoverable.** Before hashing or
+  rendering, `scripts/deploy` (and `scripts/host-ops/play`) reconciles the
+  overlay repo with its `deploy-helper` mirror: fast-forward when behind, push
+  when ahead, refuse on divergence or uncommitted edits
+  (`PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1` renders as-is) —
+  [`cluster-overlay-sync`](./cluster-overlay-sync.md).
 - **Step 0 pins ONE commit.** A single `run_once` `git ls-remote` resolves the
   ref, broadcasts it, and `set_fact`s the three `precis_*_git_ref` install
   vars plus `precis_target_sha`. Install (`@<sha>`), the pre-flight
@@ -95,7 +100,7 @@ it (step 1 = `ansible all -m ping`).
   any agent-worker env var, run
   `ansible-playbook -i inventory/hosts.yml playbooks/37-precis-worker-agent.yml`
   or the var lands everywhere except the agent worker.
-- ansible's **pipelining** hangs intermittently against castor/pollux (remote
+- ansible's **pipelining** hangs intermittently against the DGX nodes (remote
   become python polls stdin forever for the module payload):
   `ANSIBLE_PIPELINING=False` fixes it immediately — try it before debugging
   any "hung deploy" on the twins (gripe filed 2026-08-29Z).
@@ -146,10 +151,10 @@ reported "exited with code 0" and read as success. Redirect to a log, read the
 
 Install (root-owned venvs, `--force-reinstall --no-deps`):
 
-- Mac (melchior/balthazar): `sudo /opt/precis/venv/bin/pip install
+- Mac (agent host/second worker host): `sudo /opt/precis/venv/bin/pip install
   --force-reinstall --no-deps "git+https://github.com/retospect/precis-mcp@<commit>"`;
-  melchior web: same with `/opt/mcps/venv/bin/pip`.
-- Linux (castor/pollux): `sudo /home/deploy/.local/bin/uv pip install --python <!-- home-path: allow — the deploy account's home on the node -->
+  Agent host web: same with `/opt/mcps/venv/bin/pip`.
+- Linux (the DGX nodes): `sudo /home/deploy/.local/bin/uv pip install --python <!-- home-path: allow — the deploy account's home on the node -->
   /opt/precis/venv/bin/python --reinstall --no-deps "git+…@<commit>"` (uv is
   not on PATH; the venv has no pip).
 
@@ -205,8 +210,8 @@ zsh-glob caveat: [`cluster-ssh-remote-access`](./cluster-ssh-remote-access.md).
   <node>` (pulls `struct_relax` into the venv) **then** `42-dft.yml`. Image
   build is optional (`-e dft_build_image=true`); the image + CUDA base were
   already on the node, and Docker Hub is unreachable from the cluster so the
-  base can't be re-pulled. Verified originally on `spark`; the GPU-pinned
-  `dft`/`fold` passes now live on `pollux` ([`cluster-logs`](./cluster-logs.md))
+  base can't be re-pulled. Verified originally on the GPU node; the GPU-pinned
+  `dft`/`fold` passes now live on the second DGX node ([`cluster-logs`](./cluster-logs.md))
   — confirm the target group in the overlay.
 - **`deploy` gates docker behind sudo/group.** `docker image inspect` as
   `deploy` returns a permission-denied that *looks like* "image absent" — use

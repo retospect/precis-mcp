@@ -356,7 +356,7 @@ def first_present(d: dict[str, Any], *keys: str) -> Any:
 
 
 #: pcb-ewod-multitile Slice 1's per-pad authoring vocabulary — the SAME
-#: three questions ``docs/backlog/pcb-component-model.md`` §Features
+#: three questions `me692617` §Features
 #: drafted (role/mask/paste), kept as a flat allowlist here rather than a
 #: DB CHECK constraint so a bad value fails at `put` time with the
 #: offending pad's own pin name in the message, not a bare constraint

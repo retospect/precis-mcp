@@ -111,6 +111,10 @@ def row_header(r: Mapping[str, Any]) -> str:
         bits.append(f"errors {r['errors']}")
     if r.get("recall_at_5") is not None:
         bits.append(f"recall@5 {r['recall_at_5']:.3f}")
+    if r.get("gold_rank_page") is not None:
+        bits.append(f"gold@page {r['gold_rank_page']}")
+    if r.get("gold_rank_100") is not None:
+        bits.append(f"gold@100 {r['gold_rank_100']}")
     return " · ".join(bits)
 
 
@@ -178,6 +182,19 @@ def resolve_results(results_dir: Path, name: str) -> Path | None:
 #: ``<day>Z-<sha>-<set>-<caller>``).
 INDEX_STEM = "index"
 
+#: The results-retention policy in one line, rendered with the run index
+#: so the listing itself answers "does a run absent here exist anywhere"
+#: (gr660413 — a probe returning zero held runs could not say whether
+#: runs #2/#3 survived on some other checkout; now an empty or
+#: filtered-empty listing still carries the policy). The long form is
+#: ``bench/results/README.md`` `## Retention`; the needs-apply answer
+#: (``precis.quest.needs._bench_retention_hint``) quotes the same facts.
+RETENTION_LINE = (
+    "retention: results files live only on the host+checkout that ran "
+    "them — never uploaded, archived or pruned; a run not listed "
+    "survives only where it ran (or is gone)"
+)
+
 
 def _norm(needle: str) -> str:
     """A search needle's matchable form — lowercase, alphanumerics only —
@@ -236,6 +253,9 @@ def run_index(results_dir: Path) -> list[dict[str, Any]]:
                 readable=True,
                 set=h.get("set"),
                 caller=caller.get("name") if isinstance(caller, Mapping) else None,
+                upper_bound=bool(
+                    isinstance(caller, Mapping) and caller.get("upper_bound")
+                ),
                 schema=h.get("schema"),
                 precis_sha=h.get("precis_sha"),
                 git_dirty=h.get("git_dirty"),
@@ -258,7 +278,8 @@ def index_line(e: Mapping[str, Any]) -> str:
         return f"{e['stem']} — ({e.get('note') or 'unreadable results file'})"
     bits = [
         f"set {e.get('set') or '?'}",
-        f"caller {e.get('caller') or '?'}",
+        f"caller {e.get('caller') or '?'}"
+        + (" (upper bound)" if e.get("upper_bound") else ""),
         f"{e.get('started_at') or '?'} → {e.get('ended_at') or '?'}",
         f"schema {e.get('schema') if e.get('schema') is not None else '?'}",
         f"{e.get('n_rows', 0)} rows",
@@ -312,8 +333,10 @@ def index_markdown(
 ) -> str:
     """The run index in one bounded slice — the ``scripts/bench index``
     render: a header line naming the window, one :func:`index_line` per
-    matching run, and a ``Next:`` continuation when runs remain past the
-    window (the same paging convention as :func:`raw_markdown`)."""
+    matching run, the :data:`RETENTION_LINE` footer (an empty listing
+    still says what absence means, gr660413), and a ``Next:``
+    continuation when runs remain past the window (the same paging
+    convention as :func:`raw_markdown`)."""
     if offset < 0 or limit < 1:
         raise ValueError("offset must be >= 0 and limit >= 1")
     lines = index_lines(results_dir, match=match)
@@ -324,6 +347,7 @@ def index_markdown(
         f"({results_dir})"
     ]
     out.extend(lines[offset:end])
+    out.append(RETENTION_LINE)
     if end < len(lines):
         call = "scripts/bench index"
         if match:
@@ -366,6 +390,8 @@ def raw_markdown(
     )
     h = results["header"]
     caller = h.get("caller", {}).get("name", "?")
+    if h.get("caller", {}).get("upper_bound"):
+        caller += ", upper bound — reads the gold"
     end = min(offset + limit, len(sel))
     out = [
         f"# raw log {h.get('set', '?')} (caller {caller}) — rows {offset}-{end} "

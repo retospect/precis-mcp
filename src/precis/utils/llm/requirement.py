@@ -31,7 +31,7 @@ policy constraints (``tier_floor``, ``transport``) are applied after recall, so
 a cached demand never overwrites them.
 
 Placement. The judge routes as source ``llm:requirement-judge``; its
-operator-owned ``llm.op.llm:requirement-judge`` chain selects castor
+operator-owned ``llm.op.llm:requirement-judge`` chain selects the local-serving node's
 gpt-oss-120b (local, ``max_tokens`` ≥2048, ``reasoning_effort`` low,
 ``timeout_s`` 300) before metered cloud glm-4.7-flash.
 :func:`~precis.utils.llm.router.route` refuses the call

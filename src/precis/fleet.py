@@ -6,7 +6,7 @@ One numeric ref per agent tree (``meta.type='agent'``, key
 (``scripts/fleet-report --push``) sends its ``--json`` report through
 ``put(kind='fleet', mode='report')``; :func:`apply_report` diffs it against
 the host's live rows under one transaction and writes only what changed.
-Design: ``docs/backlog/fleet-coordination-via-precis.md`` (step 2).
+Design: `me690606` (step 2).
 
 No unique index backs the key: the per-host advisory lock makes the
 load/insert race-free, and leaving ``meta`` unindexed keeps updates HOT.

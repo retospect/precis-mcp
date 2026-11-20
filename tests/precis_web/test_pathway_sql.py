@@ -25,7 +25,7 @@ def _job(store, ref_id, **meta):
 def test_pathway_run_jobs_per_job_seed_host_status_summary(store) -> None:
     """Each chip carries its OWN seed number and claim host — the pathway
     pools several seeds, and they may have run on different machines
-    (gr549584 comment 1: 549464 on pollux, 549466 on spark)."""
+    (gr549584 comment 1: 549464 on poplar, 549466 on spruce)."""
     pw = store.insert_ref(kind="pathway", slug="q1cand-x-rx-y", title="pw", meta={})
     seed0 = _job(
         store,
@@ -33,7 +33,7 @@ def test_pathway_run_jobs_per_job_seed_host_status_summary(store) -> None:
         pathway_ref=int(pw.id),
         job_type="autocatpath_seed",
         params={"seed": 0},
-        lease_host="pollux",
+        lease_host="poplar",
         wall_s=107.4,
     )
     seed1 = _job(
@@ -42,7 +42,7 @@ def test_pathway_run_jobs_per_job_seed_host_status_summary(store) -> None:
         pathway_ref=int(pw.id),
         job_type="autocatpath_seed",
         params={"seed": 1},
-        lease_host="spark",
+        lease_host="spruce",
         wall_s=322.1,
     )
     agg = _job(
@@ -50,7 +50,7 @@ def test_pathway_run_jobs_per_job_seed_host_status_summary(store) -> None:
         0,
         pathway_ref=int(pw.id),
         job_type="autocatpath_aggregate",
-        lease_host="pollux",
+        lease_host="poplar",
         wall_s=40.0,
     )
     store.add_tag(int(seed1.id), Tag.parse_strict("STATUS:succeeded", kind="job"))
@@ -71,9 +71,9 @@ def test_pathway_run_jobs_per_job_seed_host_status_summary(store) -> None:
     jobs = _pathway_run_jobs(store, int(pw.id))
     by_id = {j["id"]: j for j in jobs}
     assert set(by_id) == {int(seed0.id), int(seed1.id), int(agg.id)}
-    assert by_id[int(seed0.id)]["label"] == "seed 0 on pollux"
-    assert by_id[int(seed1.id)]["label"] == "seed 1 on spark"
-    assert by_id[int(agg.id)]["label"] == "aggregate on pollux"
+    assert by_id[int(seed0.id)]["label"] == "seed 0 on poplar"
+    assert by_id[int(seed1.id)]["label"] == "seed 1 on spruce"
+    assert by_id[int(agg.id)]["label"] == "aggregate on poplar"
     assert "/refs/job/" in by_id[int(seed1.id)]["url"]
     t1 = by_id[int(seed1.id)]["title"]
     assert "succeeded" in t1
@@ -81,7 +81,7 @@ def test_pathway_run_jobs_per_job_seed_host_status_summary(store) -> None:
     # insert_ref stamps a fresh job's own wall_s/finished_at (elapsed ~0) —
     # the exact figure is pinned by the fake-pool test instead; here we pin
     # that the per-job host text lands.
-    assert "on spark" in t1
+    assert "on spruce" in t1
     assert "one seed" in t1
     assert "not a new simulation" in by_id[int(agg.id)]["title"]
 

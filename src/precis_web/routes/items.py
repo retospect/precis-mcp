@@ -11,9 +11,10 @@ not this slice.
 
 The query-independent helpers below (``_DEFAULT_SOURCE_KINDS``,
 ``_parse_date``, ``_run_search``, ``_recent_rows``, ``_folder_options``,
-``_tag_filter_string``, ``_PAGE_SIZE``) are unit-tested directly and
-imported by ``routes/drive.py`` as the reusable engine — kept here
-rather than duplicated.
+``_PAGE_SIZE``) are unit-tested directly and imported by
+``routes/drive.py`` as the reusable engine — kept here rather than
+duplicated. The tag-filter spelling itself lives with the filter
+parser: :func:`precis.store._tag_filter.tag_filter_string`.
 """
 
 from __future__ import annotations
@@ -28,8 +29,9 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from precis.handlers._paper_search import _representative_block_for_ref
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
+from precis.store._tag_filter import tag_filter_string
 from precis_web.deps import get_store
-from precis_web.item_view import COMPONENT_BADGE_SPECS, item_row
+from precis_web.item_view import COMPONENT_BADGE_SPECS, item_row, tag_display_label
 from precis_web.routes.flags import FLAG_NAMESPACE, FLAG_VALUE_LIST
 
 if TYPE_CHECKING:
@@ -37,13 +39,6 @@ if TYPE_CHECKING:
 
 router = APIRouter(prefix="/items", tags=["items"])
 log = logging.getLogger(__name__)
-
-
-def _tag_filter_string(ns: str, value: str) -> str:
-    """Canonical tag-filter string for the search verb — ``OPEN`` tags are
-    bare, closed axes are ``NAMESPACE:value`` (what ``build_tag_filter``
-    parses)."""
-    return value if ns == "OPEN" else f"{ns}:{value}"
 
 
 #: Default kind set when the query doesn't name any — the block-searchable
@@ -315,6 +310,8 @@ def _run_search(
     until: datetime | None,
     tags: list[str],
     offset: int,
+    tag_kinds: list[str] | None = None,
+    fetch_all: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Blocking search + row-build; runs in a worker thread.
 
@@ -323,6 +320,18 @@ def _run_search(
     selected ``tags``, then batches the flag/tag state for the whole page.
     Over-fetches one extra hit past ``_PAGE_SIZE`` to probe "has next
     page" without a separate count query; returns ``(rows, has_next)``.
+
+    ``tag_kinds`` is the ref-kind set pinned onto each row's tag-chip
+    ``/drive?tag=`` links (defaults to ``kinds`` — the search scope) so
+    every chip on a page pins one consistent scope; the caller passes
+    the listing's ``tag_row_kinds`` when a supplementary query ran on a
+    narrower set.
+
+    ``fetch_all`` (Drive tree layout) requests the whole fused set at
+    offset zero, bounded by the number of live refs of the selected kinds.
+    A lexical count cannot bound semantic-only matches. One hit per ref
+    makes the live-ref count a safe upper bound; root pagination then owns
+    slicing and the next-page probe.
     """
     query_vec = None
     if embedder is not None:
@@ -330,6 +339,21 @@ def _run_search(
             query_vec = embedder.embed_one(q)
         except Exception:
             query_vec = None
+    if not fetch_all:
+        limit = _PAGE_SIZE + 1
+        eff_offset = offset
+        flat_page = True
+    else:
+        # Browse counts add visibility/noise filters that the chunk search
+        # does not share. Count all live refs here to avoid under-fetching.
+        with store.pool.connection() as conn:
+            count = conn.execute(
+                "SELECT count(*) FROM refs WHERE kind = ANY(%s) AND retired_at IS NULL",
+                (kinds,),
+            ).fetchone()
+        limit = max(int(count[0]) if count else 0, 1)
+        eff_offset = 0
+        flat_page = False
     hits = store.chunks.search_chunks_across_kinds(
         kinds=kinds,
         q=q,
@@ -338,8 +362,8 @@ def _run_search(
         since=since,
         until=until,
         tags=tags or None,
-        limit=_PAGE_SIZE + 1,
-        offset=offset,
+        limit=limit,
+        offset=eff_offset,
         max_distance=SEMANTIC_DISTANCE_FLOOR,
     )
     # Title introducer, same gate as the single-kind paper search (first
@@ -347,10 +371,10 @@ def _run_search(
     # first (gr537785) — a tag/date facet is a deliberate filter, so it
     # bounds the pin the way ``scope=``/``after=`` bound the MCP one.
     pinned_ids: set[int] = set()
-    if offset == 0 and not tags and since is None and until is None:
+    if eff_offset == 0 and not tags and since is None and until is None:
         hits, pinned_ids = _pin_title_matches(store, hits, q=q, kinds=kinds)
-    has_next = len(hits) > _PAGE_SIZE
-    hits = hits[:_PAGE_SIZE]
+    has_next = len(hits) > _PAGE_SIZE if flat_page else False
+    hits = hits[:_PAGE_SIZE] if flat_page else hits
     ref_ids = [ref.id for _, ref, _ in hits]
     flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
     tags_bulk = store.ref_tags_bulk(ref_ids)
@@ -371,6 +395,7 @@ def _run_search(
             block,
             score,
             flag_state.get(ref.id, set()),
+            ref_kinds=kinds if tag_kinds is None else tag_kinds,
             has_chunks=(ref.id in pinned_body if ref.id in pinned_ids else True),
             tags=tags_bulk.get(ref.id),
             identifier=idents.get(ref.id),
@@ -380,6 +405,70 @@ def _run_search(
         for block, ref, score in hits
     ]
     return rows, has_next
+
+
+def _rows_for_refs(
+    store: Store, refs: list[Any], *, tag_kinds: list[str]
+) -> list[dict[str, Any]]:
+    """The shared row-build tail every no-query list converges on:
+    flags, body-chunk presence, tags, paper identifiers and the design
+    facts batched once per page (never per-row), then one ``item_row``
+    per ref. ``_recent_rows`` and the todo ``queue=doable`` preset share
+    it so a Drive row renders identically whichever list produced it."""
+    ref_ids = [r.id for r in refs]
+    flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
+    ingested = store.refs_with_body_chunks(ref_ids)
+    tags_bulk = store.ref_tags_bulk(ref_ids)
+    idents = store.paper_identifiers(ref_ids)
+    design_facts = _design_facts_bulk(store, refs)
+    return [
+        item_row(
+            r,
+            None,
+            0.0,
+            flag_state.get(r.id, set()),
+            ref_kinds=tag_kinds,
+            has_chunks=r.id in ingested,
+            tags=tags_bulk.get(r.id),
+            identifier=idents.get(r.id),
+            design=design_facts.get(r.id),
+        )
+        for r in refs
+    ]
+
+
+def _doable_queue_rows(
+    store: Store,
+    *,
+    under: list[int] | None,
+    offset: int,
+    tags: list[str] | None = None,
+    tag_kinds: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """The todo ``queue=doable`` preset's page (gr664410): doable leaf
+    refs in the rotation's own order, through
+    ``precis.todo.views._doable_rows`` — the very query
+    ``search(kind='todo', view='doable')`` runs, so the Drive preset and
+    the ``/todo`` workbench's doable panel can never diverge.
+
+    ``under`` scopes the queue to those subtree roots (the Drive
+    ``focus``/``serves`` facets; ``None`` is the global rotation, an
+    empty list stays scoped and matches nothing). ``tags`` is the
+    Drive ``tag=`` facet set — forwarded into the leaf filter
+    (gr568264's ``build_tag_filter`` splice) so it narrows the queue
+    *before* pagination; dropping it here would silently list every
+    doable leaf under an active tag chip. Over-fetches
+    ``offset + _PAGE_SIZE + 1`` so one query answers both the page and
+    the ``has_next`` probe, then renders through the shared
+    :func:`_rows_for_refs` tail."""
+    from precis.todo.views import _doable_rows
+
+    hits = _doable_rows(store, under=under, limit=offset + _PAGE_SIZE + 1, tags=tags)
+    has_next = len(hits) > offset + _PAGE_SIZE
+    page_hits = hits[offset : offset + _PAGE_SIZE]
+    refs_by_id = store.fetch_refs_by_ids([h["id"] for h in page_hits])
+    refs = [refs_by_id[h["id"]] for h in page_hits if h["id"] in refs_by_id]
+    return _rows_for_refs(store, refs, tag_kinds=tag_kinds or ["todo"]), has_next
 
 
 def _recent_rows(
@@ -402,6 +491,8 @@ def _recent_rows(
     untried: bool = False,
     downloadable_first: bool = False,
     viewer: str | None = None,
+    tag_kinds: list[str] | None = None,
+    fetch_all: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-*edited* source items, newest
     first (or most recently created when ``created=True``);
@@ -427,10 +518,57 @@ def _recent_rows(
     ones). ``viewer`` is the web login the page is for: another owner's
     ``kind='profile'`` row never lists (gr490266, ``recent_refs(viewer=)``).
     Rows carry no preview (no query) — name, kind, when-edited, badges,
-    tags, links, flags. Returns
+    tags, links, flags. ``tag_kinds`` is the ref-kind set pinned onto
+    each row's tag-chip ``/drive?tag=`` links, defaulting to ``kinds``
+    (see :func:`_run_search`). Returns
     ``(rows, has_next)`` via the same over-fetch-one-extra probe as
     :func:`_run_search`.
+
+    ``fetch_all=True`` (Drive's ``layout=tree``, gr664408) returns the
+    whole filtered set instead of the ``offset``/``_PAGE_SIZE`` window:
+    the caller paginates by tree roots, so the row source must not cut
+    a branch at the page boundary (which would promote the orphaned
+    children to roots). Bounded by the exact filtered count — one
+    ``count_recent_refs`` (the same ``_recent_refs_where`` filter, so
+    count and set never diverge), then one full read. ``has_next`` is
+    ``False``: root pagination recomputes it.
     """
+    if fetch_all:
+        total = store.count_recent_refs(
+            kinds,
+            tags=tags or None,
+            has_pdf=has_pdf,
+            has_chunks=has_chunks,
+            has_schedule=has_schedule,
+            has_external_id=has_external_id,
+            no_oa=no_oa,
+            parent_id=folder_id,
+            unfiled_only=unfiled_only,
+            ref_ids=ref_ids,
+            deleted=deleted,
+            viewer=viewer,
+        )
+        refs = store.recent_refs(
+            kinds,
+            tags=tags or None,
+            has_pdf=has_pdf,
+            has_chunks=has_chunks,
+            has_schedule=has_schedule,
+            has_external_id=has_external_id,
+            no_oa=no_oa,
+            parent_id=folder_id,
+            unfiled_only=unfiled_only,
+            ref_ids=ref_ids,
+            deleted=deleted,
+            oldest=oldest,
+            created=created,
+            untried=untried,
+            downloadable_first=downloadable_first,
+            viewer=viewer,
+            limit=max(total, 1),
+            offset=0,
+        )
+        return _rows_for_refs(store, refs, tag_kinds=tag_kinds or kinds), False
     refs = store.recent_refs(
         kinds,
         tags=tags or None,
@@ -453,26 +591,7 @@ def _recent_rows(
     )
     has_next = len(refs) > _PAGE_SIZE
     refs = refs[:_PAGE_SIZE]
-    ref_ids = [r.id for r in refs]
-    flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
-    ingested = store.refs_with_body_chunks(ref_ids)
-    tags_bulk = store.ref_tags_bulk(ref_ids)
-    idents = store.paper_identifiers(ref_ids)
-    design_facts = _design_facts_bulk(store, refs)
-    rows = [
-        item_row(
-            r,
-            None,
-            0.0,
-            flag_state.get(r.id, set()),
-            has_chunks=r.id in ingested,
-            tags=tags_bulk.get(r.id),
-            identifier=idents.get(r.id),
-            design=design_facts.get(r.id),
-        )
-        for r in refs
-    ]
-    return rows, has_next
+    return _rows_for_refs(store, refs, tag_kinds=tag_kinds or kinds), has_next
 
 
 # store stays Any: tests pass a hand-rolled fake narrower than Store
@@ -524,7 +643,7 @@ async def tags_suggest(request: Request, q: str = "") -> JSONResponse:
     rows = await asyncio.to_thread(store.suggest_tags, q, limit=10)
     return JSONResponse(
         [
-            {"label": _tag_filter_string(ns, val), "tag": _tag_filter_string(ns, val)}
+            {"label": tag_display_label(ns, val), "tag": tag_filter_string(ns, val)}
             for ns, val, _n in rows
         ]
     )

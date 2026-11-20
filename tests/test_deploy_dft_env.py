@@ -12,7 +12,7 @@ def _render(**overrides: object) -> dict[str, str]:
     values = yaml.safe_load(
         (_ROOT / "defaults" / "main.yml").read_text(encoding="utf-8")
     )
-    values.update(dft_node="spark", ansible_managed="test")
+    values.update(dft_node="spruce", ansible_managed="test")
     values.update(overrides)
     source = (_ROOT / "templates" / "dft.env.j2").read_text(encoding="utf-8")
     rendered = (

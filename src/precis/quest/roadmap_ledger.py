@@ -1,6 +1,6 @@
 """Capability ledger — the roadmap body's derived, never-stored read.
 
-``docs/backlog/bootstrap-roadmap-quest.md`` §Design "Derived (never stored)
+`me691652` §Design "Derived (never stored)
 reads": a roadmap **root** quest is served by *capability* quests
 (``meta.quest_body == "roadmap"`` + ``meta.rubric_objectives``), each holding
 a per-axis ``meta.demand`` (what a target part needs) and ``meta.supply``

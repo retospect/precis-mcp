@@ -11,6 +11,12 @@ prefix ``LIKE``; over the exact-tag filter ``spec:*`` parses as the
 literal value and matches nothing. ``args={'under': …}`` scopes the
 forest to a subtree.
 
+``q=`` filters the forest to roots whose own chunks match — body plus
+the ``card_combined`` header card, the same lexical leg a search leg
+runs (gr702042: agents kept combining ``q=`` with this view and meeting
+a BadInput; the listing now honours the filter instead). Member counts
+stay full subtree sizes — the q filter never re-scopes the trees.
+
 ``get(kind='memory', id=N, view='toc')`` renders the node's part-of
 subtree as an indented tree. Child order is ``meta.order`` when set,
 else the position of the child's handle mention in the parent's body,
@@ -18,6 +24,12 @@ else title — a hand-maintained "reading order" list just becomes one
 more mention source, so generated TOCs can replace them over time.
 ``args={'depth': k}`` collapses below depth *k* with subtree counts;
 ``offset`` pages under the byte budget like ``view='members'``.
+
+``get(kind='memory', id='/toc')`` is the kind's own TOC (gr568237):
+the whole-graph forest — every live memory node whose part-of parents
+are all dead or non-memory (the tops of every tree) — rendered by the
+same paged root listing as the tag forest. A bare
+``get(kind='memory', view='toc')`` spells the same door.
 
 Keywords are the existing extraction — the ``rake-lemma``
 ``chunk_summaries`` row, then ``chunks.keywords`` (KeyBERT) — with
@@ -34,9 +46,12 @@ from precis._result_budget import result_context_cap
 from precis.errors import BadInput
 from precis.response import Response
 from precis.store import Tag
+from precis.store._chunks_ops import _OR_TSQUERY, _or_retry
+from precis.store._mappers import _chunk_noise_clauses
 from precis.store._refs_ops import _like_escape
 from precis.store._tag_filter import _parse_tag_string, split_tag_polarity
 from precis.utils import handle_registry
+from precis.utils.canon import lexical_q
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -97,7 +112,11 @@ def _compile_tags(
         raise BadInput(
             "view='toc' needs at least one positive tags= entry — "
             "the tag defines the forest",
-            next="search(kind='memory', tags=['spec:*'], view='toc')",
+            next=[
+                "get(kind='memory', id='/toc') — the whole-graph TOC "
+                "(every root, no tag filter)",
+                "search(kind='memory', tags=['spec:*'], view='toc') — one tag's forest",
+            ],
         )
     return pos, neg, normalized or []
 
@@ -205,6 +224,43 @@ def _forest(
     return [(int(root), int(members)) for root, members in rows]
 
 
+def _q_roots(store: Store, ref_ids: list[int], q: str) -> set[int]:
+    """The subset of forest roots whose own chunks lexically match ``q``.
+
+    Mirrors ``ChunkStore.count_chunks_lexical``'s WHERE — live body
+    chunks (``ord >= 0``) plus the ``card_combined`` header card, the
+    noise floor — restricted to the given roots, so the toc keeps a
+    root only when the root *itself* reads about the topic. An empty
+    result retries with the terms OR-ed, exactly like a search leg
+    (gr510534's recall fallback).
+    """
+    if not ref_ids:
+        return set()
+    clauses = [
+        "c.retired_at IS NULL",
+        "(c.ord >= 0 OR c.chunk_kind = 'card_combined')",
+        "c.tsv @@ qq.qq",
+        "c.ref_id = ANY(%s)",
+        *_chunk_noise_clauses(text_alias="c.text"),
+    ]
+    sql = (
+        "SELECT DISTINCT c.ref_id FROM chunks c, "
+        "websearch_to_tsquery('english', %s) qq(qq) "
+        f"WHERE {' AND '.join(clauses)}"
+    )
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, [lexical_q(q), list(ref_ids)]).fetchall()
+        if not rows and _or_retry(q, None):
+            rows = conn.execute(
+                sql.replace(
+                    "websearch_to_tsquery('english', %s)",
+                    f"(SELECT {_OR_TSQUERY})",
+                ),
+                [q, list(ref_ids)],
+            ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
 def _cut(text: str, cap: int = _DESCRIPTOR_CAP) -> str:
     """Trim a keyword string to ``cap`` on a separator boundary."""
     text = " ".join(str(text or "").split())
@@ -269,52 +325,16 @@ def count_tag_toc(
     store: Store,
     *,
     tags: list[str] | None,
+    q: str | None = None,
     include_ref_ids: list[int] | None = None,
     exclude_ref_ids: list[int] | None = None,
 ) -> int:
     """Forest-root count under this scope — the domain space footer's
-    corpus size for ``view='toc'``."""
+    corpus size for ``view='toc'``. Apply the same root-only query
+    filter as the listing so unrelated roots never count as hidden hits."""
     pos, neg, _canon = _compile_tags(
         tags, axis_in_use=lambda p: p in store.tag_namespaces()
     )
-    return len(
-        _forest(
-            store,
-            pos,
-            neg,
-            include_ref_ids=include_ref_ids,
-            exclude_ref_ids=exclude_ref_ids,
-        )
-    )
-
-
-def render_tag_toc(
-    store: Store,
-    *,
-    tags: list[str] | None,
-    page: int = 1,
-    page_size: int = 10,
-    include_ref_ids: list[int] | None = None,
-    exclude_ref_ids: list[int] | None = None,
-    under: str | int | None = None,
-    depth: int | str | None = None,
-) -> Response:
-    """``search(view='toc')``: the tag's forest roots, paged by
-    ``page_size`` rows or the result byte budget, whichever binds first
-    — the ``view='index'`` listing's shape, so ``args={'page': N}``
-    resumes exactly where the previous page stopped."""
-    pos, neg, canon = _compile_tags(
-        tags, axis_in_use=lambda p: p in store.tag_namespaces()
-    )
-    try:
-        page = max(int(page or 1), 1)
-        page_size = max(int(page_size or 1), 1)
-    except (TypeError, ValueError):
-        raise BadInput(
-            f"page=/page_size= must be integers, got page={page!r} "
-            f"page_size={page_size!r}",
-            next="search(kind='memory', tags=['spec:*'], view='toc')",
-        ) from None
     forest = _forest(
         store,
         pos,
@@ -322,10 +342,30 @@ def render_tag_toc(
         include_ref_ids=include_ref_ids,
         exclude_ref_ids=exclude_ref_ids,
     )
+    active_q = q.strip() if isinstance(q, str) else ""
+    if active_q:
+        return len(_q_roots(store, [root for root, _ in forest], active_q))
+    return len(forest)
+
+
+def _forest_page(
+    store: Store,
+    forest: list[tuple[int, int]],
+    *,
+    label: str,
+    empty_body: str,
+    page: int,
+    page_size: int,
+    more: str,
+) -> Response:
+    """Shared page render for both toc doors — ``forest`` is
+    ``[(root ref_id, member_count)]`` from :func:`_forest`; ``label``
+    is the header/empty-page scope clause (``" tagged ['spec:*']"``,
+    or ``""`` for the whole kind); ``more`` is the ready-made
+    continuation call emitted when the page doesn't cover the forest.
+    """
     if not forest:
-        return Response(
-            body=f"no memory entries tagged {canon} start a tree", result_count=0
-        )
+        return Response(body=empty_body, result_count=0)
     found = store.fetch_refs_by_ids([root for root, _ in forest])
     parts = _descriptors(store, [root for root, _ in forest])
     counts = dict(forest)
@@ -358,39 +398,136 @@ def render_tag_toc(
     if len(pages) < page:
         return Response(
             body=f"no memory entries on page {page} — "
-            f"{len(ordered)} roots tagged {canon}",
+            f"{len(ordered)} root{'s' if len(ordered) != 1 else ''}{label}",
             result_count=0,
         )
     page_rows = pages[page - 1]
     shown = sum(len(c) for c in pages)
     header = (
-        f"# memory TOC — {len(ordered)} root"
-        f"{'s' if len(ordered) != 1 else ''} tagged {canon}"
+        f"# memory TOC — {len(ordered)} root{'s' if len(ordered) != 1 else ''}{label}"
     )
     body = header + "\n" + "\n".join(ln for _rid, ln in page_rows)
-    more = len(ordered) - shown
-    if more > 0:
-        args_echo = [f"'page': {page + 1}", f"'page_size': {page_size}"]
-        if under is not None:
-            args_echo.append(f"'under': {under!r}")
-            if depth is not None:
-                args_echo.append(f"'depth': {depth!r}")
-        elif include_ref_ids is not None:
-            args_echo.append(
-                f"'include_ref_ids': {sorted({int(i) for i in include_ref_ids})}"
-            )
-        if exclude_ref_ids:
-            args_echo.append(
-                f"'exclude_ref_ids': {sorted({int(i) for i in exclude_ref_ids})}"
-            )
-        body += (
-            f"\n… {more} more — next: search(kind='memory', tags={canon!r}, "
-            f"view='toc', args={{{', '.join(args_echo)}}})"
-        )
+    remaining = len(ordered) - shown
+    if remaining > 0:
+        body += f"\n… {remaining} more — next: {more}"
     return Response(
         body=body,
         result_count=len(page_rows),
         result_ids=[rid for rid, _ln in page_rows],
+    )
+
+
+def render_tag_toc(
+    store: Store,
+    *,
+    tags: list[str] | None,
+    q: str | None = None,
+    page: int = 1,
+    page_size: int = 10,
+    include_ref_ids: list[int] | None = None,
+    exclude_ref_ids: list[int] | None = None,
+    under: str | int | None = None,
+    depth: int | str | None = None,
+) -> Response:
+    """``search(view='toc')``: the tag's forest roots, paged by
+    ``page_size`` rows or the result byte budget, whichever binds first
+    — the ``view='index'`` listing's shape, so ``args={'page': N}``
+    resumes exactly where the previous page stopped.
+
+    ``q=`` (already match-all-folded by the caller) keeps only roots
+    whose own chunks match; member counts stay full subtree sizes.
+    """
+    pos, neg, canon = _compile_tags(
+        tags, axis_in_use=lambda p: p in store.tag_namespaces()
+    )
+    try:
+        page = max(int(page or 1), 1)
+        page_size = max(int(page_size or 1), 1)
+    except (TypeError, ValueError):
+        raise BadInput(
+            f"page=/page_size= must be integers, got page={page!r} "
+            f"page_size={page_size!r}",
+            next="search(kind='memory', tags=['spec:*'], view='toc')",
+        ) from None
+    forest = _forest(
+        store,
+        pos,
+        neg,
+        include_ref_ids=include_ref_ids,
+        exclude_ref_ids=exclude_ref_ids,
+    )
+    active_q = q.strip() if isinstance(q, str) else ""
+    if active_q:
+        matched = _q_roots(store, [root for root, _ in forest], active_q)
+        forest = [(root, n) for root, n in forest if root in matched]
+    args_echo = [f"'page': {page + 1}", f"'page_size': {page_size}"]
+    if active_q:
+        args_echo.append(f"'q': {q!r}")
+    if under is not None:
+        args_echo.append(f"'under': {under!r}")
+        if depth is not None:
+            args_echo.append(f"'depth': {depth!r}")
+    elif include_ref_ids is not None:
+        args_echo.append(
+            f"'include_ref_ids': {sorted({int(i) for i in include_ref_ids})}"
+        )
+    if exclude_ref_ids:
+        args_echo.append(
+            f"'exclude_ref_ids': {sorted({int(i) for i in exclude_ref_ids})}"
+        )
+    label = f" tagged {canon}"
+    empty = f"no memory entries tagged {canon} start a tree"
+    if active_q:
+        label += f" matching {q!r}"
+        empty = f"no memory entries tagged {canon} match {q!r}"
+    return _forest_page(
+        store,
+        forest,
+        label=label,
+        empty_body=empty,
+        page=page,
+        page_size=page_size,
+        more=(
+            f"search(kind='memory', tags={canon!r}, view='toc', "
+            f"args={{{', '.join(args_echo)}}})"
+        ),
+    )
+
+
+def render_kind_toc(
+    store: Store,
+    *,
+    page: int | str | None = 1,
+    page_size: int | str | None = None,
+) -> Response:
+    """``get(kind='memory', id='/toc')`` — the kind's own TOC (gr568237):
+    the whole-graph forest — every live memory node whose part-of
+    parents are all dead or non-memory (the tops of every tree) — one
+    line each with a descriptor and member count, title-ordered and
+    paged by the same render the tag forest uses. The bare
+    ``get(view='toc')`` folds here; ``get(id=N, view='toc')`` stays
+    the single-subtree walk."""
+    try:
+        n_page = max(int(page or 1), 1)
+        n_size = max(int(page_size or 10), 1)
+    except (TypeError, ValueError):
+        raise BadInput(
+            f"page=/page_size= must be integers, got page={page!r} "
+            f"page_size={page_size!r}",
+            next="get(kind='memory', id='/toc')",
+        ) from None
+    forest = _forest(store, [], [], include_ref_ids=None, exclude_ref_ids=None)
+    return _forest_page(
+        store,
+        forest,
+        label="",
+        empty_body="no live memory roots — the graph is empty",
+        page=n_page,
+        page_size=n_size,
+        more=(
+            "get(kind='memory', id='/toc', "
+            f"args={{'page': {n_page + 1}, 'page_size': {n_size}}})"
+        ),
     )
 
 
@@ -500,6 +637,7 @@ def render_node_toc(
     *,
     depth: int | str | None = None,
     offset: int | str | None = None,
+    page_size: int | str | None = None,
 ) -> Response:
     """``get(view='toc')``: the ref's part-of subtree as an indented
     tree with extracted keywords per line.
@@ -510,10 +648,16 @@ def render_node_toc(
     reading order" list supplies order until it can be dropped.
     ``args={'depth': k}`` renders through depth *k* and collapses a
     deeper subtree into a ``· +N below`` marker; ``offset`` pages DFS
-    rows under the byte budget exactly like ``view='members'``.
+    rows under the byte budget. ``page_size`` caps the number of rows
+    per page, as in ``view='members'``.
     """
     next_call = f"get(kind='memory', id={ref.id}, view='toc')"
     off = _integer(offset, "offset", minimum=0, next_call=next_call)
+    n_size = (
+        _integer(page_size, "page_size", minimum=1, next_call=next_call)
+        if page_size is not None
+        else None
+    )
     n_depth: int | None = None
     if depth is not None:
         n_depth = _integer(
@@ -573,7 +717,9 @@ def render_node_toc(
             body=f"no members past offset {off} — 0 total; next: {next_call}"
         )
     descendants = rows[1:]
-    page_rows = descendants[off:]
+    page_rows = (
+        descendants[off : off + n_size] if n_size is not None else descendants[off:]
+    )
     if total and not page_rows:
         return Response(
             body=(f"no members past offset {off} — {total} total; next: {next_call}")
@@ -602,6 +748,8 @@ def render_node_toc(
     body = header + "\n" + "\n".join(lines)
     if end < total:
         args = f"'offset': {end}"
+        if n_size is not None:
+            args += f", 'page_size': {n_size}"
         if n_depth is not None:
             args += f", 'depth': {n_depth}"
         body += (

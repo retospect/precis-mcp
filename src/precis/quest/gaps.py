@@ -7,8 +7,11 @@ holes **are** the exploration queue. Two read-time, mechanical computations over
 the nodes that ``serves`` a quest, no minting:
 
 * **Gaps** — a striving with little support, a served ``concept`` stuck at low
-  mastery, a quest with no literature grounding, an un-answered ``hypothesis``
-  logbook entry. Each is a concrete, computable "here is where to look next".
+  mastery, a quest with no literature grounding, an un-answered hypothesis (a
+  ``serves``-linked hypothesis finding not yet settled; the older
+  ``hypothesis`` logbook entry still counts, transitional — an ``fi``-linked
+  pointer entry defers to its finding). Each is a
+  concrete, computable "here is where to look next".
 * **Health** — *momentum* (are deeds + knowledge flowing in? recent logbook +
   recent server activity, open todos moving, no ``child-failed`` bubble) and an
   *alignment floor* (cosine proximity between the quest's card vector and each
@@ -111,13 +114,25 @@ class Health:
 # ── server fetch (shared) ─────────────────────────────────────────────
 
 
+#: Open tag on a backlog spec's placeholder todo (me691000).
+BACKLOG_SPEC_TAG = "backlog-spec"
+
+
 def _live_servers(store: Store, quest_id: int) -> list[Ref]:
-    """Live refs that ``serves`` this quest (one hop, inbound)."""
+    """Live refs that ``serves`` this quest (one hop, inbound) — the quest's
+    evidence and work. Two homing links are not servers in that sense and
+    are dropped here, so every gap, momentum and tick-prompt reader agrees:
+    a gripe homed under the quest, and a ``backlog-spec`` placeholder todo
+    (both placed by the quest rollup's Homes rules; the rollup and the
+    quest's own ``get`` view read the links directly)."""
     links = store.links_for(quest_id, direction="in", relation="serves")
     ids = [ln.src_ref_id for ln in links]
     if not ids:
         return []
     refs = store.fetch_refs_by_ids(set(ids))
+    spec_todos = _backlog_spec_ids(
+        store, [i for i, r in refs.items() if r is not None and r.kind == "todo"]
+    )
     out: list[Ref] = []
     seen: set[int] = set()
     for i in ids:
@@ -125,9 +140,24 @@ def _live_servers(store: Store, quest_id: int) -> list[Ref]:
             continue
         seen.add(i)
         r = refs.get(i)
-        if r is not None and r.retired_at is None:
-            out.append(r)
+        if r is None or r.retired_at is not None:
+            continue
+        if r.kind == "gripe" or r.id in spec_todos:
+            continue
+        out.append(r)
     return out
+
+
+def _backlog_spec_ids(store: Store, todo_ids: list[int]) -> set[int]:
+    if not todo_ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'OPEN' AND t.value = %s",
+            (todo_ids, BACKLOG_SPEC_TAG),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
 
 
 def _handle(store_kind: str, ref_id: int) -> str:
@@ -202,11 +232,27 @@ def quest_gaps(
                 )
             )
 
-    # 4. Un-answered hypotheses — a hypothesis logbook entry with no later
-    #    *supported* result / dead-end (:func:`_answers_hypothesis`: a bare
-    #    `by=agent` kill is restatement, not an answer). An open question
-    #    the loop never closed.
-    for text in _open_hypotheses(store, quest_id):
+    # 4. Un-answered hypotheses — a hypothesis finding ``serves``-linked to
+    #    the quest that is not yet settled (:func:`_open_hypothesis_findings`;
+    #    the hypothesis is the finding, updated in place — decision
+    #    me674763). The logbook leg underneath is transitional: the tick
+    #    still logs proposals and open questions as ``hypothesis`` entries
+    #    until its own gripe lands, so an entry with no later *supported*
+    #    result / dead-end (:func:`_answers_hypothesis`: a bare `by=agent`
+    #    kill is restatement, not an answer) still surfaces alongside —
+    #    except an entry naming a governed ``fi`` handle, which is a dated
+    #    pointer the finding leg already owns (:func:`_open_hypotheses`).
+    open_hyps, legacy_hyps = _open_hypothesis_state(store, quest_id, live)
+    for r in open_hyps:
+        title = (r.title or "").splitlines()[0] if r.title else ""
+        gaps.append(
+            Gap(
+                kind="open-hypothesis",
+                detail=f"unsettled hypothesis — {title[:70]}",
+                handle=_handle("finding", r.id),
+            )
+        )
+    for text in legacy_hyps:
         gaps.append(
             Gap(
                 kind="open-hypothesis",
@@ -355,8 +401,85 @@ def _answers_hypothesis(b: ChunkRow) -> bool:
     )
 
 
-def _open_hypotheses(store: Store, quest_id: int) -> list[str]:
-    """Hypothesis logbook entries with no later *answering* entry."""
+def _open_hypothesis_findings(
+    store: Store, quest_id: int, live: list[Ref]
+) -> tuple[list[Ref], set[int]]:
+    """Open hypothesis findings serving the quest, plus their governed ids.
+
+    Returns ``(open, governed)``: ``open`` is the served hypothesis
+    findings not yet settled, ``governed`` the ids of *all* served
+    hypothesis findings, settled or not — the set the finding leg owns,
+    which a fi-linked logbook pointer defers to.
+
+    A finding is a hypothesis when ``meta.artifact_type == 'hypothesis'``
+    (``handlers/_finding_hypothesis.py::META_ARTIFACT_TYPE`` — the durable
+    marker that survives the ``hypothesis-proposed`` triage tag coming off).
+    *Settled* is two signals: the ``STATUS:refuted`` stamp a rejection
+    ruling lands (the do-not-repropose ledger —
+    ``store/_tag_filter.py::REFUTED_TAG``), or a ``settled`` marker on this
+    quest's dialectic block for the hypothesis
+    (``dossier.py::DialecticBlock.settled`` — the tick's ``settle`` op).
+    Retired hypotheses never reach here: ``_live_servers`` drops them.
+    """
+    hyps = [
+        r
+        for r in live
+        if r.kind == "finding"
+        and str((r.meta or {}).get("artifact_type") or "") == "hypothesis"
+    ]
+    if not hyps:
+        return [], set()
+    settled: set[int] = set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id FROM ref_tags rt "
+            "JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'STATUS' "
+            "AND t.value = 'refuted'",
+            ([r.id for r in hyps],),
+        ).fetchall()
+    settled.update(int(row[0]) for row in rows)
+    from precis.quest.dossier import _load_dialectic_blocks, dossier_ref_id
+
+    did = dossier_ref_id(store, quest_id)
+    if did is not None:
+        settled.update(
+            b.hypothesis_id for b in _load_dialectic_blocks(store, did) if b.settled
+        )
+    return [r for r in hyps if r.id not in settled], {r.id for r in hyps}
+
+
+#: An ``fi<id>`` handle inside a ``hypothesis`` logbook entry's text — the
+#: dated-pointer convention (decision me674763): the entry only records
+#: that a hypothesis finding was raised; the finding IS the hypothesis.
+_FI_POINTER_RE = re.compile(r"\bfi(\d+)\b")
+
+
+def _is_finding_pointer(text: str, governed: set[int]) -> bool:
+    """True when the entry names an ``fi<id>`` the finding leg owns.
+
+    The pointer defers only when its finding ``serves`` the quest —
+    then the finding leg is authoritative for open/settled and the
+    entry must not double-count. A pointer naming any other ``fi``
+    (unserved, retired, dangling) keeps the legacy answer-tracking
+    treatment so the question is never silently dropped.
+    """
+    return any(int(m) in governed for m in _FI_POINTER_RE.findall(text or ""))
+
+
+def _open_hypotheses(
+    store: Store, quest_id: int, governed: set[int] | None = None
+) -> list[str]:
+    """Hypothesis logbook entries with no later *answering* entry.
+
+    ``governed`` is the set of served hypothesis-finding ids the finding
+    leg owns: an entry that names one is a dated pointer, never the
+    hypothesis itself, so it is skipped here — a pointer to a live
+    hypothesis must not duplicate the finding's own gap, and a pointer
+    to a refuted or dialectic-settled one must not linger as a legacy
+    gap the finding leg already closed.
+    """
+    governed = governed or set()
     blocks = [
         b
         for b in store.chunks.list_chunks_for_ref(quest_id)
@@ -376,7 +499,26 @@ def _open_hypotheses(store: Store, quest_id: int) -> list[str]:
         for i, b in enumerate(blocks)
         if str((b.meta or {}).get("entry_type", "note")) == "hypothesis"
         and i > last_answer
+        and not _is_finding_pointer(b.text, governed)
     ]
+
+
+def _open_hypothesis_state(
+    store: Store, quest_id: int, live: list[Ref]
+) -> tuple[list[Ref], list[str]]:
+    """Open hypotheses under the combined finding/legacy semantics.
+
+    Returns ``(findings, entries)``: the served hypothesis findings not
+    yet settled (:func:`_open_hypothesis_findings`) plus the transitional
+    ``hypothesis`` logbook entries with no later answering entry
+    (:func:`_open_hypotheses`), the dated ``fi``-pointer entries counted
+    once — by the finding leg that owns them. ``quest_gaps`` renders both
+    legs; ``cascade._n_open_hypotheses`` counts the sum for its progress
+    signal so a ``STATUS:refuted`` stamp or a dialectic ``settle`` drops
+    it exactly as a supported answer drops a legacy entry.
+    """
+    open_hyps, governed = _open_hypothesis_findings(store, quest_id, live)
+    return open_hyps, _open_hypotheses(store, quest_id, governed)
 
 
 # ── momentum ──────────────────────────────────────────────────────────
@@ -462,7 +604,8 @@ def quest_momentum(
         done: set[int] = set()
         blocked: set[int] = set()
         for rid, ns, val in rows:
-            if ns == "STATUS" and val == "done":
+            # hold:no-dispatch (backlog-spec placeholders) is not open work.
+            if (ns, val) in (("STATUS", "done"), ("OPEN", "hold:no-dispatch")):
                 done.add(int(rid))
             if ns == "OPEN" and str(val).startswith("child-failed:"):
                 blocked.add(int(rid))

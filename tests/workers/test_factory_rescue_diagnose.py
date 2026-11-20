@@ -4,8 +4,10 @@ task on the ``claude-sub`` lane; a ``rescue: REARM`` verdict re-arms it once
 with a corrected brief; a ``rescue: NOFIX``, a failed or unparsable
 diagnose, a second rescue or an engine class files one ask-user todo
 blocking the node — except a node under a closed ancestor, which the pass
-closes ``won't-do`` instead (gr576258). The pass writes nothing while the
-factory kill switch holds; ``dry_run`` lists what it would do."""
+closes ``won't-do`` instead (gr576258), and except an already-old rescue,
+which closes the same way: one ask per live node (gr666159). The pass
+writes nothing while the factory kill switch holds; ``dry_run`` lists
+what it would do."""
 
 from __future__ import annotations
 
@@ -262,6 +264,52 @@ def _minted_diagnose(store: Store, task: int, root: int) -> int:
     (diag,) = _diagnose_tasks(store)
     assert _blocked_by(store, task) == [diag]
     return diag
+
+
+def _age_signals(store: Store, ids: list[int], *, by: timedelta) -> None:
+    """Backdate every signal row of ``ids`` — ref, tag sets, chunks,
+    events — so a rescue tag stamped later reads on already-old work
+    (gr666159's flood: nodes created 2026-11-11, tagged 2026-11-14)."""
+    past = datetime.now(UTC) - by
+    with store.pool.connection() as conn:
+        for table, col in (
+            ("refs", "created_at"),
+            ("ref_tags", "created_at"),
+            ("chunks", "created_at"),
+            ("ref_events", "ts"),
+        ):
+            conn.execute(
+                f"UPDATE {table} SET {col} = %s WHERE ref_id = ANY(%s)",
+                (past, ids),
+            )
+
+
+def _stale_rescued(
+    store: Store,
+    root: int,
+    *,
+    cls: str = "stalled",
+    age: timedelta = timedelta(days=3),
+) -> int:
+    """``_rescued`` on already-old work: node and failed job backdated
+    ``age``, the ``rescue:`` tag itself stamped fresh by
+    ``enter_rescue`` — the flood's exact shape (gr666159)."""
+    task = _node(store, root)
+    job = _job(
+        store,
+        task,
+        status="failed",
+        meta_extra={"branch_commits": ["abc1234 feat: x"]},
+    )
+    _chunk(store, job, "job_event", "run failed\nexit 1: kaboom-tail")
+    _age_signals(store, [task, job], by=age)
+    fr.enter_rescue(
+        store,
+        task,
+        cls,
+        _ev(job=f"jo{job}", branch=f"slice/{task}", head_sha="abc1234"),
+    )
+    return task
 
 
 # ── the mint ───────────────────────────────────────────────────────
@@ -815,6 +863,229 @@ def test_dry_run_lists_the_close_and_writes_nothing(store: Store) -> None:
     assert res.closed == []
     assert _status(store, task) == "open"
     assert "rescue" not in _meta(store, task)
+
+
+# ── stale rescues (gr666159) ───────────────────────────────────────
+
+
+def test_stale_rescued_node_closes_wont_do_without_an_ask(store: Store) -> None:
+    """gr666159: ~62 stalled-rescue asks landed in a few hours on build
+    nodes whose work had already been dead for days — one ask per LIVE
+    node. The already-old rescue closes won't-do in the same bounded
+    batch as orphans and files nothing."""
+    root = _root(store)
+    task = _stale_rescued(store, root)
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.closed == [task]
+    assert res.asked == [] and res.diagnosing == []
+    assert _ask_refs(store) == [] and _diagnose_tasks(store) == []
+    assert _status(store, task) == "won't-do"
+    assert _rescue_tags(store, task) == ["rescue:stalled"]
+    assert any(
+        "stale rescue closed by the watchdog" in c for c in _comments(store, task)
+    )
+    meta = _meta(store, task)
+    assert meta["rescue"]["closed"] == "won't-do"
+    assert meta["rescue"]["cls"] == "stalled"
+
+    # a second pass writes nothing: a closed node is never re-judged
+    res2 = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+    assert res2.closed == [] and res2.asked == []
+
+
+def test_a_node_inside_the_stale_bound_still_asks(store: Store) -> None:
+    """The bound, not the tag, decides: silence younger than
+    ``STALE_ASK_AFTER`` is a live stall and keeps its one ask."""
+    root = _root(store)
+    task = _stale_rescued(store, root, age=fr.STALE_ASK_AFTER - timedelta(hours=1))
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.asked == [task] and res.closed == []
+    assert _status(store, task) == "open"
+    assert len(_ask_refs(store)) == 1
+
+
+def test_a_fresh_job_keeps_an_old_rescue_live(store: Store) -> None:
+    """Job signals are unfiltered: a job minted after the tag — work
+    resumed — makes the node live again, so it asks rather than
+    closing."""
+    root = _root(store)
+    task = _stale_rescued(store, root)
+    _job(store, task, status="running")
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.asked == [task] and res.closed == []
+    assert _status(store, task) == "open"
+
+
+def test_a_stale_node_with_a_pending_ask_keeps_its_engagement(
+    store: Store,
+) -> None:
+    """An ask already filed on the stale node is live engagement — the
+    episode-ask rule skips it BEFORE the stale close, so the pass never
+    mints a second ask and never closes a node a human may still rule
+    on; bulk-closing the leftover flood asks is the coordinator's call."""
+    root = _root(store)
+    task = _stale_rescued(store, root)
+    ask = _node(
+        store,
+        root,
+        title="a ruling ask",
+        meta={
+            "ask": {
+                "kind": "ruling",
+                "options": ["retry"],
+                "blocks": f"td{task}",
+                "context": "pending",
+            }
+        },
+        tags=("ask-user",),
+    )
+    store.add_link(
+        src_ref_id=task, dst_ref_id=ask, relation="blocked-by", set_by="system"
+    )
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.closed == [] and res.asked == []
+    assert _status(store, task) == "open"
+    assert _status(store, ask) == "open"
+    assert len(_ask_refs(store)) == 1
+    assert not any("superseded" in c for c in _comments(store, ask))
+
+
+def test_stale_closes_share_the_orphan_batch(store: Store) -> None:
+    """Stale closes draw the same ``ORPHAN_BATCH`` budget as orphan
+    closes — a mixed backlog drains a few closes a tick, never one
+    unbounded sweep."""
+    root = _root(store, status="done")
+    orphans = [_node(store, root, title=f"orphan {i}") for i in range(fr.ORPHAN_BATCH)]
+    for t in orphans:
+        fr.enter_rescue(store, t, "terminal-root", _ev())
+    stale = _stale_rescued(store, _root(store))
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.closed == orphans
+    assert _status(store, stale) == "open"
+    assert any("batch full" in n for n in res.notes)
+
+    res2 = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+    assert res2.closed == [stale]
+    assert _status(store, stale) == "won't-do"
+
+
+def test_stale_close_dry_run_writes_nothing(store: Store) -> None:
+    root = _root(store)
+    task = _stale_rescued(store, root)
+
+    res = fr.run_rescue_pass(store, NOW, dry_run=True)
+
+    assert res.dry_run is True
+    assert (task, "close") in res.would
+    assert res.closed == []
+    assert _status(store, task) == "open"
+
+
+def test_post_tag_engagement_keeps_a_stale_rescue_live(store: Store) -> None:
+    """gr666159 review: the bound reads real activity, not pre-tag
+    activity — a human comment or a fresh hand tag after the
+    ``rescue:`` tag is engagement, so the node asks rather than
+    closing won't-do over work someone is still holding."""
+    root = _root(store)
+    task = _stale_rescued(store, root)
+    _comment(store, task, "handoff: picking this up tomorrow")
+    store.add_tag(task, Tag.open("watching"), set_by="system")
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.asked == [task] and res.closed == []
+    assert _status(store, task) == "open"
+
+
+def test_post_tag_rescue_notes_do_not_keep_a_stale_rescue_live(
+    store: Store,
+) -> None:
+    """The exclusion is the pass's own bookkeeping specifically: a
+    ``rescue:``-prefixed note left after the tag (the re-flag/ask
+    trail) is not engagement, so the already-old node still closes
+    won't-do."""
+    root = _root(store)
+    task = _stale_rescued(store, root)
+    _comment(store, task, "rescue: stalled re-flagged; ask td1 still open")
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.closed == [task] and res.asked == []
+    assert _status(store, task) == "won't-do"
+
+
+def test_a_fresh_job_event_keeps_an_old_rescue_live(store: Store) -> None:
+    """gr666159 review: a child job's newest ``ref_events`` stamp is a
+    consumed signal — a job event fresher than the bound means work is
+    still moving, so the node asks rather than closing stale."""
+    root = _root(store)
+    task = _stale_rescued(store, root)
+    store.append_event(
+        _newest_job(store, task), source="run_slice", event="claim", payload={}
+    )
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.asked == [task] and res.closed == []
+    assert _status(store, task) == "open"
+
+
+def test_a_live_job_with_stale_signals_defers_the_stale_close(
+    store: Store,
+) -> None:
+    """td673697 review: a nonterminal child job whose signals ALL predate
+    ``STALE_ASK_AFTER`` — a runner still going whose every stamp aged
+    out — must not be closed over: the job may still land, so the pass
+    waits (the orphan path's live-job guard), never closing won't-do
+    under it."""
+    root = _root(store)
+    task = _stale_rescued(store, root)
+    live = _job(store, task, status="running")
+    _age_signals(store, [live], by=timedelta(days=3))
+
+    res = fr.run_rescue_pass(store, NOW)
+
+    assert res.closed == [] and res.asked == [] and res.diagnosing == []
+    assert res.waiting == 1
+    assert _status(store, task) == "open"
+    assert any("live job with stale signals" in n for n in res.notes)
+
+
+def test_a_stale_node_with_a_live_job_is_not_closed_from_the_ask_path(
+    store: Store,
+) -> None:
+    """td673697 review: the diagnose branches reach ``_ask_node`` without
+    ``_judge_rescued``'s stale check — a NOFIX landing on a node whose
+    signals all aged out while a child job is still live defers the
+    close the same way: no ask, no won't-do, the pass waits for the
+    job."""
+    root = _root(store)
+    task = _rescued(store, root)
+    failed_job = _newest_job(store, task)
+    diag = _minted_diagnose(store, task, root)
+    _job(store, diag, status="succeeded")
+    _comment(store, diag, "rescue: NOFIX — the denied path means a human must do it")
+    live = _job(store, task, status="running")
+    _age_signals(store, [task, failed_job, live], by=timedelta(days=3))
+
+    res = fr.run_rescue_pass(store, NOW + timedelta(minutes=1))
+
+    assert res.closed == [] and res.asked == [] and res.diagnosing == []
+    assert res.waiting == 1
+    assert _ask_refs(store) == []
+    assert _status(store, task) == "open"
+    assert _status(store, diag) == "done"  # the NOFIX verdict still closes it
+    assert any("live job with stale signals" in n for n in res.notes)
 
 
 # ── holds, gripes, supersession ────────────────────────────────────

@@ -15,7 +15,7 @@ design-review: yes
   (8514c4333, 744ff91e1 and the S1c pcb adapter commit).
 - **Unblocks:** Structured run failures and probes for hex, and the laminar-common stackup for EWOD, flex and
   cartridge kinds.
-- **Acceptance:** Per slice in [shared-core-layers](../shared-core-layers.md) §Slices.
+- **Acceptance:** Per slice in shared-core-layers (me695063) §Slices.
 - **Worktree:** per slice, on the GRIPE_FIX builder lanes.
 - **Builds:** Not estimated here; use the spec's slice list.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -26,7 +26,7 @@ design-review: yes
 checks through one shared `Diag`/`RunResult` core, and the layering
 (core < se-common / laminar-common < domains) is enforced by import-linter
 contracts and per-layer conformance suites.
-This thread owns `backlog/shared-core-layers.md`; its parent gripe is closed.
+This thread owns me695063; its parent gripe is closed.
 **Last reviewed:** 2026-10-27
 **Allocation decision:** created on Reto's ruling of 2026-10-27. It is not a fleet window: slices run on the GRIPE_FIX builder
 lanes, and the orchestrator reviews the design before each slice lands.

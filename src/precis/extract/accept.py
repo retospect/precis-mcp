@@ -1,5 +1,5 @@
 """Sampling acceptance for an extraction batch — the Wilson rule from
-docs/backlog/measures-substrate.md ("a frontier model reviews a
+me693370 ("a frontier model reviews a
 stratified sample per paper × measurand; the batch is accepted when the
 sampled error rate is under the bar — start at 5 %, measured with a
 Wilson interval", Reto 2026-10-14).

@@ -1,7 +1,7 @@
 # asa-bot: Claude auth and deploy
 
 **What it is.** asa-bot (`src/asa_bot/`; the Discord bridge) runs Asa as a
-Claude Code agent on **melchior** as user **hermes** (LaunchDaemon
+Claude Code agent on **the agent host** as user **hermes** (LaunchDaemon
 `com.asa.bot`, log `/Users/hermes/.asa/asa-bot.log`, needs `sudo`). Each Discord <!-- home-path: allow — the real path on the named host -->
 turn spawns a fresh `claude -p` subprocess (`src/asa_bot/claude_invoke.py::invoke`).
 
@@ -22,7 +22,7 @@ after building the subprocess env. It mirrors precis's `utils/claude_oauth`
 **Source of the token (changed 2026-08-07Z):** both mirrors now resolve
 env → **DB vault** → `~/.secrets/pw/<NAME>`. The per-user
 `~/.claude_oauth_token` leg is **gone** from the code and the files are purged
-fleet-wide by redeploy step 0a2 (melchior `deploy` + `hermes`, and the Spark
+fleet-wide by redeploy step 0a2 (the agent host `deploy` + `hermes`, and the GPU node
 atomsim user). **Don't "fix" an auth failure by recreating that file** — it no
 longer resolves, and while it existed it sat *ahead* of the vault and silently
 shadowed rotation. Rotate/repair with `precis secret set
@@ -51,7 +51,7 @@ the env var is only a fallback when config names none. If it still shows
 ## Deploy
 
 asa-bot deploys with **ansible, not precis's `scripts/ship`**. The repo is a
-laptop-local checkout with no git remote; melchior-only.
+laptop-local checkout with no git remote; agent-host-only.
 
     cd <precis-mcp>/deploy && SSH_AUTH_SOCK= ansible-playbook playbooks/31-asa-bot.yml
 

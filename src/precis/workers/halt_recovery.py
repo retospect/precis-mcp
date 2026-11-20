@@ -23,6 +23,7 @@ from precis.alert_ids import RULES_BY_ID
 from precis.alerts import _flip_resolved, raise_alert
 from precis.store.types import Tag
 from precis.workers.executors._common import TERMINAL
+from precis.workers.halt_retry import assess_halt_retry
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -420,6 +421,100 @@ def advance_halt_recovery(store: Store) -> None:
             )
             _save_breaker(conn, alert_id, state)
             return
+
+
+def _prior_attempt_audit(
+    conn: Connection, parent_id: int, halt: dict[str, Any]
+) -> tuple[bool, str]:
+    """Diagnose the attempts an ``uncertain-halt-outcome`` park covers.
+
+    The park exists because nobody proved the interrupted attempt did no
+    writes — re-arming blind risks a duplicate the post-execution stream
+    audit can only record, never prevent. Every ``plan_tick`` job at or
+    after the receipt's ``job_ref`` must verify before release: its own
+    halt receipt's ``retry_safe`` verdict stands (it audited the raw
+    stream at halt time), a ``recovery_retry_blocked`` flag is an
+    already-failed audit, and otherwise the stored ``meta.transcript``
+    re-runs :func:`assess_halt_retry` — the same contract, fail-closed
+    on a missing or capped stream. ``(True, note)`` releases;
+    ``(False, note)`` holds the park and carries the diagnosis.
+    """
+    job_ref = halt.get("job_ref")
+    if not isinstance(job_ref, int):
+        return False, "halt receipt names no prior attempt to audit"
+    rows = conn.execute(
+        "SELECT ref_id, meta FROM refs WHERE parent_id = %s AND kind = 'job' "
+        "AND retired_at IS NULL AND ref_id >= %s "
+        "AND meta->>'job_type' = 'plan_tick' ORDER BY ref_id",
+        (parent_id, job_ref),
+    ).fetchall()
+    if not rows:
+        return False, f"receipt's job {job_ref} is gone — nothing to audit"
+    for job_id, meta in rows:
+        meta = meta if isinstance(meta, dict) else {}
+        receipt = meta.get("halt")
+        if isinstance(receipt, dict) and receipt.get("retry_safe") is True:
+            continue
+        if meta.get("recovery_retry_blocked"):
+            return (
+                False,
+                f"job {job_id}'s own attempt audit already failed: "
+                f"{meta['recovery_retry_blocked']}",
+            )
+        transcript = meta.get("transcript")
+        if isinstance(transcript, str) and transcript.strip():
+            safe, reason = assess_halt_retry(transcript)
+            if safe:
+                continue
+            return False, f"job {job_id} audit: {reason}"
+        return False, f"job {job_id} carries no receipt or stored stream to audit"
+    return True, f"{len(rows)} prior attempt(s) audit read-only"
+
+
+def release_uncertain_park(
+    store: Store, conn: Connection, parent_id: int
+) -> tuple[bool, str] | None:
+    """Lift the ``ask-user:uncertain-halt-outcome`` park on one todo —
+    the ``asks_triage`` re-arm (gr652333), gated on the prior attempt's
+    audit. The open tag itself is the dispatch exclusion, so removing
+    it re-arms the row; the release stamps ``retry_released`` the same
+    way :func:`_release` does, and :func:`_prior_attempt_audit` is the
+    pre-release check the post-execution ``assess_halt_retry`` on the
+    resume path cannot be (it runs after any duplicate write landed).
+    When the todo's own receipt or stored stream verifies the attempts
+    read-only, the release carries that proof in the diagnosis.
+
+    Returns ``None`` when the row is not a live parked todo (the caller
+    leaves it unstamped); ``(True, note)`` when the park lifted —
+    ``note`` is the audit line for the caller's comment;
+    ``(False, note)`` when the audit refuses — the tag stays and
+    ``note`` is the failure the caller routes onward.
+    """
+    row = conn.execute(
+        "SELECT meta->'halt' FROM refs WHERE ref_id = %s AND kind = 'todo' "
+        "AND retired_at IS NULL FOR UPDATE",
+        (parent_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    parked = conn.execute(
+        "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        "WHERE rt.ref_id = %s AND t.namespace = 'OPEN' AND t.value = %s",
+        (parent_id, _UNCERTAIN),
+    ).fetchone()
+    if parked is None:
+        return None
+    halt = row[0] if isinstance(row[0], dict) else {}
+    safe, note = _prior_attempt_audit(conn, parent_id, halt)
+    if not safe:
+        return False, note
+    store.remove_tag(parent_id, Tag.open(_UNCERTAIN), conn=conn)
+    if isinstance(row[0], dict):
+        halt = dict(row[0])
+        halt["retry_released"] = True
+        halt.pop("retry_at", None)
+        _save_halt(conn, parent_id, halt)
+    return True, note
 
 
 def infra_dispatch_allowed(conn: Connection, parent_id: int) -> bool:

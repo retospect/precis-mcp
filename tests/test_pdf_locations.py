@@ -84,11 +84,11 @@ def test_ledger_present_absent_unknown(store: Store) -> None:
     assert store.pdf_held_anywhere(sha, ttl_days=7) is False
     assert store.pdf_missing(sha, ttl_days=7) is False
     # A present verdict → held, not missing.
-    store.record_pdf_location(sha, "melchior", "/corpus/k/kong24.pdf")
+    store.record_pdf_location(sha, "maple", "/corpus/k/kong24.pdf")
     assert store.pdf_held_anywhere(sha, ttl_days=7) is True
     assert store.pdf_missing(sha, ttl_days=7) is False
     # The same host later reports it absent → checked, no fresh copy → missing.
-    store.record_pdf_location(sha, "melchior", "")
+    store.record_pdf_location(sha, "maple", "")
     assert store.pdf_held_anywhere(sha, ttl_days=7) is False
     assert store.pdf_missing(sha, ttl_days=7) is True
 
@@ -97,8 +97,8 @@ def test_ledger_held_by_any_host(store: Store) -> None:
     """Presence is corpus-wide: one host absent, another present → held."""
     sha = "a" * 64
     _held_paper(store, cite_key="kong24", sha=sha)
-    store.record_pdf_location(sha, "caspar", "")  # caspar doesn't mount it
-    store.record_pdf_location(sha, "melchior", "/corpus/k/kong24.pdf")
+    store.record_pdf_location(sha, "birch", "")  # birch doesn't mount it
+    store.record_pdf_location(sha, "maple", "/corpus/k/kong24.pdf")
     assert store.pdf_held_anywhere(sha, ttl_days=7) is True
     assert store.pdf_missing(sha, ttl_days=7) is False
 
@@ -107,8 +107,8 @@ def test_ledger_ttl_expiry(store: Store) -> None:
     """A stale present verdict ages out of the TTL window → missing again."""
     sha = "a" * 64
     _held_paper(store, cite_key="kong24", sha=sha)
-    store.record_pdf_location(sha, "melchior", "/corpus/k/kong24.pdf")
-    _age_location(store, sha, "melchior", days=10)
+    store.record_pdf_location(sha, "maple", "/corpus/k/kong24.pdf")
+    _age_location(store, sha, "maple", days=10)
     assert store.pdf_held_anywhere(sha, ttl_days=7) is False
     # It has still been *checked* (a row exists), just not freshly → missing.
     assert store.pdf_missing(sha, ttl_days=7) is True
@@ -119,16 +119,16 @@ def test_pdfs_due_for_host(store: Store) -> None:
     every cite_key alias + slug is aggregated for the resolver to probe."""
     sha = "a" * 64
     _held_paper(store, cite_key="smith2024", sha=sha, aliases=("smithbook",))
-    due = store.pdfs_due_for_host("melchior", refresh_hours=6, limit=50)
+    due = store.pdfs_due_for_host("maple", refresh_hours=6, limit=50)
     assert [d.pdf_sha256 for d in due] == [sha]
     assert set(due[0].cite_keys) == {"smith2024", "smithbook"}
     # Once a fresh verdict is recorded, the sha is no longer due…
-    store.record_pdf_location(sha, "melchior", "/corpus/s/smith2024.pdf")
-    assert store.pdfs_due_for_host("melchior", refresh_hours=6, limit=50) == []
+    store.record_pdf_location(sha, "maple", "/corpus/s/smith2024.pdf")
+    assert store.pdfs_due_for_host("maple", refresh_hours=6, limit=50) == []
     # …but a zero refresh window forces a re-check, and another host is
     # always due (it has no verdict of its own).
-    assert len(store.pdfs_due_for_host("melchior", refresh_hours=0, limit=50)) == 1
-    assert len(store.pdfs_due_for_host("caspar", refresh_hours=6, limit=50)) == 1
+    assert len(store.pdfs_due_for_host("maple", refresh_hours=0, limit=50)) == 1
+    assert len(store.pdfs_due_for_host("birch", refresh_hours=6, limit=50)) == 1
 
 
 def test_location_cascades_on_pdf_delete(store: Store) -> None:
@@ -136,7 +136,7 @@ def test_location_cascades_on_pdf_delete(store: Store) -> None:
     the FK cascade drops it."""
     sha = "a" * 64
     _held_paper(store, cite_key="kong24", sha=sha)
-    store.record_pdf_location(sha, "melchior", "/corpus/k/kong24.pdf")
+    store.record_pdf_location(sha, "maple", "/corpus/k/kong24.pdf")
     with store.pool.connection() as conn:
         # Detach the ref first (refs.pdf_sha256 FK), then drop the pdfs row.
         conn.execute("UPDATE refs SET pdf_sha256 = NULL WHERE pdf_sha256 = %s", (sha,))

@@ -10,7 +10,7 @@ autocatpath barrier run and its NEB endpoints line up. The validator gate wiring
 and returns it; an unknown op or a bad reference raises ``OpError`` (the Edit
 contract surfaces this as a structured error, §5c).
 
-``add_atom_site`` (blind-3D fix, ``docs/backlog/estimate-kind-ms-chemistry-workup.md``
+``add_atom_site`` (blind-3D fix, `me690660`
 §"Blind 3D design") is the preferred adsorbate-placement op: the model NAMES a
 site (top/bridge/hollow over existing atom labels) instead of guessing
 fractional coordinates. :func:`_resolve_site` turns the name into exact

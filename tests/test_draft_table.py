@@ -155,6 +155,28 @@ def test_payload_none_when_not_a_table() -> None:
 # ── put ───────────────────────────────────────────────────────────────
 
 
+def test_table_reads_preserve_latex_backslashes(draft: DraftHandler, hub: Hub) -> None:
+    """gr720466: display canonical cells, including old escaped projections."""
+    draft.put(id="d", title="T", project=_proj(hub))
+    table = {
+        "header": [r"$\mu_B$", r"V/$\mu$m"],
+        "rows": [[r"$\mu_B$", r"V/$\mu$m"], [r"a\\b", "x|y\nz"]],
+    }
+    draft.put(id="d", chunk_kind="table", table=table)
+    chunk = _table_chunk(hub, "d")
+    stored_text = chunk.text
+    assert r"$\\mu_B$" in stored_text
+    for view in (None, "table"):
+        body = draft.get(id=chunk.dc, view=view).body
+        assert r"| $\mu_B$ | V/$\mu$m |" in body
+        assert r"$\\mu_B$" not in body
+        assert r"a\\b" in body
+        assert "x\\|y<br>z" in body
+        assert "ids: " in body
+    assert _table_chunk(hub, "d").text == stored_text
+    assert parse_markdown_table(stored_text) == {**table, "caption": None}
+
+
 def test_put_table_derives_markdown_and_stores_canonical(
     draft: DraftHandler, hub: Hub
 ) -> None:
@@ -475,6 +497,49 @@ def test_keyword_column_id_refused() -> None:
                     "rows": [[1]],
                 }
             )
+
+
+def test_pulled_column_from_refused() -> None:
+    """gr685370 — a 'from' pull spec has no resolver yet: the schema
+    refuses it at normalize instead of minting an empty column nobody
+    can fill. One gate covers table=/columns=/add_column=/toon=."""
+    with pytest.raises(BadInput, match="pulled columns are not available yet"):
+        normalize_table(
+            {
+                "columns": [
+                    {"name": "a"},
+                    {"name": "zip", "from": "table:dc6579686~kgv5"},
+                ],
+                "rows": [[1, None]],
+            }
+        )
+
+
+def test_pulled_column_from_refused_on_write(draft: DraftHandler, hub: Hub) -> None:
+    """gr685370 — put columns=, edit table= and add_column= all refuse a
+    'from' spec instead of writing the dead column."""
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    with pytest.raises(BadInput, match="pulled columns are not available"):
+        draft.put(
+            id="d",
+            chunk_kind="table",
+            columns=[{"name": "a"}, {"name": "zip", "from": "table:dc1~kgv5"}],
+            rows=[[1, None]],
+        )
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        table={"header": ["a"], "rows": [[1]]},
+        at={"last": True},
+    )
+    tc = _table_chunk(hub, "d")
+    with pytest.raises(BadInput, match="pulled columns are not available"):
+        draft.edit(id=tc.dc, add_column={"name": "zip", "from": "table:dc1~kgv5"})
+    tbl = hub.live_store.drafts.draft_chunk_meta(tc.handle)["table"]
+    tbl["columns"][0]["from"] = "vendor:price@qty"
+    with pytest.raises(BadInput, match="pulled columns are not available"):
+        draft.edit(id=tc.dc, table=tbl)
 
 
 def test_footer_non_string_func_refused() -> None:
@@ -1034,6 +1099,8 @@ def test_edit_table_recovers_caption_from_raw_latex(
     assert "\\caption" not in chunk.text  # raw LaTeX dropped by conversion
     meta = hub.live_store.drafts.draft_chunk_meta(tc.handle)
     assert meta["table"]["header"] == ["a", "b"]
+    assert not meta.get("caption")
+    assert "**Yield thresholds**" in draft.get(id=tc.dc).body.splitlines()
 
 
 def test_edit_table_cell_edit_persists_label_through_conversion(
@@ -1746,8 +1813,8 @@ def test_edit_table_cell_dry_run_on_markdown_canonical_table_leaves_untouched(
     draft: DraftHandler, hub: Hub
 ) -> None:
     """``cell=`` dry_run on an ordinary (markdown-canonical, not
-    LaTeX-recovered) table chunk previews the re-derived markdown and
-    writes neither the text nor ``meta.table``."""
+    LaTeX-recovered) table chunk previews the write's op reply (touched
+    row + hash) and writes neither the text nor ``meta.table``."""
     proj = _proj(hub)
     draft.put(id="d", title="T", project=proj)
     draft.put(
@@ -1763,7 +1830,10 @@ def test_edit_table_cell_dry_run_on_markdown_canonical_table_leaves_untouched(
 
     rows, cols = _table_ids(hub, tc)
     r = draft.edit(id=tc.dc, cell=f"{rows[0]}.{cols[0]}", text="Ge", dry_run=True)
-    assert "[dry-run]" in r.body
+    # gr685381: a cell= dry-run previews the SAME op-reply shape as the
+    # write (verb line + hash + touched row) — not the old text-diff form.
+    assert r.body.startswith("dry-run — nothing written")
+    assert "edited table" in r.body and "hash: " in r.body
     assert "Ge" in r.body
 
     after = hub.live_store.drafts.get_draft_chunk(tc.dc)
@@ -2174,3 +2244,89 @@ def test_rung_and_supply_evidence_reject_selector_handles() -> None:
     rung["produces"][0]["evidence"] = ["fi1"]
     check_rung_meta({"rung": rung})
     _check_supply_meta({"supply": {"k": {"value": 1, "evidence": ["fi1"]}}})
+
+
+@pytest.mark.parametrize("interleaved", [False, True])
+def test_formula_rows_omit_calculated_cells(interleaved: bool) -> None:
+    from precis.utils.table_formula import evaluate_table
+    from precis.utils.table_toon import op_insert_rows
+
+    columns = [{"name": "qty"}, {"name": "unit_price"}]
+    columns.insert(
+        1 if interleaved else 2, {"name": "line_cost", "formula": "qty*unit_price"}
+    )
+    table = normalize_table(
+        {
+            "columns": columns,
+            "rows": [[2, 0.5], [4, 1.25]],
+            "footer": {"line_cost": "sum"},
+        }
+    )
+    table, _ = evaluate_table(table)
+    ci = table["header"].index("line_cost")
+    assert [r[ci] for r in table["rows"]] == [1.0, 5.0]
+    assert table["footer_values"][table["columns"][ci]["id"]]["value"] == 6.0
+    table = op_insert_rows(table, [[10, 0.2]])
+    table, _ = evaluate_table(table)
+    assert table["rows"][-1][ci] == 2.0
+    with pytest.raises(BadInput, match="cells"):
+        op_insert_rows(table, [[1]])
+
+
+@pytest.mark.db
+def test_formula_input_discard_is_reported(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="formula-input", title="T", project=_proj(hub))
+    reply = draft.put(
+        id="formula-input",
+        chunk_kind="table",
+        columns=[{"name": "qty"}, {"name": "total", "formula": "qty*2"}],
+        rows=[[2, 12345]],
+    )
+    assert "discarded 1" in reply.body
+    chunk = _table_chunk(hub, "formula-input")
+    reply = draft.edit(id=chunk.dc, rows=[[3, 12345]])
+    assert "discarded 1" in reply.body
+    reply = draft.edit(id=chunk.dc, rows=[[4]])
+    assert "discarded" not in reply.body
+    table = hub.live_store.drafts.draft_chunk_meta(chunk.handle)["table"]
+    assert table["rows"] == [[2, 4], [3, 6], [4, 8]]
+    reply = draft.edit(
+        id=chunk.dc,
+        table={"columns": table["columns"], "rows": [[5, 999]]},
+    )
+    assert "discarded 1" in reply.body
+    reply = draft.edit(id=chunk.dc, table={"columns": table["columns"], "rows": [[6]]})
+    assert "discarded" not in reply.body
+    table = hub.live_store.drafts.draft_chunk_meta(chunk.handle)["table"]
+    assert table["rows"] == [[6, 12]]
+
+
+@pytest.mark.parametrize("rows", [[[2]], [[2, None, None]], [[2, 9, 8]]])
+def test_multiple_formula_columns_accept_compact_or_full_rows(
+    rows: list[list[int | None]],
+) -> None:
+    from precis.utils.table_formula import evaluate_table
+
+    notes: list[str] = []
+    table = normalize_table(
+        {
+            "columns": [
+                {"name": "a"},
+                {"name": "b", "formula": "a*2"},
+                {"name": "c", "formula": "b+1"},
+            ],
+            "rows": rows,
+        },
+        notes=notes,
+    )
+    table, _ = evaluate_table(table)
+    assert table["rows"] == [[2, 4, 5]]
+    assert bool(notes) == (rows == [[2, 9, 8]])
+
+
+def test_all_formula_columns_allow_empty_input_row() -> None:
+    from precis.utils.table_formula import evaluate_table
+
+    table = normalize_table({"columns": [{"name": "a", "formula": "2"}], "rows": [[]]})
+    table, _ = evaluate_table(table)
+    assert table["rows"] == [[2]]

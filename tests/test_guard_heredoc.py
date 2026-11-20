@@ -115,3 +115,14 @@ class TestMain:
     def test_bad_payload_silent(self, monkeypatch) -> None:
         monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
         assert main() == 0
+
+
+def test_docstring_matches_wiring() -> None:
+    """The docstring's wired/not-wired claim must match ``settings.json``."""
+    settings = _HOOK.parents[2] / ".claude" / "settings.json"
+    wired = "guard-heredoc" in settings.read_text(encoding="utf-8")
+    says_wired = "Wired in" in (_mod.__doc__ or "")
+    assert says_wired == wired, (
+        f"docstring says {'Wired' if says_wired else 'not wired'} but "
+        f"settings.json {'wires' if wired else 'does not wire'} guard-heredoc"
+    )

@@ -9,7 +9,7 @@ capability data (``se_capabilities.json``, se-kind.md "Manufacturing
 modes"), not Python constants. The line: an engine is architecture, a
 process figure is data.
 
-``purchase`` (docs/backlog/se-off-the-shelf-fabrication.md rung 1 — the
+``purchase`` (me695392 rung 1 — the
 mode for a block you don't make at all) and ``atomic`` (the nm→se merge,
 docs/backlog/nm-se-merge.md — realization *is* chemistry, the
 :mod:`precis_se.atomic` domain layer) have implementers. The other

@@ -712,7 +712,7 @@ def is_available(name: str, *, store: Store | None = None) -> bool:
     return get_secret(name, store=store) is not None
 
 
-#: db-own's vault name-class rule (docs/backlog/multi-user-overhaul.md §S1,
+#: db-own's vault name-class rule (me691019 §S1,
 #: migration 0285): ``svc/infra/*`` names carry class ``infra`` — credentials
 #: only ``precis_system`` members may reveal. Until that column exists the
 #: prefix *is* the class: callers must never probe an infra name with a live

@@ -10,17 +10,20 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from precis import settings as psettings
+from precis.plans import pr_class as P
 from precis.plans import release as R
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types import plan_dispatch as pd
+from precis.workers.job_types import release_deploy as rd
 from precis.workers.job_types import release_poll as rp
 from tests._script import load_script
 
@@ -39,6 +42,15 @@ RNG2 = f"{PREV}..{SHA2[:12]}"
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     psettings.invalidate()
+    monkeypatch.setattr(rp, "_in_flight", lambda *a, **kw: None)
+    original_get = P._get_json
+
+    def get(url: str, params: dict[str, Any]) -> Any:
+        if url.endswith("/compare/prod...main"):
+            return {"status": "ahead", "ahead_by": 1, "behind_by": 0}
+        return original_get(url, params)
+
+    monkeypatch.setattr(P, "_get_json", get)
     # The deploy's review hold scans the release's own commits (T4): an
     # empty scope here, never the checkout's git.
     monkeypatch.setattr(rp, "_release_lands", lambda rel: [], raising=False)
@@ -188,6 +200,35 @@ def test_on_and_green_answers_then_deploys(store: Store) -> None:
     jobs = _jobs_under(store, mint.ids["deploy"])
     assert len(jobs) == 1, res.notes
     assert jobs[0][1]["job_type"] == "release_deploy"
+
+
+def test_the_deploy_is_held_inside_the_backup_window_then_dispatched(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr697664: the approved deploy mints nothing while the clock is inside
+    ``release.no_release_windows`` and mints once the window ends."""
+    mint = _green_pass(store)
+    _open_round(store)
+    psettings.set_setting("release.auto_deploy", "true", store=store)
+    monkeypatch.setattr(
+        rd, "_utcnow", lambda: datetime(2026, 11, 16, 3, 30, tzinfo=UTC)
+    )
+    notes: list[str] = []
+    for _ in range(3):
+        notes += pd.run_pass(store).notes
+        if _status(store, mint.ids["approval"]) == "done":
+            break
+    assert R.approval(store, mint.ids["deploy"])[0] == "r7"
+    notes += pd.run_pass(store).notes
+    assert _jobs_under(store, mint.ids["deploy"]) == [], notes
+    assert any("release_deploy not dispatched — " in n and "held" in n for n in notes)
+
+    monkeypatch.setattr(
+        rd, "_utcnow", lambda: datetime(2026, 11, 16, 4, 20, tzinfo=UTC)
+    )
+    pd.run_pass(store)
+    jobs = _jobs_under(store, mint.ids["deploy"])
+    assert [m["job_type"] for _, m in jobs] == ["release_deploy"]
 
 
 def test_dry_run_writes_nothing(store: Store) -> None:
@@ -571,10 +612,10 @@ def test_a_non_release_loop_keeps_its_stamped_cap(
 
 
 def _armed_pass(store: Store) -> T.PlanMint:
-    """A release-pass minted while ``release.auto_deploy`` is on, the cut
-    recorded and a green verdict on the cut's exact sha."""
-    psettings.set_setting("release.auto_deploy", "true", store=store)
+    """An older hidden-ask pass, retained to test compatibility."""
     mint = T.mint_release_pass(store)
+    store.remove_tag(mint.ids["approval"], Tag.open("ask-user"))
+    psettings.set_setting("release.auto_deploy", "true", store=store)
     R.record_cut(store, mint.ids["cut"], "r7", SHA, RNG, repo="o/r")
     R.record_ci_verdict(store, SHA, RNG, "green", "31")
     return mint
@@ -592,12 +633,13 @@ def _has_ask_tag(store: Store, ref_id: int) -> bool:
 def test_the_ask_user_tag_follows_the_setting_at_mint(
     store: Store, armed: str, tagged: bool
 ) -> None:
-    """gr595272 (1): minted under ``release.auto_deploy`` the approval
-    ask carries no ``ask-user`` tag — the standing approval answers it.
-    Disarmed (or a read fault) it mints as the human item it always was."""
+    """gr702332: armed mint skips approval; disarmed mint keeps the ask."""
     psettings.set_setting("release.auto_deploy", armed, store=store)
     mint = T.mint_release_pass(store)
-    assert _has_ask_tag(store, mint.ids["approval"]) is tagged
+    if tagged:
+        assert _has_ask_tag(store, mint.ids["approval"])
+    else:
+        assert "approval" not in mint.ids
 
 
 def test_the_cut_fills_the_asks_title_and_body(store: Store) -> None:
@@ -696,8 +738,9 @@ def test_a_transient_refusal_keeps_the_ask_hidden(
     """A refusal a later write can still heal leaves the ask hidden —
     no verdict yet, the round row unpublished yet, or a database
     fault."""
-    psettings.set_setting("release.auto_deploy", "true", store=store)
     mint = T.mint_release_pass(store)
+    store.remove_tag(mint.ids["approval"], Tag.open("ask-user"))
+    psettings.set_setting("release.auto_deploy", "true", store=store)
     R.record_cut(store, mint.ids["cut"], "r7", SHA, RNG, repo="o/r")
     if case != "no-verdict":
         R.record_ci_verdict(store, SHA, RNG, "green", "31")
@@ -735,3 +778,49 @@ def test_a_red_verdict_keeps_the_ask_hidden(store: Store) -> None:
     assert not ok
     assert not _has_ask_tag(store, mint.ids["approval"])
     assert _comments(store, mint.ids["approval"]) == []
+
+
+def test_armed_pass_skips_approval_and_dispatches_green_deploy(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr702332: standing approval mints no ask; shared gates hold dispatch."""
+    psettings.set_setting("release.auto_deploy", "true", store=store)
+    mint = _green_pass(store)
+    _open_round(store)
+    assert "approval" not in mint.ids
+    assert _ask_ids(store) == []
+    monkeypatch.setattr(
+        rd, "_utcnow", lambda: datetime(2026, 11, 16, 12, 0, tzinfo=UTC)
+    )
+    R.record_ci_verdict(store, SHA, RNG, "red", "32")
+    for _ in range(3):
+        pd.run_pass(store)
+    assert _jobs_under(store, mint.ids["deploy"]) == []
+    R.record_ci_verdict(store, SHA, RNG, "green", "33")
+    for _ in range(3):
+        pd.run_pass(store)
+    jobs = _jobs_under(store, mint.ids["deploy"])
+    assert [meta["job_type"] for _, meta in jobs] == ["release_deploy"]
+    assert _ask_ids(store) == []
+
+
+def test_another_open_pass_holds_an_armed_deploy(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    psettings.set_setting("release.auto_deploy", "true", store=store)
+    mint = _green_pass(store)
+    other = T.mint_release_pass(store)
+    monkeypatch.setattr(
+        rd, "_utcnow", lambda: datetime(2026, 11, 16, 12, 0, tzinfo=UTC)
+    )
+    assert rd.validate_submit(store, params={"todo_id": mint.ids["deploy"]}) == (
+        f"release_deploy: release-pass td{other.root_id} is open"
+    )
+
+
+def test_disarming_a_pass_without_an_ask_holds_deploy(store: Store) -> None:
+    psettings.set_setting("release.auto_deploy", "true", store=store)
+    mint = _green_pass(store)
+    psettings.set_setting("release.auto_deploy", "false", store=store)
+    refusal = rd.validate_submit(store, params={"todo_id": mint.ids["deploy"]})
+    assert refusal is not None and "no approval ask" in refusal

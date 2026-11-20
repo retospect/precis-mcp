@@ -628,8 +628,8 @@ def _drop_retired_lane_pin(
 
     A todo freezes its ``params.target_node`` when it is minted; the job it
     dispatches days later inherits that pin even if the node has since left
-    the lane (castor, 2026-10-16), and the sweeper then fails it as infra
-    (gr496916). Placement already refuses retired nodes at mint
+    the lane (the local-serving node, 2026-10-16), and the sweeper then fails it
+    as infra (gr496916). Placement already refuses retired nodes at mint
     (:func:`precis.quest.compute._live_route_nodes`); this applies the same
     lane state here so the late mint is not the one path that bypasses it.
     The job goes unpinned, so any live lane worker may claim it; the dropped

@@ -28,8 +28,20 @@ The kind also answers the fisheye ladder: ``get(kind='python',
 id='<alias>::<qualname or module>', extent=<rung>)`` routes through
 ``Handler.eye`` to the override below — the focus in full, the module's
 member list at ``fisheye``, callers/callees/package-gloss/tests at
-``+1hop`` (signature + first docstring line), the second hop as names
-at ``+2hop``; per-section char budgets in ``_python_eye`` (gr498663).
+``+1hop`` (signature + first docstring line) plus the inbound notes
+citing the symbol (its lazy anchor ref's ``links`` — gr702978), the
+second hop as names at ``+2hop``; per-section char budgets in
+``_python_eye`` (gr498663).
+
+Symbols are linkable from notes: a ``python:<dotted.qualname>`` mention
+in a note/draft body mints a lazy anchor ``refs(kind='python',
+slug=<qualname>)`` row on first mention (validated against the code
+index — an unknown qualname never mints), the mention edge lands on
+that anchor, and get/eye show the inbound notes. Code can go away: a
+linked symbol that drops out of the index renders a "gone" stub (anchor
+handle, where it was last seen, its notes, and did-you-mean rename
+hints) instead of a bare NotFound. The ``link()`` verb takes a
+qualname id and a generic ``kind:identifier`` target.
 """
 
 from __future__ import annotations
@@ -82,6 +94,7 @@ from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.python_index import ModuleIndex, RepoCache, RepoIndex, Symbol
 from precis.python_index.indexer import _qualname_for_file
 from precis.response import Response
+from precis.utils import handle_registry
 from precis.utils.edit_resolve import (
     EditOp,
     apply_edit,
@@ -486,6 +499,7 @@ class PythonHandler(Handler):
         supports_put=True,
         supports_edit=True,
         supports_delete=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         views=_SUPPORTED_VIEWS,
@@ -834,14 +848,22 @@ class PythonHandler(Handler):
                 next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
             )
         if parsed.qualname is not None:
-            sym = _lookup_symbol(
-                idx,
-                parsed.alias,
-                parsed.qualname,
-                fallback_next=f"search(kind='python', "
-                f"q='{parsed.qualname.split('.')[-1]}', "
-                f"scope={parsed.alias!r})",
-            )
+            try:
+                sym = _lookup_symbol(
+                    idx,
+                    parsed.alias,
+                    parsed.qualname,
+                    fallback_next=f"search(kind='python', "
+                    f"q='{parsed.qualname.split('.')[-1]}', "
+                    f"scope={parsed.alias!r})",
+                )
+            except NotFound:
+                # A linked-but-gone symbol degrades to its anchor stub,
+                # same as the get path (gr702978).
+                stub = self._gone_stub(parsed.alias, parsed.qualname, idx)
+                if stub is not None:
+                    return Response(body=stub)
+                raise
         elif parsed.file is not None:
             mod = idx.file(parsed.file)
             if mod is None:
@@ -883,6 +905,7 @@ class PythonHandler(Handler):
                 extent=ext,
                 hits=hits,
                 placed=placed,
+                notes=self._notes_section(sym.qualname) if ext >= Extent.HOP1 else None,
             )
         )
 
@@ -2503,6 +2526,200 @@ class PythonHandler(Handler):
             return True
         return self.worktrees is not None and self.worktrees.owns(alias)
 
+    # ── anchor refs: linking notes to symbols (gr702978) ───────────
+
+    def _store_or_none(self) -> Any | None:
+        """The booted hub's store, or ``None`` (python reads must stay
+        DB-free on a store-less hub — every anchor/inbound-notes surface
+        degrades to 'not available' instead of raising)."""
+        return getattr(self, "store", None) or getattr(
+            getattr(self, "hub", None), "store", None
+        )
+
+    def symbol_anchor(self, qualname: str) -> tuple[str, str] | None:
+        """``(alias, rel_file)`` when a registered root's index resolves
+        ``qualname``, else ``None``.
+
+        The mint/validate predicate behind ``python:<qualname>`` mentions
+        and link targets: an unknown qualname never mints an anchor.
+        Static roots only — worktree corpora are session-scoped and must
+        not mint persistent anchors.
+        """
+        for alias in sorted(self.roots):
+            try:
+                idx = self._index(alias, self.roots[alias])
+            except NotFound:
+                continue
+            sym = idx.symbol(qualname)
+            if sym is not None:
+                return alias, sym.file
+        return None
+
+    #: Inbound-notes section cap (rows) before the visible overflow line.
+    _NOTES_CAP = 8
+
+    def _inbound_notes(self, qualname: str) -> tuple[str, list[str]] | None:
+        """``(anchor_handle, rows)`` of notes linking this symbol's anchor
+        ref, or ``None`` when there is no anchor (nothing has ever linked
+        it) or no store is bound. Empty rows with a handle = the anchor
+        exists but nothing cites it yet."""
+        store = self._store_or_none()
+        if store is None:
+            return None
+        rid = store.python_symbol_ref_id(qualname)
+        if rid is None:
+            return None
+        handle = handle_registry.format_handle("python", rid)
+        links = store.links_for(rid, direction="in")
+        if not links:
+            return handle, []
+        src_ids = sorted({l.src_ref_id for l in links})
+        refs = store.fetch_refs_by_ids(src_ids, include_deleted=False)
+        rows: list[str] = []
+        seen: set[int] = set()
+        for link in links:
+            src = refs.get(link.src_ref_id)
+            if src is None or src.id in seen:
+                continue  # live refs only; one row per citing ref
+            seen.add(src.id)
+            label = handle_registry.try_format(src.kind, src.id) or (
+                f"{src.kind}:{src.public_id}"
+            )
+            title = " ".join((src.title or "").split())
+            rows.append(f"  {label} — {title}" if title else f"  {label}")
+        if len(rows) > self._NOTES_CAP:
+            rows = rows[: self._NOTES_CAP] + [
+                f"  … +{len(rows) - self._NOTES_CAP} more citing notes not shown"
+            ]
+        return handle, rows
+
+    def _notes_section(self, qualname: str) -> str | None:
+        """The rendered ``Notes:`` block for get/eye — ``None`` when there
+        is no anchor, no store, or no inbound edges (the common case adds
+        no noise to symbol reads)."""
+        got = self._inbound_notes(qualname)
+        if got is None:
+            return None
+        handle, rows = got
+        if not rows:
+            return None
+        return "\n— notes citing this symbol —\n" + "\n".join(rows)
+
+    def _gone_stub(self, alias: str, qualname: str, idx: RepoIndex) -> str | None:
+        """A 'gone' card when the qualname has a live anchor but no symbol
+        in the current index — code can be renamed or purged (the rest
+        stays in git), and a linked symbol must degrade to this instead of
+        a bare NotFound (gr702978).
+
+        ``None`` when there is no anchor — the caller's ordinary NotFound
+        (with its did-you-mean rename suggestions from the code index)
+        stands. The stub itself carries the same suggestions plus the
+        anchor's inbound notes, so a reader landing on moved code gets
+        both the likely new address and whatever the notes still say.
+        """
+        got = self._inbound_notes(qualname)
+        if got is None:
+            return None
+        handle, rows = got
+        store = self._store_or_none()
+        anchor = (
+            store.get_ref(kind="python", id=qualname) if store is not None else None
+        )
+        seen_at = ""
+        if anchor is not None:
+            meta = anchor.meta or {}
+            bits = [str(b) for b in (meta.get("alias"), meta.get("file")) if b]
+            if bits:
+                seen_at = f" (last seen as {'/'.join(bits)})"
+        lines = [
+            f"# gone: {alias}::{qualname}",
+            "",
+            f"▸ {alias}::{qualname} — not in the current index of repo "
+            f"{alias!r}; the code was renamed or purged{seen_at}.",
+            f"anchor `python:{qualname}` is live; notes citing it follow.",
+        ]
+        close = _close_symbol_matches(idx, qualname)
+        if close:
+            lines.append(
+                "did you mean "
+                + ", ".join(f"get(kind='python', id='{alias}::{q}')" for q in close)
+            )
+        if rows:
+            lines.append("")
+            lines.append("— notes citing this symbol —")
+            lines.extend(rows)
+        return "\n".join(lines)
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Link-ops on a python symbol's anchor ref (gr702978).
+
+        ``id`` is a qualname (``pkg.mod.Sym``) or the get-address form
+        ``<alias>::<qualname>``. The anchor ref is find-or-minted —
+        validated against the live index, so an unknown symbol refuses
+        before anything writes. The target side is the generic
+        ``kind:identifier`` grammar (``apply_link_ops``).
+        """
+        from precis.utils.link_tag_ops import (
+            apply_link_ops,
+            format_link_tag_ack,
+            require_link_target,
+            validate_link_mode,
+        )
+
+        target_s = require_link_target(self.spec.kind, target)
+        mode = validate_link_mode(mode)
+        store = self._store_or_none()
+        if store is None:
+            raise Unsupported(
+                "python does not support link — no store bound on this hub",
+                next="run on a store-backed hub (the MCP server)",
+            )
+        qn = str(id).strip()
+        if "::" in qn:
+            qn = qn.split("::", 1)[1].strip()
+        if not qn or "/" in qn or "~" in qn:
+            raise BadInput(
+                f"link(kind='python') id must be a qualname ('pkg.mod.Sym') or "
+                f"'<alias>::<qualname>', got {id!r}",
+                next="get(kind='python', id='<alias>', view='toc') lists modules",
+            )
+        anchor = self.symbol_anchor(qn)
+        if anchor is None:
+            raise NotFound(
+                f"no symbol {qn!r} in any registered python root",
+                next=(
+                    "check the qualname: get(kind='python', id='<alias>', "
+                    "view='toc'), or search(kind='python', q='<name>')"
+                ),
+            )
+        ref_id = store.ensure_python_ref(qn, alias=anchor[0], file=anchor[1])
+        n_added, n_removed = apply_link_ops(
+            store,
+            ref_id,
+            link=target_s if mode == "add" else None,
+            unlink=target_s if mode == "remove" else None,
+            rel=rel,
+            hub=getattr(self, "hub", None),
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind=self.spec.kind,
+                ref_label=qn,
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
+            )
+        )
+
     def _resolve_writable(self, alias: str) -> Path:
         if os.environ.get(_READONLY_ENV, "").strip().lower() in (
             "1",
@@ -2755,13 +2972,22 @@ class PythonHandler(Handler):
     def _render_symbol(
         self, alias: str, qualname: str, idx, view: str | None
     ) -> Response:
-        sym = _lookup_symbol(
-            idx,
-            alias,
-            qualname,
-            fallback_next=f"search(kind='python', q='{qualname.split('.')[-1]}', "
-            f"scope={alias!r})",
-        )
+        try:
+            sym = _lookup_symbol(
+                idx,
+                alias,
+                qualname,
+                fallback_next=f"search(kind='python', q='{qualname.split('.')[-1]}', "
+                f"scope={alias!r})",
+            )
+        except NotFound:
+            # A linked-but-gone symbol degrades to its anchor stub
+            # (inbound notes + rename hints), not a bare NotFound
+            # (gr702978).
+            stub = self._gone_stub(alias, qualname, idx)
+            if stub is not None:
+                return Response(body=stub)
+            raise
 
         mod = idx.file(sym.file)
         assert mod is not None
@@ -2785,7 +3011,11 @@ class PythonHandler(Handler):
                 next=f"get(kind='python', id={alias!r}, view='toc')",
             )
         # Default and view='outline'.
-        return Response(body=render.render_symbol(alias, sym, idx))
+        body = render.render_symbol(alias, sym, idx)
+        notes = self._notes_section(qualname)
+        if notes is not None:
+            body += "\n" + notes
+        return Response(body=body)
 
     def _render_tests(
         self,

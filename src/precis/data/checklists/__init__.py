@@ -1,4 +1,4 @@
-"""Bundled shipped ``checklist`` definitions (docs/backlog/checklist-kind.md).
+"""Bundled shipped ``checklist`` definitions (me693927).
 
 One YAML file per checklist, synced into the DB on boot by
 :mod:`precis.jobs.checklist_sync` (upsert-by-item-name, content-hash

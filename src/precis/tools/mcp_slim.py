@@ -2,7 +2,7 @@
 
 ``tools/core.py``'s verb functions double as FastMCP tool schemas, so their
 ~100 kind-specific parameters were paid for by every turn of every session
-(docs/backlog/mcp-verb-schema-diet.md). This module registers a *slim*
+(me690774). This module registers a *slim*
 twin per verb: only the CORE parameters (chosen from 30 days of the prod
 tool-call ledger) are advertised; everything else rides ``args={...}``.
 
@@ -60,14 +60,15 @@ _SEARCH_DOC = """Hybrid lexical + semantic search across kinds.
 `kind` (or `'*'`) for cross-kind fan-out. `mode=` 'hybrid' (default) /
 'lexical' / 'semantic' / 'verbatim'.
 `scope=` searches inside one ref (handle or slug) — the find-in-ref
-read; only kinds that implement it accept scope=, and their refusal
-names the ones that do. `status=` filters by
+read; only implementing kinds accept scope= — a refusal names the
+rest. `status=` filters by
 `STATUS:` tag on kinds that carry that axis. Rows: `id`, `summary`,
 `remaining_words`, `links`, `tags` — the legend is in the skill.
-Some kinds are host-gated:
-`NotFound` with `routes through host(s): …` means the kind exists but
-this process lacks its provider. Kind-specific fields (`exclude`, `reach`,
-`folder`, `queries`, `per_paper`, `trust`, `wants`, `compose`,
+`queries=` (paper + `answers=`; skill: fused sections) and
+`batch=` (memory) are verb params; other kinds refuse `not on <kind>
+yet`. `NotFound … routes
+through host(s)` = a host-gated kind. Kind-specific fields (`exclude`, `reach`,
+`folder`, `per_paper`, `trust`, `wants`, `compose`,
 `property`/`min`/`max`/`unit`, ...) go in `args={...}`; an unknown key
 fails the call with `[error:BadInput]` listing the kind's accepted ones.
 
@@ -174,12 +175,16 @@ def _removed_search_arg_error(
         # view='count' pages its facet groups the same way (gr592971) —
         # the other:-tail next: call is issued with the same filters
         # plus args={'page': N+1} (td595880). The sort=/since=/until=
-        # source-search primitive pages the same way (gr608577).
+        # source-search primitive pages the same way (gr608577), and so
+        # does the todo reto-queue window (gr673370). view='toc' pages
+        # its tag forest too (gr692939) — the footer's own next: call
+        # must replay, with or without a q narrowing.
         count_view = str(kwargs.get("view") or args.get("view") or "").strip() == (
             "count"
         )
         if (
             count_view
+            or _reto_queue_call(kind, kwargs, args)
             or _memory_listing_call(kind, kwargs, args)
             or _source_search_call(kwargs, args)
         ):
@@ -204,18 +209,35 @@ def _removed_search_arg_error(
     return None
 
 
+def _reto_queue_call(kind: Any, kwargs: dict[str, Any], args: dict[str, Any]) -> bool:
+    """True for ``search(kind='todo', view='reto-queue')``.
+
+    The queue is a bounded enumeration ordered most-blocked-first —
+    ``args={'page': N}`` walks it under the ``page_size`` cap, with or
+    without a ``q`` narrowing (gr673370).
+    """
+    if not (isinstance(kind, str) and kind.strip().lower() == "todo"):
+        return False
+    return str(kwargs.get("view") or args.get("view") or "").strip() == "reto-queue"
+
+
 def _memory_listing_call(
     kind: Any, kwargs: dict[str, Any], args: dict[str, Any]
 ) -> bool:
-    """True for memory's q-less ``index`` and ``reads`` listings.
+    """True for memory's bounded-enumeration listings.
 
-    These bounded inventories take ``args={'page': N}`` (gr538490,
-    gr563563). ``q='*'`` folds to no-q, so it exempts too; a real query
-    stays on the no-paginate refusal.
+    ``view='index'`` and ``view='reads'`` take ``args={'page': N}``
+    (gr538490, gr563563). ``q='*'`` folds to no-q, so it exempts too; a
+    real query stays on the no-paginate refusal — those views rank.
+    ``view='toc'`` always pages (gr692939): its forest is a bounded
+    enumeration and its ``q=`` narrows that enumeration rather than
+    ranking it, so the listing pages with or without a query.
     """
     if not (isinstance(kind, str) and kind.strip().lower() == "memory"):
         return False
     view = kwargs.get("view") or args.get("view")
+    if view == "toc":
+        return True
     if view not in ("index", "reads"):
         return False
     q = kwargs.get("q") or args.get("q")

@@ -1,6 +1,6 @@
 """OpenAlex snapshot works loader — stream parts, stage held edges.
 
-Slice 1 of ``docs/backlog/openalex-snapshot-cites.md``: a resumable,
+Slice 1 of `me693596`: a resumable,
 idempotent pass over the public ``s3://openalex`` works dump
 (``data/jsonl/works/updated_date=YYYY-MM-DD/part_NNNN.gz``) that keeps only
 the citation edges touching a held paper and stages them in

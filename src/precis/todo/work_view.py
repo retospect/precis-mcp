@@ -15,7 +15,7 @@ row), plus one line per live job. Then the strategic roots that serve no
 quest ("unassigned"); then the fleet hosts and when they last reported.
 A todo that serves the quest directly while also sitting inside another
 served root renders once, in the larger tree. Dark-factory step 1
-(td540840, ``docs/backlog/dark-factory.md``): every later step reads
+(td540840, `me692430`): every later step reads
 this tree.
 
 :func:`work_model` computes the hierarchy once as frozen dataclasses
@@ -59,7 +59,8 @@ from typing import TYPE_CHECKING, Any
 from precis.plans.lanes import ladder, load_lanes
 from precis.plans.nodes import node_kind
 from precis.response import Response
-from precis.todo import blocker_terminal_sql, views, work_gripes, work_quest
+from precis.todo import views, work_gripes, work_quest
+from precis.todo.blocked import open_blocked_by
 from precis.todo.work_gripes import GripeBlock
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
@@ -357,8 +358,14 @@ def _todo_servers(store: Store, quest_id: int) -> list[Ref]:
     links = store.links_for(quest_id, direction="in", relation="serves")
     ids = {ln.src_ref_id for ln in links}
     refs = store.fetch_refs_by_ids(ids, include_deleted=False)
+    # Backlog-spec placeholders mark where a spec lives, not work: off the
+    # board, or one would hide an all-blocked quest's needs-you state.
+    from precis.quest.gaps import _backlog_spec_ids
+
+    todos = [r for r in refs.values() if r.kind == "todo"]
+    spec_ids = _backlog_spec_ids(store, [r.id for r in todos])
     return sorted(
-        (r for r in refs.values() if r.kind == "todo"),
+        (r for r in todos if r.id not in spec_ids),
         key=lambda r: (r.prio if r.prio is not None else 5, r.id),
     )
 
@@ -425,7 +432,7 @@ def _row(
     jobs: tuple[int, int] = (0, 0),
     metas: dict[int, dict[str, Any]] | None = None,
     lanes: dict[int, str] | None = None,
-    blockers: dict[int, tuple[int, ...]] | None = None,
+    blockers: dict[int, tuple[tuple[str, int], ...]] | None = None,
     preview_leaf: bool = False,
     lane_table: tuple[Lane, ...] = (),
 ) -> WorkRow:
@@ -480,7 +487,7 @@ def _row(
         node_text=_node_text(plan, meta),
         lane=(lanes or {}).get(rid, ""),
         attempt=_attempt(tags),
-        after=tuple(_h("todo", i) for i in (blockers or {}).get(rid, ())),
+        after=tuple(_h(k, i) for k, i in (blockers or {}).get(rid, ())),
         hold=hold,
         preview=preview,
     )
@@ -624,27 +631,13 @@ def _job_line(
     return line + (" · " + " ".join(parts) if parts else "")
 
 
-def _open_blockers(store: Store, ref_ids: list[int]) -> dict[int, tuple[int, ...]]:
-    """Read dependencies once per block, using the doable view's terminal policy."""
-    if not ref_ids:
-        return {}
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            f"""SELECT l.src_ref_id, l.dst_ref_id FROM links l
-                JOIN refs b ON b.ref_id = l.dst_ref_id
-                WHERE l.src_ref_id = ANY(%s) AND l.relation = 'blocked-by'
-                  AND b.retired_at IS NULL
-                  AND NOT EXISTS (
-                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
-                      AND t.value IN {blocker_terminal_sql()})
-                ORDER BY l.src_ref_id, l.dst_ref_id""",
-            (ref_ids,),
-        ).fetchall()
-    grouped: dict[int, list[int]] = {}
-    for src, dst in rows:
-        grouped.setdefault(int(src), []).append(int(dst))
-    return {src: tuple(targets) for src, targets in grouped.items()}
+def _open_blockers(
+    store: Store, ref_ids: list[int]
+) -> dict[int, tuple[tuple[str, int], ...]]:
+    """Read dependencies once per block, using the doable view's terminal
+    policy — ``(target_kind, target_id)`` pairs, so a gripe blocker names
+    ``gr<N>`` on the row, never ``td<N>`` (gr656970)."""
+    return open_blocked_by(store, ref_ids)
 
 
 def _job_fields(store: Store, job_ids: list[int]) -> dict[int, tuple[str, str, str]]:
@@ -815,7 +808,7 @@ def _leaf_verdicts(
     statuses: dict[int, str],
     tags_by_ref: dict[int, list[str]],
     metas: dict[int, dict[str, Any]],
-    blockers: dict[int, tuple[int, ...]],
+    blockers: dict[int, tuple[tuple[str, int], ...]],
 ) -> tuple[int, int, tuple[Unblocker, ...]]:
     """``(live leaves, blocked leaves, unblockers)`` over every todo
     row — before the ``MAX_ROWS_PER_ROOT`` cap (td573923).
@@ -828,7 +821,7 @@ def _leaf_verdicts(
     ``waiting-for:reto``, an open blocked-by target is an open
     ``ask-user`` todo, or the leaf is itself an open ask — one bulk
     tag read and one ref fetch for the targets."""
-    target_ids = sorted({d for ds in blockers.values() for d in ds})
+    target_ids = sorted({d for ds in blockers.values() for _, d in ds})
     target_refs = store.fetch_refs_by_ids(target_ids) if target_ids else {}
     target_tags = views._all_open_tags(store, target_ids) if target_ids else {}
     live = 0
@@ -865,7 +858,7 @@ def _leaf_verdicts(
                 _h("todo", rid),
                 Unblocker(_h("todo", rid), _first_line(r["title"]), "waiting-for:reto"),
             )
-        for dst in blockers.get(rid, ()):
+        for _kind, dst in blockers.get(rid, ()):
             tref = target_refs.get(dst)
             if (
                 tref is not None

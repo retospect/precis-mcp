@@ -15,7 +15,7 @@ handed back to the runner — the job defers rather than failing.
 The call pins no ``max_tokens``: a caller-pinned cap beats the op
 chain's rung cap (:class:`~precis.utils.llm.router.FailoverProvider`),
 and the proposer's old 400 silently overrode the operator's 4000 on the
-castor gpt-oss rung, which then spent the 400 on reasoning and returned
+local-serving-node gpt-oss rung, which then spent the 400 on reasoning and returned
 nothing (gr504896). The cap is the op row's call. A reply cut on the
 length cap is counted apart from other errors (``Verdict.truncated``)
 so a too-small cap shows up as itself.

@@ -94,7 +94,12 @@ from precis.pcb.topoplace.crossings import (
     resolve_crossings,
     seg_dist,
 )
-from precis.pcb.topoplace.design import _COPPER_ZONE_SAG_MM, TopoDesign, TopoZone
+from precis.pcb.topoplace.design import (
+    _COPPER_ZONE_SAG_MM,
+    TopoDesign,
+    TopoZone,
+    _net_pin_force,
+)
 from precis.pcb.topoplace.masks import BoardMasks, corridor_score
 from precis.pcb.topoplace.mesh import TopoMesh
 from precis.pcb.topoplace.wires import (
@@ -5793,6 +5798,43 @@ def _plane_trees(
     return tree_tracks, tree_vias, ok
 
 
+def _sides_at_pose(d: TopoDesign, pose: np.ndarray, n_layers: int) -> TopoDesign:
+    """``d`` with every SMD pad's ``pin_side`` / ``pad_extra_side`` read
+    off ``pose`` — the face the routed pose mounts the part on. The
+    design's sides are baked from the IR at build time, so a part the
+    placer flipped kept its authored face here while the mesh's pads
+    (:func:`~precis.pcb.topoplace.mesh.world_pads`) and the DRC sat it
+    on the other one: the search seeded its pads on the wrong layer and
+    the terminal forcing pinned them there (usbc_attiny's bottom-side
+    R1.2 under J1.5 stranded GND, td637902). Drilled pads stay drilled;
+    a pose that flips nothing returns ``d`` itself."""
+    pose_a = np.asarray(pose, dtype=np.float64)
+    if pose_a.ndim != 2 or pose_a.shape[1] < 4 or not len(pose_a):
+        return d
+    bottom = (pose_a[:, 3] >= 0.5).astype(np.int8)
+
+    def posed(side: np.ndarray, part: np.ndarray) -> np.ndarray:
+        side = np.asarray(side, dtype=np.int8)
+        part = np.asarray(part, dtype=np.int64)
+        ok = (side != 2) & (part >= 0) & (part < len(bottom))
+        out = side.copy()
+        out[ok] = bottom[part[ok]]
+        return out
+
+    pin_side = posed(d.pin_side, d.pin_part)
+    extra_side = posed(d.pad_extra_side, d.pad_extra_part)
+    if np.array_equal(pin_side, d.pin_side) and np.array_equal(
+        extra_side, d.pad_extra_side
+    ):
+        return d
+    return dataclasses.replace(
+        d,
+        pin_side=pin_side,
+        pad_extra_side=extra_side,
+        net_pin_force=_net_pin_force(tuple(d.net_pins), pin_side, n_layers),
+    )
+
+
 def _route_design_once(
     d: TopoDesign,
     ir: Any,
@@ -5809,6 +5851,9 @@ def _route_design_once(
     hole_clearance_mm: float = 0.0,
     hv_weight: float = 0.0,
     legalise_sink: list[np.ndarray] | None = None,
+    shove_seeds: int | None = None,
+    shove_seed: int = 0,
+    shove_budget: int | None = None,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local``) shares.
@@ -5824,6 +5869,8 @@ def _route_design_once(
     (:func:`_plane_pours`). Without plane nets this is
     :func:`_route_signals` verbatim; see it for ``pose``, ``net_rules``,
     ``event``, ``masks`` and ``hv_weight``."""
+    if pose is not None:
+        d = _sides_at_pose(d, pose, int(ir.n_layers))
     kw: dict[str, Any] = dict(
         pose=pose,
         net_rules=net_rules,
@@ -5834,6 +5881,9 @@ def _route_design_once(
         masks=masks,
         hv_weight=hv_weight,
         legalise_sink=legalise_sink,
+        shove_seeds=shove_seeds,
+        shove_seed=shove_seed,
+        shove_budget=shove_budget,
     )
     planes = _plane_nets(d, ir)
     if not planes:
@@ -6101,6 +6151,9 @@ def route_design(
     hv_weight: float = 0.0,
     legalise_sink: list[np.ndarray] | None = None,
     pose_sink: list[np.ndarray] | None = None,
+    shove_seeds: int | None = None,
+    shove_seed: int = 0,
+    shove_budget: int | None = None,
 ) -> tuple[RoutePlan, Any]:
     """:func:`_route_design_once` plus the corridor-overflow recovery
     (cleanup-66): a ``CorridorOverflow`` is a legalise input, so the
@@ -6129,6 +6182,9 @@ def route_design(
         hole_clearance_mm=hole_clearance_mm,
         hv_weight=hv_weight,
         legalise_sink=poses,
+        shove_seeds=shove_seeds,
+        shove_seed=shove_seed,
+        shove_budget=shove_budget,
     )
     first_exc: CorridorOverflow | None = None
     try:
@@ -6185,6 +6241,9 @@ def _route_signals(
     mesh_sink: list[Any] | None = None,
     hv_weight: float = 0.0,
     legalise_sink: list[np.ndarray] | None = None,
+    shove_seeds: int | None = None,
+    shove_seed: int = 0,
+    shove_budget: int | None = None,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local.topo_place``) shares.
@@ -6255,6 +6314,9 @@ def _route_signals(
         mesh_sink=mesh_sink,
         hv_weight=hv_weight,
         legalise_sink=legalise_sink,
+        shove_seeds=shove_seeds,
+        shove_seed=shove_seed,
+        shove_budget=shove_budget,
     )
 
     def _only(nets: set[int]) -> tuple[np.ndarray, ...]:
@@ -7065,7 +7127,9 @@ def _copper_zones(
     rows (net-tagged, so the same net may still touch them) — the
     survivors' copper frozen for :func:`route_design`'s pass 3.
 
-    Each piece is clipped to outside every pad of its layer (the copper
+    Same-net pieces on the same layer are unioned before meshing: internal
+    overlapping boundaries can strand CDT constraint recovery. Each union
+    is clipped to outside every pad of its layer (the copper
     the mesh will constrain, at ``pose``, default ``d.pose0``): a
     fanout stub starts at its pad's centre, and a zone vertex inside a
     pad ring would collapse that pad's wall in the mesh. The clipped
@@ -7103,7 +7167,7 @@ def _copper_zones(
 
     from precis.pcb import clearance as pcb_clearance
 
-    out: list[TopoZone] = []
+    pieces: dict[tuple[str, int | None], list[Any]] = {}
     for row in pcb_realize.result_copper_rows(rres, ir, layers, derived=True):
         body = pcb_clearance.body_of(dict(row))
         if body is None:
@@ -7124,7 +7188,11 @@ def _copper_zones(
         # a via barrel spans every layer — its zone must too
         is_via = str(row.get("ctype") or "") == "via"
         idx = None if is_via or layer not in name_to_idx else name_to_idx[layer]
-        geom = geom.difference(lands_on(idx))
+        pieces.setdefault((str(row.get("net") or ""), idx), []).append(geom)
+
+    out: list[TopoZone] = []
+    for (net, idx), geoms in pieces.items():
+        geom = unary_union(geoms).difference(lands_on(idx))
         for part in getattr(geom, "geoms", (geom,)):
             if part.geom_type != "Polygon" or part.area <= 1e-6:
                 continue
@@ -7133,8 +7201,8 @@ def _copper_zones(
                     kind="fixed_copper",
                     ring=np.asarray(part.exterior.coords, dtype=np.float64),
                     layers=() if idx is None else (idx,),
-                    net=str(row.get("net") or ""),
-                    name=f"pass-2 copper {row.get('ctype') or '?'}",
+                    net=net,
+                    name="pass-2 copper union",
                 )
             )
     return out
@@ -7262,6 +7330,9 @@ def _route_head(
     mesh_sink: list[Any] | None = None,
     hv_weight: float = 0.0,
     legalise_sink: list[np.ndarray] | None = None,
+    shove_seeds: int | None = None,
+    shove_seed: int = 0,
+    shove_budget: int | None = None,
 ) -> _RouteWork:
     """The search half of a route pass — mesh → wires → corridor
     refusal → the td569542 legalisation round — returning the live
@@ -7303,6 +7374,9 @@ def _route_head(
         },
         masks=masks,
         hv_weight=hv_weight,
+        shove_seeds=shove_seeds,
+        shove_seed=shove_seed,
+        shove_budget=shove_budget,
     )
     routed_over = tuple(c for c in wires.overflow if not c.refused)
     if routed_over:
@@ -7682,13 +7756,20 @@ def sketch_rows(
         u = stranded_by_net.get(k)
         if u is not None:
             pins = u.pins or (u.pin,)
-            problems.append(
-                {
-                    "reason": "unrouted",
-                    "message": "pins walled off: "
-                    + ", ".join(pin_key(p) for p in pins),
-                }
-            )
+            if u.cause:
+                by = (
+                    "; blocked by "
+                    + ", ".join(
+                        str(d.net_name[b]) if b < len(d.net_name) else str(b)
+                        for b in u.blocked_by
+                    )
+                    if u.blocked_by
+                    else ""
+                )
+                message = f"withdrawn by shove ({u.cause}{by})"
+            else:
+                message = "pins walled off: " + ", ".join(pin_key(p) for p in pins)
+            problems.append({"reason": "unrouted", "message": message})
         withdrawn = set(getattr(plan, "withdrawn", ()))
         for a, b in plan.crossings:
             if net_by_branch.get(a) != k and net_by_branch.get(b) != k:

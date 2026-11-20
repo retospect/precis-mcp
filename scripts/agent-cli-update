@@ -9,7 +9,12 @@ runs the read-only report (installed version vs pin vs vendor minimum, with an
 ALERT per host behind its pin) and changes nothing. ``--apply`` installs each
 CLI's pin with the vendor's own installer, smokes it (``--version`` plus one
 headless prompt; ``--no-prompt`` drops the prompt) and reinstalls the previous
-version when the smoke fails, exiting non-zero.
+version when the smoke fails, exiting non-zero. A recognized missing login or
+model keeps the binary when --version passes and reports installed, needs login
+with the command and target user. The host updater exits 2 for that outcome;
+the role accepts it as success and displays the report. This wrapper returns
+Ansible’s exit code: 0 includes needs-login updates; broken installs fail the
+play and return non-zero. No authentication files are read or copied.
 
 The same update installs/repairs ~/.local/bin/agent-start on each target,
 pointing at committed launcher code in its stable primary checkout. The
@@ -25,6 +30,13 @@ No host name lives in the repo: ``--host`` / ``--group`` name overlay entries
 and become ansible's ``--limit``; one is required, so a run never reaches the
 whole fleet by accident. No CLI auth file is copied; each host logs in through
 the vendor's own flow.
+
+The report/update runs as ``agent_cli_user`` (default deploy; builder_hosts
+members follow precis_builder_user), the account whose home holds the CLIs the
+slice lanes run. devin is found in ~/.local/bin and kimi in ~/.kimi-code/bin
+as the lanes resolve them; a fresh devin installs through the vendor script,
+kimi through npm (node >= 22.19) or the vendor install.sh. The agent-start
+launcher is skipped on builder_hosts members (agent_cli_launcher_managed).
 
 Runs playbooks/30-agent-clis.yml through scripts/host-ops/play (the prod-pinned
 checkout and the overlay). ``--print`` shows the command without running it.

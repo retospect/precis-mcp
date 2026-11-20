@@ -10,7 +10,7 @@
 
 Every write goes through :class:`precis.handlers.gripe.GripeHandler`
 ``edit(mode='fix')`` — the same door the MCP exposes — never SQL
-(``docs/backlog/gripe-fix-loop-on-the-gripe.md``). Against prod run it as
+(`me691588`). Against prod run it as
 ``scripts/prod-precis gripe-fix …``; ``brief`` and any ``--dry-run`` count
 as reads there.
 

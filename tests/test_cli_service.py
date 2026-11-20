@@ -26,10 +26,10 @@ from precis.workers.service_config import list_service_config, set_service_prio
 
 def test_seed_subcommand_registered():
     parser = _build_parser()
-    args = parser.parse_args(["service", "seed", "melchior", "classify", "5"])
+    args = parser.parse_args(["service", "seed", "maple", "classify", "5"])
     assert args.cmd == "service"
     assert args.service_cmd == "seed"
-    assert args.host == "melchior"
+    assert args.host == "maple"
     assert args.service == "classify"
     assert args.prio == 5
     assert args.actor is None
@@ -48,8 +48,8 @@ def test_existing_subcommands_still_parse():
     parser = _build_parser()
     for argv in (
         ["service", "list"],
-        ["service", "prio", "melchior", "classify", "0"],
-        ["service", "clear", "melchior", "classify"],
+        ["service", "prio", "maple", "classify", "0"],
+        ["service", "clear", "maple", "classify"],
     ):
         args = parser.parse_args(argv)
         assert args.cmd == "service"
@@ -57,11 +57,9 @@ def test_existing_subcommands_still_parse():
 
 def test_reserve_release_subcommands_registered():
     parser = _build_parser()
-    args = parser.parse_args(
-        ["service", "reserve", "--host", "melchior", "--hours", "2"]
-    )
+    args = parser.parse_args(["service", "reserve", "--host", "maple", "--hours", "2"])
     assert args.service_cmd == "reserve"
-    assert args.host == "melchior"
+    assert args.host == "maple"
     assert args.hours == 2.0
     assert args.all is False
 
@@ -76,7 +74,7 @@ def test_reserve_release_subcommands_registered():
 
 
 def _ns(**overrides) -> argparse.Namespace:
-    defaults = dict(host="melchior", service="classify", prio=5, actor=None)
+    defaults = dict(host="maple", service="classify", prio=5, actor=None)
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
@@ -86,17 +84,17 @@ def test_cmd_seed_inserts_when_absent(store, capsys) -> None:
     out = capsys.readouterr().out
     assert "seeded" in out
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
-    assert rows[("melchior", "classify")]["prio"] == 5
+    assert rows[("maple", "classify")]["prio"] == 5
 
 
 def test_cmd_seed_leaves_a_console_override_untouched(store, capsys) -> None:
-    set_service_prio(store, "melchior", "classify", 0, actor="console")
+    set_service_prio(store, "maple", "classify", 0, actor="console")
     _cmd_seed(store, _ns(prio=5, actor="deploy"))
     out = capsys.readouterr().out
     assert "already has a row" in out
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
-    assert rows[("melchior", "classify")]["prio"] == 0
-    assert rows[("melchior", "classify")]["actor"] == "console"
+    assert rows[("maple", "classify")]["prio"] == 0
+    assert rows[("maple", "classify")]["actor"] == "console"
 
 
 def test_cmd_prio_still_upserts_unconditionally(store, capsys) -> None:
@@ -105,8 +103,8 @@ def test_cmd_prio_still_upserts_unconditionally(store, capsys) -> None:
     _cmd_seed(store, _ns(prio=5, actor="deploy"))
     _cmd_prio(store, _ns(prio=0, actor="console"))
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
-    assert rows[("melchior", "classify")]["prio"] == 0
-    assert rows[("melchior", "classify")]["actor"] == "console"
+    assert rows[("maple", "classify")]["prio"] == 0
+    assert rows[("maple", "classify")]["actor"] == "console"
 
 
 # ---------------------------------------------------------------------------
@@ -115,13 +113,13 @@ def test_cmd_prio_still_upserts_unconditionally(store, capsys) -> None:
 
 
 def _reserve_ns(**overrides):
-    defaults = dict(host="melchior", all=False, hours=4.0, actor=None)
+    defaults = dict(host="maple", all=False, hours=4.0, actor=None)
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
 
 def _release_ns(**overrides):
-    defaults = dict(host="melchior", all=False)
+    defaults = dict(host="maple", all=False)
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 
@@ -129,7 +127,7 @@ def _release_ns(**overrides):
 def test_cmd_reserve_creates_row_with_expiry(store, capsys) -> None:
     _cmd_reserve(store, _reserve_ns())
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
-    row = rows[("melchior", "reserve")]
+    row = rows[("maple", "reserve")]
     assert row["prio"] == 1
     assert row["expires_at"] is not None
     assert "reserved until" in capsys.readouterr().out
@@ -145,7 +143,7 @@ def test_cmd_release_removes_row(store, capsys) -> None:
     _cmd_reserve(store, _reserve_ns())
     _cmd_release(store, _release_ns())
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
-    assert ("melchior", "reserve") not in rows
+    assert ("maple", "reserve") not in rows
     assert "released reserve" in capsys.readouterr().out
 
 
@@ -155,15 +153,15 @@ def test_cmd_release_no_row_reports_cleanly(store, capsys) -> None:
 
 
 def test_reserved_subcommand_registered():
-    args = _build_parser().parse_args(["service", "reserved", "--host", "melchior"])
+    args = _build_parser().parse_args(["service", "reserved", "--host", "maple"])
     assert args.service_cmd == "reserved"
-    assert args.host == "melchior"
+    assert args.host == "maple"
     assert args.all is False
 
 
 def test_cmd_reserved_none_prints_and_returns(store, capsys) -> None:
     _cmd_reserved(store, _release_ns())
-    assert capsys.readouterr().out.strip() == "reserve: none on melchior"
+    assert capsys.readouterr().out.strip() == "reserve: none on maple"
 
 
 def test_cmd_reserved_exits_3_when_reserved(store, capsys) -> None:
@@ -172,7 +170,7 @@ def test_cmd_reserved_exits_3_when_reserved(store, capsys) -> None:
     with pytest.raises(SystemExit) as exc:
         _cmd_reserved(store, _release_ns())
     assert exc.value.code == 3
-    assert capsys.readouterr().out.strip() == "reserve: active on melchior"
+    assert capsys.readouterr().out.strip() == "reserve: active on maple"
 
 
 def test_cmd_reserved_wildcard_reserve_applies_to_host(store) -> None:
@@ -187,17 +185,17 @@ def test_cmd_reserved_released_or_expired_is_none(store, capsys) -> None:
     _cmd_release(store, _release_ns())
     capsys.readouterr()
     _cmd_reserved(store, _release_ns())
-    assert "reserve: none on melchior" in capsys.readouterr().out
+    assert "reserve: none on maple" in capsys.readouterr().out
 
     _cmd_reserve(store, _reserve_ns())
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE service_config SET expires_at = now() - interval '1 minute' "
-            "WHERE host = 'melchior' AND service = 'reserve'"
+            "WHERE host = 'maple' AND service = 'reserve'"
         )
     capsys.readouterr()
     _cmd_reserved(store, _release_ns())
-    assert "reserve: none on melchior" in capsys.readouterr().out
+    assert "reserve: none on maple" in capsys.readouterr().out
 
 
 def test_cmd_reserve_hours_bounds_enforced(store) -> None:
@@ -226,4 +224,4 @@ def test_generic_verbs_refuse_reserve_pseudo_service(store, capsys) -> None:
         assert exc.value.code == 2
         assert "pseudo-service" in capsys.readouterr().err
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
-    assert ("melchior", "reserve") not in rows
+    assert ("maple", "reserve") not in rows

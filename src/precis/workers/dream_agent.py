@@ -45,7 +45,7 @@ existing dream worker's discipline.
 
 Cadence (§A): folded onto the decentralized ``scheduler`` worker pass
 (:mod:`precis.workers.scheduler`) as the ``dream_agent`` cadence —
-host-pinned to melchior, its ``resolve_interval`` reading
+host-pinned to the agent host, its ``resolve_interval`` reading
 :func:`precis.workers.dream_throttle.resolve_min_interval_minutes` (DB >
 env > compiled 15) directly, so the cadence knob IS the live interval
 rather than a fixed launchd timer plus a throttle underneath it. The old
@@ -101,7 +101,7 @@ log = logging.getLogger(__name__)
 
 
 # Default model: the router's BIG tier — local-first (qwen3-235b on the
-# spark pair) with an OSS cloud fallback, per ``llm.chain.big``.
+# the GB10 node pair) with an OSS cloud fallback, per ``llm.chain.big``.
 #
 # This was FRONTIER (opus-4.8) on the "if it's worth thinking about, think
 # well" argument. The bill retired that argument: 30 days of hourly dreaming
@@ -481,7 +481,7 @@ def _recent_draft_cited_paper_ids(store: Store, limit: int) -> list[int]:
     handles in the prose, so this rides an existing graph — no new plumbing.
     Feeding these into the dream fisheye lets a wandering re-read of the draft
     you are *actively* writing spot a paragraph that drifted from its own cited
-    evidence (``docs/backlog/dreaming.md`` names exactly this as the payoff).
+    evidence (`gr690614` names exactly this as the payoff).
     Ordered by the most-recent citing draft; deleted papers excluded."""
     if limit <= 0:
         return []

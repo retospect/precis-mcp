@@ -10,7 +10,7 @@ effort: medium
 - **Next:** Tick qu164903: Reto ruled 2026-10-07 (via chat-interface) that the re-mint of the 23 failed verify seeds is NOT a re-run, so chemistry may tick.
 - **Blocked by:** Nothing for the tick. Catalysis items 25 (re-runs) and 23 (hydride pilot) stay held; the surface-Pourbaix optimizer that 23 waits on got its q3 ruling 2026-10-12 (oxide corrections on bulk references only, surface anchors uncorrected, oxide boundaries a labelled uncertain layer) and a viewer ask (the layered map; see the item's slices).
 - **Unblocks:** Healthy pathway engine output for [catalysis](catalysis-selectivity.md#resume).
-- **Acceptance:** After the hold question is resolved, follow [the latest handoff](#thread-context): verify wall 28800, cpuset, retry stamp and child taskset on castor/pollux; inspect the content-key change first.
+- **Acceptance:** After the hold question is resolved, follow [the latest handoff](#thread-context): verify wall 28800, cpuset, retry stamp and child taskset on the DGX nodes; inspect the content-key change first.
 - **Worktree:** `chemistry`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -41,7 +41,7 @@ candidates carry `quest_seed_infra_retries=1` (stamped 10-08/10-10, 322478
 since 09-07), and autocatpath_seed jobs keep minting (newest 479080 queued
 2026-10-11 14:42Z). The 06:46Z "no dispatch" report was premature: that tick
 ran only the llm/apply slices. Open: confirm the child runs under `taskset`
-on castor/pollux, and that the 23 re-minted seeds complete.
+on the DGX nodes, and that the 23 re-minted seeds complete.
 Unchecked:
 whether the verify content key moved since 09-24 (uv.lock changed
 10-01/10-02); if it did, the re-dispatch mints fresh trees and supersedes the
@@ -62,7 +62,7 @@ nothing requests it today. The dft role renders `PRECIS_DFT_MPI_RANKS`,
 default to today's behaviour, and MPI ranks stay 0 (off) against the
 image, which has no MPI. Rank the items below by what that paper needs.
 
-1. **backlog/qu164903-campaign.md** residuals are ops/Reto
+1. **me691359** residuals are ops/Reto
    (st164913 un-rule-out, kinetics cutover prod write, presentation items).
 2. **qu202467 (NO from exhaust → fertilizer N) restart** — RULED
    2026-10-02 (chemistry-7, option 1): restart after round 2 deploys,
@@ -89,7 +89,7 @@ image, which has no MPI. Rank the items below by what that paper needs.
    round 2 deploys, capped at 3 ticks, re-pause if it doesn't cite the five.
    Not fixed: the frontier-table sync wall (undiagnosed) — the next
    blocker if the quest holds again.
-3. **backlog/autocatpath-seed-health.md** — PARTIAL (child-killed fix
+3. **gr614723** — PARTIAL (child-killed fix
    a772a52aa and the 0.11 tier overlays shipped). Prod read 2026-10-03:
    the August "child exited without result.json" population and the lease
    churn are gone in the last 30 days; all 24 seed failures are 5–7.5 h
@@ -102,7 +102,7 @@ image, which has no MPI. Rank the items below by what that paper needs.
    2026-10-03: `PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS` (unset = general
    wall) and the harvest holds a timed-out seed instead of re-running it at
    the same wall. **Measured 2026-10-03:** verify seed job 464221
-   (pathway 449732 seed 0, pollux, unpinned) ran 13:57:55Z–19:03:04Z =
+   (pathway 449732 seed 0, the second DGX node, unpinned) ran 13:57:55Z–19:03:04Z =
    **5 h 05 m**, 50 states; the child grows to ~76 GB GPU memory, so
    budget one whole GPU per seed. Wall value 28800 (2× = 36618 s, cap
    binds; margin 1.57×). Reto ruled 2026-10-03 19:32Z (chemistry-8,
@@ -111,12 +111,12 @@ image, which has no MPI. Rank the items below by what that paper needs.
    wall and the seed cpuset (`0-4,10-14`, runner falls back unpinned when
    the node lacks those CPUs) landed in 4181421ce; the dispatch follows
    its deploy (Resume line).
-4. **backlog/neb-structure-builder.md** — Reto 2026-10-25:
+4. **me689902** — Reto 2026-10-25:
    build it, kept separate from gr506762 and the NEB trust diagnostic. qu509651 has zero
    barriers after 21 sightings. Slice 1 needs no GPU and unblocks its
    endpoints. Draft until Reto answers the open questions; slice 3's
    per-edge job is also the first piece Horizon 1 can reuse.
-5. **backlog/neb-trust-diagnostic.md** — zero-compute
+5. **me690689** — zero-compute
    `view='gate'` on pathways; prevents qu164903 spending ticks on
    confirmation reruns whose verdict is already stored (st336035's
    pw512178/pw513347 were already blocked). Below 4 because Reto ordered 4
@@ -127,7 +127,7 @@ image, which has no MPI. Rank the items below by what that paper needs.
 Items 1-4 are engine items moved down from Do next 2026-10-01 to keep it
 at five; engine-over-UI still holds.
 
-1. **backlog/neb-barriers-in-the-catpath-pipeline.md** — NEB transition-
+1. **gr695038** — NEB transition-
    state barriers as a pipeline step (barriers, not just thermodynamics);
    triage 2026-10-02: no code yet, the item is a design call (endpoint
    pairing, cost gate, convergence handling). Endpoint pairing now has a
@@ -139,23 +139,23 @@ at five; engine-over-UI still holds.
    `struct_search` as an optional endpoint generator. Measure first; no
    build without a ruling.
 2. **catalysis-selectivity thread** — owns
-   `backlog/catpath-desorption-link-kind.md` since 2026-10-02 (first slice
+   gr695176 since 2026-10-02 (first slice
    of its step-annotation item) plus the NH₃ network, U/pH selectivity
    window and NEB promotion items; Reto ranked it high, so its engine
    edits go ahead of this file's Horizon.
-3. **backlog/autocatpath-aggregate-ran-11h-on-a-33s-job.md** — the
+3. **gr694966** — the
    kinetics ceiling shipped (the subprocess timeout, deploy 2026-09-27;
    `precis_pathway/runner.py`, `tests/test_pathway_kinetics_timeout.py`);
-   the item is NOT closed: the castor reproduction that settles the
+   the item is NOT closed: the local-model reproduction that settles the
    cause, the stranded `no_to_nh3_pd` aggregate re-dispatch (needs Reto),
    and the broader blocking-dispatch ceiling remain (triage 2026-10-02
    confirmed exactly that remainder).
-4. **backlog/pathway-conditions-effects-report.md** — `prio: high`,
+4. **me692126** — `prio: high`,
    written for quest qu164903 (NO→NH₃): the first consumer-visible
    product of the engine. Phases 0-1 shipped (12b0a5e68); Phase 2 (report
    step) and Phase 3 (coverage job, cross-repo) are left. After Do next
    3-5 because a report over unhealthy seeds is the artefact problem again.
-5. **backlog/chem-database-tie-ins.md** — MOF and catalyst database
+5. **me690555** — MOF and catalyst database
    tie-ins (Reto, 2026-10-02): structure seeds, reference energies,
    screening. Decided 2026-10-02: MOF library + ODAC23 references,
    on-demand import, show-and-flag only; bulk catalyst source OC20 first,
@@ -166,54 +166,54 @@ at five; engine-over-UI still holds.
    November trust-demo paper needs reference energies UMA was not trained
    on. Its mechanism for the Pd slabs (typed reference, match key,
    bare-host calibration panel, distrust flag) is
-   **backlog/catalyst-library-pd-slab-tie-in.md** (draft, Reto
+   **me690616** (draft, Reto
    2026-10-05); its slice A needs no credentials either.
-6. **backlog/autocatpath-integration.md** — the remaining slices of the
+6. **me690505** — the remaining slices of the
    native integration (most shipped; present state is in the
    `src/precis_pathway/` docstrings; ADR 0069 was folded into the
    `__init__.py` docstring when `docs/decisions/` was retired); read with 4.
-7. **backlog/catalyst-physical-realism.md** + **backlog/slab-modelling-knobs.md**
+7. **me690551** + **me692237**
    — defect ensembles, poisoning, slab knobs; make the engine's answer
    physically honest. After the engine reliability block. Slab knobs:
    `remove_atom` op and variable-cell relax (precis-dft container side)
    open, `n_slab` provenance half-threaded.
-8. **backlog/ephemeral-potentials-for-catpath.md** — a throwaway potential
+8. **me690583** — a throwaway potential
    as a pre-screen, DFT only on survivors; cost lever, waits on Do next 3 so
    the saving is measured on a healthy pipeline.
-9. **backlog/quest-data-table-and-formula-discovery.md** — the
+9. **me691755** — the
    `precis quest table` export verb does not exist yet, then the
    deterministic baseline; `meta.params`, `view='series'` and the
    `wrong_site` distrust gate (575e24f38) shipped.
-10. **backlog/quest-artifacts-in-dossier.md** — embed the existing
+10. **gr692320** — embed the existing
     pareto/energy-profile renders in the quest's document; the dossier target
-    is superseded by `backlog/quest-graph-as-dossier.md`
+    is superseded by me692487
     (graph-memory-consumers Horizon 1), so this waits on its design.
-11. **backlog/material-off-sample-model.md** (material kind's off-sample
+11. **gr695251** (material kind's off-sample
    estimate layer, ADR 0070 deferral) +
-   **backlog/harvest-bookmark-concurrency.md** — small `idea`s homed here
+   **gr695327** — small `idea`s homed here
    by the sweep; harvest-bookmark has no live repro (one job per
    candidate today).
-12. **backlog/protomia-gap-eval-and-molecular-properties.md** — `idea`:
+12. **gr695416** — `idea`:
    Hessian rung + structure intake, picked up only when a named quest,
    pathway or draft needs frequencies (Reto 2026-10-21, eval dropped).
-13. **backlog/reaction-kind-and-synthesis-cost.md** — sourced reaction-fact
+13. **me694355** — sourced reaction-fact
    store and cost over routes; rung 1 (the `rxn` kind, e2f420ab4) shipped,
    rungs 2-5 left.
-14. **backlog/estimate-kind-ms-chemistry-workup.md** — argue before
+14. **me690660** — argue before
    simulating; sets up sims, waits on 13 for facts to argue from.
-15. **backlog/chem-tools-integration.md** +
-   **backlog/structure-import.md** — chaining and import surface for
+15. **me694029** +
+   **me474315** — chaining and import surface for
    chem tools; presentation/packaging layer, after the engine.
-16. **backlog/sim-harness.md** — quest-driven automation, writeup draft and
+16. **me695250** — quest-driven automation, writeup draft and
    container drive path (slices 2–3); consumes roadmap-quest's loop.
-17. **backlog/pathway-explorer.md** + **backlog/pathway-viewer-ux-batch.md**
+17. **me692374** + **me692650**
    — the UI. Last by the rank rule: it presents what the engine has to
    get right first. Shared presentation logic belongs to plugin-split
    (Seam).
-18. **backlog/chem-name-lookup-verb.md** — PubChem-backed
+18. **gr695202** — PubChem-backed
    formula/ID → common name; small, and a dependency of
    reaction-kind-and-synthesis-cost (13). From pillar 4, 2026-10-01.
-19. **backlog/catpath-wheel-version-reuse.md** — one catpath version across
+19. **me690566** — one catpath version across
    many commits leaves a hand-passed wheel unidentifiable; deploy hygiene for
    the engine this thread owns. Platform pass 2026-10-02.
 
@@ -229,13 +229,13 @@ at five; engine-over-UI still holds.
 
 - **catalysis-selectivity** changes the ammonia network content and adds
   link fields; this thread keeps the engine contract and the wheel bump.
-  `pathway-viewer-ux-batch.md` item 3 moved there.
+  `pathway-viewer-ux-batch (me692650)` item 3 moved there.
 
-- **plugin-split** owns `backlog/pathway-presentation-shared-module.md`
+- **plugin-split** owns me692580
   (its Do-next 6: where shared pathway presentation lives, plus the
   catpath version bump and wheel redeploy). Horizon 17 here must not start
   a second copy of that logic.
-- **The compute runner** (`backlog/slullama-hpc-placement.md` §From
+- **The compute runner** (me695656 §From
   precis-dispatch, ranked in local-compute) is what this thread's compute
   jobs (DFT relax) depend on; this thread is its first consumer, and its
   seams extract when a second backend runs.

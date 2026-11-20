@@ -23,7 +23,11 @@ __all__ = ["hubs_grounded_by_paper"]
 
 
 def hubs_grounded_by_paper(
-    store: PoolStore, paper_ref_id: int, *, require_pub_id: bool = True
+    store: PoolStore,
+    paper_ref_id: int,
+    *,
+    require_pub_id: bool = True,
+    chunk_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Every live ``TAPROOT:claim`` hub ``paper_ref_id`` has an inbound
     evidence edge to — the many-to-many read a cite-time nudge needs
@@ -40,6 +44,14 @@ def hubs_grounded_by_paper(
     wanting "what does this paper ground, including the mint-frontier" —
     pass ``require_pub_id=False`` there to LEFT JOIN instead, keeping
     those rows with ``pub_id: None``.
+
+    ``chunk_id`` (gr553454) narrows the read to edges pinned at that one
+    source chunk (``links.src_chunk_id = chunk_id``, strict — ref-level
+    edges drop out too): a ``[pc<id>]`` cite names a passage, so it may
+    only be steered to hubs the edge itself pins to that passage, never
+    to every hub the paper touches. ``None`` (a ``[pa<id>]`` whole-paper
+    cite, or any "what does this paper ground" reader) keeps the
+    unfiltered paper-level read.
 
     Returns one dict per hub: ``{'hub_ref_id', 'pub_id', 'claim',
     'role'}`` — ``claim`` is the hub's title (``mint_hub`` stamps
@@ -62,6 +74,7 @@ def hubs_grounded_by_paper(
                        AND ri.id_kind = 'pub_id'
             WHERE l.src_ref_id = %(paper)s
               AND l.relation = ANY(%(roles)s)
+              AND (%(chunk)s::bigint IS NULL OR l.src_chunk_id = %(chunk)s)
               AND r.kind = 'finding'
               AND r.retired_at IS NULL
             ORDER BY r.ref_id
@@ -71,6 +84,7 @@ def hubs_grounded_by_paper(
                 "claim": TAPROOT_CLAIM,
                 "paper": paper_ref_id,
                 "roles": list(HUB_ROLES),
+                "chunk": chunk_id,
             },
         ).fetchall()
 

@@ -39,8 +39,9 @@ def jobs(hub: Hub) -> JobHandler:
 @pytest.fixture
 def _factory_advertised(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub the advertised-capability map so ``run_slice``/``land_slice``'s
-    placement tokens (repo_checkout/claude_bin/git) pass the check-only
-    placement gate — orthogonal to the lane-cap math under test."""
+    placement tokens (repo_checkout/builder/git, gr676054) pass the
+    check-only placement gate — orthogonal to the lane-cap math under
+    test."""
     from precis.workers.executors import _common
 
     real = _common._advertised_by_host
@@ -54,7 +55,7 @@ def _factory_advertised(monkeypatch: pytest.MonkeyPatch) -> None:
             "lane_host_f",
             "lane_host_h",
         ):
-            out.setdefault(host, set()).update({"repo_checkout", "claude_bin", "git"})
+            out.setdefault(host, set()).update({"repo_checkout", "builder", "git"})
         return out
 
     monkeypatch.setattr(_common, "_advertised_by_host", _patched)
@@ -281,6 +282,130 @@ def test_cap_zero_suspends_executor_claims(store: Store) -> None:
         conn.commit()
 
 
+def test_host_suffixed_cap_binds_that_host_only(store: Store) -> None:
+    """gr676054: ``claim.executor_cap.<executor>.<host>`` replaces the
+    unsuffixed key on that host — the builder fleet's per-host sizing —
+    while every other host keeps the global value."""
+    host = "lane_host_i"
+    other = "lane_host_j"
+    keys = [
+        f"{_EXECUTOR_CAP_KEY_PREFIX}ssh_node",
+        f"{_EXECUTOR_CAP_KEY_PREFIX}ssh_node.{host}",
+    ]
+    try:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO app_state (key, value) VALUES (%s, '8'), "
+                "(%s, '2') ON CONFLICT (key) DO UPDATE "
+                "SET value = EXCLUDED.value",
+                keys,
+            )
+            conn.commit()
+        _fill_running(store, host, "autocatpath_seed", 2)
+        _fill_running(store, other, "autocatpath_seed", 2)
+        queued = [_job(store, job_type="demo_compute") for _ in range(2)]
+        # host is at its host-scoped cap 2 → nothing claims there.
+        assert _claim(store, host, limit=10) == []
+        # other is under the global cap 8 → the queued rows claim.
+        assert sorted(_claim(store, other, limit=10)) == sorted(queued)
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM app_state WHERE key = ANY(%s)", (keys,))
+            conn.commit()
+
+
+def test_host_suffixed_reserve_replaces_the_global_on_that_host(
+    store: Store,
+) -> None:
+    """gr676054: ``claim.reserve.<executor>.<host>`` REPLACES the
+    unsuffixed reserve map wholesale on that host (empty JSON = no
+    holds), it does not merge. Two hosts, same global keys
+    (cap 3 / reserve {run_slice: 1}), two computes running each: the
+    host whose reserve is ``{}`` runs a plain band of 3 and admits a
+    third compute; the host under the global reserve holds its band at
+    2 and refuses it."""
+    host = "lane_host_k"
+    other = "lane_host_l"
+    keys = [
+        f"{_EXECUTOR_CAP_KEY_PREFIX}ssh_node",
+        f"{_RESERVE_KEY_PREFIX}ssh_node",
+        f"{_RESERVE_KEY_PREFIX}ssh_node.{host}",
+    ]
+    try:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO app_state (key, value) VALUES (%s, '3'), "
+                "(%s, %s), (%s, '{}') ON CONFLICT (key) DO UPDATE "
+                "SET value = EXCLUDED.value",
+                (keys[0], keys[1], json.dumps({"run_slice": 1}), keys[2]),
+            )
+            conn.commit()
+        _fill_running(store, host, "autocatpath_seed", 2)
+        _fill_running(store, other, "autocatpath_seed", 2)
+        _job(store, job_type="demo_compute")
+        _job(store, job_type="demo_compute")
+        # host: reserve {} → shared band is the full cap → 1 slot free.
+        assert len(_claim(store, host, limit=10)) == 1
+        # other: the global reserve still holds the last slot for
+        # run_slice → a compute is blocked even though one band slot
+        # nominally remains.
+        assert _claim(store, other, limit=10) == []
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM app_state WHERE key = ANY(%s)", (keys,))
+            conn.commit()
+
+
+def test_malformed_override_warning_names_the_key_it_came_from(
+    store: Store, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The host-suffixed read falls back to the unsuffixed key, so a
+    malformed value can come from EITHER — the warning must name the key
+    that actually supplied it, not the suffix the caller passed."""
+    import logging
+
+    from precis.workers.executors._common import executor_lane_limits
+
+    keys = [
+        f"{_EXECUTOR_CAP_KEY_PREFIX}ssh_node",
+        f"{_EXECUTOR_CAP_KEY_PREFIX}ssh_node.h1",
+        f"{_RESERVE_KEY_PREFIX}ssh_node",
+        f"{_RESERVE_KEY_PREFIX}ssh_node.h1",
+    ]
+    try:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO app_state (key, value) VALUES (%s, 'bogus'), "
+                "(%s, 'not-json') ON CONFLICT (key) DO UPDATE "
+                "SET value = EXCLUDED.value",
+                (keys[0], keys[2]),
+            )
+            conn.commit()
+            with caplog.at_level(logging.WARNING):
+                executor_lane_limits(conn, "ssh_node", host="h1")
+            assert f"{keys[0]}='bogus'" in caplog.text
+            assert f"{keys[2]}='not-json'" in caplog.text
+            assert "ssh_node.h1" not in caplog.text
+            # The suffixed keys win once present — and are named when
+            # they are the malformed source.
+            conn.execute(
+                "INSERT INTO app_state (key, value) VALUES (%s, 'host-bogus'), "
+                "(%s, 'also-not-json') ON CONFLICT (key) DO UPDATE "
+                "SET value = EXCLUDED.value",
+                (keys[1], keys[3]),
+            )
+            conn.commit()
+            caplog.clear()
+            with caplog.at_level(logging.WARNING):
+                executor_lane_limits(conn, "ssh_node", host="h1")
+            assert f"{keys[1]}='host-bogus'" in caplog.text
+            assert f"{keys[3]}='also-not-json'" in caplog.text
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM app_state WHERE key = ANY(%s)", (keys,))
+            conn.commit()
+
+
 # ── the setting door validates the new key families ────────────────────
 
 
@@ -301,6 +426,58 @@ def test_setting_door_accepts_lane_knobs(jobs: JobHandler) -> None:
     assert "set claim.reserve.ssh_node" in out.body
     for key in ("claim.executor_cap.ssh_node", "claim.reserve.ssh_node"):
         jobs.put(mode="setting", key=key, unset=True, reason="test")
+
+
+def test_setting_door_accepts_host_suffixed_knobs(jobs: JobHandler) -> None:
+    """gr676054: ``claim.executor_cap.<executor>.<host>`` /
+    ``claim.reserve.<executor>.<host>`` pass the same leaf and value
+    validation as the unsuffixed keys — the host part is free-form but
+    must be non-empty, and the executor head must name a real executor."""
+    out = jobs.put(
+        mode="setting",
+        key="claim.executor_cap.ssh_node.spruce",
+        value=4,
+        reason="test",
+    )
+    assert "set claim.executor_cap.ssh_node.spruce" in out.body
+    out = jobs.put(
+        mode="setting",
+        key="claim.reserve.ssh_node.spruce",
+        value={"run_slice": 1},
+        reason="test",
+    )
+    assert "set claim.reserve.ssh_node.spruce" in out.body
+    for key in (
+        "claim.executor_cap.ssh_node.spruce",
+        "claim.reserve.ssh_node.spruce",
+    ):
+        jobs.put(mode="setting", key=key, unset=True, reason="test")
+
+
+def test_setting_door_refuses_bad_host_suffixed_knobs(
+    jobs: JobHandler,
+) -> None:
+    with pytest.raises(BadInput):
+        jobs.put(
+            mode="setting",
+            key="claim.executor_cap.ssh_node.",
+            value=4,
+            reason="test",
+        )
+    with pytest.raises(BadInput):
+        jobs.put(
+            mode="setting",
+            key="claim.executor_cap.no_such_executor.spruce",
+            value=4,
+            reason="test",
+        )
+    with pytest.raises(BadInput):
+        jobs.put(
+            mode="setting",
+            key="claim.reserve.ssh_node.spruce",
+            value={"no_such_type": 1},
+            reason="test",
+        )
 
 
 def test_setting_door_refuses_bad_reserve(jobs: JobHandler) -> None:

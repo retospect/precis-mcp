@@ -52,7 +52,7 @@ Remote Login "allow full disk access for remote users" setting; ``terminal``
 attest at all: the NAS reaches it through the VM's mount, and no grant on the
 host binary applies. Known gaps: (i) one-shot
 cron/launchd-timer interpreters are not long-running and do not attest; (ii)
-a host with no ``host_heartbeat`` row (caspar, daemon-free by design) cannot
+a host with no ``host_heartbeat`` row (the database host, daemon-free by design) cannot
 receive attestations — logged once per process; (iii) several stdio
 ``precis serve`` processes on one host without distinct ``PRECIS_PROCESS``
 share one key, latest write wins, so one serve's denial can be overwritten by
@@ -96,7 +96,7 @@ _FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
 # arm in ``executors/_common.py`` needs). ``_boot_process`` is the
 # ``worker_logs.process``-shaped name (``PRECIS_PROCESS`` env, e.g.
 # ``precis-worker`` / ``precis-worker-agent``) this boot_id is advertised
-# under — a host can run more than one profile (melchior runs both), so
+# under — a host can run more than one profile (the agent host runs both), so
 # the advertised value is keyed ``(host, process)``, not just ``host``.
 _boot_id: str | None = None
 _boot_process: str | None = None
@@ -286,6 +286,96 @@ def collect_mem_used_pct() -> float | None:
         return None
 
 
+def collect_mem_free_mb() -> int | None:
+    """Best-effort currently-*admittable* memory in MiB, else ``None``.
+
+    The RAM half of footprint admission's live headroom (td655172) — the
+    ``mem_mb`` capacity row is static, so the claim cross-checks its RSS
+    reservation against this measured number per beat. The probe nets the
+    host's OS reserve (:func:`precis.workers.capability_probe.
+    mem_reserve_mb`), the same subtraction the capacity row carries, so
+    untracked consumers can't spend the reserve the ledger protects
+    (td655171 review). Unmeasurable → the meta key stays absent and
+    admission reads as dark (ledger only).
+    """
+    try:
+        from precis.workers.capability_probe import mem_free_mb
+
+        return mem_free_mb()
+    except Exception:
+        log.warning("heartbeat: mem free probe failed", exc_info=True)
+        return None
+
+
+def collect_vram_free_mb() -> int | None:
+    """Best-effort *admittable* free VRAM of the freest single NVIDIA card
+    in MiB, else ``None``.
+
+    The VRAM half of footprint admission's live headroom (td655172) —
+    untracked consumers (LLM serving, interactive use) don't decrement the
+    static ``vram_mb`` row, so the claim cross-checks the reservation
+    against this measured number per beat. It is the best SINGLE card's
+    free (:func:`precis.workers.capability_probe.vram_free_mb`), never the
+    cross-card sum — a model must fit one card — less the host-wide
+    ``PRECIS_HOST_VRAM_RESERVE_MB`` reserve (``0`` by default). Absent (no
+    cards / unmeasurable) → admission reads as dark on this dimension.
+    """
+    try:
+        from precis.workers.capability_probe import vram_free_mb
+
+        return vram_free_mb()
+    except Exception:
+        log.warning("heartbeat: vram free probe failed", exc_info=True)
+        return None
+
+
+def collect_vram_free_cards_mb() -> list[int] | None:
+    """Best-effort per-card free VRAM in MiB (``nvidia-smi`` index order),
+    else ``None``.
+
+    The card-level half of live headroom (td655172 card assignment): the
+    claim picks ONE card from this list — enforcing that card's own
+    headroom and concurrency cap — and stamps ``meta.reserved.gpu_card``
+    so the dispatch binds execution to the admitted card. Raw measured
+    free per card (unlike the scalar, no reserve subtraction): the pick
+    nets the reserve off the card under test itself, read from the
+    ``vram_reserve_mb`` stamp
+    :func:`collect_vram_reserve_mb` writes alongside this list
+    (td655172 review). Absent (no
+    cards / unmeasurable) → claims stay unbound, the pre-binding
+    behaviour.
+    """
+    try:
+        from precis.workers.capability_probe import vram_free_per_card_mb
+
+        return vram_free_per_card_mb()
+    except Exception:
+        log.warning("heartbeat: per-card vram free probe failed", exc_info=True)
+        return None
+
+
+def collect_vram_reserve_mb() -> int | None:
+    """This host's configured ``PRECIS_HOST_VRAM_RESERVE_MB`` reserve in
+    MiB, else ``None``.
+
+    Written alongside :func:`collect_vram_free_cards_mb` so card-bound
+    admission nets the MEASURED host's reserve off the raw per-card
+    free — a remote ``target_node`` claimer reading
+    :func:`precis.workers.capability_probe.vram_reserve_mb` itself would
+    subtract its own env's setting instead of the reservation host's
+    (td655172 review). Unreadable → the key stays absent and a beat
+    carrying the list without the stamp leaves claims on the unbound
+    scalar path.
+    """
+    try:
+        from precis.workers.capability_probe import vram_reserve_mb
+
+        return vram_reserve_mb()
+    except Exception:
+        log.warning("heartbeat: vram reserve probe failed", exc_info=True)
+        return None
+
+
 def collect_top_cpu(n: int = 3) -> list[dict[str, Any]]:
     """Best-effort top-``n`` processes by CPU %, for the factory host strip.
 
@@ -396,7 +486,7 @@ def _probe_nas() -> dict[str, Any]:
     watch/worker daemons use — so an EPERM here means every launchd/cron
     process on this host is locked out of the NAS. That happens when the
     venv python's Full Disk Access grant breaks after ``brew upgrade
-    python`` changes its cdhash (OPEN-ITEMS: 'melchior daemon NAS lockout').
+    python`` changes its cdhash (OPEN-ITEMS: 'gateway daemon NAS lockout').
 
     Runs :func:`_probe_nas_body` on a daemon worker thread and joins with a
     ``PRECIS_NAS_PROBE_TIMEOUT_SECONDS`` bound (default 5s). Additional
@@ -1032,7 +1122,7 @@ def _collect_and_upsert(
     # Live activity (2026-08-09 fetch_oa monopolization postmortem): this
     # process's own {process: snapshot} entry, keyed by the SAME
     # PRECIS_PROCESS source _own_boot_ids_meta uses above — so a host
-    # running more than one profile (melchior: system + agent) nested-
+    # running more than one profile (the agent host: system + agent) nested-
     # merges per-process, same as boot_ids (see record_heartbeat's UPSERT).
     # Skipped entirely pre-first-pass (empty snapshot) to avoid writing
     # noise, and when there's no process name to key it under.
@@ -1070,6 +1160,32 @@ def _collect_and_upsert(
     # series host_heartbeat_log.mem_used_pct keeps per beat.
     if mem_used_pct is not None:
         meta["mem_used_pct"] = mem_used_pct
+
+    # Footprint admission's live headroom (td655172): the measured
+    # admittable free numbers the claim cross-checks footprint
+    # reservations against — available minus the host's reserve, the same
+    # subtraction the static capacity rows carry (td655171) — so
+    # untracked consumers (LLM serving, interactive use) can't over-admit
+    # past the static capacity rows or spend the OS reserve they protect.
+    # Absent when unmeasurable — admission then reads as dark on that
+    # dimension and the ledger stands alone.
+    mem_free_mb = collect_mem_free_mb()
+    if mem_free_mb is not None:
+        meta["mem_free_mb"] = mem_free_mb
+    vram_free_mb = collect_vram_free_mb()
+    if vram_free_mb is not None:
+        meta["vram_free_mb"] = vram_free_mb
+    # Per-card list the claim binds GPU work to (td655172): absent →
+    # admission keeps the unbound scalar fallback above. The reserve
+    # stamp travels with it so the card pick nets THIS host's
+    # PRECIS_HOST_VRAM_RESERVE_MB — a remote target_node claimer must
+    # not read its own env (td655172 review).
+    vram_free_cards_mb = collect_vram_free_cards_mb()
+    if vram_free_cards_mb is not None:
+        meta["vram_free_cards_mb"] = vram_free_cards_mb
+        vram_reserve_mb = collect_vram_reserve_mb()
+        if vram_reserve_mb is not None:
+            meta["vram_reserve_mb"] = vram_reserve_mb
 
     # llm-lane-scheduler S0: on a serving host, the SGLang /metrics scrape
     # (running/queued/KV/retractions) plus host swap-in; self-gates to {}

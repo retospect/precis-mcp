@@ -65,6 +65,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from weakref import WeakKeyDictionary
 
 import numpy as np
 import shapely
@@ -347,6 +348,10 @@ class Unreachable:
     #: for a chord-blocked failure (S1) every crossing partner,
     #: most-crossed first.
     blocked_by: tuple[int, ...] = ()
+    #: Why the shove withdrew the whole net (``_Shove._strip`` only):
+    #: 'guard', 'crossing', 'no-via-site', 'cut' or 'wall'. Empty for a
+    #: genuinely stranded component.
+    cause: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -2659,15 +2664,19 @@ class _ViaPlanter:
         # (net, edge, r_site, clearance) -> statically-surviving points
         # for that net — the re-judge runs once per pair, attempts share it
         self._net_free: dict[tuple[int, int, float, float], np.ndarray] = {}
-        # (id(dyn), dyn._version, net, edge, r_site, clearance, lo, hi, drill)
-        # -> plantable points — the dyn index is per view, shared by that
-        # net's retry attempts; the version key is the index's mutation
-        # count, so a grow loop adding its own vias mid-attempt re-judges
-        self._pts: dict[
-            tuple[int, int, int, int, float, float, float, float, float],
-            np.ndarray,
+        # Retry indices own their cached verdicts only while alive. Keeping
+        # them pinned for an entire build retains every abandoned grow and
+        # its STRtree; only the current mutation version can be reused.
+        self._pts: WeakKeyDictionary[
+            CopperIndex,
+            tuple[
+                int,
+                dict[tuple[int, int, float, float, float, float, float], np.ndarray],
+            ],
+        ] = WeakKeyDictionary()
+        self._static_pts: dict[
+            tuple[int, int, float, float, float, float, float], np.ndarray
         ] = {}
-        self._dyn_refs: dict[int, CopperIndex] = {}  # pins ids against reuse
         # (r_site, clearance) -> (edges a pad could block, edges an env
         # body could block): the tree's reach bound, so an edge outside
         # both skips the per-point index queries entirely
@@ -2958,16 +2967,14 @@ class _ViaPlanter:
             return
         # Zero is the stored via convention for the emitted default drill.
         drill_mm = float(drill_mm or self.default_drill_mm)
-        # one verdict per (dynamic index STATE, net, edge): a net's
-        # attempts all read the same dyn object, so retries are dict
-        # hits — but _grow_net adds this net's own vias to its index
-        # between branches, so the key must carry the mutation version,
-        # not just the object
+        cache = self._static_pts
         if dyn is not None:
-            self._dyn_refs[id(dyn)] = dyn
+            state = self._pts.get(dyn)
+            if state is None or state[0] != dyn._version:
+                state = (dyn._version, {})
+                self._pts[dyn] = state
+            cache = state[1]
         key = (
-            id(dyn),
-            dyn._version if dyn is not None else 0,
             net,
             int(e),
             r_site,
@@ -2976,8 +2983,8 @@ class _ViaPlanter:
             hi,
             drill_mm,
         )
-        if key in self._pts:
-            free = self._pts[key]
+        if key in cache:
+            free = cache[key]
         else:
             free = self.static_survivors(e, net, r_site, clearance)
             if len(free) and self.hole_ix._tree is not None:
@@ -2994,7 +3001,7 @@ class _ViaPlanter:
                 free = free[(tp >= lo - 1e-9) & (tp <= hi + 1e-9)]
             if dyn is not None and len(free):
                 free = free[~self._dynamic_blocked(free, r_site, clearance, net, dyn)]
-            self._pts[key] = free
+            cache[key] = free
         for xy in free:
             x, y = float(xy[0]), float(xy[1])
             yield x, y, _edge_param_at(ctx, e, (x, y))
@@ -3521,7 +3528,10 @@ def _pin_layers(d: TopoDesign, pin: int, n_layers: int, cand_mask: int) -> int:
     """The candidate layers a wire may leave or reach ``pin`` on without
     a via: an SMD pad's own face, every layer for a drilled pad. A pad
     face outside the net's candidates binds nothing here (the terminal
-    stub the plan mints is :func:`realise._fix_terminals`' business)."""
+    stub the plan mints is :func:`realise._fix_terminals`' business).
+    ``d.pin_side`` must be the ROUTED pose's face — the mesh walls a pad
+    where the pose puts it; ``realise._sides_at_pose`` re-reads it for
+    a part the placer flipped (td637902)."""
     return _pin_mask(int(d.pin_side[pin]), n_layers) & cand_mask or cand_mask
 
 
@@ -6154,6 +6164,11 @@ _SHOVE_GROWS = 20
 _SHOVE_VARIANT = "m"
 _SHOVE_BEAM = 4
 _SHOVE_SEEDS = 3
+#: multi-start RNG salt stride — ``seed`` rotates the seeded net-order
+#: shuffles by whole salt blocks so two recovery attempts never draw
+#: the same order (gr635502's track shove); ``seed=0`` reproduces the
+#: original ``Random(s)`` draws bit for bit.
+_SHOVE_SEED_STRIDE = 7919
 #: What a refused net's partial copper does during the phase (s1fix
 #: review F1): ``True`` strips it from the cell when the net's tries
 #: exhaust, so later grows price the freed channel instead of the
@@ -6414,6 +6429,9 @@ class _Shove:
         net_clearance_by_name: Mapping[str, float] | None = None,
         masks: BoardMasks | None = None,
         hv_weight: float = 0.0,
+        seeds: int | None = None,
+        seed: int = 0,
+        budget: int | None = None,
     ) -> None:
         from precis.pcb.rules import NetRules
 
@@ -6424,6 +6442,16 @@ class _Shove:
         self.rules = rules
         self.masks = masks
         self.hv_weight = hv_weight
+        # Per-state memos (the state object is held so its id stays unique):
+        # every candidate of one ``_tries`` call re-judges the same unchanged
+        # state, and replanning it dominates the shove phase.
+        self._shaped_plans: dict[
+            int, tuple[_ShoveState, tuple[int, ...], RoutePlan]
+        ] = {}
+        self._before_guards: dict[
+            tuple[int, frozenset[int]],
+            tuple[_ShoveState, tuple[int, ...], dict[int, set[WirePath]]],
+        ] = {}
         self.net_rules = {
             (str(d.net_name[k]) if k < len(d.net_name) else str(k)): NetRules(
                 track_width_mm=r[0],
@@ -6452,9 +6480,16 @@ class _Shove:
         self.order = list(order)
         self.order_pos = {k: i for i, k in enumerate(order)}
         self.grows = 0
-        self.budget = _SHOVE_GROWS * len(d.net_pins)
+        # Recovery attempts widen/rotate the phase (gr635502): ``seeds``
+        # multi-start shuffles, ``seed`` their RNG salt, ``budget`` the
+        # grow count the starts share — defaults keep the S2 ruling.
+        self.seeds = _SHOVE_SEEDS if seeds is None else max(0, int(seeds))
+        self.seed = int(seed)
+        self.budget = _SHOVE_GROWS * len(d.net_pins) if budget is None else int(budget)
         self.round_yield: list[tuple[int, ...]] = []
         self.exhaustive_noop = False
+        #: net -> 'guard' when the last refused try died in the clearance guard
+        self.last_refusal: dict[int, str] = {}
 
     def _grow(
         self,
@@ -6614,6 +6649,7 @@ class _Shove:
             return None
         candidate = self._apply(st, k, P, atts, occ2, branches)
         if not self._preserves_guard(st, candidate, S):
+            self.last_refusal[k] = "guard"
             return None
         return candidate
 
@@ -6640,7 +6676,16 @@ class _Shove:
         if not others:
             return True
         before = [b.branch for bl in st.builts.values() for b in bl]
-        previous = self._guarded(st, before, others)
+        key = (id(st), frozenset(others))
+        ident = (id(self.d), *map(id, before))
+        hit = self._before_guards.get(key)
+        if hit is not None and hit[0] is st and hit[1] == ident:
+            previous = hit[2]
+        else:
+            previous = self._guarded(st, before, others)
+            if len(self._before_guards) >= 16:
+                self._before_guards.clear()
+            self._before_guards[key] = (st, ident, previous)
         return all(after[n] <= previous.get(n, set()) for n in others)
 
     def _guarded(
@@ -6692,6 +6737,7 @@ class _Shove:
         already made), then the pinned sets {p1}, {p1, p2}, {p1, p2,
         p3}, {p1, .., p4} — a set with no new partner is skipped.
         Yields only the accepted ones."""
+        self.last_refusal.pop(k, None)
         kept_k = [(kk, b) for kk, bl in st.builts.items() if kk != k for b in bl]
         branches_k = [b.branch for _kk, b in kept_k]
         occ_k = st.occupancy.rebuild(kept_k)
@@ -6719,6 +6765,7 @@ class _Shove:
                 if self._preserves_guard(st, candidate, {k}):
                     yield candidate
                     return
+                self.last_refusal[k] = "guard"
             # refused: fall through — the probe may still name swap
             # partners that clear the bigon.
             occ_k = st.occupancy.rebuild(kept_k)
@@ -6760,6 +6807,17 @@ class _Shove:
         # Keep a certificate even when no copper remains for realise to see.
         old_rows = [u for u in st.unreachable if u.net == k]
         pins = tuple(int(p) for p in self.d.net_pins[k])
+        partners_k = tuple(st.partners.get(k, ()))
+        if self.last_refusal.get(k) == "guard":
+            cause = "guard"
+        elif partners_k or st.keys[k][1]:
+            cause = "crossing"
+        elif any(u.layered for u in old_rows):
+            cause = "no-via-site"
+        elif old_rows:
+            cause = "cut"
+        else:
+            cause = "wall"
         row = Unreachable(
             net=k,
             pin=old_rows[0].pin if old_rows else pins[0],
@@ -6768,6 +6826,7 @@ class _Shove:
             layered=bool(st.keys[k][1]) or any(u.layered for u in old_rows),
             blocked_by=tuple(st.partners.get(k, ()))
             or tuple(dict.fromkeys(p for u in old_rows for p in u.blocked_by)),
+            cause=cause,
         )
         occ2 = st.occupancy.rebuild(kept)
         keys = dict(st.keys)
@@ -6892,21 +6951,23 @@ class _Shove:
         self, st0: _ShoveState, budget: int | None = None
     ) -> tuple[_ShoveState, list[tuple[int, ...]]]:
         """Variant (m): the greedy phase re-run from the post-loop
-        cell under the net order and ``_SHOVE_SEEDS`` shuffles of it —
+        cell under the net order and ``self.seeds`` shuffles of it —
         each start an equal share of the budget — the best final cell
         under failure-set inclusion stays. A strict subset wins, equal sets
         compare crossings/vias/length, and incomparable sets retain the earlier
         incumbent (as does an exact tie)."""
         budget = self.budget if budget is None else budget
-        share = max(1, budget // (_SHOVE_SEEDS + 1))
+        share = max(1, budget // (self.seeds + 1))
         best = st0
         best_metric = self._plan_metric(st0)
         yields: list[tuple[int, ...]] = []
-        for s in range(_SHOVE_SEEDS + 1):
+        for s in range(self.seeds + 1):
             order = (
                 self.order
                 if s == 0
-                else random.Random(s).sample(self.order, len(self.order))
+                else random.Random(self.seed * _SHOVE_SEED_STRIDE + s).sample(
+                    self.order, len(self.order)
+                )
             )
             st, y = self.run_greedy(st0, order, min(budget, self.grows + share))
             yields.append(tuple(y))
@@ -6942,6 +7003,21 @@ class _Shove:
         self, st: _ShoveState, branches: list[WirePath], *, shaped: bool = False
     ) -> RoutePlan:
         """Plan a cell with its growth rules, optionally through emit shaping."""
+        if shaped:
+            ident = (id(self.d), *map(id, branches))
+            hit = self._shaped_plans.get(id(st))
+            if hit is not None and hit[0] is st and hit[1] == ident:
+                return hit[2]
+            plan = self._plan_uncached(st, branches, shaped=True)
+            if len(self._shaped_plans) >= 16:
+                self._shaped_plans.clear()
+            self._shaped_plans[id(st)] = (st, ident, plan)
+            return plan
+        return self._plan_uncached(st, branches, shaped=False)
+
+    def _plan_uncached(
+        self, st: _ShoveState, branches: list[WirePath], *, shaped: bool
+    ) -> RoutePlan:
         from precis.pcb.topoplace.realise import (
             _emit_shapes,
             _spoke_offsets,
@@ -7036,6 +7112,9 @@ def build_wires(
     masks: BoardMasks | None = None,
     hv_weight: float = 0.0,
     negotiate: int = _NEGOTIATE_ITERS,
+    shove_seeds: int | None = None,
+    shove_seed: int = 0,
+    shove_budget: int | None = None,
 ) -> Wires:
     """Every net's wire tree on the mesh — spec §2's wires. Returns a
     :class:`Wires`; a component of a net no path can link to the net's
@@ -7065,7 +7144,12 @@ def build_wires(
     worse than the single pass, which is the first candidate
     (td598636). Above
     ``_NEG_ITERS_MAX`` it refuses — the 1.4x present-factor ramp is
-    float-saturated long before that many passes."""
+    float-saturated long before that many passes. ``shove_seeds``,
+    ``shove_seed`` and ``shove_budget`` steer the S2 phase for a
+    failure-driven retry (gr635502): more multi-start shuffles, their
+    RNG salt rotated so a later attempt draws different net orders, and
+    an absolute grow budget replacing the ``_SHOVE_GROWS`` × nets
+    ruling — all ``None``/0 keeps the measured defaults."""
     if int(negotiate) > _NEG_ITERS_MAX:
         raise ValueError(
             f"negotiate={negotiate} exceeds _NEG_ITERS_MAX={_NEG_ITERS_MAX}: "
@@ -7115,6 +7199,14 @@ def build_wires(
     extra: dict[int, list[tuple[int, list[int]]]] = {}
     partners_of: dict[int, list[int]] = {}
     route_order = _net_order(mesh, d, n_layers)
+    if shove_seed:
+        # A nonzero seed rotates the base route order too (gr635502's
+        # seeded re-shove): the retry is a genuinely different pass —
+        # contested channels can seat a different net — not only a
+        # different S2 multi-start draw.
+        route_order = random.Random(shove_seed * _SHOVE_SEED_STRIDE).sample(
+            route_order, len(route_order)
+        )
     rules_full = [
         (*rules_used[k], via_dia[k], via_drill[k]) for k in range(len(d.net_pins))
     ]
@@ -7130,6 +7222,9 @@ def build_wires(
         net_clearance_by_name=net_clearance_by_name,
         masks=masks,
         hv_weight=hv_weight,
+        seeds=shove_seeds,
+        seed=shove_seed,
+        budget=shove_budget,
     )
 
     def preserves_retry(

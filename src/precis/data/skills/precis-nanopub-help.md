@@ -2,17 +2,18 @@
 id: precis-nanopub-help
 family: evidence
 title: precis — publishing claims as signed nanopubs (view='nanopub' + mint pipeline)
-summary: get(kind='finding', view='nanopub') renders a claim hub as TriG — a draft pre-mint, the exact signed bytes post-mint; view='mint-preflight' runs the real gates read-only; an agent may propose a hypothesis but the mint pipeline (approve → sign → OTS anchor) stays CLI/human-driven
+summary: get(kind='finding', view='nanopub') renders a claim hub as TriG — a draft pre-mint, the exact signed bytes post-mint; view='mint-preflight' runs the real gates read-only; an agent may propose a hypothesis but the mint pipeline (approve → sign → anchor → publish) stays human-driven
 answers:
   - how do I check whether my claim has been published as a nanopub?
   - what publish state is this claim hub in?
   - can I mint or sign a nanopub myself as an agent?
   - how do I propose a hypothesis for a human to review?
+  - how do I record a rejection of a hypothesis I proposed?
   - how do I check my payload against the mint gates without approving?
   - when does signing freeze a claim's content?
   - why does a claim hub show as unmintable?
-  - how does the OpenTimestamps (OTS) batch anchor work, and when does a signed nanopub get timestamped?
-applies-to: get (kind='finding', view='nanopub'|'mint-preflight'); put (kind='finding', hypothesis=True); precis nanopub CLI (human-run); reading publish state
+  - what does the OpenTimestamps (OTS) anchor prove, and when does a signed nanopub count as anchored?
+applies-to: get (kind='finding', view='nanopub'|'mint-preflight'|'publish-preflight'); put (kind='finding', hypothesis=True); reading publish state
 status: active
 tags: [workflow, troubleshooting]
 kinds: [finding]
@@ -37,9 +38,7 @@ conflict-search coverage panel reads the hub's `meta.conflict_search`
 ledger as a statement — "no known conflict as of <date>, method
 v<n>, N passages verified" with the covered passages — or says the hub
 was never swept / was swept under an older method / more than 90 days
-ago. Pre-approve, a missing or stale ledger queues one `conflict_sweep`
-refresh job per day (only when the `conflict_search` service is lit);
-the page never runs the search itself. All of this is advisory, never
+ago. The page never runs the search itself. All of this is advisory, never
 an approval veto; missing results do not establish that no opposition
 exists. Details: [[precis-taproot-help]].
 
@@ -47,8 +46,7 @@ exists. Details: [[precis-taproot-help]].
   rendering. Pre-mint you get an **unsigned draft** (placeholder URI,
   `#` status comments; missing grounding is flagged, not invented).
   Once signed you get the **exact frozen bytes** plus a comment header
-  naming the trusty URI and the `nanopub_artifacts` row that holds the
-  authoritative copy.
+  naming the trusty URI and where the authoritative copy lives.
 - Read the header's publish state: `candidate → reviewed → signed →
   anchored → publishing → published → superseded/retracted` (`rejected` off
   `reviewed`). A hub with a live `contradicts` edge renders an
@@ -62,9 +60,8 @@ exists. Details: [[precis-taproot-help]].
   internal: edit in place, returning unsigned approvals to candidate and
   flagging their consumers for re-review. Once signed, correct through a
   successor nanopublication (`npx:supersedes`), including anchored/published
-  predecessors. Existing bytes and proofs remain immutable. Legacy signed
-  reopen/demotion paths still need alignment; do not use them to change a
-  signed claim. Re-read the current state before acting.
+  predecessors. Existing bytes and proofs remain immutable. Re-read the
+  current state before acting.
 - `get(kind='finding', id='fi<id>', view='mint-preflight')` — run the
   **real** mint gates read-only and get the violation list back. Pass a
   candidate envelope as `args={'payload': {...}}`; omit it and the hub's
@@ -80,9 +77,8 @@ exists. Details: [[precis-taproot-help]].
   mirror rots silently the moment a gate changes.
 - **Propose a hypothesis** — see the section below. The one artifact
   type an agent can originate; minting, signing, anchoring, sign-off,
-  and publishing stay human/CLI-only (`precis nanopub
-  approve/sign/signoff/anchor/publish`, or the `/nanopub` web surface)
-  — an attesting signature ties to the signer's own ORCID iD, so there
+  and publishing stay human-only (the `/nanopub` web
+  surface) — an attesting signature ties to the signer's own ORCID iD, so there
   is no way to attest as the machine.
 
 ## Hypothesis — the artifact type an agent can originate
@@ -97,11 +93,9 @@ prose naming the inferential leap and `testable_by` naming the
 discriminating experiment, *"what separates a conjecture from vibes"*.
 
 Reach for it when two findings suggest a binding nobody has
-demonstrated. The worked example
-(`docs/reference/nanopub-example/qi-hypothesis-scaled-switching.trig`)
-came from a composite that **failed** its commensurability gate: every
-clause mapped but the binding was unearned, so it was re-minted
-honestly as a typed Hypothesis. A signed, timestamped hypothesis is a
+demonstrated. A worked case: a composite
+**failed** its commensurability gate (every clause mapped but the binding
+was unearned), so it was re-minted honestly as a typed Hypothesis. A signed, timestamped hypothesis is a
 priority claim on an idea. The sentence stays declarative and unhedged
 — epistemic status lives in the *type*, so a later confirming claim can
 carry the same sentence and converge on the same content address.
@@ -148,7 +142,7 @@ Rules the door enforces:
   `mint-preflight` alike.
 - Naming a passage (`pc<id>`) rather than a whole paper records *which*
   passage provoked the conjecture, as a chunk-granular `motivated-by`
-  edge. Those edges are motivation, never support: `hub_refine` is
+  edge. Those edges are motivation, never support: evidence refinement is
   deliberately blind to them, because widening a guess by searching for
   evidence that agrees with it is a confirmation engine.
 - The sentence faces the blocking lint, **minus the epistemic pair**.
@@ -157,9 +151,7 @@ Rules the door enforces:
   the sentence would name one that never ran. Put the discriminating
   experiment in `testable_by` instead, which the door requires anyway.
   Everything else still applies: one falsifiable assertion, no author
-  names, no dangling reference, terminal period, UTF-8 canon. The
-  reference `.trig` above is the witness — copy its sentence *and* its
-  shape.
+  names, no dangling reference, terminal period, UTF-8 canon.
 
 The door **prepares**; it never approves. It lints the sentence first
 and refuses without writing anything if it fails, so a rejected
@@ -176,6 +168,26 @@ envelope and keeps the prior wording in `meta.testable_by_history` /
 `meta.motivation_history`. An unsigned review reopens in place and consumers
 are flagged/listed for re-review. Once signed, correction requires a successor
 nanopublication; this edit door refuses.
+
+## Record a rejection
+
+To record a rejection, first create the ruling, then link and stamp the hypothesis.
+
+1. Mint an ordinary sourced finding for the negative ruling. State what was
+   run and what it showed, set `cited_in` to the source chunk, and confirm
+   the chase established the finding. See [[precis-finding-help]].
+2. Link the hypothesis to the ruling with
+   `link(id='fi<hypothesis>', rel='retracted-by', target='fi<ruling>')`.
+   Use `rel='superseded-by'` when the ruling is a successor that settles
+   the same ground.
+3. Stamp the hypothesis with
+   `tag(kind='finding', id='fi<hypothesis>', add=['STATUS:refuted'])`.
+   This closes it on the serving quest's gap list and excludes it from
+   default search.
+
+Read the do-not-repropose ledger with
+`search(kind='finding', status='refuted')`. This explicit status opts in
+to refuted findings, which `status='*'` still excludes.
 
 ## Report and definition types
 
@@ -242,12 +254,11 @@ failures an extraction agent can avoid up front:
   them, so judge whether the quote still holds. A source with no ruled
   identifier — textbook/ISBN, patent — keeps its evidence *edge* (visible
   internally) but its passage stays OUT of the payload until its
-  grounding lands (`docs/backlog/nanopub-book-isbn-grounding.md`).
-- **The sha pin is `refs.pdf_sha256`** (the held file). TWO
-  `pdf_sha256` identifier rows per ref is the metadata write-back's
-  normal shape (canonical + as-downloaded alias for dedup probing) and
-  does NOT block minting. Zero anywhere = unmintable until the PDF is
-  re-hashed or acquired.
+  grounding lands.
+- **The sha pin is the ref's `pdf_sha256`** (the held file). TWO
+  `pdf_sha256` identifiers on a ref is the normal shape (canonical +
+  as-downloaded alias) and does NOT block minting. None anywhere =
+  unmintable until the PDF is re-hashed or acquired.
 
 ## Mint gates — computed (pathway) evidence
 
@@ -315,14 +326,12 @@ least one grounding passage from the body that describes the measurement
 sentence alone is not enough. Every method, instrument or quantity the
 sentence names (TEM, STS, a value) must appear in some grounding passage,
 matching acronym and expansion both ways as the paper writes them. The
-preflight list, `precis nanopub check` and `precis nanopub sign` warn
-(`term-coverage`, never blocking) on any method, acronym or number the
+preflight list warns (`term-coverage`, never blocking) on any method, acronym or number the
 claim names that no grounding passage carries, and name up to three chunks
 of the hub's papers that do, figure captions and methods first. Sign
 refuses when evidence was attached after the grounding froze (gate
-`grounding-stale`); for an unsigned row, re-review with
-`precis nanopub reopen fi<id>` then approve again, or sign with the explicit confirm after checking the newer
-evidence. A row approved before 2026-10-04 has no recorded freeze time; its
+`grounding-stale`); the newer evidence needs a human re-review before
+approval. A row approved before 2026-10-04 has no recorded freeze time; its
 last state change stands in, so evidence linked before that change is not
 listed — compare the hub's evidence against the grounding by hand.
 
@@ -338,8 +347,8 @@ verifies conformance and does not compose the sentence.
 
 ## Publish-time gates (past mint — why a signed claim may not publish)
 
-Distinct from mint gates; enumerated by `precis nanopub preflight` and
-on the `/claim/fi<id>` page's review section — one page, reader
+Distinct from mint gates; enumerated on
+the `/claim/fi<id>` page's review section — one page, reader
 evidence + review-and-sign (`/nanopub/fi<id>` is the workbench deep
 link framing it):
 
@@ -350,15 +359,10 @@ link framing it):
   `support_reason` + `verified_by` (plus `verified_at`,
   `verified_claim_sha`) — never a mint-time default. Editing the claim
   sentence invalidates sha-carrying verdicts, so an edited hub's edges
-  re-enter verification rather than keeping a stale stamp. `precis
-  taproot verify-edges` (dry-run default) is the certification sweep;
-  its default run covers both the unstamped and the stale-verified
-  edges; `--hub fi<id> --apply` takes all three cohorts (mint-time
-  stamps too) and releases a reworded hub's edges in one go. A no is
-  memoed on the edge (`rejected_claim_sha`), so re-runs skip it until
-  the claim is edited: remove or sign off such an edge on the claim page.
-  `hub_refine` re-verifies the same three cohorts per pass.
-  The literal sign-off stays human-only.
+  re-enter verification rather than keeping a stale stamp. A no is
+  memoed on the edge (`rejected_claim_sha`), so re-verification skips it
+  until the claim is edited: remove or sign off such an edge on the claim
+  page. The literal sign-off stays human-only.
 - **Trust allowlist** — only pinned (identity, key-fingerprint) pairs
   are trusted, and publishing requires the *attesting* (human) entry.
 - **Order** — atoms publish before the composites citing them; hanging
@@ -369,8 +373,7 @@ link framing it):
 Every gate above (mint and publish) checks *form* — well-formed,
 sourced, traceable. Whether anything else in the corpus actually
 **disagrees** with the claim is a different question, and two relations
-carry that signal, split along who has decided
-(`docs/backlog/disputes-edge-nonblocking-disagreement.md`):
+carry that signal, split along who has decided:
 
 - **`disputes`** — free to file (agent, human, or an LLM judge), **never
   blocks**, from any source kind or direction. "These two claims appear
@@ -380,25 +383,20 @@ carry that signal, split along who has decided
   two claim-hub findings. It renders as a visible, non-red "open
   question" on the claim page and in the overview's
   `open_disputes_count` — a question, not a demerit against either hub.
-- **`contradicts`** — adjudication-only (Part 2 of that item; not yet
-  built). **Blocks the mint mechanically**, and does so unconditionally:
-  `check_contradicts` reads `evidence.live_contradicts`, which counts
-  ANY live `contradicts` edge touching the hub, either direction, any
-  counterpart ref kind — the source-kind/direction filtering an earlier
-  revision of this doc described is gone; adjudication is the warrant
-  now, so there is no narrower reading of "blocks." No code path mints
-  a `contradicts` edge today — the only route to one is Part 2's
-  (unbuilt) adjudication workflow, so a live claim-graph `contradicts`
-  row should be rare and always traceable to an adjudication decision.
+- **`contradicts`** — adjudication-only. **Blocks the mint mechanically**,
+  and unconditionally: any live `contradicts` edge touching the hub, either
+  direction, any counterpart ref kind, blocks. No tool mints a
+  `contradicts` edge, so a live claim-graph `contradicts` row should be rare
+  and always traceable to an adjudication decision.
 
 **When in doubt, file `disputes`.** It is the free, always-available,
 never-wrong move for "I think these disagree" — it can never mis-block
 a claim, and a suspected conflict you can't confidently classify (is
 this the same system? same conditions? a real contradiction or a units
 slip?) is exactly what it exists for. Never file `contradicts` by
-hand — it only ever derives from adjudication (Part 2); filing one
-yourself is against the contract regardless of what any one write door
-happens to check.
+hand — it only ever derives from adjudication; filing one yourself is
+against the contract regardless of what any one write door happens to
+check.
 
 ## Triage a gate refusal (small-model-safe: classify and file, never fix)
 
@@ -424,10 +422,9 @@ per class — do not mutate the hub, its edges, or its sources:
 - `[grounding] edgar source has no parseable SEC accession` → the ref's
   slug is not a dashed accession; a re-ingest/slug-repair item for a
   human, not a hub fix.
-- `[pdf-sha] 0 rows` → acquisition/backfill item
-  (`docs/backlog/pdf-sha256-identifier-hygiene.md` class).
-- `[pdf-sha] >1 rows` → only ambiguous when `refs.pdf_sha256` is NULL;
-  file that combination, otherwise it's the benign alias pair.
+- `[pdf-sha] 0 rows` → acquisition/backfill item.
+- `[pdf-sha] >1 rows` → only ambiguous when the ref's `pdf_sha256` is
+  unset; file that combination, otherwise it's the benign alias pair.
 - `[primary-source]` (hearsay section or in-quote citation marker) →
   hunt-the-primary todo naming the cited work; the claim stays hanging.
 - `[report-attribution]` / `[report-genre]` / `[definition-copula]` →
@@ -443,18 +440,6 @@ per class — do not mutate the hub, its edges, or its sources:
 
 Quote-trimming, claim restructuring (atom vs composite), and every
 approve/sign/signoff click stay out of scope for this triage.
-
-## Registry mirror (read-only sidecar)
-
-A local cache of *other people's* published nanopubs — dark behind
-`PRECIS_MIRROR_ENABLED`; external nanopubs never enter taproot as
-evidence. `precis nanopub mirror status` shows counts;
-`sync --live [--all]` pulls missing codes (read-only GETs). External
-artifacts are frozen by construction (the code IS the content hash);
-`verified` means the trusty recompute over the fetched bytes matched.
-Retraction/supersede are *flags derived from edges* (only a same-signer,
-verified retraction counts), never exclusions. Concurrence — an external
-nanopub asserting one of our AIDA sentences — raises an `alert`.
 
 ## Correcting a claim: signing is the boundary
 
@@ -475,69 +460,41 @@ No-op and scope dry-run edits leave review state unchanged.
 Once signed (including anchored/published), use a new nanopublication whose
 pubinfo asserts `<successor> npx:supersedes <predecessor trusty URI>`, signed with
 the same key. Existing bytes and OTS proofs are immutable. `npx:retracts` is
-withdrawal without a successor. The local supersede door exists only for an
-anchored, unpublished predecessor (`precis nanopub supersede`, below); a
-signed-only predecessor (reopen it instead, nothing is out yet) and a published
-one are still refused, and until a successor is staged the in-place edit refuses
-signed claims. The older reopen/demotion paths still need alignment with this
-boundary; do not use them to edit a signed artifact's claim. Actual
+withdrawal without a successor. No tool stages a successor for you, and
+until one is staged the in-place edit refuses signed claims. Actual
 approval/signing and publication of successors remain the normal human flow.
 
-## Correct an anchored, unpublished artifact
+## Publish states
 
-Run `precis nanopub supersede FI` to stage a local candidate linked to the
-previous artifact. It refuses published predecessors. Review the candidate
-against current evidence, then approve and sign through the ordinary doors
-using the predecessor's key. Staging performs no signing or network calls.
-The successor pubinfo carries `npx:supersedes` pointing to the predecessor's
-trusty URI; previous signed bytes and OTS proofs remain unchanged. Reopening
-or discarding/restaging a candidate retains that predecessor obligation.
-Published supersession and retraction are not supported by this door.
+`get(kind='finding', id='fi123', view='publish-preflight')` reads the
+publish-time gates from stored records, without network calls or state
+changes. It reports **clear to publish** when no blocking issue remains,
+otherwise one line per issue marked **blocking** or **note**. Notes do not
+block publication. This complements `view='mint-preflight'`, which checks
+the candidate payload before approval.
 
-## Publishing state and reconcile
+For `grounding-stale`, today ask a person to reopen the claim to candidate
+and re-approve its grounding, or to read the newer evidence edges and sign
+using the claim page's accept-newer-evidence checkbox.
 
-`precis nanopub publish --live` claims the row (`anchored` -> `publishing`,
-stamped `publishing_since`) in a short transaction, POSTs with no database
-transaction open, then flips `publishing` -> `published`. While `publishing`,
-supersede, reopen, restage and a second publish all refuse the row. A registry
-4xx response reverts it to `anchored`. A 5xx, timeout or dropped connection is
-ambiguous (the registry may hold the bytes), so the row stays `publishing`:
-run `precis nanopub reconcile [--older-than MINUTES]` to look up its trusty URI
-at the registry (present -> `published`, 404 -> `anchored`, else untouched).
+`anchored` → `publishing` → `published`. While a row is `publishing` (the
+registry upload is in flight), supersede, reopen, restage and a second
+publish all refuse it. A row that stays `publishing` after an ambiguous
+registry response is resolved without you by the publication operator:
+present becomes published, absent goes back to anchored. Re-read later.
+For withheld evidence edges, ask the evidence-verification operator to
+re-verify them, or a person to sign off after reading the passages.
 
-## OpenTimestamps (OTS) anchoring — the daily batch sweep
+## OpenTimestamps (OTS) anchoring
 
-A daily `ots_sweep` pass anchors signed artifacts to Bitcoin via
-OpenTimestamps (`src/precis/nanopub/ots.py`). An anchor proves existence
-**no later than** T — an upper bound only, nothing about authorship — and
-exists for key-rotation scoping, so granularity caps at one batch per day.
-Only a 32-byte content-blind digest leaves the box. The sweep ships dark
-until an operator sets `PRECIS_OTS_ENABLED`; the calendar defaults to
-`DEFAULT_CALENDAR` (`PRECIS_OTS_CALENDAR` overrides), with a 30 s
-per-request timeout (`CALENDAR_TIMEOUT_S` — an unreachable calendar once
-hung a manual anchor for 12 h).
-
-- **Stamp** (`ots.stamp_batch`): every publish row in `signed` whose
-  artifact exists becomes one leaf; dependency-dirty and title-drifted
-  rows are skipped (an anchor over soon-superseded bytes buys nothing).
-  Leaf digest = `sha256(exact stored trig bytes)`, re-checked against the
-  generated `byte_sha256` column; leaves sort by ascending artifact id;
-  `make_merkle_tree` builds the root; **one calendar request per batch**.
-  The batch row retains the construction-rule string, the Merkle root,
-  each leaf's serialized inclusion path, and the root proof as `pending`
-  — the leaf table plus the rule string ARE the proof and exist nowhere
-  else.
-- **Upgrade** (`ots.upgrade_sweep`): polls the calendar for pending
-  batches; a completed proof INSERTs a new `upgraded` row (append-only —
-  the `pending` row stays as history). A batch still `pending` past 3
-  days (`STUCK_PENDING_DAYS`) raises the `nanopub_ots` alert
-  `stuck-pending:{batch_id}` at `warn`; the remedy is
-  `precis nanopub re-stamp BATCH_ID` — the raw bytes are retained, so a
-  lost commitment re-anchors under a later date, and a superseded or
-  late-upgraded batch's alert auto-resolves.
-- **Audit** (`ots.audit`): recompute-everything detection over the
-  retained bytes — `byte_sha256` vs a live sha256, the TriG re-parses,
-  the trusty URI / AIDA URI / DOI extracts appear in the parsed quads,
-  each leaf's inclusion path re-derives the recorded root, the latest
-  proof deserializes. Any mismatch raises a `critical` `audit-mismatch`
-  alert. Runs even while the network flag is dark, once proof rows exist.
+Signed artifacts are anchored to Bitcoin in a daily batch via
+OpenTimestamps; a signed artifact counts as `anchored` once its batch is
+stamped. An anchor proves existence **no later than** T — an upper bound
+only, nothing about authorship — and exists for key-rotation scoping, so
+granularity caps at one batch per day. Only a 32-byte content-blind digest
+leaves the system. A batch whose proof stays pending for days raises the `nanopub_ots` alert
+`stuck-pending:{batch_id}` (warn). Ask the timestamp operator to inspect
+and re-stamp a stuck timestamp batch; there is no agent repair call.
+Stored bytes that fail the integrity
+audit raise a critical `audit-mismatch` alert. An external nanopub that
+asserts one of our AIDA sentences raises a `concurrence` alert.

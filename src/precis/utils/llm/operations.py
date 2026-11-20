@@ -268,7 +268,7 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "decides what becomes a citable evidence edge, and a `no`/`partial` "
             "is memoed rather than attached, so a weak verifier silently shapes "
             "the corpus. Reto ruled on 2026-10-22 to route this plain "
-            "completion to castor's local gpt-oss lane. BIG is the capability "
+            "completion to the local-serving node's gpt-oss lane. BIG is the capability "
             "tier; the per-operation `llm.op.chase:verify` chain selects the "
             "local model and resolves its endpoint through the model card."
         ),
@@ -283,8 +283,8 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "`cites` upgrade (`workers/cite_resolve.py`, gr513768 slice 6)."
         ),
         note=(
-            "Reto's explicit choice (gr513768 ruling, 2026-10-24): castor "
-            "local, not a cloud tier — each verdict is small, independent "
+            "Reto's explicit choice (gr513768 ruling, 2026-10-24): the "
+            "local-serving node, not a cloud tier — each verdict is small, independent "
             "and latency-tolerant. BIG is the capability tier; the "
             "per-operation `llm.op.cite_resolve:passage` app_settings row "
             "selects the local model and resolves its endpoint through the "
@@ -296,6 +296,18 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
         model=None,
         label="Taproot dedup judgment",
         description="Deduplicate taproot claims via the `taproot:dedup` operation.",
+        note=(
+            "quota_fallback because a paused judge pauses EVERY mint, not "
+            "just one cast: during the 2026-11-11 norr-her-survey update the "
+            "claude subscription quota window tripped mid-pass and the "
+            "judge returned a pause on every candidate, deferring 21 puts "
+            "for ~17 hours (gr639347). A mint that lands on the chain's "
+            "next non-subscription rung (Opus via OpenRouter, then whatever "
+            "the operator's `llm.op.taproot:dedup` chain offers) beats a "
+            "deferred hub — the dedup prompt already biases toward "
+            "'different', so a weaker rung errs on the recoverable side."
+        ),
+        quota_fallback=True,
     ),
     "taproot:merge-confirm": OpDefault(
         tier=Tier.BIG,
@@ -326,7 +338,7 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
         ),
         note=(
             "BIG by default, as the job's own `tier` param. The prod "
-            "`llm.op.survey_extract` row steers it to the castor local "
+            "`llm.op.survey_extract` row steers it to the local-serving node's local "
             "chain for the gardener-value slice 5 trial."
         ),
     ),
@@ -477,7 +489,7 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "(glm-fleet-flip-safety.md). The worker pass has since moved to "
             "the SMALL tier chain — non-thinking rungs — so the pin is gone "
             "and the hazard with it. Registered so an `llm.op.classify` chain "
-            "(e.g. castor's local gpt-oss-120b) steers the drain without a "
+            "(e.g. the local-serving node's gpt-oss-120b) steers the drain without a "
             "deploy. The Tier-2 escalate client runs as `classify:escalate` "
             "(unregistered) so its PRECIS_CLASSIFY_ESCALATE_MODEL pin survives "
             "— the re-judge must be a different model than tier 1."

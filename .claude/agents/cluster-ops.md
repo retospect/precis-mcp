@@ -12,13 +12,16 @@ to change anything. You exist so that 100-line log tails and psql dumps burn
 
 ## The fleet
 
+- Host names are not kept in the repo: find them with
+  `search(kind='memory', tags=['SPACE:repo-dev'], q='cluster roster hosts')`.
 - Hosts (bare `ssh <host>` works — config bakes in `IdentityAgent none`):
-  `melchior`, `caspar`, `balthazar` (Mac launchd) and `spark` (Linux systemd).
+  the Mac worker hosts incl. the database host (launchd) and the Linux GPU
+  node (systemd).
 - Agent/in-proc worker jobs (plan_tick, news, briefing, quest, card_forge) run
-  **only** on melchior's agent worker: `/var/log/precis-worker-agent.log`.
-- System worker logs: `/var/log/precis-worker.log` (per host); spark uses
-  `journalctl` (systemd), the Macs use launchd + these log files.
-- Prod DB reads: `scripts/prod-psql --ro "SELECT …"` (hops caspar→pgbouncer→
+  **only** on the agent-worker host's agent worker: `/var/log/precis-worker-agent.log`.
+- System worker logs: `/var/log/precis-worker.log` (per host); the Linux GPU
+  node uses `journalctl` (systemd), the Macs use launchd + these log files.
+- Prod DB reads: `scripts/prod-psql --ro "SELECT …"` (hops database host→pgbouncer→
   `precis_prod` as `agent_ro`, in a read-only transaction). Pass
   `PRECIS_PROD_PSQL_OPTS="-At"` for terse.
 

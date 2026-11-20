@@ -1195,7 +1195,7 @@ def boot(
         # boot upsert, no migration.
         _gated(MeasureHandler)
         # checklist — Checklist-Manifesto-style argued check ledgers
-        # (docs/backlog/checklist-kind.md). Named, versioned items;
+        # (me693927). Named, versioned items;
         # per-target verdicts accumulate in an append-only ledger instead
         # of restarting. Core (not a plugin) because pcb — the first
         # consumer — is core.

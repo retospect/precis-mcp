@@ -15,6 +15,11 @@ reclaimed with it (same argument ``install_watchdog`` makes for its
 breadcrumb). A session that cannot be weak-referenced falls back to an
 ``id()``-keyed dict capped at :data:`_MAX_FALLBACK_SESSIONS` — bounded,
 if not collectable.
+
+Under ``PRECIS_MCP_STATELESS_HTTP`` (gr660588) every request gets a
+fresh session object, so every bucket is empty on arrival: suppression
+never fires — the same "no session → show the hint" fallback, arrived
+at per request.
 """
 
 from __future__ import annotations

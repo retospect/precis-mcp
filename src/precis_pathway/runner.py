@@ -24,7 +24,7 @@ numpy) back into :func:`run_pathway`'s artifact shape.
 ``autocatpath_seed``/``autocatpath_aggregate`` job_types
 (``precis_pathway.seed_job``/``.aggregate_job``) call these two
 functions. Heavy backends move to the compute lane the same way
-(``docs/backlog/autocatpath-integration.md`` in precis-mcp).
+(`me690505` in precis-mcp).
 """
 
 from __future__ import annotations
@@ -34,12 +34,13 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import signal
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -344,6 +345,103 @@ def _stamp_endpoint_tol(results: Results) -> None:
             rec["evidence"].setdefault("tol_eV", float(tol))
 
 
+def _demote_endpoint_minima(results: Results) -> None:
+    """Apply the gr593139 ruling (Reto 2026-11-11) to the freshly minted
+    trust records, in place: seeds whose relaxed endpoints differ in
+    GEOMETRY — a different fingerprint — land in SEPARATE minima, not a
+    disagreement. Each minimum is its own basin entry: identity records
+    get a ``minimum`` label (``m0`` = the lowest-energy basin; energy is
+    the tie-break only) and every record gets ``n_minima``.
+
+    Every ``endpoint_agreement`` record judged against a non-basin
+    minimum is RECOMPUTED against that minimum's own reference:
+    ``delta_meV``/``e_min_eV`` move from the basin minimum to the seed's
+    own minimum (the basin values keep their provenance under
+    ``basin_delta_meV``/``basin_e_min_eV``). Only then does a
+    ``fail``/``fatal`` demote to ``marginal``/``warn`` stamped
+    ``distinct_minimum`` — when the seed's own minimum AGREES within
+    ``tol_eV``. A non-basin minimum whose seeds span more than tol
+    hides a real disagreement: it keeps failing, so catpath's
+    ``_trust_summary`` (computed in ``_analysis_payloads`` right after
+    this) no longer blocks on a basin split but still blocks on a
+    within-minimum spread. Unfingerprinted evidence can't prove a
+    distinct minimum and fails closed.
+
+    Runs after the engine mints the records and before
+    :func:`_analysis_payloads` — same in-place stamp pattern as
+    :func:`_stamp_endpoint_tol`, and clustering per ``(model, state)``
+    mirrors the engine's own grouping. ``replay_barrier_gate`` recomputes
+    the same demotion from stored evidence at view time.
+    """
+    from precis.utils import trust_gate
+
+    records = [r for r in getattr(results, "trust", None) or () if isinstance(r, dict)]
+    if not records:
+        return
+    scope: tuple[None, set[str]] = (None, set())  # mint-time: the whole network
+    by_ms: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    for r in records:
+        if r.get("check") == "endpoint_identity" and r.get("state"):
+            by_ms.setdefault((r.get("model"), r["state"]), []).append(r)
+    minima_by_model: dict[Any, dict[Any, dict[Any, dict[int, float]]]] = {}
+    for (model, state), recs in by_ms.items():
+        if model not in minima_by_model:
+            minima_by_model[model] = trust_gate.endpoint_minima(
+                records, scope, model=model
+            )
+        groups = minima_by_model[model].get(state) or {}
+        ordinals = trust_gate.minimum_ordinals(recs)
+        basin = trust_gate.minimum_basin_fp(groups)
+        for r in recs:
+            ev = r.get("evidence")
+            if isinstance(ev, dict):
+                ev.setdefault("minimum", ordinals.get(ev.get("fingerprint"), "?"))
+                ev["n_minima"] = len(groups)
+        for r in records:
+            if (
+                r.get("check") != "endpoint_agreement"
+                or r.get("state") != state
+                or r.get("model") != model
+            ):
+                continue
+            ev = r.get("evidence")
+            if not isinstance(ev, dict):
+                continue
+            ev["n_minima"] = len(groups)
+            landing = trust_gate.minimum_landing(r, minima_by_model[model])
+            if landing is None:
+                continue
+            fp, within = landing
+            ev["minimum"] = ordinals.get(fp, "?")
+            if fp == basin:
+                continue
+            members = groups.get(fp) or {}
+            for key, value in (
+                ("delta_meV", round(within * 1000.0, 1)),
+                ("e_min_eV", min(members.values()) if members else None),
+            ):
+                if value is not None:
+                    if isinstance(ev.get(key), int | float) and not isinstance(
+                        ev.get(key), bool
+                    ):
+                        ev.setdefault(f"basin_{key}", ev[key])
+                    ev[key] = value
+            tol = ev.get("tol_eV")
+            tol = (
+                float(tol)
+                if isinstance(tol, int | float) and not isinstance(tol, bool)
+                else trust_gate.endpoint_tol_ev()
+            )
+            if (
+                r.get("verdict") == "fail"
+                and r.get("severity") == "fatal"
+                and within <= tol
+            ):
+                r["verdict"] = "marginal"
+                r["severity"] = "warn"
+                ev["distinct_minimum"] = True
+
+
 def _atoms_to_extxyz(atoms: Any) -> str:
     """One relaxed ASE ``Atoms`` → an extxyz string (lossless: cell, pbc,
     per-atom info). The wire form the precis ``structure`` seam ingests."""
@@ -413,10 +511,42 @@ def run_pathway(
     # matches what actually ran — not the raw request.
     effective = cfg.to_dict()
     prepared = _stamp_slab(cfg, slab_extxyz)
-    results = run(prepared.cfg, log=log)
+    pipeline_mod = sys.modules.get(getattr(run, "__module__", "") or "")
+    captured, restore = _capture_run_units(pipeline_mod)
+    try:
+        results = run(prepared.cfg, log=log)
+    finally:
+        restore()
     _stamp_endpoint_tol(results)
+    _demote_endpoint_minima(results)
 
+    # Same per-(model, seed) units the fan-out hands
+    # ``aggregate_seed_partials`` — so the monolith emits the same
+    # minima entries and wired network instead of a pooled one.
+    units = [
+        {
+            "seed": c["partial"].get("seed"),
+            "model": c["partial"].get("model"),
+            "model_index": c["model_index"],
+            "partial": c["partial"],
+            "structures": {
+                name: {"energy": float(e), "extxyz": _atoms_to_extxyz(a)}
+                for name, (e, a) in (c["collect"] or {}).items()
+                if not str(name).startswith("poison:")
+            },
+        }
+        for c in captured
+    ]
+    extra_xyz, minima_block, wiring = _endpoint_minima_payload(results, units)
+    structures_extxyz = _structures_extxyz(results)
+    structures_extxyz.update(extra_xyz)
+
+    _wire_minima_results(
+        results, units, wiring, energy_thresh=_energy_thresh(prepared.cfg)
+    )
     results_json, graph_json = _analysis_payloads(prepared.cfg, results)
+    if minima_block:
+        results_json["endpoint_minima"] = minima_block
     return {
         "content_key": content_key(effective),
         "autocatpath_version": __version__,
@@ -425,7 +555,7 @@ def run_pathway(
         "results_json": results_json,
         "graph_json": graph_json,
         "methods_md": provenance.methods_text(prepared.cfg, results),
-        "structures_extxyz": _structures_extxyz(results),
+        "structures_extxyz": structures_extxyz,
         "warnings": list(results.warnings),
     }
 
@@ -1067,8 +1197,7 @@ def run_coverage_scan(
 ) -> CoverageScanResult:
     """Run catpath's ab-initio-thermodynamics coverage scan
     (``autocatpath.coverage.scan``) for the MLIP spec at ``model_index`` —
-    the anchor generator of ``docs/backlog/surface-pourbaix-staircase-
-    optimizer.md`` slice 1.
+    the anchor generator of ``me692414`` slice 1.
 
     Without ``slab_extxyz`` the engine's scan builds its own clean slab
     from ``config.slab`` (element + facet). With it, the exported candidate
@@ -1659,6 +1788,708 @@ def poll_seed_partial_detached(
     return result
 
 
+def _reaggregate(values: Iterable[Any], tol: float) -> dict[str, Any]:
+    """``Estimate.as_dict()`` rebuilt from a SUBSET of pooled ``values`` —
+    mirrors ``autocatpath.uncertainty.aggregate`` field for field (a NaN
+    mean and ``no_samples`` on empty, never a fabricated 0.0) so a
+    per-minimum re-pool lands the same serialized shape the engine
+    produces, without importing the engine here. ``tol`` is the same
+    ``energy_thresh`` the pool was originally aggregated under, so a
+    re-pooled subset keeps identical ``low_confidence`` semantics."""
+    vals = [
+        float(v)
+        for v in values
+        if isinstance(v, int | float)
+        and not isinstance(v, bool)
+        and math.isfinite(float(v))
+    ]
+    if not vals:
+        return {
+            "mean": float("nan"),
+            "std": float("nan"),
+            "n": 0,
+            "values": [],
+            "low_confidence": True,
+            "reasons": ["no_samples"],
+        }
+    mean = sum(vals) / len(vals)
+    std = (
+        math.sqrt(sum((v - mean) ** 2 for v in vals) / (len(vals) - 1))
+        if len(vals) > 1
+        else 0.0
+    )
+    return {
+        "mean": mean,
+        "std": std,
+        "n": len(vals),
+        "values": vals,
+        "low_confidence": std > tol or len(vals) < 2,
+        "reasons": [
+            r
+            for r, hit in (
+                ("insufficient_samples", len(vals) < 2),
+                ("spread", std > tol),
+            )
+            if hit
+        ],
+    }
+
+
+def _energy_thresh(cfg: Any) -> float:
+    """``cfg.search.energy_thresh`` — the spread tolerance
+    ``aggregate_partials`` pooled node energies, barriers and delta_e
+    under; :func:`_reaggregate` needs it to re-pool a subset of the
+    pooled ``values`` with identical ``low_confidence`` semantics."""
+    thresh = getattr(getattr(cfg, "search", None), "energy_thresh", None)
+    return (
+        float(thresh)
+        if isinstance(thresh, int | float) and not isinstance(thresh, bool)
+        else 0.0
+    )
+
+
+def _endpoint_minima_payload(
+    results: Results,
+    seed_results: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, str], dict[str, Any], dict[str, Any]]:
+    """Per-minimum state entries and per-minimum barriers (gr593139).
+
+    Clustering the pooled ``endpoint_identity`` records by fingerprint
+    gives each ``(state, minimum)`` a label — ``m0`` is the basin (the
+    lowest-energy minimum; energy is the tie-break only). Every
+    NON-basin minimum whose seeds carried geometries becomes its own
+    relaxed-site state entry ``<state>@<mK>`` in the returned ``extra``
+    extxyz map — the site label the relaxed geometry earned; the basin
+    keeps the canonical state name. And every step's barrier is
+    regrouped by the ``(reactant-min, product-min)`` pair each seed's
+    endpoints sat in — ``m0->m1`` rides different geometry than
+    ``m0->m0`` — pooled per pair, so the artifact answers "what barrier
+    does THIS minimum give", the half of the ruling a pooled edge
+    cannot. An unprovable landing (no fingerprint) groups under ``?``.
+
+    The pair for a step is judged on the STEP's own
+    ``endpoint_identity`` record — a state can relax differently on
+    adjacent steps. All step-specific landings survive clustering. The
+    lowest landing remains the fallback only for a step the records never
+    fingerprinted.
+
+    Only ``model_index == 0`` units count — they alone collect geometry
+    (:func:`run_seed_partial`), so their energies, barriers and
+    fingerprints sit on one potential's scale and grouping them is
+    meaningful. Records stamped to another model are excluded; an
+    unstamped record counts (freshly aggregated per-seed records can
+    predate model stamping). Returns ``(extra_extxyz, block, wiring)``
+    — ``({}, {}, {})`` when no geometry model or minima can be resolved;
+    ``wiring`` feeds :func:`_wire_minima_network`, which writes the same
+    split into the network the artifact's consumers actually read.
+    """
+    from precis.utils import trust_gate
+
+    records = [r for r in getattr(results, "trust", None) or () if isinstance(r, dict)]
+    units = [r for r in seed_results if r.get("model_index") == 0]
+    if not records or not units:
+        return {}, {}, {}
+    tag = next(
+        (
+            u.get("model")
+            for u in units
+            if isinstance(u.get("model"), str) and u.get("model")
+        ),
+        None,
+    )
+    recs0 = (
+        records
+        if tag is None
+        else [r for r in records if r.get("model") in (None, tag)]
+    )
+    scope: tuple[None, set[str]] = (None, set())  # mint-time: the whole network
+    minima = trust_gate.endpoint_minima(recs0, scope, model=None)
+    if not minima:
+        return {}, {}, {}
+
+    idents: dict[Any, list[dict[str, Any]]] = {}
+    for r in recs0:
+        if r.get("check") == "endpoint_identity" and r.get("state"):
+            idents.setdefault(r["state"], []).append(r)
+    # fingerprint -> "mK" — the trust view's own ordinal labels, so a
+    # ``NO2@m1`` entry names the same minimum the endpoint table prints.
+    labels = {s: trust_gate.minimum_ordinals(rs) for s, rs in idents.items()}
+
+    # The seed's lowest landing as a legacy fallback and, for barrier-pair assignment, the
+    # STEP-specific landing: ``(state, step, seed) -> (fingerprint, e)``.
+    collapsed: dict[tuple[Any, Any], tuple[Any, float]] = {}
+    for state, groups in minima.items():
+        for fp, members in groups.items():
+            for landing, energy in members.items():
+                seed = landing[0] if isinstance(landing, tuple) else landing
+                cur = collapsed.get((state, seed))
+                if cur is None or energy < cur[1]:
+                    collapsed[(state, seed)] = (fp, energy)
+    step_fp: dict[tuple[Any, Any, Any], tuple[Any, float]] = {}
+    for r in recs0:
+        if r.get("check") != "endpoint_identity" or not r.get("state"):
+            continue
+        step = r.get("step")
+        rec_seed = r.get("seed")
+        if not step or not isinstance(rec_seed, int) or isinstance(rec_seed, bool):
+            continue
+        ev = r.get("evidence")
+        if not isinstance(ev, Mapping):
+            continue
+        e = ev.get("e_eV")
+        if not isinstance(e, int | float) or isinstance(e, bool):
+            continue
+        fp_key = (r["state"], step, rec_seed)
+        cur = step_fp.get(fp_key)
+        if cur is None or float(e) < cur[1]:
+            step_fp[fp_key] = (ev.get("fingerprint"), float(e))
+
+    _missing: Any = object()
+
+    def landing_fp(state: Any, seed: Any, step: Any = None) -> Any:
+        """The fingerprint this seed's endpoint on ``step`` landed on —
+        the step's own identity record first (the same state can relax
+        differently on adjacent steps), else the seed's collapsed
+        lowest-energy pick. ``_missing`` when nothing is recorded;
+        ``None`` is a measured-but-unfingerprinted landing."""
+        if step is not None:
+            got = step_fp.get((state, step, seed))
+            if got is not None:
+                return got[0]
+        fallback = collapsed.get((state, seed))
+        return fallback[0] if fallback is not None else _missing
+
+    def landing_label(state: Any, seed: Any, step: Any = None) -> str:
+        fp = landing_fp(state, seed, step)
+        if fp is _missing:
+            return "?"
+        return labels.get(state, {}).get(fp, "?")
+
+    extra: dict[str, str] = {}
+    states_block: dict[str, Any] = {}
+    basins: dict[Any, Any] = {}
+    for state, groups in minima.items():
+        real = {fp: m for fp, m in groups.items() if fp is not None}
+        basin = min(real, key=lambda fp: min(real[fp].values()), default=None)
+        basins[state] = basin
+        per: dict[str, Any] = {}
+        for fp, members in groups.items():
+            label = labels.get(state, {}).get(fp, "?")
+            entry: dict[str, Any] = {
+                "seeds": sorted({k[0] if isinstance(k, tuple) else k for k in members}),
+                "e_eV": min(members.values()),
+            }
+            if fp is not None:
+                entry["fingerprint"] = fp
+                entry["basin"] = fp == basin
+            if fp is not None and fp != basin:
+                name = f"{state}@{label}"
+                entry["state_entry"] = name
+                # The minimum's lowest-energy collected geometry.
+                best_geo: tuple[float, str] | None = None
+                for unit in units:
+                    geo = (unit.get("structures") or {}).get(state)
+                    if (
+                        any(
+                            unit.get("seed") == (k[0] if isinstance(k, tuple) else k)
+                            for k in members
+                        )
+                        and isinstance(geo, Mapping)
+                        and isinstance(geo.get("extxyz"), str)
+                    ):
+                        geo_energy = geo.get("energy")
+                        rank = (
+                            float(geo_energy)
+                            if isinstance(geo_energy, int | float)
+                            and not isinstance(geo_energy, bool)
+                            and math.isfinite(float(geo_energy))
+                            else float("inf")
+                        )
+                        if best_geo is None or rank < best_geo[0]:
+                            best_geo = (rank, geo["extxyz"])
+                if best_geo is not None:
+                    extra[name] = best_geo[1]
+            per[label] = entry
+        states_block[str(state)] = per
+
+    pairs: dict[str, dict[str, dict[str, Any]]] = {}
+    pair_members: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
+    for i, unit in enumerate(seed_results):
+        if unit.get("model_index") != 0:
+            continue
+        steps = (unit.get("partial") or {}).get("steps") or {}
+        for step, ent in steps.items():
+            if not isinstance(ent, Mapping):
+                continue
+            useed = unit.get("seed")
+            a_fp = landing_fp(ent.get("reactant"), useed, step)
+            b_fp = landing_fp(ent.get("product"), useed, step)
+            a_lab = landing_label(ent.get("reactant"), useed, step)
+            b_lab = landing_label(ent.get("product"), useed, step)
+            pair = f"{a_lab}->{b_lab}"
+            member = pair_members.setdefault(str(step), {}).setdefault(
+                (a_lab, b_lab),
+                {
+                    "a_fp": None if a_fp is _missing else a_fp,
+                    "b_fp": None if b_fp is _missing else b_fp,
+                    "idxs": [],
+                },
+            )
+            member["idxs"].append(i)
+            bucket = pairs.setdefault(str(step), {}).setdefault(
+                pair, {"seeds": set(), "barrier": [], "delta_e": []}
+            )
+            if isinstance(useed, int):
+                bucket["seeds"].add(useed)
+            for key in ("barrier", "delta_e"):
+                value = ent.get(key)
+                if (
+                    isinstance(value, int | float)
+                    and not isinstance(value, bool)
+                    and math.isfinite(float(value))
+                ):
+                    bucket[key].append(float(value))
+    barriers_block = {
+        step: {
+            pair: {
+                "seeds": sorted(b["seeds"]),
+                "n": len(b["seeds"]),
+                "barrier": (
+                    sum(b["barrier"]) / len(b["barrier"]) if b["barrier"] else None
+                ),
+                "barrier_std": (
+                    math.sqrt(
+                        sum(
+                            (v - sum(b["barrier"]) / len(b["barrier"])) ** 2
+                            for v in b["barrier"]
+                        )
+                        / len(b["barrier"])
+                    )
+                    if len(b["barrier"]) > 1
+                    else 0.0
+                ),
+                "delta_e": (
+                    sum(b["delta_e"]) / len(b["delta_e"]) if b["delta_e"] else None
+                ),
+            }
+            for pair, b in by_pair.items()
+        }
+        for step, by_pair in pairs.items()
+        if by_pair
+    }
+    block: dict[str, Any] = {"model": tag, "states": states_block}
+    if barriers_block:
+        block["barriers"] = barriers_block
+    wiring = {
+        "minima": minima,
+        "labels": labels,
+        "basin": basins,
+        "pair_members": pair_members,
+    }
+    return extra, block, wiring
+
+
+def _link_stats(link: dict[str, Any], bar: Any, de: Any) -> None:
+    """Re-stamp a ``graph_json`` link's flat fields from re-pooled
+    Estimate dicts — the same fields ``build_graph`` writes
+    (``barrier``/``delta_e`` means, ``*_std``, ``low_confidence`` and
+    ``trust_reasons``). A ``None`` estimate leaves that key alone, so a
+    link keeps the pooled number for whatever didn't re-pool."""
+    low = False
+    if isinstance(bar, dict):
+        link["barrier"] = bar.get("mean")
+        link["barrier_std"] = bar.get("std")
+        low = bool(bar.get("low_confidence"))
+    if isinstance(de, dict):
+        link["delta_e"] = de.get("mean")
+        link["delta_e_std"] = de.get("std")
+        low = low or bool(de.get("low_confidence"))
+    link["low_confidence"] = low
+    reasons = list(
+        dict.fromkeys(
+            list((bar or {}).get("reasons") or [])
+            + list((de or {}).get("reasons") or [])
+        )
+    )
+    if reasons:
+        link["trust_reasons"] = reasons
+    else:
+        link.pop("trust_reasons", None)
+
+
+def _wire_minima_results(
+    results: Results,
+    seed_results: Sequence[Mapping[str, Any]],
+    wiring: Mapping[str, Any],
+    *,
+    energy_thresh: float,
+) -> None:
+    """Separate measured minima before the engine computes any summaries."""
+    if not wiring:
+        return
+    from autocatpath.uncertainty import Estimate
+
+    payload: dict[str, Any] = {
+        "nodes": {name: est.as_dict() for name, est in results.node_energies.items()},
+        "edges": [
+            {k: v.as_dict() if isinstance(v, Estimate) else v for k, v in edge.items()}
+            for edge in results.edges
+        ],
+    }
+    _wire_minima_network(payload, {}, seed_results, wiring, energy_thresh=energy_thresh)
+    results.node_energies = {
+        name: Estimate(**est) for name, est in payload["nodes"].items()
+    }
+    results.edges = [
+        {
+            k: Estimate(**v)
+            if k in ("barrier", "delta_e") and isinstance(v, dict)
+            else v
+            for k, v in edge.items()
+        }
+        for edge in payload["edges"]
+    ]
+    # Site variants retain the canonical state's stoichiometry for CHE and
+    # gas-ledger labels; their energy and connectivity come from the landing.
+    for name in results.node_energies:
+        if name in results.ledgers or "@" not in name:
+            continue
+        base = name.rsplit("@", 1)[0]
+        if base in results.ledgers:
+            results.ledgers[name] = results.ledgers[base]
+
+
+def _wire_minima_network(
+    results_json: dict[str, Any],
+    graph_json: dict[str, Any],
+    seed_results: Sequence[Mapping[str, Any]],
+    wiring: Mapping[str, Any],
+    *,
+    energy_thresh: float,
+) -> None:
+    """Write the per-minimum split into the CONSUMED network (gr593139).
+
+    The sidecar block :func:`_endpoint_minima_payload` returns describes
+    the minima; this rewrites the ``results_json``/``graph_json`` that
+    ``_dispatch_common.summarize``, ``run_kinetics`` and every
+    results.json consumer actually read, so a demoted endpoint split is
+    followed by a network that stops mixing measurements of different
+    questions:
+
+    * each non-basin fingerprinted minimum becomes its own
+      ``<state>@<mK>`` node, pooled over the seeds that landed there —
+      the same state entry the ``extra`` extxyz map names;
+    * each measured non-basin minimum pair becomes its own reaction
+      edge ``<a>[@<mX>]-><b>[@<mY>]`` pooled over just that pair's
+      seeds — ``m0->m1`` is a different barrier than ``m0->m0``;
+    * the canonical state/edge re-pools to what is left — the basin
+      pair plus every landing that can't be proven distinct
+      (unfingerprinted ``?`` landings and the other models' units;
+      the same fail-closed rule as the trust gate, never a fabricated
+      basin measurement).
+
+    Subsetting the serialized ``values`` pools (never the raw partials)
+    keeps the corrections ``aggregate_partials`` already folded in, and
+    a length mismatch between a pool and the measurable units leaves
+    that entry pooled rather than mislabelled.
+    """
+    if not isinstance(results_json, dict) or not wiring:
+        return
+    minima = wiring.get("minima") or {}
+    labels = wiring.get("labels") or {}
+    basins = wiring.get("basin") or {}
+    pair_members = wiring.get("pair_members") or {}
+    split: dict[Any, set] = {
+        state: {fp for fp in groups if fp is not None and fp != basins.get(state)}
+        for state, groups in minima.items()
+    }
+
+    def _partial(unit: Mapping[str, Any]) -> Mapping[str, Any]:
+        partial = unit.get("partial")
+        return partial if isinstance(partial, Mapping) else {}
+
+    nodes = results_json.get("nodes")
+    if isinstance(nodes, dict):
+        for state, groups in minima.items():
+            fps = split.get(state)
+            est = nodes.get(state)
+            if not fps or not isinstance(est, dict):
+                continue
+            values = est.get("values")
+            if not isinstance(values, list):
+                continue
+            measuring = [
+                i
+                for i, u in enumerate(seed_results)
+                if state in (_partial(u).get("states") or {})
+            ]
+            if len(measuring) != len(values):
+                continue
+            pos = {ui: k for k, ui in enumerate(measuring)}
+            assigned: set[int] = set()
+            per_minimum: dict[Any, dict[Any, float]] = {}
+            for fp, members in groups.items():
+                for landing, energy in members.items():
+                    seed = landing[0] if isinstance(landing, tuple) else landing
+                    for i in measuring:
+                        unit = seed_results[i]
+                        if unit.get("model_index") != 0 or unit.get("seed") != seed:
+                            continue
+                        assigned.add(i)
+                        raw = _partial(unit)["states"][state]
+                        # The pooled value already includes thermo/ledger
+                        # corrections. Apply that same offset to this step's
+                        # endpoint, which need not be the seed's state pick.
+                        value = energy + values[pos[i]] - raw
+                        sample_map = per_minimum.setdefault(fp, {})
+                        sample_map[seed] = min(sample_map.get(seed, value), value)
+            canonical = [values[pos[i]] for i in measuring if i not in assigned]
+            for fp, by_seed in per_minimum.items():
+                samples = list(by_seed.values())
+                if fp not in fps:
+                    canonical.extend(samples)
+                    continue
+                label = (labels.get(state) or {}).get(fp)
+                if not label:
+                    continue
+                nodes[f"{state}@{label}"] = _reaggregate(samples, energy_thresh)
+            nodes[state] = _reaggregate(canonical, energy_thresh)
+
+    edges = results_json.get("edges")
+    edge_by_name = {e.get("name"): e for e in edges or [] if isinstance(e, dict)}
+    gnodes = graph_json.get("nodes") if isinstance(graph_json, dict) else None
+    glinks = graph_json.get("links") if isinstance(graph_json, dict) else None
+    link_by_name = {l.get("name"): l for l in glinks or [] if isinstance(l, dict)}
+    new_edges: list[dict[str, Any]] = []
+    new_links: list[dict[str, Any]] = []
+    removed_steps: set[str] = set()
+    for step, by_pair in pair_members.items():
+        edge = edge_by_name.get(step)
+        if not isinstance(edge, dict):
+            continue
+        reactant, product = edge.get("reactant"), edge.get("product")
+        moved_pairs: dict[tuple[str, str], dict[str, Any]] = {}
+        for (a_lab, b_lab), info in by_pair.items():
+            a_split = info.get("a_fp") in split.get(reactant, ())
+            b_split = info.get("b_fp") in split.get(product, ())
+            if not (a_split or b_split):
+                continue
+            moved_pairs[(a_lab, b_lab)] = {
+                "reactant": f"{reactant}@{a_lab}" if a_split else reactant,
+                "product": f"{product}@{b_lab}" if b_split else product,
+                "idxs": list(info.get("idxs") or ()),
+            }
+        for info in moved_pairs.values():
+            info["name"] = f"{info['reactant']}->{info['product']}"
+        if not moved_pairs:
+            continue
+        moved_units = {i for p in moved_pairs.values() for i in p["idxs"]}
+        measuring_step = {
+            i
+            for i, u in enumerate(seed_results)
+            if step in (_partial(u).get("steps") or {})
+        }
+        if measuring_step and measuring_step <= moved_units:
+            removed_steps.add(step)
+        lconf: dict[int, set[str]] = {}
+        for i, u in enumerate(seed_results):
+            ent = (_partial(u).get("steps") or {}).get(step)
+            if isinstance(ent, Mapping) and ent.get("low_confidence"):
+                lconf[i] = {
+                    str(t)
+                    for t in (
+                        ent.get("low_confidence_from") or ("edge:low_confidence",)
+                    )
+                }
+
+        def _stamp_lowconf(
+            est: dict[str, Any],
+            idxs: Iterable[int],
+            lconf: dict[int, set[str]] = lconf,
+        ) -> None:
+            tags = sorted({t for i in idxs for t in lconf.get(i, set())})
+            if tags:
+                est["low_confidence"] = True
+                est["reasons"] = list(
+                    dict.fromkeys(list(est.get("reasons") or []) + tags)
+                )
+
+        pooled: dict[str, dict[str, Any]] = {}
+        for key in ("barrier", "delta_e"):
+            est = edge.get(key)
+            values = est.get("values") if isinstance(est, dict) else None
+            if not isinstance(values, list):
+                continue
+            measuring = [
+                i
+                for i, u in enumerate(seed_results)
+                if isinstance((_partial(u).get("steps") or {}).get(step), Mapping)
+                and (_partial(u).get("steps") or {})[step].get(key) is not None
+            ]
+            if len(measuring) != len(values):
+                continue
+            pos = {ui: k for k, ui in enumerate(measuring)}
+            keep_units = [i for i in measuring if i not in moved_units]
+            keep = _reaggregate([values[pos[i]] for i in keep_units], energy_thresh)
+            pairs2: dict[tuple[str, str], dict[str, Any]] = {}
+            for pk, info in moved_pairs.items():
+                member = [i for i in info["idxs"] if i in pos]
+                pairs2[pk] = _reaggregate(
+                    [values[pos[i]] for i in member], energy_thresh
+                )
+            if key == "barrier":
+                _stamp_lowconf(keep, keep_units)
+                for pk, info in moved_pairs.items():
+                    _stamp_lowconf(pairs2[pk], [i for i in info["idxs"] if i in pos])
+            pooled[key] = {"keep": keep, "pairs": pairs2}
+        for key, rep in pooled.items():
+            edge[key] = rep["keep"]
+        for pk, info in moved_pairs.items():
+            new_edge: dict[str, Any] = {
+                "name": info["name"],
+                "reactant": info["reactant"],
+                "product": info["product"],
+            }
+            if "barrier" in pooled:
+                new_edge["barrier"] = pooled["barrier"]["pairs"][pk]
+            new_edge["delta_e"] = (
+                pooled["delta_e"]["pairs"][pk]
+                if "delta_e" in pooled
+                else edge.get("delta_e")
+            )
+            new_edges.append(new_edge)
+        link = link_by_name.get(step)
+        if isinstance(link, dict):
+            _link_stats(
+                link,
+                pooled.get("barrier", {}).get("keep"),
+                pooled.get("delta_e", {}).get("keep"),
+            )
+            for pk, info in moved_pairs.items():
+                new_link = dict(link)
+                new_link["name"] = info["name"]
+                new_link["source"] = info["reactant"]
+                new_link["target"] = info["product"]
+                _link_stats(
+                    new_link,
+                    pooled.get("barrier", {}).get("pairs", {}).get(pk),
+                    pooled.get("delta_e", {}).get("pairs", {}).get(pk),
+                )
+                new_links.append(new_link)
+    if isinstance(edges, list):
+        edges[:] = [e for e in edges if e.get("name") not in removed_steps]
+        edges.extend(new_edges)
+    if isinstance(glinks, list):
+        glinks[:] = [e for e in glinks if e.get("name") not in removed_steps]
+        glinks.extend(new_links)
+
+    if not (isinstance(gnodes, list) and isinstance(nodes, dict)):
+        return
+    gnode_by_id = {n.get("id"): n for n in gnodes if isinstance(n, dict)}
+    appended: list[dict[str, Any]] = []
+    for name, est in nodes.items():
+        if not isinstance(est, dict):
+            continue
+        gnode = gnode_by_id.get(name)
+        if not isinstance(gnode, dict):
+            # rsplit: state names already carry site notation (``NO@N``),
+            # so ``NO@N@m1``'s canonical base is ``NO@N``, not ``NO``.
+            base = (
+                gnode_by_id.get(str(name).rsplit("@", 1)[0])
+                if "@" in str(name)
+                else None
+            )
+            if not isinstance(base, dict):
+                continue
+            gnode = dict(base)
+            gnode["id"] = name
+            appended.append(gnode)
+            gnode_by_id[name] = gnode
+        mean = est.get("mean")
+        if isinstance(mean, int | float) and not isinstance(mean, bool):
+            gnode["energy"] = float(mean)
+        std = est.get("std")
+        if isinstance(std, int | float) and not isinstance(std, bool):
+            gnode["energy_std"] = float(std)
+        gnode["low_confidence"] = bool(est.get("low_confidence"))
+        reasons = est.get("reasons") or []
+        if reasons:
+            gnode["trust_reasons"] = list(reasons)
+        else:
+            gnode.pop("trust_reasons", None)
+    pathway = results_json.get("pathway")
+    root = pathway[0] if isinstance(pathway, list) and pathway else None
+    ref = (gnode_by_id.get(root) or {}).get("energy")
+    ref = (
+        float(ref)
+        if isinstance(ref, int | float)
+        and not isinstance(ref, bool)
+        and math.isfinite(float(ref))
+        else 0.0
+    )
+    for gnode in [*gnodes, *appended]:
+        energy = gnode.get("energy")
+        if (
+            isinstance(energy, int | float)
+            and not isinstance(energy, bool)
+            and math.isfinite(float(energy))
+        ):
+            gnode["rel_energy"] = float(energy) - ref
+    gnodes.extend(appended)
+
+
+def _capture_run_units(
+    pipeline: Any,
+) -> tuple[list[dict[str, Any]], Callable[[], None]]:
+    """Wrap ``pipeline.run_one_seed`` for one ``run()`` so the monolith
+    keeps the same per-``(model, seed)`` view the fan-out's
+    ``seed_results`` hand :func:`_endpoint_minima_payload`: the partial
+    itself, and — for the geometry model (the one ``run()`` passes
+    ``collect`` to) — that seed's relaxed geometries, merged back into
+    ``run()``'s shared dict with its own lowest-energy-wins rule so
+    ``results.structures`` is untouched.
+
+    Returns ``(captured, restore)`` — ``captured`` accumulates one
+    ``{"partial", "model_index", "collect"}`` entry per call as
+    ``run()`` dispatches (``model_index == 0`` exactly when a collect
+    dict was substituted, the geometry-model seam); ``restore()`` undoes
+    the module-attribute patch and must run in a ``finally``. A pipeline
+    without a ``run_one_seed`` seam captures nothing and the minima
+    payload degrades to the canonical network — feature-detected, not a
+    version floor.
+    """
+    captured: list[dict[str, Any]] = []
+    orig = getattr(pipeline, "run_one_seed", None)
+    if not callable(orig):
+        return captured, lambda: None
+
+    def hook(*args: Any, **kwargs: Any) -> Any:
+        shared = kwargs.get("collect")
+        per_seed: dict[str, Any] | None = {} if shared is not None else None
+        if per_seed is not None:
+            kwargs["collect"] = per_seed
+        partial = orig(*args, **kwargs)
+        if per_seed is not None and shared is not None:
+            for name, geo in per_seed.items():
+                prev = shared.get(name)
+                # states merge lowest-energy-wins like the engine's own
+                # collect; ``poison:`` refs overwrite unconditionally
+                # (engine writes them per seed, last wins).
+                if prev is None or geo[0] < prev[0] or str(name).startswith("poison:"):
+                    shared[name] = geo
+        captured.append(
+            {
+                "partial": partial,
+                "model_index": 0 if per_seed is not None else 1,
+                "collect": per_seed,
+            }
+        )
+        return partial
+
+    pipeline.run_one_seed = hook
+    return captured, lambda: setattr(pipeline, "run_one_seed", orig)
+
+
 def aggregate_seed_partials(
     config: dict[str, Any],
     # Covariant (Sequence + Mapping, not list[dict]) so a caller can pass
@@ -1679,6 +2510,17 @@ def aggregate_seed_partials(
     :func:`run_seed_partial` — so these energies are on one potential's scale
     and min-energy-wins is meaningful, mirroring the monolith).
 
+    gr593139: when seeds landed in distinct minima the canonical state
+    keeps the basin geometry and every OTHER fingerprinted minimum gets
+    its own ``<state>@<mK>`` extxyz entry; ``results_json
+    ["endpoint_minima"]`` records the per-state minima (fingerprint,
+    seeds, energy, state entry) and a per-step barrier grouped by the
+    ``mA->mB`` minimum pair each seed measured — see
+    :func:`_endpoint_minima_payload`. :func:`_wire_minima_network` then
+    writes the same split into ``results_json``/``graph_json`` nodes and
+    edges themselves, so the network summarize/kinetics consume stops
+    pooling barriers across different minima.
+
     Pure numpy (``autocatpath.pipeline.aggregate_partials`` — no ML deps),
     so this runs in-process on any node, not just wherever the seeds ran.
     """
@@ -1693,6 +2535,7 @@ def aggregate_seed_partials(
     partials = [r["partial"] for r in seed_results]
     results = aggregate_partials(prepared.cfg, partials)
     _stamp_endpoint_tol(results)
+    _demote_endpoint_minima(results)
     lattice: dict[str, float] = {}
     for r in seed_results:
         lattice.update(r.get("lattice") or {})
@@ -1709,8 +2552,15 @@ def aggregate_seed_partials(
             if name not in best or energy < best[name][0]:
                 best[name] = (energy, geo["extxyz"])
     structures_extxyz = {name: xyz for name, (_e, xyz) in best.items()}
+    extra_xyz, minima_block, wiring = _endpoint_minima_payload(results, seed_results)
+    structures_extxyz.update(extra_xyz)
 
+    _wire_minima_results(
+        results, seed_results, wiring, energy_thresh=_energy_thresh(prepared.cfg)
+    )
     results_json, graph_json = _analysis_payloads(prepared.cfg, results)
+    if minima_block:
+        results_json["endpoint_minima"] = minima_block
     return {
         "content_key": content_key(effective),
         "autocatpath_version": __version__,
@@ -2147,7 +2997,7 @@ def run_kinetics_subprocess(
     eleven hours.
 
     The cause is not established (see
-    ``docs/backlog/autocatpath-aggregate-ran-11h-on-a-33s-job.md``), which is
+    `gr694966`), which is
     the second reason for the subprocess: a timeout lands a *legible*
     ``kinetics_error`` where today there is only silence, so the next
     occurrence identifies itself instead of needing another archaeology pass.

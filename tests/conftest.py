@@ -118,6 +118,7 @@ from precis.hints import HintBus
 from precis.runtime import PrecisRuntime
 from precis.store import Migrator, Store
 from tests import _testmon_shim
+from tests._network import _no_outbound_network  # noqa: F401 (autouse fixture)
 from tests._node import require_node  # noqa: F401  (fixture for needs_node)
 from tests._repo_git import require_repo_git  # noqa: F401  (fixture for needs_repo_git)
 
@@ -125,7 +126,7 @@ from tests._repo_git import require_repo_git  # noqa: F401  (fixture for needs_r
 # (postgres at host.docker.internal:5432, role + db both
 # ``precis_test``); override via env when running elsewhere.
 # struct_relax mints refuse loudly when PRECIS_DFT_NODE is unset (no
-# node-literal default since the 2026-08-29 spark retirement); deploy always
+# node-literal default since the 2026-08-29 spruce retirement); deploy always
 # renders it in prod, so tests get a stand-in. Module-level (not a fixture):
 # struct_relax captures the env into ``_NODE`` at import, which happens at
 # collection — before any session fixture runs. Tests of the unset behavior
@@ -754,6 +755,11 @@ def _refuse_bare_suite_on_a_slice(config: pytest.Config) -> None:
 
 def pytest_configure(config: pytest.Config) -> None:
     _refuse_bare_suite_on_a_slice(config)
+    config.addinivalue_line(
+        "markers",
+        "allow_network: explicitly permit outbound Python sockets for an integration test; "
+        "prefer injected transports. Nanopub publication remains blocked.",
+    )
     # gr558530: testmon crashes on extensionless files; no-op without testmon.
     _testmon_shim.install()
     config.addinivalue_line(
@@ -782,7 +788,8 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "no_cov: cannot run under the coverage tracer (a native crash or "
-        "OOM that takes the xdist worker down with it — gr543576). Only "
+        "OOM that takes the xdist worker down with it — gr543576; or a "
+        "wall-clock throughput assert the tracer invalidates — gr701510). Only "
         "check.yml's coverage-db job deselects it (-m 'not no_cov'); every "
         "other lane, the nightly full shape included, still runs it.",
     )
@@ -863,6 +870,21 @@ def _reset_connection_scope() -> Iterator[None]:
     os.environ.pop(_scope.SERVE_READ_ONLY_ENV, None)
     _scope._serve_read_only = False
     _scope._boot_read_only = False
+
+
+@pytest.fixture(autouse=True)
+def _release_deploy_clock_outside_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin ``release_deploy``'s clock to midday UTC (gr697664): its dispatch
+    hold reads the wall clock against ``release.no_release_windows``, so a
+    suite run at 03:30Z would otherwise hold every deploy dispatch a test
+    expects. The hold's own tests override ``_utcnow``."""
+    from datetime import UTC, datetime
+
+    from precis.workers.job_types import release_deploy
+
+    monkeypatch.setattr(
+        release_deploy, "_utcnow", lambda: datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -983,6 +1005,21 @@ def _reset_drain_flag() -> Iterator[None]:
     from precis import liveness
 
     liveness._DRAIN.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_live_nanopub_registry() -> Iterator[None]:
+    """Never publish or reconcile against a real registry from a test."""
+    from precis.nanopub import intro, registry
+
+    def denied(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("live nanopub registry call in a test — inject post=/fetch=")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(registry, "_default_post", denied)
+        patch.setattr(registry, "_default_lookup", denied)
+        patch.setattr(intro, "_default_post", denied)
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -1647,8 +1684,9 @@ def id_of(body: str) -> int:
 
     Universal handles: the create-ack now reads ``created <kind> <handle>.``
     (e.g. ``created memory me158.``). Prefer the first record handle in
-    the ack's leading line; fall back to the legacy ``id=N`` form (still
-    used by update/tag acks and code-less kinds).
+    the ack's leading line; fall back to the ``id=N`` / ``id=pa<N>`` form
+    (still used by update/tag acks, code-less kinds and the paper acquire
+    mint ack).
     """
     from precis.utils import handle_registry
 
@@ -1657,7 +1695,13 @@ def id_of(body: str) -> int:
         parsed = handle_registry.parse(tok)
         if parsed is not None and not parsed[1]:  # a record (non-chunk) handle
             return parsed[2]
-    return int(body.split("id=", 1)[1].split()[0].rstrip(",.()"))
+    return int(
+        body.split("id=", 1)[1]
+        .split()[0]
+        .rstrip(",.()")
+        .strip("'\"")
+        .removeprefix("pa")
+    )
 
 
 def record_handle(store: Store, slug: str, *, kind: str = "paper") -> str:

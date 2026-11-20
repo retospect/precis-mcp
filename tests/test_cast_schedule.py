@@ -33,7 +33,7 @@ def test_install_is_idempotent_and_well_formed(store: Any) -> None:
         assert ref.parent_id == watches  # lands under the Watches umbrella
         assert ref.meta["schedule"]["cron"] == expect_cron
         assert ref.meta["schedule"]["backfill_missed"] is False
-        assert ref.meta["executor"] == "claude_inproc"  # opus compose on melchior
+        assert ref.meta["executor"] == "claude_inproc"  # opus compose on maple
         assert ref.meta["job_type"] == expect_job
         assert ref.meta["cast_watch"] == cast
 

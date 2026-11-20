@@ -1,8 +1,9 @@
 """Cross-scheme identifier alias lookup. Mixin on :class:`precis.store.Store`.
 
 A single paper can carry many identifiers — DOI (arXiv DOI form *and*
-journal DOI), arXiv id, Semantic Scholar paperId, PubMed id, MAG id,
-OpenAlex id, DBLP, plus the local ``pdf_hash`` content fingerprint.
+journal DOI), arXiv id, Semantic Scholar paperId, PubMed id, PubMed
+Central id (``pmcid``), MAG id, OpenAlex id, DBLP, plus the local
+``pdf_hash`` content fingerprint.
 Migration ``0009_ref_identifiers.sql`` introduces the
 ``ref_identifiers`` table that holds one row per ``(scheme, value)``
 mapping into ``refs.id``. This mixin provides:
@@ -16,7 +17,8 @@ mapping into ``refs.id``. This mixin provides:
 
 The shape of ``scheme`` strings is documented in the migration header;
 recognised values are ``'doi'``, ``'arxiv'``, ``'s2'``, ``'pubmed'``,
-``'mag'``, ``'openalex'``, ``'dblp'``, ``'corpusid'``, ``'pdfsha256'``.
+``'pmcid'``, ``'mag'``, ``'openalex'``, ``'dblp'``, ``'corpusid'``,
+``'pdfsha256'``.
 The mixin doesn't enforce a closed vocabulary — the table ``CHECK``
 constraint only requires lowercase non-empty strings.
 
@@ -70,6 +72,8 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from psycopg.types.json import Jsonb
+
+from precis.utils import handle_registry
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -130,11 +134,16 @@ _PDF_HASH_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 _OPENALEX_RE = re.compile(r"^W\d{6,}$")
 # PubMed id: pure digits (4-9 chars typically; bound to avoid mistaking too-short ints)
 _PUBMED_RE = re.compile(r"^\d{4,9}$")
+# PubMed Central id: ``PMC`` + digits (bound like _PUBMED_RE — real
+# PMCIDs run 6-8 digits, so a stray ``pmc12`` can't scheme-detect).
+# Bare digits stay ``pubmed``; only the PMC-prefixed form lands here.
+_PMCID_RE = re.compile(r"^pmc\d{4,}$", re.IGNORECASE)
 
 
 def detect_identifier_scheme(value: str) -> str | None:
     """Infer a scheme (``'doi'``, ``'arxiv'``, ``'s2'``, ``'pdfsha256'``,
-    ``'openalex'``, ``'pubmed'``) from the shape of an identifier string.
+    ``'openalex'``, ``'pubmed'``, ``'pmcid'``) from the shape of an
+    identifier string.
 
     Returns ``None`` when the value matches no recognised pattern —
     callers should fall back to slug lookup at that point.
@@ -160,6 +169,8 @@ def detect_identifier_scheme(value: str) -> str | None:
         return "s2"
     if v.startswith(("PMID:", "pmid:", "PubMed:", "pubmed:")):
         return "pubmed"
+    if v.startswith(("PMCID:", "pmcid:", "PMC:", "pmc:")):
+        return "pmcid"
     if v.startswith(
         ("OpenAlex:", "openalex:", "W") if v[:1] in "Ww" else ("OpenAlex:", "openalex:")
     ):
@@ -203,6 +214,8 @@ def detect_identifier_scheme(value: str) -> str | None:
         return "openalex"
     if _PUBMED_RE.match(v):
         return "pubmed"
+    if _PMCID_RE.match(v):
+        return "pmcid"
     return None
 
 
@@ -239,6 +252,13 @@ def _normalise_identifier(scheme: str, value: str) -> str:
         v = re.sub(r"^s2:\s*", "", v, flags=re.IGNORECASE)
     elif scheme == "pubmed":
         v = re.sub(r"^(?:pmid|pubmed):\s*", "", v, flags=re.IGNORECASE)
+    elif scheme == "pmcid":
+        v = re.sub(r"^(?:pmcid|pmc):\s*", "", v, flags=re.IGNORECASE)
+        # Canonical value keeps the ``pmc`` namespace: ``PMC:123`` and
+        # ``pmcid:123`` are the same id as ``pmc123`` — bare digits
+        # alone would collide with the ``pubmed`` shape.
+        if v.isdigit():
+            v = f"pmc{v}"
     elif scheme == "openalex":
         v = re.sub(r"^openalex:\s*", "", v, flags=re.IGNORECASE)
         v = re.sub(r"^https?://openalex\.org/", "", v, flags=re.IGNORECASE)
@@ -452,7 +472,8 @@ class IdentifiersMixin:
 
     def find_paper_ref_by_identifier(self, value: str) -> int | None:
         """Look up a paper ref by ANY known identifier — DOI, arXiv,
-        S2 paperId, PubMed, OpenAlex, MAG, DBLP, pdf_hash.
+        S2 paperId, PubMed, PubMedCentral, OpenAlex, MAG, DBLP,
+        pdf_hash.
 
         Scheme is auto-detected from the value shape via
         :func:`detect_identifier_scheme`. URL forms and explicit
@@ -711,7 +732,7 @@ class IdentifiersMixin:
                 )
                 return False
             owner = c.execute(
-                "SELECT ri.ref_id, r.retired_at IS NOT NULL "
+                "SELECT ri.ref_id, r.retired_at IS NOT NULL, r.kind "
                 "FROM ref_identifiers ri "
                 "JOIN refs r ON r.ref_id = ri.ref_id "
                 "WHERE ri.id_kind = %s AND ri.id_value = %s",
@@ -722,13 +743,24 @@ class IdentifiersMixin:
                 if owner_id == ref_id:
                     return False  # already ours — nothing to do
                 if not owner_deleted:
+                    # gr634191: point at the merge door itself — the
+                    # session MCP can fold the pair now, no web-UI detour.
+                    owner_h = handle_registry.format_handle(str(owner[2]), owner_id)
+                    kind_row = c.execute(
+                        "SELECT kind FROM refs WHERE ref_id = %s",
+                        (ref_id,),
+                    ).fetchone()
+                    this_kind = str(kind_row[0]) if kind_row else str(owner[2])
+                    this_h = handle_registry.format_handle(this_kind, ref_id)
                     raise BadInput(
                         f"{s}={v!r} already belongs to ref id={owner_id}",
                         next=(
-                            "a merge_duplicate cleanup is needed — see "
-                            "get(kind='skill', id='precis-paper-help') §resolving "
-                            "a duplicate ref; prefer the ref with chunks/body as "
-                            "the survivor"
+                            f"preview the merge: edit(kind='{this_kind}', "
+                            f"id='{this_h}', args={{'merge_into': "
+                            f"'{owner_h}', 'reason': '<why>'}}, "
+                            "dry_run=True) — the ref with chunks/body and "
+                            "inbound citations should be the survivor; "
+                            f"flip the pair if that is {this_h}"
                         ),
                     )
                 # Orphan from a soft-deleted ref — reclaim it. The PK is

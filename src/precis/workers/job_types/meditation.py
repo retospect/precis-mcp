@@ -1,14 +1,14 @@
 """``meditation`` job_type — compose the evening nidra cast (a draft).
 
 The evening sibling of :mod:`precis.workers.job_types.reading_brief`. Deterministic
-in-process producer under ``claude_inproc`` (melchior), so the ~45-min segmented
-walk is composed by a **nice model** (``claude-opus`` via the melchior-loopback
+in-process producer under ``claude_inproc`` (the agent host), so the ~45-min segmented
+walk is composed by a **nice model** (``claude-opus`` via the agent-host loopback
 litellm proxy). Driven by a recurring (``meta.schedule`` set) todo
 (``meta.schedule={'cron':'0 19 * * *'}``, ``meta.executor='claude_inproc'``,
 ``meta.job_type='meditation'``). Calls
 :func:`precis.reading.meditation.build_meditation`, which walks the concept graph
 into a standalone dated ``draft`` (voice ``af_nicole``); the ``cast_audio`` pass on
-melchior narrates it onto the feed as a separate downstream step.
+the agent host narrates it onto the feed as a separate downstream step.
 """
 
 from __future__ import annotations

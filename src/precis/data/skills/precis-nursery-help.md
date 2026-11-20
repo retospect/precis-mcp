@@ -2,7 +2,7 @@
 id: precis-nursery-help
 family: work
 title: precis — nursery detector of todo-tree incoherence
-summary: per-minute tree-incoherence detectors — stale claims, long waits, stuck doable, spin loops, plan-tick spins, quest-loop failures — raised as alerts (orphans are detected but not alerted)
+summary: tree-incoherence detectors — stale claims, long waits, stuck doable, spin loops, plan-tick spins, quest-loop failures — raised as alerts (orphans are detected but not alerted)
 answers:
   - why did a nursery alert fire on my todo tree?
   - what does an orphan or stale-claim alert mean?
@@ -10,7 +10,7 @@ answers:
   - why is a leaf stuck in doable and not getting picked up?
   - what counts as a spin loop and what threshold triggers it?
   - what does a lane-skipping alert mean (a job_type that mostly cancels)?
-applies-to: precis worker --only nursery; kind='alert' (alert-source:nursery:*)
+applies-to: kind='alert' (alert-source:nursery:*)
 status: active
 tags: [troubleshooting]
 kinds: [alert]
@@ -24,10 +24,8 @@ surfaces local incoherence via SQL-only detectors, and raises a
 `kind='alert'` per condition (see `precis-alert-help`), deduped per
 *condition* rather than as a rolling digest. No LLM call. The only
 proactive push is a one-shot Discord ping on a *new* `critical`
-condition (a thrashing or dead worker), delivered as a `kind='message'`
-to the Discord channel in `PRECIS_OPS_ALERT_TARGET` (a channel target
-`discord/<guild>/<channel>`, *not* a webhook URL) — unset by default, so
-the push merges dark and everything else stays pull-only.
+condition (a thrashing or dead worker); everything else stays
+pull-only.
 
 ## Detector catalogue
 
@@ -47,13 +45,10 @@ the push merges dark and everything else stays pull-only.
 | `lane-skipping` | a job_type's runs are mostly `STATUS:cancelled` — the handler's deliberate-skip path became the lane's normal outcome, invisible to err/warn counts and `child-failed` | ≥10 cancelled and ≥5× succeeded in 24 h · warn |
 
 `orphan` enforces the strategic invariant: every open todo must trace to
-a `rotation_root` ancestor. It raises **no alert** (`_NO_ALERT`, Reto's
-call 2026-09-18): an orphan todo is project backlog and already sits in
-the todo queue, so republishing it as an alert added a channel without
-adding a reader — 50 of the 55 open alerts that morning were `[orphan]`.
-The detector still runs and logs its count per pass. `stale-claim` catches workers that died
-mid-task — the claim's age is read from `ref_tags.created_at` on the
-open tag row. `stalled-recurring` surfaces a collision-skip pile-up: a
+a `rotation_root` ancestor. It raises **no alert**: an orphan todo is
+project backlog and already sits in the todo queue. The detector still
+runs and logs its count per pass. `stale-claim` catches workers that
+died mid-task. `stalled-recurring` surfaces a collision-skip pile-up: a
 spawned child stuck open will silently prevent further ticks.
 `spin-loop` is the only cross-kind detector — it scans `ref_events`
 rather than the todo tree, catching a background worker that
@@ -76,7 +71,7 @@ panel for pull-style monitoring.
 | `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running and **no** quota/window park pending (a `STATUS:waiting_time` row with `pause_parks` and a future `wake_when` is parked, not stalled — gr638954; the `budget` alert owns that page) | 15 min · **critical** |
 | `embed-lane-stalled` | `embed_batch` jobs queued but none completed in the window — the in-proc embed lane is dark while looking clean | 60 min · **critical** |
 | `unattributed-claimant` | a `claimed-by:` identity (e.g. a container id) with no `host_heartbeat` row claimed work in the window — a non-fleet worker is running | 25 d lookback · warn |
-| `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) from the heartbeat's own launchd context — every launchd/cron daemon on that host is locked out of `/opt/nas` (usually a Full Disk Access grant broken by a `brew upgrade python` cdhash change) | <5 min · **critical** |
+| `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) — every daemon on that host is locked out of the NAS | <5 min · **critical** |
 | `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent activity, skipping a worker-less dev checkout (empty or zero-unit `worker_units`, no `activity`) — the complement of `dead-worker`'s `host_alive` gate for the case where a dead single-writer host takes its own heartbeat down with it | 10 min · **critical** |
 | `kind-shrinkage` | a `(host, process)`'s registered-kind roster (`kind_provider`) lost a kind it advertised in an earlier boot — a broken handler import (missing/broken package) or a deliberate disable/removal | 30 d lookback · **critical** |
 
@@ -95,7 +90,7 @@ designated agent host, so if that executor dies, 401s, or never starts,
 jobs pile up `STATUS:queued` with no failure bubble and the planner goes
 silently dark — the "nothing running with a live lease" gate catches
 this even when the executor never started at all. These raise
-non-ref-scoped alerts (`ref_id=None` + an explicit `fingerprint_key`).
+alerts that are not scoped to a ref.
 
 Recurring subtrees (children of a root carrying `meta.schedule`) are
 exempt from the strategic invariant — they're scheduled work, not
@@ -106,12 +101,10 @@ detector.
 
 `STATUS:cancelled` is a handler's *deliberate* skip (a refused run, not
 an error), so a lane that mostly cancels looks clean everywhere else: no
-worker-log ERROR, no `child-failed` bubble. `_detect_lane_skipping`
-(`src/precis/workers/nursery.py`) reads the `STATUS:` tag transitions of
-the last 24 h (`LANE_SKIP_WINDOW_H`) and fires one `warn` alert per
-job_type — fingerprint `lane-skipping:<job_type>` — when cancelled ≥ 10
-(`LANE_SKIP_MIN_CANCELLED`) and cancelled ≥ 5× succeeded
-(`LANE_SKIP_RATIO`). A few skips beside a healthy success rate, or a
+worker-log ERROR, no `child-failed` bubble. The detector reads the
+`STATUS:` tag transitions of the last 24 h and fires one `warn` alert
+per job_type — fingerprint `lane-skipping:<job_type>` — when cancelled
+≥ 10 and cancelled ≥ 5× succeeded. A few skips beside a healthy success rate, or a
 rarely-run lane, stays quiet. Auto-resolves when the ratio recovers; the
 alert detail quotes the newest skip's `job_event` line so it names the
 leg (token / daemon / image / timeout) the handler recorded.
@@ -164,17 +157,6 @@ A condition is identified by `fingerprint = "<category>:<ref_id>"`.
 Empty findings still run the resolve sweep, so a fixed problem leaves
 the open list promptly.
 
-## Running it
-
-The pass is in the default `precis worker` rotation alongside
-`auto_check` and `schedule`. To run ad-hoc:
-
-```
-precis worker --only nursery --once
-```
-
-In production it runs hourly across the fleet.
-
 ## Surfacing
 
 Open nursery alerts show on the **Alerts** web tab (`/alerts`,
@@ -200,10 +182,11 @@ Two small page-now passes document against this skill:
 
 - `quota_check` refreshes each host's Claude OAuth utilisation snapshot
   and raises `quota_check:auth/<host>:claude-oauth` (critical) when a
-  host's `claude-oauth` credential is expired or unreadable — re-login
-  on the host (`claude login`); agent ticks there fail until then.
+  host's `claude-oauth` credential is expired or unreadable — agent
+  ticks there fail until an operator replaces the vault token
+  `CLAUDE_CODE_OAUTH_TOKEN` (see the alert's triage line).
 - `disk_check` raises `disk_check/<host>:<path>` when free disk on a
-  watched path drops under threshold (`df -h <path>` on the host first).
+  watched path drops under threshold.
 
 ## See also
 

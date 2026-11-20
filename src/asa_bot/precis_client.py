@@ -40,6 +40,18 @@ _RUN_CTX: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar
 )
 
 
+class PrecisToolError(RuntimeError):
+    """The ``tools/call`` result carried ``isError: true``.
+
+    The serve renders refusals (``[error:BadInput] …``) as ordinary
+    ``content`` text under the error flag, so the message is the
+    server's own rendered error. Surfacing it as an exception — rather
+    than as result text — keeps a refusal from being rendered like a
+    hit list (gr663484: ``/precis status`` showed "(empty)" or an
+    error line indistinguishable from data for every kind).
+    """
+
+
 @contextlib.contextmanager
 def run_context(
     *, agentlog_id: int | None = None, source: str | None = None
@@ -215,6 +227,11 @@ class PrecisClient:
         ``params._meta.precis`` — the channel a long-lived serve has for
         per-run attribution (see the module docstring). Explicit kwargs
         win over a :func:`run_context` binding.
+
+        Raises :class:`PrecisToolError` when the result carries
+        ``isError`` — the rendered error text becomes the exception
+        message; an error envelope with no text content still raises,
+        never collapses to a silent ``""``.
         """
         params: dict[str, Any] = {"name": name, "arguments": arguments}
         meta = _run_meta(agentlog_id=agentlog_id, source=source)
@@ -224,13 +241,16 @@ class PrecisClient:
         # MCP tool responses come back as {"content": [{"type": "text",
         # "text": "..."}], "isError": false}.
         content = resp.get("content") if isinstance(resp, dict) else None
-        if not content:
-            return ""
         chunks = []
-        for c in content:
+        for c in content or ():
             if isinstance(c, dict) and c.get("type") == "text":
                 chunks.append(c.get("text", ""))
-        return "\n".join(chunks)
+        text = "\n".join(chunks)
+        if isinstance(resp, dict) and resp.get("isError"):
+            raise PrecisToolError(
+                text or f"precis {name}: tool error (isError, no detail)"
+            )
+        return text
 
     async def _send_recv(self, method: str, params: dict[str, Any]) -> Any:
         if self._proc is None or self._proc.stdin is None or self._proc.stdout is None:

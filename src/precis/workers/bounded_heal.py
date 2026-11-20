@@ -55,7 +55,7 @@ class HealSpec:
     """One bounded heal action's identity + bounds.
 
     ``key`` is the durable state identity (e.g.
-    ``restart-worker:melchior:precis-worker``); ``cap`` the autonomous
+    ``restart-worker:<agent-host>:precis-worker``); ``cap`` the autonomous
     attempt budget before the terminal latch; ``base_cooldown_s`` the
     first inter-attempt cooldown (doubles per attempt). ``title`` /
     ``detail`` seed the cap-escalation gripe.
@@ -140,7 +140,7 @@ def _file_cap_gripe(store: Store, spec: HealSpec, attempts: int) -> int | None:
         f"Autonomous heal cap reached ({attempts}/{spec.cap} attempts) — "
         "latched terminal; human intervention required. The latch ages out "
         f"after {spec.reset_after_s / 3600:.0f}h of quiet.\n"
-        "Design: docs/backlog/self-healing-spine.md Layer 2."
+        "Design: me691477 Layer 2."
     )
     title = f"[bounded-heal] {spec.key} capped: {spec.title}"
     if len(title) > 200:

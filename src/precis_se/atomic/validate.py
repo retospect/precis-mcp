@@ -97,7 +97,7 @@ _M_TO_A = 1e10
 #: frame (the identity-pose contract in :func:`envelope_fit`'s docstring),
 #: but an imported/``from_smiles`` scene's atoms land wherever its own cell
 #: put them, and comparing the two answers nothing. Scale-relative per
-#: docs/backlog/multiscale-design-architecture.md "Units policy" (a fixed Å
+#: me694206 "Units policy" (a fixed Å
 #: epsilon is nonsense across sub-nm..tens-of-nm blocks); 0.5 keeps a
 #: genuine near-drift (atoms hugging the surface after an envelope shrink)
 #: on the protrusion path while catching the dogfood's actual failure, where
@@ -282,7 +282,7 @@ def envelope_fit(
 # :func:`validate_atomic` folds their findings in. Every threshold here is
 # a *fraction of a block's own envelope size* (the smaller of the two
 # blocks involved), never an absolute figure —
-# docs/backlog/multiscale-design-architecture.md "Units policy": an atomic
+# me694206 "Units policy": an atomic
 # design's blocks run from sub-nm to tens of nm, so a fixed epsilon tuned
 # for one scale is nonsense at another; a governing-length fraction reads
 # the same at every scale.

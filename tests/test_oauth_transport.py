@@ -27,10 +27,11 @@ from precis.oauth.store import (
     resolve_access_token,
 )
 from precis.oauth_transport import configure_transport
-from precis.store import Store
+from precis.store import ChunkInsert, Store
 from precis.tools import core
 from precis.user_context import current_principal, require_user, user_scope
 from precis.users import hash_password
+from precis.utils import handle_registry
 
 
 @pytest.fixture
@@ -130,9 +131,9 @@ async def _call(client, raw, session, call_id, verb="get", arguments=None):
     )
 
 
-def _app(store, config, runtime, monkeypatch, profile="typed"):
+def _app(store, config, runtime, monkeypatch, profile="typed", *, stateless=False):
     monkeypatch.setattr(core, "_get_runtime", lambda: runtime)
-    mcp = FastMCP("oauth-test", json_response=True)
+    mcp = FastMCP("oauth-test", json_response=True, stateless_http=stateless)
     monkeypatch.setattr(server, "mcp", mcp)
     monkeypatch.setattr(server, "_mcp_profile", lambda: profile)
     server._register_tools_from_registry()
@@ -253,6 +254,80 @@ def test_oauth_sessions_are_bound_to_user_and_connection(
             assert (
                 await _call(client, other_user, sessions[other_user], 7)
             ).status_code == 401
+
+    asyncio.run(exercise())
+    assert current_principal() is None
+
+
+def test_stateless_oauth_receipts_authenticate_each_request(
+    store: Store,
+    oauth_config: OAuthConfig,
+    runtime_with_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No SDK session ownership map: the bearer alone authorizes each call.
+
+    Reads survive fresh transport apps but never cross OAuth grants, even
+    grants owned by the same account. Revocation still invalidates a receipt.
+    """
+    from precis.runtime.handle_deref import reset_read_receipts
+
+    monkeypatch.setenv("PRECIS_MCP_STATELESS_HTTP", "1")
+    alice, bob = _user(store, "alice"), _user(store, "bob")
+    first, identity = _grant(store, oauth_config, alice.id, ("mcp:full",))
+    other_app, _ = _grant(store, oauth_config, alice.id, ("mcp:full",))
+    other_user, _ = _grant(store, oauth_config, bob.id, ("mcp:full",))
+    ref = store.insert_ref(kind="paper", slug="oauth-receipt", title="Receipt")
+    chunk = store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text="probe")])[0]
+    handle = handle_registry.format_handle("paper", chunk.id, chunk=True)
+
+    async def exercise() -> None:
+        app = _app(store, oauth_config, runtime_with_store, monkeypatch, stateless=True)
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url=oauth_config.resource.removesuffix("/mcp"),
+            ) as client,
+        ):
+            bad = await _call(client, "unknown-bearer", None, 1)
+            assert bad.status_code == 401
+            read = await _call(
+                client, first, None, 2, arguments={"kind": "paper", "id": handle}
+            )
+            assert read.status_code == 200, read.text
+            assert not read.json()["result"].get("isError"), read.text
+            assert "mcp-session-id" not in read.headers
+
+        reset_read_receipts()
+        app = _app(store, oauth_config, runtime_with_store, monkeypatch, stateless=True)
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url=oauth_config.resource.removesuffix("/mcp"),
+            ) as client,
+        ):
+            args = {"kind": "memory", "text": {"$ref": handle}}
+            for raw in (other_app, other_user):
+                denied = await _call(client, raw, None, 3, "put", args)
+                assert denied.status_code == 200, denied.text
+                result = denied.json()["result"]
+                assert result.get("isError"), result
+                assert "[error:Denied]" in result["content"][0]["text"]
+            own = await _call(client, first, None, 4, "put", args)
+            assert own.status_code == 200, own.text
+            result = own.json()["result"]
+            assert not result.get("isError"), result
+            assert "dereferenced text" in result["content"][0]["text"]
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "UPDATE mcp_oauth_grants SET revoked_at = now() WHERE id = %s",
+                    (identity.grant_id,),
+                )
+                conn.commit()
+            revoked = await _call(client, first, None, 5, "put", args)
+            assert revoked.status_code == 401
 
     asyncio.run(exercise())
     assert current_principal() is None
@@ -440,6 +515,148 @@ def test_oauth_legacy_transport_and_unsupported_sdk_fail_closed(
     with TestClient(app) as client:
         assert client.get("/mcp", headers=_headers(raw)).status_code == 503
         assert client.get("/mcp", headers=_headers("install")).status_code == 200
+
+
+def _class_credentials(
+    store: Store, config: OAuthConfig, slice_dir: Any
+) -> dict[str, str]:
+    """One live credential per bearer class, keyed by class name."""
+    from precis import slice_tokens
+
+    alice = _user(store, "alice")
+    return {
+        "install": "install",
+        "slice": slice_tokens.mint(slice_dir, "td42"),
+        "personal": mcp_identity.mint_user_token(store, alice.id, "laptop")[1],
+        "capability": mcp_identity.mint_capability_token(
+            store, alice.id, "connector", ("read",)
+        )[1],
+        "oauth": _grant(store, config, alice.id)[0],
+    }
+
+
+def _class_app(
+    store: Store,
+    config: OAuthConfig,
+    slice_dir: Any,
+    classes: frozenset[str] | None,
+) -> Starlette:
+    async def probe(request):
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/mcp", probe)])
+    server._install_token_auth(
+        app,
+        token="install",
+        store=store,
+        oauth_config=config,
+        slice_dir=slice_dir,
+        classes=classes,
+    )
+    return app
+
+
+@pytest.mark.parametrize("name", list(mcp_identity.CREDENTIAL_CLASSES))
+def test_each_credential_class_is_accepted_only_when_listed(
+    name: str, store: Store, oauth_config: OAuthConfig, tmp_path: Any
+) -> None:
+    credentials = _class_credentials(store, oauth_config, tmp_path)
+    with TestClient(
+        _class_app(store, oauth_config, tmp_path, frozenset({name}))
+    ) as client:
+        wrong = client.get("/mcp", headers=_headers("nope"))
+        assert wrong.status_code == 401
+        for other, raw in credentials.items():
+            response = client.get("/mcp", headers=_headers(raw))
+            if other == name:
+                assert response.status_code == 200, other
+            else:
+                # Refused exactly like a wrong token, challenge included.
+                assert response.status_code == 401, other
+                assert response.content == wrong.content
+                assert dict(response.headers) == dict(wrong.headers)
+        # Only a gate that takes OAuth tokens sends clients to sign in.
+        discovery = client.get("/.well-known/oauth-protected-resource")
+        if name == "oauth":
+            assert "resource_metadata=" in wrong.headers["www-authenticate"]
+            assert discovery.status_code == 200
+        else:
+            assert "www-authenticate" not in wrong.headers
+            assert discovery.status_code == 401
+
+
+def test_default_classes_accept_every_credential_class(
+    store: Store, oauth_config: OAuthConfig, tmp_path: Any
+) -> None:
+    credentials = _class_credentials(store, oauth_config, tmp_path)
+    for classes in (None, frozenset(mcp_identity.CREDENTIAL_CLASSES)):
+        with TestClient(_class_app(store, oauth_config, tmp_path, classes)) as client:
+            for name, raw in credentials.items():
+                assert client.get("/mcp", headers=_headers(raw)).status_code == 200, (
+                    name
+                )
+
+
+def test_oauth_only_gate_makes_no_lookup_for_the_refused_classes(
+    store: Store,
+    oauth_config: OAuthConfig,
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = _class_credentials(store, oauth_config, tmp_path)
+    for fn in ("resolve_user_token", "resolve_capability_token"):
+        monkeypatch.setattr(
+            mcp_identity, fn, lambda *a, _fn=fn: pytest.fail(f"{_fn} was called")
+        )
+    from precis import slice_tokens
+
+    monkeypatch.setattr(
+        slice_tokens,
+        "grant",
+        lambda *a: pytest.fail("slice grant looked up"),
+    )
+    with TestClient(
+        _class_app(store, oauth_config, tmp_path, frozenset({"oauth"}))
+    ) as client:
+        for name in ("install", "slice", "personal", "capability"):
+            response = client.get("/mcp", headers=_headers(credentials[name]))
+            assert response.status_code == 401, name
+        assert (
+            client.get("/mcp", headers=_headers(credentials["oauth"])).status_code
+            == 200
+        )
+        # An OAuth-only gate never reaches the personal/capability resolvers,
+        # even for an unknown OAuth-shaped bearer.
+        assert (
+            client.get("/mcp", headers=_headers(ACCESS_PREFIX + "x")).status_code == 401
+        )
+
+
+def test_ownership_503_only_applies_to_accepted_store_classes(
+    store: Store,
+    oauth_config: OAuthConfig,
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server, "_sdk_session_ownership_supported", lambda: False)
+    credentials = _class_credentials(store, oauth_config, tmp_path)
+    with TestClient(
+        _class_app(store, oauth_config, tmp_path, frozenset({"install", "oauth"}))
+    ) as client:
+        assert (
+            client.get("/mcp", headers=_headers(credentials["oauth"])).status_code
+            == 503
+        )
+        for name in ("personal", "capability"):
+            response = client.get("/mcp", headers=_headers(credentials[name]))
+            assert response.status_code == 401, name
+        assert client.get("/mcp", headers=_headers("install")).status_code == 200
+    with TestClient(
+        _class_app(store, oauth_config, tmp_path, frozenset({"install"}))
+    ) as client:
+        for name in ("personal", "capability", "oauth"):
+            response = client.get("/mcp", headers=_headers(credentials[name]))
+            assert response.status_code == 401, name
 
 
 def test_oauth_context_keeps_pat_and_oauth_namespaces_separate(

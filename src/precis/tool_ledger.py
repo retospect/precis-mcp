@@ -61,6 +61,19 @@ tokens-to-first-gold is one window function over ``(session_id, seq)`` —
 the queryable per-call token log the memory-ablation bench's primary
 metric reads.
 
+Migration 0325 records *whether the error ack helped* (gr613469):
+``error_head`` keeps only the ack's first line, so ``next:`` uptake was
+never measurable from the ledger (the td605104 baseline had to mine job
+transcripts to learn 129/130 acks carried only the generic
+``get(kind='skill', …)`` doc pointer). On an error row the dispatcher
+runs :func:`next_call_summary` over the rendered body and stores the
+first *concrete* next — a ``  next:`` line that IS a call
+(``get``/``search``/``put``/``edit``/``delete``/``tag``/``link(``) and
+not the doc pointer — as ``error_next_concrete`` plus the suggested
+call's ``error_next_verb``/``error_next_kind``, the join keys for "did
+the agent take the hint" (:func:`precis.workers.call_errors.
+hint_followthrough` reports the share).
+
 Operational, **not corpus** — never embedded (peer to
 :mod:`precis.route_log` / :mod:`precis.agentlog` / alerts).
 
@@ -104,6 +117,7 @@ import os
 import re
 import socket
 import threading
+import time
 import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -207,6 +221,15 @@ class ToolCallRecord:
     #: inferred — "which client keeps tripping on this call" is the
     #: mining question this answers.
     client: str | None = None
+    #: Whether the rendered error ack carried a concrete corrected call —
+    #: the first ``next:`` line that IS a runnable call rather than the
+    #: doc pointer (0325, gr613469; :func:`next_call_summary`). ``False``
+    #: on error rows without one; ``None`` on ok rows (no ack to measure).
+    error_next_concrete: bool | None = None
+    #: The suggested call's verb/kind — the join keys for "did the agent
+    #: take the hint". ``None`` unless ``error_next_concrete``.
+    error_next_verb: str | None = None
+    error_next_kind: str | None = None
 
 
 def record_call(store: Store | None, rec: ToolCallRecord) -> None:
@@ -227,15 +250,34 @@ def record_call(store: Store | None, rec: ToolCallRecord) -> None:
 
 def _write(store: Store, rec: ToolCallRecord) -> None:
     with store.pool.connection() as conn:
+        seq = rec.seq
+        if rec.session_id is not None and "-st:" in rec.session_id:
+            # Stateless groups survive processes. Allocate their persisted
+            # ordinal in the same transaction as the row, serializing all
+            # writers of this group (including overlapping server processes).
+            conn.execute("SET LOCAL lock_timeout = '250ms'")
+            conn.execute("SET LOCAL statement_timeout = '250ms'")
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (rec.session_id,),
+            )
+            row = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM tool_calls WHERE session_id = %s",
+                (rec.session_id,),
+            ).fetchone()
+            assert row is not None
+            seq = int(row[0])
         conn.execute(
             """
             INSERT INTO tool_calls (
                 agentlog_id, source, profile, verb, kind, input_keys,
                 outcome, error_type, result_count, latency_ms,
                 session_id, seq, result_bytes, result_tokens_est,
-                error_head, arg_sample, client, result_ids
+                error_head, arg_sample, client, result_ids,
+                error_next_concrete, error_next_verb, error_next_kind
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s, %s, %s::bigint[])
+                      %s, %s, %s, %s, %s, %s, %s, %s::bigint[],
+                      %s, %s, %s)
             """,
             (
                 rec.agentlog_id,
@@ -249,7 +291,7 @@ def _write(store: Store, rec: ToolCallRecord) -> None:
                 rec.result_count,
                 rec.latency_ms,
                 rec.session_id,
-                rec.seq,
+                seq,
                 rec.result_bytes,
                 rec.result_tokens_est,
                 rec.error_head,
@@ -260,6 +302,9 @@ def _write(store: Store, rec: ToolCallRecord) -> None:
                     if rec.result_ids
                     else None
                 ),
+                rec.error_next_concrete,
+                rec.error_next_verb,
+                rec.error_next_kind,
             ),
         )
         conn.commit()
@@ -280,6 +325,49 @@ _SESSION_IDS: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
 _SEQ_COUNTERS: dict[str, int] = {}
 _SESSION_LOCK = threading.Lock()
 
+#: ``PRECIS_MCP_STATELESS_HTTP`` (gr660588): the opt-in streamable-http
+#: mode where the SDK mints a fresh ServerSession per request — or binds
+#: none — so keying the ledger on the session object would give every
+#: call its own ``session_id`` (seq always 1). Read live, mirroring
+#: ``runtime.scope``'s env-signal rule (tests flip it mid-process); the
+#: serving side applies the same flag to ``FastMCP.settings`` in
+#: ``server._run_network_transport``.
+_STATELESS_ENV = "PRECIS_MCP_STATELESS_HTTP"
+_STATELESS_ON = ("1", "true", "yes", "on")
+
+
+def _stateless_http() -> bool:
+    return os.environ.get(_STATELESS_ENV, "").strip().lower() in _STATELESS_ON
+
+
+def _bound_owner_key() -> str | None:
+    """The authenticated owner's durable key, when one is stamped."""
+    try:
+        from precis import principal
+
+        return principal.current_owner_key()
+    except Exception:
+        return None
+
+
+def _stateless_session_id(session: object | None) -> str | None:
+    """The ledger group under ``stateless_http``: owner + UTC hour.
+
+    ``st:<owner>@<hour>`` keys on the durable credential identity — the
+    same key the durable ``read_receipts`` rows use — so the ledger
+    still correlates one principal's calls across requests, restarts and
+    the fresh-per-request session objects the SDK hands out. The hour
+    bucket keeps a long-running server's group from growing unboundedly
+    while staying wider than one request. An ownerless, sessionless call
+    (CLI / in-process) stays ``None`` — nothing here is more durable
+    than the process that made it.
+    """
+    owner = _bound_owner_key()
+    if owner is None and session is None:
+        return None
+    head = f"{worktree_server.session_prefix()}{_slice_prefix()}{socket.gethostname()}"
+    return f"{head}-st:{owner or 'anon'}@{int(time.time() // 3600)}"
+
 
 def _slice_prefix() -> str:
     """``"slice-td<id>-"`` inside a slice-token-attributed call, else ""."""
@@ -294,13 +382,17 @@ def _slice_prefix() -> str:
 
 def _session_id() -> str | None:
     """The currently-bound session's ledger id, minted on first use —
-    ``None`` outside a session (CLI, inproc ticks, tests)."""
+    ``None`` outside a session (CLI, inproc ticks, tests). Under
+    ``PRECIS_MCP_STATELESS_HTTP`` the durable owner + hour groups the
+    call instead — a per-request session object groups nothing."""
     try:
         from precis import serve_ledger
 
         session = serve_ledger.current_session()
     except Exception:
         return None
+    if _stateless_http():
+        return _stateless_session_id(session)
     if session is None:
         return None
     with _SESSION_LOCK:
@@ -333,10 +425,15 @@ def current_session_key() -> tuple[str | None, int | None]:
     the in-flight call's ledger row (e.g. ``precis_se``'s op-trace
     frames) uses this; the ledger's own write consumes the same value
     via :func:`_mint_session_key`, so both agree on the seq.
-    ``(None, None)`` outside a session."""
+    ``(None, None)`` outside a session. Stateless groups return ``(sid, None)``:
+    their ordinal is only known at write time, allocated under a database
+    lock in :func:`_write`. Exposing a process counter would falsely correlate
+    trace frames with unrelated persisted calls after a restart."""
     sid = _session_id()
     if sid is None:
         return None, None
+    if _stateless_http():
+        return sid, None
     with _SESSION_LOCK:
         return sid, _SEQ_COUNTERS.get(sid, 0) + 1
 
@@ -347,6 +444,8 @@ def _mint_session_key() -> tuple[str | None, int | None]:
     sid = _session_id()
     if sid is None:
         return None, None
+    if _stateless_http():
+        return sid, None
     with _SESSION_LOCK:
         n = _SEQ_COUNTERS.get(sid, 0) + 1
         _SEQ_COUNTERS[sid] = n
@@ -554,6 +653,50 @@ def error_head(body: str) -> str | None:
     return mask_secrets(line, warn=False)[:200]
 
 
+# ── error_next_* (migration 0325, gr613469) ─────────────────────────────
+#
+# ``error_head`` keeps only the ack's first line, so ``next:`` uptake was
+# never measurable from the ledger. :func:`next_call_summary` is the
+# read-back: it parses the rendered body's ``  next:`` lines for the
+# first line that IS a runnable call — the same ``verb(`` shape
+# :func:`precis.errors.render_corrected_call` emits — and reports it so
+# the dispatcher can store it on the error row.
+
+#: A ``next:`` line that starts a call — one of the seven surface verbs.
+_NEXT_CALL_RE = re.compile(r"^(get|search|put|edit|delete|tag|link)\(")
+#: The doc pointer — "open the skill" is documentation, not a corrected
+#: call (the td605104 baseline's 129/130).
+_NEXT_SKILL_POINTER_RE = re.compile(r"^get\(\s*kind='skill'")
+#: ``kind='…'`` inside the suggested call text.
+_NEXT_KIND_RE = re.compile(r"\bkind='([^']+)'")
+
+
+def next_call_summary(body: str) -> tuple[bool, str | None, str | None]:
+    """``(concrete, verb, kind)`` of the first corrected call an error
+    body's ``next:`` lines name — 0325's "did the ack offer a runnable
+    fix" measure.
+
+    A ``  next:`` line is concrete when it *is* a call — ``verb(`` with
+    one of the seven surface verbs — and is not the generic doc pointer
+    ``get(kind='skill', …)``: a skill get points at documentation, not
+    at the corrected retry. Prose hints ("to comment: put(…)",
+    "if a skill showed this call …") never match — only a line whose
+    first character starts the call counts. The first concrete line
+    wins: the raise site's own corrected call leads, the
+    dispatcher-appended pointers sort after it.
+    """
+    for line in body.splitlines():
+        if not line.startswith("  next: "):
+            continue
+        call = line.removeprefix("  next: ").strip()
+        m = _NEXT_CALL_RE.match(call)
+        if m is None or _NEXT_SKILL_POINTER_RE.match(call):
+            continue
+        kind = _NEXT_KIND_RE.search(call)
+        return True, m.group(1), kind.group(1) if kind else None
+    return False, None, None
+
+
 def gc(store: Store, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:
     """Delete ``tool_calls`` rows past the retention window, one bounded
     batch per pass. Returns rows deleted (0 when another host holds the
@@ -606,7 +749,7 @@ _CALL_COLS = (
     "call_id, ts, agentlog_id, source, profile, verb, kind, input_keys, "
     "outcome, error_type, result_count, latency_ms, session_id, seq, "
     "result_bytes, result_tokens_est, error_head, arg_sample, client, "
-    "result_ids"
+    "result_ids, error_next_concrete, error_next_verb, error_next_kind"
 )
 
 
@@ -742,7 +885,7 @@ def sessions_rollup(
 ) -> dict[str, Any]:
     """Per-session roll-up of the ledger — the block-navigation slice-2
     meter ("hops, bytes and budget refusals per session",
-    ``docs/backlog/block-navigation.md``).
+    `me694125`).
 
     One row per ``session_id`` (0209's key; NULL-session rows — CLI,
     inproc — correlate by ``agentlog_id`` instead and stay out): call
@@ -895,6 +1038,7 @@ __all__ = [
     "error_head",
     "gc",
     "memory_route",
+    "next_call_summary",
     "record_call",
     "sessions_rollup",
 ]

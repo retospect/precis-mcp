@@ -9,6 +9,7 @@ answers:
   - how do I attach an image to a draft chunk, and who owns clearance for a third-party figure?
   - how do I turn a data table into a rendered graph in a draft?
   - how do I render a structure or se block as a figure in a draft?
+  - how do I embed a pathway energy profile with kinetics in a draft?
   - how do I edit one cell of a table chunk without rewriting the whole grid?
   - how do I add a calculated column, footer total, or column stats to a draft table?
 applies-to: put/edit (kind='draft')
@@ -167,6 +168,57 @@ chunk handle — `[dc<id>]` renders as the target's label+number
 a number: the assigned one shifts when a sibling figure/table is added,
 moved or removed.
 
+## Figure from a pathway
+
+Use a stored pathway directly; no copied energies or Python recipe needed:
+
+```python
+put(kind="draft", id="report", chunk_kind="figure",
+    text="Main-route energy profile and stored kinetics.",
+    meta={"view": {"source": "pathway:<slug>#profile",
+                   "route_only": True, "hide_supply": True,
+                   "kinetics": True, "size": [8, 5]}})
+```
+
+`pathway:<slug>` defaults to `#profile`; `#graph` draws the network.
+The PNG renders lazily on export or first image read. Source edits invalidate
+the cache; Refresh uses the stored recipe, including its graph/profile choice.
+The figure carries a frozen data package and a `derived-from` source link.
+
+Options: `route_only` selects the shortest productive route (supply bridges
+participate before pruning); `hide_supply` removes supply edges and isolated
+states; `top_n_barriers=N` retains the N largest selected reaction barriers.
+`label_threshold_eV` suppresses smaller barrier labels. `U` shifts states with
+recorded `n_H` at V vs RHE; missing `n_H` remains unshifted. `size=[width,height]`
+uses inches, each 1–24. Boolean options default false except `kinetics=True`.
+
+Profile peaks show Ea and stored uncertainty, highlighting the largest route
+barrier. The annotation reads stored log10 TOF, method, trust, temperature and
+gas pressures; absent solves say "kinetics not solved". Rendering never runs
+the solver. Kinetics stays at its recorded environment when `U` shifts the
+profile; the two condition tables can differ. See `precis-pathway-help` for
+decluttered text views and kinetics reads.
+
+## Figure from a quest frontier
+
+```python
+put(kind="draft", id="<draft>", chunk_kind="figure",
+    text="Candidate frontier across two objectives.",
+    meta={"view": {"source": "quest:<id>#frontier",
+                   "x": "barrier", "y": "energy",
+                   "trusted_only": False, "top_n": 12, "label": "handles"}})
+```
+
+Use the quest handle for `<id>`. Give `x` and `y` together as two distinct
+rubric objective keys, or omit both to use the quest's default axes.
+`trusted_only=True` hides provisional candidates. `top_n` is an optional
+positive integer that keeps the points closest to the frontier.
+`label` accepts `handles`, `names`, or `none` (default).
+
+The first export or figure view renders the PNG and freezes its plotted
+data for export. The draft figure links back to the quest and refreshes
+when its frontier inputs change.
+
 ## Code blocks
 
 A `chunk_kind='code'` chunk holds a **verbatim code payload** — an exact
@@ -241,7 +293,11 @@ be the table (a stray prose line refuses — put prose in its own
 paragraph chunk), `text=` never rides with `table=`/`columns=`/`rows=`/
 `footer=` (one data source per write; the legend is `caption=`), and
 `text=` is a *create* input only — on `edit` it's still rejected, use
-the edit forms below.
+the edit forms below. The create reply names the cells whose stored
+value no longer prints back as the literal sent (up to five) —
+`row 1 zip: '02134' stored as 2134` — so a silent coercion is visible
+at write time; send `table=` rows as JSON strings to keep a literal
+verbatim.
 
 Editing: change the data, not the rendered text (`text=` is rejected on a
 table chunk); the four forms are `table={'header':…, 'rows':…}` (whole
@@ -331,11 +387,22 @@ put(
 )
 ```
 
+Rows may omit all formula columns on create, whole-table replacement, and
+`rows=` append; values then follow data-column order. Full-width rows also
+work: use `null` for formula cells. Supplied non-null formula cells are
+discarded and the reply reports their count.
+
 Formulas reference **column names** (`qty*unit_price`), evaluate per row,
 and are stored internally by column id — renames rewrite nothing.
 Operators: `+ - * / // % **`, comparisons, `and/or/not`, and
 `x if cond else y`. Functions:
-`abs round min max sum avg sqrt log exp if_(cond, a, b)`. Names are the
+`abs round min max sum avg sqrt log exp if_(cond, a, b)`. `min`/`max`/
+`sum`/`avg` fold two-or-more columns of the SAME row —
+`sum(qty, shipping)` is each row's qty+shipping — never down a column:
+a one-column call like `sum(qty)` reads as a column total, so a new or
+changed formula spelling it is refused. The column total is a `footer=`
+aggregate (below), which a formula cannot reference — there is no
+share-of-total spelling. Names are the
 only references — attribute access, subscripts, f-strings, comprehensions
 and imports are refused at write time. So is a formula that names a
 column the table doesn't have: a new/changed formula must resolve every
@@ -365,7 +432,11 @@ them; the
 reply notes how many rows a footer skipped as empty/non-numeric. `edit`
 accepts `footer=` by itself to set or replace the spec (`footer={}`
 clears it) — it still counts as the edit's one selector, so it can't ride
-with `table=`/`cell=`/`find=`/`sub=`. Read the results on the `footer:`
+with `table=`/`cell=`/`find=`/`sub=`. The write reply shows the footer
+line before → after — `before: sum(line_cost)=17.0` /
+`after: mean(line_cost)=5.67; count(item)=3` — with the `hash:` and the
+table grid; `dry_run=True` previews exactly that reply (never a "no
+change") and writes nothing. Read the results on the `footer:`
 line under the grid, next to `ids:`.
 
 **`view='stats'`**: `get(kind='draft', id='dc<id>', view='stats')` reports

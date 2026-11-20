@@ -38,7 +38,7 @@ Three sibling maps, precedence-ordered (a head can appear in only one in
 practice, but ``refuted`` wins if it doesn't): ``pending_claims`` — head
 resolves to a finding, not yet a hub — hollow muted-violet ``◇`` to the
 finding. ``refuted_claims`` — head tagged ``STATUS:refuted``
-(docs/backlog/quest-dossier-dialectic.md §"Refuted lifecycle") — filled
+(me690849 §"Refuted lifecycle") — filled
 RED ``◆`` to the finding, wins over live/pending. ``hypothesis_claims`` —
 hub has ``refs.meta.artifact_type == 'hypothesis'``
 (docs/backlog/hypothesis-cites-render-not-stored.md) — fuchsia ``◈`` to
@@ -55,9 +55,11 @@ import uuid
 from collections.abc import Callable, Collection, Mapping
 from html import escape
 
+from markdown_it import MarkdownIt
+from markdown_it.renderer import RendererHTML
 from markupsafe import Markup
 
-from precis.utils import handle_registry
+from precis.utils import adsorbate_star, handle_registry
 from precis.utils.handles import is_handle as _is_handle
 
 # Grammar moved to ``precis.utils.mentions`` so the write-time
@@ -180,7 +182,7 @@ _CLAIM_PENDING_ANCHOR_CLS = (
 _CLAIM_PENDING_SIGIL = "◇"
 
 #: A finding cite whose head is tagged ``STATUS:refuted`` — the
-#: do-not-repropose ledger (docs/backlog/quest-dossier-dialectic.md
+#: do-not-repropose ledger (me690849
 #: §"Refuted lifecycle"). Red, filled — "the claim as stated is dead" —
 #: so every cite site turns red automatically the moment the underlying
 #: finding is stamped refuted, with no per-surface rendering work. Wins
@@ -591,7 +593,7 @@ def _render_claim_hub(
     linking to the refuted finding itself (``/r/finding/<id>``, the same
     href convention the pending branch uses — there is no separate refuted
     page), ``title="refuted — see ruling"``. This is the do-not-repropose
-    ledger's cite-site rendering (docs/backlog/quest-dossier-dialectic.md
+    ledger's cite-site rendering (me690849
     §"Refuted lifecycle") — "red = the claim as stated is dead", not "this
     document is wrong".
 
@@ -716,11 +718,17 @@ _MD_CODE = re.compile(r"`([^`]+)`")
 #: backticks whole; the single-backtick form mirrors ``_MD_CODE``.
 _CODE_SPAN_RE = re.compile(r"```.*?```|`[^`]+`", re.DOTALL)
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
-#: Single-``*`` emphasis — the exact guard docx uses (export/docx ``_SPAN``):
-#: no adjacent ``*``/word char (so ``**bold**`` and ``a*b`` are excluded) and
-#: no space just inside the stars (so a stray ``2 * 3`` multiplication is left
-#: alone). Applied AFTER bold, so a consumed ``**…**`` never reaches it.
-_MD_ITALIC = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
+#: Single-``*`` emphasis — the exact guard the exporters use
+#: (export/latex ``_MD_ITALIC`` = export/docx ``_SPAN``): no adjacent
+#: ``*``/word char (so ``**bold**`` and ``a*b`` are excluded), no space just
+#: inside the stars (so a stray ``2 * 3`` multiplication is left alone), no
+#: ``\*`` escape and no adsorbate star (``*NO``, ``H*`` —
+#: ``utils/adsorbate_star``, gr674905). Applied AFTER bold, so a consumed
+#: ``**…**`` never reaches it.
+_MD_ITALIC = re.compile(
+    rf"(?<![*\w\\])\*(?!\s){adsorbate_star.STAR_NOT_FOLLOWED_BY_ELEMENT}"
+    rf"([^*]+?)(?<![\s\\]){adsorbate_star.STAR_NOT_PRECEDED_BY_ELEMENT}\*(?!\w)"
+)
 #: ``$$…$$`` (display) before ``$…$`` (inline) — stashed verbatim for KaTeX.
 #: ``(?<!\\)`` guards: an escaped ``\$`` (``title_md``'s literal-dollar
 #: marker, gr515227) is a currency sign, not a math delimiter — without
@@ -775,6 +783,10 @@ def _md_inline(escaped: str) -> str:
     # Bold before italic so a ``**…**`` run is consumed before single-* italic.
     s = _MD_BOLD.sub(r"<strong>\1</strong>", s)
     s = _MD_ITALIC.sub(r"<em>\1</em>", s)
+    # An author-escaped \* is a literal star (the italic arm already refused
+    # it as a delimiter) — drop the backslash AFTER emphasis runs so
+    # ``\*word\*`` can't round-trip into real <em>.
+    s = s.replace("\\*", "*")
     s = _MD_SUB.sub(r"<sub>\1</sub>", s)
     s = _MD_SUP.sub(r"<sup>\1</sup>", s)
 
@@ -1697,9 +1709,11 @@ def linkify_toon(
 
     A drop-in replacement for ``linkify_refs`` on ref-detail bodies. Runs
     of consecutive lines that each contain a tab are rendered as an
-    aligned ``<table>`` (a TOON ``{...}`` header row becomes a ``<thead>``);
-    everything else is linkified prose in a ``whitespace-pre-wrap`` block,
-    exactly as before. A lone tab-bearing line with no ``{...}`` header is
+    aligned ``<table>`` (a TOON ``{...}`` header row becomes a ``<thead>``).
+    With ``handles``, prose renders safe Markdown blocks, preserving single
+    newlines for existing line-oriented memories. Without it, prose retains
+    its legacy ``whitespace-pre-wrap`` block. A lone tab-bearing line without
+    a ``{...}`` header is
     left as prose — the guard keeps an incidental tab from becoming a
     one-row table.
 
@@ -1707,7 +1721,7 @@ def linkify_toon(
     ``doi:<id>`` token then renders as an anchor (gr489578). ``None``
     leaves the text untouched — the caller skips the lookup entirely.
 
-    ``handles`` enables Markdown tables, fenced code, inline rendering and
+    ``handles`` enables Markdown blocks, tables, fenced code, inline rendering and
     batch-resolved bare handles, identically in prose, headers and cells.
     Resolved records use their canonical reader URLs; code spans and fenced
     blocks stay literal. ``None`` keeps the legacy presentation for other callers.
@@ -1764,8 +1778,38 @@ def linkify_toon(
     def _flush_prose() -> None:
         if not prose:
             return
-        html = _inline("\n".join(prose))
-        out.append(f'<div class="whitespace-pre-wrap">{html}</div>')
+        source = "\n".join(prose)
+        if handles is None:
+            out.append(f'<div class="whitespace-pre-wrap">{_inline(source)}</div>')
+        else:
+            md = MarkdownIt("commonmark", {"html": False})
+            renderer = RendererHTML()
+            # CommonMark normalizes NULs; protect our DOI sentinels while
+            # parsing blocks, then restore them before inline/code rendering.
+            null_marker = f"toon-null-{uuid.uuid4().hex}"
+            tokens = md.parse(source.replace("\x00", null_marker))
+            for index, token in enumerate(tokens):
+                token.content = token.content.replace(null_marker, "\x00")
+                if token.type == "inline":
+                    out.append(
+                        '<span class="whitespace-pre-wrap">'
+                        f"{_inline(token.content)}</span>"
+                    )
+                elif token.type in {"code_block", "fence"}:
+                    out.append(
+                        f"<pre><code>{escape(_literal_code(token.content))}</code></pre>"
+                    )
+                else:
+                    classes = {
+                        "bullet_list_open": "list-disc pl-5 my-2",
+                        "ordered_list_open": "list-decimal pl-5 my-2",
+                        "blockquote_open": "border-l pl-4 my-2",
+                        "heading_open": "font-semibold my-2",
+                        "paragraph_open": "my-2",
+                    }
+                    if token.type in classes:
+                        token.attrSet("class", classes[token.type])
+                    out.append(renderer.renderToken(tokens, index, md.options, {}))
         prose.clear()
 
     i, n = 0, len(lines)
@@ -1873,11 +1917,43 @@ def render_cloze(text: str) -> Markup:
     return Markup("".join(out))
 
 
+def render_cloze_masked(text: str) -> Markup:
+    """Render an Anki cloze body as a self-quiz: every gap masked until hover.
+
+    Same escaping contract as :func:`render_cloze`. Each deletion renders as a
+    blank (the answer sits in a hidden ``.cloze-answer`` span the page CSS
+    reveals on hover/focus) and the gaps are labelled ``c1``, ``c2``, … in
+    order of appearance — the quiz numbering starts at c1 and is positional,
+    independent of the card's own ``{{cN}}`` indices. The hint, when present,
+    rides the ``title=`` tooltip. Text with no cloze deletion renders as plain
+    escaped prose.
+    """
+    out: list[str] = []
+    pos = 0
+    for gap, m in enumerate(_CLOZE_DISPLAY_RE.finditer(text or ""), start=1):
+        out.append(escape(text[pos : m.start()]))
+        _idx, answer, hint = m.group(1), m.group(2), m.group(3)
+        title = "hover to reveal"
+        if hint:
+            title += f" · hint: {escape(hint)}"
+        out.append(
+            f'<span class="cloze-mask" tabindex="0" title="{title}">'
+            f'<span class="cloze-blank" aria-hidden="true">&mdash;</span>'
+            f'<span class="cloze-answer">{escape(answer)}</span>'
+            f'<sup class="cloze-index">c{gap}</sup>'
+            f"</span>"
+        )
+        pos = m.end()
+    out.append(escape(text[pos:] if text else ""))
+    return Markup("".join(out))
+
+
 __all__ = [
     "extract_dois",
     "linkify_refs",
     "linkify_toon",
     "popover_chip",
     "render_cloze",
+    "render_cloze_masked",
     "render_markdown",
 ]

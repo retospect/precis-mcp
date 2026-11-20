@@ -40,7 +40,7 @@ forwards it by key.
       --build-arg RMAPI_VERSION=v0.0.34 docker/remarkable
 
 `RMAPI_VERSION` pins the `ddvk/rmapi` release; the build detects the arch
-(`aarch64` → the Apple-silicon colima default on melchior, `x86_64` for a Linux
+(`aarch64` → the Apple-silicon colima default on the agent host, `x86_64` for a Linux
 node) and fetches the matching release binary. Tag the image with a sha and
 point the worker at it via `PRECIS_REMARKABLE_IMAGE`.
 
@@ -70,7 +70,7 @@ deployment-wide device: a send without a signed-in, paired user declines.
    one-time code, paste it on `/account` (or paste an `rmapi.conf` body —
    at minimum `devicetoken: <token>` — in the advanced box).
 2. Nothing to vault by hand; pairing writes the entry.
-3. A deploy builds this image on the worker node (colima on melchior) and sets
+3. A deploy builds this image on the worker node (colima on the agent host) and sets
    `PRECIS_REMARKABLE_IMAGE` + `PRECIS_CONTAINER_BIN` in the worker-agent env.
    This rides the same Phase-2 container-executor ops window as the rest of the
    factory container cutover.

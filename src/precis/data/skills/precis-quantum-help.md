@@ -1,8 +1,8 @@
 ---
 id: precis-quantum-help
 family: science
-title: precis — quantum computers: what they solve today, IBM's free tier, and the proposed surface
-summary: deciding whether a problem belongs on a quantum computer, judging quantum advantage claims against classical baselines, what IBM's free Open Plan allows and how to estimate QPU seconds, how to reach IBM hardware outside precis, and the proposed (unbuilt) quantum kind and skill set. precis has no QPU access today.
+title: precis — quantum computers: what they solve today and IBM's free tier
+summary: deciding whether a problem belongs on a quantum computer, judging quantum advantage claims against classical baselines, what IBM's free Open Plan allows and how to estimate QPU seconds, and how to reach IBM hardware outside precis. precis has no QPU access.
 answers:
   - what kinds of problems can a quantum computer solve today?
   - should this problem run on a quantum computer or a classical method?
@@ -165,58 +165,6 @@ IBM documents official MCP servers, added to the MCP client's config by a human 
 | `qiskit-ibm-transpiler-mcp-server` | AI-assisted circuit optimization | Yes |
 
 Its runtime tools: `run_sampler_tool`, `run_estimator_tool`, `list_my_jobs_tool`, `get_job_status_tool`, `get_job_results_tool`, `cancel_job_tool`, plus account setup and deletion. Attaching it takes minutes and suits a one-off trial in one session. It is outside the budget breaker and the job record, leaves no ref in the graph, and cluster agents do not get it. Record any result by hand as a finding: [[precis-finding-help]].
-
-## See the proposed precis quantum kind
-## What would a quantum surface in precis look like?
-
-**Not built; every call below refuses today.** Scope is the free tier. The design needs no new verb.
-
-```text
-get(kind='quantum')                                      # plan, seconds left, reset date, recent runs
-get(kind='quantum', id='/backends')                      # devices, qubits, pending jobs, error rates; worker-cached
-get(kind='quantum', id='/quota')                         # IBM's balance, reserved seconds, per-quest use
-put(kind='quantum', id='<slug>', text='<OpenQASM 3>')    # immutable circuit; a change makes a new version
-get(kind='quantum', id='<slug>', view='draw')            # also qasm, runs, compare
-put(kind='quantum', id='<slug>', args={'op': 'simulate', 'primitive': ..., 'shots': ..., 'noise': ...})
-put(kind='quantum', id='<slug>', args={'op': 'quote', 'backend': ..., 'primitive': ..., 'shots': ...,
-                                       'observables': ..., 'mitigation': ...})
-put(kind='quantum', id='<slug>', args={'op': 'run', 'quote': <job id>})                     # spends quota
-get(kind='quantum', id='<slug>', view='result', args={'run': <job id>, 'top': 20})
-```
-
-`simulate`, `quote` and `run` enqueue jobs, as `pcb` does with `op='place'`, so status and cancel use `kind='job'`. `search`, `link`, `tag` and `delete` behave as usual, and `edit` refuses. `link` holds the classical baseline next to each result.
-
-`op='run'` refuses unless all hold, each refusal naming the fix:
-
-1. This circuit version has a successful `simulate` run.
-2. The quote matches this version and is under 24 hours old.
-3. The estimate is within the per-run cap (default 30 s).
-4. The estimate fits the balance after a 60 s reserve.
-5. The pinned IBM instance is Open Plan.
-
-Implementation constraints:
-
-- Quota is the control: all agents share 600 s, so reservations must be atomic, and actual `job.usage()` is charged on any outcome.
-- The worker stores IBM's job ID before polling, so a restart cannot resubmit.
-- `max_execution_time` comes from the quote, as a stop on IBM's side.
-- Submissions use the shared rate limiter; Qiskit loads on workers only.
-- Results keep shots, mitigation settings and the calibration snapshot.
-- Paid backends would need new wiring into the budget breaker.
-
-Off the surface: account setup, sessions, Functions, raw REST, Hamiltonian builders.
-
-Order: simulator stage, then Open Plan hardware, then paid backends only if a study justifies them. Open before starting: approval of a `[quantum]` optional dependency (`qiskit`, `qiskit-ibm-runtime`, `qiskit-aer`), IBM's terms for unattended use, whether the API exposes the remaining balance, and which classical lane is the chemistry baseline.
-
-Skills it would split into:
-
-| Skill | Answers |
-|---|---|
-| `precis-quantum-fit-help` | QPU or classical? Which baseline? |
-| `precis-quantum-claims-help` | Is this advantage claim real? |
-| `precis-quantum-circuit-help` | OpenQASM 3, parameters, reading transpiled depth and gate counts |
-| `precis-quantum-run-help` | Sampler or Estimator, shots, batching, spending quota, refusals |
-| `precis-quantum-mitigation-help` | Which mitigation is worth its quota; reporting error bars |
-| `precis-quantum-chem-help` | Active space, simulator optimization, one hardware evaluation, classical comparison |
 
 ## Check how far these facts are verified
 ## Where did this quantum research come from?

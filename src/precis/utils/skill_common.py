@@ -8,7 +8,7 @@ The redesign adds list fields (``invokes_personas:``) and adds
 validation on ``flavor:``, so the parser graduates into a typed
 :class:`SkillFrontmatter` dataclass.
 
-See ``docs/backlog/docs-and-skills-redesign.md`` decision 7 (flavour
+See `gr690464` decision 7 (flavour
 discriminator), decision 9 (runbook orchestration), decision 13
 (availability gating).
 """
@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Final
 
-from precis.utils.handle_registry import code_for_kind, is_known_kind
+from precis.utils.handle_registry import code_for_kind, is_known_kind, parse
 
 #: Defined flavours, per decision 7. The frontmatter field
 #: ``flavor: <value>`` is emitted as a ``FLAVOR:<value>`` tag (uppercase
@@ -142,7 +142,7 @@ class SkillFrontmatter:
     #: variant (:mod:`precis.skill_index.chunker`) alongside
     #: ``summary`` — embedded standalone so an agent's intent query
     #: matches question-to-question instead of question-to-prose. See
-    #: ``docs/backlog/mcp-surface-economy.md`` §1.
+    #: `me691324` §1.
     answers: tuple[str, ...] = ()
 
     #: ISO-ish date the skill was last edited. Authored manually.
@@ -192,18 +192,21 @@ class SkillFrontmatter:
     #: queryable. Empty tuple when absent (the common case).
     governs: tuple[str, ...] = ()
 
+    #: Hidden provenance handles; visible sections state rules without history.
+    rulings: tuple[str, ...] = ()
+
     #: Subject family (``family: se``) - the grouping axis behind
     #: ``family=`` on skill search/toc. ``None`` = absent: the family
     #: defaults to the slug's name-prefix stem (:func:`skill_family`).
     family: str | None = None
 
-    #: Parent skill in the skill tree (``docs/backlog/file-mirror.md``):
+    #: Parent skill in the skill tree (`me693606`):
     #: the mirror-links pass makes this skill ``part-of`` it. Optional;
     #: absent, ``precis.cli.mirror_links.skill_parents`` applies the
     #: default rule.
     parent: str | None = None
 
-    #: Whole-skill write fence (``docs/backlog/read-scope-skill-fencing.md``,
+    #: Whole-skill write fence (`me691026`,
     #: gr512233): ``write`` marks a skill that only teaches mutation — a
     #: read-scope connection is served a stub instead of the body.
     #: ``None``/``read`` is the default: every existing skill serves as
@@ -248,6 +251,7 @@ _KNOWN_FIELDS: Final[frozenset[str]] = frozenset(
         "tags",
         "kinds",
         "governs",
+        "rulings",
         "family",
         "parent",
         "scope",
@@ -388,6 +392,7 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
             "kinds",
             "requires",
             "governs",
+            "rulings",
         }
         if key in list_keys and val.startswith("[") and val.endswith("]"):
             inner = val[1:-1].strip()
@@ -476,6 +481,18 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
         fields_in["governs"] = ()
     elif isinstance(gv, str):
         fields_in["governs"] = (gv,) if gv else ()
+
+    rulings = fields_in.get("rulings") or ()
+    if isinstance(rulings, str):
+        rulings = (rulings,)
+    assert isinstance(rulings, tuple)
+    for handle in rulings:
+        parsed = parse(handle)
+        if parsed is None or parsed[0] not in {"memory", "gripe", "todo"} or parsed[1]:
+            raise FrontmatterError(
+                f"rulings: {handle!r} must be a memory/gripe/todo handle"
+            )
+    fields_in["rulings"] = rulings
 
     # fields_in is dict[str, object] (frontmatter is parsed dynamically);
     # unpacking it into SkillFrontmatter's typed fields can't be checked

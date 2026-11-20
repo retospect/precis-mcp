@@ -93,8 +93,12 @@ class TestRecordFailureErrorMeta:
             store, job.id, reason, gripe_rollback=None, failure_class="infra"
         )
         meta = store.fetch_refs_by_ids({job.id})[job.id].meta or {}
-        assert meta.get("error") == reason[: _common._ERROR_META_CAP]
-        assert len(meta["error"]) == _common._ERROR_META_CAP
+        # gr635381: head + tail, not a bare head-truncation — the
+        # traceback's last line is the part that must survive.
+        error = meta["error"]
+        assert len(error) == _common._ERROR_META_HEAD + 3 + _common._ERROR_META_TAIL
+        assert error.startswith(reason[: _common._ERROR_META_HEAD])
+        assert error.endswith(reason[-_common._ERROR_META_TAIL :])
 
         # the full, untruncated reason still lands in the job_event chunk
         chunks = store.chunks.list_chunks_for_ref(job.id)
@@ -102,13 +106,14 @@ class TestRecordFailureErrorMeta:
         assert len(job_events) == 1
         assert job_events[0].text == reason
 
-    def test_no_meta_error_when_no_failure_class_given(self, store: Store) -> None:
-        """Unclassified failures keep their old shape — no ``failure_class``
-        means no meta write at all (still logged to the job_event chunk)."""
+    def test_meta_error_stamped_when_no_failure_class_given(self, store: Store) -> None:
+        """gr635381: unclassified failures stamp ``meta.error`` too — a
+        bare ``STATUS:failed`` used to leave meta readers with no cause
+        at all. ``failure_class`` still stays unstamped."""
         job = store.insert_ref(kind="job", slug=None, title="struct_relax")
         _common.record_failure(
             store, job.id, "some non-infra reason", gripe_rollback=None
         )
         meta = store.fetch_refs_by_ids({job.id})[job.id].meta or {}
-        assert "error" not in meta
+        assert meta["error"] == "some non-infra reason"
         assert "failure_class" not in meta

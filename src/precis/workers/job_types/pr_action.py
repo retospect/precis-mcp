@@ -1,6 +1,6 @@
 """``pr_action`` — act on the answered PR decision (td543749).
 
-Spec: ``docs/backlog/dark-factory.md`` § "9. Inbound pull requests"; the
+Spec: `me692430` § "9. Inbound pull requests"; the
 ``act`` node of a ``pr-intake`` plan, blocked-by the ``decision`` ask.
 Comments on a PR and closing it are outward-facing, so this op runs only
 after the ask is answered: :func:`validate_submit` refuses (the tick notes

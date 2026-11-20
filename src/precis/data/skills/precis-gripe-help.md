@@ -141,10 +141,11 @@ a `+1 (<first line>): <text>` comment; the ack says so.
 <!-- write -->
 It names `args={'new': True}` as the bypass if you meant a standalone
 gripe. One match with no live keeper tags the new gripe `theme:<slug>`,
-making it the keeper — but minting takes a stronger match than merging
-(two pattern hits or a title hit; one incidental body hit files
-standalone), and a filing carrying `thread:<slug>` only ever joins a
-keeper inside that same thread. Several matches file normally — the ack
+making it the keeper. Minting and merging both need two distinct pattern
+hits or a title hit; one incidental body hit files standalone. Filings
+over 1,500 characters or carrying a `spec:` line never merge. A merge
+echoes your tags in its comment and leaves keeper tags unchanged. A filing
+carrying `thread:<slug>` only ever joins a keeper inside that same thread. Several matches file normally — the ack
 lists them (add the one you meant as `theme:<slug>` yourself if you want
 it on a keeper). Comments (`put(id=N, …)`) never match.
 <!-- /write -->
@@ -152,8 +153,8 @@ it on a keeper). Comments (`put(id=N, …)`) never match.
 ```python
 put(kind="gripe", text="scripts/test <file> -q waits ~25s on container bring-up")
 <!-- write -->
-# → merged into gr514478 (theme test-speed); to file separately anyway
-#   pass args={'new': True}
+# → NOT filed as a new gripe: merged into gr514478 (theme test-speed) as comment 1.
+# next: repeat this put with args={'new': True}
 <!-- /write -->
 ```
 
@@ -251,6 +252,11 @@ triage reads that need the title, not just the id:
 search(kind="gripe", tags=["STATUS:open"], view="list", page_size=100)
 ```
 
+Search rows default to `cluster:` chips. Choose open-tag prefixes with
+`args={'tag_prefixes': 'thread,fix,reto'}` on table or `view='list'`
+searches. The same argument appends those chips to default batch
+`get(id=[...])` summaries; omission keeps the existing summary.
+
 `args={'id_min': N}` / `args={'id_max': M}` bound any search to a
 ref-id range — a lone bound is legal — so "open gripes filed since
 gr514000" is `args={'id_min': 514000}`. The range applies on the
@@ -262,21 +268,26 @@ that combination is refused.
 ## Find gripes that are ready for a fix attempt
 
 ```python
-search(kind="gripe", tags=["STATUS:ready_for_fix"])
+search(kind="gripe", tags=["STATUS:triaged"])  # confirmed and unclaimed: the pick list
 ```
 
-## Find gripes with a fix in flight (claimed through landing and deploy)
+## Find gripes with a fix in flight
 
 ```python
-search(kind="gripe", tags=["STATUS:in_review"])
+search(kind="gripe", tags=["STATUS:fixing"])  # claimed, not yet on main
 ```
 
-## Find gripes deployed and awaiting the probe verdict
+## Find gripes landed and awaiting verification
 
 ```python
-search(kind="gripe", tags=["STATUS:auto_verify"])   # landed, deploy check closes it
-search(kind="gripe", tags=["STATUS:user_verify"])  # landed, a human checks it
-search(kind="gripe", tags=["STATUS:needs_spec"])   # parked until a spec exists
+search(kind="gripe", tags=["STATUS:auto_verify"])  # on main, the deploy check closes it
+search(kind="gripe", tags=["STATUS:user_verify"])  # on main, a human checks it
+```
+
+## Find gripes waiting on a spec
+
+```python
+search(kind="gripe", tags=["STATUS:needs_spec"])
 ```
 
 ## Find gripes marked won't-fix
@@ -301,19 +312,28 @@ tag(kind="gripe", id=N, add=["STATUS:parked"],
 put(kind="gripe", id=N, tags=["STATUS:parked"], args={"until": "td456"})
 put(kind="gripe", id=N, tags=["STATUS:parked"],
     args={"until": "2026-12-01"})
-# spec_landed's value is a spec's repo path — the id this read takes:
-get(kind="md", id="docs/backlog/<slug>.md")
+# spec_landed's value is a graph handle — the spec root or its plan
+# todo (specs live in graph memory; there is no repo path to name).
+# On put the condition rides in args= — meta= is tag's carrier:
+put(kind="gripe", id=N, tags=["STATUS:parked"],
+    args={"until": {"type": "spec_landed", "value": "me<spec root>"}})
+get(kind="memory", id=me<N>)             # the spec root, names its plan todo
+get(kind="todo", id=td<N>, view="tree")  # the plan and its slices
 ```
 
 Condition types: `ref_done` (gr/td handle; met when that ref reaches a
 terminal STATUS), `sha_in_prod` (a hex sha; met once it is in the
-recorded prod head), `spec_landed` (a spec's repo path — the `id=` an
-`md` get takes, as above; the wake pass can't see the repo, so unpark
-by hand or use `text`), `date` (ISO-8601; met at that UTC instant),
+recorded prod head), `spec_landed` (a spec root `me<N>` or its plan
+todo `td<N>`; met when the todo reaches `STATUS:done` — the slice
+landed; `won't-do`/`auto-timeout` do not count — with `me<N>` resolving
+through the spec's `plan-of` link, so
+the wake pass evaluates it from the DB), `date` (ISO-8601; met at that
+UTC instant),
 `text` (free
 text — the cheapest tier judges met/not_met/unsure from the newest
 comments; unsure = not met). Shorthands: `gr<N>`/`td<N>` → `ref_done`,
-a 9–40-hex sha → `sha_in_prod`, an ISO date → `date`, anything else →
+`me<N>` → `spec_landed`, a 9–40-hex sha → `sha_in_prod`, an ISO date →
+`date`, anything else →
 `text`. `get(kind="gripe", id="/parked")` lists the shelf with each
 condition and parked age; `tag(add=["STATUS:open"])` unparks by hand.
 
@@ -358,6 +378,13 @@ comments — a page that can't hold the rest names the
 Plain `view='full'` is the bounded complete read: a long body clips
 naming `view='body'`, and comments the page can't hold are elided by
 ord with the windowed call named. `view='log'` remains the audit log.
+## Read several gripes in one call
+
+Batch numeric-ref reads accept up to 300 IDs with `view='list'` (handle, title and tag chips)
+or `view='ids'` (bare handles). Both return one line per distinct ID in caller
+order; missing, deleted or other-kind rows get a one-line status. Other batch
+views keep the 50-ID cap. `args={'tag_prefixes': 'thread,fix'}` overrides list chips.
+
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to
 50); add a single-id view to map it over the batch —
@@ -459,7 +486,14 @@ has no ledger. After the entry commits, the put rewrites the gripe's
 recording which comment it was rebuilt through (the card marks it
 `STALE` once newer entries exist). Dead ends survive in it as one line
 each — `ruled out: X, see entry N` — so the next agent doesn't
-re-investigate. Code locations in entries and the summary are
+re-investigate. Each claim appears once, under the label the newest
+ledger entry mentioning it carries — scoped to the claim: the entry's
+label must head that claim's own text (`recommend: retry` labels
+`retry`; `recommend: replace coil` with `retry failed` in the body is
+a verdict, not a `recommend:` for `retry`), and a mention under no
+claim label (a later `test: X failed`) keeps `ruled out:` rather than
+resurrecting the `recommend:`. A claim several entries repeat cites
+them all — `see entries 1, 3`. Code locations in entries and the summary are
 code-anchor handles (`an<N>`) only, never paths or snippets — a
 stage `put` whose text still names a raw `path`/`path::qual` refuses:
 mint the handle first, then write the entry naming it. The
@@ -521,24 +555,17 @@ naming a file adds hits but never replaces it: which files belong to
 that gripe. Closed gripes don't rank. No hits means file a new one.
 
 ## Triage a gripe — I've reviewed it and it's real {write}
+## Mark a gripe ready for someone to fix {write}
 
 ```python
 tag(kind="gripe", id=42, add=["STATUS:triaged"])
 ```
 
-Use when the gripe is confirmed but not yet ready to act on
-(needs more discussion, blocked on something, etc.). `STATUS:`
-is closed-prefix and replaces atomically.
-
-## Mark a gripe ready for someone to fix {write}
-
-```python
-tag(kind="gripe", id=42, add=["STATUS:ready_for_fix"])
-```
-
-The signal that flips it from "thinking about it" to "ready for the
-owning thread's session to fix". Nothing auto-mints a `fix_gripe` job
-from it (lane OFF since 2026-10-02).
+`STATUS:triaged` means confirmed and ready to pick: sessions pick from
+it, and the factory takes the ones that also carry a `fix:<class>` tag.
+A real gripe that cannot be acted on yet is not `triaged`: park it with
+a wake condition (`STATUS:parked`) or send it to `STATUS:needs_spec`.
+`STATUS:` is closed-prefix and replaces atomically.
 
 ## Say a tree is working the gripe {write}
 
@@ -557,39 +584,47 @@ diff the branch to learn the coverage (gr514899).
 ## Who fixes a gripe?
 ## Can I hand a gripe off to an LLM to fix? {write}
 
-`project:memory` belongs to the gardener under
-[[precis-fix-memory-gripe-help]]; never submit it to the coder lane below.
+Filing is all the filer does. A triaged gripe is fixed by one of three
+routes, and its tags decide which.
 
-A coordinator running a builder wave batches gripes, briefs a builder
-and records handoff, review verdict and landed sha on each gripe with
-`edit(kind='gripe', id=[...], mode='fix', args={...})`; the queues are
-`get(kind='gripe', id='/queue')` — see `precis-gripe-loop-help`.
-Otherwise the repo session that owns the gripe's work thread fixes it in
-its own worktree;
-`/pillar-review` relinks unthreaded gripes to a thread. The
-auto-fix lane is OFF by ruling: the groomer mints no `fix_gripe`
-todos, and a hand-submitted job skips at the push preflight unless
-the worker node holds a credential. A hand-submit, for reference:
+**A memory gripe** (`project:memory`) belongs to the gardener under
+[[precis-fix-memory-gripe-help]]; it never goes to a coder.
+
+**The factory** builds code fixes. Where its intake runs, it takes an
+`open` or `triaged` gripe that carries a fix class (`fix:code`,
+`fix:skill`, `fix:docs`, `fix:web`, `fix:mcp`) and no hold tag, mints a
+plan and leaves a `dispatch:` comment naming the plan root
+([[precis-work-help]] § "How does a gripe reach a build lane by
+itself?"). A `blocked-by` link — to a todo or another gripe — sequences
+the gripe (gr656970): while the blocker is open the intake skips the
+gripe, and it becomes dispatchable once the blocker reaches a terminal
+STATUS; a blocker linked after the chain minted still holds its queued
+build at claim. The work board row names the blocker as
+`after <handle>`. To
+send one gripe yourself:
 
 ```python
-put(kind="job", job_type="fix_gripe", link="gripe:42", rel="fixes")
-# → created job id=101
-# gripe auto-tagged STATUS:ready_for_fix as a side effect.
+put(kind="todo", mode="plan", args={"template": "gripe-fix", "gripe_id": 42})
 ```
 
-One call — no need to set `STATUS:ready_for_fix` first. If a
-credential is present the worker clones the repo, runs claude on a `gripe_42` branch,
-publishes the branch to the repo's upstream — confirmed there
-with `git ls-remote` before it says so — and posts a comment on
-the gripe when it's ready for review (or explains why it
-couldn't).
+[[precis-factory-submit-help]] has the recipe and how to read the
+outcome. `hold:no-dispatch` keeps a gripe out of the intake.
 
-See `precis-fix-gripe-help` for the full review / iterate loop.
+**A session already working in that code** fixes it in its own tree:
+claim it (`tag(kind='gripe', id=42, add=['claimed-by:<you>'])` moves it
+to `fixing`), comment the tree and its coverage (above), and end the
+squash subject with `(gr42)`. Landing writes the `resolved:` comment and
+`STATUS:auto_verify`.
 
-## Show me which agent fixes are running for this gripe
+A coordinator's manual builder wave is [[precis-gripe-loop-help]]. The
+`fix_gripe` job is switched off; [[precis-fix-gripe-help]] is its
+reference page.
+
+## Show me what is working this gripe
 
 ```python
-search(kind="job", link="gripe:42")
+get(kind="gripe", id=42)  # status, claim, dispatch: and in-progress comments
+search(kind="todo", args={"link": "gripe:42"})  # the plan or code todo fixing it
 ```
 
 ## Mark a gripe as won't-fix
@@ -613,11 +648,12 @@ you want the gripe gone from search.
 ## Defer a gripe without fixing or closing it
 ## Park a gripe {write}
 
-Leave it at `STATUS:open` (or `STATUS:triaged`) and append a
-comment with the reason:
+Park it with a wake condition, which takes it off every open queue until
+the condition is met ("Park a gripe until something happens" above lists
+the condition types):
 
 ```python
-put(kind="gripe", id=42, text="parking until after the F20 freeze")
+put(kind="gripe", id=42, tags=["STATUS:parked"], args={"until": "the F20 freeze is over"})
 ```
 
 ## Close a gripe after the fix is merged
@@ -757,7 +793,7 @@ put(
 )
 put(
     kind="gripe",
-    text="decouple spark embedder from the compute GPU",
+    text="decouple the GPU-node embedder from the compute GPU",
     link="gripe:50906",
     rel="supersedes",
 )
@@ -839,6 +875,12 @@ triage tick classifies it, tags `project:memory`, links the memory with
 next pass, closing it with a `resolved:` comment. Until then the
 memory's fisheye carries an `under review: gr<N> …` line. Use the full form below for route disagreements.
 
+A gripe that asks to change the repo and merely names a memory as the
+source — "skill X lacks the fact me123 holds" — is a repo fix
+(`fix:docs`/`fix:code`/…), not a memory complaint: the tick keeps it in
+the repo lane so a builder can land it. `project:memory` is only for
+gripes asking to change the memory node itself.
+
 ## Tool bugs and memory confusion go to gripes
 
 A gripe reports something wrong with the **precis tool / MCP surface /
@@ -873,11 +915,25 @@ search(kind="gripe", view="count", args={"group_by": "state"})  # cohorts now
 search(kind="gripe", view="count", status="*",
        args={"group_by": "tag:area"})                           # by theme
 search(kind="gripe", view="flow", since="7d")                   # opens/closes per day
+search(kind="gripe", status="done",
+       args={"closed_since": "2026-11-01",
+             "closed_until": "2026-11-08"})                     # closed in [A,B)
+search(kind="gripe", view="count", status="done",
+       args={"group_by": "tag:thread",
+             "closed_since": "2026-11-01"})                    # closings per thread
+search(kind="gripe", view="count", status="done",
+       args={"group_by": "tag:goal",
+             "closed_since": "2026-11-01",
+             "closed_until": "2026-11-08"})                    # fixed, by goal
 ```
 
 `view='count'` + `group_by` (`state`, `meta.<key>`, `tag:<axis>`)
 is the **snapshot** — "which cohorts are busy right now" — and
-`since=`/`until=` bound the counted set by mint time.
+`since=`/`until=` bound the counted set by mint time. The
+`closed_since`/`closed_until` pair bounds **closure** time instead —
+the STATUS tag's set-time — on a queryless listing (newest-closed
+first) or `view='count'`; `status='resolved'` reads as `done`, and
+`get(kind="gripe", id="/done")` pages the same newest-closed list.
 `view='flow'` is the **trend** — opened vs closed per bucket
 (`args={'bucket': 'hour'|'day'|'week'|'month'}`), net, and
 median/p90 open-to-close time read off the STATUS tag's set-times,
@@ -897,7 +953,7 @@ full vocabulary is in `precis-search-help`'s count/flow sections.
 | `STATUS:verify`        | Legacy spelling of `auto_verify` (pre-split rows); still accepted |
 | `STATUS:auto_verify`   | On main, waiting for a gated release: needs a newest `resolved: <sha> (main, release pending)` comment (`scripts/ship` writes both for every `grN` ending the squash subject); releases the lease. `scripts/gripe-validate` / the `gripe_validate` job flips it to `done` once the sha is on prod — or back to `triaged` when the release gate is red. The triage worker also parks deployed-pending fixes here (`fix-sha:`) |
 | `STATUS:user_verify`   | Same wait, but a human must check the fix (the lander opts the gripe in at ship time). Each deploy keeps ONE ask-user todo listing the cohort; the gripes close when it's answered |
-| `STATUS:needs_spec`    | Ill-specified — parked until a backlog spec names it (the deploy verifier closes it then) or a human sends it back to `open` ("move back to new" on the web detail page — writes a comment) |
+| `STATUS:needs_spec`    | Ill-specified — parked until a graph spec names it (the deploy verifier closes it then) or a human sends it back to `open` ("move back to new" on the web detail page — writes a comment) |
 | `STATUS:parked`        | Waiting on a `meta.until` wake condition (gr/td ref done, sha in prod, a date, or free text) — off every open queue; the `gripe_parked` pass returns it to `open` when met. Requires `until` on the parking call |
 | `STATUS:done`          | Fixed/resolved — terminal; hidden from the live queue |
 | `STATUS:wontfix`       | Decided not to act (kept on record)     |
@@ -915,16 +971,18 @@ suppresses triage's own re-ask of that question).
 A stalled `put` may have committed anyway, so don't blind-retry it —
 that risks double-filing. While precis is down your only moves are to
 restore the connection or wait about five minutes — don't carry on
-without it (the MCP-down rule). For the writes that never confirmed:
+without it (the MCP-down rule — [[mcp-down]]). For the writes that
+never confirmed:
 
 1. Keep a short list (verb, kind, first line, when).
 2. When precis is back, `search` for each one to see whether it landed.
-3. Re-file only the missing ones, each with a fresh `idem_key=`
-   (`<session>:<serial>`, e.g. `outage-2026-11-13:2`). The key dedupes
-   only writes that carried it — it cannot merge onto the original
-   unkeyed write; the search above is what catches that one. What it
-   buys you: if the re-file itself stalls, its own retry is safe. See
-   `precis-put-help`, "Make a retry safe with idem_key".
+3. Re-file only the missing ones — reusing the write's original
+   `idem_key=` if it carried one, else a fresh `<session>:<serial>`
+   (e.g. `outage-2026-11-13:2`). The key dedupes only writes that
+   carried it — a fresh key cannot merge onto an earlier write, keyed
+   or not; the search above is what catches an unkeyed original. What
+   it buys you: if the re-file itself stalls, its own retry is safe.
+   See `precis-put-help`, "Make a retry safe with idem_key".
 4. Clear the list, then file **one** gripe about the outage itself —
    what you were doing, how long it lasted, which writes were affected.
 
@@ -935,7 +993,38 @@ link or comment the recovery note onto the surviving ref instead.
 
 - [[precis-fix-memory-gripe-help]] — replay and resolve a `project:memory` complaint
 - [[precis-gripe-loop-help]] — the builder-wave loop: batch, brief, assign, handoff, verdict, land, close
-- [[precis-fix-gripe-help]] — the fix_gripe job recipe (lane OFF)
+- [[precis-fix-gripe-help]] — reading existing `fix_gripe` jobs (lane OFF)
 - [[precis-job-help]] — monitor/cancel fix attempts
 - [[precis-search-help]] — search across kinds
 - [[precis-todo-help]] — promote a gripe to a todo
+
+## Origin classification
+
+Filings and triage infer the open tag `origin-class:human`,
+`origin-class:self-improvement` or `origin-class:specification` from explicit
+filing tags, then the first line. Known human writer context also counts.
+Unknown provenance stays untagged. An existing origin-class tag is preserved;
+use `tag` to remove the old value and add a corrected one.
+
+Filter with `search(kind="gripe", tags=["origin-class:human"])`;
+count with `search(kind="gripe", view="count",
+args={"group_by": "tag:origin-class"})`.
+
+`precis gripe origin-backfill --status done` reports counts and unclassified
+handles without writes. Review the report, then pass `--apply` to stamp
+classifiable rows. Existing classifications remain untouched.
+
+## Goal axis
+
+The open tag `goal:<value>` records what campaign the gripe serves:
+`reaction-graph` | `pathway` | `pcb` | `memory-graph` | `work-model` |
+`search-surface` | `llm-router` | `other`. The triage tick stamps it from
+the gripe's `thread:`/`cluster:` tags (ordered glob map — thread rules
+first); a hand-set `goal:` is never overwritten.
+
+Fixed-per-goal read:
+`search(kind="gripe", view="count", status="done",
+args={"group_by": "tag:goal", "closed_since": A, "closed_until": B})`.
+
+`precis gripe origin-backfill --goal` runs the same stamp as a backfill —
+dry-run by default, `--apply` writes. Existing `goal:` tags stay untouched.

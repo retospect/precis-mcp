@@ -12,7 +12,7 @@ ownership invariant is pinned by ``tests/test_flatpack_panels.py``).
 appends these rows after the other store-aware passes in
 ``_render_drc``.
 
-Checks (docs/backlog/flatpack-furniture-generator.md, build 3):
+Checks (me694692, build 3):
 
 * ``flatpack_mating`` (error) — at every mated pair (a shared slab
   volume, :mod:`precis_se.flatpack.mating`), each panel's material inside

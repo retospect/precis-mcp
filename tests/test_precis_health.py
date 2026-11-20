@@ -1,6 +1,6 @@
 """PrecisClient.ping must detect a *degraded* precis, not just a dead one.
 
-Regression for the 2026-07-14 incident: melchior rebooted, asa's long-lived
+Regression for the 2026-07-14 incident: maple rebooted, asa's long-lived
 ``precis serve`` subprocess was spawned while the prod DB was unreachable, and
 it came up **storeless** — it answered ``tools/list`` cleanly but reported
 ``unknown kind`` for memory/conv/gripe. asa's preamble filled with those

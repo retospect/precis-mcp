@@ -45,7 +45,9 @@ except a node under a closed ancestor (``terminal-root``, or any class
 with a ``won't-do`` up its parent chain), which the pass closes
 ``STATUS:won't-do`` with one note instead, a bounded batch of
 :data:`precis.workers.factory_rescue.ORPHAN_BATCH` closes a pass
-(gr576258).
+(gr576258) — and except an already-old rescue: a node silent past
+:data:`precis.workers.factory_rescue.STALE_ASK_AFTER` closes the same
+way, one ask per LIVE node (gr666159).
 
 ``dedupe_pending`` coalesces a pass whose previous run is still pending.
 Workers never import handlers: every write goes through ``enter_rescue``.
@@ -79,9 +81,9 @@ DESCRIPTION: str = (
     "failure signature), including the tick-silent heartbeat on "
     "plan_dispatch itself — then the diagnose pass: a node in rescue gets "
     "one claude-sub diagnose task, a REARM verdict re-arms it once, else "
-    "one ask-user todo — except an orphan under a closed ancestor, "
-    "which closes won't-do with no ask. Read-only while the factory "
-    "kill switch is on."
+    "one ask-user todo — except an orphan under a closed ancestor or "
+    "an already-old rescue, which close won't-do with no ask (one ask "
+    "per live node). Read-only while the factory kill switch is on."
 )
 
 

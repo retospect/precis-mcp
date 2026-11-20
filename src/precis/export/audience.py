@@ -46,6 +46,32 @@ def web_base_url(store: Any) -> str:
     return (secrets.get_secret(WEB_BASE_URL_SECRET, store=store) or "").rstrip("/")
 
 
+#: The exact remediation every unset-origin warning names (gr592892): one
+#: operator-set application origin per installation — a vault secret or
+#: env var, never a per-export param (there is no ``base_url`` override).
+#: ``precis secret set`` reads the value from stdin, never argv, so the
+#: origin is piped in (or typed at the ``--prompt`` no-echo prompt).
+SET_ORIGIN_COMMAND = (
+    "echo https://<web-app-origin> | precis secret set PRECIS_WEB_BASE_URL"
+)
+
+
+def link_origin_warnings(base_url: str) -> list[str]:
+    """The loud warning a dev/collaborator export emits when the
+    application origin is unset (gr592892): every record-handle link it
+    writes is path-only, which a PDF viewer cannot open. ``[]`` when the
+    origin is configured; one shared text feeds the job event, the job
+    summary and the draft hygiene report."""
+    if base_url:
+        return []
+    return [
+        "PRECIS_WEB_BASE_URL is unset — every record-handle link in this "
+        "export is path-only (no origin to join onto), which a PDF viewer "
+        "cannot open. Set the application origin once per installation: "
+        f"{SET_ORIGIN_COMMAND} (or the same name on /secrets)."
+    ]
+
+
 def validate_audience(audience: str) -> None:
     if audience not in {"dev", "external"}:
         raise BadInput("unknown export audience", next="choose dev or external")
@@ -338,6 +364,10 @@ class Audience:
     base_url: str = ""
     entries: list[SupplementEntry] = field(default_factory=list)
     source_chunks: dict[str, list[str]] = field(default_factory=dict)
+    #: Export-level advisories the renderer folds into its own warnings
+    #: (gr592892: an unset ``PRECIS_WEB_BASE_URL`` leaves every dev link
+    #: path-only — :func:`link_origin_warnings`).
+    warnings: list[str] = field(default_factory=list)
     _by_record: dict[tuple[str, bool, int], SupplementEntry] = field(
         default_factory=dict
     )
@@ -416,6 +446,8 @@ def for_export(
 ) -> Audience:
     validate_audience(audience)
     state = Audience(store, audience, web_base_url(store))
+    if audience == "dev":
+        state.warnings.extend(link_origin_warnings(state.base_url))
     if audience == "external":
         for chunk in chunks or []:
             for text in [chunk.text or "", *_strings(getattr(chunk, "meta", None))]:

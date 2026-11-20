@@ -6,7 +6,7 @@ The cluster-side replacement for the (removed) synchronous
 process* principle means the canonicalizer cascade (extract → block →
 judge → place, ``precis.taproot.backfill``) can only run on a worker.
 ``put(kind='job', job_type='taproot_backfill', params={'scope': '<slug|dc<id>>'})``
-queues it; ``claude_inproc`` on the melchior agent worker runs this
+queues it; ``claude_inproc`` on the agent-host agent worker runs this
 dispatcher directly (a plugin ``dispatch``, no claude subprocess — same
 shape as ``draft_export``).
 
@@ -151,6 +151,15 @@ def _dispatch(ctx: Any, spec: Any) -> None:
                 f"lease lost after {n_scanned} chunk(s) — another worker "
                 "generation reclaimed this job; stopping without a terminal status",
             )
+            return
+        # Operator cancel (STATUS:cancel_requested) lands at the next chunk
+        # boundary; done_chunk_ids already checkpoints what finished (gr720454).
+        if ctx.is_cancel_requested():
+            ctx.append_chunk(
+                "job_event",
+                f"cancel requested — stopping after {n_scanned} chunk(s)",
+            )
+            ctx.set_status("cancelled")
             return
         n_scanned += 1
         try:

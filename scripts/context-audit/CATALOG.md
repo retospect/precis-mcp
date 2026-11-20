@@ -27,7 +27,7 @@ the job.
 
 | context | producer | how to poke | what it ought to do |
 |---|---|---|---|
-| `view='dreamable'` — salience seed + ANN ring | `src/precis/runtime/angle.py::AngleMixin._dispatch_dreamable` | `search(kind='memory', view='dreamable')` | Surface the highest-salience unread neighborhood for a dream/reflection pass — see `docs/backlog/dreaming.md`. |
+| `view='dreamable'` — salience seed + ANN ring | `src/precis/runtime/angle.py::AngleMixin._dispatch_dreamable` | `search(kind='memory', view='dreamable')` | Surface the highest-salience unread neighborhood for a dream/reflection pass — see gr690614. |
 | `view='stubs'` — paper backlog | `src/precis/runtime/search.py::SearchMixin._dispatch_stubs` | `search(kind='paper', view='stubs')` | List papers with an external id but no PDF yet — the acquire backlog (the stub surfaces). |
 | `angle=`/`like=` spray | `src/precis/runtime/angle.py::AngleMixin._dispatch_angle` | `search(angle=0.3, like='kind:slug')` | Diverse-cone semantic sampler for exploration, not top-K relevance. |
 | `view='keywords'` — keyword-only TOON | `src/precis/utils/search_merge.py::_render_keywords_table` (routed via `_dispatch_cross_kind`) | `search(view='keywords', q='…')` | Cheap "what topics span the corpus" scan — no preview text, just per-hit keyword arrays from `chunks.keywords`. |

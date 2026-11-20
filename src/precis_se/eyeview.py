@@ -1,5 +1,5 @@
 """The se spatial eye — ``<slug>~<focus>`` on the fisheye ladder
-(structure-workspaces slice 2e, docs/backlog/structure-workspaces.md
+(structure-workspaces slice 2e, me693174
 §Structure fisheye).
 
 ``SeHandler.eye`` splits ``id`` on the first ``~`` and lands here: the

@@ -21,7 +21,7 @@ silently dropping a declaration lets connections recreate it unbound. Physical
 footprint pad duplicates remain geometry, not separate electrical identities.
 Re-put is create-or-extend, not a pin editor or historical-data repair — pin
 SEMANTICS on an existing instance are edited via :meth:`pcb_patch_pins`
-(``op='pins'``; docs/backlog/pcb-datasheet-review.md slice 2).
+(``op='pins'``; me692814 slice 2).
 
 Mixin assumes the concrete Store provides ``self.pool``/``self.tx``/
 ``self.insert_ref``/``self.get_ref``.
@@ -1373,7 +1373,7 @@ class PcbMixin:
                 conn, ref.id, k, inst_by_refdes, net_by_name
             )
 
-        # Net naming rule (pcb-lazy-netlist-and-checks.md §1d): checked on
+        # Net naming rule (me693232 §1d): checked on
         # the FINAL state of every net whose membership this apply changed
         # (a pin moved off a net changes that net too), so a later op in the
         # batch can add the constrained member and an unchanged legacy net
@@ -2300,7 +2300,7 @@ class PcbMixin:
                 courtyard = (
                     courtyard if courtyard is not None else resolved.get("courtyard")
                 )
-        # `pin_swap_groups` (docs/backlog/pcb-ewod-multitile.md "Rulings
+        # `pin_swap_groups` (me692460 "Rulings
         # 2026-09-19" item 6) rides `meta` the same way `pcb_instances.meta`
         # already carries `group`/`pattern` — a caller-declared admissible
         # pin-swap set (a generator's sink instance, or a hand-authored
@@ -2316,7 +2316,7 @@ class PcbMixin:
         # *meta*, not columns: it documents what the source SAID, while
         # ``part_lcsc`` (its own column, joined into the catalog) is what
         # precis resolves on.
-        # `supplies` (pcb-lazy-netlist-and-checks.md §1b) is the successor
+        # `supplies` (me693232 §1b) is the successor
         # and rides the same way (already normalised by `_pcb_apply`).
         # `frame` (gr521596): the creator frame id a workspace run
         # stamps — the binding ``view='frames'`` resolves against the
@@ -2548,8 +2548,8 @@ class PcbMixin:
     ) -> int:
         """Declare a pin for every pad the component's cached footprint
         names and the component did not declare — "a package should always
-        have all the pins" (docs/backlog/pcb-lazy-netlist-and-checks.md
-        Slice 2; Defect A of docs/backlog/ewod-controller-and-hv-supply.md,
+        have all the pins" (me693232
+        Slice 2; Defect A of me690877,
         taken over by that slice).
 
         Without this, :func:`precis.pcb.realize.pads_for_ir`'s per-pin loop
@@ -2886,7 +2886,7 @@ class PcbMixin:
             n += result.rowcount
         return n
 
-    #: ``op='pins'`` (docs/backlog/pcb-datasheet-review.md slice 2) — the
+    #: ``op='pins'`` (me692814 slice 2) — the
     #: pin-annotation dict's allowed keys. ``pad`` is deliberately absent:
     #: pad binding stays with the canonical-pad rule — this op edits a
     #: pin's SEMANTICS (what the ERC rules read), never its geometry, and
@@ -2952,8 +2952,7 @@ class PcbMixin:
         conn: Connection | None = None,
     ) -> dict[str, Any]:
         """``op='pins'`` — patch pin SEMANTICS on one existing instance's
-        pins (the design-layer annotation; docs/backlog/
-        pcb-datasheet-review.md slice 2). The write a plain re-put
+        pins (the design-layer annotation; me692814 slice 2). The write a plain re-put
         deliberately never performs (:meth:`_pcb_apply`'s contract is
         create-or-extend, "not a pin editor") — this is that editor: it is
         how an imported or already-authored part gets the ``etype`` /
@@ -4196,7 +4195,7 @@ class PcbMixin:
             name = str(name).strip()
             if not name:
                 raise ValueError("pcb net_class needs a name")
-            # ewod-controller-and-hv-supply.md Slice 4c: refuse a value the
+            # me690877 Slice 4c: refuse a value the
             # spacing table cannot honour NOW (a stored-but-unresolvable
             # class would otherwise crash every later resolve_net_rules
             # call). conductor_spacing_mm raises above its 500 V top band.
@@ -4256,7 +4255,7 @@ class PcbMixin:
 
     # -- geometric DRC findings (pcb-guided-place-route Slice 8) ----------
     def pcb_set_board_phase(self, ref_id: int, phase: str | None) -> str | None:
-        """The authored design phase (pcb-lazy-netlist-and-checks.md Slice
+        """The authored design phase (me693232 Slice
         8, ``op='phase'``) onto ``pcb_boards.meta['phase']`` — the board
         row, because fab-readiness is a claim about THIS board.
         ``phase=None`` clears it, returning the check surface to
@@ -7333,7 +7332,7 @@ class PcbMixin:
         self, mpns: list[str] | set[str]
     ) -> dict[str, list[tuple[str, str]]]:
         """``{lowercase mfr_part: [(lcsc, mfr)]}`` — the manufacturer+MPN
-        half of the import's part lookup (pcb-datasheet-review.md slice
+        half of the import's part lookup (me692814 slice
         1: "manufacturer + MPN first, then the C-number"). ``mfr_part``
         comparisons are case-insensitive; callers disambiguate a multi-
         hit with the manufacturer string."""
@@ -7399,7 +7398,7 @@ class PcbMixin:
                 ),
             )
 
-    # -- argument ledger (the se_notes shape; pcb-argue-with-design.md) --
+    # -- argument ledger (the se_notes shape; me690151) --
     def pcb_handles(self, ref_id: int) -> dict[str, Any]:
         """Every live handle on a design, by class: ``parts`` (refdes),
         ``pins`` (``{refdes: [pin, ...]}``), ``nets`` (names), ``features``

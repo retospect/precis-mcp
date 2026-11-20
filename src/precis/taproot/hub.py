@@ -1,7 +1,7 @@
 """Taproot Phase 2 — the single write door for claim hubs + evidence edges.
 
-Build ticket: ``docs/backlog/taproot.md``; governance:
-taproot evidence relations; design: ``docs/backlog/taproot.md`` §"The core
+Build ticket: `me694691`; governance:
+taproot evidence relations; design: `me694691` §"The core
 model".
 
 **Single write path.** Every hub-finding and every
@@ -368,8 +368,11 @@ def _enqueue_conflict_sweep(store: Store, hub_ref_id: int, *, conn: Any) -> None
     when the backfill walk reaches it. Best-effort and never a reason a
     mint fails: the enqueue runs in its own nested savepoint and any
     failure is logged. Dark unless the ``conflict_search`` service is
-    enabled (:func:`~precis.workers.conflict_search.enqueue_conflict_sweep`
-    returns ``None`` and writes nothing). Local import — ``workers.
+    enabled, and skipped when the live sweep backlog is at the mint
+    fan-out cap (gr637060) — either way
+    :func:`~precis.workers.conflict_search.enqueue_conflict_sweep`
+    returns ``None``, writes nothing, and the standing pass sweeps the
+    hub later from its watermark. Local import — ``workers.
     conflict_search`` imports :data:`HUB_ROLES` from this module."""
     from precis.workers.conflict_search import enqueue_conflict_sweep
 
@@ -697,10 +700,11 @@ class HubFrozenError(ValueError):
 def refine_claim_sentence(
     store: Store,
     hub_ref_id: int,
-    sentence: str,
+    sentence: str | None,
     *,
     scope: dict[str, Any] | None = None,
     set_by: str = "agent",
+    attribution: dict[str, str] | None = None,
     conn: Any = None,
 ) -> dict[str, Any]:
     """Reword a ``TAPROOT:claim`` hub's claim sentence in place. Returns a
@@ -730,6 +734,12 @@ def refine_claim_sentence(
        the new pub_id already belongs to a *different* live ref, raises
        :class:`ValueError` rather than silently merging.
 
+    ``sentence=None`` keeps the title read under the hub lock, so a
+    scope-only edit cannot undo a concurrent retitle.
+    ``attribution`` carries the title editor's writer annotation, saved
+    in the same transaction as a changed title or scope so provenance
+    cannot outlive a failed edit. An unchanged title and scope leave
+    existing attribution intact.
     ``scope=None`` keeps the hub's existing scope; ``conn`` folds the write
     into a caller's open transaction (default: own ``store.tx()``).
 
@@ -756,7 +766,7 @@ def refine_claim_sentence(
         TitleRoundTripError: the written title didn't read back equal.
     """
     stripped = sentence.strip() if sentence else ""
-    if not stripped:
+    if sentence is not None and not stripped:
         raise ValueError("refine_claim_sentence requires a non-empty sentence")
 
     def _do(c: Any) -> dict[str, Any]:
@@ -781,7 +791,7 @@ def refine_claim_sentence(
             dict(scope) if scope is not None else dict(current_meta.get("scope") or {})
         )
 
-        new_title = stripped
+        new_title = old_title if sentence is None else stripped
         if new_title == old_title and effective_scope == dict(
             current_meta.get("scope") or {}
         ):
@@ -817,14 +827,18 @@ def refine_claim_sentence(
         store.update_ref(
             hub_ref_id,
             title=new_title,
-            meta_patch={"scope": effective_scope} if scope is not None else None,
+            meta_patch={
+                **(attribution or {}),
+                **({"scope": effective_scope} if scope is not None else {}),
+            }
+            or None,
             conn=c,
         )
         _assert_title_round_trip(c, hub_ref_id, new_title, op="refine_claim_sentence")
 
         # (2) finding_body chunk — DELETE+INSERT at ord=0.
         store.chunks.replace_body_chunk(
-            hub_ref_id, stripped, chunk_kind="finding_body", source=set_by, conn=c
+            hub_ref_id, new_title, chunk_kind="finding_body", source=set_by, conn=c
         )
         from precis.workers.embed import nudge_fresh_embed
 
@@ -836,7 +850,7 @@ def refine_claim_sentence(
         c.execute("DELETE FROM chunks WHERE ref_id = %s AND ord < 0", (hub_ref_id,))
 
         # (4) pub_id — recompute, alias the old one, guard a cross-ref collision.
-        new_paper_id = make_taproot_hub_paper_id(stripped, effective_scope)
+        new_paper_id = make_taproot_hub_paper_id(new_title, effective_scope)
         new_pub_id = make_pub_id(new_paper_id)
         existing = c.execute(
             "SELECT ref_id FROM ref_identifiers "
@@ -867,7 +881,7 @@ def refine_claim_sentence(
         # already holding the new sentence is a merge candidate, logged
         # by register_sentence_id — never a silent merge here either.
         if policy_for(_hub_claim_type(hub_ref_id, conn=c)).dedup_sentence_only:
-            other = register_sentence_id(c, hub_ref_id, stripped)
+            other = register_sentence_id(c, hub_ref_id, new_title)
             if other is not None:
                 log.warning(
                     "taproot: refined hub %s now states the sentence hub %s "
@@ -1327,7 +1341,7 @@ def attach_evidence(
 # ── reground: the edge-REMOVAL door ─────────────────────────────────
 #
 # ``attach_evidence`` above is the single *write* door; until reground
-# (docs/backlog/taproot-reground.md) there was no *removal* door at all,
+# (gr693791) there was no *removal* door at all,
 # because ``hub_refine`` was strictly additive. Reground audits existing
 # edges and auto-removes proxy grounding, so removal needs the same
 # single-choke-point treatment — plus one thing attach doesn't need: an
@@ -1337,7 +1351,7 @@ def attach_evidence(
 
 
 #: ``finding.meta`` key carrying a claim hub's reground audit trail
-#: (docs/backlog/taproot-reground.md stage 2): an append-only list of
+#: (gr693791 stage 2): an append-only list of
 #: :func:`reground_log_entry` records — one per removal, disputes
 #: re-attach, or deliberately *withheld* action. Read by the claim page /
 #: any human asking "why is this edge gone?".
@@ -1417,7 +1431,7 @@ class EvidenceHandle:
     ``(source ref, grounding chunk, relation)``.
 
     Deliberately **not** the ``links.link_id`` surrogate: the applier's
-    read-back (docs/backlog/taproot-reground.md §"Applier must enforce
+    read-back (gr693791 §"Applier must enforce
     add-first") has to compare an *intent* it formed before the write
     against state it re-read after the commit, and an intent has no
     link_id. ``src_chunk_id`` is ``None`` for a ref-level (``pa<id>``)
@@ -1436,7 +1450,7 @@ def live_evidence_handles(conn: Any, hub_ref_id: int) -> set[EvidenceHandle]:
 
     No ``retired_at IS NULL`` filter — ``links`` has no such column, and
     adding one to the predicate *errors* rather than merely
-    under-returning (docs/backlog/taproot-reground.md §"applier
+    under-returning (gr693791 §"applier
     contract"). Every row here is live by construction.
     """
     rows = conn.execute(
@@ -1600,7 +1614,7 @@ def append_reground_log(
     Read-modify-write on ``meta`` (``update_ref``'s ``meta_patch`` merges
     only top-level, so the list is rebuilt whole) — same lost-update
     exposure as ``hub_refine``'s ``taproot_rejected`` memo under concurrent
-    passes on one hub (unresolved, docs/backlog/taproot-reground.md; run
+    passes on one hub (unresolved, gr693791; run
     reground on one host per the enablement runbook). A vanished hub is a
     silent no-op, not a raise — the log is an audit nicety, never worth
     failing a removal that already happened.
@@ -1638,7 +1652,7 @@ class WouldStrandHub(BadInput):
     A hub SHOULD be allowed to reach zero (that's how "questionable" is
     expressed — emergent ``unverified`` via ``.trust``), but only as a
     deliberate, authorized RETIRE, never the accidental residue of a
-    half-applied add-first prune plan (docs/backlog/taproot-reground.md —
+    half-applied add-first prune plan (gr693791 —
     two hubs really were pruned to zero this way before a human caught it).
     The door refuses by default; the caller has to say so out loud.
     """
@@ -2109,7 +2123,7 @@ def attach_motivation(
     motivation out of :data:`HUB_ROLES` is load-bearing: ``hub_refine``
     widens a claim by searching for supporting evidence, and aiming that at
     a conjecture makes a confirmation engine of it
-    (``docs/backlog/nanopub-corpus-remediation.md``) — a motivator prompted the
+    (`me691969`) — a motivator prompted the
     guess, never supports it.
 
     ``meta['source_handle']`` grounds the edge at a specific passage,

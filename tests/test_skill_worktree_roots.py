@@ -85,6 +85,28 @@ def test_worktree_alias_lists_slugs(env) -> None:
     assert "wt-only-help" in body
 
 
+def test_worktree_skill_eye_uses_the_tree_corpus(env) -> None:
+    """gr568808 review: ``extent='verbatim'`` — the recovery call every
+    rooted index serve advertises — must reach the tree's corpus; the
+    packaged corpus stays untouched (the same slug does not resolve
+    bare through the eye either)."""
+    h = _make(env)
+    body = h.eye(id="wt-alpha/wt-only-help", extent="verbatim").body
+    assert "unlanded body" in body
+    with pytest.raises(BadInput, match="no live skill"):
+        h.eye(id="wt-only-help", extent="verbatim")
+
+
+def test_worktree_skill_eye_section_and_map(env) -> None:
+    h = _make(env)
+    section = h.eye(id="wt-alpha/wt-only-help~2", extent="verbatim").body
+    assert "sec two" in section
+    fmap = h.eye(id="wt-alpha/wt-only-help", extent="fisheye").body
+    # The map's rows keep the root so its handles re-resolve the tree.
+    assert "wt-alpha/wt-only-help~2" in fmap
+    assert "sk:wt-alpha/wt-only-help~" in fmap
+
+
 def test_worktree_edits_visible_without_cache(env) -> None:
     """The corpus rebuilds per call — the point is previewing edits."""
     h = _make(env)
@@ -114,10 +136,12 @@ def test_non_worktree_view_grammar_unchanged(env) -> None:
         h.get(id="precis-overview/bogus")
 
 
-def test_tilde_placeholder_error_names_digits(env) -> None:
+def test_tilde_placeholder_error_names_heading_candidates(env) -> None:
     h = _make(env)
-    with pytest.raises(BadInput, match="~<n>"):
+    with pytest.raises(BadInput, match="skill heading") as caught:
         h.get(id="precis-overview~N")
+    assert "precis-overview~" in str(caught.value)
+    assert "precis-overview/toc" in str(caught.value)
 
 
 def test_repo_dev_skill_hint_sees_live_checkout_dirs(tmp_path: Path) -> None:

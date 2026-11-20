@@ -5,7 +5,7 @@ precis cluster on any set of hosts. It is deliberately **cluster-agnostic**:
 nothing here names a real machine, address, or secret. Everything specific to
 *your* cluster lives in a small local overlay that this repo never sees.
 
-Design-of-record: [`docs/backlog/factory-console-and-scheduling.md`](../docs/backlog/factory-console-and-scheduling.md)
+Design-of-record: gr690514 (gr690514)
 (open scope; shipped portion in the `precis.workers` docstring + git history). This directory is **slice 12a** —
 the repo rationalization, **complete since 2026-07-19**: `scripts/deploy` runs
 from this tree by default, and it is the authoritative deploy path. The only
@@ -354,6 +354,15 @@ symlink-free and checkout-independently: it uses **this** checkout's
 So a deploy works from any worktree — `/go` ships+deploys from one — with the
 overlay stored in exactly one place and no per-worktree secret copies.
 
+If `deploy/inventory` is itself a git repo with a remote named `deploy-helper`
+(a *private* mirror of the overlay — never this public repo), `scripts/deploy`
+and `scripts/host-ops/play` reconcile the two before rendering: fetch,
+fast-forward when behind, push when ahead, refuse on divergence or uncommitted
+edits (`PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT=1` renders the local copy as-is
+once). `scripts/overlay-sync status|commit|push|log|diff` operates that repo
+from any session. A plain directory is left alone. Details:
+`docs/runbooks/cluster-overlay-sync.md`.
+
 ### Fix-lane deploys
 
 The factory's `release_deploy` job runs `scripts/release --deploy-only` as the
@@ -468,8 +477,11 @@ Overlay variables the portable roles expect (define these in your local
 `nas_host` / `nas_mount_base` / `nas_nfs_export` / `nas_mount_name` and the
 `precis_capabilities` map. The `deploy/inventory.example/` templates show
 every one.
+`gateway_host` also feeds code: the precis_web migrate step writes it to the
+`cluster.gateway_host` setting (`PRECIS_GATEWAY_HOST`), which the sandbox
+exclusion, the SMALL-band pin and the gateway-pinned cadences read.
 
-The cluster share's move to the NAS (`docs/backlog/cluster-fileserver-move.md`)
+The cluster share's move to the NAS (me695259)
 adds optional ones, all dark while unset: `nas_lan_ip` / `nas_lan_name` (the
 NAS's `/etc/hosts` line), `nas_cluster_export` and `nas_dbbackup_export` (its
 two shares), `cluster_share_on_nas` (the cutover flag for `nfs_client`; leave

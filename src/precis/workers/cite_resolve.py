@@ -1,5 +1,5 @@
 """cite_resolve — chunk→paper ``cites`` links from in-text citation
-markers (gr513768, docs/backlog/citation-resolution-skill.md slices 1–2, 4).
+markers (gr513768, me690820 slices 1–2, 4).
 
 Where ``bib_mark`` (``workers/bib_mark.py``) records *which* inline
 ``[N]`` markers a body chunk uses (``chunk_citations``) and
@@ -40,7 +40,7 @@ Two deterministic layers (no LLM), one OpenAlex leg, one LLM layer:
   lights :func:`run_passage_sweep` at the end of the pass — each minted
   ref-level link's citing sentence is embedded, the cited paper's top-5
   embedded body chunks go to ``cite_resolve:passage`` (the BIG tier
-  Reto steered to castor's local lane, same as ``chase:verify``), and a
+  Reto steered to the local-serving node's lane, same as ``chase:verify``), and a
   pick upgrades the link to chunk→chunk while ``none`` memoizes the
   pair (``links.meta.passage``) so it is not retried.
 

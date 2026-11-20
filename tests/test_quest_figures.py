@@ -15,6 +15,8 @@ import argparse
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+import pytest
+
 from precis.quest import figures
 from precis.quest.frontier import (
     Candidate,
@@ -239,6 +241,107 @@ class TestParetoRenderer:
         assert png.startswith(_PNG_MAGIC)
 
 
+def test_pareto_axes_and_trusted_only() -> None:
+    """Renderer args for the draft figure source (gr592643): an explicit
+    ``x=``/``y=`` pair selects the plotted columns in the snapshot rows;
+    ``trusted_only`` drops provisional points; ``top_n`` caps the points;
+    an unknown axis raises ``ValueError`` naming the objective keys."""
+    quest_ref = _FakeRef(
+        id=99,
+        kind="quest",
+        title="A quest with three objectives",
+        meta={
+            "rubric_objectives": [
+                {"key": "log_tof", "sense": "max"},
+                {"key": "atom_cost", "sense": "min"},
+                {"key": "barrier", "sense": "min"},
+            ]
+        },
+    )
+    store = _FakeStore(quest_ref)
+    fr = FrontierResult(
+        objectives=[("log_tof", "max"), ("atom_cost", "min"), ("barrier", "min")],
+        frontier=[
+            Candidate(
+                1,
+                "st1",
+                "Fe-N4",
+                {"log_tof": 2.0, "atom_cost": 1.0, "barrier": 0.3},
+                True,
+            ),
+            Candidate(
+                2,
+                "st2",
+                "Cu-N4",
+                {"log_tof": 1.0, "atom_cost": 0.5, "barrier": 0.9},
+                True,
+            ),
+        ],
+        dominated=[
+            Candidate(
+                3,
+                "st3",
+                "Ni-N4",
+                {"log_tof": 0.5, "atom_cost": 2.0, "barrier": 1.2},
+                True,
+            ),
+        ],
+        provisional=[
+            ProvisionalCandidate(
+                candidate=Candidate(
+                    4,
+                    "st4",
+                    "Pd-N4",
+                    {},
+                    False,
+                    flags={"barrier_trusted": False},
+                ),
+                measures={"log_tof": 1.5, "atom_cost": 0.8, "barrier": 0.6},
+                untrusted_keys=frozenset({"barrier"}),
+                reasons=["barrier untrusted"],
+                on_frontier=False,
+            )
+        ],
+    )
+
+    swapped = figures.build_pareto_snapshot(
+        cast(Any, store), quest_ref, fr, x="barrier", y="log_tof"
+    )
+    assert swapped["params"]["x_measure"] == "barrier"
+    assert swapped["params"]["y_measure"] == "log_tof"
+    assert swapped["params"]["x"] == "barrier"
+    assert swapped["params"]["y"] == "log_tof"
+    assert "log_tof" in swapped["columns"]  # non-default axis becomes a column
+    by_handle = {r["handle"]: r for r in swapped["rows"]}
+    assert by_handle["st1"]["barrier"] == 0.3
+    assert by_handle["st1"]["log_tof"] == 2.0
+
+    trusted = figures.build_pareto_snapshot(
+        cast(Any, store), quest_ref, fr, trusted_only=True
+    )
+    assert trusted["params"]["trusted_only"] is True
+    assert "st4" not in {r["handle"] for r in trusted["rows"]}
+    assert "st4" in {r["handle"] for r in swapped["rows"]}
+
+    capped = figures.build_pareto_snapshot(cast(Any, store), quest_ref, fr, top_n=3)
+    assert len(capped["rows"]) == 3
+    assert capped["params"]["top_n"] == 3
+
+    labelled = figures.build_pareto_snapshot(
+        cast(Any, store), quest_ref, fr, label="handles"
+    )
+    assert labelled["params"]["label"] == "handles"
+
+    with pytest.raises(ValueError, match="rubric objective keys"):
+        figures.build_pareto_snapshot(
+            cast(Any, store), quest_ref, fr, x="nope", y="barrier"
+        )
+    with pytest.raises(ValueError, match="rubric objective keys"):
+        figures.build_pareto_snapshot(
+            cast(Any, store), quest_ref, fr, x="barrier", y=None
+        )
+
+
 # ---------------------------------------------------------------------------
 # Pathway profile
 # ---------------------------------------------------------------------------
@@ -292,6 +395,48 @@ def _pathway_ref(**meta_overrides: Any) -> _FakeRef:
 
 
 class TestPathwayProfile:
+    def test_kinetics_annotation_from_meta(self) -> None:
+        ref = _pathway_ref(
+            results={
+                "kinetics_v2": {
+                    "tof_mf": 0.01,
+                    "trust": "provisional",
+                    "environment": {"T": 350, "gases": {"inputs": {"H2": 0.2}}},
+                }
+            }
+        )
+        annotation = figures.pathway_kinetics_annotation(ref.meta)
+        assert annotation is not None
+        assert annotation["tof_log10"] == -2
+        assert annotation["method"] == "mean-field"
+        assert annotation["trust"] == "provisional"
+        assert annotation["T"] == 350
+        assert annotation["gases"] == {"H2": 0.2}
+        assert annotation["rls_step"] == "s1→s2"
+        assert annotation["steps"][0] == {"name": "s1→s2", "ea": 0.55, "sigma": None}
+        assert figures.pathway_kinetics_annotation(_pathway_ref().meta) is None
+
+    def test_profile_route_only_drops_side_states(self) -> None:
+        graph = {
+            "nodes": [*_GRAPH3["nodes"], {"id": "side", "rel_energy": 3}],
+            "links": [
+                *_GRAPH3["links"],
+                {"source": "s1", "target": "side", "barrier": 4},
+            ],
+        }
+        full = figures._profile_positions(graph, "s1", "s3", kinetics=True)
+        route = figures._profile_positions(graph, "s1", "s3", route_only=True)
+        assert len(route) < len(full)
+        assert "side" not in {r["label"] for r in route}
+
+    def test_profile_png_has_tof_annotation(self) -> None:
+        ref = _pathway_ref(results={"kinetics_v2": {"tof_chain": 0.01}})
+        png, snapshot = figures.pathway_profile_figure(cast(Any, None), ref)
+        assert png.startswith(_PNG_MAGIC)
+        assert "log10 TOF (/s): -2.0; chain" in snapshot["params"]["annotation"]
+        _, unsolved = figures.pathway_profile_figure(cast(Any, None), _pathway_ref())
+        assert unsolved["params"]["annotation"] == "kinetics not solved"
+
     def test_pathway_profile_figure_png_and_snapshot(self) -> None:
         pathway_ref = _pathway_ref()
         png, snapshot = figures.pathway_profile_figure(

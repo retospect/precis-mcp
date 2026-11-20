@@ -86,7 +86,7 @@ _DIRECTIONS = {"input", "covariate"}
 _BOUNDS = {"upper", "lower"}
 
 #: The reader-contract generation stamped on every written run's
-#: ``meta.extraction.prompt`` (r1 = the unversioned castor contract).
+#: ``meta.extraction.prompt`` (r1 = the unversioned local-serving-node contract).
 READER_PROMPT_VERSION = "r3"
 
 _RESULT_FIELDS = {

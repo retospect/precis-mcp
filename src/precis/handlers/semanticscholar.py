@@ -6,6 +6,11 @@ The ``semanticscholar`` kind wraps Semantic Scholar's Graph API. The
 * ``get(kind='semanticscholar', id='<query>')`` — a paper *search*:
   the top-10 ranked hits for a natural-language query, as a structured
   markdown listing (same shape as perplexity-*).
+* ``get(kind='semanticscholar', id='doi:<doi>')`` or
+  ``id='arxiv:<arxiv-id>'`` — a single-paper *lookup* by identifier
+  (gr489407, gr711201): an identifier-shaped ``id`` must never
+  free-text search, which returned unrelated hits an agent read as
+  "not found".
 * ``get(kind='semanticscholar', id='refs:<paper-id>')`` — the papers
   *this* paper cites (its reference list / bibliography).
 * ``get(kind='semanticscholar', id='cites:<paper-id>')`` — the papers
@@ -188,15 +193,40 @@ _AUTHOR_COMPLETE_TITLE_FALLBACK_CAP = 200
 #: Used to auto-prefix a path id when the caller passes a naked id.
 _ARXIV_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 
-#: Bare-DOI shape — ``10.<4-9 digits>/<non-space>`` (gr489407: a DOI as
-#: query must route to the ``/paper/DOI:<doi>`` lookup, not a free-text
-#: search that returns unrelated papers).
+#: Identifier shapes that route ``get`` to a single-paper lookup instead
+#: of a topic search (gr489407: a DOI as query must hit
+#: ``/paper/DOI:<doi>``; gr711201: same for ``arxiv:<id>`` / a bare arXiv
+#: id — the old free-text fallback burned a rate-limited S2 call and
+#: returned ~10 unrelated "arXiv"-flavoured hits an agent read as
+#: "not found"). The bare-arXiv shape is :data:`_ARXIV_RE`.
 _DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
+
+#: Canonical-key prefix of an arXiv paper lookup (gr711201) — distinct
+#: from any key a topic search is cached under, so stale rows are never
+#: served as the lookup. The double space cannot occur in a topic key
+#: (queries are whitespace-collapsed), so no legacy row — ``arxiv:<id>``,
+#: ``arxivid:<id>``, … — can share it.
+_ARXIV_LOOKUP_PREFIX = "arxivid  "
 
 _ATTRIBUTION = (
     "Source: Semantic Scholar (https://www.semanticscholar.org). "
     "Each cited paper is an external work — verify and cite the "
     "primary paper, not this aggregator query."
+)
+
+#: Agent-facing 429 wording, shared by the backoff-exhausted raise in
+#: :meth:`SemanticScholarHandler._s2_raw_get_backoff` and the
+#: ``_s2_parse_response`` guard (gr676917): every S2 GET rides the
+#: shared ``s2`` limiter and retries under it, so a 429 that still
+#: surfaces means the limiter is saturated — the recovery is one spaced
+#: retry, never a loop and never an operator-only key change.
+_S2_429_MESSAGE = (
+    "Semantic Scholar rate-limited (HTTP 429): retries exhausted — the "
+    "shared s2 limiter is saturated"
+)
+_S2_429_NEXT = (
+    "retry this call once after ~30 s; do not loop; batch with "
+    "get(kind='semanticscholar', id=[...]) where a batch form exists"
 )
 
 
@@ -229,8 +259,9 @@ class SemanticScholarHandler(CacheBackedHandler):
             "papers it cites, id='cites:<paper-id>' the papers citing "
             "it — each row carrying the DOI to feed a "
             "put(kind='paper', doi=…) acquisition stub. A bare DOI "
-            "(id='10.x/y' or 'doi:10.x/y', or q= a DOI) resolves that "
-            "one paper via the lookup endpoint. Or walk the "
+            "(id='10.x/y' or 'doi:10.x/y') or an arXiv id (id='arxiv:2510.25380' "
+            "or a bare '2510.25380') resolves that one paper via the "
+            "lookup endpoint. Or walk the "
             "author graph: id='authors:<paper-id>' lists that paper's "
             "authors (each with their ORCID — the key into kind='orcid' — "
             "h-index, affiliations, senior author flagged), "
@@ -256,6 +287,8 @@ class SemanticScholarHandler(CacheBackedHandler):
     attribution: ClassVar[str] = _ATTRIBUTION
     corpus_slug: ClassVar[str] = "default"
     example_query: ClassVar[str] = "carbon nanotube field-effect transistors"
+    # The ``ss<id>`` handle routes by ref id (gr702974).
+    handle_routes_by_ref_id: ClassVar[bool] = True
     #: Per-call cost — the public tier is free, partner tier charges
     #: per query but it's tiny. Record None so the dashboard doesn't
     #: invent a per-call dollar figure.
@@ -297,6 +330,16 @@ class SemanticScholarHandler(CacheBackedHandler):
                 if mode == "author" and _GET_STATE.get().complete:
                     ident = f"{ident}{_AUTHOR_COMPLETE_SUFFIX}"
                 return f"{prefix}{ident}"
+        # gr711201: an arXiv-shaped query is a paper lookup. It gets its
+        # own key namespace so a legacy ``arxiv:<id>`` row — a topic
+        # search cached before the lookup routing, junk hits and all —
+        # is never served as the lookup result.
+        if low.startswith("arxiv:"):
+            arxiv = low[6:].strip()
+            if arxiv:
+                return f"{_ARXIV_LOOKUP_PREFIX}{arxiv}"
+        elif _ARXIV_RE.match(low):
+            return f"{_ARXIV_LOOKUP_PREFIX}{low}"
         return low
 
     @staticmethod
@@ -339,6 +382,11 @@ class SemanticScholarHandler(CacheBackedHandler):
         return r  # assume a raw S2 paper hash
 
     def _slug_for(self, key: str) -> str:
+        # A lookup slug uses ``_`` — ``slug_from_text`` only emits
+        # ``[a-z0-9-]``, so no legacy topic row can hold it.
+        if key.startswith(_ARXIV_LOOKUP_PREFIX):
+            ident = re.sub(r"[^a-z0-9]+", "_", key[len(_ARXIV_LOOKUP_PREFIX) :])
+            return f"arxiv_{ident.strip('_')}"[:60]
         return slug_from_text(key, max_len=60) or "semanticscholar-query"
 
     def _recover_key(self, ref, cache):
@@ -402,7 +450,8 @@ class SemanticScholarHandler(CacheBackedHandler):
         else (graph-walk modes, the injection-withheld/suspect banners)
         defers to the base class unchanged.
 
-        Discriminator: only :meth:`_fetch_search` stamps ``meta['papers']``
+        Discriminator: only :meth:`_fetch_search` and
+        :meth:`_fetch_paper_lookup` stamp ``meta['papers']``
         — the graph-walk fetchers (`_fetch_graph` / `_fetch_paper_authors`
         / `_fetch_author_papers`) never do, so they always fall through to
         ``super()._render()``. A ``high`` injection verdict also defers to
@@ -581,54 +630,78 @@ class SemanticScholarHandler(CacheBackedHandler):
             if mode == "author":
                 return self._fetch_author_papers(key, ident)
             return self._fetch_graph(key, mode, ident)
-        # gr489407: a bare DOI (or ``doi:`` prefix) is a paper *lookup*,
-        # not a topic search — free-texting it returned junk hits.
-        if doi := self._doi_of(key):
-            return self._fetch_paper_lookup(key, doi)
+        # gr489407 / gr711201: an identifier-shaped key (a bare DOI or
+        # ``doi:`` / ``arxiv:`` prefix, or a bare arXiv id) is a paper
+        # *lookup*, not a topic search — free-texting it returned junk
+        # hits an agent read as "not found".
+        if path_id := self._lookup_path_id(key):
+            return self._fetch_paper_lookup(key, path_id)
         return self._fetch_search(key)
 
     @staticmethod
-    def _doi_of(key: str) -> str | None:
-        """The DOI a canonical key names, or None for a real query."""
+    def _lookup_path_id(key: str) -> str | None:
+        """The S2 ``/paper/{id}`` path segment a canonical key names, or
+        ``None`` for a real query (which goes to the topic search)."""
         k = key.strip()
-        if k.startswith("doi:"):
-            return k[4:] or None
-        return k if _DOI_RE.match(k) else None
+        low = k.lower()
+        if low.startswith(_ARXIV_LOOKUP_PREFIX):
+            arxiv = k[len(_ARXIV_LOOKUP_PREFIX) :].strip()
+            return f"ARXIV:{arxiv}" if arxiv else None
+        if low.startswith("doi:"):
+            doi = k[4:].strip()
+            return f"DOI:{doi}" if doi else None
+        if low.startswith("arxiv:"):
+            arxiv = k[6:].strip()
+            return f"ARXIV:{arxiv}" if arxiv else None
+        if _DOI_RE.match(k):
+            return f"DOI:{k}"
+        if _ARXIV_RE.match(k):
+            return f"ARXIV:{k}"
+        return None
 
-    def _fetch_paper_lookup(self, key: str, doi: str) -> FetchResult:
-        """Resolve one paper by DOI via ``/paper/DOI:<doi>`` (gr489407).
+    def _fetch_paper_lookup(self, key: str, path_id: str) -> FetchResult:
+        """Resolve one paper by identifier via ``/paper/{path_id}``
+        (gr489407 for DOIs, gr711201 for arXiv ids).
 
-        A 404 is a clean "not found" row, not an Upstream error — the
-        caller verifying a DOI needs that answer, not a retry hint."""
-        url = f"{_S2_PAPER_BASE}/DOI:{doi}"
-        resp = self._s2_raw_get(url, {"fields": _S2_FIELDS})
+        A 404 is a clean "not found" row, not an ``Upstream`` error — the
+        caller verifying an identifier needs that answer, not a retry
+        hint. The call rides the shared ``s2`` limiter like every S2 GET
+        (gr676917): a 429/5xx is paced and retried under it before it
+        can surface as an ``Upstream``."""
+        url = f"{_S2_PAPER_BASE}/{path_id}"
+        resp, _attempts = self._s2_raw_get_backoff(url, {"fields": _S2_FIELDS})
         if resp.status_code == 404:
             return FetchResult(
-                title=f"S2 paper lookup: {doi}",
+                title=f"S2 paper lookup: {path_id}",
                 body_blocks=[
                     ChunkInsert(
                         ord=0,
                         text=(
-                            f"Semantic Scholar has no record for DOI {doi} "
+                            f"Semantic Scholar has no record for {path_id} "
                             "(404). Check the spelling, or try "
                             "search(kind='semanticscholar', ...) terms."
                         ),
                     )
                 ],
                 cost_usd=None,
-                meta={"key": key, "nav": "doi", "doi": doi, "result_count": 0},
+                meta={
+                    "key": key,
+                    "nav": "lookup",
+                    "path_id": path_id,
+                    "result_count": 0,
+                },
             )
         paper = self._s2_parse_response(resp)
         # Reuse the topic-search corpus-diff render: ``meta['papers']``
         # marks it so ``_render`` flags held:/stub:/NEW like a hit list.
         return FetchResult(
-            title=f"S2 paper lookup: {doi}",
+            title=f"S2 paper lookup: {path_id}",
             body_blocks=[ChunkInsert(ord=0, text=_format_paper(paper))],
             cost_usd=None,
             meta={
                 "key": key,
-                "nav": "doi",
-                "doi": doi,
+                "nav": "lookup",
+                "path_id": path_id,
                 "result_count": 1,
                 "papers": [paper],
             },
@@ -640,8 +713,9 @@ class SemanticScholarHandler(CacheBackedHandler):
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """A DOI-shaped ``q`` routes to the paper lookup (gr489407)."""
-        if q is not None and self._doi_of(" ".join(q.lower().split())):
+        """An identifier-shaped ``q`` routes to the paper lookup
+        (gr489407, gr711201)."""
+        if q is not None and self._lookup_path_id(" ".join(q.lower().split())):
             return self.get(id=q)
         return super().search(q=q, **_kw)
 
@@ -870,26 +944,24 @@ class SemanticScholarHandler(CacheBackedHandler):
             offset = nxt
         return papers, False, requests, retried
 
-    def _s2_get_json_backoff(
-        self, url: str, params: dict[str, Any]
-    ) -> tuple[dict[str, Any], int]:
-        """Like :meth:`_s2_get_json`, but runs under the shared politeness
-        core (:func:`precis.utils.http.with_backoff`, service ``s2``): one
+    def _s2_raw_get_backoff(self, url: str, params: dict[str, Any]) -> tuple[Any, int]:
+        """One S2 Graph GET under the shared politeness core
+        (:func:`precis.utils.http.with_backoff`, service ``s2``): one
         ``s2`` limiter token per attempt, full-jitter backoff on 429/5xx,
         ``Retry-After`` honoured and parked on the shared row, a breaker.
-        The last consecutive 429 raises ``Upstream`` with a "retries
-        exhausted" message distinct from :meth:`_s2_parse_response`'s
-        generic 429 message.
+        EVERY S2 call routes through here (gr676917) — a burst is paced
+        and retried inside the limiter budget instead of failing on the
+        first 429.
 
-        Returns ``(json, attempts)`` — ``attempts`` is how many actual
-        HTTP calls this one page needed (1 when no 429 was hit, more
-        when it was retried) — :meth:`_walk_author_papers` sums these
-        across pages for the ``complete=True`` render's request count.
-
-        Only the ``complete=True`` author walk uses this — it makes
-        several sequential calls and is far likelier to cross the public
-        tier's ~1 req/s ceiling than the other (single-call) fetch paths,
-        which keep the immediate-raise behaviour of :meth:`_s2_get_json`.
+        Returns ``(raw_response, attempts)`` — ``attempts`` is how many
+        actual HTTP calls the call needed (1 when no retry status was
+        hit). A retryable status never comes back: an exhausted budget,
+        an open breaker, a drain or a limiter refusal raises ``Upstream``
+        — the exhausted-429 raise carries the agent-actionable wording in
+        :data:`_S2_429_MESSAGE` — as does a fatal 401/403. Non-retryable
+        statuses (404, 400, …) are returned for the caller to read:
+        :meth:`_s2_parse_response` for the JSON paths, the DOI lookup's
+        clean-404 branch for its own.
         """
         attempts = 0
 
@@ -908,11 +980,7 @@ class SemanticScholarHandler(CacheBackedHandler):
             ) from exc
         except VendorUnavailable as exc:  # budget spent, breaker open, draining
             if exc.status == 429:
-                raise Upstream(
-                    "Semantic Scholar rate-limited (HTTP 429): retries exhausted",
-                    next="retry the same call later, or set "
-                    "SEMANTIC_SCHOLAR_API_KEY for the partner tier",
-                ) from exc
+                raise Upstream(_S2_429_MESSAGE, next=_S2_429_NEXT) from exc
             raise Upstream(
                 f"Semantic Scholar unavailable: {exc}",
                 next="retry the same call shortly; S2 is having an outage",
@@ -928,14 +996,25 @@ class SemanticScholarHandler(CacheBackedHandler):
                 f"Semantic Scholar HTTP {exc.status}",
                 next="retry the same call shortly; S2 may be degraded",
             ) from exc
+        return resp, attempts
+
+    def _s2_get_json_backoff(
+        self, url: str, params: dict[str, Any]
+    ) -> tuple[dict[str, Any], int]:
+        """:meth:`_s2_raw_get_backoff` + ``_s2_parse_response``, with the
+        attempt count kept — :meth:`_walk_author_papers` sums these
+        across pages for the ``complete=True`` render's request count
+        (gr356740). Single-call paths use :meth:`_s2_get_json`, which
+        drops it."""
+        resp, attempts = self._s2_raw_get_backoff(url, params)
         return self._s2_parse_response(resp), attempts
 
     @staticmethod
     def _s2_raw_get(url: str, params: dict[str, Any]) -> Any:
         """Issue one GET against the S2 Graph API and return the raw
-        ``httpx.Response`` — no status/JSON handling. Shared by
-        :meth:`_s2_get_json` (single-shot, raises immediately on 429) and
-        :meth:`_s2_get_json_backoff` (retrying multi-page walk).
+        ``httpx.Response`` — no status/JSON handling. This is a single
+        attempt; the pacing, retry and error mapping live in
+        :meth:`_s2_raw_get_backoff`, which calls this per attempt.
         """
         httpx = require_httpx()
         from precis.secrets import get_secret
@@ -957,13 +1036,7 @@ class SemanticScholarHandler(CacheBackedHandler):
     def _s2_parse_response(resp: Any) -> dict[str, Any]:
         """Status-check + JSON-parse a raw S2 response (or raise)."""
         if resp.status_code == 429:
-            raise Upstream(
-                "Semantic Scholar rate-limited (HTTP 429); the public tier "
-                "is ~1 req/s. Set SEMANTIC_SCHOLAR_API_KEY for the partner "
-                "tier or retry later.",
-                next="set SEMANTIC_SCHOLAR_API_KEY for the partner tier, or "
-                "retry the same call later",
-            )
+            raise Upstream(_S2_429_MESSAGE, next=_S2_429_NEXT)
         if resp.status_code == 401:
             raise Upstream(
                 "Semantic Scholar rejected the API key (HTTP 401). "
@@ -992,15 +1065,17 @@ class SemanticScholarHandler(CacheBackedHandler):
                 "changed its response shape",
             ) from exc
 
-    @staticmethod
-    def _s2_get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _s2_get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
         """Issue one S2 Graph GET and return parsed JSON (or raise).
 
-        Shared by the search and citation-graph paths so the
-        rate-limit / auth / transport handling lives in one place.
+        Shared by the search, citation-graph and single-page author
+        paths so the rate-limit / auth / transport handling lives in
+        one place — :meth:`_s2_raw_get_backoff`, the shared ``s2``
+        limiter + 429/5xx retry every S2 GET rides (gr676917). The
+        attempt count it reports is unused on a single-call path.
         """
-        resp = SemanticScholarHandler._s2_raw_get(url, params)
-        return SemanticScholarHandler._s2_parse_response(resp)
+        resp, _attempts = self._s2_raw_get_backoff(url, params)
+        return self._s2_parse_response(resp)
 
     def _fetch_search(self, key: str) -> FetchResult:
         # Over-fetch (``_S2_FETCH_LIMIT`` ~30) vs. what actually renders

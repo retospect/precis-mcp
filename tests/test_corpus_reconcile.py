@@ -107,7 +107,7 @@ def test_reconcile_pass_records_present_then_absent(
     pdf = tmp_path / "k" / "kong24.pdf"
     pdf.write_bytes(b"%PDF")
 
-    r1 = run_corpus_reconcile_pass(store, (tmp_path,), "melchior", limit=50)
+    r1 = run_corpus_reconcile_pass(store, (tmp_path,), "maple", limit=50)
     assert (r1.claimed, r1.ok, r1.failed) == (1, 1, 0)
     assert store.pdf_missing(sha, ttl_days=7) is False
 
@@ -118,17 +118,17 @@ def test_reconcile_pass_records_present_then_absent(
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE pdf_locations SET seen_at = now() - interval '1 day' "
-            "WHERE pdf_sha256 = %s AND host = 'melchior'",
+            "WHERE pdf_sha256 = %s AND host = 'maple'",
             (sha,),
         )
-    r2 = run_corpus_reconcile_pass(store, (tmp_path,), "melchior", limit=50)
+    r2 = run_corpus_reconcile_pass(store, (tmp_path,), "maple", limit=50)
     assert (r2.claimed, r2.ok, r2.failed) == (1, 0, 1)
     assert store.pdf_missing(sha, ttl_days=7) is True
 
 
 def test_reconcile_no_corpus_dirs_is_noop(store: Store) -> None:
     """No roots configured on this node → the pass claims nothing."""
-    r = run_corpus_reconcile_pass(store, (), "melchior", limit=50)
+    r = run_corpus_reconcile_pass(store, (), "maple", limit=50)
     assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
 
 

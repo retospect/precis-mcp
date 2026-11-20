@@ -6,7 +6,7 @@ blocktree-library-build-plan.md §Settled): the core owns the recursive tree
 (``parent``/``template``), instancing with cycle guards, ports, connects,
 and envelope validation over the ``precis.cad`` SDF kernel; this module
 adds se's own invariants on top — units are **metres** (float64,
-se-kind.md "Decisions"), **arrays are first-class block-level structure**
+me694842 "Decisions"), **arrays are first-class block-level structure**
 (an array node is an instance node — ``template`` set, resolved at read
 time, never copied — that additionally carries a multiplicity spec), and
 the L2/L3/off-the-shelf vocabulary (joints, measures, loads, manufacturing
@@ -43,7 +43,7 @@ used here as-is or extended with se's own cascades:
   plus exactly one of ``linear`` (``count`` + ``pitch`` (m) + ``axis``) or
   ``polar`` (``count`` + ``radius`` (m) + ``axis``, axis defaulting to
   ``[0,0,1]`` — the cad node-level ``polar:nNrR`` modifier's implicit +z,
-  lifted to block level per se-kind.md "Hierarchy"). ``count`` must be a
+  lifted to block level per me694842 "Hierarchy"). ``count`` must be a
   whole number ≥ 2 — an array of one is just an instance, and the
   rejection says so. Member poses are derived at read/check time from the
   spec (the realization-as-overlay rule: the template's solid stored
@@ -79,7 +79,7 @@ used here as-is or extended with se's own cascades:
   (:mod:`precis_se.simp_bridge` — a ``load_at``/``fixed_at`` port
   carrying ``{'boss': <thickness>}`` pins a solid contact slab in the
   SIMP domain, O5). The superset registry with contract classes
-  (se-kind.md "Annotations") still arrives with the registry half. The port
+  (me694842 "Annotations") still arrives with the registry half. The port
   ``name`` may not contain ``'.'`` — the ``connect``/``disconnect``
   ``'block.port'`` syntax reserves it. ``pose``/``rot`` optionally place
   the port ITSELF in the block's local frame (metres/radians; ``rot``
@@ -121,7 +121,7 @@ used here as-is or extended with se's own cascades:
 - ``set_load``        — set/replace the loads on a block (``block=``) or
   a connect (``a=``/``b=``): ``force``/``torque`` 3-vectors (N / N·m),
   ``duty`` prose, ``cycles`` ≥ 0 — replace semantics; ``clear=true``
-  removes. The kind-neutral loads vocabulary (se-kind.md "Relation to
+  removes. The kind-neutral loads vocabulary (me694842 "Relation to
   nm").
 - ``add_measure`` / ``set_measure`` / ``remove_measure`` — named measures
   on ordinary blocks (metres), optionally carrying a **tolerance
@@ -141,7 +141,7 @@ used here as-is or extended with se's own cascades:
   definition, events recomputed on read; ``observe_ray`` stores only a
   digest. Observation only — no ray op touches geometry.
 
-Off-the-shelf rung 1 (docs/backlog/se-off-the-shelf-fabrication.md) adds
+Off-the-shelf rung 1 (me695392) adds
 the ops for things you *don't* make:
 
 - ``set_mode``        — assign a block's manufacturing mode
@@ -160,7 +160,7 @@ the ops for things you *don't* make:
   name/slug-keyed text resolved at read time — binding a component that
   doesn't exist yet is legal and reported, not rejected.
 - ``set_material``    — a block's explicit ``kind='material'`` slug
-  (gr514245, se-native-fields.md ruling Q3), or clear it with ``null``.
+  (gr514245, me694928 ruling Q3), or clear it with ``null``.
   Slug-keyed like the binding — resolved at read, and the explicit slug
   wins over ``mode``'s ``family/material`` half (the fallback for
   op-made blocks).
@@ -173,7 +173,7 @@ the ops for things you *don't* make:
   the ambiguity this avoids. Lines whose target is removed go with it
   (the vacancy rule ``remove_block``/``disconnect`` already follow).
 
-Slice 2 of docs/backlog/structural-solution-space.md adds the one
+Slice 2 of me695531 adds the one
 solver-backed op:
 
 - ``formfind``       — force-density form-finding over the axial
@@ -477,7 +477,7 @@ def _check_block_name_chars(op: dict[str, Any], *, opname: str) -> None:
 #: block's realization IS chemistry, so the thing it binds is an atomistic
 #: design. ``nm`` was legal here while that kind existed; the merge retired
 #: the kind and 0008 dropped it from the CHECK constraint too. ``pcb``
-#: arrived with the rough box (docs/backlog/pcb-se-binding.md v0): a
+#: arrived with the rough box (me692932 v0): a
 #: bound board's realization is derived at load by
 #: :func:`precis_se.persist.attach_boards` from ``mechanical_profile``.
 _BINDING_KINDS: tuple[str, ...] = ("cad", "structure", "component", "part", "pcb")
@@ -486,7 +486,7 @@ _BINDING_KINDS: tuple[str, ...] = ("cad", "structure", "component", "part", "pcb
 @dataclass
 class PortSpec(Port):
     """A named attachment point on a block — the capability-set half of the
-    "one fact, two projections" port (pcb-component-model.md). ``roles``/
+    "one fact, two projections" port (me692617). ``roles``/
     ``direction``/``annotations`` are the shared core's
     (:class:`~precis.blocktree.types.Port`); the fields below are se's own,
     and today only the **atomic mode** fills them (the nm→se merge): the
@@ -652,7 +652,7 @@ class SeBlock(BlockNode):
     bound_kind: str | None = None
     bound: str | None = None
     #: The block's explicit material — a ``kind='material'`` ref slug
-    #: (gr514245, docs/backlog/se-native-fields.md ruling Q3),
+    #: (gr514245, me694928 ruling Q3),
     #: template-owned like ``mode``: an instance resolves it from its
     #: template (:func:`effective_material`). ``None`` = undeclared, and
     #: readers fall back to ``mode``'s ``family/material`` half; a slug
@@ -918,7 +918,7 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     #: Store-bound material-property lookup: a ``kind='material'`` slug →
     #: ``{property_id: value_num}``, ``None`` when the material is gone.
     #: Wired by the loader like :attr:`measurands`; read by the flow
-    #: adapter's ``fluid=`` (se-multiphysics.md slice 1). ``None`` (a
+    #: adapter's ``fluid=`` (me694808 slice 1). ``None`` (a
     #: bare tree) means "cannot resolve" — a fluid-dependent line is a
     #: reason, never a guess.
     materials: Callable[[str], dict[str, float] | None] | None = field(
@@ -1230,7 +1230,7 @@ def effective_dof(tree: SeTree, node: SeBlock) -> dict[str, Any] | None:
 
 
 def effective_material(tree: SeTree, node: SeBlock) -> str | None:
-    """The material slug "seen" at ``node`` (gr514245, se-native-fields.md
+    """The material slug "seen" at ``node`` (gr514245, me694928
     ruling Q3): its own ``material`` first — the explicit assignment
     wins — else its ``mode``'s ``family/material`` half, resolved through
     the template for an instance (an instance's own ``material``/``mode``
@@ -1256,8 +1256,7 @@ def effective_material(tree: SeTree, node: SeBlock) -> str | None:
 
 
 def template_names(tree: SeTree) -> frozenset[str]:
-    """The design's library parts (gr514241, docs/backlog/
-    se-fit-check-and-probe.md slice 5): every LOCAL block some instance's
+    """The design's library parts (gr514241, me694521 slice 5): every LOCAL block some instance's
     ``template`` names, plus a block a workspace manifest flagged
     ``template: true`` (:attr:`SeBlock.template_only`, surfaced by
     :func:`precis_se.persist.load_tree`). A template is not an assembly
@@ -1383,7 +1382,7 @@ def _reject_instance_dof(tree: SeTree, op: dict[str, Any], *, opname: str) -> No
 
 def _parse_array_spec(op: dict[str, Any]) -> dict[str, Any]:
     """Vet exactly one of ``linear``/``polar`` into the stored array spec
-    (se-kind.md "Hierarchy": the cad node-level ``linear:``/``polar:``
+    (me694842 "Hierarchy": the cad node-level ``linear:``/``polar:``
     modifiers lifted to block level, with an explicit axis). ``overrides``
     is a later round — rejected loudly today, never swallowed."""
     if op.get("overrides") is not None:
@@ -2103,7 +2102,7 @@ def _measure_shared(
         )
     species = op.get("species")
     if species is not None:
-        # Species scope (se-multiphysics.md Q2): the stored name is
+        # Species scope (me694808 Q2): the stored name is
         # '<species>/<prop>' (SCOPE_SEP, the pocket-spec measures' '/');
         # '.' stays reserved for the 'block.measure' relation source.
         sp = str(species).strip()
@@ -2878,7 +2877,7 @@ def _op_set_mode(tree: SeTree, op: dict[str, Any]) -> None:
     — ``'purchase'``, ``'fdm/asa'``, ``'laser/acrylic'``, … An unknown
     family is rejected with the legal list; a known family whose
     implementer hasn't shipped is accepted, and reads back as *recorded
-    intent* (se-kind.md's suggestive-by-contract posture, applied to L5:
+    intent* (me694842's suggestive-by-contract posture, applied to L5:
     stating how you mean to make something is worth storing before the
     checker exists)."""
     name = _require_name(op, "block", "set_mode")
@@ -2920,7 +2919,7 @@ def _op_set_mode(tree: SeTree, op: dict[str, Any]) -> None:
 
 
 #: The print-group intents ``set_mode(intent=)`` accepts, in
-#: structural-solution-space.md §Slice 4 bridge's table order. The enum is
+#: me695531 §Slice 4 bridge's table order. The enum is
 #: complete so the arg shape is stable; :data:`BUILT_PRINT_INTENTS` is
 #: the subset with an implementer (round B1 = ``model``,
 #: :mod:`precis_se.printgroup`; round B2 = ``manufacture``,
@@ -3004,7 +3003,7 @@ def _op_set_binding(tree: SeTree, op: dict[str, Any]) -> None:
 def _op_set_material(tree: SeTree, op: dict[str, Any]) -> None:
     """Assign (or clear, with ``material=null``) a block's explicit
     material — a ``kind='material'`` ref slug (gr514245,
-    se-native-fields.md ruling Q3). Slug-keyed and resolved at read time,
+    me694928 ruling Q3). Slug-keyed and resolved at read time,
     ``set_binding``'s own posture: naming a material that isn't in the
     store yet is legal recorded intent — readers answer a named
     not-applicable, never a write-time rejection. The explicit slug wins
@@ -3030,7 +3029,7 @@ def _op_set_material(tree: SeTree, op: dict[str, Any]) -> None:
 
 def _op_set_process_override(tree: SeTree, op: dict[str, Any]) -> None:
     """Set (or replace) a per-block override of one
-    :mod:`precis_se.capabilities` field — se-kind.md L5's "the model
+    :mod:`precis_se.capabilities` field — me694842 L5's "the model
     overrides if it wants" posture: the resolver's house-tier default may
     be tightened or loosened per block, never below the process's
     physical figure. ``block`` + ``field`` (req) + ``value`` (a number, in
@@ -3122,7 +3121,7 @@ def _op_set_build_frame(tree: SeTree, op: dict[str, Any]) -> None:
     write so a re-read never has to). Pure — no store, no mesh, no score:
     the pin is a direction, not a verdict; the verdict is computed fresh
     by the view every time, since the block's solid can change underneath
-    a standing pin (which survives that on purpose, se-kind.md's origin
+    a standing pin (which survives that on purpose, me694842's origin
     contract)."""
     node = _template_owned(
         tree,

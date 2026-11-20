@@ -22,8 +22,7 @@ tagged ``meta.author='doctor'``. Two halves:
   selection and ``briefing_cast.py``'s health line, and importing FROM
   either of those here would be the wrong direction — this module must
   stay importable by both without a cycle.
-* :func:`convert_needs_a_human` — piece B of ``docs/backlog/doctor-
-  report-and-alert-channel-quality.md``: turns each bullet of the body's
+* :func:`convert_needs_a_human` — piece B of ``me690520``: turns each bullet of the body's
   ``## Needs a human`` section into (or bumps) a ``waiting-for:reto``
   todo, unless an open gripe, alert or todo it names already tracks it,
   and rewrites the section with ``- td<id>: ...`` lines so the
@@ -476,7 +475,7 @@ def convert_needs_a_human(
     section in the returned body as ``- td<id>: <first line>`` lines so
     the filed report links into Reto's queue (``search(kind='todo',
     tags=['waiting-for:reto'])``) instead of leaving the ask stranded in
-    prose (``docs/backlog/doctor-report-and-alert-channel-quality.md``
+    prose (`me690520`
     piece B).
 
     A bullet is filed only when nothing already makes it findable: it

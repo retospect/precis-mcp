@@ -1,6 +1,6 @@
 """``release_confirm`` — the factory attests the deployed runtime (td573432).
 
-Spec: ``docs/backlog/dark-factory.md`` § "4. Release pass, event-driven";
+Spec: `me692430` § "4. Release pass, event-driven";
 the ``confirm`` node of the ``release-pass`` template
 (:func:`precis.plans.templates.mint_release_pass`). Mechanical, no LLM; a
 detached submit/poll pair under ``ssh_node``, the same launcher as
@@ -51,6 +51,32 @@ as do live hosts outside the cohort — worker-less under unconfigured
 membership, or uncovered by a published ``deploy.fleet`` (gr623769,
 td649547).
 
+**A moved head** (gr684358). The release branch can move past the plan's
+recorded sha after its verdict — a review fix-forward's ``land_slice
+--onto`` or a hand push mints no restamp/verdict node — and
+``release_deploy`` then ships the live head (its ``wait_ci`` gated that
+head green before the rollout). The pin check accepts it when the pinned
+sha IS ``release/r<N>``'s live head AND a green gate run is on record for
+it — ``release.ci_verdicts``'s newest verdict on the sha (a waived red's
+``green`` row counts) or check.yml's newest run on the branch. Anything
+unverifiable — an unreadable head, a head that moved again, no green run
+— keeps the mismatch a problem: fail closed, never a guessed sha.
+
+**The merge-back goes first.** ``scripts/round deploy --confirm-runtime``
+retires the release: it tags ``deployed/r<N>``, merges the release head
+into main itself and deletes the branch — and exits 1 on "final forward
+merge conflicts" when a release fix and main changed the same lines.
+The pass's ``merge_back`` node, dispatched beside this one, is what can
+resolve that (a resolver slice, then an ours-merge), but it finished
+after the confirm had already failed into a human ask — r335 and r336,
+2026-11-19, each on a red that was fixed once on the release branch and
+once on main. So an attested release parks (the probe's park) until
+``meta.release.merge_back`` reads ``merged`` or ``noop``; the script's
+own forward merge then has nothing left to do. The wait is bounded by
+:data:`_MERGE_BACK_WAIT`; past it the script runs as before. The
+evidence is gathered first either way, so a deploy that did not take
+still fails at once.
+
 On ok the job runs ``scripts/round deploy --confirm-runtime <sha>
 --runtime-evidence <text>`` (phase ``confirm``), stamps the evidence on
 the plan root and ``release.round``
@@ -79,6 +105,7 @@ from typing import TYPE_CHECKING, Any
 from precis import daemon_fleet as _df
 from precis.plans import red_waiver as _red_waiver
 from precis.plans import release as _release
+from precis.plans.gates import read_ci_verdicts
 from precis.utils.secret_scan import mask_secrets
 from precis.workers.job_types import release_cut as _rc
 from precis.workers.job_types import release_deploy as _rd
@@ -152,6 +179,12 @@ BOOT_SHA_HEADER = "X-Precis-Boot-Sha"
 #: loop in a worker pass).
 _CONFIRM_WINDOW = timedelta(minutes=10)
 _REPROBE_EVERY = timedelta(seconds=60)
+
+#: How long an attested release holds its retirement script back for the
+#: pass's merge-back (module docstring, "The merge-back goes first").
+#: Past it the script runs anyway and, on a conflict, fails as it did
+#: before the wait existed — the tick's ask goes to a human.
+_MERGE_BACK_WAIT = timedelta(hours=2)
 
 #: Timestamp shape ``release.round`` / ``release.prod_head`` and the
 #: parked handle carry (``precis.plans.release._stamp``'s, restated).
@@ -331,6 +364,94 @@ def _web_evidence(url: str | None, sha: str) -> tuple[str, str | None]:
     return "", f"web reports {reported}, release is {sha[:12]}"
 
 
+def _fetch_head(repo: str, branch: str) -> str | None:
+    """Seam: ``branch``'s live head on GitHub
+    (``ci_verdict_poll.fetch_head``); ``None`` when unreadable."""
+    from precis.workers.job_types import ci_verdict_poll as _cvp
+
+    return _cvp.fetch_head(repo, branch)
+
+
+def _gate_run_verdict(repo: str, sha: str, branch: str) -> str | None:
+    """Seam: ``green``/``red``/``pending`` of the newest check.yml run on
+    ``sha`` on ``branch`` (``ci_verdict_poll.gate_verdict`` — the gate
+    legs decide, as they did for the deploy); ``None`` when GitHub is
+    unreadable."""
+    from precis.workers.job_types import ci_verdict_poll as _cvp
+
+    try:
+        runs = _cvp.fetch_runs(repo, sha)
+    except Exception:
+        return None
+    if runs is None:
+        return None
+    verdict, _run_id, _why = _cvp.gate_verdict(repo, runs, sha, branch)
+    return verdict
+
+
+def _repo_of(store: Store, rel: dict[str, Any]) -> str | None:
+    """The GitHub ``owner/repo`` the moved-head check reads — the cut's
+    recorded repo, the ``release.repo`` setting, else this checkout's
+    origin remote (``resolve_target``'s order), or ``None``."""
+    from precis import settings
+
+    repo = _release.valid_repo(rel.get("repo")) or _release.valid_repo(
+        settings.get_str("release.repo", store=store)
+    )
+    if repo:
+        return repo
+    try:
+        return _rc.origin_repo(_rs.slice_root())
+    except RuntimeError:
+        return None
+
+
+def _recorded_verdict(store: Store, sha: str) -> str | None:
+    """The newest ``release.ci_verdicts`` verdict on ``sha`` (the
+    tests-green gate's prefix match — a waived red's ``green`` row is the
+    standing decision it is), else ``None``."""
+    best: tuple[str, int] | None = None
+    verdict: str | None = None
+    for i, row in enumerate(read_ci_verdicts(store)):
+        if not _same_sha(sha, str(row.get("sha") or "")):
+            continue
+        key = (str(row.get("at") or ""), i)
+        if best is None or key >= best:
+            best, verdict = key, str(row.get("verdict") or "")
+    return verdict
+
+
+def _moved_head(store: Store, rel: dict[str, Any], sha: str, rn: str) -> str | None:
+    """The acceptance phrase for a pinned ``sha`` that is not the plan's
+    release sha, else ``None`` (gr684358).
+
+    The release branch can move past ``meta.release.sha`` after its
+    verdict — a review fix-forward's ``land_slice --onto`` or a hand push
+    mints no restamp/verdict node — and ``release_deploy`` ships the live
+    head, its ``wait_ci`` having gated that head green before the
+    rollout. So a pinned sha that IS ``release/<rn>``'s live head and
+    carries a green gate run is the release, not a deploy of the wrong
+    commit: accepted, with the phrase ("verdict recorded green" /
+    "check.yml green") the evidence line reports. ``None`` keeps the
+    mismatch a problem — an unverifiable repo or head, a head that moved
+    again, or no green run all fail closed."""
+    repo = _repo_of(store, rel)
+    if repo is None or not rn:
+        return None
+    branch = _release.release_branch(rn)
+    try:
+        head = _fetch_head(repo, branch)
+    except Exception:
+        return None
+    if head is None or not _same_sha(sha, head):
+        return None
+    if _recorded_verdict(store, sha) == "green":
+        return "verdict recorded green"
+    if _gate_run_verdict(repo, sha, branch) == "green":
+        return "check.yml green"
+    return None
+
+
 def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evidence:
     """The runtime attestation for the plan's release ``rel``
     (``meta.release``); ``now`` pins the call's clock seam for tests.
@@ -338,7 +459,9 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     Required evidence is the workers — the pinned sha
     (:func:`precis.plans.release.pinned_deploy_sha`) must equal every
     live host's heartbeat ``code_sha`` exactly, and it must be the plan's
-    own release sha. Only a cohort member attests — with a published
+    own release sha — or the release branch's live head with a green
+    gate run when the branch moved past the plan after its verdict
+    (:func:`_moved_head`, gr684358). Only a cohort member attests — with a published
     ``deploy.fleet`` ``covered`` list, the configured members alone
     (td649547); without one, a host running workers or carrying a
     pre-snapshot beat (gr623769): a live non-attestor is reported in
@@ -365,12 +488,20 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     waiting: list[str] = []
     unbounced: list[str] = []
     states: list[str] = []
+    moved = ""
     if sha is not None:
-        if rel_sha and sha != rel_sha:
-            problems.append(
-                f"pinned deploy sha {sha[:12]} is not the plan's release "
-                f"sha {rel_sha[:12]}"
-            )
+        if rel_sha and not _same_sha(sha, rel_sha):
+            how = _moved_head(store, rel, sha, rn)
+            if how is None:
+                problems.append(
+                    f"pinned deploy sha {sha[:12]} is not the plan's release "
+                    f"sha {rel_sha[:12]}"
+                )
+            else:
+                moved = (
+                    f"; {_release.release_branch(rn)} head moved past the "
+                    f"plan's {rel_sha[:12]} ({how})"
+                )
         for host, ts, code_sha in live:
             reported = code_sha[:12] if code_sha else "no code_sha"
             if any(_same_sha(code_sha, p) for p in prev_shas):
@@ -441,7 +572,7 @@ def gather_evidence(store: Store, rel: dict[str, Any], *, now: datetime) -> Evid
     if noncohort:
         note += "; note: " + ", ".join(f"{h} ({why})" for h, why in noncohort)
     text = mask_secrets(
-        f"{rn or 'r?'} pinned {short}; {workers}{note}; web: {web_clause}"
+        f"{rn or 'r?'} pinned {short}{moved}; {workers}{note}; web: {web_clause}"
     )[:_TEXT_CAP]
     return Evidence(
         ok=not problems and not waiting,
@@ -631,6 +762,7 @@ def _launch_confirm(ctx: Any, rn: str, ev: Evidence) -> dict[str, Any] | None:
             ev.text,
         ],
         script="round",
+        env=_rc.pass_env(ctx),
     )
     if isinstance(handle, dict):
         handle.update(phase="confirm", rn=rn, sha=ev.sha, evidence=ev.text)
@@ -679,6 +811,81 @@ def _park_probe(
     return handle
 
 
+def _merge_back_settled(rel: dict[str, Any]) -> bool:
+    """The pass's merge-back put the release head on main, or had nothing
+    to put there: ``meta.release.merge_back`` reads ``merged``/``noop``."""
+    from precis.workers.job_types import release_merge_back as _mb
+
+    outcome = rel.get(_mb.MERGE_BACK_KEY)
+    return isinstance(outcome, dict) and outcome.get("state") in ("merged", "noop")
+
+
+def _merge_back_wait(
+    rel: dict[str, Any], handle: dict[str, Any] | None, now: datetime
+) -> str | None:
+    """Why the retirement script must not run yet, else ``None``: the
+    pass's merge-back is not settled (:func:`_merge_back_settled`) and
+    the wait — clocked from the parked handle's ``merge_wait_since`` —
+    is inside :data:`_MERGE_BACK_WAIT`."""
+    from precis.workers.job_types import release_merge_back as _mb
+
+    if _merge_back_settled(rel):
+        return None
+    outcome = rel.get(_mb.MERGE_BACK_KEY)
+    state = outcome.get("state") if isinstance(outcome, dict) else None
+    since = None
+    if handle is not None:
+        since = _parse_ts(handle.get("merge_wait_since"))
+    if since is not None and now - since >= _MERGE_BACK_WAIT:
+        return None
+    if state == "conflict" and isinstance(outcome, dict):
+        return (
+            "the merge-back hit a conflict and its resolver "
+            f"td{outcome.get('resolver')} has not put the release on main yet"
+        )
+    return "the merge-back has not put the release head on main yet"
+
+
+def _park_merge_back(
+    ctx: Any,
+    ev: Evidence,
+    rn: str,
+    now: datetime,
+    why: str,
+    handle: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The runtime is attested but the merge-back is not settled: park
+    like :func:`_park_probe` and look again in :data:`_REPROBE_EVERY`.
+    One ``job_event`` per distinct reason, not one per look."""
+    due = now + _REPROBE_EVERY
+    fields: dict[str, Any] = {
+        "phase": "probe",
+        "rn": rn,
+        "sha": ev.sha,
+        "not_before": due.strftime(_TS_FMT),
+        "deadline": "",
+    }
+    if handle is None:
+        handle = dict(fields)
+    else:
+        handle.update(fields)
+    handle.setdefault("merge_wait_since", now.strftime(_TS_FMT))
+    if handle.get("merge_wait_why") != why:
+        handle["merge_wait_why"] = why
+        ctx.append_chunk(
+            "job_event",
+            f"{NAME}: {rn} is attested at {str(ev.sha)[:12]}; holding "
+            f"scripts/round deploy --confirm-runtime — {why} (its own "
+            "forward merge would stop on the same conflict)",
+        )
+    ctx.set_meta(
+        compute_handle=handle,
+        compute_handle_released=False,
+        deadline=time.time() + _REPROBE_EVERY.total_seconds() + wall_seconds(),
+    )
+    return handle
+
+
 def submit(ctx: Any, spec: Any) -> Any:
     del spec
     params = dict((ctx.meta or {}).get("params") or {})
@@ -696,6 +903,9 @@ def submit(ctx: Any, spec: Any) -> Any:
     now = datetime.now(UTC)
     ev = gather_evidence(ctx.store, rel, now=now)
     if ev.ok and ev.sha is not None:
+        why = _merge_back_wait(rel, None, now)
+        if why is not None:
+            return _park_merge_back(ctx, ev, rn, now, why)
         return _launch_confirm(ctx, rn, ev)
     if ev.problems:
         _probe_failed(ctx, ev, rn, params.get("todo_id"))
@@ -727,6 +937,17 @@ def _probe_poll(ctx: Any, handle: dict[str, Any]) -> bool:
     ev = gather_evidence(ctx.store, rel, now=now)
     if ev.ok and ev.sha is not None:
         rn = str(handle.get("rn") or rel["rN"])
+        why = _merge_back_wait(rel, handle, now)
+        if why is not None:
+            _park_merge_back(ctx, ev, rn, now, why, handle)
+            return False
+        if handle.get("merge_wait_since") and not _merge_back_settled(rel):
+            ctx.append_chunk(
+                "job_event",
+                f"{NAME}: the merge-back is still not settled after "
+                f"{int(_MERGE_BACK_WAIT.total_seconds() // 3600)} h — running "
+                "scripts/round deploy --confirm-runtime anyway",
+            )
         fresh = _launch_confirm(ctx, rn, ev)
         if fresh is None:
             return True
@@ -806,7 +1027,11 @@ def _launch_close(ctx: Any) -> dict[str, Any] | None:
         exit_file = base.with_suffix(".exit")
         exit_file.unlink(missing_ok=True)
         pid = _rc._launch(
-            [str(path), "close"], cwd=root, log_path=log_path, exit_file=exit_file
+            [str(path), "close"],
+            cwd=root,
+            log_path=log_path,
+            exit_file=exit_file,
+            extra_env=_rc.pass_env(ctx),
         )
     except Exception as exc:
         log.warning("%s: scripts/round close failed to launch", NAME, exc_info=True)

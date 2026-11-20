@@ -1,7 +1,7 @@
 """The factory service registry — one declarative row per thing that runs.
 
 This is the single source of truth the *factory console* + capability
-scheduler are built on (docs/backlog/factory-console-and-scheduling.md,
+scheduler are built on (gr690514,
 slice 1). Before it, "what runs where, gated how" was spread across four
 parallel lists that drifted:
 
@@ -45,7 +45,7 @@ class ServiceKind(StrEnum):
 
 #: The worker ``--profile`` names a pass can run under in the *default*
 #: rotation (no ``--only``). ``system`` = every node; ``agent`` =
-#: melchior's OAuth-bearing worker. A pass in neither is cron-/env-driven.
+#: the agent host's OAuth-bearing worker. A pass in neither is cron-/env-driven.
 Profile = str
 
 
@@ -335,7 +335,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # anki-sync) into the worker via a DB-lease conditional advance
         # (exactly-once, no designated node). LIVE on both profiles — the
         # agent profile must run it too, or a host-pinned cadence
-        # (dream_agent, anki_sync — both melchior) never has an eligible
+        # (dream_agent, anki_sync — both on the agent host) never has an eligible
         # claimant.
         name="scheduler",
         label="Recurring trigger (decentralized)",
@@ -344,7 +344,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         default_profiles=_SYS | _AGT,
         ref_pass=True,
         one_line="Decentralized cadences: cron tick, watch poll, dream_agent, "
-        "anki_sync (host-pinned melchior).",
+        "anki_sync (host-pinned to the agent host).",
         doc_skill="precis-recurring-help",
     ),
     ServiceSpec(
@@ -358,7 +358,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-nursery-help",
     ),
     ServiceSpec(
-        # docs/backlog/self-healing-spine.md Layer 2. Fleet-singleton via the
+        # me691477 Layer 2. Fleet-singleton via the
         # `health_digest` scheduler cadence (workers/scheduler.py, hourly,
         # host-agnostic) — NOT `default_profiles`, mirroring `dream_agent`
         # below: a cadence-fired pass registers here only for a manual
@@ -377,7 +377,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-health-digest-help",
     ),
     ServiceSpec(
-        # §F cycle a (docs/backlog/cluster-scheduling.md §F). Fleet-
+        # §F cycle a (me695459 §F). Fleet-
         # singleton via the `materialize` scheduler cadence (workers/
         # scheduler.py, 300s) — same shape as `health_digest` just above:
         # NOT `default_profiles`, so this registration is for a manual
@@ -512,6 +512,16 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        name="survey_requeue",
+        label="survey_extract requeue",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        one_line="Re-queue survey_extract on papers whose body was replaced.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="openalex_enrich",
         label="OpenAlex abstract/metadata enrich",
         category="acquisition",
@@ -580,7 +590,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         "stubs so acquisition chases the relevant ones first.",
         doc_skill="precis-overview",
     ),
-    # ── Agent-worker passes (melchior / OAuth) ──────────────────────
+    # ── Agent-worker passes (agent host / OAuth) ──────────────────────
     ServiceSpec(
         # gr192752: cadence-fired via the `structural` scheduler lease
         # (workers/scheduler.py) — NOT `default_profiles`, mirroring
@@ -797,7 +807,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # (summarize/classify) as a minted job. `requires=frozenset()`
         # DELIBERATELY (unlike embed_batch's {'embedder'}): concurrency is capped
         # at the ROUTER's local-serving slot per call, so reserving an executor
-        # slot here would double-count. Melchior-pinned via params.target_node;
+        # slot here would double-count. Agent-host-pinned via params.target_node;
         # llm_summarize rides its local-first llm.op.llm_summarize chain (cloud
         # rung is slot-overflow only). Minted by the materialize SMALL bands.
         name="derived_drain",
@@ -807,7 +817,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         uses_model=True,
         cost_sources=("llm_summarize", "classify"),
         one_line="Bounded work order draining a SMALL-tier derived LLM queue "
-        "(summarize/classify) — melchior-pinned, router-capped.",
+        "(summarize/classify) — agent-host-pinned, router-capped.",
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
@@ -837,7 +847,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-pcb-help",
     ),
     ServiceSpec(
-        # docs/backlog/pcb-argue-with-design.md slice 2: answer a pcb
+        # me690151 slice 2: answer a pcb
         # design's open argument notes in place — resolve each question's
         # handles through precis.pcb.argue, run the real machinery (one
         # live geometric DRC run + measures + part-pair distances), and
@@ -874,7 +884,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-datasheet-help",
     ),
     ServiceSpec(
-        # docs/backlog/pcb-datasheet-review.md slice 7: the re-check pass —
+        # me692814 slice 7: the re-check pass —
         # work a design's not-checked/stale pcb-tapeout judgment items, one
         # fresh-context MEDIUM-tier call each (in-process router, no
         # `requires`), machine verdicts anchored + quoted.
@@ -916,7 +926,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-youtube-help",
     ),
     ServiceSpec(
-        # docs/backlog/measures-substrate.md "Next slice": the survey/
+        # me693370 "Next slice": the survey/
         # review numeric-extraction pass — a local reader walks a paper's
         # chunks proposing anchored measure runs, then a spawned
         # measure_accept child samples the batch. put(kind='job',
@@ -1389,9 +1399,12 @@ SERVICES: tuple[ServiceSpec, ...] = (
         label="Run slice (job)",
         category="jobs",
         kind=ServiceKind.JOB,
-        placement=frozenset({"repo_checkout", "claude_bin", "git"}),
+        # ``builder`` = any lane binary (gr676054): a builder fleet host
+        # may carry kimi/codex/devin without claude; ``placement_requires``
+        # substitutes the picked/pinned adapter's ``<a>_bin`` token per job.
+        placement=frozenset({"repo_checkout", "builder", "git"}),
         uses_model=True,
-        one_line="One slice headless: claude -p in its own worktree of the "
+        one_line="One slice headless: its lane's CLI in a worktree of the "
         "host's checkout; a clean exit mints land_slice.",
         doc_skill="precis-job-help",
     ),
@@ -1403,6 +1416,27 @@ SERVICES: tuple[ServiceSpec, ...] = (
         placement=frozenset({"repo_checkout", "git"}),
         one_line="Land a slice's branch with scripts/ship --quick on the "
         "host that ran it.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        name="repo_release",
+        label="Repo release (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        one_line="Release a second repo mechanically: version bump, push, "
+        "CI wait, tag (refused until a profile names a releaser).",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        name="pin_bump",
+        label="Pin bump (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        one_line="Move precis's pin of a released second-repo engine "
+        "mechanically, then hand the branch to land_slice (repos whose "
+        "profile names it as pinner: catpath).",
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
@@ -1514,6 +1548,14 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        name="weekly_report",
+        label="Weekly report (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        one_line="Collect factory numbers into report tables; optional draft section.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="gripe_validate",
         label="Gripe validate (job)",
         category="jobs",
@@ -1522,13 +1564,32 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        # gr592838: a PDF export compiles through ``latexmk`` — a host
+        # capability, not an executor property. ``placement`` (check-only,
+        # td543917) holds the row queued on hosts whose heartbeat doesn't
+        # advertise ``latexmk`` — on EVERY claim path, so a
+        # ``claude_inproc`` claim on a TeX-less box waits for a capable
+        # one instead of producing a PDF-less run — and the sweeper's
+        # ``_alert_unschedulable_jobs`` pages when no live host offers it.
+        name="draft_export",
+        label="Draft export (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"latexmk"}),
+        one_line="Render a draft to LaTeX and compile a PDF — needs a TeX "
+        "toolchain (latexmk) on the claiming host.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="lane_health",
         label="Lane health probe (job)",
         category="jobs",
         kind=ServiceKind.JOB,
-        # The probe must run where the sessions run (gr588221 review):
-        # same host affinity as run_slice — the lane CLIs and their
-        # logins are the probe surface.
+        # The probe must run where the sessions run (gr588221 review) —
+        # anchored on ``claude_bin``, not run_slice's ``builder`` floor
+        # (gr676054): its load-bearing read is the claude auth ping,
+        # which a claude-less builder host could only stamp ``unprobed``.
+        # The other lane CLIs absent report unprobed by design.
         placement=frozenset({"repo_checkout", "claude_bin", "git"}),
         one_line="Hourly credential probe per enabled lane: red parks it "
         "out of dispatch, green unparks; enabled stays the human switch.",
@@ -1647,6 +1708,31 @@ SERVICES: tuple[ServiceSpec, ...] = (
         "suggests duplicates, never closes; dark until service_config "
         "lights it.",
         doc_skill="precis-gripe-help",
+    ),
+    ServiceSpec(
+        # gr652333 (precis.workers.asks_triage): the 15-minute
+        # `asks_triage` scheduler cadence fires the pass over the asks
+        # ("needs you") list; this row names the service so
+        # `precis service` can light it. NO `default_profiles` and no
+        # rotation wiring (ref_pass=False): dark until a service_config
+        # row (prio > 0) lights it.
+        # uses_model: one call per untriaged row (≤10/tick) on the
+        # registered `asks_triage.tier` setting (default Sonnet-class
+        # `big`; `frontier` is the spec's "clever" lift).
+        name="asks_triage",
+        label="Asks triage",
+        category="health",
+        kind=ServiceKind.PASS,
+        # The per-row call goes through claude_p-class transports —
+        # can't containerize; the cadence's `eligible` mirrors this.
+        needs_claude="cli",
+        uses_model=True,
+        cost_sources=("asks_triage",),
+        one_line="15-minute LLM tick over the untriaged asks rows — "
+        "resolves, routes (coordinator queue / chore batch) or rewrites "
+        "each with an asks-triage: stamp; dark until service_config "
+        "lights it.",
+        doc_skill="precis-todo-help",
     ),
     ServiceSpec(
         name="pool_refresh",
@@ -1838,7 +1924,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-part-select-help",
     ),
     ServiceSpec(
-        # docs/backlog/openalex-snapshot-cites.md slice 3: the standing
+        # me693596 slice 3: the standing
         # refresh over the public OpenAlex works dump. Same shape as
         # parts_refresh just above: no `default_profiles`, so this registers
         # a pass only for a manual/dedicated `--only openalex_snapshot` run —
@@ -1881,7 +1967,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # scores it with a local model (+ optional depth-2 escalate), and raises
         # an alert on `high`. DARK — no default profile; lit by a `service
         # prio` row (PRECIS_INJECT_SCAN_ENABLED is not read live and the deploy
-        # seed task does not seed it) on the agent host (melchior) where the
+        # seed task does not seed it) on the agent host where the
         # local model proxy resolves, alongside mail_poll.
         name="inject_scan",
         label="Email injection scan (depth 1/2)",
@@ -1916,7 +2002,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         uses_external=("anthropic",),
         prompt_env="PRECIS_DREAM_PROMPT_PATH",
         one_line="Reflective memory pass — §A scheduler-lease cadence "
-        "(host-pinned melchior, PRECIS_DREAM_AGENT), default 15-min knob.",
+        "(host-pinned to the agent host, PRECIS_DREAM_AGENT), default 15-min knob.",
         doc_skill="precis-overview",
         introspect=AgentIntrospect(
             # §A: the standalone com.precis.dream LaunchDaemon (dream-pass.sh)
@@ -1967,7 +2053,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         label="Web UI (uvicorn)",
         category="daemon",
         kind=ServiceKind.DAEMON,
-        one_line="The precis_web browser UI (melchior).",
+        one_line="The precis_web browser UI (the web host).",
         doc_skill="precis-overview",
     ),
     ServiceSpec(
@@ -2004,6 +2090,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         kind=ServiceKind.COMPUTE,
         requires=frozenset({"gpu"}),
         one_line="GPAW / ML-potential relax on a GPU node.",
+        doc_skill="precis-structure-help",
+    ),
+    ServiceSpec(
+        name="electronic_analysis",
+        label="Electronic analysis (DFT single point)",
+        category="compute",
+        kind=ServiceKind.COMPUTE,
+        requires=frozenset({"gpu"}),
+        one_line=(
+            "GPAW single point on a stored geometry; stamps Bader/d-band/"
+            "PDOS/COHP descriptors on the structure."
+        ),
         doc_skill="precis-structure-help",
     ),
     ServiceSpec(
@@ -2048,7 +2146,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         category="compute",
         kind=ServiceKind.COMPUTE,
         requires=frozenset({"gpu"}),
-        one_line="AlphaFold3 structure prediction on spark.",
+        one_line="AlphaFold3 structure prediction on the GPU node.",
         doc_skill="precis-overview",
     ),
 )

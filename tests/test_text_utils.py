@@ -6,7 +6,49 @@ Three handlers (paper, markdown, patent) used to ship near-identical
 
 from __future__ import annotations
 
-from precis.utils.text import excerpt
+import re
+
+from precis.utils.text import excerpt, sci_anchor_pattern
+
+
+class TestSciAnchorPattern:
+    def test_no_scientific_notation_returns_none(self) -> None:
+        assert sci_anchor_pattern("95") is None
+        assert sci_anchor_pattern("9.6 ± 1.7") is None
+
+    def test_unsigned_atom_expands_to_flattened_prints(self) -> None:
+        # boundaries are the caller's lookarounds; delimit spans with spaces
+        pattern = sci_anchor_pattern("5e12")
+        assert pattern is not None
+        for flattened in ("5 × 1012", "peak 5 × 10 12 w", "5e12 w"):
+            assert re.search(pattern, flattened) is not None
+        for other in ("5 × 1011", "5 × 10^11"):
+            assert re.search(pattern, other) is None
+
+    def test_mantissa_one_also_gets_bare_prints(self) -> None:
+        pattern = sci_anchor_pattern("1e11-1e12")
+        assert pattern is not None
+        assert re.search(pattern, "fluxes of 1011-1012 w") is not None
+        assert re.search(pattern, "fluxes of 10 11-10 12 w") is not None
+
+    def test_fractional_mantissa_gets_no_bare_prints(self) -> None:
+        pattern = sci_anchor_pattern("1.3e11")
+        assert pattern is not None
+        assert re.search(pattern, "at 1.3 × 1011 cm-2") is not None
+        # a bare flattened print carries no mantissa; it cannot be 1.3 × 10^11
+        assert re.search(pattern, "at 1011 cm-2") is None
+
+    def test_signed_atom_is_left_verbatim(self) -> None:
+        # signed prints (× 10-3) already fold to the e-form on the span side
+        assert sci_anchor_pattern("2e-3") is None
+
+    def test_flattened_literal_folds_to_the_e_form(self) -> None:
+        # the caller squashes the span first, so the glyph print is already
+        # the e-form at search time
+        pattern = sci_anchor_pattern("5 × 1012")
+        assert pattern is not None
+        assert re.search(pattern, "peak of 5e12 w") is not None
+        assert re.search(pattern, "peak of 5 × 10 12 w") is not None
 
 
 class TestExcerpt:

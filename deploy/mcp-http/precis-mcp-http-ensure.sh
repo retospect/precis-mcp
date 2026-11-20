@@ -9,7 +9,7 @@
 # disabled for source checkouts). Under streamable-http the client holds only
 # an Mcp-Session-Id: a restarted server 404s that id, the client re-runs
 # `initialize`, and the session carries on with a refreshed tool list.
-# Spec + rationale: docs/backlog/session-mcp-http-server.md in the precis repo;
+# Spec + rationale: me691707 in the precis repo;
 # this layout: deploy/mcp-http/README.md.
 #
 # Called from Claude Code's SessionStart hook. The FIRST session on the machine

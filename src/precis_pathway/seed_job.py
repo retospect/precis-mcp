@@ -2,7 +2,7 @@
 pathway exploration and stash the resulting JSON partial on its own job
 meta.
 
-§B-1 (gr180096, the spark wedge fix): ``autocatpath_explore`` ran the whole
+§B-1 (gr180096, the GPU-node wedge fix): ``autocatpath_explore`` ran the whole
 network x N seeds x full NEB as one ~90-min in-process blob, un-
 interruptible and SIGTERM-deaf — it overran its lease and took the worker
 down. This job_type is the fan-out unit instead: minutes-scale (one seed of

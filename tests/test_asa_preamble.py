@@ -6,16 +6,19 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 
 from asa_bot.config import PreambleConfig
 from asa_bot.preamble import (
+    _fetch_stickies,
     _fetch_user_note,
     _render_conv_pointer,
     _render_inner_life,
     _render_operator_prefs,
+    _render_stickies,
     _render_user_note,
     _user_note_tag,
 )
@@ -134,6 +137,35 @@ def test_user_note_reads_writes_and_prompt_use_valid_label(
         prompt = _render_user_note(blob, author)
         assert f"tags=[{tag!r}]" in prompt
         assert author in prompt
+
+
+def test_stickies_fetch_unions_thread_and_global_under_and_semantics() -> None:
+    memories = {
+        "m1": {"sticky:thread:conv-a"},
+        "m2": {"sticky:global"},
+        "m3": {"sticky:thread:conv-b"},
+        "m4": {"sticky:thread"},  # the bare pin: no conv, so every thread
+    }
+
+    async def fake_call(verb: str, params: dict) -> str:
+        want = set(params["tags"])  # AND: a memory must carry every tag
+        hits = [m for m, tags in memories.items() if want <= tags]
+        hits = hits[: params["page_size"]]
+        return "\n".join(f"- {m}" for m in hits) or "no memory entries"
+
+    precis = AsyncMock(spec=PrecisClient)
+    precis.call_tool.side_effect = fake_call
+    blob = asyncio.run(_fetch_stickies(precis, "conv-a", PreambleConfig()))
+    assert "m1" in blob
+    assert "m2" in blob
+    assert "m3" not in blob
+    assert "m4" in blob
+    assert "no memory entries" not in blob
+    assert blob.count("m1") == 1
+    assert _render_stickies(blob, datetime.now(UTC), 3).startswith("## Pinned memories")
+    none = asyncio.run(_fetch_stickies(precis, "conv-z", PreambleConfig()))
+    assert "m2" in none
+    assert "m1" not in none
 
 
 def test_user_note_error_is_not_an_empty_search() -> None:

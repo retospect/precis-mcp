@@ -1,6 +1,6 @@
 """Disk-check pass — raise a precis-native alert before a node fills.
 
-Gripe 191008: caspar's DB SSD hit 100%, ``psycopg`` raised ``DiskFull``,
+Gripe 191008: the database host's DB SSD hit 100%, ``psycopg`` raised ``DiskFull``,
 and ALL prod writes stalled ~1.5h before anyone noticed — Prometheus had
 a 90% rule, but it reached no one. This pass is the precis-native
 replacement: a per-node system-profile check that ``df``s the configured
@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 _DISK_ALERT_SOURCE = RULES_BY_ID["disk_check/{host}:{path}"].rule
 
 #: ``os.pathsep``-separated list of paths to ``df``. Default: just ``/`` —
-#: on the data node (caspar) the PG data dir, /opt/homebrew, and
+#: on the data node (the database host) the PG data dir, /opt/homebrew, and
 #: /opt/shared all live on the root volume, which is what filled.
 _WATCH_PATHS_ENV = "PRECIS_DISK_WATCH_PATHS"
 _DEFAULT_WATCH_PATHS = ("/",)

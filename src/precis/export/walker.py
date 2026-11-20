@@ -43,8 +43,12 @@ Cross-references: :func:`number_xrefs` is the numbering pre-pass over chunk
 structure (sections, figures, tables, equations; it reads no inline text,
 so it cannot renumber a cite); :func:`resolve_xref` decides liveness, the
 downgrade warning and what number to print; :func:`merge_xref_runs` joins
-whitespace-separated refs (LaTeX's ``\\cref{a,b}``). LaTeX lets cleveref
-count at compile time; docx prints the pre-pass numbers. A legacy ``¶``
+whitespace-separated refs (LaTeX's ``\\cref{a,b}``) and
+:func:`format_xref_run` prints such a run the way cleveref does ("Sections
+1 and 2", "Figures 1 to 3"). LaTeX lets cleveref count and print at compile
+time; docx prints the pre-pass numbers through :func:`format_xref_run`. A section
+reference into the citing chunk's own section (or an ancestor) is the
+word above/below in both (:func:`relative_word`). A legacy ``¶``
 handle is still mapped to its ``dc`` in each backend's reference dispatch,
 which moves with the chunk loop.
 
@@ -83,11 +87,37 @@ class CiteGroup:
     numbers: tuple[int, ...]
     si: tuple[bool, ...]
     chunk_ids: tuple[int | None, ...] = ()
+    #: The block's plain text right before the mark and right after it
+    #: (:func:`mark_context`); what :class:`RepeatMarks` reads to tell whether
+    #: the sentence leans on the mark. Not part of the mark's identity.
+    before: str = field(default="", compare=False)
+    after: str = field(default="", compare=False)
 
-    @property
-    def mergeable(self) -> bool:
-        """A plain mark: may join an adjacent run (an SI postnote never does)."""
-        return not any(self.si)
+    def joins(self, run: Sequence[CiteGroup]) -> bool:
+        """May this mark join the adjacent ``run``? An SI mark joins and keeps
+        its flag on its own number; only a paper already in the run with the
+        OTHER flag (``[n]`` then ``[n] (SI)``) stays a separate mark."""
+        flags = {k: s for g in run for k, s in zip(g.keys, g.si, strict=True)}
+        return all(
+            flags.get(k, s) == s for k, s in zip(self.keys, self.si, strict=True)
+        )
+
+    def by_number(self) -> CiteGroup:
+        """A merged mark with an SI member prints its numbers ascending (the
+        SI mark rides on its own number); other marks are left as they are."""
+        if len(self.keys) < 2 or not any(self.si):
+            return self
+        order = sorted(range(len(self.keys)), key=lambda i: self.numbers[i])
+        return CiteGroup(
+            keys=tuple(self.keys[i] for i in order),
+            numbers=tuple(self.numbers[i] for i in order),
+            si=tuple(self.si[i] for i in order),
+            chunk_ids=tuple(self.chunk_ids[i] for i in order)
+            if len(self.chunk_ids) == len(self.keys)
+            else self.chunk_ids,
+            before=self.before,
+            after=self.after,
+        )
 
 
 class Renderer(Protocol):
@@ -255,6 +285,125 @@ def resolve_cite_handle(store: Any, handle: str) -> tuple[str, int | None, bool]
     )
 
 
+_DOI_PREFIX = re.compile(r"\s*(?:https?://(?:dx\.)?doi\.org/|doi:)\s*", re.IGNORECASE)
+_NON_ALNUM = re.compile(r"[\W_]+")
+_CITED_KINDS = ("paper", "patent", "datasheet")
+
+
+def normalise_doi(raw: Any) -> str:
+    """A DOI for comparison: ``https://doi.org/`` prefix stripped, lower-case;
+    ``""`` for none."""
+    return _DOI_PREFIX.sub("", str(raw or ""), count=1).strip().lower()
+
+
+def _first_family(authors: Any) -> str:
+    """The lead author's family name, lower-case (``""`` for none)."""
+    from precis.utils.authors import author_display
+
+    for a in authors if isinstance(authors, list) else []:
+        if isinstance(a, dict) and str(a.get("family") or "").strip():
+            return str(a["family"]).strip().lower()
+        name = author_display(a, order="sortable")
+        if name:
+            head = name.split(",")[0] if "," in name else name.rsplit(" ", 1)[-1]
+            return head.strip().lower()
+    return ""
+
+
+@dataclass
+class DoiAliases:
+    """One reference number for two records of the same work. ``cited`` and
+    ``warnings`` are the export's own lists. :meth:`canonical` maps the key
+    about to be registered to the already cited record with the same DOI (the
+    first one cited), so a second record of that work takes its number and no
+    second list entry; the export warns once per such pair.
+    :meth:`same_work_warnings` is the after-the-walk check for the records
+    this cannot merge (no DOI, or different ones)."""
+
+    store: Any
+    cited: list[str]
+    warnings: list[str]
+    _refs: dict[str, Any] = field(default_factory=dict, repr=False)
+    _alias: dict[str, str] = field(default_factory=dict, repr=False)
+    _dois: dict[str, str] = field(default_factory=dict, repr=False)
+
+    def _ref(self, key: str) -> Any:
+        if key not in self._refs:
+            get_ref = getattr(self.store, "get_ref", None)
+            ref = None
+            if callable(get_ref):
+                for kind in _CITED_KINDS:
+                    ref = get_ref(kind=kind, id=key)
+                    if ref is not None:
+                        break
+            self._refs[key] = ref
+        return self._refs[key]
+
+    def doi(self, key: str) -> str:
+        """The record's normalised DOI, ``""`` when it has none."""
+        if key in self._dois:
+            return self._dois[key]
+        ref = self._ref(key)
+        fn = getattr(self.store, "identifiers_for_refs", None)
+        doi = ""
+        if ref is not None and callable(fn):
+            try:
+                alias = fn([ref.id]).get(ref.id, {})
+            except Exception:  # pragma: no cover — store hiccup
+                alias = {}
+            if isinstance(alias, dict):
+                doi = normalise_doi(alias.get("doi"))
+        self._dois[key] = doi
+        return doi
+
+    def canonical(self, key: str) -> str:
+        """The key to register for ``key``: itself, or the first cited record
+        with the same DOI."""
+        if key in self._alias:
+            return self._alias[key]
+        if key in self.cited:
+            return key
+        doi = self.doi(key)
+        if doi:
+            for other in self.cited:
+                if self.doi(other) == doi:
+                    self._alias[key] = other
+                    if self._ref(other).id != self._ref(key).id:
+                        self.warnings.append(
+                            f"references {other} and {key} share DOI {doi}: "
+                            "printed as one entry"
+                        )
+                    return other
+        return key
+
+    def same_work_warnings(self) -> list[str]:
+        """A warning per pair of cited records that look like one work (same
+        normalised title, year and first author family) without sharing a
+        DOI; nothing is merged."""
+        out: list[str] = []
+        seen: dict[tuple[str, Any, str], list[int]] = {}
+        for i, key in enumerate(self.cited):
+            ref = self._ref(key)
+            if ref is None:
+                continue
+            title = _NON_ALNUM.sub(" ", str(ref.title or "").lower()).strip()
+            if not title:
+                continue
+            ident = (title, ref.year, _first_family(ref.authors))
+            for j in seen.get(ident, []):
+                a, b = self.cited[j], key
+                if self._ref(a).id == ref.id:
+                    continue  # one record under two cite keys, not two records
+                if self.doi(a) and self.doi(a) == self.doi(b):
+                    continue
+                out.append(
+                    f"references [{j + 1}] and [{i + 1}] look like the same "
+                    f"work ({a}, {b})"
+                )
+            seen.setdefault(ident, []).append(i)
+        return out
+
+
 def key_group(
     keys: Sequence[str], resolve: Callable[[str], tuple[str, bool]]
 ) -> list[tuple[str, bool]]:
@@ -288,9 +437,11 @@ def register_group(
 def merge_adjacent(
     items: Sequence[str | CiteGroup],
 ) -> list[str | CiteGroup]:
-    """LaTeX grouping: a run of directly adjacent plain marks (nothing but
-    empty strings between them) becomes one mark, keys deduped in first-cited
-    order; a mark with an SI postnote stands alone and breaks the run."""
+    """LaTeX grouping: a run of directly adjacent marks (nothing but empty
+    strings between them) becomes one mark, keys deduped in first-cited
+    order. An SI postnote stays attached to its own key inside the group
+    (``\\cites{a}[SI]{b}``, numbers ascending); a paper cited both plain and
+    SI back to back keeps two marks (:meth:`CiteGroup.joins`)."""
     out: list[str | CiteGroup] = []
     run: list[CiteGroup] = []
 
@@ -300,11 +451,13 @@ def merge_adjacent(
         if len(run) == 1:
             out.append(_dedupe(run[0]))
         else:
-            out.append(_dedupe(_concat(run)))
+            out.append(_dedupe(_concat(run)).by_number())
         run.clear()
 
     for item in items:
-        if isinstance(item, CiteGroup) and item.mergeable:
+        if isinstance(item, CiteGroup):
+            if run and not item.joins(run):
+                flush()
             run.append(item)
         elif isinstance(item, str) and not item:
             continue
@@ -321,6 +474,8 @@ def _concat(groups: Sequence[CiteGroup]) -> CiteGroup:
         numbers=tuple(n for g in groups for n in g.numbers),
         si=tuple(s for g in groups for s in g.si),
         chunk_ids=tuple(c for g in groups for c in g.chunk_ids),
+        before=groups[0].before,
+        after=groups[-1].after,
     )
 
 
@@ -334,6 +489,8 @@ def _dedupe(group: CiteGroup) -> CiteGroup:
         numbers=tuple(group.numbers[i] for i in keep),
         si=tuple(group.si[i] for i in keep),
         chunk_ids=tuple(group.chunk_ids[i] for i in keep if i < len(group.chunk_ids)),
+        before=group.before,
+        after=group.after,
     )
 
 
@@ -358,6 +515,19 @@ def trim_before_dropped(prose: str) -> str:
     return stripped.rstrip(" ") if stripped != trimmed else trimmed
 
 
+def close_up_dropped(before: str, after: str) -> tuple[str, str]:
+    """Prose either side of a repeated cite mark that was not printed
+    (:class:`RepeatMarks`), closed up: closing punctuation hugs the word
+    before (``More [5].`` -> ``More.``, and a stranded ``and`` goes,
+    :func:`trim_before_dropped`), the end of the block leaves no trailing
+    space, and two spaces become one (``as [5] and`` -> ``as and``)."""
+    if not after or after[0] in CLOSING_PUNCT:
+        return trim_before_dropped(before), after
+    if after[0] == " " and before.endswith(" "):
+        return before, after.lstrip(" ")
+    return before, after
+
+
 @dataclass
 class RepeatGuard:
     """LaTeX same-mark collapse within one paragraph: a reference whose
@@ -379,29 +549,139 @@ class RepeatGuard:
         return True
 
 
+#: Markup that is not text: emphasis, code and math delimiters, sub/sup
+#: tags, script and brace characters, the backslash of an escape.
+_MARKUP = re.compile(r"</?su[bp]>|[*_^{}$\\`]")
+#: How much of the block either side of a mark :func:`mark_context` keeps.
+_CONTEXT_BEFORE = 80
+_CONTEXT_AFTER = 24
+
+
+def mark_context(before_src: str, after_src: str) -> tuple[str, str]:
+    """The plain text directly around a cite mark, from the block's source
+    text before it (a display link as its surface text, as the exporters
+    accumulate it) and after it: the input of :func:`leans_on_mark`. Both
+    backends call this on the same source, so they decide alike."""
+    return (
+        _MARKUP.sub("", before_src[-_CONTEXT_BEFORE:]),
+        _MARKUP.sub("", after_src[:_CONTEXT_AFTER]),
+    )
+
+
+#: A word that hands the sentence to the citation: ``see [5]``, ``in ref. [5]``.
+_LEAN_WORDS = frozenset(
+    {
+        *("see", "cf", "in", "by", "from", "of", "and", "or", "to", "as", "per"),
+        *("with", "also", "ref", "refs", "reference", "references", "following"),
+        *("after", "e.g", "i.e"),
+    }
+)
+_WORD_BEFORE = re.compile(r"(?<![\w.-])([^\W\d_]+(?:\.[^\W\d_]+)*)\.?\Z")
+_CLOSERS = ")]%\u201d\u2019\u00bb\u203a"
+
+
+def _ends_a_phrase(before: str) -> bool:
+    """Does the (stripped, non-empty) ``before`` end in a letter, digit,
+    closing bracket, closing quotation mark or ``%``? A straight quote
+    closes when it follows a word, not a space or an opening bracket."""
+    c = before[-1]
+    if c.isalnum() or c in _CLOSERS:
+        return True
+    if c in "\"'":
+        prev = before[-2:-1]
+        return bool(prev) and not prev.isspace() and prev not in "([{"
+    return False
+
+
+def leans_on_mark(before: str, after: str) -> bool:
+    """Does the sentence need the cite mark between ``before`` and ``after``
+    (:func:`mark_context`, spaces next to the mark ignored)? Yes when nothing
+    precedes it, when what precedes does not end a phrase (``(``, ``,``, ``;``,
+    ``:``, ``.``, a dash, an opening quote), when the word before is one of
+    :data:`_LEAN_WORDS`, or when ``'s`` follows. Dropping such a mark leaves
+    ``(see)``, ``()``, ``ref..`` or ``the model 's core``."""
+    head = before.strip()
+    if not head or not _ends_a_phrase(head):
+        return True
+    word = _WORD_BEFORE.search(head)
+    if word is not None and word.group(1).lower() in _LEAN_WORDS:
+        return True
+    return after.lstrip().startswith(("'s", "\u2019s"))
+
+
+@dataclass
+class RepeatMarks:
+    """The repeated-citation rule for ONE rendered prose block (a paragraph,
+    a list item, a caption, one table cell; a fresh instance per block): a
+    mark naming the same set of references as the previous *printed* mark of
+    the block is not printed again, however much prose lies between. A mark
+    naming a different set prints and becomes the one compared against; an
+    SI mark differs from the same paper without the flag. A mark the sentence
+    leans on (:func:`leans_on_mark`, read from the group's ``before`` /
+    ``after``) prints and becomes the one compared against. A mark that
+    carries a trust mark always prints and, as the text now between it and
+    the next mark, resets the comparison. ``enabled=False`` prints every
+    mark."""
+
+    enabled: bool = True
+    _prev: frozenset[tuple[str, bool]] | None = None
+
+    def admit(self, group: CiteGroup, *, trusted: bool = False) -> bool:
+        """Should ``group`` print? Records it as the previous printed mark."""
+        marks = frozenset(zip(group.keys, group.si, strict=True))
+        if trusted:
+            self._prev = None
+            return True
+        if (
+            self.enabled
+            and marks == self._prev
+            and not leans_on_mark(group.before, group.after)
+        ):
+            return False
+        self._prev = marks
+        return True
+
+
 @dataclass
 class CiteRun:
     """docx in-walk grouping: directly adjacent cites buffer into one mark;
     consecutive cites of the same paper (same SI flag) collapse to one, even
-    across whitespace; an SI cite flushes the run and prints its own mark.
-    Returned groups are ready for :meth:`Renderer.cite_group`."""
+    across whitespace; an SI cite joins the run and keeps its mark on its
+    own number, except next to the same paper cited without the flag (two
+    marks, as in LaTeX). Returned groups are ready for
+    :meth:`Renderer.cite_group`."""
 
     _last: tuple[str, bool] | None = None
-    _buffer: list[tuple[str, int, int | None]] = field(default_factory=list)
+    _buffer: list[tuple[str, int, bool, int | None]] = field(default_factory=list)
+    _before: str = ""
+    _after: str = ""
 
     def add(
-        self, key: str, number: int, *, si: bool, chunk_id: int | None
+        self,
+        key: str,
+        number: int,
+        *,
+        si: bool,
+        chunk_id: int | None,
+        context: tuple[str, str] = ("", ""),
     ) -> list[CiteGroup]:
-        """Cite ``key``; return the marks to emit now (possibly none)."""
+        """Cite ``key``; return the marks to emit now (possibly none).
+        ``context`` is the plain text before and after the reference in its
+        block (:func:`mark_context`): the run's mark carries the text before
+        its first and after its last reference."""
         if self._last == (key, si):
+            self._after = context[1]
             return []
         self._last = (key, si)
-        if not si:
-            self._buffer.append((key, number, chunk_id))
-            return []
-        flushed = self.flush()
-        own = CiteGroup((key,), (number,), (True,), (chunk_id,))
-        return [own] if flushed is None else [flushed, own]
+        flushed: list[CiteGroup] = []
+        if any(k == key and s != si for k, _n, s, _c in self._buffer):
+            mark = self.flush()
+            flushed = [mark] if mark is not None else []
+        if not self._buffer:
+            self._before = context[0]
+        self._after = context[1]
+        self._buffer.append((key, number, si, chunk_id))
+        return flushed
 
     def flush(self) -> CiteGroup | None:
         """End the pending run: one mark for it (a doubled paper once)."""
@@ -410,12 +690,14 @@ class CiteRun:
             return None
         return _dedupe(
             CiteGroup(
-                keys=tuple(k for k, _n, _c in run),
-                numbers=tuple(n for _k, n, _c in run),
-                si=tuple(False for _ in run),
-                chunk_ids=tuple(c for _k, _n, c in run),
+                keys=tuple(k for k, _n, _s, _c in run),
+                numbers=tuple(n for _k, n, _s, _c in run),
+                si=tuple(s for _k, _n, s, _c in run),
+                chunk_ids=tuple(c for _k, _n, _s, c in run),
+                before=self._before,
+                after=self._after,
             )
-        )
+        ).by_number()
 
     def gap(self, text: str) -> CiteGroup | None:
         """Prose between references: any content ends the run; real
@@ -488,6 +770,18 @@ def title_heading_dc(chunks: list[Any], title: str | None) -> str | None:
     return str(first.dc) if norm(first.text) == norm(title) else None
 
 
+def has_sections(chunks: list[Any], title_dc: str | None) -> bool:
+    """Whether the draft has a section heading besides its title (and the
+    generated Glossary). Only then is the prose before the first heading an
+    abstract; a note made of paragraphs alone has none."""
+    return any(
+        c.chunk_kind == "heading"
+        and str(c.dc) != title_dc
+        and not is_glossary_heading(c)
+        for c in chunks
+    )
+
+
 def depth_shift(chunks: list[Any], title_dc: str | None) -> int:
     """1 when the body is nested under the seeded title chunk (so sections
     number from 1, not 1.x), else 0; a draft whose sections sit beside the
@@ -518,11 +812,31 @@ class XrefNumbers:
     handle to ``(noun, number)`` as ``\\cref`` would print it (an empty
     noun: ``number`` is already the full label, a back-matter heading's
     name); ``numbered_headings`` are the headings that display a number;
-    ``equations`` maps a standalone equation's dc to its number."""
+    ``equations`` maps a standalone equation's dc to its number. ``order``
+    (dc -> reading-order index) and ``section`` (dc -> the numbered section
+    the chunk sits in; absent in front and back matter) place a reference
+    relative to its citing chunk (:func:`relative_word`). ``types`` maps a
+    dc to the cleveref type its ``\\label`` carries (``figure``, ``table``,
+    ``section`` / ``subsection`` / ``subsubsection``) for the targets whose
+    type is known, so a run of references to them can print as cleveref
+    would (:func:`format_xref_run`); a list item, a code listing, an aside,
+    a run-in heading or a back-matter heading is not in it."""
 
     labels: dict[str, tuple[str, str]]
     numbered_headings: set[str]
     equations: dict[str, int]
+    order: dict[str, int] = field(default_factory=dict)
+    section: dict[str, str] = field(default_factory=dict)
+    types: dict[str, str] = field(default_factory=dict)
+
+
+#: The cleveref type of a heading by its numbered depth.
+XREF_SECTION_TYPES = ("section", "subsection", "subsubsection")
+
+#: Chunk kinds whose ``\\label`` carries a type of its own in LaTeX (a list
+#: item's ``enumi``, a listing, an aside box): a reference to one is never
+#: part of a merged run, as :func:`format_xref_run` cannot name its type.
+XREF_UNTYPED_KINDS = frozenset({"term", "item", "code", "listing", "aside", "box"})
 
 
 def number_xrefs(
@@ -545,6 +859,7 @@ def number_xrefs(
     the next equation number. Reads chunk structure only: no inline text
     is resolved here, so no cite is numbered."""
     labels: dict[str, tuple[str, str]] = {}
+    types: dict[str, str] = {}
     shown: set[str] = set()
     counters = [0] * NUMBERED_DEPTHS
     figs = 0
@@ -553,13 +868,26 @@ def number_xrefs(
     shift = depth_shift(chunks, title_dc)
     back_matter = back_matter_handles(chunks)
     current = ""  # number of the enclosing numbered section
-    for c in chunks:
+    in_back = False  # inside unnumbered journal back matter
+    order: dict[str, int] = {}
+    section: dict[str, str] = {}
+    for i, c in enumerate(chunks):
+        order[c.dc] = i
+        if c.chunk_kind == "heading" and not is_glossary_heading(c):
+            if c.dc in back_matter:
+                in_back = True
+            elif c.dc != title_dc:
+                in_back = False
+        if current and not in_back and c.chunk_kind not in ("ulist", "olist"):
+            section[c.dc] = current  # a numbered heading overwrites below
         if c.chunk_kind == "figure":
             figs += 1
-            labels[c.dc] = ("fig.", str(figs))
+            labels[c.dc] = ("Figure", str(figs))
+            types[c.dc] = "figure"
         elif c.chunk_kind == "table":
             tabs += 1
-            labels[c.dc] = ("table", str(tabs))
+            labels[c.dc] = ("Table", str(tabs))
+            types[c.dc] = "table"
         elif c.chunk_kind == "heading":
             if is_glossary_heading(c) or c.dc == title_dc:
                 continue
@@ -573,10 +901,17 @@ def number_xrefs(
                     counters[i] = 0
                 shown.add(c.dc)
                 current = ".".join(str(n) for n in counters[: d + 1])
+                types[c.dc] = XREF_SECTION_TYPES[d]
             # else: run-in paragraph heading — resolves to the enclosing section
-            labels[c.dc] = ("section", current)
+            labels[c.dc] = ("Section", current)
+            if not in_back:
+                section[c.dc] = current
         elif c.chunk_kind not in ("ulist", "olist") and current:
-            labels[c.dc] = ("section", current)
+            labels[c.dc] = ("Section", current)
+            if c.chunk_kind not in XREF_UNTYPED_KINDS:
+                # A \\label in a paragraph takes the type of the sectioning
+                # counter last stepped: the enclosing section's depth.
+                types[c.dc] = XREF_SECTION_TYPES[current.count(".")]
     equations: dict[str, int] = {}
     for c in chunks:
         if c.chunk_kind in EQ_SKIP_KINDS:
@@ -585,7 +920,14 @@ def number_xrefs(
         if eq is None or eq[1]:  # not standalone, or the starred escape hatch
             continue
         equations[c.dc] = len(equations) + 1
-    return XrefNumbers(labels=labels, numbered_headings=shown, equations=equations)
+    return XrefNumbers(
+        labels=labels,
+        numbered_headings=shown,
+        equations=equations,
+        order=order,
+        section=section,
+        types=types,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -597,16 +939,23 @@ class Xref:
     any number. ``equation`` / ``label``: what to print (from the
     pre-pass, when the backend prints numbers itself); ``label`` is ``None``
     when there is nothing to print (front matter, glossary, or a section
-    reference before the first numbered section)."""
+    reference before the first numbered section). ``relative``: ``"above"``
+    / ``"below"`` when the target is the citing chunk's own section or an
+    ancestor of it (:func:`relative_word`), printed instead of the number."""
 
     dc: str
     surface: str | None
     live: bool
     equation: int | None = None
     label: tuple[str, str] | None = None
+    relative: str | None = None
     #: Neutral text for a dead target with no authored surface (a retired
     #: chunk prints "a removed figure", never the bare ``dc…`` — gr493181).
     fallback: str | None = None
+    #: The cleveref type of the printed number (``XrefNumbers.types``;
+    #: ``"equation"`` for an equation) when a run of such references may
+    #: merge (:func:`format_xref_run`); ``None``: the reference prints alone.
+    kind: str | None = None
 
 
 #: Placeholder for a dead ``[dc]`` cross-ref whose target is unknown or
@@ -634,6 +983,8 @@ def resolve_xref(
     numbers: XrefNumbers | None,
     warnings: list[str],
     dead: Callable[[str], tuple[str | None, str]] | None = None,
+    placement: XrefNumbers | None = None,
+    citing: str = "",
 ) -> Xref:
     """Resolve a ``[dc<id>]`` cross-ref. ``live`` is the draft's live dc
     handles (``None``: unknown, treat as live); a dead target warns and
@@ -641,7 +992,10 @@ def resolve_xref(
     number itself (LaTeX's cleveref counts at compile time and passes
     ``None``). ``dead`` maps a dead handle to ``(replacement, text)``: a
     retired target resolves to its recorded live replacement, otherwise the
-    xref prints ``text`` — a neutral placeholder, never the bare handle."""
+    xref prints ``text`` — a neutral placeholder, never the bare handle.
+    ``placement`` is the pre-pass for the own-section test, which a backend
+    that leaves the numbers to the typesetter (LaTeX, ``numbers=None``) still
+    supplies; ``citing`` is the dc of the chunk being rendered."""
     if live is not None and dc not in live:
         replacement: str | None = None
         text = DEAD_XREF_TEXT
@@ -655,19 +1009,61 @@ def resolve_xref(
                 f"cross-ref {dc}: retired — resolved to its replacement {replacement}"
             )
             return resolve_xref(
-                replacement, surface, live=live, numbers=numbers, warnings=warnings
+                replacement,
+                surface,
+                live=live,
+                numbers=numbers,
+                warnings=warnings,
+                placement=placement,
+                citing=citing,
             )
         warnings.append(f"cross-ref {dc}: no such live chunk — downgraded")
         return Xref(dc, surface, live=False, fallback=text)
-    if surface or numbers is None:
+    if surface:
+        return Xref(dc, surface, live=True)
+    word = relative_word(dc, citing, placement or numbers)
+    if word is not None:
+        return Xref(dc, None, live=True, relative=word)
+    if numbers is None:
         return Xref(dc, surface, live=True)
     eq = numbers.equations.get(dc)
     if eq is not None:
-        return Xref(dc, None, live=True, equation=eq)
+        return Xref(dc, None, live=True, equation=eq, kind="equation")
     label = numbers.labels.get(dc)
     if label is None or not label[1]:
         return Xref(dc, None, live=True)
-    return Xref(dc, None, live=True, label=label)
+    return Xref(dc, None, live=True, label=label, kind=numbers.types.get(dc))
+
+
+def relative_word(dc: str, citing: str, nums: XrefNumbers | None) -> str | None:
+    """``"above"`` / ``"below"`` for a reference that resolves to a section
+    number (a prose or heading target; not a figure, table or equation) when
+    that section is the citing chunk's own innermost section or one of its
+    ancestors: "section 3.1" inside 3.1 reads as noise. ``"above"`` when the
+    target precedes the citing chunk in reading order, or is it; ``"below"``
+    when it follows. ``None`` everywhere else (the number prints as usual).
+    The one place both exporters get this decision."""
+    if nums is None or not citing:
+        return None
+    label = nums.labels.get(dc)
+    here = nums.section.get(citing)
+    if label is None or label[0] != "Section" or not label[1] or not here:
+        return None
+    if dc in nums.equations or (
+        here != label[1] and not here.startswith(label[1] + ".")
+    ):
+        return None
+    if dc not in nums.order or citing not in nums.order:
+        return None
+    return "above" if nums.order[dc] <= nums.order[citing] else "below"
+
+
+@dataclass
+class XrefCursor:
+    """The chunk the walk is rendering, set by :func:`walk_body` so a
+    cross-ref deep in a chunk's inline text knows its citing chunk."""
+
+    dc: str = ""
 
 
 def dead_xref(
@@ -755,17 +1151,31 @@ def _dc_of(store: Any, raw: Any, live_set: Collection[str]) -> str | None:
     return getattr(chunk, "dc", None) if chunk is not None else None
 
 
+#: What may sit between two cross-references of one run: nothing, ``,``,
+#: ``and`` or ``, and`` (spaces around; a line break is fine, a blank line
+#: is a paragraph break and is not). ``or``, ``&``, ``;``, ``to``, a dash
+#: or any other word ends the run.
+_XREF_CONNECTOR = re.compile(r"(?:\s*|\s*,\s*|\s+and\s+|\s*,\s+and\s+)")
+
+
+def xref_connector(gap: str) -> bool:
+    """Do the words ``gap`` between two references let them join one run?"""
+    return _XREF_CONNECTOR.fullmatch(gap) is not None and not re.search(r"\n\s*\n", gap)
+
+
 def merge_xref_runs(
     items: Sequence[str | tuple[str, ...]],
 ) -> list[str | tuple[str, ...]]:
-    """Cross-refs separated by nothing but whitespace become one multi-ref
-    (``\\cref{a,b}``: cleveref prints "sections 1 and 2"); the whitespace
-    between them is dropped. ``items`` are prose strings and label tuples."""
+    """Cross-refs separated by nothing, whitespace, ``,``, ``and`` or
+    ``, and`` (:func:`xref_connector`) become one multi-ref (``\\cref{a,b}``:
+    cleveref prints "Sections 1 and 2" and supplies its own conjunctions);
+    the connector between them is dropped. ``items`` are prose strings and
+    label tuples."""
     out: list[str | tuple[str, ...]] = []
     for item in items:
         if isinstance(item, tuple):
             gap = out[-1] if out else None
-            if isinstance(gap, str) and not gap.strip() and len(out) >= 2:
+            if isinstance(gap, str) and xref_connector(gap) and len(out) >= 2:
                 if isinstance(out[-2], tuple):
                     out.pop()
             prev = out[-1] if out else None
@@ -773,6 +1183,149 @@ def merge_xref_runs(
                 out[-1] = prev + item
                 continue
         out.append(item)
+    return out
+
+
+#: cleveref's singular / plural name of each label type: the ``\\crefname``
+#: lines of ``data/templates/draft/preamble.tex`` (a test keeps them equal).
+XREF_NAMES = {
+    "figure": ("Figure", "Figures"),
+    "table": ("Table", "Tables"),
+    "section": ("Section", "Sections"),
+    "subsection": ("Section", "Sections"),
+    "subsubsection": ("Section", "Sections"),
+    "equation": ("Eq.", "Eqs."),
+}
+
+#: The preamble's ``\\Crefname`` lines: the names ``\\Cref`` prints for the
+#: first type of a run at the start of a sentence.
+XREF_NAMES_CAPITAL = {"equation": ("Equation", "Equations")}
+
+
+@dataclass(frozen=True, slots=True)
+class XrefPart:
+    """One piece of a printed reference run: literal ``text``, or the
+    ``number`` of target ``dc`` (``noun``: its label word, ``""`` for an
+    equation) that a backend prints as a live cross-reference field."""
+
+    text: str = ""
+    dc: str = ""
+    number: str = ""
+    noun: str = ""
+
+
+def _xref_number(xref: Xref) -> str:
+    if xref.equation is not None:
+        return str(xref.equation)
+    return xref.label[1] if xref.label is not None else ""
+
+
+def _number_key(number: str) -> tuple[int, ...]:
+    return tuple(int(p) if p.isdigit() else 0 for p in number.split("."))
+
+
+def _follows(prev: tuple[int, ...], key: tuple[int, ...]) -> bool:
+    """Does ``key`` repeat ``prev`` or step its last component by one (the
+    next section of the same parent, the next figure)?"""
+    return key[:-1] == prev[:-1] and key[-1] - prev[-1] in (0, 1)
+
+
+def _xref_units(group: Sequence[Xref]) -> list[tuple[Xref, Xref]]:
+    """One type's references as cleveref's ``sort&compress`` prints them:
+    sorted by number; a stretch of three or more references whose numbers
+    each repeat or follow the one before (counted per reference, a repeated
+    target included) is a range ``(first, last)``, a shorter one lists its
+    distinct numbers. Checked against cleveref 2.x in TeX Live 2026."""
+    ordered = sorted(group, key=lambda x: _number_key(_xref_number(x)))
+    units: list[tuple[Xref, Xref]] = []
+    i = 0
+    while i < len(ordered):
+        j = i
+        while j + 1 < len(ordered) and _follows(
+            _number_key(_xref_number(ordered[j])),
+            _number_key(_xref_number(ordered[j + 1])),
+        ):
+            j += 1
+        stretch = ordered[i : j + 1]
+        if len(stretch) >= 3:
+            units.append((stretch[0], stretch[-1]))
+        else:
+            for x in stretch:
+                if not units or _xref_number(units[-1][1]) != _xref_number(x):
+                    units.append((x, x))
+        i = j + 1
+    return units
+
+
+def _number_parts(x: Xref) -> list[XrefPart]:
+    noun = x.label[0] if x.label is not None else ""
+    part = XrefPart(dc=x.dc, number=_xref_number(x), noun=noun)
+    if x.kind == "equation":
+        return [XrefPart(text="("), part, XrefPart(text=")")]
+    return [part]
+
+
+def _conjoin(items: list[list[XrefPart]], pair: str, last: str) -> list[XrefPart]:
+    """``items`` joined the cleveref way: ``a``; ``a<pair>b``;
+    ``a, b<last>c`` (the separator before the final item is ``last``)."""
+    out: list[XrefPart] = []
+    for i, item in enumerate(items):
+        if i:
+            out.append(
+                XrefPart(
+                    text=pair
+                    if len(items) == 2
+                    else (last if i == len(items) - 1 else ", ")
+                )
+            )
+        out += item
+    return out
+
+
+def format_xref_run(
+    run: Sequence[Xref], *, sentence_start: bool = False
+) -> list[XrefPart]:
+    """What cleveref prints for ``\\cref{a,b,…}`` over ``run`` (live,
+    numbered references in source order; every ``kind`` set), in the
+    preamble's names: references group by type, the types in order of
+    first appearance, one label word per type (plural when it holds more
+    than one number); numbers sort within a type and compress to ``1 to 3``
+    (:func:`_xref_units`); a type's numbers read ``1 and 2`` / ``1, 2 and
+    4``, the types ``Sections 1 and 2 and Figure 3`` / ``A, B, and C``.
+    An equation's number sits in parentheses. ``sentence_start`` is
+    ``\\Cref``: the first type's name from :data:`XREF_NAMES_CAPITAL`.
+    The pieces come back with their numbers as :class:`XrefPart` fields
+    for the backend to print."""
+    groups: dict[str, list[Xref]] = {}
+    for x in run:
+        groups.setdefault(x.kind or "", []).append(x)
+    printed: list[list[XrefPart]] = []
+    for n, (kind, members) in enumerate(groups.items()):
+        units = _xref_units(members)
+        many = len(units) > 1 or _xref_number(units[0][0]) != _xref_number(units[0][1])
+        names = XREF_NAMES[kind]
+        if sentence_start and n == 0:
+            names = XREF_NAMES_CAPITAL.get(kind, names)
+
+        rendered: list[list[XrefPart]] = []
+        for first, last in units:
+            if _xref_number(first) == _xref_number(last):
+                rendered.append(_number_parts(first))
+            else:
+                rendered.append(
+                    _number_parts(first) + [XrefPart(text=" to ")] + _number_parts(last)
+                )
+        printed.append(
+            [XrefPart(text=f"{names[1 if many else 0]} ")]
+            + _conjoin(rendered, " and ", " and ")
+        )
+    parts = _conjoin(printed, " and ", ", and ")
+    out: list[XrefPart] = []
+    for part in parts:  # one text run where pieces of literal text meet
+        if out and not part.dc and not out[-1].dc:
+            out[-1] = XrefPart(text=out[-1].text + part.text)
+        else:
+            out.append(part)
     return out
 
 
@@ -883,6 +1436,7 @@ def walk_body(
     equation_of: Callable[[str | None], tuple[str, bool] | None],
     numbers: XrefNumbers | None = None,
     on_chunk: Callable[[int], None] | None = None,
+    cursor: XrefCursor | None = None,
 ) -> None:
     """Visit the draft body once, in reading order, and hand each chunk to
     the renderer as the method its kind calls for; the renderer only
@@ -894,7 +1448,8 @@ def walk_body(
     (``equation_of``) with its pre-pass number. ``renderer.code_kinds`` and
     ``renderer.aside_kinds`` name the chunk kinds a backend has a block for
     (docx renders a listing and an aside as an ordinary paragraph: a known
-    divergence, kept byte-identical). ``on_chunk`` reports progress."""
+    divergence, kept byte-identical). ``on_chunk`` reports progress;
+    ``cursor`` follows the chunk being rendered."""
     # Chunk ids and parents only matter for list items; a caller's lighter
     # chunk shape (no ids) still walks.
     kind_by_id = {getattr(c, "chunk_id", None): c.chunk_kind for c in chunks}
@@ -913,6 +1468,8 @@ def walk_body(
     for n_done, c in enumerate(chunks):
         if on_chunk is not None:
             on_chunk(n_done)
+        if cursor is not None:
+            cursor.dc = c.dc
         depth = depth_of(c)
         while open_lists and depth <= open_lists[-1][1]:
             renderer.list_close(sink, open_lists.pop()[0])

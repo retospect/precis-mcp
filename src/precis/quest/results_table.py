@@ -1,5 +1,5 @@
 """Quest results table — a lineage-ordered, one-row-per-candidate context
-block for the tick prompt (docs/backlog/pathway-conditions-effects-report.md
+block for the tick prompt (me692126
 decision 4).
 
 The tick is a single structured LLM call with no live ``get``/``search``
@@ -306,12 +306,18 @@ def _trusted_str(candidate: Candidate) -> str:
     with none, ``-`` on no trust signal at all (gr592277)."""
     from precis.quest.frontier import candidate_trusted
 
+    if candidate.flags.get("barrier_assurance"):
+        return str(candidate.flags["barrier_assurance"])
     return {True: "yes", False: "no", None: "-"}[candidate_trusted(candidate)]
 
 
 def _blocker_display(candidate: Candidate) -> str:
     """The first fatal on-route trust id, or the ``worst_problem`` one-liner,
     or ``'-'`` — clipped to 60 chars (a prompt-table cell, not a report)."""
+    if candidate.flags.get("barrier_assurance") == "WARN":
+        from precis.quest.frontier import assurance_note
+
+        return assurance_note(candidate)
     blocked = candidate.flags.get("barrier_blocked_by")
     if isinstance(blocked, list) and blocked:
         first = blocked[0]
@@ -439,6 +445,10 @@ def build_results_rows(
 
     built: list[tuple[tuple[Any, ...], float | None, dict[str, Any]]] = []
     for candidate, band, measures, untrusted in entries:
+        if candidate.flags.get("barrier_assurance") == "WARN":
+            untrusted = untrusted | frozenset(
+                {"barrier", "span", "U_L", "U_L_abs", "U_opt", "span_at_Uopt"}
+            )
         atoms = _structure_atoms(store, candidate.ref_id)
         dopant, n_dopant, site = _dopant_and_site(candidate, slab_element, atoms)
         coads, h_count, o_count = _coads(candidate, atoms)

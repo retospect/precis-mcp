@@ -4,7 +4,7 @@ Fans N concurrent MCP clients at a live ``precis serve`` and ramps N until
 something degrades, recording the two facts that tell the walls apart.
 
 Two independent walls present identically as "calls hang" (see
-``docs/backlog/mcp-concurrency-load-test.md``):
+`me691729`):
 
 1. the anyio worker pool — verbs are sync callables, so FastMCP runs each on
    a worker thread; enough concurrent thread-parking calls starve the pool

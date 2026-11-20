@@ -38,12 +38,13 @@ Everything in Tier R, plus the following. The test for every grant is that the u
 - **Coordinator:** Tier W. Launches, briefs and closes builders. Never answers another session's permission prompt; Reto does. Gets compacted at ~120k tokens while no subagents are running (self via send-keys to its own pane if it has one, otherwise CHAT does it); bulky reads (logs, transcripts, `scripts/inflight --json`) go to a Haiku digest subagent that returns at most 30 lines.
 - **Release owner:** Tier W, plus `scripts/release`, `scripts/deploy` and `scripts/round`, each pinned to a release sha, migration ordering, and landing Tier R builders' branches with `scripts/fleet-wave land <tree>` (see Tier R).
 - **Catpath agents and the chat desk** (Reto 2026-10-22, first-hand: "authorize you/catpath agents to push as necessary. And to deploy as necessary"): push catpath `main` and release tags, bump the catpath version, bump precis's pinned `autocatpath` rev, and deploy that bump: `scripts/release` + `scripts/deploy` pinned to the release sha when no other release is open, otherwise it rides the release owner's next round. Migrations still go through the release owner.
+- **The dark factory, in catpath** (Reto 2026-11-13, voice, td659522): its mechanical, no-LLM jobs may push catpath `main` as a plain fast-forward after a local gate (`land_slice` for a `repo:catpath` slice), cut a catpath release through one release node per batch (bump the version, push the `chore(release)` commit, tag only a sha whose main CI run is green, always a new version) and, through the `pin_bump` job, write precis's pinned `autocatpath` version and land that through `scripts/ship`. No pull requests, no force pushes, no moved or deleted tags. A builder session in a catpath tree does none of this: no push, version bump, tag or fetch. Closed per repo until the DB-only setting `factory.open_repos` lists it.
 - **Host desk:** Tier R on hosts. Any host change goes through `scripts/host-ops/play` from origin/prod after the gates in me493172.
 
 ## Reto only, for every tier and role
 
 The test: a backup cannot undo it, or it leaves the building.
-- Release or deploy, except the release owner and the catpath grant as above.
+- Release or deploy, except the release owner and the two catpath grants as above.
 - Secrets: reading, printing, rotating, or adding them to vault.
 - Host plays outside the gated path, service restarts, container recreates, installs.
 - Outward-facing actions: email, nanopub publish or sign, PRs or comments on other people's repos, a PCB `op='order'`, any purchase.

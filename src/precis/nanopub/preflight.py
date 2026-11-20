@@ -65,6 +65,12 @@ _PC_HANDLE = re.compile(r"^pc(\d+)$")
 #: Inbound paper→hub evidence relations (mirrors ``taproot.hub.HUB_ROLES``).
 EVIDENCE_RELATIONS = ("establishes", "corroborates", "contradicts")
 
+PUBLISHING_MESSAGE = (
+    "registry post in flight or unresolved; it is resolved without you "
+    "by the publication operator (present becomes published, absent goes "
+    "back to anchored); re-read later"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class PreflightIssue:
@@ -341,11 +347,7 @@ def publish_preflight(
         issues.append(
             PreflightIssue(
                 check="state",
-                message=(
-                    "a registry POST is already in flight or unresolved "
-                    "(state 'publishing') — wait, or run "
-                    "`precis nanopub reconcile`"
-                ),
+                message=PUBLISHING_MESSAGE,
             )
         )
     elif row.state != "anchored":
@@ -419,8 +421,9 @@ def publish_preflight(
                 check="withheld-edge",
                 message=(
                     f"{why} evidence edge {edge.relation!r} from "
-                    f"{edge.paper_title!r} (pc{edge.paper_ref_id}) — verify "
-                    "it (refine) or sign it off literally (link "
+                    f"{edge.paper_title!r} (pa{edge.paper_ref_id}) — ask the "
+                    "evidence-verification operator to re-verify it, or a "
+                    "person to sign it off after reading the passage (link "
                     f"{edge.link_id})"
                 ),
                 subject_id=edge.link_id,

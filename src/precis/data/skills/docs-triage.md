@@ -1,76 +1,113 @@
 ---
 id: docs-triage
 family: work
-title: precis — keep the backlog live, delete the rest
-summary: triage the repo's open-work backlog — verify then delete shipped or stale items, honor snooze-until, compact bloated ideas, and fold surviving truth into the owning package docstring; git log is the archive
+title: precis — keep the open work live, retire the rest
+summary: triage open work in the spec graph — verify then retire built or stale sections against code handles, park on the plan todo, compact bloated nodes, and fold surviving truth into the owning package docstring; git log and the revision trail are the archive
 answers:
-  - how do I act on a backlog item the linter flagged as done?
-  - the work shipped — what do I do with its backlog item?
-  - how do I park a backlog item without losing it?
-  - where does a deleted item's surviving rationale go?
-applies-to: items in the repo's backlog dir (the open-work markdown list)
+  - how do I act on a spec section the linter flagged as done?
+  - the work shipped — what do I do with its spec section?
+  - how do I park specced work without losing it?
+  - where does a retired section's surviving rationale go?
+applies-to: get/delete/edit (kind='memory'), get/tag (kind='todo'), get (kind='python')
 status: active
 tags: [workflow]
 governs: factory
 ---
 
-# docs-triage — keep the backlog live, delete the rest
+# docs-triage — keep the open work live, retire the rest
 
-**The disease.** An `*.md` item in the backlog dir is *open work*. When its
-work ships, the truth moves into code + the owning package docstring, but
-nobody deletes the item — so it lingers, gets READ as open work, and rots.
-Cure: **delete-default** ("rest in git for the archaeologists"). `git log` is
-the history; the backlog is the present. Contract: `docs/README.md` §Backlog
-lifecycle.
+**The disease.** A spec section is *open design*. When its work ships, the
+truth moves into code + the owning package docstring, but nobody retires
+the section — so it lingers, gets READ as open work, and rots. Cure:
+**retire-default** ("rest in git and the revision trail for the
+archaeologists"). The live graph is the present. Specifications are hubs of
+linked memory nodes under the Specifications hub (me568215), not files (Reto
+2026-11-05, me568168): the format and the prune and retirement passes are
+[[precis-spec-help]].
 
 ## Start here
 
-    scripts/backlog-lint     # flags done-marked items still in the backlog dir
+The repo's own linters are advisory (they never delete and never fail a
+build); they surface candidates and you apply the judgment they can't. The
+spec inventory is generated, so nothing is hand-maintained:
 
-Advisory (never deletes, never fails a build); it surfaces candidates by
-title-level done-markers only. You apply the judgment it can't. The
-generated index (`INDEX.md` in the backlog dir, gitignored, rewritten by
-`scripts/docs-index` at session start) is the one-line-per-item view.
+Repo-dev: `scripts/memory-lint` (stale current-state prose, orphans, expiry)
+and `scripts/backlog-lint` (the residual thread files); the
+ship contract is `docs/README.md` §Spec lifecycle.
 
-## The per-item verdict
+```python
+search(kind="memory", tags=["spec:*"], view="toc")   # every spec root
+get(kind="memory", id="<spec root>", view="toc")     # its sections, in reading order
+get(kind="todo", id="<plan root>", view="tree")      # what is actually being built
+```
 
-- **Shipped** — the work is on `main`. Verify (`git log`, the code), then
-  **delete the file in the same commit** that shipped it — or now, if it was
-  missed. Never leave a "DONE ✅" note; the backlog is the active list, not
-  an archive.
-- **Stale** — the item describes a problem the code no longer has, or a
+## The per-section verdict
+
+Classify against code **through the python kind** — the prune pass,
+`precis-spec-help~9`. Evidence rule: **no verified handle, no BUILT**.
+
+```python
+search(kind="python", mode="pattern", q="<symbol>")
+get(kind="python", id="<alias>::<qualname>")
+```
+
+- **Built** — the behaviour is in the shipped code. Retire the section,
+  superseded by the symbol's handle; the group hub or spec root keeps a
+  one-line pointer naming the behaviour and the handle. Never leave a
+  "DONE ✅" body; the graph is the active design, not an archive.
+
+```python
+delete(kind="memory", id="<id>", args={"superseded_by": "python:main::<qualname>"})
+```
+
+- **Partial** — keep only the open design, opening with **one Built
+  sentence** naming the built part and its handles.
+- **Stale** — the section describes a problem the code no longer has, or a
   plan overtaken by a different shipped approach. Verify against the code
-  (don't trust the prose), then delete. If deletion would orphan a claim a
-  kept doc relies on, correct that doc to code-truth in the same commit.
-- **Snoozed** — deliberately parked, not dead. `snooze-until: YYYY-MM-DD`
-  front-matter; triage skips it until the date. On or after the date:
-  re-probe the unblock condition, then act or bump the date.
+  (don't trust the prose), then retire. If retiring would orphan a claim a
+  kept node or doc relies on, correct that one in the same pass.
+- **Parked** — deliberately shelved, not dead. Park on the **plan todo**
+  (its `STATUS:`) with a `due:YYYY-MM-DD` tag for the unblock date; triage
+  skips it until then, and on the date re-probes the condition and acts or
+  bumps it. Memory carries no snooze field.
+- **Reference** — surveys, evidence and gotchas stay. Rulings on shipped
+  decisions stay too, as `absorbed`.
 - **Open** — keep. Compact if bloated (bar below).
 
-Before deleting, re-scan for stragglers:
+Before retiring, re-scan for stragglers and read the node's ring with
+`get(kind='memory', id='<id>', extent='fisheye+1hop')`, so no live spec,
+plan or gripe points at a node about to go; fix every surviving reference.
 
-    grep -rn "<slug>" . --exclude-dir=.git    # fix every surviving ref
+```bash
+grep -rn "me<N>" . --exclude-dir=.git    # repo-dev: handle refs in files
+```
 
 ## The compaction bar
 
-- An **idea** is ≤ ~15 lines: `# title` + what, why, owner anchor, `test:`.
-  No front-matter needed.
-- A **spec** (status `draft` → `ready`, per the backlog `TEMPLATE.md`)
-  keeps its full body while active — acceptance criteria and blast radius
-  are load-bearing for the fixer; don't compact a live spec down to an idea.
-- An idea that has grown spec-shaped sections without front-matter is a
-  spec in denial — add the front-matter or cut it back to an idea.
+- A **spec root** holds purpose, owner handles, its plan todo, scope
+  exclusions and dependencies — not a copy of its sections. When it
+  approaches the 4000-character fisheye limit, group sections into
+  sub-hubs rather than trimming meaning.
+- A **section** is one design claim, prose only, under about 3500
+  characters, with observable acceptance and explicit unknowns. Acceptance
+  criteria and blast radius are load-bearing for the builder; don't compact
+  a live section down to a title.
+- A section carrying several independent claims is a split, not a
+  compaction — the spec lint flags it.
+- A **small item** — an idea, a finding, a one-paragraph annoyance — is a
+  gripe, never a spec node.
 
 ## Where truth folds
 
-On ship (or when cutting a stale item that carried real rationale), any
+On ship (or when retiring a stale section that carried real rationale), any
 surviving truth — the "why", the rejected alternative, the invariant —
 folds into the **owning package's `__init__.py` docstring**, compactly, in
 the same commit. Nothing else is an archive: no done-log, no CHANGELOG, no
-completed/ directory. Reusable incident forensics go to `docs/runbooks/`.
+completed/ hub. Reusable incident forensics go to the repo's runbooks.
 
 ## See also
 
-- [[flow-stages]] — the spec stage writes these items; the ship stage deletes them.
-- [[next]] — the backlog is where the next piece of work comes from.
+- [[precis-spec-help]] — the spec-in-memory format, the prune pass, retirement.
+- [[flow-stages]] — the spec stage writes these nodes; the ship stage retires them.
+- [[next]] — the spec graph and the gripe tracker are where the next piece of work comes from.
 - [[whatneedsdoing]] — scanning open work before picking an item.

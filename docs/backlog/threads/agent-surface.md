@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** [block-navigation](../block-navigation.md) slice 1 (authoring lint); then [tool-description-budgets](../tool-description-budgets.md) slices 2+ (slice 1, the cap test into `CODE_HYGIENE`, landed 2026-10-21); the error contract (M1–M3) is on main, so it unblocks nothing further.
+- **Next:** block-navigation (me694125) slice 1 (authoring lint); then tool-description-budgets (me692313) slices 2+ (slice 1, the cap test into `CODE_HYGIENE`, landed 2026-10-21); the error contract (M1–M3) is on main, so it unblocks nothing further.
 - **Blocked by:** Nothing.
 - **Unblocks:** Agents that recover from a refused call without a human, and fewer silent misuses on the surface every thread uses.
 - **Acceptance:** Each item's own criteria; for the error contract, a call either does exactly what its ack says or refuses with a next step.
@@ -32,15 +32,15 @@ description budgets, then Drive.
 
 ## Do next
 
-1. **backlog/block-navigation.md** — small addressable blocks, `budget=`
+1. **me694125** — small addressable blocks, `budget=`
    with refuse-with-outline instead of `more`, telemetry, batched get,
    preload, acceptance harness and optimizer (Reto 2026-10-28). Slice 1
    (authoring lint, skill cap below the 24 KiB split) first.
-2. **backlog/tool-description-budgets.md** — verb descriptions sit at
+2. **me692313** — verb descriptions sit at
    966–971 of 1024 bytes; slice 1 (the cap test into `CODE_HYGIENE`) landed
    2026-10-21, the rest waits on it so kind clauses move into skills once
    refusals carry the fix.
-3. **backlog/drive-slash-command-line.md** — `/` in the Drive search box
+3. **me690832** — `/` in the Drive search box
    opens a command popdown; the web counterpart of discoverable verbs.
    Slice 2 (bare-word qualifiers + `//` escape) landed 2026-10-21;
    remaining slices are pipes (traverse) and result-list actions.
@@ -68,17 +68,17 @@ description budgets, then Drive.
 
 ## Horizon
 
-1. **backlog/context-navigation.md §7** — seen-stubs are a reader over the twin; owned by thread context-navigation, listed here as the seam.
-2. **backlog/drive-filter-hierarchy.md** — Return and Showcase remain;
+1. **me690580 §7** — seen-stubs are a reader over the twin; owned by thread context-navigation, listed here as the seam.
+2. **me690816** — Return and Showcase remain;
    Return needs personal viewing history.
-3. **backlog/drive-my-vs-agent-stuff.md** — separate a user's refs from
+3. **gr690478** — separate a user's refs from
    their agent's; follows the Drive ruling that accepted agent writes.
-4. **backlog/drive-presenter-completeness.md** — presenter contract
+4. **gr690488** — presenter contract
    totality and the kind-taxonomy audit; makes every kind render in Drive.
-5. **backlog/drive-characteristic-scale.md** — a derived scale value for
+5. **me694572** — a derived scale value for
    design refs as a sort key; blocked on a ruling (moved from
    multiscale-design-core 2026-10-17).
-6. **backlog/read-scope-skill-fencing.md** — read-scoped connections get
+6. **me691026** — read-scoped connections get
    skills and `Next:` hints without write recipes; ready
    2026-10-25 on Reto's option-B ruling (scope from the connection, no
    flag); slice 1 is the filter plus `precis-gripe-help`.

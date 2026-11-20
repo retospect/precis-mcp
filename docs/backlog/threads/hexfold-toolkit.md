@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** (1) relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added the `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note. (3) spec `me630471` (the retired backlog/hexfold-tethered-relax-op.md, slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against [structure-workspaces](../structure-workspaces.md) slice 4p (relax-service path); then the re-vet of Do-next 1a, then the graded-bends residual (Do-next 3). The open-for-Reto on whether stored-mode surface deviation should score the H caps lapsed with its close. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); catalogue R17 variant A (spec `me628806`).
+- **Next:** (1) relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added the `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note. (3) spec `me630471` (the retired backlog/hexfold-tethered-relax-op.md, slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against structure-workspaces (me693174) slice 4p (relax-service path); then the re-vet of Do-next 1a, then the graded-bends residual (Do-next 3). The open-for-Reto on whether stored-mode surface deviation should score the H caps lapsed with its close. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); catalogue R17 variant A (spec `me628806`).
 - **Blocked by:** Three-plane Y cannot use the revolution-target receipt; surface_deviation stays unavailable. Legacy r5 remains unavailable without receipt. Unequal variant B needs seam-row measurement. Larger-pillar cost gate is a separate next slice; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use spec `me628775` and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -87,7 +87,7 @@ validation was performed for this note.
 
 Reto via orchestrator (2026-10-06 15:20Z) asks whether a wider pillar
 reduces collapse in the ball12 lineage, `se:hexfold-dogfood-r4` /
-`st465728`. Plan fresh Melchior-only variants at current diameter, 1.5x
+`st465728`. Plan fresh web-host-only variants at current diameter, 1.5x
 and 2x, with the same authored ball radius and fold settings, after R16
 deployment and authenticated process/viewer gates. Durable plan and limits:
 publication key
@@ -108,7 +108,7 @@ from saved provenance; a fitted sphere radius is not that provenance.
 Guard investigation (durable, readback verified)
 confirms the n ceiling protects synchronous request cost, not socket or
 print clearance. A proposed explicit 12/18/24 ceiling opt-in must preserve
-the default and all geometry checks, with a proven Melchior request budget;
+the default and all geometry checks, with a proven web-host request budget;
 no implementation in this note. Also, `top_R` selects the nearest
 area-matched candidate: identical requested radius does not guarantee
 identical actual sphere radius. Report both; a strictly fixed actual-radius
@@ -116,7 +116,7 @@ sweep needs a separate reviewed target-authoring premise/change.
 
 Report each variant's built/refused/unknown state, actual/authored diameter,
 reach residual mean/p95/max in Å, whole-scene and pillar-period fractions
-within 0.5 Å, and an actually opened Melchior `/se/<slug>` URL. Name the
+within 0.5 Å, and an actually opened web-host `/se/<slug>` URL. Name the
 observed collapse indicator: evidenced self-intersection, measured waist
 narrowing relative to authored diameter with discrete-ring/precision limits,
 or declining fraction along the pillar with explicit counts. Use saved
@@ -391,7 +391,7 @@ removed as met — the transport move it waited on happened 09-29)
 1a. **HELD for re-scope against structure-workspaces slice 4p (Reto
    2026-10-22; launch not to be queued until re-scoped).**
    **spec `me630471` (the retired tethered-relax op — slice 0, first) and
-   backlog/hexfold-scene-grammar-from-primitives.md (the grammar,
+   me689995 (the grammar,
    blocked-by slice 0)** (Reto ruled YES 2026-10-07, via chat-interface;
    both draft, model opus; the readiness vet of 2026-10-07 said
    needs-work and its blockers are applied, re-vet owed). Ranked right
@@ -720,7 +720,7 @@ removed as met — the transport move it waited on happened 09-29)
    waits on 1.
    The box test piece (`spec.md` §28 step 3, `src/hexfold/spec.md`) has no
    backlog file; it is ranked here, and the file is filed when it starts.
-6. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
+6. **me689752** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
 7. **spec `me628776` (seam-type catalogue)** — the seam-motif rows the
    catalogue's third row type exists for. R17 variant A exposes the private
@@ -759,7 +759,7 @@ removed as met — the transport move it waited on happened 09-29)
 9. **valve spec `me628980` Q2** (scrubbers `me629055`) — scrubber cadence
    per poison species, decided by instrumenting the first lining, so it
    waits on 7.
-10. **backlog/hexfold-sp3-seam.md + spec `me628808` (isolation band)**
+10. **me689742 + spec `me628808` (isolation band)**
    (§28.7) — three- and four-sheet joins at an atom, and the valve's sp³
    isolation loops. Sequenced here by choice, not blocked: §28 lists it as
    unblocked since step 2 landed. `JOINERS` is already keyed on a lattice
@@ -789,12 +789,12 @@ removed as met — the transport move it waited on happened 09-29)
     organic loft. Do-next 1 (ideal surface first) is the first concrete
     slice of this item, with authored radii in place of catenoids and
     table fillets.
-13. **backlog/global-structure-search-slices.md** — variable-composition
+13. **me694826** — variable-composition
     (`add` ranges) and surrogate warm-start from a prior AGOX database;
     structure-kind search work homed here by Reto's pillar-2 ruling
     (2026-10-01). Waits on nothing; sequenced after the test pieces by
     choice.
-14. **backlog/structure-kind-demotion.md** — `ready`; se is the origin of
+14. **gr695047** — `ready`; se is the origin of
     atoms (Reto, 2026-09-14), structure becomes an import filter with no
     direct agent access. Staged, independent of the §28 pieces; ranked
     here because hexfold builds are where the structure-kind gripes
@@ -805,7 +805,7 @@ removed as met — the transport move it waited on happened 09-29)
     landed 2026-10-13: `rail-k3-120-z` builds the cross-section — N arcs
     on N equal-120 seams, each an inward rib, authored pore cells, the
     lumen site list. Left: reservoir sheets, radius changes, MLIP relax.
-16. **backlog/hexfold-multicell-prism.md** — multi-cell prisms over
+16. **me630425** — multi-cell prisms over
     shared sheet primitives (Reto 2026-10-22, "is a cell wall not just a
     graphene sheet?"): slices 0+1 landed 2026-10-22 (hexfold-ms): 45 SHA
     goldens + multicell census + glossary; `hexfold.sheetnet`

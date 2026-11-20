@@ -35,6 +35,11 @@ ads) is stripped. Links preserved as `[text](url)`; images dropped.
 Footer carries source URL and fetch date for attribution. First call
 fetches and caches; subsequent calls hit the cache.
 
+A cached page also answers to its `wb<N>` record handle (the `cite as`
+line on any read) — `get(id="wb<N>")` re-reads the stored row for
+free, `view='links'` and `extent=` show its inbound mentions, and a
+`wb<N>~<ord>` selector reads one stored chunk.
+
 Extraction needs `trafilatura`, a core dependency — it ships with every
 install. If it's somehow missing (broken venv) the call fails with an
 actionable `[error:Unsupported] trafilatura is not installed` whose
@@ -112,6 +117,10 @@ After canonicalisation the URL is the id and the slug. The same page
 served from `HTTPS://Example.COM/x?utm_source=tw` and
 `https://example.com/x` is one cache row.
 
+A surviving query string is part of the identity: `…/api?ids=A` and
+`…/api?ids=B` are different pages, so a query-bearing URL slugs with a
+`-q-<hash>` tail and each distinct query keeps its own row.
+
 ## Why did the same URL produce different cache entries?
 ## What happens to #fragments and tracking params?
 ## Per-host fragment handling — the SPA gotcha
@@ -170,8 +179,6 @@ tag(
     id="https://example.com/article",
     add=["bookmark", "topic:rag", "read-later"],
 )
-
-tag(kind="web", id="https://example.com/article", add=["CACHE:pinned"])  # never expire
 
 tag(kind="web", id="https://example.com/article", remove=["read-later"])
 ```

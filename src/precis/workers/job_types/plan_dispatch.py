@@ -1,6 +1,6 @@
 """``plan_dispatch`` job_type — the dark-factory tick that drives plan subtrees.
 
-Spec: ``docs/backlog/dark-factory.md`` § "Plans" → "The dispatcher tick" and
+Spec: `me692430` § "Plans" → "The dispatcher tick" and
 "Job lifecycle per task"; the kill switch is step 7's. A plan is a todo
 subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
 
@@ -46,8 +46,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    REVERT never
    comes from a glued token — or a ``review: LAND|FIX`` token at a line
    start (markdown ``- ``/``* ``/``**``/``#``/``> `` markers may sit
-   between the line start and the token) or right after sentence-final
-   punctuation, outside backticks/parens — the verdict lines too, so a
+   between the line start and the token) or right after boundary
+   punctuation (``.!?``, plus the ``:``/``)`` a glued text block leaves
+   before the verdict, gr687501), outside backticks/parens — the
+   verdict lines too, so a
    quoted grammar echo never turns a real line into a disagreement
    (td591267) — no
    ``<…>`` rest (a lane gluing
@@ -67,7 +69,13 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    The ``(read-only, tests not run)`` marker is stripped where it ends a
    line before matching — accepted, never required, so a forgotten
    marker never strands a review. A LAND is a diff read, never a test
-   result. ``LAND`` closes the node. ``FIX`` mints one ``run_slice`` task
+   result. A LAND on a held pre-land land mints the held ``land_slice``
+   only when the verdict's judged head (``verified head <sha>``,
+   :func:`_verdict_heads`) is the stamp's pushed tip — a LAND naming
+   another head read a different commit than the hold would ship, so
+   the hold stands and the reviewer re-runs, retry-capped like a
+   malformed verdict (td730820). ``LAND`` closes the node. ``FIX`` mints
+   one ``run_slice`` task
    ``Fix review findings for td<id>`` (body = the list) under the plan root
    and closes the node — the mint is stamped ``meta.fix_depth``, the
    count of consecutive FIX mints on the review→fix→land→review chain,
@@ -89,7 +97,22 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    honours and whose ``waiting-for:`` prefix keeps every descendant out
    of dispatch — and one ``ask-coordinator`` ask (``blocks:`` the root,
    so it counts as open work, not a record) collects the chain's
-   complete findings and landed shas for one briefed builder. ``REVERT``
+   complete findings and landed shas for one briefed builder. A FIX or
+   REVERT on a branch a pre-land reviewer still holds (gr570506) mints
+   nothing: the build reopens with the finding as its ``handoff:`` and
+   the reviewer stays open for the rebuild. The send-backs are counted
+   in ``meta.preland_fix_rounds`` — the finding's digest and
+   ``anchors:``-line ``file::function`` set plus the pushed head the
+   verdict judged —
+   and the build is held on an ``ask-coordinator`` ask only on the
+   failure the ask describes (gr688058): the reviewed head unchanged
+   since the last send-back (the builder is not acting), the head the
+   verdict judged other than the pushed tip (the reviewer is reading a
+   stale branch), the newest finding the last one's again (the same
+   text, or a shared ``file::function`` on the verdict's ``anchors:``
+   line with token-Jaccard text similarity of at least 0.6), or
+   :data:`PRELAND_FIX_CAP` rounds in a
+   row (gr684815). ``REVERT``
    mints one ``run_slice`` task ``Revert
    <sha> on main`` (the ``landed: <sha>`` comment of each reviewed node --
    ``td<id>`` itself, or its child todos when it has them, as a slicer
@@ -141,8 +164,15 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``analysis:`` comment was posted since (td543749); a mechanical task (``meta.op`` other than ``run_slice``) whose
    newest job succeeded; a ``run_slice`` task whose newest job is a
    succeeded ``land_slice`` (a succeeded build alone never closes it, and
-   a build plus its red land count as one attempt). Deepest first, so
-   nested phases cascade in one pass.
+   a build plus its red land count as one attempt); a ``pin_bump`` node
+   closes only once its record's ``image.ready`` says the land host's gate
+   image carries the pin (td659522 F7, Reto 2026-11-15; its job's image
+   wait stamps it and closes the node, this is the backstop). Its job hands
+   a branch to ``land_slice`` and succeeds, so a succeeded ``pin_bump``
+   alone neither closes the node nor re-dispatches it, and a failed land
+   re-dispatches the build; a succeeded land is no attempt, and the next
+   tick mints the image wait, pinned to the land's ``target_node``.
+   Deepest first, so nested phases cascade in one pass.
 4. **dispatch** — each doable task (``node_kind`` task, a generator with no
    children yet, or a plain leaf under a plan root; ``STATUS:open``, no live
    ``blocked-by`` target on it or an ancestor — a terminal target stays
@@ -158,15 +188,23 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    it parks a gripe in ``gripe_dispatch`` (gr645524):
    ``meta.op`` resolved to ``{type, params}`` (a bare name is
    ``{type: name, params: {todo_id}}``), default ``run_slice {todo_id}``.
+   A ``pin_bump`` node (td659522 step 4) takes ``release_todo`` (its one
+   ``blocked-by`` ``repo_release`` node) and ``pin_repo`` (that node's one
+   non-default repo) from the plan; it is skipped, with a note, when it has
+   no single such blocker, the release node governs no or several repos or
+   the default one, or the node itself resolves to a repo other than precis.
    A ``run_slice`` class with no enabled offering is blocked on one
    coordinator ask before any job is minted (gr611305). So is a
    ``run_slice`` leaf whose judged text — its body and newest
-   ``brief:`` — names a deny path or is prod-graph only:
+   ``brief:`` — asks to write a deny path or is prod-graph only:
    work no builder lane may write skips the ladder and files one
    ``ask-coordinator`` ask with the brief attached (gr645163, Reto's
    2026-11-12 "escalate to next model" ruling — td643078/td638980's
    won't-do stalls and gr630346/gr630611's no-commit runs were this
-   class). Generators never classify: they read source text, and a
+   class). The deny-path leg is write intent, not mention (gr685970 —
+   the shared :func:`precis.plans.route.coordinator_route` classifier):
+   a bare mention, a test-fixture path or an ``Out of scope`` line does
+   not route. Generators never classify: they read source text, and a
    gripe or diff may name deny paths legitimately. A ``handoff:``
    never classifies either — it reports the attempt, and a denied
    run's own deny-path line is the event, not the target. The
@@ -205,9 +243,30 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ancestor's, else :data:`DEFAULT_SCORE`, and a human-set ``prio``
    multiplies it (never the key). So a release-pass root stamped
    ``RELEASE_SCORE`` mints (and reaches the lanes) before a default
-   gripe build, whichever root is older. A run_slice whose brief file
-   set overlaps an in-flight land's is held until that land finishes
-   (td603849 — the ``_inflight_land_ids``/``_brief_file_sets`` check).
+   gripe build, whichever root is older. The job carries the effective
+   score and release claim band into host claim order. Every doable build
+   queues; a build whose file set
+   overlaps a started, unlanded build's in any plan — building, held for
+   its pre-land review, or landing — stays queued until that one lands
+   (td603849, widened 2026-11-15 — the ``_started_slices``/
+   ``_overlap_inputs`` check; a started build's files are its stamped
+   ``meta.branch_files`` plus the files its body, briefs and the lander's
+   failure handoff name — never a builder's plain ``handoff:``,
+   gr734976). "Overlaps" means the same
+   repo-relative path: a brief's shorter suffix (``land_slice.py``,
+   ``job_types/land_slice.py``) resolves only when exactly one of the
+   started build's paths ends with it, so two builds touching different
+   ``dispatch.py`` or ``__init__.py`` files do not wait on each other.
+   Only builds with the same land target wait on each other. The target
+   comes from metadata, body or selected brief, with main as the default.
+   A build whose ``land_slice``
+   died (newest job failed/cancelled/timed-out, none live) or that
+   carries or sits under a ``rescue:``/``child-failed:`` tag — or whose
+   pending pre-land review todo carries one — holds no lock (gr701628);
+   the dead-land drop reads only a failure of the
+   stamp's own ``head`` — a rebuild's fresh ``pending_land`` outlives the
+   historical dead job (td701778). ``live_nodes`` counts a held
+   candidate as not live.
    A reviewer's ``run_slice`` is pinned to
    ``pick_lane('review', exclude_vendor=<the builder lane's vendor>)``;
    while no other vendor's lane is enabled that falls back to the
@@ -244,6 +303,16 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    (gr574881) — while an orphan mint (no ``blocked-by``/``part-of`` edge, no
    body — its own orphan-ask edge is the ask's dedup mark, not a link) is
    not released and files one ask on the plan root instead;
+   an open pin-bump node whose image wait found the gate image behind the
+   pin (``image.reason`` stale/unlabelled/absent, or docker unreachable for
+   over :data:`PIN_STALE_AFTER`) files ONE coordinator ask naming
+   ``scripts/build-image precis-dev`` on that host, under the root and not
+   blocking the node (deduped on :data:`PIN_IMAGE_ASK_KEY` while it is open
+   for the same wanted sha; closed with the image still behind, it is asked
+   again at most hourly), and an open image ask whose node is closed is
+   closed with it (td659522 F7); such a wait behind for over
+   :data:`PIN_STALE_AFTER` also raises the stale-open alert although its
+   parked job is live;
    a task whose newest job ended
    (failed, or succeeded without closing it) with attempts at its retry
    cap is parked. The cap is an explicit ``meta.retries`` pin, else the
@@ -312,7 +381,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``meta.host_refusal``: the lane's host refused the launch, so nothing
    was tried (gr571395); a job carrying ``meta.attempt_free`` failed for
    a reason outside the slice's diff (``"lane-wait"``, gr572118;
-   ``"infra-land"``, gr570187) and likewise burned no attempt; an
+   ``"infra-land"``, gr570187) and likewise burned no attempt — a
+   sustained run of the SAME free reason backs off exponentially from
+   the newest failure's mint and parks behind a coordinator ask at
+   :data:`FREE_RUN_CAP`, since the retry bound never sees it (gr662077);
+   an
    operator-cancelled job is likewise free — its node re-queues on the
    next dispatch, but only when the job's type is on
    :data:`_REQUEUE_ON_CANCEL` (the default op plus confirmed
@@ -329,6 +402,24 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``meta.unplaced_ask`` and settled ``done``/``won't-do`` as the gap or
    the node closes (gr657333).
 
+6. **park stamp** (``_step_park_stamp``; park = save, resume anywhere,
+   Reto 2026-11-16: parked work holds no build seat and no timer throws
+   it away): whichever path parked a ``run_slice`` build — an open ask
+   (hygiene's, the rescue pass's, the stall sweep's), ``rescue:*`` or
+   ``child-failed:*``, ``STATUS:paused`` — the failed job already saved
+   its worktree on the build host (``meta.saved``, :mod:`._slice_park`:
+   a ``wip: parked`` snapshot commit pushed to
+   ``refs/factory/slice/<td>``). The step copies it to the node as
+   ``meta.parked = {host, worktree, head, reason, at, job}`` and writes
+   host, worktree and head into the body of every open ask blocking the
+   node (an ask minted this pass is reached next pass — the step reads
+   the plan as loaded). Answering and closing an ask re-arms the node
+   (:func:`_step_rearm`), whose next ``run_slice`` resumes from that
+   branch on any host; an answer saying ``start over`` stamps
+   ``meta.start_over`` and clears ``meta.parked`` so the launch drops the
+   saved branch and cuts from the base. A reaper for abandoned parked
+   worktrees keys on ``meta.parked.host`` + ``.worktree``.
+
 Plan roots: the ids named by ``plan:<id>`` tags on live todos, plus every
 live todo whose meta makes it a gate / loop / generator / phase; a root
 inside another root's subtree is folded into it. Closed roots are skipped.
@@ -339,7 +430,8 @@ inside another root's subtree is folded into it. Closed roots are skipped.
 in-memory model and counts what it would have done, nothing is written. The
 job summary's first line is
 ``plan_dispatch: roots=N gates=o/c loops=minted/closed phases=closed
-dispatched=N released=N asks=N dry_run=bool reopened=N reviews=N``; the
+dispatched=N released=N asks=N dry_run=bool reopened=N reviews=N held=N``
+(``held``: candidates waiting on file overlap at claim); the
 actions follow it. A ``release_cut`` node's dispatch refusal (a cut
 held on the tip's reviews) is also one ``job_result`` line and a log
 line, once per change of its text (``meta.cut_refusal_logged`` on the
@@ -360,6 +452,7 @@ Workers never import handlers: every write here is a store call.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -367,8 +460,12 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
+from itertools import groupby
+from operator import itemgetter
 from typing import Any
 
+from precis.alert_ids import RULES_BY_ID
 from precis.alerts import raise_alert
 from precis.errors import BadInput
 from precis.plans import gates as _gates
@@ -394,7 +491,12 @@ from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
 from precis.todo.guards import check_ask_meta, release_claims
 from precis.todo.views import _fetch_subtree
 from precis.utils import dispatch_score as _dscore
-from precis.workers.job_types import JobTypeSpec, _lane_decide, get_job_type
+from precis.workers.job_types import (
+    JobTypeSpec,
+    _lane_decide,
+    _slice_park,
+    get_job_type,
+)
 
 log = logging.getLogger(__name__)
 
@@ -405,6 +507,7 @@ NAME = "plan_dispatch"
 #: pass, so the job path and the worker-lane pass never mint or dispatch the
 #: same thing twice.
 TICK_LOCK_KEY: int = 0x504C414E5449434B
+_STARTED_SLICES_LOCK_KEY = 0x534C4943454F564C
 #: ``idle_in_transaction_session_timeout`` for the lock connection: longer than
 #: any tick, so a tick that overruns loses the lock (the intended failure)
 #: rather than pinning it forever.
@@ -422,6 +525,27 @@ _HIDDEN_META_KEY = "hidden_comments"
 
 #: A ``claimed-by:`` tag older than this, with no live job, is released.
 CLAIM_STALE = timedelta(hours=4)
+
+#: An open pin-bump node with no live job this long after its release node
+#: tagged raises the ``pin_bump/stale-open:{todo}`` alert (td659522 step 4).
+PIN_STALE_AFTER = timedelta(hours=6)
+_PIN_STALE_SOURCE = RULES_BY_ID["pin_bump/stale-open:{todo}"].rule
+
+#: ``pin_bump.RECORD_KEY`` and ``pin_bump.IMAGE_ASK_KEY``, restated (a test
+#: pins the spellings equal): the pin record on the node, and the image
+#: ask's dedup mark ``{"ask": id, "want": sha}`` (td659522 F7).
+PIN_RECORD_KEY = "pin_bump"
+PIN_IMAGE_ASK_KEY = "pin_image_ask"
+#: ``image.reason`` values of a gate image behind the pin; ``unreachable``
+#: docker asks only once it has lasted :data:`PIN_STALE_AFTER`.
+PIN_IMAGE_STALE = frozenset({"stale", "unlabelled", "absent"})
+PIN_IMAGE_UNREACHABLE = "unreachable"
+#: ``pin_bump.GATE_IMAGE``: the image the gate runs in, the one the ask
+#: tells the coordinator to rebuild (``scripts/build-image precis-dev``).
+PIN_GATE_IMAGE = "precis-dev"
+#: An image ask closed while the image still lacks the pin is asked again,
+#: at most this long after the previous ask closed.
+PIN_IMAGE_REASK_AFTER = timedelta(hours=1)
 
 #: A plan job queued longer than this with no host advertising its placement
 #: capabilities gets a pass note (td543917).
@@ -493,6 +617,16 @@ FIX_ESCALATE_DEPTH = 3
 #: brief instead of a chain of partial fixes.
 FIX_CHAIN_CAP = 4
 
+#: Pre-land FIX/REVERT verdicts in a row on one build before the tick
+#: stops rebuilding it and asks the coordinator (gr684815). Nothing
+#: bounded that loop — every send-back re-arms the builder's retry
+#: budget — and one build ran thirty-odd rounds on a single finding.
+#: Six since gr688058: the cap is the backstop now, not the stop —
+#: the loop ends early only on the failure the ask names (an unchanged
+#: reviewed head, a stale-read verdict, the same finding twice), so a
+#: converging build→review loop gets the rounds.
+PRELAND_FIX_CAP = 6
+
 #: The tag a FIX-chain-capped plan root parks on (gr604629): a
 #: ``waiting-for:`` marker for the coordinator — no auto-release and no
 #: step settles it; removing it is the human's call once the briefed
@@ -544,6 +678,16 @@ DEFAULT_RETRIES = 2
 
 #: The job type a task without ``meta.op`` (and every generator) runs.
 DEFAULT_OP = "run_slice"
+
+#: The mechanical op that cuts a release of a second repo (td659522
+#: step 3). Named, not imported: the job module registers separately.
+REPO_RELEASE_OP = "repo_release"
+
+#: The mechanical op that bumps a second repo's pin in precis after its
+#: release node cut the tag (td659522 step 4). Named, not imported. Its
+#: job hands a branch to ``land_slice`` and succeeds: the node closes
+#: through that land, like a ``run_slice`` slice, never on the job itself.
+PIN_BUMP_OP = "pin_bump"
 
 #: The todo's comment chunk kind (``handlers.todo._COMMENT_KIND``; restated —
 #: workers never import handlers).
@@ -662,6 +806,40 @@ _ORPHAN_MINT_ASK_OPTIONS: list[str] = [
 #: bounded so a broken gate environment cannot loop the lander forever.
 LAND_AGAIN_CAP = 2
 
+#: Consecutive identical ``attempt_free`` failures (:func:`_free_run`)
+#: before the node reads as capped and parks behind a coordinator ask
+#: (gr662077): free failures burn no attempt, so the retry bound never
+#: sees them — an infra wait that never clears (a live git's
+#: ``index.lock``, a lane that never frees) needs its own bound.
+FREE_RUN_CAP = 6
+
+#: Re-mints stay immediate below this run length — a transient infra
+#: wait usually clears on the next tick; a sustained one backs off.
+FREE_RUN_GRACE = 3
+
+#: Backoff on a sustained identical ``attempt_free`` run (gr662077):
+#: after run *k* the re-mint waits :data:`FREE_BACKOFF_BASE` ×
+#: ``2 ** (k − FREE_RUN_GRACE)``, capped at :data:`FREE_BACKOFF_MAX`,
+#: anchored to the newest failure's mint — submit-side free failures
+#: die seconds after mint, so the anchor is close to the failure.
+FREE_BACKOFF_BASE = timedelta(minutes=2)
+FREE_BACKOFF_MAX = timedelta(minutes=30)
+
+
+def free_backoff_ready_at(newest_created_at: datetime, run: int) -> datetime | None:
+    """When a node's free-failure backoff ends: the newest failed job's
+    mint plus the exponential wait for a ``run``-long identical run, or
+    ``None`` while the run is under :data:`FREE_RUN_GRACE` (immediate
+    re-mint). One home for the formula — the dispatch step applies it and
+    the stall watchdog reads it to tell a backoff wait from a stall
+    (gr681342)."""
+    if run < FREE_RUN_GRACE:
+        return None
+    return newest_created_at + min(
+        FREE_BACKOFF_MAX, FREE_BACKOFF_BASE * 2 ** (run - FREE_RUN_GRACE)
+    )
+
+
 #: ``meta.spend`` on a task node — the dispatcher's spend record
 #: ``{usd, cap_usd, blocked, at}`` (gr599486). ``blocked: True`` means
 #: a paid rung's ``rung_caps`` cap refused the climb; the rescue step
@@ -721,14 +899,14 @@ _MECHANICAL_REDS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
         "skill-size",
         re.compile(r"\bis \d+ bytes \(cap \d+\)", re.IGNORECASE),
-        "move detail into a child skill or trim; the cap is in "
-        "tests/test_skill_size.py",
+        "move detail into a child skill or trim; the cap is in the "
+        "skill-size test (test_skill_size)",
     ),
     (
         "skill-vocab",
         re.compile(r"appears? in no skill", re.IGNORECASE),
         "mention the named registry value in the skill that owns it "
-        "(tests/test_skill_vocabulary.py)",
+        "(the skill-vocabulary test, test_skill_vocabulary)",
     ),
     (
         "conflict",
@@ -791,8 +969,11 @@ _READONLY_MARKER_RE = re.compile(
 #: never matches before ``_``, td636385); a glued ``LANDED``/``LAND_x``
 #: still misses.
 _VERDICT_LINE_RE = re.compile(r"review:\s*(LAND|FIX|REVERT)_*\b", re.IGNORECASE)
-#: Sentence-final punctuation a glued token may directly follow.
-_SENTENCE_END = frozenset(".!?")
+#: Punctuation a glued token may directly follow: sentence-final
+#: ``.!?`` (gr573564), plus ``:`` and ``)`` — a streamed text block
+#: glued to its narration leaves ``…just parse):review: LAND`` with no
+#: separator at all (gr687501).
+_TOKEN_BOUNDARY_PUNCT = frozenset(".!?:)")
 #: Markdown line-start markers a fallback token may directly follow
 #: (``- ``/``* `` bullets, ``**``/``~~`` emphasis, ``#`` heading,
 #: ``> `` quote — gr568824's bold mid-brief verdict line).
@@ -943,18 +1124,30 @@ class _Plan:
         """The blocker's code is not on main yet: ``meta.pending_land``
         on it — a build closed ``done`` with its squash held for the
         pre-land review, or that held land still in flight (gr659981) —
-        or, the blocker being the review itself, on its targets (the
+        or ``meta.preland_defer_failed`` on a blocker still ``done``
+        (gr663738): the push died, the work sits only in a node
+        worktree, and a dependant's cut of main would miss it exactly
+        like the held land. The hold does NOT outlive a drop ruling: a
+        blocker closed ``won't-do`` (or another non-``done`` terminal
+        status) is the coordinator abandoning the work, so it releases
+        its dependants like any dead blocker (review td676510) — or,
+        the blocker being the review itself, on its targets (the
         reviewer closes ``done`` at LAND while the in-flight land has
         not recorded). The load-time :attr:`_Blocker.pending_land` is
         honored on the loaded path too: the load query resolves it in
-        the store, so it sees a reviewer's held targets that sit
-        outside the loaded subtrees — invisible to the in-memory
-        :func:`_pending_targets` (gr659981 review td660658)."""
+        the store under the same ``done`` condition, so it sees a
+        reviewer's held targets that sit outside the loaded subtrees —
+        invisible to the in-memory :func:`_pending_targets` (gr659981
+        review td660658)."""
         node = self.nodes.get(b.id)
         if node is None:
             return b.pending_land
         if (
             isinstance(node.meta.get(_templates.PENDING_LAND_KEY), dict)
+            or (
+                node.status == "done"
+                and node.meta.get(_templates.PRELAND_DEFER_FAILED_KEY)
+            )
             or b.pending_land
         ):
             return True
@@ -986,6 +1179,14 @@ class _Plan:
             for b in self.blockers.get(n.id, [])
             if b.is_ask and self.status_of(b) not in BLOCKER_TERMINAL_STATUSES
         ]
+
+
+#: Terminal statuses that are always a *ruling* on the work (gr663909):
+#: on the reopen paths below ``done`` is machine state — the pre-land
+#: hold, the post-land close, an ended digest — but a ``won't-do`` /
+#: ``auto-timeout`` set while a job ran or a review queued outranks the
+#: run's and the verdict's writeback: the node is never reopened.
+_RULING_STATUSES: frozenset[str] = TERMINAL_TODO_STATUSES - {"done"}
 
 
 def _closed(n: _Node) -> bool:
@@ -1232,6 +1433,15 @@ def _load(store: Any, roots: list[int] | None = None) -> _Plan:
                      WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                    (
                      jsonb_typeof(b.meta->'pending_land') = 'object'
+                     -- gr663738: a failed pre-land defer holds the
+                     -- blocker's dependants like pending_land does —
+                     -- while it stays 'done'; a won't-do ruling drops
+                     -- the hold (review td676510).
+                     OR (b.meta->>'preland_defer_failed' IS NOT NULL
+                         AND EXISTS (
+                           SELECT 1 FROM ref_tags rt2 JOIN tags t2 USING (tag_id)
+                            WHERE rt2.ref_id = b.ref_id
+                              AND t2.namespace = 'STATUS' AND t2.value = 'done'))
                      OR (
                        b.meta->'generate'->>'role' = 'reviewer'
                        AND EXISTS (
@@ -1329,6 +1539,8 @@ class PassResult:
     reopened: int = 0
     #: Reviewer verdicts acted on (LAND / FIX / REVERT).
     reviews: int = 0
+    #: Queued candidates currently waiting on file overlap at claim.
+    held: int = 0
     #: Why the pass did nothing (another tick held the lock); ``None`` = ran.
     skipped: str | None = None
     notes: list[str] = field(default_factory=list)
@@ -1351,6 +1563,7 @@ class PassResult:
             "dry_run": self.dry_run,
             "reopened": self.reopened,
             "reviews": self.reviews,
+            "held": self.held,
         }
         if self.skipped:
             out["skipped"] = self.skipped
@@ -1365,7 +1578,7 @@ class PassResult:
             f"loops={self.loops_minted}/{self.loops_closed} "
             f"phases={self.phases_closed} dispatched={self.dispatched} "
             f"released={self.released} asks={self.asks} dry_run={self.dry_run} "
-            f"reopened={self.reopened} reviews={self.reviews}"
+            f"reopened={self.reopened} reviews={self.reviews} held={self.held}"
         )
 
     def render(self) -> str:
@@ -1423,12 +1636,16 @@ class _Writer:
                 self.store.add_tag(n.id, Tag.open(value), set_by="system")
 
     def comment(self, n: _Node, text: str) -> None:
+        self.comment_id(n.id, text)
+
+    def comment_id(self, ref_id: int, text: str) -> None:
+        """:meth:`comment` on a todo outside the loaded plan."""
         if self.dry_run:
             return
-        existing = list(self.store.chunks.list_chunks_for_ref(n.id))
+        existing = list(self.store.chunks.list_chunks_for_ref(ref_id))
         ord_ = max((int(c.ord) for c in existing), default=0) + 1
         self.store.chunks.insert_chunks(
-            n.id,
+            ref_id,
             [
                 ChunkInsert(
                     ord=ord_,
@@ -1652,7 +1869,10 @@ def _comments(store: Any, todo_id: int) -> list[Any]:
 
 def _token_boundary(text: str, start: int) -> bool:
     """A fallback token counts only at a line start or directly after
-    sentence-final punctuation (``…main.review: FIX — …``); a token
+    boundary punctuation — sentence-final ``.!?`` (``…main.review: FIX
+    — …``), plus the ``:`` and ``)`` a streamed text block glued to its
+    narration leaves before the token (``…just parse):review: LAND``,
+    gr687501); a token
     mid-sentence (``I will post review: LAND if…``) is narration. Markdown
     line-start markers — ``- ``/``* `` bullets, ``**`` bold, ``#``
     headings, ``> `` quotes — may sit between the line start and the
@@ -1660,7 +1880,7 @@ def _token_boundary(text: str, start: int) -> bool:
     i = start - 1
     while i >= 0 and text[i] in " \t":
         i -= 1
-    if i < 0 or text[i] == "\n" or text[i] in _SENTENCE_END:
+    if i < 0 or text[i] == "\n" or text[i] in _TOKEN_BOUNDARY_PUNCT:
         return True
     j = i
     while j >= 0 and text[j] in _MD_MARKERS:
@@ -1845,7 +2065,9 @@ def _read_verdict(
 
 
 def _landed_sha(store: Any, todo_id: int) -> str | None:
-    """The sha of the todo's newest ``landed: <sha>`` comment."""
+    """The sha of the todo's newest ``landed: <sha>`` comment; a newer
+    ``landed: nothing — …`` is skipped. ``run_slice._newest_landed_sha``
+    reads the same, so a second-repo reviewer reviews this commit."""
     for c in _comments(store, todo_id):
         m = _LANDED_RE.match(str(c.text).strip())
         if m:
@@ -2188,7 +2410,10 @@ def _release_scope_target(store: Any, shas: list[str]) -> str | None:
     ``None`` (the corrective lands on main). The deploy gate wants a
     FIX/REVERT's corrective ON the release branch (release-train T4),
     so a corrective minted for main would hold the deploy until a human
-    answers. Any read fault reads ``None``."""
+    answers. A main commit the branch repeats patch for patch
+    (``release_poll._branch_carries``) is in the scope too: the gate
+    judges the branch's copy by that commit's review, so its corrective
+    belongs on the branch as well. Any read fault reads ``None``."""
     if not shas:
         return None
     from precis.workers.job_types import release_poll as _rp
@@ -2201,16 +2426,54 @@ def _release_scope_target(store: Any, shas: list[str]) -> str | None:
         if rel is None or _release.deploy_started(store, root) is not None:
             return None
         lands = _rp._release_lands(rel)
+        picked, _undone, _notes = _rp._branch_carries(rel, lands)
     except Exception:
         log.warning("plan_dispatch: release scope unreadable", exc_info=True)
         return None
-    for land in lands:
-        if any(
-            land.sha.startswith(s.lower()) or s.lower().startswith(land.sha)
-            for s in shas
-        ):
+    for sha in [land.sha for land in lands] + [src.sha for src in picked.values()]:
+        if any(sha.startswith(s.lower()) or s.lower().startswith(sha) for s in shas):
             return _release.release_branch(str(rel["rN"]))
     return None
+
+
+def _mint_fix_reviewer(
+    store: Any,
+    plan: _Plan,
+    w: _Writer,
+    n: _Node,
+    fix_id: int,
+    repo: str,
+    now: datetime,
+) -> None:
+    """Mint the reviewer of the second-repo fix ``fix_id`` in the same pass
+    (td659522 step 5): ``mint_reviewer`` gives it the repo tag and the
+    ``blocked-by`` edge on the fix; the in-memory plan gets the node (like
+    :func:`_mint_task`, so later steps of this pass see it) and the open
+    release node waits on it too. A fix of a second repo would otherwise
+    land unreviewed; the FIX depth cap bounds the chain. The caller skips a
+    dry run (nothing is minted)."""
+    rid = _templates.mint_reviewer(store, n.root, fix_id, repo=repo)
+    ref = store.get_ref(kind="todo", id=rid)
+    root = plan.nodes.get(n.root)
+    plan.nodes[rid] = _Node(
+        id=rid,
+        kind="todo",
+        parent_id=n.root,
+        title=str(ref.title or "") if ref is not None else "",
+        meta=dict(ref.meta or {}) if ref is not None else {},
+        status="open",
+        created_at=now,
+        prio=None,
+        depth=(root.depth + 1) if root is not None else 1,
+        root=n.root,
+        open_tags={f"plan:{n.root}": now, f"repo:{repo}": now},
+    )
+    if root is not None:
+        root.children.append(rid)
+    plan.blockers.setdefault(rid, []).append(
+        _Blocker(id=fix_id, status="open", is_ask=False, created_at=now)
+    )
+    _gate_release_on(store, plan, w, n, rid, now)
 
 
 def _review_fix(
@@ -2265,8 +2528,21 @@ def _review_fix(
         if _review_sha(n) is not None
         else f"{handle}'s brief is the intent"
     )
-    target = _release_scope_target(store, _reviewed_shas(store, plan, n))
-    if target is None:
+    repo = _second_repo(plan, n)
+    # A second repo's sha is not a precis sha: its release scope is never
+    # read (td659522 step 5).
+    target = (
+        None
+        if repo is not None
+        else _release_scope_target(store, _reviewed_shas(store, plan, n))
+    )
+    if repo is not None:
+        body = (
+            f"{findings}\n\nFindings of the review td{n.id} of {handle}'s land on "
+            f"{repo} {_repo_base(repo)}. Fix them on a fresh slice in the {repo} "
+            f"repo; the factory's lander lands it; {intent}."
+        )
+    elif target is None:
         body = (
             f"{findings}\n\nFindings of the review td{n.id} of {handle}'s land on "
             f"main. Fix them on a fresh slice and land it; {intent}."
@@ -2284,6 +2560,10 @@ def _review_fix(
         store, plan, w, n.root, f"Fix review findings for {handle}", body, now
     )
     node = plan.nodes[fix_id]
+    _tag_minted_repo(plan, w, n, fix_id, now)
+    _gate_release_on(store, plan, w, n, fix_id, now)
+    if repo is not None and not w.dry_run:
+        _mint_fix_reviewer(store, plan, w, n, fix_id, repo, now)
     w.stamp_meta(node, {FIX_DEPTH_KEY: depth})
     if target is not None:
         w.stamp_meta(node, {_release.LAND_TARGET_KEY: target})
@@ -2291,10 +2571,12 @@ def _review_fix(
         # gr604629: two rounds could not close the finding — the third is
         # born model-pinned to the ladder's top rung (the ``model`` pin
         # routes through ``pick_lane`` and ``_escalate`` never climbs it
-        # back down), not held for another design call.
+        # back down), not held for another design call. The top is
+        # ``top_rung`` -- the table's last lane's last model -- not
+        # ``ladder()[-1]``, whose round-robin order ends on whichever lane
+        # lists the most models (gr685753).
         task_class = str(node.meta.get("task_class") or _DEFAULT_TASK_CLASS)
-        rungs = _lanes.ladder(task_class, lanes=lane_table)
-        top = rungs[-1] if rungs else None
+        top = _lanes.top_rung(task_class, lanes=lane_table)
         if top is not None:
             params = {"model": top.model} if top.model else {"lane": top.lane}
             w.stamp_meta(node, {"op": {"type": DEFAULT_OP, "params": params}})
@@ -2361,9 +2643,11 @@ def _review_revert(
         if from_sha is not None:
             shas = [from_sha]
     # release-train T3 review F2: a land inside the open release is
-    # reverted on its release branch, where the deploy gate wants it.
-    target = _release_scope_target(store, shas)
-    where = target or "main"
+    # reverted on its release branch, where the deploy gate wants it. A
+    # second repo's sha is no precis sha: its scope is never read.
+    repo = _second_repo(plan, n)
+    target = None if repo is not None else _release_scope_target(store, shas)
+    where = target or (f"{repo} {_repo_base(repo)}" if repo else "main")
     if len(shas) == 1:
         title = f"Revert {shas[0]} on {where}"
     elif shas:
@@ -2375,7 +2659,19 @@ def _review_revert(
         if shas
         else f"the squash commit(s) naming {handle} (`git log --grep {handle} origin/main`)"
     )
-    if target is None:
+    if repo is not None:
+        cmds = (
+            ", ".join(f"`git revert --no-edit {s}`" for s in shas)
+            if shas
+            else "`git revert --no-edit <sha>` for each commit naming " + handle
+        )
+        body = (
+            f"Revert {named} in the {repo} repo: a builder slice whose whole "
+            f"change is {cmds} (newest first); no other edit, no version "
+            "bump, no push. The factory's lander lands it."
+            f"\n\nWhy (review td{n.id}): {why}"
+        )
+    elif target is None:
         body = (
             f"Revert {named} on main: `git revert --no-edit <sha>` for each, "
             "newest first; resolve conflicts against the current main; commit "
@@ -2390,10 +2686,23 @@ def _review_revert(
             f"never main.\nland target: {target}\n\nWhy (review td{n.id}): {why}"
         )
     revert_id = _mint_task(store, plan, w, n.root, title, body, now)
+    _tag_minted_repo(plan, w, n, revert_id, now)
+    _gate_release_on(store, plan, w, n, revert_id, now)
     if target is not None:
         w.stamp_meta(plan.nodes[revert_id], {_release.LAND_TARGET_KEY: target})
     requeue = [t for t, sha in landed if sha] or targets
     for t in requeue:
+        if t.status in _RULING_STATUSES:
+            # gr663909: a coordinator ruling on the landed node outranks
+            # the REVERT requeue — the verdict keeps its minted revert
+            # task but never reopens the ruled node behind it.
+            w.comment(
+                t,
+                f"plan_dispatch: review REVERT (td{n.id}) — td{t.id} is "
+                f"STATUS:{t.status}, a ruling set while the review ran; "
+                "it stands and the requeue reopens nothing",
+            )
+            continue
         claims = _claims(t)
         if claims:
             w.remove_tags(t, claims)
@@ -2491,6 +2800,18 @@ def _pending_land(store: Any, todo_id: int) -> bool:
     )
 
 
+def _defer_failed(store: Any, todo_id: int) -> bool:
+    """``meta.preland_defer_failed`` on ``todo_id`` (gr663738): the
+    build's last pre-land defer raised — its branch never reached
+    origin, the work sits only in a node worktree — so a ``done`` with
+    no ``landed:`` is a lost push, not a dead land: neither the verdict
+    close nor the dead-chain sweep may drop it silently."""
+    ref = store.get_ref(kind="todo", id=todo_id)
+    return bool(
+        ref is not None and (ref.meta or {}).get(_templates.PRELAND_DEFER_FAILED_KEY)
+    )
+
+
 def _pending_targets(plan: _Plan, n: _Node) -> list[_Node]:
     """The reviewer ``n``'s targets whose land it gates — the build todos
     carrying ``meta.pending_land`` (gr570506, pre-land review)."""
@@ -2516,6 +2837,24 @@ def _is_its_land_gate(plan: _Plan, n: _Node, b: _Blocker) -> bool:
     )
 
 
+def _open_preland_reviewers(plan: _Plan, n: _Node) -> list[_Node]:
+    """The open pre-land reviewers whose land gate covers ``n`` (gr681208):
+    a build a FIX/REVERT sent back keeps its reviewer open to re-gate the
+    rebuild — a ``validated:``/``no-op:`` on it is "the pushed branch is
+    ready as it stands", never proof nothing is left to land."""
+    return [
+        m
+        for m in plan.todos()
+        if not _closed(m)
+        and _is_reviewer(m)
+        and m.meta.get(_templates.PRELAND_REVIEW_KEY) is True
+        and (
+            _review_from(m) == n.id
+            or any(t.id == n.id for t in _review_targets(plan, m))
+        )
+    ]
+
+
 def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
     """The reviewer ``n``'s land targets when EVERY one closed with no
     ``landed:`` comment — the review has nothing left to judge
@@ -2526,7 +2865,16 @@ def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
     Targets are ``generate.from``'s todo — its non-ask children when it
     has them (a slicer's slices) — falling back to the non-ask
     ``blocked-by`` edges when ``from`` resolves to no plan todo (an
-    engine-review node points out of its plan subtree)."""
+    engine-review node points out of its plan subtree). A target stamped
+    ``meta.preland_defer_failed`` still counts as dead here — the read
+    IS right that nothing landed; :func:`_close_dead_chain` turns that
+    case into an ask instead of a close while the target still claims
+    ``done``, and honors a ``won't-do`` drop ruling as a plain close
+    (gr663738, review td676510).
+
+    A sha-keyed reviewer (:func:`_review_sha`) with no td target has
+    nothing that could fail to land, so it is never dead here whatever
+    its blockers did."""
     pairs: list[tuple[int, str]] = [(t.id, t.status) for t in _review_targets(plan, n)]
     if not pairs:
         fid = _review_from(n)
@@ -2545,6 +2893,13 @@ def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
                     else _todo_status(store, fid),
                 )
             ]
+        elif _review_sha(n) is not None:
+            # A sha-keyed reviewer judges a commit already on main: it has
+            # no land that could fail. Its ``blocked-by`` edges are other
+            # work (a rescue's diagnose task), whose close without a
+            # ``landed:`` comment is not "nothing landed to review"
+            # (td704507, td728642).
+            return []
         else:
             pairs = [
                 (b.id, plan.status_of(b))
@@ -2562,7 +2917,12 @@ def _dead_land_targets(plan: _Plan, store: Any, n: _Node) -> list[int]:
 
 
 def _close_dead_chain(
-    plan: _Plan, w: _Writer, res: PassResult, n: _Node, dead: list[int]
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    n: _Node,
+    dead: list[int],
+    now: datetime,
 ) -> None:
     """Close reviewer ``n`` and the rest of the dead land chain ``won't-do``
     (gr575912): the dead target's other ``blocked-by`` descendants — the
@@ -2571,7 +2931,87 @@ def _close_dead_chain(
     settle. A node carrying a live job defers: the sweep re-runs every
     pass while the targets stay dead (``_step_reviews`` runs it for a
     closed reviewer too), so the straggler closes once its job ends
-    instead of holding the root open forever."""
+    instead of holding the root open forever.
+
+    The carve-out (gr663738): a dead target stamped
+    ``meta.preland_defer_failed`` is a lost push, not a dead land — its
+    reviewed, amended commit sits only in a node worktree. Closing the
+    chain won't-do would drop that work and the never-built dependants
+    with no trace, so the sweep files ONE coordinator ask and closes
+    nothing; the ask's ``blocked-by`` edge on ``n`` parks the review and
+    dedupes later passes, and the stamp holds the dependants
+    (:meth:`_Plan._land_held`).
+
+    Resolution (review td676510): the stamp only counts while the
+    target still claims ``done`` — a stamped target the coordinator
+    closed ``won't-do`` is the explicit drop ruling the ask offers, so
+    it falls back to the normal close below and the chain settles
+    instead of re-filing the ask forever."""
+    stamped = [
+        tid
+        for tid in dead
+        if _defer_failed(w.store, tid) and _todo_status(w.store, tid) == "done"
+    ]
+    if stamped:
+        names = ", ".join(f"td{t}" for t in stamped)
+        if plan.open_asks(n):
+            res.notes.append(
+                f"td{n.id}: dead land chain holds a failed pre-land defer "
+                f"({names}) — its ask already stands"
+            )
+            return
+        if w.dry_run:
+            res.asks += 1
+            res.notes.append(
+                f"td{n.id}: would ask — dead land chain holds a failed "
+                f"pre-land defer ({names})"
+            )
+            return
+        ask_id = _mint_coordinator_ask(
+            w.store,
+            plan,
+            n,
+            title=(
+                f"td{n.id}: dead land chain holds a failed pre-land defer "
+                "— re-push the branch or drop the chain?"
+            ),
+            body=(
+                f"The plan tick found review td{n.id} nothing left to "
+                f"judge: {'its land target' if len(dead) == 1 else 'all of its land targets'} "
+                f"({', '.join(f'td{t}' for t in dead)}) closed `done` "
+                "with no `landed:` comment — the usual dead-chain close "
+                "would drop the review and every starved dependant "
+                "won't-do. But "
+                f"{names} carries `meta.preland_defer_failed`: its "
+                "build's push to origin failed, so the commit exists "
+                "only in a slice worktree — closing the chain drops "
+                "real, reviewed work (gr663738). The tick closed "
+                "nothing and parked this review on this ask. To keep "
+                "the work: fetch the sha the stamp names from the node "
+                "worktree (or re-run the build — the push is "
+                "lease-guarded now), push it to "
+                "origin's hidden `refs/factory/slice/<id>`, clear the target's "
+                "`meta.preland_defer_failed` and reopen it — the "
+                "reviewer re-gates on the next defer. To drop it: close "
+                f"{'the target' if len(stamped) == 1 else 'each stamped target'} "
+                "STATUS:won't-do and the sweep closes the rest. "
+                "Answering 'acknowledged' and closing this ask leaves "
+                "the chain parked as-is; the sweep re-files next tick."
+            ),
+            context=(
+                f"review td{n.id}: dead land target(s) {names} carry "
+                "meta.preland_defer_failed — the branch never reached "
+                "origin"
+            ),
+            now=now,
+            block_node=True,
+        )
+        res.asks += 1
+        res.notes.append(
+            f"td{n.id}: dead land chain holds a failed pre-land defer "
+            f"({names}) — nothing closed, asked in td{ask_id}"
+        )
+        return
     why = (
         f"review target {', '.join(f'td{t}' for t in dead)} closed with no "
         "`landed:` comment — nothing landed to review"
@@ -2603,7 +3043,7 @@ def _close_dead_chain(
 
 
 def _mint_preland_land(
-    store: Any, w: _Writer, res: PassResult, n: _Node, t: _Node
+    store: Any, plan: _Plan, w: _Writer, res: PassResult, n: _Node, t: _Node
 ) -> int:
     """The pre-land LAND (gr570506): mint the ``land_slice`` the build's
     clean exit held back — the params ``run_slice`` stamped in
@@ -2612,10 +3052,22 @@ def _mint_preland_land(
     (``_record_land`` clears it): it is the marker keeping the done,
     not-yet-landed target out of ``_dead_land_targets`` while the land
     is in flight, and the stamp ``land_slice`` reads to admit a closed
-    todo. Returns the job id."""
+    todo. The caller gates this on the verdict's judged head: a LAND
+    naming a head other than the stamp's must not mint — it read a
+    different commit than the held land ships (td730820). The land is
+    stamped with the build's :func:`_claim_score`, floored so it claims
+    ahead of fresh builds. Returns the job id."""
     params = dict(t.meta[_templates.PENDING_LAND_KEY])
     job_id = _mint_job(
-        store, t, "land_slice", "ssh_node", params, idem_key=f"land_slice:td{t.id}"
+        store,
+        t,
+        "land_slice",
+        "ssh_node",
+        params,
+        idem_key=f"land_slice:td{t.id}",
+        meta_extra={
+            _dscore.SCORE_META_KEY: _claim_score(plan, t, job_type="land_slice")
+        },
     )
     w.comment(
         t,
@@ -2628,6 +3080,344 @@ def _mint_preland_land(
     return job_id
 
 
+def _same_sha(a: str, b: str) -> bool:
+    """One sha a prefix of the other — a 40-char pushed tip against the
+    abbreviation a verdict writes (gr688058)."""
+    a, b = a.lower(), b.lower()
+    return bool(a) and bool(b) and (a.startswith(b) or b.startswith(a))
+
+
+#: The ``path/file.py::Symbol`` citation a finding carries (gr688058):
+#: a shared active anchor needs similar finding text to repeat the
+#: finding again — the builder's response is not reaching the review.
+_ANCHOR_RE = re.compile(r"[\w./~-]+::[\w.~-]+")
+
+#: Where one clause ends and the next begins — ``;``, a sentence end,
+#: an em dash, a newline or a comma join (td688394). Bounds the
+#: judged-head scan: a sha is judged only inside its own clause.
+_FINDING_CLAUSE_RE = re.compile(r"[;!?\n—]+|\.\s+|,\s*(?:and|but|so|yet)?\s*")
+
+#: The ``anchors:`` line the pre-land reviewer brief asks a FIX/REVERT
+#: verdict to end with — the ``file::function`` of each ACTIVE finding
+#: it sends back (gr688058, td688394 r5). The tick reads the LAST such
+#: line and never classifies the prose: a resolved-context cite
+#: (``a.py::f is fixed``) and a fresh finding read the same to a
+#: regex, so the reviewer declares the active set on this line. No
+#: ``anchors:`` line, no anchors.
+_ANCHORS_LINE_RE = re.compile(
+    r"^[ \t]*anchors\s*:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE
+)
+
+
+def _finding_anchors(rest: str) -> set[str]:
+    """The ``file::function`` anchors ``rest``'s last ``anchors:`` line
+    names, lowercased — the active findings the reviewer declares
+    (gr688058, td688394 r5); empty when the line is absent or bare.
+    Prose is never parsed for them."""
+    line = ""
+    for m in _ANCHORS_LINE_RE.finditer(rest):
+        line = m.group(1)
+    return {a.group(0).lower() for a in _ANCHOR_RE.finditer(line)}
+
+
+#: A sha token: a 7-to-40-hex word carrying at least one digit, so a
+#: ``td<id>`` cite or a word like ``defaced`` never reads as one.
+_SHA_TOKEN = r"\b(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b"
+
+#: The sha a verdict names as the head it JUDGED — ``verified head
+#: <sha>`` / ``reviewed <sha>`` / ``rev-parse <sha>`` / ``<sha>
+#: verified`` on one line (gr688058). Naming no head proves nothing; a
+#: named head other than the pushed tip proves the read was stale.
+_JUDGED_HEAD_RES = (
+    re.compile(
+        rf"\b(?:verified|reviewed|judged|rev-parse|tested)\b[^\n]{{0,40}}?`?"
+        rf"({_SHA_TOKEN})",
+        re.IGNORECASE,
+    ),
+    re.compile(rf"({_SHA_TOKEN})[^\n]{{0,30}}?\bverified\b", re.IGNORECASE),
+)
+
+#: ``head <sha>`` / ``tip <sha>`` — a judged head only when no judgment
+#: verb named one; under an expectation gloss it names what the branch
+#: should be at, never what the reviewer read (td688394).
+_HEAD_TIP_RE = re.compile(
+    rf"\b(?:head|tip)\b[^\n]{{0,40}}?`?({_SHA_TOKEN})", re.IGNORECASE
+)
+
+#: ``expected head <sha>`` / ``pushed tip <sha>`` — an expectation
+#: gloss names what the branch should be at, never the head the
+#: reviewer read. The whole mention is masked out of its clause before
+#: the judgment markers scan it, so its sha can never be judged —
+#: ``expected head <current>; verified head <old>`` judges ``<old>``
+#: however the clauses are joined (td688394 r2).
+_EXPECT_SHA_RE = re.compile(
+    rf"\b(?:expected|pushed|current|new|actual|want(?:ed)?)\b"
+    rf"[^\n]{{0,24}}?(?:head|tip)\b[^\n]{{0,16}}?`?{_SHA_TOKEN}",
+    re.IGNORECASE,
+)
+
+
+def _mask_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """``text`` with every ``(start, end)`` span blanked to spaces —
+    positions unchanged, so a match's offset still orders the text."""
+    chars = list(text)
+    for s, e in spans:
+        chars[s:e] = " " * (e - s)
+    return "".join(chars)
+
+
+def _verdict_heads(raw: str) -> list[str]:
+    """The shas ``raw`` names as the head it JUDGED, in text order —
+    what the reviewer actually read (gr688058). A judgment verb's sha
+    (``verified head <sha>``, ``<sha> verified``) is that head — read
+    inside the verb's own clause (the finding-clause boundaries), so a
+    neighbouring clause's sha is never judged, and with every
+    expectation mention (``expected head <sha>``, ``pushed tip
+    <sha>``) masked first, so a sha the verdict itself marks as
+    expected can never be judged either (td688394 r2); a bare
+    ``head``/``tip`` mention counts only when no verb named one.
+    ``"verified head <old>; expected head <current>"`` reads as the
+    stale judged head it is (td688394)."""
+    clauses: list[tuple[int, str]] = []
+    start = 0
+    for m in _FINDING_CLAUSE_RE.finditer(raw):
+        clauses.append((start, raw[start : m.start()]))
+        start = m.end()
+    clauses.append((start, raw[start:]))
+    masked = [
+        (base, _mask_spans(clause, [m.span() for m in _EXPECT_SHA_RE.finditer(clause)]))
+        for base, clause in clauses
+    ]
+    seen: dict[str, int] = {}
+    for base, clause in masked:
+        for rx in _JUDGED_HEAD_RES:
+            for m in rx.finditer(clause):
+                seen.setdefault(m.group(1).lower(), base + m.start(1))
+    if seen:
+        return sorted(seen, key=seen.__getitem__)
+    for base, clause in masked:
+        for m in _HEAD_TIP_RE.finditer(clause):
+            seen.setdefault(m.group(1).lower(), base + m.start(1))
+    return sorted(seen, key=seen.__getitem__)
+
+
+#: Token-Jaccard floor of the newest finding's text against the last
+#: round's for a shared ``anchors:`` entry to count as the same finding
+#: (gr702711): a new finding at the same function reads differently.
+PRELAND_SAME_FINDING_JACCARD = 0.6
+
+#: Longest finding text kept in the ``preland_fix_rounds`` record.
+_FINDING_TEXT_CAP = 4000
+
+_SHA_RE = re.compile(_SHA_TOKEN)
+
+
+def _finding_text(kind: str, rest: str) -> str:
+    """``rest`` as the loop compares findings: the ``anchors:`` line and
+    sha tokens dropped (a fresh verified head is not a new finding),
+    lowercased, whitespace collapsed."""
+    body = _ANCHORS_LINE_RE.sub("", rest.lower())
+    body = _SHA_RE.sub("", body)
+    return " ".join(f"{kind} {body}".lower().split())
+
+
+def _token_jaccard(a: str, b: str) -> float:
+    """Jaccard similarity of the word-token sets of ``a`` and ``b``."""
+    ta, tb = set(re.findall(r"\w+", a)), set(re.findall(r"\w+", b))
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+#: Why the pre-land review loop stops (:func:`_preland_round`), each with
+#: the reading its coordinator ask gives — the four stops need different
+#: answers, and one shared sentence made the asks read alike (gr709688).
+_PRELAND_STOPS: dict[str, str] = {
+    "same finding": (
+        "the rebuild did not resolve the finding, or the reviewer is wrong "
+        "about it; the verdict names no head other than the pushed tip"
+    ),
+    "unchanged head": (
+        "the rebuild pushed no new commit, so the reviewer judged the same "
+        "tree again: read the rebuild job for why it committed nothing (a "
+        "rebase conflict, a no-op verdict)"
+    ),
+    "stale read": (
+        "the reviewer judged an older head than the one pushed, so its "
+        "finding may already be fixed; nothing is known to be wrong with "
+        "the pushed tip until a review reads it"
+    ),
+    "round cap": (
+        "every round found something new on a new head; the build is not "
+        "converging — its scope may be too large for one slice"
+    ),
+}
+
+
+def _preland_round(
+    n: _Node,
+    t: _Node,
+    kind: str,
+    rest: str,
+    pushed: str,
+    raw: str,
+    single: bool,
+) -> tuple[int, dict[str, Any], tuple[str, str] | None]:
+    """``(count, record, stop)`` of the pre-land FIX/REVERT sent
+    back to ``t`` (gr684815, gr688058): ``count`` one more than the
+    ``meta.preland_fix_rounds`` stamp holds, ``record`` the value to
+    write while the loop goes on (the finding's digest and anchors plus
+    the pushed head this verdict judged), and ``stop`` — the
+    ``(reason, why)`` for :func:`_park_preland_rounds`, ``reason`` a
+    :data:`_PRELAND_STOPS` key — ``None`` while the loop should run.
+
+    The stop is the failure the ask describes, never the round count
+    alone: the newest finding is the last one's again (same digest of the
+    text with anchors line and shas dropped, or a shared
+    ``file::function`` on the ``anchors:`` line together with token
+    Jaccard >= :data:`PRELAND_SAME_FINDING_JACCARD`; a shared anchor
+    alone is a new finding at the same function, gr702711),
+    the reviewed head is unchanged
+    since the previous send-back (the builder is not acting), the head
+    the verdict JUDGED is not the pushed tip (the reviewer is reading a
+    stale branch — read only on a single-target review, whose verdict
+    can name just the one tip), or the count reaches
+    :data:`PRELAND_FIX_CAP`."""
+    prev = t.meta.get(_templates.PRELAND_FIX_ROUNDS_KEY)
+    prev = prev if isinstance(prev, dict) else {}
+    try:
+        count = int(prev.get("count") or 0) + 1
+    except (TypeError, ValueError):
+        count = 1
+    text = _finding_text(kind, rest)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    anchors = sorted(_finding_anchors(rest))
+    record: dict[str, Any] = {
+        "count": count,
+        "finding": digest,
+        "head": pushed or None,
+        "anchors": anchors,
+        "text": text[:_FINDING_TEXT_CAP],
+    }
+    # The stale read is judged first: a reviewer that read the old head
+    # re-reports the old finding, which would otherwise read as "same
+    # finding" and blame the builder (td707034).
+    heads = _verdict_heads(raw) if single else []
+    if heads and pushed and not any(_same_sha(h, pushed) for h in heads):
+        return (
+            count,
+            record,
+            (
+                "stale read",
+                f"review td{n.id} judged head {heads[0][:12]} but the pushed "
+                f"tip is {pushed[:12]} — the reviewer read a stale branch",
+            ),
+        )
+    prev_anchors = set(prev.get("anchors") or [])
+    same_digest = digest == prev.get("finding")
+    if same_digest or (
+        anchors
+        and set(anchors) & prev_anchors
+        and _token_jaccard(text, str(prev.get("text") or ""))
+        >= PRELAND_SAME_FINDING_JACCARD
+    ):
+        return (
+            count,
+            record,
+            (
+                "same finding",
+                f"review td{n.id} returned the same pre-land {kind} twice "
+                "running "
+                + (
+                    "(same normalized finding digest)"
+                    if same_digest
+                    else "(shared active anchor and token Jaccard similarity "
+                    f">= {PRELAND_SAME_FINDING_JACCARD})"
+                ),
+            ),
+        )
+    prev_head = str(prev.get("head") or "")
+    if pushed and prev_head and _same_sha(pushed, prev_head):
+        return (
+            count,
+            record,
+            (
+                "unchanged head",
+                f"review td{n.id} sent the branch back on an unchanged head "
+                f"{pushed[:12]} — the rebuild pushed nothing new",
+            ),
+        )
+    if count >= PRELAND_FIX_CAP:
+        return (
+            count,
+            record,
+            (
+                "round cap",
+                f"review td{n.id} sent the branch back {count} times in a row",
+            ),
+        )
+    return count, record, None
+
+
+def _park_preland_rounds(
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    n: _Node,
+    t: _Node,
+    kind: str,
+    rest: str,
+    stop: tuple[str, str],
+    now: datetime,
+) -> None:
+    """Hold the sent-back build ``t`` on a coordinator ask instead of
+    rebuilding again (gr684815, gr688058): ``stop`` is
+    :func:`_preland_round`'s ``(reason, why)`` — the same finding twice
+    running, an unchanged reviewed head, a stale-read verdict, or
+    :data:`PRELAND_FIX_CAP` rounds. The ask's title names the reason and
+    its body that reason's own reading (:data:`_PRELAND_STOPS`). The
+    count clears, so the answer buys a fresh one."""
+    reason, why = stop
+    w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: None})
+    res.asks += 1
+    if w.dry_run:
+        # Mirror the hold so the dispatch step mints no rebuild this pass.
+        plan.blockers.setdefault(t.id, []).append(
+            _Blocker(id=-t.id, status="open", is_ask=True, created_at=now)
+        )
+        res.notes.append(f"td{t.id}: would ask coordinator — {why}")
+        return
+    ask_id = _mint_coordinator_ask(
+        w.store,
+        plan,
+        t,
+        title=(
+            f"td{t.id}: pre-land review loop stopped ({reason}) — a coordinator call"
+        ),
+        body=(
+            f"The plan tick stopped rebuilding td{t.id} "
+            f"({t.title.splitlines()[0] if t.title else ''}): {why}. "
+            f"Stop reason: {reason} — {_PRELAND_STOPS[reason]}.\n\n"
+            f"Newest verdict (review td{n.id}):\n{kind} — {rest}\n\n"
+            f"The branch is on origin and td{t.id} is open, blocked by "
+            "this ask. Read the branch against the finding, then leave a "
+            f"`brief:` comment on td{t.id} (what to change) or on review "
+            f"td{n.id} (how to verify what is already there) and close "
+            f"this ask `acknowledged` — td{t.id} rebuilds and the round "
+            f"count starts over. To drop the work, close td{t.id} "
+            "STATUS:won't-do."
+        ),
+        context=why,
+        now=now,
+        block_node=True,
+    )
+    w.comment(
+        t,
+        f"plan_dispatch: {why} — no rebuild mints; held on ask td{ask_id} (gr684815).",
+    )
+    res.notes.append(f"td{t.id}: pre-land review loop stopped — ask td{ask_id} ({why})")
+
+
 def _review_back_to_builder(
     store: Any,
     plan: _Plan,
@@ -2636,20 +3426,56 @@ def _review_back_to_builder(
     n: _Node,
     kind: str,
     rest: str,
+    now: datetime,
+    raw: str = "",
 ) -> None:
     """A pre-land FIX/REVERT (gr570506, Reto 2026-11-12: "if it says no,
     the work goes back to the builder"). Nothing landed, so no fix or
-    revert task mints: each held target's ``meta.pending_land`` clears,
-    it reopens with the findings as its ``handoff:`` — the next build's
-    brief — and the reviewer stays open for the rebuild (its
-    ``blocked-by`` edge re-arms while the target is open and releases
-    when the next build defers again)."""
+    revert task mints: each held target's ``meta.pending_land`` clears
+    into ``meta.preland_held`` (gr681208 — the stash a rebuild's
+    ``validated:``/``no-op:`` verdict re-holds from, since that verdict
+    is "the pushed branch is ready as it stands", not "nothing to
+    land"), it reopens with the findings as its ``handoff:`` — the next
+    build's brief, and only the NEWEST finding — and the reviewer stays
+    open for the rebuild (its ``blocked-by`` edge re-arms while the
+    target is open and releases when the next build defers again). The
+    rounds are counted (gr684815): the target is held on a coordinator
+    ask only on the failure the ask describes (gr688058) — the same
+    finding twice running, an unchanged reviewed head, a verdict that
+    names a head other than the pushed tip, or
+    :data:`PRELAND_FIX_CAP` rounds."""
     targets = _pending_targets(plan, n)
+    single = len(targets) == 1
+    ruled: list[int] = []
     for t in targets:
-        w.stamp_meta(t, {_templates.PENDING_LAND_KEY: None})
+        held = t.meta.get(_templates.PENDING_LAND_KEY)
+        pushed = str(held.get("head") or "") if isinstance(held, dict) else ""
+        w.stamp_meta(
+            t,
+            {
+                _templates.PRELAND_HELD_KEY: {
+                    "params": t.meta[_templates.PENDING_LAND_KEY],
+                    "reviewer": n.id,
+                },
+                _templates.PENDING_LAND_KEY: None,
+            },
+        )
         claims = _claims(t)
         if claims:
             w.remove_tags(t, claims)
+        if t.status in _RULING_STATUSES:
+            # gr663909: a coordinator ruling set while the review ran
+            # outranks the verdict — no handoff, no reopen. The cleared
+            # hold lets the dead-chain sweep close this review.
+            ruled.append(t.id)
+            w.comment(
+                t,
+                f"plan_dispatch: review {kind} — {rest}\n\n(review td{n.id}, "
+                f"pre-land — but td{t.id} is STATUS:{t.status}, a ruling "
+                "set while the review ran; it stands and the verdict "
+                "reopens nothing)",
+            )
+            continue
         # The rejected build burns no attempt (``_review_revert``'s
         # floor): the rebuild dispatches on a fresh budget.
         ended = [j for j in plan.jobs(t) if j.status in _JOB_ENDED]
@@ -2658,14 +3484,21 @@ def _review_back_to_builder(
         w.comment(
             t,
             f"handoff: review: {kind} — {rest}\n\n(review td{n.id}, "
-            "pre-land: the branch is still on origin — rebuild on it "
+            f"{_templates.PRELAND_HANDBACK_MARK} — rebuild on it "
             "from the brief with this finding in mind)",
         )
         if t.status != "open":
             w.set_status(t, "open")
+        count, record, stop = _preland_round(n, t, kind, rest, pushed, raw, single)
+        if stop is not None:
+            _park_preland_rounds(plan, w, res, n, t, kind, rest, stop, now)
+        else:
+            w.stamp_meta(t, {_templates.PRELAND_FIX_ROUNDS_KEY: record})
+    sent_back = [t.id for t in targets if t.id not in ruled]
     res.notes.append(
         f"td{n.id}: review {kind} pre-land — back to the builder: "
-        + ", ".join(f"td{t.id}" for t in targets)
+        + (", ".join(f"td{i}" for i in sent_back) or "nothing")
+        + (f"; STATUS stands on {', '.join(f'td{i}' for i in ruled)}" if ruled else "")
     )
 
 
@@ -2685,7 +3518,7 @@ def _step_reviews(
             continue
         dead = _dead_land_targets(plan, store, n)
         if dead:
-            _close_dead_chain(plan, w, res, n, dead)
+            _close_dead_chain(plan, w, res, n, dead, now)
             continue
         if _closed(n):
             continue
@@ -2745,8 +3578,49 @@ def _step_reviews(
         pending = _pending_targets(plan, n)
         preland = bool(pending) and len(pending) == len(_review_targets(plan, n))
         if kind == "LAND":
+            single = len(pending) == 1
+            judged = _verdict_heads(raw or "") if single else []
+            stale_reads: list[tuple[_Node, list[str], str]] = []
             for t in pending:
-                _mint_preland_land(store, w, res, n, t)
+                held = t.meta.get(_templates.PENDING_LAND_KEY)
+                pushed = str(held.get("head") or "") if isinstance(held, dict) else ""
+                if judged and pushed and not any(_same_sha(h, pushed) for h in judged):
+                    stale_reads.append((t, judged, pushed))
+                else:
+                    _mint_preland_land(store, plan, w, res, n, t)
+            if stale_reads:
+                # td730820: the verdict named a head the held stamp does
+                # not hold — it read a different commit than the mint
+                # would ship, so the LAND releases nothing. The hold
+                # stands; the reviewer re-runs with a fresh read, bounded
+                # by the retry cap like a malformed verdict.
+                job_type_, params_ = _resolve_op(n)
+                cap = _retry_cap(
+                    n, _cap_rungs(plan, lane_table, n, job_type_, params_, rules)
+                )
+                detail = "; ".join(
+                    f"td{t.id}: judged {heads[0][:12]} but the pushed tip "
+                    f"is {pushed[:12]}"
+                    for t, heads, pushed in stale_reads
+                )
+                w.stamp_meta(n, {"review": {**record, "verdict": None}})
+                w.comment(
+                    n,
+                    f"plan_dispatch: job:{newest.id} posted `review: LAND` "
+                    f"naming a judged head that is not the held land's "
+                    f"pushed tip ({detail}) — the verdict read a different "
+                    "commit than the hold would ship, so the land does not "
+                    "mint and the hold stands (td730820). Retrying "
+                    f"(retry cap {cap}), then rescue.",
+                )
+                if n.status != "open":
+                    w.set_status(n, "open")
+                res.notes.append(
+                    f"td{n.id}: review LAND for {handle} {marker} read a "
+                    "stale head — the held land stays held; reviewer "
+                    "re-runs (td730820)."
+                )
+                continue
             w.set_status(n, "done")
             res.notes.append(f"td{n.id}: review LAND for {handle} {marker}; closed")
         elif preland:
@@ -2754,14 +3628,25 @@ def _step_reviews(
             # has not landed sends the work back to the builder — nothing
             # is on main to fix or revert — and the reviewer stays open
             # for the rebuild it then re-gates.
-            _review_back_to_builder(store, plan, w, res, n, kind, rest)
-            w.stamp_meta(n, {"rearmed_after_job": newest.id})
-            if n.status != "open":
-                w.set_status(n, "open")
-            res.notes.append(
-                f"td{n.id}: review {kind} for {handle} {marker}; "
-                "pre-land — back to the builder, reviewer stays open"
-            )
+            _review_back_to_builder(store, plan, w, res, n, kind, rest, now, raw or "")
+            if all(_closed(t) for t in _review_targets(plan, n)):
+                # gr663909: every held target was ruled closed while the
+                # review ran — nothing is left to re-gate, and an open
+                # reviewer would re-dispatch over terminal blockers.
+                w.set_status(n, "won't-do")
+                res.notes.append(
+                    f"td{n.id}: review {kind} for {handle} {marker}; "
+                    "every held target was ruled closed — the review "
+                    "closes with it"
+                )
+            else:
+                w.stamp_meta(n, {"rearmed_after_job": newest.id})
+                if n.status != "open":
+                    w.set_status(n, "open")
+                res.notes.append(
+                    f"td{n.id}: review {kind} for {handle} {marker}; "
+                    "pre-land — back to the builder, reviewer stays open"
+                )
         elif kind == "FIX":
             fix_id, cap_ask = _review_fix(
                 store, plan, w, res, n, handle, rest, now, lane_table
@@ -2793,6 +3678,19 @@ def _step_reviews(
                 res.notes.append(
                     f"td{n.id}: review REVERT for {handle} {marker}; "
                     f"minted td{revert_id}, closed"
+                )
+            elif (rts := _review_targets(plan, n)) and all(_closed(t) for t in rts):
+                # gr663909: every requeue target was ruled closed while
+                # the review ran — no rebuild comes to re-gate, and an
+                # open reviewer would re-review the same land and
+                # re-mint the revert in a loop. (An out-of-plan ``from``
+                # has no targets — it waits on the revert task itself,
+                # gr597625.)
+                w.set_status(n, "won't-do")
+                res.notes.append(
+                    f"td{n.id}: review REVERT for {handle} {marker}; "
+                    f"minted td{revert_id} — every requeue target was "
+                    "ruled closed, the review closes with it"
                 )
             else:
                 w.stamp_meta(n, {"rearmed_after_job": newest.id})
@@ -2840,6 +3738,17 @@ def _step_reopen(plan: _Plan, w: _Writer, res: PassResult) -> None:
         res.notes.append(
             f"generator td{n.id} reopened: {len(open_kids)} child(ren) still open"
         )
+
+
+def _answers_start_over(store: Any, ask_id: int) -> bool:
+    """The closing answer on ask ``ask_id`` says ``start over`` (any case):
+    the ``answer:`` comment, else the ask's newest comment. The ask's body
+    names the option and so is never read."""
+    answer = _release._newest_answer(store, ask_id)
+    if answer is None:
+        newest = _comments(store, ask_id)
+        answer = str(newest[0].text) if newest else ""
+    return "start over" in answer.lower()
 
 
 def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
@@ -2901,6 +3810,13 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
         else:
             stamp["rearmed_answer"] = None
             stamp["rearmed_ask_at"] = None
+        # Park = save, resume anywhere (``_slice_park``): the re-armed
+        # build resumes from its saved branch — unless the closing answer
+        # says ``start over``: the next launch then drops the saved branch
+        # and cuts from the base.
+        if _answers_start_over(w.store, newest_ask.id):
+            stamp[_slice_park.START_OVER_KEY] = newest_ask.id
+            stamp[_slice_park.PARKED_KEY] = None
         # A node whose rescue ended in the rescue pass's own ask: the
         # human's answer IS the clearing (td584381 S1a F1) — the
         # ``rescue:<cls>`` tag would otherwise keep it excluded from
@@ -2917,6 +3833,10 @@ def _step_rearm(plan: _Plan, w: _Writer, res: PassResult) -> None:
                 "job": ended[-1].id if ended else None,
             }
         w.stamp_meta(n, stamp)
+        if n.status == "paused":
+            # Resume lifts ``STATUS:paused`` (Reto 2026-11-16); a
+            # ``waiting-for:*`` hold — waiting on files — stays as is.
+            w.set_status(n, "open")
         if cleared:
             w.remove_tags(n, cleared)
             if n.status == "doing":
@@ -2950,23 +3870,46 @@ def _moot_descendants(plan: _Plan, n: _Node) -> list[_Node]:
     """The open todos under ``n.root`` ``blocked-by``-dependent on ``n``,
     transitively — the review / wait-for-prod / validate chain a task
     moot closes (td584381 S1d review). A closed link in the chain still
-    transmits: the closure walks through it, it is just not re-closed."""
+    transmits: the closure walks through it, it is just not re-closed.
+
+    A ``repo_release`` node is a join, not a chain link (td659522 step
+    3): the walk enters it only once ALL its non-ask blockers are dead —
+    ``n`` itself, a node already walked, a ruled-out (non-``done``
+    terminal) or ``verdict:moot`` node. One live blocker keeps it, and
+    everything behind it, out; the walk re-tests it from each blocker
+    it reaches, so a join whose last blocker dies later in the walk
+    still closes."""
     dependents: dict[int, set[int]] = {}
     for src, targets in plan.blockers.items():
         for b in targets:
             dependents.setdefault(b.id, set()).add(src)
     seen = {n.id}
+    reached = {n.id}
     frontier = [n.id]
     out: list[_Node] = []
+
+    def blocker_dead(b: _Blocker) -> bool:
+        node = plan.nodes.get(b.id)
+        if b.is_ask or (node is not None and _is_ask_node(node)):
+            return True  # an ask is a question, not work the join waits on
+        if b.id in reached or plan.status_of(b) in _RULING_STATUSES:
+            return True
+        return node is not None and MOOT_TAG in node.open_tags
+
     while frontier:
         cur = frontier.pop()
-        for dep_id in dependents.get(cur, ()):
+        for dep_id in sorted(dependents.get(cur, ())):
             if dep_id in seen:
                 continue
-            seen.add(dep_id)
             m = plan.nodes.get(dep_id)
+            if m is not None and m.kind == "todo" and _is_repo_release(m):
+                live = [b for b in plan.blockers.get(dep_id, []) if not blocker_dead(b)]
+                if live:
+                    continue  # not seen: a later blocker may complete the join
+            seen.add(dep_id)
             if m is None or m.kind != "todo" or m.root != n.root:
                 continue
+            reached.add(dep_id)
             frontier.append(dep_id)
             if not _closed(m):
                 out.append(m)
@@ -3046,9 +3989,26 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
     the hit must not disarm the guard: it bounds ``_attempt_jobs`` at
     its mint, hiding the denied job from ``_human_hit`` the pass after
     it files, so the stamp is read off the job the verdict would come
-    from — until a newer job exists (td604695)."""
+    from — until a newer job exists (td604695). A launch refusal's
+    clean meta is no all-clear either: the stamp is checked again on
+    the source job the ``since`` bound reads off, so a denied session
+    behind a refused retry still cannot close (td695902). A
+    ``validated:``/
+    ``no-op:`` on a build a pre-land review still gates is "the pushed
+    branch is ready as it stands", never "nothing to land" (gr681208):
+    the ``meta.preland_held`` stash a FIX/REVERT left re-holds the land
+    and closes done as a fresh defer does; with neither hold nor stash
+    the node stays open."""
     for n in plan.todos():
         if _closed(n) or n.id == n.root or _is_ask_node(n):
+            continue
+        if _is_repo_release(n):
+            # td659522 step 3: the tag on the remote is the result — a
+            # release node closes only through its succeeded job.
+            continue
+        if _is_pin_bump(n):
+            # td659522 step 4: a pin-bump node closes only through its
+            # land_slice; no verdict line stands for the bump on main.
             continue
         if plan.live_job(n):
             continue
@@ -3064,14 +4024,111 @@ def _step_verdicts(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None
         # after the answer re-arms, until a newer job runs (td604695).
         if last is not None and last.meta.get(HUMAN_ONLY_KEY):
             continue
-        verdict = _verdict_comment(
-            store, n.id, since=last.created_at if last is not None else None
+        # gr685988: the ``since`` bound must read off the newest job a
+        # verdict could come FROM — an ended job that ran a session. A
+        # launch refusal (``model_rule_refusal``/``host_refusal``/
+        # ``attempt_free``/voided) never ran; letting its mint own the
+        # bound disowns the earlier session's posted verdict — a
+        # validate's `validated:` stayed masked behind the refused
+        # retry the different-model rule filed, stranding the chain.
+        src = next(
+            (
+                j
+                for j in reversed(ended if ended else plan.jobs(n))
+                if j.status in _JOB_ENDED
+                and not _no_attempt(j)
+                and j.meta.get(MODEL_RULE_KEY) is None
+            ),
+            None,
         )
-        if verdict is None and last is not None and last.status == "failed":
-            verdict = any_verdict(_job_event_text(store, last.id))
+        bound = src if src is not None else last
+        # td695902 review: the stamp must ride the job the verdict is
+        # read FROM, not only the newest ended one — a launch refusal
+        # never ran, so ``last``'s clean meta says nothing about the
+        # denied session sitting behind it. That session's posted
+        # verdict is still the human-only ask's ruling: no close ahead
+        # of it, exactly as the ``last`` check above rules when the
+        # denied job is itself newest.
+        if src is not None and src.meta.get(HUMAN_ONLY_KEY):
+            continue
+        verdict = _verdict_comment(
+            store, n.id, since=bound.created_at if bound is not None else None
+        )
+        if verdict is None and src is not None and src.status == "failed":
+            verdict = any_verdict(_job_event_text(store, src.id))
         if verdict is None or _foreign_verdict(store, n, verdict):
             continue
         kind_, why = verdict
+        if n.meta.get(_templates.PRELAND_DEFER_FAILED_KEY):
+            # gr663738: the stamp means the last pre-land defer failed —
+            # the branch never reached origin, so a `validated:` "the
+            # work was already built and committed" handoff is the stale
+            # read the failed push left, not proof anything landed; a
+            # `no-op:`/`moot:` close would strand the stamp the same way.
+            # The node stays open for the retry the lease-guarded push
+            # fixes.
+            res.notes.append(
+                f"td{n.id}: `{kind_}:` ignored — "
+                "meta.preland_defer_failed is stamped; left open (gr663738)"
+            )
+            continue
+        held = n.meta.get(_templates.PRELAND_HELD_KEY)
+        held_params = held.get("params") if isinstance(held, dict) else None
+        held_land = isinstance(n.meta.get(_templates.PENDING_LAND_KEY), dict)
+        if (
+            kind_ in ("validated", "no-op")
+            and isinstance(held_params, dict)
+            and not held_land
+        ):
+            # gr681208: a pre-land FIX/REVERT reopened this build and
+            # stashed its held land in ``meta.preland_held`` — the
+            # rebuild's verdict is "the pushed branch is ready as it
+            # stands", not "nothing to land". Re-stamp ``pending_land``
+            # and close held exactly as a fresh defer does: the land
+            # gate holds the dependants and releases the reviewer for
+            # the re-gate. The bare close was the incident — it released
+            # dependants onto a main missing the work and let the
+            # dead-chain sweep won't-do the review. A ``pending_land``
+            # that already stands is a fresher hold than the stash —
+            # never overwritten here.
+            reviewer = held.get("reviewer") if isinstance(held, dict) else None
+            w.stamp_meta(
+                n,
+                {
+                    _templates.PENDING_LAND_KEY: dict(held_params),
+                    _templates.PRELAND_HELD_KEY: None,
+                },
+            )
+            w.set_status(n, "done")
+            w.comment(
+                n,
+                f"plan_dispatch: closed on verdict `{kind_}: {why[:300]}` "
+                "— the branch is ready as it stands; land held for "
+                f"review td{reviewer} (gr681208)",
+            )
+            res.notes.append(
+                f"td{n.id}: verdict `{kind_}: {why[:200]}` — closed done, "
+                f"land re-held for review td{reviewer}"
+            )
+            continue
+        if (
+            kind_ in ("validated", "no-op")
+            and not held_land
+            and not isinstance(held_params, dict)
+            and _open_preland_reviewers(plan, n)
+        ):
+            # gr681208's residual hole: the same verdict on a build a
+            # live pre-land review still gates, with no hold and no
+            # stash to restore (a send-back from before the stash — a
+            # truthy-but-unusable ``preland_held`` is no stash either,
+            # not a pass through to the close) — leave it open for the
+            # re-gate like the defer-failed skip.
+            res.notes.append(
+                f"td{n.id}: `{kind_}:` ignored — a live pre-land review "
+                "gates its land and no pending_land/preland_held stands; "
+                "left open (gr681208)"
+            )
+            continue
         w.set_status(n, "done")
         if kind_ == "moot":
             w.add_tags(n, [MOOT_TAG])
@@ -3432,6 +4489,25 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
             # then a succeeded land_slice (its ship closes the todo first;
             # this is the backstop). A succeeded run_slice alone never does.
             jobs = plan.jobs(n)
+            # A pin-bump node closes only once its gate image carries the
+            # pin (td659522 F7, Reto 2026-11-15): its record's
+            # ``image.ready``, which its own image wait stamps before it
+            # closes the node (this is the backstop). The land alone never
+            # closes it — glue blocked by it would build on a stale image.
+            if _op_type(n) == PIN_BUMP_OP:
+                if _pin_image_ready(n) and not plan.live_job(n):
+                    w.set_status(n, "done")
+                    res.phases_closed += 1
+                    res.notes.append(
+                        f"task td{n.id} closed: the gate image carries the pin"
+                    )
+                elif (
+                    jobs
+                    and jobs[-1].status == "succeeded"
+                    and jobs[-1].meta.get("job_type") == "land_slice"
+                ):
+                    res.notes.append(f"task td{n.id} held open: gate image wait (F7)")
+                continue
             if _op_type(n) == DEFAULT_OP and not (
                 jobs and jobs[-1].meta.get("job_type") == "land_slice"
             ):
@@ -3485,8 +4561,92 @@ def _excluded(plan: _Plan, n: _Node) -> bool:
     return False
 
 
+def _node_repos(plan: _Plan, n: _Node) -> list[str]:
+    """The ``repo:`` values governing ``n``: its own, else the nearest
+    tagged ancestor's (the reach of :func:`_excluded`)."""
+    for node in (n, *plan.ancestors(n)):
+        repos = _lanes.repo_tags(node.open_tags)
+        if repos:
+            return repos
+    return []
+
+
+def _node_repo(plan: _Plan, n: _Node) -> str:
+    """The one repo ``n`` builds in: its first governing ``repo:`` tag,
+    else the default repo."""
+    repos = _node_repos(plan, n)
+    return repos[0] if repos else _lanes.DEFAULT_REPO
+
+
+def _is_generator(n: _Node) -> bool:
+    """``n`` is a generator (triage, brief, reviewer, analyst): its session
+    commits nothing, so it neither holds nor waits in the overlap hold."""
+    return node_kind(n.meta) == "generator"
+
+
 def _claims(n: _Node) -> list[str]:
     return [v for v in n.open_tags if v.startswith("claimed-by:")]
+
+
+def _held_by_registry(plan: _Plan, n: _Node) -> bool:
+    """Any shared doable-exclusion tag (``child-failed:`` included, unlike
+    :func:`_excluded`) or ``rescue:`` on ``n`` or an ancestor."""
+    held = (*_DOABLE_EXCLUSION_TAGS, "rescue:")
+    for node in (n, *plan.ancestors(n)):
+        for value in node.open_tags:
+            for t in held:
+                if (t.endswith(":") and value.startswith(t)) or value == t:
+                    return True
+    return False
+
+
+def _node_live(plan: _Plan, n: _Node) -> bool:
+    """Whether ``n`` is work in motion: a non-terminal child job or a
+    ``claimed-by:`` tag, or the tick would dispatch it — the
+    :func:`_step_dispatch` predicate (open task shape, no hold tag, not
+    blocked or paused). A parked node (``ask-user``, ``waiting-for:*``,
+    ``child-failed:*``, paused, blocked, rescue) is not live. The
+    file-overlap hold does not stop queueing. :func:`live_nodes` separates
+    running work from queued or undispatched work for the census."""
+    if plan.live_job(n) or _claims(n):
+        return True
+    if n.status != "open" or not _dispatchable(plan, n):
+        return False
+    return not (_held_by_registry(plan, n) or plan.blocked(n) or plan.paused(n))
+
+
+def live_and_held_nodes(store: Any, roots: list[int]) -> tuple[set[int], set[int]]:
+    """``(running, waiting)`` todos under ``roots`` (gr702610).
+
+    Running jobs and explicit claims consume capacity. Queued jobs and
+    doable nodes remain moving for the stall sweep, including builds
+    waiting on file overlap at claim time, but hold no running slot.
+    """
+    if not roots:
+        return set(), set()
+    plan = _load(store, list(roots))
+    moving = {n.id for n in plan.todos() if _node_live(plan, n)}
+    live = {
+        i
+        for i in moving
+        if _claims(plan.nodes[i])
+        or any(j.status == "running" for j in plan.jobs(plan.nodes[i]))
+    }
+    # Waiting work remains moving for stall detection, but only a running
+    # job or explicit claim consumes capacity. This includes queued builds
+    # held on files and doable nodes awaiting their first dispatch.
+    return live, moving - live
+
+
+def live_nodes(store: Any, roots: list[int], *, count_held: bool = False) -> set[int]:
+    """Running todos under ``roots``; ``count_held`` includes waiting work.
+
+    Used-slot census excludes every queued or undispatched build, whether
+    held on files or immediately claimable. Stall detection includes both
+    sets, because work awaiting a host is still moving.
+    """
+    live, held = live_and_held_nodes(store, roots)
+    return live | held if count_held else live
 
 
 def _plan_root_of(store: Any, ref_id: int) -> int | None:
@@ -3592,6 +4752,7 @@ def _attempt_jobs(plan: _Plan, n: _Node) -> list[_Node]:
     since = max((b.created_at for b in asks), default=None)
     floor = _rearm_floor(n)
     jobs = plan.jobs(n)
+    pin = _is_pin_bump(n)
     return [
         j
         for i, j in enumerate(jobs)
@@ -3602,11 +4763,17 @@ def _attempt_jobs(plan: _Plan, n: _Node) -> list[_Node]:
         and (since is None or j.created_at > since)
         and (floor is None or j.id > floor)
         # A build that handed off to the lander is one attempt with its
-        # land_slice, not two.
+        # land_slice, not two (a pin_bump likewise, td659522 step 4).
         and not (
             j.status == "succeeded"
-            and j.meta.get("job_type") == DEFAULT_OP
+            and j.meta.get("job_type") in (DEFAULT_OP, PIN_BUMP_OP)
             and any(k.meta.get("job_type") == "land_slice" for k in jobs[i + 1 :])
+        )
+        # A pin bump's land is not its end: the node waits for the gate
+        # image next (td659522 F7), so the succeeded land is no attempt
+        # and the image wait is not a retry over the cap.
+        and not (
+            pin and j.status == "succeeded" and j.meta.get("job_type") == "land_slice"
         )
     ]
 
@@ -3707,6 +4874,40 @@ def _infra_red_lands(plan: _Plan, n: _Node) -> int:
             break
         count += 1
     return count
+
+
+def _free_run(plan: _Plan, n: _Node) -> tuple[str | None, int]:
+    """The consecutive run of identical ``attempt_free`` reasons on
+    failed/timed-out jobs at the tail of ``n``'s jobs — ``(reason,
+    count)``, ``(None, 0)`` when the newest job is not a free failure.
+    Floored by ``meta.rearmed_after_job`` like :func:`_infra_red_lands`:
+    an answered ask re-arms the run. A different reason, a real attempt,
+    a success or a non-ended job ends it (gr662077)."""
+    floor = _rearm_floor(n)
+    reason: str | None = None
+    count = 0
+    for j in reversed(plan.jobs(n)):
+        if floor is not None and j.id <= floor:
+            break
+        if j.status not in ("failed", "timed-out"):
+            break
+        r = j.meta.get(ATTEMPT_FREE_KEY)
+        if not r:
+            break
+        if reason is None:
+            reason = str(r)
+        elif str(r) != reason:
+            break
+        count += 1
+    return reason, count
+
+
+def _free_done(plan: _Plan, n: _Node) -> str | None:
+    """The identical ``attempt_free`` reason whose consecutive run hit
+    :data:`FREE_RUN_CAP` — what :func:`_capped` turns into the
+    coordinator ask — or ``None`` while under the cap (gr662077)."""
+    reason, run = _free_run(plan, n)
+    return reason if reason is not None and run >= FREE_RUN_CAP else None
 
 
 def _brief_rewritten(store: Any, todo_id: int, since: datetime) -> bool:
@@ -4168,6 +5369,8 @@ def _capped(
     rungs: tuple[_lanes.Rung, ...] = (),
     spend_capped: bool = False,
 ) -> bool:
+    if _pin_awaits_land(plan, n):
+        return False  # the land owns the node (td659522 step 4)
     jobs = plan.jobs(n)
     # The newest job need only be TERMINAL: a cancelled job burns no
     # attempt itself (:func:`_attempt_jobs` skips it), but the attempts
@@ -4190,6 +5393,11 @@ def _capped(
     # capped: the third repeat goes to the ask, not to a third same-rung
     # retry (gr604579).
     if _mech_done(plan, n) is not None:
+        return True
+    # Identical ``attempt_free`` failures burn no attempt, so the retry
+    # cap below never sees them; the run has its own bound — the
+    # coordinator ask, not another doomed mint (gr662077).
+    if _free_done(plan, n) is not None:
         return True
     # A spend cap is spent money, not retries — every rung left for the
     # node sits over its per-node USD bound (gr599486).
@@ -4221,6 +5429,193 @@ def _resolve_op(n: _Node) -> tuple[str, dict[str, Any]]:
     if isinstance(op, str) and op.strip():
         return op.strip(), {"todo_id": n.id}
     return DEFAULT_OP, {"todo_id": n.id}
+
+
+def _is_repo_release(n: _Node) -> bool:
+    """``n`` is a second-repo release node: its resolved mechanical op
+    is :data:`REPO_RELEASE_OP` (td659522 step 3)."""
+    return _resolve_op(n)[0] == REPO_RELEASE_OP
+
+
+def _is_pin_bump(n: _Node) -> bool:
+    """``n`` is a pin-bump node: its resolved mechanical op is
+    :data:`PIN_BUMP_OP` (td659522 step 4)."""
+    return _resolve_op(n)[0] == PIN_BUMP_OP
+
+
+def _pin_image(n: _Node) -> dict[str, Any]:
+    """The ``image`` stamp of a pin-bump node's record (``{}`` for none):
+    what its gate image wait last saw (td659522 F7)."""
+    record = n.meta.get(PIN_RECORD_KEY)
+    image = record.get("image") if isinstance(record, dict) else None
+    return image if isinstance(image, dict) else {}
+
+
+def _pin_image_ready(n: _Node) -> bool:
+    """The pin node's gate image carries the pin: ``image.ready`` on its
+    record, stamped by the image wait before it closes the node."""
+    return _pin_image(n).get("ready") is True
+
+
+def _pin_land_host(plan: _Plan, n: _Node) -> str | None:
+    """The ``params.target_node`` of the pin node's newest ``land_slice``
+    when that land succeeded (the host whose gate image the next job
+    checks; a failed image wait after it does not lose it). Without one —
+    a no-op mints no land — the host a ``landed`` record's image wait
+    stamped (``image.host``), so a re-dispatched wait checks the same
+    image. Else ``None``."""
+    lands = [j for j in plan.jobs(n) if j.meta.get("job_type") == "land_slice"]
+    host: Any = None
+    if lands and lands[-1].status == "succeeded":
+        params = lands[-1].meta.get("params")
+        host = params.get("target_node") if isinstance(params, dict) else None
+    if not (isinstance(host, str) and host.strip()):
+        record = n.meta.get(PIN_RECORD_KEY)
+        if isinstance(record, dict) and record.get("state") == "landed":
+            host = _pin_image(n).get("host")
+    return host if isinstance(host, str) and host.strip() else None
+
+
+def _pin_awaits_land(plan: _Plan, n: _Node) -> bool:
+    """``n`` is a pin-bump node whose newest job is a succeeded
+    ``pin_bump`` above the re-arm floor: the branch is handed to the
+    lander, and the node waits for that land (it closes through it, and a
+    failed land re-dispatches the build). Neither a cap ask nor a second
+    ``pin_bump`` may fire in this state."""
+    if not _is_pin_bump(n):
+        return False
+    jobs = plan.jobs(n)
+    if not jobs:
+        return False
+    j = jobs[-1]
+    floor = _rearm_floor(n)
+    return (
+        j.status == "succeeded"
+        and j.meta.get("job_type") == PIN_BUMP_OP
+        and (floor is None or j.id > floor)
+    )
+
+
+def _pin_releases(plan: _Plan, n: _Node) -> list[_Node]:
+    """The non-ask ``blocked-by`` targets of ``n`` that are ``repo_release``
+    nodes inside the loaded plan."""
+    return [
+        m
+        for b in plan.blockers.get(n.id, [])
+        if not b.is_ask
+        and (m := plan.nodes.get(b.id)) is not None
+        and m.kind == "todo"
+        and _is_repo_release(m)
+    ]
+
+
+def _pin_params(
+    plan: _Plan, n: _Node, params: dict[str, Any]
+) -> tuple[dict[str, Any], str | None]:
+    """The ``pin_bump`` params of ``n`` (``todo_id``, ``release_todo``,
+    ``pin_repo``; ones already on the op are kept) and ``None``, or the
+    reason it must not dispatch. ``release_todo`` is the single non-ask
+    ``blocked-by`` target of ``n`` that is a ``repo_release`` node, open
+    or done; blockers are read from ``plan.nodes``, so a target outside
+    the loaded subtrees (no op to read) does not count. ``pin_repo`` is
+    the one non-default repo governing that release node. The pin-bump
+    node itself builds in precis: it must resolve to no repo or the
+    default one."""
+    own = _node_repos(plan, n)
+    if own and own != [_lanes.DEFAULT_REPO]:
+        return params, (
+            f"resolves to repo {', '.join(own)}; it builds in precis "
+            "(carry repo:precis or inherit no repo: tag)"
+        )
+    releases = _pin_releases(plan, n)
+    ids = sorted({m.id for m in releases})
+    if len(ids) != 1:
+        return params, (
+            f"needs exactly one {REPO_RELEASE_OP} blocked-by target, found {len(ids)}"
+        )
+    repos = _node_repos(plan, releases[0])
+    if len(repos) != 1 or repos[0] == _lanes.DEFAULT_REPO:
+        return params, (
+            f"release td{ids[0]} must govern exactly one non-default repo, "
+            f"found {repos or 'none'}"
+        )
+    out = dict(params)
+    out.setdefault("todo_id", n.id)
+    out.setdefault("release_todo", ids[0])
+    out.setdefault("pin_repo", repos[0])
+    return out, None
+
+
+def _second_repo(plan: _Plan, reviewer: _Node) -> str | None:
+    """The one non-default repo a reviewer's verdict concerns (td659522
+    step 5): the repo governing the reviewer, else the first review target
+    that has one. ``None`` for the default repo, no repo, or more than one."""
+    repos = _node_repos(plan, reviewer)
+    for t in () if repos else _review_targets(plan, reviewer):
+        repos = _node_repos(plan, t)
+        if repos:
+            break
+    if len(repos) != 1 or repos[0] == _lanes.DEFAULT_REPO:
+        return None
+    return repos[0]
+
+
+def _repo_base(repo: str) -> str:
+    """The base branch of ``repo``'s build profile (``main`` without one)."""
+    profile = _lanes.repo_profile(repo)
+    return profile.base if profile is not None else "main"
+
+
+def _tag_minted_repo(
+    plan: _Plan, w: _Writer, reviewer: _Node, minted_id: int, now: datetime
+) -> None:
+    """Carry the reviewed slice's second repo onto the fix or revert todo
+    ``_mint_task`` just made under the plan root (it only has the
+    ``plan:`` tag, so it would resolve to the default repo): the repo
+    governing the reviewer, else the first review target that has one. Only
+    a single non-default repo not already governing the minted node is
+    tagged."""
+    minted = plan.nodes.get(minted_id)
+    repo = _second_repo(plan, reviewer)
+    if minted is None or repo is None:
+        return
+    if _node_repos(plan, minted) == [repo]:
+        return
+    w.add_tag(minted, f"repo:{repo}", now)
+
+
+def _gate_release_on(
+    store: Any, plan: _Plan, w: _Writer, reviewer: _Node, gate_id: int, now: datetime
+) -> None:
+    """Hold every OPEN ``repo_release`` node of ``reviewer``'s plan behind
+    ``gate_id`` too — the fix or revert todo the reviewer's verdict just
+    minted — when it is ``blocked-by`` the reviewer, or governs the same
+    repo(s) as the minted todo (the reviewer's when the minted one
+    resolves none): a reviewer of a fix has no edge from the release. The
+    reviewer closes ``done`` at FIX/REVERT, so without this edge the
+    release would unblock and cut unfixed code. Idempotent: an existing
+    edge is kept."""
+    minted = plan.nodes.get(gate_id)
+    repos = sorted(_node_repos(plan, minted)) if minted is not None else []
+    repos = repos or sorted(_node_repos(plan, reviewer))
+    for m in plan.todos():
+        if (
+            m.id == gate_id
+            or m.root != reviewer.root
+            or _closed(m)
+            or not _is_repo_release(m)
+        ):
+            continue
+        edges = plan.blockers.setdefault(m.id, [])
+        if not any(b.id == reviewer.id for b in edges) and not (
+            repos and sorted(_node_repos(plan, m)) == repos
+        ):
+            continue
+        if any(b.id == gate_id for b in edges):
+            continue
+        if not w.dry_run:
+            store.add_link(src_ref_id=m.id, dst_ref_id=gate_id, relation="blocked-by")
+        edges.append(_Blocker(id=gate_id, status="open", is_ask=False, created_at=now))
 
 
 def _params_problem(schema: dict[str, Any], params: dict[str, Any]) -> str | None:
@@ -4484,6 +5879,22 @@ def _effective_score(plan: _Plan, n: _Node) -> float:
     return score * _dscore.SHOWSTOPPER_MULT if show else score
 
 
+def _claim_score(plan: _Plan, n: _Node, job_type: str | None = None) -> float:
+    """The score stamped on ``n``'s job for the executor's claim order.
+
+    A finished build waiting for its pre-land review or its land holds
+    the files it touched, so both are claimed ahead of fresh builds: a
+    pre-land reviewer and any ``land_slice`` job (``job_type``) floor at
+    :data:`~precis.utils.dispatch_score.FINISH_FIRST_SCORE`. Everything
+    else keeps :func:`_effective_score`."""
+    score = _effective_score(plan, n)
+    if job_type == "land_slice" or (
+        _is_reviewer(n) and n.meta.get(_templates.PRELAND_REVIEW_KEY) is True
+    ):
+        return max(score, _dscore.FINISH_FIRST_SCORE)
+    return score
+
+
 def _review_lane(
     plan: _Plan,
     w: _Writer,
@@ -4663,7 +6074,11 @@ def _rerun_stall(
     if unpark:
         w.remove_tags(n, [NOREPRO_WAIT_TAG])
         digest = _digest_of(plan, n)
-        if digest is not None and not plan.live_job(digest):
+        if (
+            digest is not None
+            and not plan.live_job(digest)
+            and digest.status not in _RULING_STATUSES
+        ):
             ended = [j for j in plan.jobs(digest) if j.status in _JOB_ENDED]
             if digest.status != "open":
                 w.set_status(digest, "open")
@@ -5002,41 +6417,421 @@ def _step_brief_holds(
             )
 
 
-def _inflight_land_ids(plan: _Plan) -> list[int]:
-    """Todo ids with a live ``land_slice`` job — the slices currently
-    landing (td603849)."""
-    return [
-        n.id
-        for n in plan.todos()
-        if any(
-            j.status not in _JOB_TERMINAL and j.meta.get("job_type") == "land_slice"
-            for j in plan.jobs(n)
+@dataclass(frozen=True)
+class _Started:
+    """A build whose work has started and not landed (the overlap hold's
+    blocker): ``state`` is ``landing``, ``in pre-land review`` or
+    ``building``; ``branch_files`` the paths its branch touched when it
+    last exited clean (:data:`~precis.plans.templates.BRANCH_FILES_KEY`),
+    empty before then; ``repo`` the repo its ``repo:`` tag resolves to —
+    its own, else the nearest tagged ancestor's — resolved in the store
+    because a held build can sit outside the loaded plan's nodes."""
+
+    state: str
+    branch_files: tuple[str, ...]
+    repo: str
+    branch_files_current: bool = False
+
+
+#: ``factory.overlap_hold_max_runs`` when unset or unreadable.
+OVERLAP_HOLD_MAX_RUNS = 3
+
+
+def _overlap_hold_max_runs(store: Any) -> int:
+    """How many ended ``run_slice`` runs a build may have and still hold
+    the file-overlap lock while it builds or waits for its pre-land
+    review — ``factory.overlap_hold_max_runs``, default
+    :data:`OVERLAP_HOLD_MAX_RUNS`; ``0`` never lifts the hold. Unreadable
+    reads as the default: the claim transaction calls this, and a
+    settings blip must not change who holds whom."""
+    from precis import settings
+
+    try:
+        runs = settings.get_int("factory.overlap_hold_max_runs", store=store)
+    except Exception:
+        return OVERLAP_HOLD_MAX_RUNS
+    return OVERLAP_HOLD_MAX_RUNS if runs is None else max(0, runs)
+
+
+def _started_slices(store: Any, *, single_flight: bool = False) -> dict[int, _Started]:
+    """Every build with started, unlanded work, factory-wide (td603849,
+    widened 2026-11-15 from in-flight lands): a live ``land_slice`` or
+    ``run_slice`` job, or a finished build held for its pre-land review
+    (``meta.pending_land``) — an hour of build plus review in which a
+    second slice editing the same file used to start on a main that
+    would not have the first. Generators (triage, brief, reviewer)
+    commit nothing and never count. One query, not the loaded plan: a
+    held build can sit outside the loaded subtrees. A terminal *ruling*
+    on the todo (``_RULING_STATUSES`` — ``won't-do``, ``auto-timeout``;
+    ``wontfix``/``cancelled`` are not todo statuses)
+    ends the hold whatever a stale ``pending_land`` or a still-live job
+    says: a dropped plan closing build and reviewer before a verdict
+    never clears the stamp (only ``_record_land`` /
+    ``_review_back_to_builder`` do), and the work is never landing, so
+    it cannot hold overlapping builds forever. ``done`` still counts —
+    its held land may be in flight.
+
+    A bare ``pending_land`` stamp (no live job) holds only while the
+    land can still come (gr701628): it is dropped when the build's
+    newest ``land_slice`` job died (``failed``/``cancelled``/
+    ``timed-out``) — nothing re-mints it and only ``_record_land`` clears
+    the stamp, so the dead land held the lock forever — or when the build
+    or an ancestor — or its pending pre-land review todo — carries a
+    ``rescue:`` or ``child-failed:`` tag (the rescue pass owns it now;
+    the rescue machinery tags the review, not the build, when it hands
+    a stuck review to a human). The dead-land drop is scoped to the current
+    build attempt (review td701778): the dying job carries the ``head``
+    it was minted from (the stamp's pushed tip at mint time), and only a
+    dead land OF THE CURRENT STAMP's head drops the hold — after a
+    failed land the rebuild re-stamps a fresh ``pending_land`` with the
+    new head while the historical dead job is still the newest one, and
+    that stale failure must not release the hold during the rebuilt
+    branch's pre-land review. Heads absent on both sides (a defer that
+    could not resolve its tip) count as one attempt, the pre-scope read.
+    A build still in its pre-land review (no land job yet) counts as
+    before. Only a ``STATUS:running`` ``run_slice`` job or a
+    ``land_slice`` job holds; a merely queued job holds nothing, so
+    queued builds never block each other.
+
+    The hold is bounded (:func:`_overlap_hold_max_runs`): a build whose
+    ``run_slice`` runs ended that many times without a land has had its
+    turns and holds only while it is ``landing``. A cancelled run and an
+    attempt-free failure or host-refused launch are no turn. Three builds that did
+    not converge with their pre-land reviewers (seven runs on one) held
+    30 queued builds, the oldest for 23 hours, on 2026-11-19; a real
+    conflict with the work that went ahead rebuilds at their land.
+
+    ``single_flight`` (dispatch diagnostics only, gr732475): take a
+    transaction advisory lock around the scan and return ``{}`` when
+    another scan holds it, so concurrent dispatch passes do not stack
+    copies of the query. Claim and rescue callers leave it off and
+    always run the full scan: a skipped scan there would drop real
+    overlap holds."""
+    with store.pool.connection() as conn, conn.transaction():
+        if single_flight:
+            lock = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(%s)", (_STARTED_SLICES_LOCK_KEY,)
+            ).fetchone()
+            if not lock or not lock[0]:
+                return {}
+        rows = conn.execute(
+            """
+            WITH live AS (
+                SELECT j.parent_id, bool_or(j.meta->>'job_type' = 'land_slice')
+                       AS landing,
+                       array_agg(DISTINCT j.meta->'params'->>'head')
+                           FILTER (WHERE j.meta->>'job_type' = 'land_slice')
+                           AS land_heads
+                  FROM refs j
+                 WHERE j.kind = 'job' AND j.retired_at IS NULL
+                   AND j.meta->>'job_type' IN ('run_slice', 'land_slice')
+                   AND j.parent_id IS NOT NULL
+                   AND (j.meta->>'job_type' = 'land_slice' OR EXISTS (
+                         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                          WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                            AND t.value = 'running'))
+                   AND NOT EXISTS (
+                         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                          WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                            AND t.value = ANY(%s))
+                 GROUP BY j.parent_id
+            ),
+            candidates AS (
+                SELECT parent_id AS ref_id FROM live
+                UNION
+                SELECT ref_id FROM refs
+                 WHERE kind = 'todo' AND retired_at IS NULL
+                   AND jsonb_typeof(meta->'pending_land') = 'object'
+            )
+            SELECT r.ref_id, COALESCE(live.landing, FALSE),
+                   (jsonb_typeof(r.meta->'pending_land') = 'object'
+                    AND NOT (COALESCE(land_dead.dead, FALSE)
+                             AND land_dead.job_head IS NOT DISTINCT FROM
+                                 (r.meta->'pending_land'->>'head'))),
+                   r.meta->%s,
+                   r.meta->>%s,
+                   CASE WHEN live.landing THEN live.land_heads
+                        ELSE ARRAY[r.meta->'pending_land'->>'head'] END,
+                   (SELECT count(*) FROM refs j
+                     WHERE j.kind = 'job' AND j.retired_at IS NULL
+                       AND j.parent_id = r.ref_id
+                       AND j.meta->>'job_type' = 'run_slice'
+                       AND NOT COALESCE(j.meta ? %s, FALSE)
+                       AND NOT COALESCE(j.meta ? 'host_refusal', FALSE)
+                       AND EXISTS (
+                             SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                              WHERE rt.ref_id = j.ref_id
+                                AND t.namespace = 'STATUS'
+                                AND t.value = ANY(%s)))
+              FROM candidates c
+              JOIN refs r ON r.ref_id = c.ref_id
+              LEFT JOIN live ON live.parent_id = r.ref_id
+              LEFT JOIN LATERAL (
+                  SELECT EXISTS (
+                             SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                              WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                                AND t.value = ANY(%s)) AS dead,
+                         j.meta->'params'->>'head' AS job_head
+                    FROM refs j
+                   WHERE j.kind = 'job' AND j.retired_at IS NULL
+                     AND j.meta->>'job_type' = 'land_slice'
+                     AND j.parent_id = r.ref_id AND j.parent_id IS NOT NULL
+                     AND jsonb_typeof(r.meta->'pending_land') = 'object'
+                   ORDER BY j.ref_id DESC LIMIT 1
+              ) land_dead ON TRUE
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND NOT COALESCE(r.meta ? 'generate', FALSE)
+               AND (live.parent_id IS NOT NULL
+                    OR NOT (COALESCE(land_dead.dead, FALSE)
+                            AND land_dead.job_head IS NOT DISTINCT FROM
+                                (r.meta->'pending_land'->>'head')))
+               AND NOT EXISTS (
+                         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                          WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                            AND t.value = ANY(%s))
+            """,
+            (
+                sorted(_JOB_TERMINAL),
+                _templates.BRANCH_FILES_KEY,
+                _templates.BRANCH_FILES_HEAD_KEY,
+                ATTEMPT_FREE_KEY,
+                sorted(_JOB_TERMINAL - {"cancelled"}),
+                sorted(_JOB_TERMINAL - {"succeeded"}),
+                sorted(_RULING_STATUSES),
+            ),
+        ).fetchall()
+    out: dict[int, _Started] = {}
+    # Read the cap only when there is a holder to judge.
+    max_runs = _overlap_hold_max_runs(store) if rows else 0
+    for rid, landing, pending, files, stamp_head, land_heads, runs in rows:
+        if max_runs and not landing and int(runs or 0) >= max_runs:
+            continue
+        state = (
+            "landing" if landing else "in pre-land review" if pending else "building"
         )
-    ]
-
-
-def _brief_file_sets(store: Any, ids: list[int]) -> dict[int, frozenset[str]]:
-    """``{todo id: file keys}`` from each todo's body chunks plus its
-    ``brief:``/``handoff:`` comments — one query for the handful of ids
-    the overlap check needs."""
-    if not ids:
-        return {}
+        paths = tuple(str(p) for p in files) if isinstance(files, list) else ()
+        current = (
+            bool(stamp_head)
+            and land_heads == [stamp_head]
+            and isinstance(files, list)
+            and all(isinstance(p, str) for p in files)
+        )
+        out[int(rid)] = _Started(state, paths, _lanes.DEFAULT_REPO, current)
+    if not out:
+        return out
+    # A bare pending_land stamp under a rescue / child-failed tag (own, an
+    # ancestor's, or its pending pre-land review's) holds no lock (gr701628).
+    for rid in _rescued_ids(
+        store, [i for i, s in out.items() if s.state == "in pre-land review"]
+    ):
+        del out[rid]
+    if not out:
+        return out
+    # The blocker side of the repo check: ``_node_repos``' reach (own
+    # ``repo:`` tags, else the nearest tagged ancestor's) resolved in the
+    # store, since the loaded plan cannot see an out-of-subtree todo.
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT ref_id, text FROM chunks
-             WHERE ref_id = ANY(%s)
-               AND (chunk_kind = %s
-                    OR (chunk_kind = %s
-                        AND (starts_with(lower(ltrim(text)), 'brief:')
-                             OR starts_with(lower(ltrim(text)), 'handoff:'))))
+            WITH RECURSIVE up(origin, anc, depth) AS (
+                SELECT ref_id, ref_id, 0
+                  FROM refs WHERE ref_id = ANY(%s)
+                UNION ALL
+                SELECT u.origin, r.parent_id, u.depth + 1
+                  FROM up u JOIN refs r ON r.ref_id = u.anc
+                 WHERE u.anc IS NOT NULL AND u.depth < 25
+            ),
+            tagged AS (
+                SELECT u.origin, t.value, u.depth,
+                       MIN(u.depth) OVER (PARTITION BY u.origin) AS nearest
+                  FROM up u
+                  JOIN refs r ON r.ref_id = u.anc
+                  JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                  JOIN tags t USING (tag_id)
+                 WHERE r.kind = 'todo' AND r.retired_at IS NULL
+                   AND t.namespace = 'OPEN' AND starts_with(t.value, 'repo:')
+            )
+            SELECT origin, value FROM tagged WHERE depth = nearest
             """,
-            (ids, TODO_BODY_KIND, _COMMENT_KIND),
+            (sorted(out),),
         ).fetchall()
-    texts: dict[int, list[str]] = {}
-    for ref_id, text in rows:
-        texts.setdefault(int(ref_id), []).append(str(text or ""))
-    return {i: _dscore.brief_files("\n".join(texts.get(i, ()))) for i in ids}
+    repos: dict[int, list[str]] = {}
+    for origin, value in rows:
+        repos.setdefault(int(origin), []).append(str(value)[len("repo:") :].strip())
+    return {
+        rid: _Started(
+            s.state,
+            s.branch_files,
+            sorted(repos[rid])[0] if rid in repos else _lanes.DEFAULT_REPO,
+            s.branch_files_current,
+        )
+        for rid, s in out.items()
+    }
+
+
+def _rescued_ids(store: Any, ids: list[int]) -> set[int]:
+    """The todos in ``ids`` that the rescue pass owns: one that carries a
+    ``rescue:`` or ``child-failed:`` open tag itself or on an ancestor,
+    or whose pending pre-land review does. The review is the reviewer
+    todo ``meta.generate = {role: reviewer, from: td<id>}`` with
+    ``meta.preland_review`` (the lookup of ``run_slice._preland_reviewer``),
+    with ``from`` naming the build or, for a slicer's slice, its
+    parent (:func:`_review_targets`). The rescue machinery tags the
+    review, not the build, when it hands a stuck review to a human, and
+    the build behind it parks ``done`` with ``pending_land`` set: without
+    this arm it held the file-overlap gate for as long as the human took.
+    Read in the store, because a held build can sit outside the loaded
+    plan; :func:`_held_by_registry` is the in-plan read of the same tags
+    for a node being dispatched, and a stamped build is closed, so it
+    needs no such arm."""
+    if not ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH RECURSIVE up(origin, anc, depth) AS (
+                SELECT ref_id, ref_id, 0
+                  FROM refs WHERE ref_id = ANY(%s)
+                UNION ALL
+                SELECT u.origin, r.parent_id, u.depth + 1
+                  FROM up u JOIN refs r ON r.ref_id = u.anc
+                 WHERE u.anc IS NOT NULL AND u.depth < 25
+            )
+            SELECT u.origin
+              FROM up u
+              JOIN refs r ON r.ref_id = u.anc
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t USING (tag_id)
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND t.namespace = 'OPEN'
+               AND (starts_with(t.value, 'rescue:')
+                    OR starts_with(t.value, 'child-failed:'))
+            UNION
+            SELECT b.ref_id
+              FROM refs b
+              JOIN refs rv
+                ON rv.kind = 'todo' AND rv.retired_at IS NULL
+               AND rv.meta->'generate'->>'role' = 'reviewer'
+               AND rv.meta->%s = 'true'::jsonb
+               AND rv.meta->'generate'->>'from'
+                   IN ('td' || b.ref_id::text, 'td' || b.parent_id::text)
+              JOIN ref_tags rt2 ON rt2.ref_id = rv.ref_id
+              JOIN tags t2 ON t2.tag_id = rt2.tag_id
+             WHERE b.ref_id = ANY(%s)
+               AND t2.namespace = 'OPEN'
+               AND (starts_with(t2.value, 'rescue:')
+                    OR starts_with(t2.value, 'child-failed:'))
+            """,
+            (sorted(ids), _templates.PRELAND_REVIEW_KEY, sorted(ids)),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+#: ``scripts/ship`` narrates its own steps on lines led by one of these
+#: marks (``▶ rebuilding Tailwind CSS``, ``→ src/precis_web/static/
+#: tailwind.css``, ``⚠ deploy lag …``).
+_SHIP_NARRATION_MARKS = ("▶", "→", "⚠")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _without_ship_narration(text: str) -> str:
+    """A lander handoff minus the lines ``scripts/ship`` wrote about its
+    own steps. The handoff quotes the gate's output before the verdict,
+    and every land rebuilds the stylesheet, so ``→ …/tailwind.css`` made
+    each build with a failed land declare that file and wait on every
+    other one (gr736403). Any other comment is returned as written: a
+    brief may open a line with an arrow."""
+    from precis.workers.job_types import run_slice
+
+    if not text.lstrip().lower().startswith(run_slice._LANDER_HANDOFF_PREFIX):
+        return text
+    return "\n".join(
+        line
+        for line in text.splitlines()
+        if not _ANSI_RE.sub("", line).lstrip().startswith(_SHIP_NARRATION_MARKS)
+    )
+
+
+def _overlap_inputs(
+    store: Any, ids: list[int]
+) -> dict[int, tuple[frozenset[str], str]]:
+    """Read file sets and effective land targets on the claim connection.
+
+    The file set is what the todo declares (gr734976): its body, its
+    ``brief:`` comments, the machine-written handoffs that name files to
+    fix (the lander's failure note without ship's own narration,
+    :func:`_without_ship_narration`, and the pre-land hand-back,
+    :func:`~precis.workers.job_types.run_slice._outranks_brief`) and its
+    own stamped ``meta.branch_files``. A builder session's plain
+    ``handoff:`` names files it read, ran or found red, not files it
+    edits, so it contributes none. Target resolution still reads the
+    newest of every brief and handoff, as build and land do.
+    """
+    from precis.workers.job_types import run_slice
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH inputs AS (
+                SELECT r.ref_id, r.meta->%s AS target,
+                       r.meta->%s AS branch_files, ARRAY(
+                    SELECT t.value
+                      FROM ref_tags rt JOIN tags t USING (tag_id)
+                     WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                       AND starts_with(t.value, 'attempt:')
+                ) AS retry_tags
+                  FROM refs r WHERE r.ref_id = ANY(%s)
+            )
+            SELECT i.ref_id, i.target, i.retry_tags, i.branch_files,
+                   c.ord, c.chunk_kind, c.text
+              FROM inputs i
+              LEFT JOIN chunks c ON c.ref_id = i.ref_id AND c.ord >= 0
+                   AND c.chunk_kind IN (%s, %s)
+             ORDER BY i.ref_id, c.ord
+            """,
+            (
+                _release.LAND_TARGET_KEY,
+                _templates.BRANCH_FILES_KEY,
+                ids,
+                TODO_BODY_KIND,
+                _COMMENT_KIND,
+            ),
+        ).fetchall()
+
+    result: dict[int, tuple[frozenset[str], str]] = {}
+    for rid, group in groupby(rows, key=itemgetter(0)):
+        ref_rows = list(group)
+        _, target, tags, stamped, *_ = ref_rows[0]
+        body = "\n\n".join(
+            text
+            for _, _, _, _, _, kind, text in ref_rows
+            if kind == TODO_BODY_KIND and text
+        )
+        briefs = [
+            (ord_, text)
+            for _, _, _, _, ord_, kind, text in ref_rows
+            if kind == _COMMENT_KIND
+            and text
+            and text.lstrip().lower().startswith(run_slice._BRIEF_PREFIXES)
+        ]
+        latest = run_slice._select_slice_brief(
+            briefs, reviewer=False, open_tags=partial(iter, tags)
+        )
+        meta = {_release.LAND_TARGET_KEY: target}
+        # gr734976: a builder's own ``handoff:`` is prose about files it
+        # read or found red; only briefs and the machine's file-naming
+        # handoffs, plus the stamped branch files, say what it touches.
+        declared = [
+            _without_ship_narration(text)
+            for _, text in briefs
+            if text.lstrip().lower().startswith("brief:")
+            or run_slice._outranks_brief(text.lstrip())
+        ]
+        if isinstance(stamped, list):
+            declared.extend(str(p) for p in stamped)
+        files = _dscore.brief_files("\n".join([body, *declared]))
+        result[rid] = files, _release.land_target_of(meta, body, latest) or "main"
+    return result
 
 
 def _block_lane_gap(
@@ -5112,11 +6907,12 @@ def _block_route(
     plan: _Plan, w: _Writer, res: PassResult, n: _Node, why: str, text: str
 ) -> None:
     """Hold one run_slice-bound node on a coordinator ask — the mint-time
-    route of gr645163: a brief no builder lane may run (it names a deny
-    path, or the fix is prod-graph only) mints no job and burns no
-    build; the ``blocked-by`` edge keeps later passes from re-minting or
-    re-asking. The ask's body carries the brief itself — the ruling's
-    "with the diff/brief attached"."""
+    route of gr645163: a brief no builder lane may run (it asks to write
+    a deny path, or the fix is prod-graph only — gr685970) mints no job
+    and burns no build; the ``blocked-by`` edge keeps later passes from
+    re-minting or re-asking. The ask's body carries the brief itself —
+    the ruling's "with the diff/brief attached", and ``why`` quotes the
+    sentence the route fired on."""
     now = datetime.now(UTC)
     if w.dry_run:
         # Mirror the hold so hygiene cannot report a second ask this pass.
@@ -5138,8 +6934,8 @@ def _block_route(
                 "td643078/td638980 stalls). Land it by hand, mint a "
                 "builder outside the factory's deny rules, or drop the "
                 f"node; closing this ask `acknowledged` re-arms td{n.id} "
-                "and it routes again while the text still names a denied "
-                "path.\n\n---\n\n" + text.strip()[:4000]
+                "and it routes again while the text still asks to write "
+                "a denied path.\n\n---\n\n" + text.strip()[:4000]
             ),
             context=why,
             now=now,
@@ -5175,41 +6971,183 @@ def _log_cut_refusal(w: _Writer, res: PassResult, n: _Node, note: str | None) ->
         log.info("plan_dispatch: %s", note)
 
 
+#: The release_deploy node's refusal texts already commented since it
+#: last dispatched (:func:`_comment_deploy_refusal`).
+DEPLOY_REFUSAL_SEEN_KEY = "deploy_refusal_seen"
+
+#: How many refusal texts :data:`DEPLOY_REFUSAL_SEEN_KEY` keeps.
+_DEPLOY_REFUSAL_SEEN_CAP = 8
+
+
+def _comment_deploy_refusal(
+    w: _Writer, res: PassResult, n: _Node, note: str | None
+) -> None:
+    """Write a ``release_deploy`` node's dispatch refusal as ONE comment
+    the first time its text is seen (gr702442): the engine-review gate
+    held r316's deploy for nine hours and nothing on the node said why.
+    Unlike :func:`_log_cut_refusal` this leaves a comment, so the texts
+    already written are kept in ``meta.deploy_refusal_seen`` (newest
+    :data:`_DEPLOY_REFUSAL_SEEN_CAP`) — a refusal that flaps between two
+    texts comments each once, not every tick. A dispatch (``note``
+    ``None``) clears the key so the next hold comments afresh. A dry run
+    writes nothing."""
+    if w.dry_run:
+        return
+    seen = [str(s) for s in (n.meta.get(DEPLOY_REFUSAL_SEEN_KEY) or [])]
+    if note is None:
+        if seen:
+            w.stamp_meta(n, {DEPLOY_REFUSAL_SEEN_KEY: None})
+        return
+    if note in seen:
+        return
+    w.comment(n, f"plan_dispatch: {note}")
+    w.stamp_meta(
+        n, {DEPLOY_REFUSAL_SEEN_KEY: [*seen, note][-_DEPLOY_REFUSAL_SEEN_CAP:]}
+    )
+    res.logged.append(note)
+    log.info("plan_dispatch: %s", note)
+
+
+def _review_repo_mismatch(plan: _Plan, n: _Node) -> str | None:
+    """Why the reviewer ``n`` must not dispatch: the repo it resolves to
+    (:func:`_node_repos`, none = the default) is not the repo its review
+    target(s) landed in (``meta.landed_repo``, absent = the default).
+    ``None`` when they agree. A reviewer with no target in the plan (a
+    sha-keyed one) compares against the default repo."""
+    tagged = _node_repos(plan, n)
+    own = tagged[0] if tagged else _lanes.DEFAULT_REPO
+    landed = {
+        str(t.meta.get(_lanes.LANDED_REPO_KEY) or _lanes.DEFAULT_REPO)
+        for t in _review_targets(plan, n)
+    } or {_lanes.DEFAULT_REPO}
+    if landed == {own}:
+        return None
+    return (
+        f"review repo mismatch: the reviewer resolves to repo {own}, its "
+        f"target landed in {', '.join(sorted(landed))}"
+    )
+
+
+def _same_red_digest(plan: _Plan, n: _Node, other: _Node | None) -> bool:
+    """``n`` and ``other`` are fix nodes of one red run: both
+    ``blocked-by`` the same ``ci_red_digest`` node (:func:`_digest_of`).
+    Their briefs all carry that run's whole digest and changed-files
+    table (``ci_red_digest._cluster_briefs``), so each names every file
+    its siblings' clusters name: the file-overlap hold read them as one
+    conflict and ran the fixers of a red release one at a time, each
+    waiting for the one before it to land. They build side by side
+    instead (Reto 2026-11-19). The lands still go one at a time: ship's
+    round lock admits one release push, and a land that finds it held
+    runs again a minute later (``land_slice.RELEASE_BUSY_MARK``); a fix
+    that conflicts with a sibling's goes back to its builder at the
+    land, like any conflicting land. Fix nodes of different iterations
+    wait on different digests and keep the hold."""
+    if other is None or other.id == n.id:
+        return False
+    mine = _digest_of(plan, n)
+    theirs = _digest_of(plan, other)
+    return mine is not None and theirs is not None and mine.id == theirs.id
+
+
+def _held_files(s: _Started, declared: frozenset[str]) -> frozenset[str]:
+    """The files a started build holds. Once it has left the build step
+    with a complete stamp for its landing or review tip, the branch diff
+    is the whole answer: a file its body or a lander note
+    merely names is not one it edits (gr736403: a landing build with four
+    branch files held 16 queued builds through two it never touched).
+    While it builds or the stamp is missing, incomplete or stale, the
+    declared files count too."""
+    branch = _dscore.brief_files("\n".join(s.branch_files))
+    if s.branch_files_current and s.state != "building":
+        return branch
+    return declared | branch
+
+
+def _overlap_holds(
+    plan: _Plan,
+    store: Any,
+    started: dict[int, _Started],
+    candidates: list[_Node],
+) -> dict[int, tuple[int, frozenset[str]]]:
+    """``{candidate id: (blocking started id, shared file keys)}`` — the
+    td603849 file-overlap hold, reported by :func:`_step_dispatch` and
+    enforced inside the executor claim transaction (gr702610). Only a default-op,
+    non-generator build is held; ``started`` is :func:`_started_slices`;
+    a started build blocks a candidate in the same repo when a file the
+    candidate declares is the same repo-relative path as one the
+    started build touches. Each side's declared files are its body, its
+    ``brief:`` comments, the lander's failure handoff and the pre-land
+    hand-back, and its stamped ``branch_files`` (so a retry that already
+    has commits carries them); a builder's plain ``handoff:`` names files
+    it merely read and counts for neither (gr734976;
+    :func:`_overlap_inputs`,
+    :func:`~precis.utils.dispatch_score.shared_files`). A brief
+    that names a file by a shorter suffix counts only when exactly one of
+    the started build's paths ends with it — the same basename in two
+    directories, or an ambiguous ``__init__.py``, holds nothing; a real
+    conflict still rebuilds at land. Only started work holds, never
+    another candidate, so two candidates never hold each other. Builds
+    hold each other only on the same land target (gr688291), and the
+    fix nodes of one red digest never hold each other
+    (:func:`_same_red_digest`).
+    One ``_overlap_inputs`` query for the lot; empty without a started
+    build or a build candidate."""
+    builds = [
+        n
+        for n in candidates
+        if _resolve_op(n)[0] == DEFAULT_OP and not _is_generator(n)
+    ]
+    if not started or not builds:
+        return {}
+    inputs = _overlap_inputs(store, list(started) + [n.id for n in builds])
+    default: tuple[frozenset[str], str] = (frozenset(), "main")
+    held: dict[int, tuple[int, frozenset[str]]] = {}
+    held_sets = {
+        i: _held_files(s, inputs.get(i, default)[0]) for i, s in started.items()
+    }
+    for n in builds:
+        mine, target = inputs.get(n.id, default)
+        if not mine:
+            continue
+        repo = _node_repo(plan, n)
+        for hid in sorted(held_sets):
+            # started[hid].repo, not _node_repo on plan.nodes: a held
+            # build can sit outside the loaded subtrees, and skipping
+            # the check then held a same-path build in another repo.
+            if started[hid].repo != repo:
+                continue
+            # gr688291: another land target is another branch; a release
+            # fix's wide digest brief must not wait on unrelated main work.
+            if inputs.get(hid, default)[1] != target:
+                continue
+            if _same_red_digest(plan, n, plan.nodes.get(hid)):
+                continue
+            shared = _dscore.shared_files(mine, held_sets[hid])
+            if hid != n.id and shared:
+                held[n.id] = (hid, shared)
+                break
+    return held
+
+
 def _step_dispatch(
     plan: _Plan,
     w: _Writer,
     res: PassResult,
     lane_table: tuple[_lanes.Lane, ...],
     rules: dict[str, dict[str, Any]] | None = None,
+    now: datetime | None = None,
 ) -> None:
-    held_ids = _inflight_land_ids(plan)
+    if now is None:
+        now = datetime.now(UTC)
     candidates = [
         n
         for n in sorted(plan.todos(), key=lambda x: (-_effective_score(plan, x), x.id))
         if _dispatchable(plan, n) and n.status == "open"
     ]
-    # td603849 file-overlap hold: a run_slice whose brief file set
-    # overlaps an in-flight land's scores below it until that land
-    # finishes — i.e. held this pass, never outranking the land (two
-    # slices rebuilding the same file re-conflicted at the mint-barrier
-    # land). The held land's own todo is never a candidate (it has a
-    # live job).
-    overlap_files = (
-        _brief_file_sets(w.store, held_ids + [n.id for n in candidates])
-        if held_ids
-        else {}
-    )
-    held: dict[int, int] = {}
-    if held_ids:
-        held_sets = {i: overlap_files.get(i) or frozenset() for i in held_ids}
-        for n in candidates:
-            if _resolve_op(n)[0] != DEFAULT_OP:
-                continue
-            mine = overlap_files.get(n.id) or frozenset()
-            for hid, hfiles in held_sets.items():
-                if hid != n.id and mine and mine & hfiles:
-                    held[n.id] = hid
-                    break
+    # Diagnostic only: every doable node is queued. The claim transaction
+    # checks current holders before spending an executor slot.
+    started = _started_slices(w.store, single_flight=True) if candidates else {}
+    held = _overlap_holds(plan, w.store, started, candidates)
     # gr657066: governs:factory skills join the routing set — a brief
     # naming one routes to the coordinator like any deny-path text. The
     # filesystem variant failing open is fine here (the run/land gates
@@ -5219,15 +7157,87 @@ def _step_dispatch(
         if _excluded(plan, n) or _claims(n) or plan.live_job(n):
             continue
         if n.id in held:
+            res.held += 1
+            hid, shared = held[n.id]
+            named = sorted(p for p in shared if "/" in p) or sorted(shared)
             res.notes.append(
-                f"td{n.id}: file-overlap hold — brief names files in "
-                f"td{held[n.id]}'s in-flight land; scored below it until "
-                "that land finishes"
+                f"td{n.id}: file-overlap hold — waits on td{hid} "
+                f"({started[hid].state}): both touch "
+                f"{', '.join(f'`{p}`' for p in named[:3])}"
+                f"{' …' if len(named) > 3 else ''}; claims once td{hid} "
+                "is on main"
             )
+        # td659522 step 0: every op on a node tagged for another repo is
+        # skipped before any routing, escalation or ask — the builder,
+        # reviewer and lander all assume a precis worktree.
+        repo_problem = _lanes.repo_refusal(_node_repos(plan, n), w.store)
+        if repo_problem is not None:
+            res.notes.append(f"td{n.id}: not dispatched — {repo_problem}")
             continue
+        if _is_reviewer(n):
+            # td659522 step 5: a reviewer runs in the repo its target landed
+            # in; a mismatch would review one repo's sha in another's tree.
+            # A blocked or paused one is skipped first, quietly: until its
+            # target lands, the target has no landed_repo to agree with.
+            if plan.blocked(n) or plan.paused(n):
+                continue
+            mismatch = _review_repo_mismatch(plan, n)
+            if mismatch is not None:
+                res.notes.append(f"td{n.id}: not dispatched — {mismatch}")
+                continue
         job_type, params = _resolve_op(n)
+        # td659522 step 1: a build in another repo carries it on the job;
+        # a default-repo node gets no key, so its params are unchanged.
+        node_deny = deny
+        if job_type == DEFAULT_OP:
+            tagged = _node_repos(plan, n)
+            if tagged and tagged[0] != _lanes.DEFAULT_REPO:
+                params["repo"] = tagged[0]
+                profile = _lanes.repo_profile(tagged[0])
+                if profile is not None:
+                    # The precis deny set (and its governed skills) is no
+                    # reason to route a brief about another repo.
+                    node_deny = (
+                        profile.deny_paths
+                        if profile.deny_paths is not None
+                        else _lanes.deny_paths_for(w.store)
+                    )
         if plan.blocked(n) or plan.paused(n):
             continue
+        if _is_repo_release(n):
+            # td659522 step 3: the release job cuts a tag in a second
+            # repo; it takes the node's repo like a build does. A node
+            # that resolves to precis or to nothing is not its business
+            # (precis releases go through release_cut).
+            tagged = _node_repos(plan, n)
+            if not tagged or tagged[0] == _lanes.DEFAULT_REPO:
+                res.notes.append(
+                    f"td{n.id}: {REPO_RELEASE_OP} not dispatched — no "
+                    "second-repo repo: tag; precis releases go through "
+                    "release_cut"
+                )
+                continue
+            params["repo"] = tagged[0]
+            params.setdefault("todo_id", n.id)
+        if _is_pin_bump(n):
+            # td659522 step 4: the pin-bump job names its release node and
+            # the repo it pins; it builds in precis (no ``repo`` param).
+            params, pin_problem = _pin_params(plan, n, params)
+            if pin_problem is not None:
+                res.notes.append(
+                    f"td{n.id}: {PIN_BUMP_OP} not dispatched — {pin_problem}"
+                )
+                continue
+            if _pin_awaits_land(plan, n):
+                res.notes.append(
+                    f"td{n.id}: {PIN_BUMP_OP} succeeded; waiting for its land_slice"
+                )
+                continue
+            # td659522 F7: after a land the next job is the gate image wait;
+            # it checks the image on the host the land ran on.
+            land_host = _pin_land_host(plan, n)
+            if land_host is not None:
+                params.setdefault("target_node", land_host)
         reland = _reland_params(plan, n, w.store)
         if job_type == DEFAULT_OP and reland is None:
             task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
@@ -5236,14 +7246,14 @@ def _step_dispatch(
                 _block_lane_gap(plan, w, res, n, gap)
                 continue
             # gr645163 (Reto 2026-11-12, "escalate to next model"): work
-            # no builder lane may write — the judged text names a deny
-            # path, or the fix is prod-graph only — skips the builders
-            # and files one coordinator ask at mint. Generators never
-            # classify: they read source text, and a gripe or diff may
-            # name deny paths legitimately.
+            # no builder lane may write — the judged text asks to write a
+            # deny path (gr685970), or the fix is prod-graph only — skips
+            # the builders and files one coordinator ask at mint.
+            # Generators never classify: they read source text, and a
+            # gripe or diff may name deny paths legitimately.
             if node_kind(n.meta) != "generator":
                 body, brief = _route_text(w.store, n)
-                routed = _route.coordinator_route(body, deny, brief=brief)
+                routed = _route.coordinator_route(body, node_deny, brief=brief)
                 if routed is not None:
                     text = "\n\n".join(part for part in (body, brief) if part)
                     _block_route(plan, w, res, n, routed, text)
@@ -5291,7 +7301,24 @@ def _step_dispatch(
             # re-queued this pass.
             requeued_cancel = newest.id
         free_reason = newest.meta.get(ATTEMPT_FREE_KEY) if newest else None
-        if free_reason:
+        if free_reason and newest is not None:
+            # gr662077: identical ``attempt_free`` failures burn no
+            # attempt, so the retry bound never trips — a held
+            # ``index.lock`` re-minted a doomed job every tick (~140 in
+            # 3h on td656030). The first repeats re-queue at once — a
+            # transient wait usually clears on the next tick — but a
+            # sustained run of the SAME reason backs off exponentially
+            # from the newest failure's mint, and at
+            # :data:`FREE_RUN_CAP` ``_free_done`` reads as capped and the
+            # hygiene step asks the coordinator.
+            _reason, run = _free_run(plan, n)
+            ready = free_backoff_ready_at(newest.created_at, run)
+            if ready is not None and ready > now:
+                res.notes.append(
+                    f"td{n.id}: held — '{free_reason}' free failure "
+                    f"x{run} in a row; next dispatch at {_iso(ready)}"
+                )
+                continue
             res.notes.append(f"td{n.id}: re-queued after {free_reason}, not an attempt")
         if reland is not None:
             # An infra-red land re-runs ship on the same branch with the
@@ -5345,7 +7372,7 @@ def _step_dispatch(
                 if not (isinstance(prev, dict) and prev.get("job") == last_job):
                     w.comment(
                         n,
-                        f"brief: {brief} — mechanical red on jo{last_job}: "
+                        f"brief: {brief}{_templates.MECH_BRIEF_MARK}{last_job}: "
                         f"{line[:200]}",
                     )
                 mech_pinned = _mech_pin(plan, w, n, rungs, params, rules)
@@ -5379,9 +7406,24 @@ def _step_dispatch(
         ):
             # The deploy, the cut, the red-run digest and the runtime
             # confirm run where the cut ran (meta.release.host, td543856,
-            # td543855, td573431, td573432); the first cut has none and
-            # stays unpinned.
+            # td543855, td573431, td573432). The first cut has none: it
+            # pins to release.cut_host (gr713351 — a builder host that
+            # claimed r333's cut had no deploy overlay), and with that
+            # unset it is held, never left for any ssh_node host to claim.
             host = _release.pinned_host(w.store, n.id)
+            if not host and job_type == "release_cut":
+                host = _release.cut_host(w.store)
+                if not host:
+                    no_host = (
+                        f"td{n.id}: release_cut held — release.cut_host is "
+                        "unset, so the first cut has no host that can "
+                        "deploy (gr713351); next: put(kind='job', "
+                        "mode='setting', args={'key': 'release.cut_host', "
+                        "'value': '<host>', 'reason': '...'})"
+                    )
+                    _log_cut_refusal(w, res, n, no_host)
+                    res.notes.append(no_host)
+                    continue
             if host:
                 params["target_node"] = host
         spec = get_job_type(job_type)
@@ -5396,6 +7438,8 @@ def _step_dispatch(
         note = f"td{n.id}: {job_type} not dispatched — {problem}" if problem else None
         if job_type == "release_cut":
             _log_cut_refusal(w, res, n, note)
+        elif job_type == "release_deploy":
+            _comment_deploy_refusal(w, res, n, note)
         if note:
             res.notes.append(note)
             continue
@@ -5416,9 +7460,14 @@ def _step_dispatch(
                 # The decide() shadow beside the dispatch-time pick
                 # (td572552 S4b) — run_slice.submit nests it under its
                 # own submit record.
-                meta_extra={"decision": decision_stamp}
-                if decision_stamp is not None
-                else None,
+                meta_extra={
+                    _dscore.SCORE_META_KEY: _claim_score(plan, n, job_type=job_type),
+                    **(
+                        {"decision": decision_stamp}
+                        if decision_stamp is not None
+                        else {}
+                    ),
+                },
             )
             if requeued_cancel is not None:
                 res.notes.append(
@@ -5434,13 +7483,13 @@ def _step_dispatch(
 # ── (5) hygiene ────────────────────────────────────────────────────
 
 
-def _job_event_text(store: Any, job_id: int) -> str:
-    """The newest ``job_event`` chunk's text (the job's failure reason)."""
+def _job_chunk_text(store: Any, job_id: int, chunk_kind: str) -> str:
+    """The newest ``chunk_kind`` chunk's text on the job."""
     try:
         chunks = [
             c
             for c in store.chunks.list_chunks_for_ref(job_id)
-            if c.chunk_kind == "job_event" and c.text
+            if c.chunk_kind == chunk_kind and c.text
         ]
     except Exception:  # a missing tail must not stop the ask
         log.warning("plan_dispatch: reading job:%d chunks failed", job_id)
@@ -5448,6 +7497,18 @@ def _job_event_text(store: Any, job_id: int) -> str:
     if not chunks:
         return ""
     return str(max(chunks, key=lambda c: (c.ord, c.id)).text).strip()
+
+
+def _job_event_text(store: Any, job_id: int) -> str:
+    """The newest ``job_event`` chunk's text (the job's failure reason)."""
+    return _job_chunk_text(store, job_id, "job_event")
+
+
+def _job_summary_text(store: Any, job_id: int) -> str:
+    """The newest ``job_summary`` chunk's text — the run's own outcome
+    account, written on success where ``job_event`` keeps only the
+    submit's launch preamble."""
+    return _job_chunk_text(store, job_id, "job_summary")
 
 
 def _failure_tail(store: Any, job_id: int, limit: int) -> str:
@@ -6092,9 +8153,16 @@ def _step_unplaced(
     ask (:func:`_mint_unplaced_ask`), deduped on ``meta.unplaced_ask`` —
     a closed ask is the ruling, never re-minted. The heal check settles
     it: the node closes first → the ask closes ``won't-do``; the gap
-    heals or the job leaves ``queued`` → ``done``."""
+    heals or the job leaves ``queued`` → ``done``.
+
+    gr681494: the ask mints only when no dark host offers the job's whole
+    token set either — a job whose only fit is a host the ``host-dark``
+    alert already names waits on that one page instead of adding a
+    per-job "provision a host?" ask to the flood."""
     from precis.workers.executors._common import (
         advertised_by_host,
+        dark_advertised_by_host,
+        lane_adapter_map,
         placement_gap,
         placement_requires,
     )
@@ -6116,6 +8184,8 @@ def _step_unplaced(
         return
     with store.pool.connection() as conn:
         advertised = advertised_by_host(conn)
+        dark = dark_advertised_by_host(conn)
+        lane_map = lane_adapter_map(conn)
     for n, mark in marked:
         ask_id = mark.get("ask")
         ask = plan.nodes.get(ask_id) if isinstance(ask_id, int) else None
@@ -6137,7 +8207,7 @@ def _step_unplaced(
         still_blocked = any(
             j.status == "queued"
             and placement_requires(j.meta)
-            and placement_gap(j.meta, advertised)
+            and placement_gap(j.meta, advertised, lane_map)
             for j in plan.jobs(n)
         )
         if still_blocked:
@@ -6152,7 +8222,7 @@ def _step_unplaced(
             f"td{ask.id}: unplaced ask closed — td{n.id}'s placement gap healed"
         )
     for n, j in waiting:
-        gap = placement_gap(j.meta, advertised)
+        gap = placement_gap(j.meta, advertised, lane_map)
         if not gap:
             continue
         minutes = int((now - j.created_at).total_seconds() // 60)
@@ -6165,6 +8235,25 @@ def _step_unplaced(
             or _UNPLACED_ASK_KEY in n.meta
             or _closed(n)
         ):
+            continue
+        # gr681494: a job whose whole token set fits one dark host waits
+        # on that host's ``host-dark`` page — the one alert already names
+        # the cause, so the per-job provision ask is noise. A ``target_node``
+        # pin narrows the check to that host, as ``placement_gap`` does.
+        tokens = placement_requires(j.meta, lane_map)
+        pin = (j.meta.get("params") or {}).get("target_node")
+        waiting_on = next(
+            (
+                h
+                for h in ([str(pin)] if pin else sorted(dark))
+                if tokens <= dark.get(h, set())
+            ),
+            None,
+        )
+        if waiting_on is not None:
+            res.notes.append(
+                f"td{n.id}: job jo{j.id} waiting on host-dark:{waiting_on}"
+            )
             continue
         if w.dry_run:
             res.asks += 1
@@ -6348,6 +8437,33 @@ def _in_rescue(n: _Node) -> bool:
     return any(v.startswith("rescue:") for v in n.open_tags)
 
 
+def _review_miss(store: Any, n: _Node, last: _Node) -> str | None:
+    """The verdict miss a reviewer's succeeded ``last`` attempt was
+    judged on — ``meta.review``'s ``verdict: None`` on this job
+    (``_step_reviews``'s stamp) — as a signature line, or ``None`` for a
+    non-reviewer, a stamp on another job, or a verdict posted since the
+    judging."""
+    seen = n.meta.get("review")
+    if not (
+        _is_reviewer(n)
+        and isinstance(seen, dict)
+        and seen.get("job") == last.id
+        and seen.get("verdict") is None
+    ):
+        return None
+    verdict, raw = _read_verdict(store, n.id, last.created_at)
+    if verdict is not None:
+        # A verdict landed after the judging stamped the miss — never
+        # sign a miss that no longer holds.
+        return None
+    what = (
+        f"a malformed verdict {_first_line(raw)!r}" if raw else "no `review:` comment"
+    )
+    # ``left``, not ``succeeded with``: the miss line IS the signature
+    # key, and ``succeeded``'s ``cceeded`` tail normalizes to ``<sha>``.
+    return f"review job:{last.id} left {what}"
+
+
 def _rescue_node(
     plan: _Plan, w: _Writer, res: PassResult, n: _Node, cap: int, attempts: int
 ) -> None:
@@ -6363,6 +8479,20 @@ def _rescue_node(
     ended = _attempt_jobs(plan, n)
     last = ended[-1] if ended else plan.jobs(n)[-1]
     text = _job_event_text(w.store, last.id)
+    if last.status == "succeeded":
+        # A succeeded attempt records no failure — its newest
+        # ``job_event`` is the submit's launch preamble, and signing
+        # THAT lumps every same-lane silent outcome into one signature
+        # gripe (gr685880: three no-verdict reviewers shared the launch
+        # line). Sign the attempt's own account instead: a verdict-miss
+        # reviewer's miss leads, its ``job_summary`` follows; the
+        # summary alone for any other clean-exit class.
+        miss = _review_miss(w.store, n, last)
+        summary = _job_summary_text(w.store, last.id)
+        if miss is not None:
+            text = "\n".join(x for x in (miss, summary) if x)
+        elif summary:
+            text = summary
     lines = [ln for ln in text.splitlines() if ln.strip()]
     # The signature key's error line is the failure's own first line —
     # skipping the ``run_slice:`` preamble and the ``--- log tail ---``
@@ -6386,6 +8516,12 @@ def _rescue_node(
             f"; the per-node spend cap ${float(spend['cap_usd']):.2f} for a "
             f"paid rung held — ${float(spend.get('usd') or 0):.2f} recorded "
             "spent on the node's job rows"
+        )
+    if last.status == "succeeded":
+        # Say the cap's shape honestly: no lane failure drove it — the
+        # newest attempt exited clean and left nothing to act on.
+        step += (
+            "; the newest attempt exited clean — a deliverable miss, not a lane failure"
         )
     verdict = _verdict_line(text)
     if verdict is None:
@@ -6438,6 +8574,239 @@ def _rescue_node(
         res.notes.append(f"td{n.id}: rescue skipped ({r.skipped})")
 
 
+def _tagged_age(record: Any, now: datetime) -> timedelta | None:
+    """How long ago a ``meta.repo_release`` record (``state: tagged``) was
+    tagged, else ``None`` (no record, not tagged, or no readable
+    ``tagged_at``)."""
+    if not isinstance(record, dict) or record.get("state") != "tagged":
+        return None
+    try:
+        at = datetime.fromisoformat(str(record.get("tagged_at")))
+    except ValueError:
+        return None
+    return now - (at if at.tzinfo else at.replace(tzinfo=UTC))
+
+
+def _step_pin_stale(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> None:
+    """td659522 step 4 F1: an OPEN pin-bump node whose one release node
+    tagged over :data:`PIN_STALE_AFTER` ago and which has no live job raises
+    ``pin_bump/stale-open:{todo}`` (warn; ``raise_alert`` dedups on the
+    fingerprint). A succeeded ``pin_bump`` whose land never appeared is such a
+    node: its newest job is terminal and nothing else runs. So is one whose
+    live job is a parked gate image wait (td659522 F7) that has seen the
+    image behind the pin for over :data:`PIN_STALE_AFTER`: the parked job
+    would otherwise hide a node that may never close."""
+    for n in plan.todos():
+        if _closed(n) or not _is_pin_bump(n):
+            continue
+        image = _pin_image(n)
+        since = _pin_image_since(image) if image.get("ready") is not True else None
+        waiting = since is not None and now - since > PIN_STALE_AFTER
+        if plan.live_job(n) and not waiting:
+            continue
+        releases = _pin_releases(plan, n)
+        if len(releases) != 1:
+            continue
+        rel = releases[0]
+        age = _tagged_age(rel.meta.get("repo_release"), now)
+        if age is None or age <= PIN_STALE_AFTER:
+            continue
+        record = rel.meta["repo_release"]
+        tag = str(record.get("tag") or "?")
+        hours = int(age.total_seconds() // 3600)
+        res.notes.append(
+            f"td{n.id}: pin bump still open {hours} h after {tag} was tagged"
+        )
+        if w.dry_run:
+            continue
+        raise_alert(
+            w.store,
+            source=_PIN_STALE_SOURCE,
+            fingerprint=f"stale-open:{n.id}",
+            title=f"pin bump td{n.id} still open {hours} h after {tag} was tagged",
+            detail=(
+                (
+                    f"pin-bump node td{n.id} has waited over "
+                    f"{int(PIN_STALE_AFTER.total_seconds() // 3600)} h for the "
+                    f"{PIN_GATE_IMAGE} gate image on {image.get('host')} "
+                    f"({image.get('reason')}); "
+                    if waiting
+                    else f"pin-bump node td{n.id} is open with no live job; "
+                )
+                + f"release node td{rel.id} tagged {tag} {hours} h ago (limit "
+                f"{int(PIN_STALE_AFTER.total_seconds() // 3600)} h). "
+                + (
+                    "Its image ask may have been closed without a rebuild."
+                    if waiting
+                    else "The bump failed, was never dispatched, or its land never ran."
+                )
+            ),
+            severity="warn",
+            subject_ref_id=n.id,
+        )
+
+
+def _todo_status_of(plan: _Plan, store: Any, ref_id: int) -> str | None:
+    """``ref_id``'s STATUS: the loaded node's, else the store's tags."""
+    node = plan.nodes.get(ref_id)
+    if node is not None:
+        return node.status
+    for t in store.tags_for(ref_id):
+        if t.prefix == "STATUS":
+            return str(t.value)
+    return None
+
+
+def _pin_image_since(image: dict[str, Any]) -> datetime | None:
+    try:
+        at = datetime.strptime(str(image.get("since")), "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return at.replace(tzinfo=UTC)
+
+
+def _step_pin_image_ask(
+    plan: _Plan, w: _Writer, res: PassResult, now: datetime
+) -> None:
+    """td659522 F7 (Reto 2026-11-15): an OPEN pin-bump node whose image wait
+    found the land host's gate image behind the pin (``image.reason`` one
+    of :data:`PIN_IMAGE_STALE`, or docker unreachable for over
+    :data:`PIN_STALE_AFTER`) gets ONE coordinator ask naming
+    ``scripts/build-image precis-dev``. The ask sits under the plan root and
+    does not block the node: the glue is already blocked by the open node,
+    and a block would stop the re-dispatch of a wait that ended without
+    closing it. The factory never rebuilds the image; the wait closes the
+    node and the ask on its first poll after the rebuild. Deduped on the
+    node's :data:`PIN_IMAGE_ASK_KEY` while that ask is open for the same
+    wanted sha; an ask closed while the image still lacks the pin is asked
+    again, at most :data:`PIN_IMAGE_REASK_AFTER` after it was first seen
+    closed (``closed_at`` on the mark). Backstop: an open image ask whose
+    node is closed (by hand, or before the wait could close it) is closed
+    with it, and the mark is cleared."""
+    for n in plan.todos():
+        if not _is_pin_bump(n):
+            continue
+        mark = n.meta.get(PIN_IMAGE_ASK_KEY)
+        mark = mark if isinstance(mark, dict) else {}
+        ask_id = mark.get("ask")
+        if not isinstance(ask_id, int) or isinstance(ask_id, bool):
+            ask_id = None
+        ask_status = (
+            _todo_status_of(plan, w.store, ask_id) if ask_id is not None else None
+        )
+        ask_open = ask_status is not None and ask_status not in TERMINAL_TODO_STATUSES
+        if _closed(n):
+            if ask_id is None:
+                continue
+            if ask_open:
+                res.notes.append(f"td{n.id}: image ask td{ask_id} closed with its node")
+                text = (
+                    f"answer: td{n.id} is closed ({n.status}); the image wait is over"
+                )
+                ask = plan.nodes.get(ask_id)
+                if ask is not None:
+                    w.comment(ask, text)
+                    w.set_status(ask, "done")
+                elif not w.dry_run:
+                    w.comment_id(ask_id, text)
+                    w.store.add_tag(
+                        ask_id,
+                        Tag.closed("STATUS", "done"),
+                        set_by="system",
+                        replace_prefix=True,
+                    )
+            w.stamp_meta(n, {PIN_IMAGE_ASK_KEY: None})
+            continue
+        image = _pin_image(n)
+        want, reason = image.get("want"), image.get("reason")
+        if image.get("ready") is True or not isinstance(want, str) or not want:
+            continue
+        if reason == PIN_IMAGE_UNREACHABLE:
+            since = _pin_image_since(image)
+            if since is None or now - since <= PIN_STALE_AFTER:
+                continue
+        elif reason not in PIN_IMAGE_STALE:
+            continue
+        again: int | None = None
+        if ask_id is not None and mark.get("want") == want:
+            if ask_open:
+                continue  # one open ask per wanted sha
+            closed_at = _pin_image_since({"since": mark.get("closed_at")})
+            if closed_at is None:
+                # First pass that sees it closed: start the re-ask clock.
+                w.stamp_meta(n, {PIN_IMAGE_ASK_KEY: {**mark, "closed_at": _iso(now)}})
+                res.notes.append(
+                    f"td{n.id}: image ask td{ask_id} closed, the image still "
+                    "lacks the pin; asking again in "
+                    f"{int(PIN_IMAGE_REASK_AFTER.total_seconds() // 60)} min"
+                )
+                continue
+            if now - closed_at < PIN_IMAGE_REASK_AFTER:
+                continue
+            again = ask_id
+        host = str(image.get("host") or "the land host")
+        record = n.meta.get(PIN_RECORD_KEY) or {}
+        landed = str(record.get("landed_sha") or "")
+        package = str(record.get("package") or "the engine")
+        have = str(image.get("have") or "no label")
+        glue = sorted(
+            bid
+            for bid, blockers in plan.blockers.items()
+            if any(b.id == n.id for b in blockers)
+        )
+        title = f"td{n.id}: rebuild the gate image on {host}"
+        res.notes.append(f"td{n.id}: {title.split(': ', 1)[1]} ({reason})")
+        if w.dry_run:
+            res.asks += 1
+            continue
+        if reason == PIN_IMAGE_UNREACHABLE:
+            seen = (
+                f"docker on {host} has not answered `docker image inspect "
+                f"{PIN_GATE_IMAGE}` for over "
+                f"{int(PIN_STALE_AFTER.total_seconds() // 3600)} h, so td{n.id} "
+                "cannot tell whether the gate image carries the pin."
+            )
+        else:
+            seen = (
+                f"The {PIN_GATE_IMAGE} gate image on {host} is {reason}: its "
+                f"precis.autocatpath_rev label is {have[:12]}, the pin wants "
+                f"{want[:9]}."
+            )
+        body = (
+            f"td{n.id} moved precis's {package} pin"
+            + (f" (landed as {landed[:9]})" if landed else "")
+            + f". {seen} The factory never builds the image. On {host}, from a "
+            f"precis checkout at or after {landed[:9] or 'that land'} (pull "
+            f"first), run `scripts/build-image {PIN_GATE_IMAGE}`; td{n.id} "
+            "closes itself (and this ask) within ~2 min of the rebuild."
+            + (
+                f" The previous ask td{again} was closed, but the image still "
+                "does not carry the pin."
+                if again is not None
+                else ""
+            )
+            + (
+                " Blocked until then: " + ", ".join(f"td{g}" for g in glue) + "."
+                if glue
+                else ""
+            )
+        )
+        ask_id = _mint_coordinator_ask(
+            w.store,
+            plan,
+            n,
+            title=title,
+            body=body,
+            context=f"gate image {reason} on {host}: have {have[:12]}, want {want[:9]}",
+            now=now,
+            # Not a block: the open node already holds the glue, and a
+            # blocked node could not re-dispatch a wait that ended early.
+            block_node=False,
+        )
+        w.stamp_meta(n, {PIN_IMAGE_ASK_KEY: {"ask": ask_id, "want": want}})
+        res.asks += 1
+
+
 def _step_hygiene(
     plan: _Plan,
     w: _Writer,
@@ -6449,6 +8818,8 @@ def _step_hygiene(
     _step_gripe_leases(w.store, w, res, now)
     _step_unplaced(w.store, plan, w, res, now)
     _step_mint_holds(w.store, plan, w, res, now)
+    _step_pin_stale(plan, w, res, now)
+    _step_pin_image_ask(plan, w, res, now)
     for n in plan.todos():
         if _closed(n):
             continue
@@ -6489,6 +8860,7 @@ def _step_hygiene(
         coord = _coordinator_hit(plan, n)
         model_rule = _model_rule_hit(plan, n)
         no_commit = _no_commit(plan, n)
+        free_sig = _free_done(plan, n)
         lane_gap: str | None = None
         if (
             not human
@@ -6496,6 +8868,7 @@ def _step_hygiene(
             and mech_sig is None
             and coord is None
             and model_rule is None
+            and free_sig is None
             and job_type == DEFAULT_OP
             and not rungs
         ):
@@ -6510,6 +8883,7 @@ def _step_hygiene(
             coord is None
             and model_rule is None
             and mech_sig is None
+            and free_sig is None
             and not human
             and not land_capped
             and not no_commit
@@ -6521,7 +8895,10 @@ def _step_hygiene(
                 f"enter rescue ({'review' if _is_reviewer(n) else 'builder'})"
                 if rescue
                 else f"file a coordinator ask (retry cap {cap})"
-                if coord is not None or no_commit or model_rule is not None
+                if coord is not None
+                or no_commit
+                or model_rule is not None
+                or free_sig is not None
                 else f"file an ask (retry cap {cap})"
             )
             res.notes.append(f"td{n.id}: would {what}")
@@ -6631,6 +9008,39 @@ def _step_hygiene(
                 now=now,
                 block_node=True,
             )
+        elif free_sig is not None:
+            # gr662077: the node's last :data:`FREE_RUN_CAP` jobs all
+            # died on the same ``attempt_free`` reason — an infra wait
+            # no retry changes (a live git's ``index.lock`` in the slice
+            # worktree, a lane that never frees). Backoff already gave
+            # the holder its window; finding and clearing it is the
+            # coordinator's call. The ``blocked-by`` edge re-arms the
+            # node on the answer.
+            ask_id = _mint_coordinator_ask(
+                w.store,
+                plan,
+                n,
+                title=(
+                    f"td{n.id}: '{free_sig}' failure x{FREE_RUN_CAP} "
+                    "in a row — a coordinator call"
+                ),
+                body=(
+                    f"The plan tick stopped dispatching td{n.id} "
+                    f"({n.title.splitlines()[0] if n.title else ''}): "
+                    f"its last {FREE_RUN_CAP} jobs all failed outside "
+                    f"the diff with attempt_free='{free_sig}' — an "
+                    "infra wait that never cleared (gr662077). No "
+                    "ladder rung or same-rung retry changes it: find "
+                    "and clear the holder — a live git's index.lock in "
+                    "the slice worktree, a lane that never frees, a "
+                    "dead rerun path — or drop the node. Closing this "
+                    f"ask `acknowledged` re-arms td{n.id} with a fresh "
+                    "retry budget."
+                ),
+                context=(f"attempt_free '{free_sig}' x{FREE_RUN_CAP} consecutive"),
+                now=now,
+                block_node=True,
+            )
         else:
             ask_id = _mint_ask(
                 w.store,
@@ -6656,6 +9066,8 @@ def _step_hygiene(
             if land_capped
             else "can't finish — ladder spent"
             if no_commit
+            else f"identical '{free_sig}' wait x{FREE_RUN_CAP}"
+            if free_sig
             else "no enabled lane"
             if lane_gap
             else "retry cap hit"
@@ -6678,6 +9090,103 @@ def _step_hygiene(
         res.asks += 1
 
 
+# ── Park = save, resume anywhere (``_slice_park``) ────────────────
+
+
+def _is_parked(plan: _Plan, n: _Node) -> bool:
+    """A build parked for a human or the rescue pass: an open ask on it, a
+    ``rescue:*`` or ``child-failed:*`` tag, or ``STATUS:paused``."""
+    return bool(
+        plan.open_asks(n)
+        or _in_rescue(n)
+        or n.status == "paused"
+        or any(v.startswith("child-failed:") for v in n.open_tags)
+    )
+
+
+def _park_line(todo_id: int, saved: dict[str, Any]) -> str:
+    """The ask-body sentence naming where a parked build's work is."""
+    wip = " (a WIP snapshot of the uncommitted tree on top)" if saved.get("wip") else ""
+    if str(saved.get("push") or "").startswith("withheld"):
+        where = (
+            "kept on that host only — the push was withheld by the secret "
+            f"scan ({saved.get('push')}), so a resume works on that host only"
+        )
+    else:
+        where = f"pushed to `refs/factory/slice/{todo_id}`"
+    return (
+        f"{_slice_park.BODY_MARK} host `{saved.get('host')}`, worktree "
+        f"`{saved.get('worktree')}`, head `{str(saved.get('head'))[:12]}`{wip}, "
+        f"{where}. Closing this ask re-arms td{todo_id} to resume from that "
+        f"branch (and lifts STATUS:paused; a `waiting-for:*` hold stays until lifted by hand); "
+        "answer `start over` to drop it and rebuild from the base."
+    )
+
+
+def _step_park_stamp(plan: _Plan, w: _Writer, res: PassResult) -> None:
+    """Whichever path parked a build — a hygiene ask, a rescue ask, a
+    ``child-failed:`` bubble, ``STATUS:paused`` — copy where its work was
+    saved onto it. The failed ``run_slice``/``land_slice`` job saved its
+    worktree on the build host (``meta.saved``, :mod:`._slice_park`); this
+    step runs on the tick and so only reads that stamp: ``meta.parked =
+    {host, worktree, head, reason, at, job}`` on the node, and the
+    :data:`_slice_park.BODY_MARK` sentence — host, worktree, head — in the
+    body of every open ask blocking it. Idempotent: a stamp is rewritten
+    only when the saved head moves, an ask body only once."""
+    for n in plan.todos():
+        if _closed(n) or _resolve_op(n)[0] != DEFAULT_OP or not _is_parked(plan, n):
+            continue
+        saved: dict[str, Any] | None = None
+        job_id = 0
+        for j in sorted(plan.jobs(n), key=lambda j: j.id, reverse=True):
+            rec = j.meta.get(_slice_park.SAVED_KEY)
+            if j.status in _JOB_ENDED and isinstance(rec, dict) and rec.get("head"):
+                saved, job_id = rec, j.id
+                break
+        if saved is None:
+            continue
+        parked = {
+            k: saved.get(k)
+            for k in ("host", "worktree", "head", "reason", "at", "push")
+        } | {"job": job_id}
+        have = n.meta.get(_slice_park.PARKED_KEY)
+        if not (isinstance(have, dict) and have.get("head") == parked["head"]):
+            w.stamp_meta(n, {_slice_park.PARKED_KEY: parked})
+            w.comment(
+                n,
+                f"parked: work saved on {parked['host']}:{parked['worktree']} "
+                f"at {str(parked['head'])[:12]} (jo{job_id}; "
+                f"refs/factory/slice/{n.id})",
+            )
+            res.notes.append(
+                f"td{n.id}: parked work saved at {str(parked['head'])[:12]}"
+            )
+        if w.dry_run:
+            continue
+        line = _park_line(n.id, parked)
+        for ask in plan.open_asks(n):
+            try:
+                chunks = [
+                    c
+                    for c in w.store.chunks.list_chunks_for_ref(ask.id)
+                    if c.chunk_kind == TODO_BODY_KIND
+                ]
+                body = str(chunks[0].text) if chunks else ""
+                if _slice_park.BODY_MARK in body:
+                    continue
+                w.store.chunks.replace_body_chunk(
+                    ask.id,
+                    f"{body}\n\n{line}".strip(),
+                    chunk_kind=TODO_BODY_KIND,
+                    source=NAME,
+                    reason="park-save: where the parked work is",
+                )
+            except Exception:  # the stamp stands; the next pass retries
+                log.warning(
+                    "plan_dispatch: park note on ask td%d failed", ask.id, exc_info=True
+                )
+
+
 # ── Pass + dispatch ────────────────────────────────────────────────
 
 
@@ -6695,6 +9204,35 @@ def read_only_reason(store: Any, params: dict[str, Any] | None = None) -> str | 
     if (params or {}).get("dry_run"):
         return "params.dry_run"
     return None
+
+
+def enqueue_roots(store: Any, roots: list[int]) -> PassResult:
+    """Queue doable work in freshly minted chains without waiting a tick.
+
+    Share the tick lock and all dispatch guards; executor claimers own
+    capacity and file-overlap admission.
+    """
+    res = PassResult(dry_run=False)
+    if not roots:
+        return res
+    with try_xact_advisory_lock(
+        store.dsn,
+        TICK_LOCK_KEY,
+        idle_timeout=TICK_LOCK_IDLE_TIMEOUT,
+        application_name=TICK_LOCK_APP_NAME,
+    ) as got:
+        if not got:
+            res.skipped = "another tick holds the lock"
+            return res
+        plan = _load(store, roots)
+        _step_dispatch(
+            plan,
+            _Writer(store, False),
+            res,
+            _lanes.load_lanes(store),
+            _spend_rules(store),
+        )
+    return res
 
 
 def run_pass(
@@ -6739,8 +9277,9 @@ def run_pass(
         _step_phases(plan, w, res)
         _step_ci_rerun(store, plan, w, res, now)
         _step_brief_holds(store, plan, w, res, now)
-        _step_dispatch(plan, w, res, lane_table, rules)
+        _step_dispatch(plan, w, res, lane_table, rules, now)
         _step_hygiene(plan, w, res, now, lane_table, rules)
+        _step_park_stamp(plan, w, res)
     return res
 
 
@@ -6786,6 +9325,8 @@ __all__ = [
     "SERVICE",
     "SPEC",
     "PassResult",
+    "live_and_held_nodes",
+    "live_nodes",
     "load",
     "parse_verdict",
     "read_only_reason",

@@ -21,7 +21,7 @@ The **logbook** hangs off the quest as append-only ``quest_log`` chunks (the
 chunks *are* the ledger, the fisheye's body slot reads :func:`quest_gist`
 (statement + rubric) instead; the logbook stays at ``view='logbook'``. Append
 idiom mirrors gripe's comment append, with an entry type:
-``put(kind='quest', id=N, text='…', entry='hypothesis')``. A ``milestone`` entry
+``put(kind='quest', id=N, text='…', args={'entry': 'hypothesis'})``. A ``milestone`` entry
 is a **deed** (the honest medieval sense of progress); an entry carrying a
 ``cost`` feeds the **tote** (lifetime spend = a query over the dated log, no
 separate cost store). Dead-ends are first-class — recording what failed stops the
@@ -47,7 +47,13 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.corrected_call import retry_call
+from precis.errors import (
+    BadInput,
+    NotFound,
+    Unsupported,
+    nearest_option,
+)
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
@@ -107,6 +113,7 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
     "fidelity_restale_band",
     "fidelity_promote_neb",
     "fidelity_promote_verify",
+    "fidelity_mechanical_retry_cap",
 )
 
 #: ``edit(kind='quest', meta=...)``'s closed allowlist (quest-tick-incident-
@@ -121,14 +128,21 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
 #: best cited literature value — :func:`_check_demand_meta` /
 #: :func:`_check_supply_meta`, ``bootstrap-roadmap-quest.md``),
 #: ``reaction_config`` (the autocatpath config the compute lane dispatches —
-#: shallow-merged, :func:`_check_reaction_config`, gr489168).
+#: shallow-merged, :func:`_check_reaction_config`, gr489168),
+#: ``lit_gate`` (the lit-search relevance gate's term lists —
+#: ``{"host": [...], "reaction": [...]}``,
+#: :func:`_check_lit_gate`, :mod:`precis.quest.lit_gate`, gr592951).
 #: ``fidelity_restale_cap`` / ``fidelity_restale_band`` /
 #: ``fidelity_promote_neb`` / ``fidelity_promote_verify`` (the ladder's
 #: human-set holds, read by ``quest.compute`` ``promote_tiers``; each a
 #: non-negative int, ``0`` = that pass off — gr537835; and
 #: ``fidelity_restale_cap=0`` is wider still — it holds EVERY automatic
 #: pathway re-mint on the quest, promote passes and repair re-dispatches
-#: included — ``compute._automatic_rerun_hold``, gr543908).
+#: included — ``compute._automatic_rerun_hold``, gr543908; the one exemption
+#: is the mechanical-rerun arm, gr593138: untrusted barriers that classify
+#: mechanical requeue on the pinned engine under
+#: ``fidelity_mechanical_retry_cap`` / ``fidelity_mechanical_gpu_h_budget``
+#: even under the hold — Reto ruling 2026-11-12).
 #: Mirrors ``todo.tag()``'s ``TAG_META_ALLOWED_KEYS`` promotion gate
 #: (``guards.check_meta_keys_promotable``) — a closed set, not a general meta
 #: bag; anything else still goes through ``put()``/create-time meta. Before
@@ -145,6 +159,8 @@ _META_ALLOWED_KEYS: frozenset[str] = frozenset(
         "operating_conditions",
         "environment_space",
         "reaction_config",
+        "lit_gate",
+        "fidelity_mechanical_gpu_h_budget",
         *_FIDELITY_INT_KEYS,
     }
 )
@@ -243,6 +259,43 @@ def _check_reaction_config(meta: dict[str, Any]) -> None:
             f"got {value['network_her']!r}",
             next=_REACTION_CONFIG_NEXT,
         )
+
+
+_LIT_GATE_NEXT = (
+    "meta={'lit_gate': {'host': ['Pd', 'Pd(111)'], "
+    "'reaction': ['NO', 'NH3', 'nitric oxide reduction']}}"
+)
+
+
+def _check_lit_gate(meta: dict[str, Any]) -> None:
+    """Reject a ``meta.lit_gate`` patch that isn't a term-list dict the
+    lit-search gate can read: ``{"host": [...], "reaction": [...]}`` —
+    each value a list of strings. Unknown keys are typos the read side
+    would silently ignore, so the write door refuses them (the gate
+    stays off until a good config lands — the conservative default,
+    gr592951)."""
+    if "lit_gate" not in meta:
+        return
+    value = meta["lit_gate"]
+    if not isinstance(value, dict):
+        raise BadInput(
+            f"meta.lit_gate must be a dict of term lists, got {type(value).__name__}",
+            next=_LIT_GATE_NEXT,
+        )
+    allowed = {"host", "reaction"}
+    unknown = sorted(set(value) - allowed, key=str)
+    if unknown:
+        raise BadInput(
+            f"meta.lit_gate key(s) {unknown} are not gate term lists — "
+            f"allowed: {sorted(allowed)}",
+            next=_LIT_GATE_NEXT,
+        )
+    for key, terms in value.items():
+        if not isinstance(terms, list) or not all(isinstance(t, str) for t in terms):
+            raise BadInput(
+                f"meta.lit_gate.{key} must be a list of term strings, got {terms!r}",
+                next=_LIT_GATE_NEXT,
+            )
 
 
 _DEMAND_ENTRY_KEYS: frozenset[str] = frozenset({"value", "source", "reason"})
@@ -521,6 +574,15 @@ def _check_fidelity_meta(meta: dict[str, Any]) -> None:
                 f"meta.{key} must be an integer >= 0 (0 = pass off), got {val!r}",
                 next=f"edit(kind='quest', id=N, meta={{'{key}': 0}})",
             )
+    budget = meta.get("fidelity_mechanical_gpu_h_budget")
+    if budget is not None and (
+        isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget < 0
+    ):
+        raise BadInput(
+            "meta.fidelity_mechanical_gpu_h_budget must be a number >= 0 "
+            f"(GPU-hours for mechanical reruns, gr593138), got {budget!r}",
+            next="edit(kind='quest', id=N, meta={'fidelity_mechanical_gpu_h_budget': 36})",
+        )
 
 
 def _check_demand_meta(meta: dict[str, Any]) -> None:
@@ -664,6 +726,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "served",
     "meta",
     "replay",
+    "considerations",
 )
 
 
@@ -690,6 +753,28 @@ def _budget_arg(args: dict[str, Any] | None) -> int:
             next="args={'budget': 2500}",
         )
     return raw
+
+
+def _ledger_page_arg(
+    args: dict[str, Any] | None, name: str, default: int, minimum: int
+) -> int:
+    """One ``view='considerations'`` history-window knob — ``args['limit']``
+    (>= 1) or ``args['offset']`` (>= 0), the same paging the memory
+    ledger's ``limit=``/``offset=`` kwargs take (gr662069)."""
+    if not isinstance(args, dict) or args.get(name) is None:
+        return default
+    raw = args[name]
+    try:
+        parsed = int(str(raw))
+    except (TypeError, ValueError):
+        parsed = minimum - 1
+    if parsed < minimum:
+        raise BadInput(
+            f"args={{{name!r}: {raw!r}}}: {name} must be an integer >= {minimum}",
+            next=f"get(kind='quest', id=N, view='considerations', "
+            f"args={{{name!r}: <int>}})",
+        )
+    return parsed
 
 
 #: ``view='results'`` ``args['format']`` values — ``'toon'`` (default) is the
@@ -787,6 +872,7 @@ def _shape_fr(fr: Any, *, trusted: bool, sort: tuple[str, str] | None) -> Any:
         fr = replace(
             fr,
             frontier=[c for c in fr.frontier if candidate_trusted(c) is True],
+            pass_frontier=[c for c in fr.pass_frontier if candidate_trusted(c) is True],
             dominated=[c for c in fr.dominated if candidate_trusted(c) is True],
             provisional=[
                 pc for pc in fr.provisional if candidate_trusted(pc.candidate) is True
@@ -868,6 +954,25 @@ def _logbook_limit(value: Any) -> int:
         raise BadInput(
             f"args={{'limit': {value!r}}}: limit must be a positive int (entries)",
             next="args={'limit': 50}",
+        )
+    return value
+
+
+#: ``view='frontier'`` evidence-ladder page size — the top-N provisional
+#: candidates printed when ``args={'trusted': true}`` leaves the confirmed
+#: frontier empty (gr592563); ``args={'limit': N}`` widens.
+_LADDER_PAGE = 10
+
+
+def _ladder_limit(value: Any) -> int:
+    """``args['limit']`` for the frontier evidence ladder — a positive int
+    (rungs), default :data:`_LADDER_PAGE`."""
+    if value is None:
+        return _LADDER_PAGE
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise BadInput(
+            f"args={{'limit': {value!r}}}: limit must be a positive int (ladder rows)",
+            next="args={'limit': 10}",
         )
     return value
 
@@ -1035,6 +1140,12 @@ class QuestHandler(NumericRefHandler):
     #: (gr514482); the method itself keeps its scalar-id signature.
     edit_id_list: ClassVar[str] = "repeat"
 
+    #: A quest is a consideration scope (gr662069): ``link(rel='considered',
+    #: meta={'verdict': …, 'reason': …, 'depth': …})`` records a candidate
+    #: verdict on it — the lit-search relevance gate's first consumer
+    #: (gr592951). Opens the base ``link``'s meta=/reason= door (gr662070).
+    link_meta: ClassVar[bool] = True
+
     spec: ClassVar[KindSpec] = KindSpec(
         kind="quest",
         title="Quest",
@@ -1043,7 +1154,7 @@ class QuestHandler(NumericRefHandler):
             "pulls subtasks + knowledge acquisition into its service. Never "
             "`done` — lifecycle is active/dormant/abandoned. Body is the "
             "striving statement (+ criteria). Append logbook entries with "
-            "put(id=N, text=…, entry='hypothesis'); rewrite the founding "
+            "put(id=N, text=…, args={'entry': 'hypothesis'}); rewrite the founding "
             "statement in place with edit(id=N, mode='replace', text=…) "
             "(logbook/links/tags untouched); mark serving work with "
             "link(target='quest:N', rel='serves'). search(view='roots') (or "
@@ -1066,7 +1177,10 @@ class QuestHandler(NumericRefHandler):
             "measurand over everything serving it; view='pourbaix' the "
             "per-candidate surface-Pourbaix validity maps; view='replay' "
             "the measured history as an optimisation benchmark (top-5% "
-            "coverage + regret vs a seeded random baseline). "
+            "coverage + regret vs a seeded random baseline); "
+            "view='considerations' the quest's scoped verdict ledger — "
+            "current rel='considered' verdicts, the reopen queue and the "
+            "judgment history (args={'limit': N, 'offset': M} pages it). "
             "See ``quest-layer`` (git-only)."
         ),
         supports_get=True,
@@ -1261,7 +1375,7 @@ class QuestHandler(NumericRefHandler):
                     "requires text=",
                     next=(
                         f"put(kind={self.kind!r}, id={id}, text='what happened', "
-                        "entry='observation')"
+                        "args={'entry': 'observation'})"
                     ),
                 )
             # Tags / mode belong on tag() against the ref, not the append
@@ -1745,7 +1859,7 @@ class QuestHandler(NumericRefHandler):
         logbook entries, same ``serves``/``served-by`` links — only the
         statement text changes. The old wording lands in ``ref_events`` as a
         ``body_replaced`` row (``view='log'`` for the diff). Distinct from
-        the logbook append (``put(id=N, text=…, entry=…)``), which never
+        the logbook append (``put(id=N, text=…, args={'entry': …})``), which never
         touches the founding text; this is the "wordsmith the striving,
         keep everything else" verb (gripe 169979).
 
@@ -1832,6 +1946,7 @@ class QuestHandler(NumericRefHandler):
             _check_operating_conditions(meta)
             _check_environment_space(meta)
             _check_reaction_config(meta)
+            _check_lit_gate(meta)
             _check_fidelity_meta(meta)
             patch = dict(meta)
             # ``reaction_config`` is itself a dict: merge the patch into the
@@ -2033,6 +2148,9 @@ class QuestHandler(NumericRefHandler):
                     budget=_budget_arg(args),
                     trusted=_trusted_arg(args),
                     sort=_sort_arg(args),
+                    limit=_ladder_limit(
+                        args.get("limit") if isinstance(args, dict) else None
+                    ),
                 )
             )
         if view == "leaderboard" and concrete:
@@ -2092,6 +2210,28 @@ class QuestHandler(NumericRefHandler):
         if view == "served" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_served(ref, args))
+        if view == "considerations" and concrete:
+            # gr662069 (me626852): a quest is a consideration scope — the
+            # lit-search's verdict ledger. The shared render shows
+            # current verdicts, the reopen queue (stale + edge-lost) and
+            # the paged judgment history — everything view='links'
+            # cannot show.
+            if isinstance(id, list):
+                raise BadInput(
+                    "view='considerations' requires one quest id",
+                    next="get(kind='quest', id=N, view='considerations')",
+                )
+            from precis.handlers._memory_considerations import (
+                render_considerations,
+            )
+
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return render_considerations(
+                self.store,
+                ref,
+                history_limit=_ledger_page_arg(args, "limit", 10, 1),
+                history_offset=_ledger_page_arg(args, "offset", 0, 0),
+            )
         if view == "replay" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_replay(ref, args))
@@ -2110,20 +2250,30 @@ class QuestHandler(NumericRefHandler):
         # deeds are a filtered slice of view='log'. (Tooling-log audit:
         # recurring guess.)
         if concrete and view is not None and view not in _BASE_VIEWS:
+            # gr613469: lead with the corrected call — the same get,
+            # nearest valid view swapped in — ahead of the view prose.
+            view_options = [*_QUEST_CONCRETE_VIEWS, *EYE_LADDER, *_BASE_VIEWS]
+            near = nearest_option(view, view_options)
+            corrected = (
+                retry_call("get", kind="quest", id=id, view=near) if near else None
+            )
+            nexts = [corrected] if corrected else []
+            nexts += [
+                "quest views: tree, gaps, dossier, frontier, leaderboard, "
+                "results, series, measures, logbook, pourbaix, kinetics-summary, status, "
+                "rubric, served, meta, replay, considerations "
+                "(quest-specific) · "
+                "fisheye ladder (kwd, summary, verbatim, fisheye, "
+                "fisheye+1hop, fisheye+2hop, optionally +recall) · "
+                "links, log, raw (generic)",
+                "no 'deeds' view — default get(kind='quest', id=N) shows a "
+                "digest with a logbook tail; view='logbook' is the full lab "
+                "notebook; view='log' is the raw ref-events ledger",
+            ]
             raise Unsupported(
                 f"unknown view {view!r} for kind='quest'",
-                options=[*_QUEST_CONCRETE_VIEWS, *EYE_LADDER, *_BASE_VIEWS],
-                next=[
-                    "quest views: tree, gaps, dossier, frontier, leaderboard, "
-                    "results, series, measures, logbook, pourbaix, kinetics-summary, status, "
-                    "rubric, served, meta, replay (quest-specific) · "
-                    "fisheye ladder (kwd, summary, verbatim, fisheye, "
-                    "fisheye+1hop, fisheye+2hop, optionally +recall) · "
-                    "links, log, raw (generic)",
-                    "no 'deeds' view — default get(kind='quest', id=N) shows a "
-                    "digest with a logbook tail; view='logbook' is the full lab "
-                    "notebook; view='log' is the raw ref-events ledger",
-                ],
+                options=view_options,
+                next=nexts,
             )
         return super().get(id=id, view=view, q=q, **_kw)
 
@@ -2136,7 +2286,8 @@ class QuestHandler(NumericRefHandler):
         candidate bands + fidelity tiers and the trusted-per-axis coverage
         the frontier header computes, the open exploration queue
         (``view='gaps'``), the last coordinator tick, and the operator
-        holds in force (``fidelity_restale_cap=0`` is the master hold;
+        holds in force (``fidelity_restale_cap=0`` is the master hold, with
+        one exemption: mechanical reruns on the pinned engine;
         ``fidelity_promote_*=0`` holds one pass; ``compute_lane`` /
         ``lit_lane`` ``off``). Sized to ~1 kB — listings cap at
         ``_STATUS_*_CAP`` and point at the full views."""
@@ -2298,7 +2449,9 @@ class QuestHandler(NumericRefHandler):
         cap = _fval("fidelity_restale_cap")
         if cap is not None and cap <= 0:
             holds.append(
-                "fidelity_restale_cap=0 (every automatic pathway re-mint held)"
+                "fidelity_restale_cap=0 (every automatic pathway re-mint held, "
+                "except mechanical reruns on the pinned engine under their "
+                "retry cap and GPU-h budget)"
             )
         for key in ("fidelity_promote_neb", "fidelity_promote_verify"):
             v = _fval(key)
@@ -2512,6 +2665,7 @@ class QuestHandler(NumericRefHandler):
         budget: int = _DEFAULT_VIEW_BUDGET,
         trusted: bool = False,
         sort: str | None = None,
+        limit: int = _LADDER_PAGE,
     ) -> str:
         """`view='frontier'` — the Pareto frontier of candidate materials.
 
@@ -2526,7 +2680,12 @@ class QuestHandler(NumericRefHandler):
         orders each band by it on its declared sense — the "trusted AND
         best" read (gr592277). Both print a ``filter:`` note; a filter
         that empties the confirmed band says so under it rather than
-        misreading as "none evaluated".
+        misreading as "none evaluated". When ``trusted`` leaves the
+        confirmed frontier empty but provisional candidates exist, an
+        **evidence ladder** prints instead of the bare "no candidates
+        pass" line — the top ``limit`` provisional rows (default
+        :data:`_LADDER_PAGE`, ``args={'limit': N}`` widens) ranked
+        closest-to-trusted, one blocker each (gr592563).
 
         An ``inquiry``-body quest (docs/backlog/quest-bodies-inquiry.md) has
         no candidate materials AND NEVER WILL — it reads, reasons, and
@@ -2586,7 +2745,10 @@ class QuestHandler(NumericRefHandler):
                 str(t) == "needs-experiment" for t in self.store.tags_for(c.ref_id)
             )
             star = " ★ needs-experiment" if graduated else ""
-            return f"  {c.handle} {c.name} — {ms or '(no measures)'}{star}"
+            note = frontier_mod.assurance_note(c)
+            return f"  {c.handle} {c.name} — {ms or '(no measures)'}{star}" + (
+                f" — {note}" if note else ""
+            )
 
         def _fmt_provisional(pc: frontier_mod.ProvisionalCandidate) -> str:
             c = pc.candidate
@@ -2599,7 +2761,44 @@ class QuestHandler(NumericRefHandler):
             reasons = f" [{'; '.join(pc.reasons)}]" if pc.reasons else ""
             return f"  {c.handle} {c.name} — {ms}{star}{reasons}"
 
+        # gr592563: a ``trusted`` read whose confirmed frontier came out
+        # empty gets the evidence ladder — the provisional candidates
+        # ranked closest-to-trusted, one blocker each — instead of the
+        # bare "no candidates pass" line.
+        ladder_band: tuple[str, list[str]] | None = None
+        if trusted and not fr.frontier and raw_fr.provisional:
+            ladder = frontier_mod.evidence_ladder(raw_fr, top_n=limit)
+            total = len(raw_fr.provisional)
+
+            def _fmt_ladder(i: int, row: frontier_mod.LadderRow) -> str:
+                pc = row.provisional
+                c = pc.candidate
+                bits = []
+                for k, v in sorted(pc.measures.items()):
+                    mark = " ⚠untrusted" if k in pc.untrusted_keys else ""
+                    bits.append(f"{k}={v:g}{mark}")
+                ms = " ".join(bits) or "(no measures)"
+                star = " ★ provisional-frontier" if pc.on_frontier else ""
+                return f"  {i}. {c.handle} {c.name} — {ms}{star} — clear: {row.blocker}"
+
+            ladder_rows = [_fmt_ladder(i, row) for i, row in enumerate(ladder, 1)]
+            if total > len(ladder):
+                ladder_rows.append(
+                    f"  (+{total - len(ladder)} more provisional — "
+                    "args={'limit': N} widens the ladder)"
+                )
+            ladder_band = (
+                "── evidence ladder — provisional candidates, closest to "
+                f"trusted ({len(ladder)} of {total}; one blocker each) ──",
+                ladder_rows,
+            )
+
         if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
+            if ladder_band is not None:
+                # The same ``_fit_bands`` budget contract as the banded
+                # render below — a lone ladder band still trims rungs off
+                # its tail under ``args={'budget': N}`` (review td677831).
+                return _fit_bands(lines, [ladder_band], budget=budget)
             if had_candidates:
                 lines.append(
                     "no candidates pass the trusted filter — none carries an "
@@ -2630,6 +2829,13 @@ class QuestHandler(NumericRefHandler):
                 frontier_rows,
             )
         ]
+        if any(c.flags.get("barrier_assurance") for c in (*fr.frontier, *fr.dominated)):
+            bands.insert(
+                0, ("── PASS-only Pareto set ──", [_fmt(c) for c in fr.pass_frontier])
+            )
+            bands[1] = ("── PASS+WARN Pareto set ──", frontier_rows)
+        if ladder_band is not None:
+            bands.append(ladder_band)
         if fr.dominated:
             bands.append(
                 (
@@ -2834,7 +3040,7 @@ class QuestHandler(NumericRefHandler):
         the measure difference down a block is attributable to that axis.
 
         Nothing enumerates a grid — the agent owns which series to run
-        (docs/backlog/pathway-conditions-effects-report.md decision 4); this
+        (me692126 decision 4); this
         only names the series the data already contains, and says so plainly
         when there are none. Budgeted like ``view='results'``."""
         from precis.quest import frontier as frontier_mod
@@ -3182,7 +3388,7 @@ class QuestHandler(NumericRefHandler):
                             ),
                             (
                                 f"put(kind={self.kind!r}, id={ref.id}, text='…', "
-                                "entry='observation')",
+                                "args={'entry': 'observation'})",
                                 "record a logbook entry",
                             ),
                         ]
@@ -3493,7 +3699,7 @@ class QuestHandler(NumericRefHandler):
                     "put a project/goal in its service",
                 ),
                 (
-                    f"put(kind={self.kind!r}, id={ref_id}, text='…', entry='hypothesis')",
+                    f"put(kind={self.kind!r}, id={ref_id}, text='…', args={{'entry': 'hypothesis'}})",
                     "add a logbook entry",
                 ),
                 (

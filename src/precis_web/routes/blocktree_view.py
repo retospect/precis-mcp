@@ -60,7 +60,7 @@ never just 404s.
 
 The anchored-notes layer arrived via
 docs/backlog/se-topology-cloud-and-surface-notes.md slice 2, re-shaped by
-docs/backlog/pcb-argue-backport-se.md (one always-present argue box, not a
+me690276 (one always-present argue box, not a
 per-selection panel):
 
 * ``POST /se/{slug}/note/rewrite`` — AI-assisted intent capture: a raw
@@ -99,6 +99,20 @@ off the event loop and 303s back with the outcome in the query string;
 Apply on a store-aware proposal. Both refuse a ``?rev=`` naming a past
 revision (409) — a turn edits the current tree. The panel is hidden on a
 past revision.
+
+Validation-target selection (``GET /se/{slug}/validation-targets`` and
+the 3D client) reuses block selection for finding messages. Targets
+carry the loaded snapshot identity and actual transformed port pose; a
+read-only activation recheck refuses stale rows. Nullable anchors stay
+unavailable because placing a marker at the block centre would
+misrepresent a port. Legacy bound ports use the existing atom-origin
+helper and the overlay's pinned structure version; selection refuses an
+overlay with a different binding identity. Ambiguous dotted block/port
+subjects stay unavailable rather than guessing. Molecular drawing uses
+a shared core and captured host: retiring overlays cannot touch
+replacement scenes. Standalone structure remains fixture-only. Decoded
+keys prevent ordinal-ID invention; invalid graphs retain atoms with
+explicit unavailability. Selection changes view state only.
 
 Still out of scope (see the gripe): argue-with-points (click → anchor →
 job).
@@ -1788,7 +1802,7 @@ def _build_scene3d(
 async def _tool_volumes_response(
     request: Request, kind: str, slug: str, *, rev: int | None
 ) -> Response:
-    """The 3D page's "tool volumes" toggle (docs/backlog/se-mechanical-drc.md
+    """The 3D page's "tool volumes" toggle (me694687
     rulings 5/6): every fasten finding that carries swept volumes
     (``fastener_insertion_path``'s body/tool/hand sweeps), as one
     ``Shapes`` group (:func:`~precis_web.blocktree_3d.tool_volume_group`)
@@ -3004,7 +3018,7 @@ async def se_pick(
 
 # ── argue box → interview note (slice 2 of
 #    docs/backlog/se-topology-cloud-and-surface-notes.md, re-shaped by
-#    docs/backlog/pcb-argue-backport-se.md: one box, many anchors) ────────
+#    me690276: one box, many anchors) ────────
 
 #: The kinds the web comment box can mint. An ``answer`` needs a ``re``
 #: target picked from the existing ledger — out of scope for a viewer

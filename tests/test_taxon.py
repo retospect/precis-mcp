@@ -13,7 +13,12 @@ from typing import Any, cast
 import pytest
 
 from precis.errors import BadInput, NotFound
-from precis.taxonomy.nodes import slugify, validate_taxon_meta
+from precis.taxonomy.nodes import (
+    matches_term,
+    resolves_term,
+    slugify,
+    validate_taxon_meta,
+)
 
 TOF = (
     "turnover frequency — the number of catalytic cycles per active site per unit time"
@@ -34,6 +39,28 @@ def _created_id(resp: Any) -> int:
 
 
 class TestTaxonPut:
+    @pytest.mark.parametrize("separator", [" — ", "—", " – ", "\n"])
+    def test_put_preserves_internal_en_dash(self, store: Any, separator: str) -> None:
+        name = "Lennard–Jones reduced temperature"
+        definition = "dimensionless thermal energy kBT/ε relative to ε."
+        h = _handler(store)
+        ref = store.get_ref(
+            kind="taxon",
+            id=_created_id(
+                h.put(
+                    text=f"{name}{separator}{definition}",
+                    meta={
+                        "dimension_kind": "dimensionless",
+                        "canonical_unit": "1",
+                        "aliases": ["LJ reduced temperature"],
+                    },
+                )
+            ),
+        )
+        assert ref.title == name
+        assert ref.meta["name"] == name
+        assert ref.meta["definition"] == definition
+
     def test_put_mints_proposed_node_with_card_and_no_body(self, store: Any) -> None:
         h = _handler(store)
         ref = store.get_ref(kind="taxon", id=_created_id(h.put(text=TOF)))
@@ -219,6 +246,33 @@ class TestPureHelpers:
     def test_slugify(self) -> None:
         assert slugify("Turnover Frequency (TOF)") == "turnover-frequency-tof"
 
+    def test_matches_term_strict_vs_resolves_term_loose(self) -> None:
+        meta = {
+            "name": "DimeNet++",
+            "norm_name": "dimenet++",
+            "slug": "dimenet",
+            "aliases": ["DNetPP"],
+        }
+        assert matches_term(meta, "DimeNet++")
+        assert matches_term(meta, "dimenet++")  # case fold
+        assert matches_term(meta, "dnetpp")  # alias
+        assert resolves_term(meta, "dimenet")  # slug addresses it
+        assert resolves_term(meta, "DimeNet++")
+        # but a slug that dropped the "++" is not an identity
+        assert not matches_term(meta, "DimeNet")
+        # separator-folded names still identify via the slug leg
+        dash = {
+            "name": "dedupe turnover",
+            "norm_name": "dedupe turnover",
+            "slug": "dedupe-turnover",
+            "aliases": [],
+        }
+        assert matches_term(dash, "dedupe-turnover")
+        # a row with only a slug (no name/norm_name) resolves but never identifies
+        bare = {"slug": "dimenet"}
+        assert resolves_term(bare, "dimenet")
+        assert not matches_term(bare, "dimenet")
+
     def test_validate_rejects_si_vector_without_si(self) -> None:
         with pytest.raises(BadInput, match="only allowed"):
             validate_taxon_meta(
@@ -228,6 +282,50 @@ class TestPureHelpers:
     def test_validate_rejects_bad_dimension_kind(self) -> None:
         with pytest.raises(BadInput, match="dimension_kind"):
             validate_taxon_meta({"dimension_kind": "volume"})
+
+    def test_explicitly_distinguished(self) -> None:
+        from precis.taxonomy.nodes import explicitly_distinguished
+
+        train = {
+            "name": "training-set classification accuracy",
+            "excludes": ["held-out test performance → tn711338"],
+        }
+        test = {"name": "held-out test accuracy", "aliases": ["test accuracy"]}
+        assert explicitly_distinguished(train, test, b_handle="tn711338")
+        # …and the reverse direction: the test node's excludes name the put.
+        test_exc = {
+            "name": "held-out test accuracy",
+            "excludes": ["the training-set classification accuracy is in-sample only"],
+        }
+        assert explicitly_distinguished(train, test_exc)
+        # No boundary entries, or entries that name nobody: not distinguished.
+        assert not explicitly_distinguished(train, {"name": "held-out test accuracy"})
+        vague = {"name": "x", "excludes": ["unrelated near-miss → tn999999"]}
+        assert not explicitly_distinguished(train, vague)
+        # Short aliases cannot match inside unrelated words.
+        assert not explicitly_distinguished(
+            {"excludes": ["et"]},
+            {"name": "wet etching", "aliases": ["et"]},
+        )
+
+    def test_explicit_distinction_requires_a_whole_handle(self) -> None:
+        from precis.taxonomy.nodes import explicitly_distinguished
+
+        proposed = {"excludes": ["excludes tn711338"]}
+        candidate = {"name": "held-out test accuracy"}
+        assert not explicitly_distinguished(proposed, candidate, b_handle="tn71133")
+        assert explicitly_distinguished(proposed, candidate, b_handle="tn711338")
+
+    def test_explicit_distinction_requires_a_whole_name_or_alias(self) -> None:
+        from precis.taxonomy.nodes import explicitly_distinguished
+
+        candidate = {"name": "carbon concentration", "aliases": ["carb", "C(%)"]}
+        assert not explicitly_distinguished({"excludes": ["carbon"]}, candidate)
+        assert not explicitly_distinguished(
+            {"excludes": ["carbon concentrations"]}, candidate
+        )
+        assert explicitly_distinguished({"includes": ["see (CARB)."]}, candidate)
+        assert explicitly_distinguished({"excludes": ["see C(%)."]}, candidate)
 
     def test_instance_of_relation_registered_with_inverse(self, store: Any) -> None:
         from tests.workers._helpers import seed_ref
@@ -797,13 +895,14 @@ class TestLinkMeta:
     ) -> None:
         from precis.tools import core
 
-        # memory is meta-capable since gr519925 (selection records), so the
-        # probe uses gripe, whose link() declares no meta= and must refuse it.
+        # memory is meta-capable since gr519925 (selection records) and gripe
+        # since gr662070, so the probe uses anki, whose link() declares no
+        # link_meta and refuses meta= before resolving the ids.
         out = _verb_text(
             core.link(
-                kind="gripe",
+                kind="anki",
                 id=1,
-                target="gripe:2",
+                target="anki:2",
                 rel="related-to",
                 meta={"axis": "composition"},
             )
@@ -907,6 +1006,21 @@ class TestSearchFacets:
             "facet alpha grandchild",
         ]
 
+    def test_oversized_descendant_listing_gives_taxon_guidance(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        from precis.tools import core
+
+        root = _mk(store, "listing size root")
+        child = _mk(store, "listing size child", under=root)
+        args = {"under": f"tn{root}", "depth": 1}
+        refused = _verb_text(core.search(kind="taxon", args=args, page_size=300))
+        assert "page_size=300 exceeds maximum 100" in refused
+        assert "page_size=100" in refused
+        assert "'depth': 1" in refused
+        accepted = _verb_text(core.search(kind="taxon", args=args, page_size=100))
+        assert f"tn{child} listing size child" in accepted
+
     def test_axis_and_depth_narrow(self, store: Any) -> None:
         t = self._tree(store)
         h = _handler(store)
@@ -972,6 +1086,36 @@ class TestSearchFacets:
 
 
 class TestLexicalNameAndDefinition:
+    @pytest.mark.parametrize("with_embedding", [False, True])
+    def test_long_query_recovers_partial_definition_match(
+        self,
+        store: Any,
+        mounted_runtime: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        with_embedding: bool,
+    ) -> None:
+        from precis.tools import core
+        from precis.utils import ref_hybrid
+
+        rid = _mk(
+            store,
+            "quux surrogate",
+            definition="A quuxatomistic model of interatomic potential energy.",
+        )
+        if with_embedding:
+            # Exercise the fused SQL; the unembedded card must hit via lexical recall.
+            monkeypatch.setattr(
+                ref_hybrid,
+                "query_vec_for",
+                lambda *_: [1.0] + [0.0] * 1023,
+            )
+        q = (
+            "quuxatomistic simulation method interatomic potential energy "
+            "learned from structure and energy data"
+        )
+        out = _verb_text(core.search(kind="taxon", q=q, page_size=10))
+        assert f"tn{rid}" in out
+
     def test_definition_only_and_name_only_words_via_search(
         self, store: Any, mounted_runtime: Any
     ) -> None:
@@ -1096,6 +1240,71 @@ class TestDedup:
         )
         with pytest.raises(BadInput, match="dedupd count"):
             h.put(text="dedupd count — no dimension given")
+
+    def test_symbol_distinguishes_architectures(self, store: Any) -> None:
+        h = _handler(store)
+        parent = _mk(store, "graph-neural-network")
+        successor = _mk(store, "DimeNet++", under=parent)
+        assert "exact:" not in h.search(q="DimeNet").body
+        original = _created_id(
+            h.put(
+                text="DimeNet — original architecture",
+                link=f"taxon:{parent}",
+                rel="specialises",
+            )
+        )
+        assert original != successor
+        assert (
+            h.search(q="DimeNet")
+            .body.splitlines()[0]
+            .startswith(f"exact: tn{original} ")
+        )
+        assert (
+            h.search(q="DimeNet++")
+            .body.splitlines()[0]
+            .startswith(f"exact: tn{successor} ")
+        )
+        with pytest.raises(BadInput, match=f"tn{successor}"):
+            h.put(text="DimeNet++ — duplicate")
+
+    def test_slug_path_resolves_symbol_named_node(self, store: Any) -> None:
+        """gr722401 follow-up: identity got stricter, but a slug stays a
+        valid path segment — ``c`` still addresses ``C++``, ``dimenet``
+        still addresses ``DimeNet++``, alone or under a parent."""
+        h = _handler(store)
+        parent = _mk(store, "sps gnn")
+        cpp = _mk(store, "sps C++", under=parent)
+        body = h.get(id="sps-c").body  # the slug alone resolves it
+        assert body.startswith(f"# taxon {cpp}:")
+        assert h.get(id="sps-gnn/sps-c").body == body  # via the parent's path
+        # and a shared slug reports ambiguity rather than picking a node
+        other = _created_id(
+            h.put(
+                text="sps C — the plain-C sibling",
+                link=f"taxon:{parent}",
+                rel="specialises",
+            )
+        )
+        with pytest.raises(BadInput) as ei:
+            h.get(id="sps-c")
+        msg = str(ei.value)
+        assert "ambiguous" in msg and f"tn{cpp}" in msg and f"tn{other}" in msg
+
+    def test_legacy_slug_collision_is_not_identity(self, store: Any) -> None:
+        """A legacy row may lack ``norm_name`` and already share its slug:
+        the slug still resolves it, dedup still refuses a true repeat, but
+        the symbol-losing sibling mints."""
+        h = _handler(store)
+        rid = _mk(store, "leg DimeNet++")
+        removed = store.clear_ref_meta_keys(rid, ["norm_name"], source="test")
+        assert removed == ["norm_name"]
+        # slug-only addressing still reaches the legacy row
+        assert h.get(id="leg-dimenet").body.startswith(f"# taxon {rid}:")
+        # name equality survives on name + slug alone -> still a duplicate
+        with pytest.raises(BadInput, match=f"tn{rid}"):
+            h.put(text="leg DimeNet++ — again")
+        # but the shared slug does not block the distinct original
+        assert _created_id(h.put(text="leg DimeNet — the original")) != rid
 
     def test_alias_and_slug_matches(self, store: Any) -> None:
         h = _handler(store)
@@ -1302,7 +1511,7 @@ class TestSiblingRefusal:
         with pytest.raises(BadInput, match="looks like an existing node"):
             h.put(**put)
         afm_name = store.get_ref(kind="taxon", id=afm).meta["name"]
-        with pytest.raises(BadInput, match="same name/alias/slug"):
+        with pytest.raises(BadInput, match="same name/alias"):
             h.put(**{**put, "text": f"{afm_name} — reworded"})
 
     def test_sibling_bar_is_not_tighter_than_dedup(self) -> None:
@@ -1316,6 +1525,151 @@ class TestSiblingRefusal:
         assert lexical_overlap("alpha beta gamma", "alpha beta gamma") == 1.0
         assert lexical_overlap("alpha beta gamma", "delta epsilon zeta") == 0.0
         assert lexical_overlap("", "alpha") == 0.0
+
+
+class TestBoundaryDistinction:
+    """gr720773: an includes/excludes entry naming the near node lifts the
+    mint-time refusal — a cosine near-miss cannot see that one side
+    explicitly excludes the other (training-set fit vs held-out test
+    performance blocked at distances 0.17/0.20)."""
+
+    PARA = TestSiblingRefusal.PARA
+    NEAR_TEXT = (
+        "bdist scanning tip device — an instrument that senses "
+        "surface forces with a sharp tip on a flexible beam"
+    )
+
+    def _rig(self, store: Any, monkeypatch: Any) -> tuple[Any, int, dict[str, int]]:
+        """Parent + near-sibling fixture, an embedder-backed handler, and a
+        vector leg that reports the current ``near`` node at the gripe's
+        distance (0.17) on every query — sibling leg and all-taxa dedup leg
+        alike. ``near['id']`` is mutable so a test can retarget it."""
+        from precis.dispatch import Hub
+        from precis.embedder import MockEmbedder
+        from precis.handlers import taxon as taxon_mod
+
+        root = _mk(store, "bdist technique")
+        afm = _mk(store, "bdist probe microscope", definition=self.PARA, under=root)
+        h = taxon_mod.TaxonHandler(
+            hub=Hub(store=store, embedder=MockEmbedder(dim=store.embedding_dim()))
+        )
+        near = {"id": afm}
+
+        def fake_semantic(**kw: Any) -> list[Any]:
+            ref = store.get_ref(kind="taxon", id=near["id"])
+            scope = kw.get("include_ref_ids")
+            return (
+                [] if scope is not None and ref.id not in scope else [(None, ref, 0.17)]
+            )
+
+        monkeypatch.setattr(store.chunks, "search_chunks_semantic", fake_semantic)
+        return h, root, near
+
+    def test_excludes_by_handle_lifts_sibling_refusal(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        h, root, near = self._rig(store, monkeypatch)
+        rid = _created_id(
+            h.put(
+                text=self.NEAR_TEXT,
+                link=f"taxon:{root}",
+                rel="specialises",
+                meta={
+                    "excludes": [
+                        f"surface-force sensing on test samples → tn{near['id']}"
+                    ]
+                },
+            )
+        )
+        assert store.get_ref(kind="taxon", id=rid) is not None
+
+    def test_excludes_by_name_lifts_sibling_refusal(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        h, root, _near = self._rig(store, monkeypatch)
+        rid = _created_id(
+            h.put(
+                text=self.NEAR_TEXT,
+                link=f"taxon:{root}",
+                rel="specialises",
+                meta={
+                    "excludes": [
+                        "the bdist probe microscope measures test samples; "
+                        "this one does not"
+                    ]
+                },
+            )
+        )
+        assert store.get_ref(kind="taxon", id=rid) is not None
+
+    def test_sibling_excluding_the_put_lifts_refusal(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        h, root, near = self._rig(store, monkeypatch)
+        # The stored sibling's excludes name the incoming node.
+        sweep = _mk(
+            store,
+            "bdist calibration sweep",
+            definition=self.PARA,
+            under=root,
+            meta={"excludes": ["the bdist scanning tip device is in-sample only"]},
+        )
+        near["id"] = sweep
+        rid = _created_id(
+            h.put(
+                text=self.NEAR_TEXT,
+                link=f"taxon:{root}",
+                rel="specialises",
+            )
+        )
+        assert store.get_ref(kind="taxon", id=rid) is not None
+
+    def test_unrelated_boundary_text_still_refuses(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        h, root, _afm = self._rig(store, monkeypatch)
+        with pytest.raises(BadInput, match="reads like an existing sibling"):
+            h.put(
+                text=self.NEAR_TEXT,
+                link=f"taxon:{root}",
+                rel="specialises",
+                meta={"excludes": ["an unrelated near-miss → tn999999"]},
+            )
+
+    def test_same_name_still_refused_even_when_excluded(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # The boundary lift applies to the embedding leg only: an exact
+        # name or alias hit is a duplicate ("use the existing node").
+        h, root, near = self._rig(store, monkeypatch)
+        name = store.get_ref(kind="taxon", id=near["id"]).meta["name"]
+        with pytest.raises(BadInput, match="same name/alias"):
+            h.put(
+                text=f"{name} — reworded but named the same",
+                link=f"taxon:{root}",
+                rel="specialises",
+                meta={"excludes": [f"not the same term → tn{near['id']}"]},
+            )
+
+    def test_dedup_leg_also_honours_boundary(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # No link=/rel=: the sibling check does not run; the all-taxa
+        # embedding dedup is the only gate, and it honours the boundary too.
+        h, _root, near = self._rig(store, monkeypatch)
+        with pytest.raises(BadInput, match="looks like an existing node"):
+            h.put(text=self.NEAR_TEXT)
+        rid = _created_id(
+            h.put(
+                text=self.NEAR_TEXT,
+                meta={
+                    "excludes": [
+                        f"surface-force sensing on test samples → tn{near['id']}"
+                    ]
+                },
+            )
+        )
+        assert store.get_ref(kind="taxon", id=rid) is not None
 
 
 class TestTaxonEdit:

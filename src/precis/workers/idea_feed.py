@@ -4,7 +4,7 @@ Hacker News, judged against the pillars and the open quests (gr543714).
 The replacement for youtube recommendations: youtube surfaced noise —
 what the gripe wants is a *bounded* stream of outside ideas that might
 feed the roadmap, read in one morning glance. The spec is Reto's
-(2026-11-01, `docs/backlog/idea-feed.md`): sources arXiv listing RSS +
+(2026-11-01, me689986): sources arXiv listing RSS +
 the HN Firebase API, a cheap judge, one digest todo, $1/day, dark.
 
 One pass (fired from the daily ``idea_feed`` scheduler cadence — the

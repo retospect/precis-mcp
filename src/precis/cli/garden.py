@@ -42,11 +42,9 @@ reopens its key for a fresh proposal after the error is fixed.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sys
-from typing import Any
 
 from precis.cli._common import bind_process_store, resolve_dsn
 from precis.errors import BadInput, NotFound
@@ -149,41 +147,14 @@ def _actor(args: argparse.Namespace) -> str:
     return args.by or os.environ.get("USER") or "human"
 
 
-def _proposal_holds(store: Store, review_ids: list[int]) -> dict[int, dict[str, Any]]:
-    """Read consumer holds for these proposals without casting arbitrary notes."""
-    from precis.graph.garden.consumer import CONSUMER_ACTOR
-
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT p.review_id, h.note FROM reviews p JOIN reviews h "
-            "ON h.target_kind = p.target_kind AND h.target_id = p.target_id "
-            "WHERE p.review_id = ANY(%s) AND h.actor = %s AND h.note LIKE %s "
-            "ORDER BY h.review_id DESC",
-            (review_ids, CONSUMER_ACTOR, '%"garden_review"%'),
-        ).fetchall()
-    holds: dict[int, dict[str, Any]] = {}
-    for review_id, note in rows:
-        try:
-            hold = json.loads(note).get("garden_review")
-        except (TypeError, ValueError, AttributeError):
-            continue
-        if (
-            isinstance(hold, dict)
-            and hold.get("proposal") == review_id
-            and hold.get("held")
-        ):
-            holds.setdefault(review_id, hold)
-    return holds
-
-
 def _proposals(args: argparse.Namespace, store: Store) -> None:
-    from precis.graph.garden.proposals import pending_proposals
+    from precis.graph.garden.proposals import pending_proposals, proposal_holds
 
     rows = pending_proposals(store, action=args.action, limit=args.limit)
     if not rows:
         print("no pending garden proposals")
         return
-    holds = _proposal_holds(store, [p.review_id for p in rows])
+    holds = proposal_holds(store, [p.review_id for p in rows])
     for p in rows:
         stale = "" if p.current else "  [stale: target changed]"
         print(
@@ -251,10 +222,10 @@ def _apply(args: argparse.Namespace, store: Store) -> None:
 
 
 def _reject(args: argparse.Namespace, store: Store) -> None:
-    from precis.graph.garden.proposals import resolve_proposal
+    from precis.graph.garden.proposals import proposal_holds, resolve_proposal
 
     review_id = int(args.review_id)
-    hold = _proposal_holds(store, [review_id]).get(review_id, {})
+    hold = proposal_holds(store, [review_id]).get(review_id, {})
     extra = (
         {"reason": hold["held"], "retryable": True}
         if hold.get("held") in {"apply_error", "unresolved"}

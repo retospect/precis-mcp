@@ -59,7 +59,7 @@ router = APIRouter(tags=["claim"])
 
 def _refuted_ruling(store: Any, hub_ref_id: int) -> dict[str, Any] | None:
     """``None`` unless ``hub_ref_id`` carries the ``STATUS:refuted`` control
-    tag (the do-not-repropose ledger, docs/backlog/quest-dossier-dialectic.md
+    tag (the do-not-repropose ledger, me690849
     §"Refuted lifecycle") — then the superseding-ruling shape the claim page
     banner needs: ``ruling_id``/``ruling_title``/``ruling_url``, all ``None``
     when refuted but the ruling link is missing (banner still shows, just

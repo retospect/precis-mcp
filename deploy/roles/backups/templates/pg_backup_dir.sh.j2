@@ -1,7 +1,7 @@
 #!/bin/bash
 # {{ ansible_managed }}
 # Nightly uncompressed directory dump → dbbackup share (backup-incremental
-# phase 1, docs/backlog/backup-incremental.md). Feeds the NAS restic leg,
+# phase 1, me690785). Feeds the NAS restic leg,
 # which snapshots the SAME fixed path each run so restic chunk dedup turns
 # every snapshot into a diff — the property the dated tar.zst archives of
 # the legacy chain never had.

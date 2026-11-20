@@ -28,13 +28,13 @@
 #     replaces it with the success marker and removes the stamp. A stamp with
 #     no newer marker = the last deploy never recorded success (died red on a
 #     task, or is still running) — the fleet's sha is UNKNOWN, and ship
-#     reports that. (Trigger case: the balthazar sandbox podman-pull residual
+#     reports that. (Trigger case: the sandbox-host podman-pull residual
 #     kept every deploy red at its tail, so the success marker was never
 #     written and lag reports counted from ancient per-worktree markers.)
 #
 # gr332009 rollout-convergence graft (scripts/deploy only, no new functions
 # here): the attempt-stamp/success-marker mechanism above is necessary but
-# not sufficient on its own — the balthazar sandbox podman-pull residual
+# not sufficient on its own — the sandbox-host podman-pull residual
 # above is exactly a play that runs AFTER the real rollout in the SAME
 # ansible-playbook invocation, so without more, every deploy dies red at that
 # tail, the success marker in step 3 never runs, and ship reports "deploy

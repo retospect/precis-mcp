@@ -10,6 +10,7 @@ writes text, cards and chunk offsets only; embeddings and derived passes are
 the worker's job (``fill_embeddings``). Arms that change the corpus itself
 (chunker, edges, size) re-ingest into their own throwaway databases —
 ``corpus.Variant`` / ``corpus.provision_variant``, one ``runner.World``
-each. Entry point: ``scripts/bench``; design
+each. :mod:`precis.bench.reformulations` holds the committed per-task query
+rephrasings the multi-query arm reads. Entry point: ``scripts/bench``; design
 in the memory graph, hub ``me621608``; slices under todo ``td604839``.
 """

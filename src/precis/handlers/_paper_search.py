@@ -53,12 +53,13 @@ from precis.handlers._paper_text import _chunk_keywords_or_caption, _scrub_block
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Tag
+from precis.store._chunks_ops import _or_retry
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for, semantic_unavailable_upstream
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import distance_as_similarity, scores_are_distances
-from precis.utils.title_views import title_md
+from precis.utils.title_views import title_md, title_md_clip
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -669,9 +670,11 @@ class FusedBlockSearch:
     ``before=`` into store-level filters, then runs either the plain
     single-query lex+sem search or (when ``queries=``/``answers=``/
     ``per_paper=`` are given) the broad RRF fusion across every
-    reformulation + HyDE leg. Title-introducer promotion and the
+    reformulation + HyDE leg. The title-match record callout and the
     year-omitted notice run here too — both are retrieval-shaping,
-    not presentation.
+    not presentation. Title rows are never promoted onto the table
+    here (gr681157); promotion survives only on
+    ``PaperHandler.search_hits``.
     """
 
     store: Store
@@ -689,50 +692,35 @@ class FusedBlockSearch:
         include_ref_ids: list[int] | None = None,
         exclude_ref_ids: list[int] | None = None,
     ) -> tuple[list[Any], list[tuple[str, str]], set[int]]:
-        """Promote near-exact title matches to the front of ``hits``.
+        """Find near-exact title matches for a record callout and optional promotion.
 
-        See the call site: FTS stop-word stripping buries an exact-title
-        query's paper. We trigram-match the raw title (store method),
-        fetch a representative block per match (the title/abstract
-        card, else the first body chunk — see
-        :func:`_representative_block_for_ref`), and prepend — deduping
-        by ref_id so a paper already in ``hits`` is reordered rather
-        than duplicated. Best-effort: any lookup hiccup returns
-        ``hits`` unchanged.
+        Full-text stop-word stripping can bury an exact-title query’s paper.
+        Trigram matching on the raw title supplies record callout lines even
+        when no matching block exists. Lookup failures leave hits unchanged.
 
-        ``include_ref_ids`` (the dispatch-resolved ``serves=``/``cited=``/
-        ``hubbed=`` inclusion set, already applied to the search legs)
-        also bounds the introducer — gr503955: an unfiltered title match
-        could name (and promote) a paper outside the include scope,
-        which ``PaperHandler.search_hits`` already avoids by skipping
-        the introducer entirely under any scope. Filtering keeps the
-        callout working for in-scope matches instead.
-        ``exclude_ref_ids`` (``exclude=`` + ``uncited=`` resolved) drops
-        matches at the trigram query too — an excluded paper must not
-        resurface via promotion (gr653528 review).
+        ``FusedBlockSearch.run`` always passes ``promote_rows=False``:
+        every kind on that path (``paper``, ``cfp``, ``datasheet`` —
+        all :class:`PaperHandler` subclasses) renders a ranked
+        chunk/paper table where a promoted record row would consume a
+        page slot and drop the ref's other hits. Only the callout
+        changes: ranked chunk and paper pages retain all their slots,
+        body preference and diversity caps (gr681157).
+        ``PaperHandler.search_hits`` uses the ``promote_rows=True``
+        default for cross-kind search: a representative card or first
+        body chunk is prepended per match, deduplicating by
+        ref_id. See :func:`_representative_block_for_ref`.
 
-        ``promote_rows=False`` retains only the record callout. Capped
-        paper search uses this to preserve its already-selected page:
-        injecting a representative card could undo body preference and
-        replace a ranked paper that no later page will return.
+        ``include_ref_ids`` bounds title matches to the dispatch-resolved
+        ``serves=``/``cited=``/``hubbed=`` inclusion set. ``exclude_ref_ids``
+        removes ``exclude=``/``uncited=`` matches at the trigram query too;
+        neither callouts nor promoted rows may escape the search scope.
 
-        Returns ``(hits, callout_lines, promoted_ref_ids)`` —
-        ``promoted_ref_ids`` names the papers now at the front (newly
-        injected or reordered), which ``PaperHandler.search_hits`` pins
-        ahead of the cross-kind RRF order. The caller stamps every
-        newly-promoted triple's score as ``float('inf')`` — the sentinel
-        the renderer (:class:`PaperSearchResultRenderer`) uses to render
-        the row as the paper *record* (``pa`` handle + one-line
-        citation) rather than a *chunk* handle plus that chunk's
-        keywords (gr244679 fix bar item 2): before that, a caller who
-        typed an exact title saw a table of unrelated-looking keywords
-        — often literally the paper's boilerplate first chunk ("google
-        hereby grants permission…" for the Transformer paper, before
-        gr244679 item 1 also taught representative-block selection to
-        prefer the card) — and concluded the paper wasn't held. The
-        callout lines name the paper record above the table too, so the
-        answer to a title query is readable even in the zero-hits
-        branch (no promotable block at all).
+        Returns ``(hits, callout_lines, promoted_ref_ids)``. With promotion
+        disabled, hits are unchanged and promoted_ref_ids is empty. With it
+        enabled, this method stamps promoted triples with ``float("inf")``:
+        the renderer’s record-row sentinel (``pa`` handle and citation).
+        ``PaperHandler.search_hits`` converts that sentinel to a finite
+        score and pins promoted refs ahead of the cross-kind RRF order.
         """
         import logging
 
@@ -1040,7 +1028,9 @@ class FusedBlockSearch:
                     kind=kind,
                     id=scope_slug,
                     next_hint=f"search(kind='{kind}', q='...') to find one",
-                    options=_suggest_paper_slugs(scope, store=self.store, kind=kind),
+                    options=lambda: _suggest_paper_slugs(
+                        scope, store=self.store, kind=kind
+                    ),
                 )
                 scope_ref_id = scope_ref.id
 
@@ -1158,7 +1148,7 @@ class FusedBlockSearch:
         per_paper_cap = 1 if paper_rows else per_paper
         # ``paper_rows`` already excludes verbatim — the verbatim early
         # return in ``search_chunks_multi`` applies no cap at all, so it
-        # must not opt into body preference or skip row promotion either.
+        # must not opt into body preference.
         capped_body_search = (
             kind == "paper"
             and per_paper_cap is not None
@@ -1339,7 +1329,12 @@ class FusedBlockSearch:
                 q=q,
                 kind=kind,
                 page_size=page_size,
-                promote_rows=not capped_body_search,
+                # Record rows belong in the callout, not in chunk
+                # slots: promotion also drops other hits of that ref.
+                # Every kind on this path (paper, cfp, datasheet —
+                # PaperHandler subclasses) renders the same ranked
+                # chunk/paper table, so none promotes (gr681157).
+                promote_rows=False,
                 include_ref_ids=include_ref_ids,
                 exclude_ref_ids=exclude_ref_ids,
             )
@@ -1421,7 +1416,8 @@ class FusedBlockSearch:
                 if m == "verbatim":
                     # search_chunks(mode='verbatim') ran
                     # search_chunks_keywords(terms=q.split()) — mirror the
-                    # exact terms so the count is the same universe.
+                    # terms to count the same keyword and phrase pool,
+                    # including the TSV candidate cap outside direct-scan scopes.
                     total = self.store.chunks.count_chunks_keywords(
                         terms=q.split(),
                         kind=self.kind,
@@ -1717,7 +1713,7 @@ class PaperSearchResultRenderer:
                     ]
                 )
             else:
-                if result.scope:
+                if result.scope and _or_retry(q, 1):
                     # Under a single-paper scope the legs already retried
                     # every term OR-ed (gr510534), so "widen the net"
                     # means different terms, not more of the same page.
@@ -1874,11 +1870,28 @@ class PaperSearchResultRenderer:
                     else result.paper_ref_counts.get(ref.id, 1) - 1
                 )
                 row["more"] = f"+{extra_hits}" if extra_hits > 0 else ""
+                # gr608579: a paper-mode row IS the paper, so it carries
+                # the paper's identity — ``pa<id> <cite_key>``, year and
+                # the (clipped) title — next to the best chunk's handle.
+                # Without it a hit on a titleless references chunk left
+                # the caller with a bare pc handle and no way to name or
+                # cite the paper it belongs to.
+                pa = handle_registry.try_format(ref.kind, ref.id) or (
+                    f"{ref.kind}:{ref.id}"
+                )
+                row["paper"] = f"{pa} {ref.slug}" if ref.slug else pa
+                row["year"] = str(ref.year) if ref.year is not None else "n.d."
+                # ``title_md_clip``, not a hard ``[:70]`` char slice —
+                # a cut inside a ``$…$``/``*…*`` span would leave a
+                # dangling marker that renders as literal noise (or
+                # pairs with a later ``$`` as fake math); the clip drops
+                # the whole span instead.
+                row["title"] = title_md_clip(title_md(ref.title), 70) or "(untitled)"
             table_rows.append(row)
         rendered_table = render_agent_table(
             table_rows,
             schema=(
-                ["handle", "more", "chunk_keywords", "size"]
+                ["handle", "more", "paper", "year", "title", "chunk_keywords", "size"]
                 if paper_rows
                 else ["handle", "chunk_keywords", "size"]
             ),

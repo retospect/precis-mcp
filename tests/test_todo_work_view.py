@@ -105,7 +105,7 @@ def _agent(tree: str, purpose: str, state: str = "working") -> dict[str, Any]:
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "vendor": "claude",
-        "host": "melchior",
+        "host": "maple",
         "project": "precis-mcp",
         "tree": tree,
         "branch": tree,
@@ -126,14 +126,14 @@ def _push_fleet(store: Store, rows: list[dict[str, Any]]) -> None:
     """Seed fleet rows the only way the kind admits them: a host report."""
     fleet_handler = boot(store=store).handlers["fleet"]
     report = {
-        "host": "melchior",
+        "host": "maple",
         "version": 1,
         "generated": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "rows": rows,
         "exceptions": [],
         "quota": {},
     }
-    fleet_handler.put(mode="report", host="melchior", report=report)
+    fleet_handler.put(mode="report", host="maple", report=report)
 
 
 def test_work_view_is_wired_in_the_vocabulary() -> None:
@@ -189,7 +189,7 @@ def test_work_view_counts_agents_by_handle_and_lease(
     assert "agents=2" in a_line
     assert "agents=" not in b_line
     assert "2 live agents" in out
-    assert "melchior reported" in out
+    assert "maple reported" in out
 
 
 def test_work_view_folds_child_jobs_into_a_cell(handler: TodoHandler, hub: Hub) -> None:

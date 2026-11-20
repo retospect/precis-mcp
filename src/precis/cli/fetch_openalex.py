@@ -28,7 +28,7 @@ a cached PDF (≈16% of the backlog in practice; the rest cost nothing but the
 free metadata call). Bounded by ``--limit`` and a hard ``--max-usd`` cap, and
 resumable — each attempt writes a ``fetcher:openalex_content`` event so a
 re-run skips what it already tried. Run it on the host that owns the watch
-inbox (melchior).
+inbox (the agent host).
 """
 
 from __future__ import annotations

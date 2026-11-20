@@ -1,5 +1,5 @@
 """Workspace import — the trusted side of ``/work/out``
-(structure-workspaces slice 0, docs/backlog/structure-workspaces.md
+(structure-workspaces slice 0, me693174
 §Import boundary).
 
 A workspace script never writes the DB: it writes ``out/manifest.json``

@@ -4,11 +4,12 @@
 Two pinned surfaces:
 
 * ``_SIZED_SITES`` — ``file::enclosing function`` sites whose source must
-  call ``size_cell(`` (or carry a ``"size"`` schema key). Removing a size
-  from a listed site fails.
+  call ``size_cell(`` (or carry a ``"size"`` schema key — labelled
+  variants like ``"size [kB] (default 1kB)"`` count, gr573411).
+  Removing a size from a listed site fails.
 * The universe of ``render_agent_table`` call sites whose schema names an
   id-ish column (a row you can ``get``). Any such site must either put
-  ``"size"`` in the schema or appear in ``_EXEMPT`` with a reason —
+  a size column in the schema or appear in ``_EXEMPT`` with a reason —
   a new fetchable-row table without a size fails until it carries one
   or is deliberately exempted.
 
@@ -34,7 +35,7 @@ _SIZED_SITES: frozenset[str] = frozenset(
         "handlers/_numeric_ref.py::_render_hits_table",
         "handlers/_numeric_ref.py::_search_body_chunks",
         "handlers/_numeric_ref.py::_get_batch",
-        "handlers/_links_render.py::render_links_section",
+        "handlers/_links_render.py::_link_row",
         "handlers/memory.py::_render_hits_table",
         "handlers/memory.py::_search_inner",
         "handlers/memory.py::_index_listing",
@@ -90,7 +91,7 @@ _NEVER_QUERY: frozenset[str] = frozenset(
 )
 
 #: ``render_agent_table`` sites with an id-ish column that carry no
-#: ``"size"`` — each pinned with the reason a size can't be had cheaply
+#: size column — each pinned with the reason a size can't be had cheaply
 #: or doesn't apply. ``file::enclosing function -> reason``.
 _EXEMPT: dict[str, str] = {
     "handlers/skill.py::_render_usage": "usage stats, not fetchable rows",
@@ -213,9 +214,16 @@ def _schema_columns(node: ast.AST) -> set[str]:
     return set()
 
 
+def _is_size_col(col: str) -> bool:
+    """The size column — bare ``size`` or a labelled variant carrying the
+    unit (``size [kB] (default 1kB)`` on the row listings, gr573411)."""
+    return col == "size" or col.startswith("size ")
+
+
 def _scan() -> tuple[dict[str, set[str]], set[str], set[str], set[str]]:
     """``(render_agent_table sites -> schema cols, sized scopes,
-    sites whose schema carries "size", body_byte_counts scopes)``."""
+    sites whose schema carries a size column, body_byte_counts
+    scopes)``."""
     sites: dict[str, set[str]] = {}
     sized: set[str] = set()
     sized_schemas: set[str] = set()
@@ -227,7 +235,7 @@ def _scan() -> tuple[dict[str, set[str]], set[str], set[str], set[str]]:
         v.visit(tree)
         for site, cols in v.sites.items():
             sites.setdefault(site, set()).update(cols)
-            if "size" in cols:
+            if any(_is_size_col(c) for c in cols):
                 sized_schemas.add(site)
         sized |= v.sized_scopes
         counted |= v.counted_scopes
@@ -238,7 +246,7 @@ def _covered(site: str, sized: set[str], sized_schemas: set[str]) -> bool:
     """A pin ``file::<name>`` holds when a sized scope in that file is
     ``<name>`` itself or a ``Class.<name>`` method — nested helpers are
     already credited to every enclosing scope by ``_mark`` — or when a
-    ``render_agent_table`` site there carries a ``"size"`` column."""
+    ``render_agent_table`` site there carries a size column."""
     rel, _, name = site.partition("::")
     for k in sized | sized_schemas:
         krel, _, kname = k.partition("::")
@@ -288,7 +296,7 @@ def test_new_fetchable_tables_carry_size_or_are_exempt() -> None:
     for site, cols in sites.items():
         if not cols & _IDISH:
             continue
-        if site in sized_schemas or "size" in cols:
+        if site in sized_schemas or any(_is_size_col(c) for c in cols):
             continue
         norm = _norm(site)
         if norm in _EXEMPT:

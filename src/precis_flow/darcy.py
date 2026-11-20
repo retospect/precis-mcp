@@ -1,5 +1,5 @@
 """Brinkman / Darcy face transmissivity for porous thin-gap regions
-(docs/backlog/se-multiphysics.md slice 4).
+(me694808 slice 4).
 
 A porous insert that fills the local gap replaces the open cubic-gap
 transmissivity ``T* = h*^3`` with the Brinkman closed form, in the same

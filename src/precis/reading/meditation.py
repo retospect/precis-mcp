@@ -7,11 +7,11 @@ second-person meditation script (induction → soft walk → tapering coda) as a
 audio path (`export_audio` → ffmpeg → `audio_feed.publish_episode`); this module
 owns only the *content* — the walk ordering + the script + the draft. Authoring
 craft is the `precis-voice` skill (nidra profile). See
-docs/backlog/reading-prep-loop.md.
+me690334.
 
 This module is store + LLM only (no TTS, no audio deps), so it unit-tests with a
 fake client. The render+publish step lives in the `cast_audio` pass / `precis
-cast` CLI, which runs on the TTS host (melchior).
+cast` CLI, which runs on the TTS host.
 """
 
 from __future__ import annotations

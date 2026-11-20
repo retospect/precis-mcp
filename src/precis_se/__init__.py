@@ -5,7 +5,7 @@ migration namespace ``src/precis_se/migrations/``), so core dispatch stays
 untouched. Always on wherever the plugin is installed — no per-kind flag
 (pinned by ``tests/test_se_plugin.py::test_kind_is_available_without_any_flag``);
 ``PRECIS_KINDS_DISABLED`` is the one general off-switch. Design:
-``docs/backlog/se-kind.md``; agent-facing docs: the ``precis-se-*-help`` skills
+`me694842`; agent-facing docs: the ``precis-se-*-help`` skills
 (``precis-se-help`` is the entry).
 
 **One scale-agnostic design kind** (the ``nm`` kind merged in as its atomic
@@ -180,7 +180,7 @@ applies them.
 - A finding that needs the store is appended by the handler's ``_render_drc``
   after the store-free :func:`precis_se.drc.drc`.
 
-**Open past what shipped** (docs/backlog/se-kind.md): the rotational DOF probe
+**Open past what shipped** (me694842): the rotational DOF probe
 (``translational_dof``'s missing twin), ``se_propose``, couplings
 (gear/rack/belt ratios), process DRC and the capability rows behind it,
 compliance advisories, the profile tier, assembly-order existence, edge

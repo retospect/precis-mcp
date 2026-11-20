@@ -3537,3 +3537,53 @@ def test_a_wire_taut_past_a_fanout_via_keeps_the_full_clearance() -> None:
         if f.rule == "clearance"
     ]
     assert clearance == []
+
+
+def test_sketch_rows_names_shove_withdrawal_cause() -> None:
+    """td678693: a whole-net shove withdrawal says 'withdrawn by shove'
+    with its cause and partners; a stranded component stays 'walled off'."""
+    d = TopoDesign(
+        parts=("P1", "P2", "P3", "P4"),
+        pin_xy=np.zeros((4, 2)),
+        pin_part=np.asarray([0, 1, 2, 3]),
+        pin_side=np.asarray([0, 0, 0, 0], dtype=np.int8),
+        pin_label=np.asarray(["1"] * 4, dtype=object),
+        pin_net=np.asarray([0, 0, 1, 1], dtype=np.int32),
+        net_pins=(np.asarray([0, 1]), np.asarray([2, 3])),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(4, dtype=bool),
+        freedoms=np.full(4, 3, dtype=np.uint8),
+        outline=np.asarray([[-1.0, -1.0], [5.0, -1.0], [5.0, 5.0], [-1.0, 5.0]]),
+        pose0=np.zeros((4, 4)),
+        net_name=("N0", "N1"),
+        pin_wh=np.zeros((4, 2)),
+    )
+    ir = SimpleNamespace(
+        n_pins=4,
+        n_nets=2,
+        pin_net=np.asarray([0, 0, 1, 1]),
+        pin_instance=np.asarray([0, 1, 2, 3]),
+        pin_label=np.asarray(["1"] * 4, dtype=object),
+        instance_refdes=np.asarray(list(d.parts), dtype=object),
+        net_name=np.asarray(list(d.net_name), dtype=object),
+        net_plane_layers=np.zeros(2, dtype=np.uint16),
+    )
+    plan = RoutePlan(
+        pieces=(),
+        vias=(),
+        layers=(),
+        stranded=(
+            wires_mod.Unreachable(
+                net=0, pin=0, owners=(), pins=(0, 1), cause="crossing", blocked_by=(1,)
+            ),
+            wires_mod.Unreachable(net=1, pin=2, owners=(), pins=(2, 3)),
+        ),
+    )
+    rows = sketch_rows(plan, d, ir, ["F.Cu", "B.Cu"])
+    shoved = rows["N0"]["fail"]["problems"][0]
+    assert shoved["reason"] == "unrouted"
+    assert shoved["message"] == "withdrawn by shove (crossing; blocked by N1)"
+    walled = rows["N1"]["fail"]["problems"][0]
+    assert walled["reason"] == "unrouted"
+    assert walled["message"].startswith("pins walled off")

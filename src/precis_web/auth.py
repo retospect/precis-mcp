@@ -5,7 +5,7 @@ mutation route — was served to anything that could reach the port, with
 tailnet membership as the only boundary. This module is the lock on that
 door. It is deliberately coarse: **every row in ``web_users`` is fully
 authorized**. Per-route ACLs, roles and per-user ask-routing are a
-separate, deferred design (``docs/backlog/identity-and-access.md``).
+separate, deferred design (`me690624`).
 
 Three responses:
 
@@ -40,9 +40,79 @@ Basic-authenticated response therefore sets a signed ``SameSite=Lax``
 session cookie (:class:`SessionTokens`) the gate accepts as an
 alternative credential; cookies always ride same-origin iframe
 requests. The roster row still decides on every cookie request
-(:func:`authorize_session_login`), so disable/rm bite immediately, and
-``POST /account/logout`` clears the cookie alongside its Basic
-realm-rotation challenge.
+(:func:`authorize_session_login`), so disable/rm bite immediately. The
+token also authenticates a tag of the row's ``password_hash``, so a
+password change (``/account/password``, or ``precis users passwd`` from
+another process) kills every cookie minted under the old one on its next
+request, and ``POST /account/logout`` sets a per-login not-before mark
+on the gate's :class:`SessionTokens` as well as deleting the cookie —
+"signed out" is a server-side fact, not only a client-side one.
+
+**``/podcast`` is exempt from the gate only when it carries a ``?t=``
+token.** The route checks the token itself (podcast apps handle Basic on
+enclosure URLs inconsistently). A ``/podcast`` request *without* a token
+takes the ordinary gate path — Basic or session cookie, lockout, failure
+log, credential cache, cookie mint — and the route reads the signed-in
+login from ``scope["state"]``. Before this the route ran its own Basic
+fallback, which touched none of that: unlimited password guessing at one
+scrypt per request. ``/files`` stays fully self-authenticating (its token
+is the only credential). The middleware and the route both read ``t`` via
+Starlette's ``QueryParams`` so they cannot disagree on "has a token".
+
+**Lockout is keyed on login + address, with a trusted bypass and a
+cookie fallback.** A lock on the login alone lets anyone who knows a login
+(they are not secret) lock its owner out from anywhere. So failed Basic
+attempts count against three buckets (:class:`FailureTracker`):
+``pair:<login>|<address>`` (10), ``addr:<address>`` (50) and
+``login:<login>`` (100, a global ceiling against a distributed run). A
+locked ``pair`` or ``addr`` refuses the Basic attempt with 429 before any
+scrypt. The ``login`` ceiling refuses only callers that are not *trusted*
+for that login: the (login, address) pair signed in with Basic recently
+(:class:`KnownAddresses`, 30 days). A cookie does not make a caller
+trusted — its HMAC only proves we issued it, not that the password it was
+minted under is still current.
+
+**Burst-proof.** The lock is checked on arrival, but a failure is only
+known after the scrypt, so N concurrent wrong guesses would all pass an
+on-arrival check. :func:`authenticate_record` therefore takes an
+:class:`AttemptGuard` and consults it *inside* each scrypt slot, recording
+the failure before the slot is released: at most ``limit + slots - 1``
+guesses of one bucket are verified however many arrive at once, the rest
+get 429 (or 503 when the gate is saturated). The tracker is thread-safe
+for that reason, and evicts fewest-hits-first so a flood of junk logins
+cannot flush a victim's count.
+
+**Cookie fallback.** A real browser sends its cached Basic header and its
+session cookie together. When the lockout refuses a Basic attempt and the
+request also carries a cookie for the *same* login that still authorizes
+(roster row, enabled, password tag current), the request is served as that
+cookie session: no password is verified, so nobody gains a guess from it,
+and nothing is recorded, cleared, remembered or re-minted. A Basic attempt
+that is not locked is judged as usual ("Basic wins": a wrong password
+beside a valid cookie is a 401). A cookie-only request is never refused by
+any bucket, and its 401s are logged but not counted: counting them would
+let a stale cookie, replayed, lock its own owner out. The address bucket
+is the resolved remote address, with IPv6 folded to its /64 (one
+subscriber, 2**64 addresses) and IPv4-mapped IPv6 to the IPv4.
+
+**Residual.** A signed-in owner is not affected by someone else filling
+their bucket. A fresh browser with no (valid) cookie in a locked bucket
+waits out the window. Under a sustained distributed run above the global
+ceiling, sign-in from an address not seen since the last web restart and
+without a valid cookie is refused until the window slides: both the
+known-address set and the cookie secret are process-local, so a restart
+forgets who is trusted and which cookies are valid.
+
+**Scrypt concurrency is bounded.** Every non-cached verification takes one
+of :data:`_SCRYPT_SLOTS` slots for the derivation; a caller that cannot
+get one in :data:`_SCRYPT_WAIT` seconds is answered 503 + ``Retry-After``.
+That is load shedding, not a failed credential: it is not logged as one
+and not counted against any bucket.
+
+**One 401 body.** Unknown login, wrong password, disabled account and a
+rejected cookie all answer ``invalid credentials``; the specific reason
+(``AuthError.reason``) goes to the server log only, so the response does
+not tell a prober which logins exist or which are disabled.
 
 **OAuth authorization starts behind the browser gate.** Discovery, token exchange
 and revocation self-authenticate, but ``/authorize`` requires the same login
@@ -56,18 +126,24 @@ import base64
 import binascii
 import hashlib
 import hmac
+import ipaddress
 import logging
 import secrets
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from http.cookies import CookieError, SimpleCookie
-from typing import Any
+from typing import Any, NamedTuple, Protocol
 from urllib.parse import urlsplit
 
-from starlette.datastructures import MutableHeaders
+from starlette.datastructures import MutableHeaders, QueryParams
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from precis import icons as precis_icons
 from precis import profiles
 from precis.users import (
+    PasswordRecord,
     PepperUnavailable,
     WebUser,
     burn_verify,
@@ -89,21 +165,35 @@ log = logging.getLogger(__name__)
 #: reporting contact — nothing the gate protects — and it must answer
 #: unauthenticated on the public funnel or scanners keep flagging it
 #: missing (a 401 looks like "not served").
-_OPEN_PATHS = frozenset({"/healthz", "/.well-known/security.txt"})
+#: ``/favicon.ico`` + ``/favicon.svg`` (gr633600) join for the same
+#: reason: a connector's icon fetch (and a browser's tab request on the
+#: OAuth consent flow) happens before any credential exists, and without
+#: the mark clients fall back to the infrastructure host's icon.
+_OPEN_PATHS = frozenset(
+    {"/healthz", "/.well-known/security.txt", *precis_icons.PUBLIC_PATHS}
+)
 
-#: Path prefixes that authenticate themselves. ``/podcast`` accepts a
-#: per-user ``?t=`` feed token because phone podcast clients handle Basic
-#: auth on enclosure URLs inconsistently — the route (not this
-#: middleware) does that check, and falls back to Basic when no token is
-#: presented. See :mod:`precis_web.routes.podcast`. ``/files`` accepts a
+#: Path prefixes that may authenticate themselves. ``/files`` accepts a
 #: signed HMAC ``?t=`` token minted by the MCP ``pdf_link`` view — with
 #: no Basic fallback, since the token *is* the credential. See
-#: :mod:`precis_web.routes.files`.
+#: :mod:`precis_web.routes.files`. ``/podcast`` accepts a per-user ``?t=``
+#: feed token because phone podcast clients handle Basic auth on
+#: enclosure URLs inconsistently, but only *when it carries one*
+#: (:data:`_TOKEN_GATED_PREFIXES`): without a token the request goes
+#: through this gate like any other. See :mod:`precis_web.routes.podcast`.
 _SELF_AUTH_PREFIXES = ("/podcast", "/files")
+
+#: The subset of :data:`_SELF_AUTH_PREFIXES` exempt only with a non-empty
+#: ``t`` query parameter.
+_TOKEN_GATED_PREFIXES = ("/podcast",)
+
+
+def _under(path: str, prefix: str) -> bool:
+    return path == prefix or path.startswith(f"{prefix}/")
 
 
 def _is_self_auth(path: str) -> bool:
-    """Is *path* inside a self-authenticating subtree?
+    """Is *path* inside a subtree that may authenticate itself?
 
     Matches by **path segment**, not string prefix. A bare
     ``str.startswith("/podcast")`` also exempts ``/podcastfoo`` — and
@@ -113,7 +203,23 @@ def _is_self_auth(path: str) -> bool:
     has to name a subtree, so only the prefix itself and things under
     its ``/`` qualify.
     """
-    return any(path == p or path.startswith(f"{p}/") for p in _SELF_AUTH_PREFIXES)
+    return any(_under(path, p) for p in _SELF_AUTH_PREFIXES)
+
+
+def _bypasses_gate(scope: Scope, path: str) -> bool:
+    """Does this request skip the gate because its route authenticates it?
+
+    A self-auth subtree always does, except the token-gated ones
+    (``/podcast``), which do only when they carry a non-empty ``t``.
+    Read with :class:`QueryParams` — the same parser the route's
+    ``request.query_params`` uses — so the two can't disagree about
+    whether a token is present.
+    """
+    if not _is_self_auth(path):
+        return False
+    if any(_under(path, p) for p in _TOKEN_GATED_PREFIXES):
+        return bool(QueryParams(scope.get("query_string", b"")).get("t"))
+    return True
 
 
 _CACHE_TTL = 300.0
@@ -135,41 +241,98 @@ SESSION_COOKIE = "precis_session"
 _SESSION_TTL = 12 * 3600.0
 
 
+def password_tag(password_hash: str) -> str:
+    """A short, non-reversible tag of the stored password hash.
+
+    Carried (and HMAC-authenticated) inside the session token, and compared
+    with the row's current tag on every cookie request: a password change
+    writes a new hash, so cookies minted under the old one stop verifying.
+    16 hex chars of sha256 is plenty — it only has to differ after a
+    change, and it leaks nothing about the hash that the cookie holder
+    could use (the hash itself never leaves the server).
+    """
+    return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()[:16]
+
+
+class SessionClaim(NamedTuple):
+    """What a verified session token vouches for."""
+
+    login: str
+    password_tag: str
+
+
 class SessionTokens:
     """Mint and verify the session cookie's signed tokens.
 
-    Format ``expires.hexsig.login`` — expiry and login are authenticated
-    by the HMAC, and :func:`verify` recomputes over the *parsed* fields
-    so a token only verifies if it round-trips exactly.
+    Format ``expires.issued.pwtag.hexsig.login`` — expiry, issue stamp,
+    password tag and login are authenticated by the HMAC, and
+    :func:`parse` recomputes over the *parsed* fields so a token only
+    verifies if it round-trips exactly. The login comes last because
+    logins may contain dots.
+
+    ``issued`` is a strictly increasing nanosecond stamp (never equal for
+    two calls, even within one clock tick), so :meth:`sign_out`'s
+    per-login not-before mark cleanly separates "before" from "after"
+    even when the user signs out and straight back in within a second.
     """
 
     def __init__(self, *, ttl: float = _SESSION_TTL) -> None:
         self._secret = secrets.token_bytes(32)
         self._ttl = ttl
+        self._lock = threading.Lock()
+        self._last_stamp = 0
+        self._not_before: dict[str, int] = {}
 
-    def _pack(self, expires: int, login: str) -> str:
+    def _stamp(self) -> int:
+        with self._lock:
+            self._last_stamp = max(time.time_ns(), self._last_stamp + 1)
+            return self._last_stamp
+
+    def _pack(self, expires: int, issued: int, tag: str, login: str) -> str:
         sig = hmac.new(
-            self._secret, f"{expires}.{login}".encode(), hashlib.sha256
+            self._secret, f"{expires}.{issued}.{tag}.{login}".encode(), hashlib.sha256
         ).hexdigest()
-        return f"{expires}.{sig}.{login}"
+        return f"{expires}.{issued}.{tag}.{sig}.{login}"
 
-    def issue(self, login: str) -> str:
-        return self._pack(int(time.time() + self._ttl), login)
+    def issue(self, login: str, password_tag: str = "") -> str:
+        return self._pack(
+            int(time.time() + self._ttl), self._stamp(), password_tag, login
+        )
+
+    def sign_out(self, login: str) -> None:
+        """Void every token issued for *login* so far (this process only)."""
+        self._not_before[login] = self._stamp()
+
+    def parse(self, token: str | None) -> SessionClaim | None:
+        """The token's claim when valid, unexpired and not signed out."""
+        if not token:
+            return None
+        parts = token.split(".", 4)
+        if len(parts) != 5:
+            return None
+        expires_s, issued_s, tag, _sig, login = parts
+        if not (
+            expires_s.isascii()
+            and expires_s.isdigit()
+            and issued_s.isascii()
+            and issued_s.isdigit()
+            and login
+        ):
+            return None
+        expires, issued = int(expires_s), int(issued_s)
+        if expires <= time.time():
+            return None
+        expected = self._pack(expires, issued, tag, login)
+        if not hmac.compare_digest(expected.encode(), token.encode()):
+            return None
+        if issued <= self._not_before.get(login, 0):
+            return None
+        return SessionClaim(login, tag)
 
     def verify(self, token: str | None) -> str | None:
         """The token's login when valid and unexpired, else ``None``."""
-        if not token:
-            return None
-        expires_s, _, rest = token.partition(".")
-        _sig, _, login = rest.partition(".")
-        if not (expires_s.isdigit() and login):
-            return None
-        expires = int(expires_s)
-        if expires <= time.time():
-            return None
-        if not hmac.compare_digest(self._pack(expires, login), token):
-            return None
-        return login
+        claim = self.parse(token)
+        return claim.login if claim is not None else None
 
 
 def _session_cookie_value(headers: dict[bytes, bytes]) -> str | None:
@@ -212,6 +375,32 @@ def _remote_addr(scope: Scope, headers: dict[bytes, bytes]) -> str:
             if forwarded:
                 return forwarded
     return host or "-"
+
+
+def _addr_bucket(remote: str) -> str | None:
+    """The lockout bucket for a resolved remote address, ``None`` for none.
+
+    IPv4 as is. IPv6 folds to its /64 network — one subscriber is
+    routinely handed a whole /64, so per-address keys would hand a
+    guesser 2**64 fresh buckets — and an IPv4-mapped IPv6 address to the
+    IPv4 it wraps. A string that isn't an IP at all keeps its own bucket
+    (the test client's peer name, say). ``"-"`` (unresolvable) is no
+    bucket: the caller skips the address keys rather than lumping every
+    unknown peer together. Log lines keep the raw *remote*.
+    """
+    if remote == "-":
+        return None
+    try:
+        ip = ipaddress.ip_address(remote)
+    except ValueError:
+        return remote
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        # Build from the integer: a scoped address (``fe80::1%eth0``)
+        # stringifies with its scope, which ``ip_network`` rejects.
+        return str(ipaddress.IPv6Network(((int(ip) >> 64) << 64, 64)))
+    return str(ip)
 
 
 #: Methods that don't change state, and so don't need the cross-site
@@ -285,18 +474,24 @@ class CredentialCache:
         self._entries.clear()
 
 
-#: Sliding-window lockout for failed credential presentations (gr343746).
-#: ``_LOCKOUT_FAILURES`` 401s for one login inside ``_LOCKOUT_WINDOW``
-#: seconds locks that login for the rest of the window — 429 before any
-#: scrypt is spent. The per-ADDRESS bucket is the wide net for a run that
-#: rotates logins, so its threshold is deliberately several times higher:
-#: one person mistyping their password must never lock out everyone who
-#: shares their address (or, when the address can't be resolved, the
-#: whole site). Process-local, like the credential cache: a web restart
-#: forgets it, which is fine (the goal is to stop a stuffing run from
-#: getting a free scrypt-bounded rate, not to persist a ban).
+#: Sliding-window lockout for failed credential presentations (gr343746,
+#: reshaped by gr730562). Three buckets count the 401s of one Basic
+#: attempt: ``pair:<login>|<address>`` (``_LOCKOUT_FAILURES``) is what
+#: stops guessing one account from one place; ``addr:<address>``
+#: (``_LOCKOUT_ADDR_FAILURES``, deliberately several times higher: one
+#: person mistyping must never lock out everyone who shares their
+#: address) is the wide net for a run that rotates logins; and
+#: ``login:<login>`` (``_LOCKOUT_LOGIN_FAILURES``) is a global ceiling
+#: against a run spread over many addresses — high enough that it only
+#: ever trips under a real distributed attack, and even then it refuses
+#: only callers not trusted for that login (see the module docstring).
+#: All 429 before any scrypt is spent. Process-local, like the credential
+#: cache: a web restart forgets it, which is fine (the goal is to stop a
+#: stuffing run from getting a free scrypt-bounded rate, not to persist
+#: a ban).
 _LOCKOUT_FAILURES = 10
 _LOCKOUT_ADDR_FAILURES = 50
+_LOCKOUT_LOGIN_FAILURES = 100
 _LOCKOUT_WINDOW = 15 * 60.0
 #: Distinct keys the tracker holds before evicting the stalest — every
 #: failed attempt inserts an attacker-chosen login string, so growth must
@@ -305,16 +500,25 @@ _LOCKOUT_MAX_KEYS = 4096
 #: One "still locked" warning per key per this many seconds — a locked
 #: key that keeps hammering shouldn't fill the log at the attacker's rate.
 _LOCKED_LOG_EVERY = 60.0
+#: How long a (login, address) that signed in with Basic stays trusted
+#: past the global login ceiling, and how many such pairs are remembered.
+_KNOWN_TTL = 30 * 86400.0
+_KNOWN_MAX = 4096
 
 
 class FailureTracker:
-    """Per-login and per-address sliding window of failed credentials.
+    """Per-pair, per-address and per-login sliding windows of failures.
 
-    ``record`` after every 401 on a *presented* credential (Basic header
-    or session cookie); ``locked_for`` before verifying one, so a locked
-    key is refused ahead of the scrypt. A success ``clear``s the login's
-    window (not the address's — a shared NAT address may carry both a
-    legitimate user and the run targeting them).
+    ``record`` after every 401 on a presented Basic credential;
+    ``locked_for`` before verifying one, so a locked key is refused ahead
+    of the scrypt. A success ``clear``s the pair's window (not the
+    address's — a shared NAT address may carry both a legitimate user and
+    the run targeting them — nor the login ceiling's). The limit is
+    picked by key prefix: ``addr:``, ``login:``, else the pair limit.
+
+    Thread-safe: the gate checks on the event loop but verifies, and
+    records the failure, on worker threads (see :class:`_AttemptGuard`),
+    so every public method holds one lock.
     """
 
     def __init__(
@@ -322,18 +526,25 @@ class FailureTracker:
         *,
         failures: int = _LOCKOUT_FAILURES,
         addr_failures: int = _LOCKOUT_ADDR_FAILURES,
+        login_failures: int = _LOCKOUT_LOGIN_FAILURES,
         window: float = _LOCKOUT_WINDOW,
         maxsize: int = _LOCKOUT_MAX_KEYS,
     ) -> None:
         self._failures = failures
         self._addr_failures = addr_failures
+        self._login_failures = login_failures
         self._window = window
         self._maxsize = maxsize
+        self._lock = threading.Lock()
         self._hits: dict[str, list[float]] = {}
         self._last_locked_log: dict[str, float] = {}
 
     def _limit(self, key: str) -> int:
-        return self._addr_failures if key.startswith("addr:") else self._failures
+        if key.startswith("addr:"):
+            return self._addr_failures
+        if key.startswith("login:"):
+            return self._login_failures
+        return self._failures
 
     def _live(self, key: str, now: float) -> list[float]:
         hits = [t for t in self._hits.get(key, ()) if t > now - self._window]
@@ -344,54 +555,111 @@ class FailureTracker:
         return hits
 
     def record(self, *keys: str) -> None:
-        now = time.monotonic()
-        for key in keys:
-            hits = self._live(key, now)
-            hits.append(now)
-            self._hits[key] = hits
-        if len(self._hits) > self._maxsize:
-            self._evict(now)
+        with self._lock:
+            now = time.monotonic()
+            for key in keys:
+                hits = self._live(key, now)
+                hits.append(now)
+                self._hits[key] = hits
+            if len(self._hits) > self._maxsize:
+                self._evict(now)
 
     def _evict(self, now: float) -> None:
-        """Drop expired windows, then the stalest keys, down to ``maxsize``.
+        """Drop expired windows, then the least-hit keys, below ``maxsize``.
+
         Bounded memory against a run that presents a fresh bogus login per
-        request; a key evicted early only means that login's count restarts
-        — never that a live lock lifts on a key still being hammered (its
-        window is the freshest and survives)."""
+        request. Eviction order is (live hit count, last hit) ascending:
+        fewest hits first, stalest first among equals — so a flood of
+        single-hit keys evicts itself rather than a victim's key that is
+        near or at its limit (evicting by staleness alone would let ~2,000
+        junk logins reset the count on the account being attacked).
+        Roster-unknown logins are deliberately not special-cased: that
+        would turn the lockout into an enumeration oracle. Evicts down to
+        7/8 of ``maxsize`` so a sustained flood pays the sort once per
+        ``maxsize / 8`` inserts, not on every one.
+        """
         for key in list(self._hits):
             self._live(key, now)
-        overflow = len(self._hits) - self._maxsize
-        if overflow > 0:
-            stalest = sorted(self._hits, key=lambda k: self._hits[k][-1])[:overflow]
-            for key in stalest:
-                self._hits.pop(key, None)
-                self._last_locked_log.pop(key, None)
+        if len(self._hits) <= self._maxsize:
+            return
+        keep = self._maxsize - self._maxsize // 8
+        victims = sorted(
+            self._hits, key=lambda k: (len(self._hits[k]), self._hits[k][-1])
+        )
+        for key in victims[: len(self._hits) - keep]:
+            self._hits.pop(key, None)
+            self._last_locked_log.pop(key, None)
 
     def clear(self, key: str) -> None:
-        self._hits.pop(key, None)
-        self._last_locked_log.pop(key, None)
+        with self._lock:
+            self._hits.pop(key, None)
+            self._last_locked_log.pop(key, None)
 
     def locked_for(self, *keys: str) -> float:
         """Seconds until the earliest-unlocking key among *keys* frees up,
         or ``0.0`` when none is locked."""
-        now = time.monotonic()
-        retry = 0.0
-        for key in keys:
-            hits = self._live(key, now)
-            limit = self._limit(key)
-            if len(hits) >= limit:
-                # The window slides: the lock lifts when the oldest hit
-                # that still counts ages out.
-                retry = max(retry, hits[-limit] + self._window - now)
-        return retry
+        with self._lock:
+            now = time.monotonic()
+            retry = 0.0
+            for key in keys:
+                hits = self._live(key, now)
+                limit = self._limit(key)
+                if len(hits) >= limit:
+                    # The window slides: the lock lifts when the oldest hit
+                    # that still counts ages out.
+                    retry = max(retry, hits[-limit] + self._window - now)
+            return retry
 
     def should_log_locked(self, key: str) -> bool:
-        now = time.monotonic()
-        last = self._last_locked_log.get(key)
-        if last is not None and now - last < _LOCKED_LOG_EVERY:
+        with self._lock:
+            now = time.monotonic()
+            last = self._last_locked_log.get(key)
+            if last is not None and now - last < _LOCKED_LOG_EVERY:
+                return False
+            self._last_locked_log[key] = now
+            return True
+
+
+class KnownAddresses:
+    """Bounded TTL set of ``(login, address bucket)`` pairs that signed in.
+
+    What makes a caller *trusted* past the global login ceiling (and the
+    only thing that does): the same login from the same bucket proved the
+    password recently. Insertion
+    order is staleness order (a re-add moves the entry to the end), so
+    eviction drops from the front. Process-local — see the residual in
+    the module docstring.
+    """
+
+    def __init__(self, *, ttl: float = _KNOWN_TTL, maxsize: int = _KNOWN_MAX) -> None:
+        self._ttl = ttl
+        self._maxsize = maxsize
+        self._seen: dict[tuple[str, str], float] = {}
+
+    def add(self, login: str, bucket: str | None) -> None:
+        if bucket is None:
+            return
+        key = (login, bucket)
+        self._seen.pop(key, None)
+        self._seen[key] = time.monotonic() + self._ttl
+        while len(self._seen) > self._maxsize:
+            self._seen.pop(next(iter(self._seen)))
+
+    def __contains__(self, item: tuple[str, str | None]) -> bool:
+        login, bucket = item
+        if bucket is None:
             return False
-        self._last_locked_log[key] = now
+        expires = self._seen.get((login, bucket))
+        if expires is None:
+            return False
+        if expires <= time.monotonic():
+            self._seen.pop((login, bucket), None)
+            return False
         return True
+
+
+#: The one client-facing 401 body (see the module docstring).
+_INVALID = "invalid credentials"
 
 
 class AuthError(Exception):
@@ -404,12 +672,97 @@ class AuthError(Exception):
         *,
         challenge: bool = False,
         retry_after: float | None = None,
+        reason: str | None = None,
     ) -> None:
         super().__init__(detail)
         self.status = status
         self.detail = detail
         self.challenge = challenge
         self.retry_after = retry_after
+        #: Server-log-only specifics ("account disabled"); ``detail`` is
+        #: the client-facing body and must not tell rejections apart.
+        self.reason = reason
+
+
+def _lockout_refusal(
+    failures: FailureTracker, keys: tuple[str, ...], *, login: str, remote: str
+) -> AuthError | None:
+    """The 429 for an attempt whose *keys* are locked now, else ``None``.
+
+    The one place that decides "locked", logs it (once a minute per key —
+    a locked key that keeps hammering mustn't fill the log at the
+    attacker's rate) and builds the response; shared by the event-loop
+    pre-check and the in-slot :class:`_AttemptGuard`.
+    """
+    retry = failures.locked_for(*keys)
+    if retry <= 0:
+        return None
+    for key in keys:
+        if failures.locked_for(key) > 0 and failures.should_log_locked(key):
+            log.warning(
+                "precis-web auth: locked out login=%r from %s "
+                "(too many failures in %.0f s) — retry in %.0f s",
+                login,
+                remote,
+                _LOCKOUT_WINDOW,
+                retry,
+            )
+            break
+    return AuthError(
+        429,
+        "too many failed sign-in attempts — try again later",
+        retry_after=retry,
+    )
+
+
+class AttemptGuard(Protocol):
+    """What :func:`authenticate_record` needs to make the lockout burst-proof.
+
+    The pre-check runs on arrival, but a failure is only known once the
+    scrypt returns — so N concurrent wrong guesses would all pass an
+    on-arrival check and all be verified. The guard is consulted *inside*
+    the scrypt slot instead, and records the failure before the slot is
+    released, so at most ``limit + _SCRYPT_SLOTS - 1`` guesses of one
+    bucket are ever verified, however many arrive at once.
+    """
+
+    def check(self) -> None:
+        """Raise the 429 when any of this attempt's keys is locked now."""
+
+    def failed(self) -> None:
+        """Record this attempt's keys: its credential was rejected."""
+
+
+class _AttemptKeys:
+    """The :class:`AttemptGuard` over one Basic attempt's tracker keys."""
+
+    def __init__(
+        self,
+        failures: FailureTracker,
+        *,
+        check_keys: tuple[str, ...],
+        record_keys: tuple[str, ...],
+        login: str,
+        remote: str,
+    ) -> None:
+        self._failures = failures
+        self._check_keys = check_keys
+        self._record_keys = record_keys
+        self._login = login
+        self._remote = remote
+
+    def refusal(self) -> AuthError | None:
+        return _lockout_refusal(
+            self._failures, self._check_keys, login=self._login, remote=self._remote
+        )
+
+    def check(self) -> None:
+        err = self.refusal()
+        if err is not None:
+            raise err
+
+    def failed(self) -> None:
+        self._failures.record(*self._record_keys)
 
 
 def parse_basic_header(value: str | None) -> tuple[str, str] | None:
@@ -511,13 +864,52 @@ def require_roster(store: Any) -> None:
         )
 
 
-def authenticate(
-    store: Any, login: str, password: str, *, cache: CredentialCache | None = None
-) -> WebUser:
-    """Verify one credential pair against ``web_users``.
+#: Concurrent scrypt derivations allowed, and how long a caller waits for
+#: a slot. scrypt is ~60 ms of CPU *and* ~16 MiB; unbounded, a burst of
+#: wrong passwords is a memory/CPU lever on the whole web process. A
+#: caller that can't get a slot is shed with 503, not failed.
+_SCRYPT_SLOTS = 4
+_SCRYPT_WAIT = 2.0
+_SCRYPT_GATE = threading.BoundedSemaphore(_SCRYPT_SLOTS)
+
+
+class _Busy(AuthError):
+    """No scrypt slot came free in time: the attempt was shed, not judged."""
+
+
+@contextmanager
+def _scrypt_slot() -> Iterator[None]:
+    if not _SCRYPT_GATE.acquire(timeout=_SCRYPT_WAIT):
+        raise _Busy(
+            503,
+            "precis-web is busy verifying passwords — try again shortly.",
+            retry_after=max(1.0, _SCRYPT_WAIT),
+        )
+    try:
+        yield
+    finally:
+        _SCRYPT_GATE.release()
+
+
+def authenticate_record(
+    store: Any,
+    login: str,
+    password: str,
+    *,
+    cache: CredentialCache | None = None,
+    guard: AttemptGuard | None = None,
+) -> tuple[WebUser, PasswordRecord]:
+    """Verify one credential pair against ``web_users``; also hand back
+    the row's password record (the gate tags the session cookie with it).
 
     Raises :class:`AuthError` on every rejection path, so callers get one
-    exception type carrying the status they should emit.
+    exception type carrying the status they should emit. The three 401
+    paths share one client-facing body; ``reason`` carries the specific
+    cause for the server log.
+
+    *guard* (see :class:`AttemptGuard`) is consulted inside each scrypt
+    slot before the derivation and told of a rejected credential before
+    the slot is released. A cache hit does no scrypt and skips it.
 
     The roster check and the row read happen on **every** request,
     including cache hits — two indexed reads against a table with a
@@ -532,19 +924,34 @@ def authenticate(
     if found is None:
         # Unknown login: spend the same scrypt a real one would, so the
         # roster isn't enumerable with a stopwatch.
-        burn_verify()
-        raise AuthError(401, "invalid credentials", challenge=True)
+        with _scrypt_slot():
+            if guard is not None:
+                guard.check()
+            burn_verify()
+            if guard is not None:
+                guard.failed()
+        raise AuthError(401, _INVALID, challenge=True, reason="invalid credentials")
     user, record = found
     if not user.enabled:
-        burn_verify()
-        raise AuthError(401, "account disabled", challenge=True)
+        with _scrypt_slot():
+            if guard is not None:
+                guard.check()
+            burn_verify()
+            if guard is not None:
+                guard.failed()
+        raise AuthError(401, _INVALID, challenge=True, reason="account disabled")
 
     if cache is not None and cache.matches(login, password, record.password_hash):
-        return user
+        return user, record
 
     pepper = resolve_pepper(store=store)
     try:
-        ok = verify_password(password, record, pepper=pepper)
+        with _scrypt_slot():
+            if guard is not None:
+                guard.check()
+            ok = verify_password(password, record, pepper=pepper)
+            if not ok and guard is not None:
+                guard.failed()
     except PepperUnavailable as exc:
         log.error("precis-web auth: %s", exc)
         raise AuthError(
@@ -554,22 +961,31 @@ def authenticate(
             "wrong password.",
         ) from exc
     if not ok:
-        raise AuthError(401, "invalid credentials", challenge=True)
+        raise AuthError(401, _INVALID, challenge=True, reason="invalid credentials")
 
     if cache is not None:
         cache.remember(login, password, record.password_hash)
     store.touch_web_user_login(user.login)
-    return user
+    return user, record
 
 
-def authorize_session_login(store: Any, login: str) -> WebUser:
+def authenticate(
+    store: Any, login: str, password: str, *, cache: CredentialCache | None = None
+) -> WebUser:
+    """:func:`authenticate_record` for callers that only want the user."""
+    return authenticate_record(store, login, password, cache=cache)[0]
+
+
+def authorize_session_login(store: Any, login: str, tag: str) -> WebUser:
     """Authorize a login vouched for by a valid session token.
 
     The HMAC already proved *we* issued the token, so there is no
     password to verify — but the roster row is still read and still
     decides, exactly like :func:`authenticate`'s cache-hit path: a
     ``precis users disable`` / ``rm`` locks the cookie holder out on
-    their next request, not at token expiry.
+    their next request, not at token expiry. *tag* is the token's
+    :func:`password_tag`; it must match the row's current one, so a
+    password change (from this process or another) retires the cookie.
 
     Deliberately does NOT ``touch_web_user_login``: cookie traffic is the
     high-frequency kind (every iframe pane load), and a per-request
@@ -582,10 +998,16 @@ def authorize_session_login(store: Any, login: str) -> WebUser:
     require_roster(store)
     found = store.get_web_user_credentials(login)
     if found is None:
-        raise AuthError(401, "invalid credentials", challenge=True)
-    user, _record = found
+        raise AuthError(401, _INVALID, challenge=True, reason="invalid credentials")
+    user, record = found
     if not user.enabled:
-        raise AuthError(401, "account disabled", challenge=True)
+        raise AuthError(401, _INVALID, challenge=True, reason="account disabled")
+    if not hmac.compare_digest(
+        tag.encode(), password_tag(record.password_hash).encode()
+    ):
+        raise AuthError(
+            401, _INVALID, challenge=True, reason="session predates password change"
+        )
     return user
 
 
@@ -595,8 +1017,17 @@ class BasicAuthMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
         self.cache = CredentialCache()
+        #: Fallback only: ``create_app`` parks the shared instance on
+        #: ``app.state.session_tokens`` so ``/account/logout`` can reach
+        #: it; see :meth:`_sessions`.
         self.sessions = SessionTokens()
         self.failures = FailureTracker()
+        self.known = KnownAddresses()
+
+    def _sessions(self, scope: Scope) -> SessionTokens:
+        state = getattr(scope.get("app"), "state", None)
+        shared = getattr(state, "session_tokens", None)
+        return shared if isinstance(shared, SessionTokens) else self.sessions
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -611,7 +1042,7 @@ class BasicAuthMiddleware:
         )
         if (
             path in _OPEN_PATHS
-            or _is_self_auth(path)
+            or _bypasses_gate(scope, path)
             or (path in oauth_paths and path != "/authorize")
         ):
             await self.app(scope, receive, send)
@@ -621,13 +1052,21 @@ class BasicAuthMiddleware:
         raw = headers.get(b"authorization")
         creds = parse_basic_header(raw.decode("latin-1") if raw else None)
         store = self._store(scope)
+        sessions = self._sessions(scope)
         fresh_cookie: str | None = None
         remote = _remote_addr(scope, headers)
         # An unresolvable peer is not one bucket — it is no bucket.
-        addr_keys = (f"addr:{remote}",) if remote != "-" else ()
+        bucket = _addr_bucket(remote)
+        claim = sessions.parse(_session_cookie_value(headers))
         # The login this request is vouching for — what a 401 is logged
         # and counted against. None until a credential is parsed.
         presented: str | None = None
+        pair_keys: tuple[str, ...] = ()
+        #: The lockout's refusal of this Basic attempt, if any, and whether
+        #: the password was actually verified (vs. served on the cookie).
+        refusal: AuthError | None = None
+        basic_verified = False
+        guard: _AttemptKeys | None = None
 
         try:
             import anyio
@@ -637,8 +1076,7 @@ class BasicAuthMiddleware:
             check_same_origin(scope, headers)
             if store is None:
                 raise AuthError(503, "precis-web has no database connection")
-            session_login = self.sessions.verify(_session_cookie_value(headers))
-            presented = creds[0] if creds is not None else session_login
+            presented = creds[0] if creds is not None else (claim and claim.login)
             if presented is not None:
                 # The lockout key is the CANONICAL login (the roster's
                 # lower+strip form), so case variants of one login share
@@ -648,27 +1086,28 @@ class BasicAuthMiddleware:
                 # record; the cap keeps one request from writing a
                 # kilobyte per line.
                 presented = normalize_login(presented)[:128]
-            if presented is not None:
+            if creds is not None and presented is not None:
+                if bucket is not None:
+                    pair_keys = (f"pair:{presented}|{bucket}", f"addr:{bucket}")
+                # Trusted for this login: it signed in from this address
+                # before. Trust lifts only the global login ceiling. (A
+                # cookie does not: its HMAC says nothing about whether the
+                # password it was minted under is still the password.)
+                trusted = (presented, bucket) in self.known
+                guard = _AttemptKeys(
+                    self.failures,
+                    check_keys=(
+                        pair_keys if trusted else (*pair_keys, f"login:{presented}")
+                    ),
+                    record_keys=(*pair_keys, f"login:{presented}"),
+                    login=presented,
+                    remote=remote,
+                )
                 # Locked keys are refused before the row read and the
                 # scrypt — the whole point of the counter (gr343746).
-                retry = self.failures.locked_for(f"login:{presented}", *addr_keys)
-                if retry > 0:
-                    for key in (f"login:{presented}", *addr_keys):
-                        if self.failures.should_log_locked(key):
-                            log.warning(
-                                "precis-web auth: locked out login=%r from %s "
-                                "(too many failures in %.0f s) — retry in %.0f s",
-                                presented,
-                                remote,
-                                _LOCKOUT_WINDOW,
-                                retry,
-                            )
-                            break
-                    raise AuthError(
-                        429,
-                        "too many failed sign-in attempts — try again later",
-                        retry_after=retry,
-                    )
+                # This is the cheap pre-admission check; the guard repeats
+                # it inside the scrypt slot, which is what bounds a burst.
+                refusal = guard.refusal()
             if creds is not None:
                 # Basic wins when both are presented: it re-verifies the
                 # password, and (re)mints the cookie when the one sent is
@@ -681,14 +1120,65 @@ class BasicAuthMiddleware:
                 # into a mystery 401 at 3am. An explicitly presented
                 # credential is always the one judged.
                 login, password = creds
+                if refusal is None:
+                    try:
+                        user, record = await anyio.to_thread.run_sync(
+                            lambda: authenticate_record(
+                                store,
+                                login,
+                                password,
+                                cache=self.cache,
+                                guard=guard,
+                            )
+                        )
+                        basic_verified = True
+                    except AuthError as exc:
+                        if exc.status != 429 and not isinstance(exc, _Busy):
+                            raise
+                        refusal = exc
+                if refusal is not None:
+                    # Refused by lockout, or shed because every scrypt slot
+                    # was busy (a flood of guesses must not 503 the people
+                    # already signed in). A browser sends its cached Basic
+                    # header and its session cookie together, so a signed-in
+                    # owner whose bucket someone else filled (shared NAT, a
+                    # VPN exit, one /64) would otherwise be locked out of
+                    # their own session. A cookie for the SAME login that
+                    # still authorizes (roster row + password tag, so a
+                    # stale or disabled one does not) serves the request as
+                    # that session: no password is verified, so nobody gains
+                    # a guess from it, and nothing is recorded, cleared,
+                    # remembered or re-minted. No such cookie: the 429 (or
+                    # the 503).
+                    if claim is None or normalize_login(claim.login) != presented:
+                        raise refusal
+                    session = claim
+                    try:
+                        user = await anyio.to_thread.run_sync(
+                            lambda: authorize_session_login(
+                                store, session.login, session.password_tag
+                            )
+                        )
+                    except AuthError:
+                        raise refusal from None
+                elif scope["type"] == "http":
+                    tag = password_tag(record.password_hash)
+                    # A cookie minted under an older password still
+                    # round-trips its HMAC; only the tag says it's stale.
+                    if (
+                        claim is None
+                        or claim.login != user.login
+                        or not hmac.compare_digest(
+                            claim.password_tag.encode(), tag.encode()
+                        )
+                    ):
+                        fresh_cookie = self._cookie_header(scope, user.login, tag)
+            elif claim is not None:
+                session = claim
                 user = await anyio.to_thread.run_sync(
-                    lambda: authenticate(store, login, password, cache=self.cache)
-                )
-                if scope["type"] == "http" and session_login != user.login:
-                    fresh_cookie = self._cookie_header(scope, user.login)
-            elif session_login is not None:
-                user = await anyio.to_thread.run_sync(
-                    lambda: authorize_session_login(store, session_login)
+                    lambda: authorize_session_login(
+                        store, session.login, session.password_tag
+                    )
                 )
             else:
                 # Roster first, so a fresh deploy explains itself instead
@@ -701,20 +1191,28 @@ class BasicAuthMiddleware:
                 # account, wrong password, stale cookie) — the one event a
                 # stuffing run leaves behind. The bare challenge (no
                 # credential at all) is every first page load and is not
-                # logged. Bounded per key by the lockout: at most
-                # _LOCKOUT_FAILURES lines per window, then one per minute.
+                # logged. Bounded per key by the lockout: at most the
+                # bucket's limit in lines per window, then one per minute.
+                # The log keeps the specific reason; the client got one
+                # generic body.
                 log.warning(
                     "precis-web auth: 401 %s for login=%r from %s (%s)",
-                    exc.detail,
+                    exc.reason or exc.detail,
                     presented,
                     remote,
                     "basic" if creds is not None else "cookie",
                 )
-                self.failures.record(f"login:{presented}", *addr_keys)
+                # Not counted here: a Basic guess is recorded by its guard
+                # inside the scrypt slot (so a burst can't outrun the
+                # count), and a cookie carries no password to guess —
+                # counting its 401s (disabled, removed, password changed)
+                # would let a stale cookie replayed lock its own owner out.
             await _send_error(send, exc, websocket=scope["type"] == "websocket")
             return
-        if creds is not None:
-            self.failures.clear(f"login:{user.login}")
+        if basic_verified:
+            if bucket is not None:
+                self.failures.clear(f"pair:{presented}|{bucket}")
+            self.known.add(user.login, bucket)
 
         scope.setdefault("state", {})
         scope["state"]["web_user"] = user
@@ -744,9 +1242,9 @@ class BasicAuthMiddleware:
         with profiles.viewing_as(user.login):
             await self.app(scope, receive, send_with_cookie)
 
-    def _cookie_header(self, scope: Scope, login: str) -> str:
+    def _cookie_header(self, scope: Scope, login: str, tag: str) -> str:
         attrs = (
-            f"{SESSION_COOKIE}={self.sessions.issue(login)}; Path=/; "
+            f"{SESSION_COOKIE}={self._sessions(scope).issue(login, tag)}; Path=/; "
             f"Max-Age={int(_SESSION_TTL)}; HttpOnly; SameSite=Lax"
         )
         if scope.get("scheme") == "https":
@@ -810,11 +1308,15 @@ __all__ = [
     "BasicAuthMiddleware",
     "CredentialCache",
     "FailureTracker",
+    "KnownAddresses",
+    "SessionClaim",
     "SessionTokens",
     "authenticate",
+    "authenticate_record",
     "authorize_session_login",
     "check_same_origin",
     "current_user",
     "parse_basic_header",
+    "password_tag",
     "require_roster",
 ]

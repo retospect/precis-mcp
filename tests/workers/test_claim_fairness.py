@@ -16,6 +16,8 @@ import re
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors._common import (
@@ -619,11 +621,19 @@ def test_background_drains_freely_without_agent_work(store: Store) -> None:
 
 def _advertise_all(store: Store, host: str = "h1") -> None:
     """The placement gate (td543917) holds a job whose tokens no live
-    host advertises: ``run_slice`` needs ``repo_checkout/claude_bin/git``,
-    ``autocatpath_seed`` needs ``autocatpath`` — one host offers all."""
+    host advertises: ``run_slice`` needs ``repo_checkout/builder/git``
+    (gr676054: the generic ``builder`` floor replaced ``claude_bin``, which
+    a real lane host still advertises beside it), ``autocatpath_seed``
+    needs ``autocatpath`` — one host offers all."""
     store.sync_host_resource_slots(
         host,
-        {"repo_checkout": 1, "claude_bin": 1, "git": 1, "autocatpath": 1},
+        {
+            "repo_checkout": 1,
+            "builder": 1,
+            "claude_bin": 1,
+            "git": 1,
+            "autocatpath": 1,
+        },
     )
     with store.pool.connection() as conn:
         conn.execute(
@@ -801,7 +811,9 @@ def test_factory_stream_cannot_starve_bulk(store: Store, monkeypatch: Any) -> No
     """The review's starvation shape: ten fresh factory ops fill the
     ordinary picks of a 10-claim batch, and the oldest bulk row still
     claims on the reserved tenth — its wait is bounded, not FIFO-lost.
-    A factory-first share would leave the seed unclaimed entirely."""
+    A factory-first share would leave the seed unclaimed entirely.
+    Use land jobs: run_slice admits only one fresh build per batch, so
+    a build stream cannot exercise the reserved tenth pick (gr709135)."""
     from precis.workers.executors import _common
 
     _advertise_all(store)
@@ -813,9 +825,13 @@ def test_factory_stream_cannot_starve_bulk(store: Store, monkeypatch: Any) -> No
         queued_s_ago=600,
         job_type="autocatpath_seed",
     )
-    for _ in range(10):
-        _job(store, origin="background", prio=5, job_type="run_slice")
+    factory = [
+        _job(store, origin="background", prio=5, job_type="land_slice")
+        for _ in range(10)
+    ]
     got = _claim(store, limit=10)
+    assert len(got) == 10
+    assert set(got[:9]) <= set(factory)
     assert got.index(seed) == 9
 
 
@@ -837,3 +853,143 @@ def test_factory_op_loses_only_the_reserved_pick(
     )
     run = _job(store, origin="background", prio=5, job_type="run_slice")
     assert _claim(store, limit=2) == [seed, run]
+
+
+def _set_started(store: Store, ref_id: int, ago_s: float) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('started_at',"
+            " to_char((now() - make_interval(secs => %s)) AT TIME ZONE 'UTC',"
+            ' \'YYYY-MM-DD"T"HH24:MI:SS"Z"\')) WHERE ref_id = %s',
+            (ago_s, ref_id),
+        )
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - make_interval(secs => %s)"
+            " WHERE ref_id = %s",
+            (ago_s, ref_id),
+        )
+
+
+def test_deficit_favours_lane_served_least_over_window(store: Store) -> None:
+    """gr595541: a lane that held the host for the window but is idle now
+    loses to a lane that got nothing — an instantaneous fewest-running
+    count reads both as 0 running."""
+    hog = _job(store, origin="background", prio=8, job_type="hog", status="done")
+    _set_started(store, hog, 1800)
+    with store.pool.connection() as conn:
+        conn.execute(
+            'UPDATE refs SET meta = meta || \'{"lease_host": "h1"}\' WHERE ref_id = %s',
+            (hog,),
+        )
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - interval '60 seconds' "
+            "WHERE ref_id = %s",
+            (hog,),
+        )
+    _job(store, origin="background", prio=8, queued_s_ago=7200, job_type="hog")
+    starved = _job(store, origin="background", prio=8, job_type="starved")
+    assert _claim(store, limit=1) == [starved]
+
+
+def test_deficit_outside_window_is_forgotten(store: Store) -> None:
+    """Service older than the window no longer counts: ordering falls back
+    to the aged order."""
+    old = _job(store, origin="background", prio=8, job_type="hog", status="done")
+    with store.pool.connection() as conn:
+        conn.execute(
+            'UPDATE refs SET meta = meta || \'{"lease_host": "h1"}\' WHERE ref_id = %s',
+            (old,),
+        )
+    _set_started(store, old, 20000)
+    oldest = _job(store, origin="background", prio=8, queued_s_ago=7200, job_type="hog")
+    _job(store, origin="background", prio=8, job_type="starved")
+    assert _claim(store, limit=1) == [oldest]
+
+
+def test_deficit_weight_scales_share(store: Store) -> None:
+    """A lane weighted 3:1 is owed three batch claims per one of its peer."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES ('claim.share.big', '3')"
+            " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+        )
+    big = [
+        _job(store, origin="background", prio=8, queued_s_ago=100 - i, job_type="big")
+        for i in range(4)
+    ]
+    small = _job(store, origin="background", prio=8, queued_s_ago=50, job_type="small")
+    got = _claim(store, limit=4)
+    assert got[0] == big[0]
+    assert small in got and got.index(small) >= 1
+
+
+def test_deficit_pre_limit_order_keeps_the_owed_lane(store: Store) -> None:
+    """td655978 review of gr595541: the pre-LIMIT SQL order must rank by
+    the same deficit the re-rank applies. With zero window usage and 1:3
+    weights every lane's ``frac`` is 0, so a ``frac/weight`` key tied —
+    three older weight-1 rows filled the ``limit=1`` overfetch window and
+    the weight-3 lane owed 75% never reached the Python re-rank."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES ('claim.share.big', '3')"
+            " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+        )
+    smalls = [
+        _job(store, origin="background", prio=8, queued_s_ago=300 - i, job_type="small")
+        for i in range(3)
+    ]
+    big = _job(store, origin="background", prio=8, job_type="big")
+    got = _claim(store, limit=1)
+    assert got == [big]
+    assert all(s not in got for s in smalls)
+
+
+@pytest.mark.parametrize("cpu,mem", [(1999, 8192), (4000, 4095), (4000, None)])
+def test_slice_claim_waits_for_launch_capacity(
+    store: Store, cpu: int, mem: int | None
+) -> None:
+    """gr708204: executor space cannot override the launch footprint."""
+    _advertise_all(store)
+    store.sync_host_capacity("h1", {"cpu_milli": cpu, "mem_mb": mem})
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    other = _job(store, origin="background", prio=5)
+    before = {r.resource: r.free for r in store.resource_slots_for_host("h1")}
+    assert _claim(store) == [other]
+    assert {r.resource: r.free for r in store.resource_slots_for_host("h1")} == before
+    with store.pool.connection() as conn:
+        meta = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (run,)
+        ).fetchone()
+        assert meta is not None
+        assert not meta[0].get("lease_host")
+        assert not meta[0].get("reserved")
+    store.sync_host_capacity("h1", {"cpu_milli": 4000, "mem_mb": 8192})
+    assert run in _claim(store)
+    assert {r.resource: r.free for r in store.resource_slots_for_host("h1")} == {
+        **before,
+        "cpu_milli": 4000,
+        "mem_mb": 8192,
+    }
+
+
+def test_slice_claim_observes_live_launch_hold(store: Store) -> None:
+    from precis.workers import admission
+    from precis.workers.job_types.run_slice import _WORK_FOOTPRINTS
+
+    _advertise_all(store)
+    store.sync_host_capacity("h1", {"cpu_milli": 4000, "mem_mb": 8192})
+    run = _job(store, origin="background", prio=5, job_type="run_slice")
+    with store.pool.connection() as conn:
+        held = admission.admit(
+            conn, "h1", admission.Footprint(cpu_milli=3000, mem_mb=5000), "test"
+        )
+    assert held is not None
+    assert _claim(store) == []
+    with store.pool.connection() as conn:
+        admission.release(conn, held)
+    assert _claim(store) == [run]
+    # Claim probing leaves room for the actual launch: no double reservation.
+    with store.pool.connection() as conn:
+        launched = admission.admit(conn, "h1", _WORK_FOOTPRINTS["slice"], "test")
+        assert launched is not None
+        admission.release(conn, launched)

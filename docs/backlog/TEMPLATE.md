@@ -17,13 +17,18 @@ prior-art: <optional — comma-separated decimal handles (pa57193, me563920,
 
 # <one-line intent>
 
-<!-- A plain IDEA needs none of this: no front-matter, a title + a few
-lines (what, why, owner anchor, test:). This template is for the SPECCED
-form — status: draft while argued, status: ready when the fixer may pick
-it (branch fix/<slug>). On ship: fold surviving truth into the owning
-package docstring, DELETE this file in the same commit (git is history).
-Split into separate items only when deliverables are independently
-shippable; declare real ordering with blocked-by. -->
+<!-- LEGACY FILE FORM. New specifications are written in graph memory under
+the Specifications hub me568215 — get(kind='skill', id='precis-spec-help')
+— and a small idea or finding is a gripe. This template survives for
+docs/backlog/se-protein-interface-first.md, the one file spec deliberately
+left on the old convention (Reto 2026-11-05, me568168); do not mint new
+ones from it.
+
+status: draft while argued, status: ready when the fixer may pick it
+(branch fix/<slug>). On ship: fold surviving truth into the owning package
+docstring, DELETE this file in the same commit (git is history). Split into
+separate items only when deliverables are independently shippable; declare
+real ordering with blocked-by. -->
 
 ## Motivation / why
 <the problem; the "why it's this way" paragraph of the owning package

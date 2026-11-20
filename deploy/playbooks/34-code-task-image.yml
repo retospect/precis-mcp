@@ -1,6 +1,6 @@
 # 34-code-task-image.yml — (Re)build the `code-task` sandbox image on the
 # agent_sandbox_hosts group (agent-workspace-containers slice 1; decisions
-# Reto 2026-09-06: castor first, minimal python+uv+git image).
+# Reto 2026-09-06: sandbox host first, minimal python+uv+git image).
 #
 # The sandbox_run executor (workers/executors/claude_docker.py) launches
 # rootless-podman containers as `deploy` from `code-task:latest` — an image
@@ -19,7 +19,7 @@
 # rebuild; SAME → skipped. `-e precis_force_code_task_build=true`
 # overrides. `org.precis.sha` is still stamped as provenance only.
 # The build is wrapped in `timeout` — a sandbox host whose container
-# egress silently blackholes a download host (castor's first run hung
+# egress silently blackholes a download host (the first sandbox-host run hung
 # 40 min inside `curl deb.nodesource.com`; the UniFi-DPI TLS-block
 # family) must fail the play boundedly, never wedge the deploy. When
 # egress is blocked, build the image on the controller (full egress,
@@ -83,7 +83,7 @@
 
     # Rootless podman needs subordinate uid/gid ranges for the build
     # user or every layer unpack dies with "insufficient UIDs or GIDs
-    # available in user namespace" (castor's first run — the system
+    # available in user namespace" (the first sandbox-host run — the system
     # `deploy` user predates any container use, so no range was ever
     # allocated). Base 655360 sits far above adduser's sequential
     # 100000+65536 allocations, so it can't collide with ranges the OS
@@ -166,7 +166,7 @@
 
     # Docker Hub TLS is blocked/flaky from some cluster hosts (the same
     # outage family 33-precis-agent-image.yml's MIRROR FALLBACK note
-    # documents — first real castor run died on `TLS handshake timeout`
+    # documents — first real sandbox-host run died on `TLS handshake timeout`
     # to registry-1.docker.io). Pre-pull the pinned base; fall back to
     # mirror.gcr.io (Google's pull-through Hub cache). The digest pin is
     # unchanged either way, so the substitution is byte-identical; the

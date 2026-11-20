@@ -129,6 +129,16 @@
   <input type="hidden" name="submitted" value="1" />
   {% if task %}<input type="hidden" name="task" value="{{ task }}" />{% endif %}
   {% if cited_by %}<input type="hidden" name="cited_by" value="{{ cited_by }}" />{% endif %}
+  {# The todo preset (gr664410): queue/focus/serves have no picker
+     control, so they ride as hidden inputs — without them any facet
+     resubmit would silently drop the doable queue and subtree scope. #}
+  {% if queue %}<input type="hidden" name="queue" value="{{ queue }}" />{% endif %}
+  {% if focus %}<input type="hidden" name="focus" value="{{ focus }}" />{% endif %}
+  {% if serves %}<input type="hidden" name="serves" value="{{ serves }}" />{% endif %}
+  {# layout=tree (gr664408): the mode pair rides the form too, so a facet
+     resubmit keeps the tree + its edge source. #}
+  {% if layout %}<input type="hidden" name="layout" value="{{ layout }}" />{% endif %}
+  {% if rel %}<input type="hidden" name="rel" value="{{ rel }}" />{% endif %}
   <input type="hidden" name="scope" value="{{ scope }}" x-ref="scope" />
   <div class="flex flex-wrap items-end gap-2">
     <div class="relative flex-1 min-w-[16rem]" data-tour="drive-search"
@@ -188,7 +198,10 @@
       </template>
       <template x-for="(t, i) in tags" :key="t">
         <span class="inline-flex items-center gap-1 rounded bg-accent-muted px-2 py-1 text-accent-deep">
-          <span x-text="t"></span>
+          {# The hidden input carries the filter spelling; the chip shows
+             the readable one — a stored lowercase axis filters as
+             ``=ns:value`` but displays ``ns:value`` (gr636493). #}
+          <span x-text="t.replace(/^=/, '')"></span>
           <button type="button" @click="removeTag(i)" :aria-label="'Remove tag ' + t">×</button>
           <input type="hidden" name="tag" :value="t" />
         </span>
@@ -445,10 +458,7 @@
 </script>
 
 {% import "_verified_mark.html.j2" as vm %}
-{% macro item_list(items) %}
-<ul class="rounded-lg border border-line bg-surface divide-y divide-line-subtle" data-shortcut-scope="list">
-  {% for row in items %}
-  <li data-row class="px-4 py-3 hover:bg-surface-subtle" x-data="{ titleHover: false, chunkHover: false }">
+{% macro row_body(row) %}
     <div class="flex items-start gap-3">
       {% if row.thumbnail %}
       <img src="{{ row.thumbnail }}" loading="lazy" alt=""
@@ -565,6 +575,33 @@
                      class="rounded border border-line-strong text-[11px] w-20 px-1 py-0.5">
               <button class="text-accent-strong hover:underline">tag</button>
             </form>
+            {% elif a.type == 'todo_status' %}
+            {# TodoPresenter (gr664410): the workbench's STATUS dropdown
+               on a Drive row — posts to /todo/{id}/status; the focus
+               field lands the redirect on the todo's own workbench. #}
+            <form method="post" action="/todo/{{ a.id }}/status" class="inline-flex items-center gap-1">
+              {% for fk, fv in (a.fields or {}).items() %}<input type="hidden" name="{{ fk }}" value="{{ fv }}">{% endfor %}
+              <select name="status" class="rounded border border-line-strong text-[11px] max-w-[8rem]">
+                {% for c in a.choices %}
+                <option value="{{ c }}"{% if c == a.current %} selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+              </select>
+              <button class="text-info-strong hover:underline">set</button>
+            </form>
+            {% elif a.type == 'post' %}
+            {# Generic inline POST (gr664410) — the presenter names the
+               route (/todo/{id}/retry|stop|start, /tags/delete); hidden
+               fields ride along so the endpoint's redirect lands where
+               it should, and a.confirm arms a browser confirm() for
+               destructive posts. The message is JSON-serialized (tojson
+               inside a single-quoted attribute) — a raw single-quote
+               interpolation would let an apostrophe-bearing tag value
+               break the JS string (td697200). #}
+            <form method="post" action="{{ a.url }}" class="inline"
+                  {% if a.confirm %}onsubmit='return confirm({{ a.confirm | tojson }})'{% endif %}>
+              {% for fk, fv in (a.fields or {}).items() %}<input type="hidden" name="{{ fk }}" value="{{ fv }}">{% endfor %}
+              <button class="{{ a.cls or 'text-info-strong' }} hover:underline" title="{{ a.title }}">{{ a.label }}</button>
+            </form>
             {% endif %}
           {% endfor %}
         </div>
@@ -589,9 +626,48 @@
         {% endif %}
       </div>
     </div>
+{% endmacro %}
+
+{% macro item_list(items) %}
+<ul class="rounded-lg border border-line bg-surface divide-y divide-line-subtle" data-shortcut-scope="list">
+  {% for row in items %}
+  <li data-row class="px-4 py-3 hover:bg-surface-subtle" x-data="{ titleHover: false, chunkHover: false }">
+    {{ row_body(row) }}
   </li>
   {% endfor %}
 </ul>
+{% endmacro %}
+
+{# layout=tree (gr664408): the filtered rows nested under the selected
+   rel's parents — one <ul.drive-tree> per level, each node's children
+   inside its own <li>. data-depth marks the nesting for tests; a row's
+   markup is the shared row_body above, identical to the flat list. #}
+{% macro tree_list(nodes, depth=0) %}
+<ul class="drive-tree {% if depth == 0 %}rounded-lg border border-line bg-surface divide-y divide-line-subtle{% else %}ml-5 mt-1 space-y-1 border-l-2 border-line-subtle pl-2{% endif %}"
+    data-depth="{{ depth }}"{% if depth == 0 %} data-shortcut-scope="list"{% endif %}>
+  {% for node in nodes %}
+  <li data-row class="{% if depth == 0 %}px-4 py-3{% else %}px-2 py-2{% endif %} hover:bg-surface-subtle" x-data="{ titleHover: false, chunkHover: false }">
+    {{ row_body(node.row) }}
+    {{ tree_list(node.children, depth + 1) if node.children }}
+  </li>
+  {% endfor %}
+</ul>
+{% endmacro %}
+
+{% macro tag_strip(chips) %}
+{# "Matching tags" strip (gr636493): when ``tag`` shares the kind
+   selection, the top matching tags sit above the ref rows as chips —
+   each links to the drive scoped to refs carrying it. #}
+{% if chips %}
+<div class="mb-2 flex flex-wrap items-center gap-1.5 text-xs" aria-label="Matching tags">
+  <span class="text-fg-faint">matching tags:</span>
+  {% for c in chips %}
+  <a href="{{ c.href }}"
+     class="rounded px-1.5 py-0.5 bg-accent-subtle text-accent-strong hover:bg-accent-muted"
+     >{{ c.label }}{% if c.n is not none %} ·{{ c.n }}{% endif %}</a>
+  {% endfor %}
+</div>
+{% endif %}
 {% endmacro %}
 
 {% macro pager() %}
@@ -630,7 +706,23 @@
      aside keeps its w-60 rail. #}
   <details :open="wide" :class="{ 'w-full': !wide }" x-cloak>
     <summary class="cursor-pointer text-sm font-medium text-info-deep" x-show="!wide">Folders</summary>
-    <aside class="shrink-0" :class="wide ? 'w-60' : 'w-full'" data-tour="drive-folders">
+    <aside class="shrink-0 space-y-3" :class="wide ? 'w-60' : 'w-full'" data-tour="drive-folders">
+    <div class="rounded-md border border-line overflow-hidden" data-drive-views>
+      <div class="px-3 py-2 bg-surface-subtle border-b border-line text-xs font-semibold text-fg-muted">
+        Saved views
+      </div>
+      <ul class="py-1 text-sm">
+        {% for v in drive_views %}
+        <li>
+          <a href="{{ v.href }}"
+             class="block px-3 py-1 {% if drive_view_active == v.key %}bg-surface-muted font-medium{% else %}hover:bg-surface-subtle{% endif %}"{% if drive_view_active == v.key %} aria-current="page"{% endif %}>{{ v.label }}</a>
+        </li>
+        {% endfor %}
+        {% for label, href in drive_view_links %}
+        <li><a href="{{ href }}" class="block px-3 py-1 hover:bg-surface-subtle">{{ label }}</a></li>
+        {% endfor %}
+      </ul>
+    </div>
     <div class="rounded-md border border-line overflow-hidden">
       <div class="px-3 py-2 bg-surface-subtle border-b border-line text-xs font-semibold text-fg-muted">
         Folders
@@ -740,6 +832,7 @@
         </form>
       </div>
       {% endif %}
+      {{ tag_strip(matching_tags) }}
       {% if not rows %}
       <p class="text-sm text-fg-subtle">
         No matches for <span class="font-medium text-fg-secondary">{{ q }}</span>{% if since or until %} in that date window{% endif %}.
@@ -748,11 +841,22 @@
       {# The lexical denominator, up top — "5 of 50" reads very
          differently from "5 of ~50,000" (Reto). Approximate (≈) since
          the fused ranking that produced `rows` has no cheap exact
-         total. #}
+         total. In tree mode the count is top-level nodes: each page is
+         N roots with their filtered descendants riding along. #}
+      {% if layout == 'tree' and tree is not none %}
+      <p class="text-xs text-fg-subtle mb-2">
+        Showing {{ tree | length }} of ≈{{ "{:,}".format(result_total or 0) }} top-level match{{ '' if (result_total or 0) == 1 else 'es' }}.
+      </p>
+      {% else %}
       <p class="text-xs text-fg-subtle mb-2">
         Showing {{ rows | length }} of ≈{{ "{:,}".format(result_total or 0) }} match{{ '' if (result_total or 0) == 1 else 'es' }} · one passage per item.
       </p>
+      {% endif %}
+      {% if layout == 'tree' and tree is not none %}
+      {{ tree_list(tree) }}
+      {% else %}
       {{ item_list(rows) }}
+      {% endif %}
       {{ pager() }}
       {% endif %}
     {% else %}
@@ -803,13 +907,21 @@
         <a href="/drive" class="ml-1 text-info hover:underline">clear scope ×</a>
       </p>
       {% endif %}
-      {% if recent %}
+      {{ tag_strip(matching_tags) }}
+      {% if (layout == 'tree' and tree) or (layout != 'tree' and recent) %}
         {# The total, up top — "12 of 12" vs "30 of 4,318" is the whole point
            of paging a stub queue. This count is exact (a plain filtered refs
            query, no fused-ranking approximation like the search path).
            Singular/plural spelled out per-noun — "papers to fetch" pluralises
-           on the head noun, so a bare +s ("paper to fetchs") won't do. #}
+           on the head noun, so a bare +s ("paper to fetchs") won't do. In
+           tree mode the count is top-level nodes (exact on the browse
+           fetch-all) — a page is N roots with their descendants nested. #}
         {% set n = result_total or 0 %}
+        {% if layout == 'tree' and tree is not none %}
+        <p class="text-xs text-fg-subtle mb-2">
+          Showing {{ tree | length }} of {{ "{:,}".format(n) }} top-level item{{ '' if n == 1 else 's' }}.
+        </p>
+        {% else %}
         {% if cited_by %}{% set label = 'paper to fetch' if n == 1 else 'papers to fetch' %}
         {% elif state == 'stub' %}{% set label = 'stub' if n == 1 else 'stubs' %}
         {% elif state == 'deleted' %}{% set label = 'deleted ref' if n == 1 else 'deleted refs' %}
@@ -817,7 +929,12 @@
         <p class="text-xs text-fg-subtle mb-2">
           Showing {{ recent | length }} of {{ "{:,}".format(n) }} {{ label }}.
         </p>
+        {% endif %}
+        {% if layout == 'tree' and tree is not none %}
+        {{ tree_list(tree) }}
+        {% else %}
         {{ item_list(recent) }}
+        {% endif %}
         {% if state == 'stub' %}
         <p class="mt-2 text-xs text-fg-faint">Use the find: links to track a copy down.</p>
         {% elif not cited_by and not current %}
@@ -886,7 +1003,7 @@
    NOT inherited by deferred setTimeout callbacks — so staggered opens land
    after it expires and can be silently blocked unless the site is allow-listed
    in the browser's pop-up settings. This is a self-hosted daily-use tool, so
-   allow-listing melchior once is the intended setup. The FIRST tab opens
+   allow-listing the web host once is the intended setup. The FIRST tab opens
    synchronously inside the click (always allowed by the gesture); clicking
    again while a run is pending cancels the remaining timers. Button stays
    hidden until there's a downloadable row.

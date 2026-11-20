@@ -1,6 +1,6 @@
 """Regression for gripe 171107 — the reviewer's MCP-config resolution.
 
-On the spark review node (Phase-2 slice 2) ``PRECIS_AGENT_CONTAINER=1`` but
+On the spruce review node (Phase-2 slice 2) ``PRECIS_AGENT_CONTAINER=1`` but
 ``PRECIS_MCP_CONFIG`` is deliberately UNSET (it would un-gate the in-proc
 ``claude_inproc`` passes). Before the fix, ``_mcp_config_path()`` returned
 ``None`` there → the containerized reviewer advertised no tools (``mcp_config

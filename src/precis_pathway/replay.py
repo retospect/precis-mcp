@@ -1,7 +1,7 @@
 """External replay acceptance harness (gr564215).
 
 The reader side of the reproduction contract in
-``docs/backlog/catpath-repro-bundle.md``: a fresh runner receives only the
+`me690648`: a fresh runner receives only the
 exported bundle directory — no precis checkout, store, MCP, credentials or
 cached dependencies — and must still be able to re-run the computation and
 judge it. This module is that runner's engine:

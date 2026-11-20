@@ -1,6 +1,6 @@
 """``land_slice`` — the lander: land one finished slice branch (dark factory).
 
-Spec: ``docs/backlog/dark-factory.md`` § "Branches: who merges what, how"
+Spec: `me692430` § "Branches: who merges what, how"
 (the builder commits on its branch only; the lander lands it with
 ``scripts/ship`` and deletes the branch and its worktree). Mechanical: no
 LLM. :mod:`precis.workers.job_types.run_slice` mints one of these (idem key
@@ -9,7 +9,10 @@ holds the worktree) once a build session exited clean and its branch passed
 the deny-path check. The land re-checks the resolved deny set before
 launching ship — the last gate (gr645524): a denied diff is refused with
 the ``human_only_hit`` stamp, so the tick's ruling ask opens on the frozen
-branch rather than a rebuild that can never land.
+branch rather than a rebuild that can never land. One named exception
+(td659522): the ``autocatpath_min_version`` line of
+``deploy/group_vars/all.yml`` in a pin-bump node's own commit, proved by
+:func:`pin_bump.land_refusal` (:func:`_pin_exempt`).
 
 Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
 
@@ -25,9 +28,67 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   path; ``PRECIS_SHIP_VERBOSE=1`` so the log holds the whole transcript;
   ``PRECIS_GATE_N`` caps the checked gate's xdist workers at
   :func:`test_nproc` — ``PRECIS_LAND_TEST_NPROC``, default 3 — because a
-  static-wide selection on melchior OOM-killed a worker twice, gr567471;
+  static-wide selection on the agent host OOM-killed a worker twice, gr567471;
   ``PRECIS_TEST_NPROC`` carries the same count to any ``scripts/test``
-  run inside the ship). A branch carrying nothing at all — no commit
+  run inside the ship). Every child the lander spawns starts from
+  :func:`land_env` — an allowlist env, never the worker's whole env, so
+  no DB DSN or vault variable reaches a gate — and the launches that
+  fetch, push or call ``gh`` additionally get the factory credential
+  wiring (gr659929): the lander's own drift preflight and branch push
+  (trusted code) get :func:`precis.workers.factory_git.git_auth_env`.
+  The lander's own git calls go through :func:`_git`, which runs the
+  same allowlist scrubbed of credential names with hooks off — never
+  the worker's ambient env — and its authenticated transports (the
+  mirror populate and sync, the branch push, the cleanup's
+  origin-branch delete) run in the mirror's fresh ops gitdir so no
+  branch-writable config or hook meets the token.
+  Ship is different: its host-side steps run the *branch's* scripts, and
+  no process-table rule can separate their git calls from ship's own
+  (review td660513 on the broker that tried — depth-authorized asks
+  still answered a gate child's ``git credential fill``, and the broker
+  itself was branch-importable through a root ``precis/__init__.py``).
+  So ship gets **no credential at all**: the lander keeps a bare mirror
+  of the land refs in the main checkout's ``scratch/``
+  (:mod:`precis.workers.factory_git_mirror`) — one directory per launch,
+  so a sibling land's populate can never refresh away this launch's
+  unsynced squash — refreshes it from GitHub under the token at launch,
+  and gives ship env-config url-rewrite entries pointing every git
+  transport contact with the real origin URL at the mirror — ship
+  fetches, squashes and CAS-pushes exactly as before, against the
+  mirror. Every credential-bearing call runs through the trusted
+  boundary — a fresh ops gitdir, hooks off, no system/global/local
+  config, no ``refs/replace`` substitution — because the mirror, the
+  worktree gitdir and the shared common dir are all branch-writable; and
+  every GitHub answer is compared
+  against an ``ls-remote`` oracle no on-disk config can redirect. The
+  launch tips that CAS those pushes persist beside the mirror — never
+  in the branch-writable tree — and mirror mode itself persists on the
+  todo's meta (:data:`FACTORY_MIRROR_KEY`), out of every same-uid
+  file's reach, so an adopted handle's sync still fails closed when
+  the launch files are gone (review td660513, second pass: the pair
+  was deletable by the very gate code the boundary exists for).
+  Ship's green exit is not the land: the
+  lander then pushes only the refs ship moved to the real origin, each
+  leased on the tip GitHub held at launch, each required to equal the
+  sha ship reported and to descend from its tip; a lost race or a
+  mismatch defers the land (short backoff, then ship re-runs against a
+  fresh mirror) and a sync failure never records a land origin does not
+  hold — while the post-land effects ship already wrote or would write
+  (``origin/*`` refs, a fast-forwarded local main, land_notify's
+  todo/gripe marks) are repaired, refused or held until the push
+  verifies: the notify marks ride ``PRECIS_LAND_NOTIFY=0``/
+  ``PRECIS_GRIPE_NOTE=0`` and the lander posts them itself, the
+  ``origin/*`` refs are reset to GitHub's real tips on a deferred sync,
+  and the local-main advance is refused outright by a PATH-leading
+  ``git`` shim in ship's env — the lander replays it with
+  :func:`precis.workers.factory_git_mirror.advance_local_main` after
+  the sync, because a best-effort rewind cannot cover a crashed worker
+  or a blind GitHub (review td660513, second pass). The token reaches
+  only the lander's own git calls — never argv, never a ship env name,
+  never an fd — and the gates (the verify ``scripts/test``, the
+  selector, the collect probe) run branch code on the host under the
+  bare allowlist, credential-free.
+  A branch carrying nothing at all — no commit
   ahead and no net diff, the fix already on main by another route —
   gets no ship: submit returns the ``no_land`` handle and the poll
   writes the same nothing-new record, done not red (gr648125).
@@ -35,7 +96,10 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   ``shipped — landed on main:`` line, else ``git rev-parse origin/main``)
   goes on the job (``meta.landed_sha``); a ``landed: <sha>`` comment and
   ``STATUS:done`` go on the todo only when land_notify did not already
-  write them (its comment is the todo's newest); the sha is written into
+  write them (its comment is the todo's newest) — a pin-bump node keeps
+  its STATUS until its gate image carries the pin (td659522 F7: ship ran
+  with land_notify held, the lander writes the subject's other handles,
+  and ``pin_bump``'s image wait closes the node); the sha is written into
   the plan's pending ``sha-in-prod`` gate (:func:`pending_gate`). When ship
   took its nothing-new guard (:func:`nothing_new`: the branch's tree equals
   origin/main's, nothing squashed) no sha is the slice's: the todo closes
@@ -53,7 +117,8 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   project is brought down (``-v``; it used to stay warm forever —
   gr570133, and the SessionStart reapers never run on this host), then
   ``git worktree remove``, ``git branch -D slice/<id>`` and, when the
-  branch is on origin, ``git push origin --delete slice/<id>``. A cleanup
+  ``ls_remote`` oracle shows the branch on origin, an ops-repo
+  ``push --delete`` (:func:`_delete_remote_branch`). A cleanup
   step that fails is reported in the summary, not a job failure: the land
   is real. Every launch — the first and each deferral relaunch — first
   sweeps the host's other finished slice stacks
@@ -155,7 +220,7 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   (gr647914).
 
 **Release fixes land on the release branch** (release-train T1,
-``docs/backlog/release-train.md``). A slice todo whose
+`me692603`). A slice todo whose
 ``meta.land_target`` (or a ``land target: release/r<N>`` brief line,
 :func:`land_target` → :func:`precis.plans.release.land_target_of`)
 names a release branch lands with ``scripts/ship --quick --onto
@@ -238,6 +303,7 @@ git, docker or SQL.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -254,12 +320,21 @@ from precis.plans import governs as _governs
 from precis.plans import lanes as _lanes
 from precis.plans import release as _release
 from precis.plans.logbook import log_plan_event
-from precis.plans.templates import PENDING_LAND_KEY, PENDING_SHA
+from precis.plans.templates import (
+    PENDING_LAND_KEY,
+    PENDING_SHA,
+    PRELAND_DEFER_FAILED_KEY,
+    PRELAND_FIX_ROUNDS_KEY,
+    PRELAND_HELD_KEY,
+    SLICE_REF_NS,
+)
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.secret_scan import mask_secrets
+from precis.workers import admission
 from precis.workers import factory_git as _factory_git
+from precis.workers import factory_git_mirror as _factory_git_mirror
 from precis.workers import slice_stacks as _slice_stacks
-from precis.workers.job_types import JobTypeSpec
+from precis.workers.job_types import JobTypeSpec, Reconcile, _slice_park
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -362,7 +437,9 @@ def _collected_count(tree: Path, targets: list[str], timeout_s: float) -> int | 
                 *targets,
             ],
             cwd=str(tree),
-            env={**os.environ, "UV_PYTHON": ship_python()},
+            # Collect imports the branch's conftest — host-side branch
+            # code, so the scrubbed env with no credential (gr659929).
+            env={**land_env(), "UV_PYTHON": ship_python()},
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -450,11 +527,20 @@ MAIN_REFUSAL_MARKS: tuple[str, ...] = (
 #: the lander's own node cannot run a gate right now. Same deferral as a
 #: main refusal (gr552214): nothing on the branch caused it, and a builder
 #: cannot change it.
+#: ``ship --onto``'s round lock is non-blocking: a release-fix land that
+#: reaches its push while a sibling's (or the release's own cut or
+#: deploy step) holds the lock dies on it with nothing pushed. The
+#: holder is seconds from done, so this wait is its own short one
+#: (:data:`RELEASE_BUSY_BACKOFF_S`, counted in ``handle.release_busy``
+#: up to :data:`MAX_RELEASE_BUSY_WAITS`) — on the half-hour main-refusal
+#: backoff the fixers of one red release, building side by side, landed
+#: half an hour apart.
+RELEASE_BUSY_MARK = "release lifecycle busy"
+RELEASE_BUSY_BACKOFF_S = 60
+MAX_RELEASE_BUSY_WAITS = 30
 HOST_REFUSAL_MARKS: tuple[str, ...] = (
-    # release-train T3 review F4: ``ship --onto``'s round lock is
-    # non-blocking — a second near-simultaneous release-fix land dies on
-    # it with nothing pushed. A wait on a sibling, not a red: defer.
-    "release lifecycle busy",
+    # release-train T3 review F4: a wait on a sibling, not a red: defer.
+    RELEASE_BUSY_MARK,
     "docker VM disk has",
     "disk probe failed:",
     # The docker CLI itself is broken for the lander's user (no compose
@@ -536,6 +622,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "worktree": {"type": "string"},
         # The slice's branch, slice/<id>.
         "branch": {"type": "string"},
+        # The build tip used by the overlap hold.
+        "head": {"type": "string"},
         # The lane holding the lease (released on a red land).
         "lane": {"type": "string"},
         # ssh_node's host pin: the host that holds the worktree.
@@ -545,6 +633,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # True asks for --checked — honoured only when the selector's
         # answer is a spot selection (:func:`ship_flag`); else --quick.
         "checked": {"type": "boolean"},
+        # The repo the slice was built in (td659522); only the default
+        # repo lands here, see :func:`_repo_refusal`.
+        "repo": {"type": "string"},
     },
     "required": ["todo_id"],
     "additionalProperties": False,
@@ -631,7 +722,7 @@ def ship_bin(tree: Path) -> str:
 
 #: xdist workers for the lander's ``--checked`` pytest when
 #: ``PRECIS_LAND_TEST_NPROC`` is unset: half of scripts/test's default six.
-#: A 5k–8k static-wide selection OOM-killed a worker at -n6 on melchior
+#: A 5k–8k static-wide selection OOM-killed a worker at -n6 on the agent host
 #: twice (gr567471, Reto 2026-11-05 "ship it").
 DEFAULT_TEST_NPROC = 3
 
@@ -673,12 +764,141 @@ def land_gate_slots() -> str:
     return str(n if 1 <= n <= 2 else DEFAULT_LAND_GATE_SLOTS)
 
 
+#: Parent-env names every land-spawned child may inherit; everything else
+#: is dropped. gr659929: ``_launch_ship`` handed ship the whole worker env
+#: — the DB DSN, the vault variables, every token — and ship's host-side
+#: steps run code out of the slice tree (the checked-lane selector, the
+#: dotless drift helper), so any commit could read the no-expiry factory
+#: token. The factory git token is not on the list: the lander's own
+#: fetch/push/gh launches add it through
+#: :func:`precis.workers.factory_git.git_auth_env` on top of
+#: :func:`land_env`, and ship gets **no credential at all** — its origin
+#: is the lander's local mirror
+#: (:func:`~precis.workers.factory_git_mirror.mirror_ship_env`), and the
+#: token reaches the real origin only in the lander's own mirror populate
+#: and sync calls — never as an env name on a ship launch, never on an
+#: inherited fd. The gate children — the verify ``scripts/test``, the
+#: selector and the collect probe, all of which run branch code on the
+#: host — get the bare list.
+LAND_ENV_NAMES: tuple[str, ...] = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "LANG",
+    "TMPDIR",
+    "TZ",
+    # A socket path, not the keys; colima/ssh-backed docker may want it.
+    "SSH_AUTH_SOCK",
+    # The docker endpoint on the slice host (colima/OrbStack unix socket,
+    # or a tcp endpoint the unit pins) and gh's config-home override.
+    "DOCKER_HOST",
+    "GH_CONFIG_DIR",
+    # The squash commit's identity when the unit env carries it (else the
+    # checkout's git config answers).
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_PAGER",
+    "PAGER",
+    # ship's bounded git-network retry knob (scripts/lib/git-network).
+    "GIT_NETWORK_SHELL_TIMEOUT",
+)
+
+#: Prefixes inherited as a class, subject to :data:`_LAND_ENV_SECRET_RE`:
+#: the ship/test/gate/land knob families (every ``PRECIS_SHIP_*``,
+#: ``PRECIS_GATE_*``, ``PRECIS_TEST_*``, ``PRECIS_QLAND_*``,
+#: ``PRECIS_LAND_*`` override an operator set on the unit keeps working),
+#: the locale and XDG dirs, uv's cache/offline knobs, and the
+#: docker/compose/colima tunables. ``GH_*`` is deliberately not a prefix —
+#: ``GH_TOKEN`` enters only through the credential wiring.
+_LAND_ENV_PREFIXES: tuple[str, ...] = (
+    "PRECIS_",
+    "LC_",
+    "XDG_",
+    "UV_",
+    "DOCKER_",
+    "COMPOSE_",
+    "COLIMA_",
+)
+
+#: A name matching this is a credential, never a knob — dropped from the
+#: prefix inheritance: ``PRECIS_FACTORY_GIT_TOKEN``, ``PRECIS_MCP_TOKEN``,
+#: ``PRECIS_DATABASE_URL``/``PRECIS_TEST_PG_URL`` (a ``_URL`` can carry
+#: userinfo), ``UV_INDEX_URL`` and friends.
+_LAND_ENV_SECRET_RE = re.compile(
+    r"TOKEN|SECRET|PASSW|CREDENTIAL|_KEY|_DSN|DATABASE|_URL|OAUTH|PRIVATE"
+    r"|BEARER|COOKIE|_PEM|_CERT"
+)
+
+
+def land_env() -> dict[str, str]:
+    """The scrubbed environment every land-spawned child starts from:
+    :data:`LAND_ENV_NAMES` plus the :data:`_LAND_ENV_PREFIXES` names that
+    are not credential-shaped. Callers add the factory credential on top:
+    :func:`precis.workers.factory_git.git_auth_env` for the lander's own
+    fetch/push/gh launches (trusted code). Ship gets no credential: its
+    origin is the lander's local mirror
+    (:func:`~precis.workers.factory_git_mirror.mirror_ship_env`), which
+    the lander itself populates and syncs under the credential wiring.
+    ``GIT_NO_REPLACE_OBJECTS=1`` is SET, not inherited: the mirror, the
+    shared dir and the worktree gitdir are all same-uid writable, and a
+    ``refs/replace/*`` planted for an oracle-verified sha must never
+    substitute the object a child's trusted read resolves — ship's
+    fetch/merge, the drift helper's own ``rev-list``, a gate child's
+    git calls alike (review td660513, pre-land pass). ``PATH`` gains the
+    worker user's ``~/.local/bin`` appended when ``uv`` is installed
+    there but missing from the inherited PATH — a non-login coder
+    service carries no shell-hook PATH (gr702644), and ship plus its
+    nested ``/usr/bin/env uv`` helpers must still resolve it; the append
+    preserves the operator's PATH precedence
+    (:func:`~precis.workers.job_types.run_slice.path_with_user_uv`, the
+    same rule ``slice_env`` gives the session itself)."""
+    env = {k: os.environ[k] for k in LAND_ENV_NAMES if os.environ.get(k)}
+    for name, value in os.environ.items():
+        if (
+            name not in env
+            and name.startswith(_LAND_ENV_PREFIXES)
+            and not _LAND_ENV_SECRET_RE.search(name)
+        ):
+            env[name] = value
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    patched = _rs.path_with_user_uv(env.get("PATH"))
+    if patched != (env.get("PATH") or os.defpath):
+        env["PATH"] = patched
+    return env
+
+
 # ── Seams (tests monkeypatch these) ────────────────────────────────
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    """Run ``git <args>`` in ``cwd``; never raises on a non-zero exit."""
-    return _rs._git(args, cwd)
+    """Run ``git <args>`` in ``cwd``; never raises on a non-zero exit.
+
+    Never the worker's ambient env (review td660513, gr659929):
+    ``run_slice._git`` inherits ``os.environ`` wholesale — the factory
+    token and its ``GH_TOKEN`` shadow included — and the repos these
+    calls touch are branch-writable, so a planted ``hooks/*``,
+    ``core.fsmonitor``, filter or transport redirect would meet the
+    token in a spawned child's env. The scrubbed local env drops the
+    credential names and blinds system/global config, and hooks are
+    off (:data:`~precis.workers.factory_git_mirror.TRUSTED_ARGS`). The
+    transports that need the credential — the origin branch delete in
+    :func:`_cleanup`, :func:`_push_branch` — ride the mirror's fresh
+    ops gitdir instead."""
+    return subprocess.run(
+        ["git", *_factory_git_mirror.TRUSTED_ARGS, *args],
+        cwd=str(cwd),
+        env=_factory_git_mirror.local_env(land_env()),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=300,
+    )
 
 
 def _launch(
@@ -689,11 +909,16 @@ def _launch(
     exit_file: Path,
     env: dict[str, str],
     pass_fds: tuple[int, ...] = (),
+    store: Any = None,
+    work_class: str = "land",
+    pid_file: Path | None = None,
 ) -> int:
     """Start ``argv`` detached (run_slice's launcher, stdin from
     ``/dev/null``). ``pass_fds`` are fds the child inherits — the land
     flock rides one so it is held for the ship's whole life (gr650484).
-    Returns the pid (= the process group)."""
+    With a real ``store`` the launch is admitted first
+    (:func:`admission.spawn`); a full host raises
+    :class:`admission.Refused`. Returns the pid (= the process group)."""
     return _rs._launch(
         argv,
         cwd=cwd,
@@ -702,6 +927,9 @@ def _launch(
         exit_file=exit_file,
         env=env,
         pass_fds=pass_fds,
+        store=store,
+        work_class=work_class,
+        pid_file=pid_file,
     )
 
 
@@ -1050,7 +1278,9 @@ def _selector_stdout(tree: Path, timeout_s: float) -> str | None:
             [str(sel), "--stdin"],
             input=diff.stdout,
             cwd=str(tree),
-            env={**os.environ, "UV_PYTHON": ship_python()},
+            # The slice tree's selector — host-side, so the scrubbed env
+            # with no credential (gr659929).
+            env={**land_env(), "UV_PYTHON": ship_python()},
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1311,24 +1541,76 @@ def _record_land(store: Any, todo_id: int, sha: str | None, subject: str) -> lis
     """The ``landed:`` comment + ``STATUS:done``, each only when land_notify
     did not write it. ``sha=None`` is the nothing-new land: the comment is
     :data:`NO_DIFF_NOTE`, so no reader of ``landed: <sha>`` finds a sha
-    (gr561142). Returns what this wrote."""
+    (gr561142). Returns what this wrote.
+
+    A pin-bump node (``meta.pin_bump``, td659522 F7) gets the ``landed:``
+    comment but stays open until its record says the gate image carries
+    the new engine (``image.ready``): glue blocked by the node must not
+    unblock on the land alone, and ``pin_bump``'s image wait closes it.
+
+    The dedupe is keyed on the sha, not the newest comment: the
+    skill-edit mint appends its own note after this record on some
+    finishes, so a retried land tail would read a non-``landed:`` newest
+    and stamp a duplicate. A sha-keyed check stays idempotent no matter
+    what notes landed in between (and still writes a real land after a
+    ``nothing new`` note, whose ``landed:`` line names no sha)."""
     wrote: list[str] = []
-    newest = (_newest_comment(store, todo_id) or "").lstrip()
-    if not newest.lower().startswith("landed:"):
+    if sha is not None:
+        already = _landed_comment_sha(store, todo_id) == sha[:9].lower()
+    else:
+        already = (
+            (_newest_comment(store, todo_id) or "")
+            .lstrip()
+            .lower()
+            .startswith("landed:")
+        )
+    if not already:
         note = NO_DIFF_NOTE if sha is None else f"landed: {sha[:9]} — {subject}"
         _rs._append_comment(store, todo_id, note)
         wrote.append("landed comment")
     ref = store.get_ref(kind="todo", id=todo_id)
-    if ref is not None and (ref.meta or {}).get(PENDING_LAND_KEY):
+    if ref is not None and (
+        (ref.meta or {}).get(PENDING_LAND_KEY)
+        or (ref.meta or {}).get(PRELAND_DEFER_FAILED_KEY)
+        or (ref.meta or {}).get(PRELAND_HELD_KEY)
+    ):
         # The pre-land hold (gr570506) is discharged: the landed: comment
         # is the record now, and the stamp must not read a post-land
-        # review as pre-land.
-        store.stamp_ref_meta(todo_id, {PENDING_LAND_KEY: None})
+        # review as pre-land. A stale preland_defer_failed (gr663738),
+        # the FIX-round count (gr684815) and the preland_held stash
+        # (gr681208) discharge with it.
+        store.stamp_ref_meta(
+            todo_id,
+            {
+                PENDING_LAND_KEY: None,
+                PRELAND_DEFER_FAILED_KEY: None,
+                PRELAND_FIX_ROUNDS_KEY: None,
+                PRELAND_HELD_KEY: None,
+            },
+        )
         wrote.append("pending_land cleared")
-    if _rs._todo_status(store, todo_id) != "done":
+    if _pin_image_wait(ref):
+        wrote.append("STATUS held: gate image wait (F7)")
+    elif _rs._todo_status(store, todo_id) != "done":
         _close_todo(store, todo_id)
         wrote.append("STATUS:done")
     return wrote
+
+
+def _pin_record(ref: Any) -> dict[str, Any] | None:
+    """The ``meta.pin_bump`` record of a todo ref, or ``None``."""
+    record = (getattr(ref, "meta", None) or {}).get("pin_bump") if ref else None
+    return record if isinstance(record, dict) else None
+
+
+def _pin_image_wait(ref: Any) -> bool:
+    """A pin-bump node whose gate image does not carry the pin yet (its
+    record's ``image.ready`` is not true): the land leaves it open."""
+    record = _pin_record(ref)
+    if record is None:
+        return False
+    image = record.get("image")
+    return not (isinstance(image, dict) and image.get("ready") is True)
 
 
 def _plan_tag(store: Any, todo_id: int) -> str | None:
@@ -1430,6 +1712,53 @@ def _plan_gripe(store: Any, plan_tag: str) -> int | None:
     return int(row[0]) if row else None
 
 
+def _resolve_gripe(
+    store: Any,
+    gripe_id: int,
+    sha: str,
+    detail: str,
+    *,
+    status: str,
+    settled_comment: bool = False,
+) -> list[str]:
+    """The one ``resolved:`` writer (td659522 step 4): ``resolved: <sha9>
+    (main, release pending) — <detail>`` as the gripe's newest comment,
+    unless the newest already is one naming the sha, then ``STATUS:<status>``.
+    A settled gripe (:data:`_GRIPE_SETTLED`) keeps its status and, unless
+    ``settled_comment`` (land_notify's shape), gets no comment either.
+    Returns what it did: ``resolved comment``, ``STATUS:<status>`` or
+    ``left STATUS:<current>``."""
+    current = _rs._todo_status(store, gripe_id)
+    settled = current in _GRIPE_SETTLED
+    did: list[str] = []
+    if settled_comment or not settled:
+        chunks = store.chunks.list_chunks_for_ref(gripe_id)
+        comments = [c for c in chunks if c.chunk_kind == _GRIPE_COMMENT_KIND]
+        newest = (
+            str(max(comments, key=lambda c: int(c.ord)).text or "") if comments else ""
+        )
+        if not (newest.lstrip().lower().startswith("resolved:") and sha[:9] in newest):
+            store.chunks.insert_chunks(
+                gripe_id,
+                [
+                    ChunkInsert(
+                        ord=max((int(c.ord) for c in chunks), default=0) + 1,
+                        text=f"resolved: {sha[:9]} (main, release pending) — {detail}",
+                        meta={"chunk_kind": _GRIPE_COMMENT_KIND},
+                    )
+                ],
+            )
+            did.append("resolved comment")
+    if settled:
+        did.append(f"left STATUS:{current}")
+    else:
+        store.add_tag(
+            gripe_id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+        )
+        did.append(f"STATUS:{status}")
+    return did
+
+
 def _notify_gripe(
     store: Any, gripe_id: int, sha: str, subject: str, todo_id: int
 ) -> str:
@@ -1438,43 +1767,195 @@ def _notify_gripe(
     closes it once the sha is on prod. Idempotent: a settled gripe is left
     alone, a comment already naming the sha is not repeated. Returns the
     summary line."""
-    status = _rs._todo_status(store, gripe_id)
-    if status in _GRIPE_SETTLED:
-        return f"gripe gr{gripe_id}: left STATUS:{status}"
-    comments = [
-        c
-        for c in store.chunks.list_chunks_for_ref(gripe_id)
-        if c.chunk_kind == _GRIPE_COMMENT_KIND
-    ]
-    newest = str(max(comments, key=lambda c: int(c.ord)).text or "") if comments else ""
-    wrote: list[str] = []
-    if not (newest.lstrip().lower().startswith("resolved:") and sha[:9] in newest):
+    did = _resolve_gripe(
+        store,
+        gripe_id,
+        sha,
+        f"{subject} (landed by the factory, td{todo_id})",
+        status="verify",
+    )
+    if "STATUS:verify" not in did:
+        return f"gripe gr{gripe_id}: {did[-1]}"
+    return f"gripe gr{gripe_id}: {', '.join(did)} written"
+
+
+#: land_notify's ``_ITEM_RE`` — one ``(refs )?(gr|td)N`` item; group 1
+#: marks the ``refs grN`` partial form.
+_ITEM_PARSE_RE = re.compile(r"(refs\s+)?(gr|td)(\d+)")
+_MAX_HANDLES = 8
+
+#: scripts/gripe-note's ``fixed_gripe_ids`` source: the subject's
+#: trailing gripe-only ``(grN[, grM])`` — a mixed ``(gr1, td2)`` tail is
+#: land_notify's, not gripe-note's — and the body's ``Fixes: grN[, grM]``
+#: trailer lines.
+_GRIPE_NOTE_SUBJECT_RE = re.compile(r"\((gr\d+(?:[,\s]+gr\d+)*)\)\s*$")
+_GRIPE_NOTE_TRAILER_RE = re.compile(
+    r"^\s*fixes:\s*(gr\d+(?:[,\s]+gr\d+)*)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_GRIPE_NOTE_ID_RE = re.compile(r"gr(\d+)")
+
+
+def _gripe_note_ids(message: str) -> list[int]:
+    """``scripts/gripe-note``'s ``fixed_gripe_ids``: the subject line's
+    trailing ``(grN…)`` plus every ``Fixes:`` trailer's ids, distinct, in
+    order."""
+    lines = message.splitlines()
+    found: list[str] = []
+    if lines and (m := _GRIPE_NOTE_SUBJECT_RE.search(lines[0])):
+        found.append(m.group(1))
+    found += [m.group(1) for m in _GRIPE_NOTE_TRAILER_RE.finditer("\n".join(lines[1:]))]
+    seen: dict[int, None] = {}
+    for group in found:
+        for m in _GRIPE_NOTE_ID_RE.finditer(group):
+            seen.setdefault(int(m.group(1)), None)
+    return list(seen)
+
+
+def _subject_handles(subject: str) -> list[tuple[str, int, bool]]:
+    """The subject's trailing handles as ``(kind, id, partial)`` — what
+    ship's land_notify would have walked had ``PRECIS_LAND_NOTIFY=0``
+    not held it (review td660513 finding 4: the lander writes them only
+    after the origin sync verified the sha)."""
+    m = _HANDLES_RE.search(subject.strip())
+    if m is None:
+        return []
+    out: list[tuple[str, int, bool]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in _ITEM_PARSE_RE.finditer(m.group(1)):
+        kind = "gripe" if item.group(2) == "gr" else "todo"
+        key = (kind, int(item.group(3)))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((kind, key[1], item.group(1) is not None))
+        if len(out) >= _MAX_HANDLES:
+            break
+    return out
+
+
+def _landed_elsewhere(store: Any, todo_id: int) -> str | None:
+    """The second repo ``todo_id`` landed in (``meta.landed_repo``,
+    stamped by ``repo_land``), or ``None`` for a precis todo."""
+    ref = store.get_ref(kind="todo", id=todo_id)
+    repo = (getattr(ref, "meta", None) or {}).get(_lanes.LANDED_REPO_KEY)
+    if isinstance(repo, str) and repo and repo != _lanes.DEFAULT_REPO:
+        return repo
+    return None
+
+
+def _deferred_notify(
+    store: Any, subject: str, sha: str, todo_id: int, tree: Path
+) -> list[str]:
+    """What ship's post-land steps held back, written by the lander after
+    the origin sync verified ``sha`` (review td660513 finding 4):
+
+    * ``scripts/gripe-note`` first (``PRECIS_GRIPE_NOTE=0``): the
+      ``landed <sha9> on main`` comment on every gripe the squash
+      message names — subject-tail ``(grN…)`` and ``Fixes:`` trailers —
+      skipped when the gripe already carries that comment;
+    * then ``scripts/lib/land_notify.py`` (``PRECIS_LAND_NOTIFY=0``):
+      other todos get the ``landed:`` comment + done (a todo that
+      landed in a second repo is left alone, :func:`_landed_elsewhere`),
+      a ``refs grN`` the partial comment alone, a plain gripe the
+      resolved comment + ``STATUS:auto_verify``.
+
+    gripe-note's comment lands before land_notify's so a ``resolved:``
+    stays the newest — ship's own order. This land's own todo is written
+    by :func:`_record_land` already."""
+    notes: list[str] = []
+    # The squash message ship committed: the subject plus any Fixes:
+    # trailers it carried — read unauthenticated from the shared object
+    # store, falling back to the subject alone.
+    show = _git(["show", "-s", "--format=%B", sha], tree)
+    message = (show.stdout or "") if show.returncode == 0 else ""
+    text = f"landed {sha[:9]} on main"
+    for gid in _gripe_note_ids(message or subject):
+        comments = [
+            c
+            for c in store.chunks.list_chunks_for_ref(gid)
+            if c.chunk_kind == _GRIPE_COMMENT_KIND
+        ]
+        if any(str(c.text or "").strip() == text for c in comments):
+            notes.append(f"gripe gr{gid}: landed note already posted")
+            continue
         ord_ = (
             max(
-                (int(c.ord) for c in store.chunks.list_chunks_for_ref(gripe_id)),
+                (int(c.ord) for c in store.chunks.list_chunks_for_ref(gid)),
                 default=0,
             )
             + 1
         )
         store.chunks.insert_chunks(
-            gripe_id,
+            gid,
             [
                 ChunkInsert(
-                    ord=ord_,
-                    text=(
-                        f"resolved: {sha[:9]} (main, release pending) — {subject} "
-                        f"(landed by the factory, td{todo_id})"
-                    ),
-                    meta={"chunk_kind": _GRIPE_COMMENT_KIND},
+                    ord=ord_, text=text, meta={"chunk_kind": _GRIPE_COMMENT_KIND}
                 )
             ],
         )
-        wrote.append("resolved comment")
-    store.add_tag(
-        gripe_id, Tag.closed("STATUS", "verify"), set_by="system", replace_prefix=True
-    )
-    wrote.append("STATUS:verify")
-    return f"gripe gr{gripe_id}: {', '.join(wrote)} written"
+        notes.append(f"gripe gr{gid}: landed note")
+    for kind, n, partial in _subject_handles(subject):
+        if kind == "todo":
+            if n == todo_id:
+                continue
+            elsewhere = _landed_elsewhere(store, n)
+            if elsewhere is not None:
+                # td659522: its ``landed:`` sha is that repo's (the
+                # reviewer's target read); a precis sha there would lie.
+                notes.append(f"todo td{n}: left alone (it landed in {elsewhere})")
+                continue
+            wrote = _record_land(store, n, sha, subject)
+            notes.append(
+                f"todo td{n}: "
+                + (", ".join(wrote) + " written" if wrote else "already recorded")
+            )
+        elif partial:
+            # ``landed (partial):`` — touches the gripe, no status.
+            text = f"landed (partial): {sha[:9]} — {subject.strip()}"
+            comments = [
+                c
+                for c in store.chunks.list_chunks_for_ref(n)
+                if c.chunk_kind == _GRIPE_COMMENT_KIND
+            ]
+            newest = (
+                str(max(comments, key=lambda c: int(c.ord)).text or "")
+                if comments
+                else ""
+            )
+            if newest.lstrip().startswith("landed (partial):") and sha[:9] in newest:
+                notes.append(f"gripe gr{n}: already noted")
+                continue
+            ord_ = (
+                max(
+                    (int(c.ord) for c in store.chunks.list_chunks_for_ref(n)), default=0
+                )
+                + 1
+            )
+            store.chunks.insert_chunks(
+                n,
+                [
+                    ChunkInsert(
+                        ord=ord_, text=text, meta={"chunk_kind": _GRIPE_COMMENT_KIND}
+                    )
+                ],
+            )
+            notes.append(f"gripe gr{n}: partial landed comment")
+        else:
+            # land_notify's resolved path — ``resolved:`` comment +
+            # ``STATUS:auto_verify`` (it auto-verifies; _notify_gripe's
+            # ``STATUS:verify`` belongs to the plan's own gripe); it
+            # comments on a settled gripe too.
+            did = _resolve_gripe(
+                store,
+                n,
+                sha,
+                f"landed: {subject.strip()}",
+                status="auto_verify",
+                settled_comment=True,
+            )
+            notes.append(f"gripe gr{n}: {', '.join(did)}")
+    return notes
 
 
 # ── Cleanup ────────────────────────────────────────────────────────
@@ -1516,12 +1997,69 @@ def _cleanup(tree: Path, branch: str) -> list[str]:
         )
     step("worktree remove", ["worktree", "remove", str(tree)])
     step("branch -D", ["branch", "-D", branch])
-    remote = _git(["ls-remote", "--exit-code", "--heads", "origin", branch], root)
-    if remote.returncode == 0 and remote.stdout.strip():
-        step("push --delete", ["push", "origin", "--delete", branch])
-    else:
-        notes.append("origin branch: not pushed")
+    notes.extend(_delete_remote_branch(root, branch))
     return notes
+
+
+def _delete_remote_branch(root: Path, branch: str) -> list[str]:
+    """``git push --delete`` of the landed slice branch — an
+    authenticated transport, so it never runs in ``root``'s own
+    gitdir: the shared config and ``hooks/`` are branch-writable, and
+    a ``push origin`` there would hand a planted ``pre-push`` hook or
+    a ``url.insteadOf`` redirect the factory token (review td660513).
+    The "is it on origin" check is the
+    :func:`~precis.workers.factory_git_mirror.ls_remote` oracle — a
+    non-repo cwd no on-disk config can redirect — and the delete
+    pushes from a fresh ops gitdir under the credential wiring,
+    exactly like :func:`_push_branch`. Both homes are checked and
+    deleted in one push: the hidden ``refs/factory/<branch>`` the factory
+    pushes now, and a ``refs/heads/<branch>`` an older build left as a
+    visible branch. Notes; never raises."""
+    try:
+        url = _github_url(root)
+        if url is None:
+            return ["origin branch: skipped (no trusted origin url)"]
+        env = _factory_git.git_auth_env(base=land_env())
+        gone = [
+            f"{ns}{branch}"
+            for ns in (SLICE_REF_NS, "refs/heads/")
+            if (
+                _factory_git_mirror.ls_remote(url, (branch,), env=env, namespace=ns)
+                or {}
+            ).get(branch)
+        ]
+        if not gone:
+            return ["origin branch: not pushed"]
+        ops = _factory_git_mirror._ops_repo(
+            _factory_git_mirror.mirror_root(root),
+            env=_factory_git_mirror.local_env(env),
+        )
+        if ops is None:
+            return ["push --delete: FAILED (no ops repo)"]
+        try:
+            proc = _factory_git_mirror._run(
+                [
+                    "git",
+                    *_factory_git_mirror.TRUSTED_ARGS,
+                    "-C",
+                    str(ops),
+                    "push",
+                    url,
+                    "--delete",
+                    *gone,
+                ],
+                cwd=ops,
+                env=_factory_git_mirror.trusted_env(env),
+                timeout=60.0,
+            )
+        finally:
+            _factory_git_mirror._drop_ops(ops)
+    except Exception as exc:
+        return [f"origin branch: FAILED ({type(exc).__name__}: {exc})"]
+    if proc.returncode == 0:
+        return ["push --delete: ok"]
+    err = (proc.stderr or proc.stdout or "").strip()[:200]
+    return [f"push --delete: FAILED ({err})"]
 
 
 # ── Submit gate ────────────────────────────────────────────────────
@@ -1530,32 +2068,69 @@ def _cleanup(tree: Path, branch: str) -> list[str]:
 def _todo_rejection(store: Any, params: dict[str, Any]) -> str | None:
     """``_rs._todo_rejection`` plus the pre-land exception (gr570506): a
     build closed ``done`` with ``meta.pending_land`` stamped is the
-    deferred land — the tick minted this job on the reviewer's LAND
-    verdict, so a closed todo is what the land expects, not a refusal."""
+    machine's own hold — the tick minted this job on the reviewer's LAND
+    verdict, so that ``done`` is what the land expects, not a refusal.
+    The exception ends at that hold (gr663909): a ``won't-do`` or
+    ``auto-timeout`` on the stamped build is a ruling made while the
+    land queued, and the queued land refuses like any terminal
+    todo."""
     reason = _rs._todo_rejection(store, params.get("todo_id"))
     if reason is None or "is closed" not in reason:
         return reason
     todo_id = params.get("todo_id")
-    ref = (
-        store.get_ref(kind="todo", id=todo_id)
-        if store is not None and isinstance(todo_id, int)
-        else None
-    )
-    if ref is not None and (ref.meta or {}).get(PENDING_LAND_KEY):
+    if (
+        store is not None
+        and isinstance(todo_id, int)
+        and _rs._terminal_ruling(store, todo_id) is None
+    ):
         return None
     return reason
+
+
+def _repo_refusal(store: Any, params: dict[str, Any]) -> str | None:
+    """Why this job may not land (td659522), or ``None``. The default repo
+    lands here through the tree's ``scripts/ship``. Another repo is admitted
+    (and ``submit``/``poll``/``kill`` hand it to ``repo_land``) only when
+    the job's own ``params.repo`` names it, its profile's ``lander`` is
+    ``land_slice``, ``factory.open_repos`` lists it, and the todo's
+    ``repo:`` tag agrees with the param. A job with no ``params.repo`` (a
+    hand mint, a pre-profile job) whose todo is tagged for another repo
+    stays refused: it must never run ``scripts/ship``."""
+    todo_id = params.get("todo_id")
+    names = [params["repo"]] if params.get("repo") is not None else []
+    if store is not None and isinstance(todo_id, int):
+        names += _rs.slice_repos(store, todo_id)
+    other = [str(n) for n in names if n != _lanes.DEFAULT_REPO]
+    if not other:
+        return None
+    lead = f"land_slice: repo {other[0]!r} cannot be landed here: "
+    repo = params.get("repo")
+    if not isinstance(repo, str) or not repo.strip():
+        return lead + "the job has no params.repo; next: land the slice by hand"
+    repo = repo.strip()
+    profile = _lanes.repo_profile(repo)
+    if profile is None or profile.lander != "land_slice":
+        return lead + "its profile has no lander yet; next: land the slice by hand"
+    if repo not in _lanes.open_repos(store):
+        return lead + "factory.open_repos does not list it; next: land it by hand"
+    mismatch = _rs._repo_param_rejection(store, todo_id, repo)
+    return mismatch.replace("run_slice:", "land_slice:", 1) if mismatch else None
 
 
 def validate_submit(
     store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
 ) -> str | None:
-    """Refuses while ``PRECIS_FACTORY=off`` and on a missing/closed todo."""
+    """Refuses while ``PRECIS_FACTORY=off``, for any repo but the default,
+    and on a missing/closed todo."""
     del gripe_id
     if _rs.factory_off():
         return (
             "land_slice: the factory is off (PRECIS_FACTORY=off); next: unset it "
             "on the worker host to land slices"
         )
+    wrong_repo = _repo_refusal(store, params)
+    if wrong_repo is not None:
+        return wrong_repo
     reason = _todo_rejection(store, params)
     return reason.replace("run_slice:", "land_slice:", 1) if reason else None
 
@@ -1675,6 +2250,65 @@ def _fetch_onto(tree: Path, onto: str) -> None:
     )
 
 
+def _pushed_tip_ahead(
+    root: Path | None, tree: Path, branch: str, base_ref: str
+) -> tuple[bool, str | None]:
+    """Whether the pushed ``<branch>`` still carries work ``base_ref``
+    lacks — what a ``no_land`` record would abandon while ``_cleanup``'s
+    ``push --delete`` removes the branch holding it (review td682306 on
+    gr681208: a held land naming a recut or reset worktree reads empty
+    while the reviewed commits sit on the pushed branch — recording
+    done there deletes them unlanded). ``(True, tip)`` — origin's tip
+    is ahead; ``(True, None)`` — verified: nothing is pushed, or the
+    tip is not ahead; ``(False, None)`` — the pushed state could not be
+    verified.
+
+    The tip read is the ``ls_remote`` oracle — what GitHub actually
+    serves, the same read ``_delete_remote_branch`` trusts — never the
+    ``refs/remotes/origin/*`` ref a builder session can rewrite in the
+    shared common dir. The fetch afterwards only materializes the tip's
+    objects for the ancestry read, and its answer is trusted only when
+    the tracking ref lands exactly on the oracle's sha — a config
+    redirect cannot pass that check."""
+    if root is None:
+        return False, None
+    url = _github_url(root)
+    if url is None:
+        return False, None
+    env = _factory_git.git_auth_env(base=land_env())
+    tip: str | None = None
+    src: str | None = None
+    for ns in (SLICE_REF_NS, "refs/heads/"):
+        remote = _factory_git_mirror.ls_remote(url, (branch,), env=env, namespace=ns)
+        if remote is None:
+            return False, None
+        tip = remote.get(branch)
+        if tip is not None:
+            src = f"{ns}{branch}"
+            break
+    if tip is None or src is None:
+        return True, None
+    remote_ref = f"refs/remotes/origin/{branch}"
+    try:
+        fetch = _git(
+            ["fetch", "-q", "origin", f"+{src}:{remote_ref}"],
+            tree,
+        )
+        got = (_git(["rev-parse", remote_ref], tree).stdout or "").strip()
+        if fetch.returncode != 0 or got != tip:
+            return False, None
+        anc = _git(["merge-base", "--is-ancestor", tip, base_ref], tree).returncode
+        if anc == 0:
+            return True, None
+        if anc != 1:
+            # git could not run the ancestry read — not a verified
+            # "nothing pushed ahead" answer.
+            return False, None
+    except (OSError, subprocess.TimeoutExpired):
+        return False, None
+    return True, tip
+
+
 def _pr_to_close(store: Any, params: dict[str, Any], todo_id: int) -> int | None:
     """The PR a green land closes: ``params.pr``, else the todo's
     ``meta.pr_close`` (the 'land after fixes' slice)."""
@@ -1747,7 +2381,10 @@ def _fail(
             log.warning(
                 "land_slice: lease unclaim on td%d failed", todo_id, exc_info=True
             )
-        suffix = f"; todo td{todo_id} back to open (no attempt: {attempt_free})"
+        if (standing := _rs._terminal_status(ctx.store, todo_id)) is not None:
+            suffix = f"; todo td{todo_id} stays STATUS:{standing} (result discarded)"
+        else:
+            suffix = f"; todo td{todo_id} back to open (no attempt: {attempt_free})"
     else:
         try:
             attempt = _rs.release_todo(ctx.store, todo_id, str(lane) if lane else None)
@@ -1755,26 +2392,103 @@ def _fail(
             log.warning(
                 "land_slice: lease release on td%d failed", todo_id, exc_info=True
             )
-        suffix = (
-            f"; todo td{todo_id} back to open, attempt:{attempt}" if attempt else ""
-        )
+        if attempt is not None:
+            suffix = f"; todo td{todo_id} back to open, attempt:{attempt}"
+        elif (standing := _rs._terminal_status(ctx.store, todo_id)) is not None:
+            suffix = f"; todo td{todo_id} stays STATUS:{standing} (result discarded)"
+        else:
+            suffix = ""
         try:
             # The rebuild must clear the pre-land review again (gr570506).
             _rs.rearm_preland_review(ctx.store, todo_id)
         except Exception:  # pragma: no cover — defensive; the job still fails
             log.warning("land_slice: pre-land re-arm on td%d failed", todo_id)
+        # Park = save (``_slice_park``): the lander's tree may sit
+        # mid-rebase, so only the branch tip is pushed — never the dirty
+        # tree. A second repo's tree is not this remote's to push.
+        if _rs.job_repo(getattr(ctx, "meta", None) or {}) == _lanes.DEFAULT_REPO:
+            _slice_park.save_at_job_end(
+                ctx,
+                _rs.worktrees_dir(_rs.slice_root()) / _rs.slice_name(int(todo_id)),
+                int(todo_id),
+                reason,
+                base=_rs._land_base(ctx.store, int(todo_id)),
+                include_dirty=False,
+            )
     ctx.record_failure(f"land_slice: {reason}{suffix}")
+
+
+def _pin_exempt(
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    base_ref: str,
+    paths: list[str],
+    denied: list[str],
+) -> tuple[list[str], str | None, bool]:
+    """td659522 step 4, the one named exception to the deny gate (Reto,
+    2026-11-15): a pin-bump node's own commit may carry the single
+    ``autocatpath_min_version`` line of ``deploy/group_vars/all.yml``.
+    Returns ``(denied, why, unreadable)``: ``denied`` without that one
+    path when :func:`pin_bump.land_refusal` proves the branch is exactly
+    that bump (the job event names it), else ``denied`` unchanged with
+    the refusal. A todo carrying no pin record is not asked (``why`` is
+    ``None``), and every other denied path stays denied.
+
+    ``unreadable`` marks a check that could not run
+    (:class:`pin_bump.LandUnreadable`, or it raised) when that path is
+    the only one denied: no verdict on the branch, so the caller fails
+    the attempt without the ``human_only_hit`` cap and the bump is built
+    and checked again (the unreadable-diff rule, td645833)."""
+    from precis.workers.job_types import pin_bump
+
+    if pin_bump.GROUP_VARS_PATH not in denied:
+        return denied, None, False
+    only = denied == [pin_bump.GROUP_VARS_PATH]
+    commit = ""
+    try:
+        ref = ctx.store.get_ref(kind="todo", id=todo_id)
+        record = (getattr(ref, "meta", None) or {}).get(pin_bump.RECORD_KEY)
+        if not isinstance(record, dict):
+            return denied, None, False
+        commit = str(record.get("commit"))[:9]
+        why = pin_bump.land_refusal(ctx.store, todo_id, tree, base_ref, paths)
+    except pin_bump.LandUnreadable as exc:
+        return denied, str(exc), only
+    except Exception:
+        log.warning("land_slice: pin exemption for td%d failed", todo_id, exc_info=True)
+        return denied, "the check itself failed", only
+    if why is not None:
+        return denied, why, False
+    rest = [p for p in denied if p != pin_bump.GROUP_VARS_PATH]
+    if not rest:
+        ctx.set_meta(pin_exempt=pin_bump.GROUP_VARS_PATH)
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: `{pin_bump.GROUP_VARS_PATH}` admitted past the deny "
+            f"gate: the branch is td{todo_id}'s pin bump (record commit {commit}) "
+            f"and that file changes only its {pin_bump.GROUP_VARS_KEY} line",
+        )
+    return rest, None, False
 
 
 def submit(ctx: Any, spec: Any) -> Any:
     """Detached submit half: launch ship. Returns the handle, or ``None``
     after driving the job terminal."""
-    del spec
     params = dict((ctx.meta or {}).get("params") or {})
     todo_id = params.get("todo_id")
     if _rs.factory_off():
         ctx.record_failure("land_slice: the factory is off (PRECIS_FACTORY=off)")
         return None
+    wrong_repo = _repo_refusal(ctx.store, params)
+    if wrong_repo is not None:
+        ctx.record_failure(wrong_repo)
+        return None
+    if _rs.job_repo(params) != _lanes.DEFAULT_REPO:
+        from precis.workers import repo_land
+
+        return repo_land.submit(ctx, spec)
+    del spec
     reason = _todo_rejection(ctx.store, params)
     if reason is not None:
         ctx.record_failure(reason.replace("run_slice:", "land_slice:", 1))
@@ -1841,8 +2555,11 @@ def submit(ctx: Any, spec: Any) -> Any:
     # diff git cannot read stamps ``<unreadable>`` (fail closed) and is
     # refused below, before the deny check it cannot feed.
     # A release fix's changes are read against its release branch: the
-    # release's earlier fixes are not this slice's (T1 review).
-    paths = _rs.changed_paths(tree, f"origin/{onto or 'main'}")
+    # release's earlier fixes are not this slice's (T1 review). The base
+    # is GitHub's verified tip when the oracle answers — the tracking
+    # ref is branch-writable shared state (review td660513).
+    base_ref = _land_base(tree, onto)
+    paths = _rs.changed_paths(tree, base_ref)
     hits = ["<unreadable>"] if paths is None else _lanes.engine_hits(paths)
     ctx.set_meta(engine_paths=hits[:50])
     if paths is None:
@@ -1876,15 +2593,15 @@ def submit(ctx: Any, spec: Any) -> Any:
     # gr657066: governs:factory skills join the set at the land base —
     # the fence is the base's declaration, so a branch cannot un-tag
     # it, and the scan failing closes like the diff read above.
-    governed = _governs.governed_skill_paths_at_ref(
-        tree, f"origin/{onto or 'main'}", git=_git
-    )
+    # td659522: one content-checked exception, a pin-bump node's own
+    # commit (:func:`_pin_exempt`).
+    governed = _governs.governed_skill_paths_at_ref(tree, base_ref, git=_git)
     if governed is None:
         _fail(
             ctx,
             todo_id,
             lane,
-            f"governed-skill scan failed at origin/{onto or 'main'} "
+            f"governed-skill scan failed at {base_ref} "
             f"in {tree} (git failed); failing closed",
             handoff=(
                 "land FAILED: git could not enumerate the governs:factory "
@@ -1895,16 +2612,54 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         return None
     denied = _rs.deny_violations(paths, _lanes.deny_paths_for(ctx.store) + governed)
+    allow_only = _rs._skill_allow_only(ctx.store, todo_id)
+    if allow_only is not None:
+        outside = sorted(
+            p
+            for p in paths
+            if not any(_rs.fnmatch.fnmatchcase(p, g) for g in allow_only)
+        )
+        if outside:
+            _fail(
+                ctx,
+                todo_id,
+                lane,
+                "skill-editor scope violated",
+                handoff="land FAILED: paths outside skill-editor scope: "
+                + ", ".join(outside),
+            )
+            return None
+    pin_why, pin_unreadable = None, False
     if denied:
-        ctx.set_meta(**{_rs.HUMAN_ONLY_KEY: denied[:50]})
+        denied, pin_why, pin_unreadable = _pin_exempt(
+            ctx, todo_id, tree, base_ref, paths, denied
+        )
+    if denied and pin_unreadable:
         _fail(
             ctx,
             todo_id,
             lane,
-            "branch touches deny path(s): " + ", ".join(denied[:50]),
+            f"the pin bump's `{denied[0]}` change could not be checked "
+            f"({pin_why}); failing closed",
+            handoff=(
+                f"land FAILED: the lander could not check the pin bump's "
+                f"`{denied[0]}` change ({pin_why}), so the deny gate held "
+                "and nothing landed; the pin bump is built again."
+            ),
+        )
+        return None
+    if denied:
+        ctx.set_meta(**{_rs.HUMAN_ONLY_KEY: denied[:50]})
+        pin_note = f" (pin-bump exemption refused: {pin_why})" if pin_why else ""
+        _fail(
+            ctx,
+            todo_id,
+            lane,
+            "branch touches deny path(s): " + ", ".join(denied[:50]) + pin_note,
             handoff=(
                 "land FAILED: the branch touches deny path(s): "
                 + ", ".join(f"`{p}`" for p in denied[:50])
+                + pin_note
                 + " — no lane may write them; a coordinator ruling "
                 "lands the branch by hand or rewrites the work."
             ),
@@ -1912,11 +2667,77 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     if subject is None:
         if subjects == [] and not paths:
+            # review td682306 (gr681208): an empty checkout is the done
+            # record below only when the PUSHED branch is empty too — a
+            # held land can name a recut or reset worktree while
+            # ``origin/<branch>`` still carries the commits review
+            # judged; recording done here writes a false "landed:
+            # nothing", releases the dependants, and lets ``_cleanup``'s
+            # ``push --delete`` remove the branch holding the unlanded
+            # work. Refuse like the missing-worktree arm: the reopened
+            # build's restore puts the pushed tip back (or reports that
+            # nothing was pushed).
+            try:
+                pushed_root: Path | None = _rs.slice_root()
+            except Exception:
+                pushed_root = None
+            verified, pushed = _pushed_tip_ahead(
+                pushed_root, tree, branch_hint, base_ref
+            )
+            if pushed is not None:
+                _fail(
+                    ctx,
+                    todo_id,
+                    lane,
+                    f"{branch_hint} reads empty in {tree} but "
+                    f"origin/{branch_hint} is at {pushed[:12]} ahead of "
+                    f"{base_ref}",
+                    handoff=(
+                        f"land FAILED: the worktree's {branch_hint} has no "
+                        f"commit ahead of {base_ref}, but "
+                        f"origin/{branch_hint} is at {pushed[:12]} — the "
+                        "pushed tip the review judged. Restore it into the "
+                        "worktree (`git fetch` + `checkout -B`) and land "
+                        "that, or rebuild the slice."
+                    ),
+                )
+                return None
+            if not verified:
+                _fail(
+                    ctx,
+                    todo_id,
+                    lane,
+                    f"origin/{branch_hint}'s tip could not be verified "
+                    f"(no trusted read) — refusing the no-land record",
+                    handoff=(
+                        "land FAILED: the worktree reads empty and "
+                        f"origin/{branch_hint}'s state could not be "
+                        "verified — the land refuses to record a no-land "
+                        "that could abandon pushed work. Retry when "
+                        "origin is readable; a coordinator ruling lands "
+                        "or drops the branch by hand."
+                    ),
+                )
+                return None
             # gr648125: the land was minted over a branch carrying
             # nothing — no commit ahead of origin/main and no net diff
             # (the fix is already on main by another route). Nothing to
             # land is done, not red: the poll's ``no_land`` path writes
-            # the same record ship's nothing-new guard does.
+            # the same record ship's nothing-new guard does. No ship
+            # runs, so this land is unmirrored: clear a crashed
+            # predecessor's stamp AND its launch files — the mirror and
+            # the tips record beside it — or the poll's sync still reads
+            # the stale record, judges a mirror in play, and the
+            # nothing-new job fails or defers on a dead CAS basis
+            # instead of completing (review td660513, third pass).
+            try:
+                ctx.store.stamp_ref_meta(todo_id, {FACTORY_MIRROR_KEY: None})
+            except Exception:
+                pass
+            try:
+                _factory_git_mirror.drop_launch(_rs.slice_root(), f"td{todo_id}")
+            except Exception:
+                pass
             return {"no_land": True, "worktree": str(tree)}
         what = "git log failed" if subjects is None else "no commit ahead"
         _fail(
@@ -2006,6 +2827,7 @@ def _stamp_lock_holder(
     branch: str = "",
     subject: str = "",
     flag: str = "",
+    attempt: str = "",
 ) -> None:
     """Record the holder in the lock file — ``pid=N td=M branch=B
     flag=F subject=S`` — so the next land can tell its own
@@ -2023,6 +2845,8 @@ def _stamp_lock_holder(
         parts.append(f"branch={branch}")
     if flag:
         parts.append(f"flag={flag}")
+    if attempt:
+        parts.append(f"attempt={attempt}")
     if subject:
         parts.append(f"subject={subject.splitlines()[0]}")
     try:
@@ -2046,6 +2870,7 @@ def _lock_holder_stamp(text: str) -> dict[str, str]:
         ("td", r"\btd=(\d+)\b", head),
         ("branch", r"\bbranch=(\S+)", head),
         ("flag", r"\bflag=(--\S+)", head),
+        ("attempt", r"\battempt=([0-9a-f]{32})\b", head),
         ("subject", r"\bsubject=([^\n]*)", text),
     ):
         m = re.search(pat, where)
@@ -2201,13 +3026,22 @@ def _adopt_ship(
         or ""
     )
     scratch = tree / "scratch"
+    attempt = busy["stamp"].get("attempt")
+    launched_todo = busy["stamp"].get("td")
+    attempt_dir = (
+        _rs.ops_root() / f"td{launched_todo}" / attempt
+        if attempt and launched_todo
+        else None
+    )
+    exit_file = attempt_dir / "exit" if attempt_dir else scratch / "land_slice.exit"
+    log_file = attempt_dir / "log" if attempt_dir else scratch / "land_slice.log"
     launched = _now()
     handle: dict[str, Any] = {
         "pid": pid,
         "pgid": pid,
         "worktree": str(tree),
-        "log": str(scratch / "land_slice.log"),
-        "exit_file": str(scratch / "land_slice.exit"),
+        "log": str(log_file),
+        "exit_file": str(exit_file),
         "subject": subject,
         "flag": flag,
         "adopted": True,
@@ -2229,6 +3063,15 @@ def _adopt_ship(
         f"{tree} — its exit file lands this job's record",
     )
     return handle
+
+
+def reconcile(ctx: Any) -> Reconcile | None:
+    """Resume ship poll, including publication of a completed mirror squash.
+
+    A free flock cannot establish whether ship already ran. Only this
+    submit attempt's launch or exit record can resume poll.
+    """
+    return _rs._recover_launch(ctx)
 
 
 def _index_lock_pairs(gitdir: Path, tree: Path) -> list[tuple[Path, Path]]:
@@ -2485,6 +3328,50 @@ def _clear_index_locks(
     return True
 
 
+def _land_base(tree: Path, onto: str | None) -> str:
+    """The trusted base for the land's own reads: GitHub's tip of the land
+    target, read through the mirror's :func:`ls_remote` oracle — a
+    non-repo cwd, system/global config off — and fetched into the tree's
+    object store. Never the remote-tracking ref alone: the shared git
+    dir's ``refs/remotes/origin/*`` and the tree's config are writable by
+    branch code, so an ``origin/main`` read could name a fabricated tip
+    the deny gate then diffed (review td660513). Falls back to the
+    tracking ref when GitHub cannot answer — a fast path's trust, not a
+    gate: on doubt ship still runs and the sync's leases decide."""
+    ref = onto or "main"
+    try:
+        root = _rs.slice_root()
+        url = _github_url(root)
+        if url:
+            tip = (
+                _factory_git_mirror.ls_remote(
+                    url, (ref,), env=_factory_git.git_auth_env(base=land_env())
+                )
+                or {}
+            ).get(ref)
+            if tip:
+                # Fetch the objects (unauthenticated — the sha came from
+                # the oracle; a redirected fetch can only refuse), then
+                # diff against the oracle's sha, not the tracking ref the
+                # fetch may also have moved.
+                _git(
+                    [
+                        "fetch",
+                        "--quiet",
+                        url,
+                        f"+refs/heads/{ref}:refs/remotes/origin/{ref}",
+                    ],
+                    tree,
+                )
+                return tip
+    except Exception:
+        log.warning(
+            "land_slice: verified land base failed — using the tracking ref",
+            exc_info=True,
+        )
+    return f"origin/{ref}"
+
+
 def _already_landed(
     tree: Path, subject: str, onto: str | None = None
 ) -> tuple[bool, str | None]:
@@ -2504,10 +3391,13 @@ def _already_landed(
     whenever git cannot answer: this is a fast path, never a gate; on
     doubt ship still runs and its own nothing-new guard is the
     arbiter."""
-    ref = f"origin/{onto or 'main'}"
-    spec = f"+refs/heads/{onto}:refs/remotes/{ref}" if onto else "main"
-    if _git(["fetch", "--quiet", "origin", spec], tree).returncode != 0:
-        return False, None
+    ref = _land_base(tree, onto)
+    if ref.startswith("origin/"):
+        # The oracle could not verify a tip: refresh the tracking ref
+        # the legacy way and read against that.
+        spec = f"+refs/heads/{onto}:refs/remotes/{ref}" if onto else "main"
+        if _git(["fetch", "--quiet", "origin", spec], tree).returncode != 0:
+            return False, None
     if _git(["diff", "--quiet", ref, "HEAD"], tree).returncode == 0:
         return True, None
     base = _git(["merge-base", ref, "HEAD"], tree)
@@ -2713,12 +3603,88 @@ def _launch_ship(
                 "job_event",
                 "land_slice: evicted idle slice stacks: " + ", ".join(evicted),
             )
+        # gr659929 (review td660513): ship's gates run the branch's own
+        # scripts host-side, so ship's tree holds NO credential — not the
+        # token in the env, not GH_TOKEN, not a token fd a gate child
+        # could pread, and no helper it can make answer. The lander keeps
+        # a bare mirror of the land refs in the main checkout's scratch
+        # (:mod:`precis.workers.factory_git_mirror`), THIS launch's own
+        # directory — a sibling land's populate can never refresh away
+        # an unsynced squash. Populate runs BEFORE the drift probe: the
+        # probe's helper is sourced from the verified main tip the
+        # populate fetched and oracle-checked — never branch code under
+        # the token (review finding 1). Every populate call goes through
+        # the trusted boundary (fresh ops gitdir, hooks off, no
+        # system/global config) because the mirror and the checkout are
+        # adversary-writable (review finding 2).
+        ship_env = land_env()
+        if _carries_pin(ctx.store, todo_id):
+            # td659522 F7: ship's land_notify would close a pin-bump node
+            # on the land; it stays open for the gate image wait, so the
+            # notify marks are held as for a mirrored land and the lander
+            # writes them itself (``notify_deferred``, ``_record_land``).
+            ship_env["PRECIS_LAND_NOTIFY"] = "0"
+            ship_env["PRECIS_GRIPE_NOTE"] = "0"
+        token = _factory_git.factory_git_token()
+        mirror: Path | None = None
+        url: str | None = None
+        mirror_tips: dict[str, str] | None = None
+        if token:
+            try:
+                root = _rs.slice_root()
+                mirror = _factory_git_mirror.mirror_dir(root, f"td{todo_id}")
+                url = _github_url(root)
+                if url is None:
+                    raise RuntimeError(
+                        "the factory checkout names no trusted origin url"
+                    )
+                mirror_tips = _factory_git_mirror.populate(
+                    mirror,
+                    _factory_git_mirror.cache_dir(root),
+                    url,
+                    onto,
+                    env=_factory_git.git_auth_env(base=land_env()),
+                )
+                if mirror_tips is None:
+                    raise RuntimeError(
+                        "the factory git mirror could not be refreshed from origin"
+                    )
+            except Exception as exc:
+                log.warning(
+                    "land_slice: mirror populate for td%d failed",
+                    todo_id,
+                    exc_info=True,
+                )
+                _fail(
+                    ctx,
+                    todo_id,
+                    params.get("lane"),
+                    f"ship launch failed: {exc}",
+                    handoff=f"land FAILED: scripts/ship did not start ({exc}).",
+                )
+                return None
+        else:
+            # No credential resolves this launch — ship pushes origin on
+            # the host's own credentials, and poll must not read it as
+            # mirrored: drop every record an earlier token-bearing
+            # attempt may have left — the launch files AND the durable
+            # stamp on the todo (review td660513, second pass).
+            try:
+                _factory_git_mirror.drop_launch(_rs.slice_root(), f"td{todo_id}")
+            except Exception:
+                pass
+            try:
+                ctx.store.stamp_ref_meta(todo_id, {FACTORY_MIRROR_KEY: None})
+            except Exception:
+                pass
         # A release fix skips main's drift probe: ship's release lane
         # skips its drift guard too — the release push runs its own CI.
         pre: dict[str, Any] = (
             {"ran": False, "rc": None, "age": "", "diag": ""}
             if onto
-            else _drift_preflight(tree)
+            else _drift_preflight(
+                tree, mirror=mirror, main_tip=(mirror_tips or {}).get("main")
+            )
         )
         if _gate_unknown(pre):
             # Fail closed: the lander's identity cannot see main's gate, so do not
@@ -2731,7 +3697,7 @@ def _launch_ship(
                 "subject": subject,
                 "flag": flag,
             }
-            for key in ("main_refusals", "last_refusal", "gate_kills"):
+            for key in ("main_refusals", "last_refusal", "gate_kills", "release_busy"):
                 if carry is not None and key in carry:
                     parked[key] = carry[key]
             refusals = int(parked.get("main_refusals") or 0) + 1
@@ -2767,23 +3733,127 @@ def _launch_ship(
                 ship_fd = fcntl.fcntl(lock_fd, fcntl.F_DUPFD, 100)
             except (ImportError, OSError):
                 ship_fd = lock_fd
+        # The credential broker the mirror replaced failed the review:
+        # its depth-authorized socket asks could not tell ship's own git
+        # calls from a gate child's ``git credential fill`` (same depth,
+        # same env, forgeable argv), and the broker itself launched with
+        # ``python -m`` from the slice tree, where a branch-added root
+        # ``precis/__init__.py`` shadowed the trusted package and read the
+        # token fd.
         try:
             scratch.mkdir(parents=True, exist_ok=True)
-            exit_path.unlink(missing_ok=True)
+            if mirror_tips is not None and mirror is not None and url is not None:
+                # The launch tips persist NEXT TO the mirror, under the
+                # main checkout's scratch — never this tree's own
+                # scratch/, which is branch-writable: a second land that
+                # ADOPTS this running ship (gr650484) rebuilds its handle
+                # from the lock stamp without them, and a missing
+                # tree-side record once let poll read "no mirror" and
+                # record the mirror-only squash as landed (review
+                # td660513). A record that cannot be written fails the
+                # launch instead.
+                if not _factory_git_mirror.write_launch_tips(
+                    root, f"td{todo_id}", mirror_tips
+                ):
+                    raise RuntimeError(
+                        "the mirror launch record could not be persisted"
+                    )
+                # And its durable half — on the todo's meta, out of every
+                # same-uid-writable file's reach: the launch record and
+                # the mirror itself can both be deleted by the gate code
+                # ship runs, and an adopted handle must still read this
+                # launch as mirrored (review td660513, second pass). A
+                # stamp that cannot be written fails the launch like the
+                # launch record's.
+                try:
+                    ctx.store.stamp_ref_meta(todo_id, {FACTORY_MIRROR_KEY: True})
+                except Exception as exc:
+                    raise RuntimeError(
+                        "the mirror-mode record could not be persisted"
+                    ) from exc
+                ship_env = _factory_git_mirror.mirror_ship_env(mirror, ship_env, url)
+                # Ship's post-land effects are premature before the origin
+                # sync verifies the pushed sha (review finding 4): its
+                # land_notify todo/gripe marks and gripe-note are held —
+                # the lander posts them itself once the push lands —
+                # the shared-dir refs it advanced are repaired on a
+                # failed or deferred sync, and the local-main advance is
+                # refused outright (second pass: a best-effort rewind
+                # cannot cover a crashed worker or a blind GitHub, so the
+                # effect may not happen until publication verifies): a
+                # PATH-leading git shim turns ship's ``_sync_local_main``
+                # shapes down, and the lander replays the fast-forward
+                # itself after the sync.
+                ship_env["PRECIS_LAND_NOTIFY"] = "0"
+                ship_env["PRECIS_GRIPE_NOTE"] = "0"
+                shim = _factory_git_mirror.ship_git_shim(mirror)
+                if shim is None:
+                    raise RuntimeError("the ship git shim could not be written")
+                ship_env["PATH"] = (
+                    str(shim) + os.pathsep + (ship_env.get("PATH") or os.defpath)
+                )
+            attempt_dir = (
+                _rs._submit_attempt_dir(ctx, todo_id) if carry is None else None
+            )
+            if attempt_dir is not None:
+                attempt_dir.mkdir(parents=True)
+                exit_path = attempt_dir / "exit"
+            else:
+                exit_path.unlink(missing_ok=True)
+            log_path = _rs._attempt_log(attempt_dir, log_path)
+            # The deadline rides the handle (gr647913): ``started_at`` + the wall
+            # — the clock stamps share the ``_now()`` seam so a worker restart's
+            # re-adoption resumes the job's own count instead of restarting the
+            # wall at the re-adopt poll.
+            launched = _now()
+            handle: dict[str, Any] = {
+                "worktree": str(tree),
+                "log": str(log_path),
+                "exit_file": str(exit_path),
+                "subject": subject,
+                "flag": flag,
+                "started_at": launched.strftime(_TS_FMT),
+                "deadline": launched.timestamp() + wall_seconds(),
+            }
+            if mirror_tips is not None:
+                # The sync's CAS basis (GitHub's tips at launch). Adopted
+                # handles rebuild without it; poll falls back to the launch
+                # record beside the mirror
+                # (:func:`factory_git_mirror.read_launch_tips`).
+                handle["factory_mirror_tips"] = mirror_tips
+            for key in (
+                "main_refusals",
+                "last_refusal",
+                "gate_kills",
+                "release_busy",
+                "fell_back_full",
+            ):
+                if carry is not None and key in carry:
+                    handle[key] = carry[key]
+            if attempt_dir is not None:
+                _rs._write_launch_record(attempt_dir / "baseline", handle)
             pid = _launch(
                 [ship_bin(tree), flag, *(("--onto", onto) if onto else ()), subject],
                 cwd=tree,
                 log=log_path,
                 exit_file=exit_path,
-                # The factory token (vault) as git's credential helper: the slice
-                # host's service account has none of its own (td543734). UV_PYTHON
-                # pins ship's `uv run` steps to the worker's Python line: with no
-                # .venv in a slice tree uv takes the newest interpreter satisfying
-                # requires-python — Homebrew 3.15 on melchior, for which rdkit has
-                # no wheel, so the frozen sync fails and gen-devin-hooks' check
-                # reads as "stale" (jo551780 event 6).
+                # The slice host's service account has no credential of
+                # its own (td543734) — with a factory token resolvable the
+                # factory token never reaches this env: ship's git traffic
+                # to the real origin URL is rewritten to the lander's
+                # mirror, populated and synced under the credential by
+                # the lander alone. With no token resolvable the rewrite
+                # is absent and the host's own credentials apply, as
+                # before. UV_PYTHON pins ship's `uv run` steps to the
+                # worker's Python line:
+                # with no .venv in a slice tree uv takes the newest
+                # interpreter satisfying
+                # requires-python — Homebrew 3.15 on the agent host, for which
+                # rdkit has no wheel, so the frozen sync fails and
+                # gen-devin-hooks' check reads as "stale" (jo551780
+                # event 6).
                 env={
-                    **_factory_git.git_auth_env(),
+                    **ship_env,
                     "PRECIS_SHIP_VERBOSE": "1",
                     "UV_PYTHON": ship_python(),
                     # Cap the checked run's xdist workers (gr567471): ship's
@@ -2799,8 +3869,34 @@ def _launch_ship(
                 # The land flock rides into the ship process, so the lock
                 # is held for the run's whole life — a second land_slice
                 # finds it held even after this worker dies (gr650484).
-                pass_fds=() if ship_fd is None else (ship_fd,),
+                # Nothing else rides pass_fds: the credential never does.
+                pass_fds=tuple(fd for fd in (ship_fd,) if fd is not None),
+                store=ctx.store,
+                work_class="land",
+                pid_file=attempt_dir / "pid" if attempt_dir is not None else None,
             )
+        except admission.Refused as exc:
+            # The host cannot fit the gate right now — the wait shape of
+            # _land_busy, not the red path: attempt-free, so the tick
+            # re-mints the land when capacity returns (review td702053).
+            ctx.append_chunk(
+                "job_summary",
+                f"land_slice td{todo_id}: ship launch deferred — host at "
+                f"capacity ({exc}); no ship launched",
+            )
+            _fail(
+                ctx,
+                todo_id,
+                params.get("lane"),
+                f"ship launch deferred: {exc}",
+                handoff=(
+                    "land DEFERRED (not red): the worker host could not "
+                    "admit the gate's footprint just now. The tick "
+                    "re-mints the land attempt-free once capacity frees."
+                ),
+                attempt_free="admission",
+            )
+            return None
         except Exception as exc:
             log.warning("land_slice: launch for td%d failed", todo_id, exc_info=True)
             _fail(
@@ -2811,41 +3907,16 @@ def _launch_ship(
                 handoff=f"land FAILED: scripts/ship did not start ({exc}).",
             )
             return None
-        _stamp_lock_holder(lock_fd, pid, todo_id, branch, subject, flag)
-        # The deadline rides the handle (gr647913): ``started_at`` + the wall
-        # — the clock stamps share the ``_now()`` seam so a worker restart's
-        # re-adoption resumes the job's own count instead of restarting the
-        # wall at the re-adopt poll.
-        launched = _now()
-        handle: dict[str, Any] = {
-            "pid": pid,
-            "pgid": pid,
-            "worktree": str(tree),
-            "log": str(log_path),
-            "exit_file": str(exit_path),
-            "subject": subject,
-            "flag": flag,
-            "started_at": launched.strftime(_TS_FMT),
-            "deadline": launched.timestamp() + wall_seconds(),
-        }
-        for key in (
-            "main_refusals",
-            "last_refusal",
-            "gate_kills",
-            "fell_back_full",
-        ):
-            if carry is not None and key in carry:
-                handle[key] = carry[key]
-        identity = _rs._process_identity(pid)
-        if identity is not None:
-            handle["boot_id"], handle["start_time"] = identity
-        ps_identity = (
-            _rs._darwin_process_identity(pid) if sys.platform == "darwin" else None
+        _stamp_lock_holder(
+            lock_fd,
+            pid,
+            todo_id,
+            branch,
+            subject,
+            flag,
+            attempt_dir.name if attempt_dir is not None else "",
         )
-        if ps_identity is not None:
-            # ssh_node's identity gate verifies Darwin handles through ps —
-            # without it a cancel cannot signal the ship (gr572654).
-            handle["ps_identity"] = ps_identity
+        _rs._record_launched_process(handle, pid, attempt_dir)
         return handle
     finally:
         # Our end of the land flock: the launched ship's inherited copy
@@ -2854,12 +3925,326 @@ def _launch_ship(
         # failed) releases it so the next land is not wedged by a dead
         # worker's lock. ``ship_fd`` must close here too — it shares the
         # flock's open file description, so a launch-time exception
-        # leaving it open would pin the lock.
+        # leaving it open would pin the lock. No credential fd ever
+        # reaches this close set: the token crossed to the mirror's git
+        # calls as env wiring inside this worker only, and ship never
+        # inherited any of it.
         for fd in {fd for fd in (lock_fd, ship_fd) if fd is not None}:
             try:
                 os.close(fd)
             except OSError:
                 pass
+
+
+#: A pre-review launch's tips copy in the TREE's ``scratch/`` — kept as
+#: a read-only fallback so a launch still running from before the record
+#: moved beside the mirror can still sync. Branch-writable, so it is a
+#: tips SOURCE only, never evidence a launch ran mirrored.
+MIRROR_TIPS_FILE = "factory-mirror-tips.json"
+
+#: Mirror mode's durable record — ``meta.factory_mirror`` on the todo,
+#: stamped at a mirrored launch and cleared when the sync verifies its
+#: squash on origin or a token-less launch supersedes it. The launch
+#: tips file and the mirror's own directory under the main checkout's
+#: ``scratch/`` are same-uid-writable by the gate code ship runs (see
+#: :mod:`precis.workers.factory_git_mirror`), so deleting both must
+#: never read as "no mirror": the todo's meta is the DB-resident
+#: evidence an adopted handle's sync consults (review td660513, second
+#: pass).
+FACTORY_MIRROR_KEY = "factory_mirror"
+
+
+def _read_mirror_tips(tree: Path) -> dict[str, str]:
+    """The legacy launch-tips copy (:data:`MIRROR_TIPS_FILE`): ``{}``
+    when absent or malformed. Consulted only once mirror mode is already
+    established by trusted evidence — a planted copy alone never marks
+    a launch mirrored."""
+    try:
+        raw = json.loads(
+            (tree / "scratch" / MIRROR_TIPS_FILE).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(k): str(v)
+        for k, v in raw.items()
+        if isinstance(k, str)
+        and isinstance(v, str)
+        and re.fullmatch(r"[0-9a-f]{40}", v)
+    }
+
+
+def _mirror_in_play(
+    root: Path | None, todo_id: int, handle: dict[str, Any], store: Any
+) -> bool:
+    """Did this launch run mirrored — ship pushed the lander's mirror,
+    not GitHub? The durable evidence is job-visible state gate code
+    cannot reach: the handle's tips, or :data:`FACTORY_MIRROR_KEY` on
+    the todo's meta — stamped at a mirrored launch, it survives the
+    adoption that rebuilds a handle without them. The launch record and
+    the mirror's own directory stay as evidence for a launch that
+    predates the stamp, but they are same-uid-writable: their absence
+    can no longer acquit a launch the durable record convicts (a
+    deleted pair once read as "no mirror" and the adopted land recorded
+    a mirror-only squash as landed — review td660513, second pass).
+    Never the tree's scratch."""
+    if isinstance(handle.get("factory_mirror_tips"), dict):
+        return True
+    if todo_id:
+        ref = store.get_ref(kind="todo", id=todo_id)
+        if ref is not None and (ref.meta or {}).get(FACTORY_MIRROR_KEY):
+            return True
+    if root is None or not todo_id:
+        return False
+    launch_id = f"td{todo_id}"
+    return (
+        _factory_git_mirror.read_launch_tips(root, launch_id) is not None
+        or _factory_git_mirror.mirror_dir(root, launch_id).exists()
+    )
+
+
+def _github_url(root: Path) -> str | None:
+    """The real origin URL, read from the MAIN checkout (never a slice
+    tree) — the mirror populate's fetch source and the sync's push
+    destination."""
+    return _factory_git_mirror.github_url(root, env=land_env())
+
+
+#: Seconds a land defers after the mirror→origin sync loses the launch
+#: tip's race (GitHub moved under the land): ship itself would have
+#: retried in-lock immediately, so the backoff is minutes-short, not
+#: main's 30 min verdict cadence (``PRECIS_LAND_MIRROR_SYNC_BACKOFF_S``
+#: overrides).
+MIRROR_SYNC_BACKOFF_S = 60
+
+
+def mirror_sync_backoff_s() -> int:
+    """The raced-sync deferral wait (never negative)."""
+    try:
+        n = int(
+            os.environ.get("PRECIS_LAND_MIRROR_SYNC_BACKOFF_S", MIRROR_SYNC_BACKOFF_S)
+        )
+    except ValueError:
+        return MIRROR_SYNC_BACKOFF_S
+    return max(n, 0)
+
+
+def _sync_to_origin(
+    ctx: Any,
+    handle: dict[str, Any],
+    params: dict[str, Any],
+    branch: str,
+    *,
+    expected_sha: str | None = None,
+    onto: str | None = None,
+) -> bool | None:
+    """Ship pushed the mirror, not GitHub: place the refs it moved on the
+    real origin before any land record is written. Every changed ref is
+    pushed with a ``--force-with-lease`` on the tip GitHub held at launch
+    (the ``factory_mirror_tips`` on the handle, else the launch record
+    beside the mirror an adopted handle lacks), must equal
+    ``expected_sha`` — the sha ship reported — and must descend from its
+    launch tip, so a land that lost a race defers — ship re-runs against
+    a fresh mirror — a "no land refs moved" mirror while ship claimed a
+    sha is refused rather than recorded (review finding 3), and a land
+    whose sync cannot reach GitHub defers too: the records may never
+    name a sha origin does not hold. ``None`` = synced (or no mirror in
+    play — no token at launch); ``False`` = deferred (the handle is
+    parked, the meta set); ``True`` = the job is terminal (blocked past
+    the cap, or failed)."""
+    todo_id = int(params.get("todo_id") or 0)
+    tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
+    try:
+        root: Path | None = _rs.slice_root()
+    except Exception:
+        root = None
+    launch_id = f"td{todo_id}"
+    raw_tips = handle.get("factory_mirror_tips")
+    record = (
+        _factory_git_mirror.read_launch_tips(root, launch_id)
+        if root is not None
+        else None
+    )
+    tips = raw_tips if isinstance(raw_tips, dict) and raw_tips else (record or {})
+    if not tips:
+        # No CAS basis. Either the launch was never mirrored — no token
+        # resolved at launch, so ship pushed origin itself on the host's
+        # credentials, as before — or its record is gone (a reap, a
+        # deleted file). Mirror mode is judged on state the gate code
+        # ship runs cannot touch (review td660513): the handle's tips,
+        # FACTORY_MIRROR_KEY on the todo's meta — a green ship that ran
+        # mirrored without a readable basis is refused, never recorded —
+        # its squash lives only in the lander's mirror.
+        if not _mirror_in_play(root, todo_id, handle, ctx.store):
+            return None
+        # A pre-review launch can still carry its basis in the tree's
+        # scratch; a readable legacy copy recovers the sync, and an
+        # absent or forged one is refused by the lease or the descent
+        # check anyway.
+        tips = _read_mirror_tips(tree)
+        if not tips:
+            ctx.record_failure(
+                f"land_slice: ship of td{todo_id} exited green but the "
+                "mirror launch record is unreadable; refusing to record "
+                "a land that may not be on origin"
+            )
+            return True
+    outcome, detail = "error", "mirror state unreadable"
+    mirror: Path | None = None
+    url: str | None = None
+    try:
+        if root is None:
+            raise RuntimeError("the factory checkout root is unreadable")
+        mirror = _factory_git_mirror.mirror_dir(root, launch_id)
+        url = _github_url(root)
+        if url is None:
+            raise RuntimeError("the factory checkout names no trusted origin url")
+        # What ship claimed: the land target's pushed sha. A ref the
+        # mirror saw moved without a claim — or a claimed land whose ref
+        # never moved — is a refusal, not a record.
+        expect = {onto or "main": expected_sha} if expected_sha else {}
+        outcome, detail = _factory_git_mirror.sync(
+            mirror,
+            _factory_git_mirror.cache_dir(root),
+            url,
+            tips,
+            expect=expect,
+            env=_factory_git.git_auth_env(base=land_env()),
+        )
+    except Exception as exc:
+        outcome, detail = "error", f"{type(exc).__name__}: {exc}"
+    if outcome == "ok":
+        ctx.append_chunk(
+            "job_event", f"land_slice: factory mirror synced to origin ({detail})"
+        )
+        # The deferred local-main advance (review finding 4, second
+        # pass): ship's own ``_sync_local_main`` was refused by the
+        # launch's git shim; the lander replays it now that the push
+        # verified, under the credential-free local env. Best-effort,
+        # like ship's — never a land verdict.
+        for note in _advance_local_main(tree, onto, expected_sha, tips):
+            ctx.append_chunk("job_event", f"land_slice: {note}")
+        if root is not None:
+            # Verified on origin — the per-launch mirror and its launch
+            # record are done (a relaunch repopulates both if one comes).
+            _factory_git_mirror.drop_launch(root, launch_id)
+        try:
+            # And its durable half: the mirror-mode stamp on the todo.
+            ctx.store.stamp_ref_meta(todo_id, {FACTORY_MIRROR_KEY: None})
+        except Exception:
+            pass
+        return None
+    # Ship's post-land state already fanned out: the common git dir's
+    # ``refs/remotes/origin/*`` show the mirror's refs and the primary's
+    # local main may sit on the unpushed squash (review finding 4).
+    # Repair both to what GitHub actually holds before the park.
+    for note in _repair_origin_state(
+        ctx,
+        tree,
+        url,
+        tips,
+        phantom_main=expected_sha if onto is None else None,
+    ):
+        ctx.append_chunk("job_event", f"land_slice: {note}")
+    cross = (
+        f"✖ factory mirror sync to origin refused: {detail}"
+        if outcome == "raced"
+        else f"✖ factory mirror sync to origin failed: {detail}"
+    )
+    refusals = int(handle.get("main_refusals") or 0) + 1
+    if refusals <= MAX_MAIN_REFUSALS:
+        ctx.append_chunk(
+            "job_event",
+            "land_slice: ship pushed the mirror but the origin sync did not "
+            f"stick ({detail}) — deferring; ship re-runs on a fresh mirror",
+        )
+        return _defer_to_main(
+            ctx, handle, cross, refusals, backoff_s=mirror_sync_backoff_s()
+        )
+    reason, handoff = _blocked_handoff(branch, refusals, cross, "main")
+    ctx.append_chunk("job_summary", f"land_slice td{todo_id}: RED — {cross}")
+    _fail(ctx, todo_id, params.get("lane"), reason, handoff=handoff)
+    return True
+
+
+def _repair_origin_state(
+    ctx: Any,
+    tree: Path,
+    url: str | None,
+    tips: dict[str, str],
+    *,
+    phantom_main: str | None,
+) -> list[str]:
+    """Rollback notes for ship's post-land shared state after a sync that
+    did NOT place it on origin (review td660513 finding 4): the slice
+    worktree shares the main checkout's common git dir, so ship's pushes
+    moved ``refs/remotes/origin/*`` for every worktree — and a ship that
+    slipped its git shim (an adopted launch from before the shim, or a
+    branch that called real git itself) may still have fast-forwarded
+    the primary's ``main`` to a squash only the mirror holds.
+    :func:`factory_git_mirror.repair_origin` resets the tracking refs to
+    GitHub's real tips and rewinds the phantom main under the same
+    trusted boundary as the sync. Best-effort; never raises."""
+    if url is None:
+        return [
+            "origin repair: no trusted origin url — shared refs left for the relaunch"
+        ]
+    try:
+        gitdir = _worktree_gitdir(tree)
+        common = _git_common_dir(gitdir, tree) if gitdir else None
+    except Exception:
+        gitdir = common = None
+    if gitdir is None:
+        return ["origin repair: could not resolve the shared git dir"]
+    # A primary checkout's own gitdir IS the shared dir — the repair's
+    # `git -C` calls resolve their common dir either way.
+    common = common or gitdir
+    try:
+        return _factory_git_mirror.repair_origin(
+            common,
+            url,
+            tuple(tips),
+            phantom_main=phantom_main,
+            env=_factory_git.git_auth_env(base=land_env()),
+        )
+    except Exception as exc:
+        return [f"origin repair raised ({type(exc).__name__}: {exc})"]
+
+
+def _advance_local_main(
+    tree: Path,
+    onto: str | None,
+    expected_sha: str | None,
+    tips: dict[str, str],
+) -> list[str]:
+    """Replay ship's ``_sync_local_main`` now that the mirror→origin
+    sync verified (review td660513 finding 4, second pass): the launch's
+    git shim refused ship's own advance — the shared main would have
+    sat on a commit only the mirror holds — so the lander does it here,
+    on the verified sha (the launch tip when ship squashed nothing), in
+    the shared git dir and under a credential-free env. Main lands
+    only: a release fix's ship never touched main. Best-effort notes;
+    never raises."""
+    if onto is not None:
+        return []
+    target = expected_sha or tips.get("main")
+    if not target or not re.fullmatch(r"[0-9a-f]{40}", target):
+        return ["local main advance: no verified sha — left alone"]
+    try:
+        gitdir = _worktree_gitdir(tree)
+        common = _git_common_dir(gitdir, tree) if gitdir else None
+    except Exception:
+        gitdir = common = None
+    if gitdir is None:
+        return ["local main advance: could not resolve the shared git dir"]
+    # A primary checkout's own gitdir IS the shared dir.
+    common = common or gitdir
+    try:
+        return [_factory_git_mirror.advance_local_main(common, target, env=land_env())]
+    except Exception as exc:
+        return [f"local main advance raised ({type(exc).__name__}: {exc})"]
 
 
 #: Seconds the drift preflight may take before it counts as unanswered.
@@ -2881,31 +4266,69 @@ def ship_python() -> str:
     return f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
-def _drift_preflight(tree: Path) -> dict[str, Any]:
+def _drift_preflight(
+    tree: Path, *, mirror: Path | None = None, main_tip: str | None = None
+) -> dict[str, Any]:
     """What the lander's own GitHub identity sees of main's gate, before ship
     runs: ``scripts/last-gated-main-sha --age-hours --diag`` in ``tree`` under
     the factory token. ``{"ran": bool, "rc": int | None, "age": str, "diag":
     str}`` — ``age`` is the helper's stdout (hours, or empty for unknowable),
     ``diag`` its one stderr line with the exit code appended.
 
-    gr549328/gr550941: ship refused the land on melchior while the same main
+    gr549328/gr550941: ship refused the land on the agent host while the same main
     read green elsewhere. Ship treats an unknowable lookup as "do not refuse"
     (a GitHub outage must not stop the fleet); an *unattended* land must not
     ride that — :func:`_gate_unknown` parks it instead. ``ran`` is False when
-    the tree has no helper (then ship's own guard is all there is)."""
+    no helper could be read (then ship's own guard is all there is).
+
+    Review td660513 (finding 1): under the token the helper is ``git show``n
+    from the launch's *verified* mirror main tip
+    (:func:`_mirror_preflight_helper`) — never from the branch's tree, whose
+    helper (or a ``scratch/lib`` shadow of a stdlib import) would run branch
+    code over the credential — and the interpreter starts isolated
+    (``python -I``: no cwd on ``sys.path``, no user site). A live token with
+    no verified helper source is a refusal, not a fall back to whatever the
+    branch placed."""
     out: dict[str, Any] = {"ran": False, "rc": None, "age": "", "diag": ""}
-    helper = _preflight_helper(tree)
-    if helper is None:
+    if mirror is not None:
+        helper = _mirror_preflight_helper(tree, mirror, main_tip)
+        if helper is None:
+            out.update(
+                ran=True,
+                diag=(
+                    "the verified mirror's main tip carried no readable "
+                    "drift helper; the branch's own copy cannot run under "
+                    "the token (refusing, not blind)"
+                ),
+            )
+            return out
+    elif _factory_git.factory_git_token():
+        # The token resolves but no verified mirror source was supplied —
+        # a branch-shaped helper under this env is the finding-1 hole.
+        out.update(
+            ran=True,
+            diag=(
+                "the token resolves but no verified mirror source was "
+                "supplied; refusing to run a helper the branch can shape"
+            ),
+        )
         return out
+    else:
+        helper = _preflight_helper(tree)
+        if helper is None:
+            return out
     try:
         cp = subprocess.run(
             [
                 # The worker's own interpreter, not the helper's `uv run`
-                # shebang: on melchior the deploy user's uv cache is
+                # shebang: on the agent host the deploy user's uv cache is
                 # root-owned and uv exits 2 before the helper starts, which
                 # ship's guard reads as "none green" (gr551238). The helper
-                # is stdlib-only.
+                # is stdlib-only. ``-I`` isolates it: no script dir or cwd
+                # on sys.path, no user site — nothing in the slice tree
+                # decides its imports.
                 sys.executable,
+                "-I",
                 str(helper),
                 "--age-hours",
                 "--start",
@@ -2915,7 +4338,12 @@ def _drift_preflight(tree: Path) -> dict[str, Any]:
                 "--diag",
             ],
             cwd=tree,
-            env=_factory_git.git_auth_env(),
+            # The helper's `gh api` read is the lander's own GitHub call,
+            # so the credential wiring — on the allowlist env, not the
+            # worker's whole env (gr659929). The allowlist's
+            # GIT_NO_REPLACE_OBJECTS also blinds planted refs/replace
+            # for the helper's own `git rev-list` read of the tree.
+            env=_factory_git.git_auth_env(base=land_env()),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -2954,10 +4382,64 @@ PREFLIGHT_HELPER_REL = Path("scratch") / "last-gated-main-sha"
 PREFLIGHT_LIB_REL = Path("scratch") / "lib" / "last_gated_main_sha.py"
 
 
+def _mirror_preflight_helper(
+    tree: Path, mirror: Path, main_tip: str | None
+) -> Path | None:
+    """The drift helper at the launch's *verified* main tip, ``git show``n
+    from the per-launch mirror — the populate oracle compared this sha to
+    what GitHub served, so the content is main's and never anything the
+    branch shaped (review td660513 finding 1: the tree's own helper, or a
+    ``scratch/lib`` import shadow, ran branch code over the token before
+    this). Materialised into the tree's ``scratch/`` as before so the
+    helper's ``parents[2]`` ``ROOT`` still resolves the tree. ``None``
+    when the tip names neither the lib module nor the dotless shim.
+
+    The read rides :data:`~precis.workers.factory_git_mirror.TRUSTED_ARGS`
+    — ``--no-replace-objects`` in particular (review td660513, pre-land
+    pass): the mirror is same-uid writable, so a ``refs/replace`` planted
+    for the verified tip would otherwise let this ``git show`` hand the
+    probe attacker-authored code to run under the token anyway."""
+    if not main_tip or not re.fullmatch(r"[0-9a-f]{40}", main_tip):
+        return None
+    env = _factory_git_mirror.trusted_env(land_env())
+    for src, rel in (
+        ("scripts/lib/last_gated_main_sha.py", PREFLIGHT_LIB_REL),
+        ("scripts/last-gated-main-sha", PREFLIGHT_HELPER_REL),
+    ):
+        cp = _factory_git_mirror._run(
+            [
+                "git",
+                *_factory_git_mirror.TRUSTED_ARGS,
+                "-C",
+                str(mirror),
+                "show",
+                f"{main_tip}:{src}",
+            ],
+            cwd=mirror,
+            env=env,
+            timeout=30.0,
+        )
+        if cp.returncode == 0 and cp.stdout.strip():
+            target = tree / rel
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(cp.stdout, encoding="utf-8")
+                target.chmod(0o755)
+                return target
+            except OSError:
+                log.warning("land_slice: could not write %s", target, exc_info=True)
+    return None
+
+
 def _preflight_helper(tree: Path) -> Path | None:
     """The drift helper the preflight runs: ``origin/main``'s copy, written to
     ``scratch/`` in ``tree`` after a fetch, else the tree's own helper, else
     ``None``.
+
+    The TOKEN-FREE path only — :func:`_drift_preflight` calls this only
+    when no factory token resolves, so nothing the branch shaped meets a
+    credential; with a mirror in play the verified
+    :func:`_mirror_preflight_helper` supplies main's copy instead.
 
     A slice branch forks from an older main and ship only merges main in
     *after* the guard; the branch's helper can predate the rule and the flag
@@ -3077,7 +4559,7 @@ def _defer_to_main(
     handle.update(last_refusal=cross, not_before=due.strftime(_TS_FMT))
     handle[counter] = refusals
     if probe is None and side == "main":
-        probe = _drift_preflight(Path(str(handle.get("worktree") or "")))["diag"]
+        probe = _defer_probe(ctx, handle)
     ctx.append_chunk(
         "job_event",
         f"land_slice: deferred ({side}-side refusal #{refusals}): {cross} — "
@@ -3093,6 +4575,32 @@ def _defer_to_main(
         compute_handle=handle, compute_handle_released=False, deadline=deadline
     )
     return False
+
+
+def _defer_probe(ctx: Any, handle: dict[str, Any]) -> str:
+    """The drift diag a deferred main-side event carries: a fresh
+    :func:`_drift_preflight` against this launch's mirror when the handle
+    knows one — the verified-helper path, never a branch helper under
+    the token."""
+    tree = Path(str(handle.get("worktree") or ""))
+    raw = handle.get("factory_mirror_tips")
+    tips = raw if isinstance(raw, dict) and raw else {}
+    mirror = None
+    try:
+        params = (ctx.meta or {}).get("params") or {}
+        todo_id = int(params.get("todo_id") or 0)
+        if todo_id:
+            root = _rs.slice_root()
+            launch_id = f"td{todo_id}"
+            if not tips:
+                # The adopted handle's fallback: the launch record
+                # beside the mirror, not the branch-writable tree.
+                tips = _factory_git_mirror.read_launch_tips(root, launch_id) or {}
+            if tips:
+                mirror = _factory_git_mirror.mirror_dir(root, launch_id)
+    except Exception:
+        mirror = None
+    return _drift_preflight(tree, mirror=mirror, main_tip=tips.get("main"))["diag"]
 
 
 def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
@@ -3134,13 +4642,17 @@ def _launch_verify(
     phase: str,
     run_tree: Path,
     argv: list[str] | None = None,
+    store: Any = None,
 ) -> dict[str, Any] | None:
     """Detached ``scripts/test <ids>`` in ``run_tree``, the log and exit
     file under the SLICE tree's ``scratch/`` so they outlive a probe
     worktree. ``argv`` replaces the bare id list (the ``deselect``
     phase's ``--selected --deselect <id>…``) while ``ids`` keeps the
     failing ids the phase is about. ``None`` when the launch itself
-    failed — the caller falls back to the ordinary red."""
+    failed — the caller falls back to the ordinary red.
+    :class:`admission.Refused` propagates: the host could not fit the
+    probe's footprint, which defers the land attempt-free at the caller,
+    never charging the branch for the host's capacity (review td702053)."""
     scratch = slice_tree / "scratch"
     log_path = scratch / f"land_verify_{phase}.log"
     exit_path = scratch / f"land_verify_{phase}.exit"
@@ -3152,13 +4664,22 @@ def _launch_verify(
             cwd=run_tree,
             log=log_path,
             exit_file=exit_path,
+            # A gate run of the branch's tests on the host: the scrubbed
+            # env, and deliberately no credential — scripts/test makes no
+            # fetch, push or `gh` call (gr659929).
             env={
-                **_factory_git.git_auth_env(),
+                **land_env(),
                 "UV_PYTHON": ship_python(),
                 "PRECIS_TEST_NPROC": test_nproc(),
                 "PRECIS_GATE_SLOTS": land_gate_slots(),
             },
+            store=store,
+            work_class="verify",
         )
+    except admission.Refused:
+        # The host is full, not the branch red: the caller defers
+        # attempt-free (review td702053).
+        raise
     except Exception as exc:
         log.warning(
             "land_slice: verify launch (%s) failed: %s", phase, exc, exc_info=True
@@ -3187,6 +4708,36 @@ def _launch_verify(
     if ps_identity is not None:
         verify["ps_identity"] = ps_identity
     return verify
+
+
+def _defer_admission_refused(
+    ctx: Any, handle: dict[str, Any], what: str, exc: admission.Refused
+) -> bool:
+    """A verify launch refused for capacity — the wait shape of the ship
+    launch's refusal (:func:`_launch_ship`), not the red path: the job
+    fails attempt-free (``red_class = "admission"``) so the tick re-mints
+    the land when the host frees, and the branch is never charged for the
+    host's moment (review td702053)."""
+    params = (ctx.meta or {}).get("params") or {}
+    todo_id = int(params.get("todo_id") or 0)
+    handle.pop("verify", None)
+    ctx.append_chunk(
+        "job_summary",
+        f"land_slice td{todo_id}: {what} launch deferred — host at capacity ({exc})",
+    )
+    _fail(
+        ctx,
+        todo_id,
+        params.get("lane"),
+        f"{what} launch deferred: {exc}",
+        handoff=(
+            "land DEFERRED (not red): the worker host could not admit the "
+            f"{what} probe's footprint just now. The tick re-mints the land "
+            "attempt-free once capacity frees."
+        ),
+        attempt_free="admission",
+    )
+    return True
 
 
 def _promote_verify(handle: dict[str, Any], verify: dict[str, Any]) -> None:
@@ -3231,7 +4782,9 @@ def _start_main_verify(ctx: Any, handle: dict[str, Any], v: dict[str, Any]) -> b
     :func:`run_slice._ensure_worktree` puts the slice trees), so its
     compose project carries the slice prefix and the stack sweep reaps
     it — and run the ids there. The worktree is dropped on every later
-    exit path (:func:`_drop_main_verify`). ``False`` → the ordinary
+    exit path (:func:`_drop_main_verify`), and on a launch refused for
+    capacity too (the caller defers attempt-free; review td702053).
+    ``False`` → the ordinary
     red."""
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
@@ -3263,9 +4816,20 @@ def _start_main_verify(ctx: Any, handle: dict[str, Any], v: dict[str, Any]) -> b
         )
         ctx.set_meta(main_probe=None)
         return False
-    verify = _launch_verify(
-        tree, [str(i) for i in (v.get("ids") or [])], phase="main", run_tree=main_tree
-    )
+    try:
+        verify = _launch_verify(
+            tree,
+            [str(i) for i in (v.get("ids") or [])],
+            phase="main",
+            run_tree=main_tree,
+            store=ctx.store,
+        )
+    except admission.Refused:
+        # Capacity, not evidence: drop the throwaway tree and let the
+        # caller defer attempt-free (review td702053).
+        _git(["worktree", "remove", "--force", str(main_tree)], root)
+        ctx.set_meta(main_probe=None)
+        raise
     if verify is None:
         _git(["worktree", "remove", "--force", str(main_tree)], root)
         ctx.set_meta(main_probe=None)
@@ -3394,7 +4958,9 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
       ``--quick`` — a ``handoff``-style note names the ids on the todo;
     * alone red + main green → the branch's red after all: the ordinary
       red, attempt burned;
-    * any launch or probe failure → the ordinary red."""
+    * any launch or probe failure → the ordinary red — except a launch
+      refused for capacity, which defers the land attempt-free (the
+      host's moment, not the branch's; review td702053)."""
     v = handle["verify"]
     exit_code = _rs._read_exit(v)
     if exit_code is None and _process_alive(int(v.get("pid") or 0)):
@@ -3461,8 +5027,11 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
         # summary shows the named ids failing — anything else is a probe
         # failure and stays the ordinary red.
         if exit_code is not None and _probe_red(v, ids):
-            if _start_main_verify(ctx, handle, v):
-                return False
+            try:
+                if _start_main_verify(ctx, handle, v):
+                    return False
+            except admission.Refused as exc:
+                return _defer_admission_refused(ctx, handle, "main probe", exc)
         return _ordinary_ship_red(ctx, handle)
     if phase == "deselect":
         # The checked selection minus the red-on-main ids (gr598110):
@@ -3530,7 +5099,18 @@ def _poll_verify(ctx: Any, handle: dict[str, Any]) -> bool:
             "the release gate keeps the suite",
         )
     argv = ["--selected", *[a for i in ids for a in ("--deselect", i)]]
-    verify = _launch_verify(tree, ids, phase="deselect", run_tree=tree, argv=argv)
+    try:
+        verify = _launch_verify(
+            tree, ids, phase="deselect", run_tree=tree, argv=argv, store=ctx.store
+        )
+    except admission.Refused as exc:
+        # The finished main probe's throwaway tree goes on every exit
+        # path (its phase is done; the deselect gate never started) —
+        # then the capacity refusal defers attempt-free.
+        for note in _drop_main_verify(v):
+            ctx.append_chunk("job_event", f"land_slice: {note}")
+        ctx.set_meta(main_probe=None)
+        return _defer_admission_refused(ctx, handle, "deselect", exc)
     if verify is None:
         return _ordinary_ship_red(ctx, handle)
     _promote_verify(handle, verify)
@@ -3604,9 +5184,26 @@ def _land_without_main_reds(
     return False
 
 
+def _repo_handle(ctx: Any, handle: Any) -> bool:
+    """Whether ``handle`` (or the job's params) belongs to ``repo_land``:
+    its ``lander`` says so, or the handle's or the job's ``repo`` is not
+    the default (the no-land handle carries ``repo`` but no ``lander``)."""
+    if isinstance(handle, dict):
+        if handle.get("lander") == "repo_land":
+            return True
+        if handle.get("repo") not in (None, _lanes.DEFAULT_REPO):
+            return True
+    meta = getattr(ctx, "meta", None) or {}
+    return _rs.job_repo(meta) != _lanes.DEFAULT_REPO
+
+
 def poll(ctx: Any, handle: Any) -> bool:
     """Detached poll half: ``False`` while ship runs; then the land record
     and cleanup (green) or the red path."""
+    if _repo_handle(ctx, handle):
+        from precis.workers import repo_land
+
+        return repo_land.poll(ctx, handle)
     if not isinstance(handle, dict):
         ctx.record_failure(f"land_slice: malformed handle {handle!r}")
         return True
@@ -3744,7 +5341,12 @@ def poll(ctx: Any, handle: Any) -> bool:
             and ids
             and len(outside_diff_ids(tree, ids)) == len(ids)
         ):
-            verify = _launch_verify(tree, ids, phase="alone", run_tree=tree)
+            try:
+                verify = _launch_verify(
+                    tree, ids, phase="alone", run_tree=tree, store=ctx.store
+                )
+            except admission.Refused as exc:
+                return _defer_admission_refused(ctx, handle, "verify", exc)
             if verify is not None:
                 _promote_verify(handle, verify)
                 ctx.append_chunk(
@@ -3760,7 +5362,22 @@ def poll(ctx: Any, handle: Any) -> bool:
                 )
                 return False
         side = refusal_side(cross)
-        if side is not None:
+        if side is not None and RELEASE_BUSY_MARK in str(cross):
+            # Another release push holds ship's round lock: run again
+            # in a minute, on this wait's own counter.
+            waits = int(handle.get("release_busy") or 0) + 1
+            if waits <= MAX_RELEASE_BUSY_WAITS:
+                return _defer_to_main(
+                    ctx,
+                    handle,
+                    cross,
+                    waits,
+                    side=side,
+                    backoff_s=RELEASE_BUSY_BACKOFF_S,
+                    counter="release_busy",
+                )
+            reason, handoff = _blocked_handoff(branch, waits, cross, side)
+        elif side is not None:
             # Main's or the host's state, not the branch's: park and retry
             # later, up to the cap.
             refusals = int(handle.get("main_refusals") or 0) + 1
@@ -3849,9 +5466,136 @@ def poll(ctx: Any, handle: Any) -> bool:
             f"be read (log {handle.get('log')}); check git log origin/{onto or 'main'}"
         )
         return True
+    # Ship pushed the launcher's private mirror, not GitHub: place the
+    # refs ship moved onto the real origin under the launch-tip lease —
+    # verified against the sha ship reported — before any land record
+    # names their shas (gr659929).
+    try:
+        _root: Path | None = _rs.slice_root()
+    except Exception:
+        _root = None
+    mirror_in_play = _mirror_in_play(_root, todo_id, handle, ctx.store)
+    synced = _sync_to_origin(ctx, handle, params, branch, expected_sha=sha, onto=onto)
+    if synced is not None:
+        return synced
     return _landed_finish(
-        ctx, handle, params, sha=sha, exit_code=exit_code, status=status
+        ctx,
+        handle,
+        params,
+        sha=sha,
+        exit_code=exit_code,
+        status=status,
+        # A pin-bump land ran ship with land_notify held (td659522 F7).
+        notify_deferred=mirror_in_play or _carries_pin(ctx.store, todo_id),
     )
+
+
+def _carries_pin(store: Any, todo_id: int) -> bool:
+    """Whether ``todo_id`` is a pin-bump node (its meta carries a
+    ``pin_bump`` record). Fails closed — ``True`` when the store cannot
+    say: this guards ship's land_notify close, and holding the notify for
+    a plain slice only moves its marks to the lander's deferred write."""
+    try:
+        return _pin_record(store.get_ref(kind="todo", id=todo_id)) is not None
+    except Exception:
+        log.warning("land_slice: reading td%d's pin record failed", todo_id)
+        return True
+
+
+def _pin_finish(store: Any, todo_id: int, sha: str | None) -> str | None:
+    """td659522 step 4: the ``land_slice`` a ``pin_bump`` mints lands the
+    pin node's own branch — :func:`pin_bump.finish` is its closing tail,
+    run right before this land's record: ``meta.pin_bump`` ``state:
+    "landed"`` plus the batch's ``fixes`` gripe resolution (without it
+    the record would sit ``handed`` forever and
+    the ``pin_bump/stale-open:{todo}`` alert would fire). A plain slice
+    carries no pin record and is skipped; a no-diff reland finishes at
+    the record's own commit. Never raises — the land is real, the record
+    is a report; ``finish``'s own ``landed`` stamp is idempotent. The
+    node is not closed here or by :func:`_record_land`: the ``landed``
+    record is what the dispatcher's next ``pin_bump`` resumes into the
+    gate image wait (td659522 F7)."""
+    try:
+        ref = store.get_ref(kind="todo", id=todo_id)
+        record = (getattr(ref, "meta", None) or {}).get("pin_bump")
+        if not isinstance(record, dict):
+            return None
+        landed_sha = sha
+        if landed_sha is None:
+            from precis.workers import repo_land
+
+            landed_sha = repo_land._hex(record.get("commit")) or None
+        if landed_sha is None:
+            return "pin: record present but no sha to finish at"
+        from precis.workers.job_types import pin_bump
+
+        pin_bump.finish(store, todo_id, landed_sha)
+        return f"pin: record landed at {landed_sha[:9]}"
+    except Exception:  # pragma: no cover — reported, the land stands
+        log.warning("land_slice: pin finish for td%d failed", todo_id, exc_info=True)
+        return "pin: finish FAILED"
+
+
+def _mint_skill_edit(store: Any, todo_id: int, sha: str) -> str:
+    """Mint one follow-up per landed diff, atomically with the source receipt."""
+    from precis.plans.nodes import finish_mint
+
+    chunks = store.chunks.list_chunks_for_ref(todo_id)
+    handoffs = [
+        c.text
+        for c in chunks
+        if c.chunk_kind == "todo_comment" and c.text.startswith("handoff:")
+    ]
+    ids = _rs.skills_named(handoffs[-1] if handoffs else None)
+    if ids is None:
+        return "skills: not stated"
+    if not ids:
+        return "skills: none"
+    plan_tag = _plan_tag(store, todo_id)
+    with store.tx() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE", (todo_id,)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"skill-edit source td{todo_id} disappeared")
+        receipts = dict((row[0] or {}).get("skill_edit_jobs") or {})
+        if sha in receipts:
+            return f"skills: follow-up td{receipts[sha]} already minted"
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=f"Update skills after td{todo_id}",
+            parent_id=todo_id,
+            meta={
+                "task_class": "skill",
+                "op": "run_slice",
+                "skill_ids": list(ids),
+                "landed_sha": sha,
+            },
+            conn=conn,
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", "open"), set_by="system", conn=conn)
+        store.add_tag(ref.id, Tag.open("skill-edit"), set_by="system", conn=conn)
+        store.add_tag(
+            ref.id, Tag.open(plan_tag or f"plan:{ref.id}"), set_by="system", conn=conn
+        )
+        store.chunks.insert_chunks(
+            ref.id,
+            [
+                ChunkInsert(
+                    ord=0,
+                    text=f"Read landed diff `git show {sha}` from td{todo_id}.\n"
+                    f"Named skills: {', '.join(ids)}.\nRun each example on the live tool and correct drift. "
+                    "Escalate governs:factory skills and missing rulings to Reto.",
+                    meta={"chunk_kind": "todo_body"},
+                )
+            ],
+            conn=conn,
+        )
+        receipts[sha] = ref.id
+        store.stamp_ref_meta(todo_id, {"skill_edit_jobs": receipts}, conn=conn)
+        finish_mint(store, ref.id, conn=conn)
+    return f"skills: minted td{ref.id} for {', '.join(ids)}"
 
 
 def _landed_finish(
@@ -3862,13 +5606,20 @@ def _landed_finish(
     sha: str | None,
     exit_code: int | None,
     status: str | None,
+    notify_deferred: bool = False,
 ) -> bool:
-    """The green tail — the land record, the plan gate, the gripe rung,
-    the logbook, cleanup, the PR close — shared by :func:`poll`'s
-    ship-green path and :func:`_launch_ship`'s pre-ship already-landed
-    finish (gr650484: ``status="already-landed"``, no ship log exists,
-    ``exit_code`` is None). ``handle`` only needs ``worktree`` and
-    ``subject`` (plus ``fell_back_full`` on the relaunch path)."""
+    """The green tail — the pin finish, the land record, the plan gate,
+    the gripe rung, the logbook, cleanup, the PR close — shared by
+    :func:`poll`'s ship-green path and :func:`_launch_ship`'s pre-ship
+    already-landed finish (gr650484: ``status="already-landed"``, no
+    ship log exists, ``exit_code`` is None). ``handle`` only needs
+    ``worktree`` and ``subject`` (plus ``fell_back_full`` on the relaunch
+    path).
+
+    ``notify_deferred`` is the mirror lands' contract (review td660513
+    finding 4): ship ran with ``PRECIS_LAND_NOTIFY=0`` so its
+    land_notify wrote nothing — here, AFTER the origin sync verified
+    the sha, the lander writes every handle the subject names."""
     todo_id = int(params.get("todo_id") or 0)
     number = _pr_param(params)
     default_branch = (
@@ -3880,7 +5631,23 @@ def _landed_finish(
     landed = f"landed {sha[:9]} — {subject}" if sha else NO_DIFF_NOTE
     summary = [f"land_slice td{todo_id}: {landed}"]
     store = ctx.store
+    if sha is not None:
+        try:
+            skill_note = _mint_skill_edit(store, todo_id, sha)
+            summary.append(skill_note)
+            if skill_note == "skills: not stated" and _newest_comment(
+                store, todo_id
+            ) != ("skills: not stated"):
+                _rs._append_comment(store, todo_id, skill_note)
+        except Exception as exc:
+            log.warning(
+                "land_slice: skill-edit mint for td%d failed", todo_id, exc_info=True
+            )
+            summary.append(f"skills: follow-up FAILED ({exc})")
     try:
+        pin_note = _pin_finish(store, todo_id, sha)
+        if pin_note is not None:
+            summary.append(pin_note)
         wrote = _record_land(store, todo_id, sha, subject)
         summary.append(
             "todo: "
@@ -3899,6 +5666,19 @@ def _landed_finish(
     except Exception as exc:  # pragma: no cover — the land is real; report it
         log.warning("land_slice: land record on td%d failed", todo_id, exc_info=True)
         summary.append(f"todo: land record FAILED ({exc})")
+    if notify_deferred and sha is not None:
+        # Ship's land_notify and gripe-note were held
+        # (PRECIS_LAND_NOTIFY=0 / PRECIS_GRIPE_NOTE=0): write the
+        # subject's other handles now that origin holds the sha.
+        try:
+            summary += _deferred_notify(store, subject, sha, todo_id, tree)
+        except Exception as exc:  # pragma: no cover — reported, land stands
+            log.warning(
+                "land_slice: deferred notify for td%d failed",
+                todo_id,
+                exc_info=True,
+            )
+            summary.append(f"deferred handles: notify FAILED ({exc})")
     gate_id = None
     # ``sha`` is what THIS land pushed; ``gate_sha`` is what the plan's
     # gate ends up holding — the recovered prior land's on a no-diff
@@ -3993,27 +5773,101 @@ def _landed_finish(
     return True
 
 
-def _push_branch(tree: Path, branch: str) -> str:
-    """``git push origin <branch>`` in ``tree`` under the factory
+def _push_branch(tree: Path, branch: str, sha: str | None = None) -> str:
+    """Push ``<branch>`` to origin's hidden ``refs/factory/<branch>``
+    (:data:`~precis.plans.templates.SLICE_REF_NS`) under the factory
     credential — until then the branch lives only on this host, so a
     killed land's commit would die with a worktree reap (gr598110,
-    jo595597). One note for the job event; never raises."""
+    jo595597). Never ``refs/heads/``: GitHub would list the branch and
+    offer a "Compare & pull request" for it (Reto 2026-11-15). Never from
+    ``tree``'s own gitdir: the tree's config and hooks are
+    branch-written, so a planted ``hooks/pre-push`` or a
+    ``url.insteadOf`` redirect would meet the token (review td660513
+    finding 2) — the push runs in a fresh ops repo that borrows the
+    object store by alternates. One note for the job event; never
+    raises.
+
+    The push is lease-guarded (gr665602, after gr658662): a slice branch
+    is factory-owned with one writer, so a rebased re-push of a slice
+    already on origin must overwrite our own earlier push — a plain push
+    is rejected non-fast-forward and burned the whole retry ladder. No
+    launch tip of ``slice/<id>`` is recorded anywhere (the mirror's launch
+    tips cover the land refs, not the slice branch), so the lease names
+    the tip ``ls-remote`` reads immediately before the push: an empty
+    expectation when the branch is not on origin yet. A move between that
+    read and the push is refused (``lease refused``) and still fails the
+    caller; an unreadable origin falls back to the plain push. The note
+    carries ``(replaced)`` when the push overwrote a tip origin already
+    held (an amended/rebased build whose earlier push is stale,
+    gr663738).
+
+    ``sha`` pushes that commit instead of the local branch tip: the
+    park-save's WIP snapshot (:mod:`precis.workers.slice_park`) rides the
+    same ref without moving the local branch."""
+    ops: Path | None = None
+    remote: dict[str, str] | None = None
     try:
-        proc = subprocess.run(
-            ["git", "push", "origin", branch],
-            cwd=str(tree),
-            env=_factory_git.git_auth_env(),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=120,
-            check=False,
+        root = _rs.slice_root()
+        url = _github_url(root)
+        if url is None:
+            return f"branch push of {branch}: skipped (no trusted origin url)"
+        if sha is None:
+            sha = (
+                _git(["rev-parse", f"refs/heads/{branch}"], tree).stdout or ""
+            ).strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            return f"branch push of {branch}: FAILED (no local sha)"
+        env = _factory_git.git_auth_env(base=land_env())
+        gitdir = _worktree_gitdir(tree)
+        common = _git_common_dir(gitdir, tree) if gitdir else None
+        dirs = [common / "objects"] if common else []
+        ops = _factory_git_mirror._ops_repo(
+            _factory_git_mirror.mirror_root(root), *dirs, env=env
+        )
+        if ops is None:
+            return f"branch push of {branch}: FAILED (no ops repo)"
+        remote = _factory_git_mirror.ls_remote(
+            url, (branch,), env=env, namespace=SLICE_REF_NS
+        )
+        lease: list[str] = []
+        if remote is not None:
+            lease = [
+                f"--force-with-lease={SLICE_REF_NS}{branch}:{remote.get(branch, '')}"
+            ]
+        proc = _factory_git_mirror._run(
+            [
+                "git",
+                *_factory_git_mirror.TRUSTED_ARGS,
+                "-C",
+                str(ops),
+                "push",
+                url,
+                f"{sha}:{SLICE_REF_NS}{branch}",
+                *lease,
+            ],
+            cwd=ops,
+            env=_factory_git_mirror.trusted_env(env),
+            timeout=120.0,
         )
     except Exception as exc:
         return f"branch push of {branch}: FAILED ({exc})"
+    finally:
+        _factory_git_mirror._drop_ops(ops)
     if proc.returncode == 0:
-        return f"branch push of {branch}: on origin"
-    err = (proc.stderr or proc.stdout or "").strip()[:200]
+        prior = (remote or {}).get(branch, "")
+        replaced = " (replaced)" if prior and prior != sha else ""
+        return f"branch push of {branch}: on origin{replaced}"
+    err_full = (proc.stderr or proc.stdout or "").strip()
+    err = err_full[:200]
+    # The "(stale info)" marker trails the full ref line — check the
+    # UNTRUNCATED stderr or a long origin url pushes it past 200 chars
+    # (real-git coverage, review td676510).
+    if "stale info" in err_full:
+        seen = (remote or {}).get(branch, "absent")[:9]
+        return (
+            f"branch push of {branch}: FAILED (lease refused — {branch} moved "
+            f"on origin since {seen}: {err})"
+        )
     return f"branch push of {branch}: FAILED ({err})"
 
 
@@ -4043,6 +5897,10 @@ def kill(ctx: Any, handle: Any) -> None:
     land leaves neither behind. A handle naming the worker's own pid or
     process group is never signaled (td652194: a pre-launch stamp once
     carried the worker's pid into an adopted handle)."""
+    if _repo_handle(ctx, handle):
+        from precis.workers import repo_land
+
+        return repo_land.kill(ctx, handle)
     if isinstance(handle, dict):
         verify = handle.get("verify")
         live = verify if isinstance(verify, dict) else handle
@@ -4055,6 +5913,10 @@ def kill(ctx: Any, handle: Any) -> None:
                 _rs._signal_group(pgid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+            except PermissionError:
+                # The pgid now belongs to another user's process (reused
+                # after ship exited): not ours to signal, so skip it.
+                log.warning("land_slice: kill skipped — pgid %d is not ours", pgid)
     params = (getattr(ctx, "meta", None) or {}).get("params") or {}
     todo_id = params.get("todo_id")
     number = _pr_param(params)
@@ -4098,6 +5960,7 @@ SPEC = JobTypeSpec(
     validate_submit=validate_submit,
     submit=submit,
     poll=poll,
+    reconcile=reconcile,
     kill=kill,
     deadline_kill_meta=DEADLINE_KILL_META,
     wall_seconds=wall_seconds,
@@ -4149,6 +6012,7 @@ __all__ = [
     "outside_diff_ids",
     "pending_gate",
     "poll",
+    "reconcile",
     "refusal_backoff_s",
     "refusal_side",
     "ship_bin",

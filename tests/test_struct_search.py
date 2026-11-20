@@ -267,7 +267,7 @@ def test_dispatch_writes_back_top_k_distinct_candidates(
     seed_scene, _ = structure.store.structure_load(seed_ref.id)
     population = _canned_population(seed_scene)
 
-    def _stub_runner(*, spec: SearchSpec, workdir: Path) -> SearchResult:
+    def _stub_runner(*, spec: SearchSpec, workdir: Path, device=None) -> SearchResult:
         return SearchResult(
             candidates=population,
             budget_used=200,
@@ -326,7 +326,7 @@ def test_dispatch_with_quest_id_wires_candidate_tag_and_serves_link(
     seed_scene, _ = structure.store.structure_load(seed_ref.id)
     population = _canned_population(seed_scene)
 
-    def _stub_runner(*, spec: SearchSpec, workdir: Path) -> SearchResult:
+    def _stub_runner(*, spec: SearchSpec, workdir: Path, device=None) -> SearchResult:
         return SearchResult(candidates=population, budget_used=200, wall_s=1.0)
 
     monkeypatch.setattr(struct_search, "SEARCH_RUNNER", _stub_runner)
@@ -351,7 +351,7 @@ def test_zero_candidates_after_dedup_still_succeeds(
 ) -> None:
     seed_ref = _seed_ref(structure)
 
-    def _stub_runner(*, spec: SearchSpec, workdir: Path) -> SearchResult:
+    def _stub_runner(*, spec: SearchSpec, workdir: Path, device=None) -> SearchResult:
         return SearchResult(candidates=[], budget_used=200, wall_s=1.0)
 
     monkeypatch.setattr(struct_search, "SEARCH_RUNNER", _stub_runner)
@@ -371,7 +371,9 @@ def test_search_unsupported_is_infra_and_names_the_extra(
 ) -> None:
     seed_ref = _seed_ref(structure)
 
-    def _raise_unsupported(*, spec: SearchSpec, workdir: Path) -> SearchResult:
+    def _raise_unsupported(
+        *, spec: SearchSpec, workdir: Path, device=None
+    ) -> SearchResult:
         raise SearchUnsupported("agox not importable")
 
     monkeypatch.setattr(struct_search, "SEARCH_RUNNER", _raise_unsupported)
@@ -397,7 +399,7 @@ def test_seed_version_drift_fails_fast_as_input(
     seed_ref = _seed_ref(structure)
     calls: list[SearchSpec] = []
 
-    def _never_called(*, spec: SearchSpec, workdir: Path) -> SearchResult:
+    def _never_called(*, spec: SearchSpec, workdir: Path, device=None) -> SearchResult:
         calls.append(spec)
         raise AssertionError("runner must not run on a drifted seed")
 

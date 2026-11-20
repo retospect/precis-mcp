@@ -12,8 +12,8 @@ status: active
 ---
 A **timeline** lays out dated events in chronological order (a history, a
 roadmap of milestones). Reach for it when the user says "timeline",
-"chronology", "history", or "roadmap". For a schedule with **durations** (a
-gantt) see `precis-mermaid-unsupported`.
+"chronology", "history", or "roadmap". For a schedule with **durations**
+use a `gantt` diagram (renders; see `precis-mermaid-help`).
 
     timeline
       title Company history

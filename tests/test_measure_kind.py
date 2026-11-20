@@ -67,6 +67,19 @@ class TestDisplay:
             == "1 eV"
         )
 
+    def test_entropy_shows_in_multiples_of_the_boltzmann_constant(self) -> None:
+        # gr721110: ΔS reported as ΔS/k_B keeps that printed scale while the
+        # value stays stored as J/K.
+        assert (
+            format_value(
+                1.380649e-23, canonical_unit="J/K", display_unit="boltzmann_constant"
+            )
+            == "1 boltzmann_constant"
+        )
+        assert to_canonical(2, "boltzmann_constant", "J/K") == pytest.approx(
+            2 * 1.380649e-23, rel=1e-12, abs=0
+        )
+
     def test_ph_is_never_prefixed_or_converted(self) -> None:
         assert format_value(0.001, canonical_unit="pH") == "0.001 pH"
         with pytest.raises(BadInput, match="logarithmic"):
@@ -108,6 +121,20 @@ class TestDisplay:
         assert to_canonical(1, "eV", "J") == pytest.approx(1.602176634e-19)
         with pytest.raises(BadInput, match="no canonical unit"):
             to_canonical(1, "m", None)
+
+
+class TestHartreeSpelling:
+    def test_ha_converts_energy_and_uncertainty(self) -> None:
+        conv = make_converter("Ha", "eV")
+        assert conv.value(-2.0) == pytest.approx(-54.42277249)
+        assert conv.scale == pytest.approx(27.211386245)
+        assert to_canonical(1.0, "Ha", "J") == pytest.approx(4.359744722e-18, rel=1e-9)
+        assert format_value(1.0, canonical_unit="hartree", unit="Ha") == "1 Ha"
+
+    def test_ha_keeps_energy_dimensions_and_case(self) -> None:
+        with pytest.raises(BadInput, match="'Ha'"):
+            make_converter("Ha", "m²")
+        assert to_canonical(1.0, "ha", "m²") == pytest.approx(10000.0)
 
 
 class TestMolarBridge:
@@ -162,6 +189,25 @@ class TestDisplayUnitKey:
 
     def test_it_is_only_checked_once_canonical_unit_is_set(self) -> None:
         validate_taxon_meta({"display_unit": "Å"})  # merged and re-checked later
+
+    def test_a_named_constant_keeps_the_printed_scale(self) -> None:
+        # gr721110: an entropy reported as ΔS/k_B was forced into a
+        # dimensionless ratio because the parser refused the display unit.
+        meta = validate_taxon_meta(
+            {
+                "dimension_kind": "si",
+                "si_vector": "2,1,-2,0,-1,0,0",
+                "canonical_unit": "J/K",
+                "display_unit": "boltzmann_constant",
+            }
+        )
+        assert meta["display_unit"] == "boltzmann_constant"
+
+    def test_a_named_constant_of_another_dimension_is_refused(self) -> None:
+        with pytest.raises(BadInput, match="different dimension"):
+            validate_taxon_meta(
+                {"canonical_unit": "m", "display_unit": "boltzmann_constant"}
+            )
 
     def test_type_and_emptiness(self) -> None:
         with pytest.raises(BadInput, match="unit string"):
@@ -1092,6 +1138,70 @@ class TestSearchHandler:
         assert "1.8–2.2 Å" in out and "< 3 Å" in out and "9.6 ± 1.7 Å" in out
         assert "Cordierite" in out
 
+    def test_inclusive_bound_literals_render_an_inclusive_sign(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        # gr716878: 'by 350 K' is an inclusive ceiling — the measures view
+        # must not turn the endpoint strict.
+        _put(
+            store,
+            w,
+            "temperature",
+            "by 350",
+            unit="K",
+            value_num=350,
+            value_form="upper_bound",
+        )
+        _put(store, w, "temperature", "≤573", unit="K")
+        _put(
+            store,
+            w,
+            "temperature",
+            "at most 0.2",
+            unit="K",
+            value_num=0.2,
+            value_form="upper_bound",
+        )
+        out = h.search(property=str(w["temperature"]), unit="K").body
+        assert "≤ 350 K" in out and "≤ 573 K" in out and "≤ 0.2 K" in out
+
+    def test_strict_bound_literals_keep_the_strict_sign(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        _put(store, w, "temperature", "<3", unit="K")
+        _put(
+            store,
+            w,
+            "temperature",
+            "less than 5",
+            unit="K",
+            value_num=5,
+            value_form="upper_bound",
+        )
+        _put(
+            store,
+            w,
+            "temperature",
+            "more than 1",
+            unit="K",
+            value_num=1,
+            value_form="lower_bound",
+        )
+        _put(
+            store,
+            w,
+            "temperature",
+            "1.4",
+            unit="K",
+            value_low=1.4,
+            value_form="lower_bound",
+        )
+        out = h.search(property=str(w["temperature"]), unit="K").body
+        assert "< 3 K" in out and "< 5 K" in out and "> 1 K" in out
+        # a bare-number literal carries no evidence either way: the
+        # long-standing strict rendering stands
+        assert "> 1.4 K" in out
+
 
 class TestDispatchSurface:
     @pytest.fixture
@@ -1186,6 +1296,116 @@ class TestDispatchSurface:
     def test_fisheye_totality_over_the_registry(self) -> None:
         """Every registered handler either has the ladder or says why not."""
         assert MeasureHandler.spec.is_numeric and MeasureHandler.spec.kind == "measure"
+
+    def test_put_run_through_slim_args_reason_and_items(
+        self, store: Store, w: dict[str, Any], mounted: Any
+    ) -> None:
+        """gr716949: the slim schema hides ``items=``/``reason=`` (they are
+        not CORE_PARAMS), so the skills document them inside ``args=``.
+        That spelling must write the full run: ``args['items']`` promotes to
+        the handler's top-level ``items=`` and ``args['reason']`` hoists to
+        the revision context — silently dropping the input rows would leave
+        every condition unrecorded."""
+        from precis.tools.mcp_slim import make_slim_verb
+
+        verb = make_slim_verb("put", mounted.put)
+        out = self._text(
+            verb(
+                kind="measure",
+                text="95",
+                meta=TestPutRun._meta(w),
+                args={
+                    "reason": "read-paper pa1",
+                    "items": TestPutRun._items(),
+                },
+            )
+        )
+        assert "[error:" not in out, out
+        assert "deprecated" not in out
+        ids = [int(m) for m in re.findall(r"^mx(\d+) ", out, re.M)]
+        assert len(ids) == 3, out
+        rows = [store.measure_detail(i) for i in ids]
+        assert {r["direction"] for r in rows} == {"output", "input"}
+
+    def test_put_run_through_slim_top_level_items_is_deprecated_but_works(
+        self, store: Store, w: dict[str, Any], mounted: Any
+    ) -> None:
+        """The pre-slim top-level spelling still lands (folded into ``args=``
+        with a deprecation note) so legacy callers do not silently no-op."""
+        from precis.tools.mcp_slim import make_slim_verb
+
+        verb = make_slim_verb("put", mounted.put)
+        out = self._text(
+            verb(
+                kind="measure",
+                text="95",
+                meta=TestPutRun._meta(w),
+                items=TestPutRun._items(),
+                reason="read-paper pa1",
+            )
+        )
+        assert "[error:" not in out, out
+        assert "deprecated" in out
+        ids = [int(m) for m in re.findall(r"^mx(\d+) ", out, re.M)]
+        assert len(ids) == 3, out
+
+    def test_put_run_full_verb_args_reason_and_items(
+        self, store: Store, w: dict[str, Any], mounted: Any
+    ) -> None:
+        """The full (non-slim) verb has no promotion layer: the documented
+        ``args={'reason':…, 'items':[…]}`` spelling must still write the
+        input rows, not drop them silently."""
+        out = self._text(
+            mounted.put(
+                kind="measure",
+                text="95",
+                meta=TestPutRun._meta(w),
+                args={
+                    "reason": "read-paper pa1",
+                    "items": TestPutRun._items(),
+                },
+            )
+        )
+        assert "[error:" not in out, out
+        ids = [int(m) for m in re.findall(r"^mx(\d+) ", out, re.M)]
+        assert len(ids) == 3, out
+
+    def test_review_through_slim_args_spelling(
+        self, store: Store, w: dict[str, Any], mounted: Any
+    ) -> None:
+        """td730858 moved the review spelling into ``args=`` too; pin it."""
+        from precis.tools.mcp_slim import make_slim_verb
+
+        run = _put(
+            store,
+            w,
+            "fe",
+            "95",
+            unit="%",
+            reference="RHE",
+            tier="measured",
+            source_attribution="own_work",
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+            conds=(
+                _cond(w, "product", "NH3", label="product"),
+                _cond(w, "potential", "-0.5", unit="V", ref="RHE"),
+            ),
+        )
+        verb = make_slim_verb("edit", mounted.edit)
+        out = self._text(
+            verb(
+                kind="measure",
+                id=f"mx{run.output_id}",
+                text="95 is printed in the anchor sentence",
+                args={
+                    "review": "model",
+                    "verdict": "approved",
+                    "meta": {"model": "claude-opus-5-5"},
+                },
+            )
+        )
+        assert "[error:" not in out, out
+        assert "approved" in out
 
 
 class TestGetRow:
@@ -1349,6 +1569,23 @@ class TestGetRow:
         )
         out = h.get(id=run.output_id).body
         assert "value: > 1.4 Å" in out and "SI: > 1.4e-10 m" in out
+
+    def test_an_inclusive_bound_shows_its_sign_on_get(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        run = _put(
+            store,
+            w,
+            "temperature",
+            "by 350",
+            unit="K",
+            value_num=350,
+            value_form="upper_bound",
+        )
+        out = h.get(id=run.output_id).body
+        # the SI line shows the stored (canonical) reading: the inclusive
+        # endpoint survives conversion, not just the display-unit line
+        assert "SI: ≤ 350 K" in out
 
     def test_the_si_line_keeps_bounds_intervals_and_error(
         self, store: Store, w: dict[str, Any], h: MeasureHandler
@@ -1855,6 +2092,33 @@ class TestPutRun:
         h.put(text="96", meta=self._meta(w, supersedes=f"mx{old}"))
         assert store.measure_detail(old)["superseded_by"] is not None
 
+    def test_derived_from_mx_handles_through_put(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        first = _output_id(h.put(text="95", meta=self._meta(w)).body)
+        second = _output_id(
+            h.put(text="96", meta=self._meta(w, derived_from=[f"mx{first}"])).body
+        )
+        assert store.measure_detail(second)["derived_from"] == [first]
+
+
+@pytest.mark.parametrize("raw", [12, "12", "mx12", " MX12 "])
+def test_measure_id_coercion_accepts_row_addresses(raw: str | int) -> None:
+    from precis.handlers._measure_write import _measure_id
+
+    assert MeasureHandler._coerce_id(raw) == 12
+    assert _measure_id(raw, "meta", "supersedes") == 12
+
+
+@pytest.mark.parametrize("raw", [True, 0, -1, "mx0", "mx-1", "pa12", "mx", "mx12x"])
+def test_measure_id_coercion_refuses_invalid_addresses(raw: Any) -> None:
+    from precis.handlers._measure_write import _measure_id
+
+    with pytest.raises(BadInput, match="measure id"):
+        MeasureHandler._coerce_id(raw)
+    with pytest.raises(BadInput, match=r"meta\.derived_from"):
+        _measure_id(raw, "meta", "derived_from")
+
 
 def _output_id(body: str) -> int:
     found = re.search(r"^mx(\d+) output", body, re.M)
@@ -1974,7 +2238,9 @@ class TestPutEditThroughTheVerbs:
         self, store: Store, w: dict[str, Any], verbs: Any
     ) -> None:
         mid = _output_id(self._put(verbs, w))
-        out = self._text(verbs.edit(kind="measure", id=mid, review="model"))
+        out = self._text(
+            verbs.edit(kind="measure", id=mid, review="model", verdict="approved")
+        )
         assert "error" in out.lower(), out
         assert "a model review must name its model" in out
         assert store.reviews_for("measure", mid) == []
@@ -1996,13 +2262,14 @@ class TestPutEditThroughTheVerbs:
         (rv,) = store.reviews_for("measure", mid)
         assert (rv.actor, rv.model, rv.current) == ("reto", None, True)
         # no meta.actor: the single human identity, as for draft
-        verbs.edit(kind="measure", id=mid, review="human")
+        verbs.edit(kind="measure", id=mid, review="human", verdict="approved")
         assert store.reviews_for("measure", mid)[0].actor == "human"
         out = self._text(
             verbs.edit(
                 kind="measure",
                 id=mid,
                 review="human",
+                verdict="approved",
                 meta={"actor": "reto", "model": "opus-5"},
             )
         )
@@ -2049,29 +2316,44 @@ class TestReviewHandler:
 
         with revision_context("manual", actor="reto"):
             with pytest.raises(BadInput, match="a human review has no model"):
-                h.edit(id=mid, review="human", meta={"model": "x"})
+                h.edit(id=mid, review="human", verdict="approved", meta={"model": "x"})
             with pytest.raises(BadInput, match="a model review must name its model"):
-                h.edit(id=mid, review="model")
+                h.edit(id=mid, review="model", verdict="approved")
             with pytest.raises(BadInput, match="meta.actor names the person"):
-                h.edit(id=mid, review="model", meta={"model": "m", "actor": "reto"})
+                h.edit(
+                    id=mid,
+                    review="model",
+                    verdict="approved",
+                    meta={"model": "m", "actor": "reto"},
+                )
+
+    def test_a_review_without_a_verdict_is_refused(
+        self, store: Store, h: MeasureHandler, mid: int
+    ) -> None:
+        with pytest.raises(
+            BadInput, match="verdict='approved' or verdict='rejected'"
+        ) as excinfo:
+            h.edit(id=mid, review="model", meta={"model": "m"})
+        assert "verdict='approved'" in (excinfo.value.next or "")
+        assert store.reviews_for("measure", mid) == []
 
     def test_bad_verdicts_and_ids(self, h: MeasureHandler, mid: int) -> None:
         with pytest.raises(BadInput, match="approved or rejected"):
             h.edit(id=mid, review="model", verdict="retract", meta={"model": "m"})
         with pytest.raises(BadInput, match="'human' or 'model'"):
-            h.edit(id=mid, review="cites", meta={"model": "m"})
+            h.edit(id=mid, review="cites", verdict="approved", meta={"model": "m"})
         with pytest.raises(BadInput, match="needs id"):
-            h.edit(review="model", meta={"model": "m"})
+            h.edit(review="model", verdict="approved", meta={"model": "m"})
         with pytest.raises(NotFound, match="not found"):
-            h.edit(id=999999, review="model", meta={"model": "m"})
+            h.edit(id=999999, review="model", verdict="approved", meta={"model": "m"})
 
     def test_bad_review_meta_names_the_fix(self, h: MeasureHandler) -> None:
         """gr494831 M3: the append-only-review refusals carry ``next=``."""
         with pytest.raises(BadInput, match="non-empty model id") as excinfo:
-            h.edit(id=1, review="model", meta={"model": 5})
+            h.edit(id=1, review="model", verdict="approved", meta={"model": 5})
         assert "meta={'model'" in (excinfo.value.next or "")
         with pytest.raises(BadInput, match="non-empty name") as excinfo:
-            h.edit(id=1, review="human", meta={"actor": ""})
+            h.edit(id=1, review="human", verdict="approved", meta={"actor": ""})
         assert "meta={'actor'" in (excinfo.value.next or "")
 
 

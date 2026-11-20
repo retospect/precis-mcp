@@ -72,7 +72,7 @@ def test_pinned_job_not_flagged(store: Store) -> None:
         {
             "job_type": "struct_relax",
             "executor": "x",
-            "params": {"target_node": "spark"},
+            "params": {"target_node": "spruce"},
         },
     )
     _alert_unschedulable_jobs(store)
@@ -180,8 +180,8 @@ def test_coordinator_job_type_requires_flagged_when_unadvertised(store: Store) -
 def test_coordinator_job_type_requires_not_flagged_when_advertised(
     store: Store,
 ) -> None:
-    store.sync_host_resource_slots("melchior", {"claude_bin": 1})
-    _upsert_host_heartbeat(store, "melchior", age_minutes=0.5)
+    store.sync_host_resource_slots("maple", {"claude_bin": 1})
+    _upsert_host_heartbeat(store, "maple", age_minutes=0.5)
     jid = _queue(
         store,
         {"job_type": "quest_tick", "executor": "coordinator", "params": {}},

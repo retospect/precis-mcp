@@ -214,7 +214,7 @@ def test_beat_omits_activity_key_when_snapshot_is_empty(store, monkeypatch) -> N
 
 
 def test_activity_merges_across_two_processes_on_one_host(store, monkeypatch) -> None:
-    """Same multi-process concern as boot_ids: melchior running both
+    """Same multi-process concern as boot_ids: maple running both
     ``system`` and ``agent`` must not have one process's beat wipe the
     other's last-published activity."""
     _reset_throttle(monkeypatch)

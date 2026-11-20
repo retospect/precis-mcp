@@ -32,7 +32,7 @@ export expansion the convention promised:
   exported)`` so no internal id leaks; that rewrite is one-way.
 * :class:`StoreRefResolver` — the db-backed ``cite(handle)`` building
   the one-line citation + capped verbatim excerpt per kind
-  (``docs/backlog/workspace-db-references.md``'s excerpt table).
+  (`me689708`'s excerpt table).
 """
 
 from __future__ import annotations
@@ -594,7 +594,7 @@ def _paper_citation(ref: Any, doi: str | None) -> str:
 
 class StoreRefResolver:
     """``cite(handle)`` against a live store — the citation + excerpt
-    table of ``docs/backlog/workspace-db-references.md``.
+    table of `me689708`.
 
     Duck-typed on the store slice it reads: ``resolve_handle``,
     ``get_ref``, ``identifiers_for_refs``, ``chunks.get_chunk`` /

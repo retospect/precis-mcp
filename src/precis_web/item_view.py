@@ -25,14 +25,20 @@ grown with one presenter per design/artifact kind (``se``/``structure``/
 their standalone list routes (``/se``, ``/structure``, ``/pcb``, …) into
 Drive chips loses no information a row can cheaply carry — "cheaply"
 meaning off ``ref.meta`` or a lookup batched once per page by the caller
-(``routes/items.py``), never a per-row query or file read.
+(``routes/items.py``), never a per-row query or file read. ``todo`` and
+``job`` joined the same way for the work-queue surfaces (gr664410):
+their rows carry STATUS/``refs.prio`` badges and the ``/todo/{id}/*``
+job controls, read off the page-batched tag pairs, so the todo
+dashboard's list could retire into a Drive preset.
 """
 
 from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlencode
 
+from precis.store._tag_filter import tag_filter_string
 from precis.utils.authors import author_names
 from precis.utils.title_views import title_md, title_md_clip
 from precis_web.paper_ident import PAPER_IDENT_KINDS
@@ -120,11 +126,31 @@ _TAG_HIDE_NS: frozenset[str] = frozenset(
 _TAG_HIDE_VALUES: frozenset[str] = frozenset({"read-later", "must-read", "skim"})
 
 
-def _display_tags(raw: list[tuple[str, str]] | None) -> list[dict[str, str]]:
+def tag_display_label(ns: str, value: str) -> str:
+    """Display label for a stored ``(namespace, value)`` tag —
+    ``OPEN`` tags render as their bare value, every other namespace as
+    ``ns:value``. Presentation only; the *filter* spelling a
+    ``/drive?tag=`` link carries is
+    :func:`precis.store._tag_filter.tag_filter_string` — identical
+    except a lowercase/mixed-case axis, which filters as ``=ns:value``
+    (the exact-axis escape; plain ``ns:value`` would parse as the
+    OPEN/FLAG pair and match nothing — gr636493)."""
+    return value if ns == "OPEN" else f"{ns}:{value}"
+
+
+def _display_tags(
+    raw: list[tuple[str, str]] | None, ref_kinds: list[str]
+) -> list[dict[str, str]]:
     """Per-row tag chips: what this item was tagged with, minus the
     machine namespaces and the reading-intent flags (which have buttons).
     ``OPEN`` tags render bare; others as ``namespace:value``; each links
-    to the ``/tags/refs`` pivot.
+    to Drive filtered to that tag (the ``tag=`` param is the canonical
+    filter spelling, urlencoded — values with ``& # + %`` or spaces
+    break a raw ``href``). Each link pins ``ref_kinds`` as explicit
+    ``k=`` params — the ``/drive`` landing resolves the ``items_kinds``
+    cookie when the URL names no ``k=``, so a bare ``?tag=`` link would
+    re-list tags (a saved ``k=tag``) instead of the refs the tag matches;
+    the same pin ``routes/drive.py::_tag_rows`` puts on tag-row links.
     """
     out: list[dict[str, str]] = []
     for ns, val in raw or []:
@@ -132,8 +158,12 @@ def _display_tags(raw: list[tuple[str, str]] | None) -> list[dict[str, str]]:
             continue
         if ns == "OPEN" and val in _TAG_HIDE_VALUES:
             continue
-        label = val if ns == "OPEN" else f"{ns}:{val}"
-        out.append({"label": label, "href": f"/tags/refs?namespace={ns}&value={val}"})
+        label = tag_display_label(ns, val)
+        params = [
+            ("tag", tag_filter_string(ns, val)),
+            *(("k", kind) for kind in ref_kinds),
+        ]
+        out.append({"label": label, "href": "/drive?" + urlencode(params)})
     return out
 
 
@@ -206,7 +236,9 @@ class ItemPresenter:
         the youtube per-video screenshot) overrides this."""
         return None
 
-    def actions(self, ref: Any) -> list[dict[str, str]]:
+    def actions(
+        self, ref: Any, *, tags: list[tuple[str, str]] | None = None
+    ) -> list[dict[str, Any]]:
         """Universal per-row quick actions — move-to-folder, delete/unfile,
         tag — rendered on every ``/drive`` row (WS1a). Kind-specific
         actions beyond these (e.g. papers-needed's "re-chase stub", cad's
@@ -217,11 +249,17 @@ class ItemPresenter:
         Each action is a small dict the ``/drive`` row template renders as
         an inline form posting to ``routes/drive.py``'s generic per-ref
         write routes (``/drive/move``, ``/drive/item/<kind>/<id>/delete``,
-        ``/drive/item/<kind>/<id>/tag``) — every write still rides the
-        seven-verb dispatch, no direct SQL. A handler that doesn't support
-        a verb (e.g. a kind with no ``delete``) surfaces the rejection via
-        the same ``redirect_or_error`` error page every other write route
-        uses — a clean stop, not a crash.
+        ``/drive/item/<kind>/<id>/tag``) or — for ``type='post'`` /
+        ``type='todo_status'`` — a kind's own write route (the todo
+        workbench's ``/todo/{id}/*`` endpoints). Every write still rides
+        the seven-verb dispatch, no direct SQL. A handler that doesn't
+        support a verb (e.g. a kind with no ``delete``) surfaces the
+        rejection via the same ``redirect_or_error`` error page every
+        other write route uses — a clean stop, not a crash.
+
+        ``tags`` is this ref's slice of the page-batched
+        ``store.ref_tags_bulk`` lookup — the same ``(namespace, value)``
+        pairs ``state()`` reads; the base implementation ignores it.
         """
         ref_id = getattr(ref, "id", None)
         if ref_id is None:
@@ -239,6 +277,7 @@ class ItemPresenter:
         *,
         has_chunks: bool,
         design: dict[str, Any] | None = None,
+        tags: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, str]]:
         """Pipeline-state badges for the row (paper-family kinds only, plus
         `pathway`'s own compute-status badge).
@@ -261,6 +300,11 @@ class ItemPresenter:
         (``routes/items.py``'s ``_design_facts_bulk``) — ``None`` for every
         kind but ``se``/``structure``/``component``, which override this
         method to render it; the base implementation ignores it.
+        ``tags`` is this ref's slice of the same page-batched
+        ``store.ref_tags_bulk`` lookup the row's tag chips come from —
+        ``None`` when the caller has none to offer; the base
+        implementation ignores it (``todo``/``job`` read STATUS and the
+        free control tags off it).
         """
         if self.kind == "pathway":
             status = (getattr(ref, "meta", None) or {}).get("status")
@@ -404,8 +448,9 @@ class SePresenter(ItemPresenter):
         *,
         has_chunks: bool,
         design: dict[str, Any] | None = None,
+        tags: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, str]]:
-        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        badges = super().state(ref, has_chunks=has_chunks, design=design, tags=tags)
         if not design:
             return badges
         level = design.get("level")
@@ -455,8 +500,9 @@ class StructurePresenter(ItemPresenter):
         *,
         has_chunks: bool,
         design: dict[str, Any] | None = None,
+        tags: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, str]]:
-        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        badges = super().state(ref, has_chunks=has_chunks, design=design, tags=tags)
         if not design:
             return badges
         n_atoms = design.get("atoms") or 0
@@ -507,8 +553,9 @@ class PcbPresenter(ItemPresenter):
         *,
         has_chunks: bool,
         design: dict[str, Any] | None = None,
+        tags: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, str]]:
-        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        badges = super().state(ref, has_chunks=has_chunks, design=design, tags=tags)
         meta = getattr(ref, "meta", None) or {}
         last_route = meta.get("last_route")
         if isinstance(last_route, dict):
@@ -563,8 +610,9 @@ class ComponentPresenter(ItemPresenter):
         *,
         has_chunks: bool,
         design: dict[str, Any] | None = None,
+        tags: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, str]]:
-        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        badges = super().state(ref, has_chunks=has_chunks, design=design, tags=tags)
         meta = getattr(ref, "meta", None) or {}
         category = meta.get("category")
         if category:
@@ -621,8 +669,9 @@ class MaterialPresenter(ItemPresenter):
         *,
         has_chunks: bool,
         design: dict[str, Any] | None = None,
+        tags: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, str]]:
-        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        badges = super().state(ref, has_chunks=has_chunks, design=design, tags=tags)
         meta = getattr(ref, "meta", None) or {}
         material_class = meta.get("material_class")
         if material_class:
@@ -651,8 +700,9 @@ class FigurePresenter(ItemPresenter):
         *,
         has_chunks: bool,
         design: dict[str, Any] | None = None,
+        tags: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, str]]:
-        badges = super().state(ref, has_chunks=has_chunks, design=design)
+        badges = super().state(ref, has_chunks=has_chunks, design=design, tags=tags)
         meta = getattr(ref, "meta", None) or {}
         box = meta.get("viewbox")
         if isinstance(box, (list, tuple)) and len(box) == 4:
@@ -685,6 +735,268 @@ class MermaidPresenter(ItemPresenter):
     anything beyond :class:`ItemPresenter` today."""
 
 
+def _ns_values(tags: list[tuple[str, str]] | None, namespace: str) -> list[str]:
+    """Tag values under one namespace — ``(ns, value)`` pairs → bare
+    values. ``item_row`` already batches every row's raw tag pairs, so
+    reading STATUS / free control tags off them costs no extra query."""
+    return [v for ns, v in tags or [] if ns == namespace]
+
+
+#: Badge colour per todo STATUS — mirrors the dashboard row's ``sc``
+#: map (``templates/todo/_row.html.j2``); a value not listed (``open``,
+#: or a lifecycle value the template predates) keeps the neutral info
+#: colour rather than failing the row.
+_TODO_STATUS_BADGE_CLS: dict[str, str] = {
+    "done": "bg-success-muted text-success-strong",
+    "doing": "bg-warning-muted text-warning-strong",
+    "blocked": "bg-danger-muted text-danger-strong",
+    "paused": "bg-surface-emphasis text-fg-muted",
+    "won't-do": "bg-surface-emphasis text-fg-subtle",
+}
+
+#: The STATUS dropdown's vocabulary — mirrors
+#: ``routes/todo.py::STATUS_CHOICES`` (the closed ``STATUS`` axis the
+#: todo handler enforces). Kept local: the presenter layer shouldn't
+#: import a sibling route module for six strings.
+_TODO_STATUS_CHOICES: tuple[str, ...] = (
+    "open",
+    "doing",
+    "blocked",
+    "paused",
+    "done",
+    "won't-do",
+)
+
+#: Badge colour per job STATUS — the attempt lifecycle colours the
+#: dashboard's job rows use (queued → running → succeeded/failed/
+#: cancelled).
+_JOB_STATUS_BADGE_CLS: dict[str, str] = {
+    "queued": "bg-info-muted text-info-strong",
+    "running": "bg-warning-muted text-warning-strong",
+    "failed": "bg-danger-muted text-danger-strong",
+    "cancelled": "bg-surface-emphasis text-fg-subtle",
+    "succeeded": "bg-success-muted text-success-strong",
+}
+
+#: Terminal job statuses a ``⟳ retry`` applies to — the same pair the
+#: dashboard job row shows its retry form for
+#: (``templates/todo/_row.html.j2``).
+_JOB_RETRYABLE: frozenset[str] = frozenset({"failed", "cancelled"})
+
+#: Live job statuses a ``⏹ stop`` applies to — the same pair the
+#: workbench's ``/stop`` route cancels (``_LIVE_JOB_STATUSES``).
+_JOB_STOPPABLE: frozenset[str] = frozenset({"queued", "running"})
+
+
+def _post_action(
+    url: str,
+    label: str,
+    *,
+    cls: str,
+    title: str,
+    fields: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """An inline-POST row action — ``type='post'`` renders a small form
+    whose button submits ``fields`` (hidden inputs) to ``url``. The
+    generic seam for kind-specific write routes that already exist
+    elsewhere (the todo workbench's ``/todo/{id}/*`` endpoints), so the
+    presenter doesn't need a new ``/drive`` route per action."""
+    return {
+        "type": "post",
+        "url": url,
+        "label": label,
+        "cls": cls,
+        "title": title,
+        "fields": fields or {},
+    }
+
+
+class TodoPresenter(ItemPresenter):
+    """``todo`` — a work-queue row (gr664410): the dashboard list's
+    glanceable facts on a Drive row — STATUS and ``refs.prio`` badges
+    plus the tape-player controls (the STATUS dropdown, ⏹ stop / ▶
+    start, ⟳ retry on a parked child) posting straight to the same
+    ``/todo/{id}/*`` routes the workbench rows use, so a Drive row can
+    run a todo in place. The row's open_url is the ``/todo/{id}``
+    workbench itself — the same posture ``/cad/{slug}`` takes.
+
+    Everything here reads off data the page already batches: ``tags``
+    (the ref's ``(namespace, value)`` pairs — STATUS plus the free
+    ``halt``/``child-failed:*`` control markers live among them) and
+    ``refs.prio``. No extra per-row query."""
+
+    def state(
+        self,
+        ref: Any,
+        *,
+        has_chunks: bool,
+        design: dict[str, Any] | None = None,
+        tags: list[tuple[str, str]] | None = None,
+    ) -> list[dict[str, str]]:
+        badges = super().state(ref, has_chunks=has_chunks, design=design, tags=tags)
+        status = next(iter(_ns_values(tags, "STATUS")), "open")
+        badges.append(
+            {
+                "label": status,
+                "cls": _TODO_STATUS_BADGE_CLS.get(
+                    status, "bg-info-muted text-info-strong"
+                ),
+                "title": f"STATUS:{status}",
+            }
+        )
+        prio = getattr(ref, "prio", None)
+        if prio is not None:
+            badges.append(
+                {
+                    "label": f"P{prio}",
+                    "cls": "bg-accent-muted text-accent-strong",
+                    "title": (
+                        f"priority {prio} (1=hottest, 10=coldest) — the "
+                        "doable rotation's primary sort"
+                    ),
+                }
+            )
+        free = _ns_values(tags, "OPEN")
+        if any(t == "halt" or t.startswith("halt:") for t in free):
+            badges.append(
+                {
+                    "label": "⏸ halted",
+                    "cls": "bg-surface-emphasis text-fg-subtle",
+                    "title": "halt marker — dispatch is braked; ▶ start clears it",
+                }
+            )
+        if any(t.startswith("child-failed:") for t in free):
+            badges.append(
+                {
+                    "label": "⚠ parked",
+                    "cls": "bg-danger-muted text-danger-strong",
+                    "title": "a child job failed — waiting on a retry / give-up decision",
+                }
+            )
+        return badges
+
+    def actions(
+        self, ref: Any, *, tags: list[tuple[str, str]] | None = None
+    ) -> list[dict[str, Any]]:
+        acts = super().actions(ref, tags=tags)
+        ref_id = getattr(ref, "id", None)
+        if ref_id is None:
+            return acts
+        status = next(iter(_ns_values(tags, "STATUS")), "open")
+        # Every form posts ``focus=<id>`` so the workbench's redirect lands
+        # back on this todo's focused tree, not the unfiltered one.
+        focus = {"focus": str(ref_id)}
+        acts.append(
+            {
+                "type": "todo_status",
+                "id": str(ref_id),
+                "choices": list(_TODO_STATUS_CHOICES),
+                "current": status,
+                "fields": focus,
+            }
+        )
+        free = _ns_values(tags, "OPEN")
+        for t in free:
+            if t.startswith("child-failed:"):
+                job_id = t.rsplit(":", 1)[1]
+                if job_id.isdigit():
+                    acts.append(
+                        _post_action(
+                            f"/todo/{job_id}/retry",
+                            "⟳ retry",
+                            cls="text-warning-strong",
+                            title=f"retry — clear the failure and re-run job #{job_id}",
+                            fields=focus,
+                        )
+                    )
+        if any(t == "halt" or t.startswith("halt:") for t in free):
+            acts.append(
+                _post_action(
+                    f"/todo/{ref_id}/start",
+                    "▶ start",
+                    cls="text-success-strong",
+                    title="start — resume this subtree (clears halt)",
+                    fields=focus,
+                )
+            )
+        else:
+            acts.append(
+                _post_action(
+                    f"/todo/{ref_id}/stop",
+                    "⏹ stop",
+                    cls="text-danger-strong",
+                    title="stop — halt this whole subtree & cancel its running jobs",
+                    fields=focus,
+                )
+            )
+        return acts
+
+
+class JobPresenter(ItemPresenter):
+    """``job`` — a worker-attempt row (gr664410): the STATUS badge plus
+    the retry / stop controls the dashboard's job rows post
+    (``/todo/{id}/retry`` re-runs a terminal attempt, ``/stop`` cancels
+    a live one). ``open_url`` stays the generic
+    ``/refs/job/{id}`` reader — that detail page already carries the
+    job's own actions strip (retry, transcript) and is what every other
+    surface links a job to."""
+
+    def state(
+        self,
+        ref: Any,
+        *,
+        has_chunks: bool,
+        design: dict[str, Any] | None = None,
+        tags: list[tuple[str, str]] | None = None,
+    ) -> list[dict[str, str]]:
+        badges = super().state(ref, has_chunks=has_chunks, design=design, tags=tags)
+        status = next(iter(_ns_values(tags, "STATUS")), "queued")
+        badges.append(
+            {
+                "label": status,
+                "cls": _JOB_STATUS_BADGE_CLS.get(
+                    status, "bg-surface-emphasis text-fg-muted"
+                ),
+                "title": f"job STATUS:{status}",
+            }
+        )
+        return badges
+
+    def actions(
+        self, ref: Any, *, tags: list[tuple[str, str]] | None = None
+    ) -> list[dict[str, Any]]:
+        acts = super().actions(ref, tags=tags)
+        ref_id = getattr(ref, "id", None)
+        if ref_id is None:
+            return acts
+        status = next(iter(_ns_values(tags, "STATUS")), "queued")
+        # ``focus`` = the parent todo (``refs.parent_id`` rides the batched
+        # row) so the post redirect lands on the owning todo's workbench.
+        parent = getattr(ref, "parent_id", None)
+        fields = {"focus": str(parent)} if parent else {}
+        if status in _JOB_RETRYABLE:
+            acts.append(
+                _post_action(
+                    f"/todo/{ref_id}/retry",
+                    "⟳ retry",
+                    cls="text-warning-strong",
+                    title="clear the failure bubble and re-run this job",
+                    fields=fields,
+                )
+            )
+        elif status in _JOB_STOPPABLE:
+            acts.append(
+                _post_action(
+                    f"/todo/{ref_id}/stop",
+                    "⏹ stop",
+                    cls="text-danger-strong",
+                    title="cancel this job and halt its parent todo",
+                    fields=fields,
+                )
+            )
+        return acts
+
+
 #: Per-kind presenter overrides — the registry seam for a kind whose
 #: hover/thumbnail/actions need more than the generic default. Grow this
 #: as kinds adopt a richer presenter; see the module docstring for why
@@ -698,6 +1010,8 @@ _PRESENTER_CLASSES: dict[str, type[ItemPresenter]] = {
     "material": MaterialPresenter,
     "figure": FigurePresenter,
     "mermaid": MermaidPresenter,
+    "todo": TodoPresenter,
+    "job": JobPresenter,
 }
 
 
@@ -770,6 +1084,7 @@ def item_row(
     score: float,
     flags: set[str],
     *,
+    ref_kinds: list[str],
     has_chunks: bool = False,
     tags: list[tuple[str, str]] | None = None,
     identifier: str | None = None,
@@ -784,10 +1099,13 @@ def item_row(
     hit). ``has_chunks`` drives the stub/ingested state badges (a search
     hit matched a chunk, so it's ``True``; a recent-list ref is probed).
     ``tags`` are the ref's raw ``(namespace, value)`` tags → the per-row
-    chips. ``design`` is this one ref's slice of the caller's batched
-    ``se``/``structure``/``component`` facts lookup (``None`` for every
-    other kind, or when the caller has none to offer) — see
-    :meth:`ItemPresenter.state`.
+    chips; ``ref_kinds`` is the listing's ref scope, pinned onto each
+    chip's ``/drive?tag=`` link as explicit ``k=`` params so a saved
+    ``k=tag`` cookie can't turn the click into a tag listing (see
+    :func:`_display_tags`). ``design`` is this one ref's slice of the
+    caller's batched ``se``/``structure``/``component`` facts lookup
+    (``None`` for every other kind, or when the caller has none to
+    offer) — see :meth:`ItemPresenter.state`.
     """
     p = presenter_for(getattr(ref, "kind", ""))
     return {
@@ -802,11 +1120,11 @@ def item_row(
         "open_url": p.open_url(ref),
         "preview": p.preview(block, summary),
         "thumbnail": p.thumbnail(ref),
-        "actions": p.actions(ref),
+        "actions": p.actions(ref, tags=tags),
         "created_at": getattr(ref, "created_at", None),
         "updated_at": getattr(ref, "updated_at", None),
-        "state": p.state(ref, has_chunks=has_chunks, design=design),
-        "tags": _display_tags(tags),
+        "state": p.state(ref, has_chunks=has_chunks, design=design, tags=tags),
+        "tags": _display_tags(tags, ref_kinds),
         "links": p.links(identifier),
         "score": score,
         "title_meta": p.title_meta(ref),

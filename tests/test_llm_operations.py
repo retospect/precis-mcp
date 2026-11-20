@@ -225,11 +225,11 @@ def test_classify_model_pin_via_override(monkeypatch: pytest.MonkeyPatch) -> Non
     assert operations.resolve_op("classify") == (Tier.SMALL, "some-other-model")
 
 
-def test_classify_op_chain_can_pin_castor_local_rung(
+def test_classify_op_chain_can_pin_cedar_local_rung(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`llm.op.classify` carrying a `chain` resolves to that chain — the
-    castor gpt-oss-120b rung shape the lane move writes (max_tokens 512,
+    cedar gpt-oss-120b rung shape the lane move writes (max_tokens 512,
     timeout 300, reasoning_effort low)."""
     chain = [
         {
@@ -578,7 +578,7 @@ def test_resolve_op_chain_parses_and_filters_tools(
     assert tooled is not None and [r.model for r in tooled] == ["b"]
 
 
-def test_chase_verify_op_chain_can_pin_castor_local_rung(
+def test_chase_verify_op_chain_can_pin_cedar_local_rung(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     chain = [
@@ -615,3 +615,23 @@ def test_resolve_op_chain_non_registered_is_none(
         )
         is None
     )
+
+
+# ── taproot:dedup quota fallback (gr639347) ─────────────────────────────
+
+
+def test_taproot_dedup_wants_quota_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POLICY (gr639347): the dedup judge opts into the router's
+    subscription-pause escape — a tripped claude quota window must walk
+    the chain to the next non-subscription rung, not pause EVERY finding
+    mint behind it (a 2026-11-11 window deferred 21 puts ~17 h). A live
+    ``llm.op.taproot:dedup`` ``{"quota_fallback": false}`` still turns the
+    escape off."""
+    _bind(monkeypatch, {})
+    assert operations.wants_quota_fallback("taproot:dedup") is True
+
+    _set_op_override(monkeypatch, "taproot:dedup", {"quota_fallback": False})
+    live_config.bust_cache()
+    assert operations.wants_quota_fallback("taproot:dedup") is False

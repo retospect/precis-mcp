@@ -20,6 +20,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from precis.anki.cloze import space_adjacent_braces
+
 #: Tag the human puts on a card in Anki to request a fix.
 FIX_TAG = "precis-fix"
 #: Tag precis swaps in once the fix is applied.
@@ -137,8 +139,9 @@ def apply_fix(col: Any, note_id: int, new_fields: dict[str, str]) -> bool:
     note = col.get_note(note_id)
     changed = False
     for name, val in new_fields.items():
-        if name in note.keys() and note[name] != val:  # noqa: SIM118 (anki Note)
-            note[name] = val
+        fixed, _ = space_adjacent_braces(val)
+        if name in note.keys() and note[name] != fixed:  # noqa: SIM118 (anki Note)
+            note[name] = fixed
             changed = True
     tags = [t for t in note.tags if t != FIX_TAG]
     if FIXED_TAG not in tags:

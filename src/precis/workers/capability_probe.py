@@ -1,6 +1,6 @@
 """Per-host capability + slot self-probe for the factory scheduler.
 
-Slice 6b of ``docs/backlog/factory-console-and-scheduling.md`` (§5.5). Each
+Slice 6b of `gr690514` (§5.5). Each
 host discovers what it can do and how many parallel slots it offers; the
 ``heartbeat`` reporter writes the result into ``resource_slots`` every
 cycle, and the scheduler (slice 6c) + the ``/factory`` console read the
@@ -18,6 +18,10 @@ distinction:
   tell. The row is left *untouched* — a transient ``nvidia-smi`` hiccup must
   not retract a GPU the host really has (and, once 6c lands, drop its live
   reservations).
+
+Claude and Codex lane tokens require login presence as well as a binary:
+installing a CLI before logging in must not consume slice retry budgets.
+Credential presence does not prove that a token is still valid upstream.
 
 The capability vocabulary is *derived from the registry* — the union of
 every ``ServiceSpec.requires`` token — so adding a ``requires={"foo"}``
@@ -40,6 +44,7 @@ from importlib.util import find_spec
 from pathlib import PurePosixPath
 
 from precis.embedder_wire import PATH_READY
+from precis.plans import lanes
 from precis.workers.registry import SERVICES
 
 log = logging.getLogger(__name__)
@@ -91,15 +96,35 @@ RETRACTABLE_SOFT_SIGNALS = frozenset(
 )
 
 
+#: The per-adapter lane binaries run_slice's lane-aware placement asks
+#: for (gr676054): no ServiceSpec declares them statically —
+#: ``placement_requires`` substitutes the picked/pinned adapter's token
+#: for the ``builder`` floor — but the heartbeat must still probe them
+#: so each host advertises the lane subset it carries.
+LANE_BIN_TOKENS = frozenset({"claude_bin", "codex_bin", "kimi_bin", "devin_bin"})
+
+
+#: The per-repo checkout tokens a second-repo slice job asks for: no
+#: ServiceSpec declares them statically — ``placement_requires`` adds one
+#: per job from ``params.repo`` — but the heartbeat must still probe them
+#: so each host advertises the repos it holds a clone of. Built from every
+#: profile, with or without a lander.
+SECOND_REPO_TOKENS = frozenset(
+    lanes.repo_checkout_token(name) for name in lanes.REPO_PROFILES
+)
+
+
 def capability_vocabulary() -> frozenset[str]:
     """Every capability token any service declares via ``requires`` or
-    ``placement`` (the check-only claim-gate tokens, td543917).
+    ``placement`` (the check-only claim-gate tokens, td543917), plus the
+    lane-bin tokens :data:`LANE_BIN_TOKENS` a lane-aware run_slice asks
+    for per job and the per-repo checkout tokens :data:`SECOND_REPO_TOKENS`.
 
     The self-probe evaluates exactly this set, so a capability no host can
     provide still gets a definitive absent (deleted) row rather than being
     silently ignored.
     """
-    tokens: set[str] = set()
+    tokens: set[str] = set(LANE_BIN_TOKENS) | set(SECOND_REPO_TOKENS)
     for spec in SERVICES:
         tokens |= set(spec.requires) | set(spec.placement)
     return frozenset(tokens)
@@ -159,7 +184,7 @@ def container_runtime() -> str | None:
     ``docker`` often isn't on a launchd daemon's PATH, so a full path is the
     escape hatch), else ``podman`` then ``docker`` on PATH. One detector shared
     by the capability probe and :func:`agent_container._container_bin`, so "each
-    host has its own container capability" is uniform across podman (spark/Linux)
+    host has its own container capability" is uniform across podman (GPU node/Linux)
     and docker (OrbStack on the Macs)."""
     explicit = os.environ.get("PRECIS_CONTAINER_BIN") or os.environ.get(
         "PRECIS_PODMAN_BIN"
@@ -297,10 +322,16 @@ def _probe_claude_bin() -> int:
     name on PATH or an absolute path, the same override
     ``utils/claude_agent`` honors; a launchd daemon's PATH often misses
     it, so the full path is the escape hatch — mirrors
-    :func:`container_runtime`), else ``claude`` on PATH."""
+    :func:`container_runtime`), else ``claude`` on PATH. An explicit
+    path must be an executable file — the same read
+    :func:`_slice_adapters.adapter_bin_present` applies, so the
+    advertised ``claude_bin`` token never outruns what a lane pick can
+    exec (gr676054)."""
     configured = os.environ.get("PRECIS_CLAUDE_BIN") or "claude"
     if shutil.which(configured) or (
-        os.path.isabs(configured) and os.path.exists(configured)
+        os.path.isabs(configured)
+        and os.path.isfile(configured)
+        and os.access(configured, os.X_OK)
     ):
         return 1
     return 0
@@ -319,10 +350,10 @@ def _stored_claude_auth() -> bool:
     """The non-env auth arms a daemon-spawned ``claude -p`` can resolve:
     the vaulted OAuth token (``ensure_oauth_token``'s env → ``vault.reveal``
     → bootstrap-file order, via ``get_secret``) or an interactive
-    ``~/.claude`` login state. Extracted as the test seam (mirrors
+    credentials file/macOS keychain item. Extracted as the test seam (mirrors
     :func:`_embedder_ready`). ``get_secret`` is best-effort and never
     raises in practice; a raised import-time error degrades to the
-    login-dir check rather than failing the heartbeat."""
+    local credential check rather than failing the heartbeat."""
     try:
         from precis import secrets as _secrets
         from precis.utils.claude_oauth import ENV_VAR as _oauth_var
@@ -331,13 +362,32 @@ def _stored_claude_auth() -> bool:
             return True
     except Exception:
         log.warning("capability_probe: claude oauth vault lookup raised", exc_info=True)
-    return os.path.isdir(os.path.expanduser("~/.claude"))
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    if os.path.isfile(os.path.join(config_dir, ".credentials.json")):
+        return True
+    if sys.platform != "darwin":
+        return False
+    # Query item metadata only: never extract the CLI's credential. A config
+    # directory alone is created before login and proves nothing (gr701455).
+    try:
+        return (
+            subprocess.run(
+                ["security", "find-generic-password", "-s", "Claude Code-credentials"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def _probe_claude_config() -> int:
     """Auth/config state for ``claude -p`` — the ``claude_config_mount``
     token: the ``CLAUDE_CODE_OAUTH_TOKEN`` env, the vault/bootstrap token,
-    or an interactive ``~/.claude`` login. Presence, not correctness: a
+    or an interactive credentials file/keychain item. Presence, not correctness: a
     stale keychain still advertises (the run path surfaces the 401)."""
     from precis.utils.claude_oauth import ENV_VAR
 
@@ -371,6 +421,30 @@ def _probe_repo_checkout() -> int | None:
     return 1 if root.is_dir() and (root / ".git").exists() else 0
 
 
+def _make_repo_probe(name: str) -> Callable[[], int | None]:
+    """The probe for ``repo_checkout_<name>``: ``run_slice.slice_root_for``
+    resolving to a directory that holds a ``.git`` entry. ``1`` present; ``0``
+    when it raises (``PRECIS_SLICE_REPOS`` unset, malformed or without an
+    entry) or the path is not such a directory; ``None`` on an unexpected
+    ``OSError`` (leave the row)."""
+
+    def probe() -> int | None:
+        from precis.workers.job_types import run_slice
+
+        try:
+            root = run_slice.slice_root_for(name)
+        except (RuntimeError, FileNotFoundError):
+            return 0
+        except (OSError, subprocess.SubprocessError):
+            log.warning(
+                "capability_probe: repo_checkout_%s probe failed", name, exc_info=True
+            )
+            return None
+        return 1 if root.is_dir() and (root / ".git").exists() else 0
+
+    return probe
+
+
 def _probe_autocatpath() -> int:
     """The ``autocatpath`` engine importable in THIS venv (gr543909) — 1/0,
     never unknown. ``find_spec`` locates the package without importing it
@@ -399,18 +473,33 @@ def _probe_has_mace() -> int:
         return 0
 
 
+def _probe_latexmk() -> int:
+    """The TeX toolchain ``draft_export`` compiles through (gr592838) —
+    ``PRECIS_LATEXMK_SLOTS`` override, else 1 when ``latexmk`` resolves.
+    Presence, not correctness: the same ``have_latexmk()`` predicate the
+    dispatch gate reads at run time; a partial TeX tree still advertises
+    and the run path surfaces the compile failure."""
+    override = _env_slots("PRECIS_LATEXMK_SLOTS")
+    if override is not None:
+        return override
+    from precis.export.compile import have_latexmk
+
+    return 1 if have_latexmk() else 0
+
+
 def claude_bin_present() -> bool:
-    """Public read of the ``claude_bin`` probe — whether THIS host can exec
-    ``claude`` (``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH). The LLM router's
-    rung gate reuses it so a host the capability advertisement marks
-    claude-less skips the same transports at dispatch."""
+    """Binary-only seam: whether THIS host can exec ``claude``
+    (``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH). The LLM router's rung
+    gate uses it to skip transports without an executable. The advertised
+    ``claude_bin`` token uses :func:`_probe_claude_lane` to require login too."""
     return _probe_claude_bin() == 1
 
 
 def claude_auth_present() -> bool:
     """Public read of the ``claude_config_mount`` probe — whether a
     non-``--bare`` ``claude -p`` can resolve a credential here (env token,
-    vault/bootstrap token, or an interactive ``~/.claude`` login). Presence,
+    vault/bootstrap token, or a ``.credentials.json`` file in the Claude
+    config directory or a macOS keychain item). Presence,
     not correctness: a stale login still reports True (the run path surfaces
     the 401)."""
     return _probe_claude_config() == 1
@@ -433,13 +522,76 @@ def codex_login_present() -> bool:
     :mod:`precis.utils.codex_exec`). Presence, not correctness: a stale
     login still reports True — the run path surfaces the auth failure.
 
-    Deliberately NOT in :data:`_PROBES`: no ``ServiceSpec`` declares a
-    ``codex_exec`` token yet (the lane ships dark), and probe keys must
-    stay a subset of the registry vocabulary. Registering it is a
-    one-liner once a service requires it."""
+    Used by the ``codex_bin`` lane token as well as the router gate."""
     from precis.utils.codex_exec import codex_login_present as _probe
 
     return _probe()
+
+
+def devin_login_present() -> bool:
+    """Public read of the ``devin_tree`` lane's login probe — the binary
+    resolves and ``devin auth status`` reports a login (TTL-cached in
+    :mod:`precis.workers.job_types._slice_adapters`, lazy import: the
+    worker module is heavier than this probe file). Presence, not
+    correctness: a stale login still reports True.
+
+    Used by the ``devin_bin`` lane token and run_slice's pick filter."""
+    from precis.workers.job_types._slice_adapters import devin_login_present as _probe
+
+    return _probe()
+
+
+def _probe_adapter_bin(adapter: str) -> int:
+    """A lane adapter's binary token — resolved exactly as its argv does
+    (:func:`_slice_adapters.adapter_bin_present`; lazy import: the
+    worker module is heavier than this probe file)."""
+    from precis.workers.job_types._slice_adapters import adapter_bin_present
+
+    return 1 if adapter_bin_present(adapter) else 0
+
+
+def _probe_codex_bin() -> int:
+    """Advertise ``codex_bin`` only with a binary and subscription login."""
+    return int(codex_bin_present() and codex_login_present())
+
+
+def _probe_claude_lane() -> int:
+    """Advertise ``claude_bin`` only with an executable and credentials.
+
+    Installation precedes vendor login on new builders; advertising the
+    executable alone spends slice retry budgets on unauthenticated launches.
+    Keep the binary-only public seam for callers that check auth separately.
+    """
+    return int(claude_bin_present() and claude_auth_present())
+
+
+def _probe_kimi_bin() -> int:
+    """The ``kimi_tree`` lane's binary — the ``kimi_bin`` token."""
+    return _probe_adapter_bin("kimi_tree")
+
+
+def _probe_devin_bin() -> int:
+    """Advertise ``devin_bin`` only with a binary and a Devin login.
+
+    A logged-out host that advertised the lane would die in the submit
+    preflight on every launch, and that refusal backs the lane off for
+    the whole fleet. No binary answers 0 without running ``auth status``."""
+    return int(devin_login_present())
+
+
+def _probe_builder() -> int:
+    """The ``builder`` token — at least one ready slice lane on this
+    host: the unpinned ``run_slice`` placement floor (gr676054). The
+    pick then filters to the adapters actually present."""
+    for probe in (
+        _probe_claude_lane,
+        _probe_codex_bin,
+        _probe_kimi_bin,
+        _probe_devin_bin,
+    ):
+        if probe() == 1:
+            return 1
+    return 0
 
 
 def claude_agent_capable() -> bool:
@@ -468,12 +620,21 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "tts": _probe_tts,
     "embedder": _probe_embedder,
     "git": _probe_git,
-    "claude_bin": _probe_claude_bin,
+    "claude_bin": _probe_claude_lane,
+    "codex_bin": _probe_codex_bin,
+    "kimi_bin": _probe_kimi_bin,
+    "devin_bin": _probe_devin_bin,
+    "builder": _probe_builder,
     "clones_dir": _probe_clones_dir,
     "claude_config_mount": _probe_claude_config,
     "repo_checkout": _probe_repo_checkout,
     "autocatpath": _probe_autocatpath,
     "has_mace": _probe_has_mace,
+    "latexmk": _probe_latexmk,
+    **{
+        lanes.repo_checkout_token(_n): _make_repo_probe(_n)
+        for _n in lanes.REPO_PROFILES
+    },
 }
 
 #: Vocabulary tokens already warned about as probe-less — the
@@ -665,6 +826,49 @@ def mem_used_pct() -> float | None:
     return round(max(0.0, 100.0 - pct), 1)
 
 
+def _linux_mem_available_mb() -> int | None:
+    """``MemAvailable`` from ``/proc/meminfo`` in MiB (Linux)."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                if key == "MemAvailable":
+                    return int(rest.strip().split()[0]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def mem_free_mb() -> int | None:
+    """This host's currently *admittable* free memory in MiB, or ``None``.
+
+    The live headroom footprint admission cross-checks an RSS reservation
+    against (td655172): the ``mem_mb`` capacity row is a static total minus
+    the OS reserve, so workloads that never reserved through the ledger
+    (LLM serving, interactive use) don't shrink it and the claim alone
+    over-admits. The measurement nets the SAME reserve —
+    ``MemAvailable`` minus :func:`mem_reserve_mb` — so live headroom can't
+    spend what the ledger protects (td655171 review): an untracked
+    consumer that eats into the reserve vetoes admissions instead of
+    silently borrowing it. A real ``0`` (available at or under the
+    reserve) is not dark: it refuses memory admissions. Linux reads
+    ``MemAvailable`` directly; macOS multiplies the sysctl total by
+    ``memory_pressure``'s free percentage. Same override discipline as
+    :func:`mem_used_pct` — ``PRECIS_MEM_PRESSURE_FREE`` pins the claim
+    gauge, never this measurement.
+    """
+    free = _linux_mem_available_mb()
+    if free is None:
+        if sys.platform != "darwin":
+            return None
+        pct = _macos_mem_free_pct()
+        total = _darwin_mem_total_mb()
+        if pct is None or total is None:
+            return None
+        free = int(total * pct / 100.0)
+    return max(0, free - mem_reserve_mb())
+
+
 #: Memory the OS keeps for itself, off the admittable ``mem_mb`` capacity.
 #: Code default mirroring deploy's ``host_memory_os_reserve: 10G``
 #: (``roles/hardening/defaults/main.yml``), which reaches no running code;
@@ -676,6 +880,27 @@ def _reserve(name: str, default: int = 0) -> int:
     """A host reserve from ``os.environ[name]``, else ``default``."""
     value = _env_slots(name)
     return default if value is None else value
+
+
+def mem_reserve_mb() -> int:
+    """The OS memory reserve kept off admittable capacity —
+    ``PRECIS_HOST_MEM_RESERVE_MB`` else :data:`DEFAULT_MEM_RESERVE_MB`.
+    The one subtraction both the static ``mem_mb`` row
+    (:func:`probe_host_capacity`) and the live headroom
+    (:func:`mem_free_mb`) apply."""
+    return _reserve("PRECIS_HOST_MEM_RESERVE_MB", DEFAULT_MEM_RESERVE_MB)
+
+
+def vram_reserve_mb() -> int:
+    """The host-wide VRAM reserve kept off admittable capacity —
+    ``PRECIS_HOST_VRAM_RESERVE_MB`` else ``0``. Same pairing as
+    :func:`mem_reserve_mb`: the ``vram_mb`` row, the live
+    :func:`vram_free_mb` scalar, and footprint admission's per-card pick
+    all subtract it — the pick reads it off the beat's
+    ``vram_reserve_mb`` stamp (THIS host's own value, carried so a
+    remote ``target_node`` claimer doesn't subtract its own env's —
+    td655172 review), never a claimer-side call."""
+    return _reserve("PRECIS_HOST_VRAM_RESERVE_MB")
 
 
 def _linux_mem_total_mb() -> int | None:
@@ -717,19 +942,22 @@ def _total_mem_mb() -> int | None:
     return total
 
 
-def _total_vram_mb() -> int | None:
-    """Summed ``memory.total`` of every NVIDIA card in MiB.
+def _nvidia_smi_query(field: str) -> list[int] | None:
+    """One ``nvidia-smi --query-gpu=<field>`` value per card, in MiB.
 
-    No ``nvidia-smi`` → ``0`` (no VRAM, retract the row). A failing call or
-    an unparseable answer (``[N/A]`` on unified-memory cards) → ``None``
-    (unknown, leave the row)."""
+    ``None`` = the answer is unknown (call failed, unparseable — leave any
+    existing row untouched); ``[]`` = definitively no NVIDIA cards (retract
+    the row). The present/absent/unknown discipline the capacity rows sync
+    with. One helper for both the static per-card totals and the live free
+    probes below.
+    """
     if shutil.which("nvidia-smi") is None:
-        return 0
+        return []
     try:
         res = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=memory.total",
+                f"--query-gpu={field}",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -739,16 +967,85 @@ def _total_vram_mb() -> int | None:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        log.warning("capability_probe: nvidia-smi vram query failed", exc_info=True)
+        log.warning(
+            "capability_probe: nvidia-smi %s query failed", field, exc_info=True
+        )
         return None
     if res.returncode != 0:
         return None
     try:
-        return sum(
-            int(line.strip()) for line in res.stdout.splitlines() if line.strip()
-        )
+        return [int(line.strip()) for line in res.stdout.splitlines() if line.strip()]
     except ValueError:
         return None
+
+
+def _total_vram_mb() -> int | None:
+    """Summed ``memory.total`` of every NVIDIA card in MiB.
+
+    No ``nvidia-smi`` → ``0`` (no VRAM, retract the row). A failing call or
+    an unparseable answer (``[N/A]`` on unified-memory cards) → ``None``
+    (unknown, leave the row)."""
+    cards = _nvidia_smi_query("memory.total")
+    if cards is None:
+        return None
+    return sum(cards)
+
+
+def _max_card_vram_mb() -> int | None:
+    """The largest single card's ``memory.total`` in MiB — the per-card VRAM
+    ceiling (:data:`precis.workers.admission.VRAM_CARD_MB`) a model's
+    footprint must fit (td655172: the host-wide sum admits models no single
+    card can hold). Same three-way verdict as :func:`_total_vram_mb`."""
+    cards = _nvidia_smi_query("memory.total")
+    if cards is None:
+        return None
+    return max(cards) if cards else 0
+
+
+def vram_free_per_card_mb() -> list[int] | None:
+    """Per-card ``memory.free`` in MiB, in ``nvidia-smi`` index order.
+
+    The card-level view footprint admission binds a claim to (td655172 card
+    assignment): the scalar :func:`vram_free_mb` says SOME card has
+    headroom; this list is what picks WHICH one and enforces that card's
+    own headroom and concurrency cap. Stays RAW measured free — the
+    pick nets :func:`vram_reserve_mb` off the card under test, read
+    from the ``vram_reserve_mb`` stamp the heartbeat writes alongside
+    this list (td655172 review), and the truthful per-card number is
+    what the beat
+    should record. ``None`` = unmeasurable or no cards —
+    the heartbeat then leaves the key off and admission stays unbound (the
+    pre-binding behaviour). A ``[0, …]`` entry is a real reading: that card
+    is full and must fail eligibility.
+    """
+    cards = _nvidia_smi_query("memory.free")
+    return cards or None
+
+
+def vram_free_mb() -> int | None:
+    """The largest single card's *admittable* ``memory.free`` in MiB.
+
+    The live headroom footprint admission cross-checks a VRAM reservation
+    against (td655172): the ``vram_mb`` capacity row is static, so untracked
+    consumers (an LLM server, an interactive session) don't shrink it and
+    the ledger alone over-admits. A model must fit ONE card, so this is the
+    best single card's free, never the cross-card sum (two cards with 12 GiB
+    free each can't hold a 20 GiB model) — less :func:`vram_reserve_mb`,
+    the same host-wide reserve the ``vram_mb`` row subtracts from the
+    summed total. Applying a host-wide reserve to the best card is
+    conservative (it can only under-state headroom) and is ``0`` by
+    default; the per-card list :func:`vram_free_per_card_mb` reports stays
+    raw, so the card pick applies the same subtraction to the card under
+    test from the beat's own ``vram_reserve_mb`` stamp (td655172 review).
+    ``None`` = unmeasurable or no cards — the
+    heartbeat then leaves the key untouched and admission reads as dark.
+    A real ``0`` means every card is fully used (or the reserve is
+    exhausted) and must veto GPU claims.
+    """
+    cards = vram_free_per_card_mb()
+    if not cards:
+        return None
+    return max(0, max(cards) - vram_reserve_mb())
 
 
 #: Where this process's cgroup v2 membership and the unified hierarchy live
@@ -825,9 +1122,11 @@ def reset_capacity_cache() -> None:
 def probe_host_capacity() -> dict[str, int | None]:
     """Admittable host capacity as hard multi-unit rows (gr647996).
 
-    ``{mem_mb, cpu_milli, vram_mb}``: the measured total minus this host's
-    reserve, in the units :class:`precis.workers.admission.Footprint`
-    reserves. Same three-way verdict as :func:`probe_host_resources`
+    ``{mem_mb, cpu_milli, vram_mb, vram_card_mb}``: the measured total minus
+    this host's reserve, in the units :class:`precis.workers.admission.Footprint`
+    reserves — plus ``vram_card_mb``, the largest single card's total, which
+    is checked by footprint admission rather than reserved (td655172).
+    Same three-way verdict as :func:`probe_host_resources`
     (``> 0`` present, ``0`` retract, ``None`` leave). Reserves:
     ``PRECIS_HOST_MEM_RESERVE_MB`` (default :data:`DEFAULT_MEM_RESERVE_MB`),
     ``PRECIS_HOST_CPU_RESERVE_MILLI`` and ``PRECIS_HOST_VRAM_RESERVE_MB``
@@ -837,17 +1136,18 @@ def probe_host_capacity() -> dict[str, int | None]:
     now = time.monotonic()
     if _capacity_cache is not None and now - _capacity_cache[0] < _CAPACITY_TTL_S:
         return dict(_capacity_cache[1])
-    from precis.workers.admission import CPU_MILLI, MEM_MB, VRAM_MB
+    from precis.workers.admission import CPU_MILLI, MEM_MB, VRAM_CARD_MB, VRAM_MB
 
     out = {
-        MEM_MB: _minus(
-            _total_mem_mb(),
-            _reserve("PRECIS_HOST_MEM_RESERVE_MB", DEFAULT_MEM_RESERVE_MB),
-        ),
+        MEM_MB: _minus(_total_mem_mb(), mem_reserve_mb()),
         CPU_MILLI: _minus(
             _available_cpu_milli(), _reserve("PRECIS_HOST_CPU_RESERVE_MILLI")
         ),
-        VRAM_MB: _minus(_total_vram_mb(), _reserve("PRECIS_HOST_VRAM_RESERVE_MB")),
+        VRAM_MB: _minus(_total_vram_mb(), vram_reserve_mb()),
+        # Per-card ceiling, NOT a reserve target: the raw largest-card
+        # total (the host-wide VRAM reserve above is about aggregate
+        # headroom; per-card fit gets its own margin from the claim).
+        VRAM_CARD_MB: _max_card_vram_mb(),
     }
     _capacity_cache = (now, out)
     return dict(out)
@@ -874,6 +1174,8 @@ __all__ = [
     "claude_auth_present",
     "claude_bin_present",
     "mem_capacity",
+    "mem_free_mb",
+    "mem_reserve_mb",
     "mem_used_pct",
     "probe_host_capacity",
     "probe_host_resources",
@@ -881,4 +1183,7 @@ __all__ = [
     "reset_capacity_cache",
     "resource_kind",
     "soft_capacity",
+    "vram_free_mb",
+    "vram_free_per_card_mb",
+    "vram_reserve_mb",
 ]

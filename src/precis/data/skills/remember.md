@@ -34,6 +34,8 @@ governs: factory
 - Name yourself on every write: `args={'writer': {'model': '<your model id>'}}`; add `'human': 'reto'` when the content is what Reto told you.
 
 Notation: follow [[precis-notation-canon]] (UTF-8 units/exponents, no TeX outside quotes or derivations); if the canon does not fit what you are writing, file a gripe linked to skill:precis-notation-canon instead of improvising.
+- ranges: en dash, unspaced, one unit after the second endpoint (`9–12 GPa`); write `to` when an endpoint is negative (`−5 to 10 °C`).
+- digit grouping: none (`4600`, not `4,600`).
 
 The graph shape (root me474312 → subject hubs → nodes, `part-of` edges, one
 type tag, gotchas `qualifies` threads) is described in the root node and in
@@ -104,6 +106,12 @@ it in the session that coins it — `put(kind='taxon', text='<term> —
 rel='specialises')`; the hub nodes are the children of `tn559460`, one
 per memory hub plus Projects & quests for nicknames. A rename makes the
 old name an alias; a retired term is deleted.
+
+## A spec is not a memory fact
+
+Specifications live under the Specifications hub me568215 (programme roots,
+then spec roots); write one with [[precis-spec-help]], not this recipe
+(gr568183).
 
 ## With evidence edit, on suspicion gripe
 

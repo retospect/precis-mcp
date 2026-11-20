@@ -7,7 +7,7 @@ V/mm, 6 μm → 6 m, i.e. 10^3–10^6×) into clean-looking ASCII that no
 downstream text scan can catch.
 
 Two distinct failure modes, both settled in
-``docs/backlog/ingest-strips-greek-glyphs.md``:
+`me690638`:
 
 * **mode "a"** — a *lying* ``/ToUnicode``: the font (e.g.
   ``KKLGAD+AdvP7DA6``) names its μ glyph ``/m`` and maps code ``<6d>`` to
@@ -45,6 +45,14 @@ ingest read the record too — the measures write path may not import this
 module), re-exported here, and are
 used by the paper views' banner, the finding view's ``source caveats:``
 section and the draft write-path ``glyph_cite_hint``.
+
+Sign damage (gr685717) is a third, extraction-side mode this module also
+detects: OCR/texify can drop minus signs outright or mangle ± while the
+surviving digits read as clean text. :func:`detect_sign_damage` compares
+the PDF's raw text layer against the stored extraction and, on a wide
+margin of loss, stamps ``glyph_health['sign_damage']`` and sets
+``suspected`` — so pa678941-style papers (lost potentials, ``93.19 ±
+1.99%`` mangled) carry the same caveat machinery as the font modes.
 
 The classification helpers below are pure functions over already-parsed
 font/geometry structures so they are unit-testable without a PDF engine;
@@ -135,6 +143,37 @@ _POSITIONAL_GLYPH_RE = re.compile(
 )
 
 
+# ── Sign damage (gr685717) ────────────────────────────────────────────────
+#
+# Marker/surya OCR (and some publisher HTML) can drop minus signs outright
+# (``−0.5 V`` → ``0.5 V``) or mangle ± (``93.19 ± 1.99%`` → mojibake). The
+# loss is silent — the remaining digits read as clean text — so a
+# per-document flag is the only defense (recovery would need a re-parse
+# with a different engine; nothing rewrites stored chunks).
+
+#: A sign-bearing minus: U+2212 MINUS SIGN anywhere, or an ASCII
+#: hyphen-minus that *introduces* a number. The lookbehind excludes
+#: range typography (``1-2``, ``10-15``, ``0.5-1.0``) which is not a sign;
+#: the lookahead's optional space covers ``- 0.5`` from loose kerning.
+#: Marker texify rewrites ``$\u22120.5$`` as ASCII ``$-0.5$`` — both sides
+#: of the raw-vs-extracted comparison must count that as a surviving sign
+#: or every texified paper false-flags.
+_SIGN_EQUIV_RE = re.compile(r"\u2212|(?<![\d.,])-(?=\s?\d)")
+
+#: ± in its surviving mojibake forms: ``\u00c2\u00b1`` (UTF-8 read as
+#: latin-1) and ``\u00c3\u0082\u00b1`` (double-encoded). A stored mojibake
+#: ± is never legitimate scientific text — it flags at one occurrence.
+_PM_MOJIBAKE_RE = re.compile("\u00c2\u00b1|\u00c3\u0082\u00b1")
+
+#: Detection thresholds — the raw text layer must be richer in signs than
+#: the stored extraction by a wide margin before we flag, so a paper that
+#: genuinely carries few signs never trips (the 30/30-false-positive
+#: lesson of the 2026-10-14 sample applies here too).
+_SIGN_MIN_MINUS = 5
+_SIGN_MIN_PM = 3
+_SIGN_KEEP_FRAC = 0.3
+
+
 #: TeX math-extension fonts (Computer Modern ``cmex``, Latin Modern
 #: ``lmex``, Euler ``euex``), subset prefix optional. Their low code points
 #: are big delimiters and radicals — ``cmex10`` 0x00/0x01 are the large
@@ -196,6 +235,61 @@ def count_bare_unit_numbers(text: str) -> int:
 def count_stray_space_units(text: str) -> int:
     """Count stray-space units — ``V/ mm`` for ``V/µm`` (pa494's tell)."""
     return len(_STRAY_SPACE_UNIT_RE.findall(text))
+
+
+def count_sign_equivalents(text: str) -> int:
+    """Sign-bearing minus occurrences: U+2212, or ASCII ``-`` before a number."""
+    return len(_SIGN_EQUIV_RE.findall(text))
+
+
+def count_pm_signs(text: str) -> int:
+    """Occurrences of the ± character (U+00B1)."""
+    return text.count("±")
+
+
+def count_pm_mojibake(text: str) -> int:
+    """Occurrences of ± in surviving mojibake form (``Â±`` / ``Ã‚Â±``)."""
+    return len(_PM_MOJIBAKE_RE.findall(text))
+
+
+def detect_sign_damage(raw_text: str, extracted_text: str) -> dict[str, Any]:
+    """Compare the PDF's raw text layer against the stored extraction (gr685717).
+
+    Flags when the extraction lost a wide margin of the signs the raw
+    layer carries — minus-before-number dropped outright, ± dropped, or ±
+    left mangled as mojibake. Comparative on purpose: an OCR paper whose
+    raw layer genuinely has few signs never flags, and a texified paper
+    whose ASCII minuses survived reads as intact.
+
+    Limitations: a scanned (image-only) PDF has no text layer to compare
+    against, and a PDF whose own layer already lost the signs (a lying
+    font) compares equal and stays unflagged — the font-level detectors
+    above own that case.
+    """
+    raw_text = raw_text or ""
+    extracted_text = extracted_text or ""
+    minus_raw = count_sign_equivalents(raw_text)
+    minus_extracted = count_sign_equivalents(extracted_text)
+    pm_raw = count_pm_signs(raw_text)
+    pm_extracted = count_pm_signs(extracted_text)
+    pm_mojibake = count_pm_mojibake(extracted_text)
+
+    minus_lost = (
+        minus_raw >= _SIGN_MIN_MINUS and minus_extracted <= minus_raw * _SIGN_KEEP_FRAC
+    )
+    pm_lost = (
+        pm_raw >= _SIGN_MIN_PM
+        and (pm_extracted + pm_mojibake) <= pm_raw * _SIGN_KEEP_FRAC
+    )
+    detected = minus_lost or pm_lost or pm_mojibake >= 1
+    return {
+        "detected": detected,
+        "minus_raw": minus_raw,
+        "minus_extracted": minus_extracted,
+        "pm_raw": pm_raw,
+        "pm_extracted": pm_extracted,
+        "pm_mojibake": pm_mojibake,
+    }
 
 
 def has_positive_tell(text: str) -> bool:
@@ -454,6 +548,7 @@ def analyze_pdf(pdf_path: str | Path, extracted_text: str = "") -> dict[str, Any
     fonts: list[dict[str, Any]] = []
     orphan_spans = 0
     raw_c0 = 0
+    raw_text = ""
     font_error: str | None = None
     recovery: dict[str, Any] = {}
 
@@ -462,11 +557,13 @@ def analyze_pdf(pdf_path: str | Path, extracted_text: str = "") -> dict[str, Any
 
         with fitz.open(str(pdf_path)) as doc:
             seen_xrefs: set[int] = set()
+            raw_parts: list[str] = []
             for page in doc:
                 try:
                     text_dict = page.get_text("dict")
                     raw_c0 += count_c0_in_spans(text_dict)
                     orphan_spans += count_orphan_single_char_spans(text_dict)
+                    raw_parts.append(page.get_text())
                     for font in page.get_fonts(full=True):
                         xref = font[0]
                         if xref in seen_xrefs:
@@ -475,6 +572,7 @@ def analyze_pdf(pdf_path: str | Path, extracted_text: str = "") -> dict[str, Any
                         fonts.append(_font_info(doc, font))
                 except Exception as exc:  # one bad page must not sink the record
                     log.debug("glyph_health: page scan failed: %s", exc)
+            raw_text = "\n".join(raw_parts)
             recovery = _recover(doc, fonts)
     except ImportError:
         font_error = "pymupdf (fitz) unavailable"
@@ -502,6 +600,13 @@ def analyze_pdf(pdf_path: str | Path, extracted_text: str = "") -> dict[str, Any
     )
     if record["suspected"] and (recovery.get("resolved") or recovery.get("misses")):
         record["recovery"] = recovery
+    # Sign damage (gr685717) is comparative: only meaningful when the PDF
+    # opened and produced a text layer to compare the extraction against.
+    if font_error is None:
+        sign = detect_sign_damage(raw_text, extracted_text)
+        if sign["detected"]:
+            record["sign_damage"] = sign
+            record["suspected"] = True
     return record
 
 

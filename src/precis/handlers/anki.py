@@ -30,19 +30,16 @@ Authoring conventions (taught by ``precis-anki-help``):
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from typing import Any, ClassVar
 
+from precis.anki.cloze import has_cloze, space_adjacent_braces, strip_cloze
 from precis.errors import BadInput
 from precis.format import render_agent_table
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
-
-#: A cloze deletion: ``{{c1::answer}}`` or ``{{c1::answer::hint}}``. The answer
-#: capture is non-greedy and the ``::hint`` tail optional, so the stripped form
-#: keeps the answer and drops the hint.
-_CLOZE_RE = re.compile(r"\{\{c\d+::(.+?)(?:::.+?)?\}\}", re.DOTALL)
 
 #: A lone ``---`` line separating the cloze body from an optional Back Extra.
 _EXTRA_SEP_RE = re.compile(r"\n[ \t]*---[ \t]*\n")
@@ -76,8 +73,19 @@ def _split_extra(text: str) -> tuple[str, str]:
 
 def _strip_cloze(text: str) -> str:
     """Replace every ``{{cN::answer::hint}}`` with just ``answer`` — the natural
-    sentence, for the embedded/searchable ``card_combined`` chunk."""
-    return _CLOZE_RE.sub(r"\1", text)
+    sentence, for the embedded/searchable ``card_combined`` chunk. Brace-aware
+    (:mod:`precis.anki.cloze`), so nested LaTeX braces stay in the answer."""
+    return strip_cloze(text)
+
+
+def _space_cloze_braces(text: str) -> tuple[str, int]:
+    """Normalise the cloze part of a body (Back Extra untouched) so Anki's
+    first-``}}`` scan finds the real end of each cloze. Returns
+    ``(text, spaces_inserted)``; idempotent."""
+    m = _EXTRA_SEP_RE.search(text)
+    head, tail = (text, "") if m is None else (text[: m.start()], text[m.start() :])
+    head, n = space_adjacent_braces(head)
+    return head + tail, n
 
 
 class AnkiHandler(NumericRefHandler):
@@ -114,7 +122,7 @@ class AnkiHandler(NumericRefHandler):
         """Guard: a cloze card needs ≥1 ``{{cN::…}}`` deletion. Returns the
         cloze body (Back Extra split off)."""
         cloze_text, _extra = _split_extra(text)
-        if not _CLOZE_RE.search(cloze_text):
+        if not has_cloze(cloze_text):
             raise BadInput(
                 "an anki card needs at least one cloze deletion, e.g. "
                 "{{c1::the hidden answer}}",
@@ -144,9 +152,19 @@ class AnkiHandler(NumericRefHandler):
     def _create(self, *, text: str | None, **kw: Any):
         # Reject a non-cloze body up front (before the insert tx) so a bad
         # card writes nothing — mirrors the atomic-create contract.
+        spaced = 0
         if text is not None and text.strip():
             self._validate_cloze(text)
-        return super()._create(text=text, **kw)
+            text, spaced = _space_cloze_braces(text)
+        ack = super()._create(text=text, **kw)
+        if not spaced:
+            return ack
+        return dataclasses.replace(
+            ack,
+            body=ack.body
+            + f"\nspaced {spaced} `}}}}` inside cloze answers so Anki does not "
+            "cut the answer.",
+        )
 
     # ── list views ─────────────────────────────────────────────────────
 

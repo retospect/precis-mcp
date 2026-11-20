@@ -573,19 +573,18 @@ class IntrospectionMixin(RuntimeShape):
             f"AND {where}"
         )
         with self.store.pool.connection() as conn:
-            open_rows = conn.execute(
-                "SELECT date_trunc(%s, r.created_at AT TIME ZONE 'UTC'), "
-                "count(*) FROM refs r "
-                f"WHERE {where}{opens_window} GROUP BY 1 ORDER BY 1",
-                [bucket, *params, *window_params],
-            ).fetchall()
-            close_rows = conn.execute(
-                "SELECT date_trunc(%s, rt.created_at AT TIME ZONE 'UTC'), "
-                "count(DISTINCT r.ref_id) "
-                f"FROM refs r {terminal_sql}{closes_window} "
-                "GROUP BY 1 ORDER BY 1",
-                [bucket, sorted(closed), *params, *window_params],
-            ).fetchall()
+            from precis.reports.activity import flow_buckets
+
+            open_rows, close_rows = flow_buckets(
+                conn,
+                bucket=bucket,
+                where=where,
+                params=params,
+                closed=sorted(closed),
+                opens_window=opens_window,
+                closes_window=closes_window,
+                window_params=window_params,
+            )
             ttc = conn.execute(
                 "SELECT count(DISTINCT r.ref_id), "
                 "percentile_cont(0.5) WITHIN GROUP (ORDER BY "
@@ -771,7 +770,14 @@ class IntrospectionMixin(RuntimeShape):
     )
     #: args= keys the generic count reads.
     _GENERIC_COUNT_ALLOWED_EXTRAS: frozenset[str] = frozenset(
-        {"group_by", "include_ref_ids", "exclude_ref_ids"}
+        {
+            "group_by",
+            "agg",
+            "include_ref_ids",
+            "exclude_ref_ids",
+            "closed_since",
+            "closed_until",
+        }
     )
 
     def _dispatch_generic_count(self, kind: str, args: dict[str, Any]) -> Response:
@@ -801,8 +807,10 @@ class IntrospectionMixin(RuntimeShape):
         """
         from precis.handlers._numeric_ref import (
             _COUNT_GROUP_LIMIT,
+            _count_agg_cells,
             _count_facet_label,
             _count_group_label,
+            _parse_count_aggs,
             _parse_count_facets,
             _parse_window_bound,
         )
@@ -810,7 +818,18 @@ class IntrospectionMixin(RuntimeShape):
         if self.store is None:
             raise Unsupported("view='count' needs a store-backed deployment")
         bad = next(
-            (a for a in self._GENERIC_COUNT_UNSUPPORTED_TOP if args.get(a) is not None),
+            (
+                a
+                for a in self._GENERIC_COUNT_UNSUPPORTED_TOP
+                # ``page=1`` is the ``search`` verb's unconditional
+                # injected default (tools/core.py's payload), not a
+                # caller's paging ask — over MCP it reached every
+                # generic count and refused the call outright (gr663484).
+                # Only ``page`` past the first names a page the ref
+                # count can't serve.
+                if args.get(a) is not None
+                and not (a == "page" and args.get("page") == 1)
+            ),
             None,
         )
         if bad is not None:
@@ -866,7 +885,14 @@ class IntrospectionMixin(RuntimeShape):
         )
         since_dt = _parse_window_bound(args.get("since"), "since")
         until_dt = _parse_window_bound(args.get("until"), "until")
+        closed_after_dt = _parse_window_bound(
+            extras.get("closed_since"), "closed_since"
+        )
+        closed_before_dt = _parse_window_bound(
+            extras.get("closed_until"), "closed_until"
+        )
         facets = _parse_count_facets(extras.get("group_by"))
+        aggs = _parse_count_aggs(extras.get("agg"), facets)
 
         total, groups = self.store.count_refs_facets(
             kind=kind,
@@ -874,9 +900,12 @@ class IntrospectionMixin(RuntimeShape):
             include_ref_ids=sorted(include) if include is not None else None,
             exclude_ref_ids=sorted(exclude) if exclude else None,
             facets=facets,
+            aggs=aggs,
             group_limit=_COUNT_GROUP_LIMIT,
             since=since_dt,
             until=until_dt,
+            closed_after=closed_after_dt,
+            closed_before=closed_before_dt,
         )
 
         filters: list[str] = []
@@ -886,6 +915,18 @@ class IntrospectionMixin(RuntimeShape):
             lo = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if since_dt else "…"
             hi = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if until_dt else "…"
             filters.append(f"created [{lo}, {hi})")
+        if closed_after_dt is not None or closed_before_dt is not None:
+            lo = (
+                closed_after_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if closed_after_dt
+                else "…"
+            )
+            hi = (
+                closed_before_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if closed_before_dt
+                else "…"
+            )
+            filters.append(f"closed [{lo}, {hi})")
         head = f"# {total} {kind} entr{'y' if total == 1 else 'ies'}"
         if filters:
             head += f" ({', '.join(filters)})"
@@ -894,8 +935,11 @@ class IntrospectionMixin(RuntimeShape):
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets))
-            for vals, n, _span in groups:
-                parts.append(f"  {_count_group_label(vals, facets)}: {int(n)}")
+            for vals, n, span in groups:
+                parts.append(
+                    f"  {_count_group_label(vals, facets)}: {int(n)}"
+                    + _count_agg_cells(aggs, span.aggregates)
+                )
             if len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(
                     f"  … (top {_COUNT_GROUP_LIMIT} groups by count — "

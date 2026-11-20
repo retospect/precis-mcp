@@ -23,7 +23,6 @@ pytestmark = pytest.mark.skipif(
 _REPO = Path(__file__).resolve().parent.parent
 _DIR = _REPO / "scripts" / "host-ops"
 _SCRIPTS = [
-    "lanes-overlay",
     "nas-hostkey-check",
     "nfs-keepalive",
     "nfs-recover",
@@ -38,25 +37,31 @@ _SCRIPTS = [
 _HOSTS_YML = """\
 all:
   vars:
-    nfs_server: caspar
+    nfs_server: alder
     shared_mount: "/mnt/cluster"
   children:
     linux:
       hosts:
-        spark:
-        castor:
-        pollux:
+        maple:
+          os_update_units: docker
+          os_update_peer: birch
+        cedar:
+          os_update_units: sglang,precis-worker
+          os_update_peer: birch
+        birch:
+          os_update_units: precis-worker,precis-worker-compute
+          os_update_peer: cedar
       vars:
         os_family: linux
     nfs_servers:
       hosts:
-        caspar:
+        alder:
     vllm_serving:
       hosts:
-        castor:
+        cedar:
     macos:
       hosts:
-        caspar:
+        alder:
           ansible_host: 203.0.113.10
           lan_ip: 203.0.113.11
 """
@@ -66,7 +71,7 @@ all:
   children:
     linux:
       hosts:
-        spark:
+        maple:
 """
 
 
@@ -252,13 +257,64 @@ def test_os_update_requires_host(tmp_path: Path, bin_dir: dict[str, str]) -> Non
 
 def test_os_update_dry_run(tmp_path: Path, bin_dir: dict[str, str]) -> None:
     env = _env(tmp_path, bin_dir)
-    result = _run(env, "os-update", "--host", "spark", "--dry-run")
+    result = _run(env, "os-update", "--host", "maple", "--dry-run")
     assert result.returncode == 0, result.stderr
-    assert "DRY: precis_cli reserve --host spark" in result.stdout
+    assert "DRY: precis_cli reserve --host maple" in result.stdout
     assert "7/7 checks" in result.stdout
+    # units and the reserve-CLI peer come from the overlay's per-host keys
+    assert "for u in docker " in result.stdout
+    assert "(CLI on birch)" in result.stdout
     # The stale apt/dpkg lock probe always runs; nothing else may ssh.
     calls = _calls(bin_dir["ssh_calls"])
     assert len(calls) == 1 and "fuser" in calls[0]
+
+
+def test_os_update_units_comma_list_and_peer(
+    tmp_path: Path, bin_dir: dict[str, str]
+) -> None:
+    env = _env(tmp_path, bin_dir)
+    result = _run(env, "os-update", "--host", "birch", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "for u in precis-worker precis-worker-compute " in result.stdout
+    assert "(CLI on cedar)" in result.stdout
+
+
+def test_os_update_run_on_env_wins(tmp_path: Path, bin_dir: dict[str, str]) -> None:
+    env = _env(tmp_path, bin_dir, RUN_ON="poplar")
+    result = _run(env, "os-update", "--host", "maple", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "(CLI on poplar)" in result.stdout
+
+
+def test_os_update_serving_dry_run_skips_llm_wait(
+    tmp_path: Path, bin_dir: dict[str, str]
+) -> None:
+    env = _env(tmp_path, bin_dir)
+    result = _run(env, "os-update", "--host", "cedar", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "for u in sglang precis-worker " in result.stdout
+    assert "waiting for sglang health" not in result.stdout
+    assert len(_calls(bin_dir["ssh_calls"])) == 1
+
+
+def test_os_update_host_without_units_fails_clearly(
+    tmp_path: Path, bin_dir: dict[str, str]
+) -> None:
+    result = _run(_env(tmp_path, bin_dir), "os-update", "--host", "spruce", "--dry-run")
+    assert result.returncode == 2
+    assert "os_update_units" in result.stderr
+    assert "spruce" in result.stderr
+    assert _calls(bin_dir["ssh_calls"]) == []
+
+
+def test_os_update_host_without_peer_fails_clearly(
+    tmp_path: Path, bin_dir: dict[str, str]
+) -> None:
+    yml = _HOSTS_YML.replace("          os_update_peer: birch\n", "", 1)
+    env = _env(tmp_path, bin_dir, hosts_yml=yml)
+    result = _run(env, "os-update", "--host", "maple", "--dry-run")
+    assert result.returncode == 2
+    assert "os_update_peer" in result.stderr
 
 
 def test_vllm_stop_requires_host_or_group(
@@ -275,7 +331,7 @@ def test_vllm_stop_resolves_group_host(tmp_path: Path, bin_dir: dict[str, str]) 
     result = _run(env, "vllm-stop")
     assert result.returncode == 0, result.stderr
     calls = _calls(bin_dir["ssh_calls"])
-    assert calls and all(" castor " in f" {c} " for c in calls)
+    assert calls and all(" cedar " in f" {c} " for c in calls)
     assert any("disable --now vllm" in c for c in calls)
 
 
@@ -283,10 +339,10 @@ def test_vllm_stop_host_override_and_start(
     tmp_path: Path, bin_dir: dict[str, str]
 ) -> None:
     env = _env(tmp_path, bin_dir, VLLM_STOP_SLEEP_S="0")
-    result = _run(env, "vllm-stop", "--host", "pollux", "--start")
+    result = _run(env, "vllm-stop", "--host", "birch", "--start")
     assert result.returncode == 0, result.stderr
     calls = _calls(bin_dir["ssh_calls"])
-    assert calls and all(" pollux " in f" {c} " for c in calls)
+    assert calls and all(" birch " in f" {c} " for c in calls)
     assert any("enable --now vllm" in c for c in calls)
 
 
@@ -301,7 +357,7 @@ def test_nfs_keepalive_runs_on_linux_group(
     calls = _calls(bin_dir["ssh_calls"])
     assert len(calls) == 3
     hosts = {c.split()[8] for c in calls}  # four -o pairs, then <host> <remote>
-    assert hosts == {"spark", "castor", "pollux"}
+    assert hosts == {"maple", "cedar", "birch"}
     assert all("systemd-run" in c and "/mnt/cluster" in c for c in calls)
 
 
@@ -321,8 +377,8 @@ def test_nfs_recover_overlay_driven(tmp_path: Path, bin_dir: dict[str, str]) -> 
     joined = "\n".join(calls)
     # nfsd restart on the resolved nfs_server host, then a pass over the
     # linux-group clients, then the recurrence probe.
-    assert "caspar" in joined and "nfsd restart" in joined
-    for h in ("spark", "castor", "pollux"):
+    assert "alder" in joined and "nfsd restart" in joined
+    for h in ("maple", "cedar", "birch"):
         assert any(f" {h} " in f" {c} " for c in calls), h
     # the LAN address for `ss -K dst` came from the server's lan_ip, not a literal
     assert "dst 203.0.113.11" in joined
@@ -508,22 +564,6 @@ def test_play_missing_checkout_names_the_env_var(
     assert "main-prod" in result.stderr
     assert "PROD_CHECKOUT" in result.stderr
     assert _calls(bin_dir["ansible_calls"]) == []
-
-
-# ── lanes-overlay: dry-run anchors ───────────────────────────────────────────
-
-
-def test_lanes_overlay_dry_run_no_writes(
-    tmp_path: Path, bin_dir: dict[str, str]
-) -> None:
-    # A fixture that matches none of the anchors must abort without writing.
-    env = _env(tmp_path, bin_dir)
-    overlay = tmp_path / "inv"
-    before = (overlay / "hosts.yml").read_text(encoding="utf-8")
-    env["PRECIS_OVERLAY_DIR"] = str(overlay)
-    result = _run(env, "lanes-overlay")
-    assert result.returncode != 0
-    assert (overlay / "hosts.yml").read_text(encoding="utf-8") == before
 
 
 # ── nas-hostkey-check: keyscan vs overlay pins (gr513894) ───────────────────

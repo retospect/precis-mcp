@@ -251,6 +251,15 @@ def test_call_codex_exec_scrubs_openai_api_key_when_logged_in(
 def test_codex_bin_present(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PRECIS_CODEX_BIN", str(tmp_path / "missing"))
     assert cx.codex_bin_present() is False
+    # An explicit path that exists but cannot exec is absent — parity
+    # with run_slice's ``adapter_bin_present`` pick filter, so the
+    # advertised ``codex_bin`` token never outruns a pickable lane
+    # (gr676054).
+    noexec = tmp_path / "codex-noexec"
+    noexec.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    noexec.chmod(0o644)
+    monkeypatch.setenv("PRECIS_CODEX_BIN", str(noexec))
+    assert cx.codex_bin_present() is False
     _write_codex_stub(tmp_path, monkeypatch, "#!/bin/sh\nexit 0\n")
     assert cx.codex_bin_present() is True
 
@@ -260,6 +269,12 @@ def test_codex_login_present_requires_chatgpt(
 ) -> None:
     _write_codex_stub(
         tmp_path, monkeypatch, "#!/bin/sh\necho 'Logged in using ChatGPT'\n"
+    )
+    assert cx.codex_login_present() is True
+    # The real CLI also writes successful login status to stderr.
+    cx._bust_login_probe()
+    _write_codex_stub(
+        tmp_path, monkeypatch, "#!/bin/sh\necho 'Logged in using ChatGPT' >&2\n"
     )
     assert cx.codex_login_present() is True
     # An API-key-only login is the billed path, not the subscription lane.

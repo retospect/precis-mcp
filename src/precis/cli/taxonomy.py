@@ -1,7 +1,7 @@
 """``precis taxonomy-bootstrap`` — a campaign's measurand list from corpus usage.
 
 ``taxonomy-bootstrap`` runs the procedure in
-`docs/backlog/taxonomy-bootstrap.md` over the snapshot a campaign config
+me692282 over the snapshot a campaign config
 pins. The list is an output, not a table someone maintains, so this verb is
 the whole interface: same campaign, same salt, same snapshot, same list.
 

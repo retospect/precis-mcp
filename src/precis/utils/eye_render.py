@@ -41,13 +41,20 @@ kind, so the ladder generalizes but its shape does not:
   is dispatched on its ``sk:`` prefix ahead of the decimal parse and renders
   straight from the skill corpus (``handlers.skill``'s own accessors —
   ``_load_skill`` / ``_skill_title``, the same ones ``SkillHandler.get``
-  uses). No *spatial* neighborhood (a file has no corpus position), but it
-  does have a **link ring**: the ``[[slug]]`` wikilinks, derived from the
-  shared :class:`~precis.skill_index.SkillGraph` rather than stored edges
-  (gr572706 ruling — outbound ``see-also``, inbound ``see-also-by``).
-  ``toc``/``none`` collapse to a one-line bookmark, ``summary``…``fisheye``
-  render the verbatim body, ``fisheye+1hop`` appends the wikilink ring and
-  ``fisheye+2hop`` the second hop, both in the link-kind shape.
+  uses). Since gr568475 a skill *is* treated as the H2 tree it literally
+  is: ``sk:<slug>~N`` focuses one section and renders through the shared
+  tree-kind spatial ladder (:func:`precis.utils.fisheye.render_fisheye_span`
+  over a ``chunk_by_h2`` adapter — verbatim center, graduated summary/kwd
+  neighbours), and a whole-skill ``sk:<slug>`` at ``fisheye`` renders the
+  **section map** (one ``~N`` row per section, never the body — the old
+  two-rung bookmark-or-body special case is gone). ``verbatim`` still
+  renders the body; ``summary`` the front-matter ``summary:``/synopsis.
+  The *link* ring is the ``[[slug]]`` wikilinks, derived from the shared
+  :class:`~precis.skill_index.SkillGraph` rather than stored edges
+  (gr572706 ruling — outbound ``see-also``, inbound ``see-also-by``):
+  ``fisheye+1hop`` appends it, ``fisheye+2hop`` the second hop as counts,
+  and ``q='<label>'`` / ``q='skill:<label>'`` expand one group, both in the
+  link-kind shape.
 
 Reached from every kind's ``get`` through one door: ``get(kind=K, id=…,
 extent=<rung>)`` (or a ladder label in ``view=``) is routed by the
@@ -82,12 +89,32 @@ from precis.utils.entity_courtesy import (
     entity_handles,
     safe_entity_states,
 )
-from precis.utils.link_tag_ops import link_reason_suffix
+from precis.utils.inject_scan import cache_body_notice
+from precis.utils.link_tag_ops import (
+    CONSIDERED_VERDICT_LABELS,
+    LinkWhy,
+    link_reason_suffix,
+    link_why,
+)
 from precis.utils.refeye import RING_GROUP_KIND_RANK, RING_GROUPS, ring_group
 from precis.workers.working_set import Extent
 
 if TYPE_CHECKING:
     from precis.store.store import Store
+
+#: Fetch caches with record eyes. The verdict is stored on cache_state.
+_CACHE_EYE_KINDS = frozenset(
+    {
+        "chem",
+        "perplexity-reasoning",
+        "perplexity-research",
+        "semanticscholar",
+        "web",
+        "websearch",
+        "wikipedia",
+        "youtube",
+    }
+)
 
 #: Reading-order tree kinds — routed to the spatial fisheye.
 _TREE_KINDS: frozenset[str] = frozenset({"draft", "plan"})
@@ -106,8 +133,11 @@ _TREE_KINDS: frozenset[str] = frozenset({"draft", "plan"})
 #: ``edgar`` is here by the matching human call: a long SEC filing with
 #: section-labelled body chunks is the same shape as a patent, so an
 #: ``eg<id>`` eye gets the cluster-TOC renderer, not the link-kind note one.
+#: ``youtube`` joined for gr702962 the same way: a fetched transcript is a
+#: chunked document with no heading tree. (websearch / perplexity-* stay
+#: link-kind eyes — a search answer is a note-shaped response, not a doc.)
 _DOC_KINDS: frozenset[str] = frozenset(
-    {"paper", "patent", "web", "datasheet", "cfp", "edgar"}
+    {"paper", "patent", "web", "datasheet", "cfp", "edgar", "youtube"}
 )
 
 _SUMMARY_CAP = 300
@@ -156,7 +186,7 @@ _HOME_FWD = 12
 #: decimal parse, rather than folded into the registry's grammar.
 _SKILL_HANDLE_PREFIX = handle_registry.code_for_kind("skill") + ":"
 
-#: The closed ``SPACE:`` tag axis (``docs/backlog/file-mirror.md``
+#: The closed ``SPACE:`` tag axis (`me693606`
 #: §Pillar-review deltas) — the partition a ``space=`` ring filter selects
 #: inside. Derived from the store's closed vocabulary so a new SPACE value
 #: (e.g. ``design-conventions``) is filterable everywhere at once; kept as
@@ -256,6 +286,7 @@ def render_eye(
     *,
     q: str | None = None,
     ring: RingFilter | dict[str, Any] | None = None,
+    corpus: dict[str, str] | None = None,
 ) -> str:
     """Render one eye by its kind's neighborhood strategy. Raises ``ValueError``
     if the handle does not resolve to a live ref/chunk, or asks a rung its
@@ -268,7 +299,10 @@ def render_eye(
     above lists one first-hop group uncapped (:func:`_expand_first_hop`) — the
     call a ``… +N more`` line carries. ``ring`` narrows every ring a link or
     doc eye renders (first hop, second hop, recall) by neighbour kind,
-    ``SPACE:`` tag and/or arbitrary tags (:class:`RingFilter`)."""
+    ``SPACE:`` tag and/or arbitrary tags (:class:`RingFilter`). ``corpus``
+    is consulted only by ``sk:`` handles: a ``<root>/<slug>`` id's worktree
+    corpus (``{slug: raw}``) resolved by ``SkillHandler.eye`` (gr541511) —
+    without it a ``/`` in the handle stays one unresolvable slug."""
     ext, recall = parse_extent(extent)
     filt = RingFilter.parse(ring)
     if q is not None and (ext < Extent.HOP1 or (ext < Extent.HOP2 and ":" in q)):
@@ -277,7 +311,7 @@ def render_eye(
             "q='<kind>:<label>' expands a second-hop group at fisheye+2hop"
         )
     if handle.startswith(_SKILL_HANDLE_PREFIX):
-        return _render_skill_eye(handle, ext, expand=q, ring=filt)
+        return _render_skill_eye(handle, ext, expand=q, ring=filt, corpus=corpus)
     parsed = handle_registry.parse(handle)
     if parsed is None:
         raise ValueError(f"eye: unresolvable handle {handle!r}")
@@ -291,8 +325,27 @@ def render_eye(
         from precis.utils.fisheye import render_fisheye
 
         return render_fisheye(store, kind=kind, handle=handle, extent=ext)
+    notice = ""
+    if kind in _CACHE_EYE_KINDS and not is_chunk:
+        cached = store.get_cache_entry_by_ref_id(kind=kind, ref_id=pk)
+        if cached is not None:
+            ref, cache = cached
+            withhold, notice = cache_body_notice(cache.meta)
+            if withhold:
+                head = _head(ref, kind, _head_chips(store, ref, kind))
+                sections = _rings(
+                    store,
+                    ref.id,
+                    kind,
+                    ext,
+                    recall=False,
+                    expand=q,
+                    ring=filt,
+                    handle=handle,
+                )
+                return "\n\n".join([head, notice, *sections])
     if kind in _DOC_KINDS:
-        return _render_doc_eye(
+        body = _render_doc_eye(
             store,
             handle,
             kind,
@@ -302,9 +355,11 @@ def render_eye(
             expand=q,
             ring=filt,
         )
-    return _render_note_eye(
-        store, handle, kind, ext, recall=recall, expand=q, ring=filt
-    )
+    else:
+        body = _render_note_eye(
+            store, handle, kind, ext, recall=recall, expand=q, ring=filt
+        )
+    return f"{notice}\n\n{body}" if notice else body
 
 
 #: The suffix that adds the similarity rung to any extent.
@@ -374,9 +429,9 @@ def _mirror_name(ref: Any) -> str:
 def _handle_with_file(kind: str, ref: Any, ref_id: int) -> str:
     """The handle, with the mirror filename beside it when the ref has one:
     ``me4641 (worker_busy_vs_starved_diagnosis.md)``. A code-less kind
-    (``handle_registry.CODELESS_KINDS``: websearch, web, perplexity-*, …)
+    (``handle_registry.CODELESS_KINDS``: calc, math, …)
     is addressed by ``<kind>:<slug>``, the form ``get`` resolves, so a memory
-    whose ring cites a websearch cache renders instead of raising
+    whose ring cites a codeless cache renders instead of raising
     (gr476896)."""
     hid = handle_registry.try_format(kind, ref_id)
     if hid is None:
@@ -600,43 +655,92 @@ def _skill_expand_second_hop(expand: str, second: dict[str, tuple[str, ...]]) ->
     return "\n".join(lines)
 
 
-def _render_skill_eye(
-    handle: str,
-    ext: Extent,
-    *,
-    expand: str | None = None,
-    ring: RingFilter | None = None,
-) -> str:
-    """A skill eye (``sk:<slug>``): file-backed, so it renders straight from
-    the skill corpus via ``handlers.skill``'s own accessors — the same ones
-    ``SkillHandler.get`` uses — rather than a store round trip.
+def _skill_synopsis(text: str) -> str:
+    """A skill's one-line gloss: its front-matter ``summary:``, else the
+    first non-heading content line (gr568475 — the ``summary`` eye rung
+    renders the node alone, and a skill's own summary field is the honest
+    gloss of it)."""
+    from precis.skill_index.chunker import _extract_front_matter_questions
 
-    ``toc``/``none`` render a one-line bookmark, ``summary``…``fisheye``
-    the verbatim body (capped like any other eye): a skill has no corpus
-    position to be a spatial neighbour of. Its *link* ring is derived,
-    not stored — the ``[[slug]]`` wikilinks, outbound plus inbound, from
-    the shared :class:`SkillGraph` (gr572706). ``fisheye+1hop`` appends
-    it; ``fisheye+2hop`` adds the second hop as counts. ``q='<label>'``
-    expands one first-hop group, ``q='skill:<label>'`` one second-hop
-    group — the same grammar a link-kind eye takes. Wikilinks in the
-    body render expanded like the whole-skill serve."""
-    from precis.handlers.skill import _expand_wikilinks, _load_skill, _skill_title
+    summary, _answers = _extract_front_matter_questions(text)
+    if summary:
+        return " ".join(summary.split())
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and stripped != "---":
+            return " ".join(stripped.split())
+    return ""
 
-    slug = handle[len(_SKILL_HANDLE_PREFIX) :]
-    text = _load_skill(slug)
-    if text is None:
-        raise ValueError(f"eye: no live skill for {handle!r}")
-    title = _skill_title(slug) or slug
-    head = f"{handle} [skill] {title}".rstrip()
-    if ext <= Extent.TOC:
-        return f"· {head}"
-    block = f"{head}\n{_cap(_expand_wikilinks(text), _VERBATIM_CAP)}"
-    if ext < Extent.HOP1:
-        return block
 
-    # ring= narrows like on any eye: a kinds filter without 'skill'
-    # empties the ring; a space or tags filter always does — a file
-    # carries no tags.
+def _section_synopsis(chunk_text: str) -> str:
+    """A section's one-line gloss — its first non-heading content line,
+    collapsed. Heading lines carry no information a ``~N`` row doesn't."""
+    for line in chunk_text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return _cap(" ".join(stripped.split()), _CHUNK_SUMMARY_CAP)
+    return ""
+
+
+#: Most sections a whole-skill eye's map lists — the doc-eye cluster cap's
+#: twin; the tail folds into a ``+N more`` line, never a page (gr568475).
+_MAP_SECTION_CAP = 20
+
+
+def _skill_section_map(slug: str, text: str) -> str:
+    """A whole-skill eye's ``fisheye`` body: the section map — one ``~N``
+    row per H2 section (heading, targeting questions, size), never verbatim
+    body text. Shares its row computation with the index-first whole-skill
+    serve (:func:`precis.handlers.skill._skill_section_rows`), so a row that
+    appears on either surface reads the same. Drill a section by focusing
+    ``sk:<slug>~N`` or a plain ``get(kind='skill', id='<slug>~N')``."""
+    from precis.handlers.skill import _skill_section_rows
+
+    rows, loose = _skill_section_rows(slug, text)
+    shown = rows[:_MAP_SECTION_CAP]
+    lines = [
+        f"— {len(rows)} sections (drill: get(kind='skill', id='{slug}~N') "
+        f"or focus sk:{slug}~N) —"
+    ]
+    if loose:
+        lines.append(f"  questions: {_cap(' · '.join(loose), _CHUNK_SUMMARY_CAP)}")
+    for r in shown:
+        label = r["heading"]
+        if r["answers"]:
+            label = f"{label} — {r['answers']}"
+        row = f"  · {r['section']}  {_cap(label, _CHUNK_SUMMARY_CAP)}"
+        lines.append(f"{row} · {r['size']}" if r["size"] else row)
+    if len(rows) > len(shown):
+        lines.append(f"  +{len(rows) - len(shown)} more sections")
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class _SkillEyeSection:
+    """One H2 section of a skill, adapted to the tree-kind eye's
+    :class:`~precis.utils.fisheye._Chunk` protocol (gr568475) — the
+    ``chunk_by_h2`` list becomes a flat reading order (depth 0, no
+    parents), addressed by its ``~N`` selector in ``dc`` and by
+    ``sk:<slug>~N`` in ``handle``."""
+
+    chunk_id: int
+    ref_id: int
+    handle: str
+    chunk_kind: str
+    text: str
+    parent_chunk_id: int | None
+    depth: int
+    dc: str
+
+
+def _skill_ring_sections(
+    slug: str, ext: Extent, *, expand: str | None, ring: RingFilter | None
+) -> list[str]:
+    """The skill eye's hop sections in the link-kind shape — factored out
+    of the whole-skill and section eyes so both render the identical
+    wikilink ring, second hop and ``q=`` expansions. ``ring=`` narrows
+    like on any eye: a kinds filter without 'skill' empties the ring; a
+    space or tags filter always does — a file carries no tags."""
     if ring is not None and (
         (ring.kinds is not None and "skill" not in ring.kinds)
         or ring.spaces is not None
@@ -665,15 +769,169 @@ def _render_skill_eye(
             sections.append(
                 _skill_render_second_hop(second, sum(len(s) for s in groups.values()))
             )
-    return "\n\n".join([block, *sections])
+    return sections
+
+
+def _render_skill_eye(
+    handle: str,
+    ext: Extent,
+    *,
+    expand: str | None = None,
+    ring: RingFilter | None = None,
+    corpus: dict[str, str] | None = None,
+) -> str:
+    """A skill eye (``sk:<slug>`` or ``sk:<slug>~N``): file-backed, so it
+    renders straight from the skill corpus via ``handlers.skill``'s own
+    accessors — the same ones ``SkillHandler.get`` uses — rather than a
+    store round trip.
+
+    A skill is an H2 tree, so since gr568475 the ladder is the tree-kind
+    one, not a bookmark-or-body special case. A **section eye**
+    (``sk:<slug>~N``) focuses one section and renders through the shared
+    spatial span (:func:`precis.utils.fisheye.render_fisheye_span` over a
+    ``chunk_by_h2`` adapter): ``kwd`` a one-line bookmark, ``summary`` the
+    section gloss, ``verbatim`` the section text, ``fisheye`` the verbatim
+    center over a graduated neighbourhood of sections. A **whole-skill
+    eye** renders the node alone at the content rungs (``kwd`` a bookmark,
+    ``summary`` the front-matter synopsis, ``verbatim`` the body) and the
+    **section map** — one ``~N`` row per section, never a page — at
+    ``fisheye`` and up. The *link* ring belongs to the skill, not one
+    section: ``fisheye+1hop`` (on either eye) appends the derived
+    ``[[slug]]`` wikilinks (gr572706), ``fisheye+2hop`` the second hop as
+    counts, and ``q='<label>'`` / ``q='skill:<label>'`` expand one group —
+    the same grammar a link-kind eye takes. Wikilinks in a verbatim body
+    render expanded like the whole-skill serve.
+
+    The eye honours the serve's two resolutions and its scope fence
+    (gr568808 review): a ``<root>/<slug>`` handle renders the worktree
+    corpus ``SkillHandler.eye`` resolved for it (gr541511 — never a
+    silent repoint at the packaged corpus: without ``corpus`` a ``/``
+    stays one unresolvable slug); a served alias resolves through
+    ``_serve_fallback`` like ``get`` (gr338442 / gr524267); and the
+    gr512233 fence applies before any section selection — a
+    ``scope: write`` skill stubs under a read connection on every rung
+    above the bookmark, and ``scope_render`` runs in BOTH scopes (read
+    drops a ``{write}`` section's body to its pointer, write strips the
+    markers), so the ladder reads exactly the text ``get`` serves and a
+    ``~N`` handle names the same section either way."""
+    from precis.handlers.skill import (
+        _expand_wikilinks,
+        _load_skill,
+        _serve_fallback,
+        _skill_is_write_only,
+        _skill_title,
+        _skill_title_in,
+        _write_only_stub,
+    )
+    from precis.runtime.scope import current_scope
+    from precis.skill_index.chunker import chunk_by_h2
+    from precis.utils.fisheye import render_fisheye_span
+    from precis.utils.skill_scope import render as scope_render
+    from precis.utils.skill_scope import strip_heading_mark
+
+    raw = handle[len(_SKILL_HANDLE_PREFIX) :]
+    slug, sep, sel = raw.partition("~")
+    root = ""
+    if corpus is not None and "/" in slug:
+        root, _, slug = slug.partition("/")
+    display = f"{root}/{slug}" if root else slug
+    text = _load_skill(slug, corpus=corpus)
+    if text is None:
+        alias_target = _serve_fallback(slug, corpus)
+        if alias_target is not None:
+            slug = alias_target
+            display = f"{root}/{slug}" if root else slug
+            text = _load_skill(slug, corpus=corpus)
+    if text is None:
+        raise ValueError(f"eye: no live skill for {handle!r}")
+    title = (
+        _skill_title_in(corpus, slug) if corpus is not None else _skill_title(slug)
+    ) or slug
+
+    conn_scope = current_scope()
+    if conn_scope == "read" and _skill_is_write_only(slug, corpus=corpus):
+        head = f"{_SKILL_HANDLE_PREFIX}{display} [skill] {title}".rstrip()
+        if ext <= Extent.TOC:
+            return f"· {head}"
+        return f"{head}\n{_write_only_stub(slug, corpus=corpus)}"
+    text, _dropped = scope_render(text, conn_scope)
+
+    if sep:
+        # Section eye — sk:<slug>~N through the shared tree-kind ladder.
+        if not sel.strip().isdigit():
+            raise ValueError(
+                f"eye: bad skill section selector in {handle!r} — "
+                f"expected sk:<slug>~<n>"
+            )
+        idx = int(sel)
+        chunks = chunk_by_h2(text)
+        if idx >= len(chunks):
+            raise ValueError(
+                f"eye: no section ~{idx} on {_SKILL_HANDLE_PREFIX}{display} "
+                f"({len(chunks)} section(s): ~0..~{len(chunks) - 1})"
+            )
+        sections = [
+            _SkillEyeSection(
+                chunk_id=i,
+                ref_id=0,
+                handle=f"{_SKILL_HANDLE_PREFIX}{display}~{i}",
+                chunk_kind="section",
+                text=c.text,
+                parent_chunk_id=None,
+                depth=0,
+                dc=f"{display}~{i}",
+            )
+            for i, c in enumerate(chunks)
+        ]
+        views = {s.handle: {"summary": _section_synopsis(s.text)} for s in sections}
+        target = sections[idx]
+        heading = strip_heading_mark(chunks[idx].heading)
+        head = f"{handle} [skill] {heading or title}".rstrip()
+        if ext <= Extent.TOC:
+            return f"· {head}"
+
+        def _ring() -> str:
+            return "\n\n".join(
+                _skill_ring_sections(slug, ext, expand=expand, ring=ring)
+            )
+
+        block = render_fisheye_span(sections, target, views, ext, ring=_ring)
+        return f"{head}\n{block}"
+
+    # Whole-skill eye — the node alone at the content rungs, the section
+    # map (never the body) at the neighbourhood rungs.
+    head = f"{handle} [skill] {title}".rstrip()
+    if ext <= Extent.TOC:
+        return f"· {head}"
+    if ext is Extent.SUMMARY:
+        return f"{head}\n{_cap(_skill_synopsis(text), _SUMMARY_CAP)}"
+    if ext is Extent.FULL:
+        # The verbatim rung is the one rung that promises the text —
+        # and on skill it *is* the complete read: ``extent='verbatim'``
+        # replaced ``full=true`` as the canonical full-body spelling
+        # (gr568808), so capping it at ``_VERBATIM_CAP`` would break the
+        # deprecation's promise. The file's own size gate bounds it.
+        return f"{head}\n{_expand_wikilinks(text)}"
+
+    block = f"{head}\n{_skill_section_map(display, text)}"
+    if ext < Extent.HOP1:
+        return block
+    ring_sections = _skill_ring_sections(slug, ext, expand=expand, ring=ring)
+    return "\n\n".join([block, *ring_sections])
 
 
 # ── doc kinds: the keyword-cluster fisheye (paper / patent / web / …) ──
 
 
 def _chunk_handle(kind: str, block: Any) -> str:
-    """The block's universal ``pc<id>`` chunk handle."""
-    return handle_registry.format_handle(kind, int(block.id), chunk=True)
+    """The block's universal ``pc<id>`` chunk handle — or, for a doc kind
+    whose chunks mint no handle (``web`` / ``youtube``, gr702962: no
+    chunk codes until refresh keeps chunk ids stable), the
+    ``<ref-handle>~<ord>`` selector that drills the same block."""
+    h = handle_registry.try_format(kind, int(block.id), chunk=True)
+    if h is not None:
+        return h
+    return f"{handle_registry.format_handle(kind, int(block.ref_id))}~{block.ord}"
 
 
 def _preview_text(text: str) -> str:
@@ -699,8 +957,9 @@ def _chunk_summary(block: Any) -> str:
 
 
 def _cluster_label(kind: str, bucket: list[Any], kws: list[str]) -> str:
-    """One collapsed label line for a cluster — its lead ``pc`` handle, the span
-    size, and the keyword label. Drill it by focusing the handle."""
+    """One collapsed label line for a cluster — its lead chunk selector
+    (``pc<N>``, or ``<ref>~<ord>`` where chunks mint no handle), the span
+    size, and the keyword label."""
     lead = _chunk_handle(kind, bucket[0])
     span = f" +{len(bucket) - 1}" if len(bucket) > 1 else ""
     label = ", ".join(kws) or _chunk_summary(bucket[0]) or "…"
@@ -711,9 +970,22 @@ def _cluster_label(kind: str, bucket: list[Any], kws: list[str]) -> str:
 
 def _cluster_map(kind: str, clusters: list[tuple[list[Any], list[str]]]) -> str:
     """A whole-doc eye: the cluster map — one label row per cluster, no
-    verbatim text. Drill any cluster by focusing its ``pc`` handle."""
+    verbatim text. Drill any cluster by focusing its chunk handle; on a
+    doc kind whose chunks mint no handle (``web`` / ``youtube``,
+    gr702962) the ``<ref>~<ord>`` rows are plain-get selectors — under
+    ``extent=`` they are refused, so the header names the call that
+    works (review td707055)."""
     shown = clusters[:_MAP_CLUSTER_CAP]
-    lines = [f"— {len(clusters)} clusters (focus a pc handle to open one) —"]
+    if handle_registry.try_format(kind, 0, chunk=True) is not None:
+        drill = "focus a chunk handle to open one"
+    elif shown:
+        drill = (
+            f"read a row with get(kind={kind!r}, "
+            f"id='{_chunk_handle(kind, shown[0][0][0])}')"
+        )
+    else:
+        drill = f"read a row with get(kind={kind!r}, id='<ref>~<ord>')"
+    lines = [f"— {len(clusters)} clusters ({drill}) —"]
     lines.extend(_cluster_label(kind, bucket, kws) for bucket, kws in shown)
     if len(clusters) > len(shown):
         lines.append(f"  +{len(clusters) - len(shown)} more clusters")
@@ -757,7 +1029,10 @@ def _fisheye_split(
     for b in home_bucket[lo:hi]:
         # ``pc<N> ~<ord>`` like the ``#`` chunk-get header — the decimal
         # handle alone hides the block's ``~ord`` selector (gr520328).
-        h = f"{_chunk_handle(kind, b)} ~{b.ord}"
+        # The ``<ref>~<ord>`` fallback form already carries its ord.
+        h = _chunk_handle(kind, b)
+        if not h.endswith(f"~{b.ord}"):
+            h += f" ~{b.ord}"
         if b.ord == eye_ord:
             if ext is Extent.SUMMARY:
                 lines.append(f"▸ {h} [{b.chunk_kind}]  {_chunk_summary(b)}")
@@ -900,12 +1175,30 @@ def _note_body(store: Store, ref: Any, kind: str, *, cap: int) -> tuple[str, int
     composed from ``refs.title``/``refs.meta`` by
     :func:`precis.handlers.quest.quest_gist` (``fisheye-everywhere.md``
     in-scope 4). Composed, not stored: meta rubric edits can't drift a
-    derived gist, and pre-change quests need no backfill."""
+    derived gist, and pre-change quests need no backfill.
+
+    A memory renders through the handler's display projection
+    (:meth:`precis.handlers.memory.MemoryHandler._display_body`) fed the
+    same stored ``memory_body`` chunk the ordinary and ``~body`` reads
+    project, so the eye hides the same legacy title echo — the stamped
+    decision survives partial edits and metadata-only retitles (gr715698)."""
     if kind == "quest":
         from precis.handlers.quest import quest_gist
 
         gist = quest_gist(ref)
         return _cap(gist, cap), len(gist)
+    if kind == "memory":
+        # ``_stored_body``, not the ord≥0 join: the stamped
+        # ``_memory_body_display`` policy sha-fingerprints the first body
+        # chunk alone, so a second body chunk or a ``tag_overflow`` in the
+        # join would miss it — resurrecting the hidden lead or eating an
+        # authored first line.
+        from precis.handlers.memory import MemoryHandler
+
+        shown = MemoryHandler._display_body(
+            ref, MemoryHandler._stored_body(store, ref)
+        ).strip()
+        return _cap(shown, cap), len(shown)
     return _ordered_body(store, int(ref.id), cap=cap)
 
 
@@ -1081,11 +1374,31 @@ class _RingNeighbour:
     ref_id: int
     edges: int = 1
     passages: tuple[tuple[int, int | None], ...] = ()
+    #: The *focus*-side ``(chunk_id, ord)`` passages the folded edges pin
+    #: on this ref — ``via pc118 ~12`` on the row (gr627629: a chunk-
+    #: grounded rollup named the far passage but hid which of the focus's
+    #: own chunks carried the claim). ``()`` for ref-level edges.
+    via: tuple[tuple[int, int | None], ...] = ()
     log_entry: tuple[int, str] | None = None
     suspect: bool = False
-    #: Distinct non-empty ``meta.reason`` values across the folded edges,
-    #: first-seen order (gr626896 — an edge's why displays where it lists).
+    #: Distinct non-empty whys across the folded edges, first-seen order
+    #: (gr626896 — an edge's why displays where it lists; a ``considered``
+    #: edge's is the composed verdict line, :func:`link_why`).
     reasons: tuple[str, ...] = ()
+    #: The ``considered`` verdict slug when a folded edge carries one
+    #: (gr662069) — what the Considered group counts per verdict.
+    verdict: str | None = None
+
+
+def _why_parts(why: Any) -> tuple[str | None, str | None]:
+    """``(display text, verdict)`` of an edge's why as the bucket carries
+    it — a :class:`LinkWhy` from :func:`_edge_reasons_by_id`, or the bare
+    ``meta.reason`` string older call paths still pass."""
+    if isinstance(why, LinkWhy):
+        return (why.text or None), why.verdict
+    if isinstance(why, str) and why.strip():
+        return why, None
+    return None, None
 
 
 def _link_neighbors(store: Store, ref_id: int) -> str:
@@ -1149,7 +1462,17 @@ def _render_ring(
         hub_handle=handle_registry.format_handle("memory", ref_id)
         if notes is not None
         else None,
+        via_kind=_focus_kind(store, ref_id),
     )
+
+
+def _focus_kind(store: Store, ref_id: int) -> str | None:
+    """The eye's focus kind — the chunk-code namespace the ``via``
+    handles on ring rows resolve in (:data:`_RingNeighbour.via`).
+    ``None`` when the focus can't be read, which drops every via tail."""
+    focus = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+    kind = str(getattr(focus, "kind", "") or "")
+    return kind or None
 
 
 def _entity_handles_for_refs(refs: dict[int, Any]) -> dict[int, str]:
@@ -1207,13 +1530,26 @@ def _more_hint_factory(
     The call re-reads the focus with ``q='<label>'``, which lists that whole
     group (:func:`_expand_first_hop`). For a memory whose group members share
     a ``section:<type>`` tag a scoped ``search`` is offered too."""
-    if not any(len(ns) > _NEIGHBOR_GROUP_CAP for ns in hop1.values()):
+    if not any(
+        len(ns)
+        > (_CONSIDERED_ROW_CAP if group == "Considered" else _NEIGHBOR_GROUP_CAP)
+        for (group, _label), ns in hop1.items()
+    ):
         return None
     focus = store.fetch_refs_by_ids([ref_id]).get(ref_id)
     if focus is None:
         return None
     kind = str(getattr(focus, "kind", "") or "")
     handle = handle_registry.format_handle(kind, ref_id)
+    from precis.store._consideration_ops import CONSIDERATION_LEDGER_KINDS
+
+    if kind in CONSIDERATION_LEDGER_KINDS:
+        # The scope's own verdicts overflow into their ledger — current
+        # verdicts, the reopen queue and the judgment history — not into
+        # another ring page (gr662069).
+        ledger_hint = f" · get(kind={kind!r}, id={handle!r}, view='considerations')"
+    else:
+        ledger_hint = None
     space = None
     if kind == "memory":
         space = next(
@@ -1226,6 +1562,8 @@ def _more_hint_factory(
         )
 
     def hint(label: str, ns: list[_RingNeighbour]) -> str:
+        if label == "considered" and ledger_hint is not None:
+            return ledger_hint
         out = (
             f" · get(kind={kind!r}, id={handle!r}, extent='fisheye+1hop', q={label!r})"
         )
@@ -1384,16 +1722,16 @@ def _ring_kept(
     store: Store,
     ring: RingFilter,
     refs: dict[int, Any],
-    pairs: list[tuple[int, int | None, Any]],
-) -> list[tuple[int, int | None, Any]]:
-    """``pairs`` (``(neighbour ref, far chunk id, meta.reason)`` per edge)
-    narrowed by ``ring``: kind from the ref row, tags in one bulk read
-    (only when the filter uses a tag dimension)."""
+    pairs: list[tuple[int, int | None, Any, int | None]],
+) -> list[tuple[int, int | None, Any, int | None]]:
+    """``pairs`` (``(neighbour ref, far chunk id, meta.reason, own chunk
+    id)`` per edge) narrowed by ``ring``: kind from the ref row, tags in
+    one bulk read (only when the filter uses a tag dimension)."""
     out = pairs
     if ring.kinds is not None:
         out = [p for p in out if str(getattr(refs[p[0]], "kind", "")) in ring.kinds]
     if ring.spaces is not None or ring.tags is not None:
-        tag_of = _tag_sets(store, {o for o, _c, _w in out})
+        tag_of = _tag_sets(store, {p[0] for p in out})
         if ring.spaces is not None:
             want = {f"SPACE:{v}" for v in ring.spaces}
             out = [p for p in out if tag_of.get(p[0], frozenset()) & want]
@@ -1458,32 +1796,44 @@ def _suspect_edge_keys(store: Store, ref_id: int) -> set[tuple[int, int | None]]
 
 
 def _collapse_pairs(
-    pairs: list[tuple[int, int | None, Any]],
+    pairs: list[tuple[int, int | None, Any, int | None]],
     ords: dict[int, int],
     suspect: set[tuple[int, int | None]]
     | frozenset[tuple[int, int | None]] = frozenset(),
 ) -> list[_RingNeighbour]:
-    """``(ref, far chunk, meta.reason)`` per edge → one
+    """``(ref, far chunk, meta.reason, own chunk)`` per edge → one
     :class:`_RingNeighbour` per ref — first-seen order, every edge
     counted, far-end chunks deduped (gr524665: a claim hub's
     ``paper --corroborates--> hub`` fan-in grounds at N chunks
-    of one source and must render as one row, not N identical rows). A row
+    of one source and must render as one row, not N identical rows), and
+    the focus-side chunks deduped the same way into ``via`` (gr627629). A row
     is ``suspect`` when any folded edge's ``(ref, chunk)`` is in
     ``suspect``; its ``reasons`` are the folded edges' distinct non-empty
-    ``meta.reason`` values, first-seen order (gr626896)."""
-    acc: dict[int, tuple[int, list[int], bool, list[str]]] = {}
+    whys, first-seen order (gr626896); its ``verdict`` the first
+    ``considered`` verdict among them (gr662069)."""
+    acc: dict[int, tuple[int, list[int], bool, list[str], str | None, list[int]]] = {}
     order: list[int] = []
-    for oid, ck, why in pairs:
+    for oid, ck, why, own in pairs:
         slot = acc.get(oid)
         if slot is None:
-            acc[oid] = slot = (0, [], False, [])
+            acc[oid] = slot = (0, [], False, [], None, [])
             order.append(oid)
-        edges, chunks, sus, reasons = slot
-        acc[oid] = (edges + 1, chunks, sus or (oid, ck) in suspect, reasons)
+        edges, chunks, sus, reasons, verdict, own_chunks = slot
+        text, v = _why_parts(why)
+        acc[oid] = (
+            edges + 1,
+            chunks,
+            sus or (oid, ck) in suspect,
+            reasons,
+            verdict or v,
+            own_chunks,
+        )
         if ck is not None and ck not in chunks:
             chunks.append(ck)
-        if isinstance(why, str) and why.strip() and why not in reasons:
-            reasons.append(why)
+        if own is not None and own not in own_chunks:
+            own_chunks.append(own)
+        if text is not None and text not in reasons:
+            reasons.append(text)
     return [
         _RingNeighbour(
             oid,
@@ -1491,6 +1841,8 @@ def _collapse_pairs(
             passages=tuple((c, ords.get(c)) for c in acc[oid][1]),
             suspect=acc[oid][2],
             reasons=tuple(acc[oid][3]),
+            verdict=acc[oid][4],
+            via=tuple((c, ords.get(c)) for c in acc[oid][5]),
         )
         for oid in order
     ]
@@ -1516,7 +1868,7 @@ def _first_hop(
     if not by_label:
         return {}, {}
     refs = store.fetch_refs_by_ids(
-        {o for pairs in by_label.values() for o, _c, _why in pairs}
+        {o for pairs in by_label.values() for o, _c, _why, _own in pairs}
     )
     live = {
         key: [p for p in pairs if _live(refs, p[0])] for key, pairs in by_label.items()
@@ -1528,9 +1880,17 @@ def _first_hop(
             for key, pairs in live.items()
             if (kept := _ring_kept(store, ring, refs, pairs))
         }
+    # ``~<ord>`` suffixes resolve for both ends — the far-end passage
+    # handles and the focus-side ``via`` handles (gr627629).
     ords = _chunk_ords(
         store,
-        (c for pairs in live.values() for _o, c, _why in pairs if c is not None),
+        {
+            c
+            for pairs in live.values()
+            for _o, far_c, _why, own_c in pairs
+            for c in (far_c, own_c)
+            if c is not None
+        },
     )
     suspect = _suspect_edge_keys(store, ref_id) if live else set()
     entries = _quest_log_entries(store, ref_id, live, refs)
@@ -1538,12 +1898,12 @@ def _first_hop(
     for key, pairs in live.items():
         ordinary = []
         seen: set[int] = set()
-        for oid, cid, why in pairs:
+        for oid, cid, why, own in pairs:
             entry = (
                 entries.get(cid) if cid is not None and key[1] == "cited-by" else None
             )
             if entry is None:
-                ordinary.append((oid, cid, why))
+                ordinary.append((oid, cid, why, own))
                 continue
             if cid in seen:
                 continue
@@ -1551,12 +1911,13 @@ def _first_hop(
             seen.add(cid)
             ord_, section, preview = entry
             label = f"quest log — {section}" if section else "quest log"
+            why_text = _why_parts(why)[0]
             out.setdefault((key[0], label), []).append(
                 _RingNeighbour(
                     oid,
                     passages=((cid, ord_),),
                     log_entry=(ord_, preview),
-                    reasons=(why,) if isinstance(why, str) and why.strip() else (),
+                    reasons=(why_text,) if why_text is not None else (),
                 )
             )
         if ordinary:
@@ -1576,7 +1937,7 @@ def _first_hop(
 def _quest_log_entries(
     store: Store,
     ref_id: int,
-    pairs: dict[tuple[str, str], list[tuple[int, int | None, Any]]],
+    pairs: dict[tuple[str, str], list[tuple[int, int | None, Any, int | None]]],
     refs: dict[int, Any],
 ) -> dict[int, tuple[int, str, str]]:
     """A structure's incoming log entries, keyed by the linked chunk.
@@ -1589,7 +1950,7 @@ def _quest_log_entries(
         cid
         for (_group, label), neighbours in pairs.items()
         if label == "cited-by"
-        for oid, cid, _why in neighbours
+        for oid, cid, _why, _own in neighbours
         if cid is not None
         and str(getattr(refs[oid], "kind", "")) == "quest"
         and not _scope_masks(refs[oid])
@@ -1678,23 +2039,38 @@ def _neighbourhood_edges(
     return edges
 
 
-def _edge_reasons_by_id(store: Store, link_ids: list[int]) -> dict[int, Any]:
-    """``{link_id: meta['reason']}`` for the listed edges in one query —
-    the value the ring appends to the neighbour row. A read failure
-    reads as no reasons, never a broken render."""
+def _edge_reasons_by_id(store: Store, link_ids: list[int]) -> dict[int, LinkWhy]:
+    """``{link_id: why}`` for the listed edges in one query — the value
+    the ring appends to the neighbour row: ``meta.reason`` for a plain
+    edge, the composed verdict line for a ``considered`` edge
+    (:func:`link_why`, gr662069). A read failure reads as no reasons,
+    never a broken render."""
     if not link_ids:
         return {}
     try:
         with store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT link_id, meta->>'reason' FROM links "
-                "WHERE link_id = ANY(%s) AND meta ? 'reason'",
+                "SELECT link_id, meta->>'reason', meta->>'verdict', "
+                "meta->>'depth', meta->>'checked_at' FROM links "
+                "WHERE link_id = ANY(%s) AND (meta ? 'reason' OR meta ? 'verdict')",
                 (link_ids,),
             ).fetchall()
     except Exception:
         log.debug("link reason read failed", exc_info=True)
         return {}
-    return {int(r[0]): r[1] for r in rows}
+    out: dict[int, LinkWhy] = {}
+    for lid, reason, verdict, depth, checked in rows:
+        why = link_why(
+            {
+                "reason": reason,
+                "verdict": verdict,
+                "depth": depth,
+                "checked_at": checked,
+            }
+        )
+        if why is not None:
+            out[int(lid)] = why
+    return out
 
 
 def _live(refs: dict[int, Any], oid: int) -> bool:
@@ -1706,15 +2082,16 @@ def _bucket_edges(
     store: Store,
     ref_id: int,
     edges: list[tuple[int, int, Any, int | None, int | None, Any]],
-) -> dict[tuple[str, str], list[tuple[int, int | None, Any]]]:
+) -> dict[tuple[str, str], list[tuple[int, int | None, Any, int | None]]]:
     """Group ``ref_id``'s ``(src, dst, relation, src_chunk, dst_chunk,
     reason)`` edges by ``(ring group, label as seen from here)``, listing
-    the other endpoint of each as ``(ref, far chunk id, meta.reason)`` —
-    the chunk the edge grounds at on the neighbour's side, and the why the
-    row appends (``None`` when the edge carries none). Dead ends included;
-    the caller filters by liveness and collapses."""
+    the other endpoint of each as ``(ref, far chunk id, meta.reason, own
+    chunk id)`` — the chunk the edge grounds at on the neighbour's side,
+    the why the row appends (``None`` when the edge carries none), and the
+    chunk it pins on the *focus's* side for the ``via`` tail (gr627629).
+    Dead ends included; the caller filters by liveness and collapses."""
     inverses, symmetric = _relation_reading(store)
-    by_label: dict[tuple[str, str], list[tuple[int, int | None, Any]]] = {}
+    by_label: dict[tuple[str, str], list[tuple[int, int | None, Any, int | None]]] = {}
     for src, dst, rel, sck, dck, reason in edges:
         group = ring_group(str(rel)) if rel is not None else None
         if group is None:
@@ -1724,11 +2101,17 @@ def _bucket_edges(
         if other == ref_id:
             continue
         other_chunk = dck if outbound else sck
+        own_chunk = sck if outbound else dck
         label = _as_seen_from_here(
             str(rel), outbound=outbound, inverses=inverses, symmetric=symmetric
         )
         by_label.setdefault((group, label), []).append(
-            (other, int(other_chunk) if other_chunk is not None else None, reason)
+            (
+                other,
+                int(other_chunk) if other_chunk is not None else None,
+                reason,
+                int(own_chunk) if own_chunk is not None else None,
+            )
         )
     return by_label
 
@@ -1763,7 +2146,10 @@ def first_hop_shape(
             edges[end].append((int(src), int(dst), rel, sck, dck, None))
     buckets = {r: _bucket_edges(store, r, e) for r, e in edges.items()}
     others = {
-        o for b in buckets.values() for pairs in b.values() for o, _c, _why in pairs
+        o
+        for b in buckets.values()
+        for pairs in b.values()
+        for o, _c, _why, _own in pairs
     }
     refs = store.fetch_refs_by_ids(others | {int(src) for src, _d, _r, _s, _k in rows})
     shape: dict[int, tuple[int, int, int]] = {}
@@ -1785,15 +2171,15 @@ def first_hop_shape(
             if src == r and rel == "supersedes" and not _live(refs, dst)
         }
         live_groups = [
-            {o for o, _c, _why in pairs if _live(refs, o)}
+            {o for o, _c, _why, _own in pairs if _live(refs, o)}
             for (_g, label), pairs in by_label.items()
             if not (r in hubs and label == _HUB_MEMBER_LABEL)
         ]
         live_all = [
-            {o for o, _c, _why in pairs if _live(refs, o)}
+            {o for o, _c, _why, _own in pairs if _live(refs, o)}
             for pairs in by_label.values()
         ]
-        every = {o for pairs in by_label.values() for o, _c, _why in pairs}
+        every = {o for pairs in by_label.values() for o, _c, _why, _own in pairs}
         live = set().union(*live_all) if live_all else set()
         shape[r] = (
             len(live),
@@ -1839,24 +2225,41 @@ def _expand_first_hop(
             [n.ref_id for n in ns if n.ref_id in refs]
         ).items()
     }
-    lines = [f"— linked (1 hop) · {label} ({len(ns)}) —"]
+    via_kind = _focus_kind(store, ref_id)
+    lines = [f"— linked (1 hop) · {label} ({_target_edge_tally(ns)}) —"]
     lines.extend(
-        f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''))}"
+        f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''), via_kind=via_kind)}"
         for n in ns[:_FIRST_HOP_EXPAND_CAP]
     )
     if len(ns) > _FIRST_HOP_EXPAND_CAP:
-        lines.append(f"    … +{len(ns) - _FIRST_HOP_EXPAND_CAP} more")
+        lines.append(
+            f"    … +{len(ns) - _FIRST_HOP_EXPAND_CAP} more · "
+            f"showing {_FIRST_HOP_EXPAND_CAP} of {len(ns)}"
+        )
     return "\n".join(lines)
 
 
-def _passage_suffix(n: _RingNeighbour, kind: str) -> str:
-    """A collapsed row's tail (gr524665): ``  ×N`` when parallel edges folded
-    into it, plus the far-end chunk handles those edges ground at —
-    ``pc<id> ~<ord>``, the doc eye's form — first few, then ``· +N more``.
-    A kind with no chunk code (memory chunks are not agent-addressable)
-    drops the handle but keeps the count."""
+def _target_edge_tally(ns: list[_RingNeighbour]) -> str:
+    """``T`` targets alone, or ``T targets · E edges`` when parallel edges
+    fold into rows — a chunk-pinned fan-in must not read as N distinct
+    targets (gr627629)."""
+    targets = len(ns)
+    edges = sum(n.edges for n in ns)
+    if edges == targets:
+        return str(targets)
+    t = f"{targets} target" + ("s" if targets != 1 else "")
+    e = f"{edges} edge" + ("s" if edges != 1 else "")
+    return f"{t} · {e}"
+
+
+def _chunk_handles(chunks: tuple[tuple[int, int | None], ...], kind: str | None) -> str:
+    """``pc<id> ~<ord>`` handles joined `` · `` — first few, then
+    ``· +N more``. A kind with no chunk code (memory chunks are not
+    agent-addressable) drops the handle."""
+    if kind is None:
+        return ""
     handles: list[str] = []
-    for cid, ord_ in n.passages:
+    for cid, ord_ in chunks:
         h = handle_registry.try_format(kind, cid, chunk=True)
         if h is not None:
             handles.append(f"{h} ~{ord_}" if ord_ is not None else h)
@@ -1864,12 +2267,34 @@ def _passage_suffix(n: _RingNeighbour, kind: str) -> str:
     listed = " · ".join(shown)
     if len(handles) > len(shown):
         listed += f" · +{len(handles) - len(shown)} more"
+    return listed
+
+
+def _passage_suffix(
+    n: _RingNeighbour, kind: str, *, via_kind: str | None = None
+) -> str:
+    """A collapsed row's tail (gr524665): ``  ×N`` when parallel edges folded
+    into it, plus the far-end chunk handles those edges ground at —
+    ``pc<id> ~<ord>``, the doc eye's form — first few, then ``· +N more``,
+    then ``via pc<id> ~<ord>`` naming the *focus's own* chunks the edges
+    pin on this side (gr627629). A kind with no chunk code drops the
+    handle but keeps the count."""
+    listed = _chunk_handles(n.passages, kind)
+    via = _chunk_handles(n.via, via_kind)
+    via = f" via {via}" if via else ""
     if n.edges > 1:
-        return f"  ×{n.edges} ({listed})" if listed else f"  ×{n.edges}"
-    return f"  ({listed})" if listed else ""
+        return f"  ×{n.edges} ({listed}){via}" if listed else f"  ×{n.edges}{via}"
+    return f"  ({listed}){via}" if listed else via
 
 
-def _ring_row(ref: Any, n: _RingNeighbour, *, chips: str = "", size: str = "") -> str:
+def _ring_row(
+    ref: Any,
+    n: _RingNeighbour,
+    *,
+    chips: str = "",
+    size: str = "",
+    via_kind: str | None = None,
+) -> str:
     """One ring row: the neighbour label plus its collapsed-edge tail."""
     from precis.utils.surface_scope import masked_ref_placeholder
 
@@ -1883,7 +2308,7 @@ def _ring_row(ref: Any, n: _RingNeighbour, *, chips: str = "", size: str = "") -
         handle = handle_registry.format_handle("quest", n.passages[0][0], chunk=True)
         return f"{handle} ~{ord_} — {preview}"
     row = _neighbor_label(ref, n.ref_id, chips=chips, size=size) + _passage_suffix(
-        n, str(getattr(ref, "kind", "") or "")
+        n, str(getattr(ref, "kind", "") or ""), via_kind=via_kind
     )
     # gr568170: a folded edge whose target moved since it was asserted.
     if n.suspect:
@@ -1901,6 +2326,7 @@ def _render_first_hop(
     hub_members: dict[int, str] | None = None,
     more_hint: Any = None,
     hub_handle: str | None = None,
+    via_kind: str | None = None,
 ) -> str:
     chips = chips or {}
     sizes = sizes or {}
@@ -1949,27 +2375,60 @@ def _render_first_hop(
                         f"extent='fisheye+1hop', q='{label}')"
                     )
             continue
-        if len(live_ids) == 1:
+        if len(live_ids) == 1 and live_ids[0].edges == 1:
             n = live_ids[0]
             lines.append(
                 f"  {label}: "
-                f"{_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''))}"
+                f"{_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''), via_kind=via_kind)}"
             )
             continue
-        lines.append(f"  {label} ({len(live_ids)}):")
-        for n in live_ids[:_NEIGHBOR_GROUP_CAP]:
+        # gr662069 / me626853: the scope's judged-out candidates are a
+        # count first and a short list second — they never spend the
+        # per-group row budget the useful rows get.
+        cap = _CONSIDERED_ROW_CAP if group == "Considered" else _NEIGHBOR_GROUP_CAP
+        counts = _verdict_counts(live_ids) if group == "Considered" else ""
+        # gr627629: targets and edges are different counts — a chunk-
+        # pinned fan-in folds into one target row but is still N edges,
+        # and the header must say so or "1" reads as a single edge.
+        lines.append(
+            f"  {label} ({_target_edge_tally(live_ids)}{': ' + counts if counts else ''}):"
+        )
+        shown = min(cap, len(live_ids))
+        for n in live_ids[:shown]:
             lines.append(
-                f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''))}"
+                f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''), via_kind=via_kind)}"
             )
-        if len(live_ids) > _NEIGHBOR_GROUP_CAP:
+        if len(live_ids) > cap:
             more = more_hint(label, live_ids) if more_hint is not None else ""
-            lines.append(f"    … +{len(live_ids) - _NEIGHBOR_GROUP_CAP} more{more}")
+            lines.append(
+                f"    … +{len(live_ids) - cap} more{more} · "
+                f"showing {shown} of {len(live_ids)}"
+            )
     if hub_handle is not None and heading is not None:
         lines.append(
             f"search within: search(kind='memory', q='<terms>', "
             f"args={{'under': '{hub_handle}'}})"
         )
     return "\n".join(lines) if heading is not None else ""
+
+
+#: Rows the Considered group lists before its ``… +N more`` line — the
+#: group is a count first (me626853: negative candidates must not exhaust
+#: the useful-row budget); the ledger (``view='considerations'``) is the
+#: expansion.
+_CONSIDERED_ROW_CAP = 3
+
+
+def _verdict_counts(ns: list[_RingNeighbour]) -> str:
+    """``"4 not useful · 1 uncertain"`` — the Considered group's header
+    tally, verdicts in severity order, zero counts omitted."""
+    tally = {v: 0 for v in ("not-useful", "uncertain", "useful")}
+    for n in ns:
+        if n.verdict in tally:
+            tally[n.verdict] += 1
+    return " · ".join(
+        f"{count} {CONSIDERED_VERDICT_LABELS[v]}" for v, count in tally.items() if count
+    )
 
 
 def _neighbor_label(ref: Any, ref_id: int, *, chips: str = "", size: str = "") -> str:
@@ -2296,10 +2755,22 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
             continue
         seen.add(rid)
         kept.append(ref)
-        gist = _cap(" ".join((block.text or "").split()), _CHUNK_SUMMARY_CAP)
+        cached = (
+            store.get_cache_entry_by_ref_id(kind=kind, ref_id=rid)
+            if kind in _CACHE_EYE_KINDS and ref.kind == kind
+            else None
+        )
+        withhold, notice = cache_body_notice(cached[1].meta if cached else None)
+        gist = (
+            ""
+            if withhold
+            else _cap(" ".join((block.text or "").split()), _CHUNK_SUMMARY_CAP)
+        )
         lines.append(
             f"  {_neighbor_label(ref, rid, chips=chips.get(rid, ''))}  ({1 - dist:.2f})"
         )
+        if notice:
+            lines.append(f"    {notice.splitlines()[0]}")
         if gist:
             lines.append(f"    {gist}")
         if len(seen) == _RECALL_K:

@@ -10,7 +10,7 @@ doors that already ask for it (``scope=``, ``mode='verbatim'`` — the
 verbatim early-return applies no per-paper collapse, so an explicit
 ``'paper'`` there is a BadInput rather than a silent fallback).
 
-Page-size defaults follow the row shape — 25 papers / 10 chunks — which
+Page-size defaults follow the row shape — 25 papers / 20 chunks — which
 is why the tool boundary now forwards ``page_size=None`` when unset and
 the handler resolves it *after* ``unique_per``. An explicitly passed
 ``unique_per`` echoes into same-search continuations so ``page=N+1``
@@ -27,6 +27,7 @@ from precis.errors import BadInput
 from precis.handlers.paper import PaperHandler
 from precis.store import ChunkInsert, Store
 from precis.utils import handle_registry
+from tests.workers._helpers import seed_chunk
 
 
 def _seed(
@@ -170,20 +171,98 @@ def test_per_paper_over_one_rejected_under_paper_rows(store: Store) -> None:
 
 
 def test_page_size_defaults_follow_the_row_shape(store: Store) -> None:
-    """12 one-chunk papers on one matching term: the default paper page
-    (25) returns all 12; the chunk page (10) stops at 10. An explicit
+    """22 one-chunk papers on one matching term: the default paper page
+    (25) returns all 22; the chunk page (20) returns 20 of 22. An explicit
     ``page_size`` overrides both."""
-    for i in range(12):
+    for i in range(22):
         _seed(store, slug=f"ps-{i}", blocks=[f"gallium arsenide study {i}"])
     h = _handler(store)
     paper = h.search(q="gallium arsenide")
-    assert len(_row_chunk_handles(paper.body)) == 12  # 25-row paper page
+    assert len(_row_chunk_handles(paper.body)) == 22  # 25-row paper page
     chunk = h.search(q="gallium arsenide", unique_per="chunk")
-    assert len(_row_chunk_handles(chunk.body)) == 10  # 10-row chunk page
+    assert len(_row_chunk_handles(chunk.body)) == 20  # 20-row chunk page
     # The verb refuses ``page=`` — the trailer must never advertise it.
     assert "page=" not in chunk.body
     explicit = h.search(q="gallium arsenide", page_size=5)
     assert len(_row_chunk_handles(explicit.body)) == 5
+    explicit_chunk = h.search(q="gallium arsenide", unique_per="chunk", page_size=7)
+    assert len(_row_chunk_handles(explicit_chunk.body)) == 7
+
+
+def test_scope_search_default_page_is_chunk_sized(store: Store) -> None:
+    """``scope=`` implies chunk rows, so no ``page_size`` asks for 20."""
+    ref = _seed(
+        store,
+        slug="sc-one",
+        blocks=[f"indium phosphide layer {i}" for i in range(23)],
+    )
+    res = _handler(store).search(
+        q="indium phosphide", scope=handle_registry.format_handle("paper", ref)
+    )
+    assert len(_row_chunk_handles(res.body)) == 20
+
+
+def test_chunk_title_matches_do_not_consume_page_slots(store: Store) -> None:
+    """gr681157: title records stay in the callout, leaving 20 chunk rows."""
+    query = "metal organic framework CO2 capture"
+    matching = _seed(
+        store,
+        slug="title-chunks",
+        title=query,
+        blocks=[f"{query} passage {i}" for i in range(22)],
+    )
+    record_only = _seed(
+        store,
+        slug="title-only",
+        title=query,
+        blocks=["unrelated boilerplate"],
+    )
+    h = _handler(store)
+    first = h.search(q=query, mode="lexical", unique_per="chunk")
+    assert "Title match" in first.body
+    for ref_id in (matching, record_only):
+        pa = handle_registry.format_handle("paper", ref_id)
+        assert pa in first.body
+        assert not any(line.startswith(pa + "\t") for line in first.body.splitlines())
+    assert first.body.splitlines()[0].startswith("# 20 of 22 block hits")
+    assert len(_row_chunk_handles(first.body)) == 20
+    second = h.search(q=query, mode="lexical", unique_per="chunk", page=2)
+    assert len(_row_chunk_handles(second.body)) == 2
+    assert set(_row_chunk_handles(first.body)).isdisjoint(
+        _row_chunk_handles(second.body)
+    )
+
+
+def test_datasheet_title_matches_do_not_consume_page_slots(store: Store) -> None:
+    """gr681157 review: ``cfp`` and ``datasheet`` subclass PaperHandler
+    and reuse its search path — the no-promotion contract must hold for
+    them too, not just ``kind='paper'``. A title-matched datasheet record
+    stays in the callout and every table row stays a chunk row."""
+    from precis.handlers.datasheet import DatasheetHandler
+
+    query = "ACME buck converter efficiency report"
+    e = MockEmbedder(dim=1024)
+    ref = store.insert_ref(kind="datasheet", slug="acme-buck-eff", title=query)
+    texts = [f"{query} section {i}" for i in range(22)]
+    store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(ord=i, text=t, embedding=e.embed_one(t))
+            for i, t in enumerate(texts)
+        ],
+    )
+
+    out = DatasheetHandler(hub=Hub(store=store, embedder=e)).search(
+        q=query, mode="lexical", unique_per="chunk"
+    )
+    assert "Title match" in out.body
+    ds = handle_registry.format_handle("datasheet", ref.id)
+    assert ds in out.body
+    table = out.body.split("Next:", 1)[0]
+    assert not any(ln.startswith(ds + "\t") for ln in table.splitlines())
+    assert out.body.splitlines()[0].startswith("# 20 of ")
+    rows = [ln.split("\t", 1)[0] for ln in table.splitlines() if ln.startswith("dk")]
+    assert len(rows) == 20
 
 
 def test_paper_mode_pages_papers_not_chunks(store: Store) -> None:
@@ -369,7 +448,7 @@ def test_title_callout_does_not_promote_a_row(store: Store) -> None:
     h = PaperHandler(hub=Hub(store=store, embedder=e))
     out = h.search(q="attention is all you need")
     assert "Title match" in out.body
-    # No pool hit → the promoted record row is the only mention of the
+    # No pool hit → the title callout is the only mention of the
     # pa handle; the hits table itself is empty (callout + empty page).
     assert "no paper blocks match" in out.body
 
@@ -431,3 +510,89 @@ def test_ref_counts_out_stays_empty_on_verbatim(store: Store) -> None:
     )
     assert hits
     assert counts == {}
+
+
+# ── gr608579: paper rows carry the paper's identity ──────────────────────
+
+
+def test_paper_rows_carry_identity_columns(store: Store) -> None:
+    """gr608579: a paper-mode row is the PAPER — ``pa<id>`` + cite key,
+    year and the (clipped) title sit next to the best hit's pc handle —
+    so a hit on a titleless ``references`` chunk still names the paper
+    it belongs to."""
+    ref = store.insert_ref(
+        kind="paper",
+        slug="norr2026survey",
+        title="A Survey of Norrish Herstein Catalytic Cycles",
+        year=2026,
+    )
+    seed_chunk(
+        store,
+        ref_id=ref.id,
+        ord=0,
+        chunk_kind="references",
+        text="[42] umbratic vireline reference entry",
+    )
+    out = _handler(store).search(q="umbratic vireline")
+    table = out.body.split("Next:", 1)[0]
+    assert "{handle\tmore\tpaper\tyear\ttitle\tchunk_keywords\tsize}" in table
+    pa = handle_registry.format_handle("paper", ref.id)
+    assert f"{pa} norr2026survey" in table
+    assert "2026" in table
+    assert "A Survey of Norrish Herstein Catalytic Cycles" in table
+
+    # A slugless, untitled stub: the paper cell is just ``pa<id>`` and
+    # the title cell ``(untitled)``. ``insert_ref`` requires a slug for
+    # paper, so drop the cite_key identifier to mint the bare-handle
+    # shape the corpus's stub papers actually carry.
+    bare = store.insert_ref(kind="paper", slug="gone2026x", title="")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = 'cite_key'",
+            (bare.id,),
+        )
+        conn.commit()
+    seed_chunk(
+        store,
+        ref_id=bare.id,
+        ord=0,
+        chunk_kind="references",
+        text="[9] umbratic vireline second entry",
+    )
+    out2 = _handler(store).search(q="umbratic vireline")
+    pa2 = handle_registry.format_handle("paper", bare.id)
+    assert f"\t{pa2}\t" in out2.body  # slugless: paper cell is just pa<id>
+    assert "(untitled)" in out2.body
+
+
+def test_paper_row_title_clip_is_span_safe(store: Store) -> None:
+    """The 70-char title clip must not split a math/emphasis span — a
+    cut inside ``$…$`` would leave a dangling ``$`` that renders as
+    literal noise (or pairs with a later ``$`` as fake math). The whole
+    span drops instead (``title_md_clip``)."""
+    # 66 chars of prose, then a 15-char math span crossing char 70.
+    long_title = "alpha beta " * 6 + "$\\mathrm{CO_2}$ tail"
+    _seed(store, slug="clip-a", blocks=["umbratic vireline"], title=long_title)
+    out = _handler(store).search(q="umbratic vireline")
+    row = next(ln for ln in out.body.splitlines() if ln.startswith("pc"))
+    title_cell = row.split("\t")[4]  # handle, more, paper, year, title
+    assert title_cell.endswith("…")
+    assert len(title_cell) <= 70
+    assert "$" not in title_cell
+    assert "mathrm" not in title_cell
+
+
+def test_chunk_rows_keep_three_columns(store: Store) -> None:
+    """``unique_per='chunk'`` (and the ``scope=`` door that implies it)
+    keeps the per-hit shape — no ``paper``/``year``/``title`` columns."""
+    ref = _seed(store, slug="cc-a", blocks=["copper nitrate ammonia x"])
+    h = _handler(store)
+    out = h.search(q="copper nitrate ammonia", unique_per="chunk")
+    assert "{handle\tchunk_keywords\tsize}" in out.body
+    assert "\tpaper\t" not in out.body
+    scoped = h.search(
+        q="copper nitrate ammonia",
+        scope=handle_registry.format_handle("paper", ref),
+    )
+    assert "{handle\tchunk_keywords\tsize}" in scoped.body
+    assert "\tpaper\t" not in scoped.body

@@ -47,7 +47,7 @@ TITLE DISCIPLINE: write the body first (``text=`` — the full "I notice…" con
   ✅ title="Free-energy bound ≈ [pt913]'s clamp circuit"
      text="I notice [pa812]'s free-energy bound mirrors [pt913]'s clamp circuit, which suggests…"
 
-The body MUST name each source ref inline by the identifier the tool result printed for it, so the connection auto-links and stays traceable (`get(kind='skill', id='precis-addressing-help')` for the form). Corpus refs print a `[handle]` — papers `[pa..]`, patents `[pt..]`, memories `[me..]`. A consulted **search / perplexity / web** answer has no `[handle]`; it prints a `cite as \`kind:id\`` line instead (`websearch:12345`, `perplexity-research:678`, `web:910`) — drop that exact `kind:id` token into the body and it auto-links the same way. Whenever a websearch/perplexity call supplies the fact-bearing leg (as the Urbach-tail one did), cite it by its token so the edge to the search survives. Vague connections are useless; be specific about what links to what AND name the fact-bearing leg explicitly.
+The body MUST name each source ref inline by the identifier the tool result printed for it, so the connection auto-links and stays traceable (`get(kind='skill', id='precis-addressing-help')` for the form). Corpus refs print a `[handle]` — papers `[pa..]`, patents `[pt..]`, memories `[me..]` — and a consulted **search / perplexity / web** answer does too (`[wx12345]`, `[rr678]`, `[wb910]`); its `cite as` line prints the bracketed form. Drop that exact token into the body and it auto-links the same way. Whenever a websearch/perplexity call supplies the fact-bearing leg (as the Urbach-tail one did), cite it by its token so the edge to the search survives. Vague connections are useless; be specific about what links to what AND name the fact-bearing leg explicitly.
 
 NUMBERS NEXT TO A CITATION MUST BE IN THE CITED TEXT. ``DREAM:speculative`` licenses an unsourced claim, never a mis-sourced one: a reader discounts your synthesis because of the tag but trusts the cited number. If a figure is your own recollection or estimate, say so inline and keep it away from the handle — write ``ℓc is of order 0.01 nm (my estimate)``, not ``ℓc ~10 nm per websearch:170350`` when the search never gave a number. Writes that pin a number to a handle whose text lacks it are tagged ``AUDIT:ungrounded-number`` and will be refused.
 
@@ -101,16 +101,14 @@ Reach for this when a Step-6 connection is a **cross-binding you cannot close**:
       from_memory="me<id>"                               # the Step-6 memory this came out of
   )
 
-THE SENTENCE IS THE HARD PART. It is gated by the same lint every published claim faces, and the gate is severe on purpose — only ~1.4% of existing hubs pass it. Your sentence MUST carry:
+THE SENTENCE IS THE HARD PART. State the conjecture itself: ONE falsifiable assertion, self-contained (no "this", "the same group", "as above"), a terminal period, no author names, no em dashes, and UTF-8 notation (`C₆₀`, `≈10⁴ cm² V⁻¹ s⁻¹`), never TeX. Do NOT word it as something a technique measured, found or showed. Nothing has been measured yet, so a hypothesis is exempt from the evidence-verb and method-name rule that published claims face; naming a technique in the sentence would attribute a result nobody has. The measurement that would settle it goes in ``testable_by=``, which is mandatory.
 
-  * an **evidence verb** — one of predicts / finds / shows / measures / observes / demonstrates (inflections fine), AND
-  * an **epistemic mode** — the technique that would produce the observation: DFT, spin-polarized DFT, first-principles, NEGF, molecular dynamics (MD), Monte Carlo, TEM, SEM, STM, AFM, c-AFM, Raman, XRD, XPS, NMR, nanoindentation.
-
-In practice this forces the sentence to name the measurement that would test it, which is the point. Also: a terminal period, ONE assertion, self-contained (no "this", "the same group", "as above"), no author names, no em dashes, and UTF-8 notation (`C₆₀`, `≈10⁴ cm² V⁻¹ s⁻¹`), never TeX.
-
+  ❌ "c-AFM measures conductance switching under electrode displacement in monolayer films of quantum-interference-active coordination cages."
+     (claims a measurement that does not exist)
   ❌ "Mechanical switching persists when the molecules are assembled into thin films."
-     (no evidence verb, no epistemic mode, and "the molecules" dangles)
-  ✅ "c-AFM measures conductance switching under electrode displacement in monolayer films of quantum-interference-active coordination cages."
+     ("the molecules" dangles: which molecules?)
+  ✅ "Mechanical switching between constructive and destructive quantum-interference pathways, demonstrated in single-molecule junctions, persists when quantum-interference-active molecules are assembled into coordination cages and monolayer thin films."
+     testable_by="conductance modulation under electrode displacement or mechanical strain in junctions of QI-active coordination cages and of their monolayer thin films"
 
 Two more rules the door enforces, so aim at them:
   * **≥2 motivators across ≥2 different source papers.** A conjecture that leaps from one source is just a restatement of that source. Two claim hubs grounded in the same single paper count as ONE source. Name a passage (`pc<id>`) rather than a whole paper wherever you actually read one — the edge then records which passage provoked you.

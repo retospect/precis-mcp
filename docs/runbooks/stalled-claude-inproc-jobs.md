@@ -6,11 +6,11 @@ whether the worker is dead, blocked, or merely not selecting them.
 
 ## Topology (what to expect)
 
-- `job_claude_inproc` runs on **melchior only**. ALL `claude_inproc` jobs
+- `job_claude_inproc` runs on **the agent host only**. ALL `claude_inproc` jobs
   cluster-wide drain through that **one single-threaded worker**; if it hangs,
   they all stall.
 - The agent lane is the dedicated **`com.precis.worker-agentlane`** unit on
-  melchior (playbook `20e-precis-worker-agentlane.yml`, gr247125:
+  the agent host (playbook `20e-precis-worker-agentlane.yml`, gr247125:
   `precis worker --only job_claude_inproc --only job_inproc`, running as
   `PRECIS_PROCESS=precis-worker-agentlane`). The old
   `com.precis.worker-agent` plist was retired ~2026-07-22Z; its
@@ -48,7 +48,7 @@ whether the worker is dead, blocked, or merely not selecting them.
    I/O wait. The **sweeper** marks the DB row failed at 1 h
    (`swept:claim-orphaned`) but that does **not** unblock the OS thread.
 3. Recover a blocked worker: `sudo launchctl kickstart -k
-   system/com.precis.worker` on melchior. If the unit is gone entirely:
+   system/com.precis.worker` on the agent host. If the unit is gone entirely:
    [`worker-jetsam-bootout-recovery`](./worker-jetsam-bootout-recovery.md).
 4. Precedent: `news_poll`'s `_default_parse_feed` called
    `feedparser.parse(url)` (un-timed urllib GET); one stalled RSS feed hung the
@@ -58,14 +58,16 @@ whether the worker is dead, blocked, or merely not selecting them.
 ## Expedite one stuck job: prio is ASC — LOWER is more urgent
 
 `src/precis/workers/executors/_common.py` claim ordering is
-`COALESCE(prio, 5) ASC, queued_since ASC, ref_id ASC` (SQL `ORDER BY`; the
-Python re-rank key is `(-scarcity, prio, …)`). Default prio is 5; a
-`refs_prio_check` constraint forbids prio 0, so **use prio 1** for "claim this
-next". Bumping prio *high* is backwards.
+`claim_rank ASC, factory_pref ASC, lane_deficit DESC, aged_prio ASC,
+queued_since ASC, ref_id ASC` (SQL `ORDER BY`; the Python re-rank adds
+scarcity and node-affinity terms). `claim_rank` is the origin class with
+ageing promotion — a prio-1 row ranks `-1`, preempting every class.
+Default prio is 5; a `refs_prio_check` constraint forbids prio 0, so
+**use prio 1** for "claim this next". Bumping prio *high* is backwards.
 
-`_CLAIM_OVERFETCH=3`: the SQL fetches only `limit*3` rows in ASC order, so a
-HIGH-numbered job sits at the bottom of that window and is never fetched →
-never claimed (no lease ever stamped).
+`_CLAIM_OVERFETCH=3`: the SQL fetches only `limit*3` rows in claim
+order, so a HIGH-numbered job sits at the bottom of that window and is
+never fetched → never claimed (no lease ever stamped).
 
     scripts/prod-psql "UPDATE refs SET prio=1 WHERE ref_id=<job>"
 

@@ -51,7 +51,7 @@ GOLDEN_CODELESS = (
     "— linked (1 hop) —\n"
     "Notes & links:\n"
     "  related-to (2):\n"
-    "    websearch:characteristic-length-nanoparticles — ℓc search\n"
+    "    math:characteristic-length-nanoparticles — ℓc search\n"
     "    <B> — XPS profiling"
 )
 
@@ -69,7 +69,7 @@ GOLDEN_GROUP_CAP = (
     "    <N5> — Related note 5\n"
     "    <N6> — Related note 6\n"
     "    <N7> — Related note 7\n"
-    "    … +2 more · get(kind='memory', id='<A>', extent='fisheye+1hop', q='related-to')"
+    "    … +2 more · get(kind='memory', id='<A>', extent='fisheye+1hop', q='related-to') · showing 8 of 10"
 )
 
 GOLDEN_OVERFLOW_LIVE_ONLY = (
@@ -263,7 +263,7 @@ GOLDEN_ROADMAP_ORDER = (
     "    <P3> — Paper 3\n"
     "    <P4> — Paper 4\n"
     "    <P5> — Paper 5\n"
-    "    … +3 more · get(kind='quest', id='<Q>', extent='fisheye+1hop', q='served-by')"
+    "    … +3 more · get(kind='quest', id='<Q>', extent='fisheye+1hop', q='served-by') · showing 8 of 11"
 )
 
 GOLDEN_QUEST_GIST = (
@@ -385,7 +385,7 @@ def test_memory_1hop_codeless_neighbour(hub: Hub) -> None:
     store = hub.live_store
     mem = store.insert_ref(kind="memory", slug=None, title="Focus")
     cache = store.insert_ref(
-        kind="websearch", slug="characteristic-length-nanoparticles", title="ℓc search"
+        kind="math", slug="characteristic-length-nanoparticles", title="ℓc search"
     )
     paper = store.insert_ref(kind="paper", slug="wenzel16", title="XPS profiling")
     for near in (cache, paper):

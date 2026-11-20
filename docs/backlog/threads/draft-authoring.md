@@ -79,11 +79,13 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
   failures) · poster genre (shipped 2026-10-15, spec closed 2026-10-21;
   left: Reto's manual eyeball of one exported poster after deploy) ·
   `draft-section-styles`.
-- **Prose framework** — [terse-prose-framework](../terse-prose-framework.md)
+- **Prose framework** — terse-prose-framework (me652550)
   (idea, Reto 2026-10-14: tag-driven prose lint + story graph + card; not
   hit by the October paper).
-- **Content model** — `spreadsheet-tables` (spec 2026-10-26: ids,
-  TOON patch, formulas, pulls, vendors; then `bom-tables`) ·
+- **Content model** — spreadsheet-tables (graph spec me685600, plan
+  td685665: ids, TOON patch and formulas built; pulls, vendors, cited
+  values, units and standalone tables open) · bom-tables (graph spec
+  me685771, plan td685784; waits on the pull slice td685673) ·
   `draft-table-structured-enrichment` ·
   `draft-footnotes-annotations` ·
   `diagram-editing-and-chunk-binding` · `draft-refresh` ·
@@ -113,7 +115,7 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
 
 ## Seam
 
-- `knowledge-mesh.md` Horizon holds draft-linearization (the draft as a graph
+- `knowledge-mesh (me693314)` Horizon holds draft-linearization (the draft as a graph
   view); this thread holds authoring and export of the draft itself. Neither
   reorders the other.
 - `claims-and-evidence.md` owns the claim side of cite-time attach.

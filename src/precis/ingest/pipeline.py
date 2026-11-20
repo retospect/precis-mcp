@@ -471,7 +471,8 @@ def extract_body(
     caller that has already read the file skip a second read; it is only
     used for the page count behind ``extract_fallback_empty``.
 
-    ``target_title`` / ``target_doi`` name the article this PDF is for. On a
+    ``target_title`` / ``target_doi`` name the article this PDF is for. The
+    title confirms the article opening after a recognised publisher advert. On a
     multi-article page spread only that article's blocks become chunks
     (:func:`precis.ingest.article_spread.trim_to_article`, gr463414); the
     cut is reported on ``spread`` for the caller to journal.
@@ -496,6 +497,7 @@ def extract_body(
         glyph_health=glyph_health_info,
         ocr_context=ocr_context,
         kind=kind,
+        target_title=target_title,
     )
     blocks = _repair_mojibake(blocks)
     # Page stats stay on the whole PDF: a trimmed spread is not a preview.

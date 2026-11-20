@@ -39,17 +39,29 @@ get(kind="math", q="population of Ireland")  # compute
 
 | Arg | Type | Meaning |
 |---|---|---|
-| `kind` | str | Required. Which kind to read from. |
+| `kind` | str | Optional when `id=` self-identifies (handle, bare ref id, slug, DOI, `kind:id`); otherwise required. Which kind to read from. |
 | `id` | str | Identifier — the **handle** (`<2-char code><id>`, e.g. `pa5`, `me47`) is canonical; copy it with its prefix. Papers also accept a DOI (`id='10.x/y'`). Some kinds accept `id` *or* `q`. |
-| `view` | str | Display variant. Kind-specific (`'abstract'`, `'toc'`, `'bibtex'`, `'cite/bib'`, …). |
+| `view` | str | Display variant. Kind-specific (`'abstract'`, `'toc'`, `'bibtex'`, `'cite/bib'`, …). A fisheye-ladder label here (`view='fisheye+1hop'`) is the deprecated spelling of `extent=`; `full=` is the deprecated spelling of `extent='verbatim'` — both still route and announce the read on `interpreted:`. |
 | `q` | str | Free-text query for compute-style kinds. |
 | `extent` | str | The fisheye ladder's rung on any kind — `fisheye`, `fisheye+1hop`, `fisheye+2hop`, optionally `+recall` (up to 8 nearest same-kind + finding refs by embedding, inside the focus's `SPACE:` when it has one — no `SPACE:` tag recalls unrestricted; a ring `space=` filter overrides) — the node with its neighborhood (`precis-fisheye-help`). |
 | `args` | dict | Typed extras for views that need them. An unknown key fails the call with `BadInput` listing the kind's accepted keys; reserved keys (`kind`, `id`, `view`, `q`) are rejected. |
 
-Per-kind views are listed by the kind's own skill
-(`get(kind='skill', id='precis-<kind>-help')`) or by the `options=` of
-an unknown-view refusal — a view name valid on one kind does not carry
-to another.
+Most kinds list their views in `precis-<kind>-help`. For `websearch`,
+open `precis-perplexity-help`. The `cfp`, `email`, `make`, `route`,
+`semanticscholar`, and `skill` kinds have no dedicated kind help skill.
+Use `search(kind='skill', q='<kind>')` to find related help or read the
+`options=` of an unknown-view refusal for that kind's supported views.
+
+Batch numeric-ref reads accept up to 300 IDs with `view='list'` (handle, title and tag chips)
+or `view='ids'` (bare handles). Both return one line per distinct ID in caller
+order; missing, deleted or other-kind rows get a one-line status. Other batch
+views keep the 50-ID cap. `args={'tag_prefixes': 'thread,fix'}` overrides list chips.
+
+An `id` list may mix self-identifying handles from different kinds. Mixed
+batches resolve each address independently in caller order and render a scalar
+read per address; the mixed path caps at 300 IDs whatever the view. Shared
+options must be valid for every resolved kind. Same-kind lists keep their
+native batch views and limits.
 
 ## Render a ref with its neighbourhood and recall
 
@@ -255,7 +267,10 @@ chunks — term-wise (the literal phrase is absent)`; a total miss reads
 `args={'context': N}` widens
 the window (≤25). `~SEL` on the id scopes the find (draft `~dc<N>`,
 file `~<block>` / `~L42-58`, paper `~A..B`). A get returns the body whole up to
-24 kB; over that it returns the head that fits plus an outline and the targeted `next:`/`rest:` call for
+24 kB — `kind='skill'` excepted: a default whole-skill read over ~6 kB serves the
+section index (one row per H2 with its `~N` handle) and `extent='verbatim'` keeps the body
+reachable (`full=true` is the deprecated spelling); `extent='verbatim'` plus `q=` on a skill
+returns the matching passages (`args={'context': N}` honoured). Over that cap a body returns the head that fits plus an outline and the targeted `next:`/`rest:` call for
 the remainder — a `~` selector (`slug~N`, `me<id>~<section>`) or a list of
 ids reads its part in full, up to the same 24 kB. `q=` does not combine with `view=`, a list
 (`id='/recent'`, `id=[…]`) or a missing `id` — and a kind that can't

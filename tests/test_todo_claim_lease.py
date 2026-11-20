@@ -109,6 +109,34 @@ def test_second_claimer_rejected_while_lease_live(
         handler.tag(id=leaf, add=["claimed-by:agent-b"])
 
 
+def test_fleet_source_takeover_of_live_lease_refused(
+    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``scripts/fleet-wave`` claims plan todos under
+    ``PRECIS_SOURCE=fleet-wave`` — an explicit worker source, so the CAS
+    refuses a live lease another tree holds instead of an inherited
+    ``cli`` default letting an owner-takeover replace it (review
+    td706868)."""
+    leaf = _leaf(handler, "Fleet-contested leaf.")
+    handler.tag(id=leaf, add=["claimed-by:other-tree"])
+    monkeypatch.setenv("PRECIS_SOURCE", "fleet-wave")
+    with pytest.raises(BadInput, match="already claimed by 'other-tree'"):
+        handler.tag(id=leaf, add=["claimed-by:my-tree"])
+    claim = _claim_expiry(handler.store, leaf)
+    assert claim is not None and claim[0] == "claimed-by:other-tree"
+
+
+def test_fleet_prefix_needs_the_dash() -> None:
+    """The worker vocabulary is prefix-exact: ``fleet-wave`` is a worker,
+    ``fleetwave`` (typo, no dash) stays owner — the forward-compatible
+    default errs toward owner."""
+    from precis.todo.guards import is_owner
+
+    assert not is_owner("fleet-wave")
+    assert is_owner("fleetwave")
+    assert is_owner("fleet")
+
+
 def test_expired_lease_is_free_to_take_over(
     handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

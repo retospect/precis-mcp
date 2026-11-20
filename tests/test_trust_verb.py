@@ -79,6 +79,24 @@ def test_get_marks_legacy_rows_unstamped(
     assert "trust: unknown · unknown (unstamped)" in out
 
 
+def test_read_scope_footer_has_no_edit_recipe(
+    runtime_with_store: PrecisRuntime,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read-scoped run cannot run the consider call — the footer keeps
+    the stamp and sha only, on every read (gr499041)."""
+    mid = _put_memory(runtime_with_store, "a note a read token reads")
+    monkeypatch.setenv("PRECIS_MCP_READ_ONLY", "1")
+    out = runtime_with_store.dispatch("get", {"kind": "memory", "id": mid})
+    sha = _sha(store, "ref", mid)
+    assert f"trust: generated · hunch · sha {sha}" in out
+    assert "mode='trust'" not in out
+    monkeypatch.delenv("PRECIS_MCP_READ_ONLY")
+    out = runtime_with_store.dispatch("get", {"kind": "memory", "id": mid})
+    assert "mode='trust'" in out
+
+
 def test_considered_on_put_needs_a_reason_and_returns_a_receipt(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:

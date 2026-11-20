@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="precis">
+  <!-- gr633600: the precis mark — emerald #34d399 (the wordmark colour,
+       tailwind.src.css's text-chrome-brand) on slate-900 #0f172a chrome.
+       Hand-authored like icons/catpath.svg; keep it dependency-free.
+       The "p" is stroked so it survives 16px favicon rendering. -->
+  <rect width="64" height="64" rx="14" fill="#0f172a"/>
+  <g fill="none" stroke="#34d399" stroke-linecap="round">
+    <path d="M20 17 V47" stroke-width="9"/>
+    <circle cx="33" cy="25" r="11" fill="none" stroke-width="8"/>
+  </g>
+</svg>

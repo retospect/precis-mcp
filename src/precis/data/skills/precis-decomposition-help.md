@@ -122,9 +122,10 @@ When you split, each child should be:
   judgement-heavy work. `meta.llm_tier='sonnet'` for filtered /
   pattern-matched / mid-difficulty work (gap analysis, classification,
   mid-length drafts). `meta.llm_tier='haiku'` rarely — only for trivial
-  reformatting. Default is `sonnet`; upgrade to opus when the work needs it.
+  reformatting. A parented `put` stamps `opus` by default; pass `meta={'llm_tier': 'sonnet'}`
+  (or `'haiku'`) to downgrade, `manual=True` to leave it unstamped.
 - **Right blocked-by.** If child B reads child A's output, mint
-  `link(rel='blocked-by', src=B, dst=A)`. Unlinked children run in
+  `link(kind="todo", id=B, target="todo:A", rel="blocked-by")`. Unlinked children run in
   parallel — that's the default. Use blocked-by only for genuine
   dependencies, not "I'd like to read A first."
 

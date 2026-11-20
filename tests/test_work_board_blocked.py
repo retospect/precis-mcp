@@ -15,7 +15,9 @@ from fastapi.testclient import TestClient
 from precis.dispatch import Hub
 from precis.handlers.todo import TodoHandler
 from precis.store import Store
+from precis.store.types import Tag
 from precis.todo import views, work_view
+from tests._refs import insert_gripe
 from tests.test_work_board_rows import (
     _job,
     _quest,
@@ -245,6 +247,39 @@ def test_blocked_leaf_past_the_row_cap_still_classifies(
     assert q.board == "blocked-work"
 
 
+def test_gripe_blocked_row_names_blocker(
+    client: TestClient, handler: TodoHandler, store: Store
+) -> None:
+    """gr656970: a gripe with an open blocked-by target shows the blocker
+    on the work board row (``after``) and in ``view='blocked'``; closing
+    the blocker clears both."""
+    t = _quest_tree(handler, store, "Gripe-blocked quest")
+    handler.tag(id=t["root"], add=["thread:seq"])
+    gripe = insert_gripe(store, "Blocked gripe")
+    store.add_tag(gripe.id, Tag.open("thread:seq"), set_by="agent")
+    blocker = store.insert_ref(kind="todo", slug=None, title="The blocker")
+    store.add_link(src_ref_id=gripe.id, dst_ref_id=blocker.id, relation="blocked-by")
+    # the board row names the blocker
+    q = _quest(work_view.work_model(store), t["quest"])
+    row = next(r for r in q.roots[0].gripes.rows if r.ref_id == gripe.id)
+    assert row.after == (f"td{blocker.id}",)
+    out = handler.search(view="work").body
+    assert f"gr{gripe.id} open after td{blocker.id}" in out
+    html = client.get("/work").text
+    assert f'data-handle="gr{gripe.id}"' in html
+    assert f'href="/eye/td{blocker.id}"' in html
+    # the blocked view shows the gripe, named by the blocker
+    blocked = handler.search(view="blocked").body
+    assert f"gr{gripe.id}" in blocked
+    assert f"blocked-by td{blocker.id}" in blocked
+    # the blocker closes: both surfaces drop the gripe
+    handler.tag(id=blocker.id, add=["STATUS:done"])
+    q = _quest(work_view.work_model(store), t["quest"])
+    row = next(r for r in q.roots[0].gripes.rows if r.ref_id == gripe.id)
+    assert row.after == ()
+    assert f"gr{gripe.id}" not in handler.search(view="blocked").body
+
+
 def test_blocker_tag_reads_stay_constant_for_5_and_50_quests(
     handler: TodoHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -259,7 +294,9 @@ def test_blocker_tag_reads_stay_constant_for_5_and_50_quests(
         calls["tags"] += 1
         return real_tags(s, ids)
 
-    def spy_blockers(s: Store, ids: list[int]) -> dict[int, tuple[int, ...]]:
+    def spy_blockers(
+        s: Store, ids: list[int]
+    ) -> dict[int, tuple[tuple[str, int], ...]]:
         calls["blockers"] += 1
         return real_blockers(s, ids)
 

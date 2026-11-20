@@ -3,7 +3,7 @@
 The engine half of the bulk Pourbaix gate; the job that feeds it is
 ``precis.workers.job_types.pourbaix_bulk``, and the quest gate that will
 read the verdict (dispatch, stamp, rule-out) is
-``docs/backlog/pourbaix-quest-gate.md``.
+`me692864`.
 
 **Why.** Catalyst quests rank on reaction energetics. A candidate whose bulk
 dissolves or turns into another phase at the electrolysis conditions cannot

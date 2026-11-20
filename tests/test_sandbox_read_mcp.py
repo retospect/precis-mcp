@@ -36,9 +36,9 @@ class TestReadOnlyDatabaseUrl:
 
     def test_swaps_user_and_strips_password(self) -> None:
         url = read_mcp.read_only_database_url(
-            "postgresql://deploy" + ":s3cr3t@caspar:6432/precis_prod"
+            "postgresql://deploy" + ":s3cr3t@birch:6432/precis_prod"
         )
-        assert url == "postgresql://agent_ro@caspar:6432/precis_prod"
+        assert url == "postgresql://agent_ro@birch:6432/precis_prod"
 
     def test_preserves_host_port_db_with_no_password_in_source(self) -> None:
         url = read_mcp.read_only_database_url(
@@ -107,6 +107,7 @@ class TestBuildServeEnv:
             "PRECIS_HARMLESS_VAR": "keep-me",
             "PRECIS_MCP_TOKEN": "the-daemon-own-token",
             "PRECIS_MCP_PROFILE": "command",
+            "PRECIS_MCP_CREDENTIAL_CLASSES": "oauth",
         }
         env = read_mcp.build_serve_env(
             base, ro_dsn="postgresql://agent_ro@x/y", token="tok-run"
@@ -127,6 +128,9 @@ class TestBuildServeEnv:
         # The daemon's own MCP token is stripped; only the per-run one rides.
         assert env["PRECIS_MCP_TOKEN"] == "tok-run"
         assert env["PRECIS_MCP_PROFILE"] == "typed"
+        # A parent restricted to OAuth must not leave the child unable to
+        # take its own per-run token.
+        assert env["PRECIS_MCP_CREDENTIAL_CLASSES"] == "install"
 
 
 class TestMcpJsonPayload:

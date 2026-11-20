@@ -3,7 +3,7 @@
 Lifted from ``precis_se/notes.py`` (se-kind.md slice 4 "The
 propose/interrogate loop", migration ``precis_se/migrations/
 0005_se_notes_freedom.sql``) to ``src/precis/utils/notes.py`` so the
-``checklist`` kind (docs/backlog/checklist-kind.md, slice 1) can reuse
+``checklist`` kind (me693927, slice 1) can reuse
 the same shape verbatim instead of forking it. ``precis_se.notes``
 re-exports this module so existing ``precis_se`` imports (and its
 migration/table names, which stay ``se_notes``) are unaffected — this

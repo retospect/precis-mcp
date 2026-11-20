@@ -6,7 +6,7 @@ linear assignment, with voltage admissibility, fanout and a warm-start
 carried as a unit and only a k-pin client tuple can take it (a
 differential pair; ``within_block_swappable`` permits permuting the
 pairing, otherwise declared order binds member-for-member). No DB, no IR
-mutation. Design: docs/backlog/pcb-lazy-netlist-and-checks.md.
+mutation. Design: me693232.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """``ci_verdict_poll`` — record check.yml's verdict on a release cut (td543733).
 
-Spec: ``docs/backlog/dark-factory.md`` § "4. Release pass, event-driven";
+Spec: `me692430` § "4. Release pass, event-driven";
 the ``poll`` node of the ``release-pass`` template. Mechanical, DB + one
 HTTPS read, under ``job_inproc`` (the ``gripe_validate`` shape), so the cut
 session never waits on CI and no lane is held while CI runs.
@@ -14,8 +14,21 @@ https://api.github.com/repos/<owner>/<repo>/actions/runs?head_sha=<sha>``
 through :func:`precis.utils.safe_fetch.safe_get` (unauthenticated is fine
 for the public repo at 60/h; ``GH_TOKEN`` from the env, else the factory's
 vault token, is sent — :func:`precis.workers.factory_git.github_api_headers`).
+Completed runs are checked against the live release branch head before
+recording a verdict. A moved head supersedes either verdict: adopt it via
+``record_head`` and park for its run. An unreadable head also stays pending,
+so a fix push cancelling the old run cannot spend another fix iteration.
+The red digest repeats this head check before launching its script.
+
 The newest check.yml run (on the release branch when one is known):
 
+- its blocking legs all green — one ``lint`` and the whole ``gate-fast``
+  matrix, read from the run's jobs (:func:`gate_legs_green`) → ``green``
+  at once, while the soak still runs and whatever the soak then
+  concludes (:func:`gate_verdict`; me580555 made the soak non-blocking,
+  and Reto 2026-11-19 ruled the deploy does not wait for it). A red
+  soak is debt for the next ``round cut`` and a ``ci:soak`` gripe, not a
+  red release.
 - completed ``success``/``skipped``/``neutral`` → ``green``; any other
   completed conclusion → ``red``. The verdict row
   ``{sha, range, verdict, run_id, at}`` goes into ``release.ci_verdicts``
@@ -25,7 +38,7 @@ The newest check.yml run (on the release branch when one is known):
 - no run yet, still running, or GitHub unreadable (rate limit, network) →
   **pending**: a ``pending`` summary, then the job parks itself
   (``ctx.defer``, ``STATUS:waiting_time``) for :func:`poll_interval`
-  (10 min, 2 min once the run is 18+ min old — gr611302); the
+  (10 min, 2 min once the run is 8+ min old — gr611302); the
   wake runner re-queues the same job, which polls again. A parked job is
   live, so the tick neither closes the node nor mints a second poll (one
   poll per node: the tick's ``plan_dispatch:td<id>`` idem key).
@@ -37,7 +50,7 @@ Pending splits two ways (gr656644):
   ``run_slice.wait_parks`` / ``release_poll.placement_parks`` shape —
   the shared six-park cap is for window pauses, not a healthy gate),
   so the job keeps polling on the run's own clock for as long as the
-  run reports live. A soak gate runs ~60 min and ship's own CI budget
+  run reports live. A gate over the whole suite runs ~25 min and ship's own CI budget
   is 150 min, while six 2-min late-interval parks cover ~12 — counting
   the wait against the cap spent a node retry per ~36 min and filed the
   retry-cap ask on a GREEN gate. A run still going past
@@ -59,8 +72,18 @@ API (:func:`fetch_head`) and moves ``meta.release`` onto it with no cut
 (:func:`precis.plans.release.record_head`: sha, range end, the
 ``tests-green`` gate and the loop's ``until``). The poll after it then
 waits on the run the fixes' push started; the digest of a second red
-reads that run. A head equal to the recorded sha (no fix landed) writes
-nothing. The no-run ladder's clock is ``meta.release.head_at`` once a
+reads that run. A head equal to the recorded sha splits on the fix
+nodes' closes (:func:`_restamp_owed`, gr664485): a close is not a push
+— a hand close (gr663909) releases the restamp while the
+``ship --onto`` push is still in flight. When a blocker may still owe
+the branch a push — a recorded ``landed: <sha>`` the head does not
+show, a held land, an open or bare-``done`` close with no legible
+outcome — the restamp parks and re-reads the head like a pending poll,
+then fails loudly at the park cap rather than leaving ``meta.release``
+on the red cut and letting the poll judge the stale run. When every
+blocker closed with no land owed (verdict closes, ``won't-do``,
+``landed: nothing``) an unmoved head writes nothing, as before. The
+no-run ladder's clock is ``meta.release.head_at`` once a
 restamp set it, else ``cut_at``.
 
 A poll the plan tick mints for a ``validated:`` non-repro rerun
@@ -114,10 +137,12 @@ NAME = "ci_verdict_poll"
 #: Wait between polls while CI runs.
 POLL_INTERVAL = timedelta(minutes=10)
 #: Wait between polls once the run is :data:`POLL_FAST_AFTER` old —
-#: check.yml is near its end then, so a fixed 10-minute wait adds ~4
-#: minutes to the average gate for nothing (gr611302).
+#: a fixed 10-minute wait adds ~4 minutes to the average gate for
+#: nothing (gr611302). The clock starts where a selection-shaped gate
+#: can already be green (lint + gate-fast, :func:`gate_verdict`), not
+#: where the whole run ends.
 POLL_INTERVAL_LATE = timedelta(minutes=2)
-POLL_FAST_AFTER = timedelta(minutes=18)
+POLL_FAST_AFTER = timedelta(minutes=8)
 #: The workflow whose run is the release verdict (scripts/release's gate).
 WORKFLOW_FILE = "check.yml"
 OK_CONCLUSIONS = frozenset({"success", "skipped", "neutral"})
@@ -170,7 +195,7 @@ DESCRIPTION: str = (
     "Dark release pass: read check.yml's GitHub Actions run on a release "
     "cut's sha and record green/red in release.ci_verdicts (the tests-green "
     "gate reads it); parks itself and re-polls every 10 min while CI runs "
-    "(2 min once the run is 18+ min old, gr611302)."
+    "(2 min once the run is 8+ min old, gr611302)."
 )
 
 
@@ -266,6 +291,173 @@ def fetch_head(repo: str, branch: str) -> str | None:
     return sha if _FULL_SHA_RE.match(sha) else None
 
 
+def release_branch_head(store: Any, rel: dict[str, Any]) -> str | None:
+    """The live head of ``rel``'s release branch (``meta.release``: the
+    ``rN`` plus the cut's recorded repo, falling back to the
+    ``release.repo`` setting), else ``None`` when unverifiable — no
+    recorded repo, or GitHub unreadable. The rerun superseded guard
+    (gr685062) reads it before any ``gh run rerun``: a rerun may only
+    fire on a run whose head IS the current release head — rerunning a
+    superseded run cancels the live gate run through the branch
+    concurrency group."""
+    rn = str(rel.get("rN") or "")
+    if not rn:
+        return None
+    from precis import settings
+
+    repo = _release.valid_repo(rel.get("repo")) or _release.valid_repo(
+        settings.get_str("release.repo", store=store)
+    )
+    if not repo:
+        return None
+    return fetch_head(repo, f"release/{rn}")
+
+
+#: A ``landed: <sha>`` comment line — the record a fixer's land_slice
+#: leaves on the fix todo (``land_slice._LANDED_COMMENT_RE``). An
+#: all-zeros sha is the gate's PENDING_SHA placeholder, not a land.
+_LANDED_SHA_RE = re.compile(r"^landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
+#: ``landed: nothing``/other non-sha ``landed:`` lines — a land that
+#: pushed no commit owes the branch nothing.
+_LANDED_ANY_RE = re.compile(r"^landed:", re.IGNORECASE)
+#: The no-land closes a fix todo's comments may carry: the verdicts
+#: (``no-op:``/``moot:``/``validated:`` — ``plans.nodes.any_verdict``'s
+#: set), the release-fix ``verified:`` escape, and the digest's
+#: ``waived:`` close. A close carrying one of these owes the release
+#: branch no push.
+_NO_LAND_RE = re.compile(
+    r"^\s*(?:no-op|moot|validated|verified|waived)\s*:", re.IGNORECASE
+)
+#: Terminal todo statuses a fix node may close with owing no push —
+#: ``precis.todo.TERMINAL_TODO_STATUSES`` minus ``done``.
+_NO_LAND_STATUS = frozenset({"won't-do", "auto-timeout"})
+
+
+def _restamp_blockers(store: Any, restamp_id: int) -> list[int]:
+    """The todos the restamp node waits on — the iteration's fix nodes
+    (``src`` waits on ``dst`` in a ``blocked-by`` link)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE relation = 'blocked-by' "
+            "AND src_ref_id = %s ORDER BY dst_ref_id",
+            (restamp_id,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _comment_outcome(text: str) -> tuple[str, str] | None:
+    """The close outcome one comment records: ``('landed', sha)`` a push
+    was recorded, ``('no-land', line)`` a close that owes the release
+    branch nothing — a first-line ``landed:``/verdict comment, or a
+    ``handoff:`` comment's outcome line. The finishing contract puts the
+    verdict on the handoff's own first line (``handoff: no-op: …``,
+    ``handoff: verified: …``), so the ``handoff:`` prefix is stripped
+    before that line is read — not only its later lines. ``None`` —
+    other comments never count: a brief quoting the verdict grammar is
+    no outcome (td604234)."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    if lines[0].lower().startswith("handoff:"):
+        embedded = lines[0][len("handoff:") :].strip()
+        candidates = ([embedded] if embedded else []) + lines[1:]
+    else:
+        candidates = lines[:1]
+    for s in candidates:
+        m = _LANDED_SHA_RE.match(s)
+        if m is not None and m.group(1).lstrip("0"):
+            return "landed", m.group(1).lower()
+        if _LANDED_ANY_RE.match(s) or _NO_LAND_RE.match(s):
+            return "no-land", s[:80]
+    return None
+
+
+def _fix_owed(store: Any, fix_id: int) -> str | None:
+    """Why a todo blocking the restamp may still owe ``release/r<N>`` a
+    push, else ``None``: a held land (``meta.pending_land``) or a
+    ``landed: <sha>`` comment the head does not show, a still-open node
+    (never reached — the restamp is blocked-by it), or a bare ``done``
+    with no legible outcome — a hand close (gr663909) whose
+    ``ship --onto`` may still be in flight. A ``won't-do``/verdict/
+    ``landed: nothing`` close owes nothing.
+
+    The outcome scan reads only the CURRENT attempt's ``todo_comment``
+    chunks — newest-first down to (not through) the second
+    ``handoff:``/``brief:`` boundary, the ``run_slice._posted_verdict``
+    convention — so an earlier attempt's ``no-op:`` close cannot read as
+    this attempt's outcome and hide a bare ``done`` whose push is still
+    in flight. A ``landed:``/verdict line inside a job summary or the
+    todo body is quoted grammar (td604234), not the close's outcome."""
+    from precis.plans.templates import PENDING_LAND_KEY
+    from precis.workers.job_types import run_slice as _rs
+
+    ref = store.get_ref(kind="todo", id=fix_id)
+    if ref is None:
+        return None
+    if isinstance((ref.meta or {}).get(PENDING_LAND_KEY), dict):
+        return f"td{fix_id} holds a pending land"
+    status = "open"
+    for tag in store.tags_for(fix_id):
+        if tag.prefix == "STATUS":
+            status = str(tag.value)
+            break
+    if status in _NO_LAND_STATUS:
+        return None
+    if status != "done":
+        return f"td{fix_id} is still {status}"
+    comments = sorted(
+        (
+            c
+            for c in store.chunks.list_chunks_for_ref(fix_id)
+            if c.chunk_kind == _COMMENT_KIND and c.text
+        ),
+        key=lambda c: (int(c.ord), int(getattr(c, "id", 0))),
+        reverse=True,
+    )
+    boundary_seen = False
+    for c in comments:
+        body = str(c.text).strip()
+        lowered = body.lower()
+        if (
+            lowered.startswith("handoff:")
+            or lowered.startswith("brief:")
+            or body == _rs._HANDOFF_WITHHELD
+        ):
+            if boundary_seen:
+                break
+            boundary_seen = True
+        hit = _comment_outcome(body)
+        if hit is not None:
+            kind, detail = hit
+            if kind == "landed":
+                return f"td{fix_id} recorded landed: {detail[:12]}"
+            return None
+    return f"td{fix_id} closed done with no recorded land or verdict"
+
+
+def _restamp_owed(store: Any, restamp_id: int) -> list[str]:
+    """One line per fix todo blocking the restamp whose close may still
+    owe ``release/r<N>`` a push (:func:`_fix_owed`) — the head-equals-
+    recorded-sha wait is for these. An unreadable blocker list or node
+    counts as owed: guessing "no fix landed" is the failure gr664485
+    files, so an unprovable close waits and then refuses loudly."""
+    try:
+        blockers = _restamp_blockers(store, restamp_id)
+    except Exception:
+        log.warning("%s: restamp blockers unreadable", NAME, exc_info=True)
+        return ["the iteration's fix nodes are unreadable"]
+    owed: list[str] = []
+    for fix_id in blockers:
+        try:
+            why = _fix_owed(store, fix_id)
+        except Exception:
+            log.warning("%s: fix close td%s unreadable", NAME, fix_id, exc_info=True)
+            why = f"td{fix_id}'s close outcome is unreadable"
+        if why is not None:
+            owed.append(why)
+    return owed
+
+
 def _restamp(ctx: Any, params: dict[str, Any]) -> None:
     """The restamp node (release-train T1, :data:`PARAMS_SCHEMA`
     ``restamp``): the fix round's lands moved ``origin/release/r<N>``,
@@ -273,7 +465,10 @@ def _restamp(ctx: Any, params: dict[str, Any]) -> None:
     (:func:`precis.plans.release.record_head`) — no cut. The next node,
     the verdict poll, then waits on the check.yml run the fixes' push
     started, and a red there digests that run, never the cut's. An
-    unreadable head parks like a pending poll."""
+    unreadable head parks like a pending poll — and so does a head that
+    has not moved while a fix node's close may still owe a push
+    (:func:`_restamp_owed`, gr664485): the close released the restamp,
+    it is not proof ``origin`` moved."""
     try:
         target = resolve_target(ctx.store, params)
     except PollError as exc:
@@ -292,12 +487,45 @@ def _restamp(ctx: Any, params: dict[str, Any]) -> None:
         ctx.record_failure(note)
         return
     if head.startswith(target["sha"]) or target["sha"].startswith(head):
-        ctx.append_chunk(
-            "job_summary",
+        todo_id = params.get("todo_id")
+        owed: list[str]
+        if (
+            isinstance(todo_id, int)
+            and not isinstance(todo_id, bool)
+            and ctx.store is not None
+        ):
+            owed = _restamp_owed(ctx.store, todo_id)
+        elif ctx.store is None:
+            owed = []
+        else:
+            owed = ["the restamp node's todo_id is missing"]
+        if not owed:
+            ctx.append_chunk(
+                "job_summary",
+                f"{NAME}: restamp — {target['branch']} head {head[:9]} is the "
+                "recorded sha (no fix landed); meta.release unchanged",
+            )
+            ctx.set_meta(ci_verdict_restamp={"head": head, "moved": False})
+            return
+        why = "; ".join(owed)
+        note = (
             f"{NAME}: restamp — {target['branch']} head {head[:9]} is the "
-            "recorded sha (no fix landed); meta.release unchanged",
+            f"recorded sha but {why}: the push may still be in flight; "
+            f"re-checking in {POLL_INTERVAL_LATE}"
         )
-        ctx.set_meta(ci_verdict_restamp={"head": head, "moved": False})
+        ctx.append_chunk("job_summary", note)
+        ctx.set_meta(ci_verdict_restamp={"head": head, "moved": False, "owed": owed})
+        defer = getattr(ctx, "defer", None)
+        if defer is not None and defer(datetime.now(UTC) + POLL_INTERVAL_LATE, note):
+            return
+        ctx.record_failure(
+            f"{NAME}: restamp — {target['branch']} head is still the "
+            f"recorded sha {target['sha'][:9]} and {why}: cannot move "
+            f"meta.release; next: push the fix to {target['branch']} "
+            f"(scripts/ship --onto {target['branch']}), or close the fix "
+            "node(s) with a no-land verdict (no-op:/moot: — a bare done "
+            "never proves nothing was pushed)"
+        )
         return
     notes = _release.record_head(ctx.store, int(params["todo_id"]), head)
     ctx.set_meta(ci_verdict_restamp={"head": head, "moved": True})
@@ -369,7 +597,7 @@ def _run_age(run: dict[str, Any] | None, now: datetime) -> timedelta | None:
 
 def poll_interval(run_age: timedelta | None) -> timedelta:
     """Wait to the next poll: :data:`POLL_INTERVAL_LATE` once the run is
-    :data:`POLL_FAST_AFTER` old (check.yml is near its end; gr611302),
+    :data:`POLL_FAST_AFTER` old (its gate legs can be in; gr611302),
     else :data:`POLL_INTERVAL`."""
     if run_age is not None and run_age >= POLL_FAST_AFTER:
         return POLL_INTERVAL_LATE
@@ -420,6 +648,122 @@ def verdict_of(
         run_id,
         f"run {run_id} concluded {conclusion or 'without a conclusion'}",
     )
+
+
+# ── the gate legs decide, not the soak (me580555) ─────────────────
+
+_JOBS_URL = "https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs"
+_GATE_LEG_RE = re.compile(r"gate-fast \((\S+), (\d+)\)")
+_SOAK_LEG_RE = re.compile(r"soak \(\S+, \d+\)")
+#: check.yml's job that turns a red soak into a red run conclusion.
+SOAK_VERDICT_JOB = "verdict-soak"
+
+
+def fetch_jobs(repo: str, run_id: str) -> list[dict[str, Any]] | None:
+    """The jobs of ``run_id``'s newest attempt; ``None`` when GitHub is
+    unreadable or the answer is not the whole list — a partial read is
+    no evidence."""
+    headers = _factory_git.github_api_headers()
+    try:
+        resp = _http_get(
+            _JOBS_URL.format(repo=repo, run_id=run_id),
+            {"filter": "latest", "per_page": 100},
+            headers,
+        )
+    except Exception as exc:
+        log.info("%s: GitHub jobs read failed (%s)", NAME, type(exc).__name__)
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    if not isinstance(jobs, list) or data.get("total_count") != len(jobs):
+        return None
+    return [j for j in jobs if isinstance(j, dict)]
+
+
+def gate_legs_green(jobs: list[dict[str, Any]]) -> bool:
+    """Whether the run's blocking legs all passed, whatever its soak is
+    doing. True only when every one of these holds:
+
+    - a soak leg exists and was not skipped. check.yml starts the soak
+      only on ``needs.gate-fast.result == 'success'``, so its presence is
+      GitHub's own word that the whole gate-fast matrix passed — a
+      listing read before the matrix expanded has none;
+    - exactly one ``lint`` job, concluded ``success``;
+    - the ``gate-fast (PY, K)`` legs cover 1..N per Python with no gap,
+      each concluded ``success``;
+    - every other job outside the soak (its legs and
+      :data:`SOAK_VERDICT_JOB`) is completed with an OK conclusion.
+
+    The full shape (nightly, harness FULL) has no soak leg and reads
+    ``False``: there the run's own conclusion is the verdict."""
+    named = [(str(j.get("name") or ""), j) for j in jobs]
+    soak = [j for name, j in named if _SOAK_LEG_RE.fullmatch(name)]
+    if not any(str(j.get("conclusion") or "") != "skipped" for j in soak):
+        return False
+    lint = [j for name, j in named if name == "lint"]
+    if len(lint) != 1:
+        return False
+    shards: dict[str, list[int]] = {}
+    for name, j in named:
+        if name == SOAK_VERDICT_JOB or _SOAK_LEG_RE.fullmatch(name):
+            continue
+        if str(j.get("status") or "") != "completed":
+            return False
+        conclusion = str(j.get("conclusion") or "")
+        leg = _GATE_LEG_RE.fullmatch(name)
+        if leg or name == "lint":
+            if conclusion != "success":
+                return False
+        elif conclusion not in OK_CONCLUSIONS:
+            return False
+        if leg:
+            shards.setdefault(leg.group(1), []).append(int(leg.group(2)))
+    return bool(shards) and all(
+        sorted(ks) == list(range(1, len(ks) + 1)) for ks in shards.values()
+    )
+
+
+def gate_verdict(
+    repo: str, runs: list[dict[str, Any]], sha: str, branch: str = ""
+) -> tuple[str, str, str]:
+    """:func:`verdict_of`, with the gate legs deciding once they are in.
+
+    A gate-shaped check.yml run is lint + gate-fast, then the soak — the
+    whole non-nightly suite again, ~45 minutes, non-blocking by ruling
+    me580555. The run's own conclusion arrives only after the soak, and a
+    red soak turns it red through ``verdict-soak``; reading it made every
+    deploy wait for the soak and sent a soak-only red into the fix loop.
+    So a run that is still going, or that ended not-green, is green when
+    :func:`gate_legs_green` says its blocking legs passed (Reto
+    2026-11-19: the deploy does not wait for the soak; the nightly is
+    the net). A red soak stays what the ruling made it: debt the next
+    ``round cut`` reads, and a ``ci:soak`` gripe from ``ci_watch``.
+
+    A run that ended not-green whose jobs cannot be read is ``pending``,
+    not ``red``: the soak alone may have turned it, and a recorded red
+    is final — it would start the fix loop on a green release. The next
+    poll reads the jobs again."""
+    state, run_id, why = verdict_of(runs, sha, branch)
+    if state == "green" or not run_id:
+        return state, run_id, why
+    jobs = fetch_jobs(repo, run_id)
+    if jobs is None:
+        if state == "red":
+            return "pending", run_id, f"{why}, but its jobs are unreadable"
+        return state, run_id, why
+    if gate_legs_green(jobs):
+        return (
+            "green",
+            run_id,
+            f"run {run_id}: lint and gate-fast legs green; the soak does "
+            f"not gate ({why})",
+        )
+    return state, run_id, why
 
 
 # ── the no-run ladder (gr589270) ──────────────────────────────────
@@ -785,7 +1129,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     if runs is None:
         state, run_id, why = "pending", "", "GitHub unreadable (network or rate limit)"
     else:
-        state, run_id, why = verdict_of(runs, sha, target["branch"])
+        state, run_id, why = gate_verdict(target["repo"], runs, sha, target["branch"])
     meta: dict[str, Any] = {"sha": sha, "range": rng, "state": state, "run_id": run_id}
     if ctx.meta.get("rerun_of") is not None and picked is not None:
         # A rerun poll records the run's freshness evidence too — the
@@ -807,6 +1151,25 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
                 f"baseline (<= {before}) — the rerun's own verdict has "
                 "not landed"
             )
+    if state in ("green", "red") and target["branch"]:
+        # A fix push cancels the previous release run. Its completed
+        # verdict belongs to the old head, never to the current release.
+        head = fetch_head(target["repo"], target["branch"])
+        if head is None:
+            state = "pending"
+            why = "release head unreadable; cannot confirm the run is current"
+        elif head != sha:
+            state = "pending"
+            why = f"superseded by {head[:9]}"
+            log.info("%s: %s %s", NAME, sha[:9], why)
+            todo_id = params.get("todo_id")
+            if isinstance(todo_id, int):
+                _release.record_head(ctx.store, todo_id, head)
+                # Explicit overrides must follow the head on the next wake too.
+                params.pop("sha", None)
+                params.pop("range", None)
+                ctx.set_meta(params=params)
+        meta["state"] = state
     ctx.set_meta(ci_verdict_poll=meta)
     if state in ("green", "red"):
         line = _release.record_ci_verdict(ctx.store, sha, rng, state, run_id)
@@ -880,9 +1243,13 @@ __all__ = [
     "POLL_INTERVAL_LATE",
     "SPEC",
     "fetch_head",
+    "fetch_jobs",
     "fetch_runs",
+    "gate_legs_green",
+    "gate_verdict",
     "load",
     "poll_interval",
+    "release_branch_head",
     "resolve_target",
     "verdict_of",
 ]

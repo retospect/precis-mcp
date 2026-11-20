@@ -35,6 +35,32 @@ lane, and calling it from a process without that provider gets `NotFound`
 with a `kind 'pathway' routes through host(s): …` hint — expected off-host,
 not a bug; retry from a host that has it.
 
+## Declutter profiles and embed pathway figures
+
+```python
+get(kind="pathway", id="<slug>", view="profile",
+    args={"route_only": True, "hide_supply": True, "kinetics": True})
+get(kind="pathway", id="<slug>", view="mermaid",
+    args={"route_only": True, "top_n_barriers": 5, "hide_supply": True})
+```
+
+`route_only` keeps the shortest productive route; route selection traverses
+supply bridges before display pruning. `hide_supply` removes those edges and
+isolated states. `top_n_barriers` keeps N largest selected reaction barriers.
+`label_threshold_eV` suppresses smaller barrier labels. Profile `kinetics`
+defaults true: stored TOF (log10), method, trust, T and gas table accompany
+Ea and uncertainty, without solving again. Missing records say "kinetics not
+solved". The highlighted largest route barrier is not a solved degree of
+rate control. `U` shifts the profile using recorded `n_H`; kinetics remains at
+its stored environment.
+
+A draft figure accepts `meta={'view': {'source': 'pathway:<slug>#profile',
+'route_only': True, 'kinetics': True}}`; omit the suffix for profile or use
+`#graph` for the network. The same pruning, `label_threshold_eV`, `U` and
+`size=[width,height]` (inches, each 1–24) options control lazy PNG rendering.
+Source edits invalidate it; Refresh preserves its recipe. Full call and
+provenance details: `precis-draft-rich-content-help`.
+
 ## Find existing pathways / list what has been run
 
 A bare get lists the most recently updated pathways with their slugs, the
@@ -159,6 +185,17 @@ put(kind="pathway", id="no-nh3-pd", text="""...same config...""")
 
 Heavy backends run on the GPU nodes (the seed fan-out spreads across them); a real run takes minutes. Re-running an
 unchanged config is a cache hit (free); editing it recomputes only what changed.
+
+**Cost follows the number of NEB edges, not the hardware.** A small slab is
+overhead-bound, so a faster GPU does not help; cutting edges is the first
+lever on a slow run. `reagents=[] filters the network template` — an empty
+list withholds the adatoms from the steps, `None` keeps the full template.
+Recorded on the ammonia network: 9 NEB edges down to 2, hours down to
+minutes on a 36-atom slab. Budget two more multipliers: the quest NEB tier
+runs three multistarts per edge (about three times the per-edge cost), and
+the MLIP device — the engine defaults to `cpu` with no auto-detect, but a
+routed quest run is dispatched on `cuda` when the config omits
+`mlip.device`; an explicit `mlip.device` wins either way.
 
 ## Read the objective / what's the rate-limiting step / how good is this path
 
@@ -565,7 +602,7 @@ or enqueue the suggested calls.
   The `engine staleness` row compares the pathway's stamped engine against
   the env-or-pinned current version — the same check the harvest's seed
   gate demotes on: an OLDER stamp fails with `engine:stale` in `blocked_by`
-  (BLOCKED — a newer stamp is not stale), and the pathway re-measures on
+  (see assurance tiers below), and the pathway re-measures on
   the current engine when the quest opted into the tier ladder
   (`fidelity_restale_cap` > 0, frontier or top provisional band only),
   while a pathway with no engine stamp reads `not-run`. The seed-independence row
@@ -701,7 +738,8 @@ Today's config knobs are the search space you explore:
 
 - `slab.element` — the catalyst surface metal.
 - `network` — `branching` (a DAG with competing routes), `oxidation`, or `auto`.
-- `reagents` — which adatoms (O\*, H\*) are available to the steps.
+- `reagents` — which adatoms (O\*, H\*) are available to the steps; `[]`
+  filters the template down (the speed lever above), `None` keeps it full.
 - `mlip.backend` — the fidelity: `emt` (free, qualitative — a smoke test only),
   `mace` / `fairchem` (real ML potentials, GPU), and higher DFT rungs.
 - `search.seeds` — more seeds → a real mean ± spread (use ≥3 for confidence).
@@ -724,3 +762,16 @@ above don't change — only what you can put in the config.
   standing optimization campaign on the todo tree.
 - [[precis-structure-help]] — the atomistic structures behind each
   intermediate.
+
+## Barrier assurance tiers
+
+The trust verdict is PASS, WARN or FAIL. PASS retains the strict gate.
+WARN requires converged, saddle-verified evidence and permits only a single
+seed, stale engine or BEP estimate; it ranks with `≈` and its reason.
+FAIL includes unconverged NEB, absurd magnitude, endpoint split, detachment
+and wrong binder, and never ranks. A failed sibling lookup or stored barrier
+refusal remains FAIL. A vacuous endpoint check remains labelled on PASS.
+Quest frontiers show PASS-only and PASS+WARN Pareto bands side by side;
+leaderboards carry those membership columns and the assurance reason in
+`quality`. Carry the `≈` marker and reason into reports of WARN numbers;
+do not report numbers from FAIL rows.

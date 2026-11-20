@@ -78,7 +78,7 @@ a `gripe`. Then `scripts/token-review --stamp` one line summarizing the pass.
 
 Method notes: sample the 6-8 largest sessions of the window (sidechains
 included), and dedup cache-read tokens by message id. The recurring patterns
-live as numbered rules in `docs/backlog/token-review-hook-gaps.md` (D `sed -n`
+live as numbered rules in me692225 (D `sed -n`
 instead of Read, E tail-polling instead of `Monitor`, F a feature build with
 zero delegation); a recurrence is evidence appended to that item, not a new
 gripe. Re-reading governing docs after each auto-compact and fleet

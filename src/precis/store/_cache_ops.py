@@ -44,6 +44,7 @@ Mixin assumes the concrete Store provides:
 
 from __future__ import annotations
 
+import logging
 import re
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any
@@ -70,6 +71,28 @@ _TITLE_PLAIN_SQL = title_plain_sql("refs.title")
 #: ``meta_fields`` — handler constants only; anything else is refused
 #: before it can be quoted into SQL.
 _META_FIELD_RE = re.compile(r"[a-z][a-z0-9_]*")
+
+log = logging.getLogger(__name__)
+
+
+def _note_meter_spend(conn: Connection, cost_usd: float | None) -> None:
+    """Fold a paid fetch's committed cost into the budget meter's shared
+    pending counter, inside the caller's transaction (gr732477): a cap
+    crossed here gates every process at its next gate read rather than one
+    meter baseline later. Best-effort — a metering note must never break
+    the cache write it rides on; a skipped note re-enters at the next
+    baseline re-sum."""
+    if cost_usd is None or cost_usd <= 0:
+        return
+    try:
+        from precis.budget import meter
+    except Exception:
+        log.debug(
+            "cache_state: budget meter import failed; pending note skipped",
+            exc_info=True,
+        )
+        return
+    meter.note_spend(conn, cost_usd)
 
 
 def _ilike_pattern(q: str) -> str:
@@ -376,6 +399,11 @@ class CacheMixin:
                 )
             cache = _row_to_cache_entry(cache_row)
 
+            # The meter sums cache_state.cost_usd for paid fetches — this
+            # fetch's actual committed cost accrues on the shared pending
+            # counter in the same txn (gr732477).
+            _note_meter_spend(conn, cost_usd)
+
         return (ref, cache)
 
     def put_cache_entry(
@@ -494,6 +522,10 @@ class CacheMixin:
                 "cache_state INSERT returned no row — schema invariant violated"
             )
             cache = _row_to_cache_entry(cache_row)
+
+            # Same shared pending note as update_cache_entry (gr732477):
+            # the fetch's actual cost accrues fleet-wide at commit.
+            _note_meter_spend(conn, cost_usd)
 
         return (ref, cache)
 

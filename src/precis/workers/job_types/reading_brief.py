@@ -1,15 +1,15 @@
 """``reading_brief`` job_type — compose the morning reading-brief cast (a draft).
 
-Deterministic in-process producer, run under ``claude_inproc`` (the melchior agent
+Deterministic in-process producer, run under ``claude_inproc`` (the agent-host agent
 worker) — the same executor + host as the news ``briefing`` job, because the
 compose call uses a **nice model** (``claude-opus`` via the litellm proxy, which is
-melchior-loopback-only). Driven by a recurring (``meta.schedule`` set) todo
+agent-host-loopback-only). Driven by a recurring (``meta.schedule`` set) todo
 (``meta.schedule={'cron':'30 2 * * *'}``, ``meta.executor='claude_inproc'``,
 ``meta.job_type='reading_brief'``). Calls
 :func:`precis.reading.briefing_cast.build_reading_briefing`, which unions the
 activity/reading/recall lanes into a standalone dated ``draft``; the ``cast_audio``
-pass on melchior then narrates it onto the podcast feed **as a separate downstream
-step** (compose and TTS never block each other). Once-a-day, so the melchior
+pass on the agent host then narrates it onto the podcast feed **as a separate downstream
+step** (compose and TTS never block each other). Once-a-day, so the agent host
 compute is fine.
 
 ``claude_inproc`` plugin dispatchers return ``None`` and report via ``ctx`` (the

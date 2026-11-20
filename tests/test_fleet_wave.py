@@ -1627,6 +1627,167 @@ def test_close_on_gone_tree_releases_its_claim(
     assert "\trelease\tw2\tdocs/backlog/gone-spec.md" in _claims(env)
 
 
+# ── graph spec claims (gr696034) ─────────────────────────────────────
+
+FAKE_TOOLS = f"""#!{sys.executable}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_TOOLS_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps({{"argv": args,
+                          "source": os.environ.get("PRECIS_SOURCE")}}) + "\\n")
+plans = json.loads(os.environ.get("FAKE_PLANS", "{{}}"))
+refusals = set(json.loads(os.environ.get("FAKE_TAG_REFUSALS", "[]")))
+if args[0] == "get":
+    me = args[args.index("--id") + 1]
+    ids = plans.get(me, [])
+    print("# memory " + me + " - links (rel='plan-of', kind='todo')")
+    if ids:
+        print("Links:")
+        for i in ids:
+            print(f"has-plan td{{i}} | keywords | get(kind='todo', id={{i}}) | 0")
+    else:
+        print("(no links matching rel='plan-of', kind='todo')")
+elif args[0] == "tag" and "--add" in args:
+    tid = args[args.index("--id") + 1]
+    if tid in refusals:
+        print(f"[error:BadInput] todo id={{tid}} is already claimed (live lease)")
+        sys.exit(3)
+    print("ok")
+elif args[0] == "tag" and "--remove" in args:
+    tid = args[args.index("--id") + 1]
+    if tid in refusals:
+        print(f"[error:BadInput] todo id={{tid}} carries no such lease")
+        sys.exit(3)
+    print("ok")
+"""
+
+
+def _with_tools(
+    env: dict[str, str],
+    tmp_path: Path,
+    plans: dict[str, list[int]] | None = None,
+    refusals: list[int] | None = None,
+) -> dict[str, str]:
+    exe = tmp_path / "bin" / "fake-tools"
+    exe.write_text(FAKE_TOOLS, encoding="utf-8")
+    exe.chmod(0o755)
+    return {
+        **env,
+        "FLEET_SPEC_CLAIM_CMD": str(exe),
+        "FAKE_TOOLS_LOG": str(tmp_path / "tools.jsonl"),
+        "FAKE_PLANS": json.dumps(plans or {}),
+        "FAKE_TAG_REFUSALS": json.dumps([str(r) for r in (refusals or [])]),
+    }
+
+
+def _tool_calls(env: dict[str, str]) -> list[list[str]]:
+    log = Path(env["FAKE_TOOLS_LOG"])
+    if not log.exists():
+        return []
+    return [
+        json.loads(ln)["argv"] for ln in log.read_text(encoding="utf-8").splitlines()
+    ]
+
+
+def _tool_sources(env: dict[str, str]) -> list[str]:
+    """The PRECIS_SOURCE every tools call ran under."""
+    log = Path(env["FAKE_TOOLS_LOG"])
+    if not log.exists():
+        return []
+    return [
+        json.loads(ln)["source"] for ln in log.read_text(encoding="utf-8").splitlines()
+    ]
+
+
+def test_launch_claims_graph_spec_plan_todo(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """A brief naming a spec root me<N> claims the plan root todo's lease
+    through the prod CLI — no repo file is touched (gr696034)."""
+    env = _fills(_with_tools(env, tmp_path, plans={"me568172": [456]}))
+    _bare_origin(env)
+    _launch(env, tmp_path, "g1", "Build the routing cache layer of me568172.\n")
+    calls = _tool_calls(env)
+    assert calls[0][:2] == ["get", "--kind"]
+    assert calls[0][calls[0].index("--id") + 1] == "me568172"
+    assert calls[0][calls[0].index("--view") + 1] == "links"
+    add = calls[1]
+    assert add[0] == "tag" and add[add.index("--kind") + 1] == "todo"
+    assert add[add.index("--id") + 1] == "456"
+    assert add[add.index("--add") + 1] == "claimed-by:g1"
+    assert "\tclaim\tg1\ttodo:td456" in _claims(env)
+    # The claim ran under the explicit worker source, not an inherited
+    # owner default — the lease CAS refuses a live foreign lease
+    # (review td706868; the real guard is pinned in
+    # tests/test_todo_claim_lease.py).
+    assert set(_tool_sources(env)) == {"fleet-wave"}
+    purpose = (Path(env["FLEET_WORKTREES"]) / "g1" / ".claude" / "purpose").read_text(
+        encoding="utf-8"
+    )
+    assert "td456" in purpose
+    # No spec-file commit on main: the claim lives on the todo lease.
+    head = subprocess.run(
+        ["git", "log", "-1", "--format=%s"],
+        cwd=env["CWD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    assert not head.startswith("chore(backlog): claim")
+
+
+def test_launch_claims_td_handle_directly(env: dict[str, str], tmp_path: Path) -> None:
+    """A brief naming the plan todo td<N> claims it without a resolution
+    lookup."""
+    env = _fills(_with_tools(env, tmp_path))
+    _bare_origin(env)
+    _launch(env, tmp_path, "g2", "Do the work item td789 now.\n")
+    calls = _tool_calls(env)
+    assert len(calls) == 1 and calls[0][0] == "tag"
+    assert calls[0][calls[0].index("--id") + 1] == "789"
+    assert "\tclaim\tg2\ttodo:td789" in _claims(env)
+
+
+def test_launch_skips_unresolvable_or_refused_graph_claims(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """A me<N> with no plan-of todo and a todo whose lease another holds
+    warn and never block the launch."""
+    env = _fills(_with_tools(env, tmp_path, plans={"me568172": [456]}, refusals=[456]))
+    _bare_origin(env)
+    _windows(env, {})
+    brief = tmp_path / "g3.brief"
+    brief.write_text(
+        "Build me568172 and also the unrelated me999999.\n", encoding="utf-8"
+    )
+    proc = _run(env, "launch", "g3", "--brief", str(brief), "--tier", "qland")
+    assert proc.returncode == 0, proc.stderr
+    assert "me999999 has no plan-of todo" in proc.stderr
+    assert "td456 claim refused" in proc.stderr
+    calls = _tool_calls(env)
+    # Resolution ran for both spec roots; only the lease take was refused.
+    assert [c[0] for c in calls].count("get") == 2
+    assert [c[0] for c in calls].count("tag") == 1
+    assert _claims(env) == ""  # a refused claim records no ledger row
+
+
+def test_close_releases_graph_spec_claim(env: dict[str, str], tmp_path: Path) -> None:
+    """close drops the plan todo lease recorded in the ledger."""
+    env = _fills(_with_tools(env, tmp_path, plans={"me568172": [456]}))
+    _bare_origin(env)
+    _launch(env, tmp_path, "g4", "Build me568172.\n")
+    assert "\tclaim\tg4\ttodo:td456" in _claims(env)
+    _windows(env, {"claude-g4": IDLE})
+    proc = _run(env, "close", "g4")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    remove = [c for c in _tool_calls(env) if c[0] == "tag" and "--remove" in c]
+    assert len(remove) == 1
+    assert remove[0][remove[0].index("--id") + 1] == "456"
+    assert remove[0][remove[0].index("--remove") + 1] == "claimed-by:g4"
+    assert "\trelease\tg4\ttodo:td456" in _claims(env)
+
+
 # ── launch --batch: the brief comes from the gripes (gr519361) ─────────
 
 FAKE_GRIPE_FIX = f"""#!{sys.executable}
@@ -1714,23 +1875,23 @@ def test_launch_codex_tier_w_uses_the_tier_flags_verbatim(
 ) -> None:
     env = _with_gripe_fix(env, tmp_path)
     _windows(env, {})
-    _pane_alive(env, "codex-castor-s2")
+    _pane_alive(env, "codex-cedar-s2")
     proc = _run(
-        env, "launch", "castor-s2", "--batch", "castor-s2", "--codex",
+        env, "launch", "cedar-s2", "--batch", "cedar-s2", "--codex",
         "--tier", "W", "--settle", "0",
     )  # fmt: skip
     assert proc.returncode == 0, proc.stderr
     nw = next(c for c in _tmux_calls(env) if c[0] == "new-window")
-    assert nw[nw.index("-n") + 1] == "codex-castor-s2"
+    assert nw[nw.index("-n") + 1] == "codex-cedar-s2"
     # exactly scripts/fleet-authority's tier-W codex flags, nothing appended
     assert nw[-1].startswith(
         "codex --sandbox workspace-write --ask-for-approval never 'Read "
     )
     assert nw[-1].count("--ask-for-approval") == 1
     assert "scratch/codex-brief.md" in nw[-1]
-    tree = Path(env["FLEET_WORKTREES"]) / "castor-s2"
+    tree = Path(env["FLEET_WORKTREES"]) / "cedar-s2"
     brief = (tree / "scratch" / "codex-brief.md").read_text(encoding="utf-8")
-    assert brief.startswith("# batch castor-s2") and "NO precis MCP access" in brief
+    assert brief.startswith("# batch cedar-s2") and "NO precis MCP access" in brief
     # gr567689: a tier-W codex sandbox cannot write the board log — the note
     # routes status through .claude/purpose + scratch/handoff.txt instead.
     # (The appended builder footer still names scripts/board post — that
@@ -1749,14 +1910,14 @@ def test_launch_codex_tier_w_uses_the_tier_flags_verbatim(
     assert "locked" in locked
     log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
     assign = json.loads(log.splitlines()[1])
-    assert assign[assign.index("--session") + 1] == "codex:codex-castor-s2"
-    assert "launched codex-castor-s2" in proc.stdout
+    assert assign[assign.index("--session") + 1] == "codex:codex-cedar-s2"
+    assert "launched codex-cedar-s2" in proc.stdout
 
 
 def test_launch_codex_refuses_tier_r(env: dict[str, str], tmp_path: Path) -> None:
     env = _with_gripe_fix(env, tmp_path)
     _windows(env, {})
-    proc = _run(env, "launch", "castor-s2", "--batch", "castor-s2", "--codex")
+    proc = _run(env, "launch", "cedar-s2", "--batch", "cedar-s2", "--codex")
     assert proc.returncode == 2
     assert "REFUSED --codex at tier R" in proc.stderr and "--tier W" in proc.stderr
     assert not any(c[0] == "new-window" for c in _tmux_calls(env))
@@ -1768,13 +1929,13 @@ def test_launch_codex_refuses_a_window_that_died(
     env: dict[str, str], tmp_path: Path
 ) -> None:
     env = _with_gripe_fix(env, tmp_path)
-    _windows(env, {})  # no pane for codex-castor-s2: the window is gone
+    _windows(env, {})  # no pane for codex-cedar-s2: the window is gone
     proc = _run(
-        env, "launch", "castor-s2", "--batch", "castor-s2", "--codex",
+        env, "launch", "cedar-s2", "--batch", "cedar-s2", "--codex",
         "--tier", "W", "--settle", "0",
     )  # fmt: skip
     assert proc.returncode == 3, proc.stdout
-    assert "REFUSED codex-castor-s2: window gone" in proc.stderr
+    assert "REFUSED codex-cedar-s2: window gone" in proc.stderr
     assert "launched" not in proc.stdout
     log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
     assert "assign" not in log
@@ -2764,6 +2925,18 @@ KIMI_IDLE = "● kimi ready\n❯ \n"
 KIMI_TRUST = "● kimi\nTrust this folder?\n 1. Yes\n 2. No\n"
 #: synthetic: no real Kimi capture exists — a numbered permission dialog.
 KIMI_NUMBERED = "Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"
+#: gr651178's pane shape: two banners, the input box as a bare ``>``
+#: line, and a ``context:`` status — no ``❯`` anywhere.
+KIMI_BOX = (
+    "No session yet — one will be created on your first message.\n"
+    "tmux extended-keys is off. Modified Enter keys may not work. Add "
+    "`set -g extended-keys on` to ~/.tmux.conf and restart tmux.\n"
+    "> \n"
+    "context: 0% (0/1M)\n"
+)
+KIMI_BOX_HELD = KIMI_BOX.replace(
+    "> \n", "> Read scratch/kimi-brief.md and do exactly what it says.\n"
+)
 
 
 def test_kimi_launch_dry_run_resolves_kimi_tree_tmux_and_never_prompt(
@@ -3059,6 +3232,95 @@ def test_kimi_model_requires_kimi(env: dict[str, str], tmp_path: Path) -> None:
     env = _kimi_launch_fills(env)
     proc = _run(env, "launch", "x", "--brief", str(brief), "--kimi-model", "k3")
     assert proc.returncode == 2 and "--kimi-model needs --kimi" in proc.stderr
+
+
+# ── launch --kimi: the bare ``>`` input box (gr651178) ───────────────
+# Kimi's box is `> text`, not `❯ text` — the unscoped read saw an empty
+# box, reported "sent", and the pane idled with the brief unsubmitted.
+
+
+def test_kimi_bare_box_is_unsent_input_only_for_kimi() -> None:
+    m = _module()
+    held = "Read scratch/kimi-brief.md and do exactly what it says."
+    assert m.unsent_input(KIMI_BOX_HELD, "kimi") == held
+    assert m.unsent_input(KIMI_BOX, "kimi") == ""
+    # `>` is kimi-scoped: another agent's `>`-led scrollback is output.
+    assert m.unsent_input(KIMI_BOX_HELD) == ""
+    assert m.unsent_input(KIMI_BOX_HELD, "claude") == ""
+    assert m.input_box_visible(KIMI_BOX, "kimi") is True
+    assert m.input_box_visible("Kimi Code\nstarting…\n", "kimi") is False
+
+
+def test_send_line_refuses_a_kimi_box_holding_text(env: dict[str, str]) -> None:
+    _windows(env, {"kimi-a": KIMI_BOX_HELD})
+    proc = _run(env, "send-line", "a", "hello", "--pause", "0")
+    assert proc.returncode == 3
+    assert "input box holds unsent text" in proc.stdout
+    assert not [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    # An empty `>` box sends normally.
+    _windows(env, {"kimi-a": KIMI_BOX})
+    proc = _run(env, "send-line", "a", "the brief", "--pause", "0")
+    assert proc.returncode == 0 and proc.stdout == "sent: kimi-a\n"
+
+
+def test_kimi_launch_retries_a_dropped_enter_with_the_kitty_key(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    # Captures in order: box ready (launch readiness), box ready
+    # (send-line's pre-check), the typed line still held after the plain
+    # Enter, cleared after the kitty retry.
+    _seq(env, "kimi-k-x", KIMI_BOX, KIMI_BOX, KIMI_BOX_HELD, KIMI_BOX)
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = _kimi_launch_fills(env)
+    proc = _run(env, "launch", "k-x", "--brief", str(brief), "--kimi", "--settle", "0")
+    assert proc.returncode == 0, proc.stderr
+    assert "launched kimi-k-x" in proc.stdout
+    assert _sent_texts(env) == [
+        "Read scratch/kimi-brief.md and do exactly what it says."
+    ]
+    sends = [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    assert ["send-keys", "-t", "kimi-k-x", "Enter"] in sends
+    # The first retry is the kitty-protocol Enter (ESC [ 13 u), not the
+    # plain key the extended-keys-off pane already dropped.
+    assert ["send-keys", "-t", "kimi-k-x", "-H", "1b", "5b", "31", "33", "75"] in sends
+
+
+def test_kimi_launch_fails_loudly_when_the_enter_never_lands(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _with_gripe_fix(env, tmp_path)
+    _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    _seq(env, "kimi-k-x", KIMI_BOX, KIMI_BOX, KIMI_BOX_HELD)
+    proc = _run(env, "launch", "k-x", "--batch", "b-x", "--kimi", "--settle", "0")
+    assert proc.returncode == 3
+    assert "the brief is NOT delivered" in proc.stdout
+    assert "extended-keys" in proc.stderr
+    sends = [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    enters = [c for c in sends if c[-1] == "Enter"]
+    assert len(enters) == 2  # the send and the plain-key retry
+    assert ["send-keys", "-t", "kimi-k-x", "-H", "1b", "5b", "31", "33", "75"] in sends
+    # The batch assign still records — the window is up.
+    log = Path(env["FAKE_GRIPE_FIX_LOG"]).read_text(encoding="utf-8")
+    assert '"assign"' in log
+
+
+def test_kimi_launch_refuses_a_pane_that_never_shows_a_box(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _fake_kimi_tree(env, tmp_path)
+    _windows(env, {})
+    _pane_alive(env, "kimi-k-x", "Kimi Code\nstarting…\n")
+    brief = tmp_path / "brief.txt"
+    brief.write_text("Task: x.\n", encoding="utf-8")
+    env = {**_kimi_launch_fills(env), "FLEET_KIMI_READY_S": "0"}
+    proc = _run(env, "launch", "k-x", "--brief", str(brief), "--kimi", "--settle", "0")
+    assert proc.returncode == 3
+    assert "no input box" in proc.stderr
+    assert not [c for c in _tmux_calls(env) if c[0] in ("send-keys", "set-buffer")]
 
 
 # ── event-watch: the Kimi pane (td576126) ────────────────────────────

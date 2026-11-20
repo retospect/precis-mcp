@@ -177,7 +177,7 @@ class TestRunHandlerOnce:
         Resolving it does a live ``GET /model`` round-trip which raises
         ``EmbedderUnavailable`` when the service is down. If that escaped,
         it would take out ``run_loop`` — the real incident where the
-        caspar / spark / balthazar system workers crash-looped ~118×/h,
+        birch / spruce / alder system workers crash-looped ~118×/h,
         which stalled ``dispatch`` and left planner todos un-spawned.
         """
         from precis.embedder import EmbedderUnavailable

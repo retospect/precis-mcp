@@ -11,10 +11,11 @@ import dataclasses
 import numpy as np
 import pytest
 
+from precis.pcb.clearance import FAB_QUANTUM_MM
 from precis.pcb.topoplace.design import TopoZone
 from precis.pcb.topoplace.mesh import build_mesh
 from precis.pcb.topoplace.proxy import overlap_area
-from precis.pcb.topoplace.shove import ShovePush, shove_pose
+from precis.pcb.topoplace.shove import ShovePush, _legal_xy, shove_pose
 from tests.fixtures.pcb.topo_example_a import example_a
 from tests.fixtures.pcb.topo_synth import synth_design
 
@@ -191,3 +192,53 @@ def test_shove_push_row_rigid_mates_skipped() -> None:
     d1 = dataclasses.replace(d, group_of=group_of, group_members=group_members)
     res = shove_pose(d1, pose, push=[ShovePush(0, 1, (1.0, 0.0), 1.0)])
     assert res.moved_mm == 0.0
+
+
+def test_all_fixed_reports_reason() -> None:
+    """gr635502: the jo635337 shape — every part ``fixed='both'`` and
+    residual conflicts on the audit — ran 0 rounds and reported
+    ``reason ''``. The stop must name itself: no movable unit while
+    residual rows stand → ``all-fixed``. (A fixed-fixed pair lands on
+    ``noted``, never ``resolved``'s count — the keepout intrusion
+    supplies the unresolved residual the spec asserts.)"""
+    d = example_a()
+    pose = d.pose0.copy()
+    pose[1] = pose[0].copy()  # stacked pair — fixed-fixed, lands on noted
+    keepout = np.asarray(
+        [[2.0, -1.0], [4.0, -1.0], [4.0, 1.0], [2.0, 1.0], [2.0, -1.0]]
+    )
+    d = dataclasses.replace(
+        d,
+        zones=(TopoZone(kind="keepout", ring=keepout, layers=(), name="k"),),
+        fixed=np.ones(len(d.parts), dtype=bool),
+    )
+    res = shove_pose(d, pose)
+    assert res.rounds == 0 and res.moved_mm == 0.0
+    assert not res.resolved  # B1's courtyard sits inside the keepout
+    assert res.reason == "all-fixed"
+
+    # One movable member: the LP takes the shove — rounds run, no stop.
+    d1 = dataclasses.replace(d, fixed=np.asarray([True] + [False] * (len(d.parts) - 1)))
+    res1 = shove_pose(d1, pose)
+    assert res1.rounds >= 1 and res1.reason == ""
+
+
+def test_cap_blocked_reports_reason() -> None:
+    """The other named stop (gr635502): a mover exists and the push row
+    still wants separation, yet the applied step is ~0 — the pushed
+    part already sits on its legal-box +x edge and every other part is
+    fixed. ``reason`` reports ``cap-blocked``, not a silent exit."""
+    d = example_a()
+    pose = d.pose0.copy()
+    lo = np.asarray(d.outline.min(axis=0), float) + FAB_QUANTUM_MM
+    hi = np.asarray(d.outline.max(axis=0), float) - FAB_QUANTUM_MM
+    _cx_lo, cx_hi = _legal_xy(d, lo, hi)
+    pose[1, 0] = float(cx_hi[1, 0])  # A2 pinned at its +x box edge
+    d = dataclasses.replace(
+        d,
+        fixed=np.asarray([True] + [False] + [True] * (len(d.parts) - 2)),
+        silk=dataclasses.replace(d.silk, pair_req_mm=0.0),
+    )
+    res = shove_pose(d, pose, push=[ShovePush(0, 1, (1.0, 0.0), 1.0)])
+    assert res.moved_mm == pytest.approx(0.0, abs=1e-6)
+    assert res.reason == "cap-blocked"

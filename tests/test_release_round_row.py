@@ -226,6 +226,51 @@ def test_update_round_same_n_create_stamps_no_pass_on_a_later_state(
     assert plans_release.read_round(store) == seeded
 
 
+@pytest.mark.parametrize("state", ["abandoned", "superseded", "failed"])
+def test_update_round_create_replaces_a_dead_same_n_row_of_another_pass(
+    store: Store, state: str
+) -> None:
+    """gr714067: r1 died without shipping under pass td41 and its number
+    was minted again for td99. The cut replaces the row whole — left
+    alone it stayed ``abandoned`` through the new release's deploy and
+    confirm, and every reader saw a dead release."""
+    _seed(store, {**_fields(state=state), "pass": "td41", "abandoned_why": "x"})
+    fields = _fields(base="c" * 40)
+    fields["pass"] = "td99"
+    notes = plans_release.update_round(store, fields, create=True, now=NOW)
+    assert notes == [f"release.round: wrote r1 cut over the dead row ({state}, td41)"]
+    assert plans_release.read_round(store) == {
+        **fields,
+        "state_at": "2026-11-06T12:00:00Z",
+        "cut_at": "2026-11-06T12:00:00Z",
+    }
+
+
+@pytest.mark.parametrize(
+    ("row", "why"),
+    [
+        pytest.param({"state": "confirmed", "pass": "td41"}, "confirmed", id="shipped"),
+        pytest.param({"state": "abandoned", "pass": "td99"}, "abandoned", id="own"),
+        pytest.param(
+            {"state": "failed", "pass": "td41", "deploy": {"started_epoch": 5}},
+            "failed",
+            id="partial-rollout",
+        ),
+    ],
+)
+def test_update_round_create_leaves_a_same_n_row_that_is_not_dead(
+    store: Store, row: dict, why: str
+) -> None:
+    """A release that shipped, this pass's own row, and a ``failed`` row
+    whose rollout launched (a live partial rollout) are never replaced."""
+    seeded = _seed(store, {**_fields(), **row})
+    fields = _fields(base="c" * 40)
+    fields["pass"] = "td99"
+    notes = plans_release.update_round(store, fields, create=True, now=NOW)
+    assert f"already on record ({why})" in notes[0]
+    assert plans_release.read_round(store) == seeded
+
+
 def test_update_round_recut_moves_a_lower_n_row(store: Store) -> None:
     _seed(store, _fields(n=1, state="confirmed"))
     notes = plans_release.update_round(store, _fields(n=2), create=True, now=NOW)
@@ -425,3 +470,55 @@ def test_live_deploy_job(store: Store) -> None:
     gone = _deploy_job(store)
     store.retire_ref(gone)
     assert plans_release.live_deploy_job(store) is False
+
+
+def test_live_deploy_job_plan_uses_partial_index(store: Store) -> None:
+    """EXPLAIN of the check's own statement picks
+    ``refs_job_release_deploy_idx``.
+
+    The newest-50 ``release_deploy`` read had the gr685472 shape — a
+    full walk of the job rows; the partial index starts from the handful
+    of rows ever stamped with that job_type. On a tiny test table the
+    planner could still prefer a seq scan or ``refs_kind_idx``, so both
+    alternatives are forbidden rather than weakening the assert.
+    """
+    _deploy_job(store)
+    _deploy_job(store, job_type="release_cut")
+    with store.pool.connection() as conn:
+        conn.execute("ANALYZE refs")
+        conn.execute("SET LOCAL enable_seqscan = off")
+        conn.execute("SET LOCAL enable_bitmapscan = off")
+        plan = "\n".join(
+            str(r[0])
+            for r in conn.execute(
+                "EXPLAIN " + plans_release._LIVE_DEPLOY_JOB_SQL
+            ).fetchall()
+        )
+    assert "refs_job_release_deploy_idx" in plan, plan
+    assert "refs_kind_idx" not in plan, plan
+    assert "refs_ref_id_kind_key" not in plan, plan
+
+
+def test_release_deploy_index_predicate_matches(store: Store) -> None:
+    """The index predicate is the statement's WHERE, kept in step — the
+    planner only uses a partial index when the query implies it, so an
+    edit to ``_LIVE_DEPLOY_JOB_SQL`` that breaks the implication turns
+    the index dead weight."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT i.indisvalid, pg_get_expr(i.indpred, i.indrelid) "
+            "FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+            "WHERE c.relname = 'refs_job_release_deploy_idx'"
+        ).fetchone()
+    assert row is not None, (
+        "refs_job_release_deploy_idx missing — migration not applied"
+    )
+    valid, pred = row
+    assert valid
+    for fragment in (
+        "kind = 'job'::text",
+        "retired_at IS NULL",
+        "job_type",
+        "release_deploy",
+    ):
+        assert fragment in pred, pred

@@ -486,7 +486,7 @@ class PlaintextHandler(Handler):
         self.embedder = hub.embedder
         self.root = root.resolve()
         #: ``PRECIS_ROOTS`` mirrors: alias → root. Their refs are slugged
-        #: ``<alias>/<flat slug>`` (``docs/backlog/file-mirror.md``).
+        #: ``<alias>/<flat slug>`` (`me693606`).
         self.mirrors: dict[str, MirrorRoot] = dict(mirrors or {})
         self._aliases = frozenset(self.mirrors)
 
@@ -1584,6 +1584,7 @@ class PlaintextHandler(Handler):
         *,
         id: str | int,
         confirm: str | None = None,
+        dry_run: bool = False,
         **_kw: Any,
     ) -> Response:
         """Delete a paragraph / region, or the whole file.
@@ -1597,6 +1598,8 @@ class PlaintextHandler(Handler):
           file. Matches the file-level ``put(mode='create')`` so
           ``put`` and ``delete`` are symmetric (MCP critic MINOR-C
           2026-05-02).
+        - ``dry_run=True`` previews the selected region or whole file
+          and its line count. It writes nothing and needs no confirmation.
         """
         slug, sel, _path_view = _parse_file_id(
             str(id),
@@ -1605,6 +1608,28 @@ class PlaintextHandler(Handler):
             aliases=self._aliases,
         )
         self._refuse_ro(slug)
+        if dry_run:
+            path = self._resolve_path(slug, must_exist=True)
+            text = path.read_text(encoding="utf-8")
+            if sel is None:
+                return Response(
+                    body=f"Would delete file {slug!r} ({len(text.splitlines())} lines)."
+                )
+            blocks = self._parse_blocks(text)
+            target = _find_block(blocks, sel)
+            if target is None:
+                raise NotFound(
+                    f"{self._block_noun()} {sel.value!r} not found in {slug!r}",
+                    options=self._block_miss_options(blocks, sel) or None,
+                    next=f"get(kind={self._KIND!r}, id={slug!r})",
+                )
+            return Response(
+                body=(
+                    f"Would delete region {slug}~{target.slug} "
+                    f"(L{target.line_start}-L{target.line_end}, "
+                    f"{target.line_end - target.line_start + 1} lines)."
+                )
+            )
         if sel is None:
             expected_confirm = f"delete-file-{slug}"
             if confirm != expected_confirm:

@@ -3,7 +3,7 @@
 A suspended job_type's queued rows are never claimed (they wait in place;
 in-flight rows are untouched), and ``dispatch_autocatpath`` stops minting
 new fan-out trees while ``autocatpath_seed`` is held. The switch is the
-"suspend spark autocatpath until further notice" lever (2026-08-17): the
+"suspend spruce autocatpath until further notice" lever (2026-08-17): the
 deploy var ``precis_suspended_job_types`` renders it into every worker
 unit, so it survives redeploys and resuming is a one-line var flip.
 """

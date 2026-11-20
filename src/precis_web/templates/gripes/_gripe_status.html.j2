@@ -1,9 +1,12 @@
 {# Status control — closed STATUS: axis (replace-on-add, no explicit
    remove). The active status renders as a badge; every other
    vocabulary value gets a small "→ value" button that posts the
-   change. Caller provides: id, status, status_values, status_badge —
-   the same shape both the detail route and this fragment's own
-   htmx re-render supply.
+   change. Caller provides: id, status, status_values, status_badge,
+   attention — the same shape both the detail route and this
+   fragment's own htmx re-render supply. ``attention`` (status in
+   BADGE_STATUSES) renders here, inside the swapped wrapper, so a
+   status click can't leave a stale "Attention: yes" beside a
+   terminal badge.
 
    Progressive enhancement: htmx swaps just this wrapper in place
    (outerHTML), so the detail page doesn't reload. The plain
@@ -12,6 +15,7 @@
   <span class="inline-block rounded border px-2 py-1 text-xs font-medium uppercase {{ status_badge }}">
     {{ status }}
   </span>
+  <span class="text-xs text-fg-faint">Attention: {{ 'yes' if attention else 'no' }}</span>
   {% for v in status_values %}
     {% if v != status %}
     <form method="post" action="/gripes/{{ id }}/status" class="shrink-0"

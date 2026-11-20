@@ -36,11 +36,12 @@ the first network call that actually needs a bearer token (see
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, Upstream
+from precis.errors import BadInput, Conflict, Upstream
 from precis.handlers._slug_ref_shared import (
     reject_chunk_or_path_view,
     render_slug_ref_list,
@@ -152,12 +153,18 @@ def enqueue_authored_works(
             identifiers.append(("doi", work["doi"]))
         if work.get("arxiv"):
             identifiers.append(("arxiv", work["arxiv"]))
-        ref_id, _created = store.upsert_stub_paper(
-            identifiers=identifiers,
-            title=work.get("title"),
-            year=work.get("year"),
-            set_by="orcid",
-        )
+        try:
+            ref_id, _created = store.upsert_stub_paper(
+                identifiers=identifiers,
+                title=work.get("title"),
+                year=work.get("year"),
+                set_by="orcid",
+            )
+        except Conflict as exc:
+            logging.getLogger(__name__).warning(
+                "ORCID: skipping work %s: %s", ident, exc
+            )
+            continue
         _link_authored(store, orcid_ref_id, ref_id, work)
         stubbed += 1
     return {
@@ -328,6 +335,8 @@ class OrcidHandler(Handler):
         untags: list[str] | None = None,
         rel: str | None = None,
         of_kind: str | None = None,
+        limit: Any = None,
+        cursor: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Bare get / q-only → search or listing, mirroring paper/oracle.
@@ -363,6 +372,8 @@ class OrcidHandler(Handler):
                 sense="orcid",
                 rel=rel,
                 of_kind=of_kind,
+                limit=limit,
+                cursor=cursor,
             )
 
         force_refresh = bool(refresh) or mode == "refresh"

@@ -144,12 +144,24 @@ class CopperIndex:
         live = self._live_discs(net)
         if len(xy) and live.any():
             dxy = self._disc_xy[live]
-            d = np.hypot(
-                xy[:, None, 0] - dxy[None, :, 0], xy[:, None, 1] - dxy[None, :, 1]
-            )
             lim = r + self._disc_r[live] + np.maximum(clearance, self._disc_c[live])
             lim += FAB_QUANTUM_MM
-            out |= (d < lim[None, :]).any(axis=1)
+            # Only discs whose reach touches the query's bounding box can
+            # block any point: prune before the (N, M) distance matrix.
+            lo, hi = xy.min(axis=0), xy.max(axis=0)
+            near = (
+                (dxy[:, 0] + lim >= lo[0])
+                & (dxy[:, 0] - lim <= hi[0])
+                & (dxy[:, 1] + lim >= lo[1])
+                & (dxy[:, 1] - lim <= hi[1])
+            )
+            if near.any():
+                dxy, lim = dxy[near], lim[near]
+                d = np.hypot(
+                    xy[:, None, 0] - dxy[None, :, 0],
+                    xy[:, None, 1] - dxy[None, :, 1],
+                )
+                out |= (d < lim[None, :]).any(axis=1)
         return out
 
     def blocked(

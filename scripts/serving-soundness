@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/serving-soundness — verify a served LLM endpoint is not corrupt
-# before routing traffic to it (the 2026-10-12 castor corruption gate:
+# before routing traffic to it (the 2026-10-12 serving-node corruption gate:
 # stray token-0 `!`, flat first-token logits, nondeterministic temp-0 —
 # vllm#37030 on GB10/SM121).
 #

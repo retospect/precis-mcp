@@ -98,7 +98,7 @@ quoted prefix of at least 40 characters; an `add` with an unresolved parent
 is kept as a root with `parent_unresolved` and rendered as unplaced; each
 tick logs its applied counts; the dialectic prompt section only shows when
 a block exists. The dialectic design is
-`quest-graph-as-dossier.md` open question 2.
+`quest-graph-as-dossier (me692487)` open question 2.
 **Last reviewed:** 2026-10-03 (round 3 deployed and dogfooded; parked at TIER 3)
 **Worktree:** `roadmap-quest`
 
@@ -213,7 +213,7 @@ a block exists. The dialectic design is
    no search, so local-first is still unproven live. Serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
    qu330435, qu347422) once it ticks unattended.
-5. **backlog/bootstrap-roadmap-quest.md §Residuals 2, 3, 4** — "lowest unmet
+5. **me691652 §Residuals 2, 3, 4** — "lowest unmet
    capability" is the builder's reading not a ruling; supply-absent rows
    route to supply not bridge; first-tick deed baseline seeds silently. All
    three become decidable only after 2 shows real ticks.
@@ -223,15 +223,15 @@ a block exists. The dialectic design is
 1. **qu453863 ticking cadence** — ticking unattended since 2026-10-02;
    waits on Do next 4's watch; rungs that carry numbers, driving PRIO down
    through qu161906 to the pathway quests.
-2. **backlog/bootstrap-roadmap-quest.md §Residuals 2-4 ruled** — waits on
+2. **me691652 §Residuals 2-4 ruled** — waits on
    real ticks showing which capability the root picks; rulings replace the
    builder's readings.
-3. **backlog/bootstrap-roadmap-quest.md §Residuals 5** (capped framing chunk
+3. **me691652 §Residuals 5** (capped framing chunk
    + web hub ledger panel) — waits on three clean ticks.
-4. **backlog/knowledge-mesh.md in-scope 2** (meta.supply widened to
+4. **me693314 in-scope 2** (meta.supply widened to
    measures) — waits on measures-substrate (knowledge-mesh thread); supply
    numbers with identity instead of free floats.
-5. **backlog/retire-dossier.md** (draft) — Reto 2026-10-24:
+5. **me692487** (draft) — Reto 2026-10-24:
    "retire the dossier". Directions become todos `part-of` the quest,
    evidence `serves`, the narrative is a bounded generated view, exports
    build from the graph; a dry-run-first migration of the 25 prod
@@ -241,23 +241,23 @@ a block exists. The dialectic design is
    the tick's proposal and auto-commit paths and converted from the 25
    dossiers; the design pass landed 2026-11-02 (§Experiment memory
    cards). Build on HOLD until Reto rules on the spec's §Open for Reto.
-6. **backlog/curation-gate.md** — waits on eval-run-spine's verdict column;
+6. **me695348** — waits on eval-run-spine's verdict column;
    review of what each tick wrote before it feeds the next.
 
 Quest-loop machinery, ranked here 2026-10-01 (engine and qu164903 items are
 the chemistry thread's):
 
-7. **backlog/quest-tick-slicing-residuals.md** — requeue-from-checkpoint and
+7. **gr692360** — requeue-from-checkpoint and
    stale-stage agentlog finalize; the stage machine shipped, these are the
    residual failure paths.
-8. **backlog/quest-loop-safety.md** — the "rubric key never produced"
+8. **me690889** — the "rubric key never produced"
     warning (the anti-spin breaker shipped); a silent empty
     frontier is the failure it names.
-9. **backlog/quest-loop-cadence-strip.md** — the web dashboard shows no
+9. **me690874** — the web dashboard shows no
     cadence or why-not-ticking.
-10. **backlog/quest-bodies.md** — the `inquiry` body and qu401863's restart
+10. **me691653** — the `inquiry` body and qu401863's restart
     checklist.
-11. **backlog/web-quest-editor.md** — create/reprioritise the quest tree from
+11. **gr692428** — create/reprioritise the quest tree from
     the web; last, a human surface over a loop that must tick first.
 13. **Local leg ignores hub verdicts.** `quest/search.py::_local_graph_search`
     has no trust or posture filter, and `finding` is in `LINKABLE_KINDS`.

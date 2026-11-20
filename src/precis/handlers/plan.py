@@ -145,7 +145,13 @@ class PlanHandler(Handler):
     # ── get ──────────────────────────────────────────────────────────
 
     def get(
-        self, *, id: str | int | None = None, view: str | None = None, **_kw: Any
+        self,
+        *,
+        id: str | int | None = None,
+        view: str | None = None,
+        limit: Any = None,
+        cursor: str | None = None,
+        **_kw: Any,
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
@@ -156,9 +162,17 @@ class PlanHandler(Handler):
         if view == "links":
             # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
             # every Handler-direct kind alongside the paper fix.
+            # args={'limit'|'cursor'} page the view — the footer's
+            # ``next:`` line carries the exact continuation (gr627629).
             from precis.handlers._links_render import render_links_view
 
-            return render_links_view(self.store, ref, sense="plan")
+            return render_links_view(
+                self.store,
+                ref,
+                sense="plan",
+                limit=limit,
+                cursor=cursor,
+            )
         if view is not None and view != "toc":
             raise BadInput(
                 f"unknown plan view {view!r}",

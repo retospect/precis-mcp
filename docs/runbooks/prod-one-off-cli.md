@@ -5,20 +5,20 @@ session MCP exposes only get/search/put/edit/delete/tag/link (no arbitrary
 CLI verb), a local `precis` hits the dev DB, and there is no local ansible
 vault-pass to build the `agent_rw` DSN yourself.
 
-**Recipe.** Extract the prod DSN from a deployed daemon plist on melchior and
+**Recipe.** Extract the prod DSN from a deployed daemon plist on the agent host and
 pass it to `--database-url`, running entirely remotely so the secret never
 enters session context:
 
 ```
-ssh -o IdentityAgent=none melchior 'DSN="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:PRECIS_DATABASE_URL" /Library/LaunchDaemons/com.precis.web.plist)"; /opt/precis/venv/bin/precis <cmd> --database-url "$DSN" ...'
+ssh -o IdentityAgent=none <agent-host> 'DSN="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:PRECIS_DATABASE_URL" /Library/LaunchDaemons/com.precis.web.plist)"; /opt/precis/venv/bin/precis <cmd> --database-url "$DSN" ...'
 ```
 
 **Notes.**
 
-- `scp`/sftp to melchior fails ("subsystem request failed") — pipe files via
-  `cat local | ssh melchior 'cat > /tmp/f'`.
+- `scp`/sftp to the agent host fails ("subsystem request failed") — pipe files via
+  `cat local | ssh <agent-host> 'cat > /tmp/f'`.
 - `/opt/mcps/sortie/env` (the documented rendered-DSN file) was absent on
-  melchior 2026-07-30; the `com.precis.web` plist DSN worked and targets
+  the agent host 2026-07-30; the `com.precis.web` plist DSN worked and targets
   `precis_prod`.
 - Always `--dry-run` first.
 - Deploy first — the CLI must be on the node.
@@ -41,14 +41,14 @@ env/code defaults; other tiers are untouched. `PRECIS_LLM_MODEL_<TIER>`
 likewise beats `llm.model.<tier>`, but a chain rung's own `model` already wins
 for dispatch, so the chain var alone is normally enough.
 
-Example — `small` on the local qwen3-next-80b, served by melchior's llama-swap:
+Example — `small` on the local qwen3-next-80b, served by the agent host's llama-swap:
 
 ```
 PRECIS_LLM_CHAIN_SMALL='[{"placement": "local", "model": "qwen3-next-80b-a3b-q4_k_m", "transport": "local"}]' \
   /opt/precis/venv/bin/precis taproot-migrate canary --tier small --database-url "$DSN" ...
 ```
 
-**Must run on melchior.** The `local` rung finds its endpoint through the
+**Must run on the agent host.** The `local` rung finds its endpoint through the
 model's `served_by` card and takes a slot of the `llm:qwen3-next-80b-a3b-q4_k_m`
 `resource_slots` row (capacity 1 — one in-flight call, so expect it to be slow
 and to back off while busy). The endpoint is loopback-only, so any other host
@@ -80,7 +80,7 @@ h = build_runtime().hub.handler_for("paper")
 print(h.edit(id=<ref_id>, doi="…", dry_run="full"))   # then re-run without dry_run
 ```
 
-Ship that to melchior and run it against the deployed venv with the DSN above.
+Ship that to the agent host and run it against the deployed venv with the DSN above.
 Handler-level edits still fire the right cascades (identifier set, card
 rewrite, `doi_edit_metadata_risk` event), unlike a bare
 `store.set_ref_identifier`.
@@ -91,8 +91,8 @@ Two traps that cost the most time:
   statically prove keeps git in this tree: `ssh host 'python -' <<'PY'` and
   any "too complex" compound command are rejected, while a git-free local
   heredoc may run (gr514330). Use the Write tool to create the script,
-  then `cat /tmp/x | ssh melchior 'cat > /tmp/x-claude.py'` (two plain
+  then `cat /tmp/x | ssh <agent-host> 'cat > /tmp/x-claude.py'` (two plain
   commands), and run it in a third.
-- ssh to melchior lands as user `deploy`, so a `/tmp` file owned by `reto`
+- ssh to the agent host lands as user `deploy`, so a `/tmp` file owned by `reto`
   can't be overwritten or removed — the "permission denied" comes from the
   *remote* zsh and is easy to misread as local. Pick a distinct filename.

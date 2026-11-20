@@ -91,6 +91,12 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "Default: included when cited claims have minted nanopubs.",
     )
     ex.add_argument(
+        "--repeat-cites",
+        action="store_true",
+        help="Print every citation mark. Default: a mark naming the same "
+        "references as the previous one in its paragraph is dropped.",
+    )
+    ex.add_argument(
         "--no-library-links",
         action="store_true",
         help="Skip the library-discovery-search hyperlink run normally "
@@ -339,6 +345,7 @@ def _run_export(args: argparse.Namespace) -> None:
             doi_links=not args.no_doi_links,
             library_links=not args.no_library_links,
             claim_appendix=not args.no_claim_appendix,
+            repeat_cites=args.repeat_cites,
             bib_style=args.bib_style,
             record_override=True,
         )

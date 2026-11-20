@@ -29,6 +29,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from precis._result_budget import body_bytes
 from precis.cad import catalog
 from precis.cad.bulk import expr_aabb, expr_aabb_disjoint
 from precis.cad.bulk import volume as cad_volume
@@ -426,6 +427,9 @@ class CadHandler(Handler):
                 "relief_fit",
                 "phi",
                 "alpha",
+                # view='links' paging (gr627629)
+                "limit",
+                "cursor",
             }
         ),
     }
@@ -1481,13 +1485,39 @@ class CadHandler(Handler):
             # every Handler-direct kind alongside the paper fix.
             from precis.handlers._links_render import render_links_view
 
-            resp = render_links_view(self.store, ref, sense="cad")
+            a = args or {}
+            resp = render_links_view(
+                self.store,
+                ref,
+                sense="cad",
+                limit=a.get("limit"),
+                cursor=a.get("cursor"),
+            )
             extra = self._make_coverage(ref) + self._printed_joint_check(ref, spec)
             stale = self._stale_analyses(ref)
             if stale:
                 extra += "\n⚠ STALE analyses (re-run or detach): " + "; ".join(stale)
             if extra:
-                resp = Response(body=resp.body + extra)
+                # review td681248: a bare body rebuild dropped the links
+                # view's row-boundary ``budget_fit`` — a wide page then
+                # lost its ``next:`` cursor to the generic line-fit. Keep
+                # the fitter and reserve the warnings' bytes, so the cut
+                # still lands on a whole row and the warnings ride past it.
+                fit = resp.budget_fit
+                if fit is not None:
+                    page_fit = fit
+                    warn_bytes = body_bytes(extra)
+
+                    def fit_with_warnings(cap: int) -> str:
+                        return page_fit(cap - warn_bytes) + extra
+
+                    resp = replace(
+                        resp,
+                        body=resp.body + extra,
+                        budget_fit=fit_with_warnings,
+                    )
+                else:
+                    resp = replace(resp, body=resp.body + extra)
             return resp
         if view not in _PROBE_VIEWS:
             raise BadInput(

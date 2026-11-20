@@ -1,5 +1,5 @@
 """precis_flow — dimension-free thin-chamber flow kernel
-(docs/backlog/se-flow-kernel.md, slice 1).
+(me695207, slice 1).
 
 Vendored from the cfdtest ``breakthrough_annealer`` scratch repo
 (``flow.py``/``tracker.py``/``cost.py``/``geometry.py``) and recast so nothing

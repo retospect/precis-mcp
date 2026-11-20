@@ -54,7 +54,7 @@ of a burned bulk run.
 **``apply`` is a quiet-window operation (an operator step, not a code
 gate).** Before running it, pause the derived-queue workers that touch
 hubs (``hub_refine``, ``chase_trigger``) so nothing refines/re-embeds a
-hub mid-repoint, and avoid 02:00-03:30 UTC (nightly backup + caspar's
+hub mid-repoint, and avoid 02:00-03:30 UTC (nightly backup + the database host's
 daily reboot) — see ``docs/backlog/taproot-atomic-claims.md``'s "Quiet
 window definition". Phase 3 (human review) is not built here.
 """

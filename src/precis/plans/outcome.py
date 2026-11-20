@@ -42,8 +42,12 @@ session's model is no test (the MUST is not a preference). The MUST
 also binds when a prior code session's model cannot be established
 — a failed pick read parks the launch; an unrecorded one resolves to
 the vendor's account default where this host's config names it
-(:func:`account_default_model`), and only a default that cannot be
-named still refuses (:func:`code_session_models`, gr657521).
+(:func:`account_default_model`), and one whose default cannot be named
+falls back to its adapter (gr702143): a vendor CLI's model ids cannot
+equal another vendor's, so a test pick on a different adapter is a
+proven difference, while a pick on the same adapter as the unnamed
+session — like a session with neither model nor adapter — still
+refuses (:func:`code_session_models`).
 """
 
 from __future__ import annotations
@@ -104,7 +108,7 @@ def hard_gates(
     vanished: bool,
     num_turns: int | None,
     max_turns: int | None,
-    tests_observed: bool,
+    tests_observed: bool | None,
     tests_expected: bool,
 ) -> dict[str, bool | None]:
     """The four cheap checks the spec names, as observed facts.
@@ -116,14 +120,29 @@ def hard_gates(
       failure; ``False`` is the lie this gate exists for: a session
       that reported done while its tree does not compile.
     * ``tests_ran`` — acceptance tests ran on the worker or the
-      session's own ``tests: ran`` marker. ``None`` when the run owed
-      no tests: a class outside :data:`TEST_EXPECTED_CLASSES` (a
+      session's own ``tests: ran`` marker. ``tests_observed`` is
+      tri-state (gr674798): ``True`` the receipt says ran; ``False``
+      no receipt at all — the owed marker was never honoured, a
+      failure; ``None`` the session DECLARED ``tests: NOT RUN —
+      <why>``, an honest non-observation in a sandbox that could
+      not run the step, so the gate records ``None`` (not
+      observable). The land mints ``checked`` for the evidence —
+      a request ``ship_flag`` honours as ``--checked`` only when
+      its spot selection allows, else the land runs ``--quick``
+      and the release gate's CI supplies the suite (gr599427).
+      ``None`` is also the gate's answer when the run owed no
+      tests: a class outside :data:`TEST_EXPECTED_CLASSES` (a
       review, a brief — recording False there would read as a gate
       failure it never owed), or a code run that left no commits —
       nothing to test. A code run that produced owes the receipt
       whether or not its ask named test paths (review td655142:
       the every-run gate; a later lander check is no substitute for
-      THIS run's evidence).
+      THIS run's evidence). The caller decides which runs may
+      declare: the poll maps NOT RUN to ``None`` on code runs, and
+      on a validate run whose session delivered its verdict —
+      ``validated:``/``moot:`` is the test session's deliverable and
+      the brief's read needs no suite (gr685988); a validate run
+      carrying no verdict still fails on ``False``.
     * ``no_exceptions`` — no adapter-reported error and the worktree
       did not vanish under the run.
     * ``within_step_cap`` — the session ended before ``max_turns``;
@@ -135,7 +154,11 @@ def hard_gates(
         within_cap = num_turns < max_turns
     return {
         "compiled": compiled,
-        "tests_ran": (bool(tests_observed) if tests_expected else None),
+        "tests_ran": (
+            (None if tests_observed is None else bool(tests_observed))
+            if tests_expected
+            else None
+        ),
         "no_exceptions": no_exceptions,
         "within_step_cap": within_cap,
     }
@@ -352,27 +375,36 @@ def account_default_model(adapter: str | None) -> str | None:
     return model.strip()
 
 
-def code_session_models(store: Any, todo_id: int) -> tuple[frozenset[str], str | None]:
-    """``(avoid, unknown)`` — the model ids the run's code sessions
-    already ran (the picks the test session must route around,
-    gr595545) and WHY that set cannot be trusted, when it cannot:
+def code_session_models(
+    store: Any, todo_id: int
+) -> tuple[frozenset[str], frozenset[str], str | None]:
+    """``(avoid, unknown_adapters, unknown)`` — the model ids the run's
+    code sessions already ran (the picks the test session must route
+    around, gr595545), the adapters whose sessions' models could not be
+    named at all (gr702143), and WHY the avoid set cannot be trusted,
+    when it cannot:
 
     * ``"read"`` — the prior-pick read failed: a transient store
       fault. The caller PARKS and retries; an empty avoid riding past
       the different-model MUST is how the old code let a same-model
       test launch (review td655142).
-    * ``"unrecorded"`` — a prior code session's ``meta.model`` was
-      never recorded AND its account default cannot be resolved either
-      (:func:`account_default_model`, gr657521). Permanent — the run
-      can never prove its test session ran a different model, so the
-      caller REFUSES rather than guesses.
+    * ``"unrecorded"`` — a prior code session recorded NEITHER a
+      ``meta.model`` NOR the adapter that ran it: no model to avoid and
+      no vendor family to compare against. Permanent — the run can
+      never prove its test session ran a different model, so the caller
+      REFUSES rather than guesses.
 
     ``unknown is None`` says every prior code pick's model is
     established (or there are none — a test session launched first
     owes no avoidance). A launched pick with no recorded model
     contributes its resolved account default to ``avoid``: the current
     default stands in for the launch-time default (gr657521 — a test
-    pin to a different family then proves the difference).
+    pin to a different family then proves the difference). A default
+    this host cannot name instead contributes the pick's ADAPTER to
+    ``unknown_adapters`` (gr702143): one vendor CLI's model ids can
+    never equal another's, so a test pick on a different adapter is a
+    proven difference, while a pick on the same adapter as the unnamed
+    session still cannot prove one.
 
     Only picks whose submit stamped ``meta.lane`` count as sessions:
     ``lane`` and ``model`` stamp together just before the launch, so a
@@ -384,21 +416,29 @@ def code_session_models(store: Any, todo_id: int) -> tuple[frozenset[str], str |
         picks = prior_picks(store, todo_id, strict=True)
     except Exception:
         log.warning("outcome: prior-pick read for td%d failed", todo_id, exc_info=True)
-        return frozenset(), "read"
+        return frozenset(), frozenset(), "read"
     sessions = [
         p for p in picks if p.task_class == CODE_TASK_CLASS and p.lane is not None
     ]
     avoid: set[str] = {p.model for p in sessions if p.model}
+    unknown_adapters: set[str] = set()
     unrecorded = False
     for p in sessions:
         if p.model is not None:
             continue
         default = account_default_model(p.adapter)
         if default is None:
-            unrecorded = True
+            if p.adapter:
+                unknown_adapters.add(p.adapter)
+            else:
+                unrecorded = True
         else:
             avoid.add(default)
-    return frozenset(avoid), "unrecorded" if unrecorded else None
+    return (
+        frozenset(avoid),
+        frozenset(unknown_adapters),
+        "unrecorded" if unrecorded else None,
+    )
 
 
 def session_disagreement(
@@ -526,7 +566,7 @@ def build_outcome(
     vanished: bool,
     budget_note: str | None,
     test_failure: str | None,
-    tests_observed: bool,
+    tests_observed: bool | None,
     nothing: str | None,
     clean: bool,
     max_turns: int | None,
@@ -545,7 +585,10 @@ def build_outcome(
     probe); ``corrected`` says a test session left non-test changes
     over the code sibling's produce; ``tests_expected`` overrides the
     class-level obligation (a code run owes tests once it left
-    commits)."""
+    commits). ``tests_observed`` is the tri-state :func:`hard_gates`
+    documents — ``None`` is the declared ``tests: NOT RUN — <why>``
+    (gr674798), kept on the record as ``None``, not folded to
+    ``False``."""
     task_class = CODE_TASK_CLASS
     try:
         todo = store.get_ref(kind="todo", id=int(todo_id))
@@ -626,7 +669,7 @@ def build_outcome(
         "cost_usd": cost_usd,
         "wall_s": wall_s,
         "num_turns": num_turns,
-        "tests_observed": bool(tests_observed),
+        "tests_observed": (None if tests_observed is None else bool(tests_observed)),
         "tests_expected": tests_expected,
         "corrected": corrected,
         "at": _utcnow(),
@@ -654,6 +697,13 @@ PREFIX_LANE_FALLBACK_MODELS: tuple[str, ...] = (
 #: retry (review td661037).
 ALLOWLIST_MODEL_ADAPTERS: frozenset[str] = frozenset({"devin_tree"})
 
+#: Note prefix :func:`diverse_model_pick` returns when a lane that could
+#: run a different model exists but is at cap or backed off right now: a
+#: wait, not a refusal. The caller parks on the lane-wait machinery
+#: instead of refusing — a full claude-sub lane read as "no fit lane"
+#: filed one coordinator ask per validate node (gr674214).
+DIVERSE_BUSY_PREFIX = "run_slice: the different-model lane is busy"
+
 
 def diverse_model_pick(
     store: Any,
@@ -667,6 +717,7 @@ def diverse_model_pick(
     avoid: frozenset[str],
     model_pin: str | None,
     task_class: str,
+    unknown_adapters: frozenset[str] = frozenset(),
 ) -> tuple[Any, str | None, str | None]:
     """``(lane, model, note)`` — the test-session pick routed around the
     run's prior code models (gr595545), or ``(None, None, note)`` when
@@ -676,8 +727,9 @@ def diverse_model_pick(
 
     Same-lane alternates win first (the pick's lane still stands, only
     the model moves), then another candidate lane offering a model
-    outside ``avoid`` under ``pick_lane``'s own ordering (cost class,
-    then live count). A ``model_pin`` that repeats a code model is
+    outside ``avoid`` under ``pick_lane``'s own ordering — the shared
+    free/subscription tier by load fraction, a metered lane last
+    (gr685753). A ``model_pin`` that repeats a code model is
     overridden — the constraint is a MUST — but a pinned LANE is a
     contract: it only re-picks its model, never hops.
 
@@ -689,10 +741,25 @@ def diverse_model_pick(
     default that cannot be named, or one only an allowlist adapter
     (:data:`ALLOWLIST_MODEL_ADAPTERS`) would run, still needs a declared
     model outside ``avoid`` or the pick fails (review td661037).
+
+    ``unknown_adapters`` (gr702143) carries the vendors of code
+    sessions whose models could not be named at all — the config named
+    no default. One vendor CLI's model ids can never equal another's,
+    so a pick on a lane whose adapter is NOT in the set is a PROVEN
+    difference from those sessions and needs nothing more; a lane
+    whose adapter IS in the set cannot prove one (a different declared
+    model on the same vendor could still BE the unrecorded default),
+    so only a hop to another adapter's lane — never a same-lane model
+    move — can carry it, and with no such lane the pick refuses.
+    When ``avoid`` is empty, that hop may use an unnamed account
+    default: the adapter difference supplies all the required evidence.
     """
     from precis.plans import lanes as _lanes
 
-    if not avoid or lane is None:
+    if lane is None:
+        return lane, model, None
+    same_unknown = lane.adapter in unknown_adapters
+    if not avoid and not same_unknown:
         return lane, model, None
 
     def _pinnable(ln: Any, candidate: str) -> bool:
@@ -728,27 +795,37 @@ def diverse_model_pick(
             None,
         )
 
-    # A resolved model that already differs needs nothing; a resolved
-    # None (the account default) is unknown — it could BE a code model.
-    if model is not None and model not in avoid:
+    # A resolved model that already differs needs nothing — unless the
+    # lane runs a vendor whose code session's model is unknown: the
+    # unrecorded default could BE this very id (gr702143).
+    if model is not None and model not in avoid and not same_unknown:
         return lane, model, None
 
-    alt = _alt(lane)
-    if alt is not None:
-        return (
-            lane,
-            alt,
-            f"run_slice: test session must differ from the run's code "
-            f"model(s) {sorted(avoid)}; lane {lane.name!r} carries "
-            f"{alt!r} instead of {model or model_pin or 'the account default'}",
-        )
+    if not same_unknown:
+        alt = _alt(lane)
+        if alt is not None:
+            return (
+                lane,
+                alt,
+                f"run_slice: test session must differ from the run's code "
+                f"model(s) {sorted(avoid)}; lane {lane.name!r} carries "
+                f"{alt!r} instead of {model or model_pin or 'the account default'}",
+            )
 
     def _refuse() -> tuple[Any, None, str]:
-        why = (
-            f"its resolved model {model!r} repeats them"
-            if model is not None
-            else "its unnamed account default could repeat them"
-        )
+        if same_unknown:
+            why = (
+                f"its lane runs the same vendor as a code session whose "
+                f"model was never recorded — nothing on adapter "
+                f"{lane.adapter!r} can be proven different from that "
+                f"unknown model"
+            )
+        else:
+            why = (
+                f"its resolved model {model!r} repeats them"
+                if model is not None
+                else "its unnamed account default could repeat them"
+            )
         return (
             None,
             None,
@@ -763,6 +840,9 @@ def diverse_model_pick(
     live = dict(counts) if counts is not None else _lanes.live_lane_counts(store)
     now = datetime.now(UTC)
     backed = {n for n, until in (backoffs or {}).items() if until and until > now}
+    # A hop must prove the difference on its own: lanes on an adapter
+    # whose code session's model is unknown can never do that
+    # (gr702143), so they are not fit and not "busy" either.
     fit = [
         ln
         for ln in candidates
@@ -771,17 +851,39 @@ def diverse_model_pick(
         and not ln.parked
         and ln.fits(task_class)
         and ln.name not in backed
+        and ln.adapter not in unknown_adapters
         and live.get(ln.name, 0) < ln.cap
-        and _alt(ln) is not None
+        and (not avoid or _alt(ln) is not None)
     ]
-    if not paid_ok and any(ln.cost_class == _lanes.COST_FREE for ln in fit):
-        fit = [ln for ln in fit if ln.cost_class == _lanes.COST_FREE]
+    if not paid_ok and any(ln.cost_class != _lanes.COST_METERED for ln in fit):
+        fit = [ln for ln in fit if ln.cost_class != _lanes.COST_METERED]
     if not fit:
+        busy = sorted(
+            ln.name
+            for ln in candidates
+            if ln is not lane
+            and ln.enabled
+            and not ln.parked
+            and ln.fits(task_class)
+            and ln.adapter not in unknown_adapters
+            and (ln.name in backed or live.get(ln.name, 0) >= ln.cap)
+            and (not avoid or _alt(ln) is not None)
+        )
+        if busy:
+            outside = sorted(avoid) or sorted(unknown_adapters)
+            return (
+                None,
+                None,
+                f"{DIVERSE_BUSY_PREFIX}: {', '.join(busy)} would run a model "
+                f"outside {outside} but is full or backed off; parked "
+                f"until a slot frees",
+            )
         return _refuse()
     best = min(
         fit,
         key=lambda ln: (
-            _lanes.COST_ORDER.index(ln.cost_class),
+            1 if ln.cost_class == _lanes.COST_METERED else 0,
+            live.get(ln.name, 0) / max(ln.cap, 1),
             live.get(ln.name, 0),
         ),
     )

@@ -238,7 +238,35 @@ def test_basis_entry_dropped_when_measure_cleared(store: Store) -> None:
     )
     meta = _meta(store, sid)
     assert meta.get("env_best_J") is None
-    assert "env_best_J" not in meta["network_basis_by_key"]
+    assert "env_best_J" not in (meta.get("network_basis_by_key") or {})
+
+
+def test_restamp_without_basis_clears_stale_provenance(store: Store) -> None:
+    """A new J written with no pathway basis must not keep ranking under
+    the previous evaluation's provenance (review td659951)."""
+    sid = _structure(store)
+    pw_meta = {"config": {"network": "ammonia"}}
+    stamp_environment_results(
+        store,
+        sid,
+        footing="computed",
+        env_best=_evaluation(1.5),
+        env_pareto_fraction=0.3,
+        pathway_meta=pw_meta,
+    )
+    assert _meta(store, sid)["network_basis_by_key"]["env_best_J"]
+    stamp_environment_results(
+        store,
+        sid,
+        footing="computed",
+        env_best=_evaluation(2.5),
+        env_pareto_fraction=0.3,
+    )
+    meta = _meta(store, sid)
+    assert meta["env_best_J"] == 2.5
+    by_key = meta.get("network_basis_by_key") or {}
+    assert "env_best_J" not in by_key
+    assert "env_pareto_fraction" not in by_key
 
 
 def test_sixth_term_m_ea_is_stored(store: Store) -> None:

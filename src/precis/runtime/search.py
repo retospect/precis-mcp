@@ -25,6 +25,15 @@ intersects the resolved domain's ``kinds`` (``runtime.scope``), the
 footer names the skipped count and the door. An explicit ``kind=`` or
 comma list outside the domain still runs; ``'all'`` is byte-identical
 to the unfenced fan-out.
+
+Fan-out isolation (gr664954): the wildcard fan-out shares one call
+deadline across ~34 kinds on a capped worker pool, so a slow kind must
+not starve the queue — every pool checkout a worker makes is bounded
+by :data:`~precis.store.pool.CHECKOUT_BUDGET` (the wait itself and,
+server-side, every statement, not just the ANN leg), and a kind
+dequeued inside the min-start floor still gets a lexical-only attempt
+rather than a bare TimeoutError. Degraded kinds are named in a footer;
+errored ones in the errored tip.
 """
 
 from __future__ import annotations
@@ -64,8 +73,13 @@ from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
 )
 from precis.runtime.scope import DOMAINS, Domain, current_domain
-from precis.store._chunks_ops import ANN_STATEMENT_TIMEOUT_MS
+from precis.store._chunks_ops import (
+    _ANN_DROPPED_PARTIAL_KINDS,
+    ANN_STATEMENT_TIMEOUT_MS,
+)
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
+from precis.store._tag_filter import _parse_tag_string
+from precis.store._tags_ops import _tag_to_namespace_value
 from precis.store.types import Tag
 from precis.utils import handle_registry, search_trace
 from precis.utils.search_merge import (
@@ -75,6 +89,7 @@ from precis.utils.search_merge import (
     merge_and_render,
     ref_hits_to_search_hits,
 )
+from precis.utils.time_span import SPAN_FORMS, span_ago
 
 log = logging.getLogger(__name__)
 
@@ -223,10 +238,21 @@ _PAGE_TOLERATED: dict[str, tuple[Any, ...]] = {"page": (1,)}
 #: cancel (ANN_STATEMENT_TIMEOUT_MS) has a shipped regression test.
 CROSS_KIND_MAX_WORKERS = 4
 #: A kind dequeued with less budget than this (or <10% of the whole
-#: deadline, whichever is smaller) cannot finish even the fastest leg —
-#: report the timeout instead of spending a pooled connection and a query
-#: Postgres will cancel anyway.
+#: deadline, whichever is smaller) cannot finish the full hybrid legs —
+#: it falls to the lexical floor below rather than reporting the
+#: timeout outright (gr664954).
 CROSS_KIND_MIN_START_MS = 1_500
+#: Smaller floor for a lexical-only attempt (gr664954). A kind dequeued
+#: inside ``CROSS_KIND_MIN_START_MS`` still answers a lexical leg in far
+#: less budget — the 2026-11-13 collapse starved cheap kinds (skill,
+#: todo) to TimeoutError purely on queue position while early kinds
+#: held the workers, and the merge lost hits a small retry slice would
+#: have found. Applies on the default expansion only, and only when
+#: the call's mode is the default/``'hybrid'``: an explicit kind list
+#: and any explicit ``mode=`` (``'semantic'``, or the exact-term
+#: ``'verbatim'``/``'literal'`` a lexical rewrite would silently
+#: broaden) are caller intent and keep the timeout.
+CROSS_KIND_LEXICAL_MIN_START_MS = 500
 #: Kinds whose source-search hits are addressed by the parent ref handle (gr),
 #: not the matching comment chunk (gc) — the status-browse kinds (gr495382).
 _PARENT_HANDLE_KINDS = frozenset({"gripe", "todo", "quest"})
@@ -241,6 +267,24 @@ _PARENT_HANDLE_KINDS = frozenset({"gripe", "todo", "quest"})
 #: started, so pool contention or a stalled probe could spend the
 #: budget before the first kind was even submitted.
 CROSS_KIND_DEADLINE_S = 12.0
+#: Slice of that deadline the ANN route probe may spend (gr664970).
+#: The probe is an up-front optimization whose whole cost is one pool
+#: checkout plus the cached gate reads; letting it wait the entire
+#: remaining budget meant a contended pool (or a stalled read) left the
+#: fan-out nothing — every kind came back TimeoutError and the whole
+#: call raised Internal (the 2026-11-13 all-kinds collapse). The slice
+#: is ONE absolute deadline covering checkout and reads together — a
+#: per-step slice lets a waited checkout stack full-slice reads on top.
+#: Over this slice it fails open — no leg skip is claimed — and the
+#: kinds keep the rest of the deadline.
+CROSS_KIND_PROBE_BUDGET_S = 1.5
+#: Bound on the probe watchdog's ``cancel_safe`` send — and so on the
+#: ``join`` that reaps a fired watchdog before the probe's connection
+#: goes back to the pool (gr664970 review: ``Timer.cancel`` stops only
+#: a callback that has not started; one already running must finish
+#: first, else its cancel lands on the next borrower's statement — but
+#: an unbounded send, the 30 s default, would hold the checkout for it).
+CROSS_KIND_PROBE_REAP_S = 1.0
 #: Per-kind server-side statement cap inside the fan-out (gr519679).
 #: Without it one kind's runaway query (a global-route ANN scan over the
 #: paper-dominated index measures 10-30 s on prod) can hold a pooled
@@ -253,6 +297,75 @@ CROSS_KIND_PER_KIND_S = 4.0
 
 _cross_kind_pool: ThreadPoolExecutor | None = None
 _cross_kind_pool_lock = threading.Lock()
+
+#: Process-wide fan-out cost memory (gr664988): an EMA of the
+#: worker-seconds a kind's ``search_hits`` actually took inside a
+#: cross-kind call — including cancelled/errored attempts, whose
+#: cap-spanning durations are the honest signal. ~34 kinds share
+#: ``CROSS_KIND_MAX_WORKERS`` workers inside the deadline, so the
+#: queue cannot drain when a few kinds each spend the whole per-kind
+#: cap — and submitting in kind-alphabet order spent the deadline's
+#: first worker-seconds on early-letter heavy kinds (anki, job,
+#: paper…) while the cheap tail (skill, todo, web…) starved to
+#: TimeoutError on queue position alone, taking the useful hits out
+#: of the merge with it. The fan-out submits jobs cheapest-first:
+#: the deadline then serves the kinds most likely to answer, and
+#: what still misses is the genuinely-slow set the footer names.
+_cross_kind_costs: dict[str, float] = {}
+_cross_kind_costs_lock = threading.Lock()
+
+#: Weight a new observation carries in the EMA — half. One bad turn
+#: sinks a kind behind every cheaper measured kind, and a kind that
+#: recovers floats back within a few calls.
+_CROSS_KIND_COST_ALPHA = 0.5
+
+#: Cold-start cost priors for kinds whose fan-out leg is predictably
+#: at-cap before any measurement exists — the dropped-partial kinds
+#: (``_ANN_DROPPED_PARTIAL_KINDS``), whose ANN leg permanently takes
+#: the global-fallback route: a post-filter over the paper-dominated
+#: global index that keeps almost none of their rows, the documented
+#: 10-30 s worst case that cannot fit the per-kind cap under load.
+#: ``_ANN_GLOBAL_KINDS`` is the opposite routing category — those
+#: kinds dominate the global index, so the post-filter keeps nearly
+#: every candidate and answers in ~0.3 s; seeding paper slow just hid
+#: a healthy kind behind the tail (review td665388). A partial-index
+#: kind whose index is unready is a runtime condition the per-call
+#: route probe already degrades to lexical, not a static prior.
+#: Seeded at the cap so a fresh process already schedules them last;
+#: measured durations replace the prior at EMA rate.
+_CROSS_KIND_COST_PRIOR_S: dict[str, float] = {
+    k: CROSS_KIND_PER_KIND_S for k in _ANN_DROPPED_PARTIAL_KINDS
+}
+
+
+def _record_cross_kind_cost(kind: str, elapsed_s: float) -> None:
+    """Fold one fan-out attempt's worker-seconds into ``kind``'s EMA."""
+    with _cross_kind_costs_lock:
+        prev = _cross_kind_costs.get(kind)
+        if prev is None:
+            prev = _CROSS_KIND_COST_PRIOR_S.get(kind)
+        _cross_kind_costs[kind] = (
+            elapsed_s
+            if prev is None
+            else prev + _CROSS_KIND_COST_ALPHA * (elapsed_s - prev)
+        )
+
+
+def _cross_kind_job_key(kind: str) -> tuple[float, str]:
+    """A kind's fan-out submission key — cheapest first.
+
+    An unmeasured kind costs ``0`` for ordering: a never-tried kind
+    may be fast and gets the benefit of the doubt over a known-slow
+    one — which is also what rescues a kind the deadline starved last
+    call, since a job that never ran records nothing and starts the
+    next call at the front. Measured kinds order by EMA; the kind
+    name is the deterministic tie (cold start degrades to the old
+    alphabetical order).
+    """
+    with _cross_kind_costs_lock:
+        measured = _cross_kind_costs.get(kind)
+    cost = measured if measured is not None else _CROSS_KIND_COST_PRIOR_S.get(kind, 0.0)
+    return (cost, kind)
 
 
 def _cross_kind_executor() -> ThreadPoolExecutor:
@@ -1119,11 +1232,15 @@ class SearchMixin(RuntimeShape):
         * an ``under=`` the kind OWNS (``owns_under`` — todo/taxon trees,
           job's hierarchical scope) — source search would silently drop
           the scope;
-        * a queryless ``kind='job'`` without an explicit ``sort=`` —
+        * a queryless ``kind='job'`` dated listing —
           ``since=``/``until=`` on a plain job listing are the kind's own
           ``created_at`` bounds, so a bare window stays on the job
-          listing path. A ``q=`` or an explicit ``sort=`` asks for
-          ranking and still routes here.
+          listing path, including its natural ``sort='recency'``.
+          A ``q=`` or ``sort='relevance'`` still opts into ranking;
+        * ``kind='job'`` with ``sort='recency'`` (any ``q=``) or
+          ``view='parked'`` — the job handler's own filtered listing,
+          which orders the whole set (gr735229) / renders the park table
+          (gr735226).
         """
         if verb != "search" or not self._is_source_search_request(args):
             return False
@@ -1171,39 +1288,61 @@ class SearchMixin(RuntimeShape):
                 # gr608734: job_type is the kind's own meta filter —
                 # the cross-kind primitive has no way to apply it and
                 # refused the call outright. The handler's job_type path
-                # applies q=/since=/until= itself and refuses what it
-                # cannot (sort=/mode=).
+                # applies q=/since=/until= and its own sort/mode rules.
+                return False
+            sort = str(args.get("sort") or "").strip().lower()
+            if resolved == "job" and sort in {"oldest", "newest"}:
+                return False
+            if resolved == "job" and (
+                str(args.get("view") or "").strip() == "parked"
+                or (
+                    sort in {"recency", "recent"}
+                    and not str(args.get("view") or "").strip()
+                )
+            ):
+                # gr735229/gr735226: the job handler owns these. Its own
+                # listing orders the whole filtered set newest-created
+                # first — the source primitive date-sorts only a top-100
+                # relevance pool, so the newest job of a type could miss
+                # it — and ``view='parked'`` is a kind view the primitive
+                # has no way to render.
                 return False
             q = args.get("q")
-            if (
-                resolved == "job"
-                and args.get("sort") is None
-                and not (isinstance(q, str) and q.strip())
-            ):
-                return False
+            if resolved == "job" and not (isinstance(q, str) and q.strip()):
+                extras = args.get("__extras__")
+                dated = any(
+                    args.get(key) is not None
+                    or (isinstance(extras, dict) and extras.get(key) is not None)
+                    for key in ("since", "until")
+                )
+                if not sort or (dated and sort != "relevance"):
+                    return False
         return True
 
     @staticmethod
     def _parse_search_date(value: Any, field: str) -> datetime | None:
         """Parse a ``since=`` / ``until=`` bound into a tz-aware datetime.
 
-        Accepts an ISO date (``2024-01-01``) or a full ISO timestamp; a
-        naive value is assumed UTC (``refs.created_at`` is ``timestamptz``)
-        and an offset-aware value is normalized to UTC so a ``Z``-labelled
-        echo can't print the offset hour as UTC. Raises ``BadInput`` on an
-        unparseable string.
+        Accepts an ISO date (``2024-01-01``), a full ISO timestamp, or a
+        relative span (``30m`` / ``2h`` / ``3d`` / ``1w`` — "now minus that
+        long", gr735229); a naive value is assumed UTC (``refs.created_at``
+        is ``timestamptz``) and an offset-aware value is normalized to UTC
+        so a ``Z``-labelled echo can't print the offset hour as UTC. Raises
+        ``BadInput`` on an unparseable string.
         """
         if value is None:
             return None
         if isinstance(value, datetime):
             dt = value
+        elif (ago := span_ago(str(value))) is not None:
+            dt = ago
         else:
             try:
                 dt = datetime.fromisoformat(str(value).strip())
             except ValueError as exc:
                 raise BadInput(
-                    f"{field}= must be an ISO date/timestamp, got {value!r}",
-                    next=f"{field}='2024-01-01' or '2024-01-01T00:00:00'",
+                    f"{field}= must be {SPAN_FORMS}, got {value!r}",
+                    next=f"{field}='2h' or '2024-01-01' or '2024-01-01T00:00:00'",
                 ) from exc
         return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
 
@@ -1687,8 +1826,8 @@ class SearchMixin(RuntimeShape):
                     "for a filtered listing",
                     next=[
                         "search(kind='paper,patent', q='mof co2', sort='recency')",
-                        "search(kind='paper', since='2026-01-01', "
-                        "args={'serves': 'quest:<id>'})",
+                        "search(kind='paper', args={'since': '2026-01-01', "
+                        "'serves': 'quest:<id>'})",
                     ],
                 )
             ranking_only = [
@@ -2751,9 +2890,11 @@ class SearchMixin(RuntimeShape):
         # contributes its lexical hits, the footer below names the skip,
         # and an explicit kind list keeps the full legs (caller intent).
         # td649559: the probe and the fan-out share one call deadline —
-        # the probe's pool checkout and gate read draw from the same
-        # budget (its statement timeout is the remaining budget) instead
-        # of running unbounded before the fan-out's clock starts.
+        # the probe's checkout and gate reads draw from a capped slice
+        # of it (one absolute probe deadline — the checkout wait, the
+        # statement cap and the cancel watchdog all measure against the
+        # same instant, gr664970) instead of running unbounded before
+        # the fan-out's clock starts.
         route_skipped: list[str] = []
         deadline_at = time.monotonic() + CROSS_KIND_DEADLINE_S
         if (
@@ -2771,8 +2912,18 @@ class SearchMixin(RuntimeShape):
         streams: list[list[SearchHit]] = []
         per_kind_counts: list[tuple[str, int]] = []
         errored: dict[str, Exception] = {}
+        # gr664954: on the default expansion (same gate as the up-front
+        # skip — an explicit kind list is caller intent), a kind a
+        # worker can only reach inside the deadline's last slice runs
+        # lexical-only instead of timing out. The set collects those
+        # kinds so the footer below can name the degrade.
+        lexical_fallback: set[str] | None = set() if default_expansion else None
         fanned = self._cross_kind_fan_out(
-            kinds, base_kwargs, kind_overrides, deadline_at=deadline_at
+            kinds,
+            base_kwargs,
+            kind_overrides,
+            deadline_at=deadline_at,
+            lexical_fallback=lexical_fallback,
         )
         for k in kinds:
             if k not in fanned:
@@ -2970,6 +3121,34 @@ class SearchMixin(RuntimeShape):
                 result_count=response.result_count,
                 result_ids=response.result_ids,
             )
+
+        # gr664954: kinds that only got a worker inside the deadline's
+        # last slice ran lexical-only — their hits stay merged, but the
+        # semantic leg they skipped must not read as fully searched.
+        # (Kinds that errored anyway are already named by the errored
+        # tip; don't name them twice.)
+        if lexical_fallback:
+            fell_back = sorted(lexical_fallback - set(errored))
+            if fell_back:
+                tip = (
+                    "_(semantic leg skipped for "
+                    + ", ".join(fell_back)
+                    + " — the fan-out deadline left too little for the "
+                    "full hybrid legs, so they ran lexical-only this "
+                    "turn; search each kind explicitly for the full "
+                    "leg)_"
+                )
+                lines = response.body.splitlines()
+                if lines:
+                    lines.insert(1, tip)
+                else:
+                    lines.append(tip)
+                response = Response(
+                    body="\n".join(lines),
+                    cost=response.cost,
+                    result_count=response.result_count,
+                    result_ids=response.result_ids,
+                )
 
         # The domain fence's skipped-kinds footer (gr572720) — the same
         # ``_(…)_`` convention as the errored/excluded trailers, naming
@@ -3233,39 +3412,89 @@ class SearchMixin(RuntimeShape):
         a guaranteed cancel. One probe covers every kind:
         :func:`ann_route_plan`'s gate read is cached per database.
 
-        td649559: the probe shares ``deadline_at`` with the fan-out.
-        The pool checkout waits at most the remaining budget and the
-        probe's statements run under a transaction-local
-        ``statement_timeout`` of the remaining budget, so pool
-        contention or a stalled gate read cannot push the call past the
-        tool latency budget before the fan-out begins. Fails open to
-        ``[]`` — an exhausted budget or probe error keeps the old
-        cancel-at-the-cap path rather than refusing a whole search.
+        td649559: the probe shares ``deadline_at`` with the fan-out —
+        bounded to :data:`CROSS_KIND_PROBE_BUDGET_S`, not the whole
+        remainder (gr664970: a checkout waiting the full remainder on a
+        contended pool, or a gate read running it, left the fan-out
+        nothing — every kind came back TimeoutError). The slice is ONE
+        absolute deadline for the whole probe, not a per-step budget:
+        the checkout waits only what the slice has left, the statement
+        cap is what is left after that (a cap reusing the whole slice
+        lets a waited checkout plus two stalled reads spend ~3x it),
+        and a watchdog cancels whatever is still in flight when the
+        deadline lands — ``statement_timeout`` is per-statement, so a
+        second stalled read could otherwise spend a whole new cap past
+        the deadline. The per-kind loop stops issuing reads past it.
+        A fired watchdog is joined before the connection returns to
+        the pool: ``Timer.cancel`` stops only a callback that has not
+        started, and one already running would deliver its
+        ``cancel_safe`` to the NEXT borrower of the connection
+        (gr664970 review). Fails open to ``[]`` — an exhausted slice or
+        probe error keeps the old cancel-at-the-cap path rather than
+        refusing a whole search.
         """
         from precis.store._chunks_ops import _ANN_GLOBAL_KINDS, ann_route_plan
 
         store = self.hub.store
         if store is None:
             return []
-        remaining_s = deadline_at - time.monotonic()
-        if remaining_s <= 0:
+        probe_deadline = min(deadline_at, time.monotonic() + CROSS_KIND_PROBE_BUDGET_S)
+        wait_s = probe_deadline - time.monotonic()
+        if wait_s <= 0:
             return []
         try:
-            with store.pool.connection(timeout=remaining_s) as conn:
-                with conn.transaction():
-                    # Transaction-local, so the capped setting cannot
-                    # leak to the next checkout of this pooled connection.
-                    conn.execute(
-                        "SELECT set_config('statement_timeout', %s, true)",
-                        (str(int(remaining_s * 1000)),),
-                    )
-                    return [
-                        k
-                        for k in kinds
-                        if (plan := ann_route_plan(conn, k, None))["route"] == "global"
-                        and plan["kind"] is not None
-                        and plan["kind"] not in _ANN_GLOBAL_KINDS
-                    ]
+            with store.pool.connection(timeout=wait_s) as conn:
+
+                def cancel_in_flight() -> None:
+                    # A cancel delivered on an idle backend is dropped and
+                    # a dead conn has nothing to cancel — the statement
+                    # cap remains the backstop, so a watchdog error must
+                    # not mask the probe's own failure mode. The send is
+                    # bounded (the 30 s default is not): the join below
+                    # waits on this callback before the checkout ends.
+                    try:
+                        conn.cancel_safe(timeout=CROSS_KIND_PROBE_REAP_S)
+                    except Exception:
+                        pass
+
+                watchdog = threading.Timer(
+                    max(probe_deadline - time.monotonic(), 0.0), cancel_in_flight
+                )
+                watchdog.start()
+                try:
+                    with conn.transaction():
+                        # Transaction-local, so the capped setting cannot
+                        # leak to the next checkout of this pooled
+                        # connection. The cap is what the slice has LEFT
+                        # after the checkout, not the whole slice again.
+                        stmt_ms = max(
+                            int((probe_deadline - time.monotonic()) * 1000), 1
+                        )
+                        conn.execute(
+                            "SELECT set_config('statement_timeout', %s, true)",
+                            (str(stmt_ms),),
+                        )
+                        out = []
+                        for k in kinds:
+                            if time.monotonic() >= probe_deadline:
+                                raise TimeoutError("cross-kind probe deadline spent")
+                            plan = ann_route_plan(conn, k, None)
+                            if (
+                                plan["route"] == "global"
+                                and plan["kind"] is not None
+                                and plan["kind"] not in _ANN_GLOBAL_KINDS
+                            ):
+                                out.append(k)
+                        return out
+                finally:
+                    watchdog.cancel()
+                    # … and reap it: cancel() stops only a callback that
+                    # has not started — a fired watchdog keeps running
+                    # and its cancel_safe() could land AFTER the pool
+                    # return, on the next borrower's unrelated statement
+                    # (gr664970 review). The callback's own bounded send
+                    # caps this wait; the join's timeout states that bound.
+                    watchdog.join(timeout=2 * CROSS_KIND_PROBE_REAP_S)
         except Exception:
             log.exception("cross-kind ANN route probe failed; full fan-out kept")
             return []
@@ -3277,6 +3506,7 @@ class SearchMixin(RuntimeShape):
         kind_overrides: dict[str, dict[str, Any]] | None = None,
         *,
         deadline_at: float | None = None,
+        lexical_fallback: set[str] | None = None,
     ) -> dict[str, list[SearchHit] | Exception]:
         """Run every kind's ``search_hits`` on at most
         :data:`CROSS_KIND_MAX_WORKERS` threads, giving up on stragglers
@@ -3290,7 +3520,10 @@ class SearchMixin(RuntimeShape):
         reading it as zero matches. Kinds without a handler are absent
         from the result. Threads cannot be killed: a straggler finishes in
         the background, but the process-wide executor caps how many can
-        exist across all searches.
+        exist across all searches — and each job pins its pool checkouts
+        to ``deadline_at`` (``POOL_CHECKOUT_DEADLINE``), so a straggler
+        can't hold a shared worker queueing for connections after its
+        results were discarded (gr664970).
 
         ``kind_overrides`` maps a kind to ``search_hits`` kwargs merged
         over ``base_kwargs`` — the wildcard fan-out uses it to run a
@@ -3300,12 +3533,45 @@ class SearchMixin(RuntimeShape):
         :meth:`_dispatch_cross_kind` passes the deadline its ANN route
         probe already drew from, so probe and fan-out together fit the
         one budget (td649559).
+
+        gr664954: two isolations keep one slow kind from starving the
+        queue. :data:`~precis.store.pool.CHECKOUT_BUDGET` bounds every
+        pool checkout the kind makes — the wait itself and every
+        statement server-side, not just the ANN leg — so a stalled
+        checkout or an uncapped query can no longer hold a worker past
+        the call deadline. And a kind dequeued inside
+        :data:`CROSS_KIND_MIN_START_MS` but above the smaller
+        :data:`CROSS_KIND_LEXICAL_MIN_START_MS` floor runs lexical-only
+        instead of timing out: ``lexical_fallback``, when a set is
+        passed (the default expansion — an explicit kind list is
+        caller intent and keeps the timeout), collects those kinds so
+        the caller can name the degrade. The degrade itself only
+        applies to the default/``'hybrid'`` mode: an explicit
+        ``mode='semantic'`` or an exact-term mode (``'verbatim'``,
+        ``'literal'``) would have its match semantics silently changed
+        by a lexical rewrite, so those keep the timeout too.
+
+        gr664988: jobs submit cheapest-first on the process-wide cost
+        EMA (:func:`_cross_kind_job_key`), not alphabetically — an
+        early-letter kind that habitually spends the whole per-kind
+        cap used to hold a shared worker while the cheap tail starved
+        to TimeoutError on queue position alone. Cost order spends
+        the deadline on the kinds most likely to answer; the tail it
+        still cannot reach is the genuinely-slow set. Every attempt
+        that ran feeds the EMA back (:func:`_record_cross_kind_cost`);
+        a job the deadline never reached records nothing, so it leads
+        the next call instead of starving twice.
         """
         from concurrent.futures import wait
 
-        from precis.store.pool import _PINNED
+        from precis.store.pool import (
+            _PINNED,
+            CHECKOUT_BUDGET,
+            POOL_CHECKOUT_DEADLINE,
+        )
 
         jobs = [(k, h) for k in kinds if (h := self.hub.handler_for(k)) is not None]
+        jobs.sort(key=lambda j: _cross_kind_job_key(j[0]))
         out: dict[str, list[SearchHit] | Exception] = {}
         if not jobs:
             return out
@@ -3315,12 +3581,43 @@ class SearchMixin(RuntimeShape):
         def run(handler: Handler, k: str) -> list[SearchHit] | Exception:
             # A worker must not share a pinned (atomic-scope) connection.
             _PINNED.set(None)
+            # … and its pool checkouts may not outwait the call deadline:
+            # the default 30 s checkout would let a straggler hold this
+            # shared worker through repeated waits long after its results
+            # were discarded, starving the next call's fan-out (gr664970).
+            POOL_CHECKOUT_DEADLINE.set(deadline_at)
             remaining_ms = int((deadline_at - time.monotonic()) * 1000)
             min_start = min(CROSS_KIND_MIN_START_MS, int(CROSS_KIND_DEADLINE_S * 100))
+            kw = (
+                {**base_kwargs, **kind_overrides[k]}
+                if kind_overrides is not None and k in kind_overrides
+                else base_kwargs
+            )
             if remaining_ms < min_start:
-                return TimeoutError(
-                    f"fan-out deadline left {remaining_ms}ms — too late to start"
+                mode = str(kw.get("mode") or "").strip().lower()
+                lexical_floor = min(
+                    CROSS_KIND_LEXICAL_MIN_START_MS,
+                    int(CROSS_KIND_DEADLINE_S * 100),
                 )
+                if (
+                    lexical_fallback is not None
+                    and mode in ("", "hybrid")
+                    and remaining_ms >= lexical_floor
+                ):
+                    # Too late for the full legs but not for a
+                    # lexical-only attempt — a merged lexical result
+                    # beats an omitted kind (gr664954). Only the
+                    # default/hybrid mode degrades: an exact-term mode
+                    # ('verbatim', 'literal') or 'semantic' is caller
+                    # intent a lexical rewrite would silently change.
+                    kw = {**kw, "mode": "lexical"}
+                    lexical_fallback.add(k)
+                elif not (mode == "lexical" and remaining_ms >= lexical_floor):
+                    return TimeoutError(
+                        f"fan-out deadline left {remaining_ms}ms — too late to start"
+                    )
+                # An already-lexical kind needs no degrade — the smaller
+                # floor still fits its legs.
             # Postgres cancels the ANN scan at the deadline; the client-side
             # wait alone would leave it running. The per-kind cap (gr519679)
             # stops a single runaway query from holding its worker for the
@@ -3328,12 +3625,18 @@ class SearchMixin(RuntimeShape):
             ANN_STATEMENT_TIMEOUT_MS.set(
                 min(remaining_ms, int(CROSS_KIND_PER_KIND_S * 1000))
             )
-            kw = (
-                {**base_kwargs, **kind_overrides[k]}
-                if kind_overrides is not None and k in kind_overrides
-                else base_kwargs
-            )
-            return self._cross_kind_invoke_search_hits(handler, k, kw)
+            # gr664954: the same bound on every pool checkout this kind
+            # makes — a saturated pool or an uncapped non-ANN statement
+            # can no longer hold a worker past the call deadline.
+            CHECKOUT_BUDGET.set((deadline_at, CROSS_KIND_PER_KIND_S * 1000))
+            started = time.monotonic()
+            try:
+                return self._cross_kind_invoke_search_hits(handler, k, kw)
+            finally:
+                # Whatever the kind actually cost — hits, a caught
+                # exception, or a server-side cancel at the cap — is
+                # next call's ordering signal (gr664988).
+                _record_cross_kind_cost(k, time.monotonic() - started)
 
         pool = _cross_kind_executor()
         futures = {
@@ -3443,8 +3746,12 @@ class SearchMixin(RuntimeShape):
         Runs after every stream is collected: resolves ``ref_id`` (via
         ``slug`` when needed), fetches the ref-level tag set, keeps only
         hits whose tags superset the required ones. Compares on the
-        canonical string form so a flag ``workspace`` and an open tag
-        ``workspace`` match equivalently.
+        ``(namespace, value)`` rows each filter spelling expands to —
+        ``_parse_tag_string``, the same expansion the SQL leg applies
+        in ``build_tag_filter`` — so a flag ``workspace`` and an open
+        tag ``workspace``, or a stored ``STUDYTYPE:x`` axis row and the
+        documented lowercase ``studytype:x`` spelling (gr718845), match
+        equivalently.
 
         Cost: one extra ``tags_for`` DB hit per surviving hit —
         acceptable since tag filters are rare in cross-kind search and
@@ -3470,7 +3777,14 @@ class SearchMixin(RuntimeShape):
                 # hit.
                 continue
             tags_have = self.hub.store.tags_for(ref_id)
-            have_strings = {str(t) for t in tags_have}
-            if required.issubset(have_strings) and excluded.isdisjoint(have_strings):
+            # ``_tag_to_namespace_value`` is the canonical Tag → stored
+            # (namespace, value) projection — the same namespaces
+            # ``_parse_tag_string`` emits for a filter spelling.
+            have = {_tag_to_namespace_value(t) for t in tags_have}
+            if all(
+                any(pair in have for pair in _parse_tag_string(t)) for t in required
+            ) and not any(
+                pair in have for t in excluded for pair in _parse_tag_string(t)
+            ):
                 kept.append(hit)
         return kept

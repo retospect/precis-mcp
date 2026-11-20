@@ -30,6 +30,7 @@ integrations and operational authority.
 | Goal | Skill |
 |---|---|
 | Work through code and artifacts | [[precis-workspace-help]] |
+| Read and edit code by structure | [[precis-python-help]] |
 | Submit or inspect bounded computation | [[precis-job-help]] |
 | Read or record sourced numerical results | [[precis-measure-help]] |
 

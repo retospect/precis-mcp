@@ -366,6 +366,9 @@ def start_page_text(root: Path) -> str:
         f"  to `{memdir}/outage-memory.md`; the SessionStart hook flags",
         "  it for integration once the graph returns. No other memory",
         "  writes during an outage.",
+        "- The outage contract — the MCP-down rule, verifying",
+        "  unconfirmed writes, the get() ModuleNotFoundError signature:",
+        "  `src/precis/data/skills/mcp-down.md`.",
         "- Restore: `docs/runbooks/memory-restore.md`.",
     ]
     for rel, rev, body in parts:

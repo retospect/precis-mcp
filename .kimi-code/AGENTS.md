@@ -2,9 +2,9 @@
 
 You are Kimi Code working on the precis MCP server. Claude Code sessions
 work this repo under `CLAUDE.md`; it binds you too. **Read `CLAUDE.md` in
-full before your first edit**, then the repo-root `AGENTS.md` (graph memory,
-definition of done). Where they name a Claude-only mechanism, this file
-gives the Kimi equivalent.
+full before your first edit**, then the repo-root `AGENTS.md` (conduct,
+conventions, graph memory, definition of done, response style). Where they
+name a Claude-only mechanism, this file gives the Kimi equivalent.
 
 ## Setup (once per machine; `scripts/kimi-tree` re-runs it)
 
@@ -28,8 +28,8 @@ allow list as permission rules. `kimi doctor` validates it;
   and after they approve re-issue the command prefixed `ALLOW_PROD_WRITE=1 `.
   Never add an `ALLOW_*` override on your own.
 - **precis MCP.** Same server as Claude, tools `mcp__precis__get`, `search`,
-  `put`, `edit`, `delete`, `tag`, `link`, `more`. It targets PROD: writes
-  land in production. Use it the way `CLAUDE.md` says (python/md kinds
+  `put`, `edit`, `delete`, `tag`, `link`. It targets PROD: writes
+  land in production. Use it the way `AGENTS.md` says (python/md kinds
   before grep, memory recall at task start, product data through the MCP
   before `scripts/prod-psql`). Discover with
   `search(kind='skill', q='<goal>')`.
@@ -61,4 +61,4 @@ allow list as permission rules. `kimi doctor` validates it;
   Report status on the board (`scripts/board post`) plus
   `.claude/purpose`. Never run `kimi -p` — headless automation is
   forbidden; the interactive pane is the only lane.
-- **Response style.** `CLAUDE.md` §Response style applies unchanged.
+- **Response style.** `AGENTS.md` §Response style applies unchanged.

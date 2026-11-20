@@ -33,9 +33,9 @@ TRANSPORT_CONTAINER = "container"
 DEFAULT_SEEDS = [1]
 
 #: Env naming the fold node's model directory (mounted read-only into the
-#: container). On spark: ``/home/reto/alphafold3/models`` (world-readable).
+#: container). On the GPU node: ``/home/reto/alphafold3/models`` (world-readable).
 FOLD_MODELS_ENV = "PRECIS_FOLD_MODELS_DIR"
-#: Env overriding the AF3 image tag (default matches the spark install).
+#: Env overriding the AF3 image tag (default matches the GPU-node install).
 FOLD_IMAGE_ENV = "PRECIS_FOLD_IMAGE"
 #: Env naming a persistent host XLA cache dir (skips the ~5-10 min recompile).
 FOLD_XLA_CACHE_ENV = "PRECIS_FOLD_XLA_CACHE"
@@ -130,7 +130,7 @@ class AlphaFold3Engine:
     """AlphaFold3 adapter — container engine.
 
     AF3 runs in the ``alphafold3:ready`` image on the GPU fold node
-    (grounded on the real spark install); it is **not** run in-process
+    (grounded on the real GPU-node install); it is **not** run in-process
     (containerizing keeps the jax/CUDA env + the 1 GB weights off the always-on
     workers). So :meth:`fold` raises — the ``fold`` job routes container engines
     to ``precis_bio.jobs._run_container``, which builds the ``docker run`` argv

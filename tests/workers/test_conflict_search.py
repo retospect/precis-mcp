@@ -11,17 +11,21 @@ never a live LLM.
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 from precis.errors import BadInput
-from precis.store.types import ChunkInsert
+from precis.store.types import ChunkInsert, Tag
 from precis.taproot.canon import CanonicalClaim, MergeCandidate, Verdict
 from precis.taproot.directed import QualifyResult
 from precis.taproot.hub import attach_evidence, mint_hub
+from precis.utils.idem import idem_lock_key
 from precis.workers.conflict_search import (
+    _MINT_CAP_LOCK_IDEM,
     CONFLICT_SEARCH_FRESH_DAYS,
     CONFLICT_SEARCH_VERSION,
     CONFLICT_SWEEP_JOB_TYPE,
@@ -713,6 +717,213 @@ def test_mint_hub_queues_the_sweep_when_the_service_is_lit(store: Any) -> None:
 def test_mint_hub_queues_nothing_while_dark(store: Any) -> None:
     hub = _seed_hub(store, "Dark-service claim sentence.")
     assert _job_rows(store, hub) == []
+
+
+def test_mint_sweep_fanout_is_bounded_by_the_live_backlog(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr637060: a burst of hub mints stops queueing ``conflict_sweep``
+    jobs once the live backlog reaches ``PRECIS_CONFLICT_SEARCH_MINT_CAP``
+    — the capped hub still mints (the standing pass sweeps it from its
+    watermark). Human refresh asks are never capped, and a terminal job
+    frees its slot."""
+    monkeypatch.setenv("PRECIS_CONFLICT_SEARCH_MINT_CAP", "2")
+    _enable_service(store)
+    first = _seed_hub(store, "Fan-out bound claim sentence one.")
+    second = _seed_hub(store, "Fan-out bound claim sentence two.")
+    assert len(_job_rows(store, first)) == 1
+    assert len(_job_rows(store, second)) == 1
+
+    # The third mint in the burst: the hub mints, its sweep defers.
+    capped = _seed_hub(store, "Fan-out bound claim sentence three.")
+    assert _job_rows(store, capped) == []
+    assert enqueue_conflict_sweep(store, capped, reason="mint") is None
+
+    # A human refresh ask is never capped.
+    assert (
+        enqueue_conflict_sweep(store, capped, reason="refresh:2026-11-13", refresh=True)
+        is not None
+    )
+
+    # A terminal job frees its slot — but the refresh job above holds
+    # one too (the cap counts every live sweep), so at cap=2 the fourth
+    # mint still defers.
+    store.add_tag(
+        _job_rows(store, first)[0]["ref_id"],
+        Tag.closed("STATUS", "failed"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    fourth = _seed_hub(store, "Fan-out bound claim sentence four.")
+    assert _job_rows(store, fourth) == []
+
+    # Fail the other mint job: live backlog drops to the refresh alone
+    # and the next mint queues again.
+    store.add_tag(
+        _job_rows(store, second)[0]["ref_id"],
+        Tag.closed("STATUS", "failed"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    fifth = _seed_hub(store, "Fan-out bound claim sentence five.")
+    assert len(_job_rows(store, fifth)) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "requeues"),
+    [
+        ("failed", True),
+        ("timed-out", True),
+        ("succeeded", False),
+        ("cancelled", False),
+    ],
+)
+def test_terminal_status_decides_if_the_idem_key_requeues(
+    store: Any, status: str, requeues: bool
+) -> None:
+    """gr637060's re-queue half, scoped: only an attempt that died
+    unstamped frees ``conflict_sweep:<hub>:v<ver>:<reason>``
+    (``failed``/``timed-out``). A ``succeeded`` or ``cancelled`` job
+    keeps holding the key — the work was done or deliberately stopped,
+    so the same-door ask returns it rather than minting a duplicate
+    (td663775 review)."""
+    _enable_service(store)
+    hub = _seed_hub(store, f"Terminal-idem claim sentence ({status}).")
+    dead = _job_rows(store, hub)[0]["ref_id"]
+    store.add_tag(
+        dead,
+        Tag.closed("STATUS", status),
+        set_by="system",
+        replace_prefix=True,
+    )
+    again = enqueue_conflict_sweep(store, hub, reason="mint")
+    if requeues:
+        assert again is not None and again != dead
+        assert len(_job_rows(store, hub)) == 2
+    else:
+        assert again == dead
+        assert len(_job_rows(store, hub)) == 1
+
+
+def test_succeeded_same_day_refresh_still_dedupes(store: Any) -> None:
+    """The one-sweep-per-hub-per-day contract the approve surface and
+    the sweep button share (``freshness.request_conflict_resweep`` /
+    ``nanopub_sweep``): a same-day refresh ask after the day's sweep
+    succeeded returns that job instead of minting a second. Key-freeing
+    is only for a lost attempt — had it failed, the same-day ask
+    re-queues (td663775 review)."""
+    _enable_service(store)
+    hub = _seed_hub(store, "Refresh dedup claim sentence.")
+    day = "refresh:2026-11-13"
+    done = enqueue_conflict_sweep(store, hub, reason=day, refresh=True)
+    assert done is not None
+    store.add_tag(
+        done,
+        Tag.closed("STATUS", "succeeded"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert enqueue_conflict_sweep(store, hub, reason=day, refresh=True) == done
+    # The mint job plus the day's refresh — nothing new.
+    assert len(_job_rows(store, hub)) == 2
+
+    store.add_tag(
+        done,
+        Tag.closed("STATUS", "failed"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    retry = enqueue_conflict_sweep(store, hub, reason=day, refresh=True)
+    assert retry is not None and retry != done
+    assert len(_job_rows(store, hub)) == 3
+
+
+def _advisory_waiter(store: Any, idem: str) -> bool:
+    """True while a session waits on ``pg_advisory_xact_lock`` for the
+    idem string — the ``pg_locks`` probe tests/test_put_idem_key.py
+    uses, scoped to the exact key."""
+    key64 = idem_lock_key(idem) & 0xFFFFFFFFFFFFFFFF
+    with store.tx() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+            "AND NOT granted AND objsubid = 1 AND classid = %s AND objid = %s "
+            "LIMIT 1",
+            (key64 >> 32, key64 & 0xFFFFFFFF),
+        ).fetchone()
+    return row is not None
+
+
+def _assert_waits_on(store: Any, idem: str) -> None:
+    deadline = time.monotonic() + 30
+    while not _advisory_waiter(store, idem):
+        if time.monotonic() > deadline:
+            pytest.fail(f"enqueue never waited on the advisory lock for {idem!r}")
+        time.sleep(0.05)
+
+
+def test_mint_cap_check_serializes_on_the_shared_lock(store: Any) -> None:
+    """td663775 review: a ``reason="mint"`` enqueue's backlog count +
+    insert are one critical section — a peer holding the shared cap
+    lock makes it WAIT on ``pg_advisory_xact_lock`` instead of racing
+    the count past the cap."""
+    hub = _seed_hub(store, "Cap-lock serialization claim sentence.")
+    _enable_service(store)
+    holder = store.pool.getconn()
+    got: dict[str, int | None] = {}
+    try:
+        holder.execute("BEGIN")
+        holder.execute(
+            "SELECT pg_advisory_xact_lock(%s)",
+            (idem_lock_key(_MINT_CAP_LOCK_IDEM),),
+        )
+        t = threading.Thread(
+            target=lambda: got.__setitem__(
+                "id", enqueue_conflict_sweep(store, hub, reason="mint")
+            ),
+            name="cap-lock-waiter",
+            daemon=True,
+        )
+        t.start()
+        _assert_waits_on(store, _MINT_CAP_LOCK_IDEM)
+        assert _job_rows(store, hub) == []
+        holder.execute("COMMIT")
+        t.join(timeout=60)
+    finally:
+        holder.rollback()
+        store.pool.putconn(holder)
+    assert got.get("id") is not None
+    assert len(_job_rows(store, hub)) == 1
+
+
+def test_same_key_enqueue_serializes_on_the_idem_lock(store: Any) -> None:
+    """The per-key advisory lock lands before the dedup read — a peer
+    holding it makes a same-key enqueue wait, then reuse the committed
+    job instead of double-minting (td663775 review)."""
+    _enable_service(store)
+    hub = _seed_hub(store, "Same-key lock claim sentence.")
+    first = _job_rows(store, hub)[0]["ref_id"]
+    key = f"{CONFLICT_SWEEP_JOB_TYPE}:{hub}:v{CONFLICT_SEARCH_VERSION}:mint"
+    holder = store.pool.getconn()
+    got: dict[str, int | None] = {}
+    try:
+        holder.execute("BEGIN")
+        holder.execute("SELECT pg_advisory_xact_lock(%s)", (idem_lock_key(key),))
+        t = threading.Thread(
+            target=lambda: got.__setitem__(
+                "id", enqueue_conflict_sweep(store, hub, reason="mint")
+            ),
+            name="key-lock-waiter",
+            daemon=True,
+        )
+        t.start()
+        _assert_waits_on(store, key)
+        holder.execute("COMMIT")
+        t.join(timeout=60)
+    finally:
+        holder.rollback()
+        store.pool.putconn(holder)
+    assert got.get("id") == first
+    assert len(_job_rows(store, hub)) == 1
 
 
 def test_coverage_status_reads_the_ledger_as_a_statement() -> None:

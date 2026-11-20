@@ -7,10 +7,14 @@ DB-backed. Tag every row with a uuid so assertions survive the shared
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, cast
 from uuid import uuid4
 
-from precis import tool_ledger
+import pytest
+
+from precis import principal, tool_ledger
+from precis.store import Store
 from precis.tool_ledger import ToolCallRecord
 
 
@@ -41,6 +45,24 @@ _FAKE_KEY = "sk-" + "ant-" + "FAKETESTKEY" + "123456"
 
 def test_record_call_noop_without_store() -> None:
     tool_ledger.record_call(None, _rec())  # must not raise
+
+
+def test_stateless_persisted_ordinals_serialize_writers(store: Store) -> None:
+    """Repeated provisional ordinals from fresh processes cannot reorder routes."""
+    sid = f"test-st:oauth:{uuid4().hex}@hour"
+    tool_ledger.record_call(store, _rec(session_id=sid, seq=50))
+
+    def write(_: int) -> None:
+        tool_ledger.record_call(store, _rec(session_id=sid, seq=1))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(write, range(12), timeout=10))
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT seq FROM tool_calls WHERE session_id = %s ORDER BY call_id",
+            (sid,),
+        ).fetchall()
+    assert [row[0] for row in rows] == list(range(1, 14))
 
 
 def test_record_call_writes_row(store: Any) -> None:
@@ -275,6 +297,75 @@ class TestSessionKey:
         with serve_ledger.session_scope(_FakeSession()):
             sid_b, _ = tool_ledger.current_session_key()
         assert sid_a is not None and sid_b is not None and sid_a != sid_b
+
+
+class TestStatelessSessionKey:
+    """gr660588: under ``PRECIS_MCP_STATELESS_HTTP`` the SDK mints a fresh
+    session object per request — the ledger groups by the durable owner +
+    UTC hour instead, or stays ``None`` for a truly sessionless call."""
+
+    def test_off_flag_keeps_per_session_ids(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis import serve_ledger
+
+        monkeypatch.delenv("PRECIS_MCP_STATELESS_HTTP", raising=False)
+        with principal.bind("oauth:7"):
+            with serve_ledger.session_scope(_FakeSession()):
+                sid_a, _ = tool_ledger._mint_session_key()
+            with serve_ledger.session_scope(_FakeSession()):
+                sid_b, _ = tool_ledger._mint_session_key()
+        assert sid_a is not None and sid_b is not None and sid_a != sid_b
+        assert "-st:" not in sid_a
+
+    def test_owner_groups_across_fresh_sessions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis import serve_ledger
+
+        monkeypatch.setenv("PRECIS_MCP_STATELESS_HTTP", "1")
+        with principal.bind("oauth:7"):
+            with serve_ledger.session_scope(_FakeSession()):
+                sid1, seq1 = tool_ledger._mint_session_key()
+            with serve_ledger.session_scope(_FakeSession()):
+                sid2, seq2 = tool_ledger._mint_session_key()
+        assert sid1 is not None and sid1 == sid2
+        assert "st:oauth:7@" in sid1
+        # A stateless ordinal is allocated durably at ledger write time;
+        # no process-local peek can predict it across concurrent servers.
+        assert seq1 is None and seq2 is None
+        with principal.bind("oauth:7"):
+            assert tool_ledger.current_session_key() == (sid1, None)
+
+    def test_other_owner_groups_separately(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis import serve_ledger
+
+        monkeypatch.setenv("PRECIS_MCP_STATELESS_HTTP", "1")
+        with principal.bind("oauth:7"), serve_ledger.session_scope(_FakeSession()):
+            sid_a, _ = tool_ledger._mint_session_key()
+        with principal.bind("oauth:8"), serve_ledger.session_scope(_FakeSession()):
+            sid_b, _ = tool_ledger._mint_session_key()
+        assert sid_a != sid_b and "st:oauth:8@" in (sid_b or "")
+
+    def test_ownerless_session_groups_as_anon(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis import serve_ledger
+
+        monkeypatch.setenv("PRECIS_MCP_STATELESS_HTTP", "1")
+        with serve_ledger.session_scope(_FakeSession()):
+            sid, _ = tool_ledger._mint_session_key()
+        assert sid is not None and "st:anon@" in sid
+
+    def test_sessionless_call_stays_ungrouped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A CLI / in-process call has no durable identity — nothing to
+        correlate across processes, so no synthetic group is minted."""
+        monkeypatch.setenv("PRECIS_MCP_STATELESS_HTTP", "1")
+        assert tool_ledger._mint_session_key() == (None, None)
 
 
 class TestCurrentClient:
@@ -743,3 +834,72 @@ def test_gc_single_flight_skips_when_lock_held(store: Any) -> None:
         holder.execute("SELECT pg_advisory_unlock(%s)", (tool_ledger._GC_LOCK,))
         holder.commit()
     assert tool_ledger.gc(store, retention_days=30) >= 1
+
+
+# ── next_call_summary / error_next_* (0325, gr613469) ───────────────────
+
+
+def test_next_call_summary() -> None:
+    """The ledger-side read-back of a rendered error ack: the first
+    ``  next:`` line that IS a runnable call — not the skill doc
+    pointer — is the concrete next (verb + kind are the follow-through
+    join keys)."""
+    ncs = tool_ledger.next_call_summary
+    # Skill-pointer-only ack (the td605104 baseline's 129/130).
+    assert ncs(
+        "[error:BadInput] keys ['x'] not accepted\n"
+        "  options: a, b\n"
+        "  next: get(kind='skill', id='precis-search-help')"
+    ) == (False, None, None)
+    # A corrected call leads — the skill pointer after it never counts.
+    assert ncs(
+        "[error:BadInput] keys ['scop'] not accepted\n"
+        "  next: search(kind='paper', q='x', scope='pa1')\n"
+        "  next: get(kind='skill', id='precis-search-help')"
+    ) == (True, "search", "paper")
+    # The gripe standing-order hint is prose wrapping a call — not a
+    # call line (it does not start with the verb).
+    assert ncs(
+        "[error:BadInput] nope\n"
+        "  next: if a skill or doc showed this call, file a gripe — "
+        "put(kind='gripe', text='x')"
+    ) == (False, None, None)
+    # A call with no kind= keeps the verb.
+    assert ncs("[error:BadInput] nope\n  next: get(id='/recent')") == (
+        True,
+        "get",
+        None,
+    )
+    # No next lines at all.
+    assert ncs("[error:Internal] boom") == (False, None, None)
+
+
+def test_record_call_persists_error_next(store: Any) -> None:
+    """0325's three columns round-trip; ok rows keep NULLs."""
+    tag = uuid4().hex[:8]
+    verb = f"errnext-{tag}"
+    tool_ledger.record_call(
+        store,
+        _rec(
+            verb=verb,
+            outcome="error",
+            error_type="BadInput",
+            error_next_concrete=True,
+            error_next_verb="get",
+            error_next_kind="todo",
+        ),
+    )
+    tool_ledger.record_call(store, _rec(verb=f"{verb}-ok"))
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT error_next_concrete, error_next_verb, error_next_kind "
+            "FROM tool_calls WHERE verb=%s",
+            (verb,),
+        ).fetchone()
+        ok_row = conn.execute(
+            "SELECT error_next_concrete, error_next_verb, error_next_kind "
+            "FROM tool_calls WHERE verb=%s",
+            (f"{verb}-ok",),
+        ).fetchone()
+    assert row == (True, "get", "todo")
+    assert ok_row == (None, None, None)

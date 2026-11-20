@@ -61,8 +61,8 @@ def test_consecutive_errors_accumulate_and_trip_abort(
 def test_pauses_do_not_count_toward_the_error_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A saturated local slot is a wait, not an error — a busy castor
-    must not read as a down lane (fable-castor-trial-review finding 7)."""
+    """A saturated local slot is a wait, not an error — a busy cedar
+    must not read as a down lane (fable-cedar-trial-review finding 7)."""
     monkeypatch.setenv("PRECIS_SURVEY_EXTRACT_MAX_ERRORS", "3")
     monkeypatch.setattr(
         job,
@@ -103,7 +103,7 @@ def test_length_stop_counts_as_truncated_not_unparseable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A reply cut at the token cap is its own class — truncation, not a
-    malformed-JSON failure (fable-castor-trial-review finding 9)."""
+    malformed-JSON failure (fable-cedar-trial-review finding 9)."""
     monkeypatch.setattr(
         job,
         "route",

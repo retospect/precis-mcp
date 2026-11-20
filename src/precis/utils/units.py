@@ -4,7 +4,7 @@
 units-policy cutover; superseded the now-deleted
 `docs/backlog/units-policy-cutover.md` decisions log — cite this
 docstring, not that path). Implements the map's §Units policy
-(`docs/backlog/multiscale-design-architecture.md`): se/cad ops (`nm` was
+(me694206): se/cad ops (`nm` was
 folded into `se`, see `precis_se/__init__.py`) and the cad DSL accept any
 pint-parseable unit at the boundary (`3 mm`, `1.4 Å`, `12 lbf`, ...);
 everything downstream — handler state, plugin tables, kernel calls — is

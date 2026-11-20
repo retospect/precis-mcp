@@ -30,6 +30,7 @@ import re
 from typing import Any
 
 from precis.store import Ref
+from precis.utils import adsorbate_star as _adsorbate_star
 from precis.utils.authors import author_names as _shared_author_names
 from precis.utils.record_cite import record_type_of
 from precis.utils.title_views import title_md, title_plain
@@ -455,9 +456,13 @@ def _latex_escape_math(text: str) -> str:
 #: md emphasis spans inside a ``title_md`` string — same shapes
 #: ``precis_web.linkify``'s ``_MD_BOLD``/``_MD_ITALIC`` honour — converted
 #: to ``\textbf``/``\emph`` for BibTeX. Applied only to non-math segments
-#: (a ``*`` inside ``$…$`` is an operator, not emphasis).
+#: (a ``*`` inside ``$…$`` is an operator, not emphasis). ``\*`` and the
+#: adsorbate star (``*NO``, ``H*``) stay literal here too (gr674905).
 _BIBTEX_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
-_BIBTEX_ITALIC_RE = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
+_BIBTEX_ITALIC_RE = re.compile(
+    rf"(?<![*\w\\])\*(?!\s){_adsorbate_star.STAR_NOT_FOLLOWED_BY_ELEMENT}"
+    rf"([^*]+?)(?<![\s\\]){_adsorbate_star.STAR_NOT_PRECEDED_BY_ELEMENT}\*(?!\w)"
+)
 
 #: LaTeX commands allowed inside a ``$…$``/``$$…$$`` math island when a
 #: title is exported to BibTeX (gr515709). The criterion is *typesetting
@@ -980,6 +985,7 @@ _SAFE_TEXT_MACROS: frozenset[str] = frozenset(
         "textbackslash",
         "textless",
         "textgreater",
+        "textasteriskcentered",
         # logos
         "LaTeX",
         "LaTeXe",
@@ -1046,7 +1052,15 @@ def bibtex_title(raw: str) -> str:
         if not seg:
             continue
         if _LATEX_SAFE_SPAN_RE.fullmatch(seg):
-            out.append(_sanitize_math_span(seg) if seg.startswith("$") else seg)
+            if seg.startswith("$"):
+                out.append(_sanitize_math_span(seg))
+            else:
+                # ``\*`` is the author's literal-star escape (gr674905),
+                # but in LaTeX ``\*`` is a math-mode discretionary, not
+                # a glyph — emit the star command export/latex.stash
+                # uses for the same escape. Other ``\x`` spans (``\%``
+                # ``\_`` …) are real glyph escapes and pass through.
+                out.append(r"\textasteriskcentered{}" if seg == r"\*" else seg)
             continue
         seg = _latex_escape(seg)
         # A ``\cmd`` in text mode is a live macro unless allowlisted —

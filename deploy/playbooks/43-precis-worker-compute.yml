@@ -298,7 +298,7 @@
     # report green while the lane ran old code. /builds cannot see it either:
     # it shows the build stamped on each job when it was claimed, so an idle
     # lane keeps showing its last pre-restart claim (r27 read as stale on
-    # castor/pollux for exactly that reason, while their venvs and processes
+    # the DGX nodes for exactly that reason, while their venvs and processes
     # were on 5c692aad3). So the check runs on the host, against the unit
     # itself: the venv its ExecStart names must carry the pinned sha in
     # direct_url.json, and the running main process must have started after

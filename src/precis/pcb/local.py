@@ -1,5 +1,5 @@
 """Offline place/DRC/gerbers — the laptop half of
-``docs/backlog/pcb-workspace-code.md`` §Q3 (slice 4, the
+`me693071` §Q3 (slice 4, the
 ``precis-geom[pcb-kernel]`` extra).
 
 The script-side surface is ``precis_geom.pcb.local`` (a lazy alias for

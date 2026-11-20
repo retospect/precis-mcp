@@ -15,7 +15,7 @@
 #                                           # free local derived passes on the dev DB: chunk embeddings
 #                                           # + per-chunk keywords (no LLM: summaries, categorizer tags
 #                                           # and edges stay empty; `run` reports their coverage)
-#   scripts/bench run --set quick [--caller triage|rowkw|ladder] [--arms a,b] [--seed N] [--out F] [--planted N] [--budget T]
+#   scripts/bench run --set quick [--caller triage|rowkw|rank-order|oracle|ladder] [--arms a,b] [--seed N] [--out F] [--planted N] [--budget T]
 #                                           # scripted-caller ablation matrix -> bench/results/<date>Z-<sha>-quick-<caller>.json;
 #                                           # re-ingest arms in --arms provision + run their own DB (header.worlds)
 #   scripts/bench sweep [--caller triage|rowkw] [--seeds 1,2,3]   # pick the triage threshold on planted dev seeds (throwaway DB of its own:
@@ -30,8 +30,15 @@
 #                                           # one line per held run (stem, dates, set, caller, counts,
 #                                           # td<id> launched under); --match filters by substring over
 #                                           # the line or the file text (a date, a caller, a td<id>)
+#   scripts/bench questions [--set quick] [--seed N] [--out F]
+#                                           # {task, question} lines of the QASPER set, or with --seed of that
+#                                           # planted seed (reads the dev DB for the host paragraphs)
+#   scripts/bench reformulate --questions F --name qasper-<set>|planted-<seed> [--model ID] [--force]
+#                                           # maintainers: write bench/tasks/<name>.queries.jsonl, the committed
+#                                           # rephrasings for the multi-query arm. Runs on the HOST (the generator
+#                                           # is the logged-in Claude CLI); refuses to overwrite without --force
 #
-# Everything runs inside the precis-dev container via scripts/dev, which points
+# Everything else runs inside the precis-dev container via scripts/dev, which points
 # PRECIS_DATABASE_URL at this worktree's precis_dev; the loader refuses any
 # database not named precis_dev*/precis_test*/precis_bench*, so prod is never
 # reachable. `ingest` brings the dev DB up first (idempotent). The pinned
@@ -47,6 +54,15 @@ cd "$(dirname "$0")/.."
 
 if [[ "${1:-}" == "ingest" || "${1:-}" == "variant" ]]; then
     scripts/dev db-up
+fi
+
+# The reformulations module has its own entry point: `reformulate` calls the
+# Claude CLI, which is logged in on the host and absent from the container.
+if [[ "${1:-}" == "reformulate" ]]; then
+    exec uv run --no-sync python -m precis.bench.reformulations "$@"
+fi
+if [[ "${1:-}" == "questions" ]]; then
+    exec scripts/dev uv run --no-sync python -m precis.bench.reformulations "$@"
 fi
 
 # The container cannot read this worktree's git dir, so the host pins the sha

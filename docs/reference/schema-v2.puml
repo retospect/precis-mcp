@@ -22,7 +22,7 @@
 '   docs/decisions/0008-drop-slug-identifier-normalisation.md
 '   docs/decisions/0017-derived-queue-family.md  (artifact_kinds, ref_artifacts)
 '   docs/decisions/0018-persistent-discovery-layer.md  (SUPERSEDED — ref_segments dropped; per-chunk KeyBERT now)
-'   docs/backlog/finding-chase.md  (kind=finding, ref_events, fetcher cascade)
+'   gr690649  (kind=finding, ref_events, fetcher cascade)
 '
 hide circle
 skinparam linetype ortho

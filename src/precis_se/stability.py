@@ -1,6 +1,6 @@
 """Whole-structure mobility/stability over the axial subgraph — the
 Maxwell/Calladine analysis backing ``view='stability'``
-(docs/backlog/structural-solution-space.md rung 4, built together with
+(me695531 rung 4, built together with
 rung 1's ``axial`` class so the counting and the unilateral member land
 as one piece; slice 1 of the same doc's build order).
 
@@ -53,7 +53,7 @@ tolerance; undeclared members are completed by least squares and the
 implied forces vetted against role sign and capacity pair.
 
 The same assembler backs the **complementarity bridge** (the se side of
-docs/backlog/complementarity-solver.md slices 1–3; the solver itself is
+me694137 slices 1–3; the solver itself is
 :mod:`precis.structsolve.complementarity`, unchanged): under a declared
 or named load case, which members carry and does every member stay on its
 legal sign. :func:`load_path_report` (the ``view='stability'`` taut/slack
@@ -80,8 +80,8 @@ implicit ``'declared'`` case and a ``load_cases`` view argument layers
 named cases on top, so no objectives-schema change and no migration.
 
 TRIPWIRE CONTRACT (two-party, recorded in
-docs/backlog/structural-solution-space.md §Tripwire contract and
-docs/backlog/cad-machine-spec.md §NOT-in-scope): any constraint-vs-DOF
+me695531 §Tripwire contract and
+me694526 §NOT-in-scope): any constraint-vs-DOF
 counting that cannot run the ``m − s`` + second-order machinery must
 report ``"first-order mobile; may be prestress-stabilized — not checked"``
 rather than a bare "mechanism" verdict. :func:`classify` satisfies the
@@ -882,7 +882,7 @@ def _stress_matrix(system: _System, state: np.ndarray) -> np.ndarray:
 
 
 # ── prestress: declared preloads vs the self-stress space ────────────────
-# (docs/backlog/structural-solution-space.md rung 5's null-space DRC,
+# (me695531 rung 5's null-space DRC,
 # shipped as the same doc's slice 3)
 
 #: Acceptance for the null-space residual: max nodal out-of-balance ≤
@@ -1416,7 +1416,7 @@ def _find_connect(tree: SeTree, row: MemberRow) -> ConnectSpec | None:
 
 
 # ── the complementarity bridge: load path, completeness, bistability ────
-# (docs/backlog/complementarity-solver.md — the se side of slices 1–3.
+# (me694137 — the se side of slices 1–3.
 # The solver is :mod:`precis.structsolve.complementarity`, a pin-jointed
 # small-displacement active-set solve; this bridge reduces the assembled
 # system to exactly the pin model it takes and reports under the same

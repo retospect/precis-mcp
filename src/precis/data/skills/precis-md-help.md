@@ -27,10 +27,10 @@ only; edit the files directly on disk.
 ```python
 get(kind="md")  # list configured roots
 get(kind="md", id="docs")  # root overview: file/block counts, top dirs
-get(kind="md", id="docs/backlog/some-item.md")  # file's heading outline
-get(kind="md", id="docs/backlog/some-item.md", view="source")  # full file text
-get(kind="md", id="docs/backlog/some-item.md~Motivation")  # one heading's section
-get(kind="md", id="docs/backlog/some-item.md", q="find me")  # passages inside the file (find-in-ref)
+get(kind="md", id="docs/conventions/shipping.md")  # file's heading outline
+get(kind="md", id="docs/conventions/shipping.md", view="source")  # full file text
+get(kind="md", id="docs/conventions/shipping.md~Long form")  # one heading's section
+get(kind="md", id="docs/conventions/shipping.md", q="find me")  # passages inside the file (find-in-ref)
 ```
 
 `<alias>` comes from `PRECIS_MD_ROOTS`. `~<heading>` takes the
@@ -50,7 +50,7 @@ restart. Read-only like the rest of the kind, indexed lazily on first
 query, and dropped after 24 h idle
 (`PRECIS_PYTHON_WORKTREE_IDLE_HOURS`) or when the tree is removed.
 They are NOT in the default cross-root search; name one with
-`scope='wt-x'` or `scope='wt-x/docs/backlog'`. If the alias does not
+`scope='wt-x'` or `scope='wt-x/docs/conventions'`. If the alias does not
 resolve, fall back to Grep/Read.
 
 The same aliases work on `kind='skill'` as a corpus root:
@@ -64,14 +64,10 @@ but not yet landed and deployed.
 ```python
 search(kind="md", q="how do I make search fresh after shipping")
 search(kind="md", q="ship gate", scope="docs")  # restrict to one root
-search(kind="md", q="ship gate", scope="docs/backlog")  # restrict to a subtree or file
+search(kind="md", q="ship gate", scope="docs/conventions")  # restrict to a subtree or file
 ```
 
-`folder=` (the corpus-kind scoping kwarg) is **not supported here** —
-a single-kind `search(kind='md', ...)` never enters the cross-kind
-fan-out (only a comma-list or wildcard `kind=` does), so `folder=` is
-silently swallowed by `md`'s handler, not an error. Use `scope=`
-instead; it's `md`'s own root/subtree/file restriction, above.
+`folder=` is refused on `md`; use `scope=` (above).
 
 
 Hits are ranked; each carries its heading breadcrumb and a
@@ -109,7 +105,7 @@ next time it's touched (per-file, so unrelated files stay cached).
 `kind='markdown'` is the DB-backed, `PRECIS_ROOT`-sandboxed kind:
 write-capable, ingested into the corpus, cross-kind-searchable.
 `kind='md'` is a separate, read-only, DB-free index over
-`PRECIS_MD_ROOTS` — for searching a codebase's own docs/backlog/skills
+`PRECIS_MD_ROOTS` — for searching a codebase's own docs and skills
 without ingesting them. Use `markdown` to author corpus notes; use
 `md` to search a repo's prose in place.
 

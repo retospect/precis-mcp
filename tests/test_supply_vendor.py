@@ -1,8 +1,10 @@
 """``vendor:`` pull foundations — ``PartRecord``, ``may_store``, the alias
 map, and the JLCPCB adapter over ``jlc_api.live_lookup``.
 
-The supply half of spreadsheet-tables slice 4 (docs/backlog/
-spreadsheet-tables.md §6). No network and no database: ``live_lookup``'s
+This is the supply half of vendor columns in tables: an exact lookup by
+part number, and the licence rule that identity fields may be stored from
+any vendor while stock and price are stored only where ``may_store`` is
+true (JLCPCB; Reto 2026-10-26). No network and no database: ``live_lookup``'s
 ``client`` seam takes a fake ``component_info``, and a stub store records
 ``parts_import`` calls — the real contract, exercised end to end. The
 credentials fixture pins the secrets resolver to an empty dir, same

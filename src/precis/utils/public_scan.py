@@ -1,8 +1,9 @@
 """Publication gate for generated artifacts: the repo secret scan, factored.
 
 ``tests/test_deploy_tree_no_secrets.py`` gates the tracked tree two ways —
-cluster addresses everywhere, real node hostnames under ``deploy/`` — plus
-credential shapes via :func:`precis.utils.secret_scan.find_secrets`. A
+cluster addresses everywhere, real node hostnames under ``deploy/``, the
+packaged skills and the ``.claude/`` prompt files (the rest of the tree is not
+yet covered) — plus credential shapes via :func:`precis.utils.secret_scan.find_secrets`. A
 *published artifact* (the pathway repro bundle, any future export archive)
 must pass the same shapes before it can leave the cluster: its staged files
 are scanned with the identical patterns here, so "the archive gate" and "the
@@ -42,10 +43,14 @@ ADDRESS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b"),
     ),
     ("lan ip (192.168.x)", re.compile(r"\b192\.168\.\d{1,3}\.\d{1,3}\b")),
+    # A tailnet's MagicDNS suffix names the tailnet: overlay only.
+    ("tailnet dns suffix", re.compile(r"\btail[0-9a-f]{4,}\.ts\.net\b")),
 ]
 
-#: Real node hostnames — an architecture check under ``deploy/`` in the repo,
-#: a disclosure check in anything published. Shared pattern source.
+#: Real node hostnames — an architecture check under ``deploy/``, a leak check
+#: for ``src/``, ``docker/``, ``docs/``, ``tests/`` and the ``.claude/`` prompts
+#: in the repo (scripts are not yet covered), and a disclosure check in anything
+#: published. Shared pattern source.
 NODE_HOSTNAME_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "real hostname / tailnet",

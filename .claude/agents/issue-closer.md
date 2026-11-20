@@ -17,12 +17,12 @@ justify against the diff.
    base — don't go spelunking through unrelated history.
 2. List candidates: `search(kind='gripe', status='open')` plus `triaged` /
    `ready_for_fix` / `in_review` / `verify` (skip `wontfix` — already a closed decision,
-   not a fix target). Read the `docs/backlog/INDEX.md` index for items
-   (generated; run `scripts/docs-index` if missing)
-   (skip one whose `snooze-until` date is still in the future — a deliberate
-   park, not something an incidental diff should close).
-3. For each candidate, `get(kind='gripe', id=N)` or read the backlog item's
-   file, and compare its specific complaint against the diff: does the
+   not a fix target), plus the open slice todos on the affected spec's plan
+   (`search(kind='todo', view='doable', args={'under': <plan root>})`; skip
+   one carrying a future `due:` tag — a deliberate park, not something an
+   incidental diff should close).
+3. For each candidate, `get(kind='gripe', id=N)` or read the slice todo and
+   its section node, and compare its specific complaint against the diff: does the
    diff visibly change the exact code path the complaint is about, in a way
    that addresses that exact complaint — not just "touches the same file".
 4. Close only what clears the Guardrails bar below. Leave everything else
@@ -51,19 +51,19 @@ justify against the diff.
 - Gripe: `put(kind='gripe', id=N, text='resolved: <sha> (r<N>) — <how verified>',
   tags=['STATUS:done'])`. The tag is refused unless the newest comment
   starts `resolved:`. `delete` is only for duplicates, spam, filed-in-error.
-- Backlog item: `git rm docs/backlog/<slug>.md` in the same pass
-  (delete-on-ship, no done-markers, per this repo's own convention) and
-  commit that edit separately — the ship commit already happened, don't
-  try to amend it. Hard stop: if `scripts/ship` is still running in the
-  caller's worktree, do NOT commit — its final reset destroys post-start
-  WIP; report the files to remove and let the caller commit.
+- Spec slice: `tag(kind='todo', id=N, add=['STATUS:done'])` plus the
+  `landed:` sha as a comment, and report which section is now BUILT so the
+  caller can retire it per `docs-triage` — you never retire a memory node
+  yourself. Hard stop: if `scripts/ship` is still running in the caller's
+  worktree, do NOT commit anything — its final reset destroys post-start
+  WIP; report what to change and let the caller do it.
 
 ## What to return
 Short and structured — this text is relayed to the user verbatim, so no
 transcript of what you considered and ruled out:
 - One line per closed item: `Closed: gripe #42 (title) — <1-line reason>.`
-  or `Closed: docs/backlog/<slug> — <1-line reason>.`
-- If nothing qualified: `Nothing to close — no open gripe/backlog item
+  or `Closed: td<N> (slice title) — <1-line reason>.`
+- If nothing qualified: `Nothing to close — no open gripe or slice
   is confidently resolved by <sha>.`
 
 A confident close is proof read twice; an unconfident one stays open —

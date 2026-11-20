@@ -2,7 +2,7 @@
 
 **When.** You need a **real** docx/PDF/EndNote artifact built from prod data
 with *unshipped worktree code* — fast feedback on a brittle format before it
-ships. This beats "ship + deploy, then download from the melchior web UI" when
+ships. This beats "ship + deploy, then download from the web host's UI" when
 the output needs a human's eyes first.
 
 **Recipe.** Connect a `Store` straight to prod from the host and run the
@@ -28,3 +28,6 @@ exporter.
 Code: `src/precis/export/docx.py`, `src/precis/export/endnote.py`. To verify
 what the cluster actually runs, see
 [`cluster-deploy`](./cluster-deploy.md) (venv `direct_url.json`).
+
+Compiling the export to PDF locally (the Mac's tectonic cannot run biber):
+skill `draft-pdf-local` — `get(kind='skill', id='draft-pdf-local')`.

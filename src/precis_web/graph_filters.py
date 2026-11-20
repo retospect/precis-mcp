@@ -1,5 +1,5 @@
 """Query-param filters shared by the graph pages — the ``/graph/`` JSON +
-SVG focus page (``docs/backlog/web-graph-navigation.md`` slice 4) and the
+SVG focus page (`me694223` slice 4) and the
 ``/eye/<handle>`` text ladder (``fisheye-everywhere.md`` in-scope 1).
 
 One parser per axis so the two surfaces can't drift: a comma list is

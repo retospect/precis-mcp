@@ -124,10 +124,11 @@ from precis.workers.executors._common import (
     SUCCEEDED as _SUCCEEDED,
 )
 from precis.workers.executors._common import (
-    append_chunk as _append_chunk,
+    _error_meta,
+    claim_executor_jobs,
 )
 from precis.workers.executors._common import (
-    claim_executor_jobs,
+    append_chunk as _append_chunk,
 )
 from precis.workers.executors._common import (
     poison_guard as _poison_guard,
@@ -197,7 +198,7 @@ def _reap_bin() -> str:
     decision the way launching one is, so this mirrors
     :func:`agent_container._container_bin`: prefer podman, fall back to
     docker (via the shared :func:`capability_probe.container_runtime`
-    detector) so a docker-only host (no podman on PATH — e.g. spark) can
+    detector) so a docker-only host (no podman on PATH — e.g. the GPU node) can
     still reap orphaned ``sandbox-*`` containers at boot instead of the
     reconcile pass throwing ``FileNotFoundError: 'podman'`` every restart.
     Falls back to ``"podman"`` (today's behavior) only when neither runtime
@@ -1856,10 +1857,12 @@ def _duration_seconds(store: Store, ref_id: int) -> float | None:
 
 def _fail(store: Store, ref_id: int, reason: str) -> None:
     """Fail a job before/without a container: event chunk + STATUS:failed
-    + failure bubble. Mirrors ``_common.record_failure`` but keeps the
-    job_summary shape consistent with the terminal path."""
+    + ``meta.error`` crumb + failure bubble. Mirrors
+    ``_common.record_failure`` but keeps the job_summary shape
+    consistent with the terminal path."""
     with store.pool.connection() as conn:
         _append_chunk(store, ref_id, _JOB_EVENT_KIND, reason, conn=conn)
+        _set_meta(conn, ref_id, error=_error_meta(reason))
         _set_status(store, ref_id, _FAILED, conn=conn)
         conn.commit()
     from precis.utils.job_bubble import bubble_job_failure

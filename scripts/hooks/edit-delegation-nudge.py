@@ -2,7 +2,7 @@
 """PreToolUse hook (matcher: Edit|Write|MultiEdit|NotebookEdit|Agent|Task) —
 nudge the MAIN loop to delegate a long un-delegated build to ``coder``.
 
-Token-review (docs/backlog/token-review-hook-gaps.md, Rule F) found opus-tier
+Token-review (me692225, Rule F) found opus-tier
 main loops doing 130-340 Edit/Write calls of mechanical multi-file feature work
 with zero ``coder`` dispatches. This hook counts Edit/Write-family calls per
 session; at ``THRESHOLD`` (50) with no ``coder`` dispatch since the last reset

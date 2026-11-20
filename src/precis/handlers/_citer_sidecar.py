@@ -4,7 +4,7 @@ A one-off, capped attachment for a chunk that carries resolved
 chunk-scoped ``cites`` edges from ``workers/inbound_chase.py`` —
 deliberately **not** a slice of the deferred fidelity-level /
 turn-routing-context-DSL proposal
-(``docs/backlog/turn-routing-and-context-dsl.md``, still "deferred —
+(`me695177`, still "deferred —
 design captured, not sliced"); this render reuses that proposal's
 *shape* (capped count, ``card_combined``-fidelity identity,
 expand-on-request) without committing to its scope.

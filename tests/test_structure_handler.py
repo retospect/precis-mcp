@@ -9,6 +9,7 @@ Uses the same ``store`` fixture every DB-backed handler test uses (auto
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import numpy as np
 import pytest
@@ -100,6 +101,99 @@ def test_slab_op_refusal_carries_a_working_example_as_next(structure):
     assert isinstance(exc.value.next, str)
     assert "precis-structure-slab-help" in exc.value.next
     assert '"size":[3,3,4]' in _reject_reason(exc.value)
+
+
+def test_put_explicit_null_cell_means_absent_not_a_crash(structure):
+    """gr681307: an LLM spec carrying ``"cell": null`` reached
+    ``_build_cell(None)``, and the quest tick's rejection note surfaced the
+    raw ``'NoneType' object has no attribute 'get'``. An explicit null reads
+    as absent (the ops layer's convention), so a cell-establishing op still
+    supplies the cell."""
+    pytest.importorskip("ase.build")
+    resp = structure.put(
+        id="pd_slab_null_cell",
+        text=json.dumps(
+            {
+                "cell": None,
+                "ops": [{"op": "slab", "element": "Pd", "size": [2, 2, 3]}],
+            }
+        ),
+    )
+    assert "created" in resp.body
+    assert "Pd12" in resp.body
+
+
+def test_put_null_cell_without_a_cell_op_is_a_named_refusal(structure):
+    """``"cell": null`` and no cell-establishing op → the ordinary
+    needs-a-cell refusal, not a raw AttributeError."""
+    with pytest.raises(BadInput, match="cell"):
+        structure.put(id="no_cell", text=json.dumps({"cell": None, "ops": []}))
+
+
+def test_put_non_object_cell_is_a_named_refusal(structure):
+    """A ``cell`` that isn't an object (or null) names the field instead of
+    crashing inside ``_build_cell``."""
+    with pytest.raises(BadInput, match="cell"):
+        structure.put(id="bad_cell", text=json.dumps({"cell": "fcc", "ops": []}))
+
+
+def test_put_null_cell_fields_fall_back_to_defaults(structure):
+    """``pbc``/angle ``null``s inside a cell object read as absent —
+    ``_op_slab``'s explicit-null convention applied to the cell spec."""
+    resp = structure.put(
+        id="null_fields",
+        text=json.dumps(
+            {
+                "cell": {
+                    "a": 10.0,
+                    "b": 10.0,
+                    "c": 10.0,
+                    "pbc": None,
+                    "alpha": None,
+                },
+                "ops": [{"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]}],
+            }
+        ),
+    )
+    assert "created" in resp.body
+    assert "pbc[TTT]" in resp.body
+
+
+def test_put_non_numeric_cell_is_a_named_refusal(structure):
+    """A non-number where a cell field wants a number is a BadInput naming
+    the field, not a raw TypeError."""
+    with pytest.raises(BadInput, match="cell"):
+        structure.put(
+            id="nan_cell",
+            text=json.dumps({"cell": {"a": "big", "b": 10.0, "c": 10.0}, "ops": []}),
+        )
+
+
+def test_put_non_list_ops_is_a_named_refusal(structure):
+    """``ops`` as an object (one op not wrapped in a list) is a named
+    refusal, not a dict-keys iteration that errors on its first key."""
+    with pytest.raises(BadInput, match="ops"):
+        structure.put(
+            id="dict_ops",
+            text=json.dumps(
+                {
+                    "cell": {"a": 10.0, "b": 10.0, "c": 10.0},
+                    "ops": {"op": "slab", "element": "Pd"},
+                }
+            ),
+        )
+
+
+def test_derive_null_op_entry_is_a_named_refusal(structure):
+    """``derive_from`` with a ``null`` ops entry used to hit ``o.get('op')``
+    on None in the relax pre-check — gr681307's second ``'NoneType' …
+    'get'`` crash site. It now falls through to the malformed-op refusal."""
+    structure.put(id="pd_pair", text=_PD)
+    with pytest.raises(BadInput, match="op"):
+        structure.put(
+            id="pd_pair_child",
+            args={"derive_from": "pd_pair", "ops": [None]},
+        )
 
 
 def test_atom_and_neighborhood_and_bonds_probes(structure):
@@ -296,7 +390,7 @@ def test_relax_dispatch_pins_to_env_dft_node(
     """With no MLIP group rendered, the mint pins ``target_node`` to
     PRECIS_DFT_NODE verbatim — the value deploy renders from topology
     (precis_capabilities.dft), never a node literal baked into code (the
-    2026-08-29 spark retirement made that a 4-day silent wedge)."""
+    2026-08-29 spruce retirement made that a 4-day silent wedge)."""
     monkeypatch.setenv("PRECIS_DFT_NODE", "dft-twin")
     for env in ("PRECIS_MLIP_NODES", "PRECIS_AUTOCATPATH_ROUTE_NODE"):
         monkeypatch.delenv(env, raising=False)
@@ -1444,7 +1538,7 @@ def test_energy_rung_with_requester_wires_the_wait(structure, store, no_local_ml
 
     structure.put(id="pd_pair", text=_PD)
     ref = structure.store.get_ref(kind="structure", id="pd_pair")
-    todo = TodoHandler(hub=Hub(store=store)).put(text="relax pd_pair on spark")
+    todo = TodoHandler(hub=Hub(store=store)).put(text="relax pd_pair on spruce")
     todo_id = id_of(todo.body)
 
     resp = structure.edit(
@@ -1751,3 +1845,35 @@ def test_structure_search_row_shows_generator_params(structure, store):
     body = structure.search(q="adsorption screening", mode="lexical").body
     assert "hexfold_scene" in body
     assert "periods=8" in body and "seams=++++++" in body
+
+
+def test_neighborhood_exposes_vacancy_labels_and_periodic_coordinates(
+    structure: Any,
+) -> None:
+    """gr700540: choose a Pd vacancy adjacent to Rh across the cell boundary."""
+    structure.put(
+        id="rh_pd_boundary",
+        text=json.dumps(
+            {
+                "cell": {"a": 10.0, "b": 10.0, "c": 10.0, "pbc": [True, True, False]},
+                "ops": [
+                    {"op": "add_atom", "element": "Rh", "frac": [0.05, 0.5, 0.5]},
+                    {"op": "add_atom", "element": "Pd", "frac": [0.79, 0.5, 0.5]},
+                    {"op": "add_atom", "element": "Pd", "frac": [0.5, 0.5, 0.5]},
+                ],
+            }
+        ),
+    )
+    summary = structure.get(id="rh_pd_boundary").body
+    assert "view='neighborhood'" in summary
+    assert "coordinates" in summary
+    body = structure.get(
+        id="rh_pd_boundary", view="neighborhood", args={"atom": "aRh1", "radius": 3.0}
+    ).body
+    assert "aPd1" in body
+    assert "aPd2" not in body
+    assert "2.600" in body
+    assert "-1,0,0" in body
+    assert "0.790000,0.500000,0.500000" in body
+    assert "-2.100000,5.000000,5.000000" in body
+    assert "minimum image" in body

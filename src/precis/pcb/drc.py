@@ -13,7 +13,7 @@ check, not the main event. Both emit
 ``eyes.drc_lite`` is superseded and retired.
 
 Two NETLIST-level rules report on the same surface since Slice 2 of
-docs/backlog/pcb-lazy-netlist-and-checks.md (§1g: one check surface, not
+me693232 (§1g: one check surface, not
 two — an ERC finding is the same row with ``margin_mm`` empty):
 :func:`check_unconnected_pins`, phase-aware through
 :func:`derive_phase`/``PHASES``, and :func:`check_undeclared_pads`, the
@@ -942,7 +942,7 @@ def check_clearance(
 
     ``net_voltages`` (net NAME -> peak working voltage, ``pcb_nets.
     working_voltage_v``) adds the PAIRWISE term
-    ``docs/backlog/pcb-missing-constraint-classes.md`` §E-1 specifies:
+    `me693086` §E-1 specifies:
     required spacing is a function of ``|V_a - V_b|`` (IPC-2221B Table 6-1,
     via :func:`precis.pcb.capabilities.conductor_spacing_mm`), a property
     of the *pair*, not of either net — a 20 V net beside another 20 V net
@@ -1022,7 +1022,7 @@ def check_clearance(
     # One resolution per pair and layer (rules.required): the per-net
     # per-layer tiers, a class pair rule, then the pairwise voltage term (a
     # missing annotation is not 0 V; the coverage report above already
-    # named it). Slice 4b (ewod-controller-and-hv-supply.md): a resolved
+    # named it). Slice 4b (me690877): a resolved
     # ``min_clearance_mm`` is a HARD floor — below it is an ERROR, the same
     # tier the fab minimum owns. With layer-scoped rules a multi-layer pair
     # (a through via) is judged on the layer where it fares worst: an
@@ -2102,7 +2102,7 @@ def check_via_pad_keepout(
     # test every via against every pad, measured at 1.9 s of a 1.9 s
     # :func:`run_geometric_drc` on ONE 8x8 EWOD tile and 30 s at four tiles,
     # which is what made "run geometric DRC at every board mutation"
-    # (docs/backlog/pcb-always-valid-board-invariant.md) unaffordable.
+    # (me569109) unaffordable.
     #
     # The index is a PRUNE, not a different question: this rule's own
     # condition ``gap < required`` with ``gap = pad_poly.distance(centre) -
@@ -2797,8 +2797,7 @@ def check_courtyard_overlap(
     ``pads`` (``model["pads"]``, each carrying ``refdes``) refines the
     error tier further: a courtyard is the union of a part's pad
     outlines, an over-approximation of what the part occupies, so two
-    courtyards intersecting proves nothing about the lands (docs/backlog/
-    pcb-lazy-netlist-and-checks.md §1g-bis — an over-approximation is
+    courtyards intersecting proves nothing about the lands (me693232 §1g-bis — an over-approximation is
     sound for proving a collision ABSENT, not present). With pads given,
     the error is kept only when a real land of one part intersects a real
     land of the other; courtyards that overlap with every land clear are
@@ -3519,7 +3518,7 @@ def check_keepout_copper(
     model: dict[str, Any], keepouts: Sequence[Keepout] = ()
 ) -> list[DrcFinding]:
     """Copper inside an authored keep-out region is an error — the binding
-    half of ``ftype='keepout'`` (``docs/backlog/pcb-keepout-does-not-bind.md``):
+    half of ``ftype='keepout'`` (`me692901`):
     until this rule, a keepout was recorded data the se fit check warned
     about (:class:`~precis_geom.pcb_shape.Keepout`'s own docstring) and no
     check read. Tracks, vias and pours whose polygon
@@ -4367,7 +4366,7 @@ def check_unrouted(
 
 # ── netlist-level rules on the same check surface ──────────────────────
 #
-# docs/backlog/pcb-lazy-netlist-and-checks.md §1g ("one check surface, not
+# me693232 §1g ("one check surface, not
 # two") + §1j (intent markers): the rules below need no geometry — they
 # judge the netlist — but they report on THIS surface, as the same
 # ``DrcFinding`` row (``margin_mm=None``), because splitting the surface
@@ -4889,7 +4888,7 @@ def _bend_zone_geom(
     """One ``bend_zones`` entry's checked geometry: the fold line widened
     by the bend allowance — the arc length of board surface the fold
     consumes, ``radius_mm * |angle_deg|`` radians, split evenly either
-    side of the fold (docs/backlog/pcb-flexboard.md's "fold line widened
+    side of the fold (gr689726's "fold line widened
     by the bend allowance"). Returns ``(label, fold_unit_dir, area)`` —
     ``area`` the flat-capped strip, ``fold_unit_dir`` the direction
     perpendicularity is measured against. ``None`` on a malformed row: a
@@ -4939,7 +4938,7 @@ def check_bend_zones(
     model: dict[str, Any],
     courtyards: Sequence[Courtyard] | None = None,
 ) -> list[DrcFinding]:
-    """Flex bend-zone rules (gr520329; docs/backlog/pcb-flexboard.md's
+    """Flex bend-zone rules (gr520329; gr689726's
     fold-zone DRC), off ``model["bend_zones"]`` — the builder's
     ``bend_zone`` features as extracted by
     :func:`precis.pcb.session.fab_layers_from_features`:
@@ -5634,7 +5633,7 @@ def _erc_unknown_for_net(
     pins: list[dict[str, Any]],
     what: str,
 ) -> DrcFinding:
-    """A per-net cannot-fire row (pcb-datasheet-review.md slice 2, Reto's
+    """A per-net cannot-fire row (me692814 slice 2, Reto's
     ruling): pins on this net declare a bound (``max_voltage_v`` /
     ``max_current_a``) but the net declares no voltage/current to compare
     it against. The net's value is NEVER guessed — the finding asks the
@@ -5740,8 +5739,8 @@ def check_over_current(
 ) -> list[DrcFinding]:
     """A net's declared ``est_current_a`` exceeds a pin's declared
     ``max_current_a`` — a 3 A rail through a pin rated 1 A
-    (pcb-datasheet-review.md slice 2; the ratings-validation half of
-    ``pcb-component-model.md``'s power section).
+    (me692814 slice 2; the ratings-validation half of
+    ``me692617``'s power section).
 
     Whether a pin sits IN the current path is ``meta['current_role']``
     (``series``/``shunt``/``signal``, authored via ``op='pins'``): only
@@ -5950,7 +5949,7 @@ def check_passive_rating(
     net_class_rules: dict[str, Any] | None = None,
 ) -> list[DrcFinding]:
     """A catalog passive whose parsed rating fails the margin policy —
-    pcb-datasheet-review.md slice 3 (in-scope 4's parse + 5's
+    me692814 slice 3 (in-scope 4's parse + 5's
     ``passive_rating``): ``C1525``'s description parses to
     ``100nF 16V X7R`` (:func:`precis.pcb.catalog.parse_passive_description`)
     and the named policy (``PASSIVE_MARGIN_POLICY`` r

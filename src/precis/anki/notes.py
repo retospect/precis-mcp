@@ -8,13 +8,15 @@ keyed on the precis ref_id** (`precis:<ref_id>`). That is what makes a re-push
 *update* the existing note in place — preserving its Anki scheduling history —
 instead of creating a duplicate. It is NEVER derived from the card text (a text
 edit must not re-guid, or Anki would treat it as a new card and reset the
-forgetting curve). Notes also carry a human-findable `precis::<ref_id>` tag.
+forgetting curve). Notes also carry a human-findable `precis::id::<ref_id>` tag.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+
+from precis.anki.cloze import space_adjacent_braces
 
 #: The deck every precis-authored card lands in. Adopted, not schema-changing.
 PRECIS_DECK = "Precis"
@@ -44,8 +46,9 @@ def ref_id_from_guid(guid: str) -> int | None:
 
 
 def precis_tag(ref_id: int) -> str:
-    """The human-findable per-ref tag on our notes."""
-    return f"precis::{ref_id}"
+    """The human-findable per-ref tag on our notes; nested under `precis::id`
+    so the Anki GUI collapses them into one tree node."""
+    return f"precis::id::{ref_id}"
 
 
 @dataclass(frozen=True)
@@ -55,6 +58,8 @@ class AnkiCardSpec:
     ref_id: int
     fields: dict[str, str]  # e.g. {"Text": "<cloze markup>", "Back Extra": "…"}
     deck: str = PRECIS_DECK  # meta.deck; a `Precis::<topic>` sub-deck or Precis
+    previously_synced: bool = False
+    boost: bool = False  # meta.anki_boost_due set — bring due forward to today
 
 
 def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
@@ -72,12 +77,18 @@ def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
     if meta.get("notetype", "Cloze") != "Cloze":
         return None
     fields_meta = meta.get("fields") or {}
-    text = fields_meta.get("Text") or ref.title
+    text, _ = space_adjacent_braces(fields_meta.get("Text") or ref.title)
     out: dict[str, str] = {"Text": text}
     extra = fields_meta.get("Back Extra")
     if extra:
         out["Back Extra"] = extra
-    return AnkiCardSpec(ref_id=ref.id, fields=out, deck=meta.get("deck") or PRECIS_DECK)
+    return AnkiCardSpec(
+        ref_id=ref.id,
+        fields=out,
+        deck=meta.get("deck") or PRECIS_DECK,
+        previously_synced=bool(meta.get("anki_synced_at")),
+        boost=bool(meta.get("anki_boost_due")),
+    )
 
 
 def aggregate_stats(

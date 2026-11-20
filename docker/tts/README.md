@@ -2,7 +2,7 @@
 
 A per-tool container (sibling of `docker/aizynth`) that renders a **voice-score**
 to an audio file. Follows the established dockerized-tool pattern: **code + env +
-models** baked, built **on the `tts_render` topology node** (melchior — `docker
+models** baked, built **on the `tts_render` topology node** (`docker
 build` via colima; `podman build` on a Linux node), driven by a **one-shot
 `docker`/`podman run` per episode** that stages input/output over a bind mount.
 The precis worker never needs the `[tts]` extra — it shells out.
@@ -76,6 +76,6 @@ sidecars) and register them per-lang.
    `precis draft audio` prefer it when `PRECIS_TTS_IMAGE` is set (else the
    in-process `KokoroSynth`).
 2. **`roles/tts`** (cluster) — topology-driven (`precis_capabilities.tts_render`
-   in the overlay's `topology.yml`, currently melchior): ensures the container
+   in the overlay's `topology.yml`, currently the TTS host): ensures the container
    runtime, builds the image (flag-gated), worker env (`PRECIS_TTS_IMAGE`).
    Works on Linux (systemd drop-in) and the macOS gateway (colima docker).

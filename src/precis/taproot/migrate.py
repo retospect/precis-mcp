@@ -80,7 +80,7 @@ VERDICTS: tuple[Verdict, ...] = (
 #: :func:`dry_run`'s consecutive-infra-failure breaker: this many
 #: ``verdict="error"`` outcomes in a row aborts the whole run rather than
 #: silently producing a full-size report of misclassified NO-CLAIMs — the
-#: melchior incident (every dispatch ECONNREFUSED, all 25 hubs reported
+#: agent-host incident (every dispatch ECONNREFUSED, all 25 hubs reported
 #: "no-claim") that motivated this guard.
 _CONSECUTIVE_ERROR_LIMIT = 3
 

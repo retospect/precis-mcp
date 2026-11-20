@@ -1,7 +1,7 @@
 """``resource_slots`` CRUD — the factory scheduler's per-host resource map.
 
 Mixin on :class:`precis.store.Store`. Backs slice 6 of
-``docs/backlog/factory-console-and-scheduling.md`` (§5). Migration
+`gr690514` (§5). Migration
 ``0073_resource_slots.sql`` defines the table: one row per
 ``(host, resource)`` the host offers, with a materialized ``free`` counter.
 
@@ -252,6 +252,28 @@ def delete_slot_hold(conn: Connection, hold_id: int) -> bool:
     miss means the sweep already reclaimed it (the refund already
     happened), so the caller must NOT refund again."""
     return conn.execute(_DELETE_HOLD, (hold_id,)).fetchone() is not None
+
+
+#: Push back the expiry of live holds — the admitted-spawn babysitter's
+#: heartbeat while its child still runs (gr657245). Holds the sweep already
+#: reclaimed have no row to renew; that is not an error.
+_RENEW_HOLDS = (
+    "UPDATE resource_slot_holds SET expires_at = now() + make_interval(secs => %s) "
+    "WHERE id = ANY(%s) RETURNING id"
+)
+
+
+def renew_slot_holds(conn: Connection, hold_ids: list[int], ttl_s: float) -> int:
+    """Extend every listed hold's TTL to ``ttl_s`` from now.
+
+    Returns the number of holds still live and renewed — a smaller number
+    means the sweep reclaimed some since the caller read them; the refund
+    already happened there, nothing is double-counted."""
+    ids = [int(h) for h in hold_ids]
+    if not ids:
+        return 0
+    rows = conn.execute(_RENEW_HOLDS, (float(ttl_s), ids)).fetchall()
+    return len(rows)
 
 
 def reclaim_expired_slot_holds(conn: Connection) -> int:

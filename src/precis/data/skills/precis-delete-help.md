@@ -17,6 +17,8 @@ scope: write
 
 # precis-delete-help — remove a ref or a selector region
 
+Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
+
 `delete` removes content two ways. Numeric-ref kinds soft-delete:
 the row hides from list/search but is recoverable. File kinds
 require a selector and rewrite the file without the addressed
@@ -43,8 +45,13 @@ design — and a kind with no delete door refuses as `Unsupported`,
 naming the supported verbs.
 
 Soft-delete only. The ref disappears from list views and search;
-the row is retained for audit. Memory retirement also cleans up links
-and checks prose mentions; see the memory recipe below.
+the row is retained for audit. Memory and finding retirement also clean up links and check live memory
+prose mentions; see the memory recipe below. Findings accept the same
+`dry_run=`, `superseded_by=` and `args={'force': True}` options. For example,
+`delete(kind='finding', id='fi42', dry_run=True, superseded_by='fi77')`
+previews retirement without writing; repeat without `dry_run` to retire and
+record the successor redirect. This retires a duplicate finding; claim-hub
+merging still uses the Taproot merge door.
 
 Pass `reason=` to say why — it lands as an
 `agent/deleted` row on the ref's `ref_events` log, the audit line a
@@ -55,6 +62,23 @@ row on a whole-draft delete, the chunk's `retired` event for one chunk;
 ```python
 delete(kind="memory", id=42, reason="stale duplicate, folded into me77")
 ```
+
+## Check dependants before you delete
+
+`delete(kind=..., id=N, dry_run=True)` previews a soft-delete — nothing
+written — and ends with a `## Dependants` block: the refs that rely on
+the target (a hub that cites it, a draft grounded on it), walked
+depth-first to 2 hops and page-capped. The real delete's ack ends with
+a `dependants: X shown of Y` line that says `INCOMPLETE` when the walk
+was cut — an incomplete count is not "no dependants". Page the full
+set yourself:
+
+```python
+get(kind="memory", id=42, view='dependants', args={'depth': 2, 'limit': 25})
+```
+
+Deletion never refuses on dependants — the block is review surface,
+not a gate.
 
 ## Retire a memory without leaving stale claims behind
 
@@ -163,22 +187,29 @@ verb refuses to wipe a whole file by accident. Use `edit` with
 ## Delete a single matched span (one citation, one line)
 ## Cut one occurrence of a string from a file
 
-`delete` operates on whole chunks / line ranges / symbols. For
-arbitrary spans inside a chunk, use `edit(mode='find-replace',
-text='')` — anchored find-replace recipe: [[precis-edit-help]].
+For the supported `delete` selectors, see [[precis-edit-help]].
+For an arbitrary span inside a chunk,
+use `edit(mode='find-replace', find=…, text='')` — anchored
+find-replace recipe: [[precis-edit-help]].
 
 ## Why can't I delete a paper or a cached tool answer?
 
 ```python
-delete(kind="paper", id="<slug>")  # raises Unsupported
+delete(kind="paper", id="<slug>")  # raises BadInput
 delete(kind="web", id="<url>")  # raises Unsupported
 ```
 
-Papers, patents, and cache-backed kinds (`calc`, `math`, `web`,
-`youtube`, `websearch`, `perplexity-reasoning`, `perplexity-research`) reject `delete`. Cache
-entries expire on TTL or via `tag(... add=['CACHE:stale'])`. To
-remove an ingested paper, work at the SQL layer or re-fetch by id
-to overwrite the local copy.
+`delete(kind='paper', …)` refuses as `BadInput`, not `Unsupported` —
+the paper itself is never deleted, but two doors exist. Retire a
+phantom stub with
+`edit(kind='paper', id=<slug>, args={'retire': True, 'reason': '<why>'})`,
+and hide one of its notes with
+`delete(kind='paper', id=<slug>, args={'comment': <K>})` (see
+[[precis-paper-help]]). Patents refuse `delete` as `Unsupported`, and
+so do the cache-backed kinds (`calc`, `math`, `web`,
+`youtube`, `websearch`, `perplexity-reasoning`, `perplexity-research`).
+Cache entries expire on TTL; to re-fetch one now, pass
+`args={'refresh': True}` on the `get` ([[precis-cache]]).
 
 ## Undo a delete
 ## I deleted the wrong thing — can I get it back?

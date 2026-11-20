@@ -164,7 +164,7 @@ class PresInput:
 class MarkupInput:
     """Structured full text (JATS / Elsevier XML / arXiv HTML / LaTeX).
 
-    Markup-first ingest (docs/backlog/dark-features-activation.md): the body
+    Markup-first ingest (gr690306): the body
     chunks come from ``markup_path`` via
     :func:`precis.ingest.pipeline.extract_paper_from_markup` — **Marker
     is never run**.
@@ -748,7 +748,11 @@ def _ingest_pdf(
             # of the same kind, so a stale / already-upgraded / soft-deleted
             # target falls through to a normal insert.
             existing = _valid_fold_stub(
-                fold_ref_id, kind=paper.kind, conn=conn, doi=paper.doi
+                fold_ref_id,
+                kind=paper.kind,
+                conn=conn,
+                doi=paper.doi,
+                pdf_sha256=paper.pdf_sha256,
             )
             if (
                 existing is None
@@ -860,7 +864,7 @@ def _ingest_pdf(
             # the row is a stub (``pdf_sha256 IS NULL``), upgrade it
             # by promoting this PDF to canonical and inserting the
             # extracted chunks. See db_writer.register_aliases_and_maybe_upgrade
-            # for the contract and docs/backlog/finding-chase.md
+            # for the contract and gr690649
             # §"Stub upgrade" for the rationale (chase findings
             # waiting on this stub resume on the next chase pass
             # without any extra plumbing).
@@ -1250,7 +1254,12 @@ def _handle_stem_ref_id(stem: str) -> int | None:
 
 
 def _valid_fold_stub(
-    ref_id: int, *, kind: str, conn: Any, doi: str | None = None
+    ref_id: int,
+    *,
+    kind: str,
+    conn: Any,
+    doi: str | None = None,
+    pdf_sha256: str | None = None,
 ) -> int | None:
     """Return ``ref_id`` iff it's a live, same-kind ref that still needs a body.
 
@@ -1265,7 +1274,9 @@ def _valid_fold_stub(
     a stored PDF sha — the bodiless re-fetch case, where the fetched file
     differs from the stored one. ``register_aliases_and_maybe_upgrade``
     then writes chunks only if the ref has no body, attaches only
-    otherwise, and honours the ``markup_refetch`` pin.
+    otherwise, and honours the ``markup_refetch`` pin. A short preview
+    replacement also qualifies when both hashes match ``pdf_preview_refetch``;
+    the writer checks body growth before replacing it.
 
     Identity check: when the fetched file carries a journal DOI and the
     target holds a different journal DOI, the sidecar is pointing at the
@@ -1283,13 +1294,15 @@ def _valid_fold_stub(
            AND r.retired_at IS NULL
            AND (
                 r.pdf_sha256 IS NULL
+                OR (r.meta->'pdf_preview_refetch'->>'from' = r.pdf_sha256
+                    AND r.meta->'pdf_preview_refetch'->>'to' = %s)
                 OR NOT EXISTS (
                     SELECT 1 FROM chunks c
                      WHERE c.ref_id = r.ref_id AND c.ord >= 0
                 )
            )
         """,
-        (ref_id, kind),
+        (ref_id, kind, pdf_sha256),
     ).fetchone()
     if row is None:
         return None
@@ -2527,7 +2540,11 @@ def _ingest_markup(
         )
         if existing is None and input.fold_ref_id is not None:
             existing = _valid_fold_stub(
-                input.fold_ref_id, kind=paper.kind, conn=conn, doi=paper.doi
+                input.fold_ref_id,
+                kind=paper.kind,
+                conn=conn,
+                doi=paper.doi,
+                pdf_sha256=paper.pdf_sha256,
             )
             if existing is not None:
                 log.info(

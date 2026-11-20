@@ -307,3 +307,112 @@ def test_hidden_resolved_comment_does_not_count(hub: Hub) -> None:
     h.delete(id=gid, args={"comment": 1})
     with pytest.raises(BadInput):
         h.tag(id=gid, add=["STATUS:done"])
+
+
+def test_close_cascade_skips_referrer_with_resolved_comment(hub: Hub) -> None:
+    """gr673558: closing a parent posts no wake note on a dependant
+    whose own ``resolved:`` already sits newest — the note would bury
+    it and fail that dependant's own close gate."""
+    from precis.store.types import Tag
+
+    h, gid = _gripe(hub)
+    h2, gid2 = _gripe(hub)
+    h2.store.add_tag(gid2, Tag.open(f"waiting-for:gr{gid}"), set_by="agent")
+    h2.put(id=gid2, text="resolved: wontfix — superseded by the parent")
+
+    h.put(id=gid, text="resolved: abc (r1) — verified")
+    h.tag(id=gid, add=["STATUS:done"])
+
+    comments = [
+        c.text
+        for c in h2.store.chunks.list_chunks_for_ref(gid2)
+        if c.chunk_kind == "gripe_comment"
+    ]
+    assert comments == ["resolved: wontfix — superseded by the parent"]
+    h2.tag(id=gid2, add=["STATUS:wontfix"])
+    assert "STATUS:wontfix" in _tags(h2, gid2)
+
+
+def test_close_gate_skips_system_wake_comment(hub: Hub) -> None:
+    """gr673558: a wake line already sitting on top of ``resolved:``
+    (pre-fix rows, or one a concurrent close still lands) is a system
+    notice — the gate reads the newest human/agent comment."""
+    h, gid = _gripe(hub)
+    h.put(id=gid, text="resolved: wontfix — by design")
+    h.put(id=gid, text="gr663868 closed (done) — next: re-evaluate")
+    h.tag(id=gid, add=["STATUS:wontfix"])
+    assert "STATUS:wontfix" in _tags(h, gid)
+
+
+def test_close_refused_when_unparked_text_is_human(hub: Hub) -> None:
+    """gr673558 review: ``unparked: <note>`` is a prefix any agent
+    update can carry — only the generated ``unparked: <type> <value>
+    met (<evidence>)`` shape (or a meta-stamped note) is a system wake
+    line. A borrowed prefix must not resurrect an older ``resolved:``."""
+    h, gid = _gripe(hub)
+    h.put(id=gid, text="resolved: wontfix — by design")
+    h.put(id=gid, text="unparked: reproduced; still broken")
+    with pytest.raises(BadInput):
+        h.tag(id=gid, add=["STATUS:wontfix"])
+    assert "STATUS:open" in _tags(h, gid)
+
+
+def test_close_refused_when_close_note_text_is_human(hub: Hub) -> None:
+    """Same guard on the cascade-note prefix: a comment naming a close
+    without the generated ``— next:`` tail is the referrer's own word."""
+    h, gid = _gripe(hub)
+    h.put(id=gid, text="resolved: abc (r1) — verified")
+    h.put(id=gid, text="gr5 closed (done) — but it regressed, reopening")
+    with pytest.raises(BadInput):
+        h.tag(id=gid, add=["STATUS:done"])
+    assert "STATUS:open" in _tags(h, gid)
+
+
+def test_close_gate_skips_legacy_unpark_notice(hub: Hub) -> None:
+    """Pre-marker rows: the parked wake pass writes ``unparked:
+    <type> <value> met (<evidence>)`` — that exact shape still reads
+    as a system notice."""
+    h, gid = _gripe(hub)
+    h.put(id=gid, text="resolved: wontfix — by design")
+    h.put(id=gid, text="unparked: ref_done gr1 met (gr1 is done)")
+    h.tag(id=gid, add=["STATUS:wontfix"])
+    assert "STATUS:wontfix" in _tags(h, gid)
+
+
+def test_unpark_gripe_comment_is_meta_marked(hub: Hub) -> None:
+    """The parked wake pass's note lands through ``unpark_gripe`` with
+    ``unpark_notice`` chunk meta, so it never gates its own gripe."""
+    from precis.cli.gripe import unpark_gripe
+
+    h, gid = _gripe(hub)
+    h.put(id=gid, text="resolved: wontfix — by design")
+    assert unpark_gripe(
+        h.store, gid, "unparked: date 2026-11-01 met (now is past 2026-11-01)"
+    )
+    newest = max(
+        (
+            c
+            for c in h.store.chunks.list_chunks_for_ref(gid)
+            if c.chunk_kind == "gripe_comment"
+        ),
+        key=lambda c: c.ord,
+    )
+    assert newest.meta.get("unpark_notice")
+    h.tag(id=gid, add=["STATUS:wontfix"])
+    assert "STATUS:wontfix" in _tags(h, gid)
+
+
+def test_batch_close_with_parked_dependant(hub: Hub) -> None:
+    """gr673558 verbatim: a batch ``tag`` closing a parent and its
+    parked dependant rolled back entirely — the parent's cascade note
+    landed on the dependant before its own gate ran."""
+    from precis.store.types import Tag
+
+    h, gid = _gripe(hub)
+    h2, gid2 = _gripe(hub)
+    h2.store.add_tag(gid2, Tag.open(f"waiting-for:gr{gid}"), set_by="agent")
+    h.put(id=gid, text="resolved: wontfix — parent")
+    h2.put(id=gid2, text="resolved: wontfix — dependant")
+    h.tag(id=[gid, gid2], add=["STATUS:wontfix"])
+    assert "STATUS:wontfix" in _tags(h, gid)
+    assert "STATUS:wontfix" in _tags(h2, gid2)

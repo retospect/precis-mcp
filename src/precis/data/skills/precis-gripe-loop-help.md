@@ -38,7 +38,7 @@ brief, who builds it, where the builder stopped, the review verdict, the
 landed sha — lives on one **code todo** per accepted gripe under the
 `Code work from gripes` root (`td559473`), linked `fixes` to the gripe.
 A second coordinator (or the same one after a crash) resumes from the
-todo tree alone — phase 1 of the gripe-todo-unify backlog spec.
+todo tree alone — phase 1 of the gripe-todo-unify spec.
 
 Loop state the old wave kept on the gripe (`batch:` tags, the
 `gripe_brief`/`gripe_handoff`/`gripe_review` chunks, `meta.fix.*`) is
@@ -121,7 +121,7 @@ has_auto_run_signal`), so nothing mints a billed `plan_tick` under it;
 `meta.task_class` is informational in phase 1 — nothing reads it on a
 plain code todo yet (`src/precis/plans/lanes.py::pick_lane` reads it in
 the plan shape), so the coordinator picks the vendor by hand; automatic
-routing is phase 2. The vocabulary: `code` (cheapest lane with fit),
+routing is phase 2. The vocabulary: `code` (the least-loaded lane),
 `design` (a spec pass first), `review` (a different vendor), `verify`,
 `docs`. Risk tags (`risk:spend`, `risk:migration`, `risk:prod-write`,
 `risk:public-surface`, `risk:read-only-verb`) are informational too, but
@@ -244,7 +244,7 @@ The `attempt:N` tag shape is the one `run_slice.release_todo` writes,
 so a later automated pass reads the same history — but `release_todo`
 only knows the `claimed-by:lane-<lane>` prefix; a `claimed-by:fleet-…`
 lease is dropped by hand in the same `tag` call, or kept when the same
-tree re-takes the fix round.
+tree re-takes the fix round. A wrong test is fixed inline (gr674030).
 
 ## Step 5 — record the review verdict
 
@@ -457,4 +457,4 @@ it).
 - [[precis-gripe-help]] — filing, comments, STATUS lifecycle, closing
 - [[precis-work-help]] — the todo tree, `meta.ask`, leases
 - [[precis-fleet-help]] — live agent rows: host, tree, ctx%, attach line
-- [[precis-fix-gripe-help]] — the `fix_gripe` job recipe (lane OFF)
+- [[precis-fix-gripe-help]] — reading existing `fix_gripe` jobs (lane OFF)

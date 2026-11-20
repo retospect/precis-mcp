@@ -118,7 +118,10 @@ def _parser() -> argparse.ArgumentParser:
         "--caller",
         choices=runner.CALLERS,
         default=runner.DEFAULT_CALLER,
-        help="scripted caller: triage (default) or ladder (the whole-ladder climb)",
+        help="scripted caller: triage (default), rowkw, rank-order (rowkw's "
+        "unscored control), oracle (upper bound: early stop, else opens the "
+        "first gold hit) or "
+        "ladder (the whole-ladder climb)",
     )
 
     swp = sub.add_parser(
@@ -156,6 +159,12 @@ def _parser() -> argparse.ArgumentParser:
         "(one per caller) are also compared side by side",
     )
     rep.add_argument("results", type=Path, nargs="+")
+    rep.add_argument(
+        "--baseline",
+        default="all-on",
+        help="arm the found-within-budget paired table compares every "
+        "arm against (default: all-on)",
+    )
     rep.add_argument(
         "--figure",
         type=Path,
@@ -383,7 +392,7 @@ def _sweep(args: argparse.Namespace) -> int:
 def _report(args: argparse.Namespace) -> int:
     runs = [runner.load_results(p) for p in args.results]
     for run in runs:
-        print(runner.report_markdown(run))
+        print(runner.report_markdown(run, baseline=args.baseline))
     if len(runs) > 1:
         print(runner.compare_markdown(runs))
     if args.figure is not None:

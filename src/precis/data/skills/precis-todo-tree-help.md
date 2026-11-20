@@ -57,7 +57,8 @@ put(
 ```
 
 Strategic and tactical tiers are gated: workers (`PRECIS_SOURCE`
-starting with `asa-`) cannot create or mutate them. CLI sessions,
+starting with `asa-` or `fleet-`) cannot create or mutate them. CLI
+sessions,
 interactive Python, and the precis-web UI (`web:owner`) pass through.
 Promoting/demoting an *existing* todo's facets after creation goes
 through `tag(meta={...})` (`tag()` already carries non-tag state via
@@ -143,15 +144,17 @@ got marked done in the last 7 days per strategic, and which
 strategic is up next (lowest picks among active strategics). No
 forecasts, no ETAs.
 
-## Projects (a strategic root that owns a workspace)
+## Projects (a strategic root with a memory hub)
 
-A *project* is not a separate kind — it's a strategic root carrying
-`meta.workspace`. The workspace gives the subtree a home directory
-(under `PRECIS_ROOT`), a file format, and a standing **brief** ("project
-thoughts": voice, scope, constraints). All three cascade to every
-descendant via the put-time inheritance, so you set them once at the
-root. A root with `meta.workspace` set is auto-stamped
-`rotation_root=true` if you don't set the facet fields yourself.
+A project is a strategic todo root. Its prose lives in a hub memory with
+section memories linked `part-of` the hub, or in a bound draft. Search
+`search(kind='memory', tags=['project:<slug>'])` and follow navigation links
+before writing. See [[precis-memory-help]].
+
+`meta.workspace` is optional export-home metadata: a directory, format and
+standing brief inherited by descendants. It does not make files the source
+of project content. A root carrying it is auto-stamped `rotation_root=true`.
+Compile/export the bound draft only when requested. For example:
 
 ```python
 put(
@@ -191,6 +194,13 @@ new descendants inherit the updated block.
 ```python
 get(kind="todo", id=42, view="tree")  # ASCII subtree under td42
 ```
+
+"Everything under this todo" is two different reads:
+`get(kind='todo', id=N, view='tree')` answers **the subtree** — every
+level, status icons, one call; `search(kind='todo', view='doable',
+args={'under': N})` answers **what can I claim under it** — the open
+leaf set only. An `under=` on a search view that is not `doable`
+refuses with a next: list pointing at both (gr676953).
 
 Tree icons: `○` doable · `▶` doing · `◀ claimed-by:<x>` claimed ·
 `⏸` waiting / paused / ask-user · `✓` done · `✗` won't-do ·

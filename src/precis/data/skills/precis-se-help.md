@@ -70,12 +70,22 @@ process DRC, STL/3MF export, `view='fab'` —
 pass `title=…` alone on a create: the slug is derived from it — a
 collision refuses rather than replacing; pass `id=` deliberately). Its
 only top-level keys are `description`, `ops`, `scenario` and `prefunits` (anything else
-is rejected). An empty op list is refused while the design has blocks —
-ops go in `text=` or `ops=`; to start over, `delete` the design first. `delete` also retires bound
+is rejected). An empty put (no `text=`, or an empty op list) is refused
+while the design has blocks. `put` has no `ops=` argument: its ops go in
+`text=` as JSON (`ops=` belongs to `edit`). To start over, `delete` the
+design first. `delete` also retires bound
 `structure` refs except ones another live design still binds ("stay
 live") or promoted building blocks. Incremental changes go through
 `edit(kind='se', id=…, ops=[…])`. Op batches are **atomic**: one bad op
 rolls the whole batch back.
+
+A full-replace put has no automatic undo, so export the old ops first:
+page `get(kind='se', id=…, view='ops', args={'page': 1, 'page_size': 5})`
+in slices (larger pages fold), advancing `page`, and save the pages
+outside any job temp directory. Verify the saved op count, duplicates and
+block count against the dry run before applying the put. After an
+accidental wipe see Design history: `view='revisions'`, then
+`restore_revision`.
 
 `scenario` names the **production context**: `prototype` (one off,
 lifetime physics OFF) · `small_batch` (100, indoor five-year service) ·
@@ -389,6 +399,9 @@ UTC time, op names, block count. `edit(kind='se', id=…,
 ops=[{'op':'restore_revision','rev':N}])` puts the design back to
 revision N (a sole op in its call); the restore is itself recorded as a
 new revision — nothing is rewound. An unknown N names the available range.
+After an accidental wipe (an overwriting put), list `view='revisions'`,
+pick the last good rev and send `restore_revision` as the only op in the
+call; other ops alongside it are refused.
 
 **Envelope revision.** A save that replaces a surviving block's envelope
 (including none → set) mints the next envelope revision; a new block or a

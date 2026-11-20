@@ -2,7 +2,7 @@
 
 `scripts/bench run --set quick` writes one file per run here,
 `<YYYYMMDD>Z-<shortsha>-<set>-<caller>.json` (UTC date, short precis git sha,
-caller `triage`, `rowkw` or `ladder`). The files are gitignored; this README is the
+caller `triage`, `rowkw`, `rank-order`, `oracle` or `ladder`). The files are gitignored; this README is the
 committed description of their schema. `scripts/bench report <file> [<file>…]`
 prints the markdown tables, and with several files (one per caller) a side by
 side comparison.
@@ -23,7 +23,8 @@ and deleting a worktree deletes its runs. A run therefore exists only on the
 host and checkout that produced it, until someone removes it. The run's
 `tool_calls` ledger rows (`header.tool_calls.source`) live in the DB on its
 own retention. `scripts/bench index` lists what the current
-`default_results_dir()` holds (`--match` filters), so check it, on the host
+`default_results_dir()` holds (`--match` filters) and prints this policy,
+as does the quest tick's `bench:index` read — so check it, on the host
 that ran the bench, before building a reader for a run. Runs #1–#3
 (schema 1) were not committed anywhere; if `index` does not show them there, their raw logs are gone and only their
 digests survive (gr660413).
@@ -73,7 +74,7 @@ only for headline numbers.
 
 | key | meaning |
 |---|---|
-| `schema` | results schema version (5; 4 = no `header.todo`, 3 = no `header.worlds`/re-ingest arms, 2 = no `header.tool_calls`, 1 = no per-row `call_log`, runs #1–#3) |
+| `schema` | results schema version (6; 5 = no row `gold_rank_*`/`gold_probe_page_size` and no `rank-order`/`oracle` callers, 4 = no `header.todo`, 3 = no `header.worlds`/re-ingest arms, 2 = no `header.tool_calls`, 1 = no per-row `call_log`, runs #1–#3) |
 | `tier` | `scripted` (the model-free caller; LLM tier is a later cut) |
 | `set`, `corpus_sha256` | fixture set and its hash from `bench/corpus/manifest.json` |
 | `tasks_file`, `tasks_sha256`, `tasks` | QASPER task file, its sha256, and counts (`qasper`, `planted`, `abstention`, `skipped`) |
@@ -82,7 +83,7 @@ only for headline numbers.
 | `embedder` | `name`, `model`, `backend`, `dim`, `meaningful` (`false` for the hash/mock embedder), `stored` (embedder -> chunk count in the DB) |
 | `models`, `judge` | `null` on the scripted tier |
 | `token_estimator`, `token_budget` | `chars/4` of the rendered dispatch body; per-task budget |
-| `caller` | `name` (`triage`, `rowkw` or `ladder`), search shape, `read_k`, the extent `ladder`, for `triage` and `rowkw` the `threshold` and `score`, `recall_ks`, stop rule |
+| `caller` | `name` (`triage`, `rowkw`, `rank-order`, `oracle` or `ladder`), search shape, `read_k`, the extent `ladder`, `gold_probe_page_size` (the `gold_rank_100` probe's page size), `upper_bound` (`true` for `oracle`), for `triage` and `rowkw` the `threshold` and `score`, `recall_ks`, stop rule |
 | `arms` | per arm: `switches_off`, `vacuous` + `reason`, `degenerate`, `embedder_note`, `identical_to_all_on_frac`, `known_defect` (a defect of the code under test that bends this arm, with its gripe) |
 | `layer_coverage` | what the DB holds of each layer (see below) |
 | `worlds` | per re-ingest arm (schema 4): `database` (the arm's own throwaway DB), `variant` (`chunker`, `links`, `distractor`), `provision` (what provisioning did, or `already`), `coverage` (that world's own layer coverage — informational; `arms.<arm>.vacuous` is judged on `layer_coverage`, the control corpus the world was cut from) |
@@ -135,7 +136,7 @@ re-chunking unchanged.
 |---|---|
 | `task`, `type`, `source` | task id, gold type (`lookup`, `grounding`, `k-hop`, `stance`, `memory`), `qasper` or `planted` |
 | `arm` | `all-on`, `no-kwd`, `no-summary`, `no-categorizer`, `no-fisheye`, `no-recall`, `lexical-only`, `semantic-only`, `no-cheap-rungs` (`kwd` and `summary` both off; the full factorial is td606577), `chunk-rag`, `whole-paper`, and the re-ingest arms `chunk-sentence-pysbd`, `chunk-fixed-512`, `chunk-section`, `no-links`, `distractor-<N>` (each runs the same callers against its own database; planted rows exist only in the base DB, so a re-ingest arm rows qasper tasks only) |
-| `caller` | `triage`, `rowkw` or `ladder` for the scripted arms; `null` for the two baselines (they have no caller) |
+| `caller` | `triage`, `rowkw`, `rank-order`, `oracle` or `ladder` for the scripted arms; `null` for the two baselines (they have no caller) |
 | `abstention` | unanswerable task: no gold, `found` and `tokens_to_first_gold` are `null`, only `tokens_total`/`calls` are meaningful |
 | `applicable` | `false` where the arm cannot run the task (`whole-paper` on a `memory` task, which has no document) |
 | `found`, `censored`, `stop` | gold rendered within the budget; `censored` = not reached, `stop` is `found`, `budget`, `exhausted` or `n/a` |
@@ -144,6 +145,7 @@ re-chunking unchanged.
 | `verbatim_opens` | `get(extent='verbatim')` calls issued (chunks read whole) |
 | `errors`, `refusals` | failed calls; and calls the server refused because the arm switched that rung/filter off (`BadInput` naming `PRECIS_BENCH_SWITCHES`). `triage` never asks for a removed rung, so its `refusals` is 0 for every arm; `ladder` counts them |
 | `recall_at_{1,3,5,10}` | share of the task's gold items touched by a chunk among the top k search hits; `null` without gold and for `whole-paper` |
+| `gold_rank_page`, `gold_rank_100` | 1-based rank of the first search hit overlapping a gold item — on the caller's own page, and on a `page_size=100` probe with otherwise identical arguments and switches issued once per task and arm through its own unlimited-budget `Session` (a measurement, not caller behaviour: it adds nothing to the row's tokens, calls or `call_log`). `null` when no hit overlaps or the task has no gold; absent on pre-schema-6 files |
 | `transcript_sha256` | hash of the normalised call/output stream (drives the vacuity check); `null` for the baselines |
 | `call_log` | the per-call token log: one entry per rendered call (`n`, `verb`, `what`, `tokens`, `refusal`), in order; `chunk` / `doc` entries for the two baselines; absent on schema-1 files |
 | `wall_s` | wall time; the only non-deterministic field |
@@ -151,14 +153,43 @@ re-chunking unchanged.
 ## Report
 
 `scripts/bench report` prints, per arm over the answerable tasks: `n`, mean
-`recall@5`, the **median tokens to first gold over the tasks that reached it**
-(a censored task carries the budget in the file; averaging it in would make the
-median the budget whenever over half are censored), the `censored` count, mean
-`calls`, `refusals`, and the deltas against `all-on`. A delta between arms with
+`recall@5`, the median tokens to first gold **over the tasks that reached it**
+(a descriptive column: a censored task carries the budget in the file, and
+averaging it in would make the median the budget whenever over half are
+censored), the `censored` count, mean `calls`, `refusals`, and the deltas
+against `all-on`. A delta between arms with
 different `censored` counts compares different task subsets; read the two
-columns together. Tables follow for the QASPER and planted tasks separately,
-then the unanswerable tasks (mean tokens and calls only). A vacuous arm is
-flagged `VACUOUS` and its delta is not a layer effect.
+columns together. Tables follow for the QASPER and planted tasks separately.
+
+The **primary metric** is *found within budget under a cost model*:
+`cost = tokens_to_first_gold + C × calls`, where the calls counted are
+those up to and including the one that rendered the gold (counted from the
+row's `call_log`; a row without one uses its `calls`). The cost is computed
+at report time, so a results file can be re-read under another C without a
+re-run. The headline is `C = 100` (`runner.COST_PER_CALL`), a stated
+assumption standing in for per-call input overhead until the LLM tier
+measures it; a compact sensitivity table reports `C = 0` and `C = 500`
+(`runner.COST_SENSITIVITY`). For each arm against a baseline arm
+(`report --baseline`, default `all-on`) the report prints, paired per
+answerable task: both found within budget, arm only, baseline only,
+neither, the net (arm only minus baseline only), an exact two-sided sign
+test over the discordant pairs, and the count of tasks one arm ran and
+the other did not (listed, never dropped silently). A recall-versus-cost
+table follows: per arm, the share of answerable tasks found with
+`cost ≤ x` for x in 500/1000/2000/4000/8000 and the budget. Every
+headline table is per source group — rows of different sources (or scope
+modes, when a row carries one) are never pooled into one number.
+
+Then the unanswerable tasks (mean tokens and calls only). A vacuous arm is
+flagged `VACUOUS` and its delta is not a layer effect. Runs at schema 6+
+add a 'first gold rank' table per arm and per source: counts of answerable
+tasks whose `gold_rank_100` falls in 1-10 / 11-20 / 21-50 / 51-100 /
+beyond 100, a count whose gold sat on the caller's own page
+(`gold_rank_page`), and each arm's share of answerable tasks whose first
+gold sits at ranks 21-100 — past the default product page of 20 but inside
+the probe. That share is the gate for the parked result-set drill-down
+feature (it returns only at 20%); the report prints the share, not a
+verdict.
 
 ## Raw log
 
@@ -244,6 +275,20 @@ the rows carry no keywords: no signal, search rank order, no cut. This is the
 caller closest to what an agent sees. Under `rowkw`, `no-kwd` and
 `no-cheap-rungs` both remove the row keywords (the `kwd` switch cuts them),
 so they are the same arm; `no-summary` changes nothing.
+
+`rank-order` is `rowkw`'s control: the hits opened in search rank order
+with no scoring and no cut, at most 5 opens, then the same `fisheye` /
+`+recall` follow-up rungs. `rowkw` minus `rank-order` is what the row
+keywords buy.
+
+`oracle` is the page's ceiling: like every caller it stops when the search
+page itself renders the gold (zero gets, found at the search's token
+count); when a hit on the page overlaps the gold and the page did not
+render it, it opens the first such hit `verbatim` (one get) and stops;
+when none does it opens nothing. It reads the gold by design and is
+labelled an upper bound wherever it is reported
+(`header.caller.upper_bound`) — a ceiling for what any picking policy can
+do on that page, never a policy itself.
 
 `no-cheap-rungs` is the honest cost of having neither cheap rung: under `triage`
 there is no cheap read and the hits are opened in search rank order.

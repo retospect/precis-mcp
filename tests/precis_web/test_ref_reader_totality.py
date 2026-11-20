@@ -66,7 +66,6 @@ def test_registered_and_drive_kinds_have_readers(store, tmp_path):
                 conn.execute("SELECT slug, is_numeric FROM kinds").fetchall()
             )
         kinds = set(numeric) | hub.kinds | inventory.kinds | AFFECTED
-        assert hub.kinds <= inventory.kinds
         for kind in sorted(kinds):
             # Empty designs are valid reader fixtures; slug readers must be
             # exercised with an actual stored slug, not only generic fallback.
@@ -104,6 +103,16 @@ def test_registered_and_drive_kinds_have_readers(store, tmp_path):
                 assert pivot.status_code == 200
                 assert f'href="/refs/{kind}/{ref.id}"' not in pivot.text
                 continue
+            if kind == "tag":
+                # No per-ref reader and no Drive row either: the kind's
+                # home is the drive's own ``k=tag`` listing (gr636493),
+                # which renders the tags table, not refs — a ``tag``
+                # kind ref is a totality probe, not a real entity.
+                assert response.status_code == 303
+                assert expected == "/drive?k=tag"
+                assert response.headers["location"] == expected
+                assert client.get(expected).status_code == 200
+                continue
             assert response.status_code in (200, 303), (kind, response.text[:300])
             if expected != f"/refs/{kind}/{ref.id}":
                 assert response.status_code == 303
@@ -123,6 +132,11 @@ def test_registered_and_drive_kinds_have_readers(store, tmp_path):
             pivot = client.get(f"/tags/refs?kind={kind}")
             assert pivot.status_code == 200
             assert f'href="{expected}"' in pivot.text, kind
+        # The Other facet only offers kinds that own refs rows (gr664402),
+        # so the roster check runs once every kind has a stored row.
+        offered = KindInputs()
+        offered.feed(client.get("/drive").text)
+        assert hub.kinds <= offered.kinds
 
 
 def test_orcid_person_and_held_papers_are_read_only(client, runtime, monkeypatch):

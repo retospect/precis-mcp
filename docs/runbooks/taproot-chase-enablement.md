@@ -21,7 +21,7 @@ is the only thing that turns them on. **A `service_config` row scoped to `'*'`
 is the hazard** — it enables the pass on *every* worker host at once, which is
 exactly the multi-instance bug above. Always name a single host:
 
-    precis service prio <host> chase_trigger 1     # e.g. host = melchior
+    precis service prio <host> chase_trigger 1     # e.g. host = the agent host
     precis service prio <host> hub_refine    1
 
 `prio 1..10` = on at that claim weight; `prio 0` / `precis service clear` =

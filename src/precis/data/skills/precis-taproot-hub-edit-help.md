@@ -44,7 +44,11 @@ label only — the originator/corroborator split is **derived** at read
 time (`get(id='fi42', view='evidence')`), same as every other door here.
 `id` must resolve to a live `TAPROOT:claim` hub (`fi<id>`, a pub_id, or a
 bare ref_id); anything else, or `mode='remove'`, falls through to the
-generic finding-link door.
+generic finding-link door. Two more refusals, here and at mint
+(`supporters=`): the role is only `establishes`|`corroborates` —
+`primary` is not a role, omit it (the default is `corroborates`) — and
+evidence attaches to ATOM hubs, so a composite (a hub with `conjunct-of`
+atoms) refuses the edge; attach to the atom the passage supports.
 
 ## Reword a hub in place
 
@@ -70,8 +74,9 @@ content-derived `pub_id` is added — the **old** one is kept as an alias,
 so existing `[<pub_id>]` cites keep resolving. Ref-level evidence edges are
 untouched; chunk-addressed users cause an atomic refusal until retargeting is
 supported. Candidate/reviewed claims edit in place; unsigned approval reopens
-and the response lists consumers flagged for re-review. Signed claims refuse
-(including anchored/published): see `precis-nanopub-help`'s correction boundary.
+and the response lists consumers flagged for re-review. Do not retitle a
+frozen or signed hub — a signed (anchored, published) nanopub freezes the
+wording and the retitle refuses: see `precis-nanopub-help`'s correction boundary.
 Rejects a non-hub finding and `dry_run` (no preview; the
 write is direct). If the new wording's `pub_id` already belongs to a
 *different* live ref, that's a duplicate-hub signal — the call raises
@@ -102,8 +107,9 @@ edit(kind="finding", id="fi42", title="…reworded…", meta={"scope": {...}})
 edit(kind="finding", id="fi42", meta={"scope": {...}}, dry_run=True)   # preview
 ```
 
-`scope` is **replaced**, not merged; values must be strings; only the
-`scope` key is accepted in `meta=`. Same effects as a retitle: the
+`scope` replaces the entire scope and maps strings to strings. Supply
+`title=` to include writer attribution in `meta=` (see
+`precis-finding-help`). Same effects as a retitle: the
 `pub_id` is re-derived and the **old one kept as an alias**, a `pub_id`
 that collides with a *different* live hub raises (duplicate-hub signal —
 see "Merge duplicate hubs"), and a non-hub finding is rejected. Scope lint
@@ -116,14 +122,21 @@ mint + `refines` link, below, not a retitle.
 
 ## Claim type
 
-Every hub carries a sort, `measurement | definition | capability |
-mechanism | landscape`, set by the extractor at mint (or the backfill
-classifier) and shown on `get(kind='finding', view='evidence')` as
-`claim type: <type> (llm|human)`. `edit(kind="finding", meta={"claim_type":
-…})` is **refused**: this door cannot tell a human from an agent, so
-reclassifying is a human act — the type form on `/claim/<head>`, or
-`precis taproot classify --hub fi<N> --set <type> --apply`. A human
-choice is never overwritten by the LLM paths.
+Every hub carries a sort, `measurement | calculation | definition |
+capability | mechanism | landscape`, set by the extractor at mint (or
+the backfill classifier) and shown on `get(kind='finding',
+view='evidence')` as `claim type: <type> (llm|human)`.
+`edit(kind="finding", meta={"claim_type": …})` is **refused**: this
+door cannot tell a human from an agent, so reclassifying is a human
+act — the type form on `/claim/<head>`, or `precis taproot classify
+--hub fi<N> --set <type> --apply`. A human choice is never overwritten
+by the LLM paths.
+
+`calculation` (a result or prediction obtained from a computation —
+DFT, NEGF, MD, a named force field or theoretical model, method and
+model kept in scope) shares measurement policy: per-edge verified,
+widened, disputes-eligible, publishable. Sort by how the result was
+obtained, even when the same quantity could be measured.
 
 `landscape` (a background sentence about a whole class of systems, the
 parent specific claims `refines` from) behaves differently:

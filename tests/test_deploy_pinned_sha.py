@@ -836,7 +836,9 @@ def test_ship_full_flag_forces_the_local_suite_on_a_docs_only_diff() -> None:
     override_at = text.index('if [[ "$FULL" == 1 && "$DOCS_ONLY" == 1 ]]; then')
     pin_at = text.index('if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1')
     assert override_at < pin_at
-    go = (REPO_ROOT / ".claude" / "commands" / "go.md").read_text(encoding="utf-8")
+    # The local .claude/commands/go.md is a bootstrap stub (td657071); the
+    # served skill carries the workflow text.
+    go = (REPO_ROOT / "src/precis/data/skills/go.md").read_text(encoding="utf-8")
     assert "scripts/ship --quick" in go
     assert "scripts/release" in go
 
@@ -983,7 +985,7 @@ def test_skip_hosts_limits_ping_and_rollout(
     fx: Fixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """PRECIS_DEPLOY_SKIP_HOSTS leaves a wedged host out of both the ping and
-    the playbook (Reto 2026-10-09, castor out of memory), loudly."""
+    the playbook (Reto 2026-10-09, cedar out of memory), loudly."""
     fakebin = _make_fake_bin(tmp_path)
     argv_log = tmp_path / "argv.log"
     for tool in ("ansible", "ansible-playbook"):
@@ -996,14 +998,14 @@ def test_skip_hosts_limits_ping_and_rollout(
         )
         wrapper.chmod(0o755)
     fx.set_marker(fx.base)
-    monkeypatch.setenv("PRECIS_DEPLOY_SKIP_HOSTS", "castor,")
+    monkeypatch.setenv("PRECIS_DEPLOY_SKIP_HOSTS", "cedar,")
 
     result = _run_deploy(fx, fakebin, fx.gated, "--pinned")
 
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
-    assert "WARNING: skipping castor" in result.stdout
+    assert "WARNING: skipping cedar" in result.stdout
     calls = argv_log.read_text(encoding="utf-8").splitlines()
-    assert any(c.startswith("ansible ") and "--limit all:!castor" in c for c in calls)
+    assert any(c.startswith("ansible ") and "--limit all:!cedar" in c for c in calls)
     assert any(
-        c.startswith("ansible-playbook ") and "--limit all:!castor" in c for c in calls
+        c.startswith("ansible-playbook ") and "--limit all:!cedar" in c for c in calls
     )

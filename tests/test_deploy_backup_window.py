@@ -596,7 +596,9 @@ class DeployFixture:
             shas,
         )
 
-    def run(self, *args: str, now: str) -> subprocess.CompletedProcess[str]:
+    def run(
+        self, *args: str, now: str, **extra: str
+    ) -> subprocess.CompletedProcess[str]:
         env = _test_env(
             PRECIS_DEPLOY_SKIP_CATPATH_WHEEL="1",
             PRECIS_DEPLOY_SKIP_WHEEL_SMOKE="1",
@@ -607,6 +609,7 @@ class DeployFixture:
             PRECIS_ENV_POINTERS="0",
             PRECIS_TEST_CALLED_DIR=str(self.called),
             DEPLOY_NOW_UTC=now,
+            **extra,
         )
         env["PATH"] = f"{self.fakebin}:{env['PATH']}"
         return subprocess.run(
@@ -750,6 +753,77 @@ def test_deploy_refuses_migration_on_a_live_dump_outside_the_window(
     assert "a backup is running on the prod DB right now" in out
     assert "backup-window guard refused" in out
     assert deploy_fx.ansible_called() == set()
+
+
+def test_a_refusal_before_any_host_exits_with_the_untouched_code(
+    deploy_fx: DeployFixture,
+) -> None:
+    """gr730609: a `die` ahead of the reachability ping exits 75, the code
+    `scripts/round` reads as "no host was touched"."""
+    r = deploy_fx.run(deploy_fx.shas["mig"], now="03:40")
+    assert r.returncode == 75, r.stdout + r.stderr
+    assert deploy_fx.ansible_called() == set()
+
+
+def _failing_playbook(deploy_fx: DeployFixture, rc: int) -> None:
+    """Replace the fake playbook with one that records its call and exits
+    `rc` — a rollout that dies after the ping reached the hosts."""
+    body = (
+        "#!/usr/bin/env bash\n"
+        'touch "$PRECIS_TEST_CALLED_DIR/ansible-playbook"\n'
+        "echo 'fatal: rollout died' >&2\n"
+        f"exit {rc}\n"
+    )
+    play = deploy_fx.fakebin / "ansible-playbook"
+    play.write_text(body, encoding="utf-8")
+    play.chmod(0o755)
+
+
+def test_a_failure_after_the_ping_exits_one(deploy_fx: DeployFixture) -> None:
+    """Past the first host contact no failure may read as untouched: the
+    rollout failing exits 1, not 75."""
+    _failing_playbook(deploy_fx, 2)
+    r = deploy_fx.run(deploy_fx.shas["mig"], now="12:00")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "ansible" in deploy_fx.ansible_called()
+
+
+def test_a_post_ping_command_exiting_75_reaches_the_exit_trap(
+    deploy_fx: DeployFixture,
+) -> None:
+    """The EXIT-trap rule: a command after the reachability ping that fails
+    with the "no host was touched" code (75) must be normalized to 1 by the
+    EXIT trap itself.
+
+    The canary phase-0 scratch-file create (scripts/deploy's
+    `_mig_out="$(mktemp)"`) is such a command: it runs bare under `set -e`,
+    outside any `||`/`if !` guard, so its 75 aborts the shell straight into
+    the trap — `die` and the rollout wrapper never see it. (The previous
+    shape — a playbook stub exiting 75 — never reached the trap:
+    `_run_rollout_playbook` collapses any non-zero to 1 before `die`.)"""
+    # scripts/deploy cds into $PRECIS_CLUSTER_DIR (scripts/deploy:1459) before
+    # the canary phase-0 `[[ -f playbooks/07-precis-migrate.yml ]]` probe, so
+    # the file belongs in the fixture's cluster dir, beside redeploy-precis.yml.
+    playbooks = deploy_fx.cluster / "playbooks"
+    playbooks.mkdir(exist_ok=True)
+    (playbooks / "07-precis-migrate.yml").write_text("---\n", encoding="utf-8")
+    mktemp = deploy_fx.fakebin / "mktemp"
+    mktemp.write_text(
+        '#!/usr/bin/env bash\ntouch "$PRECIS_TEST_CALLED_DIR/mktemp"\nexit 75\n',
+        encoding="utf-8",
+    )
+    mktemp.chmod(0o755)
+    r = deploy_fx.run(
+        deploy_fx.shas["mig"], now="12:00", PRECIS_DEPLOY_CANARY="gateway"
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    # The raw 75 happened (a fake on PATH replaced mktemp; only the phase-0
+    # scratch create calls it before the abort), and the trap fired before
+    # phase 0 ran its playbook: without the trap's normalization this exit
+    # would be 75, and `die` would have printed its marker.
+    assert "mktemp" in deploy_fx.ansible_called()
+    assert "canary deploy: phase 1" not in r.stdout
+    assert "✖" not in r.stdout + r.stderr
 
 
 def test_prune_local_sweeps_incomplete_dump_dirs_and_nas_partials() -> None:

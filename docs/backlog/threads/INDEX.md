@@ -17,7 +17,7 @@ Each programme below serves one or more:
   `draft-authoring` (drafts, export, tex layer).
 - **3d-design** — `pcb` + `se` + `chemistry` (incl. `catalysis-selectivity`) + `multiscale-design-core` + `se-machine-design` + `pcb-platform`.
 - **local-compute** — `local-compute` (owns local model
-  serving: the summariser and the single-spark model, and what they do).
+  serving: the summariser and the single-GPU-node model, and what they do).
 - **personal-integration** — HELD; no programme yet.
 - **operations** — `deploy-fleet-ops` · `security-hardening` ·
   `monitors-that-go-quiet` · `ship-gate-ci` · `serving` (`serving-programme`
@@ -47,13 +47,13 @@ Seams (same files, different work — sequence, never merge):
   easyeda's router item (pcb-missing-constraint-classes §E-1) goes before
   ewod's escape-layer leak and escape-corridor rewrite; ewod sequences
   behind by its own choice.
-- `backlog/pcb-place-route-residuals.md` — ewod owns it (layer count as a
+- gr689738 — ewod owns it (layer count as a
   user call, the one open item).
-- `backlog/pcb-missing-constraint-classes.md` — easyeda owns the router
+- me693086 — easyeda owns the router
   half now, ewod owns the HV vocabulary on its Horizon.
 
 Waits:
-- ewod Horizon 10 (`backlog/ewod-synthesis-protocol.md`) consumes
+- ewod Horizon 10 (me690494) consumes
   se-nucleic-chain's make_steps (shipped 2026-09-30; the chain thread's
   Horizon 2 points back at it).
 - pcb-platform is behind both active pcb threads on the shared
@@ -67,7 +67,7 @@ Threads: `se-3d-viewer.md` · `se-nucleic-chain.md` · `hexfold-toolkit.md` ·
 `structure-workspaces.md`
 
 Seams:
-- `backlog/se-pick-hierarchy.md` — viewer Horizon 1 (the keystone) and
+- me694838 — viewer Horizon 1 (the keystone) and
   chain Horizon 9 are the same surface; the viewer owns the selection
   mechanism and the click-time pick route, the chain thread owns the
   resolver (`precis_se/pick.py`, built) the route calls.
@@ -79,21 +79,21 @@ Seams:
   non-geometric property layer (hydrophobic, charge, field, optical);
   se-3d-viewer owns rendering whatever that model carries. Model vs
   render, not a rank duplication.
-- se-machine-design also owns `backlog/pcb-se-binding.md` and
-  `backlog/pcb-argue-with-design.md` — the mm→m crossing between se and
+- se-machine-design also owns me692932 and
+  me690151 — the mm→m crossing between se and
   pcb — not ewod-pcb or pcb-platform.
-- `backlog/structure-workspaces.md` and `backlog/pcb-workspace-code.md`
+- me693174 and me693071
   (thread `structure-workspaces.md`; pcb-platform Do-next 1 points at it)
   run on the factory thread's `sandbox_run mode:script` lane
-  (`backlog/sandbox-python-script.md` slice 4) and consumes
+  (me692178 slice 4) and consumes
   hexfold-toolkit's `sheetnet` layer as its core API; it owns the import
   boundary and the relax interface, factory owns the container.
 - multiscale-design-core is the substrate se-machine-design's
   model stands on (design-state-core, pattern groups, complementarity);
   se-machine-design consumes it rather than re-deriving it.
-- `src/precis_flow/`, `src/precis_se/flow.py`, `backlog/se-flow-kernel.md`
-  slices 4a–4b and `backlog/se-native-fields.md` — se-machine-design owns
-  the physics (kernels, regime cards, `se-multiphysics.md` slices);
+- `src/precis_flow/`, `src/precis_se/flow.py`, me695207
+  slices 4a–4b and me694928 — se-machine-design owns
+  the physics (kernels, regime cards, `se-multiphysics (me694808)` slices);
   structure-workspaces ranks and builds the script-facing toolkit
   (`precis_geom.flow`/`physics`/`params`/`optimize`/`fields` in the
   wheel, `evaluate`, the `precis-workspace-optimize-help` skill, the
@@ -103,7 +103,7 @@ Seams:
 
 Waits:
 - viewer Horizon 3–4 (reaction forces, mechanical DRC phase 2) feed
-  `backlog/se-feasibility-and-cost.md`, the far end all three serve.
+  me694377, the far end all three serve.
 - nanobuds-paper's seam-topology cross-cite waited on the `EnvKey`
   extent fix, which shipped; its remaining waits
   live in its own thread file.
@@ -115,15 +115,17 @@ Waits:
 Threads: `chemistry.md` (pillar 3d-design; catalysis lives here, Reto
 2026-10-01) · `catalysis-selectivity.md` (active 2026-10-02, Reto "high
 up": fork selectivity, NH₃ network completeness, U/pH window, decisive-step
-NEB, step-annotated diagram) · `nanoreactor.md` (dormant 2026-10-04:
+NEB, step-annotated diagram) · `catpath.md` (active 2026-11-14, Reto,
+gr635804: the engine's validation, the poisoned-pathway re-run and the
+open catpath gripes) · `nanoreactor.md` (dormant 2026-10-04:
 the NO→NH₃ carbon nanoreactor toolchain). Code: `src/precis_pathway`; `../catpath` is the reference
 engine.
 
 Seams:
-- `backlog/pathway-presentation-shared-module.md` — plugin-split owns it
+- me692580 — plugin-split owns it
   (its Do-next 6); chemistry's UI items (Horizon 9) consume it and start
   no second copy.
-- `backlog/slullama-hpc-placement.md` §From precis-dispatch — ranked in
+- me695656 §From precis-dispatch — ranked in
   local-compute; chemistry's DFT relax is the runner's first consumer, and
   its seams extract when the second backend runs.
 - roadmap-quest owns the quest loop that dispatches and consumes
@@ -132,10 +134,17 @@ Seams:
   restart report).
 - catalysis-selectivity edits the ammonia network content and adds link
   fields (`added`/`removed`, typed `kind`); chemistry owns the engine
-  contract and the wheel bump. `backlog/catpath-desorption-link-kind.md`
-  moved to catalysis-selectivity (Do-next 2); `neb-barriers-in-the-catpath-pipeline.md`
-  stays chemistry's, catalysis-selectivity decides where NEB runs.
-- `backlog/kinetics-engine-v2.md` (catalysis-selectivity) owns the
+  contract and the wheel bump. gr695176
+  moved to catalysis-selectivity (Do-next 2); the NEB-barriers idea stays
+  chemistry's — the spec transfer deleted `neb-barriers-in-the-catpath-pipeline.md`
+  without minting a graph node, so re-file it if still wanted;
+  catalysis-selectivity decides where NEB runs.
+- catpath owns the engine backlog: validation B1 and C (td633735), the
+  poisoned-pathway re-run (td559534) and the `project:catpath` gripes.
+  catalysis-selectivity keeps the science (network, objective, ranking)
+  and waits on catpath for a validated engine; hold 25 is lifted by Reto,
+  not by either thread.
+- me568528 (catalysis-selectivity) owns the
   kinetic environment block (T, split input/output partial pressures,
   optional U/σ/cation/pH) and the ΔG/TS provider seam; the
   electrochemical-interface spec plugs a provider into that seam and
@@ -146,8 +155,8 @@ Seams:
   chemistry owns the engine contract and the wheel bump. Its T2
   (spec `me629892`; hexfold-side `me629886`/`me629889`) is built by
   hexfold-toolkit.
-- hexfold-toolkit owns `backlog/global-structure-search-slices.md` and
-  `backlog/structure-kind-demotion.md` (structure kind, se as origin of
+- hexfold-toolkit owns me694826 and
+  gr695047 (structure kind, se as origin of
   atoms), not chemistry.
 
 ## serving — the MCP and the fleet's model serving
@@ -156,16 +165,16 @@ Threads: `session-mcp-shared-server.md` · `serving-programme.md` ·
 `local-compute.md`
 
 Seams:
-- `backlog/session-mcp-http-server.md` — ranked only in the shared-server
+- me691707 — ranked only in the shared-server
   thread; serving-programme cross-references it.
-- `backlog/mcp-concurrency-load-test.md` and the K-parallel harness — the
+- me691729 and the K-parallel harness — the
   serving thread's py-spy answer (its Do-next 1) decides whether the
   shared-server's multiprocess item is topology or workaround.
 - served vs used — serving-programme owns the MCP ceiling, the load-test
   harness and the eval-run-spine; local-compute owns local model serving
-  (vLLM Slice 0 and its spark prerequisites, local-serving-eval, the
+  (vLLM Slice 0 and its GPU-node prerequisites, local-serving-eval, the
   summariser) and what the served capacity does (summarise, insert, mesh,
-  link, categorise). The eval-run-spine's items 4 and 9 wait on the spark
+  link, categorise). The eval-run-spine's items 4 and 9 wait on the GPU node
   prerequisites ranked in local-compute's Do-next 3.
   Embedder capacity (local-compute's, decided 2026-10-02) is fed by
   serving-programme's py-spy/topology answers.
@@ -173,7 +182,7 @@ Seams:
 Waits:
 - serving Horizon 2 (shared-server end state) waits on serving Horizon 1's
   process-count answer.
-- `backlog/curation-gate.md` waits on eval-run-spine's verdict column
+- me695348 waits on eval-run-spine's verdict column
   (serving Do-next 3) and is parked on by knowledge-mesh and roadmap-quest.
 
 ## knowledge — taxonomy, quests, papers
@@ -189,25 +198,25 @@ Seams:
   first or rebase onto it. `utils/eye_render.py::RingFilter` — task-scratch
   Do-next 2 adds a `tags` dimension; graph-memory-consumers owns the ring
   and unfiltered renders must not change.
-- `backlog/measures-substrate.md` — knowledge-mesh Do-next 5; roadmap Horizon 4
+- me693370 — knowledge-mesh Do-next 5; roadmap Horizon 4
   (meta.supply widened to measures) consumes it.
-- `backlog/knowledge-mesh.md` — knowledge-mesh Horizon 3; roadmap Horizon 4 is
+- me693314 — knowledge-mesh Horizon 3; roadmap Horizon 4 is
   its in-scope 2.
-- `backlog/curation-gate.md` — both park on it; owned by serving.
+- me695348 — both park on it; owned by serving.
 - Part refs (shipped 2026-10-02, `precis.handlers.part` docstring) —
   ewod-pcb's datasheet autopull (shipped) gets `datasheet-of` for free:
   setting `part_lcsc` on the pulled datasheet writes the edge too, and
-  `datasheet-facts-mesh.md` (knowledge-mesh Horizon 16) hangs the
+  `datasheet-facts-mesh (me693194)` (knowledge-mesh Horizon 16) hangs the
   extracted facts on the part ref.
 - `fisheye-everywhere` — landed 2026-10-12 (backlog doc deleted
   2026-10-15); the eye ladder on every kind and the `/eye/<handle>`
   focus page are the human graph-browse surface (docs/roadmap.md
   pillar 1).
-- `backlog/file-mirror.md` — knowledge-mesh Do-next 7; the memory half of the
+- me693606 — knowledge-mesh Do-next 7; the memory half of the
   thread (context-memory-hierarchy, session-history-into-precis) is
-  ranked in `knowledge-mesh.md` from 2026-09-30.
+  ranked in `knowledge-mesh (me693314)` from 2026-09-30.
 - memory recall/walk/keep slice 1a (shipped) built the store-level
-  neighbourhood function that `backlog/web-graph-navigation.md` exposes:
+  neighbourhood function that me694223 exposes:
   slice 1 as `GET /graph/<kind>/<id>.json`, slices 2–3 (shipped
   2026-10-14) as the ref-page panel fragment and the radial-SVG focus
   page. One query, one inverse rule, one cap — the MCP memory walk and
@@ -227,12 +236,12 @@ Seams:
 - draft-authoring vs knowledge-mesh — knowledge-mesh ranks draft-linearization
   (the draft as a graph view); `draft-authoring.md` ranks authoring and export
   of the draft itself.
-- `backlog/quest-graph-as-dossier.md` — graph-memory-consumers Horizon 1;
+- me692487 — graph-memory-consumers Horizon 1;
   supersedes the dossier-as-draft designs (quest-dossier-dialectic and
   kin). roadmap-quest Horizon 5 points at it; draft-authoring keeps
   paper-writing-pipeline rungs 7–8; knowledge-mesh owns the mesh it lives in.
-- `graph-memory-consumers.md` Do-next 1 is `backlog/memory-native-authoring.md`
-  (Reto 2026-10-01, top priority, depends on `backlog/file-mirror.md`); its
+- `graph-memory-consumers.md` Do-next 1 is me690866
+  (Reto 2026-10-01, top priority, depends on me693606); its
   search cluster is retrieval as the consumer side of navigation.
 
 Waits:
@@ -255,26 +264,26 @@ operations pillar; plugin-split, factory, agent-surface and
 context-navigation the platform bucket. Code-debt, db-schema and docs-audit items stay unthreaded.
 
 Seams:
-- `context-navigation` ↔ `agent-surface` — `backlog/block-navigation.md`
+- `context-navigation` ↔ `agent-surface` — me694125
   (authoring lint and block sizes stay agent-surface's; lists, sets and the
   row grammar are context-navigation §3–§5) and seen-stubs
-  (`backlog/context-navigation.md` §7, listed in agent-surface Horizon 1).
+  (me690580 §7, listed in agent-surface Horizon 1).
 - `context-navigation` ↔ `graph-memory-consumers` — fisheye and the Mode B
-  loop (`backlog/context-navigation.md` §7–§8); graph-memory-consumers
+  loop (me690580 §7–§8); graph-memory-consumers
   lists them as a seam only.
 - `context-navigation` ↔ `factory` — plan_tick is Mode B's first adopter
-  (`backlog/plan-tick-context-cut.md` is the cut it generalises).
-- `context-navigation` ↔ `ship-gate-ci` — `backlog/compact-handoff.md`
+  (me690455 is the cut it generalises).
+- `context-navigation` ↔ `ship-gate-ci` — me690567
   (hook mechanics) merges into the twin reader once it exists.
 - `ship-gate-ci` ↔ `monitors-that-go-quiet` —
   monitors owns signals that lie, ship-gate-ci owns the gate and reaper that
   produce them.
 - `deploy-fleet-ops` ↔ `session-mcp-shared-server` — both touch
-  `scripts/deploy` and the ensure script (`backlog/mcps-venv-deploy-gaps.md`);
+  `scripts/deploy` and the ensure script (gr692199);
   shared-server owns the MCP's deploy shape, deploy-fleet-ops the script.
   `ship-gate-ci` Do-next 4 and `deploy-fleet-ops` share the live render tree.
 - `security-hardening` ↔ `session-mcp-shared-server` —
-  `backlog/db-role-enforce-pgbouncer.md` and the shared-server's role
+  gr690352 and the shared-server's role
   isolation (Horizon 1) are one boundary.
 - `ship-gate-ci` ↔ `ingest-and-fetch` ↔ `local-compute` — two primitives,
   one resolver (Reto 2026-10-23, shipped 2026-10-23): every outbound rule
@@ -283,12 +292,12 @@ Seams:
   deleted, the model lives in its module docstring, the gate in
   `invariants.md` §Outbound; ingest-and-fetch keeps only the
   fetch-pass confirmation.
-  `local-compute` ranks `backlog/llm-lane-scheduler.md`, the `llm-local`
+  `local-compute` ranks me695298, the `llm-local`
   class — one allocator per box (capacity controller + class lanes;
   absorbed `llm-dispatch-feedback-controller.md`), with
-  `castor-agent-lane.md`'s two lanes as classes in it. Two scheduling
-  levels stay distinct: the job queue (`cluster-scheduling.md`,
-  `job-scheduling-fairness.md`, factory/platform) decides which job runs;
+  `serving-agent-lane (me695333)`'s two lanes as classes in it. Two scheduling
+  levels stay distinct: the job queue (`cluster-scheduling (me695459)`,
+  `job-scheduling-fairness (me691338)`, factory/platform) decides which job runs;
   lanes decide which LLM call gets a slot; fillers are pull generators so
   no job is minted only to wait for a lane (seam recorded 2026-10-23).
 - `scripts/deploy` — the restart-on-installed-file-change work (shipped) and the deploy session's render-tree lock are the same script;
@@ -304,7 +313,7 @@ Waits:
 - plugin-split Horizon 2–4 waited on the restart-on-installed-file-change work (each extraction is a module
   move that re-triggers the stale-worker break); it shipped, so they
   are unblocked.
-- td457903 (the castor restart) was withdrawn 2026-09-30 — the ImportError
+- td457903 (the local-serving node restart) was withdrawn 2026-09-30 — the ImportError
   was a stale session MCP, a stale-code shape, not prod. Nothing here waits
   on Reto.
 
@@ -321,7 +330,7 @@ Seams:
 - `local-compute.md` Parked holds the **embed-drain** half of what used to be
   one cluster. Throughput there, fidelity here; different
   code, neither sequences the other.
-- `backlog/graph-gardener-value.md` slice 5 (the gardener idle filler) spends
+- me693885 slice 5 (the gardener idle filler) spends
   local capacity on this pipeline's output — a corrupt extraction makes that spend worse than
   idle, so this thread's Do-next 2 is upstream of that item's value.
 
@@ -345,7 +354,7 @@ decision from Reto (2026-10-01) and, as of the same day, a rank in local-compute
   one state Reto's local-compute goal is about. Not ranked in
   `monitors-that-go-quiet`: that thread owns signals that lie, and this is a
   signal that does not exist. It has a consumer as of 2026-09-30 —
-  the local idle-capacity queue (now `backlog/graph-gardener-value.md` slice 5)
+  the local idle-capacity queue (now me693885 slice 5)
   needs the same utilisation/queue-depth number — but a consumer is not an
   owner. **Ruled 2026-10-01: the measurement is authorised and belongs to
   local-compute** — measurement only, no alerting,

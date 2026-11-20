@@ -1,0 +1,25 @@
+---
+# macOS: the builder user's own colima VM (colima is per-user), kept alive
+# the way precis_worker_agent keeps deploy's. Included by main.yml for a
+# managed non-deploy user on darwin. colima and the docker CLI are the
+# Mac's own provisioning (brew, system-wide) — only the VM is per user. The
+# socket path matches the deploy branch of the worker unit env.
+
+- name: Keep the builder user's colima VM up (start at boot, re-check every 5 min)
+  ansible.builtin.import_role:
+    name: service_unit
+  vars:
+    service_unit_name: builder-colima
+    service_unit_run_as: "{{ precis_builder_user }}"
+    service_unit_working_dir: "{{ precis_builder_home }}"
+    service_unit_schedule:
+      mode: interval
+      seconds: 300
+    service_unit_env:
+      HOME: "{{ precis_builder_home }}"
+      PATH: /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+    # `colima status` is a cheap no-op while the VM is up; a stale hostagent
+    # after a crash is force-stopped before the start. No redirections:
+    # the plist embeds this string unescaped.
+    service_unit_exec: >-
+      /bin/bash -c 'colima status || { colima stop --force; colima start; }'

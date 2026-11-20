@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --no-project --python >=3.12 python
 """Read-only fleet reporter: one row per agent session on THIS host.
 
-Step 1 of docs/backlog/fleet-coordination-via-precis.md. No DB, no precis
+Step 1 of me690606. No DB, no precis
 writes: it reads tmux, git worktrees, Claude transcripts
 (`~/.claude/projects/<cwd with non-alphanumerics -> '-'>/*.jsonl`), Codex
 rollouts (`$CODEX_HOME/sessions/**/rollout-*.jsonl`) and Kimi Code session
@@ -70,7 +70,7 @@ APPROVAL_PATTERNS = (
     r"allow (this|once|always)|approve (this|once)",
     r"permission (required|request)",
 )
-# Codex's Plan-mode request_user_input modal, as seen on melchior 2026-10-09:
+# Codex's Plan-mode request_user_input modal, as seen on the agent host 2026-10-09:
 # "Question 1/1 (1 unanswered)" … "tab to add notes | enter to submit answer".
 QUESTION_PATTERNS = (
     r"Question \d+/\d+ \(\d+ unanswered\)",

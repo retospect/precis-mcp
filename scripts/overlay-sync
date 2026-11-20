@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
+# scripts/overlay-sync — operate the private deploy overlay's git repo
+# (deploy/inventory, mirrored on the gateway as `deploy-helper`) from any
+# session, including a worktree-isolated one (gr680328).
+#
+# The overlay is a separate git repo that happens to live inside the main
+# checkout's tree. The harness refuses `git -C <main checkout>/deploy/inventory
+# …` from a worktree session (its git must target the worktree), which left
+# sessions cloning the overlay into /tmp and leaving the real copy behind —
+# the fork that caused the 2026-11-14 outage (gr678654). This script is the
+# sanctioned door: it acts ONLY on a directory that is the top of its own
+# git repo (never on the precis-mcp checkout) and prints names, shas and
+# counts — never file contents or a vault value.
+#
+# `sync` is exactly what scripts/deploy and scripts/host-ops/play run first
+# (scripts/lib/overlay-sync.sh).
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: overlay-sync <command> [args]
+
+  status                    relation to the remote + uncommitted files (names only)
+  sync                      the deploy preflight: fetch; fast-forward when behind,
+                            push when ahead; refuse on divergence or uncommitted edits
+  commit -m <msg> [path…]   commit tracked changes (all of them, or only the given
+                            paths — untracked paths named here are added first)
+  push                      push HEAD to the remote branch (fast-forward only)
+  log [N]                   last N commits on each side (default 10), marked
+                            `<` local-only / `>` remote-only
+  diff                      names and status of files that differ from the remote
+
+Env: PRECIS_OVERLAY_DIR (default <main checkout>/deploy/inventory),
+PRECIS_OVERLAY_REMOTE (deploy-helper), PRECIS_OVERLAY_BRANCH (main),
+PRECIS_DEPLOY_ALLOW_OVERLAY_DRIFT (sync: report only, never refuse or mutate).
+Runbook: docs/runbooks/cluster-overlay-sync.md
+EOF
+}
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/overlay-sync.sh
+. "${REPO}/scripts/lib/overlay-sync.sh"
+
+cmd="${1:-}"
+case "$cmd" in
+  --help|-h|help) usage; exit 0 ;;
+  "") usage >&2; exit 2 ;;
+esac
+shift
+
+if [[ -z "${PRECIS_OVERLAY_DIR:-}" ]]; then
+  _common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  PRECIS_OVERLAY_DIR="$(dirname "${_common:-$REPO/.git}")/deploy/inventory"
+fi
+OV="$PRECIS_OVERLAY_DIR"
+REMOTE="${PRECIS_OVERLAY_REMOTE:-deploy-helper}"
+BRANCH="${PRECIS_OVERLAY_BRANCH:-main}"
+
+overlay_sync_is_repo "$OV" || {
+  echo "overlay-sync: $OV is not the top of its own git repo — refusing (this tool never acts on the code checkout; set PRECIS_OVERLAY_DIR, see docs/runbooks/cluster-overlay-sync.md)" >&2
+  exit 2; }
+
+_head() { git -C "$OV" rev-parse --verify -q HEAD 2>/dev/null || echo none; }
+_remote_ref() { git -C "$OV" rev-parse --verify -q "refs/remotes/$REMOTE/$BRANCH" 2>/dev/null || echo none; }
+
+case "$cmd" in
+  status)
+    head="$(_head)"; rref="$(_remote_ref)"
+    echo "overlay  $OV"
+    echo "branch   $(git -C "$OV" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached) @ ${head:0:9}"
+    if git -C "$OV" remote get-url "$REMOTE" >/dev/null 2>&1; then
+      counts="$(overlay_sync_counts "$OV" "$REMOTE" "$BRANCH")"
+      if [[ -n "$counts" ]]; then
+        echo "remote   $REMOTE/$BRANCH @ ${rref:0:9} (last fetch) — ahead ${counts%% *}, behind ${counts##* }"
+      else
+        echo "remote   $REMOTE/$BRANCH never fetched"
+      fi
+    else
+      echo "remote   no '$REMOTE' remote configured"
+    fi
+    dirty="$(overlay_sync_dirty "$OV")"
+    if [[ -n "$dirty" ]]; then
+      echo "uncommitted (would render here and reach nobody else):"
+      printf '%s\n' "$dirty" | sed 's/^/  /'
+    else
+      echo "clean"
+    fi
+    ;;
+  sync)
+    overlay_sync_preflight "$OV" overlay
+    ;;
+  commit)
+    msg=""
+    if [[ "${1:-}" == "-m" ]]; then msg="${2:-}"; shift 2 || true; fi
+    [[ -n "$msg" ]] || { echo "overlay-sync commit: -m <msg> is required" >&2; exit 2; }
+    if [[ $# -gt 0 ]]; then
+      git -C "$OV" add -- "$@"
+      git -C "$OV" commit -q -m "$msg" -- "$@"
+    else
+      git -C "$OV" commit -q -a -m "$msg"
+    fi
+    git -C "$OV" log -1 --format='committed %h %s'
+    echo "share it: scripts/overlay-sync push"
+    ;;
+  push)
+    GIT_TERMINAL_PROMPT=0 git -C "$OV" push "$REMOTE" "HEAD:refs/heads/$BRANCH"
+    ;;
+  log)
+    n="${1:-10}"
+    git -C "$OV" fetch -q "$REMOTE" "$BRANCH" || echo "overlay-sync: fetch failed (above); showing the last fetched state" >&2
+    echo "# < only here (${REMOTE}/${BRANCH} lacks it)   > only on ${REMOTE}/${BRANCH}"
+    git -C "$OV" log --oneline --left-right --max-count="$n" "HEAD...refs/remotes/$REMOTE/$BRANCH" || true
+    echo "# recent on each side:"
+    git -C "$OV" log --oneline --max-count="$n" HEAD | sed 's/^/local  /'
+    git -C "$OV" log --oneline --max-count="$n" "refs/remotes/$REMOTE/$BRANCH" 2>/dev/null | sed "s/^/remote /" || true
+    ;;
+  diff)
+    git -C "$OV" diff --name-status "refs/remotes/$REMOTE/$BRANCH" HEAD
+    dirty="$(overlay_sync_dirty "$OV")"
+    [[ -z "$dirty" ]] || { echo "# uncommitted:"; printf '%s\n' "$dirty"; }
+    ;;
+  *)
+    echo "overlay-sync: unknown command '$cmd' (try --help)" >&2; exit 2 ;;
+esac

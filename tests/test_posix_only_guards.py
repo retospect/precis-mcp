@@ -52,6 +52,9 @@ _EXEMPT: set[str] = {
     # Names "scripts/ship" only in text (deny paths, brief bodies); its
     # subprocess import is a fake _git returning CompletedProcess — no exec.
     "tests/test_plan_dispatch.py",
+    # Names shell scripts only as keys of its hostname allow-lists; it reads
+    # files as text and its only subprocesses are git.
+    "tests/test_deploy_tree_no_secrets.py",
 }
 
 #: Stdlib modules that do not exist on Windows — importing one at module

@@ -26,7 +26,7 @@ runs the mechanic that is *fraud* in statistics: roll a random
 provocation and keep the one that "lights up". In science p-hacking is
 dishonest because the random search *is* the published finding, with no
 independent test. Here the roll is only the **prompt**: the entry it
-returns is a spark to react to (notice the flinch, treat the reaction as
+returns is a prompt to react to (notice the flinch, treat the reaction as
 signal), never a conclusion. Verification stays downstream and mandatory
 — e.g. dream memories start ``tier:dream`` and only earn
 ``tier:synthetic-insight`` once grounded. Same statistical sin, made

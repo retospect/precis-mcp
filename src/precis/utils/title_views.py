@@ -115,6 +115,7 @@ def _math_plain(text: str) -> str:
     s = re.sub(r"\\[a-zA-Z]+\s*\{", "{", s)  # \mathrm{ → {
     s = re.sub(r"\\[a-zA-Z]+", lambda m: m.group(0)[1:], s)  # \alpha → alpha
     s = s.replace(r"\$", "$")
+    s = s.replace(r"\*", "*")  # literal-star escape (gr674905)
     s = re.sub(r"\\.", "", s)
     return re.sub(r"[{}$^_]", "", s)
 

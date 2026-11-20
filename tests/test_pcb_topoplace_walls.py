@@ -229,6 +229,91 @@ def test_copper_zones_clip_a_stub_to_outside_its_pad(monkeypatch) -> None:
     assert max(float(v[0]) for z in zones for v in z.ring) > 22.9
 
 
+# -- Frozen copper unions --------------------------------------------------
+
+
+def test_overlapping_frozen_tracks_mesh_as_one_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr702541: near-collinear overlapping caps made a recovered edge vanish."""
+    from shapely.ops import unary_union
+
+    from precis.pcb import clearance
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.topoplace import realise
+
+    d = _board(_two_pin_net_across([]), n_nets=1)
+    points = [
+        (12.611914590231137, 17.33368012208795),
+        (15.611914590231137, 17.33368012208795),
+        (18.611914590231137, 17.333680132087952),
+    ]
+    rows = [
+        {
+            "ctype": "track",
+            "layer": "F.Cu",
+            "net": "N1",
+            "width_mm": 0.3,
+            "segments": [{"shape": "line", "start": a, "end": b}],
+        }
+        for a, b in itertools.pairwise(points)
+    ]
+    monkeypatch.setattr(pcb_realize, "result_copper_rows", lambda *a, **k: rows)
+    ir = types.SimpleNamespace(stackup=[{"name": "F.Cu"}, {"name": "B.Cu"}], n_layers=2)
+    zones = realise._copper_zones(object(), d, ir)
+    frozen = dataclasses.replace(d, zones=tuple(zones))
+    mesh = build_mesh(frozen, d.pose0, trace_mm=0.15, clearance_mm=0.15)
+    assert len(mesh.tris) > 0
+    assert len(zones) == 1
+    assert zones[0].net == "N1" and zones[0].layers == (0,)
+    expected = []
+    for row in rows:
+        body = clearance.body_of(row)
+        assert body is not None
+        expected.append(
+            clearance.outward_polygon(body, 0.0, realise._COPPER_ZONE_SAG_MM)
+        )
+    assert (
+        Polygon(zones[0].ring).symmetric_difference(unary_union(expected)).area < 1e-9
+    )
+
+
+def test_frozen_copper_union_preserves_ownership_and_disconnected_pieces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Union never transfers copper to another net/layer or fills a gap."""
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.topoplace import realise
+
+    d = _board(_two_pin_net_across([]), n_nets=1)
+    rows = [
+        {
+            "ctype": "track",
+            "layer": layer,
+            "net": net,
+            "width_mm": 0.3,
+            "segments": [{"shape": "line", "start": [x, 15.0], "end": [x + 2.0, 15.0]}],
+        }
+        for net, layer, x in [
+            ("N1", "F.Cu", 12.0),
+            ("N1", "F.Cu", 12.0),  # duplicate
+            ("N1", "F.Cu", 22.0),  # disconnected
+            ("N2", "F.Cu", 12.0),  # foreign net
+            ("N1", "B.Cu", 12.0),  # opposite layer
+        ]
+    ]
+    monkeypatch.setattr(pcb_realize, "result_copper_rows", lambda *a, **k: rows)
+    ir = types.SimpleNamespace(stackup=[{"name": "F.Cu"}, {"name": "B.Cu"}], n_layers=2)
+    zones = realise._copper_zones(object(), d, ir)
+    assert sorted((z.net, z.layers) for z in zones) == [
+        ("N1", (0,)),
+        ("N1", (0,)),
+        ("N1", (1,)),
+        ("N2", (0,)),
+    ]
+    assert all(not Polygon(z.ring).covers(Point(18.0, 15.0)) for z in zones)
+
+
 # -- R2: a land with no pin vertex still has a wall --------------------------
 
 

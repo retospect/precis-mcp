@@ -21,10 +21,11 @@ its own local-first ``llm.op.llm_summarize`` chain since 2026-10-11):
   for GPU pinning), NOT the soft 10-min ``LLM_AFFINITY_GRACE_MIN`` affinity.
   For ``llm_summarize`` it is load-bearing again since the 2026-10-11
   ``llm.op.llm_summarize`` chain put a local rung back ahead of cloud:
-  melchior's ``served_by`` endpoint is loopback-only, so a drain claimed on
+  the agent host's ``served_by`` endpoint is loopback-only, so a drain claimed on
   any other host finds no ``llm:`` slot and falls through to the cloud rung
-  for every call. The materializer defaults ``target_node`` to melchior
-  (``_DEFAULT_SMALL_TARGET_NODE`` in ``materialize.py``).
+  for every call. The materializer pins ``target_node`` to the gateway host
+  (``cluster.gateway_host``; ``_band_target_node`` in ``materialize.py``) and
+  mints no SMALL-band jobs at all while that is unset.
 * ``params.concurrency`` wins when set. Absent it, the default width is
   derived from the local capacity the pass's resolved chain actually
   advertises — summed ``resource_slots`` ``capacity`` over the
@@ -46,7 +47,7 @@ Runs under ``job_inproc`` only (a bounded in-proc drain — minutes, not hours).
 Minted by the ``materialize`` cadence's SMALL bands (``workers/materialize.py``)
 — dark until those are enabled — but an operator can also
 ``put(kind='job', job_type='derived_drain', executor='job_inproc',
-params={'pass':'classify','limit':32,'target_node':'melchior'})`` directly.
+params={'pass':'classify','limit':32,'target_node':'<agent-host>'})`` directly.
 """
 
 from __future__ import annotations
@@ -80,7 +81,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "batch_size": {"type": "integer", "minimum": 1},
         "concurrency": {"type": "integer", "minimum": 1},
         # A claim-gate host pin (job_inproc's node-gate): only the named host
-        # claims the job. The materializer sets this to melchior (the local SMALL
+        # claims the job. The materializer sets this to the agent host (the local SMALL
         # server); absent ⇒ any job_inproc host may claim (manual/test).
         "target_node": {"type": "string"},
     },
@@ -106,7 +107,7 @@ DESCRIPTION = (
 
 #: params.limit default — one job drains this many chunks then finalizes, so the
 #: minter's next tick re-tops the band. Sized to last ≳ one 300s cadence tick at
-#: melchior's SMALL throughput (see the spec's band/limit open question).
+#: the agent host's SMALL throughput (see the spec's band/limit open question).
 _DEFAULT_LIMIT = 500
 
 #: Chunks claimed per wrapped ``run_X_pass`` call inside the drain loop — the
@@ -150,8 +151,10 @@ def _make_summarize_runner() -> _PassRunner:
     """A ``Tier.SMALL`` (local-only) summarize runner + optional escalation
     rung — mirrors the client wiring ``cli/_worker_passes.py`` builds for
     the standing ``llm_summarize`` pass (``PRECIS_SUMMARIZE_ESCALATE_MODEL``):
-    when the small rung's repair turns still trip the gist contract, the
-    chunk escalates to the bigger rung instead of refusing the write."""
+    a first "brief grossly over budget" verdict escalates immediately and a
+    rung measured to keep overrunning is bypassed for its cooldown; other
+    contract trips escalate once the repair turns exhaust, instead of
+    refusing the write (gr576133)."""
     from precis.utils.llm.router import DispatchClient, Tier
     from precis.workers.llm_summarize import SUMMARIZER_NAME, run_llm_summarize_pass
 

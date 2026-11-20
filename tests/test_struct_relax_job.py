@@ -10,6 +10,7 @@ positions. Compute happens once, ever; everything after is a lookup.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import time
@@ -48,13 +49,18 @@ def _poscar_labels(scene) -> list[str]:
     return [a.label for el in order for a in groups[el]]
 
 
-def _fake_ctx(store, params: dict[str, Any]) -> tuple[DispatchContext, list]:
+def _fake_ctx(
+    store, params: dict[str, Any], *, reserved: dict[str, Any] | None = None
+) -> tuple[DispatchContext, list]:
     events: list[tuple[str, Any]] = []
+    meta: dict[str, Any] = {"params": params}
+    if reserved is not None:
+        meta["reserved"] = reserved
     ctx = DispatchContext(
         store=store,
         ref_id=999,
         title="relax",
-        meta={"params": params},
+        meta=meta,
         set_status=lambda s: events.append(("status", s)),
         append_chunk=lambda k, t: events.append((k, t)),
         set_meta=lambda **kw: events.append(("meta", kw)),
@@ -135,7 +141,7 @@ def _stub_ml_runner(relaxed_poscar: str, *, e_tot: float = -3.21):
     """An ML_RUNNER that returns the container contract's result shape."""
     calls: list[dict[str, Any]] = []
 
-    def runner(*, poscar, fidelity, model, steps, cell, timeout, fmax):
+    def runner(*, poscar, fidelity, model, steps, cell, timeout, fmax, device=None):
         calls.append(
             {
                 "poscar": poscar,
@@ -145,6 +151,7 @@ def _stub_ml_runner(relaxed_poscar: str, *, e_tot: float = -3.21):
                 "cell": cell,
                 "timeout": timeout,
                 "fmax": fmax,
+                "device": device,
             }
         )
         return {
@@ -535,6 +542,151 @@ def test_build_run_argv_docker_vs_podman():
     assert "--gpus" not in cpu and "--device" not in cpu
 
 
+def test_build_run_argv_binds_the_admitted_card():
+    """td655172: a claim bound to card N fences the container to that one
+    card — the admitted-card half of per-card headroom enforcement."""
+    bound = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o", gpu_card=1)
+    assert "--gpus" in bound
+    assert "device=1" in bound
+    assert "all" not in bound
+    podman = struct_relax.build_run_argv(
+        ref_id=7, in_dir="/i", out_dir="/o", container_cmd="podman", gpu_card=0
+    )
+    assert "--device" in podman and "nvidia.com/gpu=0" in podman
+    assert "nvidia.com/gpu=all" not in podman
+
+
+def test_dispatch_binds_the_container_to_the_admitted_card(
+    structure, tmp_path, monkeypatch
+):
+    """``meta.reserved.gpu_card`` from the claim reaches the container
+    argv: a bound claim runs on the admitted card, not ``all``."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure)
+    monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+    captured: list[list[str]] = []
+
+    def runner(argv, *, node, in_dir, out_dir, timeout=None):
+        captured.append(list(argv))
+        return _stub_runner(_relaxed_poscar(structure, "pd_pair", 0.24))(
+            argv, node=node, in_dir=in_dir, out_dir=out_dir, timeout=timeout
+        )
+
+    monkeypatch.setattr(struct_relax, "RUNNER", runner)
+    _no_stale_container(monkeypatch)
+    ctx, events = _fake_ctx(
+        structure.store, params, reserved={"host": "dft-test-node", "gpu_card": 1}
+    )
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    assert ("status", "succeeded") in events
+    assert len(captured) == 1
+    assert "device=1" in captured[0]
+    assert "all" not in captured[0]
+
+
+def test_dispatch_inproc_binds_the_admitted_device(structure, tmp_path, monkeypatch):
+    """td655172 review, take two: the card binding rides the run itself —
+    ``ML_RUNNER`` gets the admitted card as an explicit ``cuda:<i>``
+    device, not a ``CUDA_VISIBLE_DEVICES`` pin that an initialized CUDA
+    context or a cached calculator would ignore. Two back-to-back
+    dispatches on different cards each see THEIR device — the
+    re-dispatch regression the env pin shipped."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure, fidelity="ml")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    seen: list[str | None] = []
+
+    def runner(*, device=None, **kw):
+        seen.append(device)
+        return _stub_ml_runner(_relaxed_poscar(structure, "pd_pair", 0.24))(
+            device=device, **kw
+        )
+
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", runner)
+    for card in (1, 0):
+        ctx, events = _fake_ctx(
+            structure.store,
+            params,
+            reserved={"host": "dft-test-node", "gpu_card": card},
+        )
+        struct_relax._dispatch(ctx, struct_relax.SPEC)
+        assert ("status", "succeeded") in events
+
+    assert seen == ["cuda:1", "cuda:0"]
+    # The env pin is gone for good: no write, nothing to restore.
+    assert os.environ.get("CUDA_VISIBLE_DEVICES") is None
+
+
+def test_dispatch_inproc_unbound_leaves_the_device_default(
+    structure, tmp_path, monkeypatch
+):
+    """No ``gpu_card`` stamp (scalar-admitted or token-only claim) →
+    ``device=None`` — the backend's own default, the pre-binding
+    behaviour."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure, fidelity="ml")
+    seen: list[Any] = []
+
+    def runner(*, device=None, **kw):
+        seen.append(device)
+        return _stub_ml_runner(_relaxed_poscar(structure, "pd_pair", 0.24))(
+            device=device, **kw
+        )
+
+    monkeypatch.setattr(struct_relax, "ML_RUNNER", runner)
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    assert ("status", "succeeded") in events
+    assert seen == [None]
+
+
+def test_ml_calculator_cache_keys_on_the_admitted_device(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``_ml_calculator`` must not re-serve a calculator built for another
+    card: the device is part of the build kwargs AND the cache key, so a
+    second card-bound claim constructs its own (td655172 review, take
+    two — the env pin left ``(family, dispersion)``-keyed calculators
+    parked on the first card)."""
+    import importlib
+    import sys
+    import types
+
+    relax_mod = importlib.import_module("precis.structure.relax")
+
+    built: list[dict[str, Any]] = []
+    fake_calcs = types.ModuleType("mace.calculators")
+
+    def mace_mp(**kw):
+        built.append(kw)
+        return object()
+
+    fake_pkg = types.ModuleType("mace")
+    monkeypatch.setattr(fake_calcs, "mace_mp", mace_mp, raising=False)
+    monkeypatch.setattr(fake_pkg, "calculators", fake_calcs, raising=False)
+    monkeypatch.setitem(sys.modules, "mace", fake_pkg)
+    monkeypatch.setitem(sys.modules, "mace.calculators", fake_calcs)
+    relax_mod._cached_ml_calculator.cache_clear()
+    try:
+        on_zero = relax_mod._ml_calculator("mace_mp", device="cuda:0")
+        on_one = relax_mod._ml_calculator("mace_mp", device="cuda:1")
+        on_zero_again = relax_mod._ml_calculator("mace_mp", device="cuda:0")
+        unbound = relax_mod._ml_calculator("mace_mp")
+    finally:
+        relax_mod._cached_ml_calculator.cache_clear()
+
+    assert on_zero is on_zero_again
+    assert on_zero is not on_one
+    assert unbound is not on_zero and unbound is not on_one
+    assert built == [
+        {"default_dtype": "float64", "dispersion": False, "device": "cuda:0"},
+        {"default_dtype": "float64", "dispersion": False, "device": "cuda:1"},
+        {"default_dtype": "float64", "dispersion": False},
+    ]
+
+
 def test_dispatch_populates_the_run_cube(structure, tmp_path, monkeypatch):
     structure.put(id="pd_pair", text=_PD)
     params = _build_params(structure)
@@ -921,19 +1073,19 @@ def test_reset_gpu_local_vs_remote(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
 
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    assert struct_relax.reset_gpu(node="spark") is True
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    assert struct_relax.reset_gpu(node="spruce") is True
     assert calls[-1] == ["nvidia-smi", "--gpu-reset"]
 
-    monkeypatch.setenv("PRECIS_NODE", "caspar")
-    assert struct_relax.reset_gpu(node="spark") is True
-    assert calls[-1] == ["ssh", "spark", "nvidia-smi --gpu-reset"]
+    monkeypatch.setenv("PRECIS_NODE", "birch")
+    assert struct_relax.reset_gpu(node="spruce") is True
+    assert calls[-1] == ["ssh", "spruce", "nvidia-smi --gpu-reset"]
 
     def raising_run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
         raise OSError("nvidia-smi not found")
 
     monkeypatch.setattr(struct_relax.subprocess, "run", raising_run)
-    assert struct_relax.reset_gpu(node="spark") is False
+    assert struct_relax.reset_gpu(node="spruce") is False
 
 
 def test_no_dft_node_helpers_noop(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1006,7 +1158,7 @@ def test_kill_container_local_runs_docker_rm(monkeypatch: pytest.MonkeyPatch) ->
     ``docker rm -f precis-job-<ref_id>`` directly (no ssh hop), then verifies
     the container is actually gone (gripe 310809) via an anchored
     ``docker ps -a`` before reporting success."""
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     calls: list[list[str]] = []
 
     def fake_run(argv, **kw):
@@ -1014,9 +1166,9 @@ def test_kill_container_local_runs_docker_rm(monkeypatch: pytest.MonkeyPatch) ->
         return subprocess.CompletedProcess(argv, 0, "", "")  # empty ps ⇒ gone
 
     monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
-    monkeypatch.setattr(struct_relax, "_NODE", "spark")
+    monkeypatch.setattr(struct_relax, "_NODE", "spruce")
 
-    ok = struct_relax.kill_container(42, node="spark")
+    ok = struct_relax.kill_container(42, node="spruce")
 
     assert ok is True
     assert calls == [
@@ -1039,7 +1191,7 @@ def test_kill_container_remote_hops_via_ssh(monkeypatch: pytest.MonkeyPatch) -> 
     the sweeper's host. Each remote command is a single shell-quoted argv
     element (not exploded into separate ssh argv items) so the remote
     shell's IFS re-split can't break a token apart."""
-    monkeypatch.setenv("PRECIS_NODE", "caspar")
+    monkeypatch.setenv("PRECIS_NODE", "birch")
     calls: list[list[str]] = []
 
     def fake_run(argv, **kw):
@@ -1048,14 +1200,14 @@ def test_kill_container_remote_hops_via_ssh(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
 
-    ok = struct_relax.kill_container(42, node="spark")
+    ok = struct_relax.kill_container(42, node="spruce")
 
     assert ok is True
     assert calls == [
-        ["ssh", "spark", "docker rm -f precis-job-42"],
+        ["ssh", "spruce", "docker rm -f precis-job-42"],
         [
             "ssh",
-            "spark",
+            "spruce",
             "docker ps -a --filter 'name=^/precis-job-42$' --format '{{.Names}}'",
         ],
     ]
@@ -1072,7 +1224,7 @@ def test_kill_container_never_raises_on_subprocess_failure(
 
     monkeypatch.setattr(struct_relax.subprocess, "run", raising_run)
 
-    assert struct_relax.kill_container(42, node="spark") is False
+    assert struct_relax.kill_container(42, node="spruce") is False
 
 
 def test_kill_container_false_on_nonzero_rc_without_exception(
@@ -1089,7 +1241,7 @@ def test_kill_container_false_on_nonzero_rc_without_exception(
 
     monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
 
-    assert struct_relax.kill_container(42, node="spark") is False
+    assert struct_relax.kill_container(42, node="spruce") is False
 
 
 def test_kill_container_false_when_still_listed_after_rm_rc0(
@@ -1107,7 +1259,7 @@ def test_kill_container_false_when_still_listed_after_rm_rc0(
 
     monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
 
-    assert struct_relax.kill_container(42, node="spark") is False
+    assert struct_relax.kill_container(42, node="spruce") is False
 
 
 def test_parse_docker_created_handles_docker_format() -> None:
@@ -1122,8 +1274,8 @@ def test_reap_stale_containers_kills_old_not_fresh(
 ) -> None:
     """The watchdog force-removes a ``precis-job-*`` container past the age
     threshold and leaves a fresh one alone — never touches anything else."""
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    monkeypatch.setattr(struct_relax, "_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    monkeypatch.setattr(struct_relax, "_NODE", "spruce")
 
     from datetime import UTC, datetime, timedelta
 
@@ -1172,9 +1324,9 @@ def test_remote_argv_quotes_a_token_containing_a_tab() -> None:
     hop. ``_remote_argv`` must shell-quote so the round trip through the
     remote shell reconstructs the exact original tokens."""
     argv = ["docker", "ps", "--format", "{{.Names}}\t{{.CreatedAt}}"]
-    remote = struct_relax._remote_argv("spark", argv)
+    remote = struct_relax._remote_argv("spruce", argv)
 
-    assert remote[:2] == ["ssh", "spark"]
+    assert remote[:2] == ["ssh", "spruce"]
     assert len(remote) == 3  # the whole remote command is ONE argv element
     # Simulate the remote shell's word-split — it must reconstruct exactly
     # the original tokens, tab and all.
@@ -1187,7 +1339,7 @@ def test_reap_stale_containers_over_ssh_kills_old_container(
     """The stale-container watchdog also works over the remote (ssh) branch
     — listing and killing both survive the remote shell's word-split now
     that the command is shell-quoted (gripe 50905 follow-up)."""
-    monkeypatch.setenv("PRECIS_NODE", "caspar")  # this worker is NOT spark
+    monkeypatch.setenv("PRECIS_NODE", "birch")  # this worker is NOT spruce
 
     from datetime import UTC, datetime, timedelta
 
@@ -1199,7 +1351,7 @@ def test_reap_stale_containers_over_ssh_kills_old_container(
 
     def fake_run(argv, **kw):
         calls.append(argv)
-        assert argv[0] == "ssh" and argv[1] == "spark"
+        assert argv[0] == "ssh" and argv[1] == "spruce"
         assert len(argv) == 3  # one shell-quoted remote command string
         remote_argv = shlex.split(argv[2])
         if remote_argv[1] == "ps" and "CreatedAt" in remote_argv[-1]:
@@ -1208,7 +1360,7 @@ def test_reap_stale_containers_over_ssh_kills_old_container(
 
     monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
 
-    reaped = struct_relax.reap_stale_containers(max_age_hours=6.0, node="spark")
+    reaped = struct_relax.reap_stale_containers(max_age_hours=6.0, node="spruce")
 
     assert reaped == 1
     assert len(calls) == 3  # listing ps, rm, verify ps (defect A)
@@ -1234,7 +1386,7 @@ def test_reap_stale_containers_never_raises_on_listing_failure(
 
     monkeypatch.setattr(struct_relax.subprocess, "run", raising_run)
 
-    assert struct_relax.reap_stale_containers(max_age_hours=6.0, node="spark") == 0
+    assert struct_relax.reap_stale_containers(max_age_hours=6.0, node="spruce") == 0
 
 
 def test_reap_stale_containers_rc_gated_not_just_no_exception(
@@ -1242,8 +1394,8 @@ def test_reap_stale_containers_rc_gated_not_just_no_exception(
 ) -> None:
     """DEFECT A regression pin, watchdog side: an ``rm -f`` that exits
     nonzero (no exception) must not be counted as reaped. Gripe 310809."""
-    monkeypatch.setenv("PRECIS_NODE", "spark")
-    monkeypatch.setattr(struct_relax, "_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    monkeypatch.setattr(struct_relax, "_NODE", "spruce")
 
     from datetime import UTC, datetime, timedelta
 
@@ -1360,7 +1512,7 @@ class TestFidelityRouting:
     ):
         structure.put(id="pd_pair", text=_PD)
         params = _build_params(structure, fidelity="gpaw")
-        params["target_node"] = "spark"
+        params["target_node"] = "spruce"
         monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
         _no_stale_container(monkeypatch)
 
@@ -1386,7 +1538,7 @@ class TestFidelityRouting:
         structure.put(id="pd_pair", text=_PD)
         params = _build_params(structure, fidelity="gpaw")
         params["steps"] = 37
-        params["target_node"] = "spark"
+        params["target_node"] = "spruce"
         monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
         monkeypatch.setattr(
             struct_relax,
@@ -1768,7 +1920,7 @@ class TestFmax:
         structure.put(id="pd_pair", text=_PD)
         params = _build_params(structure, fidelity="gpaw")
         params["fmax"] = 0.01
-        params["target_node"] = "spark"
+        params["target_node"] = "spruce"
         monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
         monkeypatch.setattr(
             struct_relax,

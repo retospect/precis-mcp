@@ -223,6 +223,34 @@ def test_generic_count_extras_exclude_ref_ids(
     assert body.startswith("# 1 pres entry"), body
 
 
+def test_generic_count_tolerates_injected_page_one(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``page=1`` is the MCP ``search`` verb's unconditional injected
+    default (tools/core.py's payload) — treating it as a paging ask
+    refused every ``view='count'`` on a block kind over the wire
+    (gr663484). It must read as absent; only ``page`` past the first
+    is a real refusal."""
+    _pres(store, 2)
+    body = runtime_with_store.dispatch(
+        "search", {"kind": "pres", "view": "count", "page": 1}
+    )
+    assert body.startswith("# 2 pres entries"), body
+
+
+def test_generic_count_still_refuses_past_first_page(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``page>1`` names a page the ref count can't serve — still a
+    loud refusal, same as before."""
+    _pres(store, 3)
+    body = runtime_with_store.dispatch(
+        "search", {"kind": "pres", "view": "count", "page": 2}
+    )
+    assert "[error:BadInput]" in body
+    assert "page= is not supported" in body
+
+
 def test_generic_count_head_parses_like_native(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:

@@ -23,7 +23,7 @@ import pytest
 from precis.plans.lanes import Lane
 from precis.plans.templates import PENDING_SHA
 from precis.store import Store
-from precis.store.types import ChunkInsert, Tag
+from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers import factory_rescue as fr
 from precis.workers._mint import mint_background_job
 from precis.workers.executors._common import claim_executor_jobs
@@ -363,6 +363,30 @@ def test_queued_job_on_a_stalled_queue_is_rescued(store: Store) -> None:
 
     assert res.rescued == [(task, "stalled", "queued")]
     assert _rescue_tags(store, task) == ["rescue:stalled"]
+
+
+def test_queued_overlap_held_build_on_a_stalled_queue_waits(store: Store) -> None:
+    """gr702610: the mint queues a file-overlap-held build — its job
+    never claims while the holder builds, so its queue can sit still
+    past the deadline. The hold, not a stall, owns the silence."""
+    root = _root(store)
+    holder = _node(store, root, title="holder build")
+    _body(store, holder, "Edit src/precis/a.py")
+    _job(
+        store,
+        holder,
+        status="running",
+        meta_extra={"started_at": (NOW - timedelta(minutes=15)).isoformat()},
+    )
+    task = _node(store, root, title="held build")
+    _body(store, task, "Edit src/precis/a.py")
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any("file-overlap hold" in note for note in res.notes)
 
 
 def test_queued_job_other_type_drain_does_not_hold(store: Store) -> None:
@@ -895,6 +919,24 @@ def test_post_land_write_fill_heals_the_gate(store: Store) -> None:
     assert comment == f"sha: a1b2c3d — landed by td{build} (stall-pass fill)"
 
 
+def test_post_land_write_fill_skips_a_second_repo_sha(store: Store) -> None:
+    """td659522 step 2: a build landed in another repo (``meta.landed_repo``)
+    left a sha the precis ``sha-in-prod`` gate can never see; the pass must
+    not fill the gate with it, and it falls through to the rescue."""
+    root = _root(store)
+    build = _node(store, root, title="build", status="done")
+    _comment(store, build, "landed: a1b2c3d — the fix")
+    store.stamp_ref_meta(build, {"landed_repo": "catpath"})
+    gate = _gate(store, root, PENDING_SHA, blocked_by=build)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+
+    assert res.rescued == [(gate, "post-land-write", "idle")]
+    ref = store.get_ref(kind="todo", id=gate)
+    assert ref is not None
+    assert ref.meta["gate"]["args"]["sha"] == PENDING_SHA
+
+
 def test_post_land_write_nothing_new_still_rescues(store: Store) -> None:
     """A no-diff land's ``landed: nothing`` note carries no sha — the gate
     stays pending and the pass rescues the GATE, class
@@ -1212,6 +1254,346 @@ def test_silent_node_past_the_deadline_since_unblock_is_rescued(
     (comment,) = _comments(store, task)
     assert "newest signal blocked-by predecessor done" in comment
     assert "44 min ago" in comment or "45 min ago" in comment
+
+
+# ── dispatcher holds are waits, not stalls (gr681342) ─────────────
+
+
+def _free_failed_jobs(store: Store, task: int, runs: int) -> list[int]:
+    """``runs`` consecutive identical ``attempt_free`` failures — the
+    dispatcher's free-backoff input (``plan_dispatch._free_run``)."""
+    return [
+        _job(
+            store,
+            task,
+            status="failed",
+            meta_extra={"attempt_free": "index lock held"},
+        )
+        for _ in range(runs)
+    ]
+
+
+def test_free_backoff_wait_is_parked_not_stalled(store: Store) -> None:
+    """Seven identical free failures back the re-mint off the full 30 min
+    from the newest mint. 25 min in, the node is only waiting on the
+    dispatcher: 25 min of silence is past the 20 min idle deadline, yet no
+    ask is filed."""
+    root = _root(store)
+    task = _node(store, root)
+    _free_failed_jobs(store, task, 7)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == []
+    assert res.held == 1
+    assert _rescue_tags(store, task) == []
+    assert any("held by the dispatcher until" in note for note in res.notes)
+    assert any("free-backoff" in note for note in res.notes)
+
+
+def test_free_backoff_past_ready_with_no_dispatch_is_stalled(store: Store) -> None:
+    """The same node 6 min past its ready time (30 min + grace) with
+    nothing minted is a real stall — the tick runs about once a minute."""
+    root = _root(store)
+    task = _node(store, root)
+    _free_failed_jobs(store, task, 7)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=36))
+
+    assert res.rescued == [(task, "stalled", "idle")]
+    assert _rescue_tags(store, task) == ["rescue:stalled"]
+
+
+def test_free_backoff_just_past_ready_is_still_waiting(store: Store) -> None:
+    """The idle clock restarts at the hold's end: 2 min past ready is the
+    dispatcher's next tick, not a stall."""
+    root = _root(store)
+    task = _node(store, root)
+    _free_failed_jobs(store, task, 7)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=32))
+
+    assert res.rescued == []
+    assert any("dispatch due since" in note for note in res.notes)
+
+
+def test_free_backoff_ready_formula_is_the_dispatchers() -> None:
+    """The watchdog and the dispatch step share one formula."""
+    from precis.workers.job_types import plan_dispatch as pd
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    assert pd.free_backoff_ready_at(base, pd.FREE_RUN_GRACE - 1) is None
+    assert pd.free_backoff_ready_at(base, pd.FREE_RUN_GRACE) == base + timedelta(
+        minutes=2
+    )
+    assert pd.free_backoff_ready_at(base, 20) == base + pd.FREE_BACKOFF_MAX
+
+
+def test_latched_retry_after_park_is_a_wait(store: Store) -> None:
+    """A ``child-failed:``-latched node whose named jobs all carry a
+    future ``retry_after`` is the sweeper's transient park — the one
+    place the stamp binds — so the watchdog reads a wait, and the note
+    names the parked job."""
+    root = _root(store)
+    task = _node(store, root)
+    job = _job(
+        store,
+        task,
+        status="failed",
+        meta_extra={"retry_after": (NOW + timedelta(minutes=40)).isoformat()},
+    )
+    store.add_tag(task, Tag.open(f"child-failed:{job}"), set_by="system")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == []
+    assert res.held == 1
+    assert any(f"retry_after on jo{job}" in note for note in res.notes)
+
+
+def test_bare_retry_after_is_no_hold(store: Store) -> None:
+    """review td688453: the dispatch tick never reads
+    ``meta.retry_after`` — it re-mints an open node on its own
+    schedule — so a transient stamp with no ``child-failed:`` latch
+    parks nothing, and a node silent past the idle deadline still
+    reads stalled."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(
+        store,
+        task,
+        status="failed",
+        meta_extra={"retry_after": (NOW + timedelta(minutes=40)).isoformat()},
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == [(task, "stalled", "idle")]
+    assert _rescue_tags(store, task) == ["rescue:stalled"]
+
+
+def test_retry_after_park_needs_every_latched_job_stamped(
+    store: Store,
+) -> None:
+    """The sweeper's short-circuit applies only when EVERY job the live
+    ``child-failed:`` tags name carries ``retry_after`` — one
+    un-stamped failure in the set means the exponential cool-down owns
+    the leaf, not the stamp."""
+    root = _root(store)
+    task = _node(store, root)
+    stamped = _job(
+        store,
+        task,
+        status="failed",
+        meta_extra={"retry_after": (NOW + timedelta(minutes=40)).isoformat()},
+    )
+    plain = _job(store, task, status="failed")
+    for job in (stamped, plain):
+        store.add_tag(task, Tag.open(f"child-failed:{job}"), set_by="system")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == [(task, "stalled", "idle")]
+
+
+def test_latched_retry_after_past_wake_is_stalled(store: Store) -> None:
+    """A latched transient park past its wake plus the grace is a real
+    stall — the sweeper should have re-armed it by now."""
+    root = _root(store)
+    task = _node(store, root)
+    job = _job(
+        store,
+        task,
+        status="failed",
+        meta_extra={"retry_after": (NOW + timedelta(minutes=10)).isoformat()},
+    )
+    store.add_tag(task, Tag.open(f"child-failed:{job}"), set_by="system")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == [(task, "stalled", "idle")]
+
+
+def test_hold_no_dispatch_node_is_a_wait(store: Store) -> None:
+    """review td688453: ``hold:no-dispatch`` rides the shared exclusion
+    registry — a tagged node is never minted, so its silence is the
+    coordinator's hold, not a stall. The note names the tag."""
+    root = _root(store)
+    task = _node(store, root, tags=("hold:no-dispatch",))
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == []
+    assert res.held == 1
+    assert _rescue_tags(store, task) == []
+    assert any("hold:no-dispatch" in note for note in res.notes)
+
+
+def test_hold_no_dispatch_on_an_ancestor_is_a_wait(store: Store) -> None:
+    """The hold's reach is the whole subtree — ``_excluded`` walks
+    ancestors, so a tagged plan root parks every descendant."""
+    root = _root(store, tags=("hold:no-dispatch",))
+    task = _node(store, root)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+    assert any(f"hold:no-dispatch on td{root}" in note for note in res.notes)
+
+
+def _body(store: Store, ref_id: int, text: str) -> None:
+    store.chunks.insert_chunks(
+        ref_id,
+        [ChunkInsert(ord=0, text=text, meta={"chunk_kind": TODO_BODY_KIND})],
+    )
+
+
+def test_file_overlap_hold_is_a_wait(store: Store) -> None:
+    """review td688453: an idle build whose brief names a file a
+    started, unlanded build touches waits on that one's land — the
+    td603849 sequence, not a stall."""
+    root = _root(store)
+    building = _node(store, root, title="first build")
+    _job(store, building, status="running")
+    store.stamp_ref_meta(
+        building, {"branch_files": ["src/precis/workers/plan_dispatch.py"]}
+    )
+    root2 = _root(store)
+    waiting = _node(store, root2, title="second build")
+    _body(store, waiting, "Fix src/precis/workers/plan_dispatch.py too")
+    _job(store, waiting, status="failed")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, waiting) == []
+    assert any(
+        f"file-overlap hold — waits on td{building} (building)" in note
+        for note in res.notes
+    )
+
+
+def _claim_lease(store: Store, ref_id: int, holder: str, ttl: timedelta) -> None:
+    """A ``claimed-by:<holder>`` open tag carrying a live lease —
+    ``ref_tags.expires_at`` ``ttl`` out, the shape
+    ``guards.stamp_claim_lease`` writes."""
+    store.add_tag(ref_id, Tag.open(holder), set_by="system")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags rt SET expires_at = %s FROM tags t "
+            "WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s "
+            "AND t.namespace = 'OPEN' AND t.value = %s",
+            (NOW + ttl, ref_id, holder),
+        )
+        conn.commit()
+
+
+def test_queued_job_gated_by_a_live_claim_lease_names_the_claim(
+    store: Store,
+) -> None:
+    """``parent_not_paused``'s lease arm: a queued job under a node with
+    a live ``claimed-by:`` lease is the claimer's wait — the note names
+    the claim, like a ``child-failed:`` gate."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+    _claim_lease(store, task, "claimed-by:agent-x", timedelta(hours=4))
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert res.held == 1
+    assert _rescue_tags(store, task) == []
+    assert any("gated by claimed-by:agent-x" in note for note in res.notes)
+
+
+def test_queued_job_under_an_unstamped_claim_is_not_gated(
+    store: Store,
+) -> None:
+    """A legacy ``claimed-by:`` row with no ``expires_at`` does not
+    gate — the clause's pre-lease behaviour, so a dead queue behind
+    one still reads stalled."""
+    root = _root(store)
+    task = _node(store, root, tags=("claimed-by:agent-x",))
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == [(task, "stalled", "queued")]
+
+
+def test_live_queued_job_is_a_wait_not_an_idle_stall(store: Store) -> None:
+    """A queued job waits for an executor slot — 25 min of silence is past
+    the idle deadline, but a queued node is judged on its queue (30 min),
+    never as idle."""
+    root = _root(store)
+    task = _node(store, root)
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+
+
+def test_queued_job_gated_by_a_child_failed_tag_names_the_tag(
+    store: Store,
+) -> None:
+    """``parent_not_paused`` refuses to claim a job under a node carrying
+    ``child-failed:<job>``; past the 30 min queue deadline on a dead queue
+    that read as a stall. It is the gate's wait, and the note names it."""
+    root = _root(store)
+    task = _node(store, root, tags=("child-failed:jo123",))
+    _job(store, task, status="queued")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=31))
+
+    assert res.rescued == []
+    assert res.held == 1
+    assert _rescue_tags(store, task) == []
+    assert any("gated by child-failed:jo123" in note for note in res.notes)
+
+
+def test_blocked_by_an_open_ask_after_a_failed_job_is_a_wait(store: Store) -> None:
+    """The blocker owns the wait: an idle node behind an open ask is not
+    filed as its own stall."""
+    root = _root(store)
+    ask = _ask(store, root, tags=("ask-user",))
+    task = _node(store, root)
+    _job(store, task, status="failed")
+    store.add_link(
+        src_ref_id=task, dst_ref_id=ask, relation="blocked-by", set_by="system"
+    )
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=25))
+
+    assert res.held == 1
+    assert res.rescued == []
+    assert _rescue_tags(store, task) == []
+
+
+def test_node_log_mtime_is_one_signal_not_one_per_job(
+    store: Store, tmp_path: Path
+) -> None:
+    """Every job of a node reads the same per-todo ``run_slice.log``;
+    the evidence lists its mtime once, as the node's."""
+    root = _root(store)
+    task = _node(store, root)
+    log = tmp_path / "run_slice.log"
+    log.write_text("x\n", encoding="utf-8")
+    stale = NOW - timedelta(hours=1)
+    os.utime(log, (stale.timestamp(), stale.timestamp()))
+    handle = {"compute_handle": {"pid": 1, "log": str(log)}}
+    _job(store, task, status="failed", meta_extra=handle)
+    _job(store, task, status="running", meta_extra=handle)
+
+    res = fr.run_stall_pass(store, NOW + timedelta(hours=5, minutes=1))
+
+    assert res.rescued == [(task, "stalled", "build")]
+    (comment,) = _comments(store, task)
+    assert comment.count("log mtime") == 1
+    assert "- node log mtime:" in comment
 
 
 # ── dry run, kill switch, dedupe, evidence ────────────────────────

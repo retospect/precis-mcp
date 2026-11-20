@@ -22,7 +22,7 @@ Draw policy (the ``sci`` lens is the motivating case — 50 % science):
 Selection is CSPRNG by default (``secrets``), matching the oracle's
 "consult" semantic; inject a ``random.Random`` for deterministic tests.
 
-The output is a spark to react to, never a conclusion — verification
+The output is a prompt to react to, never a conclusion — verification
 stays downstream (dream memories start ``tier:dream`` and only earn
 ``tier:synthetic-insight`` once grounded).
 """

@@ -44,7 +44,7 @@ PAW datasets: **no mount needed** — GPAW 25.7 bundles 559 setups via the
 + `GPAW_SETUP_PATH` still overrides them when a pinned external set is
 wanted (the NFS-staged path the dispatch design assumes).
 
-## Validated on spark (2026-06-21, GB10 / ARM)
+## Validated on the GPU node (2026-06-21, GB10 / ARM)
 
 - **Builds**: GPAW 25.7.0 compiles from source against apt
   libxc/openblas on aarch64; ASE 3.28, precis-dft installed (the base is
@@ -67,5 +67,5 @@ wanted (the NFS-staged path the dispatch design assumes).
   same calculation.
 - GPAW GPU offload (gpaw.new GPU mode + CuPy) — foundation proven, not
   wired/benchmarked.
-- Pushing the image to a registry (caspar `/opt/nfs/registry`) — Phase
-  1 runs it locally on spark; see `precis-mcp/docs/design/precis-dispatch.md`.
+- Pushing the image to a registry (database host `/opt/nfs/registry`) — Phase
+  1 runs it locally on the GPU node; see `precis-mcp/docs/design/precis-dispatch.md`.

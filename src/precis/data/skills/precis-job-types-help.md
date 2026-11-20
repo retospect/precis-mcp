@@ -41,8 +41,18 @@ Agent and internal job types; the compute and sandbox types are in
 | `plan_tick`         | `claude_inproc` | One planner-coroutine tick of a `meta.llm_tier`-set todo. Params: `model` (required), `timeout_s`, `decompose`, `select`, `envelope` — a named box (`'scout'`: WebSearch only, no MCP at all; the worker assembles its prompt and files its JSON reply); declared means required — an unknown name fails closed and a fenced tick is pinned to `claude_agent` — and `scout` (`{folder, quest}`, required with `envelope='scout'`) (see `precis-recurring-help` §Restricted tick) |
 | `news_poll` / `briefing` | `claude_inproc` | News ingestion / daily briefing          |
 | `money_refresh`     | `claude_inproc` | Refresh the `fx_rates` / `price_index` caches from the ECB and World Bank (deterministic; driven by a weekly recurring todo — minted by ops, never by hand) |
-| `draft_export`      | `claude_inproc` | Compile a draft to PDF/DOCX                   |
+| `draft_export`      | `job_inproc` (default; `claude_inproc` opt-in) | Compile a draft to PDF/DOCX — deterministic, no LLM; claims only on hosts advertising `latexmk`, and serializes per draft slug on a pg advisory lock |
+| `weekly_report` | `job_inproc` | Deterministic factory tables: jobs, gripe flow and origin/goal, releases, land outcomes, active quest ticks/sims, current open-gripe ages, and main commits. Params: `since`, `until` (UTC, half-open; defaults to the last seven days), optional paired `draft` slug and `section` heading handle (`dc<id>`). Returns tables as the job summary; with a destination replaces only direct table children, preserving prose and nested sections. |
 | `elsevier_abstract_backfill` | `claude_inproc` | Re-arm an operator-confirmed Elsevier preview cohort for re-fetch (stamps the existing `markup_refetch`/`oa_requeued` pins; bodies, hashes and events stay until a validated replacement ingests). Params: explicit `ref_ids`, `expected_count` (must equal `len(ref_ids)`), `dry_run` (default `true`). No provider or model call; never derives the cohort from body length. |
+
+The `weekly_report` scheduler is off by default; ask a human operator to
+configure the cadence and optional checkout/draft destination. It reports the
+previous complete UTC Monday-to-Monday week. Only `main` history is counted;
+absent/unreadable Git reports `git unavailable`.
+Gripe closures use current terminal tags, matching `flow`;
+job counts show current state of jobs created in the window. Open gripe ages
+are a current snapshot. Quest ticks count distinct numbered tick events,
+including repeated coordinator resumes only once per tick.
 
 ## Campaign, deferred and external-agent job_types
 
@@ -67,7 +77,7 @@ Agent and internal job types; the compute and sandbox types are in
 | `structure_propose` | `claude_inproc` | Turn an instruction into proposed structure ops (tool-less claude, propose-only — a human applies them) |
 | `reading_brief`     | `claude_inproc` | Compose the morning reading-brief cast as a dated draft (see `precis-audio-help`) |
 | `remarkable_send`   | `claude_inproc` | Export a draft in reMarkable mode and upload the PDF to the tablet — siblings `remarkable_papers_send` (cited-source PDFs) and `remarkable_reading_send` (per-source reading edition) |
-| `paper_ingest`      | `job_inproc`    | Acquire one DOI-requested paper — verifies the DOI (Semantic Scholar, then the DOI registries), mints the stub and pins it to the `fetch_oa` queue. Internal: minted by `get(kind='paper', id='<unheld DOI>')` (gr551840), idem key `paper_ingest:<doi>` — a get repeat reuses the live job, a terminal job inside 24h blocks the re-mint |
+| `paper_ingest`      | `job_inproc`    | Verifies a DOI (Semantic Scholar, then DOI registries), mints the stub and pins it to `fetch_oa`. Single and batch paper gets can mint for unheld DOIs only without a view. Any explicit view disables minting, including `meta`, `text`, `body`, and `full`. Idem key `paper_ingest:<doi>`. A repeat reuses the live job, and a terminal job inside 24h blocks a re-mint |
 
 ## Queue-drain job types — embed_batch and derived_drain
 

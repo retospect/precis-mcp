@@ -175,8 +175,9 @@ source paragraph. The bar is therefore stricter than for an inline citation.
 
 ## What makes a mintable claim — soft flags and claim sorts
 
-The extractor returns a `type` per claim (`measurement`, `definition`,
-`capability`, `mechanism`, `landscape`); mint persists it on the hub.
+The extractor returns a `type` per claim (`measurement`, `calculation`,
+`definition`, `capability`, `mechanism`, `landscape`); mint persists it
+on the hub.
 `landscape` means the material is the class the sentence names, not the
 paper's subject: "Graphene-fullerene composites are typically made by
 mixing", not "we mixed C60 with graphene". Landscape hubs are
@@ -195,11 +196,11 @@ consensus-verified, never widened and not publishable as nanopubs — see
 - **Grounding depth.** One supporter is mintable; definitions and
   landscape/survey claims also want a secondary source (a review) —
   `hub_refine` attaches corroborators when enabled. Abstract-only
-  grounding is fine for a definition/existence claim; a measurement or
-  mechanism claim grounded only on an abstract/intro chunk also wants
-  the body passage carrying its specifics attached — `hub_refine`'s job
-  when enabled, else `link(kind='finding', rel='corroborates',
-  target='pc<id>')` manually.
+  grounding is fine for a definition/existence claim; a measurement,
+  calculation or mechanism claim grounded only on an abstract/intro
+  chunk also wants the body passage carrying its specifics attached —
+  `hub_refine`'s job when enabled, else `link(kind='finding',
+  rel='corroborates', target='pc<id>')` manually.
 - **Notation.** Claim sentences render as plain text (list views, page
   titles, MCP output) — write formulas with UTF-8 sub/superscripts and
   symbols (`C₆₀`, `g-C₃N₄`, `≈10⁴ cm² V⁻¹ s⁻¹`, `μB`), never TeX
@@ -226,6 +227,7 @@ consensus-verified, never widened and not publishable as nanopubs — see
 | Sort | Example | Bar |
 |------|---------|-----|
 | Measurement | "Single-wall carbon nanocones were observed with opening angles of ≈19°, 39°, 60°, 85°, and 113°." | Carry the numbers; one primary source suffices. |
+| Calculation | "DFT with PBE predicts an adsorption energy of −0.74 eV for C60 on graphene." | Keep method and model in claim and scope; sort by how the result was obtained. |
 | Definition | "The term 'nanobud' refers to structures in which fullerenes are directly bonded to a carbon nanotube or graphene surface." | Coining paper as originator; wants a review as corroborator. |
 | Capability | "Graphene–fullerene composites can be formed by physical mixing, without covalent attachment." | Name the conditions or the contrast, else vacuous. |
 | Mechanism | "Charge transfer at the C60–nanotube junction alters field-emission behavior." | Name the mechanism, not "plays an important role". |
@@ -269,6 +271,34 @@ repointed, edges dropped as redundant (and the winner edge each collides
 with), self-loops dropped, and `can_merge` with the refusal reason (a
 side past `candidate` cannot merge). It never writes. Applying is a human
 door — hand the reviewer the winner's claim page, `/nanopub/fi<winner>`.
+
+## Minting at scale — title lint, same-session dedup, waves
+
+**Title lint.** The door refuses a title over 250 characters, and one
+whose method token is a bare technique noun. Observed, not exhaustive
+(treat as a hint; not every term was re-checked): refused were bare
+"Chronoamperometry", "DEMS", "tests" and bare "Gas chromatography";
+passed were "measurements", "voltammetry", "DFT", "analysis", "mass
+spectrometry" and "Electrochemical measurements". Qualify the technique
+with what was measured. Editing a hub title does not re-run the lint.
+
+**Same-session dedup.** The dedup judge sees same-session hubs: a hub
+you minted earlier in this session is judged against, and a same-paper
+near-duplicate is refused. Attach with `dedup='attach:fi<N>'`; force
+with `dedup='force'` (both ride in `args=` on the put, e.g.
+`args={'dedup': 'force'}`). A force can still merge into a fresh own
+hub, and files a review todo.
+
+**Mint waves.** Readers only propose hubs; a single root agent mints and
+attaches from a ledger of proposals. The dedup judge consumes quota
+(each put judges up to about a dozen neighbours), so size a wave against
+the quota you have left. On exhaustion a plain put is refused; a force
+mints unjudged (`dedup_override` verdict `'unjudged'`, see force above),
+so forcing through a long outage can mint duplicates: pause the wave.
+
+**Transient errors.** "connection closed" on a put may have landed: read
+back (`search(kind='finding', ...)`) before retrying. A LockNotAvailable
+clears on one retry.
 
 ## Search before you mint — strengthen, don't duplicate
 
@@ -327,8 +357,8 @@ Then judge each near hit:
   than adding a third.
 
 **File `disputes`, not `contradicts`.** `contradicts` is
-adjudication-derived (claim-graph disagreement, Part 2 of
-`docs/backlog/disputes-edge-nonblocking-disagreement.md`, not built) —
+adjudication-derived (claim-graph disagreement, Part 2 of the disputes
+split — spec `me693328`, not built) —
 a live one blocks the hub's nanopub mint, and you don't have the
 warrant to file it by hand. `disputes` is the free, always-safe move:
 "these two claims appear to conflict; someone should look" — it never
@@ -383,7 +413,9 @@ put(
 
 `supporters` is a list of `{paper, role, source_handle}`: `paper` is the
 supporting paper (its `pa<id>` handle, cite_key, or pub_id — a patent
-handle also resolves); `role` defaults `corroborates`; **`source_handle`
+handle also resolves); `role` is `establishes`|`corroborates` only —
+`primary` is not a role and is refused, omit it (the default is
+`corroborates`); **`source_handle`
 is the grounding `[pc<id>]` paper chunk and you should always supply
 it** — it lands on the edge as `src_chunk_id`, so the edge cites the
 passage (`pc<id>`), not just the paper (`pa<id>`). List the same paper's

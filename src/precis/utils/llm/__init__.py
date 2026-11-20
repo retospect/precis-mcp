@@ -47,7 +47,7 @@ Resolution, per dispatch (in order)
    ``plan_tick`` / …) has its tier + model owned by the registry default + a
    live ``llm.op.<source>`` override.
    ``chase:verify`` uses the BIG capability tier; its per-operation chain
-   selects castor's local gpt-oss rung, with the endpoint resolved from the
+   selects the local-serving node's gpt-oss rung, with the endpoint resolved from the
    model card rather than embedded in code.
    The override may also carry a ``chain`` (rung dicts in the
    ``llm.chain.<tier>`` grammar, same parser): that source then walks it
@@ -79,7 +79,7 @@ Resolution, per dispatch (in order)
    default; a non-boolean degrades the *whole* chain to the default (a
    billing switch must not flip on a typo); inert + warned on a non-claude
    transport. ⚠ ``meter.spent_usd`` does not yet count bare spend —
-   ``docs/backlog/bare-rung-billing-accounting.md``.
+   `me690531`.
 5. **Chain filters** — per-request ``LlmRequest.placement``
    (``'local'``/``'cloud'``, strict: emptying a nonempty chain is an
    *error* — the caller asked for a rung the chain lacks); the cloud

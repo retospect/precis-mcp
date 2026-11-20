@@ -3,7 +3,7 @@
 The coordinator's working state for a builder wave — which batch a gripe
 is in, the brief that assigned it, where the builder stopped, the review
 verdict, who is working it, the landed sha — lives on the gripe itself
-(Reto 2026-10-26; ``docs/backlog/gripe-fix-loop-on-the-gripe.md``). This
+(Reto 2026-10-26; `me691588`). This
 module is the state model behind ``edit(kind='gripe', mode='fix')``,
 the ``fix:`` card line, ``view='fix'`` and the ``/queue`` and ``/batch``
 list views in :mod:`precis.handlers.gripe`.
@@ -18,7 +18,7 @@ Stored (the smallest set; everything else is derived):
   ``host`` is the fleet host (what ``scripts/fleet-report`` sends);
   ``session`` is ``<vendor>:<window>`` — the builder's tmux window name
   (``claude:claude-tables-s2``, ``devin:devin-tables-s2``,
-  ``codex:codex-castor-s2``, what ``scripts/fleet-wave launch`` records),
+  ``codex:codex-<host>-s2``, what ``scripts/fleet-wave launch`` records),
   or ``claude:<session id>`` for a session with no window — so the fleet
   row ``<vendor>:<host>:<project>:<tree>`` resolves from its prefix. The
   key's presence is the one marker of "in the loop": the card line and

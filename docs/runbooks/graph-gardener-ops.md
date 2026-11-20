@@ -1,30 +1,30 @@
 # Graph gardener on prod — pause, resume, re-route, read the logs
 
 **When.** The graph gardener (`graph_garden` service; spec
-[`docs/backlog/graph-gardener-value.md`](../backlog/graph-gardener-value.md),
+me693885 (me693885),
 skill `precis-gardener-help`) is running on prod with its proposer on a
 local model and you need to stop it, restart it, change where its LLM calls
 go, or find out what it did. State as of 2026-11-01: lit since 2026-10-21,
-runs every 2 h from the recurring todo td504852, proposer on castor
+runs every 2 h from the recurring todo td504852, proposer on the local-serving node
 (`openai/gpt-oss-120b`, SGLang, ctx 131072) with **no cloud fallback by
-design** (castor failures must be visible), consumer on cloud Opus.
+design** (local-serving-node failures must be visible), consumer on cloud Opus.
 
 Addresses live in the gitignored overlay; none appear here.
 
 ## Pause / resume
 
 ```
-scripts/prod-precis service prio melchior graph_garden 0   # pause
-scripts/prod-precis service prio melchior graph_garden 1   # resume
+scripts/prod-precis service prio <agent-host> graph_garden 0   # pause
+scripts/prod-precis service prio <agent-host> graph_garden 1   # resume
 ```
 
-The service row is `service_config` for the melchior worker; prio 0 stops
+The service row is `service_config` for the agent host worker; prio 0 stops
 the scheduler minting runs, in-flight runs finish.
 
 ## Re-route or revert the proposer's LLM chain
 
 The proposer reads the `app_settings` key `llm.op.graph_garden:propose`
-(local chain only: castor `openai/gpt-oss-120b`, max_tokens 4000,
+(local chain only: the local-serving node `openai/gpt-oss-120b`, max_tokens 4000,
 reasoning medium). To revert to the default routing, delete that row:
 
 ```
@@ -46,7 +46,7 @@ read for the key yet (gr548280); until then `scripts/prod-psql --ro
   `reviews` ledger, actor `garden-consumer` (consumer) and `graph-garden`
   (proposer); CLI `scripts/prod-precis garden stats`. No MCP door yet
   (gr548280).
-- Logs: the melchior workers run under launchd — grep the
+- Logs: the agent host workers run under launchd — grep the
   `precis-worker*.log` files on the host, not `journalctl`; the agent
   lane's stdout is `/var/log/precis-worker-agentlane.log` (the old
   `precis-worker-agent.log` is a retired unit's frozen 0-byte file —

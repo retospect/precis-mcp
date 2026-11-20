@@ -1,59 +1,20 @@
 ---
 name: docs-triage
-description: "Triage docs/backlog/: when to delete an item (shipped, stale, snoozed), how far to compact, where surviving truth goes. Use when backlog-lint flags items."
+description: "Triage open work: when to retire a spec section (built, stale, parked), how far to compact, where surviving truth goes. Use when memory-lint or backlog-lint flags items."
 ---
 
-# docs-triage — keep the backlog live, delete the rest
+<!-- precis-stub: docs-triage -->
 
-**The disease.** A `docs/backlog/*.md` item is *open work*. When its work
-ships, the truth moves into code + the owning package docstring, but nobody
-deletes the item — so it lingers, gets READ as open work, and rots. Cure:
-**delete-default** ("rest in git for the archaeologists"). `git log` is the
-history; `docs/backlog/` is the present. Contract: `docs/README.md`
-§Backlog lifecycle.
+# docs-triage
 
-## Start here
+This skill lives in the precis corpus. Before any task work, read it
+and follow it:
 
-    scripts/backlog-lint     # flags done-marked items still in docs/backlog/
+    get(kind='skill', id='docs-triage')
 
-Advisory (never deletes, never fails a build); it surfaces candidates by
-title-level done-markers only. You apply the judgment it can't. The
-generated index (`docs/backlog/INDEX.md`, gitignored, rewritten by
-`scripts/docs-index` at session start) is the one-line-per-item view.
+Search precis skills (`search(kind='skill', q='<goal>')`) before
+starting any other task.
 
-## The per-item verdict
-
-- **Shipped** — the work is on `main`. Verify (`git log`, the code), then
-  **delete the file in the same commit** that shipped it — or now, if it was
-  missed. Never leave a "DONE ✅" note; the backlog is the active list, not
-  an archive.
-- **Stale** — the item describes a problem the code no longer has, or a
-  plan overtaken by a different shipped approach. Verify against the code
-  (don't trust the prose), then delete. If deletion would orphan a claim a
-  kept doc relies on, correct that doc to code-truth in the same commit.
-- **Snoozed** — deliberately parked, not dead. `snooze-until: YYYY-MM-DD`
-  front-matter; triage skips it until the date. On or after the date:
-  re-probe the unblock condition, then act or bump the date.
-- **Open** — keep. Compact if bloated (bar below).
-
-Before deleting, re-scan for stragglers:
-
-    grep -rn "<slug>" . --exclude-dir=.git    # fix every surviving ref
-
-## The compaction bar
-
-- An **idea** is ≤ ~15 lines: `# title` + what, why, owner anchor, `test:`.
-  No front-matter needed.
-- A **spec** (status `draft` → `ready`, per `docs/backlog/TEMPLATE.md`)
-  keeps its full body while active — acceptance criteria and blast radius
-  are load-bearing for the fixer; don't compact a live spec down to an idea.
-- An idea that has grown spec-shaped sections without front-matter is a
-  spec in denial — add the front-matter or cut it back to an idea.
-
-## Where truth folds
-
-On ship (or when cutting a stale item that carried real rationale), any
-surviving truth — the "why", the rejected alternative, the invariant —
-folds into the **owning package's `__init__.py` docstring**, compactly, in
-the same commit. Nothing else is an archive: no done-log, no CHANGELOG, no
-completed/ directory. Reusable incident forensics go to `docs/runbooks/`.
+MCP down: stop the task. Retry the connection with growing waits
+(1, 2, 4, 8 minutes, then every 15) and resume when it answers. Do
+not work the task without skills.

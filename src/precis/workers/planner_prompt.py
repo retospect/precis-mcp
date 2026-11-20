@@ -71,17 +71,17 @@ log = logging.getLogger(__name__)
 #: excluded, §2) and pulled on demand via MCP ``get``.
 
 
-#: Hard cap on the skill index. Each entry costs ~40 tokens; at the
-#: current corpus (~140 active skills) the full index renders at ~5.6k
-#: tokens, so the cap keeps the cached system prompt bounded even as the
-#: corpus grows. Sized to admit the whole active set today (a purely
-#: alphabetical truncation would otherwise drop late-sorted core skills
-#: like ``precis-todo-tree-help`` — bumped 120 -> 160 on 2026-07-29 when the
-#: ``component`` kind's new skill tipped the corpus past the old cap and
-#: evicted exactly that one). If a planner needs a skill beyond the cap
-#: it calls ``search(kind='skill', q='…')`` — that's the discovery
-#: mechanism by design.
-_SKILL_INDEX_MAX: int = 160
+#: Hard cap on the skill index. The index is names only, so an entry is a
+#: ~20-byte slug; the cap is a safety net that keeps the cached system prompt
+#: bounded, not a budget the corpus is expected to press against. Sized to
+#: admit the whole active set with room: a purely alphabetical truncation
+#: silently drops every late-sorted skill (it once dropped ``precis-put-help``,
+#: ``precis-search-help`` and every ``soul*`` at a 160 cap over a ~296-skill
+#: corpus). ``test_planner_prompt_budget`` fails when the eligible count
+#: exceeds this, so the next overflow is a red test, not a silent drop. If a
+#: planner needs a skill beyond the cap it calls ``search(kind='skill',
+#: q='…')`` — that's the discovery mechanism by design.
+_SKILL_INDEX_MAX: int = 400
 
 #: Slugs the truncation may never evict. The cap trims alphabetically, so
 #: every new ``precis-s*`` skill pushes ``precis-todo-tree-help`` one place
@@ -176,6 +176,28 @@ def _load_skill_verbatim(skill_id: str, store: Store | None = None) -> str:
         return f"# {skill_id}\n\n(skill load failed — fall back to MCP get)\n"
 
 
+def _eligible_skill_entries() -> list[tuple[str, str]]:
+    """``(slug, summary)`` for every skill the index may advertise, sorted by slug."""
+    from precis.handlers.skill import _load_skills_map
+
+    entries: list[tuple[str, str]] = []
+    for slug, raw in _load_skills_map().items():
+        fm = parse_frontmatter(raw)
+        if fm.status not in (None, "active"):
+            continue
+        # Personas are pinned as a thread's floor, not
+        # on-demand reference docs — keep them out of the discovery menu.
+        if fm.flavor == "persona":
+            continue
+        summary = (fm.summary or "").strip()
+        if not summary:
+            log.debug("planner_prompt: skill %s missing summary", slug)
+            continue
+        entries.append((slug, summary))
+    entries.sort(key=lambda e: e[0])
+    return entries
+
+
 def _build_skill_index(store: Store | None = None) -> str:
     """A compact **slug list** of the active skills — names only, no summaries.
 
@@ -205,25 +227,10 @@ def _build_skill_index(store: Store | None = None) -> str:
     """
     from precis.handlers.skill import _load_skills_map
 
-    skills_map = _load_skills_map()
-    if not skills_map:
+    if not _load_skills_map():
         log.warning("planner_prompt: no skills loaded")
         return "Available skills: (none — no skills loaded)"
-    entries: list[tuple[str, str]] = []
-    for slug, raw in skills_map.items():
-        fm = parse_frontmatter(raw)
-        if fm.status not in (None, "active"):
-            continue
-        # Personas are pinned as a thread's floor, not
-        # on-demand reference docs — keep them out of the discovery menu.
-        if fm.flavor == "persona":
-            continue
-        summary = (fm.summary or "").strip()
-        if not summary:
-            log.debug("planner_prompt: skill %s missing summary", slug)
-            continue
-        entries.append((slug, summary))
-    entries.sort(key=lambda e: e[0])
+    entries = _eligible_skill_entries()
     if len(entries) > _SKILL_INDEX_MAX:
         # Keep the always-listed slugs even when they sort past the cap;
         # they displace the last alphabetical entries, not each other.
@@ -265,29 +272,18 @@ move the work forward by exactly one of these output shapes:
    meta={'llm_tier': '<model>'}, text='<specific brief>')`. Each child
    must carry exactly one `llm_tier` of `opus|sonnet|haiku` picking the
    cheapest model that can produce the depth required. Add
-   ordering with `link(rel='blocked-by', src=B, dst=A)` for
-   sequential pairs; leave unlinked for parallel siblings. You will
-   be re-called once all children resolve. Children automatically
-   inherit your workspace.
+   ordering with `link(kind='todo', id=<B>, target='todo:<A>',
+   rel='blocked-by')` (B waits on A) for sequential pairs; leave unlinked for parallel siblings. You will
+   be re-called once all children resolve. Children inherit project context and export-home metadata.
+   Name the hub memory handle in their briefs.
 
-2. **Write the artefact directly.** *If this project owns a draft*
-   (you will see a `## Draft` block below in this message), that draft
-   is the deliverable: write prose **into the draft** with
-   `put(kind='draft', …)` / `edit(id='dc<id>', …)` exactly as that
-   block describes — the `.tex` is regenerated from the draft, so the
-   file kinds below are gated off for you this tick. Otherwise (a plain
-   tex workspace with no draft), write the artefact via the
-   workspace-routed
-   `put(kind='tex', name='<slug>', text='\\section{...}\\n...')`.
-   The system places the file at the right path under your project's
-   workspace; you don't compute paths. For figures use
-   `put(kind='pic', name='<slug>.svg', text='<svg>')`; for raw data
-   `put(kind='data', name='<slug>.csv', text='...')`. The first
-   `put` in a fresh workspace auto-creates the directory layout
-   (entrypoint `main.tex`, `tex/`, `pics/`, `data/`, `.gitignore`,
-   `git init`). Every successful `put` produces a git commit; on
-   rollback, `git reset --hard <sha>` returns the workspace to that
-   tick's state.
+2. **Write the artefact directly in the mesh.** Project prose lives in
+   memories. Find the hub first with
+   `search(kind='memory', tags=['project:<slug>'])` and follow its
+   navigation links. Write section memories linked `part-of` the hub.
+   If a `## Draft` block is present, write into that bound draft with
+   `put(kind='draft', …)` / `edit(id='dc<id>', …)` as the block describes.
+   File kinds are import/export only; compile/export when requested.
 
    **Prose style.** Write plain declarative sentences, one idea each.
    No em-dashes (the `—` character): split the thought into separate
@@ -407,27 +403,13 @@ move the work forward by exactly one of these output shapes:
   `STATUS:done` — reporting blocked is correct; a fabricated "done"
   is the worse failure.
 
-## Files (workspace-routed)
+## Files (explicit import/export)
 
-The MCP server handles project infrastructure (layout, gitignore,
-git init, main.tex skeleton, refs.bib generation) lazily on first
-need. You never think about physical paths.
+Project prose lives in memories (the hub memory) or the bound draft.
+File kinds are export/import only. `meta.workspace` is the export home.
+Follow the hub's navigation before requesting a compiled/exported artifact.
 
-- `put(kind='tex', name='intro', text='\\section{Introduction}...')`
-- `put(kind='tex', name='main', text='...')` — entrypoint (special)
-- `put(kind='pic', name='timeline.svg', text='<svg>')`
-- `put(kind='data', name='qy-by-node.csv', text='...')`
-- `get(kind='tex', id='tex--intro')` — read your section back
-- `edit(kind='tex', id='tex--intro~scope', mode='replace',
-       text='...')` — block-level edit by slug
-
-The `put` returns one of two verdicts:
-
-- **`ok`**: file landed (possibly with a small mechanical-fix note:
-  unicode escapes, missing `\\usepackage{}`, etc — silently fixed).
-- **`hint`**: file NOT written; the system has a proposed correction
-  for an error it won't auto-resolve without your ack. Read the
-  hint, decide if it preserves your intent, resubmit if it does.
+{file_exports}
 
 **Paper not in corpus**: if you want to cite a paper that isn't in
 the corpus yet, **request it** — don't just flag a gap and move on.
@@ -584,7 +566,7 @@ Format (copy verbatim, fill in the values):
 Verdict semantics — `done`, `continue` and `yield` describe the state
 changes you made earlier; the runner applies `halt` itself:
 
-* `done` — you tagged STATUS:done and the parent can read your files
+* `done` — you tagged STATUS:done and the parent can read your linked refs
 * `continue` — you minted subtasks; the parent will be re-summoned
   once they resolve
 * `yield` — you tagged `ask-user:<question>`; awaiting human input
@@ -605,14 +587,14 @@ Writing is not exclusive to leaves. Where in the tree you sit shapes
 what you write:
 
 * **Leaves** (no children) write *substrate*: section bodies,
-  citations, raw findings. One file per leaf is the typical pattern.
+  citations, raw findings. Link section memories to the project hub
+  or write the bound draft chunks.
 * **Mid-level synthesis nodes** (you minted children, they finished,
   you're re-ticking with their summaries) write *connective tissue*:
   transitions between sibling sections, intro/outro of a multi-part
-  topic, updated `\\input{}` ordering in `main.tex`.
+  topic, and navigation links between the section memories or draft chunks.
 * **Strategic root** writes the *frame*: executive summary, outlook,
-  the highest-level transitions. Often writing `main.tex`'s prose
-  scaffolding around the leaves' `\\input{}` calls.
+  the highest-level transitions in the hub memory or bound draft.
 
 If you're a mid-level node and your children's summaries already
 cover the substrate, your job is the stitching — not minting another
@@ -625,9 +607,9 @@ Information flow:
   you write at mint time. Be specific — name the deliverable, depth
   target, the considerations to weigh. A vague brief produces a
   vague leaf.
-* **Upward**: leaves produce artefacts (files on disk) + structured
+* **Upward**: leaves produce linked memories or draft chunks + structured
   conclusion summaries (the block above) + minted refs (citations,
-  findings). Parents re-tick and see workspace status + children
+  findings). Parents follow hub navigation and children
   status without re-reading the raw stdouts.
 
 ## Depth discipline (the value proposition)
@@ -794,7 +776,7 @@ def _render_patent_authoring(store: Store, ref_id: int) -> str:
     prior-art claims themselves arrive via the tick's working set (the
     ``patent_digest`` claims digest stamped on ``meta.working_set``); this
     block is the *methodology* that reads them. See
-    ``docs/backlog/patent-authoring-loop.md`` and the ``patent-*`` skills."""
+    `me690333` and the ``patent-*`` skills."""
     return (
         "## Patent authoring — write against the prior art\n\n"
         "You are drafting a **patent**. Do not write in a vacuum; each tick:\n\n"
@@ -829,7 +811,7 @@ def _render_plan_ledger(store: Store, plan_ref_id: int, slug: str) -> str:
     """Inject the project's ``plan`` — its reasoning /
     decision ledger — so a tick respects recorded decisions without having
     to fetch it. For a patent this is the freedom-to-operate scoping ledger:
-    what was declined or narrowed, and why (``docs/backlog/patent-authoring-loop.md``). One line per node, capped for the flow."""
+    what was declined or narrowed, and why (`me690333`). One line per node, capped for the flow."""
     try:
         chunks = store.drafts.reading_order(plan_ref_id)
     except Exception:  # pragma: no cover — no plan / store hiccup
@@ -1800,8 +1782,31 @@ def _m_kinds(ctx: AssemblyContext) -> str:
     return kinds_table()
 
 
+def _planner_contract(*, file_kinds: bool) -> str:
+    """Offer explicit TeX exports only on a surface that supports them."""
+    exports = ""
+    if file_kinds:
+        exports = (
+            "### Explicit file exports\n\n"
+            "Only when no hub memory or bound draft exists and an export is requested, "
+            "use `put(kind='tex', name='<slug>', text='<export>')`; "
+            "read it back with `get(kind='tex', id='tex--<slug>')`."
+        )
+    return _PLANNER_CONTRACT.replace("{file_exports}", exports)
+
+
 def _m_contract(ctx: AssemblyContext) -> str:
-    return _PLANNER_CONTRACT
+    from precis.config import load_config
+    from precis.kind_gate import parse_disabled
+    from precis.utils.surface_scope import surface_disabled_kinds
+
+    disabled = parse_disabled(load_config().kinds_disabled) | surface_disabled_kinds()
+    file_kinds = bool(os.environ.get("PRECIS_ROOT")) and "tex" not in disabled
+    # The subprocess kind overlay is installed after prompt assembly. Check
+    # the same draft binding here so its prompt never advertises a gated kind.
+    if file_kinds and ctx.store is not None and bound_draft(ctx.store, ctx.ref_id):
+        file_kinds = False
+    return _planner_contract(file_kinds=file_kinds)
 
 
 def _m_identity(ctx: AssemblyContext) -> str:
@@ -1928,27 +1933,13 @@ def _m_body(ctx: AssemblyContext) -> str:
 
 
 def _m_skill_injection(ctx: AssemblyContext) -> str:
-    """Bimodal skill injection (docs/backlog/skill-question-targets-and-
-    injection.md §2): embed this tick's task text against the skill
-    corpus's question-shaped retrieval targets; on a high-confidence
-    match, inject the WHOLE matched skill body instead of leaving
-    discovery to the model to decide on its own (measured: 5 of ~19,853
-    prod jobs used it). No cue/snippet tier — below threshold injects
-    nothing, on purpose (see :mod:`precis.skill_index.injection`).
-
-    Skipped (``""``) while autoskill is active — the router injects the
-    skills similar sessions used, with this same bimodal match as its
-    thin-history fallback, so a tick never gets both."""
-    from precis.skill_index.injection import match_skill, render_injection
+    """Inject high-confidence skill sections unless autoskill handles discovery."""
+    from precis.skill_index import injection
     from precis.utils.llm import autoskill
 
     if autoskill.active():
         return ""
-    task_text = _ref_body(ctx)
-    match = match_skill(task_text)
-    if match is None:
-        return ""
-    return render_injection(match)
+    return injection.render_section_injection(injection.match_sections(_ref_body(ctx)))
 
 
 def _m_anchor(ctx: AssemblyContext) -> str:

@@ -1,5 +1,5 @@
 """``precis trust`` — operator surface of graph trust state, slice 1
-(migration 0214; docs/backlog/graph-node-trust-state.md).
+(migration 0214; me691024).
 
 * ``precis trust report`` — the compatibility-window measurement: write
   mode, stamp histogram per table, version-0 rows written since 0214 by

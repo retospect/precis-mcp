@@ -1660,14 +1660,14 @@ def test_pathway_detail_ran_on_shown_when_set(client, runtime) -> None:
     ``/status?tab=services&host=`` is the page that best shows a host)."""
     _seed_pathway(
         runtime.store,
-        meta={"results": {"substrate": "NO", "target": "NH3"}, "ran_on": "spark"},
+        meta={"results": {"substrate": "NO", "target": "NH3"}, "ran_on": "spruce"},
         body_text=None,
     )
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
     assert "ran on" in resp.text
-    assert "/status?tab=services&amp;host=spark" in resp.text or (
-        "/status?tab=services&host=spark" in resp.text
+    assert "/status?tab=services&amp;host=spruce" in resp.text or (
+        "/status?tab=services&host=spruce" in resp.text
     )
 
 
@@ -1677,7 +1677,7 @@ def test_pathway_detail_ran_on_hidden_when_jobs_carry_the_host(client, runtime) 
     instead (seed 0 and seed 1 may have run on different machines)."""
     _seed_pathway(
         runtime.store,
-        meta={"results": {"substrate": "NO", "target": "NH3"}, "ran_on": "pollux"},
+        meta={"results": {"substrate": "NO", "target": "NH3"}, "ran_on": "poplar"},
         body_text=None,
     )
     runtime.store.pool = _RunJobsPool(
@@ -1686,7 +1686,7 @@ def test_pathway_detail_ran_on_hidden_when_jobs_carry_the_host(client, runtime) 
                 190002,
                 "autocatpath_seed",
                 "1",
-                "spark",
+                "spruce",
                 "322.1",
                 "STATUS:succeeded",
                 "autocatpath_seed: seed=1 model=mace:medium: 29 state(s), 8 warning(s).",
@@ -1696,7 +1696,7 @@ def test_pathway_detail_ran_on_hidden_when_jobs_carry_the_host(client, runtime) 
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
     assert "ran on" not in resp.text
-    assert "seed 1 on spark" in resp.text
+    assert "seed 1 on spruce" in resp.text
 
 
 def test_pathway_detail_ran_on_omitted_when_unset(client, runtime) -> None:
@@ -1726,24 +1726,24 @@ def test_pathway_detail_run_job_links_render_from_query_rows(client, runtime) ->
                 190001,
                 "autocatpath_seed",
                 "1",
-                "spark",
+                "spruce",
                 "322.1",
                 "STATUS:succeeded",
                 "autocatpath_seed: seed=1 model=mace:medium: "
                 "29 state(s), 8 warning(s).",
             ),
-            (190000, "autocatpath_aggregate", None, "pollux", "40.0", None, None),
+            (190000, "autocatpath_aggregate", None, "poplar", "40.0", None, None),
         ]
     )
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
     assert "/refs/job/190001" in resp.text
-    assert ">seed 1 on spark<" in resp.text
-    assert ">aggregate on pollux<" in resp.text
+    assert ">seed 1 on spruce<" in resp.text
+    assert ">aggregate on poplar<" in resp.text
     assert "job #190001 (autocatpath_seed)" in resp.text
     assert "one seed&#39;s simulation run" in resp.text
     assert "succeeded — a finished record" in resp.text
-    assert "322.1 s on spark" in resp.text
+    assert "322.1 s on spruce" in resp.text
     assert "29 state(s), 8 warning(s)" in resp.text
     assert "combines the seeds&#39; partial results" in resp.text
 

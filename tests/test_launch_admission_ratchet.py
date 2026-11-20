@@ -29,9 +29,9 @@ Not a site:
   ``tests/test_outbound_timeout_ratchet.py``'s job) — or a
   ``docker``/``podman`` call whose verb is in :data:`CONTAINER_PROBE_VERBS`;
 * a call in a function (or an enclosing one) that calls
-  ``admission.admit``/``admission.spawn`` (or ``admit``/``spawn``
-  from-imported from ``precis.workers.admission``), and anything inside
-  that module itself.
+  ``admission.admit``/``admission.spawn``/``admission.hold`` (or
+  ``admit``/``spawn``/``hold`` from-imported from
+  ``precis.workers.admission``), and anything inside that module itself.
 
 The argv head resolves through a literal argv, a ``list + list`` whose left
 side is literal, a shell string's first word, or a local ``cmd = [...]``
@@ -71,7 +71,7 @@ _SKIP = {".claude", ".venv", "node_modules", "build", ".git", "__pycache__"}
 #: The admission entry point itself launches by design.
 _ADMISSION_FILES = frozenset({"src/precis/workers/admission.py"})
 _ADMISSION_MODULE = "precis.workers.admission"
-_ADMISSION_CALLS = frozenset({"admit", "spawn"})
+_ADMISSION_CALLS = frozenset({"admit", "hold", "spawn"})
 
 #: Sub-minute bounded probes: argv heads that never need admission.
 PROBES: dict[str, str] = {
@@ -685,6 +685,9 @@ def test_probes_and_admitted_sites_pass() -> None:
         "            subprocess.Popen(['sh', '-c', x])\n"
         "from precis.workers.admission import spawn\n"
         "def h():\n    spawn(fp)\n    subprocess.Popen(c)\n"
+        "from precis.workers.admission import hold\n"
+        "def i():\n    with hold(store, host, fp, holder):\n"
+        "        subprocess.Popen(c)\n"
     )
     assert scan_source("ok.py", ok) == []
     assert (

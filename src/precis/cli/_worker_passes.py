@@ -417,7 +417,7 @@ def build_ref_passes(
         ref_passes.append(_chase_trigger_pass)
 
     # inbound_ground — the claim-hub half of inbound completeness
-    # (docs/backlog/taproot-inbound-grounding.md part b): a paper whose
+    # (gr693782 part b): a paper whose
     # body just finished embedding is ANN-matched against the claim-hub
     # index, each near pair verified through the shared chase verifier,
     # and a certified corroborates/disputes edge written — support with
@@ -556,7 +556,7 @@ def build_ref_passes(
     # job_ssh_node — drains the `kind='job'` queue for jobs whose
     # meta.executor=='ssh_node'. Each runs a plugin dispatch that
     # shells out to a remote node (precis-dft's gpaw_relax → ssh
-    # spark docker run) and blocks until it finishes, so the cap is
+    # GPU-node docker run) and blocks until it finishes, so the cap is
     # small. See workers/executors/ssh_node.py.
     if _register("job_ssh_node"):
         from precis.workers.executors.ssh_node import run_ssh_node_pass
@@ -690,10 +690,14 @@ def build_ref_passes(
             # this only raises the cap.
             max_tokens=SUMMARIZE_DISPATCH_MAX_TOKENS,
         )
-        # Escalation (gr595543): when the small rung's repair turns still
-        # trip the gist contract, the chunk escalates to a bigger rung —
-        # attempt N+1 on the SAME router run, ending the same-model retry
-        # loop gr576133 reported. A *distinct* client bound to the
+        # Escalation (gr595543): a first "brief grossly over budget"
+        # verdict escalates immediately — the rung cannot compress to the
+        # gist budget, so repairs re-bill the same failure — and any
+        # other contract trip escalates once the repair turns exhaust;
+        # while _RungHealth has the rung cooled for measured overrunning,
+        # chunks bypass it entirely (gr576133). Escalation is attempt N+1
+        # on the SAME router run, ending the same-model retry loop
+        # gr576133 reported. A *distinct* client bound to the
         # env-pinned model (mirrors classify's gate/escalate shape below;
         # a registered op source would silently re-run the small chain).
         _sum_escalate_model = os.environ.get("PRECIS_SUMMARIZE_ESCALATE_MODEL") or None
@@ -745,7 +749,7 @@ def build_ref_passes(
         # rungs (glm-4.7-flash → summarizer) are non-thinking small models,
         # so the empty-return hazard the old `summarizer` pin guarded
         # against no longer applies — and an `llm.op.classify` row steers
-        # it live (e.g. onto castor). PRECIS_CLASSIFY_MODEL still overrides
+        # it live (e.g. onto the local-serving node). PRECIS_CLASSIFY_MODEL still overrides
         # via the registry's env hatch. Per-chunk high volume ⇒ a lite row
         # (metadata, no replay blob).
         _cls_client = _DispatchClient(
@@ -896,7 +900,7 @@ def build_ref_passes(
     # PRECIS_PAPER_GLOSSARY_ENABLED as the live gate): a
     # corpus-wide backfill is a deliberate, node-targeted batch, like
     # classify. Model defaults to the cheap `summarizer` alias. See
-    # workers/paper_glossary.py + docs/backlog/reading-prep-loop.md.
+    # workers/paper_glossary.py + me690334.
     if _register("paper_glossary"):
         from precis.utils.llm.router import DispatchClient as _DispatchClient
         from precis.utils.llm.router import Tier as _Tier
@@ -1189,7 +1193,7 @@ def build_ref_passes(
     # feed (the first automatic audio producer). Default-OFF (`service prio` or --only briefing_audio — §L retired
     # PRECIS_BRIEFING_AUDIO_ENABLED as the live gate)
     # and TTS-host-only: it needs the precis-tts container image +
-    # ffmpeg + a PRECIS_PODCAST_DIR, all of which live on melchior. Decoupled
+    # ffmpeg + a PRECIS_PODCAST_DIR, all of which live on the TTS host. Decoupled
     # from the briefing *job* (which runs on the agent worker, no TTS): this
     # pass reads the persisted `briefing-<date>` ref and self-schedules off
     # its existence, idempotent via a `meta.audio_episode_id` marker. See
@@ -1247,8 +1251,8 @@ def build_ref_passes(
             ref_passes.append(_briefing_audio_pass)
 
     # cast_audio — narrate the daily *casts* (morning reading-brief + evening
-    # nidra) onto the podcast feed (docs/backlog/reading-prep-loop.md §Audio).
-    # Same substrate as briefing_audio: TTS-host-only (melchior), container-first,
+    # nidra) onto the podcast feed (me690334 §Audio).
+    # Same substrate as briefing_audio: TTS-host-only, container-first,
     # self-scheduling off an un-narrated cast draft, idempotent via
     # meta.audio_episode_id. Default-OFF (`service prio` or --only
     # cast_audio — §L retired PRECIS_CAST_AUDIO_ENABLED as the live gate)
@@ -1506,7 +1510,7 @@ def build_ref_passes(
         ref_passes.append(_parts_refresh_pass)
 
     # openalex_snapshot — the OpenAlex works-dump cites refresh (slice 3,
-    # docs/backlog/openalex-snapshot-cites.md). Same shape as parts_refresh:
+    # me693596). Same shape as parts_refresh:
     # this registration is for a manual/dedicated `--only openalex_snapshot`
     # run only (no `default_profiles`, no `enable_env`). The STANDING runner
     # is the `worker-oasnap` unit (playbook 20f) on the
@@ -1660,7 +1664,7 @@ def build_ref_passes(
     # watch poll, and now the host-pinned dream_agent / anki_sync
     # cadences too) into the worker via a DB-lease conditional advance
     # (exactly-once across the fleet, no designated node). It must run on
-    # the agent profile too, or a host-pinned melchior cadence never has
+    # the agent profile too, or a host-pinned agent-host cadence never has
     # an eligible claimant. gr518349: the STANDING trigger is the
     # dedicated `start_scheduler_thread` (cli/worker.py) — this
     # in-rotation pass stays as a backstop so one long sibling pass
@@ -1815,6 +1819,21 @@ def build_ref_passes(
 
         ref_passes.append(_paper_reconcile_pass)
 
+    # survey_extract requeue (gr632959) — drains the
+    # meta.survey_requeue_pending flag the ingest-side markup_refetch
+    # body REPLACE stamps (precis.ingest can't mint jobs itself), so a
+    # paper extracted against a swapped-out body gets a fresh complete
+    # pass. Cheap between flags; cadence via
+    # PRECIS_SURVEY_REQUEUE_REFRESH_HOURS (default 1).
+    if _register("survey_requeue"):
+        from precis.workers.runner import BatchResult as _BatchResult
+        from precis.workers.survey_requeue import run_survey_requeue_pass
+
+        def _survey_requeue_pass(batch_size: int) -> _BatchResult:
+            return run_survey_requeue_pass(store, limit=None)
+
+        ref_passes.append(_survey_requeue_pass)
+
     # OpenAlex abstract/metadata enrich — self-healing fill for
     # top-level abstracts (what the paper page reads). Promotes
     # already-fetched OpenAlex abstracts (no network) and drips a
@@ -1922,11 +1941,11 @@ def build_ref_passes(
         ref_passes.append(_stub_rank_pass)
 
     # Quota-check pass — refresh the Claude.ai OAuth utilisation
-    # snapshot via one 1-token `claude -p "quota" --output-format
-    # json` call. Agent profile only: hermes's OAuth state lives
+    # snapshot via one `claude -p "quota" --output-format
+    # json` call (input size dominated by CLI context). Agent profile only: hermes's OAuth state lives
     # there. Short-circuits when the persisted snapshot is younger
     # than REFRESH_INTERVAL_S (default 600s), so the cost is one
-    # SQL probe per idle cycle + a 2-token completion every 10 min.
+    # SQL probe per idle cycle + one `claude -p` call every 10 min.
     if _register("quota_check"):
         from precis.workers.quota_check import run_quota_check_pass
         from precis.workers.runner import BatchResult as _BatchResult
@@ -1936,7 +1955,7 @@ def build_ref_passes(
 
         ref_passes.append(_quota_check_pass)
 
-    # Disk-check pass — gripe 191008: caspar's DB SSD hit 100%, psycopg
+    # Disk-check pass — gripe 191008: the database host's DB SSD hit 100%, psycopg
     # DiskFull stalled ALL prod writes ~1.5h before anyone noticed (the
     # Prometheus 90% rule reached no one). System profile, every node:
     # dfs the configured watch paths (default "/") and raises a
@@ -1957,10 +1976,10 @@ def build_ref_passes(
     # registration is for a manual/ad-hoc `--only dream_agent` run only —
     # gated by PRECIS_DREAM_AGENT=1, same as always. The STANDING trigger
     # is now the `dream_agent` scheduler cadence (§A, host-pinned
-    # melchior — workers/scheduler.py), which calls run_dream_pass
+    # the agent host — workers/scheduler.py), which calls run_dream_pass
     # directly; the old standalone hermes-pinned 15-min LaunchDaemon
     # (dream-pass.sh, precis_dream role) is retired. The worker-agent
-    # role now installs PRECIS_DREAM_AGENT on melchior's agent-profile
+    # role now installs PRECIS_DREAM_AGENT on the agent host's agent-profile
     # plist instead. The persona is packaged
     # (data/prompts/dream-persona.md) with no env override.
     if _register("dream_agent"):
@@ -1972,7 +1991,7 @@ def build_ref_passes(
 
         ref_passes.append(_dream_agent_pass)
 
-    # health_digest — docs/backlog/self-healing-spine.md Layer 2. Same shape
+    # health_digest — me691477 Layer 2. Same shape
     # as dream_agent just above: this registration is for a manual/ad-hoc
     # `--only health_digest` run only (no `default_profiles`, no
     # `enable_env`). The STANDING trigger is the `health_digest`
@@ -1988,7 +2007,7 @@ def build_ref_passes(
 
         ref_passes.append(_health_digest_pass)
 
-    # materialize — §F cycle a (docs/backlog/cluster-scheduling.md
+    # materialize — §F cycle a (me695459
     # §F). Same shape as health_digest just above: this registration is
     # for a manual/ad-hoc `--only materialize` run only (no
     # `default_profiles`, no `enable_env`). The STANDING trigger is the

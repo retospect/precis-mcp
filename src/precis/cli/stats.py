@@ -86,6 +86,13 @@ _JOB_FOOTPRINTS_SCHEMA: list[str] = [
     "cpu_p50_s",
     "cpu_p95_s",
 ]
+_MODEL_FOOTPRINTS_SCHEMA: list[str] = [
+    "model",
+    "vram_mb",
+    "context_tokens",
+    "learned_at",
+    "source",
+]
 
 #: An LLM silence shorter than this is normal scheduling jitter, not idleness.
 _LLM_GAP_MINUTES = 5.0
@@ -104,7 +111,10 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "argument-graph corpus report (retracted-source ripple, "
             "unaddressed caveats, open contradictions). "
             "``--job-footprints`` shows the per-(job_type, size) "
-            "footprint p50/p95 rollup. Default: print all sections."
+            "footprint p50/p95 rollup. "
+            "``--model-footprints`` shows the per-model learned VRAM "
+            "footprints the GPU admission checks against (gr595542). "
+            "Default: print all sections."
         ),
     )
     p.add_argument(
@@ -136,6 +146,12 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "rollup the admission table derives from (gr595536).",
     )
     p.add_argument(
+        "--model-footprints",
+        action="store_true",
+        help="Show the per-model VRAM footprint rows the GPU admission "
+        "reserves against (gr595542; migration 0322).",
+    )
+    p.add_argument(
         "--hours",
         type=float,
         default=24.0,
@@ -165,12 +181,14 @@ def run(args: argparse.Namespace) -> None:
         or args.argument
         or args.utilization
         or args.job_footprints
+        or args.model_footprints
     )
     show_findings = args.findings or not any_flag
     show_stubs = args.stubs or not any_flag
     show_argument = args.argument or not any_flag
     show_utilization = args.utilization or not any_flag
     show_job_footprints = args.job_footprints or not any_flag
+    show_model_footprints = args.model_footprints or not any_flag
 
     dsn = resolve_dsn(args.database_url)
     fmt = resolve_format(args)
@@ -231,6 +249,14 @@ def run(args: argparse.Namespace) -> None:
                     "job-footprints",
                     _JOB_FOOTPRINTS_SCHEMA,
                     _query_job_footprints(store, args.days),
+                )
+            )
+        if show_model_footprints:
+            sections.append(
+                (
+                    "model-footprints",
+                    _MODEL_FOOTPRINTS_SCHEMA,
+                    store.model_footprints(),
                 )
             )
     finally:

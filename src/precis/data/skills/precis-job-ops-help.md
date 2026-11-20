@@ -21,7 +21,8 @@ status: active
 
 Lifecycle operations on a `kind='job'` ref once it exists: the
 `tag`-driven cancel, mint-time `prio=`/`origin=` scheduling,
-`mode='retarget'`/`'setting'`/`'extend'`/`'wake'`/`'retry'` modes,
+`mode='retarget'`/`'setting'`/`'extend'`/`'wake'`/`'retry'`/
+`'garden-reject'` modes,
 sweeper guards, and the full `STATUS:` vocabulary including
 `waiting_ask_user`. Submit shapes live in [[precis-job-help]];
 reading the queue in [[precis-job-find-help]].
@@ -60,10 +61,12 @@ pass. Stop the node: `halt:`/`waiting-for:`, `STATUS:paused`, won't-do.
 
 ## Queue behind interactive work — prio= / origin=
 
-Claim order is **class, then priority, then time queued** — the same
-`(class_rank, aged_prio, queued_since)` key the `queue:` lines on a
-queued job report. Two mint-time knobs (both ride `args=` on the
-advertised `put` schema):
+Claim order is **class, then factory-pipeline ops, then the lane
+deficit, then priority, then time queued** — `(class_rank,
+factory_pref, lane_deficit, aged_prio, queued_since, ref_id)`. The
+`queue:` lines on a queued job report position from the same rank keys
+minus the deficit, so a shown position is advisory. Two mint-time
+knobs (both ride `args=` on the advertised `put` schema):
 
 ```python
 put(kind='job',
@@ -205,6 +208,29 @@ It refuses other statuses and mint arguments; use `mode='retry'` for a failed jo
 Waits whose `wake_when.payload.why` contains `quota` or `pause` (case-insensitive)
 are protected unless you explicitly pass `args={'force': True,
 'reason': '<why>'}`.
+
+## Why is my hand-minted job queued forever?
+
+A hand-minted job is never claimed while its non-terminal parent todo
+carries an open exclusion tag. The set matches `view='doable'`: `halt`,
+`halt:*`, `waiting-for:*`, `ask-user`, `ask-user:*`, `child-failed:*`,
+`hold:no-dispatch`, or an unexpired `claimed-by:*` lease.
+`STATUS:paused` is not in this exclusion set.
+
+Symptom: `STATUS:queued` for hours, the queue hint says nothing is
+running on the executor, no log line, and the job card does not name
+the parent's tag. Inspect the parent before minting another job:
+
+```python
+get(kind='todo', id=<parent>, view='raw')
+# Clear a failed-child park before minting (preferred: retry the failed job).
+put(kind='job', id=<failed_job>, mode='retry')
+# Manual alternative for a child-failed:<job> park:
+tag(kind='todo', id=<parent>, remove=['child-failed:<job>'])
+```
+
+Retry details below cover `child-failed-final`; other exclusion tags
+need their own hold resolved before minting.
 
 ## Re-submit a failed job
 ## Retry a failed job

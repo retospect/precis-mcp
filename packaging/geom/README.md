@@ -30,7 +30,7 @@ planner — `GENERATORS["hexfold_scene"]({"sheet": [30, 24], "features":
 do not reach (gr514057). The wheel's `precis_se/__init__.py` is a stub
 (`packaging/geom/precis_se/`) that imports nothing — the real init pulls
 in the DB stack — and must never be installed next to the server wheel.
-This is the near-term surface; `docs/backlog/hexfold-scene-grammar-from-primitives.md`
+This is the near-term surface; me689995
 is the long-term replacement.
 
 ## Load and build

@@ -637,3 +637,18 @@ def test_kindspec_declares_only_get_and_search() -> None:
     assert spec.supports_delete is False
     assert spec.supports_tag is False
     assert spec.supports_link is False
+
+
+@pytest.mark.parametrize("docs_only", [False, True])
+def test_get_schema_reference_table_columns(docs_only: bool) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    root = repo / "docs" if docs_only else repo
+    file = "reference/schema.md" if docs_only else "docs/reference/schema.md"
+    handler = MdHandler(hub=Hub(), roots={"main": root})
+
+    outline = handler.get(id=f"main/{file}")
+    assert "(~refs," in outline.body
+    section = handler.get(id=f"main/{file}~refs")
+    assert "| `ref_id` | bigint |" in section.body
+    assert "| `kind` | text |" in section.body
+    assert "### `chunks`" not in section.body

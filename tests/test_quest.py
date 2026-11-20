@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import pytest
+
 from tests._autocatpath import needs_engine
 
 
@@ -569,6 +571,47 @@ class TestServesAndTree:
         tree = h.get(id=qid, view="tree").body
         assert "draft (1) serving" in tree
         assert "Serving Doc" in tree
+
+    def test_served_by_from_quest_side_stores_serves_server_to_quest(
+        self, store: Any
+    ) -> None:
+        """``rel='served-by'`` from the quest is stored as ``serves`` from
+        the server (one canonical row), shows in the tree, removes with the
+        same spelling, and is cycle-checked like the ``serves`` form."""
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        sub = _created_id(h.put(text="A sub-quest"))
+        todo = store.insert_ref(kind="todo", slug=None, title="Serving Todo").id
+
+        ack = h.link(id=qid, target=f"todo:{todo}", rel="served-by")
+        assert "serves" in ack.body
+
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT src_ref_id, dst_ref_id, relation FROM links "
+                "WHERE %s IN (src_ref_id, dst_ref_id)",
+                (todo,),
+            ).fetchall()
+        assert rows == [(todo, qid, "serves")]
+
+        tree = h.get(id=qid, view="tree").body
+        assert "Serving Todo" in tree
+        assert tree.count("A NO→NH₃ catalyst") == 1
+
+        # the server-side spelling is the identical row (idempotent)
+        h.link(id=qid, target=f"todo:{todo}", rel="served-by")
+        assert len(store.links_for(qid, direction="in", relation="serves")) == 1
+
+        rm = h.link(id=qid, target=f"todo:{todo}", rel="served-by", mode="remove")
+        assert "1 edge removed" in rm.body
+        assert store.links_for(qid, direction="in", relation="serves") == []
+
+        # sub serves qid; qid served-by sub would close a cycle -> refused
+        store.add_link(src_ref_id=sub, dst_ref_id=qid, relation="serves")
+        with pytest.raises(BadInput, match="cycle"):
+            h.link(id=sub, target=f"quest:{qid}", rel="served-by")
 
     def test_tree_caps_servers_per_kind_and_points_at_links(self, store: Any) -> None:
         """2026-10-01: the roadmap root's tree listed 84 papers under one

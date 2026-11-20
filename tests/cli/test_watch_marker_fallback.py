@@ -1,6 +1,6 @@
 """Tests for :func:`precis.cli.watch._check_marker_fallback`.
 
-Hardening half of gr236139: on melchior, every Marker invocation failed
+Hardening half of gr236139: on maple, every Marker invocation failed
 for weeks (surya-ocr 0.22.1's new hard ``llama-server`` backend
 requirement) and ingest silently fell back to fitz page-level
 extraction — visible only as a per-PDF ``log.warning`` that rotted

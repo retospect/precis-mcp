@@ -53,6 +53,8 @@ trailing `Sources:` block. Each cited URL gets a stub `web` ref on
 first render, so markers print as `[web:<id>]` — follow one with
 `get(kind='web', id=<id>)` (the stub fetches the page on access) or
 `get(kind='web', id=<url>)`. Cache hits return the same body for free.
+Every answer also prints a `cite as [wx<id>]` (or `rr`/`rz`) pointer —
+paste it into a note/memory to auto-link this exact cached answer.
 
 ## `id=` is the QUERY, not a ref-id — don't paste a number
 ## How do I retrieve an existing websearch ref by its number?
@@ -61,13 +63,22 @@ first render, so markers print as `[web:<id>]` — follow one with
 These kinds are **addressed by query text**. There is no "fetch ref
 #N" path through `get` here: whatever you pass as `id=`/`q=` is sent
 to Perplexity as a fresh **paid** search on a cache miss. So a bare
-number — a gripe id, a prior ref-id, the `cite as websearch:<id>`
-handle in a result footer — does **not** round-trip. `get(id=171157)`
-would web-search the literal string `"171157"` and cache junk ("171 is
-a composite number").
+number — a gripe id, a prior ref-id — does **not** round-trip as a
+query. `get(id=171157)` would web-search the literal string `"171157"`
+and cache junk ("171 is a composite number").
 
-To stop that footgun, a query that is **nothing but digits is
-rejected** with a hint instead of spending:
+The exception: these kinds DO carry universal handles now — `wx`,
+`rr`, `rz` (and `wb`/`yt` for web/youtube). A stored ref's own handle
+or bare ref-id reads it back **for free, never upstream**:
+
+```python
+get(id="wx170350")                          # the stored answer, no Sonar call
+get(kind="websearch", id="170350")          # same — digits hit the ref-id first
+get(kind="websearch", id="wx170350", view="links")   # its inbound edges
+```
+
+To stop the footgun, a digit string that resolves to **no** stored ref
+is **rejected** with a hint instead of spending:
 
 ```python
 get(kind="websearch", id="171157")
@@ -76,10 +87,8 @@ get(kind="websearch", id="171157")
 
 - **To retrieve an existing ref by its number**, that number is a
   *ref-id* — name the kind it belongs to:
-  `get(id="gripe:171157")`, `get(id="todo:171157")`, or `search(q="…")`
-  to find it. (If a *websearch* ref's own slug happens to be that
-  number, `get(kind="websearch", id="171157")` serves it for free from
-  cache — no new call.)
+  `get(id="gripe:171157")`, `get(id="todo:171157")`, `get(id="wx170350")`,
+  or `search(q="…")` to find it.
 - **To genuinely web-search a bare number** (rare — you almost never
   want this), pass the literal escape:
 
@@ -89,7 +98,10 @@ get(kind="websearch", q="171", args={"literal": True})
 
 `args={"literal": True}` also lets `perplexity-reasoning` /
 `perplexity-research` search a bare number, and the `put(mode='import')`
-path is exempt (imports are explicit).
+path is exempt (imports are explicit). `literal` on a **handle** is
+refused — `get(id="wx170350", args={"literal": True})` contradicts
+itself: the handle already names a stored ref, and its digits are not
+query text. Drop `literal` to read it.
 
 Search block handles (`report-slug~section-<hex>`) are also rejected as
 `id=`/`q=` queries before a paid call. To read the cached report, use the
@@ -250,8 +262,8 @@ without `PERPLEXITY_API_KEY`.
 get(kind="perplexity-reasoning", q="<query>", args={"refresh": True})
 ```
 
-`perplexity-research` is pinned by default; `perplexity-reasoning` has
-a 30-day TTL; `websearch` has 7 days. See `precis-cache` for the full
+`perplexity-research` and `perplexity-reasoning` are pinned by default;
+`websearch` has 7 days. See `precis-cache` for the full
 TTL table and the `CACHE:fresh` / `CACHE:stale` / `CACHE:pinned` axis.
 
 ## Bulk-import a directory of reports

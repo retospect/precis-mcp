@@ -126,7 +126,13 @@ class MakeHandler(Handler):
     # ── get ──────────────────────────────────────────────────────────
 
     def get(
-        self, *, id: str | int | None = None, view: str | None = None, **_kw: Any
+        self,
+        *,
+        id: str | int | None = None,
+        view: str | None = None,
+        limit: Any = None,
+        cursor: str | None = None,
+        **_kw: Any,
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return render_slug_ref_list(
@@ -153,7 +159,13 @@ class MakeHandler(Handler):
         if view == "links":
             from precis.handlers._links_render import render_links_view
 
-            return render_links_view(self.store, ref, sense="make")
+            return render_links_view(
+                self.store,
+                ref,
+                sense="make",
+                limit=limit,
+                cursor=cursor,
+            )
         if view is not None:
             raise BadInput(
                 f"unknown make view {view!r}",

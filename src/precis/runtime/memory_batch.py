@@ -21,11 +21,11 @@ MAX_BATCH_PAGE_SIZE = 10
 DEFAULT_BATCH_PAGE_SIZE = 5
 _FILTERS = frozenset({"scope", "page_size", "mode", "view", "tags", "under", "depth"})
 _ITEM_KEYS = _FILTERS | {"key", "q"}
-_OUTER_KEYS = _FILTERS | {"kind", "q", "page", "__extras__"}
+_OUTER_KEYS = _FILTERS | {"kind", "q", "page", "__extras__", "batch"}
 _VIEWS = frozenset({"index", "ids", "count"})
 _NEXT = (
-    "search(kind='memory', args={'batch': "
-    "[{'key': 'jane', 'q': 'Jane'}, {'key': 'bill', 'q': 'Bill'}]})"
+    "search(kind='memory', batch="
+    "[{'key': 'jane', 'q': 'Jane'}, {'key': 'bill', 'q': 'Bill'}])"
 )
 
 
@@ -69,10 +69,13 @@ def _check_filter_types(values: dict[str, Any], where: str) -> None:
 
 
 def _children(args: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-    if args.get("kind") != "memory":
-        _refuse("args.batch requires kind='memory'")
+    kind = args.get("kind")
+    if kind != "memory":
+        # gr568808: batch= is a verb-level param — a kind that doesn't
+        # implement it refuses "not on <kind> yet", never a silent drop.
+        _refuse(f"batch= is not on kind={kind!r} yet — it only runs on kind='memory'")
     if args.get("q") is not None:
-        _refuse("args.batch cannot combine with an outer q; put q in each item")
+        _refuse("batch= cannot combine with an outer q; put q in each item")
     unknown = sorted(str(key) for key in args if key not in _OUTER_KEYS)
     if unknown:
         _refuse(
@@ -80,10 +83,12 @@ def _children(args: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         )
     if isinstance(args.get("page"), bool) or args.get("page") not in (None, 1):
         _refuse("a memory batch supports only page=1")
-    extras = copy.deepcopy(args.get("__extras__", {}))
-    items = extras.pop("batch")
+    # ``batch`` rides args['batch'] — the dispatcher hoists the nested
+    # ``args={'batch': …}`` spelling to the same slot before this runs.
+    items = args.get("batch")
     if not isinstance(items, list) or not 1 <= len(items) <= MAX_BATCH_ITEMS:
-        _refuse(f"args.batch must contain 1..{MAX_BATCH_ITEMS} search objects")
+        _refuse(f"batch= must contain 1..{MAX_BATCH_ITEMS} search objects")
+    extras = copy.deepcopy(args.get("__extras__", {}))
     unknown = sorted(str(key) for key in extras if key not in _FILTERS)
     if unknown:
         _refuse(
@@ -92,6 +97,9 @@ def _children(args: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 
     defaults = copy.deepcopy(args)
     defaults.pop("__extras__", None)
+    # A child carrying ``batch`` would route back into this dispatcher —
+    # items opt out of batching by construction.
+    defaults.pop("batch", None)
     # Canonicalize shared fields before an item overrides a subtree or mode.
     for name in _FILTERS:
         if name not in extras:
@@ -105,7 +113,7 @@ def _children(args: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     children: list[tuple[str, dict[str, Any]]] = []
     keys: set[str] = set()
     for position, item in enumerate(items):
-        where = f"args.batch[{position}]"
+        where = f"batch[{position}]"
         if not isinstance(item, dict):
             _refuse(f"{where} must be a search object")
         unknown = sorted(str(key) for key in item if key not in _ITEM_KEYS)

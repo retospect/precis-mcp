@@ -10,7 +10,7 @@ effort: high
 - **Next:** pcb-se-binding is draft — the rough box built 2026-10-21, the pass-A remainder and the outline-negotiation loop are unready, and v2 moved to pcb-workspace-code slice 0b (2026-10-23). O5 + declared flat faces shipped 2026-10-21 (`annotations={'boss': <t>}` on a `load_at`/`fixed_at` port pins a passive slab at its declared axis face; non-axis directions refuse). O2–O4 shipped 2026-10-15 (`min_member=`, default rounding, stall-damped OC moves); print 2 (a re-run of the bracket with `min_member=0.003` and `max_iter` about 150) is owed after r40 is live.
 - **Blocked by:** Nothing. Active again from 2026-10-17 (Reto: "we should bring that back"): spec `me628986` (pocket-from-molecule) drives region-property layer B/C. Still owed from the 2026-10-12 deprioritisation: the load-test numbers (solver predicts 0.04 mm at 1 kg, 0.08 mm at 2 kg; needs a dial gauge or a load that visibly moves it) and the first Print files click are still owed, with no date.
 - **Unblocks:** Intent-based machine design with charge, field and optical properties.
-- **Acceptance:** Scaled print files shipped (`?scale=`, `-x<factor>` name, `precis:scale_factor`, `.json` descriptor, checks at printed size); the atom-model floor and `models` list wait on [printable-atomic-models](../printable-atomic-models.md). Preserve the already dogfooded region slice A.
+- **Acceptance:** Scaled print files shipped (`?scale=`, `-x<factor>` name, `precis:scale_factor`, `.json` descriptor, checks at printed size); the atom-model floor and `models` list wait on printable-atomic-models (me694168). Preserve the already dogfooded region slice A.
 - **Worktree:** `se-machine-design`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -23,7 +23,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 (per-region properties: hydrophobic, charge, field, optical) and a
 declarative intent can be realized by pick-and-join, so an LLM reasons over
 space, motion, assembly, charge, field and light — a PCB, a cartridge and a
-motor as children of one design. North-star: `backlog/se-kind.md` +
+motor as children of one design. North-star: me694842 +
 spec `me628986` (pocket-from-molecule's region property layer and realize loop). As the se owner it ranks the design-model items the other se threads
 (se-3d-viewer, se-nucleic-chain, hexfold-toolkit) consume. Today the region-property layer is
 unbuilt and blocks three of the six reasoning axes; everything below reads
@@ -73,7 +73,7 @@ off that gap until it closes.
       `?scale=&model=` on the route (422 with `min_scale`), and
       `print/{block}.json`;
     - the print check at printed size;
-    - the atom models in `backlog/printable-atomic-models.md`.
+    - the atom models in me694168.
     The dialog is se-3d-viewer's. The writer scale shipped
     (`precis_se/printscale.py`, route `print/{block}.3mf?scale=`).
   - **Open question to Reto** (item -6): declared flat faces with O5 (load
@@ -112,7 +112,7 @@ off that gap until it closes.
    specs folded in 2026-10-21. Blocks three of six reasoning axes (charge,
    field, optical). Ranked in the nanoreactor thread; when a second driver
    needs the realize loop, extract it from `pocket_realize.py` here.
-2. **Organic print: backlog/structural-solution-space.md §Slice 4
+2. **Organic print: me695531 §Slice 4
    bridge** (Reto 2026-10-03). The next build item. Note §14 listed
    O1–O5; O1 shipped 264f412c0, O2–O4 shipped 2026-10-15, O5 + declared
    flat faces shipped 2026-10-21 (port `annotations={'boss': <t>}` →
@@ -130,7 +130,7 @@ off that gap until it closes.
      echo always names the effective round.
    Print 1 is the bracket `organic-bracket-1` (job 464356). Printer: Bambu
    Lab X1 Carbon with tree supports; the goal is support-free.
-3. **backlog/flatpack-furniture-generator.md** — builds 1 and 2 shipped
+3. **me694692** — builds 1 and 2 shipped
    2026-10-09 (`src/precis/sheet/`, `src/precis_se/flatpack/`: panels,
    finger/straight joints, shelves, skyline nesting, laser SVG and DXF,
    the 50 mm cube golden); build 3 shipped 2026-10-13
@@ -143,9 +143,9 @@ off that gap until it closes.
    engrave labels). Rulings (laser first, 3 mm cardboard, finger
    joints default, shared sheet job under flat-pack, PCB writes through
    ewod-pcb's adapter only) are recorded in the file.
-4. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
+4. **me692057** — owned by
    term-taxonomy; wait, do not duplicate rank here (seam below).
-6. **backlog/pcb-se-binding.md** — the mm→m crossing; a producer exists,
+6. **me692932** — the mm→m crossing; a producer exists,
    a consumer was never built. Peer session EWOD found this the same day.
    Vet round 3 folded 2026-10-02; two passes (pcb side first), both
    carry migrations. Reto accepted the five v1 calls 2026-10-02.
@@ -169,12 +169,12 @@ off that gap until it closes.
      remainder moved to pcb-workspace-code slice 0b (item 7).
 7. **pcb-se-binding v2 → pcb-workspace-code slice 0b** — moved
    2026-10-23 (Reto): "Board 3-D shape in the container" in
-   `backlog/pcb-workspace-code.md` — the board's outline, per-part
+   me693071 — the board's outline, per-part
    heights/courtyards, mounting holes and keepouts exposed as data and
    as a callable inside the workspace container. Owned by the
    structure-workspaces thread; waits on pcb-workspace-code slice 0,
    not on item 6.
-8. **backlog/pcb-argue-with-design.md** — slices 1+2 shipped; the
+8. **me690151** — slices 1+2 shipped; the
    `pcb_argue` job answers open notes in place. No prod `service_config`
    row owed (a job_type rides the `job_inproc` lane). Left: the browser
    click check (human);
@@ -214,7 +214,7 @@ off that gap until it closes.
 
 ## Horizon
 
-0. **backlog/se-flow-kernel.md** — dimension-free Hele-Shaw + tracer on
+0. **me695207** — dimension-free Hele-Shaw + tracer on
    cad envelopes (mm to 50 cm thin chambers) with a regime card; ready
    2026-10-20 (Q1–Q3 decided); slice 1 landed 2026-10-20 on `flow-s1`
    (`src/precis_flow/` + tests), slice 2 landed 2026-10-21 on `flow-s2`
@@ -226,7 +226,7 @@ off that gap until it closes.
    `flow:lumen` spec + lumen `view='flow'`); slices 4a (toolkit
    `evaluate` + tracer to the player through a workspace) and 4b (the
    design-optimisation kit + examples, no server op) are ranked in
-   structure-workspaces Do-next 5–6, as is `backlog/se-native-fields.md`
+   structure-workspaces Do-next 5–6, as is me694928
    (solids: conduction, DC, Joule, thermoelastic) — seam in INDEX.md.
 0a. **se cylinder wrap + mold negative** — wrap a relief / height map /
    2-D shape around a cylinder, undercut check per pull layout, mold
@@ -242,7 +242,7 @@ off that gap until it closes.
    constant-in-z undercut check; milled-mold cutter radius; the
    `twist ↔ chiral-screw` (`twist_per_cell`) bridge; nano pattern
    consumer in spec `me628986` (pocket-from-molecule).
-0b. **backlog/se-multiphysics.md** — species/heat/EO/Darcy/slip/
+0b. **me694808** — species/heat/EO/Darcy/slip/
    compliance/power-law/two-phase on the thin-gap kernel + external 3-D
    backend; se carries BCs as patch measures (Reto 2026-10-21); slice 1
    (species advection–diffusion, Taylor dispersion, wall reactions)
@@ -251,7 +251,7 @@ off that gap until it closes.
    keys + four species COMPUTERS, `wall_rate`, migration 0231 via
    builder-ce, skills `precis-se-flow-help` + regions section); slice 1b
    (entrance-region mass transfer) next, later slices draft.
-1. **backlog/se-feasibility-and-cost.md** — owned by nobody today; the far
+1. **me694377** — owned by nobody today; the far
    end all se threads (se-3d-viewer, se-nucleic-chain, hexfold-toolkit)
    serve. Claimed here.
 2. **spec `me629051`** — transition-state pocket
@@ -270,18 +270,18 @@ off that gap until it closes.
    sibling of `me629033` under group `me628986`; the retired
    backlog/design-workbench-realize.md). Blocked-by 3's Apply
    (spec `me629932`).
-5. **backlog/se-off-the-shelf-fabrication.md**
-6. **backlog/tslot-profile-library.md** — T-slot profiles as real parts
+5. **me695392**
+6. **gr695160** — T-slot profiles as real parts
    (Reto 2026-10-01); makes the off-the-shelf captive-T-slot joint
    buildable.
-7. **backlog/rack-19in-helper.md** — 19-inch rack helper (Reto
+7. **gr695445** — 19-inch rack helper (Reto
    2026-10-01); first consumer of the T-slot library.
 8. **spec `me630880`** — the diamondoid sp³ shape language (transferred
    from `backlog/diamondoid-pattern-language.md`, gr629128)
-9. **backlog/cad-machine-spec.md**
-12. **backlog/cad-assembly-checklist-seed-items.md**
-13. **backlog/cad-diagnose-apply-loop.md**
-14. **backlog/printable-atomic-models.md**
+9. **me694526**
+12. **me694388**
+13. **me694457**
+14. **me694168**
 15. **spec `me628837`** — se optical domain round 2: placement solver,
     DRC fold-in, relay chains and the regimes round 1 declines to model
     (the retired backlog/se-fret-round-2.md).
@@ -295,8 +295,8 @@ off that gap until it closes.
     backlog/nm-stick-placement.md).
 18. **spec `me628828`** — boxel-assembly face codes, fit/reject and the
     off-O(N²) plan (the retired backlog/nm-face-codes-and-scale.md).
-19. **backlog/se-process-skills-as-rewrites.md**
-21. **backlog/situation-rule-tables.md** — unblocked (design-state-core
+19. **me694801**
+21. **me695299** — unblocked (design-state-core
     shipped in r37). Three-verdict pair
     checks over swept volumes in se drc; arguably multiscale-design-core's
     (it is a constraint-catalogue piece), kept here because its only
@@ -308,11 +308,11 @@ off that gap until it closes.
 
 ## Parked
 
-- **[cad-pattern-ops](../cad-pattern-ops.md)** — DSL mirror/rotate/tile as one motif mechanism; unparks on Reto's ruling whether a model-side pattern mechanism beats the Python-generator path.
+- **cad-pattern-ops (me694762)** — DSL mirror/rotate/tile as one motif mechanism; unparks on Reto's ruling whether a model-side pattern mechanism beats the Python-generator path.
 - **microfluidic cartridge modelling** — unparked by Reto 2026-09-30 to
   the Horizon only, and lives inside spec `me630082`
   (Do-next 9) rather than as its own entry.
-- **backlog/method-transfer-stellar-signal-separation.md** — Graz notes;
+- **gr695355** — Graz notes;
   maybe useful for object manipulation (Reto, 2026-10-01). Unparks if an
   object-manipulation thread opens.
 - **One dormant quest owned by this thread** (Reto 2026-10-03, td460284):

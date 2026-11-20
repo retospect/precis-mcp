@@ -49,6 +49,7 @@ def _record_fan_out(
         kind_overrides: dict | None = None,
         *,
         deadline_at: float | None = None,
+        lexical_fallback: set[str] | None = None,
     ) -> dict[str, object]:
         seen["kinds"] = list(kinds)
         return {k: [_hit(k, f"{k} hit", i + 1)] for i, k in enumerate(kinds)}

@@ -2,7 +2,7 @@
 
 Used by :class:`~precis.handlers.taxon.TaxonHandler` and, later, the seed
 writer, so hand-put and seeded nodes are byte-identical. No DB, no I/O. The
-fixed key set is the one in `docs/backlog/term-taxonomy.md` §Design.
+fixed key set is the one in me693578 §Design.
 """
 
 from __future__ import annotations
@@ -153,6 +153,51 @@ def dimension_clash(a: dict[str, Any], b: dict[str, Any]) -> bool:
     if ka != kb:
         return True
     return ka == "si" and a.get("si_vector") != b.get("si_vector")
+
+
+def _boundary_entries(meta: dict[str, Any]) -> list[str]:
+    """Every ``includes``/``excludes`` entry, as strings (other shapes are
+    refused by :func:`validate_taxon_meta` before a node is stored)."""
+    out: list[str] = []
+    for key in BOUNDARY_KEYS:
+        for entry in meta.get(key) or []:
+            out.append(str(entry))
+    return out
+
+
+def explicitly_distinguished(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    *,
+    a_handle: str | None = None,
+    b_handle: str | None = None,
+) -> bool:
+    """True when a boundary entry (``includes``/``excludes``) on either side
+    names the other — an explicit writer-made distinction that must not read
+    as a duplicate. An embedding near-miss between "classification accuracy
+    on the training set" and "classification accuracy on held-out test
+    samples" is exactly the pair the boundary keys exist for: cosine
+    similarity cannot see that one ``excludes`` the other (gr720773).
+
+    A side names the other by a whole handle (``tn<id>``) or a whole
+    normalized name/alias of at least four characters. Word boundaries
+    keep partial handles and words from clearing an unrelated candidate.
+    """
+    for meta, other, handle in ((a, b, b_handle), (b, a, a_handle)):
+        entries = [normalize_name(e) for e in _boundary_entries(meta)]
+        if not entries:
+            continue
+        names = [other.get("name") or "", *(other.get("aliases") or [])]
+        terms = [
+            name for value in names if len(name := normalize_name(str(value))) >= 4
+        ]
+        if handle:
+            terms.append(handle.lower())
+        for term in terms:
+            pattern = re.compile(rf"(?<!\w){re.escape(term)}(?!\w)")
+            if any(pattern.search(entry) for entry in entries):
+                return True
+    return False
 
 
 def mirror_namespace(meta: dict[str, Any]) -> str | None:
@@ -320,3 +365,46 @@ def validate_taxon_meta(
                 next="contract={'required_keys': ['dimension_kind']}",
             )
     return out
+
+
+def matches_term(meta: dict[str, Any], term: str) -> bool:
+    """Does ``term`` name this node — the identity check behind put-time
+    dedup and the ``exact:`` search lead.
+
+    Names and aliases compare with case and whitespace folded. A slug
+    match counts only when the symbol-preserving name comparison also
+    equals the term: slugs discard symbols (``DimeNet++`` slugs to
+    ``dimenet``), so a bare slug collision — even on a legacy row whose
+    ``norm_name`` is absent or stale — cannot establish identity.
+    :func:`resolves_term` is the looser addressing check, where a slug
+    does suffice.
+    """
+    norm = normalize_name(term)
+    if meta.get("norm_name") == norm:
+        return True
+    if any(normalize_name(str(a)) == norm for a in (meta.get("aliases") or [])):
+        return True
+    name = str(meta.get("name") or meta.get("norm_name") or "")
+    return bool(
+        meta.get("slug")
+        and meta["slug"] == slugify(term)
+        and re.sub(r"[\s_-]+", "-", normalize_name(name))
+        == re.sub(r"[\s_-]+", "-", norm)
+    )
+
+
+def resolves_term(meta: dict[str, Any], seg: str) -> bool:
+    """Does a path segment ``seg`` address this node — name, alias or slug
+    equal after case/whitespace folding.
+
+    Deliberately looser than :func:`matches_term`: ``dimenet`` still
+    addresses ``DimeNet++`` and ``c`` addresses ``C++``, so symbol-named
+    nodes keep their slug paths. When several nodes share the segment the
+    path resolver reports them as ambiguous rather than picking one.
+    """
+    norm = normalize_name(seg)
+    if meta.get("slug") and meta.get("slug") == slugify(seg):
+        return True
+    if meta.get("norm_name") == norm:
+        return True
+    return any(normalize_name(str(a)) == norm for a in (meta.get("aliases") or []))

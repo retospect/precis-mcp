@@ -26,10 +26,9 @@ readable diagnostics and bounded views. Preserve access to detail when
 using a summary; a short representation does not establish
 completeness.
 
-Exploratory memory navigation follows the one canonical procedure —
-the second-hop section of [[precis-fisheye-help]]
-(`precis-fisheye-help~10`). It fires on exploration, not on every
-memory read: an explicit narrow request stays narrow and adds no
+Exploratory memory navigation follows the one canonical procedure:
+[[precis-fisheye-help]] § "The second hop". It fires on exploration, not
+on every memory read: an explicit narrow request stays narrow and adds no
 `+recall`. This is agent guidance, not a runtime default; gr564250 is
 wontfix — two-hop browsing was accepted as sufficient, so do not
 reopen three-hop search to implement the preference.
@@ -38,8 +37,8 @@ reopen three-hop search to implement the preference.
 
 | Goal | Skill |
 |---|---|
-| Find the right procedure | precis-search-help~25 |
-| Read a focused object and its context | precis-fisheye-help~1..2 |
+| Find the right procedure | [[precis-search-help]] § "Find the right skill for a task" |
+| Read a focused object and its context | [[precis-fisheye-help]] § "One door" |
 | Work through explicit code | [[precis-workspace-help]] |
 
 ## See also
@@ -49,4 +48,5 @@ reopen three-hop search to implement the preference.
 ## Provenance
 
 Staged as memory me563920 at Reto's request (2026-11-04); the canonical
-procedure it then held moved to `precis-fisheye-help~10` under gr563975.
+procedure it then held moved to [[precis-fisheye-help]] § "The second hop"
+under gr563975.

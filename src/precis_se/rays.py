@@ -1,5 +1,5 @@
 """se observation rays — multiscale §5.4 ``cast_ray`` + §5.5 bookmarks
-(structure-workspaces slice 2r.1, docs/backlog/structure-workspaces.md
+(structure-workspaces slice 2r.1, me693174
 §Observation rays).
 
 A ray is a **block child** beside ports, measures and pockets (the

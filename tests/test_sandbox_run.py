@@ -34,6 +34,14 @@ from tests.conftest import id_of
 # validate_submit / argv) run fine under the same mark.
 pytestmark = pytest.mark.db
 
+
+@pytest.fixture(autouse=True)
+def _gateway_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sandbox submit check needs the gateway host configured (fail-closed
+    otherwise); tests of the unset path delete it themselves."""
+    monkeypatch.setenv("PRECIS_GATEWAY_HOST", "maple")
+
+
 # ── stub podman ────────────────────────────────────────────────────
 
 _STUB = """#!/usr/bin/env python3
@@ -92,9 +100,9 @@ def sandbox_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("PRECIS_PODMAN_BIN", str(stub))
     monkeypatch.setenv("SANDBOX_STUB_DIR", str(state_dir))
     monkeypatch.setenv("PRECIS_SANDBOX_WORK_DIR", str(tmp_path / "work"))
-    monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "balthazar spark")
+    monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "alder spruce")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-test-token")
-    monkeypatch.setenv("PRECIS_NODE", "balthazar")
+    monkeypatch.setenv("PRECIS_NODE", "alder")
     # Skip the once-per-process boot reconcile unless a test opts in.
     monkeypatch.setattr(claude_docker, "_reconciled", True)
     return state_dir
@@ -106,7 +114,7 @@ def sandbox_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _valid_params(**over: Any) -> dict[str, Any]:
     p = {
         "prompt": "write a python script that prints hello",
-        "target_node": "balthazar",
+        "target_node": "alder",
         "resources": {"wall_seconds": 1800},
     }
     p.update(over)
@@ -120,7 +128,7 @@ def _script_read_params(**over: Any) -> dict[str, Any]:
         "mode": "script",
         "code": "print('hello')\n",
         "precis_access": "read",
-        "target_node": "balthazar",
+        "target_node": "alder",
         "resources": {"wall_seconds": 1800},
     }
     p.update(over)
@@ -133,7 +141,7 @@ def _valid_run_params(*, artifact: int, **over: Any) -> dict[str, Any]:
     p: dict[str, Any] = {
         "mode": "run",
         "artifact": artifact,
-        "target_node": "balthazar",
+        "target_node": "alder",
         "resources": {"wall_seconds": 1800},
     }
     p.update(over)
@@ -242,7 +250,7 @@ class TestValidateSubmit:
     valid submit passes."""
 
     def _env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "balthazar spark")
+        monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "alder spruce")
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
 
     def test_valid_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -344,14 +352,44 @@ class TestValidateSubmit:
                 is None
             ), f"{ok!r} should pass"
 
-    def test_rejects_melchior(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_rejects_gateway_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._env(monkeypatch)
         # Even if an operator mistakenly allowlists it.
-        monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "melchior balthazar")
-        err = sandbox_run.validate_submit(
-            None, params=_valid_params(target_node="melchior")
+        monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "maple alder")
+        for node in ("maple", "maple.local"):
+            err = sandbox_run.validate_submit(
+                None, params=_valid_params(target_node=node)
+            )
+            assert err is not None and "excluded" in err and node in err
+        # A different node is still fine.
+        assert (
+            sandbox_run.validate_submit(None, params=_valid_params(target_node="alder"))
+            is None
         )
-        assert err is not None and "melchior" in err
+
+    def test_gateway_host_unset_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._env(monkeypatch)
+        monkeypatch.delenv("PRECIS_GATEWAY_HOST", raising=False)
+        # Allowlisted, valid target: still refused, naming the setting + env.
+        err = sandbox_run.validate_submit(
+            None, params=_valid_params(target_node="alder")
+        )
+        assert err is not None
+        assert "cluster.gateway_host" in err and "PRECIS_GATEWAY_HOST" in err
+        assert "not configured" in err
+        # A blank value is unset too.
+        monkeypatch.setenv("PRECIS_GATEWAY_HOST", "  ")
+        assert sandbox_run.validate_submit(None, params=_valid_params()) is not None
+
+    def test_missing_target_node_precedes_gateway_check(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._env(monkeypatch)
+        monkeypatch.delenv("PRECIS_GATEWAY_HOST", raising=False)
+        err = sandbox_run.validate_submit(None, params=_valid_params(target_node=None))
+        assert err is not None and "target_node is required" in err
 
     def test_rejects_non_allowlisted_node(
         self, monkeypatch: pytest.MonkeyPatch
@@ -363,7 +401,7 @@ class TestValidateSubmit:
         assert err is not None and "agent_sandbox_host" in err
 
     def test_rejects_missing_oauth_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "balthazar")
+        monkeypatch.setenv("PRECIS_SANDBOX_HOSTS", "alder")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         err = sandbox_run.validate_submit(None, params=_valid_params())
         assert err is not None and "CLAUDE_CODE_OAUTH_TOKEN" in err
@@ -465,7 +503,7 @@ def test_dispatch_mints_node_pinned_queued_job(
     job_id, meta = int(row[0]), dict(row[1])
     assert meta["job_type"] == "sandbox_run"
     assert meta["executor"] == "claude_docker"
-    assert meta["params"]["target_node"] == "balthazar"
+    assert meta["params"]["target_node"] == "alder"
     assert "STATUS:queued" in _tags(store, job_id)
     # Not self-resolving → dispatch injects child_job_succeeded so the
     # parent todo closes on a clean run.
@@ -508,20 +546,20 @@ def test_put_time_validate_accepts_mode_run_with_artifact(
 def test_claim_is_node_pinned_and_leased(
     store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    jid = _mk_queued_job(store, params=_valid_params(target_node="spark"))
-    # This worker is balthazar — must not claim a spark-pinned job.
-    monkeypatch.setenv("PRECIS_NODE", "balthazar")
+    jid = _mk_queued_job(store, params=_valid_params(target_node="spruce"))
+    # This worker is alder — must not claim a spruce-pinned job.
+    monkeypatch.setenv("PRECIS_NODE", "alder")
     claude_docker.run_claude_docker_pass(store, limit=4)
     assert _status(store, jid) == "queued"
 
-    # spark's worker claims + launches it, writing a wall-sized lease.
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    # spruce's worker claims + launches it, writing a wall-sized lease.
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
     claude_docker.run_claude_docker_pass(store, limit=4)
     assert _status(store, jid) == "running"
     meta = _meta(store, jid)
     assert meta["container"] == f"sandbox-{jid}"
     assert "lease_until" in meta
-    assert meta["run_host"] == "spark"
+    assert meta["run_host"] == "spruce"
 
 
 # ── Worker boot epoch: reclaim + re-adopt (the lease-epoch reclaim arm) ──
@@ -588,20 +626,20 @@ def test_epoch_reclaim_re_adopts_live_container_without_relaunch(
     polling) rather than relaunch under the same name (this branch is
     REQUIRED — see claude_docker._claim's docstring)."""
     store.record_heartbeat(
-        "spark-docker-epoch", meta={"boot_ids": {"claude_docker": "new-gen"}}
+        "spruce-docker-epoch", meta={"boot_ids": {"claude_docker": "new-gen"}}
     )
     jid = _mk_running_job_with_container(
         store,
-        jid_params=_valid_params(target_node="spark"),
+        jid_params=_valid_params(target_node="spruce"),
         lease_boot_id="dead-gen",
         lease_process="claude_docker",
-        lease_host="spark-docker-epoch",
+        lease_host="spruce-docker-epoch",
     )
     # Seed the stub container as still running under this job's name.
     (sandbox_env / f"{claude_docker.container_name(jid)}.state").write_text(
         "running 0", encoding="utf-8"
     )
-    monkeypatch.setenv("PRECIS_NODE", "spark")
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
 
     launch_calls: list[int] = []
 
@@ -625,7 +663,7 @@ def test_epoch_reclaim_re_adopts_live_container_without_relaunch(
     assert any("re-adopted" in t for t in summaries_and_events)
     # The claim re-stamped THIS worker's own lease identity (host, at least)
     # over the dead generation's stamp.
-    assert _meta(store, jid)["lease_host"] != "spark-docker-epoch"
+    assert _meta(store, jid)["lease_host"] != "spruce-docker-epoch"
 
 
 def test_poison_guard_fails_past_max_attempts(
@@ -1058,7 +1096,7 @@ def test_reap_bin_falls_back_to_docker_when_no_podman(
 ) -> None:
     """Mirrors ``test_capability_probe.py``'s docker-fallback case, scoped to
     the claude_docker reap path specifically: on a docker-only host (no
-    podman on PATH — e.g. spark) polling/reaping must resolve to docker
+    podman on PATH — e.g. spruce) polling/reaping must resolve to docker
     instead of the boot ``reconcile_orphans`` throwing
     ``FileNotFoundError('podman')`` every worker restart. The launch path
     (``_podman_bin``) stays hardcoded podman regardless — rootless podman is
@@ -1265,9 +1303,7 @@ def test_recurring_mints_mode_run_child_with_same_params(
             "schedule": {"cron": "0 0 * * *"},
             "executor": "claude_docker",
             "job_type": "sandbox_run",
-            "params": _valid_run_params(
-                artifact=build_folder_id, target_node="balthazar"
-            ),
+            "params": _valid_run_params(artifact=build_folder_id, target_node="alder"),
         },
     )
     rec_id = id_of(resp.body)

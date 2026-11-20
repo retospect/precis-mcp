@@ -19,7 +19,7 @@ mint/reword time (`taproot/authoring.py::seed_claim_hub`,
 `taproot/hub.py::refine_claim_sentence`) so a caller can fix notation
 before it silently forks a hub.
 
-**Canon v2** (`docs/backlog/nanopub-corpus-remediation.md` Phase 0/1) adds
+**Canon v2** (me691969 Phase 0/1) adds
 a closed ASCII->UTF-8 fallback table -- ``+/-``, ``ug``/``micro``,
 ``degrees C``, ``Ohm``, ``Angstrom``, ``micrometer``/``micron``, ``1e3``
 scientific notation -- each a *symbol respelling*, not a unit conversion,
@@ -112,6 +112,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from functools import lru_cache
+from importlib import resources
 
 __all__ = ["lint_notation", "normalize_notation"]
 
@@ -222,12 +224,26 @@ _SUPERSCRIPT_TAIL_RE = re.compile(f"[{_SUPERSCRIPT_DIGITS}]+$")
 #: A letter-run following a `/` -- the candidate denominator to classify.
 _DENOMINATOR_RUN_RE = re.compile(f"/([A-Za-zµμΩ]+[{_SUPERSCRIPT_DIGITS}]*)")
 
+#: A def2 basis-set name after a method/basis solidus is nomenclature,
+#: not a unit. Inspect the complete name: the denominator scanner only
+#: captures `def`, losing the digits and hyphen that establish its meaning.
+_DEF2_BASIS_RE = re.compile(r"def2-(?:SVP|SV\(P\)|[TQ]ZVPP?D?)(?![\w-])")
+
 #: A differential-quotient denominator (`dI/dV`, `dR/dT`, ...) -- physics
 #: shorthand where `d<Symbol>` is half of a derivative, not a compound
 #: unit; the ambiguity the two-denominator rule guards against (two units
 #: bundled on one solidus) doesn't apply here, so it's a carve-out on top
 #: of the accepted-unit set rather than an entry in it.
 _DIFFERENTIAL_DENOMINATOR_RE = re.compile(r"^d[A-Z]$")
+
+#: An all-caps acronym run immediately left of a `/` (gr722272): with an
+#: all-caps run right of the slash too, the solidus joins two *named
+#: methods* (`CBMC/CFCMC`, `DFT/MD`, `MD/MC`) -- a name pair as printed,
+#: not a value over a denominator, so the two-denominator ambiguity (which
+#: factor moves under the exponent) never arises. Real units fail this on
+#: the left side: `cm²/Vs` has lowercase letters before the slash, and the
+#: accepted-denominator check above already clears `S/cm`-style pairs.
+_ACRONYM_LEFT_OF_SOLIDUS_RE = re.compile(r"(?<![A-Za-z])[A-Z]{2,}$")
 
 #: One formula unit: an element symbol, optionally followed by
 #: stoichiometric digits (`Pd`, `Ni5`).
@@ -257,8 +273,134 @@ _ASCII_MULT_RE = re.compile(r"\d\s*x\s*10")
 #: `~` before a numeral, digit run NOT immediately followed by `/` --
 #: `~19` (approximation) fires, `~ 1/W` (proportionality -- an expression,
 #: not a bare quantity, on the right) does not. Canon: "`~` is overloaded"
-#: (`docs/backlog/nanopub-corpus-remediation.md` Phase 0).
+#: (me691969 Phase 0). A second
+#: carve-out lives in `lint_notation`: a `~<digits>` whose left neighbour
+#: names an addressable thing is a section/chunk selector, exempt via
+#: `_is_tilde_selector_base` (gr674776).
 _TILDE_APPROX_RE = re.compile(r"~\s*\d+(?!\s*/)")
+
+#: The whitespace-delimited token immediately left of a `~` -- the
+#: candidate selector base. `\s*$` is the optional gap between the token
+#: and the `~` (`slug~14`, `slug ~14`).
+_TILDE_LEFT_TOKEN_RE = re.compile(r"(\S+)\s*$")
+
+#: Prose punctuation stripped off a candidate token's edges before the
+#: selector-base checks (`(see remember~14)`, `"soul" ~2`). `:` is NOT
+#: in the strip set: `Size: ~19` is a colon-terminated prose label, not a
+#: `kind:id` ref.
+_TILDE_TOKEN_STRIP = ".,;!?()[]{}\"'`*_<>"
+
+#: A `kind:id` ref token (`paper:acheson26`, `memory:6184`,
+#: `skill:soul`, `main::<qualname>`): a lowercase kind word, one or two
+#: colons, then a non-space id. `Size:` fails (empty id), so a prose
+#: label never exempts `Size: ~19`.
+_KIND_ID_REF_RE = re.compile(r"[a-z][a-z0-9-]*::?\S+")
+
+#: Skill-slug shape (`precis-quest-help`, `soul`, `remember`) -- the
+#: `_SLUG_RE` / `_SKILL_ID_RE` grammar of `precis.handlers.skill`. Shape
+#: alone cannot exempt (`near` is slug-shaped too); it only gates the
+#: corpus probe in `_is_tilde_selector_base`.
+_SLUG_SHAPE_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+#: "Does this slug name a served skill?" -- `precis.handlers.skill`
+#: registers `skill_exists` at import (the same seam
+#: `precis.store._refs_ops.set_skill_probe` uses: taproot must not reach
+#: up to the handlers layer). The probe also answers for plugin-
+#: contributed slugs; unset, `_skill_slugs` reads the packaged corpus.
+_SKILL_SLUG_PROBE: Callable[[str], bool] | None = None
+
+
+def set_skill_slug_probe(probe: Callable[[str], bool] | None) -> None:
+    """Register the skill-slug predicate the `~N` selector carve-out uses."""
+    global _SKILL_SLUG_PROBE
+    _SKILL_SLUG_PROBE = probe
+
+
+def is_served_skill_slug(token: str) -> bool:
+    """Whether ``token`` names a skill this build serves.
+
+    The same probe the `~N` carve-out consults (plugin slugs included),
+    with the packaged-corpus fallback when the probe was never
+    registered. ``precis.runtime.dispatch`` uses this for kindless-get
+    inference (gr676949) — taproot answers so the runtime need not reach
+    up to the handlers layer.
+    """
+    if _SKILL_SLUG_PROBE is not None:
+        return _SKILL_SLUG_PROBE(token)
+    return token in _skill_slugs()
+
+
+@lru_cache(maxsize=1)
+def _skill_slugs() -> frozenset[str]:
+    """Slugs of the skills shipped under ``precis.data.skills`` -- the
+    offline fallback for ``_SKILL_SLUG_PROBE``, walking the corpus the
+    same way ``precis.handlers.skill._walk_skill_root`` does (minus the
+    plugin roots, which only the probe sees)."""
+    try:
+        root = resources.files("precis.data.skills")
+    except (ModuleNotFoundError, FileNotFoundError):
+        return frozenset()
+    out: set[str] = set()
+    stack = [root]
+    while stack:
+        for entry in stack.pop().iterdir():
+            name = entry.name
+            if name.startswith("__"):
+                continue
+            if entry.is_dir():
+                stack.append(entry)
+                continue
+            if not name.endswith(".md"):
+                continue
+            stem = name[:-3]
+            if _SLUG_SHAPE_RE.fullmatch(stem):
+                out.add(stem)
+    return frozenset(out)
+
+
+#: Handle shape (``me674763``, ``pc38``, ``pr592588``) for the standalone
+#: load. ``scripts/memory-lint`` check 16 runs this module from a bare
+#: copy under a throwaway ``src/`` where ``precis.utils`` does not exist
+#: (``tests/test_memory_lint.py`` builds exactly that), so the registry's
+#: parser is reached lazily in :func:`_handle_is_well_formed` and this
+#: shape stands in when it cannot be imported. A module-level
+#: ``precis.utils`` import made that load fail silently and the whole
+#: notation check print nothing (release/r313 gate red, 2026-11-14).
+_HANDLE_SHAPE_RE = re.compile(r"[a-z]{2,3}[0-9]+")
+
+
+def _handle_is_well_formed(token: str) -> bool:
+    """``precis.utils.handle_registry.is_well_formed`` when the registry
+    is importable, else the handle shape alone (standalone load)."""
+    try:
+        from precis.utils import handle_registry
+    except Exception:  # pragma: no cover - the memory-lint standalone copy
+        return _HANDLE_SHAPE_RE.fullmatch(token) is not None
+    return handle_registry.is_well_formed(token)
+
+
+def _is_tilde_selector_base(token: str) -> bool:
+    """Whether ``token`` names something a ``~<digits>`` selector hangs off.
+
+    A `~N` directly right of an addressable thing is a section/chunk
+    selector, not approximation (gr674776): a handle (``me674763~2``,
+    ``pr592588 ~124``), a ``kind:id`` ref (``paper:acheson26~12``), or a
+    skill slug (``precis-quest-help~14``, ``soul ~2``) -- with or without
+    a space before the ``~``. Anything else still warns: punctuation
+    alone (``Size: ~19``, ``- ~19``), a math symbol (``E_g ~5``,
+    ``x ~5``), and ordinary prose (``near ~19`` -- slug-shaped, but no
+    such skill).
+    """
+    if _handle_is_well_formed(token):
+        return True
+    if _KIND_ID_REF_RE.fullmatch(token):
+        return True
+    if not _SLUG_SHAPE_RE.fullmatch(token):
+        return False
+    if _SKILL_SLUG_PROBE is not None:
+        return _SKILL_SLUG_PROBE(token)
+    return token in _skill_slugs()
+
 
 #: Unit-symbol alternation for the negative-exponent rule below --
 #: `_ACCEPTED_DENOMINATORS` sorted longest-first so e.g. `MeV` wins over a
@@ -282,8 +424,13 @@ _UNIT_TOKEN_ALT = "|".join(
 #: reading, which is nonsensical -- the same unit symbol repeating right
 #: after the digits is `range-unit-repeated`'s shape, not an exponent, so
 #: this rule stands down and lets that one fire instead.
+#: Zero is not a negative power: `cycle-0` is an ordinal label, and
+#: rewriting it would corrupt prose. Bare `K-12` is also ambiguous with
+#: the conventional E. coli strain designation, so preserve it; an
+#: explicit caret (`K^-12`) still unambiguously requests an exponent.
 _ASCII_MINUS_EXP_RE = re.compile(
-    rf"(?<![A-Za-zµμΩ])(?P<unit>{_UNIT_TOKEN_ALT})\^?-(\d+)\b(?!\s?(?P=unit)\b)"
+    rf"(?<![A-Za-zµμΩ])(?!K-12\b)(?P<unit>{_UNIT_TOKEN_ALT})"
+    rf"\^?-(?!0+\b)(\d+)\b(?!\s?(?P=unit)\b)"
 )
 
 #: A caret followed by an uppercase letter is a letter superscript
@@ -296,7 +443,7 @@ _CARET_EXPONENT_RE = re.compile(r"\^(?![A-Z])")
 # ── canon v2: ASCII -> UTF-8 symbol-respelling table ────────────────────
 # Each of these is a spelling fix, not a unit conversion -- explicitly
 # exempt from the "never convert the paper's unit" carve-out (canon v2,
-# `docs/backlog/nanopub-corpus-remediation.md` Phase 0).
+# me691969 Phase 0).
 
 #: A numeral immediately left of a spelled-out unit name, with an optional
 #: single space or hyphen between. SI writes a unit *symbol* with a
@@ -359,8 +506,26 @@ _MICROMETRE_WORD_RE = re.compile(
 _UM_UNIT_RE = re.compile(r"\d\s?um\b|\bum/")
 
 #: Scientific E-notation -- `1e3`, `4.6E-6`. Digit required immediately
-#: before `e`/`E` so this never fires on an ordinary word.
-_E_NOTATION_RE = re.compile(r"\b(\d+(?:\.\d+)?)[eE]([+-]?\d+)\b")
+#: before `e`/`E` so this never fires on an ordinary word. The leading
+#: `(?![0-9a-fA-F]{7,}+(?![.+-]?\d))` keeps a hex revision hash out
+#: (gr674576): precis prints a `skill rev <sha8>` on every whole-skill
+#: serve and agents cite it back (`rev 6e521678`), and a sha of the
+#: `<digits>e<digits>` shape is regex-identical to E-notation -- the only
+#: tell is that a 7+-char all-hex run is an identifier, not a quantity
+#: (the `old-sha` audit's `_SHA` uses the same 7-char floor as git's
+#: short sha). The exemption is a *complete* hex token: the possessive
+#: `+` pins the run to its maximal extent (a plain `{7,}` could back off
+#: mid-token), and `(?![.+-]?\d)` refuses a numeric tail -- a `.`, `+` or
+#: `-` followed by a digit is a fraction or a signed exponent
+#: (`123456e-6`, `1234567.6e-6`), never part of a hash, so those still
+#: warn. Below the floor a bare `123e45` keeps firing too -- six chars is
+#: neither a git abbreviation nor a sane mantissa+exponent. Matters
+#: doubly here because `normalize_notation` shares this pattern: an
+#: unguarded match did not merely lint `6e521678`, it rewrote it to
+#: `6×10⁵²¹⁶⁷⁸`.
+_E_NOTATION_RE = re.compile(
+    r"\b(?![0-9a-fA-F]{7,}+(?![.+-]?\d))(\d+(?:\.\d+)?)[eE]([+-]?\d+)\b"
+)
 
 #: `≈`-spacing: a "symbol" is a single letter/Greek letter, or an
 #: identifier with a subscript underscore (`K_d`, `E_g`, `ΔG_aq`, `R_Q`)
@@ -377,11 +542,15 @@ _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
 #: immediately (optionally through one space) followed by a unit-ish
 #: token -- `300-800 mg/g`, `10-20 Mt`, `0.7-0.9`. Four guards keep
 #: nomenclature hyphens out, each found by a corpus dry run:
-#: `(?<![-A-Za-z\d])` before the first number excludes a hyphen/letter/
-#: digit immediately to its left, so a *named-method* hyphen (`M06-2X`,
-#: a DFT functional) never fires (the `06` would otherwise read as the
-#: left half of a range) and neither does a mid-chain member of a longer
-#: hyphenated run; `(?!-\d)` after the second number excludes a
+#: `(?<![-\w.])` before the first number excludes a hyphen, word
+#: character or dot immediately to its left, so a *named-method* hyphen
+#: (`M06-2X`, a DFT functional) never fires (the `06` would otherwise
+#: read as the left half of a range), neither does a mid-chain member of
+#: a longer hyphenated run, and neither does a hyphen inside a model/
+#: package identifier (`qwen3.6-27b-q8_0`, `model_6-27b`, `模型6-27b`) --
+#: blocking dots keeps the matcher from restarting after an identifier's
+#: decimal point while still accepting a standalone decimal range
+#: (`0.7-0.9 mg`); `(?!-\d)` after the second number excludes a
 #: `-<digit>` immediately to its right, so a three-way nomenclature chain
 #: (`5-8-5`, a Stone-Wales defect label) never fires on either of its two
 #: hyphens. Compound/series names (`Fe-ZSM-5`, `UiO-66`, `MIL-101`,
@@ -404,16 +573,21 @@ _APPROX_TOKEN_RE = re.compile(r"[^\s]+$")
 #: does not merely lint, it rewrites `6-311G` to `6–311G` and corrupts
 #: the basis set.
 _HYPHEN_NUMERIC_RANGE_RE = re.compile(
-    r"(?<![-A-Za-z\d])(?![3-6]-\d{2,3}G(?![A-Za-z]))"
+    r"(?<![-\w.])(?![3-6]-\d{2,3}G(?![A-Za-z]))"
     r"(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?!-\d)(?=\s?[A-Za-zµ°%])"
 )
 
-#: `ascii-x-multiplier`: a bare ASCII `x` immediately after a digit,
-#: word-bounded on the right -- `1.61x`, `4-8x`, `100x`. The lookbehind
-#: means the `x` must directly abut the digit (no space), and the
-#: trailing `\b` means a grid-style label like `2x2` never fires (`x` is
-#: followed by another digit, so no word boundary sits between them).
-_ASCII_X_MULT_RE = re.compile(r"(?<=\d)x\b")
+#: `ascii-x-multiplier`: a bare ASCII `x` immediately after a digit run
+#: that starts at a word boundary -- `1.61x`, `4-8x`, `100x`. The
+#: leading `\b` means the digit run must start at the beginning of a
+#: word: a ref-handle range like `pa4249x` (pa42490 to pa42499) has its
+#: digits glued to the handle prefix (`pa`, `pc`, `fi`, `me`, `td`,
+#: `gr`, ...), and between two word characters no boundary sits, so the
+#: range never fires (gr694538). The trailing `\b` means a grid-style
+#: label like `2x2` never fires either (`x` is followed by another
+#: digit, so no word boundary sits between them). The digit run is
+#: captured so `normalize_notation` can rewrite only the `x`.
+_ASCII_X_MULT_RE = re.compile(r"\b(\d+)x\b")
 
 #: `range-unit-repeated` (2026-08-20 numeric-value policy): a unit
 #: written after BOTH endpoints of a range -- `9 GPa-12 GPa`, `9 GPa-12
@@ -423,14 +597,31 @@ _ASCII_X_MULT_RE = re.compile(r"(?<=\d)x\b")
 #: separately and on a structurally disjoint shape (that rule requires
 #: the two numbers to be dash-adjacent with nothing between; this one
 #: requires a unit token *between* the first number and the dash, so the
-#: two never double-fire on the same span). The same
-#: `(?<![-A-Za-z\d])` guard as `hyphen-numeric-range` keeps a named-
-#: method hyphen (`M06-2X`) from reading its trailing digit as a range
-#: endpoint. `(?P=unit)` requires an exact repeat of the first unit's
-#: text, so `9 GPa-12 kPa` (a genuine unit change, not a duplication)
-#: never fires.
+#: two never double-fire on the same span). The same `(?<![-\w.])` guard
+#: as `hyphen-numeric-range` keeps a named-method hyphen (`M06-2X`) and
+#: an identifier's word-char/dot-adjacent digits (`model_4b-4b`) from
+#: reading as a range endpoint. `(?P=unit)` requires an exact repeat of
+#: the first unit's text, so `9 GPa-12 kPa` (a genuine unit change, not
+#: a duplication) never fires.
+#:
+#: The leading negative lookahead (gr720667) excludes an electronic-orbital
+#: label joined to its own repeat -- `4s–4s`, `3d–3d`, `4s²–4s²`. There
+#: the digit+letter is ONE name (principal quantum number + orbital
+#: letter, optionally carrying a superscript occupancy), not a value+unit
+#: pair: the `s` is never seconds, and rewriting to `4–4 s` corrupts the
+#: chemistry. Only superscript occupancy digits may follow the letter;
+#: anything else (`4fs`, `2ps`, `s⁻¹`, `dB`) is a genuine unit whose
+#: repeated range still fires (td732122). The guard anchors to a SINGLE
+#: digit (principal quantum numbers run 1-7), so a real unspaced unit
+#: repeat on a multi-digit value (`12s-15s`) still fires; the canonically
+#: spaced seconds form (`9 s-12 s`) never reaches the guard, since a space
+#: between the value and the letter already rules out an orbital label.
+#: The second label must repeat the first verbatim (`4s–4s`); two
+#: different labels (`4s–5s`) are a genuine seconds range and still fire.
 _RANGE_UNIT_REPEATED_RE = re.compile(
-    r"(?<![-A-Za-z\d])(?P<num1>\d+(?:\.\d+)?)\s?"
+    r"(?<![-\w.])"
+    r"(?!(?P<orb>\d[spdf][¹²³⁴⁵⁶⁷⁸⁹⁰]*)\s?[–-]\s?(?P=orb)(?!\w))"
+    r"(?P<num1>\d+(?:\.\d+)?)\s?"
     r"(?P<unit>[A-Za-zµ°Ω%][\w°Ω%⁻¹²³⁴⁵⁶⁷⁸⁹⁰/]*)"
     r"\s?[–-]\s?(?P<num2>\d+(?:\.\d+)?)\s?(?P=unit)\b"
 )
@@ -574,12 +765,15 @@ def lint_notation(sentence: str) -> list[str]:
             "never 'x' (e.g. '4.6 x 10^-6' -> '4.6×10⁻⁶')."
         )
 
-    m = _TILDE_APPROX_RE.search(sentence)
-    if m:
+    for tm in _TILDE_APPROX_RE.finditer(sentence):
+        left = _TILDE_LEFT_TOKEN_RE.search(sentence[: tm.start()])
+        if left and _is_tilde_selector_base(left.group(1).strip(_TILDE_TOKEN_STRIP)):
+            continue  # '<ref>~N' / '<slug> ~N' names a section, not '~N'
         warnings.append(
-            f"tilde-approximation: {m.group(0)!r} found -- use '≈', not '~' "
+            f"tilde-approximation: {tm.group(0)!r} found -- use '≈', not '~' "
             "(ambiguous between 'about' and 'of order')."
         )
+        break
 
     m = _ASCII_MINUS_EXP_RE.search(sentence)
     if m:
@@ -592,6 +786,8 @@ def lint_notation(sentence: str) -> list[str]:
         )
 
     for dm in _DENOMINATOR_RUN_RE.finditer(sentence):
+        if _DEF2_BASIS_RE.match(sentence, dm.start(1)):
+            continue
         run = dm.group(1)
         if len(run) < 2:
             continue
@@ -602,11 +798,16 @@ def lint_notation(sentence: str) -> list[str]:
             continue
         if _is_chemistry_run(stripped):
             continue
+        if stripped.isupper() and _ACRONYM_LEFT_OF_SOLIDUS_RE.search(
+            sentence[: dm.start()]
+        ):
+            continue  # '<ACRONYM>/<ACRONYM>' names two methods, not a unit
         warnings.append(
             f"two-denominator-solidus: '/{run}' found -- a solidus is fine "
             "for a single recognised unit ('mA/µm', 'S/cm') but ambiguous "
             "with two denominators ('cm²/Vs' -> 'cm² V⁻¹ s⁻¹'); a chemical "
-            "formula or Miller-index facet ('PdH/Pd(111)') is not a unit."
+            "formula or Miller-index facet ('PdH/Pd(111)') and a pair of "
+            "all-caps named methods ('CBMC/CFCMC') are not units."
         )
 
     # ── canon v2: ASCII -> UTF-8 symbol respellings ─────────────────────
@@ -952,7 +1153,13 @@ def normalize_notation(sentence: str) -> tuple[str, list[str]]:
         "hyphen-numeric-range",
         applied,
     )
-    s = _apply(s, _ASCII_X_MULT_RE, "×", "ascii-x-multiplier", applied)
+    s = _apply(
+        s,
+        _ASCII_X_MULT_RE,
+        lambda m: f"{m.group(1)}×",
+        "ascii-x-multiplier",
+        applied,
+    )
     s = _apply(
         s,
         _RANGE_UNIT_REPEATED_RE,

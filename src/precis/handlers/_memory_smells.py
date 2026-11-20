@@ -54,7 +54,10 @@ def render_memory_smells(store: Store, ref: Ref) -> Response:
             "No open or recently decided garden proposals; this is not a clean review."
         )
     hints = [
-        (f"get(kind='memory', id='me{ref.id}', view='fisheye+1hop')", "read the node")
+        (
+            f"get(kind='memory', id='me{ref.id}', extent='fisheye+1hop')",
+            "read the node",
+        )
     ]
     return Response(
         body="\n".join(lines) + render_next_section(hints),

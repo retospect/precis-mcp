@@ -38,10 +38,6 @@ _ALLOWLIST: dict[tuple[str, str], str] = {
         "_connectivity_note",
     ): "one-line warning prose listing disconnected body groups, not record rows",
     (
-        "_paper_text.py",
-        "_chunk_keywords_or_caption",
-    ): "one-line '[table] a | b | …' caption — prose summary, not a row table",
-    (
         "todo.py",
         "_check_plan_meta",
     ): "' | ' inside an error next= enumeration of accepted shapes — not output rows",

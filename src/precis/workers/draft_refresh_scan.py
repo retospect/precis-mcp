@@ -1,5 +1,5 @@
 """``draft_refresh_scan`` — the scanner half of Part 2
-(``docs/backlog/draft-refresh.md``); Part 1 is the job itself
+(`me693762`); Part 1 is the job itself
 (:mod:`precis.workers.job_types.draft_refresh`).
 
 Fired every ~4h off the ``draft_refresh_scan`` scheduler cadence
@@ -53,7 +53,7 @@ log = logging.getLogger(__name__)
 
 _HANDLER_NAME = "draft_refresh_scan"
 
-#: Mirrors the spec's default (``docs/backlog/draft-refresh.md``): a
+#: Mirrors the spec's default (`me693762`): a
 #: section is stale once its live paragraphs are older than two weeks.
 _DEFAULT_STALENESS_DAYS = 14
 

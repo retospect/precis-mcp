@@ -1042,7 +1042,7 @@ def import_epro(
 
     A part the source locked is imported locked (``fixed='both'``);
     nothing else is (Reto 2026-09-30, "only actually freeze when needed";
-    ``docs/backlog/pcb-freeze-mechanicals-and-parts.md``). ``freeze``
+    `me693126`). ``freeze``
     (``--freeze``) locks every part instead, for a board whose whole
     placement must survive a route. A 2026-10-02 freeze-by-default was
     reverted the same day: which parts are alignment-critical needs the
@@ -1100,7 +1100,7 @@ def import_epro(
             f"accepts only "
             f"{' or '.join(str(n) for n in _SUPPORTED_LAYER_COUNTS)} today, so "
             f"importing it would produce a board that refuses to place "
-            f"(docs/backlog/pcb-engine-plan.md §5 is the n-layer work)"
+            f"(me692624 §5 is the n-layer work)"
         )
     # validate_stackup is the authored-input contract; run it on a derived
     # stackup too, so a reader bug cannot write a shape the handler would

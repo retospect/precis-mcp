@@ -5,7 +5,7 @@ combined morning cast (:mod:`precis.workers.cast_audio` folds the news wire
 in at narration time); kept registered but dark so the two can't
 double-publish, and as the reference for a *prose* (non-draft) producer.
 The news briefing (:mod:`precis.workers.briefing`) runs in-process on the *agent*
-worker (melchior) and persists a dated ``briefing-<date>`` ``news`` ref. This pass
+worker (the TTS host) and persists a dated ``briefing-<date>`` ``news`` ref. This pass
 finds the newest briefing ref that has no audio yet and renders its markdown to
 speech via :func:`precis.tts.render.render_episode` — **container-first**: a
 one-shot ``podman run precis-tts`` (so the worker needs no ``[tts]`` extra), or an
@@ -30,7 +30,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from precis.draft.narrate import markdown_segments
+from precis.draft.narrate import load_personal_lexicon, markdown_segments
 from precis.tts.render import render_episode
 
 log = logging.getLogger(__name__)
@@ -138,6 +138,12 @@ def run_briefing_audio(
     produced and reported but nothing is published and no idempotency marker is
     stamped, so a later real run still fires. On a real publish the episode id is
     stamped on the ref so the next tick skips it.
+
+    The markdown is narrated with the personal pronunciation lexicon applied
+    (``load_personal_lexicon``), same as draft casts — chemistry names and
+    abbreviations come from the shared ``data/tts_lexicon.json`` table the
+    TTS-time pass already applies; this only adds the optional personal
+    overrides on top (gr690184).
     """
     from precis import audio_feed
 
@@ -161,7 +167,11 @@ def run_briefing_audio(
     except ValueError:
         episode_date = None
     segments = markdown_segments(
-        text, voice=voice, lang=lang, episode_date=episode_date
+        text,
+        voice=voice,
+        lang=lang,
+        lexicon=load_personal_lexicon(),
+        episode_date=episode_date,
     )
     if not segments:
         return {**empty, "ref_id": ref.id, "reason": "empty-briefing"}

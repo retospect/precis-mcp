@@ -7,14 +7,18 @@ the real detached launcher. No DB, no real git, no real scripts/ship.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,11 +27,12 @@ pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: the launcher execs /bin/sh"
 )
 
-from precis.plans import lanes
+from precis.plans import lanes, nodes
 from precis.plans.templates import PENDING_SHA
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.executors import ssh_node
 from precis.workers.job_types import (
+    Reconcile,
     get_job_type,
     known_job_types,
     land_slice,
@@ -185,7 +190,6 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         "launch": [],
         "alive": True,
         "subjects": [SUBJECT],
-        "remote": False,
         "gates": [],
         "diff_names": "",
         "worktree_list": "",
@@ -226,6 +230,11 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             return _proc("".join(f"{s}\n" for s in calls["subjects"]))
         if args[:3] == ["rev-parse", "--verify", "--quiet"]:
             return _proc(FULL_SHA + "\n")
+        if args[:1] == ["rev-parse"] and len(args) == 2 and args[1].startswith("refs/"):
+            # A bare ref-tip read — ``_pushed_tip_ahead`` (gr681208)
+            # reads the ``refs/remotes/origin/`` tracking tip after its
+            # refspec fetch.
+            return _proc(calls.get("tips", {}).get(args[1], ""))
         if args == ["rev-parse", "--absolute-git-dir"]:
             return _proc(calls["gitdir"] + "\n" if calls["gitdir"] else "")
         if args == ["rev-parse", "--path-format=absolute", "--git-common-dir"]:
@@ -236,14 +245,14 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
             # A path-scoped proof ("diff --quiet a b -- <paths>") answers
             # path_diff_rc; the whole-tree check answers diff_rc.
             return _proc(rc=calls["path_diff_rc"] if "--" in args else calls["diff_rc"])
+        if args[:2] == ["merge-base", "--is-ancestor"]:
+            # rc 0 = the candidate sha is an ancestor of the land base;
+            # rc 1 = ahead (``_pushed_tip_ahead`` wants the latter).
+            return _proc(rc=calls.get("ancestor_rc", 0))
         if args[:1] == ["merge-base"]:
             return _proc(calls["merge_base"] + "\n" if calls["merge_base"] else "")
         if args[:1] == ["log"] and any(a.startswith("--max-count=") for a in args):
             return _proc(calls["main_log"])
-        if args[:2] == ["ls-remote", "--exit-code"]:
-            if calls["remote"]:
-                return _proc(f"{FULL_SHA}\trefs/heads/slice/42\n")
-            return _proc(rc=2)
         if args[:2] == ["diff", "--name-only"]:
             return _proc(calls["diff_names"])
         if args[:2] == ["worktree", "list"]:
@@ -276,7 +285,7 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     calls["preflight"] = {"ran": False, "rc": None, "age": "", "diag": ""}
     calls["probed"] = []
 
-    def fake_preflight(tree: Path) -> dict[str, Any]:
+    def fake_preflight(tree: Path, **kw: Any) -> dict[str, Any]:
         calls["probed"].append(tree)
         return dict(calls["preflight"])
 
@@ -305,6 +314,9 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     monkeypatch.delenv("PRECIS_SHIP_BIN", raising=False)
+    # tests asserting "no credential wiring without a token" must hold on
+    # the factory host too, where the worker env carries the token
+    monkeypatch.delenv("PRECIS_FACTORY_GIT_TOKEN", raising=False)
     tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
     (tree / "scratch").mkdir(parents=True)
     calls["tree"] = tree
@@ -434,6 +446,262 @@ def test_validate_submit_admits_a_closed_todo_carrying_pending_land(
     assert closed is not None and "is closed" in closed
 
 
+@pytest.fixture(params=["no-lander", "real-registry"])
+def catpath_registry(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """``catpath`` with no lander on its profile, and as the registry has it
+    (``land_slice`` is its lander, but it is not in ``factory.open_repos``):
+    this lander refuses it either way."""
+    if request.param == "no-lander":
+        profile = replace(lanes.REPO_PROFILES["catpath"], lander=None)
+        monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", profile)
+    return str(request.param)
+
+
+@pytest.fixture
+def catpath_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``catpath`` with a ``land_slice`` lander AND listed as open."""
+    profile = replace(lanes.REPO_PROFILES["catpath"], lander="land_slice")
+    monkeypatch.setitem(lanes.REPO_PROFILES, "catpath", profile)
+    monkeypatch.setattr(
+        lanes, "open_repos", lambda _s: frozenset({"precis", "catpath"})
+    )
+
+
+def test_validate_submit_refuses_another_repo(
+    monkeypatch: pytest.MonkeyPatch, catpath_registry: str
+) -> None:
+    """td659522 step 2: another repo lands here only with a lander on its
+    profile AND the repo opened; otherwise refused with a next: step."""
+    store = _Store()
+    store.add_todo(42, tags=("repo:catpath",))
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    refused = land_slice.validate_submit(
+        store, params={"todo_id": 42, "repo": "catpath"}
+    )
+    assert refused is not None and refused.startswith("land_slice:")
+    assert "'catpath'" in refused and "next:" in refused
+    if catpath_registry == "no-lander":
+        assert "no lander" in refused
+    else:
+        assert "open_repos" in refused
+    store.add_todo(43)
+    assert land_slice.validate_submit(store, params={"todo_id": 43}) is None
+    assert (
+        land_slice.validate_submit(store, params={"todo_id": 43, "repo": "precis"})
+        is None
+    )
+    assert "repo" in land_slice.PARAMS_SCHEMA["properties"]
+
+
+def test_submit_refuses_another_repo_before_any_work(
+    seams: dict[str, Any], catpath_registry: str, tmp_path: Path
+) -> None:
+    store = _Store()
+    store.add_todo(42, tags=("repo:catpath",))
+    ctx = _Ctx(store, {**_params(seams), "repo": "catpath"})
+    assert land_slice.submit(ctx, None) is None
+    assert ctx.status == "failed" and ctx.failure is not None
+    assert "'catpath'" in ctx.failure and "next:" in ctx.failure
+    # Nothing ran: no git, no ship, the worktree is still there.
+    assert seams["git"] == [] and seams["launch"] == []
+    assert seams["tree"].is_dir() and ctx.meta_set == {}
+    # An explicit default repo lands as before.
+    store.add_todo(44)
+    ctx = _Ctx(store, {**_params(seams), "todo_id": 44, "repo": "precis"})
+    handle = land_slice.submit(ctx, None)
+    assert ctx.failure is None and handle is not None
+    assert seams["launch"]
+
+
+def test_a_todo_tagged_for_another_repo_never_lands_here(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, catpath_registry: str
+) -> None:
+    """A land job without ``params.repo`` (a hand mint, a pre-profile job) is
+    held to the todo's own tag: catpath-tagged work is refused before any git
+    or ship call, even with a lander on the profile and the repo opened."""
+    monkeypatch.setattr(
+        lanes, "open_repos", lambda _s: frozenset({"precis", "catpath"})
+    )
+    store = _Store()
+    store.add_todo(42, tags=("repo:catpath",))
+    store.add_todo(43, tags=("repo:precis",))
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    refused = land_slice.validate_submit(store, params={"todo_id": 42})
+    assert refused is not None and refused.startswith("land_slice:")
+    assert "'catpath'" in refused and "next:" in refused
+    ctx = _Ctx(store, _params(seams))
+    assert land_slice.submit(ctx, None) is None
+    assert ctx.status == "failed" and "'catpath'" in str(ctx.failure)
+    assert seams["git"] == [] and seams["launch"] == []
+    assert land_slice.validate_submit(store, params={"todo_id": 43}) is None
+
+
+def test_no_repo_param_is_refused_even_with_the_repo_opened(
+    catpath_open: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    store = _Store()
+    store.add_todo(42, tags=("repo:catpath",))
+    refused = land_slice.validate_submit(store, params={"todo_id": 42})
+    assert refused is not None and "no params.repo" in refused and "next:" in refused
+
+
+def test_tag_and_param_disagreement_is_refused(
+    seams: dict[str, Any], catpath_open: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    store = _Store()
+    store.add_todo(42, tags=("repo:catpath",))
+    store.add_todo(43)
+    # the param says precis, the tag says catpath
+    refused = land_slice.validate_submit(
+        store, params={"todo_id": 42, "repo": "precis"}
+    )
+    assert refused is not None and "next:" in refused
+    # the param says catpath, the todo carries no tag
+    refused = land_slice.validate_submit(
+        store, params={"todo_id": 43, "repo": "catpath"}
+    )
+    assert refused is not None and "resolves to repo" in refused
+    ctx = _Ctx(store, {**_params(seams), "todo_id": 43, "repo": "catpath"})
+    assert land_slice.submit(ctx, None) is None and ctx.status == "failed"
+    assert seams["git"] == [] and seams["launch"] == []
+
+
+class _RepoLandSpy:
+    """Stands in for ``repo_land``: records which half the dispatcher called."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any, Any]] = []
+
+    def submit(self, ctx: Any, spec: Any) -> Any:
+        self.calls.append(("submit", ctx, spec))
+        return {"lander": "repo_land", "repo": "catpath"}
+
+    def poll(self, ctx: Any, handle: Any) -> bool:
+        self.calls.append(("poll", ctx, handle))
+        return True
+
+    def kill(self, ctx: Any, handle: Any) -> None:
+        self.calls.append(("kill", ctx, handle))
+
+
+@pytest.fixture
+def repo_land_spy(monkeypatch: pytest.MonkeyPatch) -> _RepoLandSpy:
+    from precis.workers import repo_land
+
+    spy = _RepoLandSpy()
+    monkeypatch.setattr(repo_land, "submit", spy.submit)
+    monkeypatch.setattr(repo_land, "poll", spy.poll)
+    monkeypatch.setattr(repo_land, "kill", spy.kill)
+    return spy
+
+
+def test_an_opened_repo_with_a_lander_submits_through_repo_land(
+    seams: dict[str, Any],
+    catpath_open: None,
+    repo_land_spy: _RepoLandSpy,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    store = _Store()
+    store.add_todo(42, tags=("repo:catpath",))
+    params = {**_params(seams), "repo": "catpath"}
+    assert land_slice.validate_submit(store, params=params) is None
+    ctx = _Ctx(store, params)
+    sentinel = object()
+    handle = land_slice.submit(ctx, sentinel)
+    assert handle == {"lander": "repo_land", "repo": "catpath"}
+    assert repo_land_spy.calls == [("submit", ctx, sentinel)]
+    # the precis path never ran: no git, no ship launch, no failure
+    assert seams["git"] == [] and seams["launch"] == []
+    assert ctx.failure is None and ctx.meta_set == {}
+
+
+@pytest.mark.parametrize(
+    "handle",
+    [
+        {"lander": "repo_land", "repo": "catpath", "pid": 7},
+        {"no_land": True, "repo": "catpath"},
+    ],
+)
+def test_poll_routes_a_repo_handle_to_repo_land(
+    seams: dict[str, Any], repo_land_spy: _RepoLandSpy, handle: dict[str, Any]
+) -> None:
+    ctx = _Ctx(_Store(), _params(seams))
+    assert land_slice.poll(ctx, handle) is True
+    assert repo_land_spy.calls == [("poll", ctx, handle)]
+    assert seams["git"] == [] and seams["launch"] == []
+
+
+def test_poll_and_kill_route_on_the_job_params_repo(
+    seams: dict[str, Any], repo_land_spy: _RepoLandSpy
+) -> None:
+    ctx = _Ctx(_Store(), {**_params(seams), "repo": "catpath"})
+    assert land_slice.poll(ctx, {"pid": 7}) is True
+    land_slice.kill(ctx, {"pid": 7})
+    assert [c[0] for c in repo_land_spy.calls] == ["poll", "kill"]
+
+
+def test_kill_routes_a_repo_handle_and_never_pushes_the_branch(
+    seams: dict[str, Any],
+    repo_land_spy: _RepoLandSpy,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_push(tree: Path, branch: str) -> str:
+        raise AssertionError("the precis branch push ran for a repo handle")
+
+    monkeypatch.setattr(land_slice, "_push_branch", no_push)
+    handle = {"lander": "repo_land", "repo": "catpath", "worktree": str(seams["tree"])}
+    ctx = _Ctx(_Store(), _params(seams))
+    land_slice.kill(ctx, handle)
+    assert repo_land_spy.calls == [("kill", ctx, handle)]
+    assert seams["git"] == []
+
+
+def test_validate_submit_refuses_a_held_build_the_coordinator_ruled_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr663909: the pre-land exception is the machine's own ``done``
+    hold only — a ``won't-do``/``auto-timeout`` set on the stamped build
+    while its land queued is a ruling the queued land must not land
+    over."""
+    store = _Store()
+    monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    for todo_id, status in ((48, "won't-do"), (49, "auto-timeout")):
+        store.add_todo(
+            todo_id,
+            status=status,
+            meta={"pending_land": {"todo_id": todo_id, "branch": f"slice/{todo_id}"}},
+        )
+        refused = land_slice.validate_submit(store, params={"todo_id": todo_id})
+        assert refused is not None
+        assert "is closed" in refused and f"STATUS:{status}" in refused
+
+
+def test_submit_on_a_ruled_out_held_build_launches_no_ship(
+    seams: dict[str, Any],
+) -> None:
+    """The same refusal end to end: ``submit`` fails the queued land on
+    the closed todo and never launches ship; the ruling and the
+    ``pending_land`` stamp stand."""
+    store = _Store()
+    store.add_todo(
+        42,
+        status="won't-do",
+        meta={"pending_land": {"todo_id": 42, "branch": "slice/42"}},
+    )
+    ctx = _Ctx(store, _params(seams))
+    assert land_slice.submit(ctx, None) is None
+    assert ctx.status == "failed"
+    failure = ctx.failure or ""
+    assert "land_slice:" in failure and "STATUS:won't-do" in failure
+    assert seams["launch"] == []
+    assert "STATUS:won't-do" in store.tag_strings(42)
+
+
 def test_record_land_clears_pending_land() -> None:
     """The ``landed:`` record discharges the hold — a lingering stamp
     would read a post-land review as pre-land."""
@@ -441,12 +709,17 @@ def test_record_land_clears_pending_land() -> None:
     store.add_todo(
         46,
         status="done",
-        meta={"pending_land": {"todo_id": 46, "branch": "slice/46"}},
+        meta={
+            "pending_land": {"todo_id": 46, "branch": "slice/46"},
+            "preland_fix_rounds": {"count": 2, "finding": "0123456789abcdef"},
+        },
     )
     wrote = land_slice._record_land(store, 46, "abc1234def", "feat(x): y")
     assert "pending_land cleared" in wrote
     assert "landed comment" in wrote
     assert not store.refs[46].meta.get("pending_land")
+    # gr684815: the pre-land FIX-round count ends with the land.
+    assert not store.refs[46].meta.get("preland_fix_rounds")
     assert store.comments(46)[-1].startswith("landed: abc1234de")
 
 
@@ -666,7 +939,7 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
     assert kw["cwd"] == tree
     assert kw["env"]["PRECIS_SHIP_VERBOSE"] == "1"
     # the checked run's xdist workers are capped (gr567471: a static-wide
-    # selection at -n6 OOM-killed a worker on melchior twice). PRECIS_GATE_N
+    # selection at -n6 OOM-killed a worker on maple twice). PRECIS_GATE_N
     # is what ship's checked gate expands into `pytest -n`; PRECIS_TEST_NPROC
     # is scripts/test's name for the same count.
     assert kw["env"]["PRECIS_GATE_N"] == str(land_slice.DEFAULT_TEST_NPROC)
@@ -691,6 +964,423 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
         ["log", "--reverse", "--no-merges", "--format=%s", "origin/main..HEAD"],
         tree,
     ) in seams["git"]
+
+
+# ── launch env (gr659929) ──────────────────────────────────────────
+
+
+def test_land_env_scrubs_credentials_keeps_knobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr659929: every land child starts from the allowlist env — the
+    worker's DSN, vault and token material stays in the worker, while
+    the operator's ship/test/gate knobs still pass through."""
+    # Values stay non-credential-shaped literals — the repo secret scan
+    # flags even fake `scheme://user:pass@` forms (a runtime-joined fake
+    # is the alternative; see test_factory_git.py).
+    for name, value in {
+        "PRECIS_FACTORY_GIT_TOKEN": "tok-a",
+        "PRECIS_MCP_TOKEN": "tok-b",
+        "PRECIS_DATABASE_URL": "prod-dsn",
+        "PRECIS_TEST_PG_URL": "test-dsn",
+        "PRECIS_EMBEDDER_URL": "embedder-endpoint",
+        "UV_INDEX_URL": "private-index",
+        "GH_TOKEN": "ghp_x",
+        "ANTHROPIC_API_KEY": "sk-live",
+        "PRECIS_OAUTH_SECRET": "s",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PRECIS_SHIP_LOCKED_NET_TIMEOUT", "90")
+    # the checked selector's measured map must keep reaching the branch
+    # tree's impacted-tests (tests/test_deploy_coverage_map.py)
+    monkeypatch.setenv("PRECIS_COVERAGE_DB_DIR", "/cov")
+    monkeypatch.setenv("PRECIS_TEST_PASSENV", "FOO,BAR")
+    monkeypatch.setenv("LC_ALL", "C")
+    env = land_slice.land_env()
+    for dropped in (
+        "PRECIS_FACTORY_GIT_TOKEN",
+        "PRECIS_MCP_TOKEN",
+        "PRECIS_DATABASE_URL",
+        "PRECIS_TEST_PG_URL",
+        "PRECIS_EMBEDDER_URL",
+        "UV_INDEX_URL",
+        "GH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "PRECIS_OAUTH_SECRET",
+    ):
+        assert dropped not in env, dropped
+    assert env["PRECIS_SHIP_LOCKED_NET_TIMEOUT"] == "90"
+    assert env["PRECIS_COVERAGE_DB_DIR"] == "/cov"
+    assert env["PRECIS_TEST_PASSENV"] == "FOO,BAR"
+    assert env["LC_ALL"] == "C"
+    # set, not inherited: a planted refs/replace must not substitute the
+    # object a child's trusted read resolves (pre-land review pass)
+    assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
+    for leaked in ("tok-a", "tok-b", "sk-live", "ghp_x"):
+        assert leaked not in env.values()
+
+
+@pytest.mark.parametrize("existing_uv", [False, True])
+def test_land_env_finds_user_uv_without_replacing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_uv: bool
+) -> None:
+    """gr702644: non-login land services must reach uv in nested helpers."""
+    home = tmp_path / "coder"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    installed = local_bin / "uv"
+    installed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    installed.chmod(0o755)
+    service_bin = tmp_path / "service-bin"
+    service_bin.mkdir()
+    if existing_uv:
+        configured = service_bin / "uv"
+        configured.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        configured.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(service_bin))
+    env = land_slice.land_env()
+    expected = str(service_bin)
+    if not existing_uv:
+        expected += os.pathsep + str(local_bin)
+    assert env["PATH"] == expected
+    result = subprocess.run(
+        ["/usr/bin/env", "uv"], env=env, check=False, capture_output=True
+    )
+    assert result.returncode == 0
+
+
+def test_submit_ship_env_is_allowlist_not_whole_worker_env(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr659929: ship starts from the allowlist env, never the worker's
+    whole env — and with no token resolvable it also carries no
+    credential wiring (the host's own git credentials apply, like the
+    other launches)."""
+    monkeypatch.setenv("PRECIS_DATABASE_URL", "prod-dsn")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+    monkeypatch.setenv("VAULT_VAR", "v")
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None and ctx.status is None
+    [(argv, kw)] = seams["launch"]
+    assert argv == [str(seams["tree"] / "scripts" / "ship"), "--quick", SUBJECT]
+    for leaked in ("PRECIS_DATABASE_URL", "ANTHROPIC_API_KEY", "VAULT_VAR"):
+        assert leaked not in kw["env"], leaked
+    assert "sk-live" not in kw["env"].values()
+    # with no token resolvable in the test env no wiring is added
+    assert land_slice._factory_git.SECRET_NAME not in kw["env"]
+    assert "GH_TOKEN" not in kw["env"]
+    assert "GIT_CONFIG_COUNT" not in kw["env"]
+
+
+def test_ship_env_is_token_free_with_mirrored_git_credentials(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr659929 (review td660513): ship's environment carries NO token and
+    no credential helper — ``scripts/impacted-tests`` and every other
+    host-side step under ship run the branch's own code, and the fd-wired
+    and socket-brokered wiring this replaced still let them read the token
+    back. The lander now refreshes a bare mirror of the land refs under
+    the factory checkout's ``scratch/`` with trusted ``git`` calls alone
+    (never an interpreter from the slice tree) and hands ship an env
+    override pointing ``origin`` at the mirror: ship fetches, squashes and
+    CAS-pushes exactly as before, credential-free, and the land flock is
+    the only fd riding ``pass_fds``."""
+    monkeypatch.setenv("PRECIS_FACTORY_GIT_TOKEN", "tok-factory")
+    monkeypatch.setenv("PRECIS_DATABASE_URL", "prod-dsn")
+    monkeypatch.setenv("GH_TOKEN", "ghp_ambient")
+    tree = seams["tree"]
+    (tree / "scripts").mkdir(parents=True, exist_ok=True)
+    mirror = tmp_path / "scratch" / "factory-mirror" / "td42.git"
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    real_run = land_slice._factory_git_mirror._run
+    mirror_calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    tips = {"main": "a" * 40, "prod": "b" * 40}
+
+    def _sub(args: list[str]) -> str:
+        # every call goes `git <TRUSTED_ARGS> [-C dir] <sub>`
+        rest = args[1 + len(land_slice._factory_git_mirror.TRUSTED_ARGS) :]
+        if rest[:1] == ["-C"]:
+            rest = rest[2:]
+        return rest[0]
+
+    def fake_run(
+        args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        mirror_calls.append((list(args), Path(cwd), dict(env)))
+        sub = _sub(args)
+        if sub in ("init", "config"):
+            return real_run(args, cwd=cwd, env=env, timeout=timeout)
+        if sub == "ls-remote":
+            return _proc("".join(f"{s}\trefs/heads/{r}\n" for r, s in tips.items()))
+        if sub == "fetch":
+            return _proc(rc=0)
+        if sub == "push":
+            return _proc(rc=0)
+        if sub == "rev-parse":
+            return _proc(tips[args[-1].removeprefix("refs/heads/")] + "\n")
+        return _proc(rc=1)
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "_run", fake_run)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None and ctx.status is None
+    # the mirror replaced the broker: exactly ONE launch — ship itself
+    assert len(seams["launch"]) == 1
+    # review findings 1+2 (regression): every credential-bearing call is a
+    # `git` argv whose cwd is OUTSIDE the slice tree — nothing
+    # branch-importable runs while the token is live, so a branch-added
+    # root precis/__init__.py has no interpreter to shadow — each on the
+    # trusted boundary (hooks off, no system/global/local config).
+    assert mirror_calls, "the mirror was refreshed under the token"
+    for args, cwd, env in mirror_calls:
+        assert args[:3] == ["git", "-c", "core.hooksPath=/dev/null"]
+        assert cwd != tree and tree not in cwd.parents
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+    # the populate's github fetch ran in an ops repo, never the slice
+    # tree's or the mirror's own gitdir (a planted hooks/ or config there
+    # is branch-writable)
+    github = [
+        c
+        for a, c, _e in mirror_calls
+        if "github.com" in " ".join(a) and _sub(a) == "fetch"
+    ]
+    assert github and all(
+        str(c).startswith(str(mirror.parent)) and c != mirror for c in github
+    )
+    # the launch tips were recorded for poll's origin sync — on the
+    # handle, and in the launch record BESIDE the mirror under the main
+    # checkout's scratch (review td660513: never the tree's own
+    # branch-writable scratch, where a deleted file read as "no mirror")
+    assert handle["factory_mirror_tips"] == tips
+    assert (
+        json.loads(
+            (tmp_path / "scratch" / "factory-mirror" / "td42.tips.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        == tips
+    )
+    assert not (tree / "scratch" / "factory-mirror-tips.json").exists()
+    # the ship launch: an origin override to the mirror — no token, no
+    # credential helper, no token fd
+    _argv, launch_kw = seams["launch"][0]
+    ship_env = launch_kw["env"]
+    for leaked in (
+        "PRECIS_FACTORY_GIT_TOKEN",
+        "GH_TOKEN",
+        "PRECIS_DATABASE_URL",
+    ):
+        assert leaked not in ship_env, leaked
+    for value in ship_env.values():
+        assert "tok-factory" not in value
+        assert "ghp_ambient" not in value
+    # review finding 2 (regression): the only GIT_CONFIG entries are the
+    # url.<mirror>.insteadOf rewrites pointing the real origin URL at the
+    # mirror — no credential.* key of any kind, so a gate child's `git
+    # credential fill` has nothing to answer it
+    count = int(ship_env["GIT_CONFIG_COUNT"])
+    keys = [ship_env[f"GIT_CONFIG_KEY_{i}"] for i in range(count)]
+    values = [ship_env[f"GIT_CONFIG_VALUE_{i}"] for i in range(count)]
+    assert keys == [f"url.{mirror}.insteadOf"] * count
+    assert "https://github.com/example/precis.git" in values
+    assert not any(k.startswith("credential.") for k in keys)
+    assert not any("credential" in v for v in values)
+    # its mirror reads and shared-dir merges ignore planted refs/replace
+    assert ship_env["GIT_NO_REPLACE_OBJECTS"] == "1"
+    # the land flock is the ONLY fd ship inherits — no credential fd
+    fds = launch_kw["pass_fds"]
+    assert len(fds) == 1 and fds[0] >= 100
+    # finding 4, second pass (regression): ship's PATH leads with this
+    # launch's git shim — the shared local-main advance is refused until
+    # the lander's mirror sync verifies origin, then replayed there
+    assert ship_env["PATH"].split(os.pathsep)[0] == str(mirror / "ship-bin")
+    shim = mirror / "ship-bin" / "git"
+    assert shim.exists() and shim.stat().st_mode & 0o111
+    # the verify gate's env is the bare allowlist — no token, no wiring
+    v = land_slice._launch_verify(
+        tree, ["tests/test_x.py::test_t"], phase="tree", run_tree=tree
+    )
+    assert v is not None
+    _, verify_kw = seams["launch"][-1]
+    verify_env = verify_kw["env"]
+    for leaked in (
+        "PRECIS_FACTORY_GIT_TOKEN",
+        "GH_TOKEN",
+        "PRECIS_DATABASE_URL",
+        "GIT_CONFIG_COUNT",
+    ):
+        assert leaked not in verify_env, leaked
+    assert "tok-factory" not in verify_env.values()
+    assert verify_env["UV_PYTHON"] == land_slice.ship_python()
+    assert verify_env["PRECIS_GATE_SLOTS"] == land_slice.land_gate_slots()
+
+
+def test_local_git_never_runs_the_worker_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr659929 (review td660513): ``land_slice._git`` delegated to
+    ``run_slice._git`` — the worker's whole env, factory token and
+    ``GH_TOKEN`` included — on calls whose repo config is
+    branch-writable, so a planted hook, filter or transport redirect
+    met the token in a spawned child's env. The seam now runs the
+    scrubbed local env with hooks off."""
+    monkeypatch.setenv("PRECIS_FACTORY_GIT_TOKEN", "tok-factory")
+    monkeypatch.setenv("GH_TOKEN", "ghp_x")
+    monkeypatch.setenv("PRECIS_DATABASE_URL", "prod-dsn")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "credential.helper")
+    seen: dict[str, Any] = {}
+
+    def fake_run(*a: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen["argv"] = list(a[0])
+        seen["env"] = dict(kw["env"])
+        return _proc()
+
+    monkeypatch.setattr(land_slice.subprocess, "run", fake_run)
+    land_slice._git(["rev-parse", "HEAD"], tmp_path)
+    assert seen["argv"] == [
+        "git",
+        *land_slice._factory_git_mirror.TRUSTED_ARGS,
+        "rev-parse",
+        "HEAD",
+    ]
+    assert "--no-replace-objects" in seen["argv"]
+    env = seen["env"]
+    for leaked in ("PRECIS_FACTORY_GIT_TOKEN", "GH_TOKEN", "PRECIS_DATABASE_URL"):
+        assert leaked not in env, leaked
+    assert "GIT_CONFIG_COUNT" not in env
+    assert not any(k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")) for k in env)
+    assert "tok-factory" not in env.values()
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert env["GIT_NO_REPLACE_OBJECTS"] == "1"
+
+
+def test_cleanup_origin_delete_is_an_ops_repo_push(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr659929 (review td660513): cleanup's remote delete is an
+    authenticated transport — the on-origin check is the ``ls_remote``
+    oracle and the ``--delete`` pushes to the trusted url from a fresh
+    ops gitdir under the credential wiring. The branch-writable shared
+    dir, its config and its hooks never meet the token."""
+    monkeypatch.setenv("PRECIS_FACTORY_GIT_TOKEN", "tok-factory")
+    url = "https://github.com/example/precis.git"
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "github_url", lambda root, *, env: url
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "ls_remote",
+        lambda u, refs, *, env, **_kw: {"slice/42": FULL_SHA},
+    )
+
+    def fake_run(
+        args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((list(args), Path(cwd), dict(env)))
+        return _proc(rc=0)
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "_run", fake_run)
+    assert land_slice._delete_remote_branch(tmp_path, "slice/42") == [
+        "push --delete: ok"
+    ]
+    [(dargs, dcwd, denv)] = [t for t in calls if "--delete" in t[0]]
+    assert dargs[:3] == ["git", "-c", "core.hooksPath=/dev/null"]
+    assert dargs[-5:] == [
+        "push",
+        url,
+        "--delete",
+        "refs/factory/slice/42",
+        "refs/heads/slice/42",
+    ]
+    # a fresh, lander-created gitdir under the mirror root — never the
+    # shared common dir whose config and hooks are branch-writable
+    assert dcwd.parent == land_slice._factory_git_mirror.mirror_root(tmp_path)
+    # the credential wiring rides ONLY this call's env (token + helper)
+    assert denv["PRECIS_FACTORY_GIT_TOKEN"] == "tok-factory"
+    assert denv["GH_TOKEN"] == "tok-factory"
+    assert denv["GIT_CONFIG_NOSYSTEM"] == "1"
+    # the ops gitdir's own init ran credential-free
+    inits = [e for a, _c, e in calls if "init" in a]
+    assert inits and all("PRECIS_FACTORY_GIT_TOKEN" not in e for e in inits)
+
+
+def test_cleanup_origin_delete_skips_without_a_remote_branch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The oracle showing no branch on origin skips the delete; no
+    trusted url skips it too — a note, never a ``push origin`` in the
+    shared gitdir."""
+    pushes: list[list[str]] = []
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env, **_kw: {}
+    )
+
+    def spy_run(
+        args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        pushes.append(list(args))
+        return _proc(rc=0)
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "_run", spy_run)
+    assert land_slice._delete_remote_branch(tmp_path, "slice/42") == [
+        "origin branch: not pushed"
+    ]
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "github_url", lambda root, *, env: None
+    )
+    assert land_slice._delete_remote_branch(tmp_path, "slice/42") == [
+        "origin branch: skipped (no trusted origin url)"
+    ]
+    assert not any("push" in a for a in pushes)
+
+
+def test_cleanup_origin_delete_only_names_the_refs_origin_holds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The slice lives under the hidden ``refs/factory/`` namespace now
+    (no GitHub branch, no PR); a land deletes only that ref when no
+    older build left a visible ``refs/heads/`` branch too."""
+    url = "https://github.com/example/precis.git"
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "github_url", lambda root, *, env: url
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "ls_remote",
+        lambda u, refs, *, env, namespace="refs/heads/": (
+            {"slice/42": FULL_SHA} if namespace == land_slice.SLICE_REF_NS else {}
+        ),
+    )
+
+    def fake_run(
+        args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(list(args))
+        return _proc(rc=0)
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "_run", fake_run)
+    assert land_slice._delete_remote_branch(tmp_path, "slice/42") == [
+        "push --delete: ok"
+    ]
+    [dargs] = [a for a in calls if "--delete" in a]
+    assert dargs[-4:] == ["push", url, "--delete", "refs/factory/slice/42"]
 
 
 RELEASE_GREEN_LOG = (
@@ -910,13 +1600,24 @@ def test_submit_without_commits_fails_and_reopens(seams: dict[str, Any]) -> None
     assert store.comments(42)[-1].startswith("handoff: lander: land FAILED")
 
 
-def test_submit_nothing_to_land_closes_done(seams: dict[str, Any]) -> None:
+def test_submit_nothing_to_land_closes_done(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """gr648125: a land minted over a branch that carries NOTHING — no
     commit ahead of origin/main and no net diff (the fix is already on
     main by another route) — finishes done, not red: submit launches no
     ship and the poll writes the same nothing-new record (the dependent
     re-cut unblocks instead of burning a ladder). A dirty/diff branch
-    keeps the failure above."""
+    keeps the failure above. The gr681208 pushed-tip oracle confirms
+    nothing is on origin either — ``ls_remote`` names no branch."""
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env, **_kw: {}
+    )
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     seams["subjects"] = []
@@ -934,6 +1635,154 @@ def test_submit_nothing_to_land_closes_done(seams: dict[str, Any]) -> None:
     assert "STATUS:done" in tags and "claimed-by:lane-claude-sub" not in tags
     # the useless branch and worktree are still cleaned up
     assert ["branch", "-D", "slice/42"] in _cleanup_cmds(seams)
+
+
+def _oracle(monkeypatch: pytest.MonkeyPatch, remote: dict[str, str] | None) -> None:
+    """Stand the ``ls_remote`` oracle up (the ``_pushed_tip_ahead``
+    read): a resolvable origin url, then ``remote`` as GitHub's answer —
+    ``None`` when it cannot be read."""
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "ls_remote",
+        lambda u, refs, *, env, **_kw: remote,
+    )
+
+
+def test_submit_no_land_refuses_when_origin_branch_is_ahead(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review td682306 (gr681208): a held land can name a recut or reset
+    worktree — the local ``slice/42`` reads empty while
+    ``origin/slice/42`` still carries the commits review judged. The
+    ``no_land`` record would write a false "landed: nothing" and let
+    ``_cleanup``'s ``push --delete`` remove the branch holding the
+    unlanded work — refuse like the missing-worktree arm instead."""
+    tip = "c" * 40
+    _oracle(monkeypatch, {"slice/42": tip})
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    seams["subjects"] = []
+    seams["changed_paths"] = []
+    seams["tips"] = {"refs/remotes/origin/slice/42": tip}
+    seams["ancestor_rc"] = 1  # the pushed tip is ahead of the land base
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None and "reads empty" in ctx.failure
+    assert f"origin/slice/42 is at {tip[:12]}" in ctx.failure
+    assert seams["launch"] == []
+    tags = store.tag_strings(42)
+    assert {"STATUS:open", "attempt:1"} <= tags
+    assert not any(c.startswith("landed:") for c in store.comments(42))
+    assert store.comments(42)[-1].startswith("handoff: lander: land FAILED")
+    # The branch was fetched for the ancestry read — never deleted.
+    git_cmds = [a for a, _cwd in seams["git"]]
+    assert not any(a[:2] == ["push", "origin"] for a in git_cmds)
+
+
+def test_submit_no_land_refuses_when_origin_tip_is_unverifiable(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The oracle cannot answer (no trusted url, or ``ls_remote`` down):
+    the pushed state is unknown, so the land refuses the record rather
+    than risk abandoning pushed work — recoverable on a re-run."""
+    _oracle(monkeypatch, None)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    seams["subjects"] = []
+    seams["changed_paths"] = []
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None and "could not be verified" in ctx.failure
+    assert seams["launch"] == []
+    assert "STATUS:open" in store.tag_strings(42)
+    assert not any(c.startswith("landed:") for c in store.comments(42))
+
+
+def test_submit_no_land_refuses_when_ancestry_cannot_be_read(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A merge-base failure (rc >1 — no common base object, git broke)
+    is not a "nothing pushed ahead" answer: the land refuses rather
+    than record no-land on an unread ancestry."""
+    tip = "e" * 40
+    _oracle(monkeypatch, {"slice/42": tip})
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    seams["subjects"] = []
+    seams["changed_paths"] = []
+    seams["tips"] = {"refs/remotes/origin/slice/42": tip}
+    seams["ancestor_rc"] = 128
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.failure is not None and "could not be verified" in ctx.failure
+    assert "STATUS:open" in store.tag_strings(42)
+
+
+def test_submit_no_land_passes_when_origin_tip_is_not_ahead(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pushed branch whose tip the base already contains (landed by
+    another route, or pushed empty): verified nothing ahead — the
+    ``no_land`` close proceeds as before."""
+    tip = "d" * 40
+    _oracle(monkeypatch, {"slice/42": tip})
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    seams["subjects"] = []
+    seams["changed_paths"] = []
+    seams["tips"] = {"refs/remotes/origin/slice/42": tip}
+    # ancestor_rc default 0: the tip is an ancestor of the land base.
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None and ctx.status is None
+    assert handle == {"no_land": True, "worktree": str(seams["tree"])}
+
+
+def test_submit_nothing_to_land_clears_a_crashed_predecessors_mirror(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review td660513 (regression, third pass): a crashed predecessor's
+    launch files — the mirror and its tips record beside it, stale
+    mirror refs present — must not survive submit's ``no_land`` path.
+    The poll's sync still reads the record, judges a mirror in play,
+    and the nothing-new job defers on a dead CAS basis instead of
+    completing."""
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env, **_kw: {}
+    )
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub",),
+        meta={"factory_mirror": True},
+    )
+    seams["subjects"] = []
+    seams["changed_paths"] = []
+    mirror_root = tmp_path / "scratch" / "factory-mirror"
+    stale_mirror = mirror_root / "td42.git"
+    (stale_mirror / "refs" / "heads").mkdir(parents=True)
+    record = mirror_root / "td42.tips.json"
+    record.write_text(json.dumps({"main": "d" * 40}) + "\n", encoding="utf-8")
+    ctx, handle = _submit(store, seams)
+    assert handle == {"no_land": True, "worktree": str(seams["tree"])}
+    assert seams["launch"] == []
+    assert not store.refs[42].meta.get("factory_mirror")
+    assert not stale_mirror.exists()
+    assert not record.exists()
+    # the poll's no_land path completes — no stale-record sync defers it
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert store.comments(42)[-1] == land_slice.NO_DIFF_NOTE
 
 
 def test_submit_missing_worktree_fails(seams: dict[str, Any], tmp_path: Path) -> None:
@@ -967,7 +1816,9 @@ def _cleanup_cmds(seams: dict[str, Any]) -> list[list[str]]:
     ]
 
 
-def test_poll_green_after_land_notify(seams: dict[str, Any]) -> None:
+def test_poll_green_after_land_notify(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub", "plan:40"))
     store.add_todo(
@@ -977,7 +1828,27 @@ def test_poll_green_after_land_notify(seams: dict[str, Any]) -> None:
         meta={"gate": {"kind": "sha-in-prod", "args": {"sha": PENDING_SHA}}},
     )
     seams["gates"] = [(44, True)]
-    seams["remote"] = True
+    # the slice branch is on origin: the cleanup's remote delete reads
+    # the trusted-url/oracle/ops-repo seams, never `_git` in the shared
+    # gitdir (review td660513)
+    url = "https://github.com/example/precis.git"
+    mirror_calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "github_url", lambda root, *, env: url
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "ls_remote",
+        lambda u, refs, *, env, **_kw: {"slice/42": FULL_SHA},
+    )
+
+    def fake_mirror_run(
+        args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        mirror_calls.append((list(args), Path(cwd), dict(env)))
+        return _proc(rc=0)
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "_run", fake_mirror_run)
     ctx, handle = _submit(store, seams)
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is False  # ship still running
@@ -1005,12 +1876,671 @@ def test_poll_green_after_land_notify(seams: dict[str, Any]) -> None:
     assert _cleanup_cmds(seams) == [
         ["worktree", "remove", tree],
         ["branch", "-D", "slice/42"],
-        ["push", "origin", "--delete", "slice/42"],
     ]
+    # the origin branch delete is an authenticated transport: it ran as
+    # a `push --delete` to the trusted url from a fresh ops gitdir under
+    # the mirror root — never `push origin` in the shared, branch-
+    # writable gitdir where a planted pre-push or url.insteadOf would
+    # meet the token (review td660513)
+    deletes = [(a, c, e) for a, c, e in mirror_calls if "--delete" in a]
+    [(dargs, dcwd, denv)] = deletes
+    assert dargs[:3] == ["git", "-c", "core.hooksPath=/dev/null"]
+    assert dargs[-5:] == [
+        "push",
+        url,
+        "--delete",
+        "refs/factory/slice/42",
+        "refs/heads/slice/42",
+    ]
+    # ``root`` here is slice_root() == tmp_path (PRECIS_SLICE_ROOT)
+    assert dcwd.parent == land_slice._factory_git_mirror.mirror_root(tmp_path)
+    assert dcwd != seams["tree"] and seams["tree"] not in dcwd.parents
+    assert denv["GIT_CONFIG_NOSYSTEM"] == "1"
     [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
     assert "landed abc123400" in summary
     assert "land_notify did it" in summary
     assert "gate td44" in summary
+
+
+def _pin_todo(store: _Store, **record: Any) -> None:
+    """A pin-bump node handed to the lander (td659522 step 4)."""
+    meta = {
+        "op": "pin_bump",
+        "pin_bump": {
+            "state": "handed",
+            "commit": FULL_SHA,
+            "land_job": 777,
+            "package": "autocatpath",
+            "version": "0.50.0",
+            "repo": "catpath",
+            **record,
+        },
+    }
+    store.add_todo(42, meta=meta)
+
+
+def test_a_pin_bump_land_finishes_the_pin_record(seams: dict[str, Any]) -> None:
+    """td682512 review: the ``land_slice`` a ``pin_bump`` minted runs the
+    pin's closing tail right before the land record —
+    ``meta.pin_bump`` ``state: landed`` at the pushed sha (without it the
+    record would sit ``handed`` forever)."""
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    record = store.refs[42].meta["pin_bump"]
+    assert record["state"] == "landed" and record["landed_sha"] == FULL_SHA
+    assert any(c.startswith("landed: abc123400") for c in store.comments(42))
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert f"pin: record landed at {FULL_SHA[:9]}" in summary
+
+
+def test_a_no_diff_pin_land_finishes_at_the_records_commit(
+    seams: dict[str, Any],
+) -> None:
+    """A reland that squashes nothing still lands the pin record: the
+    commit is on main under the record's own sha."""
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    _finish(handle, 0, NO_DIFF_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    record = store.refs[42].meta["pin_bump"]
+    assert record["state"] == "landed" and record["landed_sha"] == FULL_SHA
+
+
+def test_a_plain_slice_land_touches_no_pin_record(seams: dict[str, Any]) -> None:
+    """A land whose todo carries no ``meta.pin_bump`` never calls into
+    ``pin_bump``: no ``pin:`` note, no meta written."""
+    store = _Store()
+    store.add_todo(42)
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    assert "pin_bump" not in store.refs[42].meta
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "pin:" not in summary
+    # and a plain land keeps ship's own land_notify (nothing held)
+    [(_argv, kw)] = seams["launch"]
+    assert "PRECIS_LAND_NOTIFY" not in kw["env"]
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def test_a_pin_land_records_landed_but_leaves_the_node_open(
+    seams: dict[str, Any],
+) -> None:
+    """td659522 F7 (Reto 2026-11-15): the land writes ``landed:`` and the
+    record, but a pin-bump node stays open until its gate image carries the
+    pin. If this fails glue blocked by the node unblocks on the land alone
+    and builds against a stale gate image."""
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    assert store.refs[42].meta["pin_bump"]["state"] == "landed"
+    assert any(c.startswith("landed: abc123400") for c in store.comments(42))
+    tags = store.tag_strings(42)
+    assert "STATUS:done" not in tags and "STATUS:doing" in tags
+    [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
+    assert "STATUS held: gate image wait (F7)" in summary
+
+
+def test_a_pin_land_holds_ships_land_notify_even_unmirrored(
+    seams: dict[str, Any],
+) -> None:
+    """With no factory token (no mirror) ship's land_notify would still close
+    the pin node from the subject's ``(td42)``: it runs with the notify marks
+    held, and the lander writes the subject's other handles itself. If this
+    fails an unmirrored pin land closes its node behind the image wait, or
+    the other todos it names are never recorded."""
+    store = _Store()
+    _pin_todo(store)
+    store.add_todo(43)
+    seams["subjects"] = ["chore(deps): pin autocatpath v0.50.0 (td42, td43)"]
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    [(_argv, kw)] = seams["launch"]
+    assert kw["env"]["PRECIS_LAND_NOTIFY"] == "0"
+    assert kw["env"]["PRECIS_GRIPE_NOTE"] == "0"
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    assert "STATUS:done" not in store.tag_strings(42)
+    assert "STATUS:done" in store.tag_strings(43)
+    assert store.comments(43)[-1].startswith("landed: abc123400")
+
+
+def test_the_pin_check_fails_closed_when_the_store_cannot_say() -> None:
+    """The pin check guards the close: a store that cannot be read holds
+    ship's land_notify (and defers the notify) rather than let it close a
+    pin node behind its image wait."""
+
+    class _Broken(_Store):
+        def get_ref(self, *, kind: str, id: int) -> _Ref | None:
+            raise RuntimeError("db down")
+
+    assert land_slice._carries_pin(_Broken(), 42) is True
+    store = _Store()
+    store.add_todo(42)
+    assert land_slice._carries_pin(store, 42) is False
+
+
+def test_record_land_closes_a_pin_node_whose_image_is_ready() -> None:
+    """Once the record says the gate image carries the pin, a land record
+    (a hand reland, the deferred notify) closes the node as for a slice; if
+    this fails a ready pin node can only ever close through its job."""
+    store = _Store()
+    _pin_todo(store, state="landed", image={"ready": True, "want": FULL_SHA})
+    wrote = land_slice._record_land(store, 42, FULL_SHA, SUBJECT)
+    assert "STATUS:done" in wrote and "STATUS:done" in store.tag_strings(42)
+    store2 = _Store()
+    _pin_todo(store2, state="landed", image={"reason": "stale", "want": FULL_SHA})
+    wrote = land_slice._record_land(store2, 42, FULL_SHA, SUBJECT)
+    assert "STATUS held: gate image wait (F7)" in wrote
+    assert "STATUS:done" not in store2.tag_strings(42)
+
+
+def _patch_sync_seams(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Stand in the mirror→origin sync: the GitHub url read, the sync
+    itself, and the shared-dir repair — recording each's arguments."""
+    seen: dict[str, Any] = {"sync": [], "repair": []}
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+
+    def fake_sync(
+        mirror: Any,
+        cache: Any,
+        url: str,
+        tips: dict[str, str],
+        *,
+        expect: dict[str, str],
+        env: dict[str, str],
+    ) -> tuple[str, str]:
+        seen["sync"].append((mirror, cache, url, dict(tips), dict(expect)))
+        return ("ok", "main → origin")
+
+    def fake_repair(*a: Any, **kw: Any) -> list[str]:
+        seen["repair"].append((a, kw))
+        return ["origin/main → ddddddddd"]
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "sync", fake_sync)
+    monkeypatch.setattr(land_slice, "_repair_origin_state", fake_repair)
+    return seen
+
+
+def test_poll_green_syncs_the_mirror_to_origin(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr659929: ship pushed the launcher's private mirror, not GitHub —
+    poll places the refs ship moved on the real origin, each leased on the
+    launch tip, BEFORE any land record is written."""
+    seen = _patch_sync_seams(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    tips = {"main": "d" * 40, "prod": "e" * 40}
+    handle["factory_mirror_tips"] = tips
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert pctx.meta_set["landed_sha"] == FULL_SHA
+    [(mirror, _cache, url, got_tips, expect)] = seen["sync"]
+    assert mirror == tmp_path / "scratch" / "factory-mirror" / "td42.git"
+    assert url == "https://github.com/example/precis.git"
+    assert got_tips == tips
+    # the sync is told the sha ship reported — a mirror tip that is not
+    # it (or a ref that never moved under a claimed land) is refused
+    assert expect == {"main": FULL_SHA}
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def test_poll_green_replays_the_local_main_advance_only_after_the_sync(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Review td660513 finding 4, second pass (regression): the launch
+    shim refused ship's own ``_sync_local_main``, so a verified
+    mirror→origin sync ends with the LANDER fast-forwarding the shared
+    local main — to the sha the sync verified on origin, after the push,
+    never before — under a credential-free env."""
+    order: list[str] = []
+
+    def fake_sync(
+        mirror: Any,
+        cache: Any,
+        url: str,
+        tips: dict[str, str],
+        *,
+        expect: dict[str, str],
+        env: dict[str, str],
+    ) -> tuple[str, str]:
+        order.append("sync")
+        return ("ok", "main → origin")
+
+    advanced: list[tuple[Path, str, dict[str, str]]] = []
+
+    def fake_advance(common: Path, sha: str, *, env: dict[str, str]) -> str:
+        order.append("advance")
+        advanced.append((common, sha, dict(env)))
+        return f"local main → {sha[:9]}"
+
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(land_slice._factory_git_mirror, "sync", fake_sync)
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "advance_local_main", fake_advance
+    )
+    monkeypatch.setattr(land_slice, "_repair_origin_state", lambda *a, **k: [])
+    common = tmp_path / "common-gitdir"
+    seams["common"] = str(common)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    handle["factory_mirror_tips"] = {"main": "d" * 40}
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert order == ["sync", "advance"]
+    [(got_common, sha, env)] = advanced
+    assert got_common == common and sha == FULL_SHA
+    for leaked in ("PRECIS_FACTORY_GIT_TOKEN", "GH_TOKEN"):
+        assert leaked not in env
+    assert any("local main →" in t for k, t in pctx.chunks if k == "job_event")
+
+
+def test_poll_nothing_new_replays_the_advance_to_the_launch_tip(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A nothing-new land deferred ship's local-main advance too — the
+    shim refuses it regardless — so the lander replays it to the LAUNCH
+    tip (the verified real main), not to a phantom."""
+    _patch_sync_seams(monkeypatch)
+    advanced: list[tuple[Path, str]] = []
+
+    def fake_advance(common: Path, sha: str, *, env: dict[str, str]) -> str:
+        advanced.append((common, sha))
+        return "ok"
+
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "advance_local_main", fake_advance
+    )
+    common = tmp_path / "common-gitdir"
+    seams["common"] = str(common)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    tip = "f" * 40
+    handle["factory_mirror_tips"] = {"main": tip}
+    _finish(handle, 0, NO_DIFF_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert advanced == [(common, tip)]
+
+
+def test_poll_green_release_land_never_advances_main(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An --onto release land's local-main advance is a no-op: main was
+    not the target and must not move even after the release ref's sync
+    verifies."""
+    _patch_sync_seams(monkeypatch)
+    advanced: list = []
+
+    def fake_advance(*a: Any, **k: Any) -> str:
+        advanced.append((a, k))
+        return "ok"
+
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "advance_local_main", fake_advance
+    )
+    seams["common"] = str(tmp_path / "common-gitdir")
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub",),
+        meta={"land_target": "release/r7", "op": "run_slice"},
+    )
+    ctx, handle = _submit(store, seams)
+    handle["factory_mirror_tips"] = {"main": "d" * 40, "release/r7": "e" * 40}
+    _finish(handle, 0, RELEASE_GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert advanced == []
+
+
+def test_poll_green_mirror_sync_race_parks_the_land(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lost launch-tip lease defers the land instead of recording a sha
+    origin does not hold: the handle parks with ``not_before`` and a
+    ``main_refusals`` count, the todo is untouched, ship re-runs
+    against a fresh mirror when the backoff expires, and ship's
+    already-written shared state (origin/* refs, the fast-forwarded
+    local main) is repaired to GitHub's real tips first (review
+    td660513 finding 4)."""
+    seen = _patch_sync_seams(monkeypatch)
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "sync",
+        lambda *a, **k: (
+            "raced",
+            "main moved on origin: expected ddddddddd, found ccccccccc",
+        ),
+    )
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    handle["factory_mirror_tips"] = {"main": "d" * 40}
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # parked, not done
+    assert pctx.status is None and pctx.failure is None
+    assert handle["main_refusals"] == 1
+    assert "not_before" in handle
+    # no land record: no landed comment, no done, no landed_sha meta
+    assert not any(c.startswith("landed:") for c in store.comments(42))
+    assert "STATUS:done" not in store.tag_strings(42)
+    assert "landed_sha" not in pctx.meta_set
+    # ship's shared-dir post-land state was rolled back before the park
+    assert seen["repair"], "no origin repair ran"
+    # the event tells the sweep why the green ship did not land
+    assert any(
+        "origin sync did not stick" in t for k, t in pctx.chunks if k == "job_event"
+    )
+
+
+def test_poll_green_mirror_sync_reads_adopted_tips_from_the_launch_record(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A handle an adopting land rebuilt (gr650484) carries no tips: poll
+    falls back to the launch record BESIDE the mirror — under the main
+    checkout's scratch, not the branch-writable tree (review td660513)."""
+    seen = _patch_sync_seams(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    # the adopted handle's shape: no factory_mirror_tips, but the launch
+    # left the tips record beside the mirror
+    tips = {"main": "f" * 40, "prod": "0" * 40}
+    record = tmp_path / "scratch" / "factory-mirror" / "td42.tips.json"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(tips) + "\n", encoding="utf-8")
+    assert "factory_mirror_tips" not in handle
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    [(_mirror, _cache, _url, got_tips, _expect)] = seen["sync"]
+    assert got_tips == tips
+
+
+def test_poll_green_adopted_ship_with_missing_tips_fails_closed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Review td660513 (regression): an adopted handle carries no tips —
+    and when the launch record is gone while the mirror itself still
+    stands, poll must NOT read "no mirror": ship ran mirrored, so its
+    squash lives only in the lander's mirror and recording it as landed
+    would name a sha origin never held. Fail closed: no sync, no land
+    record."""
+    seen = _patch_sync_seams(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    # the adopted handle's shape — no factory_mirror_tips — and the
+    # launch record deleted while the mirror dir survives
+    (tmp_path / "scratch" / "factory-mirror" / "td42.git").mkdir(parents=True)
+    assert "factory_mirror_tips" not in handle
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "mirror launch record" in (pctx.failure or "")
+    assert seen["sync"] == []
+    assert not any(c.startswith("landed:") for c in store.comments(42))
+    assert "STATUS:done" not in store.tag_strings(42)
+    assert "landed_sha" not in pctx.meta_set
+
+
+def test_poll_green_adopted_ship_with_malformed_tips_record_fails_closed(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A launch record that exists but cannot be read as tips is mirror
+    mode with no CAS basis — fail closed, never a blind land."""
+    seen = _patch_sync_seams(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    record = tmp_path / "scratch" / "factory-mirror" / "td42.tips.json"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text("not json\n", encoding="utf-8")
+    assert "factory_mirror_tips" not in handle
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert seen["sync"] == []
+    assert "STATUS:done" not in store.tag_strings(42)
+
+
+def test_poll_green_unmirrored_ship_ignores_a_planted_tips_file(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The legacy tree-scratch copy is a tips SOURCE, never evidence: a
+    planted ``factory-mirror-tips.json`` in the branch-writable tree
+    does not turn an unmirrored launch into a mirror sync."""
+    seen = _patch_sync_seams(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    (seams["tree"] / "scratch" / "factory-mirror-tips.json").write_text(
+        json.dumps({"main": "f" * 40}) + "\n", encoding="utf-8"
+    )
+    assert "factory_mirror_tips" not in handle
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    # no mirror evidence — the sync never ran, the land records plainly
+    assert seen["sync"] == []
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def test_poll_green_adopted_pre_review_launch_syncs_from_the_tree_copy(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Upgrade path: a launch still running from before the record moved
+    beside the mirror keeps its tips in the tree's scratch — with the
+    mirror standing (mirror mode already proven), the legacy copy
+    recovers the adopted sync."""
+    seen = _patch_sync_seams(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    (tmp_path / "scratch" / "factory-mirror" / "td42.git").mkdir(parents=True)
+    tips = {"main": "f" * 40, "prod": "0" * 40}
+    (seams["tree"] / "scratch" / "factory-mirror-tips.json").write_text(
+        json.dumps(tips) + "\n", encoding="utf-8"
+    )
+    assert "factory_mirror_tips" not in handle
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    [(_mirror, _cache, _url, got_tips, _expect)] = seen["sync"]
+    assert got_tips == tips
+
+
+def test_poll_green_adopted_mirrored_ship_fails_closed_when_launch_files_are_gone(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Review td660513, second pass (regression): the gate code ship runs
+    is same-uid with the lander — it can delete BOTH
+    ``<launch>.tips.json`` and ``<launch>.git`` under the main checkout's
+    scratch, and before the durable stamp that pair's absence read as
+    "no mirror": poll recorded a mirror-only squash as landed. Mirror
+    mode now also rides the todo's meta — a stamped launch whose launch
+    files are all gone still fails closed: no sync, no land record."""
+    seen = _patch_sync_seams(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    # the adopted handle's shape — no factory_mirror_tips — the earlier
+    # mirrored launch's stamp on the todo, and every launch-side file
+    # record deleted by the same-uid gate
+    assert "factory_mirror_tips" not in handle
+    store.stamp_ref_meta(42, {"factory_mirror": True})
+    mirror_root = tmp_path / "scratch" / "factory-mirror"
+    assert not (mirror_root / "td42.tips.json").exists()
+    assert not (mirror_root / "td42.git").exists()
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "mirror launch record" in (pctx.failure or "")
+    assert seen["sync"] == []
+    assert not any(c.startswith("landed:") for c in store.comments(42))
+    assert "STATUS:done" not in store.tag_strings(42)
+    assert "landed_sha" not in pctx.meta_set
+
+
+def test_poll_green_adopted_unmirrored_ship_records_the_land(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stamp's absence reads as before: an adopted handle with no
+    mirror-mode evidence anywhere — no tips, no launch files, no todo
+    stamp, so the token never resolved at launch and ship pushed origin
+    itself — lands plainly on its green exit."""
+    seen = _patch_sync_seams(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert "factory_mirror_tips" not in handle
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seen["sync"] == []
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def test_mirrored_launch_stamps_mirror_mode_on_the_todo(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The launch's durable half: a mirrored submit stamps
+    ``meta.factory_mirror`` on the todo — the record an adopted handle's
+    sync consults when every launch file is gone — alongside the tips
+    file beside the mirror."""
+    monkeypatch.setattr(
+        land_slice._factory_git, "factory_git_token", lambda: "tok-factory"
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    tips = {"main": "a" * 40, "prod": "b" * 40}
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "populate", lambda *a, **k: dict(tips)
+    )
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None and handle is not None
+    assert handle["factory_mirror_tips"] == tips
+    assert store.refs[42].meta["factory_mirror"] is True
+    assert (tmp_path / "scratch" / "factory-mirror" / "td42.tips.json").exists()
+
+
+def test_mirrored_launch_fails_when_the_todo_stamp_cannot_be_written(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Like the launch record beside the mirror, a mirror-mode stamp that
+    cannot be persisted fails the launch — ship must not run a mirrored
+    land no durable record will convict."""
+    monkeypatch.setattr(
+        land_slice._factory_git, "factory_git_token", lambda: "tok-factory"
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "populate",
+        lambda *a, **k: {"main": "a" * 40},
+    )
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    def boom(ref_id: int, updates: dict[str, Any]) -> None:
+        raise OSError("db gone")
+
+    monkeypatch.setattr(store, "stamp_ref_meta", boom)
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == []
+    assert "ship launch failed" in (ctx.failure or "")
+
+
+def test_tokenless_launch_clears_the_mirror_mode_stamp(seams: dict[str, Any]) -> None:
+    """A launch with no resolvable token supersedes an earlier mirrored
+    attempt: ``meta.factory_mirror`` on the todo is cleared alongside
+    the launch files, so the unmirrored ship's green exit lands plainly."""
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub",),
+        meta={"factory_mirror": True},
+    )
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None and handle is not None
+    assert "factory_mirror_tips" not in handle
+    assert not store.refs[42].meta.get("factory_mirror")
+
+
+def test_poll_green_mirror_sync_clears_the_todo_stamp(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A verified sync discharges the launch's records in both halves:
+    ``drop_launch`` for the files, ``meta.factory_mirror`` cleared on
+    the todo."""
+    _patch_sync_seams(monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    store.stamp_ref_meta(42, {"factory_mirror": True})
+    handle["factory_mirror_tips"] = {"main": "d" * 40}
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert not store.refs[42].meta.get("factory_mirror")
+    assert not (tmp_path / "scratch" / "factory-mirror" / "td42.git").exists()
+    assert not (tmp_path / "scratch" / "factory-mirror" / "td42.tips.json").exists()
 
 
 def test_poll_green_logs_the_land_on_the_plan_quest(
@@ -1268,11 +2798,20 @@ def test_poll_no_diff_reland_recovers_a_landed_comment_newer_than_the_revert(
 
 
 def test_poll_green_writes_the_land_when_land_notify_did_not(
-    seams: dict[str, Any],
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = _Store()
     store.add_todo(
         42, tags=("claimed-by:lane-claude-sub",), comments=("handoff: done",)
+    )
+    # the oracle sees no slice branch on origin → no remote delete
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env, **_kw: {}
     )
     ctx, handle = _submit(store, seams)
     _finish(handle, 0, GREEN_LOG)
@@ -1782,6 +3321,148 @@ def test_submit_refuses_an_interim_deny_diff_under_relaxed(
     assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == ["scripts/ship"]
 
 
+# td659522 step 4: the one named exception — a pin-bump node's own commit
+# may carry the autocatpath_min_version line of deploy/group_vars/all.yml.
+# ``pin_bump.land_refusal`` is the content check (its own tests run it on
+# real git); these stand it and pin the lander's side.
+
+_GROUP_VARS = "deploy/group_vars/all.yml"
+_PIN_DIFF = [_GROUP_VARS, "pyproject.toml", "uv.lock"]
+
+
+def _stand_pin_check(
+    monkeypatch: pytest.MonkeyPatch, answer: str | None
+) -> list[tuple[Any, ...]]:
+    from precis.workers.job_types import pin_bump
+
+    asked: list[tuple[Any, ...]] = []
+
+    def land_refusal(*args: Any) -> str | None:
+        asked.append(args)
+        return answer
+
+    monkeypatch.setattr(pin_bump, "land_refusal", land_refusal)
+    return asked
+
+
+def test_submit_admits_a_pin_nodes_group_vars_line(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails every pin bump is refused at the land (the group_vars
+    file is human-only), or it lands without the admission being recorded."""
+    asked = _stand_pin_check(monkeypatch, None)
+    seams["changed_paths"] = list(_PIN_DIFF)
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None and handle is not None, ctx.failure
+    assert len(seams["launch"]) == 1
+    assert run_slice.HUMAN_ONLY_KEY not in ctx.meta_set
+    assert ctx.meta_set["pin_exempt"] == _GROUP_VARS
+    [(_, todo_id, tree, base, paths)] = asked
+    assert (todo_id, tree, paths) == (42, seams["tree"], _PIN_DIFF)
+    assert base == seams["changed_base"][-1]
+    [event] = [t for k, t in ctx.chunks if k == "job_event" and "admitted" in t]
+    assert _GROUP_VARS in event and FULL_SHA[:9] in event
+
+
+def test_submit_refuses_a_pin_node_whose_check_fails(seams: dict[str, Any]) -> None:
+    """If this fails a pin node's group_vars diff lands although the real
+    content check refused it (here: the fake git proves no commit)."""
+    seams["changed_paths"] = list(_PIN_DIFF)
+    store = _Store()
+    _pin_todo(store, base="b" * 40)
+    ctx, handle = _submit(store, seams)
+    assert handle is None and seams["launch"] == []
+    assert ctx.status == "failed"
+    assert "pin-bump exemption refused: " in (ctx.failure or "")
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == [_GROUP_VARS]
+    assert "pin_exempt" not in ctx.meta_set
+    assert any("exemption refused" in c for c in store.comments(42))
+
+
+def test_the_pin_exemption_admits_only_the_group_vars_path(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a passing pin check lets another denied path through
+    with the group_vars file."""
+    _stand_pin_check(monkeypatch, None)
+    seams["changed_paths"] = [*_PIN_DIFF, "deploy/inventory/prod.yml"]
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert handle is None and seams["launch"] == []
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == ["deploy/inventory/prod.yml"]
+    # nothing was admitted, so nothing says so
+    assert "pin_exempt" not in ctx.meta_set
+    assert not any("admitted" in t for _, t in ctx.chunks)
+
+
+def test_a_plain_slice_touching_group_vars_is_never_asked(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a todo without a pin record reaches the exemption
+    check, or its refusal starts naming one."""
+    asked = _stand_pin_check(monkeypatch, None)
+    seams["changed_paths"] = [_GROUP_VARS]
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert handle is None and seams["launch"] == [] and asked == []
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == [_GROUP_VARS]
+    assert "exemption" not in (ctx.failure or "")
+
+
+@pytest.mark.parametrize("unreadable", [True, False])
+def test_a_pin_check_that_cannot_run_fails_the_attempt_without_the_cap(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, unreadable: bool
+) -> None:
+    """If this fails a content check that could not run (git did not
+    answer, or it raised) admits the file, or caps the node for a ruling
+    although a rebuilt bump would pass."""
+    from precis.workers.job_types import pin_bump
+
+    def boom(*args: Any) -> str | None:
+        if unreadable:
+            raise pin_bump.LandUnreadable("git could not read the branch head")
+        raise RuntimeError("git went away")
+
+    monkeypatch.setattr(pin_bump, "land_refusal", boom)
+    seams["changed_paths"] = list(_PIN_DIFF)
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert handle is None and seams["launch"] == []
+    assert ctx.status == "failed"
+    assert run_slice.HUMAN_ONLY_KEY not in ctx.meta_set
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    why = "git could not read" if unreadable else "the check itself failed"
+    assert f"could not be checked ({why}" in (ctx.failure or "")
+    assert any("the pin bump is built again" in c for c in store.comments(42))
+
+
+def test_an_unreadable_pin_check_beside_another_denied_path_still_caps(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a second denied path escapes the human-only cap because
+    the pin check beside it could not run."""
+    from precis.workers.job_types import pin_bump
+
+    def boom(*args: Any) -> str | None:
+        raise pin_bump.LandUnreadable("git could not read the branch head")
+
+    monkeypatch.setattr(pin_bump, "land_refusal", boom)
+    seams["changed_paths"] = [*_PIN_DIFF, "deploy/inventory/prod.yml"]
+    store = _Store()
+    _pin_todo(store)
+    ctx, handle = _submit(store, seams)
+    assert handle is None and seams["launch"] == []
+    assert ctx.meta_set[run_slice.HUMAN_ONLY_KEY] == [
+        _GROUP_VARS,
+        "deploy/inventory/prod.yml",
+    ]
+
+
 def test_full_refusal_on_an_engine_land_relaunches_quick(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2223,12 +3904,14 @@ def test_drift_preflight_prefers_mains_helper_over_the_branchs(
 
     monkeypatch.setattr(land_slice.subprocess, "run", fake_run)
     monkeypatch.setattr(land_slice._factory_git, "git_auth_env", lambda base=None: {})
+    monkeypatch.setattr(land_slice._factory_git, "factory_git_token", lambda: None)
     pre = _REAL_DRIFT_PREFLIGHT(tree)
     assert pre["ran"] and pre["age"] == "3.2"
     # The lib module is tried first (gr550044's shim would resolve lib/
-    # beside itself and find nothing materialised alone).
+    # beside itself and find nothing materialised alone), under `python
+    # -I` so nothing in the tree decides its imports.
     target = tree / land_slice.PREFLIGHT_LIB_REL
-    assert seen[0][:2] == [sys.executable, str(target)]
+    assert seen[0][:3] == [sys.executable, "-I", str(target)]
     assert target.read_text(encoding="utf-8") == main_copy
     assert target.stat().st_mode & 0o111
     # neither copy: nothing ran
@@ -2265,11 +3948,13 @@ def test_drift_preflight_runs_the_helper_under_the_factory_identity(
     monkeypatch.setattr(
         land_slice._factory_git, "git_auth_env", lambda base=None: {"GH_TOKEN": "x"}
     )
+    monkeypatch.setattr(land_slice._factory_git, "factory_git_token", lambda: None)
     pre = _REAL_DRIFT_PREFLIGHT(tree)
     assert pre == {"ran": True, "rc": 0, "age": "", "diag": BLIND_DIAG}
     [call] = seen
     assert call["argv"] == [
         sys.executable,  # never the helper's `uv run` shebang (gr551238)
+        "-I",  # isolated: no cwd/script dir on sys.path, no user site
         str(helper),
         "--age-hours",
         "--start",
@@ -2311,6 +3996,480 @@ def test_drift_preflight_runs_the_helper_under_the_factory_identity(
     pre = _REAL_DRIFT_PREFLIGHT(tree)
     assert pre["ran"] is True and pre["rc"] is None and pre["age"] == ""
     assert pre["diag"] == "helper did not answer (TimeoutExpired)"
+
+
+def test_drift_preflight_never_runs_branch_code_under_the_token(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review td660513 finding 1 (regression): the token resolves but no
+    verified mirror source came with it — the branch's own helper (or a
+    ``scratch/lib`` shadow it could import) must NOT run under the
+    credential: the probe refuses instead."""
+    tree = seams["tree"]
+    helper = tree / "scripts" / "last-gated-main-sha"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        land_slice._factory_git, "factory_git_token", lambda: "tok-factory"
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git, "git_auth_env", lambda base=None: {"GH_TOKEN": "x"}
+    )
+    seen: list[list[str]] = []
+
+    def spy_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(land_slice.subprocess, "run", spy_run)
+    pre = _REAL_DRIFT_PREFLIGHT(tree)
+    assert pre["ran"] is True
+    assert "refusing" in pre["diag"]
+    assert seen == [], "a helper the branch can shape ran under the token"
+
+
+def test_drift_preflight_sources_the_helper_from_the_verified_mirror(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Review td660513 finding 1 (regression): with the per-launch mirror
+    in play the helper is ``git show``n from the oracle-verified main tip
+    — never the branch's tree copy — and still runs under ``python -I``."""
+    tree = seams["tree"]
+    branch_copy = tree / "scripts" / "lib" / "last_gated_main_sha.py"
+    branch_copy.parent.mkdir(parents=True)
+    branch_copy.write_text("# branch copy — must NOT run\n", encoding="utf-8")
+    mirror = tmp_path / "scratch" / "factory-mirror" / "td42.git"
+    mirror.mkdir(parents=True)
+    tip = "f" * 40
+    main_copy = "# main copy with --diag (verified mirror tip)\n"
+    git_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        land_slice._factory_git, "factory_git_token", lambda: "tok-factory"
+    )
+    monkeypatch.setattr(
+        land_slice._factory_git, "git_auth_env", lambda base=None: {"GH_TOKEN": "x"}
+    )
+
+    def fake_mirror_run(
+        args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        git_calls.append(list(args))
+        if args[-1].endswith(":scripts/lib/last_gated_main_sha.py"):
+            return _proc(main_copy)
+        return _proc(rc=1)
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "_run", fake_mirror_run)
+    seen: list[list[str]] = []
+
+    def spy_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="1.0\n", stderr="")
+
+    monkeypatch.setattr(land_slice.subprocess, "run", spy_run)
+    pre = _REAL_DRIFT_PREFLIGHT(tree, mirror=mirror, main_tip=tip)
+    assert pre["ran"] and pre["age"] == "1.0"
+    # the helper came from `git show <tip>:...` inside the mirror — the
+    # branch's own lib copy was never read, and the read ignores a
+    # planted refs/replace for the verified tip (pre-land review pass)
+    [show] = git_calls
+    assert "show" in show and f"{tip}:scripts/lib/last_gated_main_sha.py" in show
+    assert "--no-replace-objects" in show
+    target = tree / land_slice.PREFLIGHT_LIB_REL
+    assert target.read_text(encoding="utf-8") == main_copy
+    assert seen[0][:3] == [sys.executable, "-I", str(target)]
+    # a bad tip: no helper at all, refusal — not the branch copy
+    pre = _REAL_DRIFT_PREFLIGHT(tree, mirror=mirror, main_tip="notasha")
+    assert pre["ran"] and "refusing" in pre["diag"]
+
+
+def test_deferred_notify_writes_the_subjects_handles(seams: dict[str, Any]) -> None:
+    """Review td660513 finding 4 (regression): ship's land_notify was held
+    (``PRECIS_LAND_NOTIFY=0``); after the origin sync verified the sha the
+    lander writes every handle the subject names — this todo's own record
+    is :func:`_record_land`'s, the rest land_notify's shape."""
+    store = _Store()
+    store.add_todo(42)
+    store.add_todo(55)
+    store.add_todo(7)
+    store.add_todo(9)
+    sha = "c" * 40
+    subject = "fix the credential boundary (td42, gr7, refs gr9, td55)"
+    notes = land_slice._deferred_notify(store, subject, sha, 42, seams["tree"])
+    joined = " ".join(notes)
+    # own todo untouched by the deferred pass — _record_land's job
+    assert not any(c.startswith("landed:") for c in store.comments(42))
+    assert any("td55" in n for n in notes)
+    assert any(c.startswith("landed: ccccccccc") for c in store.comments(55))
+    assert "STATUS:done" in store.tag_strings(55)
+    assert "resolved" in joined and "auto_verify" in joined
+    assert "partial" in joined
+    gripe9 = [
+        c.text for c in store.chunks.rows.get(9, []) if c.chunk_kind == "gripe_comment"
+    ]
+    assert any("landed (partial):" in t for t in gripe9)
+    assert "STATUS:auto_verify" not in store.tag_strings(9)
+    gripe7 = [
+        c.text for c in store.chunks.rows.get(7, []) if c.chunk_kind == "gripe_comment"
+    ]
+    assert any(t.startswith("resolved: ccccccccc") for t in gripe7)
+    assert "STATUS:auto_verify" in store.tag_strings(7)
+    # idempotent: a second pass writes nothing new
+    second = land_slice._deferred_notify(store, subject, sha, 42, seams["tree"])
+    assert all("already" in n or "left" in n for n in second)
+
+
+def test_deferred_notify_leaves_a_second_repo_todo_alone(
+    seams: dict[str, Any],
+) -> None:
+    """If this fails a precis land whose subject names a todo that landed
+    in another repo (td659522) writes a precis ``landed:`` sha on it — the
+    reviewer of that slice would then read a sha its repo does not hold."""
+    store = _Store()
+    store.add_todo(42)
+    store.add_todo(55, status="done", comments=("landed: 123456789 — engine",))
+    store.refs[55].meta[lanes.LANDED_REPO_KEY] = "catpath"
+    store.add_todo(56)
+    store.refs[56].meta[lanes.LANDED_REPO_KEY] = lanes.DEFAULT_REPO
+    sha = "c" * 40
+    subject = "build(deps): bump autocatpath to v0.50.0 (td42, td55, td56)"
+    notes = land_slice._deferred_notify(store, subject, sha, 42, seams["tree"])
+    assert store.comments(55) == ["landed: 123456789 — engine"]
+    assert "todo td55: left alone (it landed in catpath)" in notes
+    assert any(c.startswith("landed: ccccccccc") for c in store.comments(56))
+
+
+def test_resolve_gripe_is_the_one_writer_for_every_caller(
+    seams: dict[str, Any],
+) -> None:
+    """If this fails the shared ``resolved:`` writer repeats a comment that
+    already names the sha, moves a settled gripe, or drops land_notify's
+    comment on a settled one."""
+    store = _Store()
+    store.add_todo(7, status="open")
+    store.add_todo(8, status="done")
+    sha = "c" * 40
+
+    def gripe_comments(gid: int) -> list[str]:
+        return [
+            c.text
+            for c in store.chunks.rows.get(gid, [])
+            if c.chunk_kind == "gripe_comment"
+        ]
+
+    first = land_slice._resolve_gripe(store, 7, sha, "why", status="auto_verify")
+    assert first == ["resolved comment", "STATUS:auto_verify"]
+    assert gripe_comments(7) == ["resolved: ccccccccc (main, release pending) — why"]
+    again = land_slice._resolve_gripe(store, 7, sha, "why", status="auto_verify")
+    assert again == ["left STATUS:auto_verify"] and len(gripe_comments(7)) == 1
+    quiet = land_slice._resolve_gripe(store, 8, sha, "why", status="verify")
+    assert quiet == ["left STATUS:done"] and gripe_comments(8) == []
+    noted = land_slice._resolve_gripe(
+        store, 8, sha, "why", status="auto_verify", settled_comment=True
+    )
+    assert noted == ["resolved comment", "left STATUS:done"]
+    assert "STATUS:done" in store.tag_strings(8)
+
+
+def test_deferred_notify_replays_gripe_note(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review td660513 finding 4 (regression): ship's gripe-note was held
+    too (``PRECIS_GRIPE_NOTE=0``) — its ``landed <sha9> on main`` comment
+    goes on every gripe the SQUASH MESSAGE names (subject tail and
+    ``Fixes:`` trailers alike), before land_notify's writes so a
+    ``resolved:`` stays the newest."""
+    store = _Store()
+    store.add_todo(42)
+    store.add_todo(7)
+    store.add_todo(11)
+    sha = "c" * 40
+    message = "fix(workers): the boundary (gr7)\n\nbody\nFixes: gr11, gr7\n"
+    real_git = land_slice._git
+    monkeypatch.setattr(
+        land_slice,
+        "_git",
+        lambda args, cwd: (
+            _proc(message) if args[:2] == ["show", "-s"] else real_git(args, cwd)
+        ),
+    )
+    subject = "fix(workers): the boundary (gr7)"
+    notes = land_slice._deferred_notify(store, subject, sha, 42, seams["tree"])
+    gripe7 = [
+        c.text for c in store.chunks.rows.get(7, []) if c.chunk_kind == "gripe_comment"
+    ]
+    gripe11 = [
+        c.text for c in store.chunks.rows.get(11, []) if c.chunk_kind == "gripe_comment"
+    ]
+    # both gripes got gripe-note's comment — gr7 named by the subject,
+    # gr11 by the Fixes: trailer — and gr7's resolved: is still newest
+    assert "landed ccccccccc on main" in gripe7
+    assert gripe7[-1].startswith("resolved:")
+    assert gripe11 == ["landed ccccccccc on main"]
+    assert any("gr11" in n for n in notes)
+    # a second pass posts neither comment twice
+    second = land_slice._deferred_notify(store, subject, sha, 42, seams["tree"])
+    assert any("already posted" in n for n in second)
+    assert [
+        c.text for c in store.chunks.rows.get(11, []) if c.chunk_kind == "gripe_comment"
+    ] == ["landed ccccccccc on main"]
+
+
+def test_push_branch_runs_in_the_ops_repo_not_the_tree(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Review td660513 finding 2 (regression): the killed-land branch push
+    never runs credential-bearing git from the slice tree's gitdir — its
+    config and hooks are branch-written. The push runs in a fresh ops
+    repo under the trusted boundary."""
+    tree = seams["tree"]
+    monkeypatch.setenv("PRECIS_FACTORY_GIT_TOKEN", "tok-factory")
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    sha = "d" * 40
+    seen: list[tuple[list[str], Path]] = []
+
+    def fake_run(
+        args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        seen.append((list(args), Path(cwd)))
+        return _proc(rc=0)
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "_run", fake_run)
+    real_git = land_slice._git
+    monkeypatch.setattr(
+        land_slice,
+        "_git",
+        lambda args, cwd: (
+            _proc(sha + "\n") if args[:1] == ["rev-parse"] else real_git(args, cwd)
+        ),
+    )
+    note = land_slice._push_branch(tree, "slice/42")
+    assert "on origin" in note
+    pushes = [a for a, _c in seen if "push" in a]
+    assert pushes and f"{sha}:refs/factory/slice/42" in pushes[0]
+    for args, cwd in seen:
+        assert args[:3] == ["git", "-c", "core.hooksPath=/dev/null"]
+        assert cwd != tree and tree not in cwd.parents
+
+
+class _FakeOrigin:
+    """A scripted origin for the slice-branch push (gr665602): answers
+    ``ls-remote`` from ``tips`` and applies a push's ``--force-with-lease``
+    the way git does — refused as ``stale info`` when the expectation is
+    not the current tip (empty = the ref must be absent)."""
+
+    def __init__(self, tips: dict[str, str]) -> None:
+        self.tips = dict(tips)
+        self.pushes: list[list[str]] = []
+        #: ``ref -> sha`` applied between the ls-remote read and the push.
+        self.move_before_push: dict[str, str] = {}
+
+    def run(
+        self, args: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        if "ls-remote" in args:
+            out = "".join(
+                f"{sha}\trefs/factory/{ref}\n"
+                for ref, sha in self.tips.items()
+                if f"refs/factory/{ref}" in args
+            )
+            self.tips.update(self.move_before_push)
+            return _proc(out)
+        if "push" not in args:
+            return _proc()  # the ops repo's init / alternates plumbing
+        self.pushes.append(list(args))
+        spec = next(a for a in args if ":refs/factory/" in a and "=" not in a)
+        new, _, dest = spec.partition(":")
+        ref = dest.removeprefix("refs/factory/")
+        lease = next((a for a in args if a.startswith("--force-with-lease=")), None)
+        if lease is None:
+            held = self.tips.get(ref)
+            # Plain push: only a fast-forward; the rebased sha is not one.
+            if held is not None and held != new:
+                return subprocess.CompletedProcess(
+                    [],
+                    1,
+                    stdout="",
+                    stderr=f"! [rejected] {ref} -> {ref} (non-fast-forward)",
+                )
+        else:
+            name, _, expect = lease.removeprefix("--force-with-lease=").partition(":")
+            assert name == dest
+            if self.tips.get(ref, "") != expect:
+                return subprocess.CompletedProcess(
+                    [],
+                    1,
+                    stdout="",
+                    stderr=f"! [rejected] {ref} -> {ref} (stale info)",
+                )
+        self.tips[ref] = new
+        return _proc()
+
+
+def _slice_push_rig(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    origin: _FakeOrigin,
+    sha: str,
+) -> Path:
+    monkeypatch.setenv("PRECIS_FACTORY_GIT_TOKEN", "tok-factory")
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: "https://github.com/example/precis.git",
+    )
+    monkeypatch.setattr(land_slice._factory_git_mirror, "_run", origin.run)
+    real_git = land_slice._git
+    monkeypatch.setattr(
+        land_slice,
+        "_git",
+        lambda args, cwd: (
+            _proc(sha + "\n") if args[:1] == ["rev-parse"] else real_git(args, cwd)
+        ),
+    )
+    return Path(seams["tree"])
+
+
+def test_push_branch_rebased_slice_overwrites_its_own_earlier_push(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr665602: a slice already on origin and then rebased (a rebase
+    conflict brief, a re-arm onto newer main) is pushed under a lease on
+    the tip origin holds, so the rebased history lands instead of the
+    non-fast-forward rejection that burned the retry ladder."""
+    old, new = "a" * 40, "b" * 40
+    origin = _FakeOrigin({"slice/42": old})
+    tree = _slice_push_rig(seams, monkeypatch, origin, new)
+    note = land_slice._push_branch(tree, "slice/42")
+    assert note == "branch push of slice/42: on origin (replaced)"
+    assert origin.tips["slice/42"] == new
+    assert f"--force-with-lease=refs/factory/slice/42:{old}" in origin.pushes[0]
+
+
+def _git_run(repo: Path, *args: str) -> str:
+    """A real ``git -C <repo>`` for the real-remote push test — returns
+    stripped stdout, raises on failure (test setup must not go on)."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return proc.stdout.strip()
+
+
+def test_push_branch_replaces_amended_tip(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr663738: real git against a local bare remote — the amended
+    commit a FIX-verdict rebuild left replaces the stale tip origin
+    still holds (the lease on the tip ``ls-remote`` just read), the
+    remote tip ends at the new sha and the note marks the replace; a
+    remote moved between that read and the push still fails.
+
+    A real linked worktree is required: the ops repo borrows the common
+    object store via alternates, which a primary checkout never gets."""
+
+    def commit(repo: Path, *args: str) -> None:
+        _git_run(
+            repo,
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=test",
+            "commit",
+            *args,
+        )
+
+    main, bare, tree = tmp_path / "main", tmp_path / "origin.git", tmp_path / "tree"
+    main.mkdir()
+    _git_run(main, "init", "-b", "main")
+    (main / "f.txt").write_text("base\n", encoding="utf-8")
+    _git_run(main, "add", "-A")
+    commit(main, "-m", "base")
+    _git_run(tmp_path, "init", "--bare", str(bare))
+    _git_run(main, "worktree", "add", str(tree), "-b", "slice/42")
+    # The unfixed commit reaches origin; the FIX-verdict rebuild amends it.
+    (tree / "f.txt").write_text("unfixed\n", encoding="utf-8")
+    commit(tree, "-a", "-m", "unfixed (td42)")
+    _git_run(tree, "push", str(bare), "refs/heads/slice/42:refs/factory/slice/42")
+    (tree / "g.txt").write_text("fix\n", encoding="utf-8")
+    _git_run(tree, "add", "-A")
+    commit(tree, "--amend", "-m", "fixed (td42)")
+    old_tip = _git_run(bare, "rev-parse", "refs/factory/slice/42")
+    new_tip = _git_run(tree, "rev-parse", "refs/heads/slice/42")
+    assert old_tip != new_tip
+
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    # Local path transport needs no credential; keep the host's out of it.
+    monkeypatch.delenv("PRECIS_FACTORY_GIT_TOKEN", raising=False)
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror,
+        "github_url",
+        lambda root, *, env: str(bare),
+    )
+    assert land_slice._push_branch(tree, "slice/42") == (
+        "branch push of slice/42: on origin (replaced)"
+    )
+    assert _git_run(bare, "rev-parse", "refs/factory/slice/42") == new_tip
+
+    # A move between the ls-remote read and the push is refused.
+    commit(main, "--allow-empty", "-m", "theirs")
+    theirs = _git_run(main, "rev-parse", "HEAD")
+    commit(tree, "--allow-empty", "-m", "v2 (td42)")
+    real_ls = land_slice._factory_git_mirror.ls_remote
+
+    def moved_ls(url: str, refs: Any, *, env: Any, **kw: Any) -> Any:
+        out = real_ls(url, refs, env=env, **kw)
+        _git_run(main, "push", "--force", url, f"{theirs}:refs/factory/slice/42")
+        return out
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "ls_remote", moved_ls)
+    note = land_slice._push_branch(tree, "slice/42")
+    assert note.startswith("branch push of slice/42: FAILED (lease refused")
+    assert _git_run(bare, "rev-parse", "refs/factory/slice/42") == theirs
+
+
+def test_push_branch_first_push_expects_the_ref_absent(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = _FakeOrigin({})
+    tree = _slice_push_rig(seams, monkeypatch, origin, "c" * 40)
+    assert land_slice._push_branch(tree, "slice/42").endswith(": on origin")
+    assert "--force-with-lease=refs/factory/slice/42:" in origin.pushes[0]
+    assert origin.tips["slice/42"] == "c" * 40
+
+
+def test_push_branch_lease_refused_when_someone_else_moved_the_branch(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr665602: the branch moves between the tip read and the push — the
+    lease refuses, the note still carries FAILED (run_slice raises on it)
+    and origin keeps the other writer's tip."""
+    old, theirs, new = "a" * 40, "d" * 40, "b" * 40
+    origin = _FakeOrigin({"slice/42": old})
+    origin.move_before_push = {"slice/42": theirs}
+    tree = _slice_push_rig(seams, monkeypatch, origin, new)
+    note = land_slice._push_branch(tree, "slice/42")
+    assert note.startswith("branch push of slice/42: FAILED (lease refused")
+    assert old[:9] in note
+    assert origin.tips["slice/42"] == theirs
+
+
+def test_push_branch_unreadable_origin_falls_back_to_the_plain_push(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = _FakeOrigin({})
+    tree = _slice_push_rig(seams, monkeypatch, origin, "c" * 40)
+    monkeypatch.setattr(
+        land_slice._factory_git_mirror, "ls_remote", lambda u, refs, *, env, **_kw: None
+    )
+    assert land_slice._push_branch(tree, "slice/42").endswith(": on origin")
+    assert not any(a.startswith("--force-with-lease") for a in origin.pushes[0])
 
 
 def test_poll_before_not_before_does_nothing(
@@ -2642,6 +4801,52 @@ def _host_defer_setup(
         handle["main_refusals"] = refusals
     _finish(handle, 3, HOST_LOG)
     return store, handle
+
+
+BUSY_LOG = (
+    "quick ship (--quick)\n"
+    "release lifecycle busy — a cut, deploy, abandon or release fix is "
+    "running; retry after it completes\n"
+    "\x1b[31m✖ release lifecycle busy — nothing pushed.\x1b[0m\n"
+)
+
+
+def test_poll_a_busy_release_lock_waits_a_minute_on_its_own_counter(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """Sibling release fixes build side by side and reach ``ship --onto``'s
+    push together; the one that finds the round lock held runs again a
+    minute later, not after the half-hour main-refusal backoff, and the
+    wait does not spend the main-refusal budget."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    handle["main_refusals"] = land_slice.MAX_MAIN_REFUSALS
+    _finish(handle, 1, BUSY_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.status is None and pctx.failure is None
+    assert handle["release_busy"] == 1
+    assert handle["main_refusals"] == land_slice.MAX_MAIN_REFUSALS
+    assert handle["not_before"] == "2026-11-01T10:01:00Z"
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_event" and "host-side refusal #1" in text
+    assert "release lifecycle busy" in text
+    assert store.comments(42) == []
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_poll_a_release_lock_busy_past_its_cap_blocks_the_land(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    handle["release_busy"] = land_slice.MAX_RELEASE_BUSY_WAITS
+    _finish(handle, 1, BUSY_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.failure is not None
 
 
 def test_poll_host_refusal_defers_without_a_probe(
@@ -3038,8 +5243,8 @@ def test_gate_slot_waiting_reads_the_indented_holder_dump() -> None:
         "(steals a slot immediately if its holder dies; a live holder on "
         "this host is waited out however long its gate takes)\n"
         "gate slot: waiting at position 3 of 6 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 45m by slice-td97 (pid 111 on spark, alive)\n"
-        "  gate slot 1: held 12m by slice-td98 (pid 222 on spark, alive)\n"
+        "  gate slot 0: held 45m by slice-td97 (pid 111 on spruce, alive)\n"
+        "  gate slot 1: held 12m by slice-td98 (pid 222 on spruce, alive)\n"
     )
     got = land_slice.gate_slot_waiting(log)
     assert got is not None and got.startswith("gate slot 1: held")
@@ -3062,8 +5267,8 @@ def test_gate_slot_waiting_sees_through_the_scripts_test_ticker() -> None:
     transparent queue chatter, not the wait's end."""
     log = (
         "gate slot: waiting at position 3 of 6 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 45m by slice-td97 (pid 111 on spark, alive)\n"
-        "  gate slot 1: held 12m by slice-td98 (pid 222 on spark, alive)\n"
+        "  gate slot 0: held 45m by slice-td97 (pid 111 on spruce, alive)\n"
+        "  gate slot 1: held 12m by slice-td98 (pid 222 on spruce, alive)\n"
         "scripts/test: gate-slot wait … 10s\n"
         "scripts/test: gate-slot wait … 20s\n"
     )
@@ -3099,8 +5304,8 @@ def test_poll_ship_queued_behind_the_holder_dump_eats_no_wall(
     _ctx, handle = _submit(store, seams)
     Path(handle["log"]).write_text(
         "gate slot: waiting at position 2 of 4 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 3m by w1 (pid 11 on spark, alive)\n"
-        "  gate slot 1: held 1m by w2 (pid 22 on spark, alive)\n",
+        "  gate slot 0: held 3m by w1 (pid 11 on spruce, alive)\n"
+        "  gate slot 1: held 1m by w2 (pid 22 on spruce, alive)\n",
         encoding="utf-8",
     )
     pctx = _Ctx(store, _params(seams))
@@ -3125,7 +5330,7 @@ def test_poll_verify_queued_on_a_gate_slot_eats_no_wall(
     verify = handle["verify"]
     Path(verify["log"]).write_text(
         "gate slot: waiting at position 2 of 5 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 4m by w1 (pid 11 on spark, alive)\n",
+        "  gate slot 0: held 4m by w1 (pid 11 on spruce, alive)\n",
         encoding="utf-8",
     )
     clock["t"] = T0 + timedelta(seconds=60)
@@ -3159,7 +5364,7 @@ def test_poll_verify_queued_behind_scripts_test_ticks_eats_no_wall(
     verify = handle["verify"]
     Path(verify["log"]).write_text(
         "gate slot: waiting at position 2 of 5 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 4m by w1 (pid 11 on spark, alive)\n"
+        "  gate slot 0: held 4m by w1 (pid 11 on spruce, alive)\n"
         "scripts/test: gate-slot wait … 10s\n"
         "scripts/test: gate-slot wait … 20s\n",
         encoding="utf-8",
@@ -3174,7 +5379,7 @@ def test_poll_verify_queued_behind_scripts_test_ticks_eats_no_wall(
     # a newer tick under unchanged chatter re-arms without re-heartbeating
     Path(verify["log"]).write_text(
         "gate slot: waiting at position 2 of 5 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 4m by w1 (pid 11 on spark, alive)\n"
+        "  gate slot 0: held 4m by w1 (pid 11 on spruce, alive)\n"
         "scripts/test: gate-slot wait … 30s\n",
         encoding="utf-8",
     )
@@ -3222,7 +5427,7 @@ def test_poll_deselect_wait_re_arms_the_wall(
     assert verify["phase"] == "deselect" and "full_selection" not in verify
     Path(verify["log"]).write_text(
         "gate slot: waiting at position 1 of 3 (2 slots ahead are busy)\n"
-        "  gate slot 0: held 9m by w1 (pid 11 on spark, alive)\n",
+        "  gate slot 0: held 9m by w1 (pid 11 on spruce, alive)\n",
         encoding="utf-8",
     )
     clock["t"] = T0 + timedelta(seconds=90)
@@ -3246,12 +5451,37 @@ def test_kill_pushes_the_slice_branch_to_origin(
         return "ok"
 
     monkeypatch.setattr(land_slice, "_push_branch", fake_push)
+    # The fake ship pgid (5151) is a real id on the runner: never signal it.
+    monkeypatch.setattr(land_slice._rs, "_signal_group", lambda pgid, sig: None)
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     _ctx, handle = _submit(store, seams)
     ctx = _Ctx(store, _params(seams))
     land_slice.kill(ctx, handle)
     assert pushed == [(str(seams["tree"]), "slice/42")]
+
+
+def test_kill_skips_a_pgid_owned_by_another_user(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reused pgid owned by another user (EPERM) is skipped, not raised:
+    the branch push still runs (r331's red gate, a real 5151 on the runner)."""
+    pushed: list[str] = []
+
+    def eperm(pgid: int, sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    def fake_push(tree: Path, branch: str) -> str:
+        pushed.append(branch)
+        return "ok"
+
+    monkeypatch.setattr(land_slice, "_push_branch", fake_push)
+    monkeypatch.setattr(land_slice._rs, "_signal_group", eperm)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    land_slice.kill(_Ctx(store, _params(seams)), handle)
+    assert pushed == ["slice/42"]
 
 
 # ── outside-diff reds verified before charging (gr573347 b) ────────
@@ -3739,6 +5969,106 @@ def test_poll_checked_red_verify_launch_failure_is_ordinary(
     assert "attempt:1" in store.tag_strings(42)
 
 
+def test_poll_checked_red_verify_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A verify launch refused for capacity defers attempt-free
+    (``red_class = "admission"``): the tick re-mints the land when the
+    host frees — capacity is the host's moment, never the branch's red
+    (review td702053)."""
+
+    def boom(*a: Any, **_kw: Any) -> int:
+        raise run_slice.admission.Refused("host cannot fit the verify footprint")
+
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    monkeypatch.setattr(land_slice, "_launch", boom)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "verify" not in handle
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "admission"
+    assert "deferred" in (pctx.failure or "")
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_main_verify_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The main probe's launch refused for capacity drops the throwaway
+    worktree and defers attempt-free — never the ordinary red."""
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # alone probe launched
+    real_launch = land_slice._launch
+
+    def refuse_main(argv: list[str], **kw: Any) -> int:
+        if Path(str(kw.get("cwd") or "")).name == "slice-main-td42":
+            raise run_slice.admission.Refused("host cannot fit the verify footprint")
+        return real_launch(argv, **kw)
+
+    monkeypatch.setattr(land_slice, "_launch", refuse_main)
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "admission"
+    assert "verify" not in handle
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    main_tree = _main_tree(seams)
+    assert ["worktree", "remove", "--force", str(main_tree)] in [
+        a for a, _ in seams["git"]
+    ]
+    assert pctx.meta_set.get("main_probe") is None
+
+
+def test_deselect_verify_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deselect gate's launch refused for capacity still drops the
+    finished main probe's tree and defers attempt-free — the --quick
+    relaunch waits for the host, not a rebuild."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: False)
+    seams["diff_names"] = "src/precis/x.py\n"
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False  # alone probe launched
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False  # main probe launched
+    real_launch = land_slice._launch
+
+    def refuse_deselect(argv: list[str], **kw: Any) -> int:
+        if "--deselect" in argv:
+            raise run_slice.admission.Refused("host cannot fit the verify footprint")
+        return real_launch(argv, **kw)
+
+    monkeypatch.setattr(land_slice, "_launch", refuse_deselect)
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.meta_set["attempt_free"] == "infra-land"
+    assert pctx.meta_set["red_class"] == "admission"
+    assert "verify" not in handle
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+    main_tree = _main_tree(seams)
+    assert ["worktree", "remove", "--force", str(main_tree)] in [
+        a for a, _ in seams["git"]
+    ]
+    assert pctx.meta_set.get("main_probe") is None
+
+
 def test_poll_checked_red_alone_probe_no_tests_is_ordinary(
     seams: dict[str, Any],
 ) -> None:
@@ -4132,7 +6462,7 @@ def _gate_ctx(
     meta: dict[str, Any] = {
         "executor": "ssh_node",
         "job_type": "land_slice",
-        "params": {"todo_id": 42, "target_node": "spark"},
+        "params": {"todo_id": 42, "target_node": "spruce"},
         "compute_handle": handle,
     }
     if main_probe is not None:
@@ -4632,6 +6962,28 @@ def test_foreign_slice_land_lock_defers_retryable(
     assert ctx.meta_set["red_class"] == "ship-busy"
 
 
+def test_ship_launch_refused_is_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host that cannot fit the land gate's footprint defers attempt-free
+    (``red_class = "admission"``): the tick re-mints the land when capacity
+    returns — a capacity refusal never sends a clean branch for rebuild
+    (review td702053)."""
+
+    def boom(*_a: Any, **_kw: Any) -> int:
+        raise run_slice.admission.Refused("host cannot fit the gate footprint")
+
+    monkeypatch.setattr(land_slice, "_launch", boom)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == []
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert ctx.meta_set["red_class"] == "admission"
+    assert "deferred" in (ctx.failure or "")
+
+
 def test_own_ship_stamp_is_adopted_not_relaunched(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -4671,7 +7023,7 @@ def test_second_submit_in_the_prelaunch_window_never_adopts_the_worker(
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     second: dict[str, Any] = {}
 
-    def racing_preflight(tree: Path) -> dict[str, Any]:
+    def racing_preflight(tree: Path, **_kw: Any) -> dict[str, Any]:
         seams["probed"].append(tree)
         ctx2 = _Ctx(store, _params(seams))
         second["ctx"], second["handle"] = ctx2, land_slice.submit(ctx2, None)
@@ -4804,8 +7156,11 @@ def test_launch_passes_the_land_flock_fd_to_ship(
     assert handle is not None and seams["launch"]
     _argv, kw = seams["launch"][0]
     fds = kw.get("pass_fds", ())
-    assert len(fds) == 1 and isinstance(fds[0], int)
-    assert fds[0] >= 100
+    # The flock rides a high fd (>=100, out of shell shuffling range); no
+    # credential fd ever does — the mirror's token stayed in the lander's
+    # own git calls (gr659929's mirror wiring), and with no token
+    # resolvable in the ambient env only the flock ships.
+    assert fds and all(isinstance(fd, int) and fd >= 100 for fd in fds)
     # The holder stamp names the launched ship's pid and slice for the
     # next land's adopt-or-defer decision.
     stamp = (gitdir / land_slice.LAND_LOCK_FILE).read_text(encoding="utf-8")
@@ -5198,3 +7553,125 @@ def test_git_in_tree_unparseable_ps_is_unknown(
         ),
     )
     assert land_slice._git_in_tree(tmp_path) is None
+
+
+# ── skill-editor follow-up mint (gr657065) ────────────────────────────
+
+
+class _MintStore:
+    def __init__(self, marker: str) -> None:
+        self.meta: dict[str, Any] = {}
+        self.minted: list[dict[str, Any]] = []
+        self.bodies: list[Any] = []
+        self.chunks = SimpleNamespace(
+            list_chunks_for_ref=lambda _: [
+                SimpleNamespace(
+                    text="handoff: Built.\n" + marker, chunk_kind="todo_comment"
+                )
+            ],
+            insert_chunks=lambda ref_id, chunks, **kw: self.bodies.extend(chunks),
+        )
+
+    @contextmanager
+    def tx(self) -> Iterator[_MintStore]:
+        yield self
+
+    def execute(self, sql: str, args: tuple[Any, ...]) -> _MintStore:
+        assert "FOR UPDATE" in sql
+        return self
+
+    def fetchone(self) -> tuple[dict[str, Any]]:
+        return (self.meta,)
+
+    def insert_ref(self, **kw: Any) -> SimpleNamespace:
+        self.minted.append(kw)
+        return SimpleNamespace(id=99)
+
+    def add_tag(self, *args: Any, **kw: Any) -> None:
+        pass
+
+    def tags_for(self, ref_id: int) -> list[Any]:
+        return []
+
+    def stamp_ref_meta(self, ref_id: int, updates: dict[str, Any], **kw: Any) -> None:
+        self.meta.update(updates)
+
+
+def test_land_mints_skill_edit_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    finished: list[int] = []
+    monkeypatch.setattr(nodes, "finish_mint", lambda s, tid, **kw: finished.append(tid))
+    store = _MintStore("skills: precis-get-help, precis-put-help")
+    sha = "a" * 40
+    assert "minted td99" in land_slice._mint_skill_edit(store, 42, sha)
+    assert "already minted" in land_slice._mint_skill_edit(store, 42, sha)
+    assert len(store.minted) == 1 and finished == [99]
+    job = store.minted[0]
+    assert job["parent_id"] == 42 and job["meta"]["task_class"] == "skill"
+    assert job["meta"]["skill_ids"] == ["precis-get-help", "precis-put-help"]
+    assert sha in store.bodies[0].text
+    for marker, note in [("skills: none", "skills: none"), ("", "skills: not stated")]:
+        empty = _MintStore(marker)
+        assert land_slice._mint_skill_edit(empty, 42, sha) == note
+        assert empty.minted == []
+
+
+def test_reconcile_completed_ship_resumes_mirror_publication(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    seen = _patch_sync_seams(monkeypatch)
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx = _Ctx(store, _params(seams))
+    ctx.meta.update(
+        submit_attempt="a" * 32,
+        submit_host=run_slice.admission.local_host(),
+        submit_started_at=1.0,
+    )
+    tips = {"main": "f" * 40, "prod": "0" * 40}
+    handle = land_slice.submit(ctx, None)
+    assert handle is not None
+    attempt = run_slice.run_dir(42) / ("a" * 32)
+    assert Path(handle["exit_file"]) == attempt / "exit"
+
+    # Simulate death before even the full handle record. The completed
+    # wrapper left its PID and exit code, and the mirror is awaiting poll.
+    (attempt / "handle").unlink()
+    baseline = json.loads((attempt / "baseline").read_text(encoding="utf-8"))
+    run_slice._write_launch_record(
+        attempt / "baseline", {**baseline, "factory_mirror_tips": tips}
+    )
+    (attempt / "pid").write_text(str(handle["pid"]), encoding="utf-8")
+    _finish(handle, 0, GREEN_LOG)
+    assert land_slice._ship_busy(Path(seams["tree"]), 42, "slice/42") is None
+
+    verdict = land_slice.reconcile(ctx)
+
+    assert isinstance(verdict, Reconcile)
+    assert land_slice.poll(ctx, verdict.handle) is True
+    assert ctx.status == "succeeded"
+    [(_mirror, _cache, _url, got_tips, _expect)] = seen["sync"]
+    assert got_tips == tips
+    assert len(seams["launch"]) == 1
+
+
+def test_reconcile_free_lock_without_current_evidence_is_unknown(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
+    store = _Store()
+    store.add_todo(42)
+    ctx = _Ctx(store, _params(seams))
+    ctx.meta.update(
+        submit_attempt="a" * 32,
+        submit_host=run_slice.admission.local_host(),
+        submit_started_at=1.0,
+    )
+
+    assert land_slice._ship_busy(Path(seams["tree"]), 42, "slice/42") is None
+    assert land_slice.reconcile(ctx) is None
+    assert seams["launch"] == []

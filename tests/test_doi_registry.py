@@ -119,17 +119,17 @@ def test_crossref_miss_falls_through_to_datacite(
 def test_all_registries_miss_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen = _patch_safe_get(monkeypatch, [_resp(404), _resp(404)])
+    seen = _patch_safe_get(monkeypatch, [_resp(404), _resp(404), _resp(404)])
     assert resolve_registry_doi("10.fake/nope") is None
-    assert len(seen) == 2
+    assert len(seen) == 3
 
 
 def test_non_404_status_is_a_fault_not_a_miss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Crossref 503 + DataCite 404: one leg faulted without a hit, so the
-    # caller must see a fault (mint unverified), not "no such DOI".
-    _patch_safe_get(monkeypatch, [_resp(503), _resp(404)])
+    # Crossref 503 + DataCite/JaLC 404: one leg faulted without a hit, so
+    # the caller must see a fault (mint unverified), not "no such DOI".
+    _patch_safe_get(monkeypatch, [_resp(503), _resp(404), _resp(404)])
     with pytest.raises(RegistryLookupError):
         resolve_registry_doi("10.1/whatever")
 
@@ -160,6 +160,91 @@ def test_fault_in_first_leg_does_not_mask_second_hit(
     meta = resolve_registry_doi("10.4230/lipics.dna.32.9")
     assert meta is not None and meta["source"] == "datacite"
     assert len(calls) == 2
+
+
+# ── gr625031: JaLC leg (J-STAGE et al.) after Crossref + DataCite ──────
+
+_JALC_HIT = {
+    "status": "OK",
+    "apiType": "doi",
+    "apiVersion": "v1",
+    "message": {"total": 1, "rows": 1, "totalPages": 1, "page": 1},
+    "data": {
+        "doi": "10.69410/amfuture.1.2_195",
+        "ra": "JaLC",
+        "content_type": "JA",
+        "title_list": [
+            {"lang": "ja", "title": "超温度場材料創成学"},
+            {"lang": "en", "title": "Creation of Materials by Super-Thermal Field"},
+        ],
+        "creator_list": [
+            {
+                "sequence": "1",
+                "type": "person",
+                "names": [
+                    {"lang": "ja", "last_name": "小泉", "first_name": "雄一郎"},
+                    {"lang": "en", "last_name": "KOIZUMI", "first_name": "Yuichiro"},
+                ],
+            }
+        ],
+        "publication_date": {"publication_year": "2025"},
+        "journal_title_name_list": [
+            {"journal_title_name": "AMフューチャー", "type": "full", "lang": "ja"},
+            {
+                "journal_title_name": "Bulletin of the Japanese Institute of Additive Manufacturing",
+                "type": "full",
+                "lang": "en",
+            },
+        ],
+        "journal_id_list": [{"journal_id": "2759-873X", "type": "ISSN"}],
+        "publisher_list": [
+            {
+                "publisher_name": "The Japanese Institute of Additive Manufacturing",
+                "lang": "en",
+            }
+        ],
+        "volume": "1",
+        "issue": "2",
+        "first_page": "195",
+        "last_page": "198",
+    },
+}
+
+
+def test_jalc_doi_resolves_after_crossref_datacite_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _patch_safe_get(monkeypatch, [_resp(404), _resp(404), _resp(200, _JALC_HIT)])
+    meta = resolve_registry_doi("10.69410/amfuture.1.2_195")
+    assert meta is not None
+    assert meta["source"] == "jalc"
+    assert meta["title"] == "Creation of Materials by Super-Thermal Field"
+    assert meta["year"] == 2025
+    assert (
+        meta["journal"]
+        == "Bulletin of the Japanese Institute of Additive Manufacturing"
+    )
+    assert meta["authors"] == [{"given": "Yuichiro", "family": "KOIZUMI"}]
+    assert meta["entry_type"] == "article"
+    assert meta["issn"] == "2759-873X"
+    assert meta["volume"] == "1"
+    assert meta["issue"] == "2"
+    assert meta["pages"] == "195-198"
+    assert meta["publisher"] == "The Japanese Institute of Additive Manufacturing"
+    assert [url for url, _ in seen] == [
+        "https://api.crossref.org/works/10.69410%2Famfuture.1.2_195",
+        "https://api.datacite.org/dois/10.69410%2Famfuture.1.2_195",
+        "https://api.japanlinkcenter.org/dois/10.69410%2Famfuture.1.2_195",
+    ]
+
+
+def test_jalc_not_polled_after_datacite_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _patch_safe_get(monkeypatch, [_resp(404), _resp(200, _DATACITE_HIT)])
+    meta = resolve_registry_doi("10.4230/lipics.dna.32.9")
+    assert meta is not None and meta["source"] == "datacite"
+    assert len(seen) == 2
 
 
 # ── gr514384: whole-record cite typing (software / dataset records) ────

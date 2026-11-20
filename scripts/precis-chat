@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run python
-"""scripts/precis-chat — talk to castor's local model with the precis MCP tools
+"""scripts/precis-chat — talk to the serving node's local model with the precis MCP tools
 (repo-dev tool, NOT product).
 
     scripts/precis-chat                  interactive REPL
@@ -13,7 +13,7 @@ Up/down recall history (~/.precis_chat_history); Ctrl-C cancels the running
 answer or clears the line; Ctrl-D quits.
 
 The precis MCP is the local HTTP endpoint (PRODUCTION data). Read-only by
-default: only get/search/more are offered to the model. The castor address is
+default: only get/search/more are offered to the model. The serving node's address is
 resolved at runtime and never printed. The MCP token comes from
 PRECIS_MCP_TOKEN.
 """
@@ -63,12 +63,16 @@ HELP = (
 
 
 def castor_base() -> str:
+    # The serving node is the first host of the overlay's sglang_serving group.
+    script = (
+        f". '{REPO}/scripts/lib/node-host.sh'; "
+        "n=$(inventory_group_hosts sglang_serving | head -n 1); "
+        '[ -n "$n" ] || { echo "precis-chat: no host in the sglang_serving group'
+        ' of the cluster overlay" >&2; exit 2; }; '
+        'resolve_node_host "$n"'
+    )
     addr = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f". '{REPO}/scripts/lib/node-host.sh'; resolve_node_host castor",
-        ],
+        ["bash", "-c", script],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -246,7 +250,7 @@ async def repl(chat: Chat, banner: str) -> int:
 
 async def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Chat with castor's model over the precis MCP tools."
+        description="Chat with the serving node's model over the precis MCP tools."
     )
     ap.add_argument("-p", "--prompt", help="one-shot question")
     ap.add_argument(
@@ -279,7 +283,8 @@ async def main() -> int:
             mode = "READ+WRITE (prod)" if a.write else "read-only"
             names = ", ".join(t["function"]["name"] for t in tools)
             return await repl(
-                chat, f"precis-chat · {MODEL} on castor · tools: {names} · {mode}"
+                chat,
+                f"precis-chat · {MODEL} on the serving node · tools: {names} · {mode}",
             )
 
 

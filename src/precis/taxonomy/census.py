@@ -178,7 +178,7 @@ _BARE_EXPONENT_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\^)-(?=\d)")
 #: overwhelmingly English function words in running prose — accepting them
 #: would turn ``"3 in the cell"`` into "3 inches" and ``"1664 papers, a
 #: yield of..."`` into treating a stray ``a`` as a year. Checked against the
-#: campaign registry (`docs/backlog/taxonomy-bootstrap.md` census-tokenizer
+#: campaign registry (me692282 census-tokenizer
 #: spec): ``in``→inch, ``a``→year, ``at``→atmosphere, ``as``→attosecond,
 #: ``are``→the area unit are pint's actual traps; the rest of this list is
 #: the spec's "at minimum" set, kept for defensiveness against a campaign

@@ -4,7 +4,7 @@ Where Part A's bulk verdict (:mod:`precis.quest.pourbaix`) answers "does
 the bulk survive at (U, pH)", this module mints the *surface* anchors —
 one ``surface_coverage_scan`` job per live candidate structure — and
 harvests the pooled sweep onto the candidate's meta
-(``docs/backlog/surface-pourbaix-staircase-optimizer.md``, wave B).
+(`me692414`, wave B).
 
 Opt-in: the quest declares ``meta.surface_anchors: true`` (default off,
 so existing quests are unchanged) and carries the usual

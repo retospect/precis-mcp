@@ -34,10 +34,8 @@ def _card(model_id: str | None, meta_extra: dict[str, Any]) -> Any:
 
 
 def test_extract_card_level_served_by() -> None:
-    cards = [
-        _card("qwen-heavy", {"served_by": [{"host": "melchior", "max_parallel": 4}]})
-    ]
-    assert llm_served_slots_from_cards(cards) == {("melchior", "llm:qwen-heavy"): 4}
+    cards = [_card("qwen-heavy", {"served_by": [{"host": "maple", "max_parallel": 4}]})]
+    assert llm_served_slots_from_cards(cards) == {("maple", "llm:qwen-heavy"): 4}
 
 
 def test_extract_offering_level_served_by() -> None:
@@ -49,8 +47,8 @@ def test_extract_offering_level_served_by() -> None:
                     {
                         "transport": "openai_compat",
                         "served_by": [
-                            {"host": "melchior", "max_parallel": 4},
-                            {"host": "balthazar", "max_parallel": 2},
+                            {"host": "maple", "max_parallel": 4},
+                            {"host": "alder", "max_parallel": 2},
                         ],
                     }
                 ]
@@ -58,8 +56,8 @@ def test_extract_offering_level_served_by() -> None:
         )
     ]
     assert llm_served_slots_from_cards(cards) == {
-        ("melchior", "llm:qwen-heavy"): 4,
-        ("balthazar", "llm:qwen-heavy"): 2,
+        ("maple", "llm:qwen-heavy"): 4,
+        ("alder", "llm:qwen-heavy"): 2,
     }
 
 
@@ -95,10 +93,10 @@ def test_extract_skips_cards_without_model_id_or_host() -> None:
 
 def test_reconcile_upserts_and_is_reported(store) -> None:
     up, deleted = store.reconcile_llm_served_slots(
-        {("melchior", "llm:qwen"): 4, ("balthazar", "llm:qwen"): 2}
+        {("maple", "llm:qwen"): 4, ("alder", "llm:qwen"): 2}
     )
     assert (up, deleted) == (2, 0)
-    slots = {s.resource: s for s in store.resource_slots_for_host("melchior")}
+    slots = {s.resource: s for s in store.resource_slots_for_host("maple")}
     assert slots["llm:qwen"].capacity == 4
     assert slots["llm:qwen"].free == 4
     assert slots["llm:qwen"].kind == "hard"
@@ -151,13 +149,13 @@ def test_upsert_card_accepts_served_by_offering(store) -> None:
             {
                 "transport": "openai_compat",
                 "served_by": [
-                    {"host": "melchior", "endpoint": ":8080/v1", "max_parallel": 4}
+                    {"host": "maple", "endpoint": ":8080/v1", "max_parallel": 4}
                 ],
             }
         ],
     )
     ref = store.get_ref(kind="llm", id=rid)
-    assert ref.meta["offerings"][0]["served_by"][0]["host"] == "melchior"
+    assert ref.meta["offerings"][0]["served_by"][0]["host"] == "maple"
 
 
 def test_upsert_card_rejects_bad_served_by(store) -> None:
@@ -201,13 +199,13 @@ def test_reconcile_pass_seeds_slots_from_catalog(store) -> None:
         offerings=[
             {
                 "transport": "openai_compat",
-                "served_by": [{"host": "melchior", "max_parallel": 3}],
+                "served_by": [{"host": "maple", "max_parallel": 3}],
             }
         ],
     )
     # force past the throttle; no network (_fetch=False) so only seeding runs.
     res = run_llm_reconcile_pass(store, force=True, _fetch=False)
     assert res.ok >= 1  # at least the one seeded slot counted as work
-    slots = {s.resource: s for s in store.resource_slots_for_host("melchior")}
+    slots = {s.resource: s for s in store.resource_slots_for_host("maple")}
     assert "llm:qwen-served" in slots
     assert slots["llm:qwen-served"].capacity == 3

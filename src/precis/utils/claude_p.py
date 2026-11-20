@@ -2,7 +2,7 @@
 
 Used by anything in precis that needs LLM judgment without an
 Anthropic SDK dependency. The chase worker is the first consumer
-(per ``docs/backlog/finding-chase.md``); ingest-time consumers
+(per `gr690649`); ingest-time consumers
 (see §"Discussion" at the bottom of that doc) can adopt the same
 helper without code duplication.
 

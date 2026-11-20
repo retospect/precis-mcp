@@ -1,7 +1,7 @@
 """Surface-Pourbaix slices 4+5 — per-rung staircase masks, the honest
 operating window, and Shapley attribution of the lost window as a field.
 
-Design of record: ``docs/backlog/surface-pourbaix-staircase-optimizer.md``
+Design of record: `me692414`
 (the index of Reto's transfer prompt — §7.4–7.5 for masks/toggles,
 §8.1–8.4 for Shapley and its reductions). Pure numpy + dataclasses: no
 engine import, no DB, no views — the layer between slice 2's resting map

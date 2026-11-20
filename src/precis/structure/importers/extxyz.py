@@ -1,7 +1,7 @@
 """extXYZ reader — the workspace import path's atomistic geometry format.
 
 The sibling of :mod:`precis.structure.importers.cif` for
-``blocks/<name>.extxyz`` files (docs/backlog/structure-workspaces.md
+``blocks/<name>.extxyz`` files (me693174
 §Import boundary): parses the extended-XYZ form
 :func:`precis.structure.export.to_extxyz` writes — ``Lattice``/``pbc``
 header, ``Properties``-declared columns — plus the two precis-native

@@ -36,3 +36,43 @@
   register: precis_web_migrate
   changed_when: "'migrate: applied' in precis_web_migrate.stdout"
   tags: [precis-migrate]
+
+# The gateway host's name, for the code that must not hard-code it
+# (sandbox_run's excluded-node check, the SMALL-band target node, the
+# gateway-pinned cadences, the slullama seed host): one DB row,
+# `cluster.gateway_host`, set from the inventory variable `gateway_host`
+# AFTER the migrate above (app_settings exists by then). Same user, HOME and
+# DSN as the migrate. `precis settings set` is an upsert, so a repeat is a
+# no-op write; `changed` only when the value actually moved (it prints the
+# value either way, so the pre-read below decides).
+- name: Read the current cluster.gateway_host setting
+  when:
+    - os_family == "darwin"
+    - not (precis_db_migrated | default(false) | bool)
+    - not (precis_migrate_dry_run | bool)
+  ansible.builtin.command:
+    argv: ["{{ precis_web_venv }}/bin/precis", "settings", "get", "cluster.gateway_host"]
+  environment:
+    PRECIS_DATABASE_URL: "{{ precis_migrate_dsn | default(precis_web_dsn) }}"
+    HOME: "{{ '/Users/deploy' if os_family == 'darwin' else '/home/deploy' }}"
+  become: true
+  become_user: deploy
+  register: precis_web_gateway_host_current
+  changed_when: false
+  tags: [precis-migrate]
+
+- name: Set the cluster.gateway_host setting from the inventory gateway_host
+  when:
+    - os_family == "darwin"
+    - not (precis_db_migrated | default(false) | bool)
+    - not (precis_migrate_dry_run | bool)
+    - "('cluster.gateway_host = ' ~ gateway_host ~ ' (layer=db)') not in precis_web_gateway_host_current.stdout"
+  ansible.builtin.command:
+    argv: ["{{ precis_web_venv }}/bin/precis", "settings", "set", "cluster.gateway_host", "{{ gateway_host }}"]
+  environment:
+    PRECIS_DATABASE_URL: "{{ precis_migrate_dsn | default(precis_web_dsn) }}"
+    HOME: "{{ '/Users/deploy' if os_family == 'darwin' else '/home/deploy' }}"
+  become: true
+  become_user: deploy
+  changed_when: true
+  tags: [precis-migrate]

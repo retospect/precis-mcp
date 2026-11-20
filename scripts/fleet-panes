@@ -221,7 +221,10 @@ def cmd_say(a: argparse.Namespace) -> int:
     if kind := fleet_panes.dialog_type(plain):
         print(f"REFUSED {row['win']}: a dialog is open ({kind})")
         return 3
-    if pending := fleet_panes.unsent_input(pane):
+    # A kimi pane's box is a bare ``>`` — pass the agent or it reads as
+    # empty (gr651178).
+    agent = fleet_panes.detect_agent(row["cmd"], row["name"])
+    if pending := fleet_panes.unsent_input(pane, agent):
         print(f"REFUSED {row['win']}: input box holds unsent text: {pending[:60]}")
         return 3
     text = a.text
@@ -237,7 +240,7 @@ def cmd_say(a: argparse.Namespace) -> int:
     tmux("send-keys", "-t", target, "Enter")
     time.sleep(a.pause)
     after = capture(row, escapes=True) or ""
-    if fleet_panes.unsent_input(after):
+    if fleet_panes.unsent_input(after, agent):
         print(f"undelivered {row['win']}: the input box still holds the text")
         return 1
     print(f"sent: {row['win']}")

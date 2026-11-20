@@ -13,9 +13,11 @@ Surface (see ``precis-gripe-help``):
   matching exactly one theme folds into that theme's live
   ``theme:<slug>`` keeper as a ``+1`` comment — or becomes the keeper
   itself when none exists — so filers never have to dedup first.
-  Minting a keeper takes a stronger match than merging, and a
+  Minting and merging both need two pattern hits or a title hit; a
   ``thread:<slug>`` filing themes only within its own thread
-  (gr599069).
+  (gr599069). Only filings of at most 1500 characters without a
+  ``spec:`` line merge. Filing tags stay in the comment so a repeat
+  sighting cannot reclassify the keeper.
   ``args={'new': True}`` bypasses matching; several matches file
   normally (the ack lists them). ``args={'observation': True}`` files
   the gripe already closed (``STATUS:done`` + ``observation`` tag) via
@@ -117,7 +119,16 @@ from typing import Any, ClassVar, NamedTuple
 
 import psycopg.errors
 
-from precis.errors import BadInput, Denied, Gone, NotFound, Unsupported, Upstream
+from precis.corrected_call import retry_call
+from precis.errors import (
+    BadInput,
+    Denied,
+    Gone,
+    NotFound,
+    Unsupported,
+    Upstream,
+    nearest_option,
+)
 from precis.handlers import _comment_timeline as tl
 from precis.handlers import _gripe_fix as gf
 from precis.handlers import _gripe_summary as gs
@@ -133,6 +144,7 @@ from precis.handlers._numeric_ref import (
     _BROWSE_TERMINALS,
     _PUT_IDEM_KEY,
     NumericRefHandler,
+    _parse_window_bound,
     plain_listing_view,
 )
 from precis.handlers._prio_tag import (
@@ -197,6 +209,40 @@ _COMMENT_KIND = "gripe_comment"
 #: Chunk-meta marker on a theme-merge '+1' comment — a keyed retry finds its
 #: earlier merge by it, wherever the keeper has since gone (gr658432).
 _MERGE_FILING_META = "merge_filing"
+#: Chunk-meta marker on a close-cascade wake note (gr673558) — the
+#: ``resolved:`` gate skips it, so the note may sit on a referrer's
+#: ``resolved:`` without breaking that referrer's own close.
+_CLOSE_NOTICE_META = "close_notice"
+#: Chunk-meta marker on a parked-shelf wake note — ``cli.gripe``'s
+#: ``unpark_gripe`` stamps it through ``_PUT_COMMENT_META`` so the gate
+#: reads the notice as system text however the wording drifts.
+_UNPARK_NOTICE_META = "unpark_notice"
+#: System wake lines the ``resolved:`` gate skips (gr673558) — the
+#: exact generated shapes only, for rows written before the meta
+#: markers: the close-cascade note ``gr<N> closed (…) — next: …`` and
+#: the parked wake line ``unparked: <type> <value> met (<evidence>)``.
+#: A comment borrowing the prefix ("unparked: reproduced; still
+#: broken") is the referrer's own word and must still gate.
+_SYSTEM_WAKE_RE = re.compile(
+    r"^\s*(?:"
+    r"gr\d+ closed \(.*\) — next: (?:unblocked|re-evaluate)\s*$"
+    r"|unparked: (?:ref_done|sha_in_prod|spec_landed|date|text|until) "
+    r".* met \(.+\)\s*$"
+    r")"
+)
+
+
+def _is_system_wake(comment: Any) -> bool:
+    """A generated system notice the ``resolved:`` gate skips — meta-
+    marked going forward, text-matched for older rows; never the
+    referrer's own word."""
+    meta = comment.meta or {}
+    return bool(
+        meta.get(_CLOSE_NOTICE_META)
+        or meta.get(_UNPARK_NOTICE_META)
+        or _SYSTEM_WAKE_RE.match(comment.text)
+    )
+
 
 #: ``STATUS:parked`` (gr543711): the gripe waits on a wake condition in
 #: ``meta.until`` ({type, value, note}); the ``gripe_parked`` cadence
@@ -215,6 +261,12 @@ _OPEN_EXCLUDED_TAGS = _TERMINAL_STATUS_TAGS | {PARKED_STATUS_TAG}
 _PUT_UNTIL: RequestState[Any] = RequestState("precis_gripe_put_until", None)
 _PARK_UNTIL: RequestState[dict[str, Any] | None] = RequestState(
     "precis_gripe_park_until", None
+)
+#: Chunk-meta a comment-append ``put`` stamps on the new comment —
+#: request-scoped like ``_PUT_UNTIL`` (gr673558: ``unpark_gripe`` binds
+#: ``_UNPARK_NOTICE_META`` so its wake line reads as a system notice).
+_PUT_COMMENT_META: RequestState[dict[str, Any] | None] = RequestState(
+    "precis_gripe_put_comment_meta", None
 )
 
 #: The 0176 deferred trigger's refusal text. ``gripe_status_check()``
@@ -606,6 +658,10 @@ class GripeHandler(NumericRefHandler):
     # ~175 gripes sat live). The literal status stays reachable via
     # tags=['STATUS:open'].
     live_status_spellings: ClassVar[frozenset[str]] = frozenset({"open"})
+    # The closing-comment convention is "resolved: <sha>", so agents
+    # reach for status='resolved' — read it as the canonical 'done'
+    # (gr592737: the search refused the natural word).
+    status_aliases: ClassVar[dict[str, str]] = {"resolved": "done"}
 
     # Queryless browse is the drain queue (gr595573 ruling): the
     # dispatch score first, then size s<m<l<unsized, then oldest first —
@@ -630,7 +686,7 @@ class GripeHandler(NumericRefHandler):
     # chip — the tag that groups the queue. ``size:``, ``theme:``,
     # ``flood`` and the ``+N more`` tail were most of a 100-row page's
     # bytes and none of its grouping signal.
-    list_row_tag_prefixes: ClassVar[tuple[str, ...]] = ("cluster:",)
+    list_row_tag_prefixes: ClassVar[tuple[str, ...]] = ("cluster:", "origin-class:")
     # An overflowing list also names its ``cluster:`` groups (base class).
     facet_axis: ClassVar[str | None] = "cluster"
 
@@ -655,11 +711,13 @@ class GripeHandler(NumericRefHandler):
         # /queue and /batch are the gripe-fix loop views (gr519361),
         # rendered in get() before the base list-view route. /parked is
         # the parked shelf (gr543711): each row's until condition and
-        # parked age.
-        return ("recent", "open", "wontfix", "queue", "batch", "parked")
+        # parked age. /done is the closure listing (gr592737): STATUS:done
+        # gripes, newest-closed first, with args={'closed_since'/
+        # 'closed_until'} bounding the STATUS-tag set-time window.
+        return ("recent", "open", "wontfix", "queue", "batch", "parked", "done")
 
     paged_list_views: ClassVar[frozenset[str]] = frozenset(
-        {"open", "wontfix", "parked"}
+        {"open", "wontfix", "parked", "done"}
     )
 
     def _list_view(
@@ -669,9 +727,21 @@ class GripeHandler(NumericRefHandler):
         page: int = 1,
         page_size: int | None = None,
         sort: str | None = None,
+        closed_since: str | None = None,
+        closed_until: str | None = None,
     ) -> Response | None:
         size = 20 if page_size is None else page_size
         offset = (page - 1) * size
+        closed_after = _parse_window_bound(closed_since, "closed_since")
+        closed_before = _parse_window_bound(closed_until, "closed_until")
+        closed_given = closed_after is not None or closed_before is not None
+        if closed_given and view in ("open", "parked", "recent"):
+            raise BadInput(
+                f"args={{'closed_since'/'closed_until'}} bound a closure "
+                f"window — '/{view}' is the live shelf, not a closed list",
+                next="get(kind='gripe', id='/done', "
+                "args={'closed_since': '<ISO>', 'closed_until': '<ISO>'})",
+            )
         if view == "parked":
             if sort is not None:
                 raise BadInput(
@@ -684,17 +754,30 @@ class GripeHandler(NumericRefHandler):
             return super()._list_view(view)
         # /open selects by exclusion, not by pinning STATUS:open — the
         # live cohort is every non-terminal status (gr530682), and parked
-        # is off it too (gr543711).
-        tags = [] if view == "open" else ["STATUS:wontfix"]
+        # is off it too (gr543711). /done is the closure list (gr592737):
+        # ``closed_values=['done']`` both pins STATUS:done semantics and
+        # engages the newest-closed-first order in ``_list_by_tags``.
+        tags = [] if view == "open" else [f"STATUS:{view}"]
         exclude = sorted(_OPEN_EXCLUDED_TAGS) if view == "open" else None
+        # ``closed_values`` pins which STATUS tag's set-time the closure
+        # clock reads and switches the order to newest-closed — /done's
+        # whole point; on /wontfix only when a window was asked for, so
+        # the plain view keeps its recency order.
+        closed_values = (
+            [view] if view == "done" or (view == "wontfix" and closed_given) else None
+        )
         # The next-page call must repeat a non-default page_size or the
         # continuation silently shrinks back to 20 rows — and a caller's
-        # sort=, or page 2 quietly reverts to the default order.
+        # sort= or closure window, or page 2 quietly reverts.
         more_args = "'page': {next}"
         if page_size is not None:
             more_args += f", 'page_size': {size}"
         if sort is not None:
             more_args += f", 'sort': {sort!r}"
+        if closed_since is not None:
+            more_args += f", 'closed_since': {closed_since!r}"
+        if closed_until is not None:
+            more_args += f", 'closed_until': {closed_until!r}"
         resp = self._list_by_tags(
             tags,
             page_size=size,
@@ -703,12 +786,30 @@ class GripeHandler(NumericRefHandler):
             sort=sort or ("drain" if view == "open" else "recency"),
             exclude_tags=exclude,
             more_call=f"get(kind='gripe', id='/{view}', args={{{{{more_args}}}}})",
+            closed_after=closed_after,
+            closed_before=closed_before,
+            closed_values=closed_values,
         )
         if "next page:" in resp.body:
-            fallback = f"search(kind='gripe', status='{view}', page_size=100"
-            if sort is not None:
-                fallback += f", sort={sort!r}"
-            resp = replace(resp, body=resp.body + f"\nfallback: {fallback})")
+            if closed_values is not None:
+                # A closure listing: search() only reads the closure
+                # clock when a bound is present, so a bare
+                # status='done' search would silently drop the window
+                # and revert to created-time recency. The same view at
+                # a bigger page is the honest grab-more fallback —
+                # it keeps both (gr592737 review).
+                fb_args = "'page_size': 100"
+                if closed_since is not None:
+                    fb_args += f", 'closed_since': {closed_since!r}"
+                if closed_until is not None:
+                    fb_args += f", 'closed_until': {closed_until!r}"
+                fallback = f"get(kind='gripe', id='/{view}', args={{{fb_args}}})"
+            else:
+                fallback = f"search(kind='gripe', status='{view}', page_size=100"
+                if sort is not None:
+                    fallback += f", sort={sort!r}"
+                fallback += ")"
+            resp = replace(resp, body=resp.body + f"\nfallback: {fallback}")
         return replace(
             resp,
             body=resp.body
@@ -896,6 +997,17 @@ class GripeHandler(NumericRefHandler):
         # gr508686). Runs here so create and comment paths share it —
         # the comment path's tag leg re-aliases harmlessly on the
         # already-canonical list.
+        if id is None:
+            from precis.filing_origin import current_filed_by
+            from precis.utils.gripe_origin_class import classify_origin
+
+            origin_class = classify_origin(
+                tags or (), text or "", current_filed_by(self.store.pool)
+            )
+            if origin_class and not any(
+                t.startswith("origin-class:") for t in (tags or ())
+            ):
+                tags = [*(tags or []), f"origin-class:{origin_class}"]
         tags, readings = alias_prio_tags(tags)
         tags, status_readings = alias_status_tags(tags, kind=self.kind)
         readings += status_readings
@@ -1058,6 +1170,8 @@ class GripeHandler(NumericRefHandler):
             entry_meta = (
                 {gs.STAGE_META_KEY: stage_slug} if stage_slug is not None else None
             )
+            if comment_meta := _PUT_COMMENT_META.get():
+                entry_meta = {**(entry_meta or {}), **comment_meta}
             with _PUT_UNTIL.bind(until), _translate_status_check():
                 resp = self._append_then_link(
                     lambda: self._append_comment(
@@ -1232,7 +1346,14 @@ class GripeHandler(NumericRefHandler):
                 memory=self.kind == "gripe" and "project:memory" in (tags or ()),
                 threads=threads,
             )
-            if keeper is not None:
+            if (
+                keeper is not None
+                and keeper_mint_match(text or "", slug)
+                and len(text or "") <= 1500
+                and not re.search(
+                    r"^\s*spec:", text or "", re.IGNORECASE | re.MULTILINE
+                )
+            ):
                 with _PUT_UNTIL.bind(until), _translate_status_check():
                     return self._merge_into_keeper(
                         keeper,
@@ -1246,14 +1367,14 @@ class GripeHandler(NumericRefHandler):
                         untags=untags,
                         idem_key=idem_key,
                     )
-            if threads:
+            if threads and keeper is None:
                 # The theme never took root in this thread — neither
                 # merge nor mint (gr599069).
                 note = (
                     f"matched theme {slug} but it has no live keeper in "
                     f"{', '.join(threads)} — filed separately (no theme tag)"
                 )
-            elif keeper_mint_match(text or "", slug):
+            elif keeper is None and keeper_mint_match(text or "", slug):
                 tags = [*(tags or []), f"{THEME_TAG_PREFIX}{slug}"]
                 note = (
                     f"tagged {THEME_TAG_PREFIX}{slug} — no live keeper existed, "
@@ -1262,8 +1383,8 @@ class GripeHandler(NumericRefHandler):
                 )
             else:
                 note = (
-                    f"matched theme {slug} — filed separately: one "
-                    "incidental hit doesn't mint a keeper"
+                    f"matched theme {slug} — filed separately (no theme tag): "
+                    "weak match or standalone filing does not merge or mint a keeper"
                 )
         elif len(matched) > 1:
             note = f"matched themes: {', '.join(matched)} — filed separately (no merge)"
@@ -1406,10 +1527,10 @@ class GripeHandler(NumericRefHandler):
     ) -> Response:
         """Fold a theme-matched filing into its keeper as a ``+1`` comment.
 
-        Same semantics as ``put(id=N, …)``: caller ``link=``/``tags=``/
-        ``untags=`` ride onto the keeper in one transaction with every
-        guard intact. ``prio=`` has no comment carrier — refuse it naming
-        the direct ``tag()`` door. ``idem_key`` dedupes the appended
+        Caller links ride onto the keeper in one transaction. Tags and
+        untags are recorded only in the comment: a repeat sighting must
+        not change the keeper's classification. ``prio=`` has no comment
+        carrier — refuse it naming the direct ``tag()`` door. ``idem_key`` dedupes the appended
         comment, and short-circuits to the ref when the key's first call
         minted the keeper itself.
         """
@@ -1441,7 +1562,11 @@ class GripeHandler(NumericRefHandler):
             resp = self._append_then_link(
                 lambda: self._append_comment(
                     id=keeper,
-                    text=self._merge_comment(text),
+                    text=(
+                        self._merge_comment(text)
+                        + (f"\nFiling tags: {tags!r}" if tags else "")
+                        + (f"\nFiling untags: {untags!r}" if untags else "")
+                    ),
                     meta={_MERGE_FILING_META: "true"} if key is not None else None,
                     idem_key=key,
                 ),
@@ -1449,8 +1574,8 @@ class GripeHandler(NumericRefHandler):
                 link=link,
                 unlink=unlink,
                 rel=rel,
-                tags=tags,
-                untags=untags,
+                tags=None,
+                untags=None,
                 what=f"{self._sense()} comment",
             )
             if route is not None:
@@ -1459,12 +1584,25 @@ class GripeHandler(NumericRefHandler):
                     self.store.update_ref(
                         keeper, meta_patch={"route": route}, conn=tx_conn
                     )
+        number = re.search(r"comment (\d+)", resp.body)
+        assert number is not None, resp.body
+        retry = retry_call(
+            "put",
+            kind=self.kind,
+            text=text,
+            tags=tags,
+            untags=untags,
+            link=link,
+            unlink=unlink,
+            rel=rel,
+            new=True,
+        )
         return replace(
             resp,
             body=(
-                f"{resp.body}\nmerged into {format_handle(self.kind, keeper)} "
-                f"(theme {slug}); to file separately anyway pass "
-                "args={'new': True}"
+                f"NOT filed as a new gripe: merged into {format_handle(self.kind, keeper)} "
+                f"(theme {slug}) as comment {number[1]}.\n"
+                f"next: {retry}\n{resp.body}"
             ),
         )
 
@@ -1857,8 +1995,15 @@ class GripeHandler(NumericRefHandler):
 
     def _newest_is_resolved(self, ref_id: int) -> bool:
         comments = self._comments(ref_id)
-        newest = max(comments, key=lambda c: c.ord).text if comments else ""
-        return newest.lstrip().startswith(_RESOLVED_PREFIX)
+        for c in sorted(comments, key=lambda c: c.ord, reverse=True):
+            # gr673558: a system wake line can land on top of
+            # ``resolved:`` (a parent's close cascades to its parked
+            # dependants); the gate reads the newest human/agent
+            # comment, not the notice.
+            if _is_system_wake(c):
+                continue
+            return c.text.lstrip().startswith(_RESOLVED_PREFIX)
+        return False
 
     def _claim_status(
         self, id: str | int, add: list[str] | None, remove: list[str] | None
@@ -1996,7 +2141,8 @@ class GripeHandler(NumericRefHandler):
             raise BadInput(
                 f"parking a {self._sense()} needs its wake condition — "
                 "until {type, value, note}: 'ref_done' gr<N>/td<N>, "
-                "'sha_in_prod' <sha>, 'spec_landed' docs/backlog/<x>.md, "
+                "'sha_in_prod' <sha>, 'spec_landed' me<N> (spec root) or "
+                "td<N> (its plan todo), "
                 "'date' <ISO-8601>, or 'text' '<condition>'",
                 next=(
                     f"tag(kind={self.kind!r}, id={id}, "
@@ -2210,7 +2356,7 @@ class GripeHandler(NumericRefHandler):
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
         if target is not None:
-            # Taxon hierarchy rules (docs/backlog/term-taxonomy.md): this
+            # Taxon hierarchy rules (me693578): this
             # create path writes its own link, so it calls the shared guard.
             guard_taxon_hierarchy(
                 self.store, None, target, relation, src_kind=self.kind
@@ -2803,14 +2949,29 @@ class GripeHandler(NumericRefHandler):
         # payload (gr595551): rank open gripes by which trace
         # symbols/files their comment ledgers already name.
         trace: str | None = None,
+        # ``args={'closed_since'/'closed_until': ISO}`` — the ``/done``
+        # closure window (gr592737); forwarded to the base's list-view
+        # route like ``page``/``sort``.
+        closed_since: str | None = None,
+        closed_until: str | None = None,
+        # ``args={'tag_prefixes': 'thread,fix'}`` — the batch summary rows'
+        # tag-prefix selector (td702062); declared here so the dispatcher's
+        # own-signature args= gate admits it, then forwarded to the base.
+        tag_prefixes: Any = ...,
         **_kw: Any,
     ) -> Response:
         # ``args={'page': N}`` pages the id='/open' / '/wontfix' lists; the
         # base reads it back out of the forwarded kwargs (gr497175).
+        if tag_prefixes is not ...:
+            _kw["tag_prefixes"] = tag_prefixes
         if page is not None:
             _kw["page"] = page
         if page_size is not None:
             _kw["page_size"] = page_size
+        if closed_since is not None:
+            _kw["closed_since"] = closed_since
+        if closed_until is not None:
+            _kw["closed_until"] = closed_until
         if sort is not None:
             sort = str(sort).strip().lower()
             browse_sorts = {"prio", "recency"} | self.EXTRA_SORTS
@@ -2832,6 +2993,7 @@ class GripeHandler(NumericRefHandler):
                     next=(f"get(kind='gripe', id='/open', args={{'sort': {sort!r}}})"),
                 )
             _kw["sort"] = sort
+        raw_view = view
         view = plain_listing_view(view, ())
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
@@ -2840,6 +3002,16 @@ class GripeHandler(NumericRefHandler):
                 raise BadInput(
                     f"id='/match' takes no view= (got {view!r})",
                     next="get(kind='gripe', id='/match', args={'trace': '<text>'})",
+                )
+            if (
+                _kw.get("closed_since") is not None
+                or _kw.get("closed_until") is not None
+            ):
+                raise BadInput(
+                    "id='/match' ranks open gripes by trace — it takes no "
+                    "closure bounds",
+                    next="get(kind='gripe', id='/done', "
+                    "args={'closed_since': '<ISO>', 'closed_until': '<ISO>'})",
                 )
             return self._match_view(trace)
         if trace is not None:
@@ -2850,10 +3022,15 @@ class GripeHandler(NumericRefHandler):
                 next="get(kind='gripe', id='/match', args={'trace': '<text>'})",
             )
         if id in ("/queue", "/batch"):
-            if _kw.get("page") not in (None, 1) or _kw.get("page_size") is not None:
+            if (
+                _kw.get("page") not in (None, 1)
+                or _kw.get("page_size") is not None
+                or _kw.get("closed_since") is not None
+                or _kw.get("closed_until") is not None
+            ):
                 raise BadInput(
                     f"id={id!r} renders the whole loop on one page; it takes no "
-                    "page/page_size",
+                    "page/page_size or closure bounds",
                     next=f"get(kind='gripe', id={id!r}, args={{'queue': 'in-build'}})"
                     if id == "/queue"
                     else f"get(kind='gripe', id={id!r}, args={{'batch': '<slug>'}})",
@@ -2877,6 +3054,10 @@ class GripeHandler(NumericRefHandler):
             head = "\n".join(self._header_lines(ref, tags))
             return Response(body=gf.render_fix_view(ref, state, head))
         if isinstance(id, list):
+            if raw_view in {"list", "ids"}:
+                # Compact batch views: checked on the pre-fold view, which
+                # plain_listing_view folds to None above.
+                return super().get(id=id, view=raw_view, q=q, **_kw)
             # Batch form: one summary block per id by default, or the
             # single-id view mapped over each (gr552235). The comment
             # selectors forward per id — on a bare get they mean
@@ -2970,17 +3151,33 @@ class GripeHandler(NumericRefHandler):
             )
         if view is not None and view not in _BASE_VIEWS:
             views = [*_BASE_VIEWS, "body", "comments", "full", "fix", "summary"]
-            near = difflib.get_close_matches(view, views, n=1)
-            lead = f"nearest is view={near[0]!r}. " if near else ""
+            near = nearest_option(view, views)
+            lead = f"nearest is view={near!r}. " if near else ""
+            # gr613469: lead with the corrected call — the caller's own
+            # get (every arg preserved, review td680653) with the
+            # nearest valid view swapped in — ahead of the vocabulary
+            # walk-through.
+            corrected = (
+                retry_call(
+                    "get",
+                    kind="gripe",
+                    id=id if id is not None else "<id>",
+                    view=near,
+                )
+                if near
+                else None
+            )
+            nexts = [corrected] if corrected else []
+            nexts.append(
+                lead + "get(kind='gripe', id=<id>, view='comments') — every "
+                "comment, paged whole (args={'comments': K} newest K, "
+                "{'comments': 'A-B'} a window, {'comment': K} one); "
+                "view='body' the body; the plain get is title + tags + count"
+            )
             raise Unsupported(
                 f"unknown view {view!r} for kind='gripe'",
                 options=views,
-                next=(
-                    lead + "get(kind='gripe', id=<id>, view='comments') — every "
-                    "comment, paged whole (args={'comments': K} newest K, "
-                    "{'comments': 'A-B'} a window, {'comment': K} one); "
-                    "view='body' the body; the plain get is title + tags + count"
-                ),
+                next=nexts,
             )
         try:
             resp = super().get(id=id, view=view, q=q, **_kw)
@@ -3203,8 +3400,7 @@ class GripeHandler(NumericRefHandler):
         return Response(body=gf.render_batch(batch, states, bodies, comments))
 
     def _dup_lines(self, ref: Ref) -> list[str]:
-        """Pipeline v2 slice 2 card lines (``docs/backlog/
-        gripe-pipeline-v2.md`` §Data model): ``duplicates: x N`` =
+        """Pipeline v2 slice 2 card lines (``me691700`` §Data model): ``duplicates: x N`` =
         OUTBOUND ``supersedes`` links — this keeper supersedes N parked
         duplicates (the repo convention is source supersedes target) —
         and ``potential duplicate parents: gr<id>(<sim>)`` off
@@ -3534,7 +3730,10 @@ def gripe_close_cascade(
     re-close doesn't double-post even after an intervening comment.
     A referrer already at a terminal STATUS (per
     ``BLOCKER_TERMINAL_STATUSES`` — done/won't-do todo, closed gripe,
-    abandoned quest) is settled and gets no note.
+    abandoned quest) is settled and gets no note; neither does one
+    whose newest comment already carries its own ``resolved:`` — a
+    wake line on top would fail that referrer's own close gate
+    (gr673558).
     """
     row = conn.execute(
         "SELECT c.text FROM chunks c WHERE c.ref_id = %s "
@@ -3564,12 +3763,17 @@ def gripe_close_cascade(
 
     for src_id, relation, kind in {tuple(r) for r in referrers + waiters}:
         cur = conn.execute(
-            "SELECT t.value FROM ref_tags rt JOIN tags t "
-            "ON t.tag_id = rt.tag_id WHERE rt.ref_id = %s "
-            "AND t.namespace = 'STATUS' LIMIT 1",
+            "SELECT (SELECT t.value FROM ref_tags rt JOIN tags t "
+            "ON t.tag_id = rt.tag_id WHERE rt.ref_id = r.ref_id "
+            "AND t.namespace = 'STATUS' LIMIT 1), "
+            "COALESCE(r.meta->'hidden_comments', '[]'::jsonb) "
+            "FROM refs r WHERE r.ref_id = %s",
             (src_id,),
         ).fetchone()
-        referrer_status = str(cur[0]) if cur is not None else None
+        referrer_status = (
+            str(cur[0]) if cur is not None and cur[0] is not None else None
+        )
+        hidden_ords = {int(o) for o in (cur[1] or [])} if cur else set()
         if referrer_status in BLOCKER_TERMINAL_STATUSES:
             continue
         # Next step: a blocked-by referrer with no live blockers left is
@@ -3595,7 +3799,20 @@ def gripe_close_cascade(
                 "AND c.chunk_kind = %s AND c.text LIKE %s LIMIT 1",
                 (src_id, comment_kind, f"gr{gripe_id} closed%"),
             ).fetchone()
-            if already is None:
+            newest = conn.execute(
+                "SELECT c.text FROM chunks c WHERE c.ref_id = %s "
+                "AND c.chunk_kind = %s AND NOT (c.ord = ANY(%s::int[])) "
+                "ORDER BY c.ord DESC LIMIT 1",
+                (src_id, comment_kind, sorted(hidden_ords)),
+            ).fetchone()
+            # gr673558: a referrer whose newest comment already carries
+            # its own ``resolved:`` is closing on its own — a wake note
+            # on top would fail its close gate (and roll a batch close
+            # over both refs back with it).
+            settled = newest is not None and newest[0].lstrip().startswith(
+                _RESOLVED_PREFIX
+            )
+            if already is None and not settled:
                 nxt = "unblocked" if unblocked else "re-evaluate"
                 (ord_,) = conn.execute(
                     "SELECT coalesce(max(ord), 0) + 1 FROM chunks WHERE ref_id = %s",
@@ -3607,7 +3824,10 @@ def gripe_close_cascade(
                         ChunkInsert(
                             ord=int(ord_),
                             text=f"{close_note} — next: {nxt}",
-                            meta={"chunk_kind": comment_kind},
+                            meta={
+                                "chunk_kind": comment_kind,
+                                _CLOSE_NOTICE_META: gripe_id,
+                            },
                         )
                     ],
                     conn=conn,

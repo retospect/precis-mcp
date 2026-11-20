@@ -1,10 +1,12 @@
 # vllm role
 
+> Retired 2026-10-16: the serving node runs SGLang (roles/sglang, 49a-sglang.yml); kept for the day a fixed vLLM image is pullable.
+
 Runs one vLLM OpenAI-compatible server (one model, fully resident) as a
 systemd-managed docker container on a single GB10 host. Playbook:
 `playbooks/49-vllm.yml`, targeting inventory group `vllm_serving` (add the
 host under that group in your inventory). Spec:
-`docs/backlog/vllm-per-node-serving.md`.
+me695305.
 
 The unit restarts the container on failure; the role then waits (bounded,
 default 25 min) for `GET /health`. Model load measured 505-861 s plus engine
@@ -21,18 +23,18 @@ layered extra inventory that puts the host in `vllm_serving`.
 workaround `VLLM_MARLIN_USE_ATOMIC_ADD=1`: without it the stock image's
 Marlin MXFP4 MoE kernel races and gpt-oss emits a stray leading `!` with
 nondeterministic output at temperature 0 (vllm-project/vllm#37030; seen on
-castor at every window, 2026-10-12/13). The env alone did NOT fix v0.20.1
+the LLM host at every window, 2026-10-12/13). The env alone did NOT fix v0.20.1
 (2026-10-13); the working stack is the `sglang` role
 (`playbooks/49a-sglang.yml`, verified sound 2026-10-14). Keep this role for
 the day a fixed vLLM image (`cu130-nightly` or the NGC track) is pullable. `vllm_max_model_len` defaults to 16384 (the Slice 0 setting);
 `scripts/claude-local` needs more (a Claude Code first request exceeds 16k),
-see `docs/backlog/claude-code-on-local-serving.md`.
+see me695114.
 
 ## Memory on the GB10
 
 GPU and CPU share one 121 GiB pool, so `vllm_gpu_memory_utilization` is a
 fraction of the whole box. 0.80 (98 GiB) left the host 1 GiB and swapping
-(2026-10-12). 0.70 (85 GiB, ~36 GiB left) wedged castor twice on 2026-10-15
+(2026-10-12). 0.70 (85 GiB, ~36 GiB left) wedged the LLM host twice on 2026-10-15
 once the MACE and compute lanes and docker builds ran beside it. The default
 is now 0.60: vLLM gets ~73 GiB, the rest of the host ~48 GiB, and
 MemAvailable stays well above earlyoom's 10% line. The gpt-oss-120b MXFP4

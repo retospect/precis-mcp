@@ -33,6 +33,13 @@ DIALOG_RE = re.compile(r"Enter to select|Do you want to|Do you trust the files")
 #: A dialog's first option line: ``❯ 1. Yes`` / ``  1. Yes`` / ``› 1. Skip``.
 OPTION_RE = re.compile(r"^[\s│┃║]*[❯›❭]?\s*1\.\s")
 PROMPT_CHARS = "❯❭›"
+#: Kimi's input box leads with a bare ``>`` — too common in scrollback
+#: for the shared set (a ``> quote`` inside a Claude/Codex transcript is
+#: output, not a box), so it is kimi-scoped and bounded to the pane's
+#: bottom lines: the box is pinned just above the status line and the
+#: bottom-most prompt line wins (gr651178).
+_KIMI_BOX_RE = re.compile(r"^>(?:\s|$)")
+_INPUT_BOX_DEPTH = 8
 #: Spinners: Claude "… (12s · esc to interrupt)", Devin "Running tools · 3m
 #: (esc twice to interrupt)", Codex "Working (8s • esc to interrupt)".
 BUSY_RE = re.compile(r"… \(\d+|esc (twice )?to interrupt|• Working \(\d")
@@ -189,24 +196,52 @@ def dialog_options(pane: str) -> list[str]:
     return out
 
 
-def unsent_input(pane_with_escapes: str) -> str:
+def input_box_prompt(stripped: str, agent: str = "") -> bool:
+    """A side-stripped line leads with the agent's input prompt char."""
+    if not stripped:
+        return False
+    return stripped[0] in PROMPT_CHARS or (
+        agent == "kimi" and _KIMI_BOX_RE.match(stripped) is not None
+    )
+
+
+def input_box_visible(pane: str, agent: str = "") -> bool:
+    """The agent's input box is drawn: a prompt-char line in the tail."""
+    for raw in pane.splitlines()[-_INPUT_BOX_DEPTH:]:
+        stripped = SIDE_RE.sub("", ANSI_RE.sub("", raw))
+        if input_box_prompt(stripped, agent):
+            return True
+    return False
+
+
+def unsent_input(pane_with_escapes: str, agent: str = "") -> str:
     """Text typed into the input box but not sent: what follows the last
-    ``❯``/``›`` line's prompt char, dim placeholders and ANSI removed."""
-    for raw in reversed(pane_with_escapes.splitlines()):
+    ``❯``/``›`` line's prompt char, dim placeholders and ANSI removed.
+    ``agent`` widens the prompt set — a kimi pane's box is a bare ``>``,
+    matched only in the bottom lines so ``> `` scrollback is not input."""
+    lines = pane_with_escapes.splitlines()
+    floor = len(lines) - _INPUT_BOX_DEPTH
+    for i in range(len(lines) - 1, -1, -1):
+        raw = lines[i]
         plain = ANSI_RE.sub("", raw)
         stripped = SIDE_RE.sub("", plain)
-        if stripped and stripped[0] in PROMPT_CHARS:
-            tail = raw[raw.index(stripped[0]) + 1 :]
-            tail = ANSI_RE.sub("", DIM_SPAN_RE.sub("", tail))
-            tail = SIDE_RE.sub("", tail.replace("\xa0", " ")).strip()
-            # The agents' empty-box placeholders are plain text, not dim spans.
-            if re.match(
-                r"Ask Codex to do anything|Press Enter to send"
-                r"|Guide Devin while|Ask Devin to build",
-                tail,
-            ):
-                return ""
-            return tail
+        if not stripped:
+            continue
+        if stripped[0] not in PROMPT_CHARS and not (
+            agent == "kimi" and i >= floor and _KIMI_BOX_RE.match(stripped) is not None
+        ):
+            continue
+        tail = raw[raw.index(stripped[0]) + 1 :]
+        tail = ANSI_RE.sub("", DIM_SPAN_RE.sub("", tail))
+        tail = SIDE_RE.sub("", tail.replace("\xa0", " ")).strip()
+        # The agents' empty-box placeholders are plain text, not dim spans.
+        if re.match(
+            r"Ask Codex to do anything|Press Enter to send"
+            r"|Guide Devin while|Ask Devin to build",
+            tail,
+        ):
+            return ""
+        return tail
     return ""
 
 

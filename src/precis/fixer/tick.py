@@ -8,10 +8,12 @@ Run once via ``scripts/fixer-tick`` (launchd, skip-on-battery). Serial
 by a lockfile: a second tick that finds the lock held **exits** rather
 than racing a concurrent ship/deploy.
 
-``pick`` draws from :func:`precis.fixer.intake.all_items` — proposals
-under ``docs/backlog/`` always, plus (only when ``PRECIS_FIXER_GRIPE_DB``
-is set) promoted gripes read from that DB. See ``intake.py``'s module
-docstring for the gripe lane's promotion criterion and dial.
+``pick`` draws from :func:`precis.fixer.intake.all_items` — the retired
+file-proposal lane (it can only surface the one spec file deliberately
+left in ``docs/backlog/``; specs now live in graph memory, gr696034),
+plus (only when ``PRECIS_FIXER_GRIPE_DB`` is set) promoted gripes read
+from that DB. See ``intake.py``'s module docstring for the proposal
+lane's retirement and the gripe lane's promotion criterion and dial.
 
 **Autonomy is a dial, defaulting to the safe rung** so that merely
 landing this module does nothing dangerous:

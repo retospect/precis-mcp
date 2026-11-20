@@ -22,7 +22,7 @@ from mcp.server.auth.provider import (
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from psycopg.types.json import Jsonb
-from pydantic import AnyUrl
+from pydantic import AnyHttpUrl, AnyUrl
 
 from precis.errors import BadInput, Denied
 from precis.oauth.config import OAuthConfig
@@ -109,9 +109,15 @@ class OAuthProvider(
         client = self.config.clients.get(client_id)
         if client is None:
             return None
+        from precis import icons
+
         return OAuthClientInformationFull(
             client_id=client.id,
             client_name=client.name,
+            # Registration is disabled, so these records are operator-owned;
+            # the logo_uri declares the precis mark (served on the issuer)
+            # for any connector UI that reads client metadata (gr633600).
+            logo_uri=AnyHttpUrl(icons.https_url(self.config.issuer)),
             redirect_uris=[AnyUrl(uri) for uri in client.redirect_uris],
             token_endpoint_auth_method="none",
             grant_types=["authorization_code", "refresh_token"],

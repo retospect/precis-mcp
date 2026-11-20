@@ -1,11 +1,11 @@
 # Runbook — db-thrash-review (prod index/thrashing cadence)
 
-A recurring pass that asks: *is the prod DB (`precis_prod` on caspar) thrashing —
+A recurring pass that asks: *is the prod DB (`precis_prod` on the database host) thrashing —
 a runaway query pegging CPU, a missing index forcing repeated full scans, dead
 indexes taxing every write, or bloat?* Cadence is **14 days**, enforced
 advisory-style by `scripts/db-thrash-review` (surfaced in `/whatneedsdoing`, next
 to `token-review`). It exists because the last time nobody watched, an unindexed
-GC `DELETE` ran fleet-wide every 2s and pegged caspar for hours before anyone
+GC `DELETE` ran fleet-wide every 2s and pegged the database host for hours before anyone
 noticed (fixed: migrations 0077/0078 + `route_log.gc` single-flight).
 
 Tiering (per CLAUDE.md "three tiers"): the *cadence check* is a script (tier 1,
@@ -92,7 +92,7 @@ FROM pg_stat_user_tables WHERE n_dead_tup>500 ORDER BY n_dead_tup DESC LIMIT 12;
 - **Deliberate keeps — don't re-flag:** `chunks_keywords_gin` (backs
   `mode='verbatim'`) and `tag_embeddings_vector_hnsw` (backs ANN below the size
   threshold). A 13-row table (`app_settings`) with huge seq_scan counts means a
-  hot caller (`docs/backlog/db-resident-settings.md`), not a missing index.
+  hot caller (gr690347), not a missing index.
 
 ## Log
 

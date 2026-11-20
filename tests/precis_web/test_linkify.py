@@ -646,6 +646,19 @@ def test_markdown_star_inside_math_not_emphasis() -> None:
     assert "$a*b$" in out and "<em>" not in out
 
 
+def test_adsorbate_star_not_emphasis() -> None:
+    # gr674905: *NO / H* style adsorbate stars are literal in the reader,
+    # same rule as the exporters (utils/adsorbate_star).
+    out = str(
+        linkify_refs("*NO3- to *NO2- + O*, adsorbed *H *OH Pd* O*", markdown=True)
+    )
+    assert "<em>" not in out and "*NO" in out and "Pd*" in out
+    # \* is the literal-star escape — never a delimiter, rendered bare.
+    out = str(linkify_refs(r"a \*literal\* star and a *word*", markdown=True))
+    assert "*literal*" in out and "\\*" not in out
+    assert "<em>word</em>" in out and out.count("<em>") == 1
+
+
 def test_markdown_empty_base_math_folds_base_in() -> None:
     # Chemistry math with the base outside the $…$ (C$_{60}$) is repaired to
     # $C_{60}$ so KaTeX renders a proper subscripted base — parity with export.
@@ -896,6 +909,47 @@ def test_invalid_pilcrow_ref_flagged_not_anchored() -> None:
 # ── TOON / TSV tabular rendering (linkify_toon) ──────────────────────
 
 
+def test_toon_memory_markdown_blocks_preserve_lines() -> None:
+    """gr574981: block formatting must not collapse existing memory lines."""
+    from precis_web.linkify import linkify_toon
+
+    out = str(
+        linkify_toon(
+            "## Work\n\nRouter: first\nBuilder: second\n\n"
+            "3. **Build**\n   continuation\n4. Release\n\n"
+            "- One\n- Two\n\n> Quoted\n> second line\n\n<script>alert(1)</script>",
+            handles={},
+        )
+    )
+    assert '<h2 class="font-semibold my-2">' in out
+    assert '<ol start="3" class="list-decimal pl-5 my-2">' in out
+    assert '<ul class="list-disc pl-5 my-2">' in out
+    assert '<blockquote class="border-l pl-4 my-2">' in out
+    assert 'class="whitespace-pre-wrap">Router: first\nBuilder: second</span>' in out
+    assert "<strong>Build</strong>\ncontinuation</span>" in out
+    assert 'class="whitespace-pre-wrap">Quoted\nsecond line</span>' in out
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+
+
+def test_toon_nested_fences_restore_literal_dois() -> None:
+    """Nested code must bypass linkification and restore DOI placeholders."""
+    from precis_web.linkify import linkify_toon
+
+    out = str(
+        linkify_toon(
+            "> ```text\n> doi:10.1234/example <tag>\n> ```\n\n"
+            "- Code:\n\n    ```\n    doi:10.1234/example\n    ```",
+            handles={},
+            doi_links={"10.1234/example": "/paper/example"},
+        )
+    )
+    assert "<pre><code>doi:10.1234/example &lt;tag&gt;\n</code></pre>" in out
+    assert "<pre><code>doi:10.1234/example\n</code></pre>" in out
+    assert "\x00" not in out
+    assert "<a " not in out
+
+
 def test_toon_without_handles_preserves_legacy_fences_and_pipe_tables() -> None:
     """gr561018: non-memory readers retain origin/main's literal prose HTML."""
     from precis_web.linkify import linkify_toon
@@ -1035,6 +1089,50 @@ def test_render_cloze_escapes_untrusted_text() -> None:
 
 def test_render_cloze_no_deletion_is_plain_escaped_text() -> None:
     assert str(render_cloze("no cloze here <b>")) == "no cloze here &lt;b&gt;"
+
+
+# ── render_cloze_masked: every gap masked until hover (gr664414) ─────────
+# The /learning current-context list quizzes instead of displaying answers:
+# the answer stays in the DOM (a hidden .cloze-answer span the page CSS
+# reveals on hover/focus), the blank shows a visible label instead.
+
+
+def test_render_cloze_masked_hides_answer_under_a_labeled_blank() -> None:
+    from precis_web.linkify import render_cloze_masked
+
+    out = str(render_cloze_masked("Paris is the {{c1::capital}} of France."))
+    assert "{{" not in out and "}}" not in out
+    assert 'class="cloze-mask"' in out
+    assert 'class="cloze-blank"' in out
+    assert 'class="cloze-answer">capital</span>' in out  # present, CSS-hidden
+    assert ">c1</sup>" in out
+
+
+def test_render_cloze_masked_numbers_gaps_from_c1_positionally() -> None:
+    """Quiz labels start at c1 in order of appearance — the card's own
+    ``{{cN}}`` indices (here c3/c7) never surface in the masked view."""
+    from precis_web.linkify import render_cloze_masked
+
+    out = str(render_cloze_masked("{{c3::alpha}} pairs with {{c7::omega}}"))
+    assert ">c1</sup>" in out and ">c2</sup>" in out
+    assert "c3" not in out and "c7" not in out
+    assert 'class="cloze-answer">alpha</span>' in out
+
+
+def test_render_cloze_masked_carries_hint_and_escapes() -> None:
+    from precis_web.linkify import render_cloze_masked
+
+    out = str(render_cloze_masked("<b>x</b> {{c1::a <i>b</i>::say it}}"))
+    assert "<b>x</b>" not in out
+    assert "&lt;b&gt;x&lt;/b&gt;" in out
+    assert "<i>" not in out  # the answer is escaped too
+    assert "hint: say it" in out  # hint rides the title tooltip
+
+
+def test_render_cloze_masked_no_deletion_is_plain_escaped_text() -> None:
+    from precis_web.linkify import render_cloze_masked
+
+    assert str(render_cloze_masked("no cloze <b>")) == "no cloze &lt;b&gt;"
 
 
 # ── Taproot claim-hub cites (the `claims` side-channel) ─────────────────

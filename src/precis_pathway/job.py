@@ -14,7 +14,7 @@ Registered via the ``precis.job_types`` entry point
 (``autocatpath_explore = precis_pathway.job:SPEC``). Needs no host capability
 (``REQUIRES`` is empty); the node pin does the routing.
 
-**§B-1 (gr180096, the spark wedge fix):** ``quest.compute.
+**§B-1 (gr180096, the GPU-node wedge fix):** ``quest.compute.
 dispatch_autocatpath`` no longer mints this job_type — it runs the whole
 network x N seeds x full NEB as one ~90-min in-process blob, which overran
 its lease and took the worker down (SIGTERM-deaf -> SIGKILL). It stays

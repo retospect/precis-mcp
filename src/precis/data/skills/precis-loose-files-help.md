@@ -9,7 +9,7 @@ answers:
   - where do rulings, metrics, red lists and specs go?
   - what do I do when a file has no precis home?
   - how do I clean up a session's loose files before handing off?
-applies-to: put (kind='gripe'|'todo'|'checklist'|'memory'|'measure'), backlog files, repo branches
+applies-to: put (kind='gripe'|'todo'|'checklist'|'memory'|'measure'), memory spec nodes, repo branches
 tags: [workflow]
 kinds: [gripe, todo, checklist, memory, measure, perplexity-research, finding]
 status: active
@@ -28,7 +28,7 @@ its home. When emptying a directory, every file leaves it or is gripe'd.**
 
 | file is… | home | how |
 |---|---|---|
-| a spec / design for repo work | a backlog item in the repo, committed in a task worktree and landed; find existing ones with `search(kind='md', q=…)` | open work only; shipped parts become a "shipped as" table pointing at code |
+| a spec / design for repo work | a spec root plus section nodes in `memory` under the Specifications hub, state on a plan todo ([[precis-spec-help]]); find existing ones with `search(kind='memory', tags=['spec:*'], view='toc')` | open design only; a built section retires, superseded by the code handle that carries it |
 | a ruling log / changelog of decisions | comments on the gripe or todo that owns the work | one comment per ruling set, Reto's words kept; `put(kind='gripe', id=N, text=…)` |
 | a red list / review queue | `checklist` on the target ref, or a comment on the finding concerned | a red list derivable from data is a query, not a file |
 | run metrics, costs, measured numbers | a gripe/todo comment; `measure` rows when the number is a property of a subject | per-batch tables may ride along in the repo as provenance |
@@ -76,3 +76,28 @@ on the board or to the coordinator.
 4. Gripe + meta-gripe every gap.
 5. Delete the directory. Report what is left and why (only files whose
    home is a pending gap gripe, kept in `scratch/`).
+
+## Move a project's files into the mesh
+
+Migrate on touch; do not launch a migration wave for unrelated projects.
+For example, `projects/nox2nh3_auto/catalyst_landscape.tex` is an import
+source, not a new project's content home.
+
+1. Search `search(kind='memory', tags=['project:<slug>'], view='index')`.
+   Reuse the project's hub; create one only when absent, following
+   [[precis-memory-help]]. Inventory the source files and record provenance.
+2. Read the source through its enabled file kind for this explicit import.
+   Split its claims into section memories with project tags and one
+   `part-of` link to the hub. Search before each put to avoid duplicates.
+   Preserve equations, tables, scope and unresolved questions. Use a draft
+   for document structure rather than a monolithic memory.
+3. Replace TeX `\ref` navigation with links to the imported section handles.
+   Resolve citation placeholders to evidence links; keep unresolved citations
+   as open evidence links/questions, never fabricate a source or settled claim.
+4. Read back every section and the hub's navigation. Check coverage against
+   the original, including citations and cross-references, before retirement.
+5. Mark the file as superseded by the hub handle and retire its file ref only
+   after verification and any required owner approval. Preserve the original
+   export for provenance if needed; do not destroy the only source copy.
+   Future work follows the hub. `meta.workspace` remains the export home;
+   compile/export from the draft only when an artifact is requested.

@@ -98,7 +98,7 @@ get(
   (adsorption/reaction/activation energy), searchable as usual.
 - **Imported designs are read-only.** They carry `provenance:external` on
   their `struct_runs` row; `edit` refuses ("derive a variant instead") —
-  branch off one with `derive(id=<imported-slug>, to=<new-slug>, ops=[...])`.
+  branch off one with `put(kind='structure', id=<new-slug>, args={'derive_from': '<imported-slug>', 'ops': [...]})`.
   `view='runs'` labels each row's provenance + method fingerprint
   (functional/cutoff_eV/kmesh/spin/dataset_doi) — `facet`,
   `surface_composition`, `reactants`/`products` ride in the run's

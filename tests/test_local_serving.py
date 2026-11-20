@@ -84,7 +84,7 @@ def test_no_warning_for_local_only_alias_mismatch(store, caplog) -> None:
     local-only by design — they route through the loopback local transport, not a
     reserved llama-swap slot — so a served host being asked for one is the
     *intended* path, not a misconfiguration, and must NOT warn (gr178498: the
-    false-alarm flood, 3907 hits/48h on melchior, all ``summarizer``)."""
+    false-alarm flood, 3907 hits/48h on maple, all ``summarizer``)."""
     meter.bind_store(store)
     _serve(store, "testnode", "qwen", 2)
     with caplog.at_level("WARNING", logger="precis.utils.llm.local_serving"):
@@ -98,7 +98,7 @@ def test_no_warning_for_cloud_model_mismatch(store, caplog) -> None:
     models a host serves locally, so falling back to local/cloud is CORRECT,
     not a served_by misconfiguration — it must NOT warn (gr178888: the same
     false-alarm class as the summarizer aliases, but for frontier models like
-    ``claude-opus-4-8`` observed on melchior)."""
+    ``claude-opus-4-8`` observed on maple)."""
     meter.bind_store(store)
     _serve(store, "testnode", "qwen3-next-80b-a3b-q4_k_m", 2)
     with caplog.at_level("WARNING", logger="precis.utils.llm.local_serving"):
@@ -311,7 +311,7 @@ def test_remote_routable_endpoint_is_acquirable(store) -> None:
 
 def test_remote_loopback_endpoint_stays_host_private(store) -> None:
     """A served_by entry on another host whose endpoint is loopback
-    (melchior's llama-swap at 127.0.0.1) is NOT reachable from here — the
+    (maple's llama-swap at 127.0.0.1) is NOT reachable from here — the
     cluster-scoped path must skip it and stay dark."""
     meter.bind_store(store)
     _serve_card(
@@ -541,7 +541,7 @@ def test_paused_acquire_creates_no_hold(store) -> None:
 
 # ── capacity backoff: bounded wait + remote spill (2026-10-14) ────────────
 # A saturated local slot used to spill straight to the cloud rung (~78% of
-# routed-local calls fell to cloud at melchior's cap-4 slot). acquire now
+# routed-local calls fell to cloud at maple's cap-4 slot). acquire now
 # waits a bounded window for a free slot and spills to other LAN-routable
 # serving hosts before the caller ever sees `paused`.
 
@@ -753,7 +753,7 @@ def test_acquire_all_local_candidates_busy_pauses(store) -> None:
 # Holds of a SIGTERM'd worker used to sit until the 600s reaper floor or the
 # 3600s TTL: a drain batch acquired every free slot seconds after 'signal 15
 # received; draining' and orphaned all of them at exit (25 of 32 gpt-oss
-# slots pinned for 10 min on melchior). The drain flag must now refuse new
+# slots pinned for 10 min on maple). The drain flag must now refuse new
 # acquires — the caller sees the busy-slot outcome — and the worker's exit
 # hook must close this process's holds and refund their units.
 

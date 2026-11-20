@@ -1,6 +1,6 @@
 """``precis openalex-snapshot`` — stream OpenAlex snapshot parts, stage edges.
 
-Slice 1 of ``docs/backlog/openalex-snapshot-cites.md``: a one-shot pass over
+Slice 1 of `me693596`: a one-shot pass over
 ``s3://openalex`` works ``part_NNNN.gz`` files (anonymous HTTPS, streamed —
 never written to disk) that keeps only citation edges touching a held paper
 (``ref_identifiers`` ``openalex``/``doi``) into ``openalex_cite_edges``,

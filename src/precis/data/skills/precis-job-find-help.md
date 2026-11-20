@@ -45,10 +45,11 @@ search(kind="job", tags=["STATUS:queued"])
 ```
 
 `get(kind="job", id=N)` on a queued job adds `queue:` lines: its origin
-class, its position in the executor's claim order (class, then priority,
-then time queued) with the per-class count of rows ahead, what is running
-on that executor now, and holds it can see (operator suspension, a
-`target_node` pin, a live lease).
+class, its position in the executor's claim order (class, then
+factory-pipeline ops, then priority, then time queued — advisory; the
+lane-deficit share term isn't mirrored) with the per-class count of
+rows ahead, what is running on that executor now, and holds it can see
+(operator suspension, a `target_node` pin, a live lease).
 
 The card's status is verified against a fresh read before queue text is
 rendered: when the row's real state moved on (claimed, parked, finished),
@@ -68,7 +69,7 @@ search(kind="job", tags=["STATUS:failed"])
 ```python
 get(kind="job", id=101)
 # → header + current status + summary chunk (when finished) +
-#   recent job_event chunks (telemetry, kept for forensics)
+#   recent job_event chunks
 get(id="jo101")  # the job's universal handle resolves the same way
 ```
 
@@ -76,7 +77,14 @@ A `STATUS:failed` card leads with `error:` — the one-line failure
 reason (`meta.error`, else the newest `job_event` head; `retry_after:`
 beside it when a transient backoff was stamped) — printed right under
 `status:` so the card cap can't cut it on jobs with long event
-timelines. The full reason stays in the `job_event` chunks below.
+timelines. The card hides any `job_event` chunk that starts with the
+printed error. Use `view='raw'` for the full record.
+`view='raw'` on a failed job leads with `failure:` — the reason's
+last line, so a traceback-shaped `meta.error` shows its actual
+exception rather than just "Traceback (most recent call last):" —
+before the scalar block.
+
+`view='error'` and `view='body'` both read as the default status card.
 
 The `job_summary` chunk is the human-readable account ("Fix
 landed on main at <remote> as abc123 (squash of gripe_42 onto
@@ -89,7 +97,9 @@ proposal JSON) shows as a capped head on the card;
 `get(kind='job', id=<job>, view='result')` returns it in full.
 `view='transcript'` is the compact forensic read (one line per tool
 call + the final report); a paged full-transcript view is not
-implemented — `view='raw'` is the only uncapped transcript read today.
+implemented — `view='raw'` is the only full-record read today (a
+top-level meta value over 2000 chars elides behind
+`args={'meta_key': '<key>'}`).
 A guessed spelling with one obvious reading is accepted with an
 `interpreted:` line rather than refused (gr635827): `view='compute'`
 is the card itself — its compute lines (`footprint:`, `node:`,
@@ -184,18 +194,32 @@ search(kind="job", under="qu459585", args={"job_type": "graph_garden"})
 ```
 
 `status=` narrows to one STATUS; `since=`/`until=` bound `created_at`
-(mint time) — an ISO timestamp or an age (`'24'`/`'6h'`/`'7d'` =
-hours/days ago). A window with no `job_type=` and no view lists jobs
-of every type minted in it — "what ran in the last day". `q=` is
-title-lexical on this path; `sort=`/`mode=` are rejected — they belong
-to the unfiltered ranked path. This is the MCP answer for what used
-to need `refs.meta->>'job_type'` SQL.
+(mint time) — an ISO timestamp or a span (`'30m'`/`'6h'`/`'7d'`/`'1w'` =
+that long ago; a bare `'24'` = hours). A window with no `job_type=` and no
+view lists jobs of every type minted in it — "what ran in the last day".
+`q=` is title-lexical on this path, and `mode='lexical'` names its query
+mode. This is the MCP answer for what used to need
+`refs.meta->>'job_type'` SQL.
+
+`sort='recent'` (alias `'recency'`) orders the whole filtered set newest
+created first — `search(kind='job', args={'job_type': 'release_poll'},
+sort='recent', page_size=1)` is the latest `release_poll` job,
+`since='2h'` bounds it. A `q=` beside `sort='recent'` stays title-lexical;
+without `sort=` the plain listing is last-touched first.
 
 `since=`/`until=` ride `args=` like `job_type=` on the queryless plain
 listing too — `search(kind='job', args={'since': '2026-10-20'},
 status='*')` is the same recency-ordered listing without a `job_type=`
-filter (adding `q=` makes it a ranked search and `sort=`/`mode=` legal
-again).
+filter (adding `q=` without `sort='recent'` makes it a ranked search and
+`sort='relevance'`/`mode=` legal again). A bare `search(kind='job')` — no window, no filter — is the
+same listing over every job: "what ran lately".
+
+`view='parked'` lists jobs waiting on a clock or a lane (`STATUS:
+waiting_time`): handle, job_type, parent, lane/node, wake time (UTC), how
+long parked and the stored reason (`-` if none), furthest wake first. A
+`!` row wakes more than a day out — "3 parked for more than a day" — so a
+job parked into next year is visible: `search(kind='job',
+view='parked')`, narrowed by `q=`, `args={'job_type': ...}`, `page_size=`.
 
 `view='count'` facet rows also name each group's newest/oldest member
 (`jo<N>` + created bounds) — "when did the last <type> run, how far
@@ -214,6 +238,14 @@ For the *trend* behind the snapshot — minted vs terminal per day,
 with mint→terminal percentiles per lane —
 `search(kind='job', view='flow', args={'job_type': '<type>'})`
 (`precis-search-help`'s flow section).
+
+## Count jobs by executor and state
+
+```python
+search(kind="job", view="count", args={"group_by": "meta.executor,state"})
+```
+
+Each group shows a count and the newest and oldest job IDs.
 
 ## See also
 

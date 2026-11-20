@@ -1,6 +1,6 @@
 """Per-host memory budget for the GB10 lane layout (host-lanes, 2026-10-15).
 
-castor wedged twice on 2026-10-15: vLLM at 0.70 plus a 56G compute lane, a
+cedar wedged twice on 2026-10-15: vLLM at 0.70 plus a 56G compute lane, a
 24G sandbox lane and a 24G worker summed far past its 121 GiB. The hardening
 role now derives every lane cap from the inventory group that places the lane
 and renders one plan (templates/memory-budget.json.j2) that both writes the
@@ -123,8 +123,8 @@ def test_every_allowed_lane_combination_fits(groups: tuple[str, ...]) -> None:
     assert plan["total_mib"] <= plan["limit_mib"], plan["items"]
 
 
-def test_castor_2026_10_15_layout_is_refused() -> None:
-    """The layout that wedged castor: vLLM 0.70, compute 56G, sandbox 24G, worker 24G."""
+def test_cedar_2026_10_15_layout_is_refused() -> None:
+    """The layout that wedged cedar: vLLM 0.70, compute 56G, sandbox 24G, worker 24G."""
     plan = _plan(
         ["serving", "compute", "agent_sandbox_hosts", "vllm_serving"],
         host_lane_exclusive_groups=[],

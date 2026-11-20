@@ -1,0 +1,49 @@
+---
+# ~<pgpass_user>/.pgpass for a non-deploy account that runs a precis worker
+# (the dedicated builder user). Unlike main.yml's deploy file this carries
+# ONLY the lines for `pgpass_user_roles` — the role(s) the account's DSN
+# logs in as — never the admin / read-only / owner lines. The password comes
+# from the same vault variable main.yml renders for deploy; the name is
+# assembled per role (never a literal here, nothing is copied into the repo).
+#
+#   import_role: {name: pgpass, tasks_from: user}
+#   vars: {pgpass_user, pgpass_user_home, pgpass_user_roles: [agent_rw]}
+
+- name: Refuse to place a pgpass for an unnamed user or role set
+  ansible.builtin.assert:
+    that:
+      - pgpass_user | default('') | length > 0
+      - pgpass_user_home | default('') | length > 0
+      - pgpass_user_roles | default([]) | length > 0
+    fail_msg: pgpass_user, pgpass_user_home and pgpass_user_roles are required
+    quiet: true
+
+# Same shape guard as main.yml (gr583810): a newline, colon or outer
+# whitespace renders a corrupt file. fail_msg names the variable, not the value.
+- name: Assert the user's vault password(s) are defined and clean
+  ansible.builtin.assert:
+    that:
+      - "_var in vars"
+      - "_pw | length > 0"
+      - "_pw == (_pw | trim)"
+      - "':' not in _pw"
+      - "'\\n' not in _pw"
+      - "'\\r' not in _pw"
+    fail_msg: "{{ _var }} is undefined, empty, or has a colon or outer whitespace"
+  vars:
+    _var: "{{ 'vault' ~ '_pg_' ~ item ~ '_pass' }}"
+    _pw: "{{ lookup('vars', _var, default='') }}"
+  loop: "{{ pgpass_user_roles }}"
+  loop_control:
+    label: "{{ item }}"
+  no_log: true
+
+- name: "Deploy .pgpass for {{ pgpass_user }} (its own DB login only)"
+  ansible.builtin.template:
+    src: pgpass-user.j2
+    dest: "{{ pgpass_user_home }}/.pgpass"
+    owner: "{{ pgpass_user }}"
+    group: "{{ pgpass_user_group | default(pgpass_user) }}"
+    mode: "0600"
+  become: true
+  no_log: true

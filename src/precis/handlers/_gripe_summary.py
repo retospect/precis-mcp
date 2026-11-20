@@ -27,8 +27,19 @@ at a time; an entry past :data:`_ENTRY_CAP` is fed as sequential
 ``through`` stamp never claims coverage of text it did not see (a
 truncated entry would permanently skip the evidence — and the dead
 ends — it dropped). Folds persist per entry: a mid-rebuild refusal
-leaves an honest (text, through) pair the next call resumes from. Three
-hard gates keep the model honest (:func:`gate_summary`):
+leaves an honest (text, through) pair the next call resumes from. The
+reply is scrubbed deterministically before it can persist
+(:func:`scrub_summary`, gr673911): a claim line takes the label of the
+newest ledger entry it cites that carries one — scoped to the claim:
+the entry's label must head the claim's own text, a mention elsewhere
+in the entry (``recommend: replace coil`` with ``retry failed`` in
+the body) is a verdict under no claim label, not that label (review
+td674237) (``recommend:`` stays ``recommend:``, never ``ruled
+out:`` — and a later entry's unlabelled verdict keeps the model's
+``ruled out:`` rather than resurrecting an older ``recommend:``), and
+a claim repeated across lines collapses to one line citing every
+entry that stated it. Three hard gates then keep the model honest
+(:func:`gate_summary`):
 
 - every anchor handle in the new summary must appear in the ledger —
   the summary can never cite a code location no entry named;
@@ -97,9 +108,14 @@ COMMENT_KIND = "gripe_comment"
 #: ``co<N>`` the report's earlier one — both are code anchors, and either
 #: must exist in the ledger before a summary may cite it.
 ANCHOR_TOKEN_RE = re.compile(r"\b(?:an|co)\d+\b")
-#: ``entry N`` / ``comment N`` pointers the "ruled out: …, see entry N"
-#: lines carry — gated against the ledger's comment ords.
-ENTRY_REF_RE = re.compile(r"\b(?:entry|comment)\s+#?(\d+)\b", re.IGNORECASE)
+#: ``entry N`` / ``comment N`` pointers — including the ``entries`` /
+#: ``comments`` plural spellings and comma lists a merged claim cites —
+#: gated against the ledger's comment ords. The group captures the
+#: number list; :func:`gate_summary` splits it.
+ENTRY_REF_RE = re.compile(
+    r"\b(?:entr(?:y|ies)|comments?)\s+#?(\d+(?:\s*,\s*#?\d+)*)",
+    re.IGNORECASE,
+)
 
 #: ``args={'stage': '<slug>'}`` vocabulary is open, the slug shape is not.
 STAGE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
@@ -194,7 +210,10 @@ def gate_summary(text: str, comments: list[ChunkRow]) -> list[str]:
         {h.lower() for h in ANCHOR_TOKEN_RE.findall(text)} - ledger_handles
     )
     problems += [f"anchor {h} is not in the ledger" for h in missing]
-    bad_ords = sorted({int(n) for n in ENTRY_REF_RE.findall(text)} - ords)
+    bad_ords = sorted(
+        {int(n) for grp in ENTRY_REF_RE.findall(text) for n in re.findall(r"\d+", grp)}
+        - ords
+    )
     problems += [f"entry {n} is not a ledger comment" for n in bad_ords]
     problems += [
         f"raw location {loc} — the summary cites an<N> handles"
@@ -229,8 +248,15 @@ Rules:
   fences. At most 1500 characters; short lines.
 - Keep the state that still stands; drop only what the new entries
   supersede.
+- Each claim appears ONCE, under the label its ledger entry carries —
+  a "recommend:" entry stays "recommend:", a "needs-spec:" entry stays
+  "needs-spec:". When the new entry repeats a claim already in the
+  summary, keep ONE line for it and update its "see entry N" pointer —
+  never a second line for the same claim.
 - Every ruled-out hypothesis survives as one line:
-  "ruled out: <what>, see entry <N>".
+  "ruled out: <what>, see entry <N>" — "ruled out:" marks ONLY a
+  hypothesis the ledger disproved; never relabel another claim as
+  ruled out.
 - Code locations are code-anchor handles (an<N>) only — never paths,
   never snippets. Every handle you write must appear in the ledger.
 - Refer to ledger entries as "entry N" (their comment numbers).
@@ -307,6 +333,286 @@ def _clean_reply(reply: str) -> str:
     return text
 
 
+# ── the scrub: each claim once, under the right label ────────────────
+#
+# gr673911: the small model flattens every claim to ``ruled out:`` and
+# re-lists a claim once per entry that mentions it (~50 alternating
+# lines on a real gripe). The prompt tells it not to; the scrub makes
+# the contract hold anyway — a claim line's label comes from the
+# NEWEST ledger entry that mentions the claim's text when that entry
+# carries one, and a repeated claim collapses to one line citing every
+# entry that stated it. The label only applies when the entry's label
+# head SCOPES to the claim (``recommend: retry``) — a mention of the
+# claim elsewhere in the entry (``recommend: replace coil`` with
+# ``retry failed`` in the body) is a verdict under no claim label, and
+# the line's own label stands (review td674237). A later entry that
+# names the claim under no claim label at all (``test: X failed``) —
+# the same rule; an entry whose WHOLE text merely repeats the claim
+# carries no verdict and the walk continues — a verdict entry whose
+# first line restates the claim but whose body goes on (``test:
+# retry\nretry failed``) is not a restatement.
+
+#: Claim labels the summary's lines and the ledger's entries share: the
+#: pipeline writers' prefixes (``recommend:``, ``needs-spec:``,
+#: ``resolved:``…) plus the fold's own vocabulary. A provenance tag
+#: (``triage:``, ``FIXER (auto):``) is deliberately absent — a claim
+#: citing a tag-only entry keeps the model's label unless the tag hides
+#: an inner claim label (``triage: suspected cause - …``).
+_CLAIM_LABELS = frozenset(
+    {
+        "recommend",
+        "needs-spec",
+        "dup-suggest",
+        "project",
+        "resolved",
+        "fix-sha",
+        "touched files",
+        "changed symbols",
+        "ruled out",
+        "suspect",
+        "suspected cause",
+        "root cause",
+        "state",
+        "open",
+        "next",
+        "fixed",
+        "reopened",
+        "closed",
+    }
+)
+
+#: A ``label:`` head on a summary line or a ledger entry's first line —
+#: non-greedy to the first colon, so ``recommend: PRIO:high`` parses as
+#: label ``recommend``, claim ``PRIO:high``.
+_LABEL_RE = re.compile(
+    r"^\s*(?P<bullet>[-*•]\s+)?(?P<label>[A-Za-z][A-Za-z0-9 ()/_-]{0,40}?)"
+    r":\s+(?P<body>\S.*)$"
+)
+#: An inner claim label behind a provenance tag: the first ``xxx -`` /
+#: ``xxx:`` segment in what the tag prefixed (``triage: suspected cause
+#: - …`` → ``suspected cause``).
+_INNER_LABEL_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9 -]{1,40}?)\s*[-:–—]\s")
+#: ``see entry N`` / ``see entries N, M`` pointers in a claim line; the
+#: group captures the number list.
+_CITED_ORDS_RE = re.compile(
+    r"\bsee\s+(?:entr(?:y|ies)|comments?)\s+([#\d\s,]+)", re.IGNORECASE
+)
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def _line_ords(text: str) -> list[int]:
+    """Every comment ord a line's ``see entry`` pointers cite, sorted."""
+    return sorted(
+        {
+            int(n)
+            for grp in _CITED_ORDS_RE.findall(text)
+            for n in re.findall(r"\d+", grp)
+        }
+    )
+
+
+def _entry_label_and_claim(text: str) -> tuple[str, str] | None:
+    """The ``(label, labelled claim)`` a ledger entry's head carries.
+
+    A leading label in :data:`_CLAIM_LABELS` is the claim's own
+    (``recommend:``, ``resolved:``…); a provenance tag like ``triage:``
+    defers to an inner claim label (``triage: suspected cause - …`` →
+    ``suspected cause``); anything else is prose — no derivable label.
+    The claim half is the text the label SCOPES to — everything after
+    the label marker (:func:`_derived_label` matches it against the
+    claim being labelled, review td674237)."""
+    first = text.split("\n", 1)[0].strip()
+    m = _LABEL_RE.match(first)
+    if m is None:
+        return None
+    label = _norm(m.group("label"))
+    if label in _CLAIM_LABELS:
+        return label, m.group("body")
+    inner = _INNER_LABEL_RE.match(m.group("body"))
+    if inner is not None and _norm(inner.group(1)) in _CLAIM_LABELS:
+        return _norm(inner.group(1)), m.group("body")[inner.end() :]
+    return None
+
+
+def _is_bare_restatement(entry: str, claim_norm: str) -> bool:
+    """True when the entry only REPEATS the claim — the whole entry is
+    the claim text, or a provenance head's body is exactly the claim
+    (``triage: devin first``). A bare restatement carries no verdict,
+    so label-derivation keeps walking to the next-older mention.
+
+    The WHOLE entry must be the restatement: an entry whose first line
+    restates the claim but whose body goes on (``test: retry`` +
+    ``retry failed``) carries a verdict — matching the label head on
+    the first line alone used to swallow it and resurrect an older
+    ``recommend:`` (review td674237)."""
+    whole = entry.strip()
+    if _norm(whole) == claim_norm:
+        return True
+    m = _LABEL_RE.match(whole)
+    return m is not None and _norm(m.group("body")) == claim_norm
+
+
+def _derived_label(
+    claim_norm: str, ords: list[int], by_ord: dict[int, str]
+) -> str | None:
+    """The label the claim's cited entries give it.
+
+    Newest mention first: the newest entry naming the claim's verbatim
+    text is the ledger's current verdict on it. When the mention sits
+    under the entry's claim label — the label head's own claim MATCHES
+    this claim — that label wins (``recommend:`` stays
+    ``recommend:``); a mention elsewhere in the entry is a verdict the
+    label does not scope to (``recommend: replace coil`` whose body
+    goes on ``retry failed`` does not make ``retry`` a recommendation —
+    review td674237), so the line's own label stands. An entry whose
+    whole text merely restates the claim (:func:`_is_bare_restatement`)
+    carries no verdict — keep walking. Sub-4-char claims never
+    relabel (``an8`` substring-matches almost anything)."""
+    if len(claim_norm) < 4:
+        return None
+    for ord_ in sorted(ords, reverse=True):
+        entry = by_ord.get(ord_)
+        if entry is None or claim_norm not in _norm(entry):
+            continue
+        labelled = _entry_label_and_claim(entry)
+        if labelled is not None:
+            label, head_claim = labelled
+            head_norm = _norm(head_claim)
+            if claim_norm in head_norm or (
+                len(head_norm) >= 4 and head_norm in claim_norm
+            ):
+                return label
+            # the mention sits outside the label's scope — that
+            # verdict is about this claim without a claim label for
+            # it, so the line's own label stands (same rule as an
+            # unlabelled verdict)
+            return None
+        if not _is_bare_restatement(entry, claim_norm):
+            return None
+    return None
+
+
+@dataclass
+class _ClaimLine:
+    """One ``label: claim[, see entr(y|ies) …]`` summary line — deduped
+    by claim text; re-labelled against its cited entries at render."""
+
+    bullet: str
+    label: str
+    claim: str
+    ords: list[int]
+    #: Newest ord the occurrence supplying ``label`` cited — a merged
+    #: occurrence's label supersedes only when it cites at least as
+    #: new an entry (labels supersede in ledger order, not line
+    #: order). ``-1`` while the claim is unlabelled or label-less.
+    label_ord: int = -1
+
+    def render(self, label: str) -> str:
+        head = (
+            f"{self.bullet}{label}: {self.claim}"
+            if label
+            else f"{self.bullet}{self.claim}"
+        )
+        if not self.ords:
+            return head
+        if len(self.ords) == 1:
+            return f"{head}, see entry {self.ords[0]}"
+        return f"{head}, see entries {', '.join(str(o) for o in self.ords)}"
+
+
+def scrub_summary(text: str, comments: list[ChunkRow]) -> str:
+    """Deterministic label/dedupe fix-up of the fold's reply (gr673911).
+
+    One walk, two rules, claim lines only (``label: claim`` or any line
+    carrying a ``see entry`` pointer):
+
+    - **right label** — a claim takes the label of the NEWEST cited
+      ledger entry that mentions its text and carries a claim label
+      scoped to it — the entry's label head must cover the claim's own
+      text (``recommend:`` stays ``recommend:``; the ledger's word
+      beats the model's). A mention under an entry whose label heads a
+      DIFFERENT claim (``recommend: replace coil`` with ``retry
+      failed`` in the body) is a verdict like any unlabelled one — the
+      line's own label stands, so ``ruled out: retry, see entries 1,
+      2`` survives that entry as it survives an older ``recommend:
+      retry`` (review td674237); an entry whose whole text merely
+      restates the claim defers;
+    - **once** — a repeated claim collapses to its first position,
+      keeps the label of the occurrence citing the NEWEST entry, and
+      cites every entry that stated it (``see entries 1, 3``).
+
+    Plain prose lines dedupe verbatim; blank runs collapse. Runs on
+    model output only — an agent's ``args={'summary': …}`` write is
+    vetted by its writer, not rewritten."""
+    by_ord = {c.ord: c.text for c in comments}
+    out: list[str | _ClaimLine] = []
+    claims: dict[str, _ClaimLine] = {}
+    prose_seen: set[str] = set()
+
+    def _prose(line: str) -> None:
+        key = _norm(line)
+        if key not in prose_seen:
+            prose_seen.add(key)
+            out.append(line)
+
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            if out and out[-1] != "":
+                out.append("")
+            continue
+        m = _LABEL_RE.match(line)
+        ords = _line_ords(line)
+        if m is None and not ords:
+            _prose(line)
+            continue
+        bullet = (m.group("bullet") or "") if m else ""
+        label = (m.group("label") or "") if m else ""
+        body = m.group("body") if m else line
+        claim = _CITED_ORDS_RE.sub("", body)
+        claim = re.sub(r"\s+([;,])", r"\1", claim)
+        claim = " ".join(claim.split()).rstrip(" ,;")
+        if not claim:
+            _prose(line)
+            continue
+        key = _norm(claim).rstrip(".")
+        prev = claims.get(key)
+        if prev is not None:
+            # labels supersede in LEDGER order: the occurrence citing
+            # the newest entry supplies the label — a re-listed
+            # earlier ``recommend:`` cannot overwrite the later
+            # ``ruled out:`` disproof (review td674237); every citing
+            # entry joins the pointer
+            if label and max(ords, default=-1) >= prev.label_ord:
+                prev.label, prev.claim = label, claim
+                prev.label_ord = max(ords, default=-1)
+            prev.ords = sorted(set(prev.ords) | set(ords))
+            continue
+        node = _ClaimLine(
+            bullet=bullet,
+            label=label,
+            claim=claim,
+            ords=ords,
+            label_ord=max(ords, default=-1) if label else -1,
+        )
+        claims[key] = node
+        out.append(node)
+    lines = [
+        (
+            item.render(
+                _derived_label(_norm(item.claim), item.ords, by_ord) or item.label
+            )
+            if isinstance(item, _ClaimLine)
+            else item
+        )
+        for item in out
+    ]
+    return "\n".join(lines).strip("\n")
+
+
 def _write(store: Any, ref_id: int, text: str, through: int, by: str) -> None:
     store.stamp_ref_meta(
         ref_id,
@@ -336,9 +642,12 @@ def rebuild_summary(
     claims evidence the model did not see. Each completed entry's fold
     persists before the next begins: a mid-rebuild refusal still leaves
     an honest ``(text, through)`` pair the next call resumes from.
-    Raises :class:`BadInput` (gate refusal or an empty reply — folds
-    already persisted stand) or :class:`Upstream` (the model call
-    failed, same rule)."""
+    Each reply is scrubbed (:func:`scrub_summary`) before the gate: the
+    persisted text states each claim once, under its ledger label, so
+    mislabels and repeats the model emits never persist — and never
+    feed back into the next piece's fold. Raises :class:`BadInput`
+    (gate refusal or an empty reply — folds already persisted stand) or
+    :class:`Upstream` (the model call failed, same rule)."""
     comments = ledger(store.chunks.list_chunks_for_ref(ref.id))
     if not comments:
         raise BadInput(
@@ -368,6 +677,7 @@ def rebuild_summary(
                     "mode='summary'), or write it with "
                     "args={'summary': '<text>'}",
                 )
+            text = scrub_summary(text, comments)
             problems = gate_summary(text, comments)
             if problems:
                 raise _gate_refusal(problems, ref.id)
@@ -977,6 +1287,7 @@ __all__ = [
     "render_summary_view",
     "resolve_anchors",
     "route_small",
+    "scrub_summary",
     "stage_of",
     "substitute_locations",
     "summary_of",

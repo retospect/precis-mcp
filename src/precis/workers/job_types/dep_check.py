@@ -1,6 +1,6 @@
 """``dep_check`` — resolve a Dependabot PR's lock, never run it (td543749).
 
-Spec: ``docs/backlog/dark-factory.md`` § "9. Inbound pull requests"; the
+Spec: `me692430` § "9. Inbound pull requests"; the
 ``check`` node of a ``dependabot`` ``pr-intake`` plan. Mechanical, no LLM.
 A detached submit/poll pair under ``ssh_node`` (the ``release_cut`` shape):
 :func:`submit` launches ``python -m precis.workers.job_types.dep_check`` in
@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.plans import pr_class as _pr_class
+from precis.workers import admission
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -71,6 +72,9 @@ _STEP_TIMEOUT_S = 900
 _RESULT_RE = re.compile(r"^DEP_CHECK: (\{.*\})\s*$", re.MULTILINE)
 
 #: Parent-env names uv inherits (besides ``UV_*``, ``XDG_*``, proxies).
+#: ``PRECIS_HOST_NAME`` is no secret and lets an in-child admission (a
+#: bound store) reserve against the same host key the heartbeat
+#: publishes under (gr657245).
 ENV_ALLOWLIST: tuple[str, ...] = (
     "PATH",
     "HOME",
@@ -81,6 +85,7 @@ ENV_ALLOWLIST: tuple[str, ...] = (
     "TMPDIR",
     "TZ",
     "SSL_CERT_FILE",
+    "PRECIS_HOST_NAME",
 )
 _ENV_PREFIXES: tuple[str, ...] = ("UV_", "XDG_")
 _PROXY_NAMES = frozenset(
@@ -157,23 +162,52 @@ def uv_env(base: dict[str, str] | None = None) -> dict[str, str]:
 def _run(
     argv: list[str], cwd: Path, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``argv`` in ``cwd``; never raises on a non-zero exit."""
+    """Run ``argv`` in ``cwd``; never raises on a non-zero exit.
+
+    Admitted when a store is bound (gr657245): the resolve steps burn
+    real CPU/memory on this host. A capacity refusal is the host's, not
+    the PR's — a soft 127 the plan tick retries, never a raise through
+    the check."""
+    from precis.budget import meter
+
+    host = admission.local_host()
+    footprint = admission.Footprint(
+        cpu_milli=2000, mem_mb=4096, wall_s=float(_STEP_TIMEOUT_S)
+    )
+
+    def _inner() -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                argv,
+                cwd=str(cwd),
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                timeout=_STEP_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return subprocess.CompletedProcess(argv, 127, stdout="", stderr=str(exc))
+
     try:
-        return subprocess.run(
-            argv,
-            cwd=str(cwd),
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-            timeout=_STEP_TIMEOUT_S,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+        with admission.hold(
+            meter.active_store(), host, footprint, f"{host}:{os.getpid()}"
+        ):
+            return _inner()
+    except admission.Refused as exc:
+        log.warning("%s: step deferred, host at capacity: %s", NAME, exc)
         return subprocess.CompletedProcess(argv, 127, stdout="", stderr=str(exc))
 
 
-def _launch(argv: list[str], *, cwd: Path, log_path: Path, exit_file: Path) -> int:
+def _launch(
+    argv: list[str],
+    *,
+    cwd: Path,
+    log_path: Path,
+    exit_file: Path,
+    store: Any = None,
+) -> int:
     """Start ``argv`` detached (run_slice's launcher, stdin from /dev/null)."""
     return _rs._launch(
         argv,
@@ -182,6 +216,8 @@ def _launch(argv: list[str], *, cwd: Path, log_path: Path, exit_file: Path) -> i
         log=log_path,
         exit_file=exit_file,
         env=dict(os.environ),
+        store=store,
+        work_class="dep_check",
     )
 
 
@@ -396,7 +432,15 @@ def submit(ctx: Any, spec: Any) -> Any:
         ]
         if pr.get("head_sha"):
             argv += ["--head", str(pr["head_sha"])]
-        pid = _launch(argv, cwd=root, log_path=log_path, exit_file=exit_file)
+        pid = _launch(
+            argv, cwd=root, log_path=log_path, exit_file=exit_file, store=ctx.store
+        )
+    except admission.Refused as exc:
+        # Host capacity, not the PR's failure: the plan tick retries the
+        # check (gr657245).
+        log.warning("%s: launch deferred: %s", NAME, exc)
+        ctx.record_failure(f"{NAME}: launch deferred, host at capacity: {exc}")
+        return None
     except Exception as exc:
         log.warning("%s: launch failed", NAME, exc_info=True)
         ctx.record_failure(f"{NAME}: launch failed: {exc}")

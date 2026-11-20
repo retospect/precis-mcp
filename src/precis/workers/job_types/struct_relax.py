@@ -23,9 +23,11 @@ metadata write can recover the same preparation. Input refusals are classified
 as ``input``; only unexpected preparation failures are ``infra``.
 Legacy POSCAR jobs still run directly.
 
-**Two backends, routed by rung (gr346449).** The precis-dft image exposes
-exactly one subcommand, ``precis-dft-run gpaw-relax``, so it can only compute a
-GPAW rung (:data:`_CONTAINER_FIDELITIES`). The in-process rungs
+**Two backends, routed by rung (gr346449).** The precis-dft image's relax
+subcommand is ``precis-dft-run gpaw-relax``, so a container relax can only
+compute a GPAW rung (:data:`_CONTAINER_FIDELITIES`) — the image's other
+subcommand (``gpaw-analysis``) belongs to the ``electronic_analysis``
+job_type, not a relax rung. The in-process rungs
 (:data:`_INPROC_FIDELITIES` — ``ml``, ``xtb``) run **in this process** on
 the node via :func:`_default_ml_runner`, reusing
 :func:`precis.structure.relax._ml_calculator` /
@@ -50,11 +52,16 @@ run …``) is the module-level :data:`RUNNER` hook and the in-process one is
 write-back is exercised without a cluster.
 
 **Container runtime.** The original design anticipated podman + CDI, but the deployed
-spark node runs ``docker`` with the NVIDIA Container Toolkit and the
+the GPU node runs ``docker`` with the NVIDIA Container Toolkit and the
 ``precis-dft`` image was validated there with ``--gpus all`` — so the default
 matches reality. ``PRECIS_DFT_CONTAINER_CMD`` (``docker`` | ``podman``) flips
 the GPU flag (``--gpus all`` vs CDI ``--device nvidia.com/gpu=all``) when the
-node migrates.
+node migrates. A claim footprint-admission bound to one card
+(``meta.reserved.gpu_card``, td655172) narrows the flag to that device
+(``--gpus device=<i>`` / ``nvidia.com/gpu=<i>``); the in-process rungs get
+the same card as an explicit ``cuda:<i>`` device kwarg to :data:`ML_RUNNER`
+— env pinning can't move an initialized CUDA context or a cached
+calculator, so the device rides the call itself.
 
 **Container reap.** :func:`kill_container` (active reap) and
 :func:`reap_stale_containers` (stale-container watchdog, both invoked from
@@ -160,16 +167,22 @@ REQUIRES = frozenset({"has_gpaw"})
 DESCRIPTION = (
     "Relax a structure at an energy rung on the GPU node; sink to the run-cube."
 )
+#: The model an omitted ``params.model`` resolves to — the dispatch
+#: fallback below and the admission/affinity default (JobTypeSpec's
+#: ``default_model``) share this one definition (td655172), so the claim
+#: path reserves VRAM for, and steers affinity toward, exactly what the
+#: run will load.
+DEFAULT_MODEL = "mace_mp"
 
 # ── container contract (mirrors src/precis_dft/_container/gpaw_relax.py) ──
 #: Deploy renders PRECIS_DFT_NODE from topology (precis_capabilities.dft);
 #: deliberately no node-literal default — a hardcoded node outlives the node
-#: it names (2026-08-29 spark retirement). ``None`` ⇒ this host can't resolve
+#: it names (2026-08-29 GPU-node retirement). ``None`` ⇒ this host can't resolve
 #: a DFT target: the container helpers no-op, dispatch records an infra
 #: failure.
 _NODE = os.environ.get("PRECIS_DFT_NODE") or None
 _IMAGE = os.environ.get("PRECIS_DFT_IMAGE", "precis-dft:cpu")
-#: The Linux DFT node mounts caspar's export at /shared (macOS nodes use
+#: The Linux DFT node mounts the database host's export at /shared (macOS nodes use
 #: /opt/shared); the container runs on the node, so the bind paths must be
 #: valid there.
 _NFS_ROOT = os.environ.get("PRECIS_DFT_NFS_ROOT", "/shared")
@@ -199,10 +212,12 @@ _STALE_CONTAINER_HOURS_DEFAULT = 6.0
 #: genuinely long CPU relax. ``PRECIS_DFT_RELAX_TIMEOUT_S``.
 _RELAX_TIMEOUT_S_DEFAULT = 4 * 3600
 
-#: Rungs the ``precis-dft`` container actually implements. Its CLI exposes
-#: exactly one subcommand (``precis-dft-run gpaw-relax``), and the staged
-#: ``params.json`` carries no per-rung DFT settings, so one rung is the whole
-#: of what a container run can honestly compute. ``dft-fast``/``dft-tight``
+#: Rungs the ``precis-dft`` container actually implements. Its CLI's relax
+#: subcommand is ``precis-dft-run gpaw-relax`` (the ``electronic_analysis``
+#: job_type's ``gpaw-analysis`` subcommand is a descriptor pass, not a relax
+#: rung — it lives on its own job_type), and the staged ``params.json``
+#: carries no per-rung DFT settings, so one rung is the whole of what a
+#: container relax can honestly compute. ``dft-fast``/``dft-tight``
 #: are deliberately absent: routing them here would run byte-identical GPAW
 #: defaults and file the results under two different rung labels — the same
 #: class of lie as sending ``ml`` to ``gpaw-relax``. Adding them means
@@ -341,9 +356,21 @@ def _relax_timeout_s() -> float:
 _DFT_MEM_LIMIT_ENV = "PRECIS_DFT_MEM_LIMIT"
 
 
-def _gpu_flags(container_cmd: str) -> list[str]:
-    """GPU passthrough flags for the runtime. docker uses the nvidia runtime
-    hook (``--gpus all``); podman uses CDI (``--device nvidia.com/gpu=all``)."""
+def _gpu_flags(container_cmd: str, gpu_card: int | None = None) -> list[str]:
+    """GPU passthrough flags for the runtime.
+
+    ``gpu_card`` is the card index footprint admission bound the claim to
+    (``meta.reserved.gpu_card``, td655172): the container sees ONLY that
+    card — ``--gpus device=<i>`` under docker's nvidia runtime hook,
+    ``--device nvidia.com/gpu=<i>`` under podman CDI — so the job can't
+    spill onto a card its VRAM wasn't admitted on. ``None`` (unbound
+    claim — no per-card data at claim time) keeps the historical
+    all-cards passthrough.
+    """
+    if gpu_card is not None:
+        if container_cmd == "podman":
+            return ["--device", f"nvidia.com/gpu={gpu_card}"]
+        return ["--gpus", f"device={gpu_card}"]
     if container_cmd == "podman":
         return ["--device", "nvidia.com/gpu=all"]
     return ["--gpus", "all"]
@@ -357,16 +384,24 @@ def build_run_argv(
     image: str = _IMAGE,
     container_cmd: str = _CONTAINER_CMD,
     gpus: int = 1,
+    gpu_card: int | None = None,
+    command: str = "gpaw-relax",
 ) -> list[str]:
     """The container ``run`` argv ssh'd to the node (pure). Deterministic
     ``--name precis-job-<ref_id>`` so the sweeper can kill it by name (§23 #6;
     see :func:`kill_container` / :func:`reap_stale_containers`, gripe 50905).
-    ``gpus=0`` omits the GPU flag (CPU fallback — same image). ``-e
+    ``gpus=0`` omits the GPU flag (CPU fallback — same image). ``gpu_card``
+    binds the run to the one card footprint admission picked
+    (:func:`_gpu_flags`); ``None`` passes every card through. ``-e
     OMP_NUM_THREADS`` (:func:`_omp_threads`) overrides the image's baked ``1``
     so the run threads its BLAS calls; GPAW itself has no OpenMP, so that is a
     BLAS-only speedup. Actual parallel DFT is MPI: :func:`_mpi_ranks` > 0
     wraps the command in ``mpirun -np <n>``, which requires the MPI-enabled
-    image (precis-dft) — hence off by default."""
+    image (precis-dft) — hence off by default. ``command`` names the
+    image's ``precis-dft-run`` subcommand — ``gpaw-relax`` (the relax) or
+    ``gpaw-analysis`` (the ``electronic_analysis`` job_type's single point +
+    descriptor pass, gr592999); the staged contract (POSCAR + params.json
+    → result.json) is identical either way."""
     argv = [container_cmd, "run", "--rm", "--name", f"{_CONTAINER_PREFIX}{ref_id}"]
     limits = container_limit_flags(
         job_limit=os.environ.get(_DFT_MEM_LIMIT_ENV, "").strip() or None
@@ -387,7 +422,7 @@ def build_run_argv(
     if threads:
         argv += ["-e", f"OMP_NUM_THREADS={threads}"]
     if gpus:
-        argv += _gpu_flags(container_cmd)
+        argv += _gpu_flags(container_cmd, gpu_card)
     paw_dir = os.environ.get("PRECIS_DFT_PAW_DIR", "").strip()
     if paw_dir:
         # The image sets GPAW_SETUP_PATH=/opt/gpaw-setups but bakes no PAW
@@ -408,7 +443,7 @@ def build_run_argv(
         argv += ["mpirun", "--allow-run-as-root", "-np", str(ranks)]
     argv += [
         "precis-dft-run",
-        "gpaw-relax",
+        command,
         "--in",
         _CONTAINER_IN,
         "--out",
@@ -894,6 +929,7 @@ def _default_ml_runner(
     cell: str | None,
     timeout: float,
     fmax: float = _ML_FMAX,
+    device: str | None = None,
 ) -> dict[str, Any]:
     """Relax an :data:`_INPROC_FIDELITIES` rung **in this process**, returning
     the container contract's ``result.json`` shape (gr346449).
@@ -919,6 +955,13 @@ def _default_ml_runner(
     infra. Constraints ride in on the POSCAR's *Selective dynamics* block,
     which is how the fixed-atom mask reached the container too, so a slab's
     frozen bottom layers stay frozen.
+
+    ``device`` is the footprint-admission card binding (``cuda:<i>``): it
+    reaches the MLIP calculator's constructor through ``_ml_calculator``,
+    which keys its cache on it — a second card-bound claim gets a
+    calculator built for ITS card, never the first claim's (td655172
+    review, take two). ``None`` leaves the backend's own default, the
+    unbound behaviour. xtb is CPU-only and ignores it.
     """
     import io
     import time
@@ -937,7 +980,7 @@ def _default_ml_runner(
     if fidelity == "xtb":
         atoms.calc = _xtb_calculator()
     else:
-        atoms.calc = _ml_calculator(model)
+        atoms.calc = _ml_calculator(model, device=device)
 
     curve: list[float] = []
     deadline = time.monotonic() + timeout
@@ -1035,11 +1078,22 @@ def _dispatch_inproc(
 
     timeout = _relax_timeout_s()
     eff_fmax = fmax if fmax is not None else _ML_FMAX
+    # Card-bound claim (td655172): run the in-process MLIP on the card its
+    # VRAM was admitted on. The binding is an explicit ``cuda:<i>`` device
+    # handed to the calculator factory — CUDA_VISIBLE_DEVICES can't do
+    # this job: it's read only at CUDA's first init, so it can't move an
+    # already-initialized context, and the process-lifetime calculator
+    # cache would keep serving a calculator built for the wrong card to
+    # every later claim (td655172 review, take two).
+    from precis.workers.footprint_admission import bound_device
+
+    device = bound_device(ctx.meta)
     ctx.append_chunk(
         "job_event",
         f"relax[{fidelity}] in-process on "
         f"{os.environ.get('PRECIS_NODE') or socket.gethostname()}: "
-        f"model={model} steps={steps} fmax={eff_fmax} cap={timeout:.0f}s",
+        f"model={model} steps={steps} fmax={eff_fmax} cap={timeout:.0f}s"
+        + (f" card={device.partition(':')[2]}" if device else ""),
     )
     try:
         result = ML_RUNNER(
@@ -1050,6 +1104,7 @@ def _dispatch_inproc(
             cell=cell,
             timeout=timeout,
             fmax=eff_fmax,
+            device=device,
         )
     except RelaxUnsupported as exc:
         ctx.record_failure(
@@ -1169,7 +1224,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             f"struct_relax: malformed params ({exc})", failure_class="infra"
         )
         return
-    model = params.get("model") or "mace_mp"
+    model = params.get("model") or DEFAULT_MODEL
     steps = int(params.get("steps", 200))
     cell = params.get("cell") or None
     # Optional tight force target (eV/Å) — absent ⇒ each rung's own default.
@@ -1187,9 +1242,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             )
             return
 
-    # Fidelity routing (gr346449). The precis-dft image exposes exactly one
-    # subcommand -- ``precis-dft-run gpaw-relax`` -- so a container run can only
-    # ever compute a GPAW rung. Before this gate every rung took that argv:
+    # Fidelity routing (gr346449). The precis-dft image's only relax
+    # subcommand is ``precis-dft-run gpaw-relax`` (``gpaw-analysis`` belongs
+    # to the ``electronic_analysis`` job_type, not a relax rung), so a
+    # container relax can only ever compute a GPAW rung. Before this gate
+    # every rung took that argv:
     # a ``fidelity='ml'`` request ran a spin-polarized RPBE LCAO DFT relax
     # (~47h on 37 atoms, never inside the wall-clock cap) and, when one did
     # finish, sank DFT numbers into the run-cube under a MACE label. Running
@@ -1287,7 +1344,13 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     Path(in_dir, "params.json").write_text(
         json.dumps(run_params, sort_keys=True), encoding="utf-8"
     )
-    argv = build_run_argv(ref_id=structure_ref_id, in_dir=in_dir, out_dir=out_dir)
+    # The card footprint admission bound this claim to (td655172): the
+    # container is fenced to ``gpu_card`` instead of seeing every card.
+    raw_card = (ctx.meta.get("reserved") or {}).get("gpu_card")
+    gpu_card = int(raw_card) if raw_card is not None else None
+    argv = build_run_argv(
+        ref_id=structure_ref_id, in_dir=in_dir, out_dir=out_dir, gpu_card=gpu_card
+    )
     ctx.append_chunk("job_event", f"relax[{fidelity}] on {node}: {' '.join(argv)}")
 
     try:
@@ -1513,6 +1576,7 @@ SPEC = JobTypeSpec(
     requires=REQUIRES,
     description=DESCRIPTION,
     dispatch=_dispatch,
+    default_model=DEFAULT_MODEL,
 )
 
 
@@ -1521,6 +1585,7 @@ def load() -> JobTypeSpec:
 
 
 __all__ = [
+    "DEFAULT_MODEL",
     "ML_RUNNER",
     "SPEC",
     "build_run_argv",

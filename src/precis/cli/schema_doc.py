@@ -17,7 +17,7 @@ Two row transports, one renderer:
   and run the query. Works inside the container / on a cluster node.
 * ``--from-tsv PATH|-`` — read pre-fetched tab-separated rows. The
   ``scripts/gen-schema`` wrapper uses this: prod's pgbouncer password
-  lives in caspar's ``.pgpass``, so the introspection runs *on* caspar
+  lives in the database host's ``.pgpass``, so the introspection runs *on* the database host
   via ssh and the rows are piped here.
 
 See ``schema-doc-and-manual`` (git-only).
@@ -239,7 +239,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         metavar="PATH",
         help="Read pre-fetched introspection rows (tab-separated) "
         "instead of connecting. '-' reads stdin. Used by "
-        "scripts/gen-schema (prod auth lives on caspar).",
+        "scripts/gen-schema (prod auth lives on the database host).",
     )
     parser.add_argument(
         "--snapshot",

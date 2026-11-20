@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound, RateLimited, Unsupported, Upstream
+from precis.errors import BadInput, NotFound, RateLimited, Upstream
 from precis.handlers.youtube import (
     YouTubeHandler,
     _extract_video_id,
@@ -546,7 +546,7 @@ class TestRecentListing:
     ) -> None:
         with pytest.raises(BadInput, match="unknown view") as exc:
             handler.get(id="dQw4w9WgXcQ", view="bogus")
-        assert exc.value.options == ["languages", "toc", "body"]
+        assert exc.value.options == ["languages", "toc", "body", "links"]
 
     def test_no_fetch_reads_without_fetching(
         self, handler: YouTubeHandler, store: Store
@@ -719,20 +719,19 @@ class TestDispatchArgs:
         assert "page 2" in body
 
 
-class TestEyeRefusal:
-    def test_stored_ref_error_names_what_is_wrong(
+class TestEye:
+    def test_stored_ref_renders_the_eye(
         self, handler: YouTubeHandler, store: Store
     ) -> None:
-        """gr498108: a cached youtube ref IS a stored ref — the eye
-        refusal must say so (missing handle, not missing ref) and
-        point at /recent."""
-        _cache_video(store, "dQw4w9WgXcQ", "T")
-        with pytest.raises(Unsupported) as exc:
-            handler.eye(id="dQw4w9WgXcQ", extent="summary")
-        assert "stored" in exc.value.cause
-        assert "not a stored ref" not in exc.value.cause
-        assert "handle" in exc.value.cause
-        assert "/recent" in str(exc.value.next)
+        """gr702962: a cached youtube ref carries the ``yt`` handle — the
+        eye renders (the doc-kind cluster map) instead of refusing, and
+        an inbound memory mention shows in its ring."""
+        ref, _cache = _cache_video(store, "dQw4w9WgXcQ", "T")
+        note = store.insert_ref(kind="memory", slug=None, title="the note")
+        store.add_link(src_ref_id=note.id, dst_ref_id=ref.id, relation="related-to")
+        out = handler.eye(id="dQw4w9WgXcQ", extent="fisheye+1hop")
+        assert f"yt{ref.id}" in out.body
+        assert f"me{note.id}" in out.body
 
 
 # ── rate-limit error mapping (gr531240) ──────────────────────────────

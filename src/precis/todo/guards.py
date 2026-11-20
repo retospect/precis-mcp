@@ -28,6 +28,10 @@ guard time (Hub doesn't carry config today; we read env directly).
   ``web:owner`` per the precis-web plan)
 * starts with ``asa-`` → **worker** (chatter / worker / dreamer all
   share the same authority verdict — they're all asa)
+* starts with ``fleet-`` → **worker** (the fleet coordinator kit,
+  e.g. ``scripts/fleet-wave`` claiming a plan todo's lease on behalf of
+  a builder tree — a claim must CAS-refuse a live lease another tree
+  holds, not owner-takeover it; review td706868)
 * anything else → **owner** (forward-compatible — unknown sources
   are not silently demoted to worker)
 
@@ -295,7 +299,7 @@ _RUNG_NEXT = (
 )
 
 #: Allowed values for ``meta.rung.benign`` (roadmap-tick.py's terminal-rung
-#: "benign gate" — ``docs/backlog/bootstrap-roadmap-quest.md`` §"Terminal
+#: "benign gate" — `me691652` §"Terminal
 #: vs intermediate rungs"). ``"required"`` is the only value with meaning:
 #: :func:`~precis.quest.roadmap_tick.rung_is_terminal` honours it as an
 #: upward-only override — present it forces a rung terminal even when its
@@ -501,6 +505,8 @@ def is_owner(source: str | None = None) -> bool:
     if s.startswith("web:"):
         return True
     if s.startswith("asa-"):
+        return False
+    if s.startswith("fleet-"):
         return False
     # Forward-compatible default: unknown sources are owners. See
     # module docstring — we'd rather a typo'd $PRECIS_SOURCE leave

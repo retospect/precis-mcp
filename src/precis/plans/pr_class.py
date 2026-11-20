@@ -1,6 +1,6 @@
 """Inbound pull requests: facts, class and priority, decided in code (td543749).
 
-Spec: ``docs/backlog/dark-factory.md`` § "9. Inbound pull requests". The
+Spec: `me692430` § "9. Inbound pull requests". The
 ``pr-intake`` template (:func:`precis.plans.templates.mint_pr_intake`) mints
 one plan per open PR; which nodes it mints depends on the class this module
 gives the PR. No prompt decides the class:

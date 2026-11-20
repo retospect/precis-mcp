@@ -1,0 +1,562 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/quest-homes — quest-rollup slice 0 (td681396), DRY RUN: propose a
+home quest for every live backlog spec and every live gripe, as TSV.
+
+Rules are me691000 "Homes", first match wins.
+
+Specs (``draft``/``ready``/``in-progress``):
+  front-matter  ``quest: quNNN`` in the spec
+  thread        the quest serving the thread file that links the spec
+                (``THREAD_QUESTS`` below; a thread with no quest falls through)
+  prefix        a slug prefix naming the subject's quest (``PREFIX_QUESTS``)
+  cites         a 3d-design spec citing exactly one quest takes that quest
+                (a proposal for a rule-1 ``quest:`` line: review it)
+  pillar        the spec's ``pillar:`` default quest (``PILLAR_QUESTS``)
+Each spec row also lists the other quests its text cites (``cites``), the
+review hint for a rule-1 ``quest:`` line, and the live project todo naming
+the doc, if any (``todo``, prod only).
+
+Gripes (not ``STATUS:done``/``wontfix``):
+  serves        an existing gripe → quest ``serves`` link
+  fix-todo     the quest its ``fixes`` todo resolves to (parent chain, serves)
+  spec          a ``spec:<slug>`` tag, or ``cluster:<x>`` equal to a live
+                spec slug or thread name → that spec/thread's home
+  title-cites   the one quest the title names
+  cluster       a ``cluster:`` prefix naming the subject (``CLUSTER_PREFIX_QUESTS``)
+  pillar        a ``pillar:<p>`` tag → the pillar default
+  project       a ``project:`` with a subject quest (``PROJECT_QUESTS``)
+  gripe-fixes   a platform-project gripe with no better home (the "Gripe
+                fixes" quest qu686227)
+  catch-all     everything else
+
+Usage:
+  scripts/quest-homes --no-db                 # specs only, no prod read
+  scripts/quest-homes --out /tmp/homes.tsv    # specs + gripes (prod, read-only)
+  scripts/quest-homes --summary               # counts per quest and rule
+
+  scripts/quest-homes --apply                 # WRITE (Reto approved 2026-11-15)
+
+Prod reads go through ``scripts/prod-psql --ro``. ``--apply`` writes the
+``quest:`` front-matter lines locally, then through ``scripts/prod-precis
+tools`` (the MCP handlers): one project todo per unplaced spec (tagged
+``spec:<slug>``, ``backlog-spec``, ``hold:no-dispatch`` so no lane builds
+it), a ``serves`` link for an existing unplaced root todo, and a gripe →
+quest ``serves`` link per gripe. Idempotent: a re-run sees the todos and
+links it made and skips them.
+"""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import csv
+import io
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+BACKLOG = REPO / "docs" / "backlog"
+LIVE_STATUSES = ("draft", "ready", "in-progress")
+
+#: Pillar default quests, Reto 2026-11-15 (quest-rollup.md, Homes).
+PILLAR_QUESTS = {
+    "platform": "qu540835",
+    "memory-graph": "qu635085",
+    "local-compute": "qu635084",
+    "quests": "qu540835",
+    "3d-design": "qu686092",
+    "personal": "qu686093",
+    "operations": "qu540835",
+}
+
+#: Threads whose work serves one quest (thread:<name> tag on the quest, or
+#: the thread's own subject). Threads not listed fall through to pillar.
+THREAD_QUESTS = {
+    "catalysis-selectivity": "qu202467",
+    "hexfold-toolkit": "qu347422",
+    "pcb-platform": "qu570323",
+    "pcb-easyeda-round-trip": "qu570323",
+    "ewod-pcb": "qu570323",
+    "nanobuds-paper": "qu459585",
+    "se-machine-design": "qu686092",
+    "se-3d-viewer": "qu686092",
+    "se-nucleic-chain": "qu686092",
+    "multiscale-design-core": "qu686092",
+    "factory": "qu540835",
+    "local-compute": "qu635084",
+    "knowledge-mesh": "qu635085",
+    "task-scratch-memory": "qu635085",
+}
+
+#: Spec slug prefixes that name their subject's quest: boards go to the PCB
+#: quest, the pathway/kinetics engine to the surface-kinetics quest.
+PREFIX_QUESTS = {
+    "pcb-": "qu570323",
+    "topo-": "qu570323",
+    "ewod-": "qu570323",
+    "digikey-": "qu570323",
+    "pathway-": "qu500066",
+    "kinetics-": "qu500066",
+    "slab-": "qu500066",
+    "electrochem-": "qu500066",
+    "catpath-": "qu500066",
+    "autocatpath-": "qu500066",
+    "catalyst-": "qu500066",
+    "ephemeral-potentials-": "qu500066",
+    "surface-pourbaix-": "qu500066",
+    "hexfold-": "qu347422",
+}
+
+#: Gripe ``cluster:`` prefixes that name a quest's subject. Unmatched
+#: precis clusters fall to "Gripe fixes" (under qu540835).
+CLUSTER_PREFIX_QUESTS = {
+    "pcb-": "qu570323",
+    "topo-": "qu570323",
+    "geom-": "qu686092",
+    "se-": "qu686092",
+    "cad-": "qu686092",
+    "design-": "qu686092",
+    "autocatpath-": "qu500066",
+    "catpath-": "qu500066",
+    "pathway-": "qu500066",
+    "kinetics-": "qu500066",
+    "neb-": "qu500066",
+    "slab-": "qu500066",
+    "structure-": "qu500066",
+    "memory-": "qu635085",
+    "gardener-": "qu635085",
+    "claims-": "qu635085",
+    "link-": "qu635085",
+    "search-": "qu635085",
+    "knowledge-": "qu635085",
+    "chunk-": "qu635085",
+    "context-": "qu635085",
+    "paper-": "qu459585",
+    "draft-": "qu459585",
+    "bib-": "qu459585",
+    "tex-": "qu459585",
+    "cfp-": "qu459585",
+    "llm-": "qu635084",
+    "scheduler-": "qu635084",
+    "voice-": "qu686093",
+    "brief-": "qu686093",
+    "briefing-": "qu686093",
+}
+
+#: ``project:`` tags with a subject quest; platform projects go to
+#: "Gripe fixes".
+PROJECT_QUESTS = {
+    "memory": "qu635085",
+    "catpath": "qu500066",
+    "autocatpath": "qu500066",
+    "pcb": "qu570323",
+    "taproot": "qu635085",
+}
+PLATFORM_PROJECTS = {"precis", "precis-mcp", "infra", "release"}
+
+#: Cited quests that never home a spec: the test-fixture quest, and the
+#: broad strivings above the pillar quests.
+NOT_HOMES = {"qu600840", "qu161906", "qu635082"}
+
+#: "Gripe fixes" quest under qu540835, minted 2026-11-15.
+GRIPE_FIXES = "qu686227"
+CATCH_ALL = "CATCH-ALL"
+QUEST_RE = re.compile(r"\bqu(\d{5,})\b")
+
+
+def _front_matter(text: str) -> dict[str, str]:
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---", 4)
+    out: dict[str, str] = {}
+    for line in text[4:end].splitlines():
+        k, sep, v = line.partition(":")
+        if sep:
+            out[k.strip()] = v.strip()
+    return out
+
+
+def _thread_of() -> dict[str, list[str]]:
+    """spec slug → the thread files that link it."""
+    out: dict[str, list[str]] = collections.defaultdict(list)
+    for f in sorted((BACKLOG / "threads").glob("*.md")):
+        if f.stem.isupper() or f.stem == "README":
+            continue
+        for slug in set(re.findall(r"\(\.\./([a-z0-9-]+)\.md", f.read_text())):
+            out[slug].append(f.stem)
+    return out
+
+
+def specs() -> list[dict[str, str]]:
+    threads = _thread_of()
+    rows = []
+    for f in sorted(BACKLOG.glob("*.md")):
+        text = f.read_text()
+        fm = _front_matter(text)
+        if f.stem.isupper() or fm.get("status") not in LIVE_STATUSES:
+            continue
+        slug, pillar = f.stem, fm.get("pillar", "")
+        quest, rule = "", ""
+        if QUEST_RE.fullmatch(fm.get("quest", "")):
+            quest, rule = fm["quest"], "front-matter"
+        if not quest:
+            for t in threads.get(slug, []):
+                if t in THREAD_QUESTS:
+                    quest, rule = THREAD_QUESTS[t], f"thread:{t}"
+                    break
+        if not quest:
+            for prefix, q in PREFIX_QUESTS.items():
+                if slug.startswith(prefix):
+                    quest, rule = q, f"prefix:{prefix}"
+                    break
+        cited = {f"qu{m}" for m in QUEST_RE.findall(text)} - NOT_HOMES
+        # Platform and memory specs cite science quests as examples, not
+        # as their home; only design-pillar specs take a cited quest.
+        if not quest and pillar == "3d-design" and len(cited) == 1:
+            quest, rule = next(iter(cited)), "cites"
+        if not quest and pillar in PILLAR_QUESTS:
+            quest, rule = PILLAR_QUESTS[pillar], f"pillar:{pillar}"
+        if not quest:
+            quest, rule = CATCH_ALL, "none"
+        cites = sorted(cited - {quest})
+        rows.append(
+            {
+                "kind": "spec",
+                "id": slug,
+                "status": fm.get("status", ""),
+                "quest": quest,
+                "rule": rule,
+                "cites": " ".join(cites),
+                "todo": "",
+                "title": "",
+            }
+        )
+    return rows
+
+
+def run(sql: str) -> list[dict[str, str]]:
+    env = dict(os.environ, PRECIS_PROD_PSQL_OPTS="--csv")
+    out = subprocess.run(
+        [str(REPO / "scripts" / "prod-psql"), "--ro", sql],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    if out.returncode != 0:
+        sys.exit(f"prod-psql exit {out.returncode}:\n{out.stderr.strip()}")
+    lines = [ln for ln in out.stdout.splitlines() if ln not in ("BEGIN", "COMMIT")]
+    return list(csv.DictReader(io.StringIO("\n".join(lines))))
+
+
+#: Quest a todo resolves to: walk parent_id to the root, first ref on the
+#: way with an outbound ``serves`` to a live quest (asks_view.quest_of).
+_QUEST_OF_TODO = """
+quest_of_todo AS (
+  WITH RECURSIVE chain(start_id, ref_id, depth) AS (
+    SELECT r.ref_id, r.ref_id, 0 FROM refs r
+     WHERE r.kind = 'todo'
+    UNION ALL
+    SELECT c.start_id, p.parent_id, c.depth + 1
+      FROM chain c JOIN refs p ON p.ref_id = c.ref_id
+     WHERE p.parent_id IS NOT NULL AND c.depth < 30
+  )
+  SELECT DISTINCT ON (c.start_id) c.start_id AS todo_id, l.dst_ref_id AS quest_id
+    FROM chain c
+    JOIN links l ON l.src_ref_id = c.ref_id AND l.relation = 'serves'
+    JOIN refs q ON q.ref_id = l.dst_ref_id AND q.kind = 'quest'
+                AND q.retired_at IS NULL
+   ORDER BY c.start_id, c.depth
+)"""
+
+GRIPES_SQL = f"""
+WITH {_QUEST_OF_TODO.strip()},
+live AS (
+  SELECT g.ref_id, left(g.title, 80) AS title,
+         COALESCE((SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                    WHERE rt.ref_id = g.ref_id AND t.namespace = 'STATUS'
+                    LIMIT 1), 'open') AS status,
+         (SELECT rt.created_at FROM ref_tags rt JOIN tags t USING (tag_id)
+           WHERE rt.ref_id = g.ref_id AND t.namespace = 'STATUS'
+           LIMIT 1) AS status_at
+    FROM refs g
+   WHERE g.kind = 'gripe' AND g.retired_at IS NULL
+)
+SELECT live.ref_id, live.status, live.title,
+       (SELECT string_agg(t.value, ' ') FROM ref_tags rt JOIN tags t USING (tag_id)
+         WHERE rt.ref_id = live.ref_id AND t.namespace = 'OPEN'
+           AND split_part(t.value, ':', 1) IN ('cluster', 'spec', 'pillar', 'project')
+       ) AS tags,
+       (SELECT 'qu' || min(qt.quest_id) FROM links l
+          JOIN quest_of_todo qt ON qt.todo_id = l.src_ref_id
+         WHERE l.dst_ref_id = live.ref_id AND l.relation = 'fixes') AS fix_quest,
+       (SELECT 'qu' || min(l.dst_ref_id) FROM links l
+          JOIN refs q ON q.ref_id = l.dst_ref_id AND q.kind = 'quest'
+                      AND q.retired_at IS NULL
+         WHERE l.src_ref_id = live.ref_id AND l.relation = 'serves') AS serves
+  FROM live
+ -- live gripes, plus those closed inside the churn window, so the 30-day
+ -- "fixed" count has homes from day one
+ WHERE live.status NOT IN ('done', 'wontfix')
+    OR live.status_at > now() - interval '30 days'
+ ORDER BY live.ref_id;
+"""
+
+SPEC_TODOS_SQL = f"""
+WITH {_QUEST_OF_TODO.strip()}
+SELECT r.ref_id,
+       substring(r.title from '\\(docs/backlog/([a-z0-9-]+)\\.md\\)\\s*$') AS slug,
+       'qu' || qt.quest_id AS quest, r.parent_id
+  FROM refs r LEFT JOIN quest_of_todo qt ON qt.todo_id = r.ref_id
+ -- a spec's project todo is NAMED after it: "<title> (docs/backlog/<slug>.md)"
+ -- at the end of the title (a todo that merely mentions a doc is not one)
+ WHERE r.kind = 'todo' AND r.retired_at IS NULL
+   AND r.title ~ '\\(docs/backlog/[a-z0-9-]+\\.md\\)\\s*$';
+"""
+
+
+def gripes(spec_rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    spec_home = {r["id"]: r["quest"] for r in spec_rows}
+    thread_home = dict(THREAD_QUESTS)
+    rows = []
+    for g in run(GRIPES_SQL):
+        tags = (g.get("tags") or "").split()
+        val = {t.split(":", 1)[0]: t.split(":", 1)[1] for t in tags if ":" in t}
+        quest, rule = "", ""
+        if g.get("serves"):
+            quest, rule = g["serves"], "serves"
+        if not quest and g.get("fix_quest"):
+            quest, rule = g["fix_quest"], "fix-todo"
+        for key in ("spec", "cluster"):
+            name = val.get(key, "")
+            if quest or not name:
+                continue
+            if name in spec_home:
+                quest, rule = spec_home[name], f"{key}:{name}→spec"
+            elif name in thread_home:
+                quest, rule = thread_home[name], f"{key}:{name}→thread"
+        cited = {f"qu{m}" for m in QUEST_RE.findall(g["title"])} - NOT_HOMES
+        if not quest and len(cited) == 1:
+            quest, rule = next(iter(cited)), "title-cites"
+        cluster = val.get("cluster", "")
+        if not quest and cluster:
+            for prefix, q in CLUSTER_PREFIX_QUESTS.items():
+                if cluster.startswith(prefix):
+                    quest, rule = q, f"cluster:{cluster}→prefix"
+                    break
+        if not quest and val.get("pillar") in PILLAR_QUESTS:
+            quest, rule = PILLAR_QUESTS[val["pillar"]], f"pillar:{val['pillar']}"
+        if not quest and val.get("project") in PROJECT_QUESTS:
+            proj = val["project"]
+            quest, rule = PROJECT_QUESTS[proj], f"project:{proj}"
+        # No project: tag reads as precis (put(kind='gripe') defaults it).
+        if not quest and val.get("project", "precis") in PLATFORM_PROJECTS:
+            quest, rule = GRIPE_FIXES, f"cluster:{val.get('cluster', '-')}"
+        if not quest:
+            quest, rule = CATCH_ALL, f"project:{val.get('project', '-')}"
+        rows.append(
+            {
+                "kind": "gripe",
+                "id": f"gr{g['ref_id']}",
+                "status": g["status"],
+                "quest": quest,
+                "rule": rule,
+                "cites": "",
+                "todo": "",
+                "title": g["title"],
+            }
+        )
+    return rows
+
+
+def attach_spec_todos(spec_rows: list[dict[str, str]]) -> None:
+    """Fill ``todo`` (``td<id>@<quest|->``, ``^`` marks a child todo). A
+    spec whose todo already resolves to a quest keeps that quest (rule
+    ``todo``): the graph placement was deliberate, the rules are a guess."""
+    todos: dict[str, list[dict[str, str]]] = collections.defaultdict(list)
+    for t in run(SPEC_TODOS_SQL):
+        if t.get("slug"):
+            todos[t["slug"]].append(t)
+    for r in spec_rows:
+        ts = todos.get(r["id"], [])
+        r["todo"] = " ".join(
+            f"td{t['ref_id']}{'^' if t.get('parent_id') else ''}@{t.get('quest') or '-'}"
+            for t in ts
+        )
+        placed = [t["quest"] for t in ts if t.get("quest")]
+        if placed and r["rule"] != "front-matter":
+            r["quest"], r["rule"] = placed[0], "todo"
+
+
+# ── apply ─────────────────────────────────────────────────────────
+
+
+def _prod(*argv: str) -> str:
+    out = subprocess.run(
+        [str(REPO / "scripts" / "prod-precis"), "tools", *argv],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if out.returncode != 0 or "[error:" in out.stdout:
+        raise RuntimeError(f"{argv}: {out.stdout.strip()} {out.stderr.strip()[-400:]}")
+    return out.stdout
+
+
+def _write_quest_line(slug: str, quest: str) -> bool:
+    """Add or replace the spec's ``quest:`` front-matter line."""
+    f = BACKLOG / f"{slug}.md"
+    text = f.read_text()
+    end = text.find("\n---", 4)
+    head, rest = text[:end], text[end:]
+    if re.search(rf"^quest: {quest}$", head, re.M):
+        return False
+    if re.search(r"^quest:", head, re.M):
+        head = re.sub(r"^quest:.*$", f"quest: {quest}", head, flags=re.M)
+    else:
+        head += f"\nquest: {quest}"
+    f.write_text(head + rest)
+    return True
+
+
+def _spec_title(slug: str) -> str:
+    for line in (BACKLOG / f"{slug}.md").read_text().splitlines():
+        if line.startswith("# "):
+            return line[2:].strip().strip("`")[:120]
+    return slug
+
+
+def _spec_writes(r: dict[str, str]) -> str:
+    """One spec's prod writes: mint its project todo, or link an unplaced
+    root todo to the home quest. Returns a log line."""
+    slug, quest = r["id"], r["quest"]
+    if not r["todo"]:
+        out = _prod(
+            "put",
+            "--kind", "todo",
+            "--text", f"{_spec_title(slug)} (docs/backlog/{slug}.md)",
+            "--tags", f"spec:{slug},backlog-spec,hold:no-dispatch",
+            "--link", f"quest:{quest}",
+            "--rel", "serves",
+        )  # fmt: skip
+        m = re.search(r"created todo (td\d+)", out)
+        return f"spec {slug}: minted {m.group(1) if m else '?'} → {quest}"
+    done = []
+    for tok in r["todo"].split():
+        tid, _, q = tok.partition("@")
+        if q == "-" and not tid.endswith("^"):
+            _prod(
+                "link",
+                "--kind", "todo",
+                "--id", tid,
+                "--target", f"quest:{quest}",
+                "--rel", "serves",
+            )  # fmt: skip
+            done.append(tid)
+    return f"spec {slug}: linked {' '.join(done) or 'nothing'} → {quest}"
+
+
+def apply(rows: list[dict[str, str]], workers: int) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    spec_rows = [r for r in rows if r["kind"] == "spec" and r["quest"] != CATCH_ALL]
+    edited = sum(_write_quest_line(r["id"], r["quest"]) for r in spec_rows)
+    print(f"front matter: {edited} spec files got a quest: line", file=sys.stderr)
+
+    todo_jobs = [r for r in spec_rows if r["rule"] != "todo" or "@-" in r["todo"]]
+    failures = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for fut in [pool.submit(_spec_writes, r) for r in todo_jobs]:
+            try:
+                print(fut.result(), flush=True)
+            except RuntimeError as e:
+                failures += 1
+                print(f"FAILED {e}", flush=True)
+
+    # Gripes: a direct gripe → quest ``serves`` link (Homes rule 0), unless
+    # it already serves one or its fix todo places it.
+    def _gripe(r: dict[str, str]) -> str:
+        _prod(
+            "link",
+            "--kind", "gripe",
+            "--id", r["id"][2:],
+            "--target", f"quest:{r['quest']}",
+            "--rel", "serves",
+        )  # fmt: skip
+        return f"gripe {r['id']} → {r['quest']}"
+
+    gripe_jobs = [
+        r
+        for r in rows
+        if r["kind"] == "gripe"
+        and r["rule"] not in ("serves", "fix-todo")
+        and r["quest"] != CATCH_ALL
+    ]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for fut in [pool.submit(_gripe, r) for r in gripe_jobs]:
+            try:
+                print(fut.result(), flush=True)
+            except RuntimeError as e:
+                failures += 1
+                print(f"FAILED {e}", flush=True)
+    print(f"apply done, {failures} failure(s)", file=sys.stderr)
+    if failures:
+        sys.exit(1)
+
+
+def summary(rows: list[dict[str, str]]) -> str:
+    by = collections.Counter((r["kind"], r["quest"]) for r in rows)
+    rules = collections.Counter(
+        (r["kind"], r["rule"].split(":")[0].split("→")[0]) for r in rows
+    )
+    out = ["kind\tquest\tcount"]
+    out += [f"{k}\t{q}\t{n}" for (k, q), n in sorted(by.items(), key=lambda x: -x[1])]
+    out += ["", "kind\trule\tcount"]
+    out += [
+        f"{k}\t{r}\t{n}" for (k, r), n in sorted(rules.items(), key=lambda x: -x[1])
+    ]
+    return "\n".join(out) + "\n"
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--no-db", action="store_true", help="specs only, no prod read")
+    ap.add_argument("--out", type=Path, help="write the TSV here (default stdout)")
+    ap.add_argument("--summary", action="store_true", help="counts, not rows")
+    ap.add_argument(
+        "--apply",
+        action="store_true",
+        help="WRITE: quest: lines, spec todos, gripe serves links (prod)",
+    )
+    ap.add_argument("--workers", type=int, default=6, help="parallel prod writes")
+    a = ap.parse_args()
+
+    rows = specs()
+    if not a.no_db:
+        attach_spec_todos(rows)
+        rows += gripes(rows)
+    if a.apply:
+        if a.no_db:
+            sys.exit("--apply needs the prod read; drop --no-db")
+        apply(rows, a.workers)
+        return
+    if a.summary:
+        text = summary(rows)
+    else:
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=list(rows[0]), delimiter="\t")
+        w.writeheader()
+        w.writerows(rows)
+        text = buf.getvalue()
+    if a.out:
+        a.out.write_text(text)
+        print(f"wrote {len(rows)} rows → {a.out}", file=sys.stderr)
+    else:
+        sys.stdout.write(text)
+
+
+if __name__ == "__main__":
+    main()

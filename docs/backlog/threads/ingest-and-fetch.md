@@ -79,7 +79,7 @@ is verified done on prod.
 
 ## Do next
 
-2. **`backlog/ingest-strips-greek-glyphs.md`** — μ/Greek
+2. **me690638** — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was
    inert until the stub-upgrade fix (the upgrade dropped `paper.meta` for
    99.7% of new papers; fixed alongside this re-rank). Reto ruled
@@ -222,7 +222,7 @@ is verified done on prod.
    `edit(kind='paper', args={'retire': True, 'reason': …})` — refuses a
    ref with body, PDF, external id or live inbound cites; `retire:
    False` undoes.
-4. **Fetch ref-pass confirmation** — `pass-dead:melchior/precis-worker/fetch`. The
+4. **Fetch ref-pass confirmation** — `pass-dead:<agent-host>/precis-worker/fetch`. The
    outbound-policy work shipped in full 2026-10-23 (spec deleted; the
    model lives in `utils/outbound_policy.py`, the gate in
    `invariants.md` §Outbound): limiter/slot waits bound themselves to
@@ -240,10 +240,10 @@ is verified done on prod.
    no longer advance the fetch backoff). Still open: the /drive
    "Stubs (to get)" queue (`precis_web/routes/drive.py`) mixes the no-OA
    set in, and the stub-readout remainder.
-6. **`backlog/elsevier-preview-remediation.md`** — ~2,796 papers whose
+6. **gr690626** — ~2,796 papers whose
    body is a 1-page preview. Same "looks done, isn't" shape as 2. Ranked
    below it because the fix is a cluster ops run (the vault key), not code.
-7. **`backlog/ref-2615-is-a-mis-bound-record.md`** — one ref bound to two
+7. **me694435** — one ref bound to two
    different papers' PDFs/DOI. Silent corruption, but a single row.
 8. **S2 venue re-arm** — 4,313 S2-enriched papers have no venue. Reto approved
    the re-arm 2026-10-02 on condition of gentleness. The enrich lane
@@ -257,7 +257,7 @@ is verified done on prod.
    holds no venue for the other 1,470, so a further S2 pass gains
    nothing. Open: those 1,470, plus the 1,200 *held* venue-less papers no
    lane re-enriches. Both need the Crossref fallback
-   (`backlog/crossref-enrichment.md`); the held papers could also take a
+   (me693118); the held papers could also take a
    held-paper S2 pass.
 9. **Stub-queue depth (policy, not a defect)** — measured 2026-10-14:
    8,085 no-PDF stubs queued; citation-expansion/stub_rank mints ~366/day
@@ -306,27 +306,27 @@ is verified done on prod.
 
 ## Horizon
 
-0. **`backlog/paper-backup-pdf-transfer.md`** — slice 1 is the
+0. **me693922** — slice 1 is the
    undo export every destructive paper door lacks (a past prod repair
    needed hand SQL); later slices unblock re-extract/re-home of stored PDFs.
    Slice 4 waits on the keep_pdf door.
-1. **`backlog/pdf-sha256-identifier-hygiene.md`** — the missing-sha sweep
+1. **me694385** — the missing-sha sweep
    (the defect subset of the 22,106 sha-less refs is unmeasured; needs a
    join against the corpus dir). It gates nanopub provenance, not text.
-2. **`backlog/crossref-enrichment.md`** — abstract fallback; mailto still
+2. **me693118** — abstract fallback; mailto still
    unset on `paper_meta_enrich`.
-3. **`backlog/papers-edit-reslug-hangs.md`** — **landed 2026-10-21**
+3. **me694305** — **landed 2026-10-21**
    (bug-papers-pcb): `_rename_slug` bounded by `asyncio.wait_for` (30s)
    with a half-applied error page on timeout; the ref-211494 retry is a
    prod write, Reto's call.
-4. **`backlog/paper-dedup-bucket-b.md`** — 94 refs, CLI-gated ops run.
-5. **`backlog/acquisition-marker-lives-in-the-wrong-place.md`** — backfill
+4. **me694093** — 94 refs, CLI-gated ops run.
+5. **me690225** — backfill
    done; the prose-grep cleanup remains.
-6. **`backlog/oa-acquisition-roadmap.md`** — new OA legs and bulk arms,
+6. **me690237** — new OA legs and bulk arms,
    after the counting bugs (3, 4) make the yield measurable.
-7. **`backlog/ms-teams-paper-feed.md`** — Teams channels as an ingest
+7. **gr690839** — Teams channels as an ingest
    source; pillar 4, 2026-10-01.
-8. **`backlog/april-corpus-nas-migration.md`** — 5,335 April-era PDFs never
+8. **gr690181** — 5,335 April-era PDFs never
    merged into the NAS corpus; platform pass 2026-10-02.
 
 ## Parked
@@ -352,6 +352,6 @@ is verified done on prod.
 - `knowledge` (taxonomy, quests, papers) consumes this pipeline's output.
   Every fidelity defect here reaches that programme as a wrong answer with no
   error.
-- `graph-gardener-value.md` slice 5 (the gardener idle filler) expects to spend local
+- `graph-gardener-value (me693885)` slice 5 (the gardener idle filler) expects to spend local
   capacity on this pipeline's output; a corrupt extraction makes that spend
   worse than idle.

@@ -74,7 +74,7 @@ META_PROPOSED_PAYLOAD = "proposed_payload"
 
 
 #: The Phase-1 enforcement-asymmetry split
-#: (``docs/backlog/nanopub-corpus-remediation.md``): ``lint_notation`` /
+#: (`me691969`): ``lint_notation`` /
 #: ``lint_claim_sentence`` ADVISE everywhere (authoring, reword) and BLOCK
 #: only here, at approve/sign. This frozenset is the single place that
 #: decides block-vs-advise per lint code, so widening or narrowing the
@@ -982,8 +982,7 @@ def check_primary_source(
 def check_claim_sentence(
     sentence: str, *, artifact_type: str = "claim"
 ) -> list[GateViolation]:
-    """Claim-sentence lint's blocking half (``docs/backlog/nanopub-corpus-
-    remediation.md`` Phase 1) — the notation and admissibility/grammar
+    """Claim-sentence lint's blocking half (``me691969`` Phase 1) — the notation and admissibility/grammar
     lints run everywhere as advice (``lint_notation``,
     ``lint_claim_sentence`` at authoring/reword); this is the one place
     a subset of that advice becomes a hard mint gate, per
@@ -1600,7 +1599,7 @@ def _check_passage(
                 "pdf-sha",
                 f"{label}: ref {chunk.ref_id} has {len(shas)} pdf_sha256 "
                 "rows — mint needs exactly one to pin the quoted copy "
-                "(docs/backlog/pdf-sha256-identifier-hygiene.md)",
+                "(me694385)",
             )
         )
     elif sha and sha != shas[0]:

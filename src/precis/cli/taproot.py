@@ -199,7 +199,7 @@ def add_parser(subparsers: Any) -> None:
         "repair-evidence",
         help="Re-ground evidence edges that assert support while anchoring "
         "no passage (meta.source_handle = jsonb null, src_chunk_id NULL) -- "
-        "docs/backlog/evidence-edge-verification.md. "
+        "me694224. "
         "DRY-RUN BY DEFAULT: writes a JSONL proposal and makes zero DB "
         "writes unless --apply is given. A source with no supporting "
         "passage is recorded as verify-rejected; the claim is NEVER edited.",
@@ -352,8 +352,8 @@ def add_parser(subparsers: Any) -> None:
 
     cl = tsub.add_parser(
         "classify",
-        help="Sort claim hubs into a claim_type (measurement / definition / "
-        "capability / mechanism / landscape; refs.meta.claim_type). Without "
+        help=f"Sort claim hubs into a claim_type ({', '.join(CLAIM_TYPES)}; "
+        "refs.meta.claim_type). Without "
         "--set: the LLM backfill over hubs that have no type yet. DRY-RUN BY "
         "DEFAULT: the LLM calls run (budget-metered) but nothing is written "
         "unless --apply. The LLM path NEVER overwrites a human "
@@ -478,6 +478,81 @@ def add_parser(subparsers: Any) -> None:
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
+    cs = tsub.add_parser(
+        "conditions-sweep",
+        help="Hand-launched repair: write the missing experimental / "
+        "computational conditions (potential, reference electrode, "
+        "electrolyte, light, temperature) into claim sentences, read from "
+        "the hub's evidence paper (docs/backlog/claim-conditions-"
+        "completeness.md step 4). DRY-RUN BY DEFAULT: zero DB writes "
+        "unless --apply (the MEDIUM calls still run, budget-metered). Every "
+        "proposal is re-validated in code: the quote must occur verbatim in "
+        "the paper text, only insertions, no new blocking lint. A paper "
+        "that does not state a condition gets a '(<condition> not "
+        "reported)' marker; an ambiguous one is reported, never written.",
+    )
+    cs_mode = cs.add_mutually_exclusive_group()
+    cs_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Explicitly request the default: propose + report, write nothing.",
+    )
+    cs_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write accepted proposals through taproot.hub.refine_claim_"
+        "sentence (scope unchanged). Default (omitted) is a read-only dry-run.",
+    )
+    cs.add_argument(
+        "--hub",
+        default=None,
+        help="Restrict to one claim hub (fi<id>, pub_id, cite_key or bare "
+        "ref_id; it still has to qualify).",
+    )
+    cs.add_argument(
+        "--draft",
+        default=None,
+        help="Restrict to hubs this draft cites (dr<id>, slug or ref_id).",
+    )
+    cs.add_argument(
+        "--family",
+        default=None,
+        help="Restrict to one claim family (ec-measurement, dft-step-thermo, "
+        "dft-barrier, photo-rate, thermal).",
+    )
+    cs.add_argument("--limit", type=int, default=None, help="At most N hubs.")
+    cs.add_argument(
+        "--quoted-only",
+        action="store_true",
+        help="With --apply, write only sentences whose added conditions are "
+        "all quoted from the paper; a sentence with a '(... not reported)' "
+        "marker is reported as marker-held, not written.",
+    )
+    cs.add_argument(
+        "--work-class",
+        choices=["background", "deliverable", "interactive"],
+        default="background",
+        help="Budget class for the MEDIUM calls (precis.budget.work_class). "
+        "Default background, which the budget breaker pauses; pass "
+        "deliverable for a sweep someone is waiting on.",
+    )
+    cs.add_argument(
+        "--after-ref-id",
+        type=int,
+        default=None,
+        help="Start after this hub ref_id (keyset batching, as reword-sweep).",
+    )
+    cs.add_argument(
+        "--out",
+        default=None,
+        help="Write the JSONL rows (hub, old, new, verdict, status, added "
+        "with quotes, reason, needs_review) here. Default: stdout (the "
+        "summary goes to stderr).",
+    )
+    cs.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
     dm = tsub.add_parser(
         "direct-mint",
         help="Argue a PROPOSED claim against one passage (chunk), then fit it "
@@ -596,6 +671,37 @@ def add_parser(subparsers: Any) -> None:
         help="set_by actor slug for --fix --apply writes (default: agent).",
     )
     lint.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
+    cr = tsub.add_parser(
+        "conditions-report",
+        help="Advisory, read-only report: claim hubs whose sentence leaves "
+        "out a must-state condition (potential, reference, electrolyte, "
+        "light, temperature); per-family counts plus one line per gap.",
+    )
+    grp = cr.add_mutually_exclusive_group(required=True)
+    grp.add_argument(
+        "--draft",
+        metavar="REF_ID",
+        default=None,
+        help="Hubs cited by this draft (ref_id or dr<id>; 'cites' links to "
+        "live findings).",
+    )
+    grp.add_argument(
+        "--all",
+        action="store_true",
+        help="Every live TAPROOT:claim hub.",
+    )
+    cr.add_argument("--json", action="store_true", help="Emit JSON.")
+    cr.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap the listed gap lines at N (counts stay complete).",
+    )
+    cr.add_argument(
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
@@ -1760,6 +1866,64 @@ def _run_reword_sweep(args: argparse.Namespace) -> None:
     print(f"last ref_id: {summary['last_ref_id']}", file=sys.stderr)
 
 
+def _run_conditions_sweep(args: argparse.Namespace) -> None:
+    """``precis taproot conditions-sweep`` -- see
+    :mod:`precis.taproot.conditions_repair`. Dry-run unless ``--apply``;
+    per-hub failures are named statuses, only a hard BadInput exits 1."""
+    from precis import route_log
+    from precis.budget import meter
+    from precis.budget.work_class import work_class_scope
+    from precis.errors import BadInput
+    from precis.store import Store
+    from precis.taproot.conditions_repair import run_conditions_sweep
+
+    apply = bool(args.apply)
+    store = Store.connect(resolve_dsn(args.database_url))
+    meter.bind_store(store)
+    route_log.bind_store(store)
+    try:
+        hub_ref_id: int | None = None
+        if args.hub:
+            from precis.taproot.authoring import resolve_hub_ref_id
+
+            token = args.hub.strip()
+            hub_ref_id = resolve_hub_ref_id(
+                store, int(token) if token.isdigit() else token
+            )
+        draft_ref_id = _resolve_draft_ref_id(store, args.draft) if args.draft else None
+        with work_class_scope(getattr(args, "work_class", "background")):
+            summary = run_conditions_sweep(
+                store,
+                apply=apply,
+                limit=args.limit,
+                hub=hub_ref_id,
+                after_ref_id=args.after_ref_id,
+                draft_ref_id=draft_ref_id,
+                family=args.family,
+                out=args.out if args.out else sys.stdout,
+                quoted_only=bool(getattr(args, "quoted_only", False)),
+            )
+    except BadInput as exc:
+        print(f"taproot conditions-sweep: error: {exc.cause}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+    counts: dict[str, int] = summary["counts"]
+    suffix = ""
+    if not apply:
+        would = counts.get("added", 0) + counts.get("not-reported", 0)
+        suffix = f"  [DRY-RUN -- nothing written; would write {would}]"
+    breakdown = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"
+    print(
+        f"taproot conditions-sweep: {summary['processed']} hub(s) processed -- "
+        f"{breakdown}, applied={summary['applied']}, "
+        f"llm_calls={summary['llm_calls']}{suffix}",
+        file=sys.stderr,
+    )
+    print(f"last ref_id: {summary['last_ref_id']}", file=sys.stderr)
+
+
 def _run_direct_mint(args: argparse.Namespace) -> None:
     from precis.budget import meter
     from precis.config import load_config
@@ -2328,6 +2492,101 @@ def _run_refine_hub(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _conditions_rows(store: Store, draft: int | None) -> list[tuple[int, str, int]]:
+    """``(ref_id, title, citing_chunks)`` rows for ``conditions-report``.
+
+    ``draft`` set: live findings the draft ``cites``; the chunk count is that
+    draft's distinct citing chunks. ``None``: every live claim hub, counting
+    distinct citing chunks across all drafts. A cite with no source chunk
+    counts once.
+    """
+    from precis.taproot.canon import CLAIM_HUB_PREDICATE_PARAMS, claim_hub_predicate_sql
+
+    with store.pool.connection() as conn:
+        if draft is not None:
+            rows = conn.execute(
+                "SELECT r.ref_id, r.title, "
+                "       GREATEST(COUNT(DISTINCT l.src_chunk_id), 1) "
+                "FROM links l "
+                "JOIN refs r ON r.ref_id = l.dst_ref_id "
+                "           AND r.kind = 'finding' AND r.retired_at IS NULL "
+                "WHERE l.src_ref_id = %(draft)s AND l.relation = 'cites' "
+                f"AND {claim_hub_predicate_sql()} "
+                "GROUP BY r.ref_id, r.title ORDER BY r.ref_id",
+                {"draft": draft, **CLAIM_HUB_PREDICATE_PARAMS},
+            ).fetchall()
+            return [(int(r[0]), str(r[1] or ""), int(r[2])) for r in rows]
+        hubs = conn.execute(_LINT_COHORT_SQL).fetchall()
+        counts: dict[int, int] = dict(
+            conn.execute(
+                "SELECT dst_ref_id, COUNT(DISTINCT src_chunk_id) FROM links "
+                "WHERE relation = 'cites' AND dst_ref_id = ANY(%s) "
+                "GROUP BY dst_ref_id",
+                ([int(h[0]) for h in hubs],),
+            ).fetchall()
+        )
+    return [(int(h[0]), str(h[1] or ""), int(counts.get(h[0], 0))) for h in hubs]
+
+
+def _conditions_report(rows: list[tuple[int, str, int]]) -> dict[str, Any]:
+    """Aggregate :func:`~precis.taproot.conditions.check_conditions` over
+    ``rows`` into per-family counts and the gap list."""
+    from precis.taproot.conditions import check_conditions, condition_family
+
+    families: dict[str, dict[str, int]] = {}
+    gaps: list[dict[str, Any]] = []
+    for ref_id, title, chunks in rows:
+        family = condition_family(title)
+        if family is None:
+            continue
+        fam = families.setdefault(family, {"quantitative": 0, "gaps": 0, "bullets": 0})
+        fam["quantitative"] += 1
+        for gap in check_conditions(title):
+            fam["gaps"] += 1
+            fam["bullets"] += chunks
+            gaps.append(
+                {
+                    "hub": f"fi{ref_id}",
+                    "family": gap.family,
+                    "missing": list(gap.missing),
+                    "title": title,
+                }
+            )
+    return {"hubs": len(rows), "families": families, "gaps": gaps}
+
+
+def _run_conditions_report(args: argparse.Namespace) -> None:
+    """``precis taproot conditions-report`` -- advisory, read-only."""
+    from precis.errors import BadInput
+    from precis.store import Store
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        draft = _resolve_draft_ref_id(store, args.draft) if args.draft else None
+        report = _conditions_report(_conditions_rows(store, draft))
+    except BadInput as exc:
+        print(f"taproot conditions-report: error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    finally:
+        store.close()
+
+    gaps = report["gaps"]
+    shown = gaps if args.limit is None else gaps[: max(args.limit, 0)]
+    if args.json:
+        print(json.dumps({**report, "gaps": shown}, indent=2, ensure_ascii=False))
+        return
+    print(f"hubs: {report['hubs']}")
+    for family, c in sorted(report["families"].items()):
+        print(
+            f"  {family}: {c['quantitative']} quantitative, {c['gaps']} with gaps, "
+            f"{c['bullets']} citing chunk(s) affected"
+        )
+    for g in shown:
+        print(f"{g['hub']} {g['family']} {','.join(g['missing'])} {g['title']}")
+    if len(shown) < len(gaps):
+        print(f"...and {len(gaps) - len(shown)} more")
+
+
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis taproot <taproot_cmd>``."""
     if args.taproot_cmd == "mint":
@@ -2350,12 +2609,16 @@ def run(args: argparse.Namespace) -> None:
         _run_classify(args)
     elif args.taproot_cmd == "reword-sweep":
         _run_reword_sweep(args)
+    elif args.taproot_cmd == "conditions-sweep":
+        _run_conditions_sweep(args)
     elif args.taproot_cmd == "direct-mint":
         _run_direct_mint(args)
     elif args.taproot_cmd == "lint":
         _run_lint(args)
     elif args.taproot_cmd == "numeral-audit":
         _run_numeral_audit(args)
+    elif args.taproot_cmd == "conditions-report":
+        _run_conditions_report(args)
     else:
         print(f"taproot: unknown subcommand {args.taproot_cmd!r}", file=sys.stderr)
         sys.exit(2)

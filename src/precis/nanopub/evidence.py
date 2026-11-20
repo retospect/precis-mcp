@@ -144,7 +144,7 @@ def is_review_title(title: str) -> bool:
 #: status), and :data:`PRIMARY_UNHELD_META_KEY` (the declared flag for the
 #: shapes no edge expresses). The prose stays a fallback only until the six
 #: legacy hubs are stamped;
-#: ``docs/backlog/acquisition-marker-lives-in-the-wrong-place.md`` tracks
+#: `me690225` tracks
 #: retiring it entirely.
 ACQUISITION_MARKER = re.compile(
     r"not (?:yet )?in (?:the )?corpus|needs? acquisition", re.IGNORECASE
@@ -310,7 +310,7 @@ def source_anchor(
     fetch stored on ``cache_state``), plus the URL as a second identifier
     — a page is mutable, so the hash is what is cited and the URL is where
     it was read (Reto 2026-10-03, claims-and-evidence-3); ``patent`` → empty (still
-    DOI-gated — docs/backlog/claim-publication-nanopub-ots.md).
+    DOI-gated — me691903).
     """
     if kind == "paper":
         return SourceAnchor(doi_source_uri(doi) if doi else None)
@@ -979,7 +979,7 @@ def pdf_sha_rows(store: Store, ref_id: int) -> list[str]:
     those alias rows index re-ingests, they don't make the held copy
     ambiguous. Identifier rows are the fallback for shaless refs (zero
     of either = nothing to pin, e.g. ref 42109 —
-    ``docs/backlog/pdf-sha256-identifier-hygiene.md``)."""
+    `me694385`)."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT pdf_sha256 FROM refs WHERE ref_id = %s AND pdf_sha256 IS NOT NULL",

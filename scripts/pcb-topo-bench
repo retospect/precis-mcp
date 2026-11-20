@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/pcb-topo-bench — topo-place vs the default anneal, both routed
 # by vroute, on the standing boards plus the route-bench set
-# (gr515107; docs/backlog/pcb-topo-place.md). The boards and what each
+# (gr515107; me569095). The boards and what each
 # column measures: tests/fixtures/pcb/topo_bench.py.
 #
 # Usage:

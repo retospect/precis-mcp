@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
+import pytest
 
 from precis.bench import raw as bench_raw
 from precis.dispatch import Hub
@@ -3284,6 +3285,51 @@ class TestCommitReRepromptLadder:
             if b.chunk_kind == "quest_log"
         ]
 
+    @pytest.mark.parametrize("on_ladder", [False, True])
+    def test_operational_commit_resets_stall_without_escalation(
+        self, store: Any, monkeypatch: Any, on_ladder: bool
+    ) -> None:
+        """gr573805: accepted operational progress satisfies either commit path."""
+        self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "Compute scout")
+        progress = {"commits": [{"kind": "ask", "text": "Credit ask queued"}]}
+        monkeypatch.setenv("PRECIS_QUEST_FORCE_EXPERIMENT_EVERY", "1")
+        disp, reqs = _sequenced_dispatch(
+            [self._EMPTY, progress] if on_ladder else [progress]
+        )
+        out = run_quest_tick(store, qid, dispatch_fn=disp, compute=True)
+        assert out.status == "succeeded"
+        assert out.sims_dispatched == 0
+        assert len(reqs) == (2 if on_ladder else 1)
+        ref = store.get_ref(kind="quest", id=qid)
+        assert ref is not None
+        assert ref.meta.get("ticks_since_experiment") == 0
+        assert any("commit [ask]" in (b.text or "") for b in self._logs(store, qid))
+
+    def test_malformed_commits_preserve_other_actions_and_do_not_count_as_progress(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr573805: dropping a malformed channel must preserve the payload."""
+        self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "Compute scout")
+        disp, reqs = _sequenced_dispatch(
+            [
+                {
+                    "commits": "bad",
+                    "logbook": [{"text": "Lead checked", "entry_type": "observation"}],
+                }
+            ]
+        )
+        out = run_quest_tick(store, qid, dispatch_fn=disp, compute=True)
+        assert out.status == "succeeded"
+        assert len(reqs) == 1
+        ref = store.get_ref(kind="quest", id=qid)
+        assert ref is not None
+        assert ref.meta.get("ticks_since_experiment") == 1
+        texts = [b.text or "" for b in self._logs(store, qid)]
+        assert any("Lead checked" in text for text in texts)
+        assert any("commits: dropped 1 malformed" in text for text in texts)
+
     def test_first_dry_tick_advances_counter_without_a_commit_reprompt(
         self, store: Any, monkeypatch: Any
     ) -> None:
@@ -4347,6 +4393,70 @@ def _mk_paper_body(store: Any, title: str, sections: list[tuple[str, int]]) -> i
     return pid
 
 
+class TestJudgmentsField:
+    """gr592951 slice 5 — the tick's ``judgments`` channel is the write
+    door for explicit ``considered`` verdicts: a ``not-useful`` on a
+    served source lands the ledger edge + history row and holds the
+    source out of later lit-searches. Cheap triage (the lit_gate
+    omissions) never writes here — only an entry the model issued."""
+
+    def test_judgments_record_considered_verdicts(self, store: Any) -> None:
+        from precis.quest import search as qsearch
+
+        qid = _mk_quest(store, "A quest judging its literature")
+        pid = _mk_paper_stub(store, "Smoke adsorption on carbon")
+        _serve(store, pid, qid)
+        payload = {
+            "logbook": [],
+            "judgments": [
+                {
+                    "source": f"pa{pid}",
+                    "verdict": "not-useful",
+                    "reason": "smoke adsorption — no bearing on NO→NH3 on Pd(111)",
+                    "depth": "abstract",
+                },
+                # Reasonless entries are dropped — a verdict IS its reason.
+                {"source": f"pa{pid}", "verdict": "useful"},
+                # An unresolvable source refuses cleanly, never crashes.
+                {"source": "pa999999999", "verdict": "useful", "reason": "x"},
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+
+        assert out.judgments_recorded == 1
+        edges = store.links_for(qid, direction="out", relation="considered")
+        assert [ln.dst_ref_id for ln in edges] == [pid]
+        edge_meta = edges[0].meta or {}
+        assert edge_meta["verdict"] == "not-useful"
+        assert edge_meta["depth"] == "abstract"
+        # …and the exclusion side works immediately.
+        assert pid in qsearch.judged_out(store, qid)
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any("recorded 1 considered verdict" in t for t in texts)
+        assert any("reasonless verdict dropped" in t for t in texts)
+        assert any("does not resolve" in t for t in texts)
+
+    def test_judgments_over_cap_is_refused(self, store: Any) -> None:
+        qid = _mk_quest(store, "A quest over-judging")
+        pids = [_mk_paper_stub(store, f"candidate {i}") for i in range(9)]
+        payload = {
+            "logbook": [],
+            "judgments": [
+                {
+                    "source": f"pa{pid}",
+                    "verdict": "uncertain",
+                    "reason": "needs a read",
+                }
+                for pid in pids
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+
+        assert out.judgments_recorded == 8
+        texts = [c.text for c in store.chunks.list_chunks_for_ref(qid)]
+        assert any("over the per-tick cap" in t for t in texts)
+
+
 class TestReadSelectors:
     """gr505186 / gr507189 — a bare read only reached the body's front page;
     ``section`` and ``page`` target deeper content."""
@@ -5033,6 +5143,44 @@ class TestBenchIndexRead:
         assert s1 in todo_block and s2 not in todo_block
         assert "no held bench run matches 'no-such-needle'" in prompt
 
+    def test_bench_index_states_what_an_absent_run_means(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """gr660413 — the probe that returned zero held runs could not
+        say whether runs #2/#3 still existed anywhere: every
+        ``bench:index`` answer — populated, filtered-empty, or an empty
+        dir — now ends in the retention line."""
+        _bench_results("20261110Z-aaaa111-quick-triage", tmp_path)
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        qid = _mk_quest(store, "A striving after runs #2 and #3")
+        store.update_ref(
+            qid,
+            meta_patch={
+                "pending_reads": [
+                    {"ref": "bench:index"},
+                    {"ref": "bench:index", "section": "2026-11-09"},
+                ]
+            },
+        )
+        prompt = build_tick_prompt(store, _qref(store, qid))
+        assert "no held bench run matches '2026-11-09'" in prompt
+        assert prompt.count(bench_raw.RETENTION_LINE) == 2
+        empty = tick_mod._bench_index_text(tmp_path / "nowhere")
+        assert "no bench runs held" in empty
+        assert bench_raw.RETENTION_LINE in empty
+
+    def test_prompt_docs_state_the_bench_retention(self, store: Any) -> None:
+        """gr660413 — both bodies' read docs say what ``bench:index``
+        absence means, so the policy reaches the tick from its own
+        vocabulary, not only from a probed index."""
+        qid = _mk_quest(store, "A striving reading its read docs")
+        assert "never archived" in build_tick_prompt(store, _qref(store, qid))
+        store.stamp_ref_meta(qid, {"quest_body": QUEST_BODY_INQUIRY})
+        prompt = build_tick_prompt(
+            store, _qref(store, qid), quest_body=QUEST_BODY_INQUIRY
+        )
+        assert "never archived" in prompt
+
     def test_bench_read_unique_substring_resolves(
         self, store: Any, tmp_path: Any, monkeypatch: Any
     ) -> None:
@@ -5110,6 +5258,18 @@ class TestBenchIndexRead:
         assert len(msg) <= 400
         assert "bench:index" in msg
         assert "more" in msg
+
+    def test_bench_refusal_on_an_empty_dir_states_retention(
+        self, store: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """gr660413 — a ``bench:`` read miss with nothing held is also
+        the retention answer, inside the 400-char clip."""
+        monkeypatch.setenv("PRECIS_BENCH_RESULTS", str(tmp_path))
+        from precis.quest.search import _read_refusal
+
+        msg = _read_refusal("bench:20261109")
+        assert len(msg) <= 400
+        assert "(none held" in msg and bench_raw.RETENTION_LINE in msg
 
 
 def _ledger_rows(store: Any, tag: str | None, ts: str | None = None) -> None:

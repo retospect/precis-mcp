@@ -158,6 +158,13 @@ ARGUMENT_RELATIONS: frozenset[str] = frozenset(
         "derived-into",
     }
 )
+#: The consideration-verdict edge (gr662069, spec me626852): a scope
+#: memory/question judged a candidate source. Its own ring group, listed
+#: last and collapsed to a verdict count on the scope's eye
+#: (``eye_render._render_first_hop``): judged-out candidates must never
+#: crowd out the useful rows (me626853). The paper's eye reads the inbound
+#: edge as ``<-considered: me42 — not useful (abstract, …): …``.
+CONSIDERED_RELATIONS: frozenset[str] = frozenset({"considered"})
 
 #: The ring registry: group heading → the relations rendered under it, in
 #: render order. A decision, not a consequence — the same rule as
@@ -176,6 +183,7 @@ RING_GROUPS: dict[str, frozenset[str]] = {
     "Parts": COMPONENT_RELATIONS,
     "Argument": ARGUMENT_RELATIONS,
     "Notes & links": SEMANTIC_RELATIONS,
+    "Considered": CONSIDERED_RELATIONS,
 }
 
 #: Neighbour kinds a group ranks first, in order — the same hand-made

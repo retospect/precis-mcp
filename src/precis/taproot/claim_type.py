@@ -1,7 +1,7 @@
 """Claim type — the persisted sort of a claim hub, and what each sort
 changes about how the graph treats the hub.
 
-``docs/backlog/taproot-claim-model-v2.md`` (design decided 2026-10-10).
+`me690796` (design decided 2026-10-10).
 The extractor sorts every claim into one of :data:`CLAIM_TYPES`;
 :func:`~precis.taproot.hub.mint_hub` persists it as ``refs.meta.claim_type``
 with ``claim_type_by='llm'``. A human may reclassify through the web form
@@ -44,6 +44,7 @@ from precis.identity import normalize_text_for_hash
 from precis.store.types import Tag
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
+    CLAIM_TYPE_CHOICES,
     CLAIM_TYPE_DEFINITIONS,
     CLAIM_TYPES,
     claim_hub_predicate_sql,
@@ -109,6 +110,7 @@ _DEFAULT_POLICY = ClaimTypePolicy()
 #: The static per-type table. Absent / unknown type → the default policy.
 POLICIES: Mapping[str, ClaimTypePolicy] = {
     "measurement": _DEFAULT_POLICY,
+    "calculation": _DEFAULT_POLICY,
     "definition": _DEFAULT_POLICY,
     "capability": _DEFAULT_POLICY,
     "mechanism": _DEFAULT_POLICY,
@@ -357,7 +359,9 @@ SCOPE: {scope_json}
     + """
 
 Respond with EXACTLY ONE JSON object, nothing else:
-{{"type": "<measurement|definition|capability|mechanism|landscape>"}}
+{{"type": "<"""
+    + CLAIM_TYPE_CHOICES
+    + """>"}}
 """
 )
 

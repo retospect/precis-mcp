@@ -883,12 +883,19 @@ def test_source_search_queryless_without_cohort_still_refuses(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
     """A bare date window over the whole corpus is a browse, not a
-    listing — with no ``serves=``/facet cohort the refusal stands."""
+    listing — with no ``serves=``/facet cohort the refusal stands. The
+    refusal's ``next=`` calls must spell ``since`` inside ``args={...}``
+    (gr608575): the slim wrapper deprecates the top-level spelling, so a
+    top-level hint aims the caller back at the note the trigger label
+    just named."""
     body, is_error = runtime_with_store.dispatch_with_status(
         "search", {"kind": "paper", "since": "2000-01-01"}
     )
     assert is_error
     assert "requires q=" in body
+    assert "sort= / args={'since'/'until'}" in body
+    assert "since='2026-01-01'" not in body
+    assert "'since': '2026-01-01'" in body
 
 
 def test_source_search_serves_listing_pages_and_replays(

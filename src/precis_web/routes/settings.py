@@ -3,7 +3,7 @@
 ``/budget`` cap editor.
 
 Unlike ``/secrets`` this page is **not** write-only: settings values aren't
-secrets (the redact-rule from ``docs/backlog/db-resident-settings.md`` —
+secrets (the redact-rule from `gr690347` —
 "would you redact it in a log line?" no → settings), so the current
 resolved value is shown and pre-fills each row's edit field.
 

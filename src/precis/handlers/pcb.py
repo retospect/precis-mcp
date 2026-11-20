@@ -50,7 +50,7 @@ pixels. The verbs map onto the seven-verb surface:
   ``op='pad'`` (gr520149) moves/resizes ONE pad of ONE placed part
   (``refdes``+``pad``+``dx``/``dy``/``w``/``h``, ``revert=True`` to undo) —
   a design-local delta on ``pcb_instances.meta``, never the shared
-  footprint row (docs/backlog/pcb-pad-overrides.md).
+  footprint row (me693055).
   ``op='order'`` (pcb-jlc-order) dry-runs or places the JLCPCB order
   (``dry_run`` default True; the live path needs ``confirm='add-to-cart'``
   and creates an unpaid order — the API's cart equivalent, never a
@@ -278,7 +278,7 @@ _INSPECTION_VIEWS = ("wire", "part", "layer", "snippet")
 _RENDER_VIEWS = ("svg", "schematic", "capability")
 #: gr341532 fix 3 — the ``part_footprints`` cache gap made visible per
 #: catalog-part instance, the read-side counterpart to ``op='footprint'``.
-#: ``notes`` (pcb-argue-with-design.md) — the design's argument ledger:
+#: ``notes`` (me690151) — the design's argument ledger:
 #: what the user typed on the board page, verbatim, anchored by handle,
 #: with the model's answer re each question (:mod:`precis.pcb.argue`).
 #: ``availability`` (gr485250) — the per-BOM-line stock/library/lifecycle
@@ -1370,6 +1370,9 @@ class PcbHandler(Handler):
                 "net_class",
                 "min_length",
                 "offset",
+                # view='links' paging (gr627629)
+                "limit",
+                "cursor",
             }
         ),
     }
@@ -3100,7 +3103,7 @@ class PcbHandler(Handler):
         single_form: bool,
     ) -> str | None:
         """``op='move'`` on one or more parts
-        (docs/backlog/pcb-always-valid-board-invariant.md, Reto's rulings 1
+        (me569109, Reto's rulings 1
         and 2, 2026-10-02: "a part's own footprint copper always moves with
         it"; a list of poses is validated together as ONE resulting state).
 
@@ -3477,7 +3480,7 @@ class PcbHandler(Handler):
     def _refuse_illegal_pose(
         self, ref: Any, refdes: str, pose: dict[str, Any]
     ) -> list[str]:
-        """docs/backlog/pcb-always-valid-board-invariant.md: a move that
+        """me569109: a move that
         would put ``refdes``'s courtyard on another part or a mounting hole,
         or a solder land on an authored via, is refused with the rule and
         the pair — the placer's own rule
@@ -3876,7 +3879,7 @@ class PcbHandler(Handler):
     def _op_pins(self, ref: Any, args: dict[str, Any]) -> Response:
         """``put(args={'op':'pins','refdes':'U7','pins':[{...}]})`` —
         annotate pin SEMANTICS on an existing instance
-        (docs/backlog/pcb-datasheet-review.md slice 2): the ``etype`` /
+        (me692814 slice 2): the ``etype`` /
         ``rail`` / ``max_voltage_v`` / ``vih`` / ``vil`` /
         ``max_current_a`` / ``current_role`` (``series``|``shunt``|
         ``signal``) / ``nc`` / ``unused`` / ``must_terminate`` /
@@ -4024,8 +4027,7 @@ class PcbHandler(Handler):
 
     def _op_pad(self, ref: Any, args: dict[str, Any]) -> Response:
         """``put(args={'op':'pad','refdes':'J1','pad':'3','dx':…,'dy':…,
-        'w':…,'h':…,'drill':…}})`` — gr520149, docs/backlog/
-        pcb-pad-overrides.md: a per-pad, per-INSTANCE footprint-local
+        'w':…,'h':…,'drill':…}})`` — gr520149, me693055: a per-pad, per-INSTANCE footprint-local
         override. ``dx``/``dy`` shift the pad's stored centre (mm);
         ``w``/``h`` replace its extent (mm, absolute); ``drill`` re-drills
         a PLATED through-hole pad to an absolute diameter (mm — slice 2;
@@ -5489,7 +5491,13 @@ class PcbHandler(Handler):
                     next="re-resolve the design: get(kind='pcb', id='slug', "
                     "view='links')",
                 )
-            return render_links_view(self.store, ref, sense="pcb")
+            return render_links_view(
+                self.store,
+                ref,
+                sense="pcb",
+                limit=(args or {}).get("limit"),
+                cursor=(args or {}).get("cursor"),
+            )
         if view == "frames":
             return self._render_frames(ref_id, args)
         graph = pcb_session.sorted_graph(self._effective_graph(ref_id))
@@ -6571,7 +6579,7 @@ class PcbHandler(Handler):
         and the web UI's ``GET /pcb/{slug}/export.epro2``
         share: the writer is deterministic, so the same board state
         gives the same bytes and sha256 on every surface, with nothing
-        stored (docs/backlog/pcb-epro-mcp-roundtrip.md, Reto's ruling)."""
+        stored (me690047, Reto's ruling)."""
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         built = self._fab_model(ref_id, slug=slug)
@@ -8165,7 +8173,7 @@ class PcbHandler(Handler):
         ``op='review'``).
 
         **Runs whenever there is REAL pad geometry, not only after a
-        route (round 4, docs/backlog/pcb-ewod-multitile.md's decisions
+        route (round 4, me692460's decisions
         log).** Realized copper (``pcb_copper``, once ``op='route'`` has
         run) is checked when present; a board with real (non-synthesized)
         pads but no realized copper yet still gets a full pads-only pass
@@ -8310,7 +8318,7 @@ class PcbHandler(Handler):
         *,
         record: bool = False,
     ) -> Response:
-        """The ONE check surface (pcb-lazy-netlist-and-checks.md §1g, Slice
+        """The ONE check surface (me693232 §1g, Slice
         8) — geometric, netlist and ERC rules report on the same finding
         list, filterable on ``rule``/``severity``/``phase``. ``view='drc'``
         stays as this surface's preset for continuity (the run it shows,
@@ -9729,9 +9737,8 @@ class PcbHandler(Handler):
         **_kw: Any,
     ) -> Response:
         """Add or remove a link from this design to another ref
-        (gr485159 — a board could not ``serve`` the quest that owns it;
-        the quest-side ``served-by`` writes the edge backwards, so the
-        verb belongs here). The shared :func:`apply_link_ops` door —
+        (gr485159 — a board could not ``serve`` the quest that owns it,
+        so the verb belongs here). The shared :func:`apply_link_ops` door —
         the same one every other slug kind uses — carries the relation
         vocabulary, the constraint table (``serves`` is acyclic) and
         lazy target minting; ``rel=None`` adds ``related-to``."""
@@ -9959,7 +9966,7 @@ class PcbHandler(Handler):
                 "pose": self._pose(i),
                 # A locked source component is "do not move this" — the
                 # fact must be readable where the parts are listed
-                # (pcb-datasheet-review.md slice 1).
+                # (me692814 slice 1).
                 "fixed": i.get("fixed") or "—",
                 "roles": ",".join(i["roles"]) or "—",
             }

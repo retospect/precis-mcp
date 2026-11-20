@@ -15,12 +15,14 @@ No network and no title is written here — this only decides *which* refs
 the worker looks at again, under its own hourly cadence and fetch budget.
 
 Deliberately **not** wired into ``precis.workers.paper_reconcile``, unlike
-the other hygiene heals. This is a one-shot backfill over rows the old
-code left behind: the enrichment pass now fills the title on a stub's
-*first* visit, so nothing new accumulates. Running it on a cadence would
-also defeat that pass's one-visit-per-ref contract — a placeholder whose
-DOI simply doesn't resolve at Crossref would be re-armed, re-fetched and
-re-stamped forever.
+the other hygiene heals — and no longer needed on a cadence at all:
+``paper_meta_enrich._claim_batch``'s recovery leg (gr658887) re-selects
+a stamped placeholder once per ``meta.title_recovery_v`` version on its
+own. What's left here is the operator's *extra* re-arm: clearing the
+stamp by hand forces one more visit onto a dead end the current version
+already spent, without a code bump. An unbounded cadence would still be
+wrong — a placeholder whose DOI doesn't resolve and whose front matter
+yields nothing would be re-armed, re-fetched and re-stamped forever.
 """
 
 from __future__ import annotations

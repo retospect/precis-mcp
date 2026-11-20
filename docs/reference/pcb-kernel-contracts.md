@@ -141,7 +141,7 @@ is not an island of its net. Alternatives refused: seeding pins from the
 footprint (breaks pin identity), and net-less extra pads (made a pin's own
 second land a foreign obstacle to its net, measured on GND).
 
-Slice 2 of docs/backlog/pcb-lazy-netlist-and-checks.md then closed the other
+Slice 2 of me693232 then closed the other
 direction: every footprint pad NAME is also a declared pin —
 ``_pcb_apply`` completes a component's pins from the cached footprint's
 ``pin_map`` (``store._pcb_ops._pcb_complete_footprint_pins``), so the

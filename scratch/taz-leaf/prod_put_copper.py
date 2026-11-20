@@ -1,6 +1,6 @@
 """Phase 2 of the copper upload: put the taz-leaf-local-55 design +
 committed placement + realized routes/copper to PROD as slug taz-leaf-i
-(the web view at melchior.../pcb/taz-leaf-i).
+(the web view at $PRECIS_WEB_BASE/pcb/taz-leaf-i).
 
 Reads the phase-1 export (scratch/taz-leaf/out/local-55_export/, produced
 inside the dev container by export_local55.py) and the design
@@ -42,7 +42,8 @@ HERE = Path(__file__).parent
 BATCH = HERE / os.environ.get("TAZ_OUT", "out") / "batch.min.json"
 SLUG = sys.argv[1] if len(sys.argv) > 1 else "taz-leaf-i"
 EXPORT = HERE / "out" / (sys.argv[2] if len(sys.argv) > 2 else "local-55_export")
-WEB = "https://melchior.tailded4cf.ts.net/pcb/"
+#: Origin of the web UI, from the environment: host names stay out of the repo.
+WEB = os.environ.get("PRECIS_WEB_BASE", "<web-host>").rstrip("/") + "/pcb/"
 
 
 def _prod_dsn() -> None:

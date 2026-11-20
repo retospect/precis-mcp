@@ -1,9 +1,9 @@
 """chase:verify batch eval — replay logged verifies through the batch prompt.
 
-MEASURE ONLY — the regression record for the chase:verify → castor switch
-(gr499038; Reto 2026-10-21 triage Q5 ruled the op routes to castor regardless,
-so this does not gate the flip). It answers: does the batch prompt
-(``workers/_chase_llm._verify_supports_batch``, landed 7c769aebd) on the
+MEASURE ONLY — the regression record for the chase:verify → local-serving
+switch (gr499038; Reto 2026-10-21 triage Q5 ruled the op routes to the serving
+node regardless, so this does not gate the flip). It answers: does the batch
+prompt (``workers/_chase_llm._verify_supports_batch``, landed 7c769aebd) on the
 candidate rung return the same per-item verdicts as the reference — the
 FRONTIER rung (opus-class) — and as the stored MEDIUM verdicts?
 
@@ -63,7 +63,7 @@ from _prod_ro import add_db_args, connect_ro  # noqa: E402
 
 SOURCE = "chase:verify"
 
-#: Env chain the candidate arm dispatches under (same seam medium_castor_eval
+#: Env chain the candidate arm dispatches under (same seam medium_local_eval
 #: uses): one rung, the rung an operator flip would write.
 CANDIDATE_CHAIN_ENV = "PRECIS_LLM_CHAIN_BIG"
 
@@ -347,7 +347,7 @@ def regroup(
 
 def served_endpoint(conn: Any, model: str) -> str:
     """A local rung's ``served_by`` endpoint, read from the llm catalog card —
-    the same read medium_castor_eval does. Held in memory only (LAN address,
+    the same read medium_local_eval does. Held in memory only (LAN address,
     public repo)."""
     from urllib.parse import urlparse
 
@@ -374,7 +374,7 @@ def candidate_rung(
     """The candidate's single rung + endpoint (``None`` for a cloud rung).
 
     ``--endpoint-url`` mode synthesises the proven local-rung shape
-    (medium_castor_eval's LOCAL_RUNG: low reasoning effort, bounded
+    (medium_local_eval's LOCAL_RUNG: low reasoning effort, bounded
     ``max_tokens``). ``--op-chain`` takes rung 0 of ``llm.op.chase:verify``
     verbatim — the row the coordinator writes before the run — and resolves
     a local rung's endpoint from the card's ``served_by``.
@@ -384,7 +384,7 @@ def candidate_rung(
         if not row or not row[0]:
             raise SystemExit(
                 f"no app_settings row for llm.op.{SOURCE} — the coordinator "
-                "writes the castor row before this eval runs"
+                "writes the local-serving row before this eval runs"
             )
         override = json.loads(row[0])
         chain = override.get("chain") if isinstance(override, dict) else None

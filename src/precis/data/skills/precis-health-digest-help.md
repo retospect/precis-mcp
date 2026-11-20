@@ -9,7 +9,7 @@ answers:
   - when does a health-digest result get pushed to me vs stay quiet?
   - what does a pass-dead alert mean (a handler dead inside a live worker)?
   - what does the doctor_tick pass do with the health findings?
-applies-to: precis worker --only health_digest; kind='alert' (alert-source:watchdog:*); kind='gripe' (origin:health-digest-router)
+applies-to: kind='alert' (alert-source:watchdog:*); kind='gripe' (origin:health-digest-router)
 tags: troubleshooting, workflow
 kinds: alert, gripe
 status: active
@@ -17,7 +17,7 @@ status: active
 
 # precis-health-digest-help — the §D liveness net
 
-`health_digest` is the hourly, SQL-only liveness digest — the slow-rot
+`health_digest` is the hourly liveness digest — the slow-rot
 sibling of [[precis-nursery-help]] (which pages immediately on an outage).
 It catches degradation that unfolds over hours: a discovery pass going
 dark, a cadence that stopped firing, a registered pass with zero activity.
@@ -41,27 +41,20 @@ get(kind='alert', id=N, view='detail')
 ## `pass-dead` — a handler dead inside a live worker
 
 The `condition` group (alert source `watchdog:condition`) is a
-declarative probe registry — `src/precis/workers/conditions.py`, one
-row per condition with a severity and an optional whitelisted heal. Its
+declarative probe registry, one row per condition with a severity. Its
 `pass-dead-on-host` row fires when a handler that logged steadily on a
 `(host, process)` over the last 7 days (≥ ~150 rows, so one-off passes
-can't false-alarm) has been silent past budget — 4 h default,
-`PRECIS_COND_PASS_DEAD_BUDGET_S` — while the host still heartbeats. A slow
-tier looks back 30 days for handlers with ≥ 40 rows (a low-traffic host's
-fetch_oa logs ~15/day, and an outage > 7 days empties the 7d window) and
-fires after 12 h of silence (`PRECIS_COND_PASS_DEAD_SLOW_BUDGET_S`). The
-runner logs every registered pass every cycle, idle or not, so silence
-means the handler is dead or wedged, not merely quiet. Only names that
-still resolve to a live pass (a registry `ServiceSpec` or a
-`service_config` service) are watched — a renamed/removed pass's
-leftover log history (gr501991's `_orcid_enrich_pass`) is a ghost, not a
-death. Deliberate offs are excluded: services disabled via
-`service_config`,
-and worker units the host heartbeat reports both inactive and disabled.
-A finding keys as `pass-dead:<host>/<process>/<handler>` at `warn`, and
-on the `precis-worker` process it may request a bounded **restart-once**
-heal — ssh plus a single-command sudoers grant, dark until an operator
-arms `PRECIS_RESTART_ONCE_ENABLED`. Sibling rows: `pass-wedged` (the
+can't false-alarm) has been silent for 4 h while the host still
+heartbeats. A slow tier looks back 30 days for handlers with ≥ 40 rows
+(a low-traffic host's fetch_oa logs ~15/day, and an outage > 7 days
+empties the 7d window) and fires after 12 h of silence. The runner logs
+every registered pass every cycle, idle or not, so silence means the
+handler is dead or wedged, not merely quiet. Only names that still
+resolve to a live pass are watched — a renamed/removed pass's leftover
+log history is a ghost, not a death. Deliberate offs are excluded:
+disabled services, and worker units the host heartbeat reports both
+inactive and disabled. A finding keys as `pass-dead:<host>/<process>/<handler>` at `warn`.
+Sibling rows: `pass-wedged` (the
 heartbeat stays fresh but the pass's `since` goes stale — it has been
 running for hours), `rescue-pass-cadence`, `llm-degraded`,
 `dead-generation-claims`, `settings-env-shadowed`.
@@ -94,26 +87,24 @@ plus the bespoke checks that share the `CheckResult` shape:
 | `tool_latency` | `infra` | every verb/kind with ≥10 calls in the last hour has its `tool_calls` p95 under budget (15 s; slower for put/edit draft, perplexity, web, websearch, semanticscholar, youtube); red needs two calls over, not one cold call |
 | `tool_latency_regressed` | `infra` | no verb/kind's last-hour p95 (n≥5) cleared max(2× week, week+1 s) against a ≥30-call trailing week (info) |
 | `alert_backlog_rot` | `meta` | no `alert-state:open` row is >7d old — the response loop itself rotting (info) |
-| `post_migration_steps` | `deploy` | a migration's out-of-transaction step still pending: NOT VALID constraints and missing per-kind ANN indexes, named with the command that clears each (`precis post-migration-check` is the same probe; gr514955) |
+| `post_migration_steps` | `deploy` | a migration's out-of-transaction step still pending, named in the finding |
 
 ## Derived-group check names
 
 Derived groups name their check after the thing they watch:
 
-- `cadence` — the `scheduler_leases` check: each lease row overdue past
-  `interval + margin` (≥15 min floor); fingerprint `watchdog:cadence/{cadence}`.
-  Its never-seeded half flags a registered cadence with **no** lease row
-  on any host — fingerprint `<cadence>/never-seeded` — the eligibility
-  gate may be false fleet-wide. A `service=`-gated cadence whose
-  `service_config` rows carry no `prio > 0` anywhere (dark until lit —
-  prio 0 rows or no rows at all) is deliberately off: both halves skip
-  it, the same carve-out `pass-dead-on-host` gives disabled services
-  (gr567427).
+- `cadence` — each scheduled cadence overdue past `interval + margin`
+  (≥15 min floor); fingerprint `watchdog:cadence/{cadence}`. Its
+  never-seeded half flags a registered cadence that has never fired on
+  any host — fingerprint `<cadence>/never-seeded`. A cadence whose
+  service is dark everywhere (deliberately off) is skipped by both
+  halves, the same carve-out `pass-dead-on-host` gives disabled
+  services.
 - `coherence` — `<service>`: a registered PASS that resolves enabled
   somewhere but logged nothing in its window — 24h for rotation passes,
   `max(24h, 1.5 × cadence interval)` for scheduler-cadence-fired ones —
   intended-on but silent.
-- `condition` — the `conditions.py` probe registry, each row a named
+- `condition` — the probe registry, each row a named
   condition whose finding keys the alert fingerprint:
   `pass-dead-on-host` → `pass-dead:<host>/<process>/<handler>`;
   `rescue-pass-cadence` → `rescue-gap:<handler>` (a rescue handler has not
@@ -130,17 +121,17 @@ Derived groups name their check after the thing they watch:
   unpaced); `limiter-refusing` → `limiter-refusing:<provider>` (a
   provider's limiter row refused calls past a daily floor and is still
   refusing: a starved bucket, spent daily cap, full `llm-api` slot hold,
-  or a live Retry-After park — `refused_today`/`last_refused_at` on the
-  `external_rate_limits` row); `deploy-fleet-coverage` →
+  or a live Retry-After park); `deploy-fleet-coverage` →
   `deploy-uncovered:<host>` (a live
   host in no overlay deploy group — deploys silently skip it),
   `deploy-behind:<host>` (its `meta.code_sha` ≠ the deployed sha),
-  `deploy-ledger:unpublished|invalid` (no `app_settings.deploy.fleet`
-  row yet — the overlay group map a successful `scripts/deploy` writes;
-  blind until then); `local-serving-pressure` →
+  `deploy-ledger:unpublished|invalid` (no published overlay group map
+  yet; blind until then); `local-serving-pressure` →
   `local-serving-pressure:<host>` (a serving host's KV usage sustained
-  over threshold, retractions, or rising host swap-in — read from
-  `host_heartbeat_log`'s `serving_*` columns).
+  over threshold, retractions, or rising host swap-in); `llm-tier-regression` →
+  `llm-tier-regression:<tier>/<rung>` (a ladder offering's weekly
+  gold-set pass rate dropped past a threshold against the last recorded
+  run, or a scored offering went dark).
 
 ## Where does the doctor read these? — `doctor_tick`
 
@@ -150,8 +141,7 @@ the `conditions.py` findings, the job queue — classifies each by ratio
 (a broken pass vs noisy-but-working vs baseline noise), diagnoses via
 culprit-localization walks, and files or annotates gripes. It never
 raises an alert itself: names like `deploy-behind:<host>`,
-`lanes_idle_beside_queue` and `limiter-refusing:<provider>` (the
-`external_rate_limits` row it cites) reach the doctor through the same
+`lanes_idle_beside_queue` and `limiter-refusing:<provider>` reach the doctor through the same
 fingerprints this page lists. Its report is a per-UTC-day `kind='draft'`
 (`meta.author='doctor'`) — `doctor_report_fresh` in the table above is
 the check that watches the doctor itself — and `meta.transcript` on the

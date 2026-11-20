@@ -80,6 +80,18 @@ _ALLOWLIST: dict[str, str] = {
         "precis-taproot-mint-help",
     )
 }
+#: Over cap since 7a5c38a15 (2026-11-16) added the gripe_dispatch
+#: stall-sweep paragraph (gr687946); restructuring is the skill owner's
+#: editorial call, so it rides the allowlist like the grandfathered
+#: entries until then.
+_ALLOWLIST["precis-work-help"] = (
+    "over cap since 7a5c38a15 added the gripe_dispatch stall-sweep "
+    "paragraph (gr687946); pending the owner's restructure"
+)
+_ALLOWLIST["precis-job-observe-help"] = (
+    "gr663858 adds worker-liveness diagnoses beside raw logs; preserve the "
+    "existing fleet-view reference pending the owner's section-access split"
+)
 
 
 #: Floor on the swept corpus — parametrization over an empty glob

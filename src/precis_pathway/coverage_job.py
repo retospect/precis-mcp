@@ -1,6 +1,6 @@
 """``surface_coverage_scan`` job_type — compute one model's coverage anchors
 on a slab and fold them into the inner CHE sweep (surface-Pourbaix slice 1,
-``docs/backlog/surface-pourbaix-staircase-optimizer.md``).
+`me692414`).
 
 One job = one ``(slab config, model)`` scan: catpath's ab-initio
 thermodynamics coverage scan (``autocatpath.coverage.scan``) relaxes the

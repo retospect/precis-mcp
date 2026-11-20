@@ -1,5 +1,5 @@
 """``pcb_review`` job_type — the re-check pass over one pcb design
-(docs/backlog/pcb-datasheet-review.md slice 7, in-scope 7).
+(me692814 slice 7, in-scope 7).
 
 Works the ``pcb-tapeout`` and applicable ``pcb-mech-env`` judgment items that are ``not checked`` or
 ``stale`` on the design, one fresh-context model call each, and writes a

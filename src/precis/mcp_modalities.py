@@ -12,8 +12,9 @@ Scope:
   is bounded to the same meta-menu as ``resources/list``
   (:data:`_ENUMERATED_SKILLS`; gr514390/gr515169 — the ~200-entry
   enumeration was ~32 KB of every client's first payload).
-  Body comes from :func:`_load_skill` (or the
-  synthesised renderer for ``precis-help`` / ``precis-status``).
+  Body dispatches ``get(kind='skill', id=<slug>)`` — the same serve
+  the resource read returns: index-first over ~6 kB (gr568475),
+  scope-fenced, rev-stamped.
   Tags carry the skill's ``tier:`` and any kind it documents so
   modern clients can group / filter.
 
@@ -41,9 +42,9 @@ Resource reads dispatch through :class:`PrecisRuntime.dispatch` so
 every kind that has a ``get`` handler is reachable as a resource
 without extra wiring.
 
-Single source of truth: every skill body is read by
-:func:`_load_skill`, every ref body is rendered by the kind's
-``handler.get``.  No parallel registry.
+Single source of truth: every skill and ref body is rendered by
+the kind's ``handler.get`` through :class:`PrecisRuntime.dispatch`.
+No parallel registry.
 """
 
 from __future__ import annotations
@@ -164,28 +165,24 @@ def _skill_prompt_tags(
 
 
 def _make_skill_prompt_fn(runtime: PrecisRuntime, slug: str):
-    """Build a zero-arg callable that returns the skill body.
+    """Build a zero-arg callable that returns the skill serve.
 
-    Synthesised skills (``precis-help``, ``precis-status``) route
-    through ``SkillHandler.get`` so the rendering uses the bound
-    registry.  On-disk skills are read via :func:`_load_skill`,
-    matching the path :class:`SkillHandler` itself uses.
+    Every skill — on-disk or synthesised (``precis-help``,
+    ``precis-status``) — routes through the same ``get`` dispatch the
+    resource read uses, so the prompt returns the identical serve:
+    index-first over ~6 kB (gr568475), scope-fenced, rev-stamped.
     """
 
     def _fn() -> str:
-        if slug in SkillHandler._SYNTHESIZED_SKILLS:
-            # fold=True: this is an MCP prompt read — the body lands in
-            # an agent context, so the write-time fold still applies
-            # (dispatch defaults it off for in-process callers, gr513762).
-            response = runtime.dispatch("get", {"kind": "skill", "id": slug}, fold=True)
-            return response
-        text = _load_skill(slug)
-        return text if text is not None else f"(skill {slug!r} not found)"
+        # fold=True: this is an MCP prompt read — the body lands in
+        # an agent context, so the write-time fold still applies
+        # (dispatch defaults it off for in-process callers, gr513762).
+        return runtime.dispatch("get", {"kind": "skill", "id": slug}, fold=True)
 
     _fn.__doc__ = (
-        f"Read the precis skill ``{slug}``.\n\nServed verbatim from "
-        "the skill data directory; this prompt is a thin wrapper "
-        "around `get(kind='skill', id=...)`."
+        f"Read the precis skill ``{slug}``.\n\nThe same serve as "
+        "`get(kind='skill', id=...)` — over ~6 kB that is the section "
+        "index (`extent='verbatim'` there reads the body)."
     )
     return _fn
 
@@ -193,11 +190,12 @@ def _make_skill_prompt_fn(runtime: PrecisRuntime, slug: str):
 def _resolved_pinned_slugs(runtime: PrecisRuntime) -> frozenset[str]:
     """Resolve ``PRECIS_STARTUP_SKILLS`` to the surviving pinned set.
 
-    Honours the cap and silently drops unknowns — the banner notice
-    from :mod:`precis.startup_skills.format_banner` already surfaces
-    those errors. Resolution runs once per ``register_skill_prompts``
-    call; the returned set is immutable so callers can use it as a
-    membership-test only.
+    Silently drops unknowns — the banner notice from
+    :mod:`precis.startup_skills.format_banner` already surfaces those
+    errors. Not body-size-capped: only names/tags ride on this path
+    (gr681315). Resolution runs once per
+    ``register_skill_prompts`` call; the returned set is immutable so
+    callers can use it as a membership-test only.
     """
     from precis import startup_skills
 
@@ -205,8 +203,7 @@ def _resolved_pinned_slugs(runtime: PrecisRuntime) -> frozenset[str]:
     slugs = startup_skills.parse(getattr(config, "startup_skills", None))
     if not slugs:
         return frozenset()
-    cap_kb = getattr(config, "startup_skills_cap_kb", 50)
-    result = startup_skills.resolve(slugs, cap_kb=cap_kb)
+    result = startup_skills.resolve(slugs)
     return frozenset(result.pinned)
 
 
@@ -264,7 +261,7 @@ def register_skill_prompts(mcp: FastMCP, runtime: PrecisRuntime) -> int:
     duplicated.
 
     Skills listed in ``PRECIS_STARTUP_SKILLS`` and surviving the
-    cap-and-lookup resolution land with a ``pinned`` tag so modern
+    lookup resolution land with a ``pinned`` tag so modern
     MCP clients can prioritise the operator-recommended starting
     set.
     """

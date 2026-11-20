@@ -214,9 +214,10 @@ def test_skills_render_without_a_database() -> None:
     )
     assert "usage needs the database" in h.get(view="usage").body
     assert h.get(id="toc").body  # toc without the read column still renders
-    assert "read" not in next(
-        ln for ln in h.get(id="toc").body.splitlines() if "synopsis" in ln
-    )
+    # A category drill keeps the full rows (the bare toc goes slug-only
+    # once the corpus outgrows the response budget).
+    rows = h.get(id="toc", category="orientation").body
+    assert "read" not in next(ln for ln in rows.splitlines() if "synopsis" in ln)
 
 
 _GUIDE = "guide: get(kind='skill', id='precis-gripe-help')"

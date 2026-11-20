@@ -123,14 +123,14 @@ def test_epoch_mismatch_reclaims_before_lease_expiry(
     hours away from expiring (the gr187627-class bounce wedge)."""
     _succeeds(monkeypatch)
     store.record_heartbeat(
-        "melchior-epoch-1", meta={"boot_ids": {"precis-worker-agent": "new-gen"}}
+        "maple-epoch-1", meta={"boot_ids": {"precis-worker-agent": "new-gen"}}
     )
     rid = _mk_running_job(
         store,
         lease_offset_s=3600,
         lease_boot_id="dead-gen",
         lease_process="precis-worker-agent",
-        lease_host="melchior-epoch-1",
+        lease_host="maple-epoch-1",
     )
 
     result = claude_inproc.run_claude_inproc_pass(store, limit=2)
@@ -146,14 +146,14 @@ def test_live_holder_never_stolen_by_epoch_arm(
     never stolen while its lease is unexpired."""
     _succeeds(monkeypatch)
     store.record_heartbeat(
-        "melchior-epoch-2", meta={"boot_ids": {"precis-worker-agent": "same-gen"}}
+        "maple-epoch-2", meta={"boot_ids": {"precis-worker-agent": "same-gen"}}
     )
     rid = _mk_running_job(
         store,
         lease_offset_s=3600,
         lease_boot_id="same-gen",
         lease_process="precis-worker-agent",
-        lease_host="melchior-epoch-2",
+        lease_host="maple-epoch-2",
     )
 
     result = claude_inproc.run_claude_inproc_pass(store, limit=2)
@@ -186,7 +186,7 @@ def test_epoch_reclaim_bumps_attempts(
     """An epoch mismatch alone cannot rule out a worker crash-loop."""
     _succeeds(monkeypatch)
     store.record_heartbeat(
-        "melchior-epoch-3", meta={"boot_ids": {"precis-worker-agent": "new-gen"}}
+        "maple-epoch-3", meta={"boot_ids": {"precis-worker-agent": "new-gen"}}
     )
     rid = _mk_running_job(
         store,
@@ -194,7 +194,7 @@ def test_epoch_reclaim_bumps_attempts(
         attempts=1,
         lease_boot_id="dead-gen",
         lease_process="precis-worker-agent",
-        lease_host="melchior-epoch-3",
+        lease_host="maple-epoch-3",
     )
 
     result = claude_inproc.run_claude_inproc_pass(store, limit=2)
@@ -283,7 +283,7 @@ def test_legacy_reclaim_churn_cap_poisons_despite_low_attempts(
         claude_inproc, "get_job_type", lambda name: _spec(dispatch=_dispatch)
     )
     store.record_heartbeat(
-        "melchior-epoch-churn", meta={"boot_ids": {"precis-worker-agent": "new-gen"}}
+        "maple-epoch-churn", meta={"boot_ids": {"precis-worker-agent": "new-gen"}}
     )
     prior_reclaims = [
         {"at": "2026-01-01T00:00:00+00:00", "why": "epoch"}
@@ -295,7 +295,7 @@ def test_legacy_reclaim_churn_cap_poisons_despite_low_attempts(
         attempts=0,
         lease_boot_id="dead-gen",
         lease_process="precis-worker-agent",
-        lease_host="melchior-epoch-churn",
+        lease_host="maple-epoch-churn",
     )
     with store.pool.connection() as conn:
         set_meta(conn, rid, reclaims=prior_reclaims)

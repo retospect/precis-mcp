@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import time
 from pathlib import Path
 from typing import Any
 
@@ -1431,13 +1432,32 @@ def _open_transactions() -> int:
     return int(row[0])
 
 
+def _wait_no_transactions(timeout_s: float = 60.0, poll_s: float = 0.1) -> int:
+    """Poll :func:`_open_transactions` until it reads 0 (or the deadline);
+    return the last reading. A background thread of an EARLIER test in
+    this xdist worker can hold a checked-out connection ``idle in
+    transaction`` for a while after its test ended (the boot oracle-sync
+    daemon was the first found, conftest's F11 disable; the leak check
+    only sees a backend still alive at its own test's teardown, so a
+    thread that wakes late slips past it). That foreign backend is not
+    this door's doing — gr724747: wait it out instead of letting the
+    spy's count inherit it."""
+    deadline = time.monotonic() + timeout_s
+    while (open_now := _open_transactions()) > 0 and time.monotonic() < deadline:
+        time.sleep(poll_s)
+    return open_now
+
+
 def test_flow_op_door_solves_with_no_transaction_open(
     store: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With ``files`` passed the door writes rows inside ``store.atomic()``,
     so a solve in there sits idle in transaction with row locks held: the
     solve has to come first. The control shows the spy sees a transaction
-    when one is open."""
+    when one is open. The spy counts every client backend on this worker's
+    clone, so the reading is only the door's verdict when no earlier
+    test's late background thread still holds one open — wait for quiet
+    first (gr724747)."""
     from precis_geom import physics as geom_physics
 
     out_dir = Path(tmp_path) / "out"
@@ -1458,6 +1478,7 @@ def test_flow_op_door_solves_with_no_transaction_open(
         return real_evaluate(*args, **kw)
 
     monkeypatch.setattr(geom_physics, "evaluate", spying)
+    assert _wait_no_transactions() == 0
     body = se.edit(
         id="wsflow",
         ops=[

@@ -18,7 +18,7 @@ mirror's ``verdict='rejected'``, ``note='(retracted)'`` row) counts as
 
 Carved out of :class:`precis.store._draft_ops.DraftStore` — the first
 cut of that module's decomposition (see
-``docs/backlog/codereview-residuals.md``) — as a further
+`me690495`) — as a further
 composed sub-store, reached as ``store.drafts.review``. Holds its own
 :class:`~precis.store.core.StoreCore` reference (like
 :class:`~precis.store._draft_ops.DraftStore` itself) plus a

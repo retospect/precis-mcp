@@ -152,7 +152,7 @@ Env — every knob is documented here, and only here (gr514431):
   PRECIS_TEST_AWAIT_BUDGET=<s>    --await's per-call wait cap (default 480).
   PRECIS_TEST_NPROC=<n>           default xdist worker count when no -nN is
         passed (default 6). The slice lander sets 3 so a static-wide
-        --checked selection cannot OOM a worker on melchior (gr567471).
+        --checked selection cannot OOM a worker on the agent host (gr567471).
   UV_WITH="--with dep …"          extra uv packages for this run — the
         escape hatch for a dep the baked image lacks (--impacted uses it
         for pytest-testmon + pytest-timeout).
@@ -513,10 +513,16 @@ COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
 # common dir at its own absolute path makes the .git file's `gitdir:`
 # resolve unchanged inside the container. Absent git metadata (the gate
 # container) just adds no mount.
+#
+# Read-only (gr684320): a git killed inside the container left its
+# index.lock in the worktree's git dir, and the docker VM's file share kept
+# the handle open, so every later `git add` on the host failed. The suite
+# only reads repo git (rev-parse, ls-files, check-ignore, status); a test
+# that needs to write does so in a repo of its own under tmp_path.
 GIT_DIR_MOUNT=()
 _git_common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 [[ -n "$_git_common" && -d "$_git_common" ]] \
-    && GIT_DIR_MOUNT=(-v "${_git_common}:${_git_common}")
+    && GIT_DIR_MOUNT=(-v "${_git_common}:${_git_common}:ro")
 # Gate-slot admission (gr202193): the test container runs on one shared
 # Docker VM with every sibling worktree's — cap concurrency so runs queue
 # briefly instead of OOM-killing each other at random. A runaway's own

@@ -1,6 +1,6 @@
 """``se_manufacture`` job_type — the enqueued half of
 ``realize(block=<group root>, strategy='manufacture', ...)``
-(docs/backlog/structural-solution-space.md "Slice 4 bridge", round B2).
+(me695531 "Slice 4 bridge", round B2).
 
 The op (:func:`precis_se.manufacture.prepare_manufacture`, run inside
 ``SeHandler.put``/``edit``) validates, and fuses INLINE when the group

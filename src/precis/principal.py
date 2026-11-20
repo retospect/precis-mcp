@@ -145,6 +145,27 @@ def current() -> str:
     return f"worker:{agentlog.current_source_from_env() or 'cli'}"
 
 
+def current_owner_key() -> str | None:
+    """The durable owner identity session-bound state may key on (gr660588).
+
+    The bound server-stamped principal — ``oauth:<grant>``,
+    ``personal:<token_id>``, ``install``, ``slice:<grant>:<role>`` —
+    minus a slice grant's ``:<role>`` tail: read verbs stamp ``unknown``
+    where write verbs resolve the grant's role, so the raw stamp would
+    split one credential's receipts across its own reads and writes.
+    ``None`` when nothing is bound (stdio, in-process dispatch, tests) —
+    callers keep the in-process session key there. The ``worker:``
+    fallback is deliberately *not* an owner: it names a process, not a
+    credential.
+    """
+    bound = _PRINCIPAL.get()
+    if bound is None:
+        return None
+    if bound.startswith("slice:"):
+        return bound.rsplit(":", 1)[0]
+    return bound
+
+
 @contextmanager
 def bind(value: str | None) -> Iterator[None]:
     """Bind the server-set principal for one dispatch; ``None`` clears.
@@ -611,6 +632,7 @@ __all__ = [
     "bind_grant_refs",
     "check",
     "current",
+    "current_owner_key",
     "for_slice",
     "role_write_options",
     "slice_role",

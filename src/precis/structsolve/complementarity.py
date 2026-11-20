@@ -1,5 +1,5 @@
 """Active-set complementarity solve for unilateral pin-jointed networks
-(docs/backlog/complementarity-solver.md slices 1-3 — CORE only, no
+(me694137 slices 1-3 — CORE only, no
 se/nm bridge): given node coordinates, member incidence, per-member
 axial rate and free length (hence a prestress ``k(L₀ − L)`` at the
 input geometry), a per-member sign idiom, per-coordinate supports and
@@ -665,7 +665,7 @@ def solve_complementarity(
 
 
 # ── sign-aware completeness (slice 2's CORE, pure arrays) ────────────────
-# (docs/backlog/complementarity-solver.md slice 2 — the per-load-case
+# (me694137 slice 2 — the per-load-case
 # verdict; the se bridge that folds it into validate/drc is NOT here)
 
 #: Per-case verdicts :func:`check_completeness` can return, worst last.
@@ -832,7 +832,7 @@ def check_completeness(
 
 
 # ── slice 3: two-equilibria / bistability probe ──────────────────────────
-# (docs/backlog/complementarity-solver.md slice 3 — see the module
+# (me694137 slice 3 — see the module
 # docstring for the second-order-stability and barrier-method rationale)
 
 
@@ -891,7 +891,7 @@ class EquilibriumStabilityResult:
 @dataclass
 class BistabilityResult:
     """Slice-3 two-equilibria/bistability probe result
-    (docs/backlog/complementarity-solver.md). ``bistable`` is True only
+    (me694137). ``bistable`` is True only
     when one structure has two equilibria (see the module docstring's
     slice-3 section); a monostable (or worse) assignment reports each
     state's own honest fate and never fabricates a barrier for a state

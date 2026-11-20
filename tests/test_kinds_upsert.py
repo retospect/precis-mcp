@@ -116,8 +116,8 @@ def test_upsert_kind_providers_skips_container_id_host(store: Store) -> None:
         == 0
     )
     assert store.find_kind_providers("testkind-h", max_age_seconds=24 * 3600) == []
-    store.upsert_kind_providers([spec], host="melchior", process="precis-test")
-    assert store.find_kind_providers("testkind-h") == ["melchior"]
+    store.upsert_kind_providers([spec], host="maple", process="precis-test")
+    assert store.find_kind_providers("testkind-h") == ["maple"]
 
 
 def test_prune_kind_providers_drops_aged_rows(store: Store) -> None:

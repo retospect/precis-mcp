@@ -1,6 +1,6 @@
 """Gate evaluators — the predicates a plan's gate todos wait on.
 
-Spec: ``docs/backlog/dark-factory.md`` § "Plans" (node table row *gate*,
+Spec: `me692430` § "Plans" (node table row *gate*,
 "The dispatcher tick" step 1). A gate is a todo with
 ``meta.gate = {kind, args}``; the dispatcher tick calls :func:`evaluate` for
 each and nothing is dispatched for it. Kinds:
@@ -29,8 +29,11 @@ records ``{head, deployed_at, landed}`` after each deploy into the
 ``release.prod_head`` setting (an ``app_settings`` row, see
 :data:`precis.settings.REGISTRY`); ``landed`` accumulates the abbreviated
 shas of every deploy's ``prev..head`` range, so a sha that rode an earlier
-release stays visible. Reads go through :func:`precis.settings.get_str`, so
-a freshly written record can take up to its 60 s cache TTL to show.
+release stays visible. Record reads go through
+:func:`precis.settings.get_str`, so a freshly written record can take up to
+its 60 s cache TTL to show. A sha the record misses costs one GitHub
+compare call inside ``evaluate`` (cached per ``(sha, head)`` and guarded by
+a process breaker in ``_github_ancestor``).
 
 **tests-green reads a recorded verdict first.** ``scripts/release`` writes
 ``[{sha, range, verdict, run_id, at}]`` into the ``release.ci_verdicts``
@@ -55,7 +58,9 @@ beats a tick that dies on one malformed row.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -67,6 +72,8 @@ from precis.utils.slug_ref import resolve_live_slug_ref
 
 if TYPE_CHECKING:
     from precis.store import Store
+
+log = logging.getLogger(__name__)
 
 #: ``app_settings`` key ``scripts/release`` writes (it cannot import this
 #: package, so the literal is repeated there; a test pins them equal).
@@ -231,7 +238,66 @@ def sha_deployed(store: Store, sha: str) -> GateVerdict:
         return GateVerdict(True, f"{sha} is the prod head (deployed {at})")
     if any(_prefix_match(sha, s) for s in landed):
         return GateVerdict(True, f"{sha} landed in prod by head {head[:9]} ({at})")
-    return _closed(f"{sha} not in prod yet (head {head[:9]}, deployed {at})")
+    verdict = _github_ancestor(store, sha, head)
+    if verdict is True:
+        return GateVerdict(
+            True, f"{sha} is an ancestor of prod head {head[:9]} (GitHub compare)"
+        )
+    note = "" if verdict is False else "; GitHub ancestry unconfirmed"
+    return _closed(f"{sha} not in prod yet (head {head[:9]}, deployed {at}){note}")
+
+
+#: ``(sha, head)`` -> whether GitHub said sha is an ancestor of head. For a
+#: fixed head the answer is deterministic (prod moving changes the key), so
+#: both verdicts are kept; errors, 404s and unknown statuses are not.
+#: Dropped wholesale past :data:`_CACHE_MAX` entries.
+_ANCESTOR_CACHE: dict[tuple[str, str], bool] = {}
+_CACHE_MAX = 4096
+
+#: Process-level breaker: after a transport error or 5xx/403 the fallback is
+#: skipped for :data:`_BREAKER_S`, so an outage costs one timeout, not one
+#: per missed gate per tick. ``_clock`` is the seam tests inject.
+_BREAKER_S = 300.0
+_breaker_until = 0.0
+_clock: Callable[[], float] = time.monotonic
+
+
+def _github_ancestor(store: Store, sha: str, head: str) -> bool | None:
+    """Whether ``sha`` is an ancestor of ``head`` per GitHub's compare API.
+
+    The prod record's ``landed`` list is capped, and prod workers have no
+    git checkout, so a deployed sha the record lacks is asked of GitHub
+    (gr666159). ``True``: ``ahead``/``identical``; ``False``: ``behind`` or
+    ``diverged``; ``None``: unknown (no repo, network, auth, 404, timeout,
+    breaker open), never raised, so a gate eval cannot crash the tick.
+    """
+    global _breaker_until
+    key = (sha, head)
+    if key in _ANCESTOR_CACHE:
+        return _ANCESTOR_CACHE[key]
+    if _clock() < _breaker_until:
+        return None
+    try:
+        from precis.plans import pr_class
+
+        repo = pr_class.resolve_repo(store)
+        if not repo:
+            return None
+        url = f"{pr_class._API.format(repo=repo)}/compare/{sha}...{head}"
+        data = pr_class._get_json(url, {"per_page": 1})
+        status = data.get("status") if isinstance(data, dict) else None
+    except Exception as exc:
+        log.info("GitHub compare for %s...%s unavailable: %s", sha, head[:9], exc)
+        # A 404 is GitHub answering (unknown commit), not an outage.
+        if not str(exc).endswith("HTTP 404"):
+            _breaker_until = _clock() + _BREAKER_S
+        return None
+    if status not in ("ahead", "identical", "behind", "diverged"):
+        return None
+    if len(_ANCESTOR_CACHE) >= _CACHE_MAX:
+        _ANCESTOR_CACHE.clear()
+    _ANCESTOR_CACHE[key] = status in ("ahead", "identical")
+    return _ANCESTOR_CACHE[key]
 
 
 def _clean_sha(raw: object, what: str) -> tuple[str, GateVerdict | None]:

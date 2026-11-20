@@ -7,6 +7,13 @@ is the phase-1 form — a stripped subprocess (scrubbed env, rlimits, wall-clock
 timeout, throwaway CWD), run on a single render lane, never in-process on the
 credential-bearing worker. The phase-2 Docker jail is a refinement of the same
 seam. The prohibited form is in-process ``exec`` on the every-node worker.
+
+Stored pathway and quest-frontier recipes use the trusted server renderer instead: the recipe
+contains only validated selection options, never executable code. They read
+stored measurements. Quest freshness hashes the frontier result because serving
+structures can change independently of the quest ref. Rendering uses that same
+result to produce the PNG and frozen data package. Explicit web refresh uses
+the stored recipe to preserve the figure options.
 """
 
 from precis.render.sandbox import RenderResult, render_python

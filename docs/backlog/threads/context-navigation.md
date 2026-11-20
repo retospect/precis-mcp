@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** the autoskill deploy verification, then A0 ([context-navigation](../context-navigation.md) §2). Stop after A0 until the afternoon of hook logging (§7) is done.
+- **Next:** the autoskill deploy verification, then A0 (context-navigation (me690580) §2). Stop after A0 until the afternoon of hook logging (§7) is done.
 - **Blocked by:** Nothing for Do-next 1–2. The twin (Do-next 3) waits on the hook-logging check.
 - **Unblocks:** Every agent read on the MCP: seen-stubs, sets, the compaction handoff, the N1 meters, autoskill pointers, Mode B.
 - **Acceptance:** §1 meters exist and move; the eval baseline is recorded before targets are set.
@@ -18,27 +18,27 @@ design-review: yes
 
 ## Thread context
 
-**Status:** ends when an agent reaches a correct answer with the fewest result bytes and hops, every needed block present, and the meters in `context-navigation.md` §1 say so — the agent half of the Surfaces axis in `docs/roadmap.md`, shared with `agent-surface`. Today the spec is ruled (2026-10-30) and nothing is built; the list follows the spec's §10 order, dependency first.
+**Status:** ends when an agent reaches a correct answer with the fewest result bytes and hops, every needed block present, and the meters in `context-navigation (me690580)` §1 say so — the agent half of the Surfaces axis in `docs/roadmap.md`, shared with `agent-surface`. Today the spec is ruled (2026-10-30) and nothing is built; the list follows the spec's §10 order, dependency first.
 **Last reviewed:** 2026-10-30
 **Worktree:** `context-navigation`
 **Allocation decision:** active — Reto 2026-10-30 (as recommended: runway ends after A0 until the hook check).
 
 ## Do next
 
-1. **backlog/autoskill.md** deploy verification — new dream/plan_tick `tool_calls` rows carry `agentlog_id` and `source`, `autoskill_sessions.used` not null. First because the meters read these columns.
-2. **backlog/context-navigation.md §2 A0** — code landed; verify after deploy that doctor_tick/review/asa_bot `tool_calls` rows carry `agentlog_id` and `source`, then close the gripe.
-3. **backlog/context-navigation.md §7 twin** — `context_items` + `_ctx` pop + hooks; replaces four stores; everything below reads it. Waits on the hook-logging check.
-4. **backlog/context-navigation.md §4 + §7 readers** — stubs, `rs` sets, compaction handoff, meters, eval bank, baseline.
+1. **me691549** deploy verification — new dream/plan_tick `tool_calls` rows carry `agentlog_id` and `source`, `autoskill_sessions.used` not null. First because the meters read these columns.
+2. **me690580 §2 A0** — code landed; verify after deploy that doctor_tick/review/asa_bot `tool_calls` rows carry `agentlog_id` and `source`, then close the gripe.
+3. **me690580 §7 twin** — `context_items` + `_ctx` pop + hooks; replaces four stores; everything below reads it. Waits on the hook-logging check.
+4. **me690580 §4 + §7 readers** — stubs, `rs` sets, compaction handoff, meters, eval bank, baseline.
 
 ## Horizon
 
-1. **backlog/context-navigation.md §2** — autoskill pointer rows on the twin; the hold-out comparison starts here, not at deploy.
-2. **backlog/context-navigation.md §3 → §5** — row grammar, then multi-get + injection, then multi-query on every kind; unblocks held WU2/WU5/WU7.
-3. **backlog/block-navigation.md** — its slices re-pointed at sets and the row grammar; the authoring lint is independent and can go any time.
-4. **backlog/context-navigation.md §9** — cache-backed chunking + backfill; makes the big paid results navigable.
-5. **backlog/context-navigation.md §8 B0** — asa preamble reorder, half a build, its own meter; any time.
-6. **backlog/context-navigation.md §8 B1–B4** — Mode B loop; plan_tick first.
-7. **backlog/compact-handoff.md** — merge into the twin reader once it exists; pointer note until then.
+1. **me690580 §2** — autoskill pointer rows on the twin; the hold-out comparison starts here, not at deploy.
+2. **me690580 §3 → §5** — row grammar, then multi-get + injection, then multi-query on every kind; unblocks held WU2/WU5/WU7.
+3. **me694125** — its slices re-pointed at sets and the row grammar; the authoring lint is independent and can go any time.
+4. **me690580 §9** — cache-backed chunking + backfill; makes the big paid results navigable.
+5. **me690580 §8 B0** — asa preamble reorder, half a build, its own meter; any time.
+6. **me690580 §8 B1–B4** — Mode B loop; plan_tick first.
+7. **me690567** — merge into the twin reader once it exists; pointer note until then.
 
 ## Parked
 
@@ -47,4 +47,4 @@ design-review: yes
 
 ## No action needed
 
-- **Gripe title cut** (`block-navigation.md` R12) — ruled 2026-10-30 (cut silently, full line in body), in build elsewhere.
+- **Gripe title cut** (`block-navigation (me694125)` R12) — ruled 2026-10-30 (cut silently, full line in body), in build elsewhere.

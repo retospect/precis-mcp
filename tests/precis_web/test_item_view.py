@@ -16,12 +16,15 @@ from precis_web.item_view import (
     ComponentPresenter,
     FigurePresenter,
     ItemPresenter,
+    JobPresenter,
     MaterialPresenter,
     MermaidPresenter,
     PcbPresenter,
     SePresenter,
     StructurePresenter,
+    TodoPresenter,
     YoutubePresenter,
+    _display_tags,
     artifact_kinds,
     item_row,
     presenter_for,
@@ -307,18 +310,44 @@ def test_item_row_carries_created_and_updated_stamps() -> None:
 
     created = _dt.datetime(2026, 1, 1, tzinfo=_dt.UTC)
     updated = _dt.datetime(2026, 2, 1, tzinfo=_dt.UTC)
-    row = item_row(_ref(created_at=created, updated_at=updated), None, 0.0, set())
+    row = item_row(
+        _ref(created_at=created, updated_at=updated), None, 0.0, set(), ref_kinds=[]
+    )
     assert row["created_at"] == created
     assert row["updated_at"] == updated
 
-    bare = item_row(_ref(), None, 0.0, set())
+    bare = item_row(_ref(), None, 0.0, set(), ref_kinds=[])
     assert bare["created_at"] is None
     assert bare["updated_at"] is None
 
 
+def test_display_tags_encodes_label_and_pins_ref_kinds() -> None:
+    """gr664407: chip hrefs urlencode the canonical ``ns:value`` filter
+    (values with ``& # + %`` or spaces break a raw href) and pin the
+    listing's ref kinds as ``k=`` params so a saved ``k=tag`` cookie
+    can't bounce the click back to a tag listing."""
+    chips = _display_tags(
+        [("topic", "a&b #1"), ("OPEN", "free tag"), ("DREAM", "spec")],
+        ["paper", "draft"],
+    )
+    assert chips == [
+        {
+            "label": "topic:a&b #1",
+            # A lowercase axis spells the ``=ns:value`` exact escape —
+            # plain ``ns:value`` would filter the OPEN/FLAG pair and
+            # match nothing (gr636493).
+            "href": "/drive?tag=%3Dtopic%3Aa%26b+%231&k=paper&k=draft",
+        },
+        {
+            "label": "free tag",
+            "href": "/drive?tag=free+tag&k=paper&k=draft",
+        },
+    ]
+
+
 def test_item_row_carries_hover_thumbnail_actions() -> None:
     ref = _ref(kind="youtube", slug="abc123", title="A video")
-    row = item_row(ref, _block("a caption line"), 0.5, set())
+    row = item_row(ref, _block("a caption line"), 0.5, set(), ref_kinds=[])
     assert row["thumbnail"] == "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
     # Universal per-row actions (WS1a) address by slug when the ref has one.
     assert {a["type"]: a["id"] for a in row["actions"]} == {
@@ -491,6 +520,83 @@ def test_mermaid_presenter_has_no_free_batched_datum_yet() -> None:
     assert p.state(ref, has_chunks=False) == ItemPresenter("mermaid").state(
         ref, has_chunks=False
     )
+
+
+def test_todo_presenter_badges_status_prio_and_control_markers() -> None:
+    """gr664410 — a todo Drive row carries the dashboard list's
+    glanceable facts: STATUS + ``refs.prio`` badges plus the free-tag
+    control markers (halted / parked-on-failure), all read off the
+    page-batched tag pairs — no per-row query."""
+    ref = _ref(kind="todo", id=42, prio=3)
+    p = presenter_for("todo")
+    assert isinstance(p, TodoPresenter)
+    badges = p.state(
+        ref,
+        has_chunks=False,
+        tags=[("STATUS", "doing"), ("OPEN", "halt"), ("OPEN", "child-failed:91")],
+    )
+    labels = [b["label"] for b in badges]
+    assert labels == ["doing", "P3", "⏸ halted", "⚠ parked"]
+
+
+def test_todo_presenter_actions_reuse_workbench_posts() -> None:
+    """The row's job controls post straight to the ``/todo/{id}/*``
+    endpoints the workbench rows use — the STATUS dropdown, a ⟳ retry
+    per parked child job, and ▶ start / ⏹ stop by halt state — each
+    carrying ``focus=<id>`` so the redirect lands on this todo's
+    workbench."""
+    ref = _ref(kind="todo", id=42)
+    p = presenter_for("todo")
+    acts = p.actions(ref, tags=[("STATUS", "open"), ("OPEN", "child-failed:91")])
+    by_type = [a["type"] for a in acts]
+    assert by_type[:3] == ["move", "delete", "tag"]  # universal set kept
+    status = next(a for a in acts if a["type"] == "todo_status")
+    assert status["id"] == "42"
+    assert status["current"] == "open"
+    assert "done" in status["choices"]
+    retry = next(a for a in acts if a["type"] == "post" and "retry" in a["url"])
+    assert retry["url"] == "/todo/91/retry"
+    stop = next(a for a in acts if a["type"] == "post" and "stop" in a["url"])
+    assert stop["url"] == "/todo/42/stop"
+    assert all(
+        a.get("fields", {}).get("focus") == "42"
+        for a in acts
+        if a["type"] in ("post", "todo_status")
+    )
+    # Halted rows offer ▶ start instead of ⏹ stop.
+    halted = p.actions(ref, tags=[("OPEN", "halt")])
+    urls = [a["url"] for a in halted if a["type"] == "post"]
+    assert "/todo/42/start" in urls and "/todo/42/stop" not in urls
+
+
+def test_todo_presenter_open_url_is_the_workbench() -> None:
+    ref = _ref(kind="todo", id=42)
+    assert presenter_for("todo").open_url(ref) == "/todo/42"
+
+
+def test_job_presenter_badges_status_and_gates_actions_on_it() -> None:
+    """A job row carries its attempt STATUS badge and the retry / stop
+    controls the dashboard's job rows show for that state; ``open_url``
+    stays the generic ``/refs/job/{id}`` reader (its own actions strip
+    carries retry/transcript)."""
+    p = presenter_for("job")
+    assert isinstance(p, JobPresenter)
+    ref = _ref(kind="job", id=91, parent_id=42)
+    assert p.open_url(ref) == "/refs/job/91"
+    assert (
+        p.state(ref, has_chunks=False, tags=[("STATUS", "failed")])[0]["label"]
+        == "failed"
+    )
+    acts = p.actions(ref, tags=[("STATUS", "failed")])
+    posts = [a["url"] for a in acts if a["type"] == "post"]
+    assert posts == ["/todo/91/retry"]
+    # A live job offers ⏹ stop; a terminal-but-not-retryable one, none.
+    running = p.actions(ref, tags=[("STATUS", "running")])
+    assert [a["url"] for a in running if a["type"] == "post"] == ["/todo/91/stop"]
+    succeeded = p.actions(ref, tags=[("STATUS", "succeeded")])
+    assert [a for a in succeeded if a["type"] == "post"] == []
+    # focus=<parent todo> so the post redirect lands on the workbench.
+    assert running[-1]["fields"]["focus"] == "42"
 
 
 def test_se_present_in_artifact_kind_fallback() -> None:

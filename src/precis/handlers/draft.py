@@ -15,7 +15,10 @@ behind the existing seven verbs — **no new verbs**:
 - ``put``   — create a draft (`project=`, born with a title heading) or
   add a chunk (`chunk_kind=`, `text=`, placed by `at=`; `id=` may be a
   `dc<id>` anchor — insert after that chunk); `terms=[...]` batches
-  many `chunk_kind='term'` leaves in one transaction.
+  many `chunk_kind='term'` leaves in one transaction. `chunks=[...]`
+  batches mixed kinds and preserves one receipt handle per entry, even
+  when a markdown list expands into a tree. Placement is checked inside
+  the transaction so later entries can see earlier inserts.
 - ``get``   — list drafts (no id), a draft's outline (`id='<slug>'`), or
   a chunk verbatim with a relative window (`id='dc<id>'`, `dc<id>-2..3`).
 - ``edit``  — change a chunk's text (`text=`), move it (`move=`), or
@@ -27,6 +30,16 @@ behind the existing seven verbs — **no new verbs**:
 
 Chunks are addressed by the computed ``dc<chunk_id>`` handle (the legacy ``¶<base58>`` still resolves during the transition); the draft
 itself by its slug (the universal ``id=``). See ``precis-draft-help``.
+
+TOON replacement receipts count kept, added and retired live row/column IDs,
+including in dry runs. Filtered grids can otherwise hide accidental retirement;
+omitted calculated columns that survive replacement count as kept.
+
+Text write receipts isolate advisory database reads after commit: losing a
+connection while building hygiene hints must preserve the landed handles and
+revision hash, otherwise callers may retry and duplicate committed prose.
+Write failures themselves still propagate; the advisory guard never wraps
+the mutation.
 """
 
 from __future__ import annotations
@@ -36,7 +49,9 @@ import binascii
 import json
 import logging
 import re
-from collections.abc import Sequence
+import time
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import UTC
 from typing import Any, ClassVar
 
@@ -65,6 +80,7 @@ from precis.response import Response, ResponseImage
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
 from precis.store._draft_ops import (
     _HEADING_LINE_RE,
+    DraftChunk,
     content_sha,
     own_content_sha,
 )
@@ -129,6 +145,20 @@ from precis.utils.table_toon import (
 
 log = logging.getLogger(__name__)
 
+
+@contextmanager
+def _write_advisories() -> Iterator[list[str]]:
+    """Keep an already committed write's receipt if optional reads fail."""
+    notices: list[str] = []
+    try:
+        yield notices
+    except Exception:
+        log.warning("draft: write committed but receipt hints failed", exc_info=True)
+        notices.append(
+            "\nWrite committed; advisory hints unavailable. Do not retry the write."
+        )
+
+
 # A bare draft chunk handle: the universal handle ``dc<chunk_id>``
 # or the legacy ``¶<base58>`` form. Relative navigation (``^`` / ``+N`` /
 # ``-lo..hi``) is parsed separately via ``handle_registry.parse_relative``.
@@ -170,16 +200,25 @@ def _chunk_display_text(chunk: Any) -> str:
     (spreadsheet-tables 1a — the stored text stays plain GFM so the ids
     never reach the embedding or ``content_sha``). A stored ``ids:``
     trailer (written while the line still lived in the text) is dropped
-    first rather than printed twice — meta is the truth."""
+    first rather than printed twice — meta is the truth. Markdown tables
+    are re-rendered from canonical cells without storage backslash escaping
+    so LaTeX commands read verbatim; raw LaTeX tables keep their source."""
     text = chunk.text or ""
     if chunk.chunk_kind != "table":
         return text
-    tbl = (chunk.meta or {}).get("table")
+    meta = chunk.meta or {}
+    tbl = meta.get("table")
     if not isinstance(tbl, dict):
         return text
     lines = text.rstrip("\n").split("\n")
     if lines[-1].startswith("ids: "):
         text = "\n".join(lines[:-1])
+    if tbl.get("header") and (parsed := parse_markdown_table(text)) is not None:
+        text = table_to_markdown(
+            tbl,
+            caption=meta.get("caption") or parsed["caption"],
+            escape_backslashes=False,
+        )
     tail = "\n".join(
         line for line in (table_ids_line(tbl), table_footer_line(tbl)) if line
     )
@@ -404,6 +443,35 @@ def _coerce_authoring(v: bool | str) -> bool:
         f"authoring={v!r} not understood",
         next="edit(kind='draft', id=<slug>, authoring='on')  # or 'off' / True / False",
     )
+
+
+#: A BCP-47-shaped document-language tag (``en-GB``, ``de``): a 2–3-letter
+#: primary subtag, then optional 1–8-char subtags (gr725247 — the Word
+#: export writes the tag into ``w:lang`` so Word spell-checks the draft in
+#: its own language instead of flagging every British spelling).
+_LANGUAGE_TAG = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$")
+
+
+def _coerce_language(v: str) -> str | None:
+    """``edit(kind='draft', language=…)`` → the stored tag, or ``None`` for
+    an empty string (the clear-a-key convention pops ``ref.meta
+    ['language']``)."""
+    tag = str(v).strip()
+    if not tag:
+        return None
+    # Word core properties cap strings at 255 characters; refuse before
+    # persisting a value that would make this draft impossible to export.
+    if len(tag) > 255:
+        raise BadInput(
+            "language tag must be at most 255 characters",
+            next="edit(kind='draft', id=<slug>, args={'language': 'en-GB'})",
+        )
+    if not _LANGUAGE_TAG.fullmatch(tag):
+        raise BadInput(
+            f"language={v!r} is not a language tag like 'en-GB'",
+            next="edit(kind='draft', id=<slug>, language='en-GB')",
+        )
+    return tag
 
 
 #: The ``draft_refresh`` scanner's opt-in subdict under ``ref.meta``
@@ -636,6 +704,8 @@ class DraftHandler(Handler):
                 "page_size",
                 "rel",
                 "of_kind",
+                # view='links' exact continuation (gr627629)
+                "cursor",
                 # view='citations' diff mode (gr524227)
                 "against",
                 # spreadsheet-tables 1b — view='toon'/'table' filters
@@ -1017,7 +1087,7 @@ class DraftHandler(Handler):
             return self.find_in_ref(id=id, view=view, q=q)
         if project is not None:
             # Reverse lookup (paper-writing pipeline rung 4,
-            # docs/backlog/paper-writing-pipeline.md §Gap-analysis —
+            # me689904 §Gap-analysis —
             # backlog_draft_by_project): the draft(s) bound to a project
             # todo via the ``draft-of`` link create_draft() mints.
             if id is not None:
@@ -1117,6 +1187,8 @@ class DraftHandler(Handler):
             # chunk-scoped edges (if any land later) aren't rendered here.
             # args={'rel':…,'of_kind':…} narrow a hot ref's graph — the
             # unfiltered view runs to hundreds of KB (gr514335).
+            # args={'limit':…,'cursor':…} page it; the footer's ``next:``
+            # line carries the exact continuation (gr627629).
             from precis.handlers._links_render import render_links_view
             from precis.utils.relations import validate_relation
 
@@ -1131,9 +1203,11 @@ class DraftHandler(Handler):
                 sense="draft",
                 rel=rel,
                 of_kind=str(of_kind) if of_kind is not None else None,
+                limit=a.get("limit"),
+                cursor=a.get("cursor"),
             )
         if view == "integration":
-            # Paper-writing pipeline rung 2 (docs/backlog/paper-writing-pipeline.md
+            # Paper-writing pipeline rung 2 (me689904
             # §"The integration ledger") — a topic
             # dossier's woven-in papers (INTEGRATED) vs its topic:-tagged
             # papers with no disposition edge yet (PENDING).
@@ -1141,7 +1215,7 @@ class DraftHandler(Handler):
 
             return render_integration_view(self.store, ref)
         if view == "review":
-            # Paper-writing pipeline rung 3 (docs/backlog/paper-writing-pipeline.md
+            # Paper-writing pipeline rung 3 (me689904
             # §"Review — the memoized approval
             # ledger") — per-chunk checker status, dirty-for-human flagged.
             from precis.handlers._review_view import render_review_view
@@ -1821,6 +1895,7 @@ class DraftHandler(Handler):
         at: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
         terms: list[Any] | None = None,
+        chunks: list[Any] | None = None,
         image: str | None = None,
         mime: str | None = None,
         origin: str | None = None,
@@ -1858,6 +1933,12 @@ class DraftHandler(Handler):
                     "new draft; a terms batch writes into an existing one)",
                     next="put(kind='draft', id='<slug>', chunk_kind='term', terms=[...])",
                 )
+            if chunks is not None:
+                raise BadInput(
+                    "copy_of= does not combine with chunks= (a fork mints a "
+                    "new draft; a chunks batch writes into an existing one)",
+                    next="put(kind='draft', id='<slug>', chunks=[{'text': '…'}, …])",
+                )
             # Draft fork/deep-copy primitive: put(kind='draft',
             # copy_of='<src-slug>', project=<todo>) deep-copies the WHOLE
             # source draft (chunks + hierarchy + links) into a NEW draft
@@ -1881,6 +1962,21 @@ class DraftHandler(Handler):
                 f"put(kind='draft') slug {slug!r} may not contain a path "
                 "separator or be a '.'/'..' segment",
                 next="use a plain slug, e.g. put(kind='draft', id='nanotrans', …)",
+            )
+
+        if chunks is not None and terms is not None:
+            raise BadInput(
+                "chunks= does not combine with terms= (terms= is the "
+                "chunk_kind='term' batch; chunks= takes any kind)",
+                next="put(kind='draft', id='<slug>', chunks=[{'text': '…', "
+                "'chunk_kind': 'term', 'meta': {'short': '…'}}, …])",
+            )
+        if chunks is not None and _CHUNK_HANDLE.match(slug):
+            raise BadInput(
+                f"chunks= takes the draft slug as id=, got the chunk handle {slug!r} "
+                "(place entries with per-entry at={'after': 'dc<id>'})",
+                next="put(kind='draft', id='<slug>', chunks=[{'text': '…', "
+                "'at': {'after': 'dc<id>'}}, …])",
             )
 
         if _CHUNK_HANDLE.match(slug):
@@ -1913,6 +2009,37 @@ class DraftHandler(Handler):
                     next="get(kind='draft', id='<slug>', view='toc') lists "
                     "live chunk handles",
                 )
+
+        if chunks is not None:
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
+            self._refuse_if_machine_owned(ref.id)
+            return self._put_chunks_batch(
+                slug,
+                ref,
+                chunks,
+                chunk_kind=chunk_kind,
+                at=at,
+                meta=meta,
+                extras={
+                    "text": text,
+                    "title": title,
+                    "project": project,
+                    "table": table,
+                    "caption": caption,
+                    "regen": regen,
+                    "columns": columns,
+                    "rows": rows,
+                    "footer": footer,
+                    "image": image,
+                    "mime": mime,
+                    "origin": origin,
+                    "permission": permission,
+                    "render": render,
+                    "plots": plots,
+                    "voice": voice,
+                    "lang": lang,
+                },
+            )
 
         if terms is not None:
             ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
@@ -2066,8 +2193,10 @@ class DraftHandler(Handler):
             # ONE chunk (no blank-line split) and skips the dangling-handle
             # gate — a ``[dc…]`` token inside it is literal source, never
             # a reference.
+            t0 = time.monotonic()
             if kind != "code":
                 self._raise_on_new_dangling_refs(str(text))
+            t1 = time.monotonic()
             chunks = self.store.drafts.add_chunks(
                 ref_id=ref.id,
                 chunk_kind=kind,
@@ -2076,8 +2205,25 @@ class DraftHandler(Handler):
                 meta=meta,
                 split=kind != "code",
             )
-            self.sync_draft_links(ref.id)
+            t2 = time.monotonic()
+            # Scope the link re-resolve to the chunks this put wrote —
+            # the unscoped sync re-resolved every chunk in the draft,
+            # ~50 s median on a large draft (gr676929).
+            deferred = self.sync_draft_links(
+                ref.id, restamp_chunk_ids={c.chunk_id for c in chunks}
+            )
+            t3 = time.monotonic()
             self._attribute_touch([c.chunk_id for c in chunks])
+            log.info(
+                "draft.put phases slug=%s added_chunks=%d dangling_refs=%.3fs "
+                "add_chunks=%.3fs sync_draft_links=%.3fs attribute_touch=%.3fs",
+                slug,
+                len(chunks),
+                t1 - t0,
+                t2 - t1,
+                t3 - t2,
+                time.monotonic() - t3,
+            )
             # A markdown bullet block lands as a ulist/olist container +
             # item children (the shape every export reads), so report the
             # containers instead of spraying one handle per bullet — and
@@ -2104,33 +2250,35 @@ class DraftHandler(Handler):
             # no hygiene checks inside it, gr592769). All of a new chunk's
             # text is "newly introduced", so there's no prior text to diff
             # against.
-            if kind not in ("term", "code"):
-                body += _draft_lint.write_abbrev_hints(
-                    self.store, slug, ref.id, str(text), ""
-                )
-                body += _draft_lint.citation_form_hint(str(text))
-                body += _draft_lint.whole_paper_cite_hint(self.store, str(text), "")
-                body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
-                body += _draft_lint.glyph_cite_hint(self.store, str(text))
-                body += _draft_lint.pin_hint(self.store, str(text))
-                body += _draft_lint.literal_cite_hint(str(text))
-                body += _draft_lint.bare_identifier_hint(str(text))
-                body += _draft_lint.temperature_form_hint(str(text))
-                body += _draft_lint.math_form_hint(str(text))
-                body += _draft_lint.house_style_hint(str(text), kind)
-                body += _draft_lint.sentence_start_hint(
-                    self.store, ref.id, str(text), chunk_kind=kind
-                )
-                body += _draft_lint.bare_xref_hint(str(text))
-                body += _draft_lint.concept_label_hint(
-                    self.store, slug, ref.id, str(text), "", kind
-                )
-                body += _draft_lint.caption_number_hint(str(text), kind, meta=meta)
-                for _c in chunks:
-                    body += _draft_lint.title_heading_dup_hint(
-                        self.store, ref.id, _c.chunk_id, _c.chunk_kind, _c.text
+            with _write_advisories() as notices:
+                if kind not in ("term", "code"):
+                    body += _draft_lint.write_abbrev_hints(
+                        self.store, slug, ref.id, str(text), ""
                     )
-            return Response(body=body)
+                    body += _draft_lint.citation_form_hint(str(text))
+                    body += _draft_lint.whole_paper_cite_hint(self.store, str(text), "")
+                    body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
+                    body += _draft_lint.glyph_cite_hint(self.store, str(text))
+                    body += _draft_lint.pin_hint(self.store, str(text))
+                    body += _draft_lint.literal_cite_hint(str(text))
+                    body += _draft_lint.bare_identifier_hint(str(text))
+                    body += _draft_lint.temperature_form_hint(str(text))
+                    body += _draft_lint.math_form_hint(str(text))
+                    body += _draft_lint.house_style_hint(str(text), kind)
+                    body += _draft_lint.sentence_start_hint(
+                        self.store, ref.id, str(text), chunk_kind=kind
+                    )
+                    body += _draft_lint.bare_xref_hint(str(text))
+                    body += _draft_lint.concept_label_hint(
+                        self.store, slug, ref.id, str(text), "", kind
+                    )
+                    body += _draft_lint.caption_number_hint(str(text), kind, meta=meta)
+                    for _c in chunks:
+                        body += _draft_lint.title_heading_dup_hint(
+                            self.store, ref.id, _c.chunk_id, _c.chunk_kind, _c.text
+                        )
+            body += "".join(notices)
+            return Response(body=_facts_deferred(body, deferred))
 
         # else: create the draft
         if project is None:
@@ -2160,6 +2308,209 @@ class DraftHandler(Handler):
                 f"linked draft-of project {project_ref_id}"
             )
         )
+
+    # ── batch chunk writes (``chunks=[...]``) ──────────────────────
+
+    _CHUNKS_SHAPE = (
+        "chunks=[{'text': '…', 'chunk_kind': 'paragraph', 'meta': {…}, 'at': {…}}, …]"
+    )
+
+    def _put_chunks_batch(
+        self,
+        slug: str,
+        ref: Ref,
+        chunks: list[Any],
+        *,
+        chunk_kind: str | None,
+        at: dict[str, Any] | None,
+        meta: dict[str, Any] | None,
+        extras: dict[str, Any],
+    ) -> Response:
+        """``put(kind='draft', id=<slug>, chunks=[...])`` — many chunks of
+        any chunk kind in one transaction, all or nothing.
+
+        Each entry is ``{'text', 'chunk_kind', 'meta', 'at'}``; verb-level
+        ``chunk_kind=``/``meta=``/``at=`` are defaults an entry overrides.
+        One ``store.atomic()`` wraps the loop, so the first rejected entry
+        rolls everything back and names ``chunks[i]``; the link re-resolve
+        and the attribution touch run once, after the loop. An ``at``
+        anchor resolves against the draft as written so far, so it may
+        name an earlier chunk of the draft — there is no forward reference
+        inside a batch (the handles are minted by it).
+        """
+        conflicts = sorted(k for k, v in extras.items() if v is not None)
+        if conflicts:
+            raise BadInput(
+                f"chunks= does not combine with "
+                f"{', '.join(f'{k}=' for k in conflicts)} — per-chunk fields "
+                "go inside each entry ({'text': …, 'chunk_kind': …, "
+                "'meta': {…}, 'at': {…}})",
+                next=f"put(kind='draft', id=…, {self._CHUNKS_SHAPE})",
+            )
+        entries = self._coerce_chunks(chunks)
+        lines: list[str] = []
+        new_chunk_ids: list[int] = []
+        with self.store.atomic():
+            for pos, entry in enumerate(entries):
+                try:
+                    kind = entry.get("chunk_kind")
+                    if kind is None:
+                        kind = chunk_kind if chunk_kind is not None else "paragraph"
+                    self._require_known_chunk_kind(kind)
+                    m = {**(meta or {}), **entry["meta"]}
+                    entry_at = entry["at"] if entry["at"] is not None else at
+                    self._check_chunks_at(ref.id, entry_at)
+                    if kind == "term":
+                        m, role = self._prepare_term_meta(ref.id, m)
+                        if entry_at is None:
+                            entry_at = {
+                                "into": self.store.drafts.ensure_registry_heading(
+                                    ref.id, role
+                                )
+                            }
+                    text = entry["text"]
+                    if kind == "figure" and "view" in m:
+                        chunk, _ = self._insert_view_figure(
+                            ref_id=ref.id,
+                            caption=text,
+                            view=m.pop("view"),
+                            at=entry_at,
+                            meta=m,
+                        )
+                        made_chunks = [chunk]
+                    else:
+                        if kind == "table":
+                            text, m, _, _ = self._prepare_table_chunk(
+                                slug,
+                                table=None,
+                                caption=None,
+                                regen=None,
+                                meta=m,
+                                text=text,
+                            )
+                        if kind != "code":
+                            self._raise_on_new_dangling_refs(text)
+                        made_chunks = self.store.drafts.add_chunks(
+                            ref_id=ref.id,
+                            chunk_kind=kind,
+                            text=text,
+                            at=entry_at,
+                            meta=m or None,
+                            split=False,
+                        )
+                except PrecisError as exc:
+                    exc.cause = (
+                        f"chunks[{pos}]: {exc.cause} — batch of "
+                        f"{len(entries)} rolled back, nothing applied"
+                    )
+                    exc.args = (exc.cause,)
+                    raise
+                new_chunk_ids.extend(c.chunk_id for c in made_chunks)
+                # Structured markdown lists return their root first.
+                root = made_chunks[0]
+                lines.append(f"{root.dc} ({root.chunk_kind})")
+        deferred = self.sync_draft_links(ref.id, restamp_chunk_ids=set(new_chunk_ids))
+        self._attribute_touch(new_chunk_ids)
+        head = (
+            f"added {len(entries)} chunk{'' if len(entries) == 1 else 's'} to {slug}:"
+        )
+        return Response(body=_facts_deferred(head + "\n" + "\n".join(lines), deferred))
+
+    def _check_chunks_at(self, ref_id: int, at: dict[str, Any] | None) -> None:
+        if not at:
+            return
+        anchors = set(at) & {"before", "after", "into"}
+        edges = set(at) & {"first", "last"}
+        nxt = "use at={'after': 'dc…'} or at={'into': 'dc…', 'first': True}"
+        if (
+            set(at) - anchors - edges
+            or len(anchors) > 1
+            or len(edges) > 1
+            or (edges and anchors - {"into"})
+        ):
+            raise BadInput(f"invalid placement at={at!r}", next=nxt)
+        for edge in edges:
+            if not isinstance(at[edge], bool):
+                raise BadInput(f"at[{edge!r}] must be a boolean", next=nxt)
+        for key in anchors:
+            handle = at[key]
+            if not isinstance(handle, str) or not handle.strip():
+                raise BadInput(f"at[{key!r}] must be a chunk handle", next=nxt)
+            anchor = self.store.drafts.get_draft_chunk(handle.removeprefix("¶"))
+            if (
+                anchor is None
+                or anchor.ref_id != ref_id
+                or not anchor.pos
+                or (key == "into" and anchor.retired)
+            ):
+                raise BadInput(
+                    f"at[{key!r}] anchor {handle!r} must resolve to a chunk "
+                    "in this draft at this point in the batch",
+                    next="get(kind='draft', id='<slug>', view='toc') lists chunk handles",
+                )
+
+    def _coerce_chunks(self, chunks: list[Any]) -> list[dict[str, Any]]:
+        """Normalise ``chunks=[...]`` to ``{'text', 'chunk_kind', 'meta',
+        'at'}`` dicts, refusing a malformed entry up front (before the
+        transaction opens) with its ``chunks[i]`` position."""
+        shape = self._CHUNKS_SHAPE
+        if not isinstance(chunks, list):
+            raise BadInput(
+                f"chunks= takes a list of entries, got {type(chunks).__name__}",
+                next=f"put(kind='draft', id=…, {shape})",
+            )
+        if not chunks:
+            raise BadInput(
+                "chunks=[] is empty", next=f"put(kind='draft', id=…, {shape})"
+            )
+        if len(chunks) > BATCH_ID_CAP:
+            raise BadInput(
+                f"chunks=[...] takes at most {BATCH_ID_CAP} entries, got {len(chunks)}",
+                next=f"split into calls of {BATCH_ID_CAP} or fewer",
+            )
+        out: list[dict[str, Any]] = []
+        for pos, entry in enumerate(chunks):
+            if not isinstance(entry, dict):
+                raise BadInput(
+                    f"chunks[{pos}] must be a dict, got {type(entry).__name__} "
+                    "(an entry is {'text': …, 'chunk_kind': …, 'meta': {…}, "
+                    "'at': {…}})",
+                    next=shape,
+                )
+            unknown = set(entry) - {"text", "chunk_kind", "meta", "at"}
+            if unknown:
+                raise BadInput(
+                    f"chunks[{pos}] has unknown keys {sorted(unknown)} "
+                    "(an entry is {'text': …, 'chunk_kind': …, 'meta': {…}, "
+                    "'at': {…}})",
+                    next=shape,
+                )
+            text = entry.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise BadInput(f"chunks[{pos}] requires a non-empty 'text'", next=shape)
+            ck = entry.get("chunk_kind")
+            if ck is not None and not isinstance(ck, str):
+                raise BadInput(
+                    f"chunks[{pos}]['chunk_kind'] must be a string, "
+                    f"got {type(ck).__name__}",
+                    next=shape,
+                )
+            for key in ("meta", "at"):
+                if entry.get(key) is not None and not isinstance(entry[key], dict):
+                    raise BadInput(
+                        f"chunks[{pos}]['{key}'] must be a dict, "
+                        f"got {type(entry[key]).__name__}",
+                        next=shape,
+                    )
+            out.append(
+                {
+                    "text": text,
+                    "chunk_kind": ck,
+                    "meta": dict(entry.get("meta") or {}),
+                    "at": entry.get("at"),
+                }
+            )
+        return out
 
     # ── batch term writes (``terms=[...]``) ────────────────────────
 
@@ -2535,11 +2886,34 @@ class DraftHandler(Handler):
         when the structure's geometry changes or its slug is re-minted (a
         re-generate deletes and re-mints ``<design>-<block>``).
         ``origin='original'``."""
+        chunk, prov = self._insert_view_figure(
+            ref_id=ref_id, caption=caption, view=view, at=at
+        )
+        self.sync_draft_links(ref_id)
+        self._attribute_touch([chunk.chunk_id])
+        return Response(
+            body=(
+                f"added view figure {chunk.dc} to {slug} ({prov}); "
+                "image renders on first export/view — render pending"
+            )
+            + _draft_lint.caption_number_hint(str(caption), "figure")
+        )
+
+    def _insert_view_figure(
+        self,
+        *,
+        ref_id: int,
+        caption: str | None,
+        view: Any,
+        at: dict[str, Any] | None,
+        meta: dict[str, Any] | None = None,
+    ) -> tuple[DraftChunk, str]:
         nxt = (
             "put(kind='draft', id='…', chunk_kind='figure', text='Fig 1. …', "
             "meta={'view': {'source': 'structure:<slug>', "
             "'camera': {'azimuth_deg': 30, 'elevation_deg': 15}}})  "
-            "or meta={'view': {'source': 'se:<design>', 'block': '<block>'}}"
+            "or meta={'view': {'source': 'se:<design>', 'block': '<block>'}}  "
+            "or meta={'view': {'source': 'quest:<id>#frontier'}}"
         )
         if caption is None or not str(caption).strip():
             raise BadInput("a figure requires text= (the caption)", next=nxt)
@@ -2552,22 +2926,37 @@ class DraftHandler(Handler):
             mime="image/png",
             at=at,
             figure_meta={"render_pending": True},
+            meta=meta,
         )
         self.store.drafts.set_render_recipe(chunk.chunk_id, recipe)
-        self.sync_draft_links(ref_id)
-        self._attribute_touch([chunk.chunk_id])
-        return Response(
-            body=(
-                f"added structure view figure {chunk.dc} to {slug} ({prov}); "
-                "image renders on first export/view — render pending"
+        if recipe.get("kind") == "quest_pareto":
+            from precis.render.figure import resolve_quest_ref
+
+            quest = resolve_quest_ref(self.store, recipe["source"]["handle"])
+            assert quest is not None
+            self.store.add_link(
+                src_ref_id=ref_id,
+                src_pos=self.store.drafts.chunk_ord_map(ref_id)[chunk.chunk_id],
+                dst_ref_id=quest.id,
+                relation="derived-from",
+                set_by="agent",
             )
-            + _draft_lint.caption_number_hint(str(caption), "figure")
-        )
+        if recipe.get("kind") == "pathway_profile":
+            source_ref = self.store.get_ref(kind="pathway", id=recipe["source"]["slug"])
+            assert source_ref is not None
+            self.store.add_link(
+                src_ref_id=ref_id,
+                src_pos=self.store.drafts.chunk_ord_map(ref_id)[chunk.chunk_id],
+                dst_ref_id=source_ref.id,
+                relation="derived-from",
+                set_by="agent",
+            )
+        return chunk, prov
 
     def _validated_view_recipe(
         self, view: Any, *, nxt: str
     ) -> tuple[dict[str, Any], str]:
-        """Validate a structure-view payload into its canonical
+        """Validate a view payload into its canonical
         ``meta.render`` recipe — shared by the figure put
         (:meth:`_add_view_figure`, ``meta={'view': …}``) and the recipe
         edit (:meth:`_edit_figure_recipe`, ``args={'view': …}`` /
@@ -2580,9 +2969,48 @@ class DraftHandler(Handler):
             raise BadInput("meta['view'] must be an object", next=nxt)
         kind, _, src_slug = str(view.get("source") or "").partition(":")
         src_slug = src_slug.strip()
+        if kind == "quest":
+            from precis.quest.frontier import _objectives_for, pareto_axes
+            from precis.render.figure import quest_recipe, resolve_quest_ref
+
+            try:
+                recipe = quest_recipe(src_slug, view)
+            except ValueError as exc:
+                raise BadInput(str(exc), next=nxt) from exc
+            quest = resolve_quest_ref(self.store, recipe["source"]["handle"])
+            if quest is None:
+                raise NotFound(
+                    f"quest {src_slug!r} not found",
+                    next="search(kind='quest', q='<topic>') then use a live "
+                    "quest handle (qu<id>)",
+                )
+            try:
+                pareto_axes(
+                    quest.meta,
+                    _objectives_for(self.store, quest.id),
+                    recipe["x"],
+                    recipe["y"],
+                )
+            except ValueError as exc:
+                raise BadInput(str(exc), next=nxt) from exc
+            return recipe, f"quest:{src_slug}"
+        if kind == "pathway":
+            from precis.render.figure import pathway_recipe
+
+            try:
+                recipe = pathway_recipe(src_slug, view)
+            except ValueError as exc:
+                raise BadInput(str(exc), next=nxt) from exc
+            if self.store.get_ref(kind="pathway", id=recipe["source"]["slug"]) is None:
+                raise NotFound(
+                    f"pathway {src_slug!r} not found",
+                    next="search(kind='pathway', q='<topic>') then use a live slug",
+                )
+            return recipe, f"pathway:{src_slug}"
         if kind not in ("structure", "se") or not src_slug:
             raise BadInput(
-                "meta['view']['source'] must be 'structure:<slug>' or 'se:<design>'",
+                "meta['view']['source'] must be 'structure:<slug>', 'se:<design>', "
+                "'pathway:<slug>' or 'quest:<id>#frontier'",
                 next=nxt,
             )
         se_block: tuple[str, str] | None = None
@@ -2846,7 +3274,8 @@ class DraftHandler(Handler):
                     "edit(kind='draft', id='dc<id>', args={'view': "
                     "{'source': 'structure:<slug>', 'camera': {'azimuth_deg': "
                     "30, 'elevation_deg': 15}}})  or args={'view': {'source': "
-                    "'se:<design>', 'block': '<block>'}}"
+                    "'se:<design>', 'block': '<block>'}}  or args={'view': "
+                    "{'source': 'quest:<id>#frontier'}}"
                 ),
             )
             with self.store.drafts.tx() as conn:
@@ -2992,6 +3421,7 @@ class DraftHandler(Handler):
         review: str | None = None,
         verdict: str = "approved",
         authoring: bool | str | None = None,
+        language: str | None = None,
         scaffold: str | None = None,
         dry_run: bool | str = False,
         source: dict[str, Any] | None = None,
@@ -3043,7 +3473,10 @@ class DraftHandler(Handler):
         # path that re-derives a table chunk's text (``_edit_table`` /
         # ``_edit_latex_table_in_place``) — a table chunk used to be blanket-
         # rejected for dry_run regardless of op, which meant a table preview
-        # could never be rendered at all (gr273955 residual). The remaining
+        # could never be rendered at all (gr273955 residual). A ``footer=``
+        # edit previews through the op reply (the footer line before →
+        # after + grid + hash), not the text diff — the footer never appears
+        # in the derived markdown (gr685369). The remaining
         # structural / metadata ops (move, style, permission, voice/lang,
         # review, …) still have no diff semantics and reject the flag rather
         # than silently writing; the regex ``sub`` op addressed at a
@@ -3124,6 +3557,7 @@ class DraftHandler(Handler):
                     "review": review,
                     "verdict": verdict if verdict != "approved" else None,
                     "authoring": authoring,
+                    "language": language,
                     "scaffold": scaffold,
                     "view": view,
                     "render": render,
@@ -3204,8 +3638,27 @@ class DraftHandler(Handler):
             return Response(
                 body=f"auto-author {'ON' if on else 'OFF'} for {ref.slug or ref.id}"
             )
+        # ``language`` is a draft-level op (the remainder of gr725247): the
+        # document language the Word export writes into the file — it sets
+        # ``w:lang`` (and ``dc:language``) from it, so Word spell-checks a
+        # British-English draft in en-GB instead of flagging every
+        # 'neighbouring'. Stored on the draft ref's ``meta['language']``;
+        # an empty string clears it (``patch_ref_meta`` pops a None value).
+        # Distinct from the chunk-level ``lang=`` narration routing (the
+        # audio phonemizer), which is per-chunk and never leaves the store.
+        if language is not None:
+            _reject_dry_run("language")
+            ref = self._resolve_draft_any(id)
+            tag = _coerce_language(language)
+            self.store.drafts.patch_ref_meta(
+                ref.id, {"language": tag}, source={"actor": "draft-edit"}
+            )
+            name = ref.slug or ref.id
+            if tag:
+                return Response(body=f"set language on {name}: {tag}")
+            return Response(body=f"cleared language on {name}")
         # ``scaffold`` is a draft-level op (paper-writing pipeline rung 4,
-        # docs/backlog/paper-writing-pipeline.md §"Document classes"): lays
+        # me689904 §"Document classes"): lays
         # down a genre's standard section skeleton, the
         # same table the web ``/drafts/new`` picker uses — id is the slug
         # (or any handle in the draft), not a single chunk.
@@ -3335,7 +3788,7 @@ class DraftHandler(Handler):
         ):
             _reject_dry_run("structural", _base)
         if review is not None:
-            # Review ledger (rung 3, docs/backlog/paper-writing-pipeline.md
+            # Review ledger (rung 3, me689904
             # §"Review — the memoized approval
             # ledger"): records that `review=` (the checker, e.g. 'human',
             # 'cites', 'flow') evaluated this chunk at its *current*
@@ -3523,6 +3976,20 @@ class DraftHandler(Handler):
         # data-loss footgun). Now ``find`` drives a literal substitution,
         # and a ``find`` that is absent from the chunk *refuses* the edit
         # (leaving the text untouched) instead of erasing it.
+        # ``mode='insert'`` without ``find=`` has no anchor to splice next
+        # to; it used to fall through to the whole-chunk rewrite below and
+        # overwrite the paragraph with ``text`` (gr720455). Refuse it.
+        if find is None and (mode or "").strip() == "insert":
+            raise BadInput(
+                "mode='insert' needs find= (the anchor text inside the chunk) "
+                "plus where='before'|'after'; it never adds a new chunk. To add "
+                "a paragraph next to this chunk use put(kind='draft', ..., "
+                "args={'at': {'before': 'dc…'}})",
+                next=(
+                    f"edit(kind='draft', id={_base.dc!r}, mode='insert', "
+                    "find='anchor text', text='…', where='after')"
+                ),
+            )
         if find is not None:
             if not find:
                 raise BadInput(
@@ -3613,40 +4080,42 @@ class DraftHandler(Handler):
                     body += f" ({occurrences} occurrences of find= {suffix})"
                 self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
                 self._attribute_touch([c.chunk_id])
-                ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
-                slug = ref.slug if ref and ref.slug else str(c.ref_id)
-                # A ``code`` chunk's text is verbatim payload — no prose
-                # lint hints inside it (gr592769).
-                if c.chunk_kind != "code":
-                    body += _draft_lint.write_abbrev_hints(
-                        self.store, slug, c.ref_id, new_text, old_text
-                    )
-                    body += _draft_lint.citation_form_hint(new_text)
-                    body += _draft_lint.whole_paper_cite_hint(
-                        self.store, new_text, old_text
-                    )
-                    body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_text)
-                    body += _draft_lint.glyph_cite_hint(self.store, new_text)
-                    body += _draft_lint.pin_hint(self.store, new_text, old_text)
-                    body += _draft_lint.literal_cite_hint(new_text)
-                    body += _draft_lint.bare_identifier_hint(new_text)
-                    body += _draft_lint.temperature_form_hint(new_text)
-                    body += _draft_lint.math_form_hint(new_text, old_text)
-                    body += _draft_lint.house_style_hint(new_text, c.chunk_kind)
-                    body += _draft_lint.sentence_start_hint(
-                        self.store, c.ref_id, new_text, old_text, c.chunk_kind
-                    )
-                    body += _draft_lint.bare_xref_hint(new_text, old_text)
-                    body += _draft_lint.concept_label_hint(
-                        self.store, slug, c.ref_id, new_text, old_text, c.chunk_kind
-                    )
-                    body += _draft_lint.caption_number_hint(new_text, c.chunk_kind)
-                    body += _draft_lint.title_heading_dup_hint(
-                        self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
-                    )
-                    body += _draft_lint.dangling_edit_hint(
-                        self.store, new_text, old_text
-                    )
+                with _write_advisories() as notices:
+                    ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
+                    slug = ref.slug if ref and ref.slug else str(c.ref_id)
+                    # A ``code`` chunk's text is verbatim payload — no prose
+                    # lint hints inside it (gr592769).
+                    if c.chunk_kind != "code":
+                        body += _draft_lint.write_abbrev_hints(
+                            self.store, slug, c.ref_id, new_text, old_text
+                        )
+                        body += _draft_lint.citation_form_hint(new_text)
+                        body += _draft_lint.whole_paper_cite_hint(
+                            self.store, new_text, old_text
+                        )
+                        body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_text)
+                        body += _draft_lint.glyph_cite_hint(self.store, new_text)
+                        body += _draft_lint.pin_hint(self.store, new_text, old_text)
+                        body += _draft_lint.literal_cite_hint(new_text)
+                        body += _draft_lint.bare_identifier_hint(new_text)
+                        body += _draft_lint.temperature_form_hint(new_text)
+                        body += _draft_lint.math_form_hint(new_text, old_text)
+                        body += _draft_lint.house_style_hint(new_text, c.chunk_kind)
+                        body += _draft_lint.sentence_start_hint(
+                            self.store, c.ref_id, new_text, old_text, c.chunk_kind
+                        )
+                        body += _draft_lint.bare_xref_hint(new_text, old_text)
+                        body += _draft_lint.concept_label_hint(
+                            self.store, slug, c.ref_id, new_text, old_text, c.chunk_kind
+                        )
+                        body += _draft_lint.caption_number_hint(new_text, c.chunk_kind)
+                        body += _draft_lint.title_heading_dup_hint(
+                            self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
+                        )
+                        body += _draft_lint.dangling_edit_hint(
+                            self.store, new_text, old_text
+                        )
+                body += "".join(notices)
                 body += _landed_sha_line(c.text)
             return Response(body=body)
         if text is not None:
@@ -3668,39 +4137,48 @@ class DraftHandler(Handler):
             if c is not None:
                 self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
                 self._attribute_touch([c.chunk_id])
-                ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
-                slug = ref.slug if ref and ref.slug else str(c.ref_id)
-                # A ``code`` chunk's text is verbatim payload — no prose
-                # lint hints inside it (gr592769).
-                if c.chunk_kind != "code":
-                    body += _draft_lint.write_abbrev_hints(
-                        self.store, slug, c.ref_id, str(text), old_text
-                    )
-                    body += _draft_lint.citation_form_hint(str(text))
-                    body += _draft_lint.whole_paper_cite_hint(
-                        self.store, str(text), old_text
-                    )
-                    body += _draft_lint.pc_cite_claim_hub_hint(self.store, str(text))
-                    body += _draft_lint.glyph_cite_hint(self.store, str(text))
-                    body += _draft_lint.pin_hint(self.store, str(text), old_text)
-                    body += _draft_lint.literal_cite_hint(str(text))
-                    body += _draft_lint.bare_identifier_hint(str(text))
-                    body += _draft_lint.temperature_form_hint(str(text))
-                    body += _draft_lint.math_form_hint(str(text), old_text)
-                    body += _draft_lint.sentence_start_hint(
-                        self.store, c.ref_id, str(text), old_text, c.chunk_kind
-                    )
-                    body += _draft_lint.bare_xref_hint(str(text), old_text)
-                    body += _draft_lint.concept_label_hint(
-                        self.store, slug, c.ref_id, str(text), old_text, c.chunk_kind
-                    )
-                    body += _draft_lint.caption_number_hint(str(text), c.chunk_kind)
-                    body += _draft_lint.title_heading_dup_hint(
-                        self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
-                    )
-                    body += _draft_lint.dangling_edit_hint(
-                        self.store, str(text), old_text
-                    )
+                with _write_advisories() as notices:
+                    ref = self.store.get_ref(kind="draft", id=int(c.ref_id))
+                    slug = ref.slug if ref and ref.slug else str(c.ref_id)
+                    # A ``code`` chunk's text is verbatim payload — no prose
+                    # lint hints inside it (gr592769).
+                    if c.chunk_kind != "code":
+                        body += _draft_lint.write_abbrev_hints(
+                            self.store, slug, c.ref_id, str(text), old_text
+                        )
+                        body += _draft_lint.citation_form_hint(str(text))
+                        body += _draft_lint.whole_paper_cite_hint(
+                            self.store, str(text), old_text
+                        )
+                        body += _draft_lint.pc_cite_claim_hub_hint(
+                            self.store, str(text)
+                        )
+                        body += _draft_lint.glyph_cite_hint(self.store, str(text))
+                        body += _draft_lint.pin_hint(self.store, str(text), old_text)
+                        body += _draft_lint.literal_cite_hint(str(text))
+                        body += _draft_lint.bare_identifier_hint(str(text))
+                        body += _draft_lint.temperature_form_hint(str(text))
+                        body += _draft_lint.math_form_hint(str(text), old_text)
+                        body += _draft_lint.sentence_start_hint(
+                            self.store, c.ref_id, str(text), old_text, c.chunk_kind
+                        )
+                        body += _draft_lint.bare_xref_hint(str(text), old_text)
+                        body += _draft_lint.concept_label_hint(
+                            self.store,
+                            slug,
+                            c.ref_id,
+                            str(text),
+                            old_text,
+                            c.chunk_kind,
+                        )
+                        body += _draft_lint.caption_number_hint(str(text), c.chunk_kind)
+                        body += _draft_lint.title_heading_dup_hint(
+                            self.store, c.ref_id, c.chunk_id, c.chunk_kind, c.text
+                        )
+                        body += _draft_lint.dangling_edit_hint(
+                            self.store, str(text), old_text
+                        )
+                body += "".join(notices)
                 body += _landed_sha_line(c.text)
             return Response(body=body)
         raise BadInput(
@@ -3813,8 +4291,6 @@ class DraftHandler(Handler):
         )
         self.sync_draft_links(int(block.ref_id))
         self._attribute_touch([block.chunk_id, *(c.chunk_id for c in inserted)])
-        ref = self.store.get_ref(kind="draft", id=int(block.ref_id))
-        slug = ref.slug if ref and ref.slug else str(block.ref_id)
         made = {c.chunk_id for c in inserted}
         top = [c for c in inserted if c.parent_chunk_id not in made]
         body = f"replaced {block.dc} [{block.chunk_kind}] own content"
@@ -3832,45 +4308,51 @@ class DraftHandler(Handler):
                     f"added {len(top)} chunk{'s' if len(top) != 1 else ''}: "
                     + " ".join(str(c.dc) for c in top)
                 )
-            n_kept = len(self.store.drafts.descendant_chunk_ids(block.chunk_id)) - len(
-                inserted
-            )
-            if n_kept:
-                bits.append(
-                    f"kept {n_kept} child chunk"
-                    f"{'s' if n_kept != 1 else ''} (subsections untouched, "
-                    "same ids)"
-                )
+            with _write_advisories() as notices:
+                n_kept = len(
+                    self.store.drafts.descendant_chunk_ids(block.chunk_id)
+                ) - len(inserted)
+                if n_kept:
+                    bits.append(
+                        f"kept {n_kept} child chunk"
+                        f"{'s' if n_kept != 1 else ''} (subsections untouched, "
+                        "same ids)"
+                    )
             if bits:
                 body += " — " + "; ".join(bits)
+            body += "".join(notices)
         else:
             body = f"edited {block.dc}"
-        body += _draft_lint.write_abbrev_hints(
-            self.store, slug, int(block.ref_id), new_raw, old_text
-        )
-        body += _draft_lint.citation_form_hint(new_raw)
-        body += _draft_lint.whole_paper_cite_hint(self.store, new_raw, old_text)
-        body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_raw)
-        body += _draft_lint.glyph_cite_hint(self.store, new_raw)
-        body += _draft_lint.pin_hint(self.store, new_raw, old_text)
-        body += _draft_lint.literal_cite_hint(new_raw)
-        body += _draft_lint.bare_identifier_hint(new_raw)
-        body += _draft_lint.temperature_form_hint(new_raw)
-        body += _draft_lint.math_form_hint(new_raw, old_text)
-        body += _draft_lint.house_style_hint(new_raw, "paragraph")
-        body += _draft_lint.sentence_start_hint(
-            self.store, int(block.ref_id), new_raw, old_text
-        )
-        body += _draft_lint.bare_xref_hint(new_raw, old_text)
-        body += _draft_lint.caption_number_hint(new_raw, block.chunk_kind)
-        body += _draft_lint.title_heading_dup_hint(
-            self.store,
-            int(block.ref_id),
-            block.chunk_id,
-            block.chunk_kind,
-            block.text,
-        )
-        body += _draft_lint.dangling_edit_hint(self.store, new_raw, old_text)
+        with _write_advisories() as notices:
+            ref = self.store.get_ref(kind="draft", id=int(block.ref_id))
+            slug = ref.slug if ref and ref.slug else str(block.ref_id)
+            body += _draft_lint.write_abbrev_hints(
+                self.store, slug, int(block.ref_id), new_raw, old_text
+            )
+            body += _draft_lint.citation_form_hint(new_raw)
+            body += _draft_lint.whole_paper_cite_hint(self.store, new_raw, old_text)
+            body += _draft_lint.pc_cite_claim_hub_hint(self.store, new_raw)
+            body += _draft_lint.glyph_cite_hint(self.store, new_raw)
+            body += _draft_lint.pin_hint(self.store, new_raw, old_text)
+            body += _draft_lint.literal_cite_hint(new_raw)
+            body += _draft_lint.bare_identifier_hint(new_raw)
+            body += _draft_lint.temperature_form_hint(new_raw)
+            body += _draft_lint.math_form_hint(new_raw, old_text)
+            body += _draft_lint.house_style_hint(new_raw, "paragraph")
+            body += _draft_lint.sentence_start_hint(
+                self.store, int(block.ref_id), new_raw, old_text
+            )
+            body += _draft_lint.bare_xref_hint(new_raw, old_text)
+            body += _draft_lint.caption_number_hint(new_raw, block.chunk_kind)
+            body += _draft_lint.title_heading_dup_hint(
+                self.store,
+                int(block.ref_id),
+                block.chunk_id,
+                block.chunk_kind,
+                block.text,
+            )
+            body += _draft_lint.dangling_edit_hint(self.store, new_raw, old_text)
+        body += "".join(notices)
         # The chained-edit token: the span sha of what landed, computed
         # inside the write tx, so a follow-up replace-content needs no
         # re-read (``sha:`` for a leaf — same value, one label).
@@ -4293,6 +4775,11 @@ class DraftHandler(Handler):
         try:
             chunks = self.store.drafts.reading_order(ref_id)
             ord_by_chunk = self.store.drafts.chunk_ord_map(ref_id)
+            # The booted python handler validates qualname mentions against
+            # the code index before an anchor mints (gr702978); absent
+            # (kind disabled / hub without it) mentions mint nothing.
+            _hub = getattr(self, "hub", None)
+            py_handler = _hub.handler_for("python") if _hub is not None else None
             # Scoped mode: a caller that names the chunk(s) it just wrote
             # re-resolves only those; every other live chunk keeps the
             # auto-mention edges it already has (carried over below). Its
@@ -4335,6 +4822,10 @@ class DraftHandler(Handler):
                     except NotFound:
                         continue
                 explicit_part_lcscs.update(mentions.extract_explicit_part_lcscs(c.text))
+                # Mint the lazy python anchor for each qualname mention the
+                # live index resolves, so the resolve pass below sees it
+                # (resolution itself never mints). gr702978.
+                mentions.mint_python_mentions(self.store, c.text, py_handler)
                 targets = draft_markup.resolve_draft_link_targets(
                     self.store, c.text, exclude_ref_id=ref_id
                 )
@@ -4559,8 +5050,64 @@ class DraftHandler(Handler):
         dropping silently), cells get the same Excel-style
         :func:`infer_scalar` typing a ``cell=`` edit applies, and it never
         combines with the data args — one source per write."""
+        md, chunk_meta, cap, eval_notes = self._prepare_table_chunk(
+            slug,
+            table=table,
+            caption=caption,
+            regen=regen,
+            meta=meta,
+            text=text,
+            columns=columns,
+            rows=rows,
+            footer=footer,
+        )
+        chunks = self.store.drafts.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="table",
+            text=md,
+            at=at,
+            meta=chunk_meta,
+            split=False,
+        )
+        self.sync_draft_links(ref.id)
+        self._attribute_touch([c.chunk_id for c in chunks])
+        c = chunks[0]
+        grid = chunk_meta["table"]
+        n_rows, n_cols = len(grid["rows"]), len(grid["header"])
+        eval_tail = (
+            "; "
+            + "; ".join(eval_notes[:8])
+            + (f" (+{len(eval_notes) - 8} more)" if len(eval_notes) > 8 else "")
+            if eval_notes
+            else ""
+        )
+        return Response(
+            body=(
+                f"added table {c.dc} to {slug} ({n_rows} row"
+                f"{'' if n_rows == 1 else 's'} × {n_cols} col"
+                f"{'' if n_cols == 1 else 's'}); text is the derived markdown — "
+                f"edit table=/caption=/regen=, not text={eval_tail}"
+            )
+            + _draft_lint.caption_number_hint(chunk_kind="table", caption=cap)
+            + _draft_lint.pin_hint(self.store, md, table=True)
+        )
+
+    @staticmethod
+    def _prepare_table_chunk(
+        slug: str,
+        *,
+        table: str | dict[str, Any] | None,
+        caption: str | None,
+        regen: dict[str, Any] | None,
+        meta: dict[str, Any] | None,
+        text: str | None,
+        columns: list[dict[str, Any]] | None = None,
+        rows: list[list[Any]] | None = None,
+        footer: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any], str | None, list[str]]:
         tobj: Any = table
         md_caption: str | None = None
+        coercions: list[str] = []
         if tobj is None and columns is None and rows is None and footer is None:
             if text is not None and str(text).strip():
                 parsed = strict_markdown_table(str(text))
@@ -4582,6 +5129,17 @@ class DraftHandler(Handler):
                     "header": parsed["header"],
                     "rows": [[infer_scalar(c) for c in r] for r in parsed["rows"]],
                 }
+                from precis.utils.table_data import cell_text
+
+                header = parsed["header"]
+                for ri, literals in enumerate(parsed["rows"]):
+                    for ci, literal in enumerate(literals):
+                        stored = tobj["rows"][ri][ci]
+                        if cell_text(stored) != literal:
+                            col = header[ci] if ci < len(header) else f"col {ci + 1}"
+                            coercions.append(
+                                f"row {ri + 1} {col}: {literal!r} stored as {stored!r}"
+                            )
                 md_caption = parsed.get("caption")
             else:
                 raise BadInput(
@@ -4616,13 +5174,22 @@ class DraftHandler(Handler):
                 tobj = {**tobj, "rows": rows}
             if footer is not None:
                 tobj = {**tobj, "footer": footer}
-        norm = normalize_table(tobj)
+        input_notes: list[str] = []
+        norm = normalize_table(tobj, notes=input_notes)
         norm, eval_notes = evaluate_table(
             norm,
             # Every formula here is caller-supplied THIS write — a name
             # that resolves to no column refuses (a typo must not land).
             declared={c["id"] for c in norm.get("columns") or [] if c.get("formula")},
         )
+        if coercions:
+            input_notes.append(
+                "coercions: "
+                + "; ".join(coercions[:5])
+                + (f" (+{len(coercions) - 5} more)" if len(coercions) > 5 else "")
+                + "; send table= rows as JSON strings to keep literals"
+            )
+        eval_notes = input_notes + eval_notes
         # caption= wins over the markdown ``**…**`` caption line; an
         # explicit empty caption= clears it.
         cap = md_caption if caption is None else (caption.strip() or None)
@@ -4633,34 +5200,7 @@ class DraftHandler(Handler):
             chunk_meta["caption"] = cap
         if regen is not None:
             chunk_meta["regen"] = regen
-        chunks = self.store.drafts.add_chunks(
-            ref_id=ref.id,
-            chunk_kind="table",
-            text=md,
-            at=at,
-            meta=chunk_meta,
-            split=False,
-        )
-        self.sync_draft_links(ref.id)
-        self._attribute_touch([c.chunk_id for c in chunks])
-        c = chunks[0]
-        n_rows, n_cols = len(norm["rows"]), len(norm["header"])
-        eval_tail = (
-            "; "
-            + "; ".join(eval_notes[:8])
-            + (f" (+{len(eval_notes) - 8} more)" if len(eval_notes) > 8 else "")
-            if eval_notes
-            else ""
-        )
-        return Response(
-            body=(
-                f"added table {c.dc} to {slug} ({n_rows} row"
-                f"{'' if n_rows == 1 else 's'} × {n_cols} col"
-                f"{'' if n_cols == 1 else 's'}); text is the derived markdown — "
-                f"edit table=/caption=/regen=, not text={eval_tail}"
-            )
-            + _draft_lint.caption_number_hint(chunk_kind="table", caption=cap)
-        )
+        return md, chunk_meta, cap, eval_notes
 
     def _edit_table(
         self,
@@ -4724,7 +5264,11 @@ class DraftHandler(Handler):
         text-edit paths and writes nothing: no ``edit_text``, no
         ``meta.table``/caption/flag patch, no ``chunk_events`` row
         (gr273955 residual — a table chunk used to reject dry_run
-        unconditionally)."""
+        unconditionally). The ops with their own op reply (patch=, toon=,
+        the structure ops, footer=) preview through that reply instead —
+        the changed surface as TOON — since their change may not show in
+        a text diff at all (gr685369: the footer line is not part of the
+        derived markdown)."""
         if chunk is None or chunk.chunk_kind != "table":
             raise BadInput(
                 "table=/cell=/find=/sub=/caption=/regen=/footer= apply only "
@@ -5089,6 +5633,7 @@ class DraftHandler(Handler):
         # compiled strict by evaluate_table (a new/changed formula
         # naming no column refuses; only a stored formula may decay to
         # #REF when its column is dropped by a later edit).
+        input_notes: list[str] = []
         declared: set[str] = set()
         if table is not None:
             tobj: Any = table
@@ -5137,7 +5682,7 @@ class DraftHandler(Handler):
                         dead | {str(i) for i in (tobj.get("retired_ids") or [])}
                     ),
                 }
-            norm = normalize_table(tobj)
+            norm = normalize_table(tobj, notes=input_notes)
             declared.update(
                 c["id"] for c in norm.get("columns") or [] if c.get("formula")
             )
@@ -5198,6 +5743,9 @@ class DraftHandler(Handler):
                 rows2[ri][ci] = cell_scalar(new_value)
                 norm = {**cur_table, "rows": rows2}
                 ctrl_note = f"; note: {hint}"
+            ri, _ci = resolve_cell(cur_table, cell)
+            reply_rows = [norm["rowmeta"][ri]["id"]]
+            op_reply = f"edited table {chunk.dc}{ctrl_note}"
         elif find is not None or sub is not None:
             if not cur_table:
                 raise no_data_err
@@ -5281,6 +5829,26 @@ class DraftHandler(Handler):
             except BadInput as exc:
                 raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             op_reply = f"replaced table {chunk.dc}"
+            # Compare live identities, not retired-id history: omitted derived
+            # columns survive table_from_toon and must count as kept.
+            for label, key in (("rows", "rowmeta"), ("columns", "columns")):
+                before_ids = [item["id"] for item in (cur_table or {}).get(key, [])]
+                new_ids = {item["id"] for item in norm[key]}
+                retired = [item for item in before_ids if item not in new_ids]
+                kept = len(set(before_ids) & new_ids)
+                op_reply += (
+                    f"; {label}: {kept} kept, {len(new_ids) - kept} added, "
+                    f"{len(retired)} retired"
+                )
+                if retired:
+                    listed = ", ".join(retired[:20])
+                    if len(retired) > 20:
+                        listed += f", … (+{len(retired) - 20} more)"
+                    op_reply += f" ({listed})"
+            if " retired (" in op_reply:
+                op_reply += (
+                    "; use patch= for subset edits to preserve omitted rows and columns"
+                )
         elif add_column is not None:
             if not cur_table:
                 raise no_data_err
@@ -5368,7 +5936,7 @@ class DraftHandler(Handler):
             if not cur_table:
                 raise no_data_err
             try:
-                norm = op_insert_rows(cur_table, rows, at)
+                norm = op_insert_rows(cur_table, rows, at, notes=input_notes)
             except BadInput as exc:
                 raise _stored_ctrl_hint(exc, cur_table, chunk.dc) from exc
             added = [
@@ -5398,6 +5966,11 @@ class DraftHandler(Handler):
         elif footer is not None:
             # footer= (spreadsheet-tables 2): set/replace/clear the
             # aggregate spec on the live grid — ``footer={}`` clears.
+            # The reply is the op reply built after evaluate_table below
+            # (the rendered footer line before → after): a footer change
+            # alters no cell of the derived markdown, so the generic
+            # dry-run diff used to claim "no change" for a write that then
+            # applied (gr685369).
             if not cur_table:
                 raise no_data_err
             try:
@@ -5424,6 +5997,7 @@ class DraftHandler(Handler):
         # the reply. Runs BEFORE the base/diff/hash block so the journal
         # and content hash cover the computed cells.
         norm, eval_notes = evaluate_table(norm, declared=declared)
+        eval_notes = input_notes + eval_notes
         eval_tail = (
             "; eval: "
             + "; ".join(eval_notes[:8])
@@ -5431,6 +6005,21 @@ class DraftHandler(Handler):
             if eval_notes
             else ""
         )
+        if footer is not None:
+            # gr685369: the footer line never appears in the derived
+            # markdown, so the generic dry-run text diff reports "no
+            # change" for a footer edit that the real write then applies.
+            # Give footer= the same op reply as the other table ops — the
+            # rendered footer line before → after (footer_values are
+            # computed by evaluate_table above) — so both the dry run and
+            # the write ack show the change. ``none`` marks a side that
+            # has no footer line (first spec, or ``footer={}`` clearing).
+            _cur_line = table_footer_line(cur_table) if cur_table else None
+            _new_line = table_footer_line(norm)
+            op_reply = (
+                f"before: {_cur_line.removeprefix('footer: ') if _cur_line else 'none'}"
+                f"\nafter: {_new_line.removeprefix('footer: ') if _new_line else 'none'}"
+            )
         # Spreadsheet-tables 1b: ``base=<hash>`` optimistic guard over the
         # table content (not the chunk-text ``base_sha``) + the bounded
         # ``recent`` journal the guard diffs against. ``touched`` is this
@@ -5531,9 +6120,13 @@ class DraftHandler(Handler):
         c = self.store.drafts.edit_text(
             handle, md, base_sha=base_sha, meta_patch=mpatch, expect_table=cas_table
         )
+        pin_hint = ""
         if c is not None:
             self._attribute_touch([c.chunk_id])
             self.sync_draft_links(c.ref_id, restamp_chunk_ids={c.chunk_id})
+            pin_hint = _draft_lint.pin_hint(
+                self.store, c.text or "", chunk.text or "", table=True
+            )
         if op_reply is not None:
             return Response(
                 body=self._table_op_reply(
@@ -5547,6 +6140,7 @@ class DraftHandler(Handler):
                 )
                 + label_loss_hint
                 + cap_hint
+                + pin_hint
             )
         n_rows, n_cols = len(norm["rows"]), len(norm["header"])
         extra = f" ({replace_count} replacement(s))" if replace_count else ""
@@ -5554,6 +6148,7 @@ class DraftHandler(Handler):
             body=f"edited table {(c or chunk).dc} ({n_rows}×{n_cols}){extra}; "
             f"markdown re-derived{eval_tail}{label_loss_hint}{ctrl_note}{cap_hint}"
             f"{_landed_sha_line(c.text) if c is not None else ''}"
+            f"{pin_hint}"
         )
 
     def _table_op_reply(
@@ -5575,6 +6170,9 @@ class DraftHandler(Handler):
         structure op's reply can't drop them (a drop_column that
         orphans a formula must still say so)."""
         body = f"{op_reply}; hash: {new_hash}{eval_tail}"
+        footer_line = table_footer_line(norm)
+        if footer_line:
+            body += "\n" + footer_line
         n = len(norm.get("rows") or [])
         if rows is None and cols is None and n > REPLY_ROW_CAP:
             sel = [rm["id"] for rm in (norm.get("rowmeta") or [])[:20]]
@@ -5746,6 +6344,11 @@ class DraftHandler(Handler):
             "LaTeX in place — label/rules/multicolumn spans/spacing "
             f"untouched{label_loss_hint}"
             f"{_landed_sha_line(c.text) if c is not None else ''}"
+            + (
+                _draft_lint.pin_hint(self.store, c.text or "", raw, table=True)
+                if c
+                else ""
+            )
         )
 
     def _resolve_project(self, project: str | int) -> int:
@@ -6242,13 +6845,20 @@ class DraftHandler(Handler):
         """Whole-draft specificity debt, surfaced on every ``get`` — not
         just a fresh write — so a legacy/bulk-authored draft that never
         passed through an incremental ``put``/``edit`` still gets flagged.
-        Three checks, all advisory (never blocking):
+        Five checks, all advisory (never blocking):
 
         * **undefined abbreviations** — acronym-shaped tokens anywhere in
           the draft with no glossary ``term``/inline definition/silence.
           ``undefined_abbrevs`` normally scopes to one write's new text;
           passing it the whole draft surfaces everything a legacy draft
           never got hinted about.
+        * **authored abbreviation definitions** — a hand-written
+          ``long form (SHORT)`` for a glossary term, which the export's
+          own first-use expansion would print again as a second
+          definition (gr725250) — see
+          :func:`~precis.draft.lint.authored_abbrev_hint`. With
+          ``elide=True`` the line caps at 8 entries and points at
+          ``view='hygiene'`` for the rest.
         * **whole-paper citations** — ``[pa<id>]``/``[pk<id>]`` (no chunk)
           anywhere in the draft, with the ``dc<id>`` they live in so
           they're locatable.
@@ -6274,37 +6884,42 @@ class DraftHandler(Handler):
           fires on a ``candidate`` hub too, which is exactly when rewords
           happen.
 
-        A fifth, informational-only line (never a ``⚠``) scoreboards how
+        A sixth, informational-only line (never a ``⚠``) scoreboards how
         many of the draft's cited passages have a Taproot claim hub
         available to cite instead — see :meth:`_taproot_hub_scoreboard`.
 
-        A sixth line — DOI completeness/validity over the same cited
-        papers (docs/backlog/draft-doi-completeness-check.md), advisory
+        A seventh line — DOI completeness/validity over the same cited
+        papers (gr690484), advisory
         only — see :meth:`_hygiene_doi_line`.
 
-        A seventh line — cited papers whose byline never came from
+        An eighth line — cited papers whose byline never came from
         Crossref despite carrying a DOI, advisory only — see
         :meth:`_hygiene_author_source_line`. Both share one batched
         identifier/ref fetch done here.
 
-        An eighth line — house-style violations (em-dash, bold/italic
+        A ninth line — house-style violations (em-dash, bold/italic
         markup, ``--``) in prose chunks and figure captions, with per-rule
         counts and example ``dc`` handles; advisory only — see
         :meth:`_hygiene_house_style_lines`.
 
-        A ninth line — figure chunks whose render is pending, stale or
+        A tenth line — figure chunks whose render is pending, stale or
         recorded-failed (gr592765); a broken recipe would otherwise
         surface only inside the ``draft_export`` job — see
         :meth:`_hygiene_figure_lines`.
 
-        A tenth line — figure/table captions opening with their own
+        An eleventh line — figure/table captions opening with their own
         "Figure N."/"Table N." label, which the exporters' auto-numbering
         prints doubled (gr592852) — see :meth:`_hygiene_caption_lines`.
 
-        An eleventh line — sentences that open with a known lowercase
+        A twelfth line — sentences that open with a known lowercase
         identifier (a glossary ``term`` short or a built-in), which reads
         as a typo at line start and has no emphasis rescue under house
         style (gr592934) — see :meth:`_hygiene_sentence_start_lines`.
+
+        A thirteenth line — only on a draft that carries record handles an
+        export would link: an unset ``PRECIS_WEB_BASE_URL`` leaves every
+        dev/collaborator link path-only (gr592892) — see
+        :meth:`_hygiene_link_origin_lines`.
 
         ``elide=True`` (the outline footer's default) truncates each list to
         8 entries with a "``+N more``" tail and points at
@@ -6334,6 +6949,23 @@ class DraftHandler(Handler):
                 "meta={'short': '<ABBR>'}) to define, or "
                 "edit(not_abbrev=['<ABBR>']) to silence."
             )
+
+        from precis.utils.abbreviations import find as find_abbrev_definitions
+
+        term_shorts = self.store.drafts.draft_term_shorts(ref_id)
+        authored = [
+            f"{c.dc}:{short}"
+            for c in chunks
+            if c.text and c.chunk_kind not in {"code", "term"}
+            for short in find_abbrev_definitions(c.text)
+            if short in term_shorts
+        ]
+        if authored:
+            shown_authored = authored if limit is None else authored[:limit]
+            hint = _draft_lint.authored_abbrev_hint(shown_authored).strip()
+            if limit is not None and len(authored) > limit:
+                hint += " More entries: get(kind='draft', id=<slug>, view='hygiene')."
+            out.append(hint)
 
         whole_pairs: list[tuple[Any, str]] = []
         for c in chunks:
@@ -6370,6 +7002,7 @@ class DraftHandler(Handler):
         out.extend(hub_posture)
 
         out.extend(self._hygiene_drift_lines(ref_id, limit=limit))
+        out.extend(self._hygiene_condition_lines(ref_id, limit=limit))
 
         # A figure caption's ``Reproduced from [pc…]`` credits an image's
         # source; it is not a claim, so no hub can stand in for it. Those
@@ -6411,6 +7044,8 @@ class DraftHandler(Handler):
 
         out.extend(self._hygiene_caption_lines(chunks, limit=limit))
 
+        out.extend(self._hygiene_link_origin_lines(text))
+
         if not out:
             return []
         return ["", "## Hygiene", *out]
@@ -6422,7 +7057,7 @@ class DraftHandler(Handler):
         captions only; tables, equations, code and terms are skipped. An
         all-clear line is emitted only when ``clear_line`` (the full
         ``view='hygiene'`` report), so a clean outline stays footer-free."""
-        from precis.utils.house_style import RULE_NAMES, find_style_flags
+        from precis.utils.house_style import EM_DASH_FIX, RULE_NAMES, find_style_flags
         from precis.utils.wordcount import PROSE_CHUNK_KINDS
 
         counts: dict[str, int] = {}
@@ -6449,8 +7084,8 @@ class DraftHandler(Handler):
         return [
             f"⚠ house style: {sum(counts.values())} violation(s) in "
             f"{len(examples)} chunk(s) ({per_rule}): {shown}{tail}. "
-            "Read the chunk and edit it: no em-dash (split the sentence, or "
-            "colon/comma), no **bold**/*italic*/_italic_, no `--`."
+            f"For an em-dash, {EM_DASH_FIX}. "
+            "Remove **bold**/*italic*/_italic_ markup and replace `--`."
         ]
 
     def _hygiene_sentence_start_lines(
@@ -6589,6 +7224,36 @@ class DraftHandler(Handler):
             "assigned 'Figure N:'/'Table N:' itself — drop the authored "
             "label and reference the float from prose with [dc<id>]."
         ]
+
+    def _hygiene_link_origin_lines(self, text: str) -> list[str]:
+        """Link-origin line (gr592892): with ``PRECIS_WEB_BASE_URL`` unset
+        a dev/collaborator export writes every record-handle link in this
+        draft path-only — a PDF viewer cannot open it. Scoped to drafts
+        that actually carry a linkable handle (``text`` is the same
+        joined body the other checks scan, minus ``code`` chunks): a
+        handle-free draft produces no links, so flagging it would only
+        train readers past the warning. The fix is one operator-set
+        secret per installation, not a draft edit — advisory ``⚠``,
+        never a gate; the job event names the same ``precis secret set``
+        command. ``[]`` once the origin is configured.
+
+        ``has_record_handles`` runs WITHOUT the store here: the footer
+        already scans the whole body on every outline read, and the
+        store variant pays a per-paper-token lookup (its dataset
+        re-classification) — a cite-heavy draft with no linkable handle
+        would cost a query per cite. The one blind spot is a draft whose
+        only record handles are dataset papers; the export itself still
+        warns unconditionally."""
+        from precis.export.audience import (
+            has_record_handles,
+            link_origin_warnings,
+            web_base_url,
+        )
+
+        warnings = link_origin_warnings(web_base_url(self.store))
+        if not warnings or not has_record_handles(text):
+            return []
+        return [f"⚠ {w}" for w in warnings]
 
     def _render_hygiene(
         self, slug: str, ref: Any = None, *, root_handle: str | None = None
@@ -6907,6 +7572,48 @@ class DraftHandler(Handler):
             )
         return out
 
+    def _hygiene_condition_lines(self, ref_id: int, *, limit: int | None) -> list[str]:
+        """Warn-only: bullets citing a claim hub whose title omits must-state
+        conditions (:func:`~precis.draft.lint.find_condition_gap_cites`,
+        me691778). One summary line
+        (hubs and bullets per family), then one ``⚠ conditions:`` line per
+        bullet; ``limit`` caps the per-bullet lines with a ``view='hygiene'``
+        pointer, ``None`` lists all. ``[]`` when nothing is flagged."""
+        cites = _draft_lint.find_condition_gap_cites(self.store, ref_id)
+        if not cites:
+            return []
+        fam_hubs: dict[str, set[int]] = {}
+        fam_bullets: dict[str, set[int]] = {}
+        for c in cites:
+            fam = c.gaps[0].family
+            fam_hubs.setdefault(fam, set()).add(c.hub_ref_id)
+            fam_bullets.setdefault(fam, set()).add(c.chunk_id)
+        per_family = ", ".join(
+            f"{fam}: {len(fam_hubs[fam])} hub(s)/{len(fam_bullets[fam])} bullet(s)"
+            for fam in sorted(fam_hubs)
+        )
+        all_hubs = {c.hub_ref_id for c in cites}
+        all_bullets = {c.chunk_id for c in cites}
+        out = [
+            f"⚠ conditions: {len(all_bullets)} bullet(s) cite {len(all_hubs)} "
+            f"claim hub(s) whose statement omits must-state conditions "
+            f"({per_family}). Fix: precis taproot conditions-sweep "
+            f"--draft {ref_id}; read the paper's Methods for the values."
+        ]
+        shown = cites if limit is None else cites[:limit]
+        for c in shown:
+            g = c.gaps[0]
+            out.append(
+                f"⚠ conditions: {c.dc} cites fi{c.hub_ref_id} ({g.family}): "
+                f"no {', '.join(g.missing)} — {g.hint}"
+            )
+        if limit is not None and len(cites) > limit:
+            out.append(
+                f"ℹ (+{len(cites) - limit} more — see get(kind='draft', "
+                "id=<slug>, view='hygiene') for the full list)."
+            )
+        return out
+
     def _taproot_hub_scoreboard(self, cited_ref_ids: list[int]) -> tuple[int, int]:
         """``(grounded, total)`` over ``cited_ref_ids``
         (:meth:`_cited_paper_ref_ids` — one entry per cited *passage*,
@@ -6935,8 +7642,7 @@ class DraftHandler(Handler):
         refs_by_id: dict[int, Any],
     ) -> str:
         """One line: DOI completeness + validity over every *distinct*
-        cited paper in the draft (docs/backlog/
-        draft-doi-completeness-check.md) — advisory only, never affects
+        cited paper in the draft (gr690484) — advisory only, never affects
         export. ``ref_ids`` is the deduped cite mine (one token scan in
         :meth:`_hygiene_lines` feeds this, the taproot scoreboard and the
         author-source line; ``identifiers``/``refs_by_id`` are that same
@@ -7135,7 +7841,9 @@ class DraftHandler(Handler):
         """``dc<N>~<sel>`` — read inside a table chunk by stable ids
         (spreadsheet-tables 1a): ``<rowid>.<colid>`` one cell, ``<id>``
         one row or column, ``<id>..<id>`` a row/column range in current
-        order. A deleted id reports as dangling."""
+        order. A cell's column may also be named; resolve it to its stable
+        id before rendering so both spellings return the same address.
+        A deleted id reports as dangling."""
         from precis.utils import handle_registry as _hr
         from precis.utils.table_data import cell_text
 
@@ -7167,6 +7875,14 @@ class DraftHandler(Handler):
         # follow-up ``cell=`` needs.
         _ids = table_ids_line(tbl)
         ids_tail = f"\n{_ids}" if _ids else ""
+        if "." in sel and ".." not in sel:
+            row_ref, col_ref = sel.split(".", 1)
+            # IDs win over names, matching every table edit resolver.
+            col = next((c for c in columns if c.get("id") == col_ref), None)
+            if col is None:
+                col = next((c for c in columns if c.get("name") == col_ref), None)
+            if col is not None:
+                sel = f"{row_ref}.{col['id']}"
         if not re.fullmatch(_hr.TABLE_SEL_PATTERN, sel):
             raise BadInput(
                 f"~{sel!r} is not a table selector — <rowid>.<colid>, "
@@ -7289,7 +8005,11 @@ class DraftHandler(Handler):
                 "header": [columns[i]["name"] for i in ci],
                 "rows": [[data[i][j] for j in ci] for i in ri],
             }
-            md = table_to_markdown(sub, caption=meta.get("caption") or None)
+            md = table_to_markdown(
+                sub,
+                caption=meta.get("caption") or None,
+                escape_backslashes=False,
+            )
             ids = table_ids_line(
                 {
                     "rowmeta": [rowmeta[i] for i in ri],
@@ -7378,11 +8098,8 @@ class DraftHandler(Handler):
                     "live chunk handles",
                 )
             window = [chunk]
-            if chunk.chunk_kind in ("ulist", "olist"):
-                # A list container carries no prose — rendering it alone
-                # shows an empty block. Its items *are* its content, and
-                # the outline collapses a list to this one handle, so this
-                # read is where the items live.
+            if chunk.chunk_kind in ("ulist", "olist") and not chunk.retired:
+                # A list container carries no prose. Its items are its content.
                 ids = set(self.store.drafts.draft_subtree_chunk_ids(core))
                 window = [
                     c
@@ -7423,14 +8140,145 @@ class DraftHandler(Handler):
                 "excluded from reading order, search (all modes), and export. "
                 "A live replacement may exist; read the enclosing section."
             )
+        for chunk in window:
+            if chunk.retired:
+                body += self._retirement_notice(chunk)
         window_text = "\n\n".join(c.text for c in window)
         body += _draft_lint.dangling_finding_hint(self.store, window_text)
         body += _draft_lint.dangling_chunk_hint(self.store, window_text)
         body += _draft_lint.tombstone_chunk_hint(self.store, window_text)
         if len(window) == 1:
-            body += self._children_hint(window[0])
+            if not window[0].retired:
+                # ``descendant_chunk_ids`` counts live only, and the span
+                # it points at resolves live-only too — on a retired chunk
+                # the hint dangles (``_retired_container_lines`` covers the
+                # subtree instead).
+                body += self._children_hint(window[0])
             body += self._fisheye_affordance()
         return Response(body=body)
+
+    def _retirement_notice(self, chunk: DraftChunk) -> str:
+        """Show the retirement event and a recipe for copying the lost text."""
+        drafts = self.store.drafts
+        ev = drafts.retirement_event(chunk.chunk_id)
+        lines = [f"Retirement of {chunk.dc}"]
+        cascade = False
+        if ev is None:
+            lines[0] += " — no retirement event logged."
+        else:
+            mode = ev["source"].get("mode")
+            cascade = mode == "cascade"
+            ts = ev["ts"].astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            lines[0] += f" — retired {ts}"
+            if ev["via"] == "ancestor":
+                root = handle_registry.format_handle(
+                    chunk.kind, ev["chunk_id"], chunk=True
+                )
+                lines[0] += f" with its ancestor {root}"
+            if mode:
+                lines[0] += f" (mode={mode})"
+
+        ref = self.store.get_ref(kind=chunk.kind, id=chunk.ref_id)
+        if ref is None:
+            lines.append("Restore the draft before re-adding its chunks.")
+            return "\n\n" + "\n".join(lines)
+
+        parent = (
+            drafts.get_draft_chunk(
+                handle_registry.format_handle(
+                    chunk.kind, chunk.parent_chunk_id, chunk=True
+                ),
+                kind=chunk.kind,
+            )
+            if chunk.parent_chunk_id is not None
+            else None
+        )
+        if parent is not None and parent.retired:
+            if (
+                cascade
+                and not parent.text.strip()
+                and parent.chunk_kind
+                not in (
+                    "ulist",
+                    "olist",
+                )
+            ):
+                lines.append(
+                    f"Read get(kind={chunk.kind!r}, id={parent.dc!r}) for "
+                    "the recovery recipe for this textless parent and its contents."
+                )
+                return "\n\n" + "\n".join(lines)
+            lines.append(
+                f"Read get(kind={chunk.kind!r}, id={parent.dc!r}) to recover the "
+                f"parent first. Use its live replacement handle as restored_{parent.dc} "
+                "below. If its recipe already includes this chunk, follow that recipe once."
+            )
+            at = f"{{'into': restored_{parent.dc}, 'last': True}}"
+        else:
+            at = f"{{'after': {chunk.dc!r}}}"
+
+        descendants = drafts.cascade_retired_descendants(chunk) if cascade else []
+        lines.extend(
+            self._retired_container_lines(chunk, descendants, ref.slug or ref.id, at)
+        )
+        return "\n\n" + "\n".join(lines)
+
+    def _retired_container_lines(
+        self,
+        chunk: DraftChunk,
+        descendants: list[DraftChunk],
+        draft_id: str | int,
+        at: str,
+    ) -> list[str]:
+        """Emit typed puts in source order, with children attached to new handles."""
+        children: dict[int, list[DraftChunk]] = {}
+        for child in descendants:
+            if child.parent_chunk_id is not None:
+                children.setdefault(child.parent_chunk_id, []).append(child)
+
+        steps: list[str] = []
+
+        def restore(node: DraftChunk, placement: str) -> str:
+            kids = children.get(node.chunk_id, [])
+            text = node.text
+            if node.chunk_kind in ("ulist", "olist"):
+                # The public put requires text even for structural list nodes.
+                text = text if text.strip() else "Restored list"
+            elif not text.strip():
+                text = next(
+                    (
+                        e["prev_text"]
+                        for e in self.store.drafts.chunk_events(node.chunk_id)
+                        if (e["prev_text"] or "").strip()
+                    ),
+                    "",
+                )
+            if text:
+                new_handle = f"restored_{node.dc}"
+                steps.append(
+                    f"{new_handle} = put(kind={node.kind!r}, id={draft_id!r}, "
+                    f"chunk_kind={node.chunk_kind!r}, text={text!r}, at={placement})"
+                )
+                child_at = f"{{'into': {new_handle}, 'last': True}}"
+                for child in kids:
+                    child_at = restore(child, child_at)
+                return f"{{'after': {new_handle}}}"
+
+            # A textless wrapper has no payload to put. Its children take its slot.
+            for child in kids:
+                placement = restore(child, placement)
+            return placement
+
+        restore(chunk, at)
+        if not steps:
+            return [
+                "No recoverable text found. Read view='history' for the recorded events."
+            ]
+        return [
+            "Restore text with these puts in order. For each restored_* variable, "
+            "use the new chunk handle from that put's acknowledgment.",
+            *steps,
+        ]
 
     def _children_hint(self, chunk: Any) -> str:
         """Pointer on a single-chunk read when the chunk has live children:
@@ -7497,7 +8345,7 @@ class DraftHandler(Handler):
         """``(newly-broken chunk-ref tokens, newly-broken finding slugs)``.
         See :func:`~precis.draft.lint.newly_dangling` — the
         shared core of the inline-editor validation gate
-        (``docs/backlog/draft-inline-editor.md``)."""
+        (`me694007`)."""
         return _draft_lint.newly_dangling(self.store, new_text, old_text)
 
     def _raise_on_new_dangling_refs(self, new_text: str, old_text: str = "") -> None:

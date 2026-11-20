@@ -1,7 +1,115 @@
 """TodoHandler — task / action items with status transitions and tree shape.
 
-Subsystem architecture (facet model, job lanes, planner coroutines,
-guardrails): :mod:`precis.handlers` package docstring.
+**Facet model (§M, migration 0102).** One faceted kind — ``tags`` +
+``meta`` — never a family of kinds: level gradient, schedule shape, LLM
+auto-run tier all live in ``meta``. The one kept boundary is todo ↔ job:
+a job is claimed/leased/executor-run (``FOR UPDATE SKIP LOCKED``,
+``idem_key``, sweeper, lease-steal); a todo is durable intent, never
+leased. Pinned by ``tests/test_todo_job_boundary.py``.
+
+**Hierarchy.** ``parent_id`` on refs. Gradient: ``meta.rotation_root=true``
+(strategic root) / ``meta.worker_mintable=false`` (tactical) / neither
+(subtask, the default). Ancestry walked on read; a 1/N rotation across
+strategic roots drives 7-day picks. Reparenting goes through the reserved
+``parent`` link relation, not a raw column write.
+
+**auto_check leaves.** ``meta.auto_check`` wait-for-condition evaluators
+live under ``workers/auto_check_evaluators/``: ``paper_ingested``,
+``discord_reply_received``, ``time_past``, ``tag_present``,
+``child_job_succeeded``, ``derived_job_succeeded``,
+``all_child_findings_resolved``, ``placement_legal``, ``route_complete``,
+``netlist_drc_clean`` (the last three are the pcb-guided-place-route
+phase-machine gates), ``checklist_clean`` (every blocking item of a
+checklist settled on its target with no ``fail``).
+
+**Recurring (Watches).** ``meta.schedule`` presence *is* recurring — cron
+/ ``every:`` shorthand, or a one-shot ``at``; no separate tag
+(``level:recurring`` retired, §M). The schedule worker
+(``workers/schedule/worker.py``) mints one worker-mintable subtask per due
+tick; ``meta.deliver={'target': ...}`` fires ``pg_notify('precis.cron',
+...)`` for asa_bot instead. ``prio`` is an int column on refs (1..10); ``PRIO:*`` is
+a back-compat tag alias.
+
+**Jobs — two lanes by parent kind.** ``JobHandler.put`` requires a
+``parent_id`` whose kind is in ``JOB_PARENT_KINDS`` (``todo``/
+``structure``/``cad``/``draft``/``quest``, plus a coordinator job for
+campaign fan-out). *Intent lane* — parent a todo: rotation + failure
+bubble + ``child_job_succeeded``. *Compute lane* — parent a build
+subject: a derived, idempotent, cache-fillable job owned by the artifact;
+a blocking task links ``requested`` → job (``derived_job_succeeded``
+closes it; the bubble follows the link on failure). The ``dispatch``
+worker walks open todos carrying ``meta.executor``, mints ``kind='job'``
+children, auto-injects ``meta.auto_check={'type':
+'child_job_succeeded'}``. A **succeeded** child blocks re-mint for a
+deterministic (non-``llm_tier``) parent until ``auto_check`` flips it
+done (``dispatch._job_blocks_dispatch_sql``) — the brake against daily
+re-mint storms. On **failure** the parent gets a ``child-failed:<job_id>``
+open tag (``utils/job_bubble.py``) and leaves the doable view;
+infra-class failures (``INFRA_FAILURE_TAGS`` — lease-expiry orphan sweep
+or a signal-killed/result-less compute child) get a bounded auto-retry
+(``ORPHAN_RETRY_CAP`` 3 per 6h window) before latching; content-class
+failures latch immediately. A latched bubble isn't necessarily terminal:
+the sweeper's ``unpark`` phase (``workers/sweeper.py``) gives a parked
+parent up to ``UNPARK_CAP`` (3) autonomous, cool-down-gated re-arms before
+stamping the terminal ``child-failed-final`` tag a human must clear.
+
+**Planner coroutines.** A ``meta.llm_tier`` todo runs ``plan_tick``: each
+tick is a job that may mint children or yield (``ask-user:``) and still
+exit succeeded. ``child_job_succeeded`` never auto-closes an
+``llm_tier`` parent or one with a live child todo. Lease is 90 min. A
+tick cut off by exhaustion (``--max-turns`` or wall-clock timeout) is
+resumable, not a failure — re-minted up to
+``meta.plan_tick_resume_streak`` (default 3, env
+``PRECIS_PLAN_TICK_RESUME_CAP``), then one auto-decompose tick
+(``meta.plan_tick_decompose_attempted``) before a real ``child-failed:``
+bubble. A tick that called no precis verb is likewise resumable-not-
+success (``_precis_tools_used`` in ``executors/claude_inproc.py``,
+transport-neutral: stream ``tool_use`` count or
+``LlmResult.tool_calls``). A child parked only on
+``ask-user:``/``waiting-for:`` (no hard-block tag) stops blocking
+re-candidacy 6h after the parent's last ``plan_tick``
+(``dispatch._parked_child_still_blocks_sql``), so one human-blocked leaf
+doesn't freeze the subtree. Draft-bound ticks get sources pre-rendered
+into the prompt's variable layer
+(``workers/planner_prompt._render_draft_sources``, ``needs_sources``
+predicate) — the dominant exhaustion class was fetching, not thinking.
+
+**Planner cost guardrails.** ``workers/planner_guardrails.check_parent``
+runs before every mint, cheapest first: per-todo tick cap
+(``PRECIS_MAX_TICKS`` 10 → ``halt:tick-cap``), per-todo cost
+(``PRECIS_MAX_TODO_USD`` $2), per-tree cost (``PRECIS_MAX_TREE_USD``
+$10), global daily ceiling (``PRECIS_DAILY_COST_CEILING`` $20, pauses
+discretionary dispatch for the round). Cadence work
+(``dispatch._cadence_parent_ids``) and zero-LLM compute mints
+(``dispatch._zero_llm_parent_ids``) are exempt from the ceiling alone,
+still bound by the three caps. Dollar caps read ``llm_call_log.cost_usd``,
+subscription transports included; the ceiling sums ``billed_usd``
+(subscription ``claude_p`` = $0; 0272, gr549279).
+Code defaults; prod runs the deploy templates'
+values (``tests/test_deploy_planner_caps.py`` asserts every render site
+sets all four).
+
+**Orphan subtrees.** ``retired_at`` is not transitive; the ancestor walk
+is ``utils/ref_tree.deleted_in_ancestry``, applied both dispatching
+(``dispatch._drop_orphaned`` silently skips candidates under a deleted
+todo) and growing (``quest/weave_review.mint_review_todo`` raises
+``OrphanedParentError`` before inserting — code-minting paths bypass
+``TodoHandler.put``'s liveness check).
+
+**Views.** ``TodoView`` StrEnum + ``_TREE_SEARCH_VIEWS`` dispatch table
+here in :mod:`precis.handlers.todo` (import-time totality assert).
+``view='tree'`` walks ``kind IN ('todo','job')`` so child jobs render
+with a ``⚙`` marker; ``view='attention'`` unions ``ask-user`` leaves,
+``child-failed`` parents, and halted todos; ``view='projects'``
+(``_todo_views.render_projects``) lists workspace-owning roots.
+
+**Projects.** A project is a strategic-root todo owning
+``meta.workspace`` (no new kind). ``TodoHandler.put`` stamps a
+``project:<slug>`` tag derived from ``meta.workspace.path``
+(``utils/workspace.project_tag_for_path``) on every write path.
+``meta.workspace.brief`` cascades down the subtree into the planner
+prompt's variable layer (``workers/planner_prompt._render_project_brief``)
+— per-project, kept out of the cached system layer.
 
 Numeric-id ref kind. Builds on the shared :class:`NumericRefHandler`
 shape with four first-class extensions:
@@ -26,7 +134,7 @@ shape with four first-class extensions:
    :class:`TodoView` closed vocabulary; the :data:`_TREE_SEARCH_VIEWS`
    dispatch table maps each to a renderer in
    :mod:`precis.todo.views`), plus ``view='tree'`` / ``'comments'`` /
-   ``'body'`` / ``'scratch'`` on ``get``.
+   ``'body'`` / ``'scratch'`` / ``'release'`` on ``get``.
    ``projects`` lists strategic roots that own a ``meta.workspace``;
    ``attention`` unions ``ask-user:`` leaves, ``child-failed`` parents,
    and halted todos.
@@ -42,8 +150,9 @@ shape with four first-class extensions:
 Views via ``view='<name>'`` on search / get (the canonical surface):
     search(kind='todo', view='roots'|'projects'|'strategic'|'doable'
                               |'waiting'|'blocked'|'ask-user'|'attention'
-                              |'active'|'doing'|'done'|'work'|'asks'|'reto-queue')
-    get(kind='todo', id=N, view='tree'|'comments'|'body'|'scratch')
+                              |'active'|'doing'|'done'|'work'|'asks'|'reto-queue'
+                              |'coordinator')
+    get(kind='todo', id=N, view='tree'|'comments'|'body'|'scratch'|'release')
 
 ``view='comments'`` is selectable: ``args={'comment': K}`` reads one
 comment, ``args={'comments': K}`` the newest K, ``args={'comments':
@@ -62,12 +171,19 @@ quest then thread — ``ask-user`` todos, ``waiting-for:reto``, gripes
 tagged ``needs:ruling`` or ``discussion`` (:mod:`precis.todo.asks_view`);
 the web ``/asks`` shows the same. A row tagged ``for-reto:<ruling|spec|
 review|other>`` waits on Reto specifically; ``view='reto-queue'`` lists
-those and the asks flat, most blocked first, then oldest (gr648249). A question for the owner is a todo
+those and the asks flat, most blocked first, then oldest (gr648249),
+narrowed by ``q=`` on the row text and windowed by ``page_size=`` +
+``args={'page': N}`` (gr673370). A question for the owner is a todo
 tagged ``ask-user`` with ``meta.ask`` (``kind``, ``options``, ``blocks``,
 ``context``; validated on put and edit, ``blocks='td<id>'`` writes a
 blocked-by link from that slice and makes the row a showstopper); answer
 it with a comment ``answer: …`` and ``tag`` ``STATUS:done`` + remove
 ``ask-user``.
+
+``view='release'`` (gr735230) is a release pass on one screen — header,
+CI verdict, one line per pass node with its newest job, the stored hold
+reason and the open asks; any node inside a pass resolves to its root
+(:func:`precis.todo.release_view.render_release`).
 
 ``view='scratch'`` (gr605672) is the task-scratch index: one line per
 live ``SPACE:scratch`` memory the todo owns through ``scratch-for:td<N>``
@@ -87,13 +203,20 @@ caching needed.
 from __future__ import annotations
 
 import dataclasses
-import difflib
+import json
 import time
 from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from precis.errors import BadInput, Gone, NotFound, Unsupported
+from precis.corrected_call import retry_call
+from precis.errors import (
+    BadInput,
+    Gone,
+    NotFound,
+    Unsupported,
+    nearest_option,
+)
 from precis.handlers import _comment_timeline as tl
 from precis.handlers._eye import is_eye_view
 from precis.handlers._interpret import interpreted
@@ -119,6 +242,7 @@ from precis.todo import (
     TERMINAL_TODO_STATUSES,
     asks_view,
     guards,
+    release_view,
     views,
     work_view,
 )
@@ -296,6 +420,9 @@ class TodoView(StrEnum):
     # td574946 S1: the rescue queue — every live node carrying an open
     # ``rescue:<class>`` tag, grouped by class.
     RESCUE = "rescue"
+    # gr652333: the coordinator's own queue — asks rows ``asks_triage``
+    # routed off the owner's list (``waiting-for:coordinator``).
+    COORDINATOR = "coordinator"
 
 
 def _doable_under_ids(store: Store, raw: Any) -> list[int]:
@@ -351,6 +478,45 @@ def _doable_under_ids(store: Store, raw: Any) -> list[int]:
             ),
         )
     return [r.id for r in live]
+
+
+def _under_doable_next(raw: Any) -> list[str]:
+    """gr676953: an ``under=`` on a view that is not ``doable`` used to
+    be pointed at a single next call that only listed the claimable
+    leaves — and spelled ``under=`` top-level, the form the same
+    response called deprecated. Point at both reads instead: the
+    subtree (``get`` view='tree') first, then the claimable-leaf
+    search, interpolating the caller's own id when known.
+    """
+    ident = repr(raw) if raw is not None else "<todo id>"
+    return [
+        f"get(kind='todo', id={ident}, view='tree')",
+        f"search(kind='todo', view='doable', args={{'under': {ident}}})",
+    ]
+
+
+def _dict_in_q(q: Any) -> dict[str, Any] | None:
+    """A dict smuggled through ``q=``, decoded — else ``None``.
+
+    ``q={'under': N}`` on the wire reaches the handler re-serialized
+    to the string ``'{"under": N}'`` (``tools.core._coerce_str_arg``
+    restores the literal a JSON-shaped string carried); an in-process
+    caller's dict arrives as-is. Either shape is ``args=`` typed in the
+    wrong slot — ``view='doable'`` never read ``q`` at all, so the
+    filter vanished and the global queue came back byte-identical for
+    every ``N`` (gr678249). A ``{``-string that fails ``json.loads``
+    stays a plain query.
+    """
+    if isinstance(q, dict):
+        return q
+    if isinstance(q, str) and q.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(q)
+        except ValueError:
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
 def _view_doable(
@@ -411,8 +577,11 @@ _TREE_SEARCH_VIEWS: dict[
     TodoView.INDEX: lambda store, args, ps: views.render_flat(store, limit=ps or 200),
     TodoView.WORK: lambda store, args, ps: work_view.render_work(store),
     TodoView.ASKS: lambda store, args, ps: asks_view.render_asks(store),
-    TodoView.RETO_QUEUE: lambda store, args, ps: asks_view.render_reto_queue(store),
+    TodoView.RETO_QUEUE: lambda store, args, ps: asks_view.render_reto_queue(
+        store, page_size=ps
+    ),
     TodoView.RESCUE: lambda store, args, ps: views.render_rescue(store),
+    TodoView.COORDINATOR: lambda store, args, ps: asks_view.render_coordinator(store),
 }
 
 #: Single-source-of-truth guard: every view in the vocabulary must have
@@ -455,13 +624,15 @@ _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
 #: body + comments + links; ``view='body'`` is the bounded body-only
 #: read, gr554136). ``'brief'`` and ``'tags'`` (gr547804) read as the
 #: same card — a todo card is the brief and carries its ``tags:``
-#: line. ``None`` maps to the default view; each alias runs the
+#: line, including the lifecycle status requested by ``'status'``
+#: (gr709768). ``None`` maps to the default view; each alias runs the
 #: canonical call and names the reading via
 #: :func:`interpreted` (gr494831's shape).
 _TODO_GET_VIEW_ALIASES: dict[str, str | None] = {
     "full": None,
     "brief": None,
     "tags": None,
+    "status": None,
 }
 
 #: Reserved *virtual* link relation. ``link(rel='parent')`` is a
@@ -518,7 +689,7 @@ class TodoHandler(NumericRefHandler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "search": ArgsSpec({"under"}),
+        "search": ArgsSpec({"under", "ids"}),
         "delete": ArgsSpec(tl.DELETE_ARGS_KEYS),
     }
     #: ``put(id=N, text=...)`` appends a comment (the unknown-args= refusal
@@ -707,6 +878,16 @@ class TodoHandler(NumericRefHandler):
                 )
             ref_id = self._coerce_id(id)
             return views.render_tree(self.store, ref_id)
+        if view == "release":
+            # gr735230: the release pass on one screen — resolves any
+            # node inside a pass to its root; reads stored data only.
+            if id is None:
+                raise BadInput(
+                    "view='release' requires id=",
+                    next="get(kind='todo', id=N, view='release')",
+                )
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return release_view.render_release(self.store, ref.id)
         if view == "comments":
             ref = self._resolve_live_ref(self._coerce_id(id))
             return interpreted(
@@ -768,20 +949,45 @@ class TodoHandler(NumericRefHandler):
             # 'brief', 'tags') without an id fall through to the
             # "requires id=" refusal; eye extents ('fisheye', 'kwd', …)
             # route to ``eye`` in the base class.
-            views_list = ["body", "comments", "scratch", "tree", "full", *_BASE_VIEWS]
-            near = difflib.get_close_matches(view, views_list, n=1)
-            lead = f"nearest is view={near[0]!r}. " if near else ""
+            views_list = [
+                "body",
+                "comments",
+                "scratch",
+                "tree",
+                "release",
+                "full",
+                *_BASE_VIEWS,
+            ]
+            near = nearest_option(view, views_list)
+            lead = f"nearest is view={near!r}. " if near else ""
+            # gr613469: lead with the corrected call — the caller's own
+            # get (every arg preserved, review td680653) with the
+            # nearest valid view swapped in — ahead of the vocabulary
+            # walk-through.
+            corrected = (
+                retry_call(
+                    "get",
+                    kind="todo",
+                    id=id if id is not None else "<id>",
+                    view=near,
+                )
+                if near
+                else None
+            )
+            nexts = [corrected] if corrected else []
+            nexts.append(
+                lead + "get(kind='todo', id=<id>) — the card (text, "
+                "tags, status); view='body' the untruncated details "
+                "body; view='comments' the timeline; view='meta' the "
+                "raw meta dict; view='tree' the subtree; view='release' a "
+                "release pass on one screen; list views "
+                "are search-side: "
+                "search(kind='todo', view='projects'|'doable'|'active')"
+            )
             raise Unsupported(
                 f"unknown view {view!r} for kind='todo'",
                 options=views_list,
-                next=(
-                    lead + "get(kind='todo', id=<id>) — the card (text, "
-                    "tags, status); view='body' the untruncated details "
-                    "body; view='comments' the timeline; view='meta' the "
-                    "raw meta dict; view='tree' the subtree; list views "
-                    "are search-side: "
-                    "search(kind='todo', view='projects'|'doable'|'active')"
-                ),
+                next=nexts,
             )
         # Single-ref reads route through the base class so links /
         # log views and the soft-delete vs not-found split keep
@@ -874,9 +1080,63 @@ class TodoHandler(NumericRefHandler):
         view: str | None = None,
         args: dict[str, Any] | None = None,
         under: str | int | None = None,
+        ids: list[str | int] | None = None,
         **_kw: Any,
     ) -> Response:
         q = fold_match_all_q(q)
+        readings: list[str] = []
+        # gr678249: a dict in the q= slot is args= typed in the wrong
+        # place — ``search(kind='todo', view='doable', q={'under': N})``
+        # used to drop the filter silently and return the global queue
+        # byte-identical. Declared args= keys fold over (one reading —
+        # run it and say so); any other key refuses the way a nested
+        # args= key would.
+        q_args = _dict_in_q(q)
+        if q_args is not None:
+            declared = self.ARGS_KEYS.get("search") or frozenset()
+            unknown = sorted(set(q_args) - declared)
+            if unknown:
+                raise BadInput(
+                    f"keys {unknown!r} not accepted by todo.search; its "
+                    "args= keys are listed below — q= takes a query "
+                    "string, not an args dict",
+                    options=sorted(declared),
+                    next=(
+                        "search(kind='todo', view='doable', "
+                        f"args={{'under': {q_args['under']!r}}})"
+                        if "under" in q_args
+                        else "search(kind='todo', view='doable', "
+                        "args={'under': <todo id>})"
+                    ),
+                )
+            if "under" in q_args and (
+                args is not None
+                and args.get("under") is not None
+                and str(args["under"]) != str(q_args["under"])
+            ):
+                raise BadInput(
+                    "q={'under': …} and args={'under': …} disagree",
+                    next="pass under= once, inside args=, with the same todo id",
+                )
+            args = {**(args or {}), **q_args}
+            q = None
+            readings.append(f"q={q_args!r} read as args={q_args!r}")
+        rest = dict(args or {})
+        nested_ids = rest.pop("ids", None)
+        if ids is None:
+            ids = nested_ids
+        if ids is not None:
+            selected = set(self._coerce_ids(ids)) if ids else set()
+            included = _kw.get("include_ref_ids")
+            _kw["include_ref_ids"] = sorted(
+                selected if included is None else selected & set(included)
+            )
+            if view is not None and view != "count":
+                raise BadInput(
+                    "ids= filters ordinary todo search and view='count'",
+                    next="search(kind='todo', ids=['td123'])",
+                )
+        args = rest or None
         # ``view='count'`` is the shared numeric-ref aggregate (total +
         # group_by facets) — it takes no tree args, so under= (todo's
         # own subtree scope) is refused rather than silently dropped.
@@ -895,6 +1155,8 @@ class TodoHandler(NumericRefHandler):
                 "group_by",
                 "since",
                 "until",
+                "closed_since",
+                "closed_until",
                 "page",
                 "include_ref_ids",
                 "exclude_ref_ids",
@@ -912,7 +1174,15 @@ class TodoHandler(NumericRefHandler):
             # count's own next: call is issued with it inside args=;
             # the ref-id channels are the continuation's replayed
             # dispatch-scope filters.
-            for key in ("since", "until", "page", "include_ref_ids", "exclude_ref_ids"):
+            for key in (
+                "since",
+                "until",
+                "closed_since",
+                "closed_until",
+                "page",
+                "include_ref_ids",
+                "exclude_ref_ids",
+            ):
                 if rest.get(key) is not None:
                     merged.setdefault(key, rest[key])
             return super().search(
@@ -927,7 +1197,7 @@ class TodoHandler(NumericRefHandler):
             if view != "doable":
                 raise BadInput(
                     "under= requires view='doable' on todo search",
-                    next="search(kind='todo', view='doable', under='<todo id>')",
+                    next=_under_doable_next(under),
                 )
             if (
                 args is not None
@@ -940,6 +1210,16 @@ class TodoHandler(NumericRefHandler):
                     "with the same todo id",
                 )
             args = {**(args or {}), "under": under}
+        # args={'under': …} is admitted for the whole verb but only
+        # view='doable' reads it — every other shape used to drop it
+        # silently (gr678249's sibling hole: the same silent misroute
+        # through the documented channel). Refuse it the way the
+        # under= kwarg and view='count' already do.
+        if view != "doable" and args is not None and args.get("under") is not None:
+            raise BadInput(
+                "under= requires view='doable' on todo search",
+                next=_under_doable_next(args["under"]),
+            )
         if view is not None:
             try:
                 view_enum = TodoView(view)
@@ -952,18 +1232,48 @@ class TodoHandler(NumericRefHandler):
                         options=available,
                         next=_SEARCH_PATH_SPELLING_HINTS[view],
                     ) from None
+                # gr613469: lead with the corrected call — the caller's
+                # own search (q/tags/page_size/args preserved, review
+                # td680653), nearest valid view swapped in.
+                near = nearest_option(view, available)
+                corrected = (
+                    retry_call("search", kind="todo", q=q, view=near) if near else None
+                )
+                nexts = [corrected] if corrected else []
+                nexts.append(f"views available: {available}; see precis-todo-tree-help")
                 raise Unsupported(
                     f"unknown view {view!r} for kind={self.kind!r} search",
                     options=available,
-                    next=f"views available: {available}; see precis-todo-tree-help",
+                    next=nexts,
                 ) from None
             if view_enum is TodoView.DOABLE:
                 # gr568264: doable is the one tree view that honours
                 # tags= — the table's 3-arg signature has no channel
                 # for it, so it dispatches here with the raw tags.
-                return _view_doable(self.store, args, page_size, tags=tags)
-            return _TREE_SEARCH_VIEWS[view_enum](self.store, args, page_size)
-        return super().search(q=q, tags=tags, page_size=page_size, **_kw)
+                return interpreted(
+                    _view_doable(self.store, args, page_size, tags=tags),
+                    readings,
+                )
+            if view_enum is TodoView.RETO_QUEUE:
+                # gr673370: the queue honours q= (row-text narrowing),
+                # page_size= and page= — the table's 3-arg signature has
+                # no q/page channel, so it dispatches here like DOABLE.
+                # args={'under'} is refused above for every non-doable
+                # view.
+                return asks_view.render_reto_queue(
+                    self.store,
+                    q=q,
+                    page_size=page_size,
+                    page=_kw.get("page", 1),
+                )
+            return interpreted(
+                _TREE_SEARCH_VIEWS[view_enum](self.store, args, page_size),
+                readings,
+            )
+        return interpreted(
+            super().search(q=q, tags=tags, page_size=page_size, **_kw),
+            readings,
+        )
 
     # ── put: parent_id + level guard at create ────────────────────
 
@@ -1019,6 +1329,10 @@ class TodoHandler(NumericRefHandler):
         iterations: int | None = None,
         after: str | None = None,
         context: str | None = None,
+        repo: str | None = None,
+        slices: str | list[Any] | None = None,
+        glue: str | list[Any] | None = None,
+        bump: str | None = None,
         # Blind-retry dedupe (gr658432): on a create the key stamps
         # ``meta.idem_key`` on the minted ref (a same-key retry returns
         # the first todo); on ``id=N + text`` it dedupes the appended
@@ -1153,6 +1467,10 @@ class TodoHandler(NumericRefHandler):
                         "iterations": iterations,
                         "after": after,
                         "context": context,
+                        "repo": repo,
+                        "slices": slices,
+                        "glue": glue,
+                        "bump": bump,
                     },
                     parent_id=parent_int,
                     refused={
@@ -1484,7 +1802,7 @@ class TodoHandler(NumericRefHandler):
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel, store=self.store)
         if target is not None:
-            # Taxon hierarchy rules (docs/backlog/term-taxonomy.md): this
+            # Taxon hierarchy rules (me693578): this
             # create path writes its own link, so it calls the shared guard.
             guard_taxon_hierarchy(
                 self.store, None, target, relation, src_kind=self.kind
@@ -2832,6 +3150,7 @@ class TodoHandler(NumericRefHandler):
         id: str | int | None = None,
         args: dict[str, Any] | None = None,
         reason: str | None = None,
+        dry_run: bool = False,
         **_kw: Any,
     ) -> Response:
         if id is None:
@@ -2857,6 +3176,28 @@ class TodoHandler(NumericRefHandler):
         # seeded folders). The check is on key presence so adding
         # new builtins doesn't need a new guard.
         guards.check_not_builtin(self.store, ref_id)
+        # Mutation review (gr626866): the rely-side walk runs before the
+        # cascade retires anything.
+        deps = self.store.dependants(ref_id, limit=10)
+        from precis.handlers._dependants_view import (
+            dependants_block,
+            dependants_summary,
+        )
+
+        if dry_run:
+            return Response(
+                body=(
+                    f"dry run: would delete {self._sense()} id={ref_id} "
+                    "(nothing written)\n\n"
+                    + dependants_block(
+                        self.store,
+                        kind=self.kind,
+                        ref_id=ref_id,
+                        id_arg=str(ref_id),
+                        page=deps,
+                    )
+                )
+            )
         # Cascading soft delete: a live child under a deleted parent
         # is invisible to the nursery orphan walk (it needs a live
         # parent chain) yet rots forever as a stuck-doable leaf — the
@@ -2874,7 +3215,8 @@ class TodoHandler(NumericRefHandler):
                 payload={"reason": reason.strip()},
             )
         suffix = f" (+{n_desc} descendant todos)" if n_desc else ""
-        return Response(body=f"deleted {self._sense()} id={ref_id}{suffix}")
+        line = dependants_summary(self.store, ref_id=ref_id, page=deps)
+        return Response(body=f"deleted {self._sense()} id={ref_id}{suffix}\n{line}")
 
     # ── links view: synthesize the virtual parent edge ───────────
 

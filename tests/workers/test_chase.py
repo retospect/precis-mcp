@@ -179,7 +179,7 @@ def test_terminal_no_inline_cites_establishes_chain(store) -> None:
 
 def test_own_source_chunk_pin_establishes_not_dead_chain(store) -> None:
     """gr510556: a finding grounded on a resolvable chunk of its own
-    source paper (the kin-evidence/castor mint: a paper-level
+    source paper (the kin-evidence/cedar mint: a paper-level
     ``derived-from`` plus a ``dst_chunk_id`` pin into the same ref)
     terminates AT the pin — the inline cites inside the pinned chunk
     belong to the claim's subject, not to a chain the finding must keep

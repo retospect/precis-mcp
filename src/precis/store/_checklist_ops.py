@@ -1,4 +1,4 @@
-"""Store ops for the ``checklist`` kind (docs/backlog/checklist-kind.md,
+"""Store ops for the ``checklist`` kind (me693927,
 slice 1) — named, versioned check ledgers with per-target accumulating
 verdicts. See ``migrations/0158_checklist_kind.sql`` for the schema and
 the write-ownership rules this module enforces:

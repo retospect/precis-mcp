@@ -3,48 +3,18 @@ name: differentiation
 description: "Before writing gradient-descent code for any design objective: decide how each term's derivative is obtained and how the gradient is verified. Substance: precis-differentiation-help."
 ---
 
-# differentiation — derivative route before descent
+<!-- precis-stub: precis-differentiation-help -->
 
-**The full playbook is the shipped product skill.** Read it first:
+# differentiation
 
-```
-get(kind="skill", id="precis-differentiation-help")
-```
+This skill lives in the precis corpus. Before any task work, read it
+and follow it:
 
-Source of truth for editing:
-`src/precis/data/skills/precis-differentiation-help.md`.
+    get(kind='skill', id='precis-differentiation-help')
 
-## The three rules it exists to enforce
+Search precis skills (`search(kind='skill', q='<goal>')`) before
+starting any other task.
 
-1. **Name the derivative route per cost term before coding the descent.**
-   Many design variables into one scalar ⇒ adjoint or reverse mode (cost
-   independent of variable count). Few variables ⇒ forward mode. Finite
-   differences are a *test*, never the production gradient.
-2. **Smooth or freeze every nonsmooth term.** `max`→log-sum-exp,
-   `min`→softmin, `abs`→Huber, snap→smooth wells. Rounding, sorting,
-   catalogue choice and `if` on a design variable get frozen and handed to
-   the annealer — fake smoothness is worse than an honest discrete variable.
-3. **Ship a gradient verification test with the gradient.** Directional
-   dot-product test, then a Taylor remainder that quarters when the step
-   halves, then an independent route (central finite differences or
-   complex-step) on a few variables at several step sizes. The shipped
-   density sensitivity in `src/precis/structsolve/simp.py` is gated this way
-   — match it.
-
-## Spectral graph objects — ask which of three roles
-
-Basis (frozen eigenvectors as reduced design coordinates) ⇒ differentiable,
-one projection, forward mode. Objective (an eigenvalue) ⇒ differentiable only
-while it is simple; clustered eigenvalues and mode switching need a p-norm/KS
-aggregate over a mode *band*. Structure decision (Fiedler cut, clustering,
-coarsening) ⇒ combinatorial, annealer only. Deciding test: does it get
-recomputed when the design changes? Recomputed ⇒ outer layer.
-
-## Two failure modes that do not crash
-
-- Differentiating a solver's *iterations* instead of its converged state.
-  Differentiate the residual (implicit relation), not the loop — and never
-  let the inner tolerance vary with the outer loop, or the objective changes
-  shape under the optimiser.
-- A non-converged inner solve returning a confident, wrong gradient: every
-  derivative formula assumes the residual is zero.
+MCP down: stop the task. Retry the connection with growing waits
+(1, 2, 4, 8 minutes, then every 15) and resume when it answers. Do
+not work the task without skills.

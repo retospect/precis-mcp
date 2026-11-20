@@ -660,7 +660,7 @@ def test_dry_run_isolates_a_per_hub_extract_error(store: Store) -> None:
 def test_dry_run_aborts_after_consecutive_infra_failures(store: Store) -> None:
     """An ``extract_fn`` that always raises (infra dead, e.g. ECONNREFUSED)
     must abort the whole run rather than silently reporting every hub as
-    an error/no-claim — the melchior-incident guard. Only a handful of
+    an error/no-claim — the maple-incident guard. Only a handful of
     hubs should have been evaluated before the abort."""
     for i in range(8):
         mint_hub(store, _claim(f"Always-fails claim number {i} for breaker test"))

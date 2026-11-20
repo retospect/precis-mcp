@@ -1,6 +1,6 @@
 """3D density-field topology optimisation (SIMP) on a voxel grid, with an
 optional additive-manufacturing overhang filter and a naive implicit-lattice
-fill — the "nTop leg" of docs/backlog/structural-solution-space.md (slice 4).
+fill — the "nTop leg" of me695531 (slice 4).
 
 **Advisory tier, never a hard DRC.** A compliance number computed from a
 voxelised model is an *estimate*: the geometry is a staircase, the mesh is

@@ -5,9 +5,14 @@ from __future__ import annotations
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, Denied, NotFound
 from precis.handle_words import _ADJECTIVES, _COLORS, _NOUNS, to_number, to_words
 from precis.handlers.handle import HandleHandler
+from precis.runtime import PrecisRuntime
+from precis.runtime.dispatch import _KIND_GATE
+from precis.store import Store
+from precis.store.types import ChunkInsert
+from precis.tools import core
 
 
 def test_lists_distinct() -> None:
@@ -50,3 +55,47 @@ def test_handler_both_directions() -> None:
         h.get()
     with pytest.raises(BadInput):
         h.get(q="not a handle")
+
+
+def test_spoken_name_resolver(
+    store: Store, runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    refs = [
+        store.insert_ref(
+            kind="paper",
+            slug=f"miller-{year}",
+            title=topic,
+            meta={"author": "Miller, J.", "year": year, "title": topic},
+        )
+        for year, topic in [(2023, "Ammonia synthesis"), (2024, "Catalyst design")]
+    ]
+    for ref in refs:
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=f"The Miller paper on {ref.title}.")],
+        )
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+    body = core.get(kind="handle", q="the Miller paper", args={"kind": "paper"})
+    assert sum(line.startswith("pa") for line in body.splitlines()) == 2
+    for ref, name in zip(
+        refs, ["Miller 2023 ammonia", "Miller 2024 catalyst"], strict=True
+    ):
+        assert f"pa{ref.id} | {name} | {ref.title}" in body
+    with pytest.raises(NotFound, match="search\\(kind='paper'"):
+        HandleHandler(hub=Hub(store=store)).get(
+            q="xylophoniczz", args={"kind": "paper"}
+        )
+
+
+def test_resolver_checks_target_scope() -> None:
+    def refuse(verb: str, payload: dict[str, object]) -> None:
+        assert verb == "search"
+        assert payload["kind"] == "paper"
+        raise Denied("paper scope required", next="use a paper read credential")
+
+    token = _KIND_GATE.set(refuse)
+    try:
+        with pytest.raises(Denied):
+            HandleHandler(hub=Hub()).get(q="Miller ammonia", args={"kind": "paper"})
+    finally:
+        _KIND_GATE.reset(token)

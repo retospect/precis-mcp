@@ -32,7 +32,7 @@ list them with `get(kind='skill', id='precis-work-help/toc')`. The
 design behind the tree, when a row's shape surprises you:
 
 ```python
-get(kind="md", id="main/docs/backlog/dark-factory.md~decisions-reto-2026-10-30")
+get(kind="md", id="me692430~decisions-reto-2026-10-30")
 ```
 
 ## What is in flight right now, and who is on it?
@@ -267,7 +267,7 @@ changes:
 | `fixing` | claimed by a builder who holds a lease |
 | `auto_verify` (legacy `verify`) | fixed on main; the deploy check closes it once the sha is on prod |
 | `user_verify` | fixed on main; a human checks it via the per-deploy ask todo |
-| `needs_spec` | ill-specified; parked until a docs/backlog spec names it |
+| `needs_spec` | ill-specified; parked until a graph spec names it ([[precis-spec-help]]) |
 | `parked` | waiting on a `meta.until` condition; `gripe_parked` wakes it to `open` |
 | `done` | fixed and verified (leaves the view) |
 | `wontfix` | decided against (leaves the view) |
@@ -281,7 +281,11 @@ fix loop is in [[precis-gripe-loop-help]].
 The `gripe_dispatch` worker pass (every 10 minutes, dark until
 `service_config` lights it for a host) mints one `gripe-fix-direct`
 chain per free code-lane slot (summed cap of the enabled `code` lanes,
-minus open chains whose build has not landed). The build carries the
+minus chains whose build is live: a parked build -- ask-user,
+waiting-for, child-failed, paused -- holds no slot, and a chain parked
+with nothing moving for `factory.gripe_dispatch.stall_hours` (6) and
+no open ask is closed won't-do; the second such stall tags the gripe
+`hold:no-dispatch` for a re-brief). The build carries the
 gripe text verbatim and picks its lane at dispatch (cheapest fit, free
 before paid); the land writes `resolved: <sha>` on the gripe.
 It picks the hottest `prio` then the oldest among gripes that are `open`

@@ -1,0 +1,216 @@
+---
+# The dedicated builder account (precis_builder_user != deploy). Included
+# first by main.yml, when precis_builder_manage_user.
+#
+# Least privilege by construction: no password (locked), no sudo, no
+# supplementary groups (so NOT the docker group — it is root-equivalent),
+# home 0700. It never gets deploy's vault file or ssh keys, and
+# deploy's home stays deploy-only. What it DOES hold is listed in
+# me691785 ("Builder user").
+
+- name: Refuse to manage the deploy account here
+  ansible.builtin.assert:
+    that: precis_builder_user != 'deploy'
+    fail_msg: >-
+      user.yml creates the dedicated builder account; deploy is provisioned
+      by 00-users (precis_builder_manage_user must be false for it).
+    quiet: true
+
+# ── Linux ─────────────────────────────────────────────────────────────
+- name: Builder user account (Linux — locked password, no extra groups)
+  when: os_family == "linux"
+  ansible.builtin.user:
+    name: "{{ precis_builder_user }}"
+    system: true
+    create_home: true
+    home: "{{ precis_builder_home }}"
+    shell: /bin/bash
+    password_lock: true
+    # An empty list REMOVES every supplementary group: the account stays on
+    # its own primary group (created with it) and never in sudo or docker.
+    groups: ""
+    append: false
+    state: present
+  become: true
+
+# ── macOS ─────────────────────────────────────────────────────────────
+# A standard (non-admin) account with its own primary group, the same shape
+# as the Linux one. Written against the stock tools (dseditgroup, sysadminctl,
+# createhomedir) but not exercised on a Mac in CI: first run on a real host
+# is the check (me691785).
+- name: Builder user account (macOS)
+  when: os_family == "darwin"
+  become: true
+  block:
+    - name: Probe the builder group
+      ansible.builtin.command: dscl . -read /Groups/{{ precis_builder_user }} PrimaryGroupID
+      register: _builder_group_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: Create the builder group
+      when: _builder_group_probe.rc != 0
+      ansible.builtin.command: dseditgroup -o create {{ precis_builder_user }}
+
+    - name: Read the builder group id
+      ansible.builtin.command: dscl . -read /Groups/{{ precis_builder_user }} PrimaryGroupID
+      register: _builder_gid
+      changed_when: false
+      check_mode: false
+
+    - name: Probe the builder account
+      ansible.builtin.command: dscl . -read /Users/{{ precis_builder_user }} UniqueID
+      register: _builder_user_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    # No -admin: a standard account. sysadminctl without -password leaves an
+    # account that accepts a BLANK password, so the tasks after the home
+    # template set a random one nobody keeps, hide the account from the login
+    # window and assert the blank password no longer works.
+    - name: Create the builder account (standard user, own primary group)
+      when: _builder_user_probe.rc != 0
+      ansible.builtin.command: >-
+        sysadminctl -addUser {{ precis_builder_user }}
+        -fullName "precis builder"
+        -GID {{ _builder_gid.stdout.split()[-1] }}
+        -shell /bin/zsh
+        -home {{ precis_builder_home }}
+
+    - name: Create the builder home from the system template
+      ansible.builtin.command: createhomedir -c -u {{ precis_builder_user }}
+      args:
+        creates: "{{ precis_builder_home }}/Library"
+
+    - name: Probe for a blank builder password
+      ansible.builtin.command: dscl . -authonly {{ precis_builder_user }} ""
+      register: _builder_blank_before
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    # The password is generated in the shell and never leaves it: nothing
+    # registers or prints it, and no_log hides the command. Only when the
+    # account was just created or the blank-password probe succeeded, so a
+    # re-run does not rotate it for nothing.
+    - name: Set a random builder password nobody keeps
+      when: _builder_user_probe.rc != 0 or _builder_blank_before.rc == 0
+      ansible.builtin.shell: >-
+        dscl . -passwd /Users/{{ precis_builder_user }} "$(openssl rand -base64 33)"
+      no_log: true
+
+    - name: Probe the builder account's login-window visibility
+      ansible.builtin.command: dscl . -read /Users/{{ precis_builder_user }} IsHidden
+      register: _builder_hidden_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: Hide the builder account from the login window
+      when: _builder_hidden_probe.rc != 0 or _builder_hidden_probe.stdout.split()[-1] != '1'
+      ansible.builtin.command: dscl . -create /Users/{{ precis_builder_user }} IsHidden 1
+
+    - name: Probe the builder password again
+      ansible.builtin.command: dscl . -authonly {{ precis_builder_user }} ""
+      register: _builder_blank_after
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: The builder account must not accept a blank password
+      ansible.builtin.assert:
+        that: _builder_blank_after.rc != 0
+        fail_msg: >-
+          {{ precis_builder_user }} accepts a blank password
+          (dscl . -authonly succeeded with an empty one); set a random
+          one (dscl . -passwd /Users/{{ precis_builder_user }} <password>).
+        quiet: true
+
+    - name: Probe admin membership
+      ansible.builtin.command: dseditgroup -o checkmember -m {{ precis_builder_user }} admin
+      register: _builder_admin_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: The builder account must not be an administrator
+      ansible.builtin.assert:
+        that: _builder_admin_probe.rc != 0
+        fail_msg: >-
+          {{ precis_builder_user }} is in the admin group — the builder
+          account is a least-privilege user; remove it
+          (dseditgroup -o edit -d {{ precis_builder_user }} -t user admin).
+        quiet: true
+
+- name: Builder home is private (0700, owned by the builder user)
+  ansible.builtin.file:
+    path: "{{ precis_builder_home }}"
+    state: directory
+    owner: "{{ precis_builder_user }}"
+    group: "{{ precis_builder_user }}"
+    mode: "0700"
+  become: true
+
+# Facts the rest of the role reads (rootless docker socket, unit env).
+- name: Resolve the builder user's uid
+  ansible.builtin.command: id -u {{ precis_builder_user }}
+  register: _builder_uid_out
+  changed_when: false
+  check_mode: false
+
+- name: Record the builder uid
+  ansible.builtin.set_fact:
+    _builder_uid: "{{ _builder_uid_out.stdout | trim }}"
+
+# ── lane-CLI toolchain (scripts/agent-cli-update runs as this user) ──────
+# The system npm's global prefix (/usr, or Homebrew's) is not writable by
+# a least-privilege user, so `npm install -g` would EACCES. A user-level
+# prefix under ~/.local puts the npm CLIs in ~/.local/bin, already on the
+# unit PATH and agent_cli.py's EXTRA_PATH. Both OS families: agent_cli.py
+# falls back to the same ~/.local prefix on a Mac, so one .npmrc keeps
+# hand-run `npm -g` consistent with it.
+- name: Builder user's npm prefix (~/.npmrc, user-owned)
+  ansible.builtin.copy:
+    dest: "{{ precis_builder_home }}/.npmrc"
+    content: "prefix={{ precis_builder_home }}/.local\n"
+    owner: "{{ precis_builder_user }}"
+    group: "{{ precis_builder_user }}"
+    mode: "0644"
+  become: true
+
+- name: Builder user's ~/.local/bin exists (user-owned)
+  ansible.builtin.file:
+    path: "{{ precis_builder_home }}/.local/bin"
+    state: directory
+    owner: "{{ precis_builder_user }}"
+    group: "{{ precis_builder_user }}"
+    mode: "0755"
+  become: true
+
+# `devin update` self-updates an existing install; a fresh user has none,
+# so the vendor installer runs once (it lays ~/.local/share/devin and links
+# ~/.local/bin/devin). The installer then starts an interactive login, which
+# without a TTY prints "Login canceled" and exits 1 — so it gets no stdin and
+# its exit code is ignored; success is the binary existing and running. A
+# missing binary (failed download or install) still stops the play.
+- name: First devin install for the builder user (vendor installer, once)
+  ansible.builtin.shell: |
+    set -eu -o pipefail
+    installer="$(mktemp)"
+    trap 'rm -f "$installer"' EXIT
+    curl -fsSL https://cli.devin.ai/install.sh -o "$installer"
+    bash "$installer" < /dev/null || true
+    test -x {{ precis_builder_home }}/.local/bin/devin
+    {{ precis_builder_home }}/.local/bin/devin --version > /dev/null
+  args:
+    executable: /bin/bash
+    creates: "{{ precis_builder_home }}/.local/bin/devin"
+  become: true
+  become_user: "{{ precis_builder_user }}"
+  environment:
+    HOME: "{{ precis_builder_home }}"
+  timeout: 300

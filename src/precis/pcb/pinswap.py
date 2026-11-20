@@ -63,7 +63,7 @@ def offsets_from_ir(
     where every swap scores zero; (2) a bottom-mounted instance is
     MIRRORED and (3) any instance may be rotated — both already folded
     into ``pin_point`` and neither into a raw pad list. Found wiring
-    pin swap through ``op='route'`` (docs/backlog/pcb-ewod-multitile.md
+    pin swap through ``op='route'`` (me692460
     ruling 6, 2026-09-19): the dogfood settled 0 swaps until this. A pin
     still unplaced (``pin_point`` is ``None``) or with no real offset is
     left absent, which the group's own centroid default handles."""
@@ -112,7 +112,7 @@ def _instance_edges(ir: PcbIR, instance: int) -> dict[int, list[Point]]:
     carrying all 64 electrode pins, so every airwire from the HV507 sink
     converged on the same point and no swap could ever change a crossing
     count (the dogfood settled 0 swaps with a correctly resolved group —
-    docs/backlog/pcb-ewod-multitile.md ruling 6)."""
+    me692460 ruling 6)."""
     edges: dict[int, list[Point]] = {}
     for seg_id, near_pin in _segments_near_pin(ir, instance).items():
         a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
@@ -256,8 +256,7 @@ def propose_radial_assignment(
 
     For the one shape that dominates here — an
     HV507-class sink under an electrode field, its pads on a ring, every
-    far end a plaza via inside or around that ring (docs/backlog/
-    pcb-ewod-multitile.md ruling 6, "pin swaps make routing trivial") —
+    far end a plaza via inside or around that ring (me692460 ruling 6, "pin swaps make routing trivial") —
     the non-crossing assignment IS known in closed form: sort the pins by
     angle, sort the far ends by angle, and match them in the same cyclic
     order; two chords of a ring cross exactly when their endpoint orders

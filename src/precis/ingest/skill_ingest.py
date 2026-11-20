@@ -11,7 +11,7 @@ advisory-lock claim, transactional swap) lives separately so this
 planning phase stays unit-testable against the filesystem alone.
 
 Static gates enforced at scan time (decision 5 / Quality gates §
-Static gates of ``docs/backlog/docs-and-skills-redesign.md``):
+Static gates of `gr690464`):
 
 - Frontmatter parses; ``flavor:`` is one of the four defined values.
 - Every ``{{include …}}`` directive resolves.
@@ -46,6 +46,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -150,11 +151,19 @@ def scan_skill_dir(
     *,
     includer: Includer | None = None,
     chunk_budget_chars: int = DEFAULT_CHUNK_BUDGET_CHARS,
+    resolve_ruling: Callable[[str], bool] | None = None,
 ) -> ScanResult:
     """Walk ``root`` recursively for ``*.md`` files; return plans + failures.
 
     The scan is deterministic — files are processed in lexicographic
-    order so failure messages are stable across runs.
+    order so failure messages are stable across runs. Declared
+    ``rulings:`` handles are grammar-checked at front-matter parse
+    (memory/gripe/todo shape); a caller that can see live refs passes
+    ``resolve_ruling`` to additionally fail files whose ruling handles
+    do not exist. This scan is filesystem-only — the shipped-corpus
+    gate has no store — so resolution stays opt-in: mandating it here
+    would veto every skill that carries ``rulings:`` before any DB-backed
+    stage can certify it.
     """
     if not root.is_dir():
         raise FileNotFoundError(f"skill scan root does not exist: {root}")
@@ -166,6 +175,12 @@ def scan_skill_dir(
         slug = path.stem
         try:
             plan = _plan_one(path, slug, includer, chunk_budget_chars)
+            if resolve_ruling is not None:
+                for handle in plan.frontmatter.rulings:
+                    if not resolve_ruling(handle):
+                        raise _PlanError(
+                            f"ruling {handle} does not resolve to a live ref"
+                        )
         except _PlanError as exc:
             failures.append(IngestFailure(slug=slug, file_path=path, reason=str(exc)))
             continue

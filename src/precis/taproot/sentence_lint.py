@@ -1,6 +1,6 @@
 """Advisory admissibility/grammar lint for taproot claim sentences and scope.
 
-The 2026-08-19 corpus audit (`docs/backlog/nanopub-corpus-remediation.md`)
+The 2026-08-19 corpus audit (me691969)
 found the 1,527-hub claim corpus broadly unpublishable in ways
 `taproot/notation.py::lint_notation` does not touch: bibliography stubs
 minted as claims, "the same group"-style dangling references, sentences
@@ -117,6 +117,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from precis.taproot.conditions import check_conditions
 from precis.taproot.numeral_audit import absent_numerals
 
 __all__ = [
@@ -250,6 +251,11 @@ EPISTEMIC_MODE_TOKENS: frozenset[str] = frozenset(
         "Tafel plot",
         "Tafel plots",
         "Tafel analysis",
+        # 2026-11-19: named experimental method (gr717322). The finding
+        # preflight rejected an "Atom probe tomography ..." claim for
+        # want of a mode token; the full method name is the corpus
+        # spelling (the acronym "APT" collides with ordinary words).
+        "atom probe tomography",
     }
 )
 
@@ -580,7 +586,7 @@ _VERB_SHAPE_RE = re.compile(r"^[A-Za-z]+(?:s|ed|es)$")
 #: sentence's main verb -- plural nouns (`applications`, `results`, ...)
 #: and attributive past-participles used as adjectives (`laminated card`,
 #: not "X laminated Y"). Corpus-specific and deliberately extend-as-needed
-#: (per `docs/backlog/nanopub-corpus-remediation.md`'s prod lint run);
+#: (per me691969's prod lint run);
 #: false-negative-biased -- an omission here just means a truly verbless
 #: sentence slips through, never a real claim wrongly flagged.
 _VERB_SHAPE_EXCEPTIONS: frozenset[str] = frozenset(
@@ -1032,11 +1038,14 @@ def _clause_fragments(sentence: str) -> list[str]:
 # must never fire this).
 
 #: Numeric range with a trailing unit -- same shape as `notation.py`'s
-#: `hyphen-numeric-range`/`range-unit-repeated` detectors (deliberately
-#: not imported from there: this module stays a pure string check with no
-#: cross-module coupling, matching every other pattern here).
+#: `hyphen-numeric-range`/`range-unit-repeated` detectors, including
+#: their `(?<![-\w.])` guard so a hyphen inside a model/package
+#: identifier (`6-27b` in `qwen3.6-27b-q8_0`, gr695785) never reads as a
+#: unit range. Deliberately not imported from there: this module stays a
+#: pure string check with no cross-module coupling, matching every other
+#: pattern here.
 _RANGE_WITH_UNIT_RE = re.compile(
-    r"(?<![-A-Za-z\d])(\d+(?:\.\d+)?)\s?[–-]\s?(\d+(?:\.\d+)?)"
+    r"(?<![-\w.])(\d+(?:\.\d+)?)\s?[–-]\s?(\d+(?:\.\d+)?)"
     r"\s?([A-Za-zµ°Ω%][\w°Ω%⁻¹²³⁴⁵⁶⁷⁸⁹⁰/]*)"
 )
 
@@ -1077,7 +1086,7 @@ def _mixed_point_range_hit(sentence: str) -> tuple[str, str] | None:
     units = dict.fromkeys(m.group(3) for m in range_matches)  # dedup, keep order
     for unit in units:
         point_re = re.compile(
-            r"(?<![-\d.])(\d+(?:\.\d+)?)\s?" + re.escape(unit) + r"\b"
+            r"(?<![-\w.])(\d+(?:\.\d+)?)\s?" + re.escape(unit) + r"\b"
         )
         for m in point_re.finditer(sentence):
             if any(start <= m.start() < end for start, end in range_spans):
@@ -1294,7 +1303,7 @@ _AUTHOR_NAME_RE = re.compile(
 )
 
 #: Terseness budget. Corpus median 147 chars, p90 249, max 506
-#: (`docs/backlog/nanopub-corpus-remediation.md` audit table). 250 sits
+#: (me691969 audit table). 250 sits
 #: just above p90: terse is a rule, not a preference -- a sentence past
 #: this length is disproportionately likely to be the multi-clause-collapse
 #: shape the remediation doc names (a joined "and"-claim, a bibliography
@@ -1520,6 +1529,13 @@ def lint_claim_sentence(
             "otherwise a bare point beside a range reads as an invented "
             "midpoint. Advisory only -- this check has no access to the "
             "source and cannot confirm which case applies."
+        )
+
+    for gap in check_conditions(sentence):
+        warnings.append(
+            f"conditions-incomplete:{gap.family}: no {', '.join(gap.missing)} "
+            f"stated -- {gap.hint} Conditions the field assumes by default "
+            "stay implicit. Advisory only."
         )
 
     return warnings

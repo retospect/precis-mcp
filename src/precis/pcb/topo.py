@@ -26,7 +26,7 @@ triangle and one edge per portal. Two domains share the machinery:
   spec's bands pull taut in, the insertion search's alternative to the
   tangent graph, and where :func:`side_swap_candidates` finds the sleeve
   on the other side of a portal
-  (``docs/backlog/pcb-unified-place-route.md`` §Taut bands,
+  (`me695289` §Taut bands,
   §Composition row "5 CDT portals").
 
 **What this does not model.** No via edges between layers (the via
@@ -544,7 +544,7 @@ def net_region_graph(
     delta_mm: float = DELTA_MM,
 ) -> RegionGraph:
     """The CDT of the free space net ``net``'s band runs in — the funnel
-    domain of ``docs/backlog/pcb-unified-place-route.md`` §Taut bands.
+    domain of `me695289` §Taut bands.
     Portal ``capacity`` in a net domain is centreline room
     (``clearance_mm`` = 0: the inflation already priced the ends), not
     the physical figure the shared portal graph reports."""

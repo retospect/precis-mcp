@@ -6,7 +6,7 @@ bytes :func:`precis.pcb.epro_write.zip_epro` produced go straight back
 through the importer's own reader (:func:`precis.pcb.epro.read_archive` +
 :func:`~precis.pcb.epro.build_design`), and the design that comes out is
 compared with the model the writer was handed. An agent cannot fetch the
-file from the serving host (docs/backlog/pcb-epro-mcp-roundtrip.md), so
+file from the serving host (me690047), so
 this is the round trip it can run.
 
 **What "want" is.** The writer's model, not a source file:
