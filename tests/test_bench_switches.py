@@ -226,15 +226,20 @@ def test_kwd_off_refuses_the_kwd_rung(hub: Hub) -> None:
 
 
 def test_kwd_off_drops_the_keyword_containment_leg_from_verbatim_ranking() -> None:
-    from precis.store._chunks_ops import _verbatim_pred
+    from precis.store._chunks_ops import _VERBATIM_TSV_CAP, _verbatim_pred
 
-    sql_on, _ = _verbatim_pred(["alpha"])
-    assert "c.keywords" in sql_on
+    for scoped in (False, True):
+        sql_on, _ = _verbatim_pred(["alpha"], scoped=scoped)
+        assert "keywords @>" in sql_on
     with applied(kwd=False):
         for scoped in (False, True):
             sql_off, params = _verbatim_pred(["alpha"], scoped=scoped)
             assert "keywords" not in sql_off and "ILIKE" in sql_off
-            assert params == ["%alpha%"]
+            # Scoped: bare substring check. Unscoped: the capped TSV phrase leg.
+            expected = (
+                ["%alpha%"] if scoped else ["alpha", _VERBATIM_TSV_CAP, "%alpha%"]
+            )
+            assert params == expected
 
 
 def test_kwd_off_drops_the_keyword_clustering_notice_and_readiness_part(
