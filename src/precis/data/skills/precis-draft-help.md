@@ -399,7 +399,7 @@ See [[precis-draft-review-help]]. Three traps:
 
 ## Cite and cross-reference in prose
 
-See [[precis-draft-cite-help]].
+See [[precis-draft-cite-help]], including `view='cites'`.
 
 ## Define an abbreviation — hover-resolve, no inline spellout
 

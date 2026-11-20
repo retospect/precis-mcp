@@ -646,9 +646,11 @@ class DatasheetHandler(PaperHandler):
         for r in rows:
             h = handle_registry.format_handle("datasheet", r["ref_id"])
             pdf = "pdf" if r["has_pdf"] else "no-pdf"
+            title = (r["title"] or "").split("\n", 1)[0].strip()
             lines.append(
                 f"  {h}  [{r['cite_key'] or h}]  {r['body']}"
                 f" ({r['full_chunks']} body chunks)  {pdf}"
+                + (f"  — {title}" if title else "")
             )
             part = self._ref_part_lcsc(r["ref_id"])
             if part:

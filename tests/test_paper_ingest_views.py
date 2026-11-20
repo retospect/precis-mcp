@@ -295,6 +295,11 @@ class TestFetchStatus:
         card = _paper(store, "card2024b", card=True)
         stub = _paper(store, "stub2024c")
         refs_only = _paper(store, "refsonly2024d", card=True, refs=3)
+        store.insert_ref_identifiers(
+            full, [("doi", "10.1234/status", "test"), ("arxiv", "2611.12345", "test")]
+        )
+        store.insert_ref_identifiers(card, [("arxiv", "2611.12346", "test")])
+        store.insert_ref_identifiers(stub, [("s2", "a" * 40, "test")])
         now = datetime.now(UTC)
         _event(store, stub, "fetcher:oa", "no_oa_version", now - timedelta(hours=3))
         _event(store, stub, "fetcher:oa", "fetch_failed", now - timedelta(hours=1))
@@ -302,10 +307,16 @@ class TestFetchStatus:
             handle_registry.format_handle("paper", i)
             for i in (full, card, stub, refs_only)
         ]
-        body = papers.search(view="status", ids=ids).body
+        body = papers.get(view="status", id=[*ids]).body
+        assert body == papers.search(view="status", ids=ids).body
+        assert "[full2024a]  10.1234/status  full-text" in body
+        assert "[card2024b]  arxiv:2611.12346  card-only" in body
+        assert f"[stub2024c]  s2:{'a' * 40}  stub" in body
+        assert "[refsonly2024d]  —  card-only" in body
+        assert "never tried  — full2024a" in body
         by_slug = {}
         for line in body.splitlines():
-            m = re.search(r"\[(\w+)\]\s+(full-text|card-only|stub)", line)
+            m = re.search(r"\[(\w+)\]\s+\S+\s+(full-text|card-only|stub)", line)
             if m:
                 by_slug[m.group(1)] = (m.group(2), line)
         assert by_slug["full2024a"][0] == "full-text"
@@ -357,7 +368,9 @@ class TestFetchStatus:
         body = papers.search(view="status", ids=ids).body
         by_slug = {}
         for line in body.splitlines():
-            m = re.search(r"\[(\w+)\]\s+(full-text|thin-text|card-only|stub)", line)
+            m = re.search(
+                r"\[(\w+)\]\s+\S+\s+(full-text|thin-text|card-only|stub)", line
+            )
             if m:
                 by_slug[m.group(1)] = (m.group(2), line)
         # ≤12 chunks + no_oa_version newest → thin-text, not full-text.

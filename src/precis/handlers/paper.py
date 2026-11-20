@@ -5378,8 +5378,9 @@ class PaperHandler(Handler):
     def _fetch_status_view(self, ids: list[str] | None) -> Response:
         """``search(kind='paper', view='status', ids=[…])`` — one row per
         *input* id in input order: each ``asked`` id maps to its paper's
-        body state (full-text / thin-text / card-only / stub), has-PDF,
-        and the newest fetcher outcome; a ``dr…``/``dc…`` container id
+        body state (full-text / thin-text / card-only / stub), DOI
+        (arxiv/s2 fallback), title, has-PDF, and the newest fetcher
+        outcome (gr685134). A ``dr…``/``dc…`` container id
         resolves to every cited paper yet still gets ONE row, each
         paper's status a ``; ``-separated segment; a repeat of a paper
         already shown reads ``same as <asked>`` and a miss reads
@@ -5459,9 +5460,14 @@ class PaperHandler(Handler):
                     else "never tried"
                 )
                 pdf = "pdf" if r["has_pdf"] else "no-pdf"
+                title = _excerpt(
+                    title_md((r["title"] or "").split("\n", 1)[0].strip()),
+                    limit=80,
+                )
                 segments.append(
-                    f"{h}  [{r['cite_key'] or h}]  {r['body']}"
+                    f"{h}  [{r['cite_key'] or h}]  {r['doi'] or '—'}  {r['body']}"
                     f" ({r['full_chunks']} body chunks)  {pdf}  fetch: {last}"
+                    + (f"  — {title}" if title else "")
                 )
             row_lines.append(f"  {asked} -> " + "; ".join(segments))
         lines = [

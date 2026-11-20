@@ -395,8 +395,11 @@ get(kind="paper", id="pa123", view="status")   # same table, one paper
 ```
 
 `view='status'` (up to 200 handles/slugs/DOIs): one row per *input* id,
-in input order — `<asked> -> pa<id>  [cite_key]  full-text | thin-text
-| card-only | stub`, PDF present, and the newest fetcher outcome
+in input order — `<asked> -> pa<id>  [cite_key]  <identifier>  <body state>`.
+The identifier is the DOI, then an `arxiv:` or `s2:` fallback, or `—`.
+Body state is `full-text`, `thin-text`, `card-only` or `stub`, followed by
+the body chunk count, PDF status, newest fetcher outcome and a title excerpt.
+The fetcher outcome is
 (`fetch_ok`, `fetch_failed`, `no_oa_version`, or never tried). A `pc`
 chunk handle lands on its owning paper's row; an input whose paper was
 already shown reads `same as <asked>`; a miss reads `unresolved` and

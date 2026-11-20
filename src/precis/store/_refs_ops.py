@@ -1653,7 +1653,11 @@ class RefsMixin:
         fetcher event is ``no_oa_version`` — an abstract or skeleton,
         not article body; gr608581), ``'card-only'`` (only ``card_*``
         chunks — abstract/title cards) or ``'stub'`` (no chunks at
-        all). ``last_event`` / ``last_source`` / ``last_ts`` are the
+        all). ``doi`` is the ref's DOI, falling back to its ``arxiv:``/
+        ``s2:`` identifier when it has none (the same identifier
+        preference :meth:`manual_retrieval_list` prints, so a DOI-less
+        stub's row is never blank). ``title`` is the ref's stored
+        ``title``. ``last_event`` / ``last_source`` / ``last_ts`` are the
         strictly newest ``fetcher:%`` ref_event (empty when never tried
         — a datasheet never has any). Ids that are not live ``kind``
         refs are simply absent from the result. ``kind='datasheet'``
@@ -1666,6 +1670,15 @@ class RefsMixin:
             SELECT r.ref_id,
                    (SELECT min(id_value) FROM ref_identifiers
                      WHERE ref_id = r.ref_id AND id_kind = 'cite_key'),
+                   COALESCE(
+                     (SELECT min(id_value) FROM ref_identifiers
+                       WHERE ref_id = r.ref_id AND id_kind = 'doi'),
+                     (SELECT 'arxiv:' || min(id_value) FROM ref_identifiers
+                       WHERE ref_id = r.ref_id AND id_kind = 'arxiv'),
+                     (SELECT 's2:' || min(id_value) FROM ref_identifiers
+                       WHERE ref_id = r.ref_id AND id_kind = 's2')
+                   ),
+                   r.title,
                    r.pdf_sha256 IS NOT NULL,
                    COALESCE(c.n_full, 0), COALESCE(c.n_card, 0),
                    le.ts, le.source, le.event
@@ -1686,7 +1699,7 @@ class RefsMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (list(ref_ids), kind)).fetchall()
         by_id: dict[int, dict[str, Any]] = {}
-        for rid, cite, has_pdf, n_full, n_card, ts, src, ev in rows:
+        for rid, cite, doi, title, has_pdf, n_full, n_card, ts, src, ev in rows:
             if 0 < n_full <= THIN_BODY_MAX_CHUNKS and ev == "no_oa_version":
                 body = "thin-text"
             elif n_full:
@@ -1698,6 +1711,8 @@ class RefsMixin:
             by_id[int(rid)] = {
                 "ref_id": int(rid),
                 "cite_key": cite or "",
+                "doi": doi or "",
+                "title": title or "",
                 "has_pdf": bool(has_pdf),
                 "body": body,
                 "full_chunks": int(n_full),

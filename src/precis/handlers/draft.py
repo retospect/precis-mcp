@@ -714,6 +714,8 @@ class DraftHandler(Handler):
                 "cursor",
                 # view='citations' diff mode (gr524227)
                 "against",
+                "handles",
+                "by_section",
                 # spreadsheet-tables 1b — view='toon'/'table' filters
                 "cols",
                 "rows",
@@ -1085,6 +1087,27 @@ class DraftHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        if view == "cites":
+            if (
+                not isinstance(id, (str, int))
+                or str(id).strip() in ("", "/")
+                or "~" in str(id)
+                or _is_draft_chunk_handle(str(id).strip())
+                or any(value is not None for value in (q, targets, project))
+            ):
+                raise BadInput(
+                    "view='cites' needs a single whole draft",
+                    next="get(kind='draft', id='<slug>', view='cites', "
+                    "args={'handles': ['fi123']})",
+                )
+            ref = resolve_live_slug_ref(self.store, kind="draft", id=str(id).strip())
+            return self._render_cite_counts(ref.id, args or {})
+        if args and {"handles", "by_section"}.intersection(args):
+            raise BadInput(
+                "handles and by_section apply only to view='cites'",
+                next="get(kind='draft', id='<slug>', view='cites', "
+                "args={'handles': ['fi123']})",
+            )
         if isinstance(id, list):
             return self._get_batch(id, view=view, q=q)
         # find-in-ref (gr486840): ``q`` on a concrete get is the shared
@@ -1280,7 +1303,8 @@ class DraftHandler(Handler):
                     "per-section word counts vs targets, view='links' for the "
                     "link graph, view='integration' for the integration ledger "
                     "(a topic dossier only), view='review' for the approval "
-                    "ledger, view='citations' for the citation lifecycle "
+                    "ledger, view='cites' for finding citation counts, "
+                    "view='citations' for the citation lifecycle "
                     "(to-fetch/to-re-ground/to-promote/done), view='hygiene' "
                     "for the full undefined-abbreviation/whole-paper-cite "
                     "lists (un-elided), view='render' for the pre-export "
@@ -8476,6 +8500,78 @@ class DraftHandler(Handler):
         ]
         table = render_agent_table(rows, schema=["handle", "level", "title", "gist"])
         return Response(body=f"{header}\n\n{table}")
+
+    def _render_cite_counts(self, ref_id: int, args: dict[str, Any]) -> Response:
+        """Count literal finding markers, including repeats.
+
+        Live reading order keeps section membership aligned with chunk moves
+        and excludes retired chunks and their descendants.
+        """
+        handles = args.get("handles")
+        section = args.get("by_section")
+        if (
+            args.keys() - {"handles", "by_section"}
+            or not isinstance(handles, list)
+            or not handles
+            or any(
+                not isinstance(handle, str) or not re.fullmatch(r"fi[0-9]+", handle)
+                for handle in handles
+            )
+            or (
+                "by_section" in args
+                and (
+                    not isinstance(section, str)
+                    or not re.fullmatch(r"dc[0-9]+", section)
+                )
+            )
+        ):
+            raise BadInput(
+                "view='cites' needs a nonempty handles list of fi handles "
+                "and optionally a by_section dc heading handle",
+                next="get(kind='draft', id='<slug>', view='cites', "
+                "args={'handles': ['fi123'], 'by_section': 'dc456'})",
+            )
+
+        counts = dict.fromkeys(handles, 0)
+        inside = counts.copy()
+        section_found = False
+        active_depth = None
+        for chunk in self.store.drafts.reading_order(ref_id):
+            if active_depth is not None and chunk.depth <= active_depth:
+                active_depth = None
+            if (
+                section is not None
+                and chunk.chunk_kind == "heading"
+                and chunk.dc == section
+            ):
+                section_found = True
+                active_depth = chunk.depth
+            for handle in re.findall(r"\[(fi[0-9]+)\]", chunk.text):
+                if handle in counts:
+                    counts[handle] += 1
+                    if active_depth is not None:
+                        inside[handle] += 1
+
+        if section is not None and not section_found:
+            raise BadInput(
+                f"{section} is not a live heading in this draft",
+                next="get(kind='draft', id='<slug>', view='toc') lists live headings",
+            )
+        rows = []
+        for handle, total in counts.items():
+            row: dict[str, str | int] = {"handle": handle, "total": total}
+            if section is not None:
+                row.update(in_section=inside[handle], elsewhere=total - inside[handle])
+            rows.append(row)
+        header = (
+            f"# Finding citations under {section} vs elsewhere"
+            if section
+            else "# Finding citations"
+        )
+        schema = ["handle", "total"]
+        if section is not None:
+            schema.extend(("in_section", "elsewhere"))
+        return Response(body=f"{header}\n\n{render_agent_table(rows, schema=schema)}")
 
     def _render_wordcount(
         self, *, ref: Any = None, root_handle: str | None = None
