@@ -141,7 +141,12 @@ the enrich pass repairs it; a human-verified or Crossref-sourced record with
 an empty byline is flagged here; software/dataset records are venue-exempt,
 including legacy records with only an entry type). The check skips volume,
 pages and article number because those locators vary by publication format.
-Repair on the record
+The same view also names cited papers whose byline holds a **one-word author
+name** (`⚠ … one-word author name: <slug> (<name>)`): a reference list must
+follow the printed article, and a single-token name usually means a lost
+surname — a mononymic ORCID profile or lookup tier written over the printed
+name (gr732612) — though a genuine mononym is possible, so it's a human
+check against the printed article, not an auto-repair. Repair on the record
 with `edit(kind='paper', id=…)` — `authors=[…]` / `year=` / `journal=`, or a
 chapter's `booktitle=` + `editors=` + `publisher=`
 ([[precis-paper-ref-help]]). Start with the outline

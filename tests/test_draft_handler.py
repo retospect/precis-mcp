@@ -2590,6 +2590,67 @@ def test_hygiene_completeness_flags_crossref_empty_byline_with_doi(
     assert "authors not yet Crossref-resolved" not in out
 
 
+def test_hygiene_flags_one_word_author_name(draft: DraftHandler, hub: Hub) -> None:
+    """gr732612: a cited paper whose byline holds a one-word author name
+    gets an advisory line naming it — the cite-time backstop for records
+    damaged before the ORCID fix (the enrich alert only fires when the
+    cross-check re-verifies a row)."""
+    paper = hub.live_store.insert_ref(
+        kind="paper",
+        slug="mononym2008",
+        title="Mononym",
+        authors=[
+            {"name": "Yoo, EunJoo"},
+            {"given": "Jedeok"},
+            {"name": "Hosono, Eiji"},
+        ],
+        year=2008,
+        meta={"journal": "Nano Letters", "authors_source": "orcid"},
+    )
+    _cite_paper(draft, hub, paper.id)
+
+    out = draft.get(id="nt").body
+    assert "one-word author name" in out
+    assert "mononym2008 (Jedeok)" in out
+
+
+def test_hygiene_mononym_line_flags_any_writer(draft: DraftHandler, hub: Hub) -> None:
+    """The one-word check is source-agnostic: a Crossref-stamped record
+    with a stored single-token name is flagged too — a damaged byline
+    stays damaged whichever tier wrote it."""
+    paper = hub.live_store.insert_ref(
+        kind="paper",
+        slug="crossrefmononym",
+        title="Crossref mononym",
+        authors=[{"name": "Jedeok"}, {"name": "Yoo, EunJoo"}],
+        year=2008,
+        meta={"journal": "Nano Letters", "authors_source": "crossref"},
+    )
+    _cite_paper(draft, hub, paper.id)
+
+    out = draft.get(id="nt").body
+    assert "one-word author name" in out
+    assert "crossrefmononym (Jedeok)" in out
+
+
+def test_hygiene_mononym_line_silent_when_byline_full(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A cited paper whose authors all carry a surname gets no one-word
+    warning."""
+    paper = hub.live_store.insert_ref(
+        kind="paper",
+        slug="twoword2008",
+        title="Two-word byline",
+        authors=[{"given": "EunJoo", "family": "Yoo"}],
+        year=2008,
+        meta={"journal": "Nano Letters"},
+    )
+    _cite_paper(draft, hub, paper.id)
+
+    assert "one-word author name" not in draft.get(id="nt").body
+
+
 @pytest.mark.parametrize("type_key", ["record_type", "entry_type"])
 @pytest.mark.parametrize("record_type", ["software", "dataset"])
 def test_hygiene_completeness_record_cite_exempt_from_venue(

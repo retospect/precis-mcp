@@ -2783,10 +2783,11 @@ class RefsMixin:
         Always sets ``verified_at``/``updated_at`` to ``now()``. The name
         fields (``given``/``middle``/``family``) and ``source`` are applied
         only when passed non-``None`` — :mod:`precis.workers.orcid_enrich`
-        calls this with all three + ``source='orcid'`` for a non-human row
-        (the ORCID record's name overwrites the byline) and with none of
-        them for a ``source='human'`` row (verified, names untouched — a
-        human correction survives the cross-check). Regenerates
+        calls this with only ``source='orcid'`` for a non-human row
+        (verification stamps the row; the printed byline is never
+        rewritten from the ORCID profile, gr732612) and with none of them
+        for a ``source='human'`` row (verified, names untouched — a human
+        correction survives the cross-check). Regenerates
         ``refs.authors`` afterwards via :func:`_write_authors_projection` so
         the table and jsonb never drift (``health_checks.paper_authors_drift``
         stays 0). Never touches ``cite_key``/``ref_identifiers``.

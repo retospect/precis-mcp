@@ -189,11 +189,12 @@ Notable pass mechanics
   OpenAlex author/entry_type/retraction re-resolve) each self-throttle via
   an ``app_state`` marker + a single-runner advisory lock.
 * ``orcid_enrich`` (tiers: :mod:`precis.utils.authors` docstring) — background
-  ORCID identity tier: fetches unvisited ``kind='orcid'`` stub nodes,
+  ORCID identity tier: fetches unvisited ``kind='orcid'`` stubs,
   links held works, cross-checks each authored edge's paper DOI against
-  the fresh record and verifies/overwrites the matching ``paper_authors``
-  row. Self-throttles via an ``app_state`` marker only (no advisory lock —
-  its ``meta.fetched_at IS NULL`` claim predicate already converges).
+  the fresh record and verifies the matching ``paper_authors`` row
+  (never rewrites the byline, gr732612). Self-throttles via
+  ``app_state`` (no advisory lock — the ``meta.fetched_at IS NULL``
+  claim predicate converges).
 * ``stub_rank`` — own docstring for the four-step S2-enrich/embed/rank/
   LLM-band pipeline; writes ``refs.prio`` (1=hottest..10=coldest), which
   ``fetch``'s claim query and the ``stubs``/``chase-queue`` backlog views

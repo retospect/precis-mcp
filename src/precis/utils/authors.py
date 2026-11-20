@@ -52,8 +52,10 @@ rebuilt as a "Given Middle Family" entry by :func:`entry_from_author_row`.
 
 ``source`` records the tier that wrote the row (:data:`AUTHOR_SOURCES`):
 ``orcid`` (background ``workers/orcid_enrich.py`` cross-check — paper DOI
-in the person's ORCID works stamps ``verified_at`` and takes the ORCID
-names) > ``crossref`` / ``openalex`` / ``s2`` (lookup tiers; ``openalex``
+in the person's ORCID works stamps ``verified_at`` and the row's source;
+the printed byline is never rewritten — an ORCID profile name can be a
+later name, another script or a nickname, gr732612 — the profile name
+lives on the ``kind='orcid'`` node) > ``crossref`` / ``openalex`` / ``s2`` (lookup tiers; ``openalex``
 also contributes ``openalex_author_id`` and any missing ``orcid``) >
 ``pdf`` / ``legacy`` (scraped, or projected from pre-0168 jsonb) with
 ``llm`` reserved for a future residual pass. ``human`` wins: a paper
