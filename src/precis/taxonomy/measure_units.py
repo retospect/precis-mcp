@@ -8,7 +8,10 @@ superscripts, ``·``/``⋅``, ``−``, a caret before a bare exponent) and then
 
 * a **basis label** on a unit token — ``mg_cat⁻¹`` (per catalyst mass),
   ``mg_Fe⁻¹`` (per metal mass) — is stripped before pint sees it and returned
-  separately, to be stored as the measure's ``normalization``;
+  separately, to be stored as the measure's ``normalization``. A per-atom
+  divisor such as ``meV/atom``, ``eV per atom``, or an ``atom^-1`` /
+  ``atom⁻¹`` suffix folds to the ``atom`` basis and yields
+  ``per atom`` normalization;
 * a **mass <-> amount bridge** through a molar mass, for yield rates printed
   as ``µg h⁻¹ cm⁻²`` against a ``mol s⁻¹ m⁻²`` measurand;
 * an **energy-per-amount <-> per-particle bridge** through Avogadro's
@@ -524,6 +527,15 @@ _SQ_CUBED_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+#: A per-atom basis spelled as a divisor — 'meV/atom', 'eV atom^-1',
+#: 'kJ per atom' — is a count basis pint has no unit for; it folds to the
+#: ``atom`` basis label, like an underscore label (``eV_atom``).
+_PER_ATOM_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:\s*/\s*|\s+per\s+)atoms?$|\s*(?:atoms?\s*\^?\s*-1|atoms?⁻¹)$",
+    re.IGNORECASE,
+)
+
+
 def _pint_unit_ex(raw_unit: str) -> tuple[str, str | None, str | None]:
     """``(text pint can parse, basis label, gas qualifier)``. An electrode
     reference folded into the unit ('V vs RHE', 'V_RHE') is stripped — it is
@@ -539,6 +551,8 @@ def _pint_unit_ex(raw_unit: str) -> tuple[str, str | None, str | None]:
         # token's underscore into a 'per constant' label
         return _NAMED_CONSTANT_UNITS[text.casefold()], None, None
     stripped, label = split_basis_label(text)
+    if label is None and (m := _PER_ATOM_RE.search(stripped.strip())):
+        stripped, label = stripped.strip()[: m.start()], "atom"
     text = _normalize_unit_candidate(stripped)
     text = _SQ_CUBED_RE.sub(r"\1^\2", text)
     text, gas = _strip_gas_qualifier(text)

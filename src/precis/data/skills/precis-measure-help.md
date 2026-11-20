@@ -208,7 +208,9 @@ converted to the measurand's canonical unit.
   row (its formula, e.g. `NH3`). No formula: the row is stored with no parsed
   value and flagged `no_molar_mass`.
 - A subscript basis label on a denominator (`mg_cat⁻¹`, `mg_Fe⁻¹`) is moved into
-  `normalization`.
+  `normalization`. A per-atom divisor (`meV/atom`, `eV per atom`, or an
+  `atom^-1` / `atom⁻¹` suffix) folds to the `atom` basis and fills
+  `normalization` with `per atom` when unset.
 - A **currency unit** carries an ISO 4217 code (`USD`, `EUR`, `GBP`, `JPY`,
   ... — every code the ECB euro reference rates quote, plus EUR) or one of
   the symbols `$`/`US$`/`€`/`£` (mapped to USD/USD/EUR/GBP; `¥`, `A$` and
