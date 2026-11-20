@@ -43,7 +43,7 @@ get(kind="handle", q="amber brave dog")
 
 Three words return the number; the map is deterministic and exactly
 reversible. Two words (`q="brave dog"`) return the live refs sharing
-that pair — handle, three-word form, kind, summary, newest first —
+that pair — handle, three-word form, kind, size, summary, newest first —
 because a pair is not unique; a long list reports its true total and
 pages with `args={'page': N}`. Case, spaces, hyphens and commas are
 ignored. Words off the lists raise `BadInput`. Use the resulting number

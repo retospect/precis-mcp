@@ -226,15 +226,23 @@ def test_kwd_off_refuses_the_kwd_rung(hub: Hub) -> None:
 
 
 def test_kwd_off_drops_the_keyword_containment_leg_from_verbatim_ranking() -> None:
+    from precis.store._chunks_ops import _VERBATIM_TSV_CAP as cap
     from precis.store._chunks_ops import _verbatim_pred
 
-    sql_on, _ = _verbatim_pred(["alpha"])
-    assert "c.keywords" in sql_on
+    # unscoped: containment is a UNION leg over ``chunks`` (no ``c.`` alias);
+    # scoped: it is an OR leg on the outer row
+    sql_on, params_on = _verbatim_pred(["alpha"])
+    assert "keywords @> %s::text[] UNION" in sql_on
+    assert params_on[0] == ["alpha"]
+    sql_scoped_on, params_scoped_on = _verbatim_pred(["alpha"], scoped=True)
+    assert "c.keywords @> %s::text[]" in sql_scoped_on
+    assert params_scoped_on[0] == ["alpha"]
     with applied(kwd=False):
         for scoped in (False, True):
             sql_off, params = _verbatim_pred(["alpha"], scoped=scoped)
             assert "keywords" not in sql_off and "ILIKE" in sql_off
-            assert params == ["%alpha%"]
+            # the phrase leg survives alone: no keyword-list param ahead of it
+            assert params == (["%alpha%"] if scoped else ["alpha", cap, "%alpha%"])
 
 
 def test_kwd_off_drops_the_keyword_clustering_notice_and_readiness_part(

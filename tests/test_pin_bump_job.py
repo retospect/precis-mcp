@@ -1247,7 +1247,10 @@ def test_the_handoff_mints_one_land_and_succeeds(
         "worktree": str(pin.tree()),
         "branch": "slice/77",
         "target_node": "spruce",
+        # the build tip the overlap hold reads: the slice branch's head
+        "head": commit,
     }
+    assert mint["params"]["head"] == pin.branch_head()
     rec = pin.record()
     assert rec["state"] == "handed" and rec["land_job"] == 5001
     assert rec["commit"] == commit and rec["worktree"] == str(pin.tree())

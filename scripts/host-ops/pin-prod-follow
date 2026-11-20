@@ -69,7 +69,7 @@ resolve_checkout() {
 }
 
 main() {
-  local checkout dirty old new
+  local checkout dirty old new err
   checkout="$(resolve_checkout)"
   [[ -d "$checkout/.git" || -f "$checkout/.git" ]] || {
     echo "no prod checkout at ${checkout:-<unresolved>} (set PROD_CHECKOUT)" >&2; return 2; }
@@ -79,10 +79,11 @@ main() {
 
   # Bounded network call: git's own low-speed abort plus an ssh connect bound
   # (macOS ships no `timeout`); never prompt, this runs unattended.
-  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=20}" \
+  # git's stderr rides on the one failure line so the scheduler log says why.
+  err="$(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=20}" \
     git -C "$checkout" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=20 \
-      fetch -q origin prod 2>/dev/null || {
-    echo "pin-prod-follow: fetch of origin prod failed in $checkout" >&2; return 5; }
+      fetch -q origin prod 2>&1)" || {
+    echo "pin-prod-follow: fetch of origin prod failed in $checkout: ${err//$'\n'/ }" >&2; return 5; }
 
   old="$(git -C "$checkout" rev-parse HEAD)"
   new="$(git -C "$checkout" rev-parse origin/prod)"

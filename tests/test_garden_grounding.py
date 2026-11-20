@@ -634,7 +634,9 @@ def test_consumer_fanout_continues_past_first_page(store: Store) -> None:
     mid = _memory(store)
     consumers = []
     for i in range(52):
-        draft = store.insert_ref(kind="draft", slug=None, title=f"Consumer {i}")
+        draft = store.insert_ref(
+            kind="draft", slug=f"consumer-{i}", title=f"Consumer {i}"
+        )
         consumers.append(int(draft.id))
         store.add_link(
             src_ref_id=draft.id, dst_ref_id=mid, relation="cites", set_by="system"

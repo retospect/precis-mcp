@@ -162,6 +162,8 @@ def test_unreachable_origin_exits_5(rig: Rig, tmp_path: Path) -> None:
     r = rig.run()
     assert r.returncode == 5
     assert len(r.stderr.strip().splitlines()) == 1
+    # git's own reason survives on that one line (gone repo -> "gone")
+    assert "fetch of origin prod failed" in r.stderr and "gone" in r.stderr
     assert rig.head() == rig.c1
 
 

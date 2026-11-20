@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis import word_handle_session
+from precis._result_budget import row_size_cell
 from precis.dispatch import Hub
 from precis.errors import BadInput, Denied, NotFound
 from precis.format import render_agent_table, serialize
@@ -316,12 +317,16 @@ class HandleHandler(Handler):
                     result_count=0,
                 )
             return Response(body=f"'{pair}' names no live ref\n", result_count=0)
+        # One bulk read of the stored body lengths for this page (page_size
+        # is capped), never a per-row query.
+        sizes = self.hub.store.chunks.body_byte_counts([c.id for c in cands])
         rows = [
             {
                 "handle": handle_registry.try_format(c.kind, c.id)
                 or f"{c.kind}:{c.id}",
                 "words": to_words(c.id),
                 "kind": c.kind,
+                "size [kB] (default 1kB)": row_size_cell(sizes.get(c.id, 0)),
                 "summary": (c.title or "").splitlines()[0] if c.title else "",
             }
             for c in cands
@@ -333,7 +338,16 @@ class HandleHandler(Handler):
         body = (
             header
             + " — say the three-word form to pick one:\n"
-            + render_agent_table(rows, schema=["handle", "words", "kind", "summary"])
+            + render_agent_table(
+                rows,
+                schema=[
+                    "handle",
+                    "words",
+                    "kind",
+                    "size [kB] (default 1kB)",
+                    "summary",
+                ],
+            )
         )
         if p < pages:
             kind_arg = f", 'of_kind': {of_kind!r}" if of_kind else ""

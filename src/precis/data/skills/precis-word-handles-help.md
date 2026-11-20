@@ -76,7 +76,7 @@ get(kind='handle', q='gentle beacon')
 - `id=` returns `674030 = gentle beacon`; a list returns one `id = words`
   line per id (a clash note rides on that id's own line).
 - `q=` on two words lists the live refs sharing the pair, newest first:
-  handle, three-word form, kind, summary. `args={'of_kind': 'memory'}`
+  handle, three-word form, kind, size, summary. `args={'of_kind': 'memory'}`
   narrows by kind, `args={'page': N}` pages, and the header reports the true
   total. Only refs you may read are listed.
 - `q=` on three words returns the exact id. The words are never accepted

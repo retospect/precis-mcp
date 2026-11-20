@@ -87,7 +87,8 @@ def test_get_memory_shows_grounding_line(
     line = _grounding_line(out)
     assert line.startswith("grounding: 2+ claims - 2 supported")
     assert "- audited 20" in line  # 2026-… audit date
-    assert line.endswith("- current")
+    # Classifier-only coverage is a lower bound, so the line says so.
+    assert line.endswith("- current - truncated scan")
     # The trust line stays last, the grounding line before it.
     assert out.rstrip().endswith(")")  # the trust edit recipe closes last
     assert out.rstrip().find(line) < out.rstrip().rfind("trust:")
@@ -105,7 +106,7 @@ def test_unresolved_hypothesis_not_rendered_as_supported(
     )
     out = runtime_with_store.dispatch("get", {"kind": "memory", "id": mid})
     line = _grounding_line(out)
-    assert "2 claims" in line
+    assert "2+ claims" in line  # the classifier's count is a lower bound
     assert "2 unresolved" in line
     assert "supported" not in line
     # Displaying the hypothesis upgrades nothing: the count is the audit's
