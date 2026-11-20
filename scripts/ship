@@ -2361,7 +2361,8 @@ _release_after_landing() {
 # the tree the CAS push below will make main. A force-push retry to the same
 # ref auto-cancels the superseded run via the workflow's per-ref concurrency
 # group. Green → return 0; red/timeout → return 1 (caller dies — a red gate
-# is never retried, same contract as the local gate). If no run appears
+# is never retried, same contract as the local gate), except a red that is
+# only tests the base already fails (_red_carried below). If no run appears
 # within 10 min (GitHub incidents DROP push events and never replay them —
 # observed 2026-09-13), fall back to one explicit workflow_dispatch on the ref.
 #
@@ -2469,10 +2470,37 @@ remote_gate_wait() {
                 gh run view "$run_id" --json jobs \
                     --jq '.jobs[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != null) | "  " + .name + ": " + .conclusion' >&2 2>/dev/null || true
                 echo "  → scripts/ci-failed ${run_id}" >&2
+                _red_carried "$run_id" "$sha" && return 0
                 return 1 ;;
             *) sleep 60 ;;
         esac
     done
+}
+
+# Red-carried rule (gr739541, Reto 2026-11-20). main collects red tests
+# between releases — the quick lane runs no pytest — and a harness diff's
+# gate runs the whole suite on main + diff, so it went red on tests the diff
+# never touched (three gates lost on one 3-file commit that day).
+# scripts/lib/red_carried.py reads the red run and the check run closest
+# behind the gate's base: exit 0 means nothing but test shards failed, the
+# rest of the suite has a verdict on this tree, no failing id sits in a
+# file this diff changes, and every one of them is red in that run too
+# (its docstring has the full list). The land then carries
+# `Gate: red-carried <ids>` and writes no deploy pin — the tree is still
+# red. Every other answer, an unreadable one included, leaves the gate red.
+# PRECIS_RED_CARRIED=0 turns the rule off. $1 = the red run, $2 = the sha
+# it ran on; sets RED_CARRIED.
+_red_carried() {
+    local run_id="$1" sha="$2" base ids
+    RED_CARRIED=""
+    [[ "${PRECIS_RED_CARRIED:-1}" == 1 ]] || return 1
+    [[ -x "${WORKTREE}/scripts/lib/red_carried.py" ]] || return 1
+    base="$(git merge-base origin/main "$sha" 2>/dev/null)" || return 1
+    ids="$("${WORKTREE}/scripts/lib/red_carried.py" --run "$run_id" --head "$sha" --base "$base" --root "$WORKTREE")" \
+        || return 1
+    [[ -n "$ids" ]] || return 1
+    RED_CARRIED="$ids"
+    say "remote gate RED only on tests the base already fails — landing with Gate: red-carried (run ${run_id})"
 }
 
 # Sync by rebase: squash the branch to one commit when it has several commits
@@ -2596,6 +2624,9 @@ FWD_UNGATED=0
 FWD_BASE=""
 FWD_N=0
 GATE_TRAILER=""
+# The trailer value of a remote gate that was red only on tests its base
+# already fails (_red_carried): the land says so and pins nothing.
+RED_CARRIED=""
 LANDED_SHA=""
 # Why the ship's ending was degraded even though the land itself succeeded —
 # a best-effort tail step that failed mid-run (today: the local-main ff).
@@ -2609,7 +2640,7 @@ SHIP_STATUS_NOTE=""
 GATED_SHA=""
 for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     [[ "$attempt" -gt 1 ]] && say "main moved under us — re-syncing + re-gating (attempt ${attempt}/${MAX_ATTEMPTS})"
-    GATE_TRAILER=""; FWD_UNGATED=0; FWD_BASE=""; FWD_N=0
+    GATE_TRAILER=""; RED_CARRIED=""; FWD_UNGATED=0; FWD_BASE=""; FWD_N=0
 
     say "syncing origin/main"
     git_network fetch -q origin main || die "git fetch failed — check the network/remote and re-run scripts/ship."
@@ -3176,8 +3207,13 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # substituted). The `Gate:` trailer (forward-merged lands only)
         # rides above it so `git log` tells an exact-tested land from a
         # forward-merged one; the default Co-Authored-By is minted only
-        # when the resolved message claims none.
-        TRAILERS="$(printf '%s\n' "$MSG" | ship_mint_trailers "$GATE_TRAILER" "$CO_AUTHOR" "$BRANCH_ATTRS")"
+        # when the resolved message claims none. A red-carried gate
+        # (gr739541) adds its own `Gate:` line above that one.
+        _gate_lines="$GATE_TRAILER"
+        if [[ -n "$RED_CARRIED" ]]; then
+            _gate_lines="Gate: red-carried ${RED_CARRIED}${GATE_TRAILER:+$'\n'}${GATE_TRAILER}"
+        fi
+        TRAILERS="$(printf '%s\n' "$MSG" | ship_mint_trailers "$_gate_lines" "$CO_AUTHOR" "$BRANCH_ATTRS")"
         MSG_BODY="$(printf '%s\n' "$MSG" | ship_msg_body)"
         git merge-base --is-ancestor "$OLD_MAIN" HEAD \
             || die "internal: HEAD lacks OLD_MAIN (${OLD_MAIN:0:8}) — refusing to squash a tree that would revert main. Lock released, nothing pushed. Re-run scripts/ship and report this."
@@ -3251,7 +3287,11 @@ done
 if [[ "$FWD_UNGATED" == 1 ]]; then
     say "gated against ${FWD_BASE:0:8}, merged forward over ${FWD_N} commits — not a deploy warrant; no .ship-sha pin (origin/gated not moved)"
 fi
-if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1 && ( "$IMPACTED" != 1 || "$REMOTE" == 1 ) && -n "$GATED_SHA" && "$FWD_UNGATED" != 1 ]]; then
+# A red-carried land (gr739541) is no warrant either: its gate was red.
+if [[ -n "$RED_CARRIED" ]]; then
+    say "landed past tests the base already fails (Gate: red-carried) — not a deploy warrant; no .ship-sha pin (origin/gated not moved)"
+fi
+if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1 && ( "$IMPACTED" != 1 || "$REMOTE" == 1 ) && -n "$GATED_SHA" && "$FWD_UNGATED" != 1 && -z "$RED_CARRIED" ]]; then
     printf '%s\n' "$GATED_SHA" > "$SHIP_SHA_FILE"
     say "gated sha pinned → ${SHIP_SHA_FILE##*/} (${GATED_SHA:0:8}); deploy it with: scripts/deploy \"\$(cat .ship-sha)\" --pinned"
     # Publish the same fact as origin's `gated` ref, so the gated sha is not
@@ -3359,6 +3399,9 @@ else
         else
             printf '\n\033[33m⚡ UNTESTED ship — only ruff, the secret scan and the fast DB-free guards (and mypy on the changed files) passed;\n  full mypy, import contracts and all pytest did NOT run. main is untested until the release gate (/go).\033[0m\n'
         fi
+    fi
+    if [[ -n "$RED_CARRIED" ]]; then
+        printf '\n\033[33m⚡ RED-CARRIED ship — the remote gate was red, and only on tests main already failed before this diff:\n  %s\n  main is still red on them; the next release gate owns the fix (gr739541).\033[0m\n' "$RED_CARRIED"
     fi
 fi
 

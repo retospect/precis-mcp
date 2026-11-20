@@ -94,7 +94,9 @@ when no subagent runtime exists.
    `--remote` gates on **GitHub's computers**: the synced branch goes to
    `ci/<branch>`, the check.yml gate runs there (~90 min green, longer when
    queued), and only a green run reaches `main` via the atomic CAS
-   squash-push. Wait on it with `scripts/ship-wait /tmp/ship.log` in the
+   squash-push (or one red only on tests `main` already fails: the land
+   says `Gate: red-carried`, see `docs/conventions/shipping.md`). Wait on
+   it with `scripts/ship-wait /tmp/ship.log` in the
    background — it exits on green, red or cancelled with the verdict and the
    first failure line. That watcher is the only way to wait on the gate: no
    polling subagents, no log-tail loops. If main moves during the wait, a

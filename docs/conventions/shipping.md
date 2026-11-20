@@ -187,6 +187,42 @@ in `scripts/ship` (`scripts/ship`, `scripts/test`, `scripts/lib/*`,
 `pyproject.toml`, migrations and schema are not harness — they qland like
 everything else.
 
+A red remote gate still lands when the red is carried (gr739541, Reto
+2026-11-20): main collects red tests between releases, because the quick
+lane runs no pytest, and the harness gate runs on main + diff.
+`scripts/lib/red_carried.py` compares the gate's failing ids with the
+check run closest behind the gate's base that has a test verdict (a
+release cut, a nightly, a landed gate; never a main push). The land goes
+ahead only if all of this holds:
+
+- nothing but test shards failed, each with its junit from the current
+  attempt, and no failing test crashed its worker (that ends the shard
+  early);
+- the rest of the suite has a verdict on this tree: the red is in the soak
+  legs (gate-fast was green, the soak ran everything), or the diff touches
+  a FULL trigger of `scripts/impacted-tests` (gate-fast ran everything);
+- no failing id sits in a file the diff changes, and the diff does not
+  change `scripts/lib/red_carried.py` or `scripts/ci-failed-first`;
+- every failing id is red in the reference run too, and that run is at
+  most 50 commits behind the base.
+
+The land then carries `Gate: red-carried <ids>; base run <id>`, prints a
+warning and writes no deploy pin. Any other red, and any evidence gh
+cannot read, stays a refusal; the refusal line starts `red-carried: no —`
+and names the reason.
+
+A red gate-fast on a selected (non-FULL) gate is refused by default:
+check.yml runs the soak only after a green gate-fast, so the test files
+outside gate-fast's selection have no verdict on that tree.
+`PRECIS_RED_CARRIED_SOAKLESS=1` accepts gate-fast's selection as the
+verdict for one ship.
+
+Switches: `PRECIS_RED_CARRIED=0` turns the rule off;
+`PRECIS_RED_CARRIED_MAX` (25) caps the carried ids;
+`PRECIS_RED_CARRIED_MAX_BEHIND` (50) bounds how far back the reference run
+may be; `PRECIS_RED_CARRIED_WAIT_MIN` (30) bounds the wait for a reference
+run still in flight.
+
 When the operator explicitly assigns gating/release to another toolchain,
 `PRECIS_QLAND_EXTERNAL_GATE=1 scripts/ship --quick` acknowledges that ownership
 for one invocation and admits a harness diff to qland. Normal quick-lane lint,
