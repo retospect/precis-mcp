@@ -24,7 +24,7 @@ reaper).
 lsof is the script's open-lock proof on every platform, but the dev image
 ships no lsof package — so the fixture drops a minimal /proc-backed
 ``lsof`` onto PATH whenever the real binary is absent, answering the
-script's two call shapes (``-t -- <path>`` and ``-a -p <pid> -d cwd -Fn``)
+script's call shapes (``-F pc -- <path>``, ``-t -- <path>`` and ``-a -p <pid> -d cwd -Fn``)
 with the same results real lsof gives on Linux. No DB / MCP fixtures —
 pure git, ps and the shipped scripts.
 """
@@ -85,13 +85,27 @@ def _pids_holding(path):
             except OSError:
                 continue
             if (st.st_dev, st.st_ino) == (want.st_dev, want.st_ino):
-                print(pid)
+                yield pid
                 break
+
+
+def _comm(pid):
+    try:
+        with open(os.path.join("/proc", pid, "comm")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 def main(argv):
     if argv[:2] == ["-t", "--"]:
-        _pids_holding(argv[2])
+        for pid in _pids_holding(argv[2]):
+            print(pid)
+        return 0
+    if argv[:3] == ["-F", "pc", "--"]:  # lsof -F pc -- <path>
+        for pid in _pids_holding(argv[3]):
+            print("p" + pid)
+            print("c" + _comm(pid))
         return 0
     if "-p" in argv and "-d" in argv:  # lsof -a -p <pid> -d cwd -Fn
         pid = argv[argv.index("-p") + 1]
