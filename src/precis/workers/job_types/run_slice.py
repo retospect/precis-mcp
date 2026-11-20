@@ -41,9 +41,10 @@ that holds the lane's credentials with ``params.target_node``):
   ``attempt_free`` "already-on-main"; commits ahead with novel work go
   to the land — the pre-land reviewer when one gates it, else a
   ``land_slice`` mint — ``attempt_free`` "branch-ahead", and a
-  ``handoff: lander:`` or ``handoff: review: FIX|REVERT`` brief skips
-  that second arm since the branch is mid-fix by design (the reviewer's
-  reject wants the rebuild, not a route back into the same review);
+  ``handoff: lander:``, ``handoff: review: FIX|REVERT`` or the tick's
+  mechanical-red ``brief:`` (gr705291) skips that second arm since the
+  branch is mid-fix by design (the reviewer's reject wants the rebuild,
+  not a route back into the same review);
   the submit-time ``branch_tip``/``branch_ahead``
   the job records is the poll arm's evidence for the same ruling —
   writes
@@ -283,7 +284,13 @@ from precis.utils.dispatch_score import (
     CLAIM_BAND_META_KEY as _CLAIM_BAND_KEY,
 )
 from precis.utils.dispatch_score import (
+    FINISH_FIRST_SCORE as _FINISH_FIRST_SCORE,
+)
+from precis.utils.dispatch_score import (
     RELEASE_CLAIM_BAND as _RELEASE_CLAIM_BAND,
+)
+from precis.utils.dispatch_score import (
+    SCORE_META_KEY as _SCORE_KEY,
 )
 from precis.workers import admission
 from precis.workers import factory_git as _factory_git
@@ -300,10 +307,13 @@ from precis.workers.job_types._slice_adapters import (
     adapter_bin,
     adapter_bin_present,
     deny_settings,
+    devin_auth_status,
     devin_bin,
     devin_model_rate,
+    devin_status_logged_in,
     get_adapter,
     kimi_bin,
+    note_devin_logged_out,
     parse_devin_model_prices,
 )
 from precis.workers.job_types._slice_adapters import (
@@ -1213,25 +1223,41 @@ def _land_params(
     return params
 
 
-#: Cap on the paths :func:`_stamp_branch_files` keeps: a sweeping slice
-#: past it already overlaps nearly everything it could hold.
+#: Bound the stored overlap hints even for unusually large diffs.
 _BRANCH_FILES_CAP = 200
 
 
-def _stamp_branch_files(store: Any, todo_id: int, tree: Path) -> None:
-    """Stamp ``meta.branch_files`` — the paths the slice branch touched
-    against its land base — on a clean exit, for ``plan_dispatch``'s
-    overlap hold (:data:`~precis.plans.templates.BRANCH_FILES_KEY`). Best
-    effort: git unable to answer leaves the last stamp, and the hold falls
-    back to the brief's file guess."""
-    from precis.plans.templates import BRANCH_FILES_KEY
+def _stamp_branch_files(store: Any, todo_id: int, tree: Path, head: str | None) -> None:
+    """Record paths for a specific land tip. Incomplete or unavailable
+    diffs can supplement the brief but cannot replace it."""
+    from precis.plans.templates import BRANCH_FILES_HEAD_KEY, BRANCH_FILES_KEY
 
+    fields: dict[str, Any] = {BRANCH_FILES_HEAD_KEY: None}
+    if head:
+        try:
+            base = _land_base(store, todo_id)
+            diff = _git(
+                ["diff", "--name-only", "-z", "--no-renames", f"{base}...{head}"], tree
+            )
+            if diff.returncode == 0:
+                paths = diff.stdout.rstrip("\0").split("\0") if diff.stdout else []
+                fields[BRANCH_FILES_KEY] = paths[:_BRANCH_FILES_CAP]
+                if len(paths) <= _BRANCH_FILES_CAP:
+                    fields[BRANCH_FILES_HEAD_KEY] = head
+        except Exception:
+            log.warning("run_slice: branch_files diff for td%d failed", todo_id)
+    store.stamp_ref_meta(todo_id, fields)
+
+
+def _land_head(tree: Path, ref: str) -> str | None:
     try:
-        paths = changed_paths(tree, _land_base(store, todo_id))
-        if paths is not None:
-            store.stamp_ref_meta(todo_id, {BRANCH_FILES_KEY: paths[:_BRANCH_FILES_CAP]})
-    except Exception:
-        log.warning("run_slice: branch_files stamp for td%d failed", todo_id)
+        result = _git(["rev-parse", ref], tree)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    head = (result.stdout or "").strip()
+    return (
+        head if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", head) else None
+    )
 
 
 def _mint_land(
@@ -1239,7 +1265,9 @@ def _mint_land(
 ) -> int:
     """Mint the ``land_slice`` job for the slice (idem key
     ``land_slice:td<id>``, a child of the todo, pinned to this run's host so
-    the claimant holds the worktree). ``checked`` sets
+    the claimant holds the worktree), stamped with this build's own
+    ``dispatch_score`` floored at ``FINISH_FIRST_SCORE`` so the land
+    claims ahead of fresh builds. ``checked`` sets
     ``params["checked"]`` — what ``land_slice.ship_flag`` reads as
     ``--checked`` when the builder's test evidence is missing (gr573563).
     Returns its id."""
@@ -1247,7 +1275,15 @@ def _mint_land(
 
     meta = ctx.meta or {}
     params = _land_params(ctx, todo_id, tree, lane, checked)
+    head = _land_head(tree, "HEAD")
+    _stamp_branch_files(ctx.store, todo_id, tree, head)
+    if head:
+        params["head"] = head
     extra = {"plan_root": meta["plan_root"]} if meta.get("plan_root") else None
+    # Finishing started work outranks starting new work: a queued land
+    # keeps its build's files held.
+    own = float(meta.get(_SCORE_KEY) or 0.0)
+    extra = {**(extra or {}), _SCORE_KEY: max(own, _FINISH_FIRST_SCORE)}
     if meta.get(_CLAIM_BAND_KEY) == _RELEASE_CLAIM_BAND:
         # The waiver gripe's land claims in the same band as its build.
         extra = {**(extra or {}), _CLAIM_BAND_KEY: _RELEASE_CLAIM_BAND}
@@ -1375,10 +1411,9 @@ def _defer_land_for_review(
     # added nothing; a verdict naming another head read a stale branch.
     # The preland_held stash and its re-hold carry it like the other
     # params.
-    pushed = (
-        _git(["rev-parse", f"refs/heads/{slice_branch(todo_id)}"], tree).stdout or ""
-    ).strip()
-    if re.fullmatch(r"[0-9a-f]{40}", pushed):
+    pushed = _land_head(tree, f"refs/heads/{slice_branch(todo_id)}")
+    _stamp_branch_files(ctx.store, todo_id, tree, pushed)
+    if pushed:
         params["head"] = pushed
     ctx.store.stamp_ref_meta(
         todo_id,
@@ -1679,7 +1714,7 @@ def _preland_verdict_hold(
             "attempt (gr681208)."
         )
     tip = restored
-    _stamp_branch_files(ctx.store, todo_id, tree)
+    _stamp_branch_files(ctx.store, todo_id, tree, tip)
     params = _land_params(ctx, todo_id, tree, lane, checked)
     # The restored pushed tip — the head the next verdict judges
     # (gr688058): unchanged on a second send-back, the tick's
@@ -2159,10 +2194,13 @@ def _preland_head(
     A failed fetch leaves the old tracking ref in place, and the brief
     used to name it as the head (td707034: the reviewer judged the tip
     of two days earlier). So with ``expected`` known, a head that is not
-    it retries the hidden-ref fetch once; a head still off after a fetch
-    that FAILED is reported stale. A clean fetch that disagrees with
-    ``expected`` is origin's answer — the head is named as read and the
-    tick's judged-head check rules on it."""
+    it retries the hidden-ref fetch once. The retry still off, the head
+    is stale whatever the fetch's exit code said (td730820): a clean
+    fetch that disagrees with ``expected`` means origin's branch moved
+    after the defer stamped the tip (or the stamp names another push) —
+    either way the brief must not hand the reviewer a head the pending
+    stamp does not hold, or its LAND would release a land for a commit
+    the review never read."""
     from precis.plans.templates import SLICE_REF_NS
 
     _fetch_review_branch("main")
@@ -2186,10 +2224,13 @@ def _preland_head(
         if not expected or (head is not None and _sha_matches(head, expected)):
             return head, None
     if failed is None:
-        return head, None
+        failed = (
+            f"origin/{branch} reads {head or 'nothing'} after a clean fetch, "
+            f"not the pushed tip {expected}"
+        )
     log.warning(
-        "run_slice: pre-land fetch of %s%s failed (%s); origin/%s is at %s, "
-        "the pushed tip is %s",
+        "run_slice: pre-land fetch of %s%s could not reach the pushed tip "
+        "(%s); origin/%s is at %s, the pushed tip is %s",
         SLICE_REF_NS,
         branch,
         failed,
@@ -2275,16 +2316,19 @@ def _review_target(store: Any, meta: Any) -> str | None:
         if pending:
             head, stale = _preland_head(branch, pushed or None)
         if stale:
-            # td707034: never name a head this checkout failed to fetch
-            # as the one to judge. A run that leaves no ``review:``
+            # td707034 / td730820: never name a head this checkout could
+            # not bring to the pushed tip as the one to judge — a failed
+            # fetch, or a clean fetch whose answer disagrees with the
+            # stamp, both leave the reviewer unable to read the commit
+            # the held land ships. A run that leaves no ``review:``
             # comment is retried by the tick (plan_dispatch._step_reviews),
             # so the next run gets a fresh fetch.
             lines.append(
                 f"STALE CHECKOUT — judge nothing. td{target_id}'s branch is "
                 f"pushed to origin as `{SLICE_REF_NS}{branch}` at "
-                f"`{pushed}`, but this checkout's fetch of it failed "
+                f"`{pushed}`, but this checkout cannot read that tip "
                 f"({stale}) and origin/{branch} still reads "
-                f"`{head or 'nothing'}`, an older tip. Run `git rev-parse "
+                f"`{head or 'nothing'}`. Run `git rev-parse "
                 f"origin/{branch}`: unless it prints `{pushed}`, write NO "
                 "`review:` comment and no verdict — end with the one line "
                 "`stale checkout: <the fetch error>`. The tick then runs "
@@ -3398,6 +3442,20 @@ def _outranks_brief(handoff: str) -> bool:
     )
 
 
+def _wants_session(steer: str) -> bool:
+    """The newest steer asks for a session, not another land of the same
+    head: :func:`_outranks_brief`'s pair, or the tick's mechanical-red
+    ``brief:`` (gr705291). That brief is the tick's instruction to change
+    the branch (rebase, renumber, fix the named lint), posted after the
+    lander's handoff, so like that handoff it wants the rebuild."""
+    from precis.plans.templates import MECH_BRIEF_MARK
+
+    if _outranks_brief(steer):
+        return True
+    text = steer.lstrip()
+    return text.lower().startswith("brief:") and MECH_BRIEF_MARK in text
+
+
 def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
     """``(body, newest brief:/handoff: comment)`` of the todo.
 
@@ -4292,23 +4350,9 @@ def _devin_bin_ok(bin: str) -> bool:
 
 
 def _devin_auth_status(bin: str) -> subprocess.CompletedProcess[str]:
-    """``<bin> auth status``; never raises on a non-zero exit — a missing
-    or crashing binary answers rc 127, a hang answers rc 124."""
-    try:
-        return subprocess.run(
-            [bin, "auth", "status"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=15,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            [bin], 124, stdout="", stderr="auth status timed out"
-        )
-    except OSError as e:
-        return subprocess.CompletedProcess([bin], 127, stdout="", stderr=str(e))
+    """``<bin> auth status`` (:func:`_slice_adapters.devin_auth_status`) —
+    this module's seam for the preflight and lane_health."""
+    return devin_auth_status(bin)
 
 
 def _devin_model_prices() -> dict[str, tuple[float, float, float]] | None:
@@ -4395,8 +4439,8 @@ def _devin_preflight(under: Path) -> None:
             "point PRECIS_DEVIN_BIN at it"
         )
     status = _devin_auth_status(binary)
-    out = f"{status.stdout}\n{status.stderr}".lower()
-    if status.returncode != 0 or "not logged in" in out or "logged in" not in out:
+    if not devin_status_logged_in(status):
+        note_devin_logged_out()
         detail = (status.stdout or status.stderr).strip().splitlines()
         tail = f" ({detail[-1].strip()[:200]})" if detail else ""
         raise _HostRefusal(
@@ -4762,6 +4806,8 @@ def _adapter_ready(adapter: str) -> bool:
         return capability_probe.codex_login_present()
     if adapter == "claude_p":
         return capability_probe.claude_auth_present()
+    if adapter == "devin_tree":
+        return capability_probe.devin_login_present()
     return True
 
 
@@ -5443,11 +5489,13 @@ def submit(ctx: Any, spec: Any) -> Any:
             )
             if tip_sha:
                 ctx.set_meta(branch_tip=tip_sha, branch_ahead=ahead_n)
-            # A handoff asking for the session skips the land route: the
-            # lander's failure brief, or the tick's pre-land review
-            # hand-back — the rejected branch wants its rebuild, not a
+            # A steer asking for the session skips the land route: the
+            # lander's failure brief, the tick's pre-land review
+            # hand-back, or the tick's mechanical-red brief that follows
+            # the lander's — the rejected branch wants its rebuild, not a
             # defer back into the same open review (gr674785 review,
-            # td675373). ``_outranks_brief`` names exactly that pair.
+            # td675373) or another land of the head that just failed
+            # (gr705291). ``_wants_session`` names those three.
             resume = (latest or "").lstrip()
             if (
                 ahead_n
@@ -5461,7 +5509,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                     f"origin/{base}",
                     lane.name,
                     other_repo=profile is not None,
-                    rebuild=_outranks_brief(resume),
+                    rebuild=_wants_session(resume),
                 )
             ):
                 return None
@@ -7040,11 +7088,12 @@ def _route_ahead_branch(
     ``attempt_free``, no attempt burned, no ladder rung spent. ``False``
     when the branch is empty, git cannot judge, the route could not be
     taken (the session's own poll then mints the land as before), or a
-    handoff asking for the session stands — the lander's failure brief
-    or the pre-land reviewer's FIX/REVERT back-to-builder (gr674785
-    review, td675373): the branch is mid-fix by design and wants the
-    rebuild the handoff asked for, not a route back into the same
-    review."""
+    steer asking for the session stands (``rebuild``) — the lander's
+    failure brief, the pre-land reviewer's FIX/REVERT back-to-builder
+    (gr674785 review, td675373), or the tick's mechanical-red ``brief:``
+    posted after the lander's handoff (gr705291): the branch is mid-fix
+    by design and wants the rebuild that steer asked for, not a route
+    back into the same review or land."""
     try:
         _fetch_main(tree, base)
         cherry = _git(["cherry", base, "HEAD"], tree)
@@ -8686,7 +8735,6 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             or not tests_ran(result)
             or (adapter.name == "devin_tree" and not worker_tests_ran)
         )
-        _stamp_branch_files(ctx.store, todo_id, tree)
         # The pre-land review (its branch push needs the credential) stays
         # precis-only: a second repo's reviewer runs after the land, in a
         # detached tree at the landed sha (td659522 step 5).

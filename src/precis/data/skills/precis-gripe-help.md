@@ -921,6 +921,10 @@ search(kind="gripe", status="done",
 search(kind="gripe", view="count", status="done",
        args={"group_by": "tag:thread",
              "closed_since": "2026-11-01"})                    # closings per thread
+search(kind="gripe", view="count", status="done",
+       args={"group_by": "tag:goal",
+             "closed_since": "2026-11-01",
+             "closed_until": "2026-11-08"})                    # fixed, by goal
 ```
 
 `view='count'` + `group_by` (`state`, `meta.<key>`, `tag:<axis>`)
@@ -938,6 +942,16 @@ draining" and "which lanes are busy" without leaving the MCP — the
 full vocabulary is in `precis-search-help`'s count/flow sections.
 
 ## Lifecycle reference
+
+`get(kind="gripe", id="/stats")` shows cumulative progress over the last
+1, 6, 12 and 24 hours, also displayed on the gripes web page. Fixed counts
+live gripes done or awaiting verification, timed by the current STATUS tag.
+Verified counts done gripes with a success comment written with that closure.
+Reopening removes a gripe from both counts. Closed as dup counts gripe
+successor closures — a live `STATUS:wontfix` close timed by that STATUS
+attachment, or a retirement timed by `retired_at`. These are
+current-cohort counts, independent of list
+filters; `/stats` takes neither `q=` nor a detail `view=`.
 
 | Tag                    | Meaning                                 |
 |------------------------|-----------------------------------------|
@@ -1009,3 +1023,18 @@ args={"group_by": "tag:origin-class"})`.
 `precis gripe origin-backfill --status done` reports counts and unclassified
 handles without writes. Review the report, then pass `--apply` to stamp
 classifiable rows. Existing classifications remain untouched.
+
+## Goal axis
+
+The open tag `goal:<value>` records what campaign the gripe serves:
+`reaction-graph` | `pathway` | `pcb` | `memory-graph` | `work-model` |
+`search-surface` | `llm-router` | `other`. The triage tick stamps it from
+the gripe's `thread:`/`cluster:` tags (ordered glob map — thread rules
+first); a hand-set `goal:` is never overwritten.
+
+Fixed-per-goal read:
+`search(kind="gripe", view="count", status="done",
+args={"group_by": "tag:goal", "closed_since": A, "closed_until": B})`.
+
+`precis gripe origin-backfill --goal` runs the same stamp as a backfill —
+dry-run by default, `--apply` writes. Existing `goal:` tags stay untouched.

@@ -120,6 +120,30 @@ def test_fetch_failure_counts_and_rotates(store: Store) -> None:
     assert _watch_score(store, cid) <= 0
 
 
+def test_conflicting_citer_counts_as_failed_and_seed_rotates(store: Store) -> None:
+    _, cid = _seed_paper(store, "10.seed/7")
+    held_id, _ = store.upsert_stub_paper(
+        identifiers=[("doi", "10.cite/conflict")],
+        title="Electrocatalytic activity in carbon nanotube fiber counter-electrodes",
+    )
+    cited = [
+        {
+            "doi": "10.cite/conflict",
+            "title": "Catalytic reactions within coordination cages",
+        },
+        {"doi": "10.cite/valid", "title": "Valid citing paper"},
+    ]
+
+    res = run_watch_pass(store, fetch_cited_by=lambda _id: cited)
+
+    assert res == {"claimed": 1, "ok": 1, "failed": 1}
+    valid_id = store.find_ref_by_identifier("doi", "10.cite/valid", kind="paper")
+    assert valid_id is not None
+    assert _papers_with_tag(store, "source:semantic-scholar") == [valid_id]
+    assert not _tags(store, held_id)
+    assert _watch_score(store, cid) <= 0
+
+
 def test_citing_without_identifier_skipped(store: Store) -> None:
     _seed_paper(store, "10.seed/6")
     cited = [{"title": "No ids here", "year": 2025}]  # nothing to dedup/fetch on

@@ -29,7 +29,10 @@ leg that ran and exited non-zero marks the record `failed` (via
 `scripts/round fail`) — terminal while its journal shows `scripts/deploy`
 never launched, so the next cut supersedes it; a launched rollout's
 `failed` record stays a live partial rollout the leg resumes. A refusal
-before any work — no deployment journal — never marks it.
+before any work — no deployment journal — never marks it, and neither does
+`scripts/deploy` refusing ahead of its reachability ping, before any rollout
+step (exit 75, passed through): `scripts/round deploy` has put the record
+back, so the release stays live and a later --deploy-only r<N> deploys it.
 
 Steps, in order:
   1. fetch origin main/prod; S = --sha or origin/main; S must sit on
@@ -143,6 +146,9 @@ ROUND = HERE / "round"
 OK_CONCLUSIONS = ("success", "skipped", "neutral")
 OPEN_STATES = ("cut", "gating", "fixing", "green")
 DEPLOYING_STATES = ("deploying", "deployed")
+#: `scripts/deploy`'s exit code for a refusal before any rollout step, as
+#: `scripts/round deploy` passes it on (gr730609); a test pins the copies.
+DEPLOY_RC_UNTOUCHED = 75
 # Terminality is a predicate, not a set (gr593418 review): `failed` counts
 # terminal only while its journal shows `scripts/deploy` never launched —
 # no `started_epoch`, no `rollout_at`. A failed record whose rollout
@@ -1863,6 +1869,16 @@ def deploy_and_close(
                 rc,
                 "release finish refused — see the reason above; next: resolve it "
                 "and re-run scripts/round deploy --finish-pointer",
+            )
+        if rc == DEPLOY_RC_UNTOUCHED:
+            # gr730609: scripts/deploy refused before any rollout step and
+            # `round deploy` put the record back — there is no failed leg to
+            # mark, and the release must stay live for the re-run.
+            return die(
+                rc,
+                "deploy refused before any rollout — no host was touched and "
+                "the release record is unchanged; resolve the reason above and "
+                "re-run scripts/release (it resumes) or scripts/round deploy",
             )
         if getattr(args, "deploy_only", ""):
             # gr593418: the deploy leg ran and died — `failed` marks it:

@@ -239,6 +239,8 @@ link(kind="todo", id=<slice A id>, rel="blocked-by", target="todo:<slice B id>")
   (`python:<alias>::<qualname>`), never old commit shas or bare source
   paths. An unavailable dependency is an explicit unresolved item on the
   plan, never a silent omission.
+- **Notation canon**: an en dash for a numeric range (`60–90%`), no digit
+  grouping (`10000`, not `10,000`); the write audit flags both.
 - Navigation: the Specifications hub lists programmes; a programme lists
   spec and feature roots; each spec's outline leads to its sections; a
   feature exposes its implementing tasks and constraints; the plan shows

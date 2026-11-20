@@ -28,6 +28,7 @@ from precis.workers.job_types import run_slice, struct_relax
 from precis_bio.alphafold import build_fold_argv
 from precis_chem.aizynth import build_aizynth_argv
 from precis_chem.jobs import _build_normalizer_argv
+from tests import rlimit_lowerable
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: resource rlimits"
@@ -376,6 +377,24 @@ def test_mem_limit_preexec_resolves(monkeypatch):
     assert callable(mem_limit_preexec())
 
 
+def test_mem_limit_preexec_reports_refusal_without_logging(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import resource
+
+    if not hasattr(resource, "RLIMIT_DATA"):
+        pytest.skip("platform lacks RLIMIT_DATA")
+
+    def refuse(_what: int, _limits: tuple[int, int]) -> None:
+        raise OSError("kernel refused the cap")
+
+    monkeypatch.setattr(resource, "setrlimit", refuse)
+    apply = mem_limit_preexec(512)
+    assert apply is not None
+    assert apply() is False
+    assert not caplog.records
+
+
 def test_run_slice_launch_passes_the_mem_preexec(monkeypatch, tmp_path):
     """gr595537 wiring: the bare slice child gets the cap as ``preexec_fn``
     — ``None`` when no cap resolves (the finding: the helper had no
@@ -406,7 +425,7 @@ def test_run_slice_launch_passes_the_mem_preexec(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="rlimits are POSIX-only")
-def test_mem_limit_preexec_sets_rlimit_data():
+def test_mem_limit_preexec_sets_rlimit_data() -> None:
     """The spawned child inherits RLIMIT_DATA at the resolved cap (the
     soft limit; the child reads its own to prove it landed)."""
     import resource
@@ -415,6 +434,8 @@ def test_mem_limit_preexec_sets_rlimit_data():
         pytest.skip("platform lacks RLIMIT_DATA")
     # 512 MiB — comfortably above the interpreter's own startup footprint.
     cap = 512 * 1024 * 1024
+    if not rlimit_lowerable(resource.RLIMIT_DATA, cap):
+        pytest.skip("kernel refuses RLIMIT_DATA lowering (gr700449)")
     fn = mem_limit_preexec(512)
     assert fn is not None
     code = (
@@ -429,7 +450,7 @@ def test_mem_limit_preexec_sets_rlimit_data():
 
 
 @pytest.mark.skipif(os.name != "posix", reason="rlimits are POSIX-only")
-def test_mem_limit_preexec_address_space_opt_in():
+def test_mem_limit_preexec_address_space_opt_in() -> None:
     """address_space=True adds RLIMIT_AS; off by default because CUDA/torch
     reserve huge virtual space never resident."""
     import resource
@@ -440,6 +461,8 @@ def test_mem_limit_preexec_address_space_opt_in():
     # shared cache alone is several GiB on macOS), so the child interpreter
     # needs generous virtual headroom just to start.
     cap = 65536 * 1024 * 1024
+    if not rlimit_lowerable(resource.RLIMIT_AS, cap):
+        pytest.skip("kernel refuses RLIMIT_AS lowering (gr700449)")
     fn = mem_limit_preexec(65536, address_space=True)
     assert fn is not None
     code = (

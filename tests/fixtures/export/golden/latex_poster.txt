@@ -116,9 +116,9 @@
 \renewcommand{\PosterColumnOne}{\begin{block}{Introduction}
 A \gls{mof} hosts a \gls{fmof}; later \glstip{mof} and \glstip{fmof} uses. Plain \cite{smith20} and run \cite{smith20,jones21,lee22} end.\label{chunk:dc3}
 
-Collapse \cite{smith20} \cite{smith20} and \cite{smith20} then \cite{jones21,smith20} stop.\label{chunk:dc4}
+Collapse \cite{smith20} and \cite{smith20} then \cite{jones21,smith20} stop.\label{chunk:dc4}
 
-Handles \cite{smith20,jones21}, SI \cite[SI]{parent24} and \cite[SI]{parent24}, alias \cite{parent24}, then \cite{parent24}\cites{lee22}[SI]{parent24}\relax.\label{chunk:dc5}
+Handles \cite{smith20,jones21}, SI \cite[SI]{parent24} and \cite[SI]{parent24}, alias \cite{parent24}, then \cites{lee22}[SI]{parent24}\relax.\label{chunk:dc5}
 \end{block}
 \begin{block}{Acknowledgements}
 Thanks to all; see \cref{chunk:dc2}.\label{chunk:dc18}
@@ -126,7 +126,7 @@ Thanks to all; see \cref{chunk:dc2}.\label{chunk:dc18}
 \renewcommand{\PosterColumnTwo}{\begin{block}{Claims about \glsfmtshort{fmof} \cite{lee22}}\glsadd{fmof}
 Finding \cite{smith20}\textsuperscript{?}[unverified: source pending] hub \cite{jones21,lee22}\textsuperscript{?}[unverified: source pending] mixed \cites{lee22}[SI]{parent24}\relax\textsuperscript{?}[unverified: source pending] repeat \cite{smith20}\textsuperscript{?}[unverified: source pending]; dropped \textsuperscript{?}[unverified: source pending]. Joined (see \cite{smith20}\textsuperscript{?}[unverified: source pending]) and (also \cite{smith20}\textsuperscript{?}[unverified: source pending]).\label{chunk:dc7}
 
-Prose \cite{lee22} and doi:10.1/x and \href{https://precis.example.test/r/structure/12}{st12} and \cite{nobody99} and patent \cite{us123}. See \cref{chunk:dc2} and \cref{chunk:dc11}.\label{chunk:dc8}
+Prose \cite{lee22} and doi:10.1/x and \href{https://precis.example.test/r/structure/12}{st12} and \cite{nobody99} and patent \cite{us123}. See \cref{chunk:dc2,chunk:dc11}.\label{chunk:dc8}
 
 \begin{center}
 \includegraphics[width=\linewidth,height=0.30\textheight,keepaspectratio]{pics/dc9.png}

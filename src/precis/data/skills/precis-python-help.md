@@ -9,7 +9,7 @@ answers:
   - how do I find every caller of a function?
   - how do I trace the call path from a console script entry point to a function?
   - how do I replace a function body by its qualname?
-applies-to: get/search/put/edit/delete (kind='python')
+applies-to: get/search/put/edit/delete/link (kind='python')
 tags: orientation, addressing
 kinds: python
 status: active
@@ -322,6 +322,22 @@ The same eye renders in the browser at `/python/<alias>::<qualname>`
 the identical handler output with every caller/callee/test/member a
 link that re-centres the eye, plus the rung row, a `view='source'`
 toggle and a `mode='pattern'` search box at `/python/` (gr499107).
+
+## Link a note to a Python symbol
+
+Write `python:<qualname>` (e.g. `python:precis.handlers.python.PythonHandler`)
+in a note or draft body to cite a symbol (a dotted qualname — a bare
+`python:word` stays prose). The qualname is validated
+against the live index and an anchor ref is minted on first mention;
+`link(kind='python', id='<qualname>', target=…)` adds or removes an edge
+by hand. Citing notes show as a `notes citing this symbol` section at
+`extent='fisheye+1hop'` and on a plain symbol get (capped at 8 rows;
+the rest are counted, not listed).
+
+When the code is renamed or purged the anchor survives: get on the old
+qualname returns a `gone` stub with did-you-mean renames and the notes
+that still cite it, instead of a bare NotFound. Quote `python:<qualname>`,
+never the anchor's `py<N>` handle — it does not decode.
 
 ## What does this change touch?
 

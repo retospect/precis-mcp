@@ -337,15 +337,13 @@ class AliasHandler(NumericRefHandler):
             ref = self._resolve_ref(s)
             if view not in (None, "raw"):
                 return super().get(id=ref.id, view=view, **_kw)
-            return Response(body=self._render_pair(ref))
+            return self._render_default_get(ref)
         hits = self.lookup(s, scope=scope)
         if not hits and s.isdigit():
             # The universal ``as<N>`` route reaches here with the bare pk.
             pk_ref = self.store.get_ref(kind=self.kind, id=int(s))
             if pk_ref is not None:
-                return Response(
-                    body=self._render_pair(self._resolve_live_ref(pk_ref.id))
-                )
+                return self._render_default_get(self._resolve_live_ref(pk_ref.id))
         if not hits:
             body = f"no live alias for {_short(s)!r}"
             body += render_next_section(
@@ -366,6 +364,9 @@ class AliasHandler(NumericRefHandler):
         return Response(
             body=self._table(f"alias {_short(s, 60)!r} — {n} match(es)", hits, s)
         )
+
+    def _render_default_get(self, ref: Ref) -> Response:
+        return Response(body=self._render_pair(ref))
 
     def _supported_list_views(self) -> tuple[str, ...]:
         return ("recent", "stale")
@@ -444,7 +445,7 @@ class AliasHandler(NumericRefHandler):
         )
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
-        return ["raw"]
+        return ["raw", "full"]
 
     # ── put / edit / delete ───────────────────────────────────────────
 

@@ -256,10 +256,10 @@ def test_multi_grounding_source_without_a_frozen_flag_carries_no_triple() -> Non
     assert list(prov.triples((None, PRECIS["excerptsContiguous"], None))) == []
 
 
-# ── paper-context sentence (docs/backlog/paper-context-sentence.md) ──────
+# ── Historical publish-row context ──────
 
 
-def test_context_sentence_present_carries_source_context_triple() -> None:
+def test_historical_context_sentence_retains_source_context_triple() -> None:
     one = _claim_input(
         grounding=[
             assemble.GroundingInput(
@@ -287,7 +287,7 @@ def test_context_sentence_present_carries_source_context_triple() -> None:
     ]
 
 
-def test_context_sentence_absent_carries_no_triple_and_mint_is_clean() -> None:
+def test_new_mint_has_no_source_context_triple() -> None:
     one = _claim_input()  # default GroundingInput carries no context_sentence
     _, prov, _ = assemble.build_graphs(one, assemble.DRAFT_NS)
     assert list(prov.triples((None, PRECIS["sourceContext"], None))) == []

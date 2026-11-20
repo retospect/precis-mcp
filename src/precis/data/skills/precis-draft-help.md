@@ -58,45 +58,8 @@ chunk's subtree); omit it to search every draft. `search(id='dc<id>',
 q='…')` is accepted too — the handle already names the scope. Each hit
 shows `draft:<slug>` and `dc<id>`; read one with `get(id='dc<id>')`.
 
-**Regex find + substitute** (vi `/pattern` and `:%s/a/b/`) — for a
-**literal** pattern (markup, punctuation, a malformed citation), not
-meaning: Python regex (`\w`, `\d`, groups, `|`) over chunk text. Audits
-house style: stray `**bold**`, em-dashes, double spaces, a bare
-`paper:123` cite.
-
-```python
-search(kind="draft", mode="regex", q=r"\*\*\w+\*\*", scope="nanotrans")  # find **bold**
-search(kind="draft", mode="regex", q="TODO", scope="nanotrans", flags="i")  # case-fold
-edit(
-    kind="draft",
-    id="nanotrans",
-    sub={"find": r"\*\*(\w+)\*\*", "replace": r"\1"},
-    apply=True,
-)  # backreferences: strip bold
-```
-
-Find hits show `draft:<slug> dc<id> [kind]` and, per match,
-`L<line>:<col>` with the span wrapped `»…«`. `flags='i'` case-folds,
-`flags='s'` makes `.` cross newlines; `^`/`$` anchor per line; reads
-table/figure text too (read-only). `replace` is a regex template
-(`\1`/`\g<name>` resolve); every occurrence in each chunk is replaced —
-`s/pat/repl/` string form works too, and `sub=` dry-runs (counts +
-before→after sample) unless `apply=True`. Rewritten chunks go through
-the normal edit path (re-embed/keywords/gist re-derive, prior text kept
-in history); table/figure chunks are skipped in a slug/section-scoped
-substitute — point `sub=` at the table's own `dc<id>` to edit its cells
-instead.
-
-**Scope** (find and substitute):
-
-| `scope=`/`id=` | covers |
-|---|---|
-| a draft slug | the whole draft |
-| a `dc<id>` heading | that section's subtree |
-| a `dc<id>` leaf | just that chunk |
-| omitted (find only) | every draft |
-
-Substitute **requires** a scope — no corpus-wide rewrite.
+For regex search and scoped substitution examples, see
+[[precis-draft-reference-help]].
 
 ## Create a draft — new, fork, or scaffold
 
@@ -232,16 +195,18 @@ edit(
 )
 ```
 
-`title=` writes both `refs.title` (search hits, link chips) and the
-title heading chunk, atomically — repairs an already-drifted state too;
-the heading is edited in place (anchors stay live). `id` may be the slug
-or any `dc<id>`/`¶handle` inside it. Blank title → `BadInput`. A draft
-with no root heading (an import) renames the ref alone and says so.
+`title=` writes `refs.title` and the title heading atomically, repairing
+drift while preserving anchors. `id` is the slug or any `dc<id>`/`¶handle`
+in it. Blank title → `BadInput`. Without a root heading, only the ref changes.
 
-`ror` is the institution's [ROR](https://ror.org) id — two authors
-sharing a ROR collapse to one numbered affiliation. Renders in the web
-reader and both exports (PDF via `authblk`, .docx), org name hyperlinked
-to its ROR; no affiliations → a plain name list. Web reader has the same
+`edit(kind="draft", id=<slug>, args={"language": "en-GB"})` sets the draft
+language (`""` clears): the Word export writes it to `w:lang`/`dc:language`;
+unset exports en-US. Tags must be at most 255 characters.
+
+`ror` is the institution's [ROR](https://ror.org) id — authors sharing
+one collapse to a single numbered affiliation. Renders in the web reader
+and both exports (PDF via `authblk`, .docx), org name linked to its ROR;
+no affiliations → a plain name list. Web reader has the same
 editor: an **authors ▾** dropdown, one author per line as `Name |
 Affiliation | ROR`, posting to `/drafts/<slug>/authors`.
 
@@ -269,12 +234,33 @@ the matching `chunk_kind` + a one-line caption, not a bare "paragraph."
 **Plain prose, no emphasis markup** — `**bold**` and single-`*` italic
 both render but read as shouting; `_italic_` does NOT render and leaves
 literal `_` (collides with `$x_1$` math subscripts). No em-dashes (`—`)
-— split the sentence, or use a colon/comma/parens. Also no `--`.
+or `--`. Split the sentence first. Use a comma or parentheses only for
+a short gloss such as a unit or a three-word definition. Use a colon
+to introduce a list or explanation.
 Math (`$P_5$`), backtick code, URLs and `[handles]` are exempt. A
 violation trips a `⚠ house style` hint on write, and `view='hygiene'`
 counts them per rule with example `dc` handles. Two `*` forms stay
 literal: an adsorbate star touching an element symbol (`*NO`, `H*`) and
 the `\*` escape.
+
+**Keep the sentence structure simple.** Put the subject, verb and object
+first. Give each sentence one main fact. Keep clauses out of the space
+between the subject and its verb. Give an aside its own sentence or move
+it to the end. Rewrite "X, which Y, does Z." as "X does Z. It Y."
+
+- **Before** — Carbon nanobuds, reported in 2007, are hybrid nanostructures
+  formed by covalently or non-covalently bonding fullerenes to the sidewalls
+  of carbon nanotubes or to a plane of graphene.
+- **After** — Carbon nanobuds are hybrid nanostructures in which fullerenes
+  bond to the sidewalls of carbon nanotubes or to graphene. They were
+  reported in 2007.
+- **Before** — Chemical reactivity, field emission (on films only) and the
+  local electronic spectrum (two peaks on a single bud, no gap extracted)
+  have measurements on nanobud material.
+- **After** — Three properties have been measured on nanobud material:
+  chemical reactivity, field emission and the local electronic spectrum.
+  Field emission was measured on films only. The spectrum shows two peaks
+  on a single bud, and no gap was extracted.
 
 **No sentence opens with a lowercase identifier** — `autocatpath`,
 `precis`, a lowercase glossary short ("autocatpath, the reaction
@@ -364,38 +350,37 @@ get(kind="draft", id="nanotrans", q="amine")  # passages inside it (find-in-ref)
 get(id="dc12")  # one chunk, verbatim source
 get(id="nanotrans~Methods")  # ~<heading title> → that heading's dc chunk
 get(id="dc12-5..3")  # reading-order window: 5 chunks before → 3 after,
-                     # crossing headings (not a sibling run); clamped at the ends
+                     # signed offsets from dc12 (not a sibling run)
 get(id="dc12+1")  # next sibling under the same parent; dc12^ = enclosing heading
 get(id="dc12", view="fisheye")  # verbatim center + reading-order neighbors
 get(id="dc12", view="fisheye+1hop")  # fisheye + everything it points at
 ```
 
+A range anchored on a heading stays inside that heading's subtree,
+including nested sections; negative offsets do not add preceding context.
+Ranges anchored on other chunk kinds cross headings and clamp at the
+document ends. Both endpoints are signed offsets: `dc12+41..80` reads
+offsets 41 through 80, while `dc12-41..80` starts 41 chunks before dc12.
+Large ranges stop at a whole chunk, name the last chunk shown, and give
+an exact `next:` range retaining the original anchor. Follow that handle
+to read the remaining window without skipping nested sections. A single
+chunk too large for the budget refuses with a retry instruction; no partial
+chunk is shown. Plain list-container reads use the same whole-chunk limit
+and continuation. Recovery notices and other footers also count toward the
+budget; if a single chunk with its footer cannot fit, the read refuses.
+
 A chunk read shows the addressed chunk alone — when it has children, the
 footer counts them and names the `dc<N>-0..K` span that reads the whole
 subtree inline (children are contiguous in reading order).
 
-Reading order is each chunk's `pos` key, not the order calls went in —
-see where a chunk actually landed with `get(id='dc<id>',
-view='fisheye')`.
+Reading order follows `pos`, not insertion time. Inspect placement with
+`get(id="dc<id>", view="fisheye")`. Read the outline before prose.
+For view rungs, reference rings and section eyes, see [[precis-fisheye-help]].
 
-Navigate the outline first (cheap), then pull verbatim only for the
-region you act on. `view=` rungs each strictly contain the previous:
-`kwd` (ancestor path + bookmark) → `summary` (gloss) → `verbatim` (full
-text) → `fisheye` (graduated span, ±5 full text/±10 gloss/±15 bookmark,
-under the ancestor heading) → `fisheye+1hop` (+ the reference ring:
-cited papers/patents/datasheets, cross-referenced `[dc…]`/`[¶…]` chunks,
-linked notes; a cited `[fi<id>]` naming a live Taproot claim hub gets
-its own **Claims** group — see `precis-fisheye-help`). `extent=<rung>`
-is the same door on every kind; a section handle (`dc<id>`/`¶<base58>`,
-`pe<id>` on a plan) is the eye — a whole draft has none.
-
-The outline ends with a **`## Work in progress`** block when todos
-working on this draft are stuck or in flight (walked draft → project →
-todo subtree): `⚠ blocked` carries a `child-failed:<job>` bubble, `⚙ in
-flight` is a live/queued job. Inspect with `get(kind='todo', id='<id>')`;
-unblock by retrying, splitting, or dropping (`tag` off the
-`child-failed:` bubble + `STATUS:done`) — how a failed enrichment job
-registers on the draft instead of silently stalling.
+The outline’s **Work in progress** block lists blocked/in-flight todos
+from the draft’s project. Inspect with `get(kind="todo", id="<id>")`.
+Retry, split, or drop failed work; dropping removes the `child-failed:`
+bubble and sets `STATUS:done`.
 
 ## Edit, review & retire a chunk
 
@@ -414,15 +399,17 @@ See [[precis-draft-review-help]]. Three traps:
 
 ## Cite and cross-reference in prose
 
-See [[precis-draft-cite-help]].
+See [[precis-draft-cite-help]], including `view='cites'`.
 
 ## Define an abbreviation — hover-resolve, no inline spellout
 
 **Write the short form; define it once via a term call.** Use the
 abbreviation in prose (`TTA`, `PEI`, `FET`) — do **not** spell it out
 inline as `Term To Abbrev (TTA)`: the reader shows the definition on
-hover wherever the short form appears (including plurals like `FETs`),
-so an inline expansion is redundant clutter. After any `put`/`edit`, the
+hover wherever the short form appears (plurals like `FETs` too),
+so an inline expansion is redundant clutter. A hand-written `Long form
+(SHORT)` of a defined term is **flagged**: export expands the first
+use; write the short alone. After any `put`/`edit`, the
 response **hints any undefined acronyms you just wrote**, with
 copy-ready calls:
 
@@ -436,29 +423,29 @@ put(
 )  # define it — filed under an auto-created Glossary heading
 edit(
     kind="draft", id="<slug>", not_abbrev=["CO2"]
-)  # OR: mark not-an-abbreviation — silences the hint and skips its
-  # inline-detected pair (a term chunk you filed still defines it)
+)  # OR: not-an-abbreviation — silences the hint
 edit(
     kind="draft", id="<slug>", is_abbrev=["CO2"]
-)  # inverse: un-silence a wrongly-ignored token (removing an absent
-  # token is a no-op; the response says so)
+)  # inverse: un-silence a wrongly-ignored token
 ```
 
 The term call **is** what "define an abbreviation" means here, not an
 inline parenthetical. Want the label to stay the long form
 (`short='stereolithography'`) but the acronym to also hover-resolve? Add
 both: `meta={'short': 'stereolithography', 'abbrev': 'STL'}` — a
-distinct resolvable surface, not a replacement for `short`. Once defined
-or silenced, a token stops being hinted; reference a term with
+distinct resolvable surface, not a replacement for `short`. Defined or
+silenced tokens stop being hinted; reference a term with
 `[PEI](<dc-term-handle>)` (explicit terms win over auto-detected ones).
 
-**Defining several at once** — a glossary pass, a parts list — is one
-call, not one per term: `put(kind='draft', id='<slug>',
-chunk_kind='term', terms=[{'text': '<definition>', 'meta': {'short':
-'<ABBR>'}}, ...])` (≤50 per call; a bare string entry is shorthand for
-`{'text': it}`; an entry may carry `at=` to place it, else it files
-under the registry's home heading). All-or-nothing: a rejected entry
-rolls the whole call back and names its position.
+Batch terms with `put(kind='draft', id='<slug>', terms=[{'text': '…',
+'meta': {'short': 'ABBR'}}])`. Strings work too. Without `at`, terms file
+under their registry heading.
+For mixed kinds, pass `chunks=[{'text': '…', 'chunk_kind': 'paragraph',
+'meta': {}, 'at': {'last': True}}]`. Table text is a markdown grid.
+View figures use caption text and `meta.view`.
+Verb-level kind, metadata and placement provide defaults. Anchors must
+resolve in this draft. Each batch takes up to 50 entries and rolls back
+on indexed errors.
 
 ## Audit the draft — hygiene checks & the gap-finder
 
@@ -478,9 +465,9 @@ export**; rewrite the passage to the hub's current sentence (a
 whole-chunk `mode='replace'` re-pins even when the prose still stands).
 Undefined-abbreviation warnings are advisory — define the token
 (`chunk_kind='term'`) or silence it (`edit(not_abbrev=[…])`). A
-`doc_type='poster'` draft is branded
-by a `kind='profile'` profile — `meta.workspace.poster.profile` pins one,
-else the draft owner's default — see [[precis-profile-help]].
+`doc_type='poster'` draft is branded by a `kind='profile'` profile
+(`meta.workspace.poster.profile`, else the owner's default) — see
+[[precis-profile-help]].
 
 ## See also
 

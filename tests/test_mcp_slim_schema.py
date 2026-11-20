@@ -798,6 +798,15 @@ def test_promoted_knob_on_an_unsupported_kind_says_not_on_kind_yet(
 ) -> None:
     """The advertised verb param refuses ``not on <kind> yet`` on a
     kind that can't apply it — through the real call_tool path."""
-    out = _call("search", {"kind": "skill", "q": "x", "queries": ["y"]})
+    out = _call("search", {"kind": "memory", "q": "x", "queries": ["y"]})
     assert "[error:BadInput]" in out, out
-    assert "queries= is not on skill yet" in out, out
+    assert "queries= is not on memory yet" in out, out
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_skill_queries_pass_through_mcp(mcp_runtime: None, nested: bool) -> None:
+    args = {"queries": ["spaced repetition", "remember what I read"]}
+    payload = {"args": args} if nested else args
+    out = _call("search", {"kind": "skill", **payload})
+    assert "section matches across 2 phrasings" in out, out
+    assert "precis-anki-help~" in out, out

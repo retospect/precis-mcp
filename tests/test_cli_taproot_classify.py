@@ -78,6 +78,23 @@ def test_set_requires_hub(cli_store: Store) -> None:
     assert ei.value.code == 2
 
 
+def test_set_calculation_preserves_existing_method_and_model(cli_store: Store) -> None:
+    claim = CanonicalClaim(
+        sentence="The calculated adsorption energy is −0.74 eV.",
+        scope={"method": "DFT with PBE", "quantity": "−0.74 eV"},
+        claim_type="measurement",
+    )
+    hub = mint_hub(cli_store, claim)
+    assert _meta(cli_store, hub)["claim_type_by"] == "llm"
+
+    _run(["--set", "calculation", "--hub", f"fi{hub}", "--apply"])
+
+    meta = _meta(cli_store, hub)
+    assert meta["claim_type"] == "calculation"
+    assert meta["claim_type_by"] == "human"
+    assert meta["scope"] == claim.scope
+
+
 def test_set_bogus_type_rejected() -> None:
     with pytest.raises(SystemExit) as ei:
         _parse(["--set", "bogus", "--hub", "fi1", "--apply"])

@@ -75,6 +75,7 @@ def test_restated_claim_is_separate_opt_in_pass() -> None:
     assert cand.detectors_for(("memory-review",)) == [
         "entity_claim_stale",
         "negative_undated",
+        "notation",
         "restated_claim",
         "review_due",
         "source_drift",
@@ -252,6 +253,7 @@ def test_unavailable_embedder_reports_not_checked_without_lexical_fallback(
     assert run.cursors == {
         "entity_claim_stale:memory": 0,
         "negative_undated:memory": 0,
+        "notation:memory": 0,
         "review_due:memory": 0,
         "review_due:priority": 0,
         "source_drift:memory": 0,
@@ -329,6 +331,7 @@ def test_detector_deadline_does_not_save_partial_cursor(
     assert run.cursors == {
         "entity_claim_stale:memory": 0,
         "negative_undated:memory": 0,
+        "notation:memory": 0,
         "review_due:memory": 0,
         "review_due:priority": 0,
         "source_drift:memory": 0,

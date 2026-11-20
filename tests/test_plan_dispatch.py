@@ -4657,7 +4657,12 @@ def test_route_fix_body_shape(store: Store) -> None:
         assert f"plan:{mint.root_id}" in _open_tags(store, todo_id)
     text = _body_text(store, body.ids["measure"])
     assert f"td{loop}" in text and "`measure: <origin/main sha>`" in text
-    assert T.ROUTE_ANSWER in text and T.ROUTE_GATE_CMD in text
+    assert T.ROUTE_ANSWER in text
+    command = (
+        'PRECIS_TEST_ENV="PRECIS_PCB_LONG_BOARDS=1" '
+        'scripts/test tests/test_pcb_examples_route.py -m "slow or not slow"'
+    )
+    assert text.count(f"`{command}`") == 2
     assert "iteration 2 of 6" in text
     assert text.rstrip().endswith("Spec hub: me1.")
     assert "review: LAND" in _body_text(store, body.ids["review"])
@@ -6953,6 +6958,47 @@ def test_preland_review_land_mints_the_held_land(store: Store) -> None:
     # clears it when the squash is on main.
     assert isinstance(_meta(store, build).get("pending_land"), dict)
     assert _children(store, mint.root_id) == [build, review]
+
+
+def test_preland_review_land_naming_the_pushed_tip_mints_the_held_land(
+    store: Store,
+) -> None:
+    """td730820: a LAND whose verdict names the stamped pushed tip is the
+    read the hold waited for — the held land mints and the reviewer
+    closes."""
+    h2 = "2" * 40
+    mint = _reviewed_pending(store, f"review: LAND — verified head {h2}", head=h2)
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    land_jobs = [
+        m for _jid, m in _jobs_under(store, build) if m.get("job_type") == "land_slice"
+    ]
+    assert len(land_jobs) == 1
+
+
+def test_preland_review_land_on_a_stale_head_holds_the_land(
+    store: Store,
+) -> None:
+    """td730820: a LAND naming a judged head other than the stamp's pushed
+    tip read a different commit than the held land ships — no land_slice
+    mints, the stamp stands, the reviewer reopens for a fresh read, and
+    the pass records no verdict (the retry cap bounds the re-runs)."""
+    h1, h2 = "1" * 40, "2" * 40
+    mint = _reviewed_pending(store, f"review: LAND — verified head {h1}", head=h2)
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 0
+    assert not any(
+        m.get("job_type") == "land_slice" for _jid, m in _jobs_under(store, build)
+    )
+    assert isinstance(_meta(store, build).get("pending_land"), dict)
+    assert _status(store, review) == "open"
+    assert _meta(store, review)["review"]["verdict"] is None
+    assert any("td730820" in n for n in res.notes)
+    # The rejected verdict is not re-read: a second pass makes no note.
+    assert not any("td730820" in n for n in pd.run_pass(store).notes)
 
 
 def test_preland_land_holds_a_phase_root_open(store: Store) -> None:
@@ -9260,6 +9306,109 @@ def test_dispatch_queues_overlapping_build_with_score_and_release_band(
     assert waiting.ids["task"] not in pd.live_nodes(store, [waiting.root_id])
 
 
+def _scored_review_plan(store: Store, score: float, *, preland: bool) -> T.PlanMint:
+    """A build <- review plan whose root is stamped ``score``, the build
+    done and landed-pending so the next pass mints the review job."""
+    mint = _review_plan(store, preland=preland)
+    store.stamp_ref_meta(mint.root_id, {"dispatch_score": score})
+    return mint
+
+
+def _mint_review(store: Store, mint: T.PlanMint) -> dict[str, Any]:
+    """Mint the review job of ``mint`` (build done first); its meta."""
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    pd.run_pass(store)
+    ((_, meta),) = _jobs_under(store, review)
+    return meta
+
+
+def test_preland_review_job_is_floored_to_finish_first_score(store: Store) -> None:
+    """A finished build holds its files until its review runs, so the
+    review job's stamped score floors at ``FINISH_FIRST_SCORE``."""
+    mint = _scored_review_plan(store, 2.3, preland=True)
+    meta = _mint_review(store, mint)
+    assert meta["dispatch_score"] == 16.0
+
+
+def test_preland_review_job_above_the_floor_keeps_its_score(store: Store) -> None:
+    mint = _scored_review_plan(store, 42.0, preland=True)
+    meta = _mint_review(store, mint)
+    assert meta["dispatch_score"] == 42.0
+
+
+def test_build_job_of_a_preland_plan_keeps_the_plan_score(store: Store) -> None:
+    mint = _scored_review_plan(store, 2.3, preland=True)
+    pd.run_pass(store)
+    ((_, meta),) = _jobs_under(store, mint.ids["build"])
+    assert meta["dispatch_score"] == 2.3
+
+
+def test_reviewer_without_the_preland_marker_keeps_the_plan_score(
+    store: Store,
+) -> None:
+    mint = _scored_review_plan(store, 2.3, preland=False)
+    meta = _mint_review(store, mint)
+    assert meta["dispatch_score"] == 2.3
+
+
+def _held_land_meta(store: Store, mint: T.PlanMint) -> dict[str, Any]:
+    """Drive ``mint`` to a ``review: LAND`` verdict; the held land's meta."""
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    store.stamp_ref_meta(
+        build, {"pending_land": {"todo_id": build, "branch": f"slice/{build}"}}
+    )
+    _mark_done(store, build)
+    pd.run_pass(store)
+    ((review_job, _),) = _jobs_under(store, review)
+    _set_job_status(store, review_job, "succeeded")
+    _todo_comment(store, review, "review: LAND")
+    pd.run_pass(store)
+    (meta,) = [
+        m for _jid, m in _jobs_under(store, build) if m.get("job_type") == "land_slice"
+    ]
+    return meta
+
+
+def test_held_land_job_is_floored_to_finish_first_score(store: Store) -> None:
+    """The land a ``review: LAND`` verdict releases keeps the build's files
+    held until it runs, so it floors at ``FINISH_FIRST_SCORE`` too."""
+    meta = _held_land_meta(store, _scored_review_plan(store, 2.3, preland=True))
+    assert meta["dispatch_score"] == 16.0
+
+
+def test_held_land_job_above_the_floor_keeps_the_plan_score(store: Store) -> None:
+    meta = _held_land_meta(store, _scored_review_plan(store, 42.0, preland=True))
+    assert meta["dispatch_score"] == 42.0
+
+
+@pytest.mark.parametrize(("score", "want"), [(2.3, 16.0), (42.0, 42.0)])
+def test_reland_job_floors_at_finish_first_score(
+    store: Store, score: float, want: float
+) -> None:
+    """The infra-red re-land floors at ``FINISH_FIRST_SCORE`` and keeps a
+    plan score above it."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(mint.root_id, {"dispatch_score": score})
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        params={"todo_id": task, "branch": f"slice/{task}"},
+        meta={"attempt_free": "infra-land", "red_class": "gate infrastructure"},
+    )
+    pd.run_pass(store)
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["job_type"] == "land_slice"
+    assert meta["dispatch_score"] == want
+
+
 def test_file_overlap_hold_waits_for_the_inflight_land(store: Store) -> None:
     """td603849: a run_slice whose brief names the same file an
     in-flight land's brief names is held until that land finishes."""
@@ -9534,6 +9683,205 @@ def test_file_overlap_hold_uses_retry_brief_over_builder_handoff(store: Store) -
     assert _overlap_note(store, waiting)
 
 
+def test_file_overlap_hold_ignores_files_named_in_builder_handoffs(
+    store: Store,
+) -> None:
+    """gr734976: a builder session's plain ``handoff:`` names files it
+    read, ran or found red, not files it edits — two builds whose
+    handoffs mention the same untouched file do not wait on each other.
+    The same sentence as a ``brief:`` still holds."""
+    note = f"handoff: mypy reports import-not-found in {_SHARED}, files I didn't touch"
+    blocker = _started_outside_plans(store, ["src/precis/other.py"])
+    _todo_comment(store, blocker, note)
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(store, waiting, note)
+
+    assert not _overlap_note(store, waiting)
+    # Non-vacuous: the file is named, just not in a declaring comment.
+    _todo_comment(store, blocker, f"brief: also edit {_SHARED}")
+    _todo_comment(store, waiting, f"brief: edit {_SHARED}")
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_queued_builds_brief(store: Store) -> None:
+    """gr734976: a ``brief:`` comment on the queued build declares its
+    files, against the started build's stamped ``branch_files``."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    assert not _overlap_note(store, waiting)
+    _todo_comment(store, waiting, f"brief: rework {_SHARED}")
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_landers_conflict_handoff(store: Store) -> None:
+    """gr734976: the lander's failure handoff is a machine instruction
+    that names the files to fix — a retried build whose land hit a merge
+    conflict in a started build's file is held on it."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(
+        store,
+        waiting,
+        "handoff: lander: land FAILED: Auto-merging "
+        f"{_SHARED}\nCONFLICT (content): Merge conflict in {_SHARED}",
+    )
+    assert _overlap_note(store, waiting)
+
+
+_SHIP_NARRATION = (
+    "handoff: lander: land FAILED on slice/7: ✖ rebase conflict onto origin/main\n\n"
+    "The gate's output before the verdict:\n"
+    "⚠ deploy lag: oldest undeployed commit is 8h old — see docs/runbooks/deploy.md\n"
+    "▶ rebuilding Tailwind CSS (static production build)\n"
+    "\x1b[36m→ src/precis_web/static/tailwind.css\x1b[0m\n"
+    "▶ syncing origin/main\n"
+)
+
+
+def test_file_overlap_hold_ignores_ships_own_narration_in_a_lander_handoff(
+    store: Store,
+) -> None:
+    """gr736403: every lander failure handoff quotes ship's step lines,
+    and every land rebuilds the stylesheet — two builds whose lands
+    failed do not wait on each other through ``tailwind.css``. A file
+    the quoted gate output names outside ship's own lines still holds."""
+    blocker = _started_outside_plans(store, ["src/precis/other.py"])
+    _todo_comment(store, blocker, _SHIP_NARRATION)
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(store, waiting, _SHIP_NARRATION)
+
+    assert not _overlap_note(store, waiting)
+    _todo_comment(
+        store,
+        waiting,
+        _SHIP_NARRATION + "CONFLICT (content): Merge conflict in src/precis/other.py",
+    )
+    assert _overlap_note(store, waiting)
+
+
+def test_a_brief_that_opens_a_line_with_an_arrow_still_declares_its_file(
+    store: Store,
+) -> None:
+    """Only the lander's handoff carries ship's narration: an arrow line
+    in a ``brief:`` is an instruction and names its file."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(store, waiting, f"brief: two steps\n→ {_SHARED}: fix the read")
+    assert _overlap_note(store, waiting)
+
+
+@pytest.mark.parametrize("landing", [False, True])
+@pytest.mark.parametrize("provenance", ["current", "stale", "missing"])
+def test_a_finished_build_holds_only_current_branch_files(
+    store: Store, landing: bool, provenance: str
+) -> None:
+    """gr736403: once a build waits for its pre-land review its stamped
+    branch is the whole diff — a file its brief merely names holds
+    nothing. While it still builds, the brief's file holds too, and a
+    finished build with no stamped branch falls back to what it declares."""
+    finished = _pending_build(store, ["src/precis/other.py"])
+    head = "a" * 40
+    store.stamp_ref_meta(
+        finished,
+        {
+            "pending_land": {
+                "todo_id": finished,
+                "branch": f"slice/{finished}",
+                "head": "c" * 40 if landing else head,
+            }
+        },
+    )
+    if provenance != "missing":
+        stamp_head = head if provenance == "current" else "b" * 40
+        store.stamp_ref_meta(finished, {"branch_files_head": stamp_head})
+    if landing:
+        _slice_job(
+            store,
+            finished,
+            "land_slice",
+            "queued",
+            params={"todo_id": finished, "head": head},
+        )
+    _todo_comment(store, finished, f"brief: green on a full gate, see {_SHARED}")
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    state = "landing" if landing else "in pre-land review"
+    assert pd._started_slices(store)[finished].state == state
+    assert bool(_overlap_note(store, waiting)) == (provenance != "current")
+
+    building = _started_outside_plans(store, ["src/precis/other.py"])
+    _todo_comment(store, building, f"brief: green on a full gate, see {_SHARED}")
+    assert _overlap_note(store, waiting)
+
+
+@pytest.mark.parametrize(
+    ("state", "held"),
+    [
+        ("landing", {"b.py"}),
+        ("in pre-land review", {"b.py"}),
+        ("building", {"a.py", "b.py"}),
+    ],
+)
+def test_held_files_follow_the_builds_state(state: str, held: set[str]) -> None:
+    started = pd._Started(
+        state=state,
+        branch_files=("src/precis/b.py",),
+        repo="precis",
+        branch_files_current=True,
+    )
+    assert pd._held_files(started, frozenset({"a.py"})) == held
+
+
+def test_a_finished_build_without_branch_files_holds_what_it_declares(
+    store: Store,
+) -> None:
+    finished = _pending_build(store, [])
+    _todo_comment(store, finished, f"brief: rework {_SHARED}")
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    assert _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_retrys_own_branch_files(store: Store) -> None:
+    """gr734976: a retry that already has commits carries its own stamped
+    ``branch_files`` — held on a started build's file though no text of
+    its names one."""
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    assert not _overlap_note(store, waiting)
+    store.stamp_ref_meta(waiting, {"branch_files": [_SHARED, 7]})
+    assert _overlap_note(store, waiting)
+    # A malformed stamp is no file set, not an error.
+    store.stamp_ref_meta(waiting, {"branch_files": "not-a-list"})
+    assert not _overlap_note(store, waiting)
+
+
+def test_file_overlap_hold_reads_the_preland_handback(store: Store) -> None:
+    """gr734976: the tick's pre-land hand-back names the files the
+    reviewer's finding is about — the rebuild is held on them."""
+    from precis.plans.templates import PRELAND_HANDBACK_MARK
+
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, "Build the thing.").ids["task"]
+    _todo_comment(
+        store,
+        waiting,
+        f"handoff: review: FIX — the check in {_SHARED} is wrong\n\n"
+        f"(review td55, {PRELAND_HANDBACK_MARK} — rebuild on it "
+        "from the brief with this finding in mind)",
+    )
+    assert _overlap_note(store, waiting)
+
+
+def test_mechanical_red_briefs_name_no_file_for_the_overlap_hold() -> None:
+    """gr734976: the skill-size and skill-vocab advice names a test as
+    advice; ``brief:`` comments count for the overlap hold, so the
+    text must carry no path-ish token ``brief_files`` would read."""
+    from precis.utils import dispatch_score as _dscore
+
+    for slug, _pat, brief in pd._MECHANICAL_REDS:
+        if slug in {"skill-size", "skill-vocab"}:
+            assert not _dscore.brief_files(brief), (slug, brief)
+
+
 def test_file_overlap_hold_never_holds_waiting_builds_on_each_other(
     store: Store,
 ) -> None:
@@ -9716,6 +10064,9 @@ def test_a_build_out_of_turns_holds_only_while_landing(
     _slice_job(
         store, build, "run_slice", "failed", meta={pd.ATTEMPT_FREE_KEY: "lane-wait"}
     )
+    _slice_job(
+        store, build, "run_slice", "failed", meta={"host_refusal": {"lane": "codex"}}
+    )
     assert pd._started_slices(store)[build].state == "in pre-land review"
     _slice_job(store, build, "run_slice", "failed")
     assert build not in pd._started_slices(store)
@@ -9734,6 +10085,39 @@ def test_a_build_out_of_turns_holds_only_while_landing(
     # The land itself always holds: two lands on one file must not race.
     _slice_job(store, build, "land_slice", "running")
     assert pd._started_slices(store)[build].state == "landing"
+
+
+def test_overlap_claim_survives_a_settings_sql_error(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import settings
+    from precis.workers.executors._common import build_overlap_holds
+
+    key = "factory.overlap_hold_max_runs"
+    settings.invalidate(key)
+    monkeypatch.delenv("PRECIS_FACTORY_OVERLAP_HOLD_MAX_RUNS", raising=False)
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    with store.pool.connection() as conn:
+        # Shadow the real table with one whose SELECT fails in this transaction.
+        conn.execute("CREATE TEMP TABLE app_settings (key text) ON COMMIT DROP")
+        assert waiting in build_overlap_holds(conn, [waiting])
+        assert conn.execute("SELECT 1 FROM pg_temp.app_settings").fetchall() == []
+
+
+def test_overlap_claim_holds_while_another_scan_holds_the_lock(
+    store: Store,
+) -> None:
+    from precis.workers.executors._common import build_overlap_holds
+
+    _started_outside_plans(store, [_SHARED])
+    waiting = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    with store.pool.connection() as other, other.transaction():
+        other.execute(
+            "SELECT pg_advisory_xact_lock(%s)", (pd._STARTED_SLICES_LOCK_KEY,)
+        )
+        with store.pool.connection() as conn:
+            assert waiting in build_overlap_holds(conn, [waiting])
 
 
 def test_dead_land_of_an_earlier_attempt_holds_the_rebuilt_review(
@@ -9788,6 +10172,23 @@ def test_dead_land_of_an_earlier_attempt_holds_the_rebuilt_review(
         store, build, "land_slice", "failed", params={"todo_id": build, "head": head_b}
     )
     assert build not in pd._started_slices(store)
+
+
+def test_started_slices_single_flight_skips_a_concurrent_scan(store: Store) -> None:
+    build = _pending_build(store, ["src/precis/a.py"])
+    with store.pool.connection() as conn, conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (pd._STARTED_SLICES_LOCK_KEY,))
+        assert pd._started_slices(store, single_flight=True) == {}
+        # Claim and rescue callers never skip: the full scan still runs.
+        assert pd._started_slices(store)[build].state == "in pre-land review"
+    assert pd._started_slices(store, single_flight=True)[build].state == (
+        "in pre-land review"
+    )
+
+
+def test_pending_land_key_matches_the_overlap_query_literal() -> None:
+    # _started_slices and migration 0336's partial indexes hard-code it.
+    assert pd._templates.PENDING_LAND_KEY == "pending_land"
 
 
 def test_started_slices_keeps_a_running_land_and_a_pre_land_review(

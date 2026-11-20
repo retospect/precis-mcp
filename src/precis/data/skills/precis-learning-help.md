@@ -16,16 +16,19 @@ tags: [workflow, addressing]
 
 # precis-learning-help — private study activity
 
-Learning activity is private to the authenticated account. Mint a personal MCP
-token in **Account → MCP identity**, copy the token when shown, and use it as
-the client's bearer credential. It is shown once; mint another if lost.
-Revoke an individual token from Account. An install-wide token, slice grant,
-stdio actor or owner argument does not identify a learner.
+Learning activity is private to the authenticated account. The usual route is
+an OAuth connection: add the Precis MCP URL in the app, sign in when it opens
+Precis, and the app acts as your account (it then appears under **Account →
+Connected apps**). Where the deployment accepts personal tokens, you can
+instead mint a personal MCP token in **Account → Personal MCP tokens**, copy it
+when shown, and use it as the client's bearer credential. It is shown once;
+mint another if lost. Revoke an individual token from Account. An install-wide
+token, slice grant, stdio actor or owner argument does not identify a learner.
 
-A personal token permits learning calls plus exactly
-`get(kind='skill', id='precis-learning-help')`, this public read-only guide.
-That skill read takes no `view`, `args` or other keys. Other kinds, skills,
-skill search, catalogues, MCP resources and prompts are refused.
+A personal token permits calls to your own learning and GTD data. It also
+permits `get(kind='skill', id='precis-learning-help')` and
+`get(kind='profile', id='me')`. These reads take no `view`, `args` or
+other keys.
 
 Personal calls use the streamable HTTP transport with SDK session ownership.
 Start a new MCP session when changing users or switching between an install

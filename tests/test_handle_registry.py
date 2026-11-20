@@ -19,9 +19,8 @@ from precis.runtime import PrecisRuntime
 from precis.utils import handle_registry as hr
 
 # Mirror of the addressable persistent-ref kinds registered in
-# ``dispatch.boot()`` (providers web/youtube/perplexity-* and stateless
-# tools calc/math/provenance/random are addressed by URL/query/compute,
-# not handles). ``random`` is a stateless
+# ``dispatch.boot()`` (stateless tools calc/math/provenance/random are
+# addressed by query/compute, not handles). ``random`` is a stateless
 # generator — no row, no handle. TODO: derive from the live hub registry
 # so this can never drift, once a lightweight kind-list accessor exists
 # that doesn't boot the heavy handler graph.
@@ -80,6 +79,12 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "wikipedia",
         "semanticscholar",
         "chem",
+        # the remaining stored fetch caches (gr702962)
+        "youtube",
+        "web",
+        "websearch",
+        "perplexity-research",
+        "perplexity-reasoning",
         "machine",
     }
 )
@@ -112,7 +117,7 @@ def test_format_handle_is_code_plus_decimal_pk() -> None:
 
 
 def test_try_format_is_none_for_codeless_kind_or_id() -> None:
-    assert hr.try_format("websearch", 5) is None  # provider, no code
+    assert hr.try_format("math", 5) is None  # stateless tool, no code
     assert hr.try_format("paper", None) is None
     assert hr.try_format("paper", 5) == "pa5"
 
@@ -147,11 +152,19 @@ def test_parse_rejects_file_backed_and_other_table_codes() -> None:
     assert hr.parse("tg42") is None
 
 
-def test_measure_handle_is_a_decimal_handle_over_measures_id() -> None:
+def test_measure_handle_is_not_a_refs_backed_decimal_handle() -> None:
     # ``measures.id``, not a ref_id: the measure handler accepts ``mx12``;
-    # resolve_handle (refs-backed) never sees one.
+    # exclude it from refs-backed parsing and mention extraction.
     assert hr.format_handle("measure", 12) == "mx12"
-    assert hr.parse("mx12") == ("measure", False, 12)
+    assert hr.parse("mx12") is None
+    assert not hr.is_well_formed("mx12")
+
+
+def test_measure_mentions_do_not_report_dead_refs() -> None:
+    from precis.utils.mentions import unresolved_handle_mentions
+
+    # No refs lookup is needed for measures-table addresses.
+    assert unresolved_handle_mentions(object(), "[mx12] [[mx12]] [value](mx12)") == []
 
 
 def test_parse_rejects_junk() -> None:
@@ -179,7 +192,7 @@ def test_normalize_folds_prefix_case_only() -> None:
 
 def test_unknown_kind_and_code_raise() -> None:
     with pytest.raises(KeyError):
-        hr.code_for_kind("websearch")  # a provider, not a record
+        hr.code_for_kind("math")  # a stateless tool, not a record
     with pytest.raises(KeyError):
         hr.kind_for_code("zz")
 

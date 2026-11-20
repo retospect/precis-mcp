@@ -93,6 +93,34 @@ def test_get_batch_marks_deleted_and_accepts_handles(hub: Hub) -> None:
     assert f"gr{ids[1]}  deleted" in body
 
 
+@pytest.mark.parametrize("stale", ["deleted", "missing", "foreign"])
+def test_get_batch_read_hint_selects_first_live(hub: Hub, stale: str) -> None:
+    handler, ids = _gripes(hub, 2)
+    if stale == "deleted":
+        handler.delete(id=ids[0])
+        stale_id = ids[0]
+    elif stale == "foreign":
+        stale_id = id_of(TodoHandler(hub=hub).put(text="foreign batch row").body)
+    else:
+        stale_id = max(ids) + 100_000
+    body = handler.get(id=_batch(stale_id, ids[1])).body
+    assert f"get(kind='gripe', id={ids[1]}, view='full')" in body
+    assert f"get(kind='gripe', id={stale_id}" not in body
+    # The advertised read must succeed instead of raising Gone/NotFound.
+    assert f"# gripe {ids[1]}" in handler.get(id=ids[1], view="full").body
+
+
+def test_get_batch_without_live_rows_omits_actions(hub: Hub) -> None:
+    handler, ids = _gripes(hub, 1)
+    handler.delete(id=ids[0])
+    missing = ids[0] + 100_000
+    body = handler.get(id=_batch(ids[0], missing)).body
+    assert f"gr{ids[0]}  deleted" in body
+    assert f"gr{missing}  not found" in body
+    assert "get(kind=" not in body
+    assert "tag(kind=" not in body
+
+
 def test_get_batch_alert_shows_state(store: Store, hub: Hub) -> None:
     a, _ = raise_alert(store, source="s", fingerprint="fp-a", title="alert A\ndetail")
     b, _ = raise_alert(store, source="s", fingerprint="fp-b", title="alert B")
@@ -259,6 +287,37 @@ def test_get_batch_memory_renders_full_bodies_in_order(hub: Hub) -> None:
     assert "\n---\n" in body
     assert body.count("Next:") == 1
     assert f"get(kind='memory', id={second}, extent='fisheye+1hop')" in body
+
+
+@pytest.mark.parametrize("stale", ["deleted", "missing", "foreign"])
+def test_get_batch_memory_hint_selects_first_live(hub: Hub, stale: str) -> None:
+    handler = MemoryHandler(hub=hub)
+    first = id_of(handler.put(text="stale memory").body)
+    second = id_of(handler.put(text="live memory\nbody to read").body)
+    if stale == "deleted":
+        handler.delete(id=first)
+        stale_id = first
+    elif stale == "foreign":
+        stale_id = id_of(TodoHandler(hub=hub).put(text="foreign batch row").body)
+    else:
+        stale_id = max(first, second) + 100_000
+    body = handler.get(id=_batch(stale_id, second)).body
+    assert f"get(kind='memory', id={second}, extent='fisheye+1hop')" in body
+    assert f"get(kind='memory', id={stale_id}" not in body
+    assert "body to read" in handler.eye(id=second, extent="fisheye+1hop").body
+
+
+def test_get_batch_memory_without_live_rows_omits_next(hub: Hub) -> None:
+    handler = MemoryHandler(hub=hub)
+    first = id_of(handler.put(text="retired memory").body)
+    handler.delete(id=first)
+    foreign = id_of(TodoHandler(hub=hub).put(text="foreign batch row").body)
+    missing = max(first, foreign) + 100_000
+    body = handler.get(id=_batch(first, missing, foreign)).body
+    assert f"me{first}  deleted" in body
+    assert f"me{missing}  not found" in body
+    assert f"me{foreign}  not found" in body
+    assert "Next:" not in body
 
 
 def test_get_batch_memory_dedupes_title_echo(hub: Hub) -> None:

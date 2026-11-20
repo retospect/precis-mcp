@@ -40,7 +40,9 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from precis import word_handle_session
 from precis._result_budget import size_cell as _size_cell
+from precis.handle_words import to_words2
 from precis.response import Response
 from precis.utils import handle_registry, search_trace
 from precis.utils.search_header import format_search_headline
@@ -672,6 +674,11 @@ def _render_toon_table(
     breakdown line the caller prepends already says which kinds ran —
     dropping the column from every row loses no information.)
 
+    A ``word`` column (the ref's two-word spoken handle) is added after
+    ``id`` while the session's word-handle switch is on — the opt-in
+    voice affordance (gr674040); off, the schema is byte-for-byte what
+    callers always saw.
+
     ``links`` is populated from ``link_summary`` — a batch
     ``{ref_id: {(direction, relation): count}}`` map, one query per
     page (see ``Store.link_rel_summary_for_refs``) — rendered via
@@ -686,6 +693,7 @@ def _render_toon_table(
     # all-empty column is a per-row token tax for the common case.
     any_tags = any(h.tags for h in hits)
     any_size = any(h.n_bytes is not None and h.n_bytes >= 1024 for h in hits)
+    words_on = word_handle_session.enabled()
     rows: list[dict[str, str]] = []
     for hit in hits:
         summary, remaining_words = _derive_toon_summary(hit)
@@ -720,6 +728,9 @@ def _render_toon_table(
             )
         else:
             ident = "?"
+        word_cell = ""
+        if words_on and hit.ref_id is not None:
+            word_cell = to_words2(hit.ref_id)
         links_cell = ""
         if link_summary is not None and hit.ref_id is not None:
             rel_counts = link_summary.get(hit.ref_id)
@@ -730,6 +741,7 @@ def _render_toon_table(
         rows.append(
             {
                 "id": ident,
+                **({"word": word_cell} if words_on else {}),
                 "summary": summary,
                 "remaining_words": str(remaining_words),
                 "links": links_cell,
@@ -737,7 +749,13 @@ def _render_toon_table(
                 **({"size": _size_cell(hit.n_bytes or 0)} if any_size else {}),
             }
         )
-    schema = ["id", "summary", "remaining_words", "links"]
+    schema = [
+        "id",
+        *(["word"] if words_on else []),
+        "summary",
+        "remaining_words",
+        "links",
+    ]
     if any_tags:
         schema.append("tags")
     if any_size:

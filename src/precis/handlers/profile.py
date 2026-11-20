@@ -338,32 +338,38 @@ class ProfileHandler(NumericRefHandler):
             return self._render_index()
         ref = self._resolve_ref(id)
         if view in (None, "raw"):
-            payload = profiles.payload_of(ref)
-            lines = [
-                f"# profile {ref.id} — {payload.get('name') or ref.title}",
-                f"handle: {handle_registry.try_format(self.kind, ref.id) or ref.id}",
-                f"owner: {ref.owner_login or '(unowned)'}",
-                f"default: {bool(payload.get('default'))}",
-                f"sponsor_line: {payload.get('sponsor_line') or ''}",
-                "palette:",
-            ]
-            for role, hexv in sorted((payload.get("palette") or {}).items()):
-                lines.append(f"  {role}: {hexv}")
-            lines.append("fonts:")
-            for k, v in sorted((payload.get("fonts") or {}).items()):
-                lines.append(f"  {k}: {v}")
-            logos = payload.get("logos") or []
-            lines.append("logos:")
-            for lg in logos:
-                lines.append(f"  {lg.get('figure')} ({lg.get('group', 'institution')})")
-            if view == "raw":
-                lines += [
-                    "",
-                    "meta:",
-                    json.dumps(ref.meta or {}, indent=2, sort_keys=True),
-                ]
-            return Response(body="\n".join(lines))
+            return self._render_profile(ref, raw=view == "raw")
         return super().get(id=ref.id, view=view, **_kw)
+
+    def _render_default_get(self, ref: Ref) -> Response:
+        return self._render_profile(ref)
+
+    def _render_profile(self, ref: Ref, *, raw: bool = False) -> Response:
+        payload = profiles.payload_of(ref)
+        lines = [
+            f"# profile {ref.id} — {payload.get('name') or ref.title}",
+            f"handle: {handle_registry.try_format(self.kind, ref.id) or ref.id}",
+            f"owner: {ref.owner_login or '(unowned)'}",
+            f"default: {bool(payload.get('default'))}",
+            f"sponsor_line: {payload.get('sponsor_line') or ''}",
+            "palette:",
+        ]
+        for role, hexv in sorted((payload.get("palette") or {}).items()):
+            lines.append(f"  {role}: {hexv}")
+        lines.append("fonts:")
+        for k, v in sorted((payload.get("fonts") or {}).items()):
+            lines.append(f"  {k}: {v}")
+        logos = payload.get("logos") or []
+        lines.append("logos:")
+        for lg in logos:
+            lines.append(f"  {lg.get('figure')} ({lg.get('group', 'institution')})")
+        if raw:
+            lines += [
+                "",
+                "meta:",
+                json.dumps(ref.meta or {}, indent=2, sort_keys=True),
+            ]
+        return Response(body="\n".join(lines))
 
     def _render_index(self) -> Response:
         login = profiles.acting_login(self.store)
@@ -405,7 +411,7 @@ class ProfileHandler(NumericRefHandler):
         return Response(body=body)
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
-        return ["raw"]
+        return ["raw", "full"]
 
     # ── put / edit ────────────────────────────────────────────────────
 

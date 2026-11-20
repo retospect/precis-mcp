@@ -78,6 +78,8 @@ from precis.store._chunks_ops import (
     ANN_STATEMENT_TIMEOUT_MS,
 )
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
+from precis.store._tag_filter import _parse_tag_string
+from precis.store._tags_ops import _tag_to_namespace_value
 from precis.store.types import Tag
 from precis.utils import handle_registry, search_trace
 from precis.utils.search_merge import (
@@ -87,6 +89,7 @@ from precis.utils.search_merge import (
     merge_and_render,
     ref_hits_to_search_hits,
 )
+from precis.utils.time_span import SPAN_FORMS, span_ago
 
 log = logging.getLogger(__name__)
 
@@ -1233,7 +1236,11 @@ class SearchMixin(RuntimeShape):
           ``since=``/``until=`` on a plain job listing are the kind's own
           ``created_at`` bounds, so a bare window stays on the job
           listing path, including its natural ``sort='recency'``.
-          A ``q=`` or ``sort='relevance'`` still opts into ranking.
+          A ``q=`` or ``sort='relevance'`` still opts into ranking;
+        * ``kind='job'`` with ``sort='recency'`` (any ``q=``) or
+          ``view='parked'`` — the job handler's own filtered listing,
+          which orders the whole set (gr735229) / renders the park table
+          (gr735226).
         """
         if verb != "search" or not self._is_source_search_request(args):
             return False
@@ -1286,6 +1293,20 @@ class SearchMixin(RuntimeShape):
             sort = str(args.get("sort") or "").strip().lower()
             if resolved == "job" and sort in {"oldest", "newest"}:
                 return False
+            if resolved == "job" and (
+                str(args.get("view") or "").strip() == "parked"
+                or (
+                    sort in {"recency", "recent"}
+                    and not str(args.get("view") or "").strip()
+                )
+            ):
+                # gr735229/gr735226: the job handler owns these. Its own
+                # listing orders the whole filtered set newest-created
+                # first — the source primitive date-sorts only a top-100
+                # relevance pool, so the newest job of a type could miss
+                # it — and ``view='parked'`` is a kind view the primitive
+                # has no way to render.
+                return False
             q = args.get("q")
             if resolved == "job" and not (isinstance(q, str) and q.strip()):
                 extras = args.get("__extras__")
@@ -1302,23 +1323,26 @@ class SearchMixin(RuntimeShape):
     def _parse_search_date(value: Any, field: str) -> datetime | None:
         """Parse a ``since=`` / ``until=`` bound into a tz-aware datetime.
 
-        Accepts an ISO date (``2024-01-01``) or a full ISO timestamp; a
-        naive value is assumed UTC (``refs.created_at`` is ``timestamptz``)
-        and an offset-aware value is normalized to UTC so a ``Z``-labelled
-        echo can't print the offset hour as UTC. Raises ``BadInput`` on an
-        unparseable string.
+        Accepts an ISO date (``2024-01-01``), a full ISO timestamp, or a
+        relative span (``30m`` / ``2h`` / ``3d`` / ``1w`` — "now minus that
+        long", gr735229); a naive value is assumed UTC (``refs.created_at``
+        is ``timestamptz``) and an offset-aware value is normalized to UTC
+        so a ``Z``-labelled echo can't print the offset hour as UTC. Raises
+        ``BadInput`` on an unparseable string.
         """
         if value is None:
             return None
         if isinstance(value, datetime):
             dt = value
+        elif (ago := span_ago(str(value))) is not None:
+            dt = ago
         else:
             try:
                 dt = datetime.fromisoformat(str(value).strip())
             except ValueError as exc:
                 raise BadInput(
-                    f"{field}= must be an ISO date/timestamp, got {value!r}",
-                    next=f"{field}='2024-01-01' or '2024-01-01T00:00:00'",
+                    f"{field}= must be {SPAN_FORMS}, got {value!r}",
+                    next=f"{field}='2h' or '2024-01-01' or '2024-01-01T00:00:00'",
                 ) from exc
         return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
 
@@ -3722,8 +3746,12 @@ class SearchMixin(RuntimeShape):
         Runs after every stream is collected: resolves ``ref_id`` (via
         ``slug`` when needed), fetches the ref-level tag set, keeps only
         hits whose tags superset the required ones. Compares on the
-        canonical string form so a flag ``workspace`` and an open tag
-        ``workspace`` match equivalently.
+        ``(namespace, value)`` rows each filter spelling expands to —
+        ``_parse_tag_string``, the same expansion the SQL leg applies
+        in ``build_tag_filter`` — so a flag ``workspace`` and an open
+        tag ``workspace``, or a stored ``STUDYTYPE:x`` axis row and the
+        documented lowercase ``studytype:x`` spelling (gr718845), match
+        equivalently.
 
         Cost: one extra ``tags_for`` DB hit per surviving hit —
         acceptable since tag filters are rare in cross-kind search and
@@ -3749,7 +3777,14 @@ class SearchMixin(RuntimeShape):
                 # hit.
                 continue
             tags_have = self.hub.store.tags_for(ref_id)
-            have_strings = {str(t) for t in tags_have}
-            if required.issubset(have_strings) and excluded.isdisjoint(have_strings):
+            # ``_tag_to_namespace_value`` is the canonical Tag → stored
+            # (namespace, value) projection — the same namespaces
+            # ``_parse_tag_string`` emits for a filter spelling.
+            have = {_tag_to_namespace_value(t) for t in tags_have}
+            if all(
+                any(pair in have for pair in _parse_tag_string(t)) for t in required
+            ) and not any(
+                pair in have for t in excluded for pair in _parse_tag_string(t)
+            ):
                 kept.append(hit)
         return kept

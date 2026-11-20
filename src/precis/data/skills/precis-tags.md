@@ -105,10 +105,33 @@ search(kind="memory", q="kwargs vs modes", tags=["confidence-strong"])
 `urgent` filter raises the bare-flag-collision error.
 
 Prefix an entry with `!` to exclude instead of require —
-`tags=['topic:x', '!PRIO:high']` matches `topic:x` refs that are not
-high-priority, and `tags=['!card:experiment']` alone lists everything
+`tags=['topic:x', '!STATUS:done']` matches `topic:x` refs that are not
+done, and `tags=['!card:experiment']` alone lists everything
 *without* that tag. Negations compose with the positive entries (AND)
 and with `q=`; a bare `'!'` is refused.
+
+## Which lowercase prefixes alias a closed axis in filters?
+## Why did tags=['studytype:review'] match a STUDYTYPE row?
+
+`search(tags=...)` accepts the lowercase spelling of the paper facet
+axes documented in `precis-paper-tag-axes` — `domain:`, `scale:`,
+`dim:`, `transport:`, `studytype:`, `material:`, and `property:`. The classifier
+pass stores the closed UPPERCASE row (`STUDYTYPE:review`); the
+lowercase filter matches that row AND a literal open tag of the same
+spelling, so a manually tagged ref and an auto-tagged ref both surface.
+
+Every other closed axis is case-sensitive in filters: `STATUS:`,
+`PRIO:`, `SRC:`, `CACHE:`, `JUNK:`, … — a lowercase `status:open`
+filter is an open tag, not the axis. Lowercase `junk:x` in particular
+never targets the `JUNK:` axis: the default `JUNK:junk` exclusion
+stays on, so pin the uppercase spelling — `tags=['JUNK:junk']` — for
+the audit view.
+
+The `view='tags'` listing shows raw values under `OPEN`. Copying
+an open value such as `studytype:review` into `tags=` also matches
+the uppercase facet. Use `STUDYTYPE:review` to match only that
+facet. The Drive UI uses `=OPEN:studytype:review` in its tag links
+to match only the open row.
 
 ## List every tag in use
 ## Browse the tag vocabulary
@@ -209,9 +232,10 @@ import, so a new axis file registers itself:
 | `TAPROOT:` | ref | `claim review` | `axis:taproot` (findings) |
 
 Ref-level axes are writable on the kinds their pass targets (papers +
-findings; `MOVE:` on memory). Chunk-level axes are registered for
-filtering only — they live on `chunk_tags`, not refs. An unknown value
-is refused with close matches.
+findings; `MOVE:` on memory). Chunk classifiers write their axes to
+`chunk_tags`. Paper search checks `tags=` against ref-level rows, so
+classifier rows such as `ROLE3:own` cannot satisfy that filter. An unknown
+value is refused with close matches.
 
 `JUNK:` is the one exception (gr520915): the axis stays chunk-level,
 but `tag(kind='paper', add=['JUNK:junk'])` is the manual whole-paper
@@ -295,6 +319,10 @@ allowed axes and suggests the lowercase form.)
 put(kind='todo', text='...', tags=['urgent'])
 [error:BadInput] bare flag 'urgent' collides with closed value 'PRIO:urgent'
   next: use tags=['PRIO:urgent'] instead of tags=['urgent']
+  # that retry is right for put/tag on todo/gripe/quest (it sets the prio
+  # column); as a search filter `PRIO:urgent` matches nothing — browse
+  # with search(kind='todo', args={'sort': 'prio'}) (lower = hotter) and
+  # keep the other tags, e.g. tags=['STATUS:open']
 
 tag(kind='todo', id=40, add=['STATUS:bogus'])
 [error:BadInput] invalid STATUS value for kind 'todo': 'bogus'

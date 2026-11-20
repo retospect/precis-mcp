@@ -63,21 +63,22 @@ class TestBuildTagFilter:
         # holds (namespace, value).
         assert "ref_tags" in frag
         assert "tags t" in frag
-        # AND semantics: HAVING COUNT(DISTINCT t.value) = N where N=1.
-        # Counts on ``t.value`` rather than ``t.tag_id`` so a bare
-        # tag expanded into OPEN+FLAG namespaces still counts once
-        # (namespace-agnostic match for cross-kind workspace
-        # filtering — see ``_parse_tag_string`` for the rationale).
-        assert "HAVING COUNT(DISTINCT t.value) = %s" in frag
-        # Two params per tag (namespace, value) + the count.
-        assert params == ["STATUS", "open", 1]
+        # AND semantics: HAVING COUNT(DISTINCT want.slot) = N where N=1 —
+        # the ``want`` VALUES leg stamps each expanded (ns, val) row with
+        # the slot of the input tag that produced it, so a tag counts
+        # once whichever of its expansion rows matched (bare-tag
+        # OPEN+FLAG, lowercase-axis alias, … — see ``_parse_tag_string``).
+        assert "HAVING COUNT(DISTINCT want.slot) = %s" in frag
+        # Three params per expansion row (namespace, value, slot) + the count.
+        assert params == ["STATUS", "open", 0, 1]
 
     def test_multi_tag_AND(self) -> None:
         frag, params = build_tag_filter(["STATUS:open", "PRIO:high"])
-        # v2 uses (ns, val) tuples in IN list: 2 placeholders per tag
-        # + the trailing count = 5 placeholders for 2 tags.
-        assert frag.count("%s") == 5
-        assert params == ["STATUS", "open", "PRIO", "high", 2]
+        # v2 wants (ns, val, slot) triples in the VALUES list: 3
+        # placeholders per expansion row + the trailing count =
+        # 7 placeholders for 2 single-row tags.
+        assert frag.count("%s") == 7
+        assert params == ["STATUS", "open", 0, "PRIO", "high", 1, 2]
 
     def test_block_level_uses_chunk_tags(self) -> None:
         """v2 block-level filter routes through ``chunks`` +
@@ -109,12 +110,15 @@ class TestBuildTagFilter:
         assert " IN (" in frag
         assert " NOT IN (" in frag
         # Positive leg: 'topic:x' is an open tag → OPEN+FLAG rows of the
-        # whole 'topic:x' value, + count; negated leg: one (PRIO, high).
+        # whole 'topic:x' value (slot 0), + count; negated leg: one
+        # (PRIO, high).
         assert params == [
             "OPEN",
             "topic:x",
+            0,
             "FLAG",
             "topic:x",
+            0,
             1,
             "PRIO",
             "high",
@@ -141,7 +145,7 @@ class TestBuildTagFilter:
             ("tier", "synthetic-insight")
         ]
         frag, params = build_tag_filter(["=tier:synthetic-insight"])
-        assert params == ["tier", "synthetic-insight", 1]
+        assert params == ["tier", "synthetic-insight", 0, 1]
         # Negated exact-axis composes like any other exclusion.
         _frag, neg_params = build_tag_filter(["!=tier:dream"])
         assert neg_params == ["tier", "dream"]
@@ -163,7 +167,96 @@ class TestBuildTagFilter:
         spelling = tag_filter_string("OPEN", value)
         assert _parse_tag_string(spelling) == [("OPEN", value)]
         _, params = build_tag_filter([spelling])
-        assert params == ["OPEN", value, 1]
+        assert params == ["OPEN", value, 0, 1]
+
+    def test_lowercase_axis_alias_expands_to_both_spellings(self) -> None:
+        """gr718845: ``studytype:conceptual`` — the facet spelling
+        ``precis-paper-tag-axes`` documents — expands to the axis pass's
+        stored ``STUDYTYPE`` row AND the literal OPEN/FLAG pair a manual
+        ``tag(add=)`` writes."""
+        assert _parse_tag_string("studytype:conceptual") == [
+            ("STUDYTYPE", "conceptual"),
+            ("OPEN", "studytype:conceptual"),
+            ("FLAG", "studytype:conceptual"),
+        ]
+        # Mixed case aliases too; an unregistered lowercase prefix stays
+        # an open-tag spelling (``topic:`` is documented open-tag syntax).
+        assert _parse_tag_string("Studytype:review")[0] == ("STUDYTYPE", "review")
+        assert _parse_tag_string("topic:x") == [
+            ("OPEN", "topic:x"),
+            ("FLAG", "topic:x"),
+        ]
+
+    @pytest.mark.parametrize(
+        "axis",
+        ["DOMAIN", "MATERIAL", "PROPERTY", "DIM", "SCALE", "STUDYTYPE", "TRANSPORT"],
+    )
+    def test_documented_paper_facets_alias(self, axis: str) -> None:
+        spelling = f"{axis.lower()}:x"
+        assert _parse_tag_string(spelling) == [
+            (axis, "x"),
+            ("OPEN", spelling),
+            ("FLAG", spelling),
+        ]
+
+    @pytest.mark.parametrize(
+        "axis",
+        [
+            "move",
+            "taproot",
+            "patent_example",
+            "role",
+            "role3",
+            "open-question",
+            "status",
+            "sev",
+            "junk",
+        ],
+    )
+    def test_other_axes_keep_literal_lowercase_filters(self, axis: str) -> None:
+        spelling = f"{axis}:x"
+        assert _parse_tag_string(spelling) == [("OPEN", spelling), ("FLAG", spelling)]
+        assert tag_filter_string("OPEN", spelling) == spelling
+
+    def test_open_value_on_aliased_axis_keeps_exact_link(self) -> None:
+        """td731629 review: a stored OPEN tag whose value spells like an
+        aliased facet filter (``studytype:review``) must not ride bare —
+        the plain spelling would pull in papers carrying only the closed
+        ``STUDYTYPE:review`` row. ``=OPEN:`` preserves the exact pair."""
+        assert tag_filter_string("OPEN", "studytype:review") == "=OPEN:studytype:review"
+        assert _parse_tag_string("=OPEN:studytype:review") == [
+            ("OPEN", "studytype:review")
+        ]
+        _, params = build_tag_filter(["=OPEN:studytype:review"])
+        assert params == ["OPEN", "studytype:review", 0, 1]
+        # OPEN values that don't resemble an aliased axis still ride bare.
+        assert tag_filter_string("OPEN", "topic:co2") == "topic:co2"
+        assert tag_filter_string("OPEN", "status:open") == "status:open"
+
+    def test_lowercase_axis_alias_in_positive_and_negated_legs(self) -> None:
+        frag, params = build_tag_filter(["studytype:conceptual"])
+        assert params == [
+            "STUDYTYPE",
+            "conceptual",
+            0,
+            "OPEN",
+            "studytype:conceptual",
+            0,
+            "FLAG",
+            "studytype:conceptual",
+            0,
+            1,
+        ]
+        # The negated leg excludes every stored spelling.
+        _frag, neg_params = build_tag_filter(["!studytype:conceptual"])
+        assert neg_params == [
+            "STUDYTYPE",
+            "conceptual",
+            "OPEN",
+            "studytype:conceptual",
+            "FLAG",
+            "studytype:conceptual",
+        ]
 
 
 # ── store-level: ref-search filter ──────────────────────────────────

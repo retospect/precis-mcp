@@ -3643,3 +3643,20 @@ class TestCloseOutcomes:
         head = prompts[0].split("\n### gr", 1)[0]
         for v in ("not-a-bug", "working-as-designed", "noise", "fixed"):
             assert f'"{v}"' in head
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_triage_stamps_goal(store: Store, override: bool) -> None:
+    """gr592749: the tick stamps ``goal:<value>`` off the freshly
+    written ``cluster:`` tag; a filer-set ``goal:`` is never
+    overwritten."""
+    _light(store)
+    gid = _gripe(store, "router pours fail")
+    if override:
+        store.add_tag(gid, Tag.open("goal:other"), set_by="agent")
+    _run(
+        store,
+        llm=_llm({"verdicts": [_verdict(gid, cluster="pcb-router")]}),
+    )
+    goals = {t for t in _open_tag_values(store, gid) if t.startswith("goal:")}
+    assert goals == {"goal:other" if override else "goal:pcb"}

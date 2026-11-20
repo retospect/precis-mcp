@@ -6,10 +6,11 @@ environment variable or wire argument never supplies a personal owner.
 The account and optional token are rechecked for each operation so a
 long-lived MCP session cannot outlive revocation. ContextVar scopes reset
 on every exit and travel through anyio's worker-thread context copy.
-Personal API tokens permit learning and the exact learning-help read. OAuth
-connections carry separately revocable app grants and explicit capabilities;
-their IDs never share the API-token namespace. Dispatch maps the live account
-to its current legacy revision actor before
+Personal API tokens permit the registered private kinds
+(``private_kinds.PRIVATE_KINDS``) and their exact help reads. OAuth
+connections carry separately revocable app grants and explicit
+capabilities; their IDs never share the API-token namespace. Dispatch
+maps the live account to its current legacy revision actor before
 checking scope, preserving revocation and attribution without claiming
 that an agent's writes were typed by a human. Trusted in-process web routes
 may bind an account directly without entering the MCP scope gate.

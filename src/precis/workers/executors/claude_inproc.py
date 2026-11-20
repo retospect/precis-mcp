@@ -604,7 +604,15 @@ def _build_dispatch_context(
         # Park the job (STATUS:waiting_time + meta.wake_when at_time) —
         # this lane's Yield; wake_runner re-queues it at the instant.
         with store.pool.connection() as conn:
-            parked = _park_job_until(store, conn, ref_id, wake_at, note)
+            parked = _park_job_until(
+                store,
+                conn,
+                ref_id,
+                wake_at,
+                note,
+                submit_attempt=meta.get("submit_attempt"),
+                temporary_submit_pin=bool(meta.get("temporary_submit_pin")),
+            )
             conn.commit()
         return parked
 

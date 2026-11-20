@@ -93,13 +93,7 @@ class GroundingInput:
     #: this feature). Never derived here: the artifact must describe the
     #: paper as it was quoted at approval, not as it reads at mint time.
     contiguous_group: bool | None = None
-    #: The frozen paper-context sentence (``docs/backlog/
-    #: paper-context-sentence.md``) — one neutral method/evidence-type
-    #: sentence off ``refs.meta['context_sentence']`` at approval time,
-    #: stamped identically onto every passage sharing this DOI. ``None``
-    #: when the source paper carries no sentence yet (population is a
-    #: deliberate backfill + lazy enqueue, not a corpus-wide sweep) — the
-    #: triple is simply omitted then; minting never blocks on it.
+    #: Historical publish rows retain this literal for reproducible artifacts.
     context_sentence: str | None = None
     #: The published source node. ``None`` on a payload frozen before this
     #: field existed — :attr:`source_node` then derives it from ``doi``, so
@@ -327,12 +321,7 @@ def _provenance(inp: MintInput, ns: Namespace) -> Graph:
             g.add((src_uri, RDFS.seeAlso, URIRef(ground.source_url)))
         if ground.source_title:
             g.add((src_uri, DCT.title, Literal(ground.source_title)))
-        # Paper-context sentence (paper-context-sentence.md): a neutral
-        # method/evidence-type literal on the source node, same node
-        # dct:title and excerptsContiguous use. Omitted entirely when the
-        # source carries no frozen sentence — multiple passages of the
-        # same source emit the identical triple, which the Graph (a set)
-        # dedups for free.
+        # Retain the source literal when rebuilding historical publish rows.
         if ground.context_sentence:
             g.add(
                 (

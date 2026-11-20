@@ -66,13 +66,28 @@ def _user_line(store: Store, user_id: int) -> str:
     return f"user: {user.abbrev} (login: {user.login}, id: {user.id})"
 
 
-def _private_permission_line() -> str:
-    """The scoped-permission summary, derived from the private-kind registry."""
+def _private_permission_line(scopes: tuple[str, ...] | None = None) -> str:
+    """The scoped-permission summary, derived from the private-kind registry.
+
+    ``None`` is the personal-token case — every registered kind. An OAuth
+    connection reaches only the kinds whose grant scope it was given, so
+    naming the whole registry would claim permissions it does not hold."""
     from precis import private_kinds
 
-    kinds = ", ".join(private_kinds.PRIVATE_KINDS)
-    helps = ", ".join(f"{kind} help" for kind in private_kinds.PRIVATE_KINDS)
-    return f"permission: {kinds} calls, {helps}, whoami"
+    entries = [
+        entry
+        for entry in private_kinds.PRIVATE_KINDS.values()
+        if scopes is None or entry.oauth_scope in scopes
+    ]
+    if not entries:
+        return "permission: whoami"
+    kinds = ", ".join(entry.kind for entry in entries)
+    permissions = [f"{kinds} calls"]
+    permissions.extend(
+        f"{entry.kind} help" for entry in entries if entry.help_published
+    )
+    permissions.append("whoami")
+    return "permission: " + ", ".join(permissions)
 
 
 def _credential_lines(store: Store, owner: Principal) -> list[str]:
@@ -91,7 +106,7 @@ def _credential_lines(store: Store, owner: Principal) -> list[str]:
             (
                 "permission: full MCP (all verbs)"
                 if "mcp:full" in oauth.scopes
-                else _private_permission_line()
+                else _private_permission_line(oauth.scopes)
             ),
         ]
     if owner.token_id is not None:

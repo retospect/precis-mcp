@@ -15,6 +15,7 @@ from __future__ import annotations
 import inspect
 import time
 
+from precis.plans.lanes import BREAKER_HOLD, HOST_REFUSAL_BACKOFF, LANE_PARK_WHY
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers import wake_runner
@@ -132,6 +133,68 @@ def _status_of(store: Store, ref_id: int) -> str | None:
         if s.startswith("STATUS:"):
             return s[len("STATUS:") :]
     return None
+
+
+def test_at_time_wakes_only_legacy_breaker_parks_early(store: Store) -> None:
+    now = int(time.time())
+    # The job was already parked for two hours before the fix reached it.
+    parked_at = now - 7200
+    legacy_why = (
+        f"{LANE_PARK_WHY}run_slice: lane 'codex' pinned by params.lane "
+        "is backed off until 2027-11-19T12:00:00Z after a host refusal"
+    )
+    cases = (
+        (
+            "run_slice",
+            legacy_why,
+            parked_at,
+            int(BREAKER_HOLD.total_seconds()),
+            "queued",
+        ),
+        (
+            "run_slice",
+            legacy_why,
+            now,
+            int(HOST_REFUSAL_BACKOFF.total_seconds()),
+            "waiting_time",
+        ),
+        (
+            "run_slice",
+            "quota pause",
+            parked_at,
+            int(BREAKER_HOLD.total_seconds()),
+            "waiting_time",
+        ),
+        (
+            "demo_campaign",
+            legacy_why,
+            parked_at,
+            int(BREAKER_HOLD.total_seconds()),
+            "waiting_time",
+        ),
+    )
+    jobs = [
+        (
+            _mk_job(
+                store,
+                parent_id=None,
+                status="waiting_time",
+                meta={
+                    "job_type": job_type,
+                    "lane_park_at": start,
+                    "wake_when": {
+                        "kind": "at_time",
+                        "payload": {"ts": start + seconds, "why": why},
+                    },
+                },
+            ),
+            expected,
+        )
+        for job_type, why, start, seconds, expected in cases
+    ]
+    assert wake_runner.run_wake_pass(store)["ok"] == 1
+    assert all(_status_of(store, job_id) == expected for job_id, expected in jobs)
+    assert wake_runner.run_wake_pass(store)["claimed"] == 0
 
 
 def test_children_done_wake_treats_soft_deleted_child_as_terminal(

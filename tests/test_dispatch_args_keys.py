@@ -26,56 +26,9 @@ from precis.errors import BadInput
 from precis.handlers.gripe import GripeHandler
 from precis.protocol import ArgsSpec, Handler, UndeclaredArgsKey
 from precis.runtime import PrecisRuntime
-from precis.store import Store
+from precis.store import Store, Tag
 from precis.user_context import user_scope
 from precis.users import PasswordRecord
-
-#: (kind, verb) for every in-repo handler verb that declares ``args``.
-PASSTHROUGH = [
-    ("learning", "get"),
-    ("learning", "put"),
-    ("learning", "edit"),
-    ("todo", "search"),
-    ("todo", "delete"),
-    ("gripe", "delete"),
-    ("measure", "search"),
-    # measure.put's recheck door reads args{'papers','dry_run'}
-    # (gr506762 subset-4)
-    ("measure", "put"),
-    ("draft", "get"),
-    ("python", "get"),
-    ("pcb", "put"),
-    ("pcb", "get"),
-    ("cad", "get"),
-    ("component", "put"),
-    ("component", "get"),
-    ("quest", "get"),
-    ("paper", "get"),
-    ("paper", "edit"),
-    ("structure", "put"),
-    ("structure", "edit"),
-    ("structure", "get"),
-    ("random", "get"),
-    ("time", "get"),
-    ("paper", "put"),
-    ("paper", "delete"),
-    ("datasheet", "put"),
-    ("datasheet", "edit"),
-    ("youtube", "put"),
-    ("pres", "edit"),
-    # llm.put's owner account door reads args{'account'} (0280, td568204)
-    ("llm", "put"),
-    # Plugin handlers (entry point group ``precis.handlers``).
-    ("estimate", "get"),
-    ("pathway", "get"),
-    ("pathway", "put"),
-    # pathway.search's meta filters (candidate/engine/status/tier) ride
-    # args= (gr592660).
-    ("pathway", "search"),
-    ("se", "get"),
-    ("se", "put"),
-    ("se", "edit"),
-]
 
 
 def _handler_class(runtime: PrecisRuntime, kind: str) -> type[Handler]:
@@ -452,14 +405,79 @@ def test_job_since_with_link_stays_on_the_job_listing(
 def test_job_since_with_explicit_sort_still_routes_to_source_search(
     runtime_with_store: PrecisRuntime,
 ) -> None:
-    """An explicit ``sort=`` still asks for the source-search primitive —
-    the job exemption covers the bare-window call shape only."""
+    """An explicit ``sort='relevance'`` still asks for the source-search
+    primitive — the job exemption covers the bare-window call shape and
+    ``sort='recency'``, which the job listing orders itself (gr735229)."""
     out = runtime_with_store.dispatch(
         "search",
-        {"kind": "job", "q": "zz_no_such_token_zz", "sort": "recency"},
+        {"kind": "job", "q": "zz_no_such_token_zz", "sort": "relevance"},
     )
     assert "[error" not in out, out
     assert "matches" in out.lower(), out
+
+
+def test_job_sort_recency_routes_to_the_job_listing(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr735229: ``sort='recency'`` (and its ``'recent'`` spelling) on a
+    job search is the job handler's newest-created listing, not the source
+    primitive's date-sorted relevance pool."""
+    for sort in ("recency", "recent"):
+        out = runtime_with_store.dispatch(
+            "search",
+            {"kind": "job", "q": "zz_no_such_token_zz", "sort": sort},
+        )
+        assert "[error" not in out, out
+        assert "no job entries" in out, out
+
+
+def test_job_queryless_recency_listing_takes_status_and_paging(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr709771: the call-errors cluster's exact shapes —
+    ``search(kind='job', sort='recency', status=…)`` with ``page=`` /
+    ``page_size=`` and no ``q=`` — died on the source-search primitive's
+    "requires q=" refusal. ``sort='recency'`` routes to the job
+    handler's own newest-created listing, which applies ``status=`` and
+    paging itself."""
+    older = store.insert_ref(kind="job", slug=None, title="td737202 older", meta={})
+    store.add_tag(older.id, Tag.closed("STATUS", "running"), set_by="system")
+    newer = store.insert_ref(kind="job", slug=None, title="td737202 newer", meta={})
+    store.add_tag(newer.id, Tag.closed("STATUS", "queued"), set_by="system")
+
+    running = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "job",
+            "page": 1,
+            "page_size": 60,
+            "sort": "recency",
+            "status": "running",
+        },
+    )
+    assert "[error" not in running, running
+    assert "td737202 older" in running, running
+    assert "td737202 newer" not in running, running
+
+    queued = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "job",
+            "page": 1,
+            "page_size": 60,
+            "sort": "recency",
+            "status": "queued",
+        },
+    )
+    assert "[error" not in queued, queued
+    assert "td737202 newer" in queued, queued
+    assert "td737202 older" not in queued, queued
+
+    bare = runtime_with_store.dispatch(
+        "search", {"kind": "job", "page": 1, "page_size": 25, "sort": "recency"}
+    )
+    assert "[error" not in bare, bare
+    assert bare.index("td737202 newer") < bare.index("td737202 older"), bare
 
 
 def test_job_since_with_q_routes_to_source_search(
@@ -506,14 +524,14 @@ def test_job_search_nested_sort_routes_to_source_search(
     routing check never saw it and the extras gate refused it as
     ``keys ['sort'] not accepted by job.search`` (JobHandler.search
     forwards ``sort`` instead of declaring it). The hoist makes the
-    nested call the top-level call: it routes to the source-search
-    primitive like ``sort='recency'`` always did."""
+    nested call the top-level call: it routes like ``sort='relevance'``
+    always did (source-search primitive)."""
     out = runtime_with_store.dispatch(
         "search",
         {
             "kind": "job",
             "q": "zz_no_such_token_zz",
-            "__extras__": {"sort": "recency"},
+            "__extras__": {"sort": "relevance"},
         },
     )
     assert "[error" not in out, out
@@ -728,6 +746,36 @@ def test_get_extent_refuses_stray_args(runtime_with_store: PrecisRuntime) -> Non
     assert "extent='fisheye'" in out, out
 
 
+def _load_kind_classes() -> dict[str, type[Handler]]:
+    out: dict[str, type[Handler]] = {}
+    for mod in pkgutil.iter_modules(handlers_pkg.__path__):
+        m = importlib.import_module(f"precis.handlers.{mod.name}")
+        for _, cls in inspect.getmembers(m, inspect.isclass):
+            spec = cls.__dict__.get("spec")
+            if issubclass(cls, Handler) and spec is not None:
+                out[spec.kind] = cls
+    # Plugin packages register through the ``precis.handlers`` entry point.
+    for ep in entry_points(group="precis.handlers"):
+        cls = ep.load()
+        if inspect.isclass(cls) and issubclass(cls, Handler):
+            out[cls.spec.kind] = cls
+    return out
+
+
+_KIND_CLASS = _load_kind_classes()
+
+
+# Share discovery across the declaration check and parametrized tests so
+# every passthrough verb receives coverage as soon as it is added.
+PASSTHROUGH = sorted(
+    (kind, verb)
+    for kind, cls in _KIND_CLASS.items()
+    for verb in ("get", "put", "edit", "search", "delete")
+    if (fn := cls.__dict__.get(verb)) is not None
+    and "args" in inspect.signature(fn).parameters
+)
+
+
 @pytest.mark.parametrize(("kind", "verb"), PASSTHROUGH)
 def test_junk_args_key_rejected_naming_accepted_keys(
     runtime_with_store: PrecisRuntime, kind: str, verb: str
@@ -749,27 +797,8 @@ def _declared_cases() -> list[tuple[str, str, str]]:
     cases: list[tuple[str, str, str]] = []
     for kind, verb in PASSTHROUGH:
         cls = _KIND_CLASS[kind]
-        cases.extend((kind, verb, k) for k in sorted(cls.ARGS_KEYS[verb]))
+        cases.extend((kind, verb, k) for k in sorted(cls.ARGS_KEYS.get(verb, ())))
     return cases
-
-
-def _load_kind_classes() -> dict[str, type[Handler]]:
-    out: dict[str, type[Handler]] = {}
-    for mod in pkgutil.iter_modules(handlers_pkg.__path__):
-        m = importlib.import_module(f"precis.handlers.{mod.name}")
-        for _, cls in inspect.getmembers(m, inspect.isclass):
-            spec = cls.__dict__.get("spec")
-            if issubclass(cls, Handler) and spec is not None:
-                out[spec.kind] = cls
-    # Plugin packages register through the ``precis.handlers`` entry point.
-    for ep in entry_points(group="precis.handlers"):
-        cls = ep.load()
-        if inspect.isclass(cls) and issubclass(cls, Handler):
-            out[cls.spec.kind] = cls
-    return out
-
-
-_KIND_CLASS = _load_kind_classes()
 
 
 @pytest.mark.parametrize(("kind", "verb", "key"), _declared_cases())
@@ -788,17 +817,11 @@ def test_declared_args_key_not_rejected(
 
 def test_every_args_passthrough_verb_declares_its_keys() -> None:
     """A new ``args: dict`` verb without ``ARGS_KEYS`` fails here, loudly."""
-    found = []
-    for kind, cls in _KIND_CLASS.items():
-        for verb in ("get", "put", "edit", "search", "delete"):
-            fn = cls.__dict__.get(verb)
-            if fn is None or "args" not in inspect.signature(fn).parameters:
-                continue
-            found.append((kind, verb))
-            assert verb in cls.ARGS_KEYS, (
-                f"{cls.__name__}.{verb} declares args but ARGS_KEYS lacks it"
-            )
-    assert sorted(found) == sorted(PASSTHROUGH)
+    for kind, verb in PASSTHROUGH:
+        cls = _KIND_CLASS[kind]
+        assert verb in cls.ARGS_KEYS, (
+            f"{cls.__name__}.{verb} declares args but ARGS_KEYS lacks it"
+        )
 
 
 def test_plugin_handlers_are_discovered() -> None:
@@ -1228,18 +1251,16 @@ def test_search_fused_knob_passed_twice_refuses(
 def test_search_queries_on_an_unsupported_kind_names_the_kind(
     runtime_with_store: PrecisRuntime,
 ) -> None:
-    """``queries=`` on skill used to die as ``keys ['queries'] not
-    accepted by skill.search`` — the per-kind refusal now names the
-    verb-level knob and the contract: ``not on skill yet``."""
+    """Every spelling names the unsupported kind in its refusal."""
     for payload in (
         {"queries": ["rephrase"]},
         {"__extras__": {"queries": ["rephrase"]}},
     ):
         out = runtime_with_store.dispatch(
-            "search", {"kind": "skill", "q": "zz_no_such_token_zz", **payload}
+            "search", {"kind": "memory", "q": "zz_no_such_token_zz", **payload}
         )
         assert "[error:BadInput]" in out, (payload, out)
-        assert "queries= is not on skill yet" in out, out
+        assert "queries= is not on memory yet" in out, out
 
 
 def test_search_answers_on_an_unsupported_kind_names_the_kind(

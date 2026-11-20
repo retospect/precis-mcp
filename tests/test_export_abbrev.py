@@ -202,15 +202,23 @@ def test_prefixed_compound_edge_cases() -> None:
     assert "CVD" not in dctx.seen_acr
 
 
-def test_prefix_that_is_itself_a_short_is_not_swallowed() -> None:
-    """gr725250: in ``HOMO-LUMO-gap`` the pair branch declines (a hyphen
-    follows), and the prefix branch must not take ``HOMO`` for a plain
-    word: HOMO is still defined here, at its first use."""
-    dout, _, dctx = _both("The HOMO-LUMO-gap is small. HOMO is high.")
-    assert dout == [
-        "The highest occupied molecular orbital (HOMO)-LUMO-gap is small. HOMO is high."
-    ]
-    assert "LUMO" not in dctx.seen_acr
+@pytest.mark.parametrize("tail", ["-gap", "s"])
+def test_pair_with_suffix_counts_both_shorts(tail: str) -> None:
+    """gr725250: a plural or compound suffix cannot hide the second short.
+
+    Replaces the old test pinning the known missing LUMO definition.
+    """
+    dout, tout, dctx = _both(f"The HOMO-LUMO{tail} is small.", "HOMO and LUMO.")
+    assert "highest occupied molecular orbital" in dout[0]
+    assert "lowest unoccupied molecular orbital" in dout[0]
+    if tail == "-gap":
+        assert dout[0].endswith("-gap is small.")
+    else:
+        assert "lowest unoccupied molecular orbitals (LUMOs)" in dout[0]
+    assert dout[1] == "HOMO and LUMO."
+    assert tout[1] == r"\glstip{homo} and \glstip{lumo}."
+    assert {"HOMO", "LUMO"} <= dctx.seen_acr
+    assert {"HOMO", "LUMO"} <= dctx.used_acr
 
 
 def test_heading_prints_the_bare_short_and_keeps_the_first_use() -> None:

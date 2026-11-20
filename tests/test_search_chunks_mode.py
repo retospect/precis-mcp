@@ -10,6 +10,7 @@ import pytest
 
 from precis.embedder import MockEmbedder
 from precis.store import ChunkInsert, Store
+from precis.store import _chunks_ops as chunks_ops
 from precis.store.types import Tag
 
 
@@ -181,9 +182,9 @@ def test_verbatim_matches_text_when_keywords_miss(store: Store) -> None:
         embed=False,
     )
     # Keywords never ran on these chunks — every hit is the text path.
-    # Unscoped: keyword containment only (no trigram index → no ILIKE).
+    # gr681521: unscoped paper searches must inspect text too.
     hits = store.chunks.search_chunks(q=f"{tag}-MSEP", mode="verbatim", kind="paper")
-    assert [b for b, r, _s in hits if r.id == rid] == []
+    assert len([b for b, r, _s in hits if r.id == rid]) == 1
 
     # Scoped to the ref: the substring fallback applies.
     hits = store.chunks.search_chunks(
@@ -207,8 +208,7 @@ def test_verbatim_memory_unscoped_matches_sentence_in_body(store: Store) -> None
     tokens) — ``keywords @>`` alone can never match such a sentence.
     The memory corpus is bounded (``refs_kind_idx`` →
     ``chunks_ref_id_idx`` probes), so the whole-phrase substring
-    backstop applies unscoped here — unlike the paper corpus, which
-    keeps containment-only (gr518172, pinned above)."""
+    backstop applies unscoped to both memory and paper searches."""
     tag = uuid4().hex[:8]
     sentence = (
         f"the {tag} invariant $\\mathcal{{O}}(n^2)$ bound holds for the "
@@ -241,13 +241,13 @@ def test_verbatim_memory_unscoped_matches_sentence_in_body(store: Store) -> None
     total = store.chunks.count_chunks_keywords(terms=sentence.split(), kind="memory")
     assert total == len(hits)
 
-    # Papers keep the unscoped containment-only ruling (gr518172).
+    # gr681521: paper source checks need the same recall.
     paper = store.insert_ref(kind="paper", slug=f"pp{tag}", title="paper")
     store.chunks.insert_chunks(
         paper.id, [ChunkInsert(ord=0, text=sentence, embedding=None)]
     )
     hits = store.chunks.search_chunks(q=sentence, mode="verbatim", kind="paper")
-    assert [r.id for _b, r, _s in hits] == []
+    assert [r.id for _b, r, _s in hits] == [paper.id]
 
 
 def test_verbatim_memory_scoped_via_include_ref_ids(store: Store) -> None:
@@ -280,7 +280,7 @@ def test_verbatim_memory_kinds_list_sort_recency_keeps_backstop(store: Store) ->
     matches nothing, silently dropping every hit the same call without
     ``sort=`` finds. A single-element ``['memory']`` list probes the same
     ``refs_kind_idx`` path as the singular kind, so the bounded-scan
-    ruling carries over; mixed kind lists stay containment-only."""
+    ruling carries over; paper searches also retain literal recall."""
     tag = uuid4().hex[:8]
     sentence = f"the {tag} draft builds the {tag}.tex supplement nightly"
     ref = store.insert_ref(kind="memory", slug=None, title=f"rec {tag}")
@@ -312,8 +312,7 @@ def test_verbatim_memory_kinds_list_sort_recency_keeps_backstop(store: Store) ->
     total = store.chunks.count_chunks_keywords(terms=term.split(), kinds=["memory"])
     assert total == 1
 
-    # A mixed kind list reopens the unbounded paper corpus — the
-    # backstop stays off there (gr518172 ruling unchanged).
+    # Mixed source searches must retain both kinds literal hits.
     paper = store.insert_ref(kind="paper", slug=f"pk{tag}", title="paper")
     store.chunks.insert_chunks(
         paper.id, [ChunkInsert(ord=0, text=sentence, embedding=None)]
@@ -325,7 +324,7 @@ def test_verbatim_memory_kinds_list_sort_recency_keeps_backstop(store: Store) ->
         sort="recency",
         limit=10,
     )
-    assert [r.id for _b, r, _s in mixed] == []
+    assert {r.id for _b, r, _s in mixed} == {ref.id, paper.id}
 
 
 def test_count_chunks_keywords_mirrors_search_chunks_keywords_predicate(
@@ -498,3 +497,88 @@ def test_lexical_mode_ignores_supplied_vector(store: Store) -> None:
     )
     pure = store.chunks.search_chunks_lexical(q="nitrogen oxides", kind="paper")
     assert [h[0].id for h in lex] == [h[0].id for h in pure]
+
+
+def test_verbatim_paper_phrase_without_keywords(store: Store) -> None:
+    """gr681521: supplier phrases absent from KeyBERT still find sources."""
+    tag = uuid4().hex[:8]
+    phrase = f"Spectro Inlets {tag}"
+    rid = _seed(
+        store,
+        slug=f"spectro-{tag}",
+        blocks=[
+            f"A Kel-F electrochemical cell (4 Luer-lock port, {phrase}). "
+            f"Standard aqueous microchips ({phrase}).",
+            f"Spectro supplies Inlets with identifier {tag}.",
+        ],
+        embed=False,
+    )
+    for kinds in (None, ["paper"], ["paper", "memory"]):
+        hits = store.chunks.search_chunks_keywords(
+            terms=phrase.split(),
+            kind="paper" if kinds is None else None,
+            kinds=kinds,
+        )
+        assert [(r.id, b.ord) for b, r, _score in hits] == [(rid, 0)]
+        assert (
+            store.chunks.count_chunks_keywords(
+                terms=phrase.split(),
+                kind="paper" if kinds is None else None,
+                kinds=kinds,
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize("kwd", [True, False])
+def test_unscoped_verbatim_predicate_has_no_outer_text_scan(kwd: bool) -> None:
+    from precis.bench import switches
+
+    with switches.applied(kwd=kwd):
+        sql, _ = chunks_ops._verbatim_pred(["spectro", "inlets"])
+    assert "c.chunk_id IN (" in sql
+    assert "ch.tsv @@ plainto_tsquery" in sql
+    assert "c.text ILIKE" not in sql
+    assert "candidate.text ILIKE" in sql
+    assert ("UNION" in sql) is kwd
+    assert ("keywords @>" in sql) is kwd
+
+
+@pytest.mark.parametrize("kwd", [True, False])
+def test_unscoped_verbatim_caps_tsv_before_phrase_check(
+    store: Store, monkeypatch: pytest.MonkeyPatch, kwd: bool
+) -> None:
+    from precis.bench import switches
+
+    monkeypatch.setattr(chunks_ops, "_VERBATIM_TSV_CAP", 2)
+    terms = [f"spectro{uuid4().hex[:8]}", "inlets"]
+    first, second = terms
+    phrase = " ".join(terms)
+    rid = _seed(
+        store,
+        slug=first,
+        blocks=[
+            f"Oldest phrase {phrase}.",
+            f"Old phrase with keywords {phrase}.",
+            f"Recent phrase {phrase}.",
+            f"Newest TSV hit with {first} apart from {second}.",
+        ],
+        embed=False,
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET keywords = %s WHERE ref_id = %s AND ord = 1",
+            (terms, rid),
+        )
+
+    with switches.applied(kwd=kwd):
+        hits = store.chunks.search_chunks_keywords(terms=terms, kind="paper")
+        total = store.chunks.count_chunks_keywords(terms=terms, kind="paper")
+        scoped = store.chunks.search_chunks_keywords(
+            terms=terms, kind="paper", scope_ref_id=rid
+        )
+
+    expected = [2, 1] if kwd else [2]
+    assert [block.ord for block, _, _ in hits] == expected
+    assert total == len(expected)
+    assert [block.ord for block, _, _ in scoped] == [2, 1, 0]

@@ -428,7 +428,7 @@ def spawn(
     exit_file: str | Path,
     pid_file: str | Path | None = None,
     pass_fds: Sequence[int] = (),
-    preexec_fn: Callable[[], None] | None = None,
+    preexec_fn: Callable[[], object] | None = None,
     popen: Callable[..., Any] | None = None,
 ) -> int:
     """The one admitted detached launcher (gr657245).

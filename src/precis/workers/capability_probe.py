@@ -528,6 +528,19 @@ def codex_login_present() -> bool:
     return _probe()
 
 
+def devin_login_present() -> bool:
+    """Public read of the ``devin_tree`` lane's login probe — the binary
+    resolves and ``devin auth status`` reports a login (TTL-cached in
+    :mod:`precis.workers.job_types._slice_adapters`, lazy import: the
+    worker module is heavier than this probe file). Presence, not
+    correctness: a stale login still reports True.
+
+    Used by the ``devin_bin`` lane token and run_slice's pick filter."""
+    from precis.workers.job_types._slice_adapters import devin_login_present as _probe
+
+    return _probe()
+
+
 def _probe_adapter_bin(adapter: str) -> int:
     """A lane adapter's binary token — resolved exactly as its argv does
     (:func:`_slice_adapters.adapter_bin_present`; lazy import: the
@@ -558,8 +571,12 @@ def _probe_kimi_bin() -> int:
 
 
 def _probe_devin_bin() -> int:
-    """The ``devin_tree`` lane's binary — the ``devin_bin`` token."""
-    return _probe_adapter_bin("devin_tree")
+    """Advertise ``devin_bin`` only with a binary and a Devin login.
+
+    A logged-out host that advertised the lane would die in the submit
+    preflight on every launch, and that refusal backs the lane off for
+    the whole fleet. No binary answers 0 without running ``auth status``."""
+    return int(devin_login_present())
 
 
 def _probe_builder() -> int:

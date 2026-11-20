@@ -65,9 +65,10 @@ every kind — there is no per-kind variant to learn.
 - **Flat & stable identity.** The handle names the row, not a position; unlike
   the retired `miller23~4` it does not rot when a doc is re-chunked (the
   chunk keeps its `chunk_id`).
-- **Write it inline to reference.** Inside a memory or draft body, a bare
-  `[handle]` in the prose is a reference — it auto-links the writing ref to
-  the target (`related-to`). See `precis-memory-help` / `precis-draft-help`.
+- **Write it inline to reference.** Inside a memory or draft body, a
+  `[handle]` — or the same handle as a bare whole word — in the prose is a
+  reference: it auto-links the writing ref to the target (`related-to`).
+  See `precis-memory-help` / `precis-draft-help`.
 
 - **Read once, write by handle.** After a successful exact-handle `get` in the
   same MCP session, `put`/`edit` accepts `text={'$ref': 'dc123'}`. The server
@@ -124,9 +125,10 @@ agent-facing copy.
 | python | `py` | — | | message | `ms` | `mb` |
 | gripe | `gr` | `gc` | | tag | `tg` | — |
 | skill | `sk` | — | | alias | `as` | — |
-| wikipedia | `wp` | — | | | | |
-| semanticscholar | `ss` | — | | | | |
-| chem | `ch` | — | | | | |
+| wikipedia | `wp` | — | | youtube | `yt` | — |
+| semanticscholar | `ss` | — | | web | `wb` | — |
+| chem | `ch` | — | | websearch | `wx` | — |
+| perplexity-research | `rr` | — | | perplexity-reasoning | `rz` | — |
 
 - **`skill`** anchors round-trip as `sk<ref_id>` in `get` and `link`; the
   canonical `skill:<slug>` form also works. **`python` / `tag`** keep their
@@ -136,13 +138,15 @@ agent-facing copy.
   ADR-0033 legacy `¶<base58>` form still *resolves* as an accepted alias
   during the transition, but write new references in `dc` form.
 - **Fetch-cache providers** (`wikipedia` → `wp`, `semanticscholar` → `ss`,
-  `chem` → `ch`) persist a refs row + chunks on every read, so they *are*
-  handle-coded — cite them as `wp5` in prose and they show inbound links.
-  The handle routes by ref id, never the slug: a wikipedia slug is derived
-  from the query text, not the article title.
-- **Providers** (`web`, `youtube`, `websearch`,
-  `perplexity-*`) and **stateless tools** (`calc`, `math`, `provenance`,
-  `random`) have **no handle** — addressed by URL / query / compute.
+  `chem` → `ch`, `youtube` → `yt`, `web` → `wb`, `websearch` → `wx`,
+  `perplexity-research` → `rr`, `perplexity-reasoning` → `rz`) persist a
+  refs row + chunks on every read, so they *are* handle-coded — cite them
+  as `[wb5]` in prose and they show inbound links (`view='links'`, the
+  default read's Links section, and the fisheye ring). The handle routes
+  by ref id, never the slug: a cache slug is derived from the query text
+  or URL, so a slug read could fire a fresh (possibly paid) upstream call.
+- **Stateless tools** (`calc`, `math`, `provenance`, `random`) have
+  **no handle** — addressed by query / compute.
 - **A string with no handle** (a long URL, an external id, a path you keep
   re-sending) can get a durable short name through `kind='alias'`:
   `put(kind='alias', args={'a': 'crossref-x', 'b': '<url>', 'rel':

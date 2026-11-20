@@ -461,3 +461,30 @@ def test_synth_skill_slugs_matches_skill_handler() -> None:
     from precis.handlers.skill import SkillHandler
 
     assert frozenset(SkillHandler._SYNTHESIZED_SKILLS) == SYNTH_SKILL_SLUGS
+
+
+# ── gr676930: view='full' is the full=True spelling ────────────────────
+
+
+def test_view_full_is_full_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``get(kind='skill', view='full')`` is the announced alias for
+    ``full=True`` (gr680237 landed the get-side fold); gr676930 makes
+    the alias visible in the refusal vocabulary too. Both spellings
+    return the same body — the view spelling carries a leading
+    ``interpreted:`` banner, the body past it is byte-identical."""
+    from precis.dispatch import Hub
+    from precis.handlers.skill import SkillHandler
+    from tests._skill_corpus import _install_corpus, _md
+
+    _install_corpus(monkeypatch, {"a": _md(body="skill body")})
+    skill = SkillHandler(hub=Hub())
+    bare = skill.get(id="a").body
+    rev = bare.rstrip().splitlines()[-1].removeprefix("skill rev ")
+    assert "unchanged since you read it" in skill.get(id="a", have=rev).body
+    flagged = skill.get(id="a", have=rev, full=True).body
+    aliased = skill.get(id="a", have=rev, view="full").body
+    note, _, body = aliased.partition("\n")
+    assert note.startswith("interpreted: view='full' read as full=True")
+    assert "skill body" in flagged
+    assert body == flagged
+    assert "full" in skill.accepted_views()

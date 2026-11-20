@@ -199,6 +199,26 @@ the solver. Kinetics stays at its recorded environment when `U` shifts the
 profile; the two condition tables can differ. See `precis-pathway-help` for
 decluttered text views and kinetics reads.
 
+## Figure from a quest frontier
+
+```python
+put(kind="draft", id="<draft>", chunk_kind="figure",
+    text="Candidate frontier across two objectives.",
+    meta={"view": {"source": "quest:<id>#frontier",
+                   "x": "barrier", "y": "energy",
+                   "trusted_only": False, "top_n": 12, "label": "handles"}})
+```
+
+Use the quest handle for `<id>`. Give `x` and `y` together as two distinct
+rubric objective keys, or omit both to use the quest's default axes.
+`trusted_only=True` hides provisional candidates. `top_n` is an optional
+positive integer that keeps the points closest to the frontier.
+`label` accepts `handles`, `names`, or `none` (default).
+
+The first export or figure view renders the PNG and freezes its plotted
+data for export. The draft figure links back to the quest and refreshes
+when its frontier inputs change.
+
 ## Code blocks
 
 A `chunk_kind='code'` chunk holds a **verbatim code payload** — an exact

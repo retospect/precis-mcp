@@ -120,8 +120,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+import subprocess
+import tempfile
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, time, timedelta
+from pathlib import Path
 from typing import Any
 
 from precis.plans import pr_class
@@ -1435,6 +1438,9 @@ class _GitLand:
     subject: str
     committed_at: datetime | None
     paths: tuple[str, ...]
+    #: On ``release/r<N>`` after the cut — a fix landed on the branch,
+    #: not a commit of the cut's range (:func:`_release_lands`).
+    branch_only: bool = False
 
 
 #: ``-c safe.directory=*``: the checkout can sit under a mount owned by
@@ -1516,7 +1522,284 @@ def _release_lands(rel: dict[str, Any]) -> list[_GitLand]:
         raise RuntimeError(
             f"git fetch origin release/{rn}: {proc.stderr.strip()[:200]}"
         )
-    return _log_lands(root, rng) + _log_lands(root, f"{sha}..{tracking}")
+    return _log_lands(root, rng) + [
+        replace(land, branch_only=True)
+        for land in _log_lands(root, f"{sha}..{tracking}")
+    ]
+
+
+#: Commits of main after the cut the cherry-pick lookup reads — a bound
+#: on one ``git log -p``, far above a release's lifetime of lands.
+_CARRY_SCAN_CAP = 600
+
+
+def _patch_ids(root: Any, *log_args: str) -> dict[str, str] | None:
+    """``{sha: stable patch-id}`` of the non-merge commits ``git log -p
+    --first-parent <log_args>`` selects; ``None`` when either half of
+    the pipe fails."""
+    from precis.workers.job_types import run_slice as _rs
+
+    proc = _rs._git(
+        [
+            *_GIT_SAFE,
+            "log",
+            "-p",
+            "--first-parent",
+            "--no-merges",
+            "--format=commit %H",
+            *log_args,
+        ],
+        root,
+    )
+    if proc.returncode != 0:
+        return None
+    ids = _rs._patch_id(proc.stdout, root)
+    if ids.returncode != 0:
+        return None
+    out: dict[str, str] = {}
+    for line in ids.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] != "0" * 40:
+            out[parts[1].lower()] = parts[0]
+    return out
+
+
+def _undo_patch_id(root: Any, sha: str) -> str | None:
+    """The stable patch-id of ``sha``'s change run backwards (``git diff
+    <sha> <sha>^``) — what a commit must look like for ``sha`` to be its
+    exact revert. ``None`` on a git error or an empty diff."""
+    from precis.workers.job_types import run_slice as _rs
+
+    proc = _rs._git([*_GIT_SAFE, "diff", sha, f"{sha}^"], root)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    ids = _rs._patch_id(proc.stdout, root)
+    if ids.returncode != 0:
+        return None
+    for line in ids.stdout.splitlines():
+        parts = line.split()
+        if parts and parts[0] != "0" * 40:
+            return parts[0]
+    return None
+
+
+#: Seconds one plumbing call of the replay proof may take.
+_REPLAY_GIT_TIMEOUT_S = 60
+
+
+def _git_bytes(root: Any, *args: str) -> bytes | None:
+    """``git <args>`` in ``root`` as raw stdout — blob contents are not
+    text; ``None`` on a non-zero exit or any launch failure."""
+    try:
+        proc = subprocess.run(
+            ["git", *_GIT_SAFE, *args],
+            cwd=str(root),
+            capture_output=True,
+            check=False,
+            timeout=_REPLAY_GIT_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _changed_paths(root: Any, old: str, new: str) -> set[str] | None:
+    """The paths ``old..new`` touches, a rename as its two ends."""
+    out = _git_bytes(root, "diff", "--no-renames", "--name-only", "-z", old, new)
+    if out is None:
+        return None
+    return {p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p}
+
+
+def _entries(root: Any, commit: str, paths: list[str]) -> dict[str, bytes] | None:
+    """``{path: b"<mode> <type> <oid>"}`` of ``paths`` in ``commit``'s
+    tree; a path the tree lacks is absent."""
+    out = _git_bytes(root, "ls-tree", "-r", "-z", commit, "--", *paths)
+    if out is None:
+        return None
+    found: dict[str, bytes] = {}
+    for rec in out.split(b"\0"):
+        entry, tab, path = rec.partition(b"\t")
+        if tab:
+            found[path.decode("utf-8", "surrogateescape")] = entry
+    return found
+
+
+def _merged_blob(root: Any, ours: bytes, base: bytes, theirs: bytes) -> bytes | None:
+    """The clean three-way merge of three blob entries' contents
+    (``git merge-file``, the content merge cherry-pick and revert run);
+    ``None`` when it conflicts, an entry is not a blob, or git fails."""
+    with tempfile.TemporaryDirectory(prefix="precis-replay-") as tmp:
+        names = []
+        for name, entry in (("ours", ours), ("base", base), ("theirs", theirs)):
+            _mode, kind, oid = entry.decode("ascii", "replace").split()
+            data = _git_bytes(root, "cat-file", "blob", oid) if kind == "blob" else None
+            if data is None:
+                return None
+            (Path(tmp) / name).write_bytes(data)
+            names.append(name)
+        return _git_bytes(tmp, "merge-file", "-p", *names)
+
+
+def _replays_as(root: Any, base: str, onto: str, change: str, result: str) -> bool:
+    """Whether carrying the change ``base..change`` onto ``onto`` — what
+    ``git cherry-pick`` and ``git revert`` do — comes out clean as
+    exactly ``result``. The proof a patch-id match is not: a patch-id
+    ignores whitespace and line numbers, so an indentation change, or
+    the same lines placed at another spot with the same context, would
+    pass for a copy.
+
+    Path by path over everything either side touches: a path only one
+    side changed must hold that side's entry in ``result``; a path both
+    changed must hold their clean content merge at an unchanged mode.
+    So ``result`` can touch nothing the change does not, and nothing in
+    another way. Plumbing every git has (the worker image's predates
+    ``merge-tree --merge-base``); a rename the replay would have
+    followed, a conflict or any git failure reads ``False``."""
+    touched = _changed_paths(root, onto, result)
+    moved = _changed_paths(root, base, change)
+    if touched is None or not moved:
+        return False
+    paths = sorted(touched | moved)
+    trees = [_entries(root, commit, paths) for commit in (base, onto, change, result)]
+    if any(tree is None for tree in trees):
+        return False
+    was, ours, theirs, got = (tree or {} for tree in trees)
+    for path in paths:
+        b, o, t, r = was.get(path), ours.get(path), theirs.get(path), got.get(path)
+        if b == t or o == t:
+            want = o
+        elif b == o:
+            want = t
+        else:
+            if b is None or o is None or t is None or r is None:
+                return False
+            if len({e.split()[0] for e in (b, o, t, r)}) != 1:
+                return False
+            merged = _merged_blob(root, o, b, t)
+            kind, oid = r.decode("ascii", "replace").split()[1:3]
+            if merged is None or kind != "blob":
+                return False
+            if _git_bytes(root, "cat-file", "blob", oid) != merged:
+                return False
+            continue
+        if r != want:
+            return False
+    return True
+
+
+def _branch_carries(
+    rel: dict[str, Any], lands: list[_GitLand]
+) -> tuple[dict[str, _GitLand], set[str], list[str]]:
+    """``(picked, undone, notes)`` — the release-branch commits that add
+    no code of their own to review (Reto 2026-11-19; nine review-wait
+    asks on such commits from r316 to r334 all ended "acknowledged"):
+
+    - ``picked`` maps a branch-only commit to the main commit whose
+      patch it repeats — a cherry-pick. The gate judges that main land
+      instead: its todo, its reviewer, its verdict. Nothing is waived —
+      a main land not reviewed yet still holds the deploy until it is.
+    - ``undone`` holds an exact revert on the branch together with the
+      commit of THIS release it undoes (in the cut range or earlier on
+      the branch): the release ships neither, so neither needs a
+      review. A revert of code prod already runs matches nothing here
+      and keeps its review, and so does a revert of a revert — the
+      commit it would pair with is already spent, and re-applying a
+      change is new code for this release.
+
+    Never a subject line or a "cherry picked from" trailer — a commit
+    writes those for itself. ``git patch-id`` on the diffs only finds
+    the candidate; the proof is the tree (:func:`_replays_as`): replaying
+    the main commit onto the branch commit's parent, or the undone
+    commit backwards onto it, must give the branch commit's tree byte
+    for byte. Only engine-touching branch commits are looked at; any git
+    failure returns nothing, so every commit keeps its own review.
+    Seam: tests patch it."""
+    from precis.plans import lanes as _lanes
+    from precis.workers.job_types import run_slice as _rs
+
+    picked: dict[str, _GitLand] = {}
+    undone: set[str] = set()
+    notes: list[str] = []
+    fixes = [
+        land for land in lands if land.branch_only and _lanes.engine_hits(land.paths)
+    ]
+    if not fixes:
+        return picked, undone, notes
+    try:
+        rn = str(rel.get("rN") or "")
+        cut = str(rel.get("cut_sha") or rel.get("sha") or "").strip().lower()
+        rng = str(rel.get("cut_range") or rel.get("range") or "").strip()
+        # The same shape :func:`_release_lands` insists on: these strings
+        # become git arguments.
+        if (
+            not re.fullmatch(r"r\d+", rn)
+            or re.fullmatch(r"[0-9a-f]{7,40}", cut) is None
+            or _RANGE_RE.fullmatch(rng) is None
+        ):
+            return {}, set(), []
+        prev = rng.partition("..")[0].lower()
+        tracking = f"refs/remotes/origin/release/{rn}"
+        root = _rs.slice_root()
+        own = _patch_ids(root, f"{prev}..{tracking}")
+        if own is None:
+            return {}, set(), []
+        # Oldest first: a revert pairs with the newest live commit whose
+        # patch it runs backwards; a paired commit is spent.
+        live: dict[str, list[str]] = {}
+        wanted = {land.sha for land in fixes}
+        for land in lands:
+            if land.sha in wanted:
+                back = _undo_patch_id(root, land.sha)
+                target = live.get(back or "", [])
+                if target and _replays_as(
+                    root, target[-1], f"{land.sha}^", f"{target[-1]}^", land.sha
+                ):
+                    gone = target.pop()
+                    undone.update((land.sha, gone))
+                    notes.append(
+                        f"engine review: {rn} {land.sha[:12]} is the exact "
+                        f"revert of {gone[:12]} of this release — neither "
+                        "ships, neither needs a review"
+                    )
+                    continue
+            pid = own.get(land.sha)
+            if pid:
+                live.setdefault(pid, []).append(land.sha)
+        rest = [land for land in fixes if land.sha not in undone]
+        if not rest:
+            return picked, undone, notes
+        main_ids = _patch_ids(
+            root, f"--max-count={_CARRY_SCAN_CAP}", f"{cut}..origin/main"
+        )
+        if main_ids is None:
+            return picked, undone, notes
+        by_patch: dict[str, list[str]] = {}
+        for sha, pid in main_ids.items():  # newest first
+            by_patch.setdefault(pid, []).append(sha)
+        on_main = {land.sha: land for land in _log_lands(root, f"{cut}..origin/main")}
+        for land in rest:
+            source = next(
+                (
+                    on_main[sha]
+                    for sha in by_patch.get(own.get(land.sha) or "", [])
+                    if sha in on_main
+                    and sha != land.sha
+                    and _replays_as(root, f"{sha}^", f"{land.sha}^", sha, land.sha)
+                ),
+                None,
+            )
+            if source is None:
+                continue
+            picked[land.sha] = source
+            notes.append(
+                f"engine review: {rn} {land.sha[:12]} repeats main's "
+                f"{source.sha[:12]} patch for patch — judged by that land's review"
+            )
+    except Exception:
+        log.info("release_poll: branch carry read failed", exc_info=True)
+        return {}, set(), []
+    return picked, undone, notes
 
 
 def _log_lands(root: Any, rng: str) -> list[_GitLand]:
@@ -1532,6 +1815,9 @@ def _log_lands(root: Any, rng: str) -> list[_GitLand]:
             "--first-parent",
             "--format=%x00%H%x1f%ct%x1f%s",
             "--name-only",
+            # Both endpoints of a move count: a rename's destination alone
+            # can hide a removed runtime file.
+            "--no-renames",
         ],
         root,
     )
@@ -1636,10 +1922,21 @@ class _GateLand:
         return f"{self.land}{job}"
 
 
+def _carry_ask_key(unit: _GateLand, missing: list[str], rn: Any) -> str:
+    """The carry hold's ask key — the plain per-unit key plus the release
+    and the corrective commit(s) the waived cut lacked (td730820): an
+    answered ask waives the carry for THAT release and THAT corrective
+    commit only. The plain per-unit key would clear the same land's
+    carry hold on every release and the main gate too — "ship r318
+    without the fix" is not "ship r319 without it", and it says nothing
+    about main."""
+    return f"{unit.ask_key}:carry:{rn}:{'+'.join(missing)}"
+
+
 def _gate_lands(
     store: Any, rel: dict[str, Any] | None = None
-) -> tuple[list[_GateLand], str, list[str]]:
-    """``(units, pin, scanned)`` — the gate's units, oldest land first,
+) -> tuple[list[_GateLand], str, list[str], list[str]]:
+    """``(units, pin, scanned, notes)`` — the gate's units, oldest land first,
     the head they were scanned at and ``scanned`` every first-parent sha
     of the scope, oldest first. The scope is ``origin/prod..<pin>`` with
     ``pin`` the pinned main head (:func:`_git_lands`), or with ``rel`` a
@@ -1651,17 +1948,35 @@ def _gate_lands(
     stamped path, kept as the fast lookup) or the ``td<id>`` handles in
     the subject's trailing list. A commit neither links is its own unit,
     and a sha-keyed reviewer minted for it (or for a linked todo with no
-    live plan root) covers every unit of the commit."""
+    live plan root) covers every unit of the commit.
+
+    On a release, a branch commit that repeats a main commit's patch is
+    judged as that main land, and an exact revert drops out together
+    with the commit of the release it undoes (:func:`_branch_carries`);
+    ``notes`` says so, one line per such commit, and ``scanned`` follows:
+    without the undone commits, with the repeated main commits' shas."""
     from precis.plans import lanes as _lanes
 
+    picked: dict[str, _GitLand] = {}
+    undone: set[str] = set()
+    notes: list[str] = []
     if rel is None:
         lands, pin = _git_lands()
     else:
         lands = _release_lands(rel)
         pin = str(rel.get("cut_sha") or rel.get("sha") or "").lower()
+        picked, undone, notes = _branch_carries(rel, lands)
     stamped = _landed_jobs(store)
     out: list[_GateLand] = []
+    # What the release carries, for the carry hold: not a commit the
+    # branch took back, and a repeated main commit under main's sha too
+    # (a fix the review asked for arrives on the branch as a cherry-pick).
+    scanned = [land.sha for land in lands if land.sha not in undone]
+    scanned += [source.sha for source in picked.values()]
     for land in lands:
+        if land.sha in undone:
+            continue
+        land = picked.get(land.sha, land)
         sha12 = land.sha[:12]
         jobs = [
             (job_id, todo_id)
@@ -1679,7 +1994,7 @@ def _gate_lands(
             )
         else:
             out.append(_GateLand(sha12, None, None, land.committed_at))
-    return out, pin, [land.sha for land in lands]
+    return out, pin, scanned, notes
 
 
 #: The sha a ``landed: <sha>`` comment records — land-notify's land
@@ -1940,6 +2255,7 @@ def _file_review_wait_ask(
     dry_run: bool,
     reason: str | None = None,
     carry: str | None = None,
+    corrective: list[str] | None = None,
 ) -> tuple[str, int | None]:
     """The review-wait ask: one OPEN ``ask-user`` ruling todo per gate
     unit (a landed todo, or a sha-keyed hand land), deduped by its
@@ -1951,7 +2267,14 @@ def _file_review_wait_ask(
     land in the text (``td<N>`` or the sha12), ``job_id`` the landed job
     when one claims it. ``carry`` is the "cleared on a corrective commit"
     blocker line of a land whose corrective commit is not on the release
-    branch (gr702442) — no reviewer is involved, the ask quotes the line.
+    branch (gr702442) — no reviewer is involved, the ask quotes the
+    line; its caller passes the release-and-commit-scoped
+    :func:`_carry_ask_key`, so the waiver cannot leak across releases
+    (td730820). ``corrective`` is that hold's missing commit shas: the
+    ask names the paths each one touches and says so when every path is
+    under tests/ or docs/ (:func:`_corrective_note`, gr735222) — r336's
+    deploy waited 3.6 h on an ask whose answer was "a test-only rewrite".
+    The ask still needs its answer; the text only makes it a quick one.
 
     Returns ``(note, ask_id)`` — the live ask's todo id (filed or
     deduped) so the blocker can name it, ``None`` on dry-run/factory-off.
@@ -1960,16 +2283,37 @@ def _file_review_wait_ask(
 
     tag = f"{_REVIEW_WAIT_TAG_PREFIX}:{ask_key}"
     job = f" (jo{job_id})" if job_id is not None else ""
+    no_runtime = False
     if carry is not None:
+        touches = ""
+        # Read git only for an ask about to be filed, not on every tick
+        # of a hold whose ask is already open.
+        if corrective and _open_wait_ask_id(store, ask_key) is None:
+            touches, no_runtime = _corrective_note(corrective)
         what = f"the {land} engine land{job}"
-        title = (
-            f"engine land {land}{job} is cleared but its corrective commit "
-            "is not on the release branch — acknowledge it, or is this a "
-            "false alarm?"
-        )
+        if no_runtime:
+            title = (
+                f"test-only corrective for engine land {land}{job} is not "
+                "on the release branch — acknowledge it, or is this a "
+                "false alarm?"
+            )
+        else:
+            title = (
+                f"engine land {land}{job} is cleared but its corrective "
+                "commit is not on the release branch — acknowledge it, or "
+                "is this a false alarm?"
+            )
+        if touches:
+            touches = f"Corrective commit {touches}. "
+        if no_runtime:
+            touches += (
+                "Every path it touches is under tests/ or docs/ — a "
+                "test-only corrective: no runtime file changes. "
+            )
         body = (
             f"The engine-review gate (td574937 E1) holds the deploy of "
             f"the release carrying the {land} engine land{job}: {carry}. "
+            f"{touches}"
             "Answering clears this one land, so the release then deploys "
             "WITHOUT that corrective commit; to ship the fix with this "
             "release, land it on the release branch instead and leave "
@@ -2012,6 +2356,8 @@ def _file_review_wait_ask(
         f"{what} holds the deploy of the release carrying it until "
         "cleared — answering executes nothing"
     )
+    if no_runtime:
+        context += "; its missing corrective commit touches only tests/ or docs/"
     meta: dict[str, Any] = {
         "ask": {
             "kind": "ruling",
@@ -2326,6 +2672,50 @@ def _carry_line(unit: _GateLand, missing: list[str], rn: Any) -> str:
     )
 
 
+#: Path prefixes that hold no runtime code: a corrective commit touching
+#: only these is "test-only" in the carry ask (:func:`_corrective_note`).
+_NO_RUNTIME_PREFIXES = ("tests/", "docs/")
+
+#: How many paths per corrective commit the carry ask names.
+_CORRECTIVE_PATHS_CAP = 6
+
+
+def _commit_paths(sha: str) -> tuple[str, ...] | None:
+    """The paths commit ``sha`` touches, read from the slice root's
+    checkout; ``None`` when it cannot be read (no checkout, a sha the
+    checkout lacks) — the ask then names no path and claims nothing."""
+    from precis.workers.job_types import run_slice as _rs
+
+    try:
+        lands = _log_lands(_rs.slice_root(), f"{sha}^!")
+    except Exception:
+        log.info("release_poll: corrective paths read failed", exc_info=True)
+        return None
+    return lands[0].paths if len(lands) == 1 else None
+
+
+def _corrective_note(missing: list[str]) -> tuple[str, bool]:
+    """``(text, test_only)`` for the carry ask: what each ``missing``
+    corrective commit touches (``<sha12> touches `a`, `b```), and whether
+    EVERY path of EVERY commit sits under :data:`_NO_RUNTIME_PREFIXES`.
+    A commit whose paths cannot be read (or that touches none) is left
+    out of the text and makes ``test_only`` false: the ask never calls a
+    corrective test-only on a guess."""
+    parts: list[str] = []
+    test_only = True
+    for sha in missing:
+        paths = _commit_paths(sha)
+        if not paths:
+            test_only = False
+            continue
+        shown = ", ".join(f"`{p}`" for p in paths[:_CORRECTIVE_PATHS_CAP])
+        more = len(paths) - _CORRECTIVE_PATHS_CAP
+        parts.append(f"{sha} touches {shown}{f' and {more} more' if more > 0 else ''}")
+        if not all(p.startswith(_NO_RUNTIME_PREFIXES) for p in paths):
+            test_only = False
+    return "; ".join(parts), test_only and bool(parts)
+
+
 def _engine_verdicts(
     store: Any,
     *,
@@ -2347,10 +2737,16 @@ def _engine_verdicts(
     then, ``scanned`` empty).
 
     Per gate unit (:func:`_gate_lands`), oldest land first: an answered
-    ``release-review-wait:<key>`` ask clears a gated unit; so does being
-    a cleared FIX/REVERT's recorded corrective commit while no covering
-    reviewer reached a verdict (:func:`_chain_corrective`, gr611217); no
-    covering reviewer
+    ``release-review-wait:<key>`` ask clears a gated unit; the carry
+    hold's ask (a cleared FIX/REVERT whose corrective commit is not on
+    ``release/r<N>``) files under a key scoped to the release and the
+    corrective commit(s) (:func:`_carry_ask_key`, td730820), so
+    answering it waives only that release's carry of that commit — the
+    plain per-unit key would clear the same land's hold on every
+    release and on main. Being a cleared FIX/REVERT's recorded
+    corrective commit while no covering
+    reviewer reached a verdict (:func:`_chain_corrective`, gr611217)
+    also clears a unit; no covering reviewer
     (``generate.from`` naming the landed todo or its parent, or the
     commit's ``sha:<sha12>`` — sha-keyed covers every unit of the
     commit) mints one —
@@ -2406,7 +2802,8 @@ def _engine_verdicts(
             m = _REVIEW_FROM_SHA_RE.fullmatch(src)
             if m is not None:
                 by_sha.setdefault(m.group(1).lower(), []).append((rid, meta))
-        units, pin, scanned = _gate_lands(store, rel)
+        units, pin, scanned, carry_notes = _gate_lands(store, rel)
+        notes.extend(carry_notes)
         for unit in units:
             verdict = _LandVerdict(unit, cleared=False)
             if _answered_wait_ask(store, unit.ask_key):
@@ -2559,17 +2956,23 @@ def _engine_verdicts(
                 # The carry hold (a cleared FIX/REVERT whose corrective
                 # commit is not on release/r<N>) filed nothing, so the
                 # release waited silently — r316, nine hours (gr702442).
-                # The same per-unit ask clears it once answered: an
-                # answered ask short-circuits to a cleared, requires-free
-                # verdict above, so deploy_review_blockers drops the line.
+                # The release-scoped carry ask (:func:`_carry_ask_key`)
+                # clears it once answered: deploy_review_blockers drops
+                # the line, and here no new ask files over the answer
+                # (td730820).
                 missing = _carry_missing(verdict, scanned) if rel is not None else []
-                if file_asks and rel is not None and missing:
+                rn = rel.get("rN") if rel is not None else None
+                answered_carry = bool(missing) and _answered_wait_ask(
+                    store, _carry_ask_key(unit, missing, rn)
+                )
+                if file_asks and missing and not answered_carry:
                     note, _filed = _file_review_wait_ask(
                         store,
-                        unit.ask_key,
+                        _carry_ask_key(unit, missing, rn),
                         land=unit.land,
                         dry_run=dry_run,
-                        carry=_carry_line(unit, missing, rel.get("rN")),
+                        carry=_carry_line(unit, missing, rn),
+                        corrective=missing,
                     )
                     notes.append(note)
                 verdicts.append(verdict)
@@ -2668,9 +3071,14 @@ def deploy_review_blockers(store: Any, todo_id: int) -> list[str]:
     lines = [v.line for v in verdicts or () if not v.cleared]
     for v in verdicts or ():
         missing = _carry_missing(v, scanned)
-        if missing:
+        # td730820: the waiver is scoped to the release and the
+        # corrective commit — an answered carry ask drops this line; it
+        # never touches another release's hold or the main gate.
+        if missing and not _answered_wait_ask(
+            store, _carry_ask_key(v.unit, missing, rn)
+        ):
             line = _carry_line(v.unit, missing, rn)
-            ask_id = _open_wait_ask_id(store, v.unit.ask_key)
+            ask_id = _open_wait_ask_id(store, _carry_ask_key(v.unit, missing, rn))
             if ask_id is not None:
                 line = f"{line} — the open ask is td{ask_id}"
             lines.append(line)

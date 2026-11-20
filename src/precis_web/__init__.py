@@ -4,8 +4,8 @@ FastAPI service, imports ``precis`` directly, server-side rendered (Jinja +
 HTMX + Alpine), served over the Tailscale LAN behind **HTTP Basic auth**
 (``auth.py``). :func:`create_app` (``app.py``) wires one router per page,
 error handlers, and a lifespan building the single
-:class:`precis.runtime.PrecisRuntime`. Optional install extra
-(``precis-mcp[web]``); ``precis web`` CLI subcommand imports it lazily.
+:class:`precis.runtime.PrecisRuntime`. ``precis web`` lazily imports
+the ``[web]`` extra.
 
 **Reaction ledger (`/rxn`).** Handler-computed ledgers and kept rxn records;
 readers recompute (storage/scientific rationale: `routes/rxn.py`).
@@ -57,26 +57,28 @@ is ``draft_eyes.expand_around``.
 
 **Auth.** ``auth.py::BasicAuthMiddleware`` gates every route/mount against
 ``web_users`` (migration 0131; roster via ``precis users``); accounts have
-no roles or per-route ACLs. ``/healthz`` is the probe exemption. ``/podcast``
-self-authenticates and accepts a per-user ``?t=`` token because podcast
-clients handle Basic inconsistently on enclosure URLs. Empty roster → 503
+no roles or per-route ACLs. ``/healthz`` is the probe exemption.
+``/podcast`` self-authenticates only with a per-user ``?t=`` token (podcast
+clients handle Basic inconsistently on enclosure URLs). Empty roster → 503
 with ``precis users add``. State-changing Origin/Referer mismatch → 403:
 Basic has no ``SameSite`` CSRF defense. A signed ``SameSite=Lax`` cookie is
 also accepted because Safari won't replay Basic into iframe subnavigations.
-Presented 401s log login + peer; ``FailureTracker`` locks a login or address
-after 10 failures in 15 min (429 + ``Retry-After``, before scrypt), while
-success clears only the login window. Outermost ``security_headers.py``
+Presented 401s log login + peer; ``FailureTracker`` locks a (login, address)
+pair after 10 failures in 15 min, an address after 50, a login after 100
+(429 + ``Retry-After``, before scrypt); success clears the pair. Outermost ``security_headers.py``
 allows same-origin framing because the UI embeds its own PDF.js viewer;
 ``PRECIS_WEB_AUTH=off`` is local-dev only. ``/account`` handles password,
 profile (ORCID attributed by local nanopubs), sign-out and podcast URL. The
 row stores only the podcast token digest, so the vault is the other source.
 Sign-out sends a fresh 401 challenge (evicting cached Basic credentials) and
-deletes the session cookie.
+ends the login's sessions, as does a password change.
 
 **OAuth.** ``precis.oauth`` owns grants; ``routes.oauth`` authenticates authorization before reserving capacity.
 
 **Access logs / Secrets.** ``access_log.py`` masks ``t`` queries;
 ``routes/secrets.py`` provides write-only controls.
+
+Status separates liveness/problems for indexing.
 
 PCB component selection (``pcb_design.py``) uses exact instance IDs in
 same-origin Gerber targets, with a shown snapshot shared by HTML, SVG, chat

@@ -1838,10 +1838,15 @@ def claim_executor_jobs(
     class rank 2026-10-23, job-scheduling-fairness D2/D3; share term
     2026-10-24, D4 share half; release band 2026-11-07, gr584136;
     factory sub-priority 2026-11-13, gr657333; model affinity
-    2026-11-13, gr595542; lane deficit, gr595541).**
-    ``ORDER BY claim_rank ASC, factory_pref ASC,
+    2026-11-13, gr595542; lane deficit, gr595541; dispatch_score,
+    gr702610).**
+    ``ORDER BY claim_rank ASC, factory_pref ASC, dispatch_score DESC,
     lane_deficit DESC, aged_prio ASC, queued_since ASC, ref_id ASC``
-    (lane deficit = the lane's weighted share — its ``claim.share.<lane>``
+    (``dispatch_score`` = the ``meta.dispatch_score`` stamp, hot-first;
+    an unstamped ``land_slice`` floors at
+    :data:`~precis.utils.dispatch_score.FINISH_FIRST_SCORE` — see
+    ``score_order_sql`` below; lane deficit = the lane's weighted share — its
+    ``claim.share.<lane>``
     weight over the eligible lanes' weights — minus the fraction of the
     sliding window's lane-seconds this host gave it, gr595541; the same
     deficit orders the pre-LIMIT window so truncation can't exclude the
@@ -2874,8 +2879,20 @@ def claim_executor_jobs(
                 "OR r.parent_id IS NULL OR r.parent_id <> ALL(%s))"
             )
             where_params = (*where_params, sorted(held_builds))
+    # dispatch_score DESC (gr702610, hot-first), with the unstamped-land
+    # floor (td736734 review of 8d0cd009): the stamp floors NEW
+    # ``land_slice`` mints at ``FINISH_FIRST_SCORE``, but a land already
+    # queued when the stamp shipped — a direct land, a review-released
+    # land, an infrastructure retry — carries no ``dispatch_score`` and
+    # read as 0, so fresh builds with a stamped plan score passed it
+    # while its build's files stayed held. An unstamped land floors at
+    # the same ``FINISH_FIRST_SCORE`` a stamped one carries, so the
+    # rollout leaves already-queued lands exactly where new ones land.
+    # Mirrors :func:`_row_score` in the Python re-rank below.
     score_order_sql = (
-        f"COALESCE((r.meta->>'{_dscore.SCORE_META_KEY}')::float8, 0) DESC, "
+        f"COALESCE((r.meta->>'{_dscore.SCORE_META_KEY}')::float8,"
+        f" CASE WHEN r.meta->>'job_type' = 'land_slice'"
+        f" THEN {_dscore.FINISH_FIRST_SCORE} ELSE 0 END) DESC, "
     )
     fresh_sql = f"""
         SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at,
@@ -3014,6 +3031,20 @@ def claim_executor_jobs(
     def _row_prio(r: Any) -> float:
         return float(r[3] if r[3] is not None else _DEFAULT_JOB_PRIO)
 
+    def _row_score(r: Any) -> float:
+        """The dispatch_score claim key, with the unstamped-land floor —
+        the Python twin of ``score_order_sql`` above (td736734 review of
+        8d0cd009): a ``land_slice`` queued before the score stamp carries
+        no ``dispatch_score``; it floors at the same
+        :data:`~precis.utils.dispatch_score.FINISH_FIRST_SCORE` a stamped
+        land carries, instead of reading as 0 and losing to every fresh
+        build with a stamped plan score."""
+        meta = dict(r[2] or {})
+        raw = meta.get(_dscore.SCORE_META_KEY)
+        if raw is None and str(meta.get("job_type") or "") == "land_slice":
+            return _dscore.FINISH_FIRST_SCORE
+        return float(raw or 0)
+
     top_class = min((_row_base(r) for r in rows if _row_prio(r) != 1.0), default=0)
     # Release-band freeze (gr584136): while a release leg is among the
     # claimable non-prio-1 candidates, no row class-promotes — mirrors the
@@ -3115,7 +3146,7 @@ def claim_executor_jobs(
             -scarcity,
             rank,
             factory,
-            -float(dict(r[2] or {}).get(_dscore.SCORE_META_KEY) or 0),
+            -_row_score(r),
             -deficit,
             aged,
             _row_affinity(r),
@@ -3458,6 +3489,9 @@ def park_job_until(
     ref_id: int,
     wake_at: datetime | None,
     note: str,
+    *,
+    submit_attempt: str | None = None,
+    temporary_submit_pin: bool = False,
 ) -> bool:
     """Park a running job until ``wake_at`` — the non-coordinator lane's
     Yield (gr482938): ``STATUS:waiting_time`` + ``meta.wake_when``
@@ -3486,10 +3520,12 @@ def park_job_until(
     job was waiting on (gr592789).
     """
     row = conn.execute(
-        "SELECT COALESCE((meta->>'pause_parks')::int, 0) FROM refs WHERE ref_id = %s",
-        (ref_id,),
+        "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE", (ref_id,)
     ).fetchone()
-    parks = int(row[0]) if row and row[0] is not None else 0
+    meta = row[0] if row else {}
+    if submit_attempt is not None and meta.get("submit_attempt") != submit_attempt:
+        return False
+    parks = int(meta.get("pause_parks") or 0)
     if parks >= MAX_PAUSE_PARKS:
         return False
     at = wake_at if wake_at is not None else datetime.now(UTC) + PAUSE_BACKOFF
@@ -3506,6 +3542,17 @@ def park_job_until(
         },
         pause_parks=parks + 1,
     )
+    if submit_attempt is not None:
+        # The wake can start another submit immediately after this commit.
+        # Remove this attempt's launch intent and pin before exposing the park.
+        conn.execute(
+            "UPDATE refs SET meta = (CASE WHEN %s"
+            " AND meta->'params'->>'target_node' = %s"
+            " THEN meta #- '{params,target_node}' ELSE meta END)"
+            " - ARRAY['submit_started_at', 'submit_attempt', 'submit_host']"
+            " WHERE ref_id = %s",
+            (temporary_submit_pin, os.environ.get("PRECIS_NODE"), ref_id),
+        )
     release_job_reservation(conn, ref_id)
     set_status(store, ref_id, WAITING_TIME, conn=conn)
     return True

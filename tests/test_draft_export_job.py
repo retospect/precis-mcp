@@ -881,3 +881,25 @@ def test_export_job_checks_and_reapplies_retraction_gate(monkeypatch: Any) -> No
         frozenset(),
     )
     assert ctx.failures == ["draft_export: reached rendering setup"]
+
+
+def test_repeat_cites_param_reaches_the_exporter(hub: Hub, monkeypatch: Any) -> None:
+    """``params.repeat_cites`` is passed to ``export_draft`` (default off)."""
+    from precis.export import compile as compile_mod
+    from precis.export import latex as latex_mod
+
+    _pid, slug = _make_project_and_draft(hub)
+    spec = get_job_type("draft_export")
+    assert spec is not None and spec.dispatch is not None
+    assert "repeat_cites" in spec.params_schema["properties"]
+    runs: list[dict[str, Any]] = []
+
+    def _fake_export(*_a: Any, **kw: Any) -> Any:
+        runs.append(kw)
+        raise RuntimeError("stop after capture")
+
+    monkeypatch.setattr(latex_mod, "export_draft", _fake_export)
+    monkeypatch.setattr(compile_mod, "have_latexmk", lambda: True)
+    for params in ({"draft": slug}, {"draft": slug, "repeat_cites": True}):
+        spec.dispatch(_FakeCtx(store=hub.store, meta={"params": params}), spec)
+    assert [r["repeat_cites"] for r in runs] == [False, True]

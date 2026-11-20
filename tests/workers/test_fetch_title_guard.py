@@ -50,7 +50,7 @@ def test_cascade_validates_before_success(
     monkeypatch.setattr(
         fetch_oa, "_timed_event", lambda *a, **kw: events.append(kw["event"])
     )
-    for name in ("publisher", "acl", "openalex", "europepmc", "s2"):
+    for name in ("publisher", "acl", "zenodo", "openalex", "europepmc", "s2"):
         monkeypatch.setattr(fetch_oa, "_try_" + name, lambda *a, **kw: None)
 
     def download(*args: object, **kwargs: object) -> fetch_oa.FetchOutcome:

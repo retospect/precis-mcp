@@ -139,7 +139,7 @@ search(kind='datasheet', view='stubs')   # da<N> + part + fill instruction
 
 **Did a pull work?** `search(kind='datasheet', view='status', ids=[…])`
 mixes `da<N>` handles, cite_key slugs and C-numbers: a ref row shows its
-body state (full-text / card-only / stub) plus its part's recorded pull
+body state (full-text / card-only / stub), title and its part's recorded pull
 outcome; a C-number row shows the pull (`status`, `reason`, `url`,
 `at` — where a `not_pdf` or dead-host failure is readable without SQL)
 and the datasheet it links, if any. `search(kind='datasheet',

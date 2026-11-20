@@ -27,15 +27,13 @@ verbs, including writes and access to shared corpus/configured services.
 Existing runtime restrictions still apply; this does not add per-document or
 per-mailbox ownership to kinds that lack it. For a narrower deployment set
 `learning`, or offer both by setting `learning mcp:full`; each grant records
-the scopes actually requested and approved. Manual personal tokens retain
-their existing learning-only boundary.
+the scopes actually requested and approved. Where enabled, manual personal
+tokens permit access to the owner's learning and GTD data.
 
 The web launchd template includes the private `precis_identity_env` mapping;
 keep actual coordinates in that overlay. Supply the same values to the
 dedicated MCP service's environment. Both must use the same migrated database
 and pinned application version. Restart both after configuration changes.
-The MCP service still requires its own `PRECIS_MCP_TOKEN` for infrastructure
-access. Keep that credential separate from user app authorizations.
 
 The gateway's `precis_web` role can configure both daemons and the persistent
 MCP listener without reinstalling the application or applying migrations.
@@ -59,10 +57,20 @@ MCP environments, safely reloads changed daemons, verifies a discovery-bearing
 401 before exposure, and asserts the exact MCP and existing web mappings.
 The dedicated `com.precis.mcp-public` daemon uses the deployed web venv,
 loopback only, and an `agent_rw` DSN. It refuses pending migrations and never
-auto-migrates. The role creates a separate infrastructure token once in
-`/opt/mcps/mcp-public-secrets/PRECIS_MCP_TOKEN` (deploy-owned, mode 0600;
-directory 0700); only its directory is in the plist. Reapplying preserves the
-token and existing session MCP. The dedicated HTTPS ports 8443 and 10000
+auto-migrates. The public daemon is OAuth-only by default:
+`precis_mcp_public_credential_classes: oauth` is passed to it and to the web
+daemon as `PRECIS_MCP_CREDENTIAL_CLASSES`, so the endpoint refuses install,
+slice, personal and capability bearers and the account page offers no
+personal-token or capability-token minting. In that mode the role creates no
+infrastructure token and removes an existing
+`/opt/mcps/mcp-public-secrets/PRECIS_MCP_TOKEN`. Listing more classes in the
+private overlay (comma or space separated, from `install`, `slice`, `personal`,
+`capability`, `oauth`) re-enables them; listing `install` makes the role
+generate the token again (once, deploy-owned, mode 0600; directory 0700; only
+its directory is in the plist) and reapplying preserves it. The list must keep
+`oauth`; a list without it, or a name outside it, fails the role before any
+plist is written. Reapplying never touches the
+existing session MCP. The dedicated HTTPS ports 8443 and 10000
 remain available when the web and MCP services need different exposure.
 On shared HTTPS 443, both services must use the same Serve or Funnel mode.
 Setting `precis_mcp_public_enabled: false` skips management. To remove
@@ -119,12 +127,15 @@ listener.
 
 Use the canonical resource URL `https://precis.example.com/mcp` in clients.
 When moving from a dedicated HTTPS port, existing OAuth grants are tied to
-the old resource URL. Users sign in again on the new URL. Remove any retired
-port mapping separately after checking which clients still use it.
+the old resource URL. Users sign in again on the new URL. Moving between a
+dedicated port and 443 removes the retired MCP mapping in the same run: the
+role removes every handler that proxies to the MCP loopback port and is not
+one of the mappings it declares (never the web mapping), then re-reads
+`tailscale funnel status --json` and asserts none remains. If that assertion
+fails, the message names the manual `tailscale ... off` command.
 
-For a fixed credential in Claude, select **No sign-in** and add the
-`authorization` request header with the value `Bearer YOUR_TOKEN`. Personal
-tokens authorize learning only. Use OAuth for per-user full MCP access.
+Static tokens are refused on an OAuth-only endpoint; use OAuth for per-user
+access.
 
 The MCP SDK's Host/Origin checks retain localhost allowances and add the exact
 configured public resource host/origin and issuer origin. Configure proxy
@@ -136,7 +147,10 @@ forwarding consistently; do not disable these checks to make a URL work.
 2. Public unauthenticated `GET /.well-known/oauth-protected-resource/mcp`
    on the MCP origin must return the configured resource and issuer.
 3. An unauthenticated MCP request must return 401 with a `WWW-Authenticate`
-   discovery challenge. No data request is public.
+   discovery challenge. No data request is public. A request carrying any
+   static credential (an infrastructure, personal or capability token) must
+   return the same 401 challenge as the unauthenticated one. Read any token
+   from its file in the command, never onto the screen.
 4. `GET /.well-known/oauth-authorization-server` on the web origin must
    advertise `/authorize`, `/token`, S256 PKCE, configured scopes and public
    client auth method `none`.
@@ -162,14 +176,25 @@ and renewal. Removing a configured client or capability also fails closed.
 
 Secrets are random and digest-only in PostgreSQL. Never log request bodies,
 Authorization headers, token responses or redirect Location headers carrying
-authorization codes. Keep authentication request and concurrency limits at
-the public ingress; the authorization store also bounds outstanding requests.
+authorization codes. The authorization store also bounds outstanding requests.
+
+Tailscale Funnel has no request-rate or concurrency limits, and uvicorn runs
+with its defaults. The controls that exist are in-process: the web gate's
+failed-sign-in lockout (per login and address, per address, and a global
+per-login ceiling; it also covers the podcast route's Basic path), a cap on
+concurrent password verifications, the 64 KiB cap on OAuth protocol bodies,
+and the MCP bearer check before any body is read. Volumetric load is not
+handled in-process. The options are a real reverse proxy in front of the
+gateway, or taking the funnel down (`--tags tailscale` with the funnel
+variables false).
 
 ## External security assessment
 
 Use an independent machine outside the tailnet (for example a laptop on a
 phone hotspot with Tailscale disconnected) to verify the configured HTTPS
 routes, TLS certificates, public OAuth discovery and authentication refusals.
+Cover every funnel-capable port (443, 8443 and 10000), not only the configured
+one: a mapping left on another port is exactly what this check should find.
 Funnel's public DNS points to shared Tailscale relay infrastructure: a blanket
 IP port scan measures that relay rather than this gateway. Scope such testing
 to the owned hostname with TLS SNI, and inspect `tailscale funnel status --json`

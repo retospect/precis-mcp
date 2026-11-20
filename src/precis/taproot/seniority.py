@@ -14,6 +14,9 @@ Derivation (taproot.md, locked decision):
 
 1. **Supporters** ``S`` = papers with an inbound ``establishes`` or
    ``corroborates`` edge onto the hub (deduped by paper ref_id).
+   Explicit setup mismatches are excluded before this split, even when
+   their stored support verdict is yes. Both single and bulk derivation
+   use the same guard so citation fallback cannot revive them.
    **Contradictors** = papers with an inbound ``contradicts`` edge — a
    *separate* group, never folded into the seniority split.
 2. **Originators** among ``S``: walk ``cites`` edges *among S only* — a
@@ -60,6 +63,7 @@ from precis.taproot.hub import (
     PATHWAY_EVIDENCE_KINDS,
     pathway_barrier_mismatch,
 )
+from precis.taproot.support import setup_mismatch
 from precis.utils import handle_registry
 from precis.utils.coerce import num_finite
 
@@ -895,6 +899,11 @@ def derive_evidence(
                 IneligibleEdge(src_ref_id, relation, use.rule or "", kind)
             )
             continue
+        if relation in _SUPPORT_ROLES and setup_mismatch(meta):
+            ineligible.append(
+                IneligibleEdge(src_ref_id, relation, "setup mismatch", kind)
+            )
+            continue
         if kind in _COMPUTED_SRC_KINDS:
             computed_rows.append((src_ref_id, relation, meta))
             continue
@@ -1072,6 +1081,11 @@ def derive_evidence_bulk(
             if not use.eligible:
                 ineligible.append(
                     IneligibleEdge(src_ref_id, relation, use.rule or "", kind)
+                )
+                continue
+            if relation in _SUPPORT_ROLES and setup_mismatch(meta):
+                ineligible.append(
+                    IneligibleEdge(src_ref_id, relation, "setup mismatch", kind)
                 )
                 continue
             if kind in _COMPUTED_SRC_KINDS:

@@ -14,10 +14,13 @@ from typing import Any
 import psycopg
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers.measure import MeasureHandler
+from precis.handlers.paper import PaperHandler
 from precis.ingest.dedup import merge_refs
 from precis.store import Migrator, Store
-from precis.store._measures_ops import MeasureAnchor, MeasureSpec
+from precis.store._measures_ops import ConditionFilter, MeasureAnchor, MeasureSpec
 from precis.taxonomy.nodes import slugify, validate_taxon_meta
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -652,6 +655,21 @@ class TestElectrodeReference:
 
 
 class TestRoundTrips:
+    def test_hartree_spelling_is_retained(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        run = store.insert_measure(
+            MeasureSpec(
+                world["energy"], "-2 ± 0.1", world["paper"], reported_unit="Ha"
+            ),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["reported_unit"] == "Ha"
+        assert row["literal"] == "-2 ± 0.1"
+        assert row["value_num"] == pytest.approx(-54.42277249)
+        assert row["value_err"] == pytest.approx(2.7211386245)
+
     @pytest.mark.parametrize(
         ("literal", "form", "num", "low", "high", "err"),
         [
@@ -893,6 +911,43 @@ def test_a_value_repeated_on_the_same_anchor_span_is_refused(
         store.insert_measure(spec, actor="reader")
 
 
+def test_same_span_output_under_distinct_potentials_is_searchable(
+    store: Store, world: dict[str, Any]
+) -> None:
+    output = MeasureSpec(
+        world["fe"], "12", world["paper"], reported_unit="%", anchor=_anchor(world)
+    )
+    first = store.insert_measure(
+        output, [_potential(world, "-1.35"), _product(world)], actor="reader"
+    )
+    second = store.insert_measure(
+        output, [_potential(world, "-1.55"), _product(world)], actor="reader"
+    )
+    assert first.run_key != second.run_key
+    detail = store.measure_detail(second.output_id)
+    assert any(c["value_num"] == -1.55 for c in detail["conditions"])
+    found = store.search_measures(
+        world["fe"], conditions=[ConditionFilter("potential", "=", value=-1.55)]
+    )
+    assert [row["id"] for row in found.rows] == [second.output_id]
+    # Presentation labels and input order do not create a new condition set.
+    with pytest.raises(BadInput, match="duplicate of measure"):
+        store.insert_measure(
+            output,
+            [_product(world), _potential(world, "-1.55", subject="another label")],
+            actor="reader",
+        )
+    with pytest.raises(BadInput, match="duplicate of measure"):
+        store.insert_measure(
+            output,
+            [
+                _with(_potential(world, "-1550"), reported_unit="mV"),
+                _product(world),
+            ],
+            actor="reader",
+        )
+
+
 def test_a_different_value_or_span_is_not_a_duplicate(
     store: Store, world: dict[str, Any]
 ) -> None:
@@ -1067,13 +1122,36 @@ def test_an_order_of_magnitude_outlier_escalates_for_review(
             MeasureSpec(world["energy"], v, world["paper"], reported_unit="eV"),
             actor="reader",
         )
+    paper = seed_ref(store, title="Paper reporting an outlier", kind="paper")
     outlier = store.insert_measure(
-        MeasureSpec(world["energy"], "1", world["paper"], reported_unit="MeV"),
+        MeasureSpec(world["energy"], "1", paper, reported_unit="MeV"),
         actor="reader",
     )
     (esc,) = _row(store, outlier.output_id)["meta"]["escalation"]
     assert esc["rule"] == "implausible_value" and esc["decades"] > 5
     assert esc["median"] == pytest.approx(2.45, rel=0.01)
+    hub = Hub(store=store)
+    paper_handle = f"pa{paper}"
+    measure_handle = f"mx{outlier.output_id}"
+    inventory = PaperHandler(hub=hub).get(id=paper_handle, view="measures")
+    assert inventory.result_count == 1
+    assert f"{measure_handle} |" in inventory.body
+    assert "escalated: implausible_value" in inventory.body
+
+    handler = MeasureHandler(hub=hub)
+    scope = {"paper": paper_handle}
+    found = handler.search(args=scope).body
+    assert "including escalated" in found.splitlines()[0]
+    assert f"{measure_handle} |" in found
+    assert "escalated: implausible_value" in found
+    live = handler.search(args=scope, status="live").body
+    assert "no measures match" in live
+    assert "including escalated" not in live
+    assert (
+        f"{measure_handle} |"
+        not in handler.search(property=f"tn{world['energy']}").body
+    )
+    assert "no measures match" in handler.search(args=scope, q="unmatched").body
     # flagged, not dropped: the row lands live; an in-distribution value
     # written afterwards stays clean
     clean = store.insert_measure(
@@ -1909,6 +1987,37 @@ class TestLiteralAndUnits:
             ("-0.5", "at −0.5 V vs RHE", True),
             ("–1.0", "a drop of –1.0 eV", True),
             ("9.6 ± 1.7", "9.6 ± 1.7 mg", True),
+            # gr715556: a duplicate math rendering glued to the literal must
+            # not weld both copies into one digit run
+            ("3651±31", "UF$_{2,3}$ & 3651±31$3651\\pm31$", True),
+            ("3651±31", "cell $3651\\pm31$3651±31 next", True),
+            ("3651±31", "3651 ± 31 $3651 \\pm 31$", True),
+            ("3651±31", "$3651 \\pm 31$", True),
+            # gr715556 review: the blanking retry must not fabricate a match
+            # across unrelated math, and a decimal point stays glued to its
+            # digits
+            ("3651±31", "UF$_{2,3}$ & 3651 $\\times 2$ ± 31", False),
+            ("3651±31", "3651 $\\times 2$ ± 31$3651\\pm31$", False),
+            ("1.5", "a value of 1. 5 V", False),
+            ("1.5", "a value of 1.5 V", True),
+            ("1 2", "x 12 y", False),
+            ("V vs RHE", "VvsRHE", False),
+            ("V vs RHE", "V   vs RHE", True),
+            # Ingest flattens raised exponents to the baseline (gr715568):
+            # the literal keeps the glyphs/e-form, the chunk text does not.
+            ("5 × 10¹²", "peak of 5 × 1012 W m-2", True),
+            ("5 × 10¹²", "peak of 5 × 10 12 W m-2", True),
+            ("5 × 10¹²", "peak of 5 × 10^12 W m-2", True),
+            ("5 × 1012", "peak of 5 × 10¹² W m-2", True),
+            ("5 × 10 12", "peak of 5 × 1012 W m-2", True),
+            ("1.3 × 10¹¹", "at 1.3 × 1011 cm-2", True),
+            ("10¹¹–10¹²", "fluxes of 1011-1012 W", True),
+            ("10¹¹–10¹²", "fluxes of 10 11-10 12 W", True),
+            ("5 × 10¹²", "scaled 5 × 1011 W", False),
+            ("5 × 10¹²", "scaled 5 × 10123 times", False),
+            ("5 × 10¹²", "scaled 5 × 10 123 times", False),
+            ("12", "year 1012", False),
+            ("5", "a value of 55", False),
         ],
     )
     def test_extraction_status_matches_on_number_boundaries(
@@ -1933,6 +2042,39 @@ class TestLiteralAndUnits:
         )
         want = "anchor_matched" if matched else "anchor_mismatch"
         assert _row(store, run.output_id)["extraction_status"] == want
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            r"The gap lies between \(1\) and \(2\) eV here.",
+            r"The gap lies between \(1\)~and \(2\) eV here.",
+        ],
+    )
+    def test_interval_literal_matches_math_delimiters_in_the_span(
+        self, store: Store, world: dict[str, Any], text: str
+    ) -> None:
+        # gr719235: arXiv chunks can retain both math delimiters and TeX ties.
+        chunk = seed_chunk(
+            store,
+            ref_id=world["paper"],
+            text=text,
+            ord=3,
+        )
+        run = store.insert_measure(
+            MeasureSpec(
+                world["energy"],
+                "1 and 2",
+                world["paper"],
+                value_low=1.0,
+                value_high=2.0,
+                anchor=MeasureAnchor(world["paper"], chunk, "sentence", "s1"),
+                reported_unit="eV",
+            ),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["extraction_status"] == "anchor_matched"
+        assert row["value_form"] == "interval"
 
     @pytest.mark.parametrize(
         ("canonical", "reported", "literal", "expected"),

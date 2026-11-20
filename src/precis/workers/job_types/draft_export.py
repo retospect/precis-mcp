@@ -89,6 +89,9 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # Closing "Published claim artifacts" appendix (export_draft's
         # claim_appendix). Default on; false omits it.
         "claim_appendix": {"type": "boolean"},
+        # Print every cite mark (export_draft's repeat_cites). Default off:
+        # a mark equal to the previous one in its paragraph is dropped.
+        "repeat_cites": {"type": "boolean"},
         # biblatex bibliography style (precis.export.latex._BIB_STYLES:
         # numeric-comp | chem-rsc/rsc | chem-acs/acs | nature). Absent →
         # the draft's meta.workspace.style, else numeric-comp.
@@ -485,6 +488,7 @@ def _export_and_compile(
             doi_links=bool(params.get("doi_links", True)),
             library_links=bool(params.get("library_links", True)),
             claim_appendix=bool(params.get("claim_appendix", True)),
+            repeat_cites=bool(params.get("repeat_cites", False)),
             bib_style=str(params.get("bib_style") or "").strip() or None,
             withheld_figures=withheld,
             # A queued export job is the explicit write op — it records the

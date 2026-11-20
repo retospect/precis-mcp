@@ -468,6 +468,12 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
 
     monkeypatch.setattr(capability_probe, "claude_auth_present", lambda: True)
     monkeypatch.setattr(capability_probe, "codex_login_present", lambda: True)
+    monkeypatch.setattr(capability_probe, "devin_login_present", lambda: True)
+    # A preflight no-login finding writes the process-wide login cache;
+    # monkeypatch restores it, so no test leaks it to the next.
+    from precis.workers.job_types import _slice_adapters
+
+    monkeypatch.setattr(_slice_adapters, "_devin_login_cache", None)
     monkeypatch.setattr(
         run_slice,
         "adapter_bin_present",
@@ -2425,13 +2431,20 @@ def test_submit_pick_filters_lanes_to_host_bins(
     assert ctx2.failure is None
 
 
-@pytest.mark.parametrize("adapter", ["claude_p", "codex_exec"])
+_ADAPTER_LOGIN_PROBES = {
+    "claude_p": "claude_auth_present",
+    "codex_exec": "codex_login_present",
+    "devin_tree": "devin_login_present",
+}
+
+
+@pytest.mark.parametrize("adapter", list(_ADAPTER_LOGIN_PROBES))
 def test_adapter_readiness_requires_login(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, adapter: str
 ) -> None:
     from precis.workers import capability_probe
 
-    probe = "claude_auth_present" if adapter == "claude_p" else "codex_login_present"
+    probe = _ADAPTER_LOGIN_PROBES[adapter]
     monkeypatch.setattr(capability_probe, probe, lambda: False)
     assert run_slice._adapter_ready(adapter) is False
     monkeypatch.setattr(capability_probe, probe, lambda: True)
@@ -2900,23 +2913,39 @@ def test_review_target_names_followups_on_main(
 def test_stamp_branch_files_records_the_branch_diff(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A clean exit stamps the branch's real file set for plan_dispatch's
-    overlap hold; git unable to answer leaves the last stamp in place."""
     store = _Store()
     store.add_todo(7, "Build it", body="Build.")
-    seen: list[str] = []
+    head = "a" * 40
+    paths = ["src/a.py", "tests/test_a.py"]
+    rc = 0
 
-    def fake_paths(tree: Path, base: str = "origin/main") -> list[str] | None:
-        seen.append(base)
-        return ["src/a.py", "tests/test_a.py"]
+    def fake_git(args: list[str], tree: Path) -> subprocess.CompletedProcess[str]:
+        assert args == [
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            f"origin/main...{head}",
+        ]
+        return _proc("\0".join(paths) + "\0", rc=rc)
 
-    monkeypatch.setattr(run_slice, "changed_paths", fake_paths)
-    run_slice._stamp_branch_files(store, 7, tmp_path)
-    assert store.refs[7].meta["branch_files"] == ["src/a.py", "tests/test_a.py"]
-    assert seen == ["origin/main"]
-    monkeypatch.setattr(run_slice, "changed_paths", lambda tree, base="": None)
-    run_slice._stamp_branch_files(store, 7, tmp_path)
-    assert store.refs[7].meta["branch_files"] == ["src/a.py", "tests/test_a.py"]
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    monkeypatch.setattr(run_slice, "_BRANCH_FILES_CAP", 2)
+    run_slice._stamp_branch_files(store, 7, tmp_path, head)
+    assert store.refs[7].meta["branch_files"] == paths
+    assert store.refs[7].meta["branch_files_head"] == head
+
+    paths.append("tests/test_b.py")
+    run_slice._stamp_branch_files(store, 7, tmp_path, head)
+    assert store.refs[7].meta["branch_files"] == paths[:2]
+    assert store.refs[7].meta["branch_files_head"] is None
+
+    paths.pop()
+    run_slice._stamp_branch_files(store, 7, tmp_path, head)
+    rc = 1
+    run_slice._stamp_branch_files(store, 7, tmp_path, head)
+    assert store.refs[7].meta["branch_files"] == paths
+    assert store.refs[7].meta["branch_files_head"] is None
 
 
 def test_review_target_fetches_a_preland_branch_and_names_its_head(
@@ -3028,16 +3057,24 @@ def test_review_target_never_names_a_head_its_fetch_failed_to_reach(
     assert target is not None and "STALE CHECKOUT" not in target
     assert f"The branch head is `{new}`" in target
 
-    # A clean fetch that disagrees with the stamp is origin's answer: the
-    # head is named as read and the tick's judged-head check rules on it.
+    # A clean fetch that disagrees with the stamp is no safer than a
+    # failed one (td730820): the branch moved after the defer stamped
+    # the tip, and judging the read head would let a LAND release a land
+    # for a commit the review never read — the brief says judge nothing
+    # and the tick re-runs the review.
     monkeypatch.setattr(
         run_slice,
         "_git",
         lambda args, cwd: _proc(f"{old}\n") if args[:1] == ["rev-parse"] else _proc(),
     )
     target = run_slice._review_target(store, meta)
-    assert target is not None and "STALE CHECKOUT" not in target
-    assert f"The branch head is `{old}`" in target
+    assert target is not None
+    assert "STALE CHECKOUT" in target
+    assert "after a clean fetch" in target
+    assert new in target and old in target
+    assert "The branch head is" not in target
+    assert "verified head" not in target
+    assert "NO `review:` comment" in target
 
 
 def test_submit_routes_a_pinned_claude_model_off_the_codex_lane(
@@ -6786,6 +6823,7 @@ def test_mint_land_params_and_idem_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(mint_mod, "mint_job_once", fake_once)
     store = _Store()
+    store.add_todo(42, "Build it")
     store.tx = lambda: _Tx()  # type: ignore[attr-defined]
     ctx = _Ctx(store, {"todo_id": 42, "target_node": "node-a"}, plan_root=40)
     assert run_slice._mint_land(ctx, 42, Path("/t/slice-td42"), "claude-sub") == 555
@@ -6799,8 +6837,37 @@ def test_mint_land_params_and_idem_key(monkeypatch: pytest.MonkeyPatch) -> None:
         "lane": "claude-sub",
         "target_node": "node-a",
     }
-    assert kw["meta_extra"] == {"plan_root": 40}
+    assert kw["meta_extra"] == {"plan_root": 40, "dispatch_score": 16.0}
     assert kw["conn"] == "conn"
+
+
+@pytest.mark.parametrize(
+    ("own", "want"), [(2.3, 16.0), (42.0, 42.0), (None, 16.0)], ids=str
+)
+def test_mint_land_score_is_the_builds_floored_at_finish_first(
+    monkeypatch: pytest.MonkeyPatch, own: float | None, want: float
+) -> None:
+    """A land finishes started work: it claims at the build's own
+    ``dispatch_score`` floored at ``FINISH_FIRST_SCORE`` (16.0), 0 when the
+    build carries none."""
+    import precis.workers._mint as mint_mod
+
+    minted: list[dict[str, Any]] = []
+
+    def fake_once(store: Any, **kw: Any) -> tuple[int, bool]:
+        minted.append(kw)
+        return 555, False
+
+    monkeypatch.setattr(mint_mod, "mint_job_once", fake_once)
+    store = _Store()
+    # td736592 made _mint_land stamp the branch files on the todo, so the
+    # fake store needs the ref — same seeding as the sibling mint tests.
+    store.add_todo(42, "Build it")
+    monkeypatch.setattr(store, "tx", lambda: _Tx(), raising=False)
+    meta = {} if own is None else {"dispatch_score": own}
+    ctx = _Ctx(store, {"todo_id": 42}, **meta)
+    run_slice._mint_land(ctx, 42, Path("/t/slice-td42"), "claude-sub")
+    assert minted[0]["meta_extra"]["dispatch_score"] == want
 
 
 def test_mint_land_checked_param(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6818,6 +6885,7 @@ def test_mint_land_checked_param(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(mint_mod, "mint_job_once", fake_once)
     store = _Store()
+    store.add_todo(42, "Build it")
     monkeypatch.setattr(store, "tx", lambda: _Tx(), raising=False)
     ctx = _Ctx(store, {"todo_id": 42})
     run_slice._mint_land(ctx, 42, Path("/t/slice-td42"), "claude-sub", checked=True)
@@ -7166,6 +7234,94 @@ def test_submit_attempt_tagged_review_handoff_still_launches(
     # The retry's brief steers on the verdict, not the shadowed brief.
     brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
     assert "the widget check is wrong" in brief
+
+
+def _mech_brief_comments() -> tuple[str, ...]:
+    """The prod shape (gr705291): builder handoff, the lander's conflict
+    handoff, then the tick's mechanical-red brief as the newest comment."""
+    from precis.plans.templates import MECH_BRIEF_MARK
+
+    return (
+        "brief: the real brief",
+        "handoff: built the widget, ready to land",
+        "handoff: lander: land FAILED: rebase conflict onto origin/main",
+        "brief: rebase on origin/main and resolve src/precis/x/y.py, keeping "
+        f"main's side for others' changes{MECH_BRIEF_MARK}9: "
+        "rebase conflict onto origin/main",
+    )
+
+
+def test_submit_mechanical_brief_launches_over_preland_review(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr705291: the tick's mechanical-red ``brief:`` follows the lander's
+    conflict handoff and asks for a rebase — a session launches; the
+    ahead branch is neither deferred to the pre-land review (which would
+    say LAND on the unchanged head) nor ended attempt-free."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        body="Do X.",
+        comments=_mech_brief_comments(),
+        tags=("attempt:2",),
+    )
+    _ahead_retry(seams, tmp_path)
+    seams["preland"] = 55
+    monkeypatch.setattr(run_slice, "_carried_on_base", lambda *a, **k: None)
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None and ctx.failure is None
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    assert "preland_review" not in ctx.meta_set
+    assert seams["lands"] == [] and seams["push"] == []
+    assert len(seams["launch"]) == 1
+
+
+def test_submit_mechanical_brief_launches_instead_of_a_land_mint(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr705291: with no pre-land reviewer the same newest mechanical
+    brief launches the session rather than minting a land of the head
+    that just failed to rebase."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        body="Do X.",
+        comments=_mech_brief_comments(),
+        tags=("attempt:2",),
+    )
+    _ahead_retry(seams, tmp_path)
+    monkeypatch.setattr(run_slice, "_carried_on_base", lambda *a, **k: None)
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None and ctx.failure is None
+    assert run_slice.ATTEMPT_FREE_KEY not in ctx.meta_set
+    assert seams["lands"] == [] and len(seams["launch"]) == 1
+
+
+def test_submit_plain_brief_still_routes_an_ahead_branch_to_the_land(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr705291 guard: a ``brief:`` without the mechanical-red mark is not
+    a session request — the ahead branch still goes to its land."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        body="Do X.",
+        comments=("brief: tighten the widget check",),
+        tags=("attempt:2",),
+    )
+    tree = _ahead_retry(seams, tmp_path)
+    monkeypatch.setattr(run_slice, "_carried_on_base", lambda *a, **k: None)
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and ctx.status == "failed"
+    assert seams["lands"] == [(42, tree, "claude-sub")]
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "branch-ahead"
+    assert seams["launch"] == []
 
 
 def test_submit_ahead_branch_route_failure_falls_back_to_launch(
@@ -9155,6 +9311,30 @@ def test_devin_preflight_refuses_an_unreadable_auth_status(
     assert seams["launch"] == []
 
 
+def test_devin_preflight_no_login_stops_this_host_advertising_the_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preflight that finds no login flips the probe's cached answer to
+    False at once, so the host stops picking the lane (and advertising
+    ``devin_bin``) instead of refusing again a TTL later."""
+    from precis.workers.job_types import _slice_adapters
+
+    # The real probe: the binary resolves, ``auth status`` reads logged in.
+    monkeypatch.setattr(_slice_adapters, "_devin_login_cache", None)
+    monkeypatch.setattr(_slice_adapters, "adapter_bin_present", lambda name: True)
+    monkeypatch.setattr(
+        _slice_adapters, "devin_auth_status", lambda b: _proc("Logged in\n")
+    )
+    assert _slice_adapters.devin_login_present() is True
+    monkeypatch.setattr(run_slice, "_devin_bin_ok", lambda b: True)
+    monkeypatch.setattr(
+        run_slice, "_devin_auth_status", lambda b: _proc("Not logged in\n", rc=1)
+    )
+    with pytest.raises(run_slice._HostRefusal, match="devin auth login"):
+        run_slice._devin_preflight(Path("/unused"))
+    assert _slice_adapters.devin_login_present() is False
+
+
 def test_devin_auth_status_maps_a_timeout_to_rc_124(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -9171,7 +9351,9 @@ def test_devin_auth_status_maps_a_timeout_to_rc_124(
         TimeoutExpired=subprocess.TimeoutExpired,
         CompletedProcess=subprocess.CompletedProcess,
     )
-    monkeypatch.setattr(run_slice, "subprocess", stub)
+    from precis.workers.job_types import _slice_adapters
+
+    monkeypatch.setattr(_slice_adapters, "subprocess", stub)
     proc = run_slice._devin_auth_status("/vendor/devin")
     assert proc.returncode == 124
 

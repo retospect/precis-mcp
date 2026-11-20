@@ -78,7 +78,7 @@ def test_whoami_personal_token_names_owner_label_and_scope(
     body = cast(str, core.get(kind="profile", id="me", ctx=ctx))
     assert f"user: al (login: alice, id: {alice.id})" in body
     assert f"credential: personal MCP token {token_id} 'Laptop'" in body
-    assert "permission: learning calls, learning help, whoami" in body
+    assert "permission: learning, gtd calls, learning help, whoami" in body
     assert f"writes recorded as: personal:{token_id}" in body
     assert "revision actor: user:al" in body
     # The bare profile listing stays outside the personal-token boundary.

@@ -1187,6 +1187,32 @@ def test_deploy_only_marks_a_prelaunch_deploy_death_terminal(rig: Rig) -> None:
     assert rig.origin_ref("release/r1") == s
 
 
+def test_deploy_only_a_deploy_refused_before_any_host_keeps_the_release_live(
+    rig: Rig,
+) -> None:
+    """gr730609: `scripts/deploy` exiting 75 (no host contacted) leaves the
+    record as it was — release passes the 75 on without `round fail`, and a
+    later --deploy-only deploys the same release."""
+    s = rig.shas["c3"]
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    out = _release(
+        rig, "--deploy-only", "r1", *FAST, DEPLOY_STUB_RC="75", **_verdict(s)
+    )
+    assert out.returncode == 75, out.stdout + out.stderr
+    assert "no host was touched" in out.stderr
+    assert "supersedes the record" not in out.stderr
+    assert "fail refused" not in out.stderr
+    rel = _rel(_round_json(rig), 1)
+    assert rel["state"] == "cut"
+    assert "deployment" not in rel
+    assert rig.origin_ref("release/r1") == s
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert any(
+        ln.startswith(f"RELEASE_DEPLOYED: r1 {s} ") for ln in out.stdout.splitlines()
+    )
+
+
 def test_deploy_only_resumes_a_failed_record_whose_rollout_launched(
     rig: Rig,
 ) -> None:

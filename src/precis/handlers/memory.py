@@ -152,7 +152,7 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from psycopg import Connection
 from psycopg.errors import DeadlockDetected, LockNotAvailable
@@ -259,6 +259,9 @@ from precis.utils.secret_scan import mask_secrets
 from precis.utils.timeutil import as_utc
 from precis.workers.embed import nudge_fresh_embed
 
+if TYPE_CHECKING:
+    from precis.store.store import Store
+
 #: Heading line that opens a memory-body section — the ``~<slug>``
 #: selector grammar (``me<id>~<section>``) splits on these.
 _SECTION_HEAD_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.M)
@@ -280,6 +283,11 @@ _AUDIT_UNGROUNDED = Tag.closed("AUDIT", AUDIT_VALUE)
 #: reserve for the header + ``next:``/note lines the dispatcher may
 #: prepend, so the emitted page itself always fits the binding cap.
 _PAGED_FOOTER_BYTES = 400
+
+#: Bytes a paged ``~body`` read (gr685357) reserves for the
+#: ``(chars K..E of T)`` header plus the ``rest:`` clip footer, so the
+#: emitted page itself always fits the cap that bound the read.
+_BODY_PAGE_RESERVE = 288
 
 #: Write-retry budget for a memory write (gr631568): a fresh or
 #: just-edited memory is processed in the background — embed / keywords /
@@ -500,17 +508,6 @@ _TITLE_MAX = 80
 #: ``view='toc'`` parent listing sorts on (gr631890).
 _META_ALLOWED = ("hook", "type", "expires", "order")
 
-#: ``meta=`` keys that ride a create-time ``link=`` onto the created
-#: edge instead of the node (gr715265): the machine-edge writer record
-#: plus its evidence chunk pins. ``add_link`` admission requires exactly
-#: these on a machine-written edge, and the link verb has always carried
-#: them — but ``put`` validated them as node metadata and refused, so a
-#: memory minted together with its ``derived-from`` edge could not carry
-#: the annotation (precis-read-paper Step 2 fell back to the bare
-#: recipe). Without ``link=`` they have no edge to land on and are
-#: refused with the call that carries them.
-_EDGE_ANNOTATION_META_KEYS: tuple[str, ...] = (*MACHINE_EDGE_META_KEYS, "evidence")
-
 #: ``meta.expires`` duration grammar — mirrors the alias handler's
 #: ``expires=`` (``'7d'``/``'12h'``/``'30m'``/``'2w'``), resolved at write
 #: into the absolute instant the stored meta carries.
@@ -630,6 +627,7 @@ _OPS_KEYS = frozenset(
 )
 _OPS_KINDS = ("find-replace", "insert", "append")
 _MEMORY_TYPES = ("user", "feedback", "project", "reference")
+_CREATE_EDGE_META_KEYS = frozenset((*MACHINE_EDGE_META_KEYS, "evidence"))
 
 
 def _validate_meta(
@@ -637,6 +635,7 @@ def _validate_meta(
     *,
     ruling: bool = False,
     existing: dict[str, Any] | None = None,
+    creating: bool = False,
 ) -> dict[str, Any]:
     """Check a caller's ``meta=`` and return the cleaned patch.
 
@@ -647,6 +646,9 @@ def _validate_meta(
     (:func:`precis.utils.memory_rulings.validate_ruling_meta`; ``existing`` =
     the node's meta on an edit, ``None`` on a create, which stamps the
     defaults). Anything else raises :class:`BadInput` naming the allowed keys.
+    ``creating=True`` (a ``put``) also makes a rejection of creation-edge keys
+    (model/run_id/why/evidence…) point at the ``put(link=…)`` route; an edit
+    never gets that hint, since it would steer a repair into a second memory.
     """
     example = "meta={'hook': 'one-line index text'}"
     ruling_note = f"; a node tagged {RULING_TAG!r} also takes {list(_RULING_META_KEYS)}"
@@ -660,10 +662,22 @@ def _validate_meta(
         str(k) for k in meta if k not in _META_ALLOWED and k not in _RULING_META_KEYS
     )
     if unknown:
+        next_step = example
+        edge_keys = sorted(set(unknown) & _CREATE_EDGE_META_KEYS)
+        if creating and edge_keys:
+            # The caller is following the creation-edge annotation shape
+            # (precis-memory-help) without a link= for it to land on —
+            # name that route instead of the bare allowlist (gr725289).
+            next_step = (
+                f"meta key(s) {edge_keys} annotate the creation edge, not "
+                "the memory: pass them on put(kind='memory', link='<target>', "
+                "rel='derived-from', meta={...}) so they land on the edge, "
+                "or drop them"
+            )
         raise BadInput(
             f"meta= key(s) {unknown} not writable on kind='memory'; "
             f"allowed keys: {list(_META_ALLOWED)}{ruling_note}",
-            next=example,
+            next=next_step,
         )
     ruling_keys = {k: meta[k] for k in _RULING_META_KEYS if k in meta}
     if ruling_keys and not ruling:
@@ -741,6 +755,26 @@ def _ruling_ack(meta: dict[str, Any]) -> str:
     """The create ack's line naming the ruling keys the write stamped."""
     stamped = ", ".join(f"{k}={meta[k]}" for k in _RULING_META_KEYS if k in meta)
     return f"\nruling meta: {stamped}" if stamped else ""
+
+
+def _expiry_line(ref: Ref, tags: list[Tag]) -> str | None:
+    """The ``expires: …`` line a single-ref view/create ack ends with.
+
+    The same shared rule the garden's detectors use
+    (:func:`precis.utils.memory_threads.expiry_line`) — the read surface
+    and the sweep must never compute different instants (gr676320).
+    Standing nodes without expiry and DREAM nodes have no footer.
+    """
+    from precis.utils.memory_threads import expiry_line
+
+    if any(t.prefix == "DREAM" for t in tags):
+        return None
+    sections = frozenset(
+        t.value[len("section:") :]
+        for t in tags
+        if t.namespace == "open" and t.value.startswith("section:")
+    )
+    return expiry_line(ref.title or "", sections, ref.meta or {}, ref.updated_at)
 
 
 class MemoryHandler(AuditedRetirementHandler):
@@ -978,7 +1012,9 @@ class MemoryHandler(AuditedRetirementHandler):
         # ``view='members'``'s cursor args (``args={'offset': N,
         # 'depth': D}``) — declared so the extras gate accepts them.
         # ``offset``/``limit`` also page ``view='considerations'``'s
-        # judgment history.
+        # judgment history. ``offset`` alone also pages the ``~body``
+        # read (gr685357): an over-cap body continues at
+        # ``args={'offset': <characters shown>}``.
         offset: int | str | None = None,
         depth: int | str | None = None,
         limit: int | str | None = None,
@@ -1048,13 +1084,33 @@ class MemoryHandler(AuditedRetirementHandler):
                 "hops=/mermaid= only apply to get(kind='memory', view='environment')",
                 next="get(kind='memory', id=N, view='environment', args={'hops': 2})",
             )
-        if offset is not None and (
-            view not in {"members", "log", "toc", "considerations"} or q is not None
+        # The ~body read pages by character offset (gr685357): allowed on
+        # a single ~body selector or the view='body' spelling, refused
+        # everywhere else below.
+        body_offset = (
+            offset is not None
+            and q is None
+            and (
+                (view == "body" and id is not None and not isinstance(id, list))
+                or (
+                    isinstance(id, str)
+                    and "~" in id
+                    and _bracketed_id_list(id) is None
+                    and id.rpartition("~")[2].strip() == "body"
+                )
+            )
+        )
+        if (
+            offset is not None
+            and not body_offset
+            and (
+                view not in {"members", "log", "toc", "considerations"} or q is not None
+            )
         ):
             raise BadInput(
                 "offset= can only apply to memory view='members', 'log', "
-                "'toc' or 'considerations'",
-                next="get(kind='memory', id=N, view='log', args={'offset': 0})",
+                "'toc', 'considerations' or the ~body read",
+                next="get(kind='memory', id='me<N>~body', args={'offset': 0})",
             )
         if limit is not None and (
             view not in {"log", "considerations", "dependants"} or q is not None
@@ -1122,7 +1178,7 @@ class MemoryHandler(AuditedRetirementHandler):
             if listed is not None:
                 id = cast("list[str | int]", listed)
         if isinstance(id, str) and "~" in id:
-            return self._get_section(id=id, view=view, q=q)
+            return self._get_section(id=id, view=view, q=q, offset=offset)
         if isinstance(id, list) and any(isinstance(i, str) and "~" in i for i in id):
             return self._get_selector_batch(id, view=view, q=q)
         if (
@@ -1266,13 +1322,15 @@ class MemoryHandler(AuditedRetirementHandler):
             ref = self._resolve_live_ref(self._coerce_id(id))
             handle = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
             return interpreted(
-                self._render_section(ref, "body"),
+                self._render_section(ref, "body", offset=offset),
                 [f"view='body' read as id='{handle}~body'"],
             )
         if concrete and q is None and view in _VIEW_ALIASES:
             canon = _VIEW_ALIASES[view]
             shown = f"view={canon!r}" if canon is not None else "the default view"
             resp = super().get(id=id, view=canon, q=q, since=since, **_kw)
+            if canon is None and not isinstance(id, list):
+                resp = self._with_budget_outline(resp, id)
             return interpreted(resp, [f"view={view!r} read as {shown}"])
         if isinstance(id, list) and view in {"list", "ids"}:
             return self._get_batch(
@@ -1331,7 +1389,7 @@ class MemoryHandler(AuditedRetirementHandler):
             limit=limit if view == "dependants" else None,
             **_kw,
         )
-        if view is None and q is None and id is not None and not isinstance(id, list):
+        if view is None and q is None and concrete and not isinstance(id, list):
             resp = self._with_budget_outline(resp, id)
         return resp
 
@@ -1527,12 +1585,16 @@ class MemoryHandler(AuditedRetirementHandler):
             result_ids=[int(r.id) for r in rest[: len(lines)]],
         )
 
-    def _get_section(self, *, id: str, view: str | None, q: str | None) -> Response:
+    def _get_section(
+        self, *, id: str, view: str | None, q: str | None, offset: Any = None
+    ) -> Response:
         """``get(id='<id>~<section>')`` — one headed part of the body.
 
         The targeted read an over-cap whole-node read advertises: the
         body's ``#``-headed sections each get a slug, and ``~body``
-        always reads the body prose whole (no links/tags wrapper).
+        always reads the body prose (no links/tags wrapper), paged by
+        character offset when the body is over the transport cap
+        (gr685357) — ``args={'offset': N}`` continues at character N.
         """
         if view is not None or q is not None:
             raise BadInput(
@@ -1547,7 +1609,12 @@ class MemoryHandler(AuditedRetirementHandler):
                 next="get(kind='memory', id=<id>~<section>)",
             )
         ref = self._resolve_live_ref(self._coerce_id(base))
-        return self._render_section(ref, sel)
+        if offset is not None and sel != "body":
+            raise BadInput(
+                f"offset= only pages the ~body read, not ~{sel}",
+                next=f"get(kind='memory', id='me{ref.id}~body', args={{'offset': 0}})",
+            )
+        return self._render_section(ref, sel, offset=offset)
 
     @staticmethod
     def _section_slug(title: str) -> str:
@@ -1566,18 +1633,12 @@ class MemoryHandler(AuditedRetirementHandler):
             )
         return out
 
-    def _render_section(self, ref: Ref, sel: str) -> Response:
+    def _render_section(self, ref: Ref, sel: str, offset: Any = None) -> Response:
         body = self._body_text(ref)
         handle = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
         sections = self._body_sections(body)
         if sel == "body":
-            text = self._display_body(ref, body)
-            return Response(
-                body=f"# memory {ref.id}~body\n\n{text}"
-                + render_next_section(
-                    [(f"get(kind='memory', id={ref.id})", "header + links too")]
-                )
-            )
+            return self._render_body(ref, offset=offset)
         match = next((s for s in sections if s[0] == sel), None)
         if match is None:
             match = next((s for s in sections if s[1].lower() == sel.lower()), None)
@@ -1601,13 +1662,83 @@ class MemoryHandler(AuditedRetirementHandler):
         )
         return Response(body=out)
 
+    def _body_page_call(self, ref_id: int, offset: int | None = None) -> str:
+        """The paging call the ~body clip footer names (gr685357)."""
+        handle = handle_registry.try_format(self.kind, ref_id) or str(ref_id)
+        extra = "" if offset is None else f", args={{'offset': {offset}}}"
+        return f"get(kind='memory', id='{handle}~body'{extra})"
+
+    def _render_body(self, ref: Ref, *, offset: Any = None) -> Response:
+        """The ``~body`` read — raw body prose, paged by character offset.
+
+        Offsets count characters of the displayed body, mirroring the
+        log payload door (``view='log', args={'event_id': N, 'offset':
+        M}``): an over-cap page is cut at a character boundary and its
+        footer names the call continuing at the first unread character,
+        so following the footers reassembles the whole body. An offset
+        at or past the end refuses, naming the body's character count.
+        """
+        text = self._display_body(ref, self._body_text(ref))
+        total = len(text)
+        start = 0
+        if offset is not None:
+            try:
+                start = int(str(offset))
+            except (TypeError, ValueError):
+                start = -1
+            if start < 0:
+                raise BadInput(
+                    f"offset= must be an integer >= 0, got {offset!r}",
+                    next=self._body_page_call(ref.id),
+                )
+            if start >= total:
+                raise BadInput(
+                    f"offset={start} is at or past the end of memory {ref.id}'s "
+                    f"body ({total} characters)",
+                    next=self._body_page_call(ref.id),
+                )
+        sliced = text[start:]
+
+        def _fit_page(budget: int) -> str:
+            # Reserve the header + clip footer so the emitted page itself
+            # always fits the cap that bound the read.
+            part = sliced.encode("utf-8")[: max(0, budget - _BODY_PAGE_RESERVE)].decode(
+                "utf-8", errors="ignore"
+            )
+            end = start + len(part)
+            page = f"# memory {ref.id}~body (chars {start}..{end} of {total})\n\n{part}"
+            if end < total:
+                page += (
+                    f"\n\n… showing chars {start}..{end} of {total}; "
+                    f"rest: {self._body_page_call(ref.id, end)}"
+                )
+            return page
+
+        if offset is not None:
+            return Response(
+                body=(
+                    f"# memory {ref.id}~body (chars {start}..{total} of {total})"
+                    f"\n\n{sliced}"
+                ),
+                result_budget_hint=self._body_page_call(ref.id, start),
+                budget_fit=_fit_page,
+            )
+        return Response(
+            body=f"# memory {ref.id}~body\n\n{text}"
+            + render_next_section(
+                [(f"get(kind='memory', id={ref.id})", "header + links too")]
+            ),
+            result_budget_hint=self._body_page_call(ref.id),
+            budget_fit=_fit_page,
+        )
+
     def _with_budget_outline(self, resp: Response, id: Any) -> Response:
         """Attach the ``~<section>`` map an over-cap read prints — lazily.
 
         The thunk keeps the ref resolve + body load + section parse off
         every under-cap get; the fitter calls it only when a cap binds.
-        The hint names ``~body`` — always a valid explicit read — so it
-        too costs no body load here.
+        The hint names the paged ``~body`` read (gr685357) — always a
+        valid explicit read — so it too costs no body load here.
         """
         from dataclasses import replace
 
@@ -1615,7 +1746,8 @@ class MemoryHandler(AuditedRetirementHandler):
             resp,
             budget_outline=lambda: self._outline_text(id),
             result_budget_hint=resp.result_budget_hint
-            or f"get(kind='memory', id='{id}~body') reads the body whole",
+            or f"{self._body_page_call(self._coerce_id(id))} pages the body — "
+            "its cut footer names args={'offset': N} for the rest",
         )
 
     def _outline_text(self, id: Any) -> str | None:
@@ -1657,19 +1789,24 @@ class MemoryHandler(AuditedRetirementHandler):
         if view is not None:
             return self._get_batch_view(ref_ids, view=view)
         blocks: list[str] = []
+        first_live: int | None = None
         for rid in ref_ids:
             handle = handle_registry.try_format(self.kind, rid) or str(rid)
             try:
                 blocks.append(NumericRefHandler.get(self, id=rid).body)
+                if first_live is None:
+                    first_live = rid
             except NotFound:
                 blocks.append(f"{handle}  not found")
             except Gone:
                 blocks.append(f"{handle}  deleted")
         body = f"# {len(ref_ids)} memory (batch)\n\n" + "\n\n---\n\n".join(blocks)
+        if first_live is None:
+            return Response(body=body)
         body += render_next_section(
             [
                 (
-                    f"get(kind='memory', id={ref_ids[0]}, extent='fisheye+1hop')",
+                    f"get(kind='memory', id={first_live}, extent='fisheye+1hop')",
                     "read one with its linked neighbours",
                 )
             ]
@@ -1782,13 +1919,13 @@ class MemoryHandler(AuditedRetirementHandler):
         (``refs.meta.hook``). The other general memory metadata keys are
         ``type`` (user/feedback/project/reference), ``expires``, and ``order``.
 
-        On create with ``link=``, ``meta=`` also accepts ``model``,
-        ``prompt_version``, ``run_id``, ``why``, and ``evidence``.
-        These five keys are stored only on the created edge. The call
-        rejects them when ``link=`` is omitted. A ``dry_run=True``
-        preview names the accepted keys on an ``edge annotation`` line
-        (the preview resolves the link target but does not run the
-        edge-admission gate).
+        When ``link=`` is supplied, ``meta=`` also accepts the
+        creation-edge annotation — ``model``, ``prompt_version``, ``run_id``,
+        ``why`` and ``evidence`` — which describes the created edge, not
+        the node. Without ``link=`` those keys are refused with the
+        ``put(link=…)`` route named. A ``dry_run=True`` preview lists the
+        accepted keys on an ``edge annotation`` line; the preview resolves
+        the link target but does not run the edge-admission gate.
 
         ``args={'scratch_for': 'td<N>'}`` stamps the task-scratch pair —
         ``SPACE:scratch`` + ``scratch-for:td<N>`` — in one call
@@ -1882,28 +2019,12 @@ class MemoryHandler(AuditedRetirementHandler):
         is_ruling = any(
             isinstance(t, str) and t.strip() == RULING_TAG for t in tags or []
         )
-        link_meta: dict[str, Any] | None = None
-        if meta:
-            edge_keys = sorted(str(k) for k in meta if k in _EDGE_ANNOTATION_META_KEYS)
-            if edge_keys:
-                if link is None:
-                    raise BadInput(
-                        f"meta= key(s) {edge_keys} annotate the link created "
-                        "by link=, not the memory itself — put accepts them "
-                        "only together with link=...",
-                        next=(
-                            "put(kind='memory', text='...', link='pc<N>', "
-                            "rel='derived-from', meta={'evidence': ['pc<N>'], "
-                            "'model': <writer model>, 'prompt_version': <ver>, "
-                            "'run_id': <run>, 'why': <one sentence>})"
-                        ),
-                    )
-                link_meta = {k: meta[k] for k in edge_keys}
-                meta = {
-                    k: v for k, v in meta.items() if k not in _EDGE_ANNOTATION_META_KEYS
-                }
+        edge_meta: dict[str, Any] = {}
+        if link is not None and isinstance(meta, dict):
+            edge_meta = {k: v for k, v in meta.items() if k in _CREATE_EDGE_META_KEYS}
+            meta = {k: v for k, v in meta.items() if k not in _CREATE_EDGE_META_KEYS}
         create_meta = (
-            _validate_meta(meta or {}, ruling=is_ruling)
+            _validate_meta(meta or {}, ruling=is_ruling, creating=True)
             if meta is not None or is_ruling
             else {}
         )
@@ -1922,9 +2043,13 @@ class MemoryHandler(AuditedRetirementHandler):
                 link=link,
                 rel=rel,
                 put_meta=create_meta,
-                link_meta=link_meta,
+                edge_meta=edge_meta or None,
             )
 
+        if edge_meta:
+            # Carry the edge annotation separately through the shared put
+            # plumbing. The store admits and writes it in the create transaction.
+            create_meta["edge_meta"] = edge_meta
         base_put = super().put  # zero-arg super() can't see self inside create()
 
         def create() -> Response:
@@ -1941,7 +2066,6 @@ class MemoryHandler(AuditedRetirementHandler):
                 rel=rel,
                 auto_refresh_days=auto_refresh_days,
                 meta=create_meta,
-                link_meta=link_meta,
             )
             if is_ruling:
                 resp = replace(resp, body=resp.body + _ruling_ack(create_meta))
@@ -2213,16 +2337,16 @@ class MemoryHandler(AuditedRetirementHandler):
                     conn=conn,
                 )
             if target is not None:
-                # link_meta is the edge annotation split off put's meta=
-                # (model/prompt_version/run_id/why/evidence — gr715265):
-                # it belongs on the edge, where the machine-edge admission
-                # gate reads it, not on the node.
+                # create_meta["edge_meta"] is the edge annotation split off
+                # put's meta= (model/prompt_version/run_id/why/evidence —
+                # gr715265): it belongs on the edge, where the machine-edge
+                # admission gate reads it, not on the node.
                 self.store.add_link(
                     src_ref_id=ref.id,
                     dst_ref_id=target.ref_id,
                     dst_pos=target.pos,
                     relation=relation,
-                    meta=link_meta,
+                    meta=create_meta.get("edge_meta"),
                     conn=conn,
                 )
             if misses:
@@ -2255,14 +2379,14 @@ class MemoryHandler(AuditedRetirementHandler):
         link: str | None,
         rel: str | None,
         put_meta: dict[str, Any],
-        link_meta: dict[str, Any] | None = None,
+        edge_meta: dict[str, Any] | None = None,
     ) -> Response:
         """The ``put(dry_run=True)`` preview (gr548271): the create path's
         validation and its ack's ``Next:`` rows, computed from the draft;
-        nothing is written. ``link_meta`` (the edge annotation ``put``
-        splits off ``meta=`` for a create-time ``link=``) is echoed on an
-        ``edge annotation`` line — the preview resolves the link target
-        but does not run the edge-admission gate."""
+        nothing is written. ``edge_meta`` (the creation-edge annotation
+        ``put`` splits off ``meta=`` for a create-time ``link=``) is
+        echoed on an ``edge annotation`` line — the preview resolves the
+        link target but does not run the edge-admission gate."""
         from precis.handlers import _put_preview
         from precis.utils.link_tag_ops import guard_taxon_hierarchy, validate_relation
 
@@ -2320,8 +2444,8 @@ class MemoryHandler(AuditedRetirementHandler):
             *_roundtrip_rows(title, NEW_MEMORY),
         ]
         edge_note = None
-        if link_meta:
-            keys = ", ".join(sorted(str(k) for k in link_meta))
+        if edge_meta:
+            keys = ", ".join(sorted(str(k) for k in edge_meta))
             edge_note = f"edge annotation (rides link=): {keys}"
         space = next((v for v in sorted(values) if v.startswith("SPACE:")), None)
         dups = _put_preview.nearest_duplicates(
@@ -2608,6 +2732,23 @@ class MemoryHandler(AuditedRetirementHandler):
             *_roundtrip_hint(self, ref_id),
             *super()._create_ack_next_hints(ref_id),
         ]
+
+    def _render_create_ack(self, ref_id: int) -> Response:
+        """Create ack + the same ``expires: …`` line a ``get`` ends with.
+
+        The ack names the node's TTL at birth — a writer-set
+        ``meta={'expires': '21d'}`` and a shape default (a fresh
+        ``section:threads`` node's 14 days) both read identically here and
+        on ``get`` (gr676320).
+        """
+        resp = super()._render_create_ack(ref_id)
+        ref = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
+        if ref is None:
+            return resp
+        expiry = _expiry_line(ref, self.store.tags_for(ref_id))
+        if expiry:
+            resp = replace(resp, body=resp.body + f"\n{expiry}")
+        return resp
 
     # ── edit: in-place body rewrite (+ optional title) ──────────────
 
@@ -4133,16 +4274,27 @@ class MemoryHandler(AuditedRetirementHandler):
 
     # ── read: title header + body chunk ─────────────────────────────
 
+    @staticmethod
+    def _stored_body(store: Store, ref: Ref) -> str:
+        """The stored body bytes every read projects — the first
+        ``memory_body`` chunk. The note eye fingerprints this same chunk
+        for the ``_memory_body_display`` stamp (gr715698): joined ord≥0
+        text can carry a second body chunk or a ``tag_overflow`` and miss
+        it. Reads the ``memory_body`` rows alone, not the ref's whole
+        chunk list; ``ord >= 0`` keeps the ``list_chunks_for_ref`` meaning
+        (the by-kind read also returns the off-body ord<0 band)."""
+        for block in store.chunks.list_chunks_for_ref_by_kind(ref.id, _BODY_KIND):
+            if block.ord >= 0:
+                return block.text
+        return ref.title or ""
+
     def _body_text(self, ref: Ref) -> str:
         """The memory's body prose from its ``memory_body`` chunk.
 
         Falls back to ``refs.title`` for any pre-0050 row that never got a
         body chunk (defensive — the migration backfilled every live memory).
         """
-        for block in self.store.chunks.list_chunks_for_ref(ref.id):
-            if block.chunk_kind == _BODY_KIND:
-                return block.text
-        return ref.title or ""
+        return self._stored_body(self.store, ref)
 
     @staticmethod
     def _body_display_policy(body: str, echo_title: str) -> dict[str, str]:
@@ -4151,8 +4303,8 @@ class MemoryHandler(AuditedRetirementHandler):
             "echo_title": echo_title,
         }
 
+    @staticmethod
     def _body_echo_title(
-        self,
         body: str,
         title: str,
         meta: dict[str, Any],
@@ -4166,16 +4318,23 @@ class MemoryHandler(AuditedRetirementHandler):
         policy = meta.get("_memory_body_display")
         if (
             isinstance(policy, dict)
-            and policy.get("sha256") == self._body_display_policy(body, "")["sha256"]
+            and policy.get("sha256")
+            == MemoryHandler._body_display_policy(body, "")["sha256"]
             and isinstance(policy.get("echo_title"), str)
         ):
             return str(policy["echo_title"])
 
         return title
 
-    def _display_body(self, ref: Ref, raw_body: str) -> str:
-        echo_title = self._body_echo_title(raw_body, ref.title or "", ref.meta or {})
-        return self._strip_title_echo(raw_body, echo_title)
+    @staticmethod
+    def _display_body(ref: Ref, raw_body: str) -> str:
+        """The body as every read renders it: the raw chunk minus its
+        stamped legacy title echo. The note eye shares this projection
+        (gr715698 — its raw-chunk render kept the hidden lead visible)."""
+        echo_title = MemoryHandler._body_echo_title(
+            raw_body, ref.title or "", ref.meta or {}
+        )
+        return MemoryHandler._strip_title_echo(raw_body, echo_title)
 
     def _apply_body_edit(
         self,
@@ -4283,7 +4442,8 @@ class MemoryHandler(AuditedRetirementHandler):
             return self._body_text(ref)
         return str(block.text or "")
 
-    def _strip_title_echo(self, body: str, title: str) -> str:
+    @staticmethod
+    def _strip_title_echo(body: str, title: str) -> str:
         """Drop a leading line identified as a legacy title echo.
 
         ``_derive_title`` copies the first non-empty body line into the
@@ -4353,6 +4513,10 @@ class MemoryHandler(AuditedRetirementHandler):
                 )
         return "\n".join(out)
 
+    def _render_one_footer(self, ref: Ref, tags: list[Tag]) -> str:
+        expiry = _expiry_line(ref, tags)
+        return f"\n\n{expiry}" if expiry else ""
+
     def _render_hits_table(
         self, refs: list[Ref], *, row_tag_prefixes: tuple[str, ...] | None = None
     ) -> str:
@@ -4360,11 +4524,17 @@ class MemoryHandler(AuditedRetirementHandler):
         as the summary and count the body words hidden behind the id.
 
         Body-word counts come from one batched query over the ``memory_body``
-        chunks (no N+1) rather than the base class's first-line split.
+        chunks (no N+1) rather than the base class's first-line split. An
+        ``exp`` column marks each hit's shared-rule expiry — the date, or
+        ``EXPIRED`` when past (gr676320) — and appears only when at least
+        one hit carries one.
         """
 
+        from precis import word_handle_session
         from precis.format import render_agent_table
+        from precis.handle_words import to_words2
         from precis.utils import handle_registry
+        from precis.utils.memory_threads import effective_expiry
 
         if not refs:
             return ""
@@ -4373,6 +4543,38 @@ class MemoryHandler(AuditedRetirementHandler):
         body_words = self.store.chunks.chunk_word_counts(ref_ids, chunk_kind=_BODY_KIND)
         sizes = self.store.chunks.body_byte_counts(ref_ids)
         now = datetime.now(UTC)
+        words_on = word_handle_session.enabled()
+        with self.store.pool.connection() as conn:
+            expiry_tag_rows = conn.execute(
+                "SELECT rt.ref_id, t.namespace, t.value "
+                "FROM ref_tags rt JOIN tags t USING (tag_id) "
+                "WHERE rt.ref_id = ANY(%s) AND (t.namespace = 'DREAM' OR "
+                "(t.namespace = 'OPEN' AND starts_with(t.value, 'section:')))",
+                (ref_ids,),
+            ).fetchall()
+        sections_by_ref: dict[int, set[str]] = {}
+        dream_ids: set[int] = set()
+        for rid, namespace, value in expiry_tag_rows:
+            if namespace == "DREAM":
+                dream_ids.add(int(rid))
+            else:
+                sections_by_ref.setdefault(int(rid), set()).add(
+                    value.removeprefix("section:")
+                )
+        exp_cells: dict[int, str] = {}
+        for r in refs:
+            if r.id in dream_ids:
+                continue
+            expires, _src = effective_expiry(
+                r.title or "",
+                frozenset(sections_by_ref.get(r.id, set())),
+                r.meta or {},
+                r.updated_at,
+            )
+            if expires is not None:
+                exp_cells[r.id] = (
+                    "EXPIRED" if expires <= now else expires.strftime("%Y-%m-%d")
+                )
         rows: list[dict[str, str]] = []
         for r in refs:
             age_days = max(0, (now - r.updated_at).days)
@@ -4380,6 +4582,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 {
                     "kind": self.kind,
                     "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
+                    **({"word": to_words2(r.id)} if words_on else {}),
                     "summary": r.title or "",
                     "body_words": str(body_words.get(r.id, 0)),
                     "links": str(link_counts.get(r.id, 0)),
@@ -4390,12 +4593,17 @@ class MemoryHandler(AuditedRetirementHandler):
         schema = [
             "kind",
             "id",
+            *(["word"] if words_on else []),
             "summary",
             "body_words",
             "links",
             "age",
             "size [kB] (default 1kB)",
         ]
+        if exp_cells:
+            for row, r in zip(rows, refs, strict=True):
+                row["exp"] = exp_cells.get(r.id, "")
+            schema.insert(len(schema) - 1, "exp")
         return render_agent_table(rows, schema=schema)
 
     # ── search: body-chunk search + cross-kind hits come from the base

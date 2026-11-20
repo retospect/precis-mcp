@@ -57,6 +57,9 @@ STAMP_LOG = Path("~/.cache/precis/skill-discovery-review.log").expanduser()
 #: The shipped skill corpus the changed-skills diff reads.
 SKILLS_DIR = "src/precis/data/skills"
 
+#: Wall-clock bound for local git history and revision lookups.
+GIT_TIMEOUT_S = 30
+
 #: The two halves of a paired run, in report order.
 CONDITIONS = ("supplied", "discovery")
 
@@ -177,12 +180,13 @@ def changed_skills_since(date_str: str, *, repo: Path = Path(".")) -> set[str]:
         text=True,
         encoding="utf-8",
         check=True,
+        timeout=GIT_TIMEOUT_S,
     ).stdout
     return {Path(line).stem for line in out.splitlines() if line.endswith(".md")}
 
 
 def _revision(spec: str, *, repo: Path = Path(".")) -> str | None:
-    """One git rev-parse, ``None`` when git refuses (a non-git caller)."""
+    """Resolve a git revision, or return ``None`` if the lookup fails."""
     try:
         return (
             subprocess.run(
@@ -192,10 +196,11 @@ def _revision(spec: str, *, repo: Path = Path(".")) -> str | None:
                 text=True,
                 encoding="utf-8",
                 check=True,
+                timeout=GIT_TIMEOUT_S,
             ).stdout.strip()
             or None
         )
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.SubprocessError):
         return None
 
 
@@ -335,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         stamp = ns.since or latest_stamp()
         try:
             changed = changed_skills_since(stamp) if stamp else set()
-        except (OSError, subprocess.CalledProcessError) as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             print(
                 f"skill-discovery-review: changed-skills diff failed: {exc}",
                 file=sys.stderr,

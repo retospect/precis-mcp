@@ -32,7 +32,7 @@ import io
 import logging
 import re
 from collections.abc import Callable, Iterable, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from functools import cached_property, wraps
 from typing import TYPE_CHECKING, Any
@@ -1051,8 +1051,57 @@ class DraftStore(_AbbrevMixin):
             retired=row[8] is not None,
         )
 
+    def _span_window(
+        self, base: DraftChunk, rest: list[Any], clamp_heading: bool
+    ) -> tuple[list[int], int]:
+        """Span ids plus the first id's offset from the anchor, both taken
+        from one ``reading_order`` traversal so continuation offsets cannot
+        drift from the rows a concurrent move/insert/retire changes."""
+        lo_off, hi_off = rest
+        ordered = self.reading_order(base.ref_id, kind=base.kind)
+        idx = next(
+            (i for i, c in enumerate(ordered) if c.chunk_id == base.chunk_id),
+            None,
+        )
+        if idx is None:
+            return [], 0  # anchor retired or otherwise outside the live tree
+        lo = max(0, idx + lo_off)
+        hi = min(len(ordered) - 1, idx + hi_off)
+        if clamp_heading and base.kind == "draft" and base.chunk_kind == "heading":
+            lo = max(lo, idx)
+            end = next(
+                (
+                    i
+                    for i in range(idx + 1, len(ordered))
+                    if ordered[i].depth <= ordered[idx].depth
+                ),
+                len(ordered),
+            )
+            hi = min(hi, end - 1)
+        if lo > hi:
+            return [], 0
+        return [c.chunk_id for c in ordered[lo : hi + 1]], lo - idx
+
+    def draft_relative_span(
+        self, handle: str, *, kind: str = "draft", clamp_heading: bool = False
+    ) -> tuple[int, list[int], int] | None:
+        """``(anchor_id, ids, start)`` for a span handle, else ``None``.
+
+        ``start`` is the first id's reading-order offset from the anchor,
+        derived from the same traversal as ``ids``."""
+        parsed = handle_registry.parse_relative(handle)
+        if parsed is None or parsed[0] != kind or parsed[3][0] != "span":
+            return None
+        base = self.get_draft_chunk(
+            handle_registry.format_handle(kind, parsed[2], chunk=True), kind=kind
+        )
+        if base is None:
+            return parsed[2], [], 0
+        ids, start = self._span_window(base, list(parsed[3][1:]), clamp_heading)
+        return parsed[2], ids, start
+
     def draft_relative_chunk_ids(
-        self, handle: str, *, kind: str = "draft"
+        self, handle: str, *, kind: str = "draft", clamp_heading: bool = False
     ) -> list[int] | None:
         """Resolve a relative draft/plan handle to target chunk id(s).
 
@@ -1060,8 +1109,10 @@ class DraftStore(_AbbrevMixin):
         ``dc<id>+N``/``-N`` steps ``N`` siblings (ordered by ``pos`` under
         the same parent); ``dc<id>-lo..hi`` is the signed span — the
         reading-context window: ``lo``/``hi`` chunks before/after the
-        anchor in DFS reading order (crossing tree boundaries, the same
-        window ``pc<id>-lo..hi`` gives flat ``ord`` kinds). Returns target
+        anchor in DFS reading order. With ``clamp_heading=True``, draft
+        heading anchors clamp both endpoints to their subtree. Context
+        callers keep the default so preceding chunks remain visible;
+        other anchors and plan windows cross tree boundaries. Returns target
         ids (one for a step/ancestor, the contiguous run for a span),
         **empty list** when out of range/past the root, or ``None`` when
         ``handle`` isn't a relative handle of ``kind`` (caller then tries
@@ -1085,19 +1136,8 @@ class DraftStore(_AbbrevMixin):
             # rendered the empty container and the next heading with none
             # of the items in between (gr514337), and a span on a heading
             # listed bare sibling headings (gr514405).
-            lo_off, hi_off = rest
-            ordered = self.reading_order(base.ref_id, kind=kind)
-            idx = next(
-                (i for i, c in enumerate(ordered) if c.chunk_id == base.chunk_id),
-                None,
-            )
-            if idx is None:
-                return []  # anchor retired or otherwise outside the live tree
-            lo = max(0, idx + lo_off)
-            hi = min(len(ordered) - 1, idx + hi_off)
-            if lo > hi:
-                return []
-            return [c.chunk_id for c in ordered[lo : hi + 1]]
+            ids, _start = self._span_window(base, rest, clamp_heading)
+            return ids
         with self.pool.connection() as conn:
             if op_kind == "ancestor":
                 (n,) = rest
@@ -1469,6 +1509,87 @@ class DraftStore(_AbbrevMixin):
                 "content_sha": r[3],
                 "prev_text": r[4],
             }
+            for r in rows
+        ]
+
+    def retirement_event(self, chunk_id: int) -> dict[str, Any] | None:
+        """The ``retired`` event that took ``chunk_id`` out of the draft.
+
+        A cascade logs one event, on the subtree *root* only — a retired
+        descendant has none of its own, so the walk climbs the parent
+        chain to the nearest ancestor that does. Returns ``{chunk_id,
+        ts, source, via}`` (``via`` = ``'self'`` or ``'ancestor'``), or
+        ``None`` when no retirement was logged (a whole-draft retire
+        stamps ``retired_at`` without events)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                """WITH RECURSIVE up AS (
+                       SELECT chunk_id, parent_chunk_id, 0 AS hops
+                         FROM chunks WHERE chunk_id = %s
+                       UNION ALL
+                       SELECT c.chunk_id, c.parent_chunk_id, u.hops + 1
+                         FROM chunks c JOIN up u ON c.chunk_id = u.parent_chunk_id
+                   )
+                   SELECT e.chunk_id, e.ts, e.source, up.hops
+                     FROM up JOIN chunk_events e ON e.chunk_id = up.chunk_id
+                    WHERE e.event_kind = 'retired'
+                      AND e.ts = (SELECT retired_at FROM chunks WHERE chunk_id = %s)
+                      AND (up.hops = 0 OR e.source->>'mode' = 'cascade')
+                    ORDER BY up.hops, e.ts DESC, e.event_id DESC LIMIT 1""",
+                (chunk_id, chunk_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "chunk_id": int(row[0]),
+            "ts": row[1],
+            "source": dict(row[2] or {}),
+            "via": "self" if row[3] == 0 else "ancestor",
+        }
+
+    def cascade_retired_descendants(self, chunk: DraftChunk) -> list[DraftChunk]:
+        """Recover the subtree retired with this chunk, in reading order.
+
+        A cascade stamps its live subtree and logs the root event in the
+        same transaction. Matching the stamp at every level excludes
+        branches that had already been retired.
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """WITH RECURSIVE sub AS (
+                        SELECT c.chunk_id, c.handle, c.chunk_kind, c.text, c.pos,
+                               c.parent_chunk_id, c.meta, c.retired_at,
+                               c.pos AS sort_path, 0 AS depth
+                          FROM chunks c JOIN chunks p ON p.chunk_id = c.parent_chunk_id
+                         WHERE p.chunk_id = %s AND c.pos IS NOT NULL
+                           AND c.retired_at = p.retired_at
+                        UNION ALL
+                        SELECT c.chunk_id, c.handle, c.chunk_kind, c.text,
+                               c.pos, c.parent_chunk_id, c.meta, c.retired_at,
+                               sub.sort_path || '/' || c.pos, sub.depth + 1
+                          FROM chunks c JOIN sub
+                            ON c.parent_chunk_id = sub.chunk_id
+                         WHERE c.pos IS NOT NULL AND c.retired_at = sub.retired_at
+                    )
+                    SELECT chunk_id, handle, chunk_kind, text, pos,
+                           parent_chunk_id, meta, depth
+                      FROM sub ORDER BY sort_path COLLATE "C" ASC""",
+                (chunk.chunk_id,),
+            ).fetchall()
+        return [
+            DraftChunk(
+                chunk_id=int(r[0]),
+                ref_id=chunk.ref_id,
+                handle=r[1],
+                chunk_kind=r[2],
+                text=r[3],
+                pos=r[4],
+                parent_chunk_id=r[5],
+                depth=int(r[7]),
+                meta=dict(r[6] or {}),
+                kind=chunk.kind,
+                retired=True,
+            )
             for r in rows
         ]
 
@@ -2899,6 +3020,7 @@ class DraftStore(_AbbrevMixin):
         mime: str,
         at: dict[str, Any] | None = None,
         figure_meta: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> DraftChunk:
         """Add a single ``figure`` chunk: caption is the face (``text`` —
         embedded, searchable), image bytes go to ``chunk_blobs``,
@@ -2922,7 +3044,7 @@ class DraftStore(_AbbrevMixin):
                 text=caption,
                 parent_chunk_id=parent,
                 pos=key_between(lo, hi),
-                meta={"figure": fig},
+                meta={**(meta or {}), "figure": fig},
                 source=source,
             )
             conn.execute(
@@ -3049,10 +3171,11 @@ class DraftStore(_AbbrevMixin):
         fields: dict[str, Any],
         *,
         drop: tuple[str, ...] = (),
+        conn: psycopg.Connection | None = None,
     ) -> None:
         """Merge ``fields`` into ``meta.render`` (after removing ``drop``
         keys) — view-figure stamps: cached_key / source_version / failed."""
-        with self.tx() as conn:
+        with nullcontext(conn) if conn is not None else self.tx() as conn:
             conn.execute(
                 "UPDATE chunks SET meta = jsonb_set(meta, '{render}', "
                 "((meta->'render') - %s::text[]) || %s::jsonb, true) "

@@ -72,7 +72,7 @@ events in dedicated tables, outside chunks, embeddings and public graph
 search. `user_context` binds stable authenticated account IDs; `mcp_identity`
 stores revocable per-user bearer digests. The `learning` handler and web page
 share that store. `runtime.private` routes the kinds in the `private_kinds`
-registry (learning today) around shared payload ledgers and continuation
+registry (learning and gtd today) around shared payload ledgers and continuation
 caches; learning events record engagement, never concept mastery.
 
 `precis.oauth` adds independently revocable user/app grants backed by the same
@@ -80,7 +80,7 @@ account IDs. Web routes own consent and token exchange; `oauth_transport`
 publishes MCP resource discovery. Request identity and dispatch revalidation
 keep OAuth grants separate from personal-token IDs and infrastructure callers.
 Capabilities distinguish explicit full MCP access (including writes and shared
-services) from learning-only connections. User identity does not create
+services) from private-kind-scoped connections. User identity does not create
 per-document ACLs for the shared corpus.
 
 `mcp_identity` also stores the third bearer class (gr595554): client
@@ -95,6 +95,13 @@ legacy bare digests still authenticate), so `/podcast/*` keeps URL carriage
 while MCP keeps `Authorization: Bearer` only. Dispatch re-judges the allow-list
 on the final kind after every rewrite: converted `pa<id>` handles and a
 retired memory's successor (`md`, `python`, another kind) alike.
+
+A network MCP gate accepts five bearer classes: `install`, `slice`,
+`personal`, `capability` and `oauth`. `PRECIS_MCP_CREDENTIAL_CLASSES`
+(`mcp_identity.credential_classes`) narrows them per deployment; unset means
+all. A refused class gets the same 401 as a wrong token with no lookup, and the
+web account page stops offering to mint the personal and capability classes the
+deployment would refuse.
 
 Exact-handle write substitution uses one-hour ``read_receipts`` keyed on the
 authenticated credential, surviving transport restarts. Unauthenticated MCP
@@ -130,6 +137,11 @@ The detached executor records a submit intent before launching either job.
 Recovery uses launch evidence from that attempt and host to resume poll,
 including a ship that finished before publishing its mirror squash.
 Plan dispatch queues every doable node with its score and release band.
+A pre-land review job's and every `land_slice` job's score floors at
+`FINISH_FIRST_SCORE`, so the review and the land of a finished build are
+claimed ahead of fresh builds; at the host claim an already-queued land
+without the stamp floors at the same value, so pre-rollout lands keep
+their place.
 Host executor claims enforce capacity and skip file overlaps with started,
 unlanded builds; gripe intake bounds minting by queued builds per free
 executor slot (`factory.gripe_dispatch.queue_depth`, default 2).
@@ -154,9 +166,17 @@ Memory capture (`precis-make-memory`) and graph-gardener judgments share the
 packaged memory-help reconciliation policy. The interactive agent resolves new
 claims before writing; the gardener evaluates existing maintenance candidates
 through its reviewed apply paths. The opt-in gardener grounding pass records
-claim classifications and span coverage in SHA-pinned review rows outside the
-apply queue. Labelled memory search batches reuse ordinary
-search dispatch and preserve each query's results and errors separately.
+claim classifications, evidence judgments and premise lineage in SHA-pinned
+review rows outside the apply queue. The pass sends repair proposals through
+the existing garden ledger. It tracks unresolved checks in bounded research
+or human-review todos and reads pinned returns as candidate input on
+re-audit. Labelled memory search batches reuse ordinary search dispatch
+and preserve each query's results and errors separately.
+
+Skill discovery fuses up to five phrasings into attributed section matches.
+Planner and quest prompts use the same ranking and table after matching task
+sentences against question and heading embeddings. They include the selected
+section bodies. See `skill_index/__init__.py` for the index and prompt assembly.
 
 Explicit memory processing pins current body/header chunks in a bounded
 `embed_batch` job (`handlers/_memory_process.py::process_memory`). Its
@@ -164,6 +184,10 @@ opt-in worker claim path shares chunk leases with bulk embedding; default
 queue order and model routes stay unchanged. Readiness requires matching
 artifacts. Other enrichment stages refuse targeted requests where the worker
 cannot provide a revision-specific receipt.
+
+Paper cards draw on the publisher abstract, a labelled generated abstract,
+or leading body prose. New nanopub approvals use chunk-anchored passages.
+RDF and LaTeX preserve context literals already frozen into publish rows.
 
 ## Subsystems (where the code lives)
 
@@ -248,6 +272,9 @@ Draft pathway figures store a lazy recipe in `meta.render`; export and web
 refresh share `src/precis/render/figure.py::render_figure_chunk`. Selection
 options live in `precis.utils.pathway_figure`, and the quest renderer freezes
 stored energies and kinetics alongside the PNG without running a solve.
+Draft quest-frontier figures use the same lazy dispatch. Their cache key
+includes the serving candidates' frontier data, and the renderer uses the
+same frontier result for the PNG and its frozen snapshot.
 
 ## Package map
 

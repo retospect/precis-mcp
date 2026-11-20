@@ -8,10 +8,11 @@ and tail-handling rule. They're consolidated here so adjustments
 need to change in one place.
 
 ``markup_surface``/``markup_unit`` fold the markup papers print numbers
-and units in — LaTeX (``\\pm``, ``\\text{}``, ``^{−2}``), HTML
-``<sup>``/``<sub>``, minus-sign glyphs and ``|``-separated split table
+and units in — LaTeX (``\\pm``, ``\\text{}``, ``^{−2}``, and the
+``\\(…\\)``/``\\[…\\]`` math delimiters arXiv LaTeX bodies keep raw),
+HTML ``<sup>``/``<sub>``, minus-sign glyphs and ``|``-separated split table
 cells — to the plain reading, so a check never compares markup against
-plain text (gr511458).
+plain text (gr511458, gr719235).
 
 Pure — no DB, no IO, no logging.
 """
@@ -229,10 +230,13 @@ _TEX_WRAP_RE = re.compile(
     r"\s*\{([^{}]*)\}"
 )
 _TEX_FRAC_RE = re.compile(r"\\[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}")
+_TEX_MATH_DELIMITER_RE = re.compile(r"\\[()\[\]]")
 # ``~`` is a TeX tie only between two glued tokens (``12~eV``); a leading
 # or spaced ``~`` is the approximate-value prefix (``~12``) and survives.
+_TEX_TIE = r"(?<=[\w}$])~(?=[\w\\$])"
+_TEX_TIE_RE = re.compile(_TEX_TIE)
 _TEX_SPACE_RE = re.compile(
-    r"\\[,;:]|\\ |\\(?:quad|qquad|enspace|thinspace)\b|(?<=[\w}$])~(?=[\w\\$])"
+    r"\\[,;:]|\\ |\\(?:quad|qquad|enspace|thinspace)\b|" + _TEX_TIE
 )
 _TEX_DROP_RE = re.compile(
     r"\\(?:left|right|bigg?|Bigg?|big[lr]|Big[lr]|rm|bf|it|sf|tt|cal|"
@@ -287,7 +291,10 @@ def _markup_fold(text: str) -> str:
     s = _TEX_SPACE_RE.sub(" ", s)
     s = s.replace("\\!", "")
     s = _TEX_DROP_RE.sub("", s)
-    return _TEX_LEFTOVER_RE.sub("", s)
+    s = _TEX_LEFTOVER_RE.sub("", s)
+    # Keep delimiters through command parsing, then expose tokens next to ties.
+    s, delimiters = _TEX_MATH_DELIMITER_RE.subn("", s)
+    return _TEX_TIE_RE.sub(" ", s) if delimiters else s
 
 
 def markup_surface(text: str) -> str:
@@ -297,8 +304,12 @@ def markup_surface(text: str) -> str:
     ``$-0.7 \\pm 0.1 \\text{ W m}^{-2}$`` reads ``-0.7 ± 0.1 W m-2``;
     ``<sup>−</sup>1.9`` reads ``-1.9``; ``2 \\times 10^{-3}`` reads
     ``2e-3``; ``| a | b |`` reads ``a  b`` (a cell boundary is a space).
-    Both sides of a comparison fold identically, so a verbatim-markup
-    literal still matches its markup span.
+    The math delimiters themselves are syntax, not print: ``$…$`` and
+    ``\\(…\\)`` / ``\\[…\\]`` (arXiv LaTeX bodies keep the latter raw)
+    read as nothing, so ``between \\(1\\) and \\(2\\) eV`` reads
+    ``between 1 and 2 eV`` (gr719235). Both sides of a comparison fold
+    identically, so a verbatim-markup literal still matches its markup
+    span.
     """
     s = _markup_fold(text).translate(_MINUS_TRANS)
     s = s.replace("+/-", "±")
@@ -315,6 +326,68 @@ def markup_surface(text: str) -> str:
     s = re.sub(r"(\|\s*)([-+])\s+(?=\d)", r"\1\2", s)  # "| - 1.91" cell
     s = s.replace("|", " ")
     return re.sub(r"\s+", " ", s.replace("μ", "µ")).strip()
+
+
+#: Ingest-flattened scientific notation: a PDF text layer drops the
+#: superscript raise and leaves the exponent digits on the baseline, so
+#: ``5 × 10¹²`` extracts as ``5 × 1012`` (inline) or ``5 × 10 12``
+#: (spaced). The ``×`` admits no other reading, so the fold is safe on a
+#: literal; the bare ``10`` forms are expanded only for a literal that
+#: already holds an e-atom (:func:`sci_anchor_pattern`), so a plain
+#: 4-digit literal (a year, a catalog id) never inherits one.
+_SCI_X10_SPACED_FLAT_RE = re.compile(
+    r"(?<![\w.])(\d+(?:\.\d+)?)\s*[×·*]\s*10\s+(\d{1,4})(?![\d.])"
+)
+_SCI_X10_INLINE_FLAT_RE = re.compile(
+    r"(?<![\w.])(\d+(?:\.\d+)?)\s*[×·*]\s*10(\d{1,3})(?![\d.])"
+)
+#: An unsigned e-atom of the squashed surface (``5e12``, ``1e11``) worth
+#: expanding into the flattened prints. Signed atoms (``5e-12``) are not
+#: expanded: the signed prints (``× 10-3``, ``10-3``) already fold to the
+#: e-form on the span side.
+_SCI_E_ATOM_RE = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)e(\d{1,4})(?![\d.])")
+
+
+def sci_anchor_pattern(literal: str) -> str | None:
+    """The literal-in-span regex for a squashed literal that may carry
+    scientific notation, or ``None`` when it carries none.
+
+    A literal the paper printed with a raised exponent may sit in a
+    chunk whose text layer flattened it — ``5 × 10¹²`` extracted as
+    ``5 × 1012`` or ``5 × 10 12``, a bare ``10¹¹–10¹²`` as
+    ``1011–1012`` or ``10 11–10 12`` — while the literal itself keeps
+    the glyphs or e-form and folds to ``5e12``: a false
+    ``anchor_mismatch`` (gr715568). The pattern expands every unsigned
+    e-atom ``NeM`` into the alternation of its flattened prints
+    (``N × 10 M``, ``N × 10M``, and — for a mantissa of exactly ``1`` —
+    the bare ``10 M``/``10M``), and a literal copied from a flattened
+    chunk (``5 × 1012``) is folded to the e-form first. Plain literals
+    return ``None``: they match verbatim, with no exponent guessing.
+    """
+    folded = _SCI_X10_SPACED_FLAT_RE.sub(r"\1e\2", literal)
+    folded = _SCI_X10_INLINE_FLAT_RE.sub(r"\1e\2", folded)
+    if folded == literal and _SCI_E_ATOM_RE.search(literal) is None:
+        return None
+
+    def _atom(match: re.Match[str]) -> str:
+        mantissa, exponent = match.group(1), match.group(2)
+        forms = [
+            f"{mantissa}e{exponent}",
+            f"{mantissa} × 10 {exponent}",
+            f"{mantissa} × 10{exponent}",
+        ]
+        if mantissa == "1":
+            forms += [f"10 {exponent}", f"10{exponent}"]
+        return "(?:" + "|".join(re.escape(f) for f in forms) + ")"
+
+    out: list[str] = []
+    pos = 0
+    for match in _SCI_E_ATOM_RE.finditer(folded):
+        out.append(re.escape(folded[pos : match.start()]))
+        out.append(_atom(match))
+        pos = match.end()
+    out.append(re.escape(folded[pos:]))
+    return "".join(out)
 
 
 def markup_unit(text: str) -> str:

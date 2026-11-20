@@ -1475,32 +1475,17 @@ def test_approve_single_passage_carries_no_contiguity_flag(store: Any) -> None:
     assert "contiguous_group" not in passage
 
 
-# ── paper-context-sentence freeze (docs/backlog/paper-context-sentence.md) ──
-
-
-def test_approve_freezes_the_source_papers_context_sentence(store: Any) -> None:
-    paper, chunk, sha = _seed_paper(store)
-    store.update_ref(
-        paper,
-        meta_patch={
-            "context_sentence": "Computational study; DFT-calculated, no wet-lab work."
-        },
-    )
-    hub = _seed_hub(store, "DFT shows a context-sentenced source.", paper, chunk)
-    row = mint.approve(store, hub, payload=_payload(chunk, sha), interactive=True)
-    (passage,) = row.grounding["passages"]
-    assert (
-        passage["context_sentence"]
-        == "Computational study; DFT-calculated, no wet-lab work."
-    )
-
-
-def test_approve_carries_no_context_sentence_key_when_source_has_none(
-    store: Any,
+@pytest.mark.parametrize("submitted_context", [False, True])
+def test_approve_omits_retired_context_from_new_artifacts(
+    store: Any, submitted_context: bool
 ) -> None:
     paper, chunk, sha = _seed_paper(store)
-    hub = _seed_hub(store, "DFT shows a source with no sentence yet.", paper, chunk)
-    row = mint.approve(store, hub, payload=_payload(chunk, sha), interactive=True)
+    store.update_ref(paper, meta_patch={"context_sentence": "Historical live stamp."})
+    hub = _seed_hub(store, "DFT shows a source with legacy metadata.", paper, chunk)
+    payload = _payload(chunk, sha)
+    if submitted_context:
+        payload["passages"][0]["context_sentence"] = "Copied from an old payload."
+    row = mint.approve(store, hub, payload=payload, interactive=True)
     (passage,) = row.grounding["passages"]
     assert "context_sentence" not in passage
 

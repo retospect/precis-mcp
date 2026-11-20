@@ -517,6 +517,148 @@ def test_oauth_legacy_transport_and_unsupported_sdk_fail_closed(
         assert client.get("/mcp", headers=_headers("install")).status_code == 200
 
 
+def _class_credentials(
+    store: Store, config: OAuthConfig, slice_dir: Any
+) -> dict[str, str]:
+    """One live credential per bearer class, keyed by class name."""
+    from precis import slice_tokens
+
+    alice = _user(store, "alice")
+    return {
+        "install": "install",
+        "slice": slice_tokens.mint(slice_dir, "td42"),
+        "personal": mcp_identity.mint_user_token(store, alice.id, "laptop")[1],
+        "capability": mcp_identity.mint_capability_token(
+            store, alice.id, "connector", ("read",)
+        )[1],
+        "oauth": _grant(store, config, alice.id)[0],
+    }
+
+
+def _class_app(
+    store: Store,
+    config: OAuthConfig,
+    slice_dir: Any,
+    classes: frozenset[str] | None,
+) -> Starlette:
+    async def probe(request):
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/mcp", probe)])
+    server._install_token_auth(
+        app,
+        token="install",
+        store=store,
+        oauth_config=config,
+        slice_dir=slice_dir,
+        classes=classes,
+    )
+    return app
+
+
+@pytest.mark.parametrize("name", list(mcp_identity.CREDENTIAL_CLASSES))
+def test_each_credential_class_is_accepted_only_when_listed(
+    name: str, store: Store, oauth_config: OAuthConfig, tmp_path: Any
+) -> None:
+    credentials = _class_credentials(store, oauth_config, tmp_path)
+    with TestClient(
+        _class_app(store, oauth_config, tmp_path, frozenset({name}))
+    ) as client:
+        wrong = client.get("/mcp", headers=_headers("nope"))
+        assert wrong.status_code == 401
+        for other, raw in credentials.items():
+            response = client.get("/mcp", headers=_headers(raw))
+            if other == name:
+                assert response.status_code == 200, other
+            else:
+                # Refused exactly like a wrong token, challenge included.
+                assert response.status_code == 401, other
+                assert response.content == wrong.content
+                assert dict(response.headers) == dict(wrong.headers)
+        # Only a gate that takes OAuth tokens sends clients to sign in.
+        discovery = client.get("/.well-known/oauth-protected-resource")
+        if name == "oauth":
+            assert "resource_metadata=" in wrong.headers["www-authenticate"]
+            assert discovery.status_code == 200
+        else:
+            assert "www-authenticate" not in wrong.headers
+            assert discovery.status_code == 401
+
+
+def test_default_classes_accept_every_credential_class(
+    store: Store, oauth_config: OAuthConfig, tmp_path: Any
+) -> None:
+    credentials = _class_credentials(store, oauth_config, tmp_path)
+    for classes in (None, frozenset(mcp_identity.CREDENTIAL_CLASSES)):
+        with TestClient(_class_app(store, oauth_config, tmp_path, classes)) as client:
+            for name, raw in credentials.items():
+                assert client.get("/mcp", headers=_headers(raw)).status_code == 200, (
+                    name
+                )
+
+
+def test_oauth_only_gate_makes_no_lookup_for_the_refused_classes(
+    store: Store,
+    oauth_config: OAuthConfig,
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credentials = _class_credentials(store, oauth_config, tmp_path)
+    for fn in ("resolve_user_token", "resolve_capability_token"):
+        monkeypatch.setattr(
+            mcp_identity, fn, lambda *a, _fn=fn: pytest.fail(f"{_fn} was called")
+        )
+    from precis import slice_tokens
+
+    monkeypatch.setattr(
+        slice_tokens,
+        "grant",
+        lambda *a: pytest.fail("slice grant looked up"),
+    )
+    with TestClient(
+        _class_app(store, oauth_config, tmp_path, frozenset({"oauth"}))
+    ) as client:
+        for name in ("install", "slice", "personal", "capability"):
+            response = client.get("/mcp", headers=_headers(credentials[name]))
+            assert response.status_code == 401, name
+        assert (
+            client.get("/mcp", headers=_headers(credentials["oauth"])).status_code
+            == 200
+        )
+        # An OAuth-only gate never reaches the personal/capability resolvers,
+        # even for an unknown OAuth-shaped bearer.
+        assert (
+            client.get("/mcp", headers=_headers(ACCESS_PREFIX + "x")).status_code == 401
+        )
+
+
+def test_ownership_503_only_applies_to_accepted_store_classes(
+    store: Store,
+    oauth_config: OAuthConfig,
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server, "_sdk_session_ownership_supported", lambda: False)
+    credentials = _class_credentials(store, oauth_config, tmp_path)
+    with TestClient(
+        _class_app(store, oauth_config, tmp_path, frozenset({"install", "oauth"}))
+    ) as client:
+        assert (
+            client.get("/mcp", headers=_headers(credentials["oauth"])).status_code
+            == 503
+        )
+        for name in ("personal", "capability"):
+            response = client.get("/mcp", headers=_headers(credentials[name]))
+            assert response.status_code == 401, name
+        assert client.get("/mcp", headers=_headers("install")).status_code == 200
+    with TestClient(
+        _class_app(store, oauth_config, tmp_path, frozenset({"install"}))
+    ) as client:
+        for name in ("personal", "capability", "oauth"):
+            response = client.get("/mcp", headers=_headers(credentials[name]))
+            assert response.status_code == 401, name
+
+
 def test_oauth_context_keeps_pat_and_oauth_namespaces_separate(
     store: Store,
     oauth_config: OAuthConfig,
@@ -583,6 +725,8 @@ def test_whoami_over_oauth_wire_names_user_connection_and_scope(
             if grant_scope == "mcp:full":
                 assert "permission: full MCP (all verbs)" in body
             else:
+                # The line names only the kinds the grant's scopes open —
+                # a learning-scoped connection must not read as holding gtd.
                 assert "permission: learning calls, learning help, whoami" in body
             assert f"writes recorded as: oauth:{identity.grant_id}" in body
             assert "revision actor: user:al" in body

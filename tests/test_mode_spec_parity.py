@@ -134,6 +134,8 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     # replacement is exposed by edit. The common mode gate enforces both.
     ("learning", "put"): (),
     ("learning", "edit"): ("replace",),
+    # Private gtd captures an inbox item from text= alone — no mode axis.
+    ("gtd", "put"): (),
     # -- put: file kinds, creation-only -------------------------------
     ("markdown", "put"): ("create",),
     ("plaintext", "put"): ("create",),

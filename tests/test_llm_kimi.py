@@ -102,9 +102,9 @@ def _gate(
         "precis.budget.meter.active_store",
         lambda: _GateStore(lit, pool_rows),
     )
-    # The meter memoises BudgetStatus for 15s process-wide, not per store —
-    # drop a status a neighbouring test computed so it can't gate (or
-    # un-gate) the dispatches below.
+    # The meter keeps a short-lived fallback memo process-wide, not per
+    # store — drop a status a neighbouring test computed so it can't gate
+    # (or un-gate) the dispatches below.
     meter._cached = None
 
 

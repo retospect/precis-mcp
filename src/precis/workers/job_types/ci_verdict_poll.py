@@ -22,6 +22,13 @@ The red digest repeats this head check before launching its script.
 
 The newest check.yml run (on the release branch when one is known):
 
+- its blocking legs all green — one ``lint`` and the whole ``gate-fast``
+  matrix, read from the run's jobs (:func:`gate_legs_green`) → ``green``
+  at once, while the soak still runs and whatever the soak then
+  concludes (:func:`gate_verdict`; me580555 made the soak non-blocking,
+  and Reto 2026-11-19 ruled the deploy does not wait for it). A red
+  soak is debt for the next ``round cut`` and a ``ci:soak`` gripe, not a
+  red release.
 - completed ``success``/``skipped``/``neutral`` → ``green``; any other
   completed conclusion → ``red``. The verdict row
   ``{sha, range, verdict, run_id, at}`` goes into ``release.ci_verdicts``
@@ -31,7 +38,7 @@ The newest check.yml run (on the release branch when one is known):
 - no run yet, still running, or GitHub unreadable (rate limit, network) →
   **pending**: a ``pending`` summary, then the job parks itself
   (``ctx.defer``, ``STATUS:waiting_time``) for :func:`poll_interval`
-  (10 min, 2 min once the run is 18+ min old — gr611302); the
+  (10 min, 2 min once the run is 8+ min old — gr611302); the
   wake runner re-queues the same job, which polls again. A parked job is
   live, so the tick neither closes the node nor mints a second poll (one
   poll per node: the tick's ``plan_dispatch:td<id>`` idem key).
@@ -43,7 +50,7 @@ Pending splits two ways (gr656644):
   ``run_slice.wait_parks`` / ``release_poll.placement_parks`` shape —
   the shared six-park cap is for window pauses, not a healthy gate),
   so the job keeps polling on the run's own clock for as long as the
-  run reports live. A soak gate runs ~60 min and ship's own CI budget
+  run reports live. A gate over the whole suite runs ~25 min and ship's own CI budget
   is 150 min, while six 2-min late-interval parks cover ~12 — counting
   the wait against the cap spent a node retry per ~36 min and filed the
   retry-cap ask on a GREEN gate. A run still going past
@@ -130,10 +137,12 @@ NAME = "ci_verdict_poll"
 #: Wait between polls while CI runs.
 POLL_INTERVAL = timedelta(minutes=10)
 #: Wait between polls once the run is :data:`POLL_FAST_AFTER` old —
-#: check.yml is near its end then, so a fixed 10-minute wait adds ~4
-#: minutes to the average gate for nothing (gr611302).
+#: a fixed 10-minute wait adds ~4 minutes to the average gate for
+#: nothing (gr611302). The clock starts where a selection-shaped gate
+#: can already be green (lint + gate-fast, :func:`gate_verdict`), not
+#: where the whole run ends.
 POLL_INTERVAL_LATE = timedelta(minutes=2)
-POLL_FAST_AFTER = timedelta(minutes=18)
+POLL_FAST_AFTER = timedelta(minutes=8)
 #: The workflow whose run is the release verdict (scripts/release's gate).
 WORKFLOW_FILE = "check.yml"
 OK_CONCLUSIONS = frozenset({"success", "skipped", "neutral"})
@@ -186,7 +195,7 @@ DESCRIPTION: str = (
     "Dark release pass: read check.yml's GitHub Actions run on a release "
     "cut's sha and record green/red in release.ci_verdicts (the tests-green "
     "gate reads it); parks itself and re-polls every 10 min while CI runs "
-    "(2 min once the run is 18+ min old, gr611302)."
+    "(2 min once the run is 8+ min old, gr611302)."
 )
 
 
@@ -588,7 +597,7 @@ def _run_age(run: dict[str, Any] | None, now: datetime) -> timedelta | None:
 
 def poll_interval(run_age: timedelta | None) -> timedelta:
     """Wait to the next poll: :data:`POLL_INTERVAL_LATE` once the run is
-    :data:`POLL_FAST_AFTER` old (check.yml is near its end; gr611302),
+    :data:`POLL_FAST_AFTER` old (its gate legs can be in; gr611302),
     else :data:`POLL_INTERVAL`."""
     if run_age is not None and run_age >= POLL_FAST_AFTER:
         return POLL_INTERVAL_LATE
@@ -639,6 +648,122 @@ def verdict_of(
         run_id,
         f"run {run_id} concluded {conclusion or 'without a conclusion'}",
     )
+
+
+# ── the gate legs decide, not the soak (me580555) ─────────────────
+
+_JOBS_URL = "https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs"
+_GATE_LEG_RE = re.compile(r"gate-fast \((\S+), (\d+)\)")
+_SOAK_LEG_RE = re.compile(r"soak \(\S+, \d+\)")
+#: check.yml's job that turns a red soak into a red run conclusion.
+SOAK_VERDICT_JOB = "verdict-soak"
+
+
+def fetch_jobs(repo: str, run_id: str) -> list[dict[str, Any]] | None:
+    """The jobs of ``run_id``'s newest attempt; ``None`` when GitHub is
+    unreadable or the answer is not the whole list — a partial read is
+    no evidence."""
+    headers = _factory_git.github_api_headers()
+    try:
+        resp = _http_get(
+            _JOBS_URL.format(repo=repo, run_id=run_id),
+            {"filter": "latest", "per_page": 100},
+            headers,
+        )
+    except Exception as exc:
+        log.info("%s: GitHub jobs read failed (%s)", NAME, type(exc).__name__)
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    if not isinstance(jobs, list) or data.get("total_count") != len(jobs):
+        return None
+    return [j for j in jobs if isinstance(j, dict)]
+
+
+def gate_legs_green(jobs: list[dict[str, Any]]) -> bool:
+    """Whether the run's blocking legs all passed, whatever its soak is
+    doing. True only when every one of these holds:
+
+    - a soak leg exists and was not skipped. check.yml starts the soak
+      only on ``needs.gate-fast.result == 'success'``, so its presence is
+      GitHub's own word that the whole gate-fast matrix passed — a
+      listing read before the matrix expanded has none;
+    - exactly one ``lint`` job, concluded ``success``;
+    - the ``gate-fast (PY, K)`` legs cover 1..N per Python with no gap,
+      each concluded ``success``;
+    - every other job outside the soak (its legs and
+      :data:`SOAK_VERDICT_JOB`) is completed with an OK conclusion.
+
+    The full shape (nightly, harness FULL) has no soak leg and reads
+    ``False``: there the run's own conclusion is the verdict."""
+    named = [(str(j.get("name") or ""), j) for j in jobs]
+    soak = [j for name, j in named if _SOAK_LEG_RE.fullmatch(name)]
+    if not any(str(j.get("conclusion") or "") != "skipped" for j in soak):
+        return False
+    lint = [j for name, j in named if name == "lint"]
+    if len(lint) != 1:
+        return False
+    shards: dict[str, list[int]] = {}
+    for name, j in named:
+        if name == SOAK_VERDICT_JOB or _SOAK_LEG_RE.fullmatch(name):
+            continue
+        if str(j.get("status") or "") != "completed":
+            return False
+        conclusion = str(j.get("conclusion") or "")
+        leg = _GATE_LEG_RE.fullmatch(name)
+        if leg or name == "lint":
+            if conclusion != "success":
+                return False
+        elif conclusion not in OK_CONCLUSIONS:
+            return False
+        if leg:
+            shards.setdefault(leg.group(1), []).append(int(leg.group(2)))
+    return bool(shards) and all(
+        sorted(ks) == list(range(1, len(ks) + 1)) for ks in shards.values()
+    )
+
+
+def gate_verdict(
+    repo: str, runs: list[dict[str, Any]], sha: str, branch: str = ""
+) -> tuple[str, str, str]:
+    """:func:`verdict_of`, with the gate legs deciding once they are in.
+
+    A gate-shaped check.yml run is lint + gate-fast, then the soak — the
+    whole non-nightly suite again, ~45 minutes, non-blocking by ruling
+    me580555. The run's own conclusion arrives only after the soak, and a
+    red soak turns it red through ``verdict-soak``; reading it made every
+    deploy wait for the soak and sent a soak-only red into the fix loop.
+    So a run that is still going, or that ended not-green, is green when
+    :func:`gate_legs_green` says its blocking legs passed (Reto
+    2026-11-19: the deploy does not wait for the soak; the nightly is
+    the net). A red soak stays what the ruling made it: debt the next
+    ``round cut`` reads, and a ``ci:soak`` gripe from ``ci_watch``.
+
+    A run that ended not-green whose jobs cannot be read is ``pending``,
+    not ``red``: the soak alone may have turned it, and a recorded red
+    is final — it would start the fix loop on a green release. The next
+    poll reads the jobs again."""
+    state, run_id, why = verdict_of(runs, sha, branch)
+    if state == "green" or not run_id:
+        return state, run_id, why
+    jobs = fetch_jobs(repo, run_id)
+    if jobs is None:
+        if state == "red":
+            return "pending", run_id, f"{why}, but its jobs are unreadable"
+        return state, run_id, why
+    if gate_legs_green(jobs):
+        return (
+            "green",
+            run_id,
+            f"run {run_id}: lint and gate-fast legs green; the soak does "
+            f"not gate ({why})",
+        )
+    return state, run_id, why
 
 
 # ── the no-run ladder (gr589270) ──────────────────────────────────
@@ -1004,7 +1129,7 @@ def _dispatch(ctx: Any, spec: JobTypeSpec) -> None:
     if runs is None:
         state, run_id, why = "pending", "", "GitHub unreadable (network or rate limit)"
     else:
-        state, run_id, why = verdict_of(runs, sha, target["branch"])
+        state, run_id, why = gate_verdict(target["repo"], runs, sha, target["branch"])
     meta: dict[str, Any] = {"sha": sha, "range": rng, "state": state, "run_id": run_id}
     if ctx.meta.get("rerun_of") is not None and picked is not None:
         # A rerun poll records the run's freshness evidence too — the
@@ -1118,7 +1243,10 @@ __all__ = [
     "POLL_INTERVAL_LATE",
     "SPEC",
     "fetch_head",
+    "fetch_jobs",
     "fetch_runs",
+    "gate_legs_green",
+    "gate_verdict",
     "load",
     "poll_interval",
     "release_branch_head",

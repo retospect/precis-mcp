@@ -55,7 +55,8 @@ moved here 2026-11-11; verify with grep, the sites drift):
 - ``no-kwd``: ``store/_mappers.py::_row_to_chunk`` (chunk rows carry no
   keywords, so every row, cluster label and TOC is built without them),
   ``store/_chunks_ops.py::_verbatim_pred`` (keyword-containment leg of
-  ``mode='verbatim'``), ``ChunkStore.chunk_llm_summaries_for_ref`` (column
+  ``mode='verbatim'``; the capped TSV phrase leg and scoped substring
+  check still run), ``ChunkStore.chunk_llm_summaries_for_ref`` (column
   not selected), ``utils/eye_render.py::_apply_bench_switches`` (the ``kwd``
   rung is refused), ``utils/toc_db.py::_pending_keyword_chunks`` and
   ``handlers/paper.py::_toc_readiness_line`` (no "pending" or "keyworded"

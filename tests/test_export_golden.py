@@ -1,7 +1,7 @@
 """Byte-identical safety net for the export-parity walker
 (export-latex-docx-parity): one synthetic golden draft,
 exported end to end through ``export_draft`` (plain, patent, reMarkable
-footnote mode) and ``export_docx`` (plain, EndNote, patent), compared with
+footnote mode) and ``export_docx`` (plain, EndNote, Word citations, Zotero fields, patent), compared with
 the checked-in baseline under ``tests/fixtures/export/golden/``.
 
 DB-free: a fake store answers every lookup, so ids, handles and numbering
@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import re
 import struct
 import zipfile
 import zlib
@@ -463,6 +464,8 @@ def test_latex_export_matches_golden(
 _DOCX_MODES: dict[str, dict[str, Any]] = {
     "docx_plain": {},
     "docx_endnote": {"citations": "endnote"},
+    "docx_word": {"citations": "word"},
+    "docx_zotero": {"citations": "zotero"},
     "docx_patent": {"doc_type": "patent"},
     "docx_untitled": {"_untitled": True},
 }
@@ -472,8 +475,19 @@ _DOCX_SKIP = frozenset({"docProps/core.xml"})
 #: Parts the exporter writes per draft, kept as canonical XML text; every
 #: other part (template styles, theme, fonts) is compared by its c14n hash.
 _DOCX_TEXT = frozenset(
-    {"word/document.xml", "word/settings.xml", "word/_rels/document.xml.rels"}
+    {
+        "word/document.xml",
+        "word/settings.xml",
+        "word/_rels/document.xml.rels",
+        "customXml/item1.xml",
+        "customXml/itemProps1.xml",
+        "docProps/custom.xml",
+    }
 )
+
+
+#: the running header / footer parts (``word/header1.xml``, ``footer2.xml`` …).
+_DOCX_HEADER_FOOTER = re.compile(r"word/(header|footer)\d+\.xml")
 
 
 def _canonical_docx(path: Path) -> str:
@@ -487,7 +501,7 @@ def _canonical_docx(path: Path) -> str:
             data = z.read(part)
             if part.endswith((".xml", ".rels")):
                 data = etree.tostring(etree.fromstring(data), method="c14n")
-            if part in _DOCX_TEXT:
+            if part in _DOCX_TEXT or _DOCX_HEADER_FOOTER.match(part):
                 text = data.decode("utf-8").replace(date_line, "<DATE>")
                 text = text.replace("><", ">\n<")
             else:

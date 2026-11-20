@@ -62,7 +62,7 @@ from typing import Any, ClassVar
 from psycopg import Connection
 from psycopg.errors import QueryCanceled
 
-from precis import slice_tokens, worktree_server
+from precis import slice_tokens, word_handle_session, worktree_server
 from precis._result_budget import size_cell
 from precis.corrected_call import retry_call
 from precis.dispatch import Hub, InitError
@@ -75,6 +75,7 @@ from precis.errors import (
     Unsupported,
     nearest_option,
 )
+from precis.handle_words import to_words2
 from precis.handlers._eye import is_eye_view
 from precis.handlers._prio_tag import prio_display
 from precis.handlers._request_state import RequestState
@@ -152,7 +153,12 @@ _FILLER_FIRST_LINE = re.compile(
 #: already gave the spelling an own reading keep it — todo/quest/pres/
 #: taxon 'meta', job's ``'meta'→'raw'``, todo's and
 #: gripe's ``'tags'→None`` — those branches run ahead of the base
-#: dispatch.
+#: dispatch. ``full`` (gr676930) is the family-wide complete-read
+#: spelling promised by the get description; on the base dispatch it
+#: renders the bare get (card + body), the fullest read a base kind
+#: has. Kinds with their own fuller ``full`` (todo, gripe, job, alert's
+#: ``'full'→'detail'``, memory's alias fold) intercept it before the
+#: base dispatch and keep their reading.
 _BASE_VIEWS: tuple[str, ...] = (
     "links",
     "dependants",
@@ -163,6 +169,7 @@ _BASE_VIEWS: tuple[str, ...] = (
     "retired",
     "meta",
     "tags",
+    "full",
 )
 
 #: Batch ``get`` views that mean the default summary block per id.
@@ -435,6 +442,12 @@ def _count_group_label(
         for v, spec in zip(vals, facets, strict=True)
     )
 
+
+#: Kinds whose queryless browse takes ``sort=`` — the workflow kinds
+#: whose ``PRIO:`` write spelling translates to the ``refs.prio`` column
+#: (``_prio_tag.split_prio``). A ``PRIO:*`` tag *filter* matches nothing
+#: on them; the empty listing names the column sort instead (gr676981).
+_BROWSE_SORT_KINDS = frozenset({"gripe", "todo", "quest"})
 
 # Browse lifecycle follows each kind's actual vocabulary; dormant quests stay live.
 _BROWSE_TERMINALS: dict[str, tuple[str, ...]] = {
@@ -836,6 +849,10 @@ class NumericRefHandler(Handler):
     #: ``status='!v'`` negation paths; ``tag()``/``put()`` writes are
     #: untouched — an alias is a *read* shorthand, not a stored value.
     status_aliases: ClassVar[dict[str, str]] = {}
+
+    #: Kind-owned ``view=`` spellings the unknown-view refusal lists after
+    #: the shared ``count``/``meta``/``tags`` (job: ``parked``).
+    extra_search_views: ClassVar[tuple[str, ...]] = ()
 
     #: Queryless browse order when the caller passes no ``sort=``
     #: (``'recency'`` or ``'prio'``). Gripe browses by priority.
@@ -1418,6 +1435,13 @@ class NumericRefHandler(Handler):
                 return Response(body=self._render_meta_view(ref), result_count=1)
             if view == "tags":
                 return Response(body=self._render_tags_view(ref), result_count=1)
+        return self._render_default_get(ref)
+
+    def _render_default_get(self, ref: Ref) -> Response:
+        """Render the bare and ``full`` reads after shared selector validation.
+
+        Alias and profile override this hook to preserve their usual payloads.
+        """
         tags = self.store.tags_for(ref.id)
         body = self._render_one(ref, tags)
         # F8: surface the link graph for this ref so the agent's
@@ -1437,7 +1461,12 @@ class NumericRefHandler(Handler):
         body += self._render_links_section(
             ref, limit=DEFAULT_LINK_ROW_CAP, priority=True
         )
+        body += self._render_one_footer(ref, tags)
         return Response(body=body, result_count=1)
+
+    def _render_one_footer(self, ref: Ref, tags: list[Tag]) -> str:
+        """Kind-specific footer after the links on a default single-ref read."""
+        return ""
 
     def _event_log_source(self) -> str | None:
         """Subsystem to filter ``view='log'`` to, or ``None`` for all.
@@ -1551,7 +1580,7 @@ class NumericRefHandler(Handler):
             sort = sort.strip().lower()
             browse_sorts = {"prio", "recency"} | self.EXTRA_SORTS
             if (
-                self.kind not in {"gripe", "todo", "quest"}
+                self.kind not in _BROWSE_SORT_KINDS
                 or (q and q.strip())
                 or sort not in browse_sorts
             ):
@@ -1627,7 +1656,7 @@ class NumericRefHandler(Handler):
             if view != "count":
                 raise BadInput(
                     f"unknown view {view!r} for search(kind={self.kind!r})",
-                    options=["count", "meta", "tags"],
+                    options=["count", "meta", "tags", *self.extra_search_views],
                     next=(
                         f"search(kind={self.kind!r}, view='count', "
                         "args={'group_by': 'state'}) · view='meta' "
@@ -1813,6 +1842,7 @@ class NumericRefHandler(Handler):
         # replaced: kinds like ``todo`` are almost entirely chunk-less
         # (~2.7k refs, ~37 body chunks), so a block-only search would find
         # nearly nothing there.
+        lexical_info: dict[str, bool] = {}
         hit_refs = fused_ref_hits(
             self.store,
             getattr(self.hub, "embedder", None),
@@ -1825,6 +1855,7 @@ class NumericRefHandler(Handler):
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             card_kinds=self.search_card_kinds,
+            lexical_info_out=lexical_info,
         )
         search_trace.page(
             [search_trace.ref_handle(ref) for ref in hit_refs], rendered=True
@@ -1890,15 +1921,13 @@ class NumericRefHandler(Handler):
         # fused search can return rows it never saw (a semantic-only or
         # notation-leg hit), which would render the nonsense "3 of 0
         # matches" — so the floor is what we actually returned.
-        total = max(
-            self.store.count_refs_lexical(
-                q=q,
-                kind=self.kind,
-                tags=normalized_tags,
-                exclude_tags=excluded or None,
-            ),
-            len(hit_refs),
+        title_total = self.store.count_refs_lexical(
+            q=q,
+            kind=self.kind,
+            tags=normalized_tags,
+            exclude_tags=excluded or None,
         )
+        total = max(title_total, len(hit_refs))
         header = format_search_headline(
             n_returned=len(hit_refs),
             total=total,
@@ -1913,7 +1942,12 @@ class NumericRefHandler(Handler):
             else self._render_hits_table(hit_refs, row_tag_prefixes=row_tag_prefixes)
         )
         trunc = self._tag_truncation_note(
-            normalized_tags, matched_total=total, q=q, exclude_tags=excluded or None
+            normalized_tags,
+            matched_total=total,
+            q=q,
+            exclude_tags=excluded or None,
+            # The block leg can retry even when the title leg matched strictly.
+            or_fallback=title_total == 0 and lexical_info.get("or_fallback", False),
         )
         parts = [header]
         if status_note:
@@ -2167,6 +2201,7 @@ class NumericRefHandler(Handler):
         *,
         matched_total: int,
         q: str,
+        or_fallback: bool = False,
         exclude_tags: list[str] | None = None,
     ) -> str:
         """Warn when a ``q=`` narrowed a tag/status-scoped enumeration.
@@ -2177,16 +2212,24 @@ class NumericRefHandler(Handler):
         must lexically match ``q`` to appear — not merely an ordering.
         So the returned count can fall far below the scoped population,
         silently; this cue makes that visible (the whole point of the
-        fix behind it). Returns ``''`` when the search is unscoped or
-        ``q`` didn't drop anything.
+        fix behind it). An OR retry instead names the loose any-word
+        universe, even when it covers the entire scope. Otherwise returns
+        ``''`` when the search is unscoped or ``q`` did not drop anything.
         """
+        fallback_note = (
+            f"q ran as ANY of its {len(q.split())} words (no entry holds all of them), "
+            f"so {matched_total} is a loose superset; next: for all-words matching "
+            "quote the phrase or cut q to 1-2 words"
+            if or_fallback
+            else ""
+        )
         if not tags and not exclude_tags:
-            return ""
+            return fallback_note
         scope_total = self.store.count_refs(
             kind=self.kind, tags=tags, exclude_tags=exclude_tags
         )
         if scope_total <= matched_total:
-            return ""
+            return fallback_note
         scope = f" tagged {tags}" if tags else ""
         args = f"tags={tags!r}" if tags else ""
         if exclude_tags and set(exclude_tags) != set(_live_excluded_tags(self.kind)):
@@ -2196,10 +2239,10 @@ class NumericRefHandler(Handler):
             # along or the drop-q enumeration would change scope.
             vals = "|".join(f"!{t.split(':', 1)[1]}" for t in exclude_tags)
             args = f"{args + ', ' if args else ''}status='{vals}'"
+        query_note = fallback_note or "here q filters, it does not just order"
         return (
             f"⚠ {matched_total} of {scope_total} {self._sense()} entries{scope} "
-            f"also match q={q!r} — here q filters, it does not just "
-            f"order. To enumerate all {scope_total}, drop q: "
+            f"also match q={q!r} — {query_note}. To enumerate all {scope_total}, drop q: "
             f"search(kind={self.kind!r}{', ' + args if args else ''})"
         )
 
@@ -2781,16 +2824,17 @@ class NumericRefHandler(Handler):
         closed_values: list[str] | None = None,
         row_tag_prefixes: tuple[str, ...] | None = None,
     ) -> Response:
-        """Recency-ordered list of refs matching ``tags``, no ranking.
+        """List refs matching ``tags`` in the requested browse order.
 
         Reached when ``search(kind=K, tags=[...])`` is called without
         ``q=`` — the right shape for "show me everything I tagged X".
-        Always emits a ``Next:`` trailer pointing at the ranked search
-        path for callers who realize they wanted ranking. ``note`` is an
-        optional one-liner (e.g. the implicit-status-default hint) shown
-        under the header.
+        Next normally offers ranked search. If a positive ``PRIO:``
+        filter leaves a workflow listing empty, the suggestions use the
+        remaining tags and label the priority sort as a fresh browse
+        with default scope. ``note`` is an optional one-liner (e.g. the
+        implicit-status-default hint) shown under the header.
 
-        ``offset``/``page`` (1-based) window the recency-ordered list —
+        ``offset``/``page`` (1-based) window the ordered list —
         threaded from ``search()``'s ``page=`` so ``page=2`` actually
         advances past page 1's rows instead of silently re-showing them
         (gripe gr204291: ``page=`` was accepted but dropped on the floor
@@ -2871,11 +2915,33 @@ class NumericRefHandler(Handler):
                     f"recent {self._sense()} entries (no tag filter)",
                 )
             ]
-            if tags:
+            # gr676981: a positive ``PRIO:*`` pin can never match — writes
+            # translate to ``refs.prio`` and strip from the tag set — so an
+            # empty listing drops it from the suggested filter and names the
+            # real door, the column sort, keeping the other tags as scope.
+            prio_pin = self.kind in _BROWSE_SORT_KINDS and any(
+                t.startswith("PRIO:") for t in tags
+            )
+            kept = [
+                t for t in tags if not (prio_pin and t.startswith(("PRIO:", "!PRIO:")))
+            ]
+            if kept:
                 nav.append(
                     (
-                        f"search(kind={self.kind!r}, q='topic', tags={tags!r})",
-                        "rank within the tagged set",
+                        f"search(kind={self.kind!r}, q='topic', tags={kept!r})",
+                        "start a fresh ranked search with the remaining tags"
+                        if prio_pin
+                        else "rank within the tagged set",
+                    )
+                )
+            if prio_pin:
+                tag_arg = f"tags={kept!r}, " if kept else ""
+                nav.append(
+                    (
+                        f"search(kind={self.kind!r}, {tag_arg}args={{'sort': 'prio'}})",
+                        "PRIO: writes set the prio column. Start a fresh browse "
+                        "with default scope and any remaining tags, sorted by "
+                        "prio (lower = hotter).",
                     )
                 )
             body += render_next_section(nav)
@@ -3426,6 +3492,7 @@ class NumericRefHandler(Handler):
         hard_cut: bool = False,
         query_vec: list[float] | None = None,
         rerank: bool = False,
+        lexical_info_out: dict[str, bool] | None = None,
     ) -> tuple[
         list[tuple[Any, Ref, float]],
         int,
@@ -3523,7 +3590,20 @@ class NumericRefHandler(Handler):
         # the returned order rather than re-sorting by score.
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
         for block, ref, rank in raw:
-            best_by_ref.setdefault(ref.id, (block, ref, rank))
+            representative, _ref, _rank = best_by_ref.setdefault(
+                ref.id, (block, ref, rank)
+            )
+            if rerank and block.id != representative.id:
+                # Rescue ranks refs, not chunks: the best fused chunk can
+                # be a lexical match while a sibling is semantic rank one.
+                # Keep that sibling's evidence through deduplication.
+                distance, corroborated = fold_info.get(block.id, (None, False))
+                previous, prev_corrob = fold_info.get(representative.id, (None, False))
+                distances = [d for d in (previous, distance) if d is not None]
+                fold_info[representative.id] = (
+                    min(distances) if distances else None,
+                    prev_corrob or corroborated,
+                )
         pool = list(best_by_ref.values())
         extra = 0
         if rerank:
@@ -3551,6 +3631,7 @@ class NumericRefHandler(Handler):
                 kind=self.kind,
                 tags=tags,
                 distinct_refs=True,
+                lexical_info_out=lexical_info_out,
                 exclude_tags=exclude_tags,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
@@ -3599,6 +3680,7 @@ class NumericRefHandler(Handler):
         ``(rank=…)``. Compact views (``view='ids'``/``'list'``) keep the
         complete top-N handle list, so no continuation cursor is needed.
         """
+        lexical_info: dict[str, bool] = {}
         hits, total, fold_info = self._best_body_hits(
             q,
             tags,
@@ -3610,6 +3692,7 @@ class NumericRefHandler(Handler):
             include_ref_ids=include_ref_ids,
             chunk_scope=chunk_scope,
             rerank=True,
+            lexical_info_out=lexical_info,
         )
         if self.heat_salience_on_body_search:
             self.store.chunks.bump_salience(
@@ -3704,7 +3787,11 @@ class NumericRefHandler(Handler):
         # larger, so a generic q= (e.g. 'open' on STATUS:open) can't
         # silently under-count a triage/inventory sweep.
         trunc = self._tag_truncation_note(
-            tags, matched_total=total, q=q, exclude_tags=exclude_tags
+            tags,
+            matched_total=total,
+            q=q,
+            exclude_tags=exclude_tags,
+            or_fallback=lexical_info.get("or_fallback", False),
         )
         if trunc:
             lines.append(trunc)
@@ -4011,11 +4098,6 @@ class NumericRefHandler(Handler):
         create_kw: dict[str, Any] = {}
         if self.accepts_put_meta and _kw.get("meta"):
             create_kw["put_meta"] = _kw["meta"]
-        # Kinds whose create writes its own link (memory: gr715265) accept
-        # the edge annotation split off the caller's meta= and forward it
-        # to that link write.
-        if _kw.get("link_meta"):
-            create_kw["link_meta"] = _kw["link_meta"]
 
         def create() -> Response:
             return self._create(
@@ -4702,6 +4784,12 @@ class NumericRefHandler(Handler):
                         mint_part(lcsc)
                     except NotFound:
                         continue
+            # Mint the lazy python anchor for every qualname mention the
+            # live index resolves, so the resolve pass below can see it
+            # (the resolver itself never mints). gr702978.
+            hub = getattr(self, "hub", None)
+            py_handler = hub.handler_for("python") if hub is not None else None
+            mentions.mint_python_mentions(self.store, text, py_handler)
             targets = sync.resolve(text)
             for link in sync.unmentioned_removals(targets):
                 removed = self.store.remove_link(
@@ -4730,8 +4818,8 @@ class NumericRefHandler(Handler):
             # an explicit ``part:C…`` mention may also queue the BIG-tier
             # facts read, under the per-write and daily spend caps —
             # ``queue_mentioned_parts`` owns both. Skip when the mint
-            # failed (no live part ref).
-            hub = getattr(self, "hub", None)
+            # failed (no live part ref). ``hub`` was bound above for the
+            # python anchor mint.
             if lcscs and hub is not None and hasattr(self.store, "part_ref_id"):
                 from precis.pcb import datasheets
 
@@ -5152,7 +5240,11 @@ class NumericRefHandler(Handler):
         # (:data:`complete_get_view`) — the summary blocks are titles
         # only, and a bare get is not "in full" on a kind whose comments
         # live behind a view (gr572710).
-        read_call = f"get(kind={self.kind!r}, id={ref_ids[0]}"
+        # Stale batch inputs must not become single-ref drill hints (gr702040).
+        if not live:
+            return Response(body=body, result_count=len(ref_ids))
+        first_live = next(rid for rid in ref_ids if rid in live)
+        read_call = f"get(kind={self.kind!r}, id={first_live}"
         if self.complete_get_view is not None:
             read_call += f", view={self.complete_get_view!r}"
         body += render_next_section(
@@ -5645,13 +5737,17 @@ class NumericRefHandler(Handler):
     ) -> str:
         """Render a list of refs as a single TOON table.
 
-        Columns: ``id | status? | tags? | summary | remaining_words? |
-        links? | age? | size?``. A column in ``list_drop_constant_cols``
+        Columns: ``id | word? | status? | tags? | summary | remaining_words? |
+        links? | age? | size?``. ``word`` rides only while the session's
+        word-handle switch is on. A column in ``list_drop_constant_cols``
         is omitted when every row on the page has an empty or zero value.
         Columns:
           - ``id``: the universal handle (``gr5``, ``me158``) — the one
             address form; no separate ``kind`` column, it is constant
             per single-kind listing (gr572710).
+          - ``word``: the ref's two-word spoken handle — present only
+            while the session's word-handle switch is on (gr674040;
+            opt-in per the 12 Nov ruling).
           - ``status``: lifecycle kinds only — the ``STATUS:``/state value.
           - ``tags``: rank-ordered chips, when any row has one. A kind
             with :data:`list_row_tag_prefixes` (gripe → ``cluster:``)
@@ -5706,6 +5802,7 @@ class NumericRefHandler(Handler):
         marks = self._list_row_marks(refs)
         now = datetime.now(UTC)
         time_cells = [self._list_row_time_cells(r, now) for r in refs]
+        words_on = word_handle_session.enabled()
         rows: list[dict[str, str]] = []
         for r, cells in zip(refs, time_cells):
             body = r.title or ""
@@ -5722,6 +5819,8 @@ class NumericRefHandler(Handler):
                     # the universal handle (e.g. ``me158``) is the
                     # one address form, replacing the bare numeric id.
                     "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
+                    # the two-word spoken handle, opt-in per session (gr674040)
+                    **({"word": to_words2(int(r.id))} if words_on else {}),
                     **({"status": state} if lifecycle else {}),
                     **({"tags": chip_map.get(int(r.id), "")} if any_chips else {}),
                     "summary": summary,
@@ -5734,16 +5833,18 @@ class NumericRefHandler(Handler):
             )
         schema = [
             "id",
+            *(["word"] if words_on else []),
             "summary",
             "remaining_words",
             "links",
             *time_cells[0],
             "size",
         ]
+        word_shift = 1 if words_on else 0
         if lifecycle:
-            schema.insert(1, "status")
+            schema.insert(1 + word_shift, "status")
         if any_chips:
-            schema.insert(2 if lifecycle else 1, "tags")
+            schema.insert((2 if lifecycle else 1) + word_shift, "tags")
         if marks:
             schema.append("stale")
         schema = [
@@ -5968,6 +6069,7 @@ class NumericRefHandler(Handler):
             # common "all-default" case.
             tags_per_ref = {r.id: self.store.tags_for(r.id) for r in refs}
             any_tagged = any(tags_per_ref[r.id] for r in refs)
+            words_on = word_handle_session.enabled()
             rows: list[dict[str, str]] = []
             for r in refs:
                 preview = (r.title[:80] + "…") if len(r.title) > 80 else r.title
@@ -5975,12 +6077,16 @@ class NumericRefHandler(Handler):
                     "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
                     "preview": preview,
                 }
+                if words_on:
+                    row["word"] = to_words2(int(r.id))
                 if any_tagged:
                     row["tags"] = " ".join(str(t) for t in tags_per_ref[r.id])
                 rows.append(row)
             from precis.format import render_agent_table
 
             schema = ["id", "preview", "tags"] if any_tagged else ["id", "preview"]
+            if words_on:
+                schema.insert(1, "word")
             head = f"# recent {self._sense()} ({len(refs)})"
             body = f"{head}\n\n" + render_agent_table(rows, schema=schema)
             body += render_next_section(

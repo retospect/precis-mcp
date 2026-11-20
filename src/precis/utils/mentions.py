@@ -2,9 +2,10 @@
 
 A memory (or any note-like body) routinely names other refs inline:
 prefixed ``kind:id~chunk`` handles (``memory:6184``, ``paper:acheson26~12``),
-bare paper cite_keys (``futrell25``), and bare Discord conv handles
-(``discord/<server>/<channel>/<thread>``). Two features consume the
-same grammar:
+bare paper cite_keys (``futrell25``), bare Discord conv handles
+(``discord/<server>/<channel>/<thread>``), and universal handles —
+bracketed (``[me5]``, ``[label](me5)``, ``[[me5]]``) or written as a
+bare whole word (``me5``). Two features consume the same grammar:
 
 1. **Read-time (web).** ``precis_web.linkify`` turns the handles into
    hover-preview anchors, and the refs detail page renders a
@@ -14,6 +15,10 @@ same grammar:
    ``links`` rows (``related-to``) so the memory becomes a node in the
    graph — discoverable from the *target's* side, not just visually at
    read time.
+
+One rule covers every surface (gr702966): a handle written bare in
+prose IS a mention — the reader autolinks it, the write path links it
+and warns when it names nothing live, and the retire guard counts it.
 
 The regexes and kind allowlist live here so both surfaces share one
 grammar; ``precis_web.linkify`` re-exports them under their old private
@@ -68,6 +73,23 @@ BARE_CONV_PATTERN = re.compile(
     r"(?!\w)"
 )
 
+#: A python symbol mention: ``python:<dotted.qualname>`` (gr702978). At
+#: least one dot is required — a bare ``python:word`` stays prose, since a
+#: python anchor's slug IS a dotted qualname (``precis.handlers.
+#: _memory_link_receipt.MentionSync``). ``python`` is already in
+#: :data:`LINKIFY_KINDS` (it is a registered record kind); what it lacked
+#: was a grammar arm long enough to capture the qualname — the generic
+#: :data:`REF_PATTERN` id stops at the first dot — and a refs row to
+#: resolve against. The write-time extraction pass below owns the
+#: ``python:`` kind outright (the REF_PATTERN pass skips ``python`` so a
+#: qualname can't double-resolve as ``python:<first-segment>``).
+PYTHON_QUALNAME_PATTERN = re.compile(
+    r"\bpython:"
+    r"(?P<qn>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)"
+    r"(?!\w)"
+)
+
+
 #: Bare paper cite_key: ``<surname><2-digit year><optional letter>``.
 #: Either a chunk suffix disambiguates a ≥2-letter key, or (no suffix)
 #: ≥3 surname letters keep ``ai99`` / ``ml22`` off prose. A trailing ``-``
@@ -94,18 +116,15 @@ BARE_PART_PATTERN = re.compile(r"(?<![A-Za-z0-9:])C\d{3,8}(?![A-Za-z0-9])")
 LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
 
 #: Codeless tools/providers whose cached refs support legacy mentions.
-#: Private non-ref data and tools without cached refs stay out.
+#: Private non-ref data and tools without cached refs stay out. The
+#: handle-coded fetch caches (web/youtube/websearch/perplexity-*/
+#: wikipedia/semanticscholar/chem) join via ``record_kinds()`` instead.
 _CODELESS_CACHE_KINDS: frozenset[str] = frozenset(
     {
         "calc",
         "math",
         "provenance",
         "random",
-        "web",
-        "youtube",
-        "websearch",
-        "perplexity-research",
-        "perplexity-reasoning",
     }
 )
 
@@ -263,10 +282,11 @@ def parse_pin_suffix(pin: str | None) -> tuple[str | None, list[str]]:
 #: compounds; the trailing guard keeps a handle-prefix from gluing onto
 #: prose (``gr123-bilayer``, same convention as
 #: :data:`BARE_PAPER_PATTERN`). Resolution is DB-gated downstream, so the
-#: shape stays permissive — an unresolved token renders literal.
+#: shape stays permissive — an unresolved token renders literal. The code
+#: accepts either case, as does the handle registry and retirement scan.
 BARE_HANDLE_PATTERN = re.compile(
     r"(?<![\w./:~@-])"
-    r"(?P<bhandle>[a-z]{2}[0-9]+)"
+    r"(?P<bhandle>[A-Za-z]{2}[0-9]+)"
     r"(?![\w-])"
 )
 
@@ -360,6 +380,10 @@ def extract_handles(body: str) -> list[Handle]:
         kind = m.group("kind")
         if kind not in LINKIFY_KINDS or kind in LOW_SIGNAL_KINDS:
             continue
+        if kind == "python":
+            # The qualname pass below owns ``python:`` — REF_PATTERN's id
+            # arm would only capture the first dotted segment here.
+            continue
         _push(kind, m.group("id"), m.group("chunk"))
     for m in BARE_CONV_PATTERN.finditer(body):
         slug, _, suffix = m.group(0).partition("~")
@@ -367,7 +391,52 @@ def extract_handles(body: str) -> list[Handle]:
     for m in BARE_PAPER_PATTERN.finditer(body):
         slug, _, suffix = m.group(0).partition("~")
         _push("paper", slug, ("~" + suffix) if suffix else None)
+    for m in PYTHON_QUALNAME_PATTERN.finditer(body):
+        _push("python", m.group("qn"), None)
     return out
+
+
+def extract_python_qualnames(body: str) -> list[str]:
+    """Every ``python:<dotted.qualname>`` mention in ``body`` —
+    deduplicated, appearance-ordered. Extraction only: whether a qualname
+    mints or resolves an anchor is the caller's call (gr702978)."""
+    if not body:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in PYTHON_QUALNAME_PATTERN.finditer(body):
+        qn = m.group("qn")
+        if qn not in seen:
+            seen.add(qn)
+            out.append(qn)
+    return out
+
+
+def mint_python_mentions(store: Any, text: str, handler: Any) -> None:
+    """Mint the lazy python anchor ref for every qualname mention that
+    resolves in the live python index (gr702978).
+
+    The note/draft autolinker doors call this before
+    :func:`resolve_link_targets` — the resolver itself never mints, so
+    read-side callers (fisheye, backfill) stay pure. ``handler`` is the
+    booted python handler (``hub.handler_for('python')``); ``None`` (kind
+    disabled, or a hub without it) mints nothing — a python mention then
+    stays unlinked, the same graceful no-op as a disabled kind. An
+    unknown qualname never mints: the handler validates it against the
+    code index and returns ``None``. Per-mention failures are logged and
+    skipped — the sync's best-effort contract.
+    """
+    ensure = getattr(store, "ensure_python_ref", None)
+    if ensure is None or handler is None:
+        return
+    for qn in extract_python_qualnames(text):
+        try:
+            anchor = handler.symbol_anchor(qn)
+            if anchor is None:
+                continue
+            ensure(qn, alias=anchor[0], file=anchor[1])
+        except Exception:
+            log.debug("mentions: python anchor mint failed for %r", qn, exc_info=True)
 
 
 def _norm_part_ident(ident: str) -> str | None:
@@ -529,29 +598,40 @@ def unresolved_handle_mentions(
     body: str,
     *,
     exclude_ref_id: int | None = None,
-) -> list[str]:
-    """Explicit handle mentions that name nothing live (gr570723).
+) -> list[tuple[str, bool]]:
+    """Explicit handle mentions that name nothing live (gr570723, gr702966).
 
-    Scans only the unambiguous mention forms — ``[me5]``, ``[text](me5)``,
-    ``[[me5]]`` — not bare prose tokens, which stay literal by design on
-    the read side. Returns the well-formed tokens that resolve to no live
-    ref (the never-existed case the gardener's ``dangling_mention``
-    detector only sees later, once a handle is retired), normalised,
-    appearance-ordered, deduplicated. A token resolving to
+    Scans every mention form — the bracketed ``[me5]`` / ``[text](me5)``
+    / ``[[me5]]`` tokens and the same handle written as a bare whole word
+    in prose (the read side autolinks it, the retire guard counts it).
+    Returns ``(normalised_token, bracketed)`` pairs — well-formed tokens
+    that resolve to no live ref (the never-existed case the gardener's
+    ``dangling_mention`` detector only sees later, once a handle is
+    retired), appearance-ordered, deduplicated. ``bracketed`` tells the
+    write ack how the token was written. A token resolving to
     ``exclude_ref_id`` (the note being written) is a self-mention: it
     resolves, the mention sync just never self-links, so it is not
     reported. ``store`` stays ``Any`` for the same reason as
     :func:`resolve_link_targets`.
     """
-    out: list[str] = []
+    out: list[tuple[str, bool]] = []
+    seen: set[str] = set()
     for token in _universal_handle_tokens(body):
         norm = handle_registry.normalize(token)
-        if not handle_registry.is_well_formed(norm) or norm in out:
+        if not handle_registry.is_well_formed(norm) or norm in seen:
             continue
+        seen.add(norm)
         tgt = resolve_handle_target(store, token)
         if tgt is None:
-            out.append(norm)
+            out.append((norm, True))
         # A token that resolves (self-mention or otherwise) is not dangling.
+    for token in _bare_prose_handle_tokens(body):
+        norm = handle_registry.normalize(token)
+        if not handle_registry.is_well_formed(norm) or norm in seen:
+            continue
+        seen.add(norm)
+        if resolve_handle_target(store, token) is None:
+            out.append((norm, False))
     return out
 
 
@@ -689,6 +769,30 @@ def _universal_handle_tokens(body: str) -> list[str]:
     return out
 
 
+def _bare_prose_handle_tokens(body: str) -> list[str]:
+    """Bare whole-word handle tokens outside every bracketed mention form.
+
+    The write-time counterpart to the linkifier's combined alternation,
+    where the bracket patterns consume their whole span before the
+    bare-handle pattern fires: a handle inside ``[me5]``, ``[[me5]]`` or
+    ``[label](me5)`` is already yielded by
+    :func:`_universal_handle_tokens`, and a finding pin's target list
+    (``[fi42>pa5,pc9]`` — export provenance, not a link-graph mention)
+    must not mint edges. ``[US9927397B1]``-shaped patent brackets are not
+    in :data:`DRAFT_MARKUP_PATTERN` and need no exclusion — their inner
+    token can't match :data:`BARE_HANDLE_PATTERN`. Deduplicated,
+    appearance-ordered.
+    """
+    spans = [m.span() for m in DRAFT_MARKUP_PATTERN.finditer(body)]
+    return list(
+        dict.fromkeys(
+            handle_registry.normalize(m.group("bhandle"))
+            for m in BARE_HANDLE_PATTERN.finditer(body)
+            if not any(lo <= m.start() < hi for lo, hi in spans)
+        )
+    )
+
+
 #: A body that could name a profile (``pf<N>`` / ``profile:<N>``) — gates
 #: the one batched owner check so other bodies cost no extra query.
 _PROFILE_MENTION = re.compile(r"(?i)(?<![a-z0-9])(?:pf\d|profile:)")
@@ -705,11 +809,14 @@ def resolve_link_targets(
 ) -> list[LinkTarget]:
     """Resolve every handle in ``body`` to a live ``LinkTarget``.
 
-    Covers both the legacy ``kind:ident`` mentions and the universal
-    ``[handle]`` form (bare / display / authoring) so a note's edges
-    survive the migration onto handles. Skips handles that don't resolve,
-    point at a soft-deleted ref, or point back at ``exclude_ref_id`` (the
-    note we're linking *from* — no self-loops). Deduplicated by
+    Covers the legacy ``kind:ident`` mentions, the universal ``[handle]``
+    form (bare / display / authoring), and the same handle written as a
+    bare whole word in prose — the read side autolinks it (gr553317) and
+    the retire guard counts it as a live mention (gr702966), so the
+    write path materialises the edge too instead of leaving the mention
+    graph-invisible. Skips handles that don't resolve, point at a
+    soft-deleted ref, or point back at ``exclude_ref_id`` (the note we're
+    linking *from* — no self-loops). Deduplicated by
     ``(dst_ref_id, dst_pos)`` so two mentions of the same chunk produce
     one link.
     """
@@ -723,6 +830,13 @@ def resolve_link_targets(
         pos = chunk_to_pos(chunk)
         targets.setdefault((ref.id, pos), LinkTarget(ref.id, pos))
     for token in _universal_handle_tokens(body):
+        tgt = resolve_handle_target(store, token)
+        if tgt is None:
+            continue
+        if exclude_ref_id is not None and tgt.dst_ref_id == exclude_ref_id:
+            continue
+        targets.setdefault((tgt.dst_ref_id, tgt.dst_pos), tgt)
+    for token in _bare_prose_handle_tokens(body):
         tgt = resolve_handle_target(store, token)
         if tgt is None:
             continue

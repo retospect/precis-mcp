@@ -13,8 +13,16 @@ stored bytes and one-hour read receipts persisted by authenticated credential.
 Without a bound principal, receipts remain session-local in process memory. The
 tool ledger retains the caller's reference envelope, never expanded content.
 
+A queried verbatim skill read uses find-in-ref so it searches the served
+body even when the default read shows a section index. Fisheye queries
+continue to select neighbor groups.
+
 Table refusals select table help from explicit arguments or a best-effort chunk
 lookup for ambiguous edits, so prose and table edits retain specific recovery.
+
+An id-less taxon metadata get with a subtree selector goes to the taxon
+handler, where the subtree selects individual rows. An unscoped get still
+aliases the kind-wide metadata key inventory.
 
 Licensed live responses opt out of pagination caching while retaining the
 frame limit. The tool ledger already stores only call metadata, not content.
@@ -24,6 +32,8 @@ Each child uses ordinary dispatch and keeps its own ranking and error envelope;
 shared tags are ANDed with item tags so a batch cannot drop its SPACE scope.
 The eight-item/ten-hit bounds limit context while sequential dispatch retains
 normal request/user scope without sharing a connection across worker threads.
+Each child gets one additional backed-off attempt for lock contention so a
+short-lived lock can clear without rerunning successful sibling searches.
 The aggregate JSON is indivisible: an oversized envelope refuses with a
 smaller-batch recovery instead of passing through the prose truncation fitter.
 
@@ -40,6 +50,10 @@ these modalities call runtime dispatch without passing through the tools.
 The binding resets on success and failure so it cannot leak to another call.
 Retired memory redirects drop view, extent and q when the successor is
 another kind, with a receipt: memory read options can break that reader.
+
+Mixed-kind handle lists on get use scalar routing for each address in caller
+order, checking each resolved kind before reading. Same-kind lists retain
+their handler's native batch behavior; writes still require one shared kind.
 
 Search traces reuse agentlog refs without tags or chunks: one best-effort
 INSERT after dispatch, never an embedding/summarize/keywords work item.

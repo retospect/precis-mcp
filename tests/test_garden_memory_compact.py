@@ -144,6 +144,30 @@ def test_compact_detector_expired_trigger(store: Store) -> None:
     assert candidate.evidence["sentences"]
 
 
+def test_expired_trigger_skips_rulings_and_open_dependants(store: Store) -> None:
+    """An expired node that is a standing record (ruling/spec tag) or
+    mid-work (an open todo/gripe/quest links to it) gets no ``expired``
+    trigger; closing the todo un-shields it (gr676320)."""
+    meta = {"expires": "2020-01-01T00:00:00+00:00"}
+    ruling = _memory(store, "A standing fact.\n", meta=meta)
+    store.add_tag(ruling, Tag.open("ruling"), set_by="system")
+    spec = _memory(store, "A standing fact.\n", meta=meta)
+    store.add_tag(spec, Tag.open("spec:expiry-test"), set_by="system")
+    linked = _memory(store, "A standing fact.\n", meta=meta)
+    task = store.insert_ref(kind="todo", slug=None, title="Follow up", meta={})
+    store.add_link(src_ref_id=int(task.id), dst_ref_id=linked, relation="related-to")
+    plain = _memory(store, "A standing fact.\n", meta=meta)
+
+    targets = {ruling, spec, linked}
+    found = {c.target_id for c in cand.compact_candidates(store)}
+    assert targets.isdisjoint(found)
+    assert plain in found
+
+    store.add_tag(int(task.id), Tag.closed("STATUS", "done"), set_by="system")
+    found_after = {c.target_id for c in cand.compact_candidates(store)}
+    assert linked in found_after
+
+
 def test_compact_detector_cold_trigger(store: Store) -> None:
     target = _memory(store, "A standing fact nobody reads.\n")
     with store.pool.connection() as conn:

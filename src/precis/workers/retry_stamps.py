@@ -2,8 +2,7 @@
 via ``edit(kind='paper', args={'clear_stamp': <key>})`` (gr514347).
 
 A pass that stops re-claiming a paper once a ``refs.meta`` stamp exists
-(a converged / skip stamp — e.g. ``context_sentence``'s
-``META_FAILED_KEY``) registers its clearable keys beside the constants
+(a converged / skip stamp) registers its clearable keys beside the constants
 that write them, then adds its module to :data:`_DECLARING_MODULES`.
 :func:`clearable_stamps` lazily imports exactly that list, so a stamp is
 clearable only after its owning worker opts in — the registry IS the
@@ -20,7 +19,6 @@ __all__ = ["clearable_stamps", "register_retry_stamps"]
 #: Keeping the list explicit is what makes the door an allow-list: a new
 #: worker's stamp becomes clearable only once its module is named here.
 _DECLARING_MODULES: tuple[str, ...] = (
-    "precis.workers.context_sentence",
     "precis.workers.openalex_enrich",
     "precis.workers.stub_rank",
 )

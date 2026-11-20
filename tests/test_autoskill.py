@@ -700,14 +700,31 @@ def test_wrong_dimension_embedder_is_refused(
 # ── bimodal skip at the planner / quest-tick seams ───────────────────────
 
 
-def _bimodal_hit(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+def _injected_sections(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
 
-    def fake_match(text: str) -> injection.SkillMatch:
+    def fake_sections(text: str) -> injection.SectionSelection:
         calls.append(text)
-        return injection.SkillMatch(slug=_CORE, title="t", score=0.99)
+        from precis.handlers.skill import _SkillSearchRow
 
-    monkeypatch.setattr(injection, "match_skill", fake_match)
+        row = _SkillSearchRow(
+            slug="precis-overview",
+            score=1.0,
+            source="semantic",
+            section="~0 — Overview",
+            snippet="overview",
+        )
+        match = injection.SectionMatch(
+            slug="precis-overview",
+            chunk_idx=0,
+            row=row,
+            attribution="q1",
+            body="# Auto-matched skill sections",
+            winner=True,
+        )
+        return injection.SectionSelection((match,), 1)
+
+    monkeypatch.setattr(injection, "match_sections", fake_sections)
     return calls
 
 
@@ -717,7 +734,7 @@ def test_planner_and_quest_bimodal_skip_when_autoskill_active(
     from precis.quest import tick
     from precis.workers import planner_prompt
 
-    calls = _bimodal_hit(monkeypatch)
+    calls = _injected_sections(monkeypatch)
     monkeypatch.setattr(planner_prompt, "_ref_body", lambda ctx: "task text")
     assert planner_prompt._m_skill_injection(cast(Any, None)) == ""
     assert tick._skill_injection_section("task text") == ""
@@ -731,7 +748,7 @@ def test_planner_and_quest_bimodal_unchanged_when_autoskill_off(
     from precis.workers import planner_prompt
 
     monkeypatch.setenv("PRECIS_AUTOSKILL", "off")
-    calls = _bimodal_hit(monkeypatch)
+    calls = _injected_sections(monkeypatch)
     monkeypatch.setattr(planner_prompt, "_ref_body", lambda ctx: "task text")
     assert "Auto-matched skill" in planner_prompt._m_skill_injection(cast(Any, None))
     assert "Auto-matched skill" in tick._skill_injection_section("task text")
@@ -745,7 +762,7 @@ def test_bimodal_still_runs_when_no_store_is_bound(
     # skipped either — a session never gets neither.
     from precis.quest import tick
 
-    calls = _bimodal_hit(monkeypatch)
+    calls = _injected_sections(monkeypatch)
     assert "Auto-matched skill" in tick._skill_injection_section("task text")
     assert calls == ["task text"]
 

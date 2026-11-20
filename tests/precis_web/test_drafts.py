@@ -1100,6 +1100,65 @@ def test_export_docx_defaults_to_endnote_fields_and_stamps_name(
     assert seen[-1]["claim_appendix"] is False
 
 
+@pytest.mark.parametrize(
+    ("query", "citations", "notes"),
+    [
+        ("", "endnote", True),
+        ("audience=external", "endnote", False),
+        ("audience=external&notes=1", "endnote", True),
+        ("notes=0", "endnote", False),
+        ("notes=1", "endnote", True),
+        ("citations=plain", "plain", True),
+        ("citations=word", "word", True),
+        ("citations=zotero&notes=0", "zotero", False),
+        ("citations=bogus", "endnote", True),
+        ("citations=", "endnote", True),
+    ],
+)
+def test_export_docx_route_parses_citations_and_notes(
+    draft_client: TestClient, monkeypatch, query: str, citations: str, notes: bool
+) -> None:
+    """``?citations=`` takes the four modes (unknown falls back to endnote);
+    ``?notes=`` absent follows the audience: on for dev, off for external."""
+    import precis.export.docx as docx_mod
+
+    seen: list[dict[str, object]] = []
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(papers=[])
+
+    def fake_export_docx(store, ref, *, target_path, citations="plain", **kw):
+        seen.append({"citations": citations, **kw})
+        target_path.write_bytes(b"PK\x03\x04fake-docx")
+        (target_path.parent / "supplement.zip").write_bytes(b"PK\x05\x06" + bytes(18))
+        return docx_mod.DocxResult(path=target_path, cited_slugs=[])
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    monkeypatch.setattr(docx_mod, "export_docx", fake_export_docx)
+    r = draft_client.get("/drafts/nt/export.docx?" + query)
+    assert r.status_code == 200
+    assert seen[-1]["citations"] == citations
+    assert seen[-1]["research_notes"] is notes
+
+
+def test_export_docx_route_unbuilt_mode_is_an_input_error(
+    draft_client: TestClient, monkeypatch
+) -> None:
+    """The real exporter refuses a named-but-unbuilt mode; the route turns
+    that into its input-error page rather than a 500."""
+    import precis.export as export
+
+    monkeypatch.setattr(export, "IMPLEMENTED_CITATION_MODES", ("endnote", "plain"))
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(papers=[])
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    r = draft_client.get("/drafts/nt/export.docx?citations=zotero")
+    assert r.status_code == 422
+    assert "not available yet" in r.text
+
+
 def test_pdf_cache_dir_separates_nolinks_builds() -> None:
     """A ``?links=0`` submission PDF caches apart from the linked build of
     the same version, so neither variant is served for the other."""

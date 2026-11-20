@@ -320,6 +320,14 @@ def _math_braces_balanced(span: str) -> bool:
     return depth == 0
 
 
+#: Restrict the arithmetic exception to an operand-shaped body containing
+#: an explicit binary operator. Parentheses alone also occur in numeric
+#: currency prose (e.g. ``$10 (2025) $12 (2026)``). The operand-shaped ends
+#: exclude ranges whose closing dollar cuts off the second operand.
+_MATH_ARITHMETIC = re.compile(r"[+-]?[\d(][\d\s()+*/.-]*[\d)]")
+_MATH_BINARY_OPERATOR = re.compile(r"[\d)]\s*[+*/-]\s*[+-]?[\d.(]")
+
+
 def _math_plausible(span: str) -> bool:
     """Is a ``$…$`` candidate actually math — or a mispairing of two
     currency/stray dollars? LLM-authored prose mixes ``$10–50 per
@@ -329,7 +337,9 @@ def _math_plausible(span: str) -> bool:
     "Display math should end with $$" fatals downstream. A span that is
     long, or wordy without a single mathy character, is not math — its
     dollars fall through to the escaper and render as the literal ``$``
-    the author meant."""
+    the author meant. A numeric arithmetic span such as ``$(6 - 9)$``
+    can bypass the whitespace heuristic when it has an explicit
+    binary operator between operands."""
     body = span.strip("$")
     if len(body) > 120:
         return False
@@ -338,6 +348,9 @@ def _math_plausible(span: str) -> bool:
         # alternation glues two stray author dollars around real spans
         # ($$2^30$ ($∼$$) — verbatim passthrough would emit an unpaired $.
         return False
+    stripped = body.strip()
+    if _MATH_ARITHMETIC.fullmatch(stripped) and _MATH_BINARY_OPERATOR.search(stripped):
+        return True
     return not (body.count(" ") >= 2 and not re.search(r"[\\^_={}<>≈±×·]", body))
 
 
@@ -983,7 +996,16 @@ class _Ctx:
     #: ``\cite`` names its entry, so :func:`_merge_adjacent_cites` can hand
     #: the walker resolved groups. Equal marks share one index, so a repeated
     #: mark renders to an identical string (:class:`walker.RepeatGuard`).
+    #: Print every repeated cite mark (:class:`walker.RepeatMarks` drops a
+    #: mark equal to the previous printed one of its block).
+    repeat_cites: bool = False
+    #: Two records of one DOI cite one bib key (set in ``__post_init__``).
+    doi_aliases: walker.DoiAliases = field(init=False, repr=False)
     _cite_marks: list[walker.CiteGroup] = field(default_factory=list, repr=False)
+    #: The plain text before and after each cite occurrence
+    #: (:func:`walker.mark_context`); the ``\x06<i>\x06`` tag after a
+    #: sentinel names its entry.
+    _cite_contexts: list[tuple[str, str]] = field(default_factory=list, repr=False)
     _cite_mark_ids: dict[walker.CiteGroup, int] = field(
         default_factory=dict, repr=False
     )
@@ -1016,6 +1038,7 @@ class _Ctx:
     poster: bool = False
 
     def __post_init__(self) -> None:
+        self.doi_aliases = walker.DoiAliases(self.store, self.cited, self.warnings)
         if self.trust is None and self.store is not None:
             from precis.export._trust_marks import TrustTracker
 
@@ -1301,14 +1324,17 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
 
 def _resolve_si_slug(slug: str, ctx: _Ctx) -> tuple[str, bool]:
     """A bare cite slug → ``(slug_to_cite, is_si)``
-    (:func:`walker.resolve_si_slug`, memoised on ``ctx``)."""
-    return walker.resolve_si_slug(
+    (:func:`walker.resolve_si_slug`, memoised on ``ctx``); a record whose DOI
+    an already cited record has takes that record's key
+    (:class:`walker.DoiAliases`)."""
+    key, is_si = walker.resolve_si_slug(
         slug,
         ctx.store,
         si_cache=ctx._si_slug_cache,
         target_cache=ctx._cite_target_cache,
         warnings=ctx.warnings,
     )
+    return ctx.doi_aliases.canonical(key), is_si
 
 
 def _conjunct_cite_keys(store: Any, hub_ref_id: int) -> list[str]:
@@ -1391,7 +1417,11 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
         # the hub's full derived evidence — a pin overrides what gets
         # cited, never what the evidence graph holds.
         return _hub_footnote(pk, fc.evidence, ctx)
-    rendered = _cite_keys(keys, ctx) + _trust_mark_latex(ctx, pk)
+    trust = _trust_mark_latex(ctx, pk)
+    # \x05 tells :func:`_merge_adjacent_cites` the mark carries a trust mark
+    # (never dropped as a repeat); it strips the sentinel.
+    cite = _cite_keys(keys, ctx)
+    rendered = cite + (_TRUST_SENTINEL + trust if trust and "\x01<" in cite else trust)
     walker.record_claim_keys(
         seen, rendered_keys, ctx.cited, lambda k: _resolve_si_slug(k, ctx)[0]
     )
@@ -1880,8 +1910,16 @@ def _cite_keys(keys: list[str], ctx: _Ctx) -> str:
         return _cite(keys[0], ctx)
     if ctx.patent_mode or ctx.footnote_refs:
         return "".join(_cite(k, ctx) for k in keys)
+
     # Supplement keys cite as their parent; duplicates collapse.
-    pairs = walker.key_group(keys, lambda k: _resolve_si_slug(k, ctx))
+    # Registered one at a time, so a later key whose DOI an earlier key of the
+    # group has (neither cited before) takes that key (:class:`walker.DoiAliases`).
+    def resolve(k: str) -> tuple[str, bool]:
+        key, si = _resolve_si_slug(k, ctx)
+        walker.register(ctx.cited, key)
+        return key, si
+
+    pairs = walker.key_group(keys, resolve)
     if len(pairs) == 1:
         return _cite(pairs[0][0], ctx, si=pairs[0][1])
     return _cite_mark(walker.register_group(pairs, ctx.cited, ctx.si_cited), ctx)
@@ -1933,7 +1971,7 @@ def _source_footnote(slug: str, kind: str, excerpt: str, ctx: _Ctx) -> str:
     entry — so the footnote's ``[N]`` always matches the end bibliography,
     which the preamble numbers in citation order) + the referenced chunk
     excerpt when the ref addresses a specific chunk."""
-    base = slug.split("~", 1)[0]
+    base = ctx.doi_aliases.canonical(slug.split("~", 1)[0])
     walker.register(ctx.cited, base)
     ref = ctx.store.get_ref(kind=kind, id=base) if ctx.store is not None else None
     if kind == "patent":
@@ -2041,11 +2079,10 @@ def _paper_contiguity_label(
 
 
 def _frozen_context_sentences(pk: int, ctx: _Ctx) -> dict[int, str]:
-    """``{chunk_id: context_sentence}`` off the hub's live
-    ``nanopub_publish`` row's frozen grounding payload (``docs/backlog/
-    paper-context-sentence.md``) — empty when there is no publish row, or
-    its payload carries no sentence. Same degrade policy as
-    :func:`_frozen_contiguity_flags`."""
+    """Map quoted chunk IDs to context from historical publish rows.
+
+    Uses the same degrade policy as :func:`_frozen_contiguity_flags`.
+    """
     fn = getattr(ctx.store, "nanopub_publish_row", None)
     if not callable(fn):
         return {}
@@ -2063,30 +2100,15 @@ def _frozen_context_sentences(pk: int, ctx: _Ctx) -> dict[int, str]:
     return out
 
 
-def _paper_context_sentence(
-    paper_ref_id: int, handles: list[str], frozen: dict[int, str], ctx: _Ctx
-) -> str | None:
-    """The paper-context sentence for a source paper (``docs/backlog/
-    paper-context-sentence.md``) — the frozen copy off the hub's publish
-    row (:func:`_frozen_context_sentences`) keyed by any of this paper's
-    quoted ``chunk_id``s, else the live ``refs.meta['context_sentence']``.
-    ``None`` when neither is set — the caller renders no Context: line
-    (population is a deliberate backfill + lazy enqueue, not corpus-wide,
-    so an unset sentence is the common case, not an error)."""
+def _paper_context_sentence(handles: list[str], frozen: dict[int, str]) -> str | None:
+    """Find historical context by the quoted chunk IDs for this paper."""
     for h in handles:
         parsed = handle_registry.parse(h)
         if parsed is not None and parsed[0] == "paper" and parsed[1]:
             sentence = frozen.get(parsed[2])
             if sentence:
                 return sentence
-    if ctx.store is None:
-        return None
-    try:
-        ref = ctx.store.fetch_refs_by_ids([paper_ref_id]).get(paper_ref_id)
-    except Exception:  # pragma: no cover — store hiccup
-        return None
-    sentence = (getattr(ref, "meta", None) or {}).get("context_sentence")
-    return sentence if isinstance(sentence, str) and sentence.strip() else None
+    return None
 
 
 def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
@@ -2163,13 +2185,8 @@ def _hub_footnote(pk: int, evidence: Any, ctx: _Ctx) -> str:
         if key:
             parts.append(f"~\\cite{{{key}}}")
         lines.append("".join(parts))
-        # Paper-context sentence (paper-context-sentence.md), roman text
-        # under the title line — visually distinct from the italic quoted
-        # passages below, so a reader never mistakes added context for a
-        # verbatim excerpt.
-        sentence = _paper_context_sentence(
-            edge.paper_ref_id, handles, frozen_context, ctx
-        )
+        # Historical context appears separately from the verbatim passages.
+        sentence = _paper_context_sentence(handles, frozen_context)
         if sentence:
             lines.append(f"Context: {_render_gap(' '.join(sentence.split()), ctx)}")
         # The full grounding passage per excerpt, in reading order — the
@@ -2380,7 +2397,7 @@ def _hub_paper_cite_key(paper_ref_id: int, ctx: _Ctx) -> str | None:
         return None
     if not aliases:
         return None
-    key = str(aliases[0])
+    key = ctx.doi_aliases.canonical(str(aliases[0]))
     walker.register(ctx.cited, key)
     return key
 
@@ -2393,7 +2410,10 @@ def _hub_paper_cite_key(paper_ref_id: int, ctx: _Ctx) -> str | None:
 #: separator and are left alone. An SI mark joins the run as
 #: ``\\cites{a}[SI]{b}``.
 #: The grouping itself is :func:`walker.merge_adjacent`.
-_CITE_MARKER = re.compile(r"\x01<(\d+)>\x01")
+_CITE_MARKER = re.compile(r"\x01<(\d+)>\x01(?:\x06(\d+)\x06)?")
+#: Leads the trust-mark text that follows a cite mark (see
+#: :func:`_render_finding_cite`).
+_TRUST_SENTINEL = "\x05"
 
 
 def _merge_adjacent_cites(s: str, ctx: _Ctx) -> str:
@@ -2404,17 +2424,40 @@ def _merge_adjacent_cites(s: str, ctx: _Ctx) -> str:
     last = 0
     for m in _CITE_MARKER.finditer(s):
         group = ctx._cite_marks[int(m.group(1))]
+        if m.group(2) is not None:  # the text around this occurrence
+            before, after = ctx._cite_contexts[int(m.group(2))]
+            group = replace(group, before=before, after=after)
         items += [s[last : m.start() - len(_cite_tex(group))], group]
         last = m.end()
     items.append(s[last:])
+    merged = walker.merge_adjacent(items)
     out: list[str] = []
     renderer = LatexRenderer(ctx)
-    for item in walker.merge_adjacent(items):
+    marks = walker.RepeatMarks(enabled=not ctx.repeat_cites)
+    dropped = False  # the last mark was not printed: close the prose up
+    prose = False  # out[-1] is prose, not a mark
+    for i, item in enumerate(merged):
         if isinstance(item, str):
-            out.append(item)
-        else:
+            text = item.removeprefix(_TRUST_SENTINEL)
+            if dropped and prose:
+                out[-1], text = walker.close_up_dropped(out[-1], text)
+            dropped = False
+            if prose:  # prose either side of a dropped mark is one string
+                out[-1] += text
+            else:
+                out.append(text)
+            prose = True
+            continue
+        nxt = merged[i + 1] if i + 1 < len(merged) else ""
+        trusted = isinstance(nxt, str) and nxt.startswith(_TRUST_SENTINEL)
+        if marks.admit(item, trusted=trusted):
             renderer.cite_group(out, item)
-    return "".join(out)
+            dropped, prose = False, False
+        else:
+            dropped = True
+    if dropped and prose:
+        out[-1], _ = walker.close_up_dropped(out[-1], "")
+    return "".join(out).replace(_TRUST_SENTINEL, "")
 
 
 def _verbatim_spans(text: str) -> list[tuple[int, int]]:
@@ -2482,6 +2525,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
             out[dropped_at] = walker.trim_before_dropped(out[dropped_at])
         dropped_at = None
         out.append(_render_gap(gap, ctx, preceding=plain))
+        context = walker.mark_context(plain + gap, text[m.end() :])
         plain += gap + (m.group("disp") or m.group(0))
         ctx.dropped_cite = False
         ref = _render_reference(m, ctx)
@@ -2492,6 +2536,12 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
         # → one paper) collapse to one cite + one link run.
         if not repeat.admit(ref, gap=gap, is_cite=ref.startswith("\\cite")):
             ref = ""
+        if "\x01<" in ref:
+            # Tag each mark's sentinel with the text around this occurrence
+            # (a sentinel is shared by equal marks): the repeat rule reads it.
+            ctx._cite_contexts.append(context)
+            tag = f"\x06{len(ctx._cite_contexts) - 1}\x06"
+            ref = _CITE_MARKER.sub(r"\g<0>" + tag, ref)
         out.append(ref)
         last = m.end()
     tail = text[last:]
@@ -2646,6 +2696,7 @@ def render_body(
     library_links: bool = True,
     withheld_figures: frozenset[str] = frozenset(),
     audience: str = "dev",
+    repeat_cites: bool = False,
 ) -> RenderResult:
     """Render the whole draft body to LaTeX (no preamble/title chrome).
 
@@ -2661,7 +2712,11 @@ def render_body(
     ``doi_links=False`` / ``library_links=False`` independently turn off the
     external links normal mode otherwise puts on each ``[n]`` (the link
     itself rides on the bib entry, :func:`build_bib`) — no effect in
-    patent/footnote mode, which never emit ``\\cite`` at all."""
+    patent/footnote mode, which never emit ``\\cite`` at all.
+
+    ``repeat_cites=True`` prints every cite mark; by default a mark naming
+    the same references as the previous one in its paragraph (list item,
+    caption, table cell) is dropped (:class:`walker.RepeatMarks`)."""
     from precis.export._ref_cache import RefLookupMemo
     from precis.export.audience import for_export, guard_audience
 
@@ -2706,6 +2761,7 @@ def render_body(
         library_label=cfg.library_label,
         library_search_url=cfg.library_search_url,
         withheld_figures=withheld_figures,
+        repeat_cites=repeat_cites,
         paragraph_handles=walker.named_headings(chunks, depth_of, back_matter),
         xref_pass=walker.number_xrefs(
             chunks, getattr(ref, "title", None), equation_of=_standalone_equation
@@ -2718,6 +2774,7 @@ def render_body(
     lines = _render_chunk_lines(
         chunks, ctx, depth_of=depth_of, title_dc=title_dc, back_matter=back_matter
     )
+    ctx.warnings.extend(ctx.doi_aliases.same_work_warnings())
     return RenderResult(
         body="\n".join(lines).strip() + "\n",
         supplement=ctx.audience.entries,
@@ -3702,6 +3759,7 @@ def _export_poster(
     withheld_figures: frozenset[str],
     record_override: bool = False,
     audience: str = "dev",
+    repeat_cites: bool = False,
 ) -> ExportResult:
     """Render a ``doc_type='poster'`` draft into a compilable A0 project:
     the packaged ``poster.tex`` with the resolved branding profile
@@ -3754,6 +3812,7 @@ def _export_poster(
         library_label=cfg.library_label,
         library_search_url=cfg.library_search_url,
         withheld_figures=withheld_figures,
+        repeat_cites=repeat_cites,
         poster=True,
     )
     ctx.warnings.extend(ctx.audience.warnings)
@@ -3941,6 +4000,7 @@ def export_draft(
     claim_appendix: bool = True,
     record_override: bool = False,
     audience: str = "dev",
+    repeat_cites: bool = False,
 ) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
@@ -3959,7 +4019,9 @@ def export_draft(
     ``doi_links=False`` / ``library_links=False`` independently turn off the
     external links on each ``[n]`` and the library link in the bibliography
     entry (:func:`build_bib`) — default both on. ``claim_appendix=False`` omits the "Published claim artifacts"
-    appendix.
+    appendix. ``repeat_cites=True`` prints
+    every cite mark (default: a mark equal to the previous one in its
+    paragraph is dropped).
 
     ``bib_style`` picks the biblatex bibliography style (see
     :data:`_BIB_STYLES`): the explicit argument wins, else the draft's own
@@ -4014,6 +4076,7 @@ def export_draft(
             withheld_figures=withheld_figures,
             record_override=record_override,
             audience=audience,
+            repeat_cites=repeat_cites,
         )
     patent_mode = doc_type == _PATENT_DOC_TYPE
     if not (bib_style or "").strip():
@@ -4033,6 +4096,7 @@ def export_draft(
         library_links=library_links,
         withheld_figures=withheld_figures,
         audience=audience,
+        repeat_cites=repeat_cites,
     )
     if style_warning and not patent_mode:
         rendered.warnings.append(style_warning)

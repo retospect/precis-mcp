@@ -108,6 +108,10 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # whole for attribution reports, never queried by key.
         "autoskill_sessions.injected",
         "autoskill_sessions.used",
+        # 0326: an item snapshot before and after a change, read back whole,
+        # never queried by key.
+        "gtd_item_log.before",
+        "gtd_item_log.after",
         # 0320: the passage evidence a consideration judgment was made on
         # (chunk handles and/or quoted spans, open-ended per judgment);
         # read whole by the inspect view, never queried by key.

@@ -317,7 +317,7 @@ def add_citation_field(
     cites: list[tuple[dict[str, Any], str | None, int]],
     suffix: str = "",
     suffixes: list[str] | None = None,
-) -> None:
+) -> Any:
     """Append ONE ``ADDIN EN.CITE`` complex field to ``paragraph`` — the
     in-text citation. ``cites`` carries one ``(source, notes, cite_number)``
     triple per cited reference: a run of adjacent citations emits a single
@@ -329,11 +329,15 @@ def add_citation_field(
     passage into its record's Research Notes. ``suffix`` is a single SI
     cite's ``" (SI)"`` postnote — ``<Suffix>`` plus the cached text.
     ``suffixes`` (one per cite, some empty) is the mixed run: ``[9 (SI), 14]``,
-    the postnote on the SI ``<Cite>`` only."""
+    the postnote on the SI ``<Cite>`` only.
+
+    Returns the field's ``w:instrText`` element, so a caller can rewrite the
+    payload later (:func:`set_citation_payload`)."""
     p = paragraph._p
     payload = citation_group_payload(cites, suffix, suffixes)
     p.append(_fld_char("begin"))
-    p.append(_instr_text(" ADDIN EN.CITE " + payload))
+    instr = _instr_text(" ADDIN EN.CITE " + payload)
+    p.append(instr)
     p.append(_fld_char("separate"))
     if suffixes is not None:
         mark = merged_cite_numbers_si(
@@ -344,27 +348,47 @@ def add_citation_field(
         mark = merged_cite_numbers(sorted(n for _s, _n, n in cites))
         p.append(_cached_run(mark + suffix))
     p.append(_fld_char("end"))
+    return instr[0]
 
 
-def add_reflist_field(doc: Any, cached_lines: list[str]) -> None:
-    """Append the ``ADDIN EN.REFLIST`` bibliography field. EndNote
+def set_citation_payload(
+    instr: Any,
+    cites: list[tuple[dict[str, Any], str | None, int]],
+    suffix: str = "",
+    suffixes: list[str] | None = None,
+) -> None:
+    """Rewrite the instruction text of a field :func:`add_citation_field`
+    wrote (its returned ``w:instrText``) from a changed ``cites`` list; the
+    cached display is untouched."""
+    instr.text = " ADDIN EN.CITE " + citation_group_payload(cites, suffix, suffixes)
+
+
+def add_reflist_field(
+    doc: Any,
+    cached_lines: list[tuple[str, str]],
+    style: Any = None,
+    instr: str = " ADDIN EN.REFLIST ",
+) -> None:
+    """Append the ``ADDIN EN.REFLIST`` bibliography field (``instr`` swaps
+    the instruction: the Zotero list is the same field shape). EndNote
     regenerates the list on update, so ``cached_lines`` is just placeholder
-    text shown until then (one paragraph per reference, matching how EndNote
-    lays the formatted list out)."""
+    text shown until then: one ``(label, line)`` pair per reference, each
+    its own paragraph in ``style`` (label, a tab, the line), matching how
+    EndNote lays the formatted list out. The field opens in the first
+    paragraph and closes in the last."""
     from docx.oxml import OxmlElement
 
-    para = doc.add_paragraph()
-    p = para._p
-    p.append(_fld_char("begin"))
-    p.append(_instr_text(" ADDIN EN.REFLIST "))
-    p.append(_fld_char("separate"))
-    for i, line in enumerate(cached_lines):
-        if i:
-            br = OxmlElement("w:r")
-            br.append(OxmlElement("w:br"))
-            p.append(br)
+    paras = [doc.add_paragraph(style=style) for _ in cached_lines or [("", "")]]
+    first = paras[0]._p
+    first.append(_fld_char("begin"))
+    first.append(_instr_text(instr))
+    first.append(_fld_char("separate"))
+    for para, (label, line) in zip(paras, cached_lines, strict=False):
+        p = para._p
+        p.append(_cached_run(label))
+        p.append(_run(OxmlElement("w:tab")))
         p.append(_cached_run(line))
-    p.append(_fld_char("end"))
+    paras[-1]._p.append(_fld_char("end"))
 
 
 # ── document-level EndNote state (docVars EndNote reads) ──────────────

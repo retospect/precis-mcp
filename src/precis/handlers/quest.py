@@ -113,6 +113,7 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
     "fidelity_restale_band",
     "fidelity_promote_neb",
     "fidelity_promote_verify",
+    "fidelity_mechanical_retry_cap",
 )
 
 #: ``edit(kind='quest', meta=...)``'s closed allowlist (quest-tick-incident-
@@ -137,7 +138,11 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
 #: non-negative int, ``0`` = that pass off — gr537835; and
 #: ``fidelity_restale_cap=0`` is wider still — it holds EVERY automatic
 #: pathway re-mint on the quest, promote passes and repair re-dispatches
-#: included — ``compute._automatic_rerun_hold``, gr543908).
+#: included — ``compute._automatic_rerun_hold``, gr543908; the one exemption
+#: is the mechanical-rerun arm, gr593138: untrusted barriers that classify
+#: mechanical requeue on the pinned engine under
+#: ``fidelity_mechanical_retry_cap`` / ``fidelity_mechanical_gpu_h_budget``
+#: even under the hold — Reto ruling 2026-11-12).
 #: Mirrors ``todo.tag()``'s ``TAG_META_ALLOWED_KEYS`` promotion gate
 #: (``guards.check_meta_keys_promotable``) — a closed set, not a general meta
 #: bag; anything else still goes through ``put()``/create-time meta. Before
@@ -155,6 +160,7 @@ _META_ALLOWED_KEYS: frozenset[str] = frozenset(
         "environment_space",
         "reaction_config",
         "lit_gate",
+        "fidelity_mechanical_gpu_h_budget",
         *_FIDELITY_INT_KEYS,
     }
 )
@@ -568,6 +574,15 @@ def _check_fidelity_meta(meta: dict[str, Any]) -> None:
                 f"meta.{key} must be an integer >= 0 (0 = pass off), got {val!r}",
                 next=f"edit(kind='quest', id=N, meta={{'{key}': 0}})",
             )
+    budget = meta.get("fidelity_mechanical_gpu_h_budget")
+    if budget is not None and (
+        isinstance(budget, bool) or not isinstance(budget, (int, float)) or budget < 0
+    ):
+        raise BadInput(
+            "meta.fidelity_mechanical_gpu_h_budget must be a number >= 0 "
+            f"(GPU-hours for mechanical reruns, gr593138), got {budget!r}",
+            next="edit(kind='quest', id=N, meta={'fidelity_mechanical_gpu_h_budget': 36})",
+        )
 
 
 def _check_demand_meta(meta: dict[str, Any]) -> None:
@@ -2271,7 +2286,8 @@ class QuestHandler(NumericRefHandler):
         candidate bands + fidelity tiers and the trusted-per-axis coverage
         the frontier header computes, the open exploration queue
         (``view='gaps'``), the last coordinator tick, and the operator
-        holds in force (``fidelity_restale_cap=0`` is the master hold;
+        holds in force (``fidelity_restale_cap=0`` is the master hold, with
+        one exemption: mechanical reruns on the pinned engine;
         ``fidelity_promote_*=0`` holds one pass; ``compute_lane`` /
         ``lit_lane`` ``off``). Sized to ~1 kB — listings cap at
         ``_STATUS_*_CAP`` and point at the full views."""
@@ -2433,7 +2449,9 @@ class QuestHandler(NumericRefHandler):
         cap = _fval("fidelity_restale_cap")
         if cap is not None and cap <= 0:
             holds.append(
-                "fidelity_restale_cap=0 (every automatic pathway re-mint held)"
+                "fidelity_restale_cap=0 (every automatic pathway re-mint held, "
+                "except mechanical reruns on the pinned engine under their "
+                "retry cap and GPU-h budget)"
             )
         for key in ("fidelity_promote_neb", "fidelity_promote_verify"):
             v = _fval(key)

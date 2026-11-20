@@ -292,6 +292,50 @@ def test_parse_arxiv_html_basic() -> None:
     assert refs and "Ref one" in refs[0]["text"]
 
 
+def test_parse_arxiv_html_uses_bibliography_anchor_labels() -> None:
+    ext = parse_arxiv_html(b"""
+    <article class="ltx_document">
+      <p>Scalarization <cite class="ltx_cite">[<a href="#method"><span>52</span></a>]</cite>.
+      Weighted sums <cite class="ltx_cite">[<a href="#qubo">53</a>,
+      <a href="#method">52</a>]</cite> also work. See <a href="#alloy">52</a>.</p>
+      <p>Unlinked [52]. External <cite class="ltx_cite">[<a href="other.html#method">52</a>]</cite>.</p>
+      <section class="ltx_bibliography">
+        <ul class="ltx_biblist">
+          <li id="qubo" class="ltx_bibitem"><span class="ltx_tag_bibitem">[45]</span>
+          QUBO weighted sums.</li>
+          <li id="method" class="ltx_bibitem"><span class="ltx_tag_bibitem">[51]</span><span>Weighted Tchebycheff method.</span></li>
+          <li id="alloy" class="ltx_bibitem"><span class="ltx_tag_bibitem">[52]</span>
+          Alloy microtomography.</li>
+        </ul>
+      </section>
+    </article>
+    """)
+    assert [(block["type"], block["text"]) for block in ext.blocks] == [
+        ("paragraph", "Scalarization [51]. Weighted sums [45, 51] also work. See 52."),
+        ("paragraph", "Unlinked [52]. External [52]."),
+        ("references", "[45] QUBO weighted sums."),
+        ("references", "[51] Weighted Tchebycheff method."),
+        ("references", "[52] Alloy microtomography."),
+    ]
+
+
+def test_parse_arxiv_html_rejects_duplicate_numeric_bibliography_labels() -> None:
+    with pytest.raises(MarkupParseError, match=r"ambiguous bibliography label \[52\]"):
+        parse_arxiv_html(b"""
+        <article class="ltx_document">
+          <p>Scalarization <cite class="ltx_cite">[<a href="#method">52</a>]</cite>.</p>
+          <ul class="ltx_biblist">
+            <li id="alloy" class="ltx_bibitem">
+              <span class="ltx_tag_bibitem">[52]</span> Alloy microtomography.</li>
+          </ul>
+          <ul class="ltx_biblist">
+            <li id="method" class="ltx_bibitem">
+              <span class="ltx_tag_bibitem">[52]</span> Cited by: Introduction.</li>
+          </ul>
+        </article>
+        """)
+
+
 def test_parse_arxiv_html_extracts_arxiv_id_from_url() -> None:
     # The identity a DOI-less arXiv paper needs comes from the source URL —
     # arXiv markup is only ever reached by fetching a known id.

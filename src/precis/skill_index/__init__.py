@@ -45,11 +45,11 @@ Design notes:
   ``available=False`` and the caller drops back to its existing
   substring search. No silent quality loss.
 
-:mod:`precis.skill_index.injection` layers **bimodal harness-side
-injection** on top of this index (docs/backlog/skill-question-targets-
-and-injection.md §2): at a handful of harness-controlled prompt-assembly
-points, embed the task text once and either inject the WHOLE matched
-skill (score above threshold) or nothing at all — no cue/snippet tier.
+:mod:`precis.skill_index.injection` uses the task's sentences as discovery
+legs at planner and quest prompt assembly. A high cosine threshold admits
+question and heading targets into the same rank fusion and section table
+used by skill search. The prompts include the selected section bodies.
+Autoskill's separate history fallback still selects a skill by slug.
 """
 
 from precis.skill_index.chunker import Chunk, chunk_by_h2

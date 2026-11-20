@@ -221,6 +221,16 @@ class TestBrowseSort:
         body = h.search(tags=["WATCH:weekly"], sort="deadline").body
         assert f"cf{watched.id}" in body and sooner not in body
 
+    def test_browse_intersects_ids(self, store: Store) -> None:
+        """gr719628: the queryless cfp browse forwards ``args={'ids': …}``
+        to the tags-only renderer — without the forward the browse
+        widened past the named cohort."""
+        h, (later, sooner, _undated) = self._three(store)
+        body = h.search(ids=[sooner]).body
+        assert sooner in body and later not in body, body
+        empty = h.search(ids=["missing-cfp-slug"]).body
+        assert "no cfp entries" in empty
+
     def test_sort_rejected_with_q_and_unknown_keys(self, store: Store) -> None:
         h, _ = self._three(store)
         with pytest.raises(BadInput, match="sort="):

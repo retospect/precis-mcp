@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import re
 from typing import Any
@@ -10,7 +11,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.draft import lint as _draft_lint
-from precis.errors import BadInput, Gone, NotFound, Unsupported
+from precis.errors import BadInput, Gone, NotFound, ResultBudgetExceeded, Unsupported
 from precis.handlers.draft import DraftHandler
 from precis.store.store import Store
 from tests.factories import insert_gist
@@ -920,15 +921,210 @@ def test_span_is_a_reading_order_window(draft: DraftHandler, hub: Hub) -> None:
     body = draft.get(id=f"{ulist.dc}-0..3").body
     assert "item one" in body and "item two" in body
 
-    # A span on a heading reads through its section and crosses into the
-    # next sibling's content — not a headings-only sibling run.
+    # A span on a heading reads through its section and stops before the
+    # next sibling section (gr720456).
     body = draft.get(id=f"{intro}-0..5").body
-    assert "lead" in body and "item one" in body and "Methods" in body
+    assert "lead" in body and "item one" in body and "Methods" not in body
+    # Both endpoints are signed offsets, not a before-count and length.
+    ids = hub.live_store.drafts.draft_relative_chunk_ids(
+        f"{intro}-1..3", clamp_heading=True
+    )
+    section = _order(hub, "nt")
+    start = next(i for i, c in enumerate(section) if c.dc == intro)
+    assert ids == [c.chunk_id for c in section[start : start + 4]]
+    assert hub.live_store.drafts.draft_relative_chunk_ids(f"{intro}+1..3") == [
+        c.chunk_id for c in section[start + 1 : start + 4]
+    ]
 
     # Before-context crosses tree boundaries too: 'lead' is Intro's first
     # child, so -1..1 reads [Intro, lead, ulist].
     body = draft.get(id=f"{lead}-1..1").body
     assert "Intro" in body and "lead" in body
+
+
+def test_span_cut_names_last_chunk_and_continuation(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr720456: a span past the byte budget is cut on a chunk boundary
+    and says which chunk was last shown and how to continue."""
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "2048")
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="heading", text="Intro", at={"after": "¶" + th})
+    intro = _dc_of(hub, "Intro")
+    for i in range(6):
+        draft.put(
+            id="nt",
+            chunk_kind="paragraph",
+            text=f"para{i} " + "x" * 400,
+            at={"into": intro, "last": True},
+        )
+    response = draft.get(id=f"{intro}-0..6")
+    assert response.budget_fit is not None
+    body = response.budget_fit(2048)
+    assert "window cut at dc" in body
+    assert "get(kind='draft', id='dc" in body.split("next:")[-1]
+    assert f"id='{intro}+" in body.split("next:")[-1]
+    assert "truncated: showing" not in body
+
+
+def test_span_cut_keeps_warnings_for_shown_chunks(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shortened page keeps lint warnings for chunks it still shows and
+    drops those for chunks it cut."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(id="nt", chunk_kind="heading", text="Intro", at={"after": "¶" + th})
+    intro = _dc_of(hub, "Intro")
+    for i in range(6):
+        draft.put(
+            id="nt",
+            chunk_kind="paragraph",
+            text=f"para{i} " + "x" * 400,
+            at={"into": intro, "last": True},
+        )
+
+    def hint(_store: object, text: str) -> str:
+        return "".join(f"\n\nWARN-{tag}" for tag in ("para0", "para5") if tag in text)
+
+    monkeypatch.setattr(_draft_lint, "tombstone_chunk_hint", hint)
+    response = draft.get(id=f"{intro}-0..6")
+    assert response.budget_fit is not None
+    body = response.budget_fit(2048)
+    assert "window cut at dc" in body
+    assert "WARN-para0" in body
+    assert "WARN-para5" not in body
+
+
+@pytest.mark.parametrize("ranged", [False, True])
+def test_chunk_budget_refuses_oversized_first_chunk(
+    draft: DraftHandler, hub: Hub, ranged: bool
+) -> None:
+    """gr720456: never silently skip the remainder of an oversized chunk."""
+    draft.put(id="nt", title="T", project=_proj(hub))
+    draft.put(id="nt", text="x" * 4000, at={"last": True})
+    chunk = _order(hub, "nt")[-1]
+    handle = chunk.dc + ("-0..1" if ranged else "")
+    response = draft.get(id=handle)
+    assert response.budget_fit is not None
+    with pytest.raises(ResultBudgetExceeded, match="no chunks shown") as exc:
+        response.budget_fit(1000)
+    assert handle in str(exc.value)
+
+
+def test_chunk_budget_includes_single_chunk_footer(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A large children footer cannot send a single read to byte truncation."""
+    draft.put(id="nt", title="T", project=_proj(hub))
+    root = _order(hub, "nt")[0].dc
+    monkeypatch.setattr(draft, "_children_hint", lambda chunk: "x" * 4000)
+    response = draft.get(id=root)
+    assert response.budget_fit is not None
+    with pytest.raises(ResultBudgetExceeded, match="no chunks shown"):
+        response.budget_fit(1000)
+
+
+def test_plain_list_budget_continuation(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """List expansion reserves runtime suffix bytes and resumes at the next item."""
+    from precis._result_budget import fit_result_body
+
+    draft.put(id="nt", title="T", project=_proj(hub))
+    draft.put(
+        id="nt",
+        text="\n".join(f"- item{i} " + "x" * 600 for i in range(6)),
+        at={"last": True},
+    )
+    chunks = _order(hub, "nt")
+    container = next(c for c in chunks if c.chunk_kind == "ulist")
+    response = draft.get(id=container.dc)
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1600")
+    suffix = "\nRuntime hint " + "s" * 200
+    body = fit_result_body(
+        response.body + suffix,
+        verb="get",
+        kind="draft",
+        context_limited=True,
+        targeted_hint=None,
+        structured_fit=response.budget_fit,
+        suffix=suffix,
+    )
+    assert len(body.encode("utf-8")) <= 1600
+    assert body.endswith(suffix)
+    assert "truncated: showing" not in body
+    resume = re.search(r"next: get\(kind='draft', id='([^']+)'\)", body)
+    assert resume is not None
+    shown = [int(cid) for cid in re.findall(r"^dc(\d+)  \[", body, re.M)]
+    remaining = hub.live_store.drafts.draft_relative_chunk_ids(resume[1])
+    subtree = set(hub.live_store.drafts.draft_subtree_chunk_ids(container.dc))
+    expected = [c.chunk_id for c in chunks if c.chunk_id in subtree]
+    assert remaining is not None
+    assert shown + remaining == expected
+
+
+@pytest.mark.parametrize("anchor_heading", [True, False])
+def test_span_continuation_preserves_window_across_nested_heading(
+    draft: DraftHandler, hub: Hub, anchor_heading: bool
+) -> None:
+    """gr720456: rebasing at a nested heading dropped its later siblings."""
+    import re
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    root = _order(hub, "nt")[0].dc
+    draft.put(id="nt", chunk_kind="heading", text="Intro", at={"into": root})
+    intro = _dc_of(hub, "Intro")
+    draft.put(id="nt", text="lead " + "x" * 700, at={"into": intro})
+    lead = _dc_of(hub, "lead " + "x" * 700)
+    draft.put(
+        id="nt",
+        chunk_kind="heading",
+        text="Nested " + "n" * 700,
+        at={"into": intro, "last": True},
+    )
+    nested = _dc_of(hub, "Nested " + "n" * 700)
+    draft.put(id="nt", text="nested prose " + "y" * 700, at={"into": nested})
+    draft.put(id="nt", chunk_kind="heading", text="Sibling", at={"after": nested})
+    sibling = _dc_of(hub, "Sibling")
+    draft.put(id="nt", text="sibling prose " + "z" * 700, at={"into": sibling})
+    draft.put(id="nt", chunk_kind="heading", text="Outside", at={"after": intro})
+    anchor = intro if anchor_heading else lead
+    handle = f"{anchor}-1..5" if anchor_heading else f"{anchor}-1..4"
+    expected = hub.live_store.drafts.draft_relative_chunk_ids(
+        handle, clamp_heading=True
+    )
+    shown: list[int] = []
+    continuations: list[str] = []
+    for _ in range(10):
+        response = draft.get(id=handle)
+        assert response.budget_fit is not None
+        body = response.budget_fit(1300)
+        shown.extend(int(cid) for cid in re.findall(r"^dc(\d+)  \[", body, re.M))
+        continuation = re.search(r"next: get\(kind='draft', id='([^']+)'\)", body)
+        if continuation is None:
+            break
+        handle = continuation[1]
+        continuations.append(handle)
+        assert handle.startswith(anchor)
+    else:
+        pytest.fail("continuation did not finish")
+    assert continuations
+    first_remaining = hub.live_store.drafts.draft_relative_chunk_ids(continuations[0])
+    assert first_remaining is not None
+    assert first_remaining[0] == int(nested[2:])
+    assert shown == expected
+    assert len(shown) == len(set(shown))
+    # Context windows (including heading-focused ask previews) retain before-context.
+    assert hub.live_store.drafts.draft_relative_chunk_ids(f"{intro}-1..1") == [
+        int(root[2:]),
+        int(intro[2:]),
+        int(lead[2:]),
+    ]
 
 
 def test_heading_selector_resolves_to_its_chunk(draft: DraftHandler, hub: Hub) -> None:
@@ -1284,6 +1480,225 @@ def test_retired_chunk_read_discloses_retired_state(
     # a live chunk carries no retired marker
     live = draft.get(id=f"¶{_order(hub, 'nt')[0].handle}").body
     assert "RETIRED" not in live
+
+
+def test_retired_chunk_read_names_event_and_restore(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr700659: a cascade-retired descendant read names the ancestor's
+    ``retired`` event, still shows its text, and points at a restore."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    sec = draft.put(id="nt", chunk_kind="heading", text="Sec", at={"last": True})
+    sec_h = _dc(sec.body)
+    para = draft.put(
+        id="nt", chunk_kind="paragraph", text="body to keep", at={"into": sec_h}
+    )
+    para_h = _dc(para.body)
+    draft.put(id="nt", chunk_kind="paragraph", text="other", at={"last": True})
+    sec_chunk = hub.live_store.drafts.get_draft_chunk(sec_h)
+    assert sec_chunk is not None
+    hub.live_store.drafts.retire_chunk(sec_chunk.handle, mode="cascade")
+
+    out = draft.get(id=para_h).body
+    assert "body to keep" in out
+    assert f"its ancestor {sec_h}" in out
+    assert "mode=cascade" in out
+    assert "Restore" in out
+    # the restore call names the real draft slug and the chunk's own kind
+    assert "id='nt'" in out
+    assert "chunk_kind='paragraph'" in out
+    assert f"at={{'into': restored_{sec_h}, 'last': True}}" in out
+
+
+def test_retired_chunk_restore_targets_recreated_parent(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A separate child read points back to the parent recovery."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    outer = draft.put(id="nt", chunk_kind="heading", text="Outer", at={"last": True})
+    outer_h = _dc(outer.body)
+    inner = draft.put(id="nt", chunk_kind="heading", text="Inner", at={"into": outer_h})
+    inner_h = _dc(inner.body)
+    para = draft.put(
+        id="nt", chunk_kind="paragraph", text="nested body", at={"into": inner_h}
+    )
+    para_h = _dc(para.body)
+    draft.put(id="nt", chunk_kind="paragraph", text="tail", at={"last": True})
+    inner_chunk = hub.live_store.drafts.get_draft_chunk(inner_h)
+    assert inner_chunk is not None
+    hub.live_store.drafts.retire_chunk(inner_chunk.handle, mode="cascade")
+
+    out = draft.get(id=para_h).body
+    assert "nested body" in out
+    assert f"its ancestor {inner_h}" in out
+    assert f"id={inner_h!r}) to recover the parent first" in out
+    assert f"at={{'into': restored_{inner_h}, 'last': True}}" in out
+    assert f"at={{'after': '{para_h}'}}" not in out
+
+
+def test_retired_chunk_under_live_parent_restores_into_ghost_slot(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The single-retire case: parent still live, so ``after`` the
+    retired chunk recovers its old position (the ghost-slot bracket of
+    gripe 49153)."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    sec = draft.put(id="nt", chunk_kind="heading", text="Sec", at={"last": True})
+    sec_h = _dc(sec.body)
+    para = draft.put(
+        id="nt", chunk_kind="paragraph", text="drop me", at={"into": sec_h}
+    )
+    para_h = _dc(para.body)
+    draft.put(id="nt", chunk_kind="paragraph", text="stays", at={"last": True})
+    para_chunk = hub.live_store.drafts.get_draft_chunk(para_h)
+    assert para_chunk is not None
+    hub.live_store.drafts.retire_chunk(para_chunk.handle)
+
+    out = draft.get(id=para_h).body
+    assert "drop me" in out
+    # parent (sec) is live → after-self ghost slot, not an ``into`` anchor
+    assert f"at={{'after': '{para_h}'}}" in out
+    assert "'into'" not in out
+
+
+def test_retired_list_read_shows_items_and_restore(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr700659: a retired ulist/olist read expands to its retired
+    subtree — before, the live-only expansion rendered a completely
+    empty body. The retirement notice must still fire even though the
+    window holds more than one chunk."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="- alpha\n- beta",
+        at={"last": True},
+    )
+    draft.put(id="nt", chunk_kind="paragraph", text="tail", at={"last": True})
+    ulist = next(c for c in _order(hub, "nt") if c.chunk_kind == "ulist")
+    hub.live_store.drafts.retire_chunk(ulist.handle, mode="cascade")
+
+    out = draft.get(id=ulist.dc).body
+    assert "alpha" in out and "beta" in out
+    assert "⚠ RETIRED" in out
+    assert "mode=cascade" in out
+    assert "Restore" in out
+    assert f"at={{'after': '{ulist.dc}'}}" in out  # root chunk → ghost slot
+
+
+def test_retired_heading_lists_retired_children(draft: DraftHandler, hub: Hub) -> None:
+    """gr700659: a retired heading's read names the retired descendants
+    the cascade took with it — the "~20 headings lost their bodies"
+    case — each still readable by its own handle."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    sec = draft.put(id="nt", chunk_kind="heading", text="Sec", at={"last": True})
+    sec_h = _dc(sec.body)
+    p1 = draft.put(
+        id="nt", chunk_kind="paragraph", text="first body", at={"into": sec_h}
+    )
+    p1_h = _dc(p1.body)
+    sub = draft.put(
+        id="nt",
+        chunk_kind="heading",
+        text="Sub",
+        at={"into": sec_h, "last": True},
+    )
+    sub_h = _dc(sub.body)
+    p2 = draft.put(id="nt", chunk_kind="paragraph", text="sub body", at={"into": sub_h})
+    p2_h = _dc(p2.body)
+    draft.put(id="nt", chunk_kind="paragraph", text="after", at={"last": True})
+    sec_chunk = hub.live_store.drafts.get_draft_chunk(sec_h)
+    assert sec_chunk is not None
+    hub.live_store.drafts.retire_chunk(sec_chunk.handle, mode="cascade")
+
+    out = draft.get(id=sec_h).body
+    assert "⚠ RETIRED" in out
+    assert f"at={{'into': restored_{sec_h}, 'last': True}}" in out
+    assert f"at={{'into': restored_{sub_h}, 'last': True}}" in out
+    assert p1_h in out and "first body" in out
+    assert sub_h in out and "Sub" in out
+    assert p2_h in out and "sub body" in out
+    # and each listed child read gives its own restore call
+    child = draft.get(id=p1_h).body
+    assert "Restore" in child and "first body" in child
+
+
+def _execute_restore(draft: DraftHandler, body: str) -> dict[str, str]:
+    """Run the displayed calls with the handles returned by previous puts."""
+    handles: dict[str, str] = {}
+    for line in body.splitlines():
+        if not line.startswith("restored_"):
+            continue
+        assignment = ast.parse(line).body[0]
+        assert isinstance(assignment, ast.Assign)
+        target = assignment.targets[0]
+        call = assignment.value
+        assert isinstance(target, ast.Name) and isinstance(call, ast.Call)
+        # Only placement values can refer to earlier acknowledgments.
+        for kwarg in call.keywords:
+            if kwarg.arg == "at":
+                assert isinstance(kwarg.value, ast.Dict)
+                kwarg.value.values = [
+                    ast.Constant(handles[value.id])
+                    if isinstance(value, ast.Name)
+                    else value
+                    for value in kwarg.value.values
+                ]
+        kwargs = {
+            kwarg.arg: ast.literal_eval(kwarg.value)
+            for kwarg in call.keywords
+            if kwarg.arg is not None
+        }
+        assert kwargs.pop("kind") == "draft"
+        handles[target.id] = _dc(draft.put(**kwargs).body)
+    return handles
+
+
+def test_retired_wrapper_restores_mixed_content_in_cascade_order(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    drafts = hub.live_store.drafts
+    sec = _dc(
+        draft.put(id="nt", chunk_kind="heading", text="Section", at={"last": True}).body
+    )
+    holder = drafts.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="", at={"into": sec}
+    )[0]
+    draft.put(
+        id="nt", text="1. Previously removed\n2. Kept item", at={"into": holder.dc}
+    )
+    old_item = next(c for c in _order(hub, "nt") if c.text == "Previously removed")
+    drafts.retire_chunk(old_item.handle)
+    source = "def f():\n    return 1\n\n\ndef g():\n    pass"
+    draft.put(id="nt", chunk_kind="code", text=source, at={"into": holder.dc})
+    draft.put(id="nt", text="Final prose", at={"into": holder.dc})
+    draft.put(id="nt", text="Live tail", at={"last": True})
+    heading = drafts.get_draft_chunk(sec)
+    assert heading is not None
+    drafts.retire_chunk(heading.handle, mode="cascade")
+
+    out = draft.get(id=sec).body
+    assert "Previously removed" not in out
+    assert out.index("chunk_kind='olist'") < out.index("chunk_kind='code'")
+    assert out.index("chunk_kind='code'") < out.index("text='Final prose'")
+    handles = _execute_restore(draft, out)
+    order = _order(hub, "nt")
+    new_heading = next(c for c in order if c.dc == handles[f"restored_{sec}"])
+    children = [c for c in order if c.parent_chunk_id == new_heading.chunk_id]
+    assert [c.chunk_kind for c in children] == ["olist", "code", "paragraph"]
+    assert children[1].text == source and children[2].text == "Final prose"
+    assert [c.text for c in order if c.parent_chunk_id == children[0].chunk_id] == [
+        "Kept item"
+    ]
 
 
 def test_edit_accepts_short_sha_prefix(draft: DraftHandler, hub: Hub) -> None:
@@ -1785,7 +2200,37 @@ def test_no_promote_hint_when_already_a_term(draft: DraftHandler, hub: Hub) -> N
         text="We use multivariate templated modulation (MTVM) here.",
         at={"last": True},
     ).body
-    assert "inline definition" not in out  # already promoted → no nag
+    assert "inline definition" not in out  # no promotion offer
+    assert "hand-written abbreviation definition(s): MTVM" in out
+    report = draft.get(id="nt", view="hygiene").body
+    assert "hand-written abbreviation definition(s): dc" in report
+    assert ":MTVM" in report
+
+
+def test_authored_glossary_definition_after_first_use(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr725250: hygiene catches a definition after export's first use."""
+    draft.put(id="nt", title="T", project=_proj(hub))
+    draft.put(
+        id="nt", chunk_kind="term", text="molecular dynamics", meta={"short": "MD"}
+    )
+    draft.put(
+        id="nt", chunk_kind="paragraph", text="MD simulations.", at={"last": True}
+    )
+    put = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="Molecular dynamics (MD) follows.",
+        at={"last": True},
+    )
+    assert "hand-written abbreviation definition(s): MD" in put.body
+    chunk = _dc_of(hub, "Molecular dynamics (MD) follows.")
+    edited = draft.edit(id=chunk, text="Molecular dynamics (MD) still follows.")
+    assert "hand-written abbreviation" not in edited.body
+    assert ":MD" in draft.get(id="nt", view="hygiene").body
+    draft.edit(id=chunk, text="MD still follows.")
+    assert "hand-written abbreviation" not in draft.get(id="nt", view="hygiene").body
 
 
 def test_draft_link_verb_redirects_to_prose(hub: Hub) -> None:
@@ -3459,10 +3904,13 @@ def test_house_style_write_hint_and_hygiene_view(draft: DraftHandler, hub: Hub) 
     )
     assert "⚠ house style" in bad.body
     assert "em_dash at 1:16" in bad.body
+    advice = "split the sentence first and give each sentence one main fact"
+    assert advice in bad.body
 
     out = draft.get(id="nt", view="hygiene").body
     assert "⚠ house style: 3 violation(s) in 1 chunk(s)" in out
     assert "1 em_dash, 1 bold, 1 double_hyphen" in out
+    assert advice in out
     assert "✓ house style" not in out
 
 
@@ -3733,3 +4181,149 @@ def test_put_logs_phase_timings(
         "slug=nt",
     ):
         assert key in msg
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "a bare string",
+        {"text": "ok", "bogus": 1},
+        42,
+        {"chunk_kind": "paragraph"},
+    ],
+)
+def test_put_chunks_rejects_malformed_entries(
+    draft: DraftHandler, hub: Hub, bad: Any
+) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    with pytest.raises(BadInput) as ei:
+        draft.put(id="nt", chunks=[{"text": "fine"}, bad])
+    assert "chunks[1]" in ei.value.cause
+    for whole in ([], [{"text": "x"}] * 51):
+        with pytest.raises(BadInput):
+            draft.put(id="nt", chunks=whole)
+
+
+def test_put_chunks_schema_keeps_raw_entries() -> None:
+    from mcp.server.fastmcp.utilities.func_metadata import func_metadata
+
+    from precis.tools import put
+
+    schema = func_metadata(put, structured_output=False)
+    entries = [{"text": "valid"}, "a bare string", 42]
+    model = schema.arg_model.model_validate(
+        {"kind": "draft", "id": "nt", "chunks": entries}
+    )
+    assert model.model_dump()["chunks"] == entries
+
+
+def test_put_chunks_refuses_combinations(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    anchor = _dc(draft.put(id="nt", chunk_kind="paragraph", text="seed").body)
+    entries = [{"text": "x"}]
+    with pytest.raises(BadInput):
+        draft.put(id="nt", chunks=entries, terms=["t"])
+    with pytest.raises(BadInput):
+        draft.put(id="nt", chunks=entries, copy_of="nt")
+    with pytest.raises(BadInput):
+        draft.put(id=anchor, chunks=entries)
+
+
+def test_put_chunks_batch_is_atomic(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    before = len(_order(hub, "nt"))
+    good: list[dict[str, Any]] = [
+        {"text": "first para\n\nsecond block of the same entry"},
+        {"text": "A heading", "chunk_kind": "heading", "meta": {"level": 2}},
+        {"text": "- one\n- two", "chunk_kind": "ulist"},
+    ]
+    with pytest.raises(BadInput) as ei:
+        draft.put(
+            id="nt",
+            chunks=[*good, {"text": "bad", "chunk_kind": "no-such-kind"}],
+        )
+    assert "chunks[3]" in ei.value.cause
+    assert len(_order(hub, "nt")) == before
+
+    calls: list[Any] = []
+    orig = draft.sync_draft_links
+
+    def spy(*a: Any, **kw: Any) -> Any:
+        calls.append((a, kw))
+        return orig(*a, **kw)
+
+    monkeypatch.setattr(draft, "sync_draft_links", spy)
+    body = draft.put(
+        id="nt", chunks=[*good, {"text": "last para", "chunk_kind": "paragraph"}]
+    ).body
+    assert body.startswith("added 4 chunks to nt:")
+    assert len(calls) == 1
+    order = _order(hub, "nt")[before:]
+    assert [c.text for c in order] == [entry["text"] for entry in good] + ["last para"]
+    assert calls == [
+        ((order[0].ref_id,), {"restamp_chunk_ids": {c.chunk_id for c in order}})
+    ]
+    assert len(re.findall(r"dc\d+ \(", body)) == 4
+
+
+def test_put_chunks_placement(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    foreign = _dc(draft.put(id="other", title="Other", project=_proj(hub)).body)
+    seed = _dc(draft.put(id="nt", chunk_kind="paragraph", text="seed").body)
+    for at in (
+        {"into": foreign},
+        {"before": foreign},
+        {"after": foreign},
+        {"before": None, "after": seed},
+        {"after": None},
+        {"into": 1},
+        {"after": "dc0"},
+    ):
+        with pytest.raises(BadInput, match=r"chunks\[1\]"):
+            draft.put(id="nt", chunks=[{"text": "first"}, {"text": "bad", "at": at}])
+        assert [c.text for c in _order(hub, "nt")] == ["T", "seed"]
+
+    draft.put(
+        id="nt",
+        at={"before": seed},
+        chunks=[{"text": "before"}, {"text": "root", "at": {}}],
+    )
+    assert [c.text for c in _order(hub, "nt")] == ["T", "before", "seed", "root"]
+
+
+def test_put_chunks_resolves_earlier_entry(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    handles = iter(["HeadingAnchor", "ChildAnchor"])
+    monkeypatch.setattr("precis.store._draft_ops.new_handle", lambda: next(handles))
+    draft.put(
+        id="nt",
+        chunks=[
+            {"text": "Section", "chunk_kind": "heading", "meta": {"level": 2}},
+            {"text": "Child", "at": {"into": "¶HeadingAnchor"}},
+        ],
+    )
+    _, heading, child = _order(hub, "nt")
+    assert child.parent_chunk_id == heading.chunk_id
+
+
+def test_put_chunks_accepts_tables_and_figures(draft: DraftHandler, hub: Hub) -> None:
+    draft.put(id="nt", title="T", project=_proj(hub))
+    body = draft.put(
+        id="nt",
+        chunks=[
+            {"chunk_kind": "table", "text": "| Count |\n| --- |\n| 2 |"},
+            {"chunk_kind": "figure", "text": "Caption"},
+        ],
+    ).body
+    _, table, figure = _order(hub, "nt")
+    assert table.meta["table"]["rows"] == [[2]]
+    assert figure.text == "Caption"
+    assert body.splitlines() == [
+        "added 2 chunks to nt:",
+        f"{table.dc} (table)",
+        f"{figure.dc} (figure)",
+    ]

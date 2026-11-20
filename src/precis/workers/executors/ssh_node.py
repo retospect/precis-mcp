@@ -1590,7 +1590,7 @@ def _poll_one(ctx: DispatchContext) -> bool:
     return terminal
 
 
-def _pin_to_submitting_node(conn: Any, ref_id: int, handle: Any) -> None:
+def _pin_to_submitting_node(conn: Any, ref_id: int, handle: Any) -> bool:
     """Pin an un-pinned job to the node that just launched its compute.
 
     The handle names a process and a scratch dir on THIS host, so only this
@@ -1598,17 +1598,22 @@ def _pin_to_submitting_node(conn: Any, ref_id: int, handle: Any) -> None:
     worker never selects it (a NULL pin is claimable by any node but polled
     by none) and any node can reclaim it: 542535/542536 finished in two
     minutes and failed on the crash-loop guard three hours later, results
-    uncollected. A node-less worker polls the NULL pin and needs nothing."""
+    uncollected. A node-less worker polls the NULL pin and needs nothing.
+
+    Returns True only when THIS call set the pin: an already-pinned job or
+    a node-less worker returns False, so the caller knows whether the pin
+    is temporary until a handle is persisted."""
     node = os.environ.get("PRECIS_NODE")
     if node is None or handle is None:
-        return
-    conn.execute(
+        return False
+    cur = conn.execute(
         "UPDATE refs SET meta = meta || jsonb_build_object('params',"
         "  COALESCE(meta->'params', '{}'::jsonb)"
         "  || jsonb_build_object('target_node', %s::text))"
         " WHERE ref_id = %s AND meta->'params'->>'target_node' IS NULL",
         (node, ref_id),
     )
+    return cur.rowcount > 0
 
 
 def _persist_detached_handle(
@@ -1634,11 +1639,13 @@ def _persist_detached_handle(
         "SELECT meta FROM refs WHERE ref_id = %s FOR UPDATE",
         (ref_id,),
     ).fetchone()
+    if fresh is None or fresh[0].get("submit_attempt") != meta.get("submit_attempt"):
+        return
     _set_meta(
         conn,
         ref_id,
         compute_handle=handle,
-        deadline=_deadline_epoch(dict(fresh[0]) if fresh is not None else meta, spec),
+        deadline=_deadline_epoch(dict(fresh[0]), spec),
         submit_started_at=None,
         submit_attempt=None,
         submit_host=None,
@@ -1814,12 +1821,13 @@ def _run_one(ctx: DispatchContext) -> bool:
             "submit_attempt": uuid4().hex,
             "submit_host": admission.local_host(),
         }
+        pinned_here = False
         with store.pool.connection() as conn:
             _set_meta(conn, ref_id, **intent)
             if spec.reconcile is not None:
-                _pin_to_submitting_node(conn, ref_id, intent)
+                pinned_here = _pin_to_submitting_node(conn, ref_id, intent)
             conn.commit()
-        meta.update(intent)
+        meta.update(intent, temporary_submit_pin=pinned_here)
         try:
             handle = spec.submit(ctx, spec)
         except BaseException:
@@ -1827,12 +1835,11 @@ def _run_one(ctx: DispatchContext) -> bool:
             # failure handler (STATUS:failed) — clear the marker so a
             # deliberate requeue isn't mistaken for a mid-submit crash.
             with store.pool.connection() as conn:
-                _set_meta(
-                    conn,
-                    ref_id,
-                    submit_started_at=None,
-                    submit_attempt=None,
-                    submit_host=None,
+                conn.execute(
+                    "UPDATE refs SET meta = meta - ARRAY["
+                    "'submit_started_at', 'submit_attempt', 'submit_host']"
+                    " WHERE ref_id = %s AND meta->>'submit_attempt' = %s",
+                    (ref_id, intent["submit_attempt"]),
                 )
                 conn.commit()
             raise

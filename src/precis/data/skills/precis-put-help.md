@@ -61,8 +61,9 @@ Todo's plan door is handled outside the declared mode gate.
 `put(kind='gripe'|'todo', id=N, text=...)` appends a comment to an existing
 one (no `args=`); older comments are shown as one-liners, `view='comments'`
 shows all. On memory, id= with link= adds the edge (a repeat says it was already linked); id= with text= refuses, use edit.
-On gripe the append takes `link=`/`rel=` and `tags=`/`untags=` in the
-same transaction — comment-then-close is one call. On todo it takes
+On gripe the append takes the `link` or `unlink` parameter with `rel=`, and
+`tags=`/`untags=`, in the same transaction. Both link fields accept a
+target of the form `kind:identifier[~selector]`. On todo the append takes
 `tags=`/`untags=` the same way (link edits stay on the `link` verb):
 `put(kind='todo', id=42, text='done — shipped',
 tags=['STATUS:done'], untags=['waiting-for:reto'])` comments, closes
@@ -296,7 +297,9 @@ put(kind="todo", text="...", tags=["PRIO:high"])
 
 `tags=` runs at creation — and on a gripe or todo comment append, where it
 lands in the same transaction (see above). `PRIO:` (or `prio=`) is an
-integer 1..10, lower = hotter, on every kind including gripes;
+integer 1..10, lower = hotter, on the workflow kinds todo, gripe and
+quest — it writes the `prio` column, never a tag row (job takes `prio=`
+but refuses a `PRIO:` tag; memory has no priority axis);
 `urgent`/`high`/`normal`/`low` are aliases for 1/3/5/8. Everywhere else, for
 retroactive tag changes use
 `tag(kind='...', id=<N>, add=[...], remove=[...])`. Closed-prefix

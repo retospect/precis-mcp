@@ -52,9 +52,21 @@ and loads the campaign's definitions onto that.
 for the `taxon` ref kind (`handlers/taxon.py`): the fixed node meta key set
 and its validation, the card text, the resolution slug. The handler uses it,
 and the 0174 seed is tested byte-identical against it, so every node is
-built the same way. Boundary examples (``includes`` / ``excludes``) render
-on get but stay out of the searchable card: near-miss names must not
-attract sibling queries.
+built the same way. The slug is a display and path key only: a slug
+segment still resolves a node
+(:func:`~precis.taxonomy.nodes.resolves_term`) but never proves identity,
+because slugs drop symbols — ``DimeNet++`` slugs to ``dimenet``. The
+identity check behind dedup and the ``exact:`` lead,
+:func:`~precis.taxonomy.nodes.matches_term`, folds case and separators
+but keeps symbols, so a shared slug cannot conflate two nodes (gr722401).
+Boundary examples (``includes`` / ``excludes``) render on get but stay
+out of the searchable card: near-miss names must not attract sibling
+queries.
+
+Dedup uses a boundary entry that names the other node to distinguish near
+matches. The boundary supplies scope that card similarity misses, such as
+the distinction between training and held-out test accuracy (gr720773).
+Exact identity checks still apply.
 
 **No writes.** Stages emit files under the campaign scratch directory. The
 `taxon` node and `measures` row writers arrive as a thin adapter once

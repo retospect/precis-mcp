@@ -701,8 +701,17 @@ def test_draft_level_map_windows_fit_the_cap(
     assert windows, body
     handler = runtime_with_store.hub.handlers["draft"]
     for win in windows:
-        inline = handler._render_chunk(win).body
+        expected = handler._render_chunk(win).body
+        inline, error = runtime_with_store.dispatch_with_status(
+            "get", {"kind": "draft", "id": win}, fold=True
+        )
+        assert not error, inline
         assert len(inline.encode("utf-8")) <= 4096, (win, len(inline))
+        assert "window cut" not in inline
+        assert "truncated: showing" not in inline
+        assert re.findall(r"^dc\d+  ", inline, re.M) == re.findall(
+            r"^dc\d+  ", expected, re.M
+        )
     # The deprecated offset alias still gets its interpreted: line on the
     # level-map path (offset=0 reads as "from the top").
     body, is_error = runtime_with_store.dispatch_with_status(
@@ -719,6 +728,40 @@ def test_draft_level_map_windows_fit_the_cap(
     )
     assert is_error is True
     assert "outline" in body
+
+
+def test_draft_oversized_final_range_chunk(
+    runtime_with_store: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr720456: the final single-chunk page must never be byte-truncated."""
+    todo = store.insert_ref(kind="todo", slug=None, title="P")
+    runtime_with_store.dispatch(
+        "put", {"kind": "draft", "id": "large", "title": "T", "project": todo.id}
+    )
+    ref = store.get_ref(kind="draft", id="large")
+    assert ref is not None
+    title = store.drafts.reading_order(ref.id)[0]
+    runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "draft",
+            "id": "large",
+            "chunk_kind": "paragraph",
+            "text": "oversized " * 200,
+            "at": {"into": title.dc},
+        },
+    )
+    chunk = store.drafts.reading_order(ref.id)[-1]
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "512")
+    body, error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "draft", "id": f"{chunk.dc}-0..0"}, fold=True
+    )
+    assert error, body
+    assert chunk.dc in body
+    assert "no chunks shown" in body
+    assert "increase PRECIS_MAX_BODY_BYTES" in body
+    assert f"{chunk.dc}-0..0" in body
+    assert "truncated: showing" not in body
 
 
 def test_cross_kind_search_includes_draft(

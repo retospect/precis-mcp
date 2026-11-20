@@ -48,6 +48,7 @@ _MEMORY_DETECTORS = frozenset(
         "griped",
         "host_facts",
         "negative_undated",
+        "notation",
         "restated_claim",
         "review_due",
         "source_drift",

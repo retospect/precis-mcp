@@ -49,10 +49,10 @@ CODE_LEN = 2
 PLUGIN_GROUP = "precis.handle_codes"
 
 # --- record codes (the addressable persistent-ref kinds) ------------------
-# Authoritative kind list: dispatch.boot() composition root. Providers
-# (web/youtube/perplexity-*) and stateless tools
-# (calc/time/math/provenance/random) are addressed by URL/query/compute.
-# Private non-ref kinds retain their own store-local addresses.
+# Authoritative kind list: dispatch.boot() composition root. Stateless
+# tools (calc/time/math/provenance/random) are addressed by
+# query/compute. Private non-ref kinds retain their own store-local
+# addresses.
 
 KIND_CODES: dict[str, str] = {
     # corpus / documents
@@ -157,6 +157,16 @@ KIND_CODES: dict[str, str] = {
     "wikipedia": "wp",
     "semanticscholar": "ss",
     "chem": "ch",
+    # the remaining stored fetch caches (gr702962): same story — a memory
+    # mention auto-links them, and the edge now shows under view='links'
+    # and the fisheye. ``ws``/``px`` are deliberately avoided (ws2812 /
+    # px4 prose would trip the _memory_shape handle lint); ``wx`` =
+    # websearch, ``rr``/``rz`` = perplexity research / reasoning.
+    "youtube": "yt",
+    "web": "wb",
+    "websearch": "wx",
+    "perplexity-research": "rr",
+    "perplexity-reasoning": "rz",
 }
 
 # --- chunk codes (kinds that expose addressable body chunks) --------------
@@ -218,7 +228,8 @@ _FILE_BACKED_KINDS = frozenset({"python", "md"})
 # ``part`` is NOT here: its catalog rows live in ``parts`` (addressed by
 # C-number), but a linked part has a lazy ref, so ``pn<ref_id>`` is a live
 # decimal handle (``precis.handlers.part`` docstring).
-_OTHER_TABLE_KINDS = frozenset({"tag"})
+# Measures use measures.id, not refs.ref_id; mx is only a measure-kind address.
+_OTHER_TABLE_KINDS = frozenset({"tag", "measure"})
 
 # --- codeless kinds (providers / stateless tools / private data) ----------
 # Registered handler kinds (``dispatch.boot()``) that are never addressed by
@@ -235,16 +246,11 @@ CODELESS_KINDS: Final[tuple[str, ...]] = (
     "provenance",
     "random",
     "handle",
-    # web/document providers, addressed by URL or query, not a stored pk
-    "web",
-    "websearch",
-    "perplexity-reasoning",
-    "perplexity-research",
-    "youtube",
     # live adapter — IMAP is the source of truth, addressed by folder/uid
     "email",
-    # private non-ref records — leN is store-local, never a shared ref code
+    # private non-ref records — leN/gtN are store-local, never shared ref codes
     "learning",
+    "gtd",
 )
 
 #: Codes whose body is the row's decimal primary key and which
@@ -458,7 +464,7 @@ def parse(handle: str) -> tuple[str, bool, int] | None:
     if len(base) <= CODE_LEN:
         return None
     code, body = base[:CODE_LEN], base[CODE_LEN:]
-    if code not in _decimal_codes() or not body.isdigit():
+    if code not in _decimal_codes() or not body.isdecimal():
         return None
     kind, is_chunk = _code_to_kind()[code]
     if sel is not None and not (is_chunk and _TABLE_SEL_RE.match(sel)):

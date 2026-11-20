@@ -208,6 +208,13 @@ put(
 #     pa88 (minted)
 ```
 
+A descriptor whose DOI/arXiv id already sits on a held paper with a
+disjoint title (≥4 content words each, none shared) is refused, not
+silently claimed: it is skipped and listed as `skipped: paper
+identifier/title conflict on pa<N> …` under the awaiting list, and the
+count covers only minted/tracked stubs. If every descriptor conflicts the
+put raises `Conflict` and mints nothing; repair `pa<N>`'s identity first.
+
 `wants=` is a list of ≥1 descriptor dicts, each one of `{'doi':…}`,
 `{'arxiv':…}`, or `{'title':…, 'url':…}` — one per paper the claim
 expects grounding from. The call **atomically** mints a `DREAM:acquire`
@@ -347,10 +354,15 @@ get(id="fi42")  # by handle (prefix infers kind)
 get(id="fi42", view="log")  # chase event history
 get(
     id="fi42", view="evidence"
-)  # taproot claim-hub evidence (originators/corroborators/contradicts)
+)  # direct and inherited evidence, plus open disputes
 get(id="fi42", view="fisheye+1hop")  # the hub's claim-graph neighborhood
 get(id="fi42", view="judgments")  # what the refine judges withheld or removed, and why
 ```
+
+The evidence view prefers passage handles and groups inherited evidence by
+conjunct. It shows `contradicts` when there are contradictors and lists open
+disputes separately. Use `view='links'` for the full list when the dispute
+section reports a row cap.
 
 ```text
 # finding 42
@@ -539,13 +551,22 @@ and the `pub_id` in sync.
 `meta={'scope': …}` with `title=`). `title=` retitles a `TAPROOT:claim`
 hub in place (rejects a plain finding); see `precis-taproot-mint-help`'s
 "Reword a hub in place". `meta={'scope': {...}}` replaces a hub's scope
-(`{}` clears it; only the `scope` key is accepted; `dry_run=True`
-previews) — scope is part of the hub's identity, so it re-derives the
+(`{}` clears it and `dry_run=True` previews). Scope is part of the hub's
+identity, so a scope change re-derives the
 `pub_id` and keeps the old one as an alias, like a retitle; see
 `precis-taproot-hub-edit-help`'s "Rescope a hub". `testable_by=`/`motivation=`
 sharpen an unsigned (`candidate`/`reviewed`) hypothesis's falsification terms.
 Unsigned edits reopen its review and flag/list consumers; signed claims refuse.
 See `precis-nanopub-help`'s "Sharpening".
+
+With `title=`, `meta=` also accepts string writer fields `model`,
+`prompt_version`, `run_id`, and `why`. They are saved atomically with
+the title or scope change. If both are unchanged, existing attribution
+stays as is. Unsupported keys and non-string writer values raise
+`BadInput`.
+
+## Record an unacquirable source
+
 `unacquirable_note=`
 records a **claim-level** declaration — an author assertion about THIS
 claim, never inherited from its source paper — that a print-only/

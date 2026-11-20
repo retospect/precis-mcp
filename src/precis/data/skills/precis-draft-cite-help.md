@@ -158,6 +158,20 @@ draft citing through hubs reads as a mass cite-drop under direct counts
 alone.
 
 
+## Count finding citations in a draft
+
+```python
+get(kind="draft", id="<slug>", view="cites",
+    args={"handles": ["fi123", "fi456"], "by_section": "dc789"})
+```
+
+One row per requested finding, including zero counts. Every literal
+`[fi123]` in live draft text counts, including repeated markers in a
+single chunk. Pass a heading handle from `view='toc'` as `by_section`
+to split the total between that heading and its descendants
+(`in_section`) and the rest of the draft (`elsewhere`). Omit
+`by_section` for whole-draft totals only.
+
 ## See also
 
 - [[precis-draft-help]] — author a living document: create, search, edit, review, audit.

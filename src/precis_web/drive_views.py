@@ -45,8 +45,13 @@ DRIVE_VIEWS: tuple[DriveView, ...] = (
     DriveView("mermaid", "Mermaid", "mermaid"),
 )
 
-#: Link-only entries after the presets: (label, href).
-DRIVE_VIEW_LINKS: tuple[tuple[str, str], ...] = (("Nanopubs", "/nanopub"),)
+#: Link-only entries after the presets: (label, href). ``Todo tree`` is
+#: the gr664408 tree layout over the ``refs.parent_id`` hierarchy — the
+#: same todo rows, grouped under their parents instead of flat.
+DRIVE_VIEW_LINKS: tuple[tuple[str, str], ...] = (
+    ("Todo tree", "/drive?k=todo&layout=tree&rel=parent"),
+    ("Nanopubs", "/nanopub"),
+)
 
 
 def active_view(kinds: list[str], tags: list[str]) -> str:

@@ -25,6 +25,7 @@ count as errors without aborting the tick. CLI shows hold reasons; rejecting an
 apply-error hold reopens its key. Unresolved ops wait one day; resolved ops get
 fresh proposals. Applied find/span pairs must match fresh detector ops; link
 removals refuse, preventing model overrides from expanding detector edit scope.
+Notation review pins one authored token per memory to bound edits.
 Undo terminally rejects restored content, preventing next-tick reapplication.
 Supersede and retire snapshot links for undo, refusing changed endpoints.
 Retirement validates successor evidence before compaction so stale proposals close retryably.
@@ -38,10 +39,10 @@ incoming header links; an unrestorable chunk anchor refuses the transaction.
 Undo retains unchanged links, including legacy version-zero edges that strict
 trust mode cannot recreate exactly. Replacements of those legacy edges refuse
 before writing; unknown-origin stamped links use a create-time import act.
-Review stamps keep token-safe model names readable and encode other names as
-``hex-`` plus UTF-8 hex (including names starting with that reserved prefix),
-so namespaced model IDs retain their identity within the fixed stamp grammar.
-Review rows and trust acts retain the original model string.
+Review stamps keep token-safe model names readable, encoding others as
+``hex-`` plus UTF-8 hex (even names starting with that prefix), so
+namespaced model IDs survive the fixed stamp grammar; review rows and
+trust acts retain the original model string.
 
 **Pipeline** (:mod:`precis.graph.garden.runner`):
 
@@ -91,9 +92,8 @@ Review rows and trust acts retain the original model string.
    sha-on-prod check is documented in ``precis-gardener-help``.
    ``compact`` (gr561025) owes a per-sentence plan; ``apply_compact`` runs
    it as one unit with a single reversal record only through
-   ``precis garden apply`` — the consumer reviews but never auto-applies
-   it. ``undo_compact`` reverses it. The compaction rules live in
-   ``precis-gardener-memory-help``.
+   ``precis garden apply`` (the consumer reviews, never auto-applies);
+   ``undo_compact`` reverses it. Rules: ``precis-gardener-memory-help``.
    ``griped`` (gr657257) is the reader-complaint queue: open
    ``project:memory`` gripes naming live memories, newest first — one
    ``rewrite`` candidate per named memory, exempt from the
@@ -132,24 +132,28 @@ Review rows and trust acts retain the original model string.
    apply do not spend a review. A ``dangling_mention`` proposal whose ops
    are all bare swaps onto verified duplicate successors applies without a
    call (``garden.applied='mention'``, before/after spans recorded).
-   The six ``memory-review`` detectors stay
-   pending without consumer review or state changes. ``qualify`` and ``ask``
-   remain outside that consumer; an ``ask`` verdict files a ``memory-review``
-   todo from the runner (tiered by smell class), never a proposal. A
+   ``memory-review`` proposals stay pending for human review. The runner
+   files a ``memory-review`` todo for each ``ask`` verdict, tiered by smell
+   class. ``qualify`` also requires human review. A
    ``griped`` apply — and an evaluator no-change once no sibling fix
    path remains — replays the gripe's route and hub recall set and
    closes it with a ``resolved:`` comment once the deterministic pass
    holds (gr561873).
 
-Grounding audits pin provisional coverage to content SHA and retry paused windows.
+SHA-pinned grounding audits verify passages and inference warrants.
+Exact quotes bind local premises. Each premise needs its own support
+judgment. See :mod:`precis.graph.garden.grounding` for budgets and repairs.
+Unresolved checks get one bounded handoff todo; returned candidate
+evidence only reopens re-audit.
 
-**Memory reconciliation.** Memory candidates (including ``dup_pair``) and
-interactive ``precis-make-memory`` share packaged memory-help policy via
-:mod:`precis.utils.memory_reconcile`. Proposer, consumer and sampled reviewers
-use the identical section; its digest versions only memory proposer rejections.
-Identity/conflict/preservation judgments stay consistent without detector
-interpretation or broader apply doors. Sampled reviews read bounded body excerpts;
-merge repointing never synthesizes loser's unique claims into the winner.
+**Memory reconciliation.** Memory candidates (including ``dup_pair``)
+and interactive ``precis-make-memory`` share packaged memory-help
+policy (:mod:`precis.utils.memory_reconcile`) across proposer, consumer
+and sampled reviewers; its digest versions only memory proposer
+rejections, keeping identity/conflict/preservation judgments consistent
+without detector interpretation or broader apply doors. Sampled reviews
+read bounded body excerpts; merge repointing never synthesizes loser's
+unique claims into the winner.
 
 **Scheduling.** ``graph_garden`` job_type (``job_inproc`` executor) runs one
 bounded pass per tick. ``params.pass`` selects detectors
@@ -158,10 +162,10 @@ list); ``limit`` bounds scans, ``max_proposals`` bounds writes. Per-detector
 wall-clock deadlines skip that detector, preserving the tick (gr503580).
 Wide scans resume per-kind cursors in job ``meta.garden.cursors``
 (:func:`precis.graph.garden.service.saved_cursors`), covering the corpus
-across runs. An operator seeds a Watches **recurring todo**:
-``meta.schedule``, ``meta.executor='job_inproc'``,
-``meta.job_type='graph_garden'`` (``precis-recurring-help`` job-mode
-automation). Each due tick spawns a subtask; dispatch mints its job.
+across runs. An operator seeds a Watches
+**recurring todo** (``meta.schedule`` + ``meta.executor='job_inproc'``
++ ``meta.job_type='graph_garden'``, ``precis-recurring-help``); each
+due tick spawns a subtask dispatch mints its job from.
 Spawner ``spawned_for_tick`` idempotency and collision-skipping an open
 previous child bound runs. Per-run dispatcher gates
 (:mod:`precis.workers.job_types.graph_garden`): dark ``graph_garden``
@@ -175,16 +179,16 @@ cooling runs without scans.
 (the uses list lives in ``meta.uses``) — nothing mints those findings
 yet (the backlog's open question), so the detector also flags a node
 reaching *two different start nodes* as a disjoint-cluster hint.
-Do not treat the hint as evidence: a proposal needs the finding, or a
-judge's explicit accept on the hint.
+The hint is not evidence: a proposal needs the finding, or a judge's
+explicit accept on the hint.
 
 **Sibling-confusion contract.** ``instance-of`` edges may carry
-``meta.run`` (a classification-run id). Two siblings on an exclusive
-axis whose per-run labels swap — or that share classified instances —
-are a merge/sharpen/re-axis candidate. "Exclusive axis" is a param
-(``params.exclusive_axes``) until the taxonomy lands axis declarations;
-the 2026-10-05 ruling stands: similar labels on disjoint siblings are
-*not* a merge signal on their own.
+``meta.run`` (a classification-run id); two exclusive-axis siblings
+whose per-run labels swap — or that share classified instances — are a
+merge/sharpen/re-axis candidate. "Exclusive axis" is a param
+(``params.exclusive_axes``) until axis declarations land; the 2026-10-05
+ruling stands: similar labels on disjoint siblings are *not* a merge
+signal.
 """
 
 from __future__ import annotations

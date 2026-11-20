@@ -1065,6 +1065,68 @@ def test_meta_expires_rejects_unparseable(handler: MemoryHandler) -> None:
         handler.put(text="body", meta={"expires": "whenever"})
 
 
+def test_get_and_put_ack_show_expiry(handler: MemoryHandler, store: Store) -> None:
+    """The create ack and the single-ref read end with the same computed
+    expiry line — writer-set TTL or shape default; standing nodes get none
+    (gr676320)."""
+    ack = handler.put(text="transient note body", meta={"expires": "2030-12-01"})
+    assert "expires: 2030-12-01 (set by writer)" in ack.body
+    memory_id = id_of(ack.body)
+    linked_id = id_of(handler.put(text="a linked fact").body)
+    store.add_link(src_ref_id=memory_id, dst_ref_id=linked_id, relation="related-to")
+    got = handler.get(id=memory_id).body
+    assert "Links" in got
+    assert got.rstrip().endswith("expires: 2030-12-01 (set by writer)")
+
+    ack2 = handler.put(text="thread body text", tags=["section:threads"])
+    thread = store.fetch_refs_by_ids([id_of(ack2.body)])[id_of(ack2.body)]
+    expected = (thread.updated_at + timedelta(days=14)).strftime("%Y-%m-%d")
+    line2 = f"expires: {expected} (default: thread 14d from last edit)"
+    assert line2 in ack2.body
+    assert handler.get(id=id_of(ack2.body)).body.rstrip().endswith(line2)
+
+    ack3 = handler.put(text="a durable standing fact")
+    assert "expires:" not in ack3.body
+    assert "expires:" not in handler.get(id=id_of(ack3.body)).body
+
+
+@pytest.mark.parametrize("meta", [{}, {"expires": "2020-01-01"}])
+def test_dream_expiry_is_hidden(
+    handler: MemoryHandler, store: Store, meta: dict[str, str]
+) -> None:
+    ack = handler.put(
+        text="a speculative thread",
+        tags=["DREAM:speculative", "section:threads"],
+        meta=meta,
+    )
+    mid = id_of(ack.body)
+    assert "expires:" not in ack.body
+    assert "expires:" not in handler.get(id=mid).body
+    table = handler._render_hits_table([store.fetch_refs_by_ids([mid])[mid]])
+    assert "exp" not in table.splitlines()[0]
+
+
+def test_hits_table_marks_expiry_and_expired(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The list view's ``exp`` column shows the date, or ``EXPIRED`` past
+    it, and disappears entirely when no hit carries an expiry."""
+    fresh = id_of(
+        handler.put(text="fresh transient", meta={"expires": "2030-12-01"}).body
+    )
+    stale = id_of(
+        handler.put(text="stale transient", meta={"expires": "2020-01-01"}).body
+    )
+    standing = id_of(handler.put(text="a durable standing fact").body)
+    refs = store.fetch_refs_by_ids([fresh, stale, standing])
+    table = handler._render_hits_table([refs[fresh], refs[stale], refs[standing]])
+    assert "2030-12-01" in table
+    assert "EXPIRED" in table
+
+    table_none = handler._render_hits_table([refs[standing]])
+    assert "exp" not in table_none.splitlines()[0]
+
+
 @pytest.mark.parametrize(
     "bad",
     [
@@ -1096,6 +1158,30 @@ def test_bad_meta_key_names_the_allowed_keys(handler: MemoryHandler) -> None:
         BadInput, match=r"allowed keys: \['hook', 'type', 'expires', 'order'\]"
     ):
         handler.put(text="x", meta={"nope": "y"})
+
+
+def test_edge_meta_keys_without_link_name_the_edge_route(
+    handler: MemoryHandler,
+) -> None:
+    """gr725289: edge-annotation keys refused without link= must point at
+    the put(link=...) route, not just the bare node-meta allowlist."""
+    with pytest.raises(BadInput) as excinfo:
+        handler.put(
+            text="x",
+            meta={"model": "m", "prompt_version": "p", "run_id": "r", "why": "w"},
+        )
+    assert "annotate the creation edge" in str(excinfo.value.next)
+
+
+def test_edit_edge_meta_keys_do_not_recommend_put(
+    handler: MemoryHandler,
+) -> None:
+    """The put(link=...) hint is creation-only: an edit must not be steered
+    into minting a second memory."""
+    mid = id_of(handler.put(text="body").body)
+    with pytest.raises(BadInput) as excinfo:
+        handler.edit(id=mid, meta={"why": "w"})
+    assert "put(" not in str(excinfo.value.next)
 
 
 # ---------------------------------------------------------------------------
@@ -3345,3 +3431,102 @@ def test_put_thread_node_no_hint_on_a_fresh_prefix(
         tags=["SPACE:repo-dev"],
     )
     assert "already covers" not in plain.body
+
+
+def test_put_inline_link_routes_edge_annotation_to_the_edge(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr715314: ``put(link=, rel='derived-from', meta={model, prompt_version,
+    run_id, why, evidence})`` annotates the new edge; the node's meta keeps
+    only its own allowlisted keys."""
+    src = id_of(handler.put(text="the source memory").body)
+    edge = {
+        "model": "m1",
+        "prompt_version": "v1",
+        "run_id": "r1",
+        "why": "setup read from the paper",
+        "evidence": "pc1",
+    }
+    new = id_of(
+        handler.put(
+            text="a derived setup",
+            link=f"memory:{src}",
+            rel="derived-from",
+            meta={"hook": "setup note", **edge},
+        ).body
+    )
+    ref = store.get_ref(kind="memory", id=new)
+    assert ref is not None
+    node_meta = ref.meta or {}
+    assert node_meta.get("hook") == "setup note"
+    assert not set(edge) & set(node_meta)
+    assert "link_meta" not in node_meta
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+            (new, src),
+        ).fetchone()
+    assert row is not None and edge.items() <= row[0].items()
+
+
+def test_put_edge_annotation_without_link_still_refused(
+    handler: MemoryHandler,
+) -> None:
+    with pytest.raises(BadInput, match="not writable"):
+        handler.put(text="no link", meta={"run_id": "r1"})
+
+
+def test_put_inline_link_to_paper_chunk_under_machine_writer(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr715314's reported shape, end to end: a worker's setup put targets
+    an actual paper chunk (a ``pc…`` handle) under a model writer context.
+    All five annotation keys land on the chunk edge — admitted by the
+    machine-edge gate — while the memory node keeps only its own meta."""
+    from precis.store.revision_context import revision_context
+    from precis.utils import handle_registry
+
+    paper = store.insert_ref(kind="paper", slug="gr715314-setup-paper", title="p")
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+            "VALUES (%s, 0, 'paragraph', 'methods chunk', '{}'::jsonb) "
+            "RETURNING chunk_id",
+            (paper.id,),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
+    pin = handle_registry.format_handle("paper", chunk_id, chunk=True)
+    edge = {
+        "model": "gpt-6-astra",
+        "prompt_version": "read-paper-v2",
+        "run_id": "run-gr715314",
+        "why": "the setup is stated in this methods chunk",
+        "evidence": [pin],
+    }
+    with revision_context(trust_origin="generated", model="gpt-6-astra"):
+        new = id_of(
+            handler.put(
+                text="Setup: DFT PBE+U (VASP)",
+                link=pin,
+                rel="derived-from",
+                meta={"hook": "setup note", **edge},
+            ).body
+        )
+    ref = store.get_ref(kind="memory", id=new)
+    assert ref is not None
+    node_meta = ref.meta or {}
+    assert node_meta.get("hook") == "setup note"
+    assert not set(edge) & set(node_meta)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT l.meta, dc.ord AS dst_ord, l.dst_chunk_id "
+            "FROM links l LEFT JOIN chunks dc ON dc.chunk_id = l.dst_chunk_id "
+            "WHERE l.src_ref_id = %s AND l.dst_ref_id = %s",
+            (new, paper.id),
+        ).fetchone()
+    assert row is not None
+    link_meta, dst_ord, dst_chunk_id = row
+    assert edge.items() <= link_meta.items()
+    assert dst_ord == 0
+    assert dst_chunk_id == chunk_id

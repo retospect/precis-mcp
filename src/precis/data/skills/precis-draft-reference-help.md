@@ -6,9 +6,10 @@ summary: the lookup tables for kind='draft' — chunk addressing (dc<id>, window
 answers:
   - what views does get take on a draft, and what does each return?
   - which edit param do I use — text, find, move, table, sub, review, authors, title, scaffold?
+  - how do I regex-search or bulk-substitute in a draft?
   - what is the move= grammar for reordering or reparenting a draft chunk?
   - how do I edit one cell of a table chunk?
-applies-to: get/put/edit (kind='draft')
+applies-to: get/search/put/edit (kind='draft')
 status: active
 tags: [drafting]
 kinds: [draft]
@@ -16,19 +17,22 @@ kinds: [draft]
 
 # precis-draft-reference-help — the draft quick reference
 
-The tables behind [[precis-draft-help]]: what each verb accepts on
-`kind='draft'`. Workflow, examples and rulings live there; this file is
-the lookup.
+Look up what each verb accepts on `kind='draft'`, including regex find
+and bulk substitute. [[precis-draft-help]] covers the authoring workflow.
 
 ## Quick reference — verbs, views, edit params
 
 **Addressing.** Every chunk has a stable handle `dc<id>` (e.g. `dc41`) —
 globally unique, no draft name needed; the draft *record* is its slug or
 `dr<id>`. Never guess/compute a handle — `put`/search/get return it.
-Windows: `dc41-2..3` (2 before, 3 after), `dc41+1`, `dc41^` (parent). No
+Windows: `dc41-2..3` (signed offsets -2 through 3), `dc41+1`, `dc41^` (parent). No
 positional `~N` ordinals (they rot on insert). A window is a read
 address only: `view=` (kwd…fisheye+1hop) targets one chunk, so pair it
 with a bare `dc<id>`, never a `-B..A` window.
+
+Heading windows stop at the end of that heading’s subtree and omit before-context.
+Large windows name the last complete chunk shown and the next range call. If
+one chunk cannot fit, increase the named byte budgets and retry the exact call.
 
 **`get` — views**
 
@@ -36,7 +40,7 @@ with a bare `dc<id>`, never a `-B..A` window.
 |---|---|
 | `get(id='<slug>')` / `view='outline'` | handle \| §-path \| gist, whole doc |
 | `get(id='dc<id>')` | one chunk, verbatim |
-| `get(id='dc<id>-B..A')` | that chunk + B before, A after |
+| `get(id='dc<id>-B..A')` | signed offsets -B through A in reading order; heading anchors stay inside their subtree |
 | `get(id='dc<id>', view='fisheye')` | verbatim center + graduated neighborhood |
 | `get(id='dc<id>', view='fisheye+1hop')` | fisheye + cited/cross-ref/note ring |
 | `get(id=<scope>, view='toc')` | heading skeleton (whole draft, or one heading's subtree) |
@@ -48,6 +52,8 @@ with a bare `dc<id>`, never a `-B..A` window.
 | `get(id='<slug>', view='links')` | the draft's link graph (cites/cross-refs/notes); `args={'rel': 'touched', 'of_kind': 'agentlog'}` narrows it (a hot draft's unfiltered view runs to hundreds of KB) |
 | `get(kind='draft', project=<todo-id>)` | reverse lookup: that project's draft |
 
+## Choose edit params
+
 **`edit` — params** (`text=` rewrite is the default; one param family per
 call)
 
@@ -56,6 +62,7 @@ call)
 | `text=` | whole-chunk rewrite |
 | `mode='replace-content'` (+`text=`) | rewrite a block's own content (heading text + direct body), child subsections keep their ids — `id` also takes `'<slug>~<heading>'`; `base_sha=` = the read view's `span-sha:` |
 | `find=` (+`text=`) | find-replace within the chunk (implies `mode='find-replace'`) |
+| `mode='insert'` + `find=` + `text=` + `where='before'\|'after'` | splice `text` next to the anchor inside the chunk; without `find=` it is refused (it never adds a chunk — use `put(..., args={'at': {'before': 'dc<id>'}})`) |
 | `dry_run=True`/`'full'` | preview a `text=`/`find=` edit, write nothing |
 | `move=` | reorder/reparent — grammar below |
 | `table=` / `cell=` / `find=`+`text=` / `sub=` | table-chunk cell edits — grammar below |
@@ -136,3 +143,45 @@ is the same slot at the root level.
 - [[precis-draft-rich-content-help]] — figures, images, and data tables.
 - [[precis-draft-export-help]] — LaTeX/PDF/Word/reMarkable export.
 - [[precis-edit-help]] — the generic edit verb across kinds.
+
+## Regex find and substitute
+
+**Regex find + substitute** (vi `/pattern` and `:%s/a/b/`) — for a
+**literal** pattern (markup, punctuation, a malformed citation), not
+meaning: Python regex (`\w`, `\d`, groups, `|`) over chunk text. Audits
+house style: stray `**bold**`, em-dashes, double spaces, a bare
+`paper:123` cite.
+
+```python
+search(kind="draft", mode="regex", q=r"\*\*\w+\*\*", scope="nanotrans")  # find **bold**
+search(kind="draft", mode="regex", q="TODO", scope="nanotrans", flags="i")  # case-fold
+edit(
+    kind="draft",
+    id="nanotrans",
+    sub={"find": r"\*\*(\w+)\*\*", "replace": r"\1"},
+    apply=True,
+)  # backreferences: strip bold
+```
+
+Find hits show `draft:<slug> dc<id> [kind]` and, per match,
+`L<line>:<col>` with the span wrapped `»…«`. `flags='i'` case-folds,
+`flags='s'` makes `.` cross newlines; `^`/`$` anchor per line; reads
+table/figure text too (read-only). `replace` is a regex template
+(`\1`/`\g<name>` resolve); every occurrence in each chunk is replaced —
+`s/pat/repl/` string form works too, and `sub=` dry-runs (counts +
+before→after sample) unless `apply=True`. Rewritten chunks go through
+the normal edit path (re-embed/keywords/gist re-derive, prior text kept
+in history); table/figure chunks are skipped in a slug/section-scoped
+substitute — point `sub=` at the table's own `dc<id>` to edit its cells
+instead.
+
+**Scope** (find and substitute):
+
+| `scope=`/`id=` | covers |
+|---|---|
+| a draft slug | the whole draft |
+| a `dc<id>` heading | that section's subtree |
+| a `dc<id>` leaf | just that chunk |
+| omitted (find only) | every draft |
+
+Substitute **requires** a scope — no corpus-wide rewrite.

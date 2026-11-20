@@ -729,3 +729,116 @@ def test_latexmk_probe_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_latexmk_probe_is_registered() -> None:
     assert "latexmk" in cap._PROBES
+
+
+# ── devin lane: binary + login, TTL-cached ──────────────────────────────
+
+
+@pytest.fixture
+def devin_probe(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """The real devin login probe over fake seams: ``bin`` is whether the
+    binary resolves, ``status`` the ``auth status`` answer, ``runs`` how
+    many times ``auth status`` ran. The cache is dropped around each test."""
+    from precis.workers.job_types import _slice_adapters as sa
+
+    state = SimpleNamespace(bin=True, status="Logged in\n", rc=0, runs=0)
+
+    def auth_status(_bin: str) -> subprocess.CompletedProcess[str]:
+        state.runs += 1
+        return subprocess.CompletedProcess([], state.rc, state.status, "")
+
+    monkeypatch.setattr(sa, "adapter_bin_present", lambda name: state.bin)
+    monkeypatch.setattr(sa, "devin_auth_status", auth_status)
+    monkeypatch.setattr(sa, "_devin_login_cache", None)
+    return state
+
+
+@pytest.mark.parametrize(
+    "binary, status, rc, token",
+    [
+        (True, "Logged in (via Devin)\n", 0, 1),
+        (True, "Not logged in\n", 1, 0),
+        (True, "Not logged in\n", 0, 0),
+        (False, "Logged in\n", 0, 0),
+    ],
+)
+def test_devin_bin_token_requires_binary_and_login(
+    monkeypatch: pytest.MonkeyPatch,
+    devin_probe: SimpleNamespace,
+    binary: bool,
+    status: str,
+    rc: int,
+    token: int,
+) -> None:
+    """A logged-out devin host must not advertise the lane: its preflight
+    refusal would back the lane off for the whole fleet."""
+    devin_probe.bin, devin_probe.status, devin_probe.rc = binary, status, rc
+    for other in ("_probe_claude_lane", "_probe_codex_bin", "_probe_kimi_bin"):
+        monkeypatch.setattr(cap, other, lambda: 0)
+    assert cap._PROBES["devin_bin"]() == token
+    assert cap._probe_builder() == token
+
+
+def test_devin_bin_token_without_binary_never_runs_auth_status(
+    devin_probe: SimpleNamespace,
+) -> None:
+    devin_probe.bin = False
+    assert cap._probe_devin_bin() == 0
+    assert devin_probe.runs == 0
+
+
+def test_devin_login_probe_is_ttl_cached_and_bustable(
+    devin_probe: SimpleNamespace,
+) -> None:
+    from precis.workers.job_types import _slice_adapters as sa
+
+    assert cap.devin_login_present() is True
+    assert cap.devin_login_present() is True
+    assert devin_probe.runs == 1  # the second read was inside the TTL
+    devin_probe.status, devin_probe.rc = "Not logged in\n", 1
+    assert cap.devin_login_present() is True  # still the cached verdict
+    sa._bust_devin_login_probe()
+    assert cap.devin_login_present() is False
+    assert devin_probe.runs == 2
+
+
+def test_devin_login_probe_reprobes_after_the_ttl(
+    devin_probe: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.workers.job_types import _slice_adapters as sa
+
+    assert cap.devin_login_present() is True
+    now = sa.time.monotonic()
+    monkeypatch.setattr(
+        sa.time, "monotonic", lambda: now + sa._DEVIN_LOGIN_PROBE_TTL_S + 1
+    )
+    assert cap.devin_login_present() is True
+    assert devin_probe.runs == 2
+
+
+def test_note_devin_logged_out_flips_the_cached_answer(
+    devin_probe: SimpleNamespace,
+) -> None:
+    from precis.workers.job_types import _slice_adapters as sa
+
+    assert cap.devin_login_present() is True
+    sa.note_devin_logged_out()
+    assert cap.devin_login_present() is False
+    assert devin_probe.runs == 1  # recorded, not re-probed
+
+
+@pytest.mark.parametrize(
+    "stdout, rc, expected",
+    [
+        ("Logged in (via Devin)\n", 0, True),
+        ("Not logged in\n", 0, False),
+        ("Not logged in\n", 1, False),
+        ("Logged in\n", 1, False),
+        ("", 127, False),
+    ],
+)
+def test_devin_status_logged_in_reading(stdout: str, rc: int, expected: bool) -> None:
+    from precis.workers.job_types._slice_adapters import devin_status_logged_in
+
+    status = subprocess.CompletedProcess([], rc, stdout, "")
+    assert devin_status_logged_in(status) is expected

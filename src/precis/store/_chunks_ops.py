@@ -560,6 +560,7 @@ from precis.store.types import ChunkInsert, ChunkRow, Density, Ref
 from precis.utils import handle_registry, search_trace
 from precis.utils.angle import angle_anchors
 from precis.utils.canon import RANK_BONUS, boost_ref_ids, lexical_q
+from precis.utils.rank_fusion import reciprocal_rank_fusion
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -710,6 +711,21 @@ _TSQUERY_OP_RE = re.compile(r'"|(?:^|\s)-(?![A-Z0-9])\S')
 _OR_RETRY_MIN_WORDS = 3
 
 
+def _lexical_chunk_source(kind: str | None) -> str:
+    """Fetch taxon chunks by ref before applying full-text predicates.
+
+    Taxa are a small fraction of the corpus. OFFSET 0 keeps a long query's
+    OR fallback from driving the join through the corpus-wide tsv index.
+    """
+    if kind == "taxon":
+        return (
+            "refs r CROSS JOIN LATERAL ("
+            "SELECT c.* FROM chunks c WHERE c.ref_id = r.ref_id OFFSET 0"
+            ") c"
+        )
+    return "chunks c JOIN refs r ON r.ref_id = c.ref_id"
+
+
 def _or_retry(q: str, scope_ref_id: int | None) -> bool:
     """Whether an empty strict lexical leg retries with its terms OR-ed.
 
@@ -753,66 +769,59 @@ def _verbatim_backstop(
     kind: str | None,
     kinds: list[str] | None = None,
 ) -> bool:
-    """Whether the ``mode='verbatim'`` scan is bounded enough to afford
-    the phrase-substring backstop (see :func:`_verbatim_pred`).
-
-    True for a single-ref scope or an explicit ref-id set, and for the
-    agent-authored memory corpus (``kind='memory'``, gr662452): the join
-    filters ``refs`` via ``refs_kind_idx`` and probes
-    ``chunks_ref_id_idx``, so the ILIKE leg evaluates only memory-chunk
-    text, never the multi-million-row paper corpus. gr662452: verbatim
-    search is the dedup check the remember/search-first recipes trust,
-    and an exact sentence fails ``keywords @>`` whenever KeyBERT never
-    stored one of its words (stopwords, LaTeX tokens) — a miss then
-    mints duplicates. A memory body is one ``memory_body`` chunk, so a
-    phrase found in the body is always wholly inside that chunk's text.
-    Multi-kind ``kinds=`` filters are never bounded this way (a paper
-    member would reopen the seq-scan), so a mixed list never counts —
-    but a single-element ``['memory']`` list compiles to the same
-    ``refs_kind_idx`` probe as the singular spelling, and the
-    source-search route (``sort='recency'``, gr688850) hands the memory
-    corpus in exactly that shape: without the backstop a verbatim
-    ``sort='recency'`` memory search silently drops every hit the
-    un-sorted singular call finds.
-    """
+    """Allow a direct substring scan for explicit ref scopes and memory."""
     return (
         scope_ref_id is not None
         or include_ref_ids is not None
-        or kind == "memory"
-        or list(kinds or ()) == ["memory"]
+        or (kind == "memory" if kinds is None else set(kinds) == {"memory"})
     )
 
 
+_VERBATIM_TSV_CAP = 1000
+
+
 def _verbatim_pred(terms: list[str], *, scoped: bool = False) -> tuple[str, list[Any]]:
-    """The ``mode='verbatim'`` match predicate as ``(sql, params)``.
+    """Return the shared verbatim search/count predicate and bind params.
 
-    ``c.keywords @> terms`` (KeyBERT containment, GIN-indexed). When
-    ``scoped`` (per :func:`_verbatim_backstop`: a single ref, an explicit
-    ref-id set, or the memory corpus bounds the scan), OR the whole query
-    phrase as one literal ``text`` ILIKE substring — the backstop for a
-    term the keyword extractor never stored (gr518172: 'MSEP' returned
-    1 of 5 matching chunks). Unbounded searches keep containment only:
-    the chunks table has no trigram index, so a substring leg would
-    seq-scan millions of rows. The phrase is matched contiguously, so
-    '7 nm' never matches a chunk with "7" and "nm" apart. One predicate
-    shared by :meth:`ChunkStore.search_chunks_keywords` and
-    :meth:`ChunkStore.count_chunks_keywords` so results and the "N of K"
-    header can never diverge.
-
-    With the memory-ablation ``kwd`` switch off (``precis.bench.switches``)
-    the keyword-containment leg is gone from the ranking: only the literal
-    phrase ``text`` ILIKE match remains, scoped or not.
+    Scoped searches can check the escaped whole phrase directly. Outside
+    those scopes, union the indexed keyword matches with phrase matches
+    from a capped pool of the newest live TSV candidates (gr681521).
+    The cap bounds text checks and can omit older matches. English TSV
+    analysis can also miss literal substrings. With no-kwd, the phrase
+    leg runs alone under the same scope or cap.
     """
     from precis.bench import switches as bench_switches
 
-    if not bench_switches.current().kwd:
-        return "c.text ILIKE %s ESCAPE '\\'", [_ilike_contains(" ".join(terms))]
-    if not scoped:
-        return "c.keywords @> %s::text[]", [terms]
-    return "(c.keywords @> %s::text[] OR c.text ILIKE %s ESCAPE '\\')", [
-        terms,
-        _ilike_contains(" ".join(terms)),
-    ]
+    phrase = " ".join(terms)
+    pattern = _ilike_contains(phrase)
+    kwd = bench_switches.current().kwd
+    if scoped:
+        phrase_pred = "c.text ILIKE %s ESCAPE '\\'"
+        if not kwd:
+            return phrase_pred, [pattern]
+        return f"(c.keywords @> %s::text[] OR {phrase_pred})", [terms, pattern]
+
+    keyword_ids = (
+        "SELECT chunk_id FROM chunks WHERE keywords @> %s::text[] UNION " if kwd else ""
+    )
+    # LIMIT applies before ILIKE, so older TSV hits cannot extend the text scan.
+    return (
+        f"""c.chunk_id IN (
+            {keyword_ids}
+            SELECT candidate.chunk_id
+            FROM (
+                SELECT ch.chunk_id, ch.text
+                FROM chunks ch
+                JOIN refs owner ON owner.ref_id = ch.ref_id
+                WHERE ch.retired_at IS NULL AND owner.retired_at IS NULL
+                  AND ch.tsv @@ plainto_tsquery('english', %s)
+                ORDER BY ch.chunk_id DESC
+                LIMIT %s
+            ) candidate
+            WHERE candidate.text ILIKE %s ESCAPE '\\'
+        )""",
+        ([terms] if kwd else []) + [phrase, _VERBATIM_TSV_CAP, pattern],
+    )
 
 
 def header_card_text(title: str | None, hook: str | None) -> str:
@@ -1031,6 +1040,7 @@ class ChunkStore:
         self,
         *,
         q: str,
+        lexical_info_out: dict[str, bool] | None = None,
         kind: str | None = None,
         kinds: list[str] | None = None,
         scope_ref_id: int | None = None,
@@ -1047,7 +1057,9 @@ class ChunkStore:
         """Count chunks matching the lexical filter (no LIMIT). Companion
         to :meth:`search_chunks_lexical` for the "N of K" header — same
         WHERE clause (noise-floor guard, ``card_kinds`` opt-in) so the
-        header matches the search's exact universe.
+        header matches the search's exact universe. ``lexical_info_out``
+        receives ``or_fallback`` even when the retry also finds zero rows;
+        callers that omit it retain the integer-only count API.
 
         ``distinct_refs=True`` counts distinct *refs* with a match
         (``COUNT(DISTINCT c.ref_id)``) instead of matching chunks — the
@@ -1060,6 +1072,7 @@ class ChunkStore:
         **exclusive**. Also serves the ``/drive`` "showing N of ~K"
         denominator.
         """
+        # Optional metadata preserves the integer API while exposing the executed leg.
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         clauses = [
             "r.retired_at IS NULL",
@@ -1111,10 +1124,14 @@ class ChunkStore:
         )
         from precis.store.pool import apply_checkout_budget
 
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = False
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             assert row is not None
             if int(row[0]) == 0 and _or_retry(q, scope_ref_id):
+                if lexical_info_out is not None:
+                    lexical_info_out["or_fallback"] = True
                 # Mirror the OR retry in search_chunks_lexical —
                 # this count IS that leg's universe for the "N of K"
                 # header, so it must count the same rows. Re-derive
@@ -1148,21 +1165,11 @@ class ChunkStore:
         year_to: int | None = None,
         chunk_kinds: list[str] | None = None,
     ) -> int:
-        """Count chunks matching the ``mode='verbatim'`` filter (no
-        LIMIT). Companion to :meth:`search_chunks_keywords` for the
-        "N of K" header — same :func:`_verbatim_pred` clause (keyword
-        containment OR whole-phrase text substring, noise-floor guard,
-        ``card_kinds`` opt-in, control-tag fences, year range) so a
-        verbatim search's
-        header reports *its own* universe rather than
-        :meth:`count_chunks_lexical`'s FTS one (gr311338 — the header
-        used to always report the lexical count regardless of the mode
-        actually searched, so a verbatim query with e.g. zero keyword
-        hits could still claim "N of 386" from an unrelated FTS
-        universe; prod-measured 846 lexical vs 8 verbatim for a
-        two-word query). The substring leg's gate is
-        :func:`_verbatim_backstop`, shared verbatim with
-        :meth:`search_chunks_keywords`.
+        """Count the same verbatim pool as :meth:`search_chunks_keywords`.
+
+        The total includes all matching keyword hits and the shared phrase
+        leg, which uses a capped TSV pool outside direct-scan scopes. No
+        page limit applies to the count.
 
         The ``DREAM:speculative`` / ``ORIGIN:wikipedia`` / ``STATUS:refuted``
         fences and the ``after=``/``before=`` year-range predicate MUST
@@ -1237,6 +1244,7 @@ class ChunkStore:
         self,
         *,
         q: str,
+        lexical_info_out: dict[str, bool] | None = None,
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
@@ -1244,7 +1252,8 @@ class ChunkStore:
     ) -> int:
         """Count distinct **papers** that match the lexical query but
         carry no ``year`` — the "omitted from a publish-date filter"
-        heads-up. Lexical-only (a hard tsquery match) on purpose: it
+        heads-up. ``lexical_info_out`` reports the same ``or_fallback``
+        flag as :meth:`count_chunks_lexical`. Lexical-only (a hard tsquery match) on purpose: it
         answers "papers your keywords hit that a year filter silently
         drops", so the agent doesn't read an empty year-range result as
         "nothing exists" when the real cause is missing metadata.
@@ -1279,10 +1288,14 @@ class ChunkStore:
         )
         from precis.store.pool import apply_checkout_budget
 
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = False
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             assert row is not None
             if int(row[0]) == 0 and _or_retry(q, scope_ref_id):
+                if lexical_info_out is not None:
+                    lexical_info_out["or_fallback"] = True
                 # Same OR retry as search_chunks_lexical — the
                 # notice counts the universe the leg actually searched.
                 # Re-derive the remaining budget first (gr664954).
@@ -1369,6 +1382,7 @@ class ChunkStore:
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
         has_body: bool | None = None,
+        lexical_info_out: dict[str, bool] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Lexical search over ``chunks.tsv``.
 
@@ -1388,6 +1402,8 @@ class ChunkStore:
         fall through to unfiltered), only chunks whose ``ref_id`` is in
         the set are returned.
         """
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = False
         clauses = [
             "r.retired_at IS NULL",
             # Ghost-chunk guard: a retired draft chunk keeps its embedding +
@@ -1440,13 +1456,13 @@ class ChunkStore:
         params.append(offset)
 
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
+        source = _lexical_chunk_source(kind if kinds is None else None)
 
         def _sql(tsquery_expr: str) -> str:
             return (
                 f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
                 f"       ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION}) AS rank "
-                "FROM chunks c "
-                "JOIN refs r ON r.ref_id = c.ref_id, "
+                f"FROM {source}, "
                 f"{tsquery_expr} qq(qq) "
                 f"WHERE {' AND '.join(clauses)} "
                 # chunk_id is a deterministic tiebreak: ts_rank_cd ties are
@@ -1482,8 +1498,7 @@ class ChunkStore:
                     # inherits the stale cap (gr664954, td665127).
                     apply_checkout_budget(conn)
                     probe = conn.execute(
-                        "SELECT EXISTS(SELECT 1 FROM chunks c "
-                        "JOIN refs r ON r.ref_id = c.ref_id, "
+                        f"SELECT EXISTS(SELECT 1 FROM {source}, "
                         "websearch_to_tsquery('english', %s) qq(qq) "
                         f"WHERE {' AND '.join(clauses)})",
                         params[:-2],
@@ -1491,6 +1506,8 @@ class ChunkStore:
                     assert probe is not None
                     strict_empty = not probe[0]
                 if strict_empty:
+                    if lexical_info_out is not None:
+                        lexical_info_out["or_fallback"] = True
                     # Same re-derive before the retry itself — the AND
                     # leg (and the probe) already spent budget.
                     apply_checkout_budget(conn)
@@ -1530,20 +1547,14 @@ class ChunkStore:
         card_kinds: tuple[str, ...] | None = None,
         has_body: bool | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
-        """Verbatim keyword search — chunks whose ``keywords`` array contains
-        **all** of ``terms`` (GIN ``@>`` containment against the per-chunk
-        KeyBERT terms, F20) OR whose ``text`` literally carries the whole
-        query phrase as one substring. The ``search(mode='verbatim')``
-        leg: exact, embedder-independent term matching for when an agent
-        wants a literal keyword rather than fuzzy relevance. The
-        substring backstop covers terms KeyBERT never extracted — a
-        bulk-edit pass trusting verbatim to find every occurrence must
-        not leave stale text behind (gr518172) — and runs whenever
-        :func:`_verbatim_backstop` bounds the scan: a single ref, an
-        explicit ref-id set, or the memory corpus (gr662452: a verbatim
-        sentence search is the dedup check the remember recipes trust,
-        and ``keywords @>`` alone misses any sentence with a word
-        KeyBERT never stored). Shares every filter with the lexical leg
+        """Find keyword containment plus contiguous phrase matches.
+
+        The indexed keyword leg requires all terms. The phrase leg scans
+        a single ref, explicit ref set or memory corpus directly. Other
+        searches check the phrase within the newest capped live TSV
+        candidates (gr681521). This recovers phrases missing from KeyBERT
+        while bounding text checks. Use literal mode for a substring
+        search without the TSV prefilter. Shares lexical filters
         (kind/date/scope/tags/fences/year/chunk-scope/exclude).
 
         Terms are lowercased (KeyBERT stores lowercased; ILIKE is
@@ -1893,6 +1904,7 @@ class ChunkStore:
         card_kinds: tuple[str, ...] | None = None,
         has_body: bool | None = None,
         fold_info_out: dict[int, tuple[float | None, bool]] | None = None,
+        lexical_info_out: dict[str, bool] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Hybrid search via reciprocal rank fusion over lex + sem.
 
@@ -1941,6 +1953,8 @@ class ChunkStore:
         their ordering untouched — the fallback only fills an empty
         leg.
         """
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = False
         if query_vec is None:
             rows = self.search_chunks_lexical(
                 q=q,
@@ -1958,6 +1972,7 @@ class ChunkStore:
                 chunk_ids=chunk_ids,
                 card_kinds=card_kinds,
                 has_body=has_body,
+                lexical_info_out=lexical_info_out,
             )
             # A pure-lexical row is corroborated by definition and has no
             # semantic distance — callers folding on ``fold_info_out``
@@ -2045,24 +2060,26 @@ class ChunkStore:
         # or not; the common case (AND hit) pays one early-exiting index
         # probe and emits SQL identical to no fallback at all.
         or_leg = _or_retry(q, scope_ref_id)
+        lexical_source = _lexical_chunk_source(kind)
         from precis.store.pool import apply_checkout_budget
 
         with self.pool.connection() as conn:
             route, route_kind = _ann_route(conn, kind, None)
-            if or_leg and scope_ref_id is None:
+            if or_leg and (scope_ref_id is None or lexical_info_out is not None):
                 # Second statement on this checkout (the gate read ran
                 # first) — re-derive the remaining budget or it
                 # inherits the checkout-time cap (gr664954, td665127).
                 apply_checkout_budget(conn)
                 row = conn.execute(
-                    "SELECT EXISTS(SELECT 1 FROM chunks c "
-                    "JOIN refs r ON r.ref_id = c.ref_id, "
+                    f"SELECT EXISTS(SELECT 1 FROM {lexical_source}, "
                     "websearch_to_tsquery('english', %s) qq(qq) "
                     f"WHERE c.tsv @@ qq.qq{where_extra})",
                     [lexical_q(q), *params],
                 ).fetchone()
                 assert row is not None
                 or_leg = not bool(row[0])
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = or_leg
         sem_core, order_vec = _ann_core_sql(
             route,
             route_kind,
@@ -2085,7 +2102,7 @@ class ChunkStore:
                        row_number() OVER (
                            ORDER BY ts_rank_cd(c.tsv, oq.oq, {LEX_RANK_NORMALIZATION}) DESC, c.chunk_id
                        ) AS rnk
-                FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
+                FROM {lexical_source},
                      (SELECT {_OR_TSQUERY}) oq(oq)
                 WHERE c.tsv @@ oq.oq
                       {where_extra}
@@ -2187,7 +2204,7 @@ class ChunkStore:
                            -- search_chunks_lexical (rank ties shuffle).
                            ORDER BY ts_rank_cd(c.tsv, qq.qq, {LEX_RANK_NORMALIZATION}) DESC, c.chunk_id
                        ) AS rnk
-                FROM chunks c JOIN refs r ON r.ref_id = c.ref_id,
+                FROM {lexical_source},
                      websearch_to_tsquery('english', %s) qq(qq)
                 WHERE c.tsv @@ qq.qq
                       {where_extra}
@@ -2558,19 +2575,17 @@ class ChunkStore:
         while True:
             legs = _fetch_legs()
 
-            # Reciprocal-rank fusion: score[cid] = Σ_leg 1/(k + rank_in_leg).
-            # Keep the first-seen (ChunkRow, Ref) per chunk for rendering;
-            # leg_hits records which legs ranked it (gr514952).
-            fused: dict[int, float] = {}
+            fused, leg_hits = reciprocal_rank_fusion(
+                (
+                    (name, ((block.id, score) for block, _ref, score in leg))
+                    for name, leg in legs
+                ),
+                k=k,
+            )
             seen: dict[int, tuple[ChunkRow, Ref]] = {}
-            leg_hits: dict[int, dict[str, tuple[int, float]]] = {}
-            for leg_name, leg in legs:
-                for rank, (block, ref, leg_score) in enumerate(leg):
-                    cid = block.id
-                    fused[cid] = fused.get(cid, 0.0) + 1.0 / (k + rank + 1)
-                    if cid not in seen:
-                        seen[cid] = (block, ref)
-                    leg_hits.setdefault(cid, {})[leg_name] = (rank, leg_score)
+            for _name, leg in legs:
+                for block, ref, _score in leg:
+                    seen.setdefault(block.id, (block, ref))
 
             # Sort by fused score desc; deterministic tiebreak on chunk id.
             ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -2752,10 +2767,14 @@ class ChunkStore:
         card_kinds: tuple[str, ...] | None = None,
         has_body: bool | None = None,
         fold_info_out: dict[int, tuple[float | None, bool]] | None = None,
+        lexical_info_out: dict[str, bool] | None = None,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Mode-dispatched block search — one entry point over the three
         ranking strategies, so the LLM-facing ``search(mode=…)`` picks a
         mode instead of a function.
+
+        ``lexical_info_out`` reports whether the lexical leg retried with OR;
+        modes without a lexical retry report False.
 
         ``year_from``/``year_to`` are inclusive ``refs.year`` bounds for
         the paper publish-date filter, threaded into all three legs.
@@ -2781,6 +2800,8 @@ class ChunkStore:
         an RRF score, cosine distance, or lexical rank, "more relevant
         first" within a mode, never comparable across modes.
         """
+        if lexical_info_out is not None:
+            lexical_info_out["or_fallback"] = False
         m = (mode or "hybrid").strip().lower()
         if m == "verbatim":
             return self.search_chunks_keywords(
@@ -2858,6 +2879,7 @@ class ChunkStore:
                 chunk_ids=chunk_ids,
                 card_kinds=card_kinds,
                 has_body=has_body,
+                lexical_info_out=lexical_info_out,
             )
         return self.search_chunks_fused(
             q=q,
@@ -2881,6 +2903,7 @@ class ChunkStore:
             chunk_ids=chunk_ids,
             card_kinds=card_kinds,
             has_body=has_body,
+            lexical_info_out=lexical_info_out,
             fold_info_out=fold_info_out,
         )
 
@@ -4004,6 +4027,34 @@ class ChunkStore:
             else:
                 neighbours.append((int(chunk_id), int(ord_), str(text or "")))
         return tables, neighbours
+
+    def table_like_chunks_for_ref(
+        self, ref_id: int, *, limit: int, after_ord: int = -1
+    ) -> list[tuple[int, int, str]]:
+        """Live body chunks that look like a labeled table but are not
+        ``chunk_kind='table'`` (``Table <n>`` caption line, or a pipe
+        grid of three or more rows). The ``view='tables'`` fallback
+        pointer (gr716568). ``(chunk_id, ord, text)`` in ord order.
+
+        The caption branch mirrors :data:`precis.extract.tables._CAPTION_RE`
+        — supplementary ``S<n>`` labels and a closing markdown ``**``
+        (``**Table 2** rates``) count, so a caption the recognizer
+        accepts is never missed here."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT chunk_id, ord, text
+                  FROM chunks
+                 WHERE ref_id = %s AND retired_at IS NULL AND ord >= 0 AND ord > %s
+                   AND chunk_kind <> 'table'
+                   AND (text ~* '(^|\n)[\\s*_#>]*table\\s+[0-9ivxs]+[a-z]?\\s*(\\*\\*|[.:|)-])'
+                        OR text ~ '((^|\n)[[:blank:]]*\\|[^\n]*\\|[^\n]*){3}')
+                 ORDER BY ord
+                 LIMIT %s
+                """,
+                (ref_id, after_ord, limit),
+            ).fetchall()
+        return [(int(r[0]), int(r[1]), str(r[2] or "")) for r in rows]
 
     def chunk_pages(self, ref_id: int, ords: list[int]) -> dict[int, int]:
         """Map body-chunk ``ord`` → ``page_first`` for the given ords.

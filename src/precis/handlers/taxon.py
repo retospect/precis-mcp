@@ -29,9 +29,10 @@ Stage C adds search and dedup:
   whose ``meta.axis`` matches, ``depth=N`` meaning <= N hops. With ``q=`` the
   hits are ranked and intersected with that set; without it the set is listed
   by depth then name.
-* ``put`` refuses a likely duplicate (name/alias/slug match, then embedding
-  nearest-neighbour under ``DEDUP_MAX_DISTANCE`` when an embedder answers;
-  lexical-only when it does not). A candidate is **suppressed only on an
+* ``put`` refuses a likely duplicate (name/alias match — a slug alone is
+  too lossy to prove identity — then embedding nearest-neighbour under
+  ``DEDUP_MAX_DISTANCE`` when an embedder answers, lexical-only when it
+  does not). A candidate is **suppressed only on an
   explicit dimension mismatch**: both sides carry ``dimension_kind`` and the
   kinds differ, or both are ``si`` with different ``si_vector``. A side with
   no ``dimension_kind`` stays compatible. ``dedup=False`` mints anyway.
@@ -61,8 +62,11 @@ from precis.taxonomy.nodes import (
     EDITABLE_KEYS,
     STATUS_PROPOSED,
     dimension_clash,
+    explicitly_distinguished,
     initial_taxon_meta,
+    matches_term,
     mirror_namespace,
+    resolves_term,
     slugify,
     taxon_card_text,
     validate_taxon_meta,
@@ -113,16 +117,6 @@ def _dimension_clash(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return dimension_clash(a, b)
 
 
-def _matches_term(meta: dict[str, Any], seg: str) -> bool:
-    """Does a node's slug / norm_name / any alias equal ``seg``?"""
-    norm = normalize_name(seg)
-    if meta.get("slug") and meta.get("slug") == slugify(seg):
-        return True
-    if meta.get("norm_name") == norm:
-        return True
-    return any(normalize_name(str(a)) == norm for a in (meta.get("aliases") or []))
-
-
 def _lede(definition: str) -> str:
     """First sentence of a definition (the node's stand-alone summary)."""
     d = (definition or "").strip()
@@ -140,6 +134,8 @@ _UNIT_KEYS: frozenset[str] = frozenset({"canonical_unit", "display_unit"})
 
 class TaxonHandler(NumericRefHandler):
     owns_under = True
+    #: ``get(id=[...])`` takes a list of node refs, paths included (gr714645).
+    batch_ids: ClassVar[bool] = True
 
     #: Agent-authored assertions (graph-node-trust-state slice 1).
     trust_origin: ClassVar[str | None] = "generated"
@@ -158,6 +154,7 @@ class TaxonHandler(NumericRefHandler):
             "in meta=; a likely duplicate is refused unless dedup=False). Nodes "
             "form a DAG via link(rel='specialises', meta={'axis': …}); "
             "get(view='path') shows the chains up to the start nodes; "
+            "get(view='children', id=…) lists direct children; "
             "search(q=) matches name and definition, search(under=, axis=, "
             "depth=) lists descendants. Ids: 42, tn42, or a path "
             "'measurand/temperature'. See me693578."
@@ -256,9 +253,25 @@ class TaxonHandler(NumericRefHandler):
         return self._path_label(ref_id)
 
     def _term_matches(self, term: str) -> list[int]:
+        """Ids ``term`` may *address* — name, alias or slug (the loose
+        surface of :meth:`Store.taxon_find_by_term`). Slugs fold symbols
+        away, so this is resolution, not identity: callers that need "the
+        term IS the node" go through :meth:`_identity_matches`."""
         return self.store.taxon_find_by_term(
             slug=slugify(term), norm=normalize_name(term)
         )
+
+    def _identity_matches(self, term: str) -> list[int]:
+        """The subset of :meth:`_term_matches` that ``term`` names exactly
+        (:func:`precis.taxonomy.nodes.matches_term`) — the surface for
+        dedup and the ``exact:`` lead, so ``DimeNet`` cannot claim
+        ``DimeNet++`` over their shared ``dimenet`` slug (gr722401)."""
+        ids = []
+        for rid in self._term_matches(term):
+            ref = self.store.get_ref(kind=self.kind, id=rid)
+            if ref is not None and matches_term(ref.meta or {}, term):
+                ids.append(rid)
+        return ids
 
     def _slug_of(self, ref_id: int) -> str:
         ref = self.store.get_ref(kind=self.kind, id=ref_id)
@@ -305,7 +318,7 @@ class TaxonHandler(NumericRefHandler):
             return True
         for aid, _depth, _axis in self.store.taxon_ancestors(node):
             ref = self.store.get_ref(kind=self.kind, id=aid)
-            if ref is None or not _matches_term(ref.meta or {}, segs[-1]):
+            if ref is None or not resolves_term(ref.meta or {}, segs[-1]):
                 continue
             if self._ancestor_matches(aid, segs[:-1]):
                 return True
@@ -365,8 +378,9 @@ class TaxonHandler(NumericRefHandler):
         """Create a node. ``meta=`` is declared explicitly (not read from
         ``**_kw``) so the dispatch strictness gate, which only inspects
         explicit parameters, lets it through. Unless ``dedup=False``, a likely duplicate (same
-        name/alias/slug, or an embedding neighbour within
-        ``DEDUP_MAX_DISTANCE`` when an embedder answers) is refused naming the
+        name/alias — a shared slug alone does not count — or an embedding
+        neighbour within ``DEDUP_MAX_DISTANCE`` when an embedder answers)
+        is refused naming the
         existing node, and a near sibling under the ``link=`` parent is
         refused as a definition that does not separate (order in
         :meth:`_mint_checks`); candidates whose dimension explicitly differs
@@ -401,7 +415,7 @@ class TaxonHandler(NumericRefHandler):
         parent_ids: list[int] | None = None,
     ) -> None:
         """Refusals before a put or a definition/alias edit, most specific
-        first: an exact name/alias/slug match is a duplicate ("use the
+        first: an exact name/alias match is a duplicate ("use the
         existing node"); a near sibling is a definition that does not
         separate ("sharpen it against the sibling"); a near non-sibling is
         a duplicate again. Sibling before the embedding leg of dedup, or
@@ -445,10 +459,11 @@ class TaxonHandler(NumericRefHandler):
         terms = [meta.get("name", ""), *(meta.get("aliases") or [])] if names else []
         for term in terms:
             if str(term).strip():
-                for rid in self._term_matches(str(term)):
-                    reasons.setdefault(rid, f"same name/alias/slug as {term!r}")
+                for rid in self._identity_matches(str(term)):
+                    reasons.setdefault(rid, f"same name/alias as {term!r}")
         # Embedding leg: degrades to lexical-only on a missing or failing
         # embedder (query_vec_for) or a failing vector query.
+        name_hits = set(reasons)
         card = self._card_text_for(text, meta)
         embedder = getattr(self.hub, "embedder", None) if embedding else None
         vec = query_vec_for(embedder, card, None)
@@ -469,13 +484,27 @@ class TaxonHandler(NumericRefHandler):
                     hit.id, f"embedding neighbour, cosine distance {dist:.2f}"
                 )
         keep: list[int] = []
+        a_handle = (
+            handle_registry.format_handle(self.kind, exclude) if exclude else None
+        )
         for rid in reasons:
             if rid == exclude:
                 continue
             ref = self.store.get_ref(kind=self.kind, id=rid)
             if ref is None or mirror_namespace(ref.meta or {}) != ns:
                 continue
-            if not _dimension_clash(meta, ref.meta or {}):
+            if not _dimension_clash(meta, ref.meta or {}) and (
+                rid in name_hits
+                or not explicitly_distinguished(
+                    meta,
+                    ref.meta or {},
+                    a_handle=a_handle,
+                    b_handle=handle_registry.format_handle(self.kind, rid),
+                )
+            ):
+                # An exact identity hit is a duplicate even when the
+                # put excludes the node; a boundary-named embedding neighbour
+                # is a deliberate distinction, not a duplicate (gr720773).
                 keep.append(rid)
         if not keep:
             return
@@ -486,7 +515,8 @@ class TaxonHandler(NumericRefHandler):
             next=(
                 "use the existing node, or repeat the put with dedup=False to "
                 "mint a distinct one anyway (a different dimension_kind/"
-                "si_vector also avoids this check)"
+                "si_vector also avoids this check). For a distinct embedding "
+                "neighbour, name it by handle, name or alias in meta.excludes."
             ),
         )
 
@@ -504,7 +534,10 @@ class TaxonHandler(NumericRefHandler):
         """Nearest-sibling refusal: a node minted with ``link=<parent>``,
         ``rel='specialises'`` is compared with that parent's existing
         children; one whose definition card is too similar is refused with
-        its handle + path. The create-time link carries no ``meta.axis``, so
+        its handle + path. A sibling named in the put's ``includes``/
+        ``excludes`` (or naming the put there) is explicitly distinguished
+        and never refuses (gr720773). The create-time link carries no
+        ``meta.axis``, so
         every child of the parent is compared (an axis-blind superset of
         "same axis"); ``dedup=False`` overrides. Embedding leg when an
         embedder answers (siblings not yet embedded are simply not seen);
@@ -567,12 +600,21 @@ class TaxonHandler(NumericRefHandler):
                 if score >= SIBLING_MIN_OVERLAP:
                     reasons[sid] = f"word overlap {score:.2f}"
         ns = mirror_namespace(meta)
+        a_handle = (
+            handle_registry.format_handle(self.kind, exclude) if exclude else None
+        )
         keep = [
             r
             for r in reasons
             if (ref := refs.get(r)) is not None
             and mirror_namespace(ref.meta or {}) == ns
             and not _dimension_clash(meta, ref.meta or {})
+            and not explicitly_distinguished(
+                meta,
+                ref.meta or {},
+                a_handle=a_handle,
+                b_handle=handle_registry.format_handle(self.kind, r),
+            )
         ]
         if not keep:
             return
@@ -583,8 +625,8 @@ class TaxonHandler(NumericRefHandler):
             f"{handle} {name}:\n" + "\n".join(lines[:_DEDUP_SHOW]),
             next=(
                 "use the sibling (or add your wording as its alias); if it is "
-                "truly distinct, sharpen the definition to name the sibling it "
-                "excludes, or repeat the put with dedup=False"
+                "truly distinct, name the sibling by handle, name or alias in "
+                "meta.excludes, or repeat the put with dedup=False"
             ),
         )
 
@@ -688,12 +730,13 @@ class TaxonHandler(NumericRefHandler):
         return Response(body="\n".join(lines))
 
     def _no_name_match(self, q: str | None, page: int, kw: dict[str, Any]) -> bool:
-        """True when ``q`` hits no name/slug/alias term and the lexical leg
+        """True when ``q`` names no node exactly (name/alias — a slug-only
+        hit is not a name, gr722401) and the lexical leg
         (title + definition card) finds nothing — i.e. any hit would be
         semantic-only. Reuses ``mode='lexical'`` rather than a score cutoff."""
         if not q or not q.strip() or int(page) != 1:
             return False
-        if self._term_matches(q):
+        if self._identity_matches(q):
             return False
         lex = super().search(
             q=q,
@@ -706,11 +749,13 @@ class TaxonHandler(NumericRefHandler):
     def _exact_first(
         self, resp: Response, q: str | None, page: int, scope: set[int] | None
     ) -> Response:
-        """Page 1 leads with nodes whose name/slug/alias equals ``q`` — hybrid
-        ranking can put 'Tensile yield strength' above 'Yield' (gr460338)."""
+        """Page 1 leads with nodes whose name/alias equals ``q`` — hybrid
+        ranking can put 'Tensile yield strength' above 'Yield' (gr460338).
+        A slug-only hit (``DimeNet`` vs ``DimeNet++``) is not exact and
+        ranks normally instead (gr722401)."""
         if not q or not q.strip() or int(page) != 1:
             return resp
-        hits = [h for h in self._term_matches(q) if scope is None or h in scope]
+        hits = [h for h in self._identity_matches(q) if scope is None or h in scope]
         if not hits:
             return resp
         lead = "exact: " + "; ".join(
@@ -897,7 +942,8 @@ class TaxonHandler(NumericRefHandler):
         […]}``) / ``view='meta'`` (one row per node — id, name, slug,
         display_unit, required_conditions, axis — over a single node, an
         ``id=[…]`` list, or every descendant of ``under=``) on a concrete
-        node; ``id='/coverage'`` (the review-window stamp coverage by
+        node; ``view='children'`` (the same columns over one parent's direct
+        children); ``id='/coverage'`` (the review-window stamp coverage by
         kind); otherwise the generic numeric-ref get."""
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
@@ -906,7 +952,7 @@ class TaxonHandler(NumericRefHandler):
         if under is not None:
             raise BadInput(
                 "under= applies to get(kind='taxon', view='meta') only",
-                next="get(kind='taxon', under='tn42', view='meta')",
+                next="get(kind='taxon', view='meta', args={'under': 'tn42'})",
             )
         if isinstance(id, str) and id == "/coverage":
             # gr572708: this branch returns ahead of the base dispatch,
@@ -918,14 +964,35 @@ class TaxonHandler(NumericRefHandler):
                 "days= applies to get(kind='taxon', id='/coverage') only",
                 next="get(kind='taxon', id='/coverage', args={'days': 30})",
             )
+        if isinstance(id, list) and view != "children":
+            id = [self._resolve_spec(i) if isinstance(i, str) else i for i in id]
+            if view == "facets":
+                return self._get_batch_view(
+                    self._coerce_ids(id, view=view),
+                    view=view,
+                    sort=sort,
+                    cross=cross,
+                    **_kw,
+                )
         if isinstance(id, str) and not id.startswith("/"):
             id = self._resolve_spec(id)
-        concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
+        concrete = (
+            id is not None
+            and not isinstance(id, list)
+            and not (isinstance(id, str) and id.startswith("/"))
+        )
         if (sort is not None or cross is not None) and view != "facets":
             raise BadInput(
                 "sort=/cross= only apply with view='facets'",
                 next="get(kind='taxon', id='tn12', view='facets', args={'sort': 'recent'})",
             )
+        if view == "children":
+            if id is None or isinstance(id, list):
+                raise BadInput(
+                    "view='children' needs one parent id",
+                    next="get(kind='taxon', id='measurand', view='children')",
+                )
+            return self._render_meta_inventory(id=None, under=id, direct=True)
         if concrete and view == "path":
             return self._render_path_view(self._resolve_live_ref(self._coerce_id(id)))
         if concrete and view == "facets":
@@ -941,10 +1008,11 @@ class TaxonHandler(NumericRefHandler):
         if concrete and view is not None and view not in _BASE_VIEWS:
             raise Unsupported(
                 f"unknown view {view!r} for kind='taxon'",
-                options=["path", "facets", *_BASE_VIEWS],
+                options=["path", "facets", "children", *_BASE_VIEWS],
                 next=(
                     "view='path' (chains up to the start nodes) "
                     "· view='facets' (counts per axis of the instances beneath) "
+                    "· view='children' (meta table over direct children) "
                     "· links, log, raw (generic)"
                 ),
             )
@@ -1058,13 +1126,16 @@ class TaxonHandler(NumericRefHandler):
             out += ["", f"{total - len(chains)} more chain(s) cut (limit {limit})"]
         return Response(body="\n".join(out))
 
-    def _render_meta_inventory(self, *, id: Any, under: str | int | None) -> Response:
+    def _render_meta_inventory(
+        self, *, id: Any, under: str | int | None, direct: bool = False
+    ) -> Response:
         """``view='meta'`` — one row per node: handle, name, slug,
         ``display_unit``, ``required_conditions`` and the axis of its
         ``specialises`` edge to its (first) parent — the measurand
         card-fields that used to need prod-psql (gr503059). Bulk via
         ``id=[…]`` (cap :data:`_META_VIEW_CAP`) or every descendant of
-        ``under=`` (the same set ``search(under=)`` walks)."""
+        ``under=`` (the same set ``search(under=)`` walks). The children view
+        limits that walk to one hop and retains the axis of each edge."""
         from precis.format import render_agent_table
 
         ids: list[int]
@@ -1073,7 +1144,9 @@ class TaxonHandler(NumericRefHandler):
         if under is not None:
             root = self._resolve_live_ref(self._resolve_spec(under))
             seen: dict[int, str | None] = {}
-            for rid, _depth, ax in self.store.taxon_descendants(root.id):
+            for rid, _depth, ax in self.store.taxon_descendants(
+                root.id, max_depth=1 if direct else None
+            ):
                 seen.setdefault(rid, ax)
             ids = list(seen)
             axes = seen
@@ -1094,7 +1167,7 @@ class TaxonHandler(NumericRefHandler):
                 "view='meta' needs id= or under=",
                 next=(
                     "get(kind='taxon', id=[<tn…>, …], view='meta') or "
-                    "get(kind='taxon', under='measurand', view='meta')"
+                    "get(kind='taxon', view='meta', args={'under': 'measurand'})"
                 ),
             )
         # Axis on the specialises edge to the node's first parent — the
@@ -1124,7 +1197,8 @@ class TaxonHandler(NumericRefHandler):
                     "axis": axes.get(rid) or "",
                 }
             )
-        head = f"# {len(rows)} taxon meta{scope}"
+        label = "direct children" if direct else "taxon meta"
+        head = f"# {len(rows)} {label}{scope}"
         return Response(
             body=head
             + "\n\n"

@@ -40,6 +40,9 @@ import math
 import os
 import re
 import shutil
+import subprocess
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,6 +124,78 @@ def adapter_bin_present(name: str) -> bool:
     if os.sep in raw or (os.altsep and os.altsep in raw):
         return os.path.isfile(raw) and os.access(raw, os.X_OK)
     return shutil.which(raw) is not None
+
+
+def devin_auth_status(bin: str) -> subprocess.CompletedProcess[str]:
+    """``<bin> auth status``; never raises on a non-zero exit — a missing
+    or crashing binary answers rc 127, a hang answers rc 124."""
+    try:
+        return subprocess.run(
+            [bin, "auth", "status"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=15,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            [bin], 124, stdout="", stderr="auth status timed out"
+        )
+    except OSError as e:
+        return subprocess.CompletedProcess([bin], 127, stdout="", stderr=str(e))
+
+
+def devin_status_logged_in(status: subprocess.CompletedProcess[str]) -> bool:
+    """Whether a ``devin auth status`` answer is a login: exit 0 and the
+    output says "logged in" without "not logged in" ("Not logged in"
+    contains "logged in"). The one reading the submit preflight and the
+    capability probe share, so they cannot drift."""
+    out = f"{status.stdout}\n{status.stderr}".lower()
+    return status.returncode == 0 and "logged in" in out and "not logged in" not in out
+
+
+#: ``devin auth status`` verdict, cached this long — the capability probe
+#: and the pick filter read it per heartbeat and per submit (same TTL as
+#: ``codex_exec._LOGIN_PROBE_TTL_S``).
+_DEVIN_LOGIN_PROBE_TTL_S: float = 60.0
+
+_devin_login_lock = threading.Lock()
+_devin_login_cache: tuple[float, bool] | None = None
+
+
+def devin_login_present() -> bool:
+    """Whether THIS host can run the devin lane: the binary resolves
+    (:func:`adapter_bin_present`) AND a :data:`_DEVIN_LOGIN_PROBE_TTL_S`-cached
+    ``devin auth status`` reports a login (:func:`devin_status_logged_in`).
+    A logged-out host that advertised the lane would die in the submit
+    preflight and back the lane off fleet-wide."""
+    if not adapter_bin_present("devin_tree"):
+        return False
+    now = time.monotonic()
+    with _devin_login_lock:
+        global _devin_login_cache
+        if _devin_login_cache is not None and _devin_login_cache[0] > now:
+            return _devin_login_cache[1]
+        ok = devin_status_logged_in(devin_auth_status(devin_bin()))
+        _devin_login_cache = (now + _DEVIN_LOGIN_PROBE_TTL_S, ok)
+        return ok
+
+
+def note_devin_logged_out() -> None:
+    """Record a no-login finding from the submit preflight, so this host
+    stops advertising and picking the lane now, not a TTL later."""
+    global _devin_login_cache
+    with _devin_login_lock:
+        _devin_login_cache = (time.monotonic() + _DEVIN_LOGIN_PROBE_TTL_S, False)
+
+
+def _bust_devin_login_probe() -> None:
+    """Drop the cached login verdict — the next read re-probes. Tests (and
+    an operator who just ran ``devin auth login``) call this."""
+    global _devin_login_cache
+    with _devin_login_lock:
+        _devin_login_cache = None
 
 
 def deny_settings(deny_paths: tuple[str, ...], tree: Path) -> str:

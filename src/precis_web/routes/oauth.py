@@ -44,6 +44,7 @@ _MAX_BODY_SIZE = 64 * 1024
 _PRIVATE_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "same-origin"}
 _SCOPE_LABELS = {
     "learning": "Read and update your private learning activity and settings",
+    "gtd": "Capture and read your private gtd inbox items",
     "mcp:full": "Full MCP access: use all tools, read and change the shared corpus, and use configured services",
 }
 

@@ -2134,6 +2134,13 @@ def _write_verdict(
     ``_require_resolved_comment`` convention; Opus review item 6 — the
     old text-dedup could swallow a re-close).
 
+    gr592749: after ``cluster:<slug>`` is written the tick also stamps
+    ``goal:<value>`` — ``goal_of`` over the gripe's ``thread:`` /
+    ``cluster:`` tags — so "fixed gripes by goal" is a real tag
+    facet, not a commit-scope inference. A filer-set ``goal:`` tag is
+    never overwritten; only an absent one is filled (same preservation
+    contract as ``origin-class:``).
+
     Ownership guard (Opus review): the ``FOR UPDATE`` read requires
     ``STATUS:open`` AND ``pipeline.claimed_at`` == the stamp this tick
     wrote. A gripe closed or re-leased while the call ran is skipped —
@@ -2270,6 +2277,7 @@ def _write_verdict(
             g.ref_id, Tag.open(f"cluster:{v.cluster}"), set_by="system", conn=conn
         )
         store.add_tag(g.ref_id, Tag.open(f"size:{v.size}"), set_by="system", conn=conn)
+        from precis.utils.gripe_goal import goal_of
         from precis.utils.gripe_origin_class import classify_origin
 
         pairs = conn.execute(
@@ -2277,12 +2285,12 @@ def _write_verdict(
             "WHERE rt.ref_id = %s",
             (g.ref_id,),
         ).fetchall()
-        origin_tags = [
+        tag_values = [
             f"{ns}:{value}" if ns not in {"OPEN", "FLAG"} else value
             for ns, value in pairs
         ]
-        if not any(t.startswith("origin-class:") for t in origin_tags):
-            origin_class = classify_origin(origin_tags, g.title)
+        if not any(t.startswith("origin-class:") for t in tag_values):
+            origin_class = classify_origin(tag_values, g.title)
             if origin_class:
                 store.add_tag(
                     g.ref_id,
@@ -2290,6 +2298,16 @@ def _write_verdict(
                     set_by="system",
                     conn=conn,
                 )
+        # gr592749: stamp the goal axis off the freshly written
+        # cluster:/thread: tags. A filer-set ``goal:`` is never
+        # overwritten — only an absent one is filled.
+        if not any(t.startswith("goal:") for t in tag_values):
+            store.add_tag(
+                g.ref_id,
+                Tag.open(f"goal:{goal_of(tag_values)}"),
+                set_by="system",
+                conn=conn,
+            )
 
         # gr657257: a memory gripe names a live memory — it becomes
         # ``project:memory`` (the gardener's queue, never the coder wave)

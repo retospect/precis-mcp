@@ -45,7 +45,9 @@ Mint one plan; the armed `plan_dispatch` tick drives it:
 The nodes run in order: `cut` (`release_cut`: `scripts/release --cut-only`
 in the slice host's checkout, then `meta.release = {rN, sha, range, repo}`
 on the plan root) → `poll` (`ci_verdict_poll`: records check.yml's verdict
-in `release.ci_verdicts`, parked between polls while CI runs) → `gate`
+in `release.ci_verdicts`, parked between polls while CI runs; the verdict
+is `lint` plus the `gate-fast` legs, so the deploy does not wait for the
+run's soak legs and a red soak is not a red release) → `gate`
 (`tests-green` on the cut's range) and `loop` (a red verdict mints the
 `release-fix` body: `digest` (`ci_red_digest`: `scripts/ci-failed` on the
 red run, the digest posted as a `brief:` on the fix) → fix → `recut`
@@ -123,11 +125,31 @@ refuses unless the newest `answer:` names `deploy r<N>` for the cut this plan
 recorded, and the tick notes "not dispatched" each pass. To deploy later,
 add a new `answer: deploy r<N>` comment.
 
+A deploy that `scripts/deploy` refuses ahead of its reachability ping,
+before any rollout step — the backup window, a checkout with no overlay,
+the overlay sync, the rollback guard, the deploy lock — exits 75 through
+`scripts/round deploy` and `scripts/release` (gr730609). The local record
+goes back to what it was before the leg. On a first leg that is open with
+no journal: the job fails, the release takes fixes again, a retry deploys
+it, and a dropped pass's record is one `scripts/round cut --abandon` (or
+the next cut's own abandon phase) can retire. A resumed leg returns to its
+prior state and journal, so an earlier launched rollout stays a partial
+rollout. A leg adds the launch marker only when it reaches the ping.
+One thing does survive the refused leg: it had already moved
+`origin/gated` to the release head, and the record keeps that sha
+(`gated_seen` in the local `round.json`). A retry refuses when
+`origin/gated` has since been deleted or moved back; the bound belongs
+to the record, so `scripts/round cut --abandon` is what drops it.
+
 The `confirm` node (`release_confirm`, `retries: 0`, pinned to the cut's
 host like the deploy) then attests the runtime: every live worker's
 heartbeat `code_sha`, read from the store with no network, must equal the
 release sha, and when `release.health_url` is set the live web's
-`X-Precis-Boot-Sha` header must too. On pass it runs `scripts/round deploy
+`X-Precis-Boot-Sha` header must too. On pass it first waits for the pass's
+`merge_back` node to record `merged` or `noop` (up to two hours): the
+script below merges the release head into main itself and stops on a
+conflict that only the merge-back's resolver can settle. Then it runs
+`scripts/round deploy
 --confirm-runtime <sha> --runtime-evidence "<text>"` then `scripts/round
 close`, stamps the evidence on the plan root and `release.round`, and the
 release is tagged `deployed/r<N>`; a failed close still succeeds the job —
@@ -1025,11 +1047,22 @@ Known limits:
   that commit, landing the commit on the release branch clears the hold
   without an answer. While the gate holds a deploy, the tick writes the
   refusal as a comment on the `release_deploy` node, once per distinct
-  text (gr702442).
+  text (gr702442). Two kinds of commit on `release/r<N>` bring no code
+  of their own and get no review of their own (Reto 2026-11-19): a
+  commit that repeats a main commit patch for patch (a cherry-pick) is
+  judged by that main land's review, and carries it for the hold above;
+  an exact revert of a commit of the same release drops out together
+  with the commit it undoes. Both are proved on the trees, not read
+  from a subject or trailer: replaying the main commit onto the branch
+  commit's parent (or the undone commit backwards) must give the branch
+  commit's tree exactly. A revert of code prod already runs, a revert of
+  a revert, and any commit with a change of its own — an indentation
+  change included — keep their review.
 - The file-overlap hold is bounded. A started, unlanded build keeps
   other builds that touch its files out of the claim (td603849), but
   only for `factory.overlap_hold_max_runs` ended `run_slice` runs
-  (default 3; cancelled runs and attempt-free failures are no turn).
+  (default 3; cancelled runs, host refusals and attempt-free failures
+  leave the hold budget intact).
   After that it holds only while its `land_slice` is live, and a real
   conflict with the work that went ahead rebuilds at its land. `0`
   restores the unbounded hold. The hold writes nothing on the held job:

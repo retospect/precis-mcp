@@ -1055,6 +1055,18 @@
            x-data="{
              withSources: false,
              audience: 'dev',
+             citations: 'endnote',
+             // null = follow the audience (on for dev, off for external)
+             // until the box is touched.
+             researchNotes: null,
+             notesOn() { return this.researchNotes === null ? this.audience === 'dev' : this.researchNotes; },
+             // The .docx-only query: citation machinery + the notes switch
+             // (the notes only matter to EndNote records).
+             docxExtra() {
+               const e = {citations: this.citations};
+               if (this.citations === 'endnote') e.notes = this.notesOn() ? '1' : '0';
+               return e;
+             },
              overrideRetraction: false,
              placeholderFigures: false,
              submissionCopy: false,
@@ -1294,15 +1306,25 @@
         </div>
 
         <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <a :href="'/drafts/{{ ident }}/export.docx' + exportQuery()"
+          <label class="flex items-center gap-1 text-fg-faint"
+                 title="How the Word file encodes citations; every choice prints the same [n] marks and References list">
+            <select x-model="citations" aria-label="Citation machinery" data-citation-machinery
+                    class="bg-surface text-fg">
+              {% for value, label in citation_modes %}
+              <option value="{{ value }}">{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="flex items-center gap-1 text-fg-faint"
+                 title="Embed the cited passages as research notes in the EndNote records (default: on for dev, off for external)">
+            <input type="checkbox" data-research-notes :checked="notesOn()" @change="researchNotes = $event.target.checked"
+                   :disabled="citations !== 'endnote'" class="h-3 w-3"><span>research notes</span>
+          </label>
+          <a :href="'/drafts/{{ ident }}/export.docx' + exportQuery(docxExtra())"
              class="text-fg-subtle underline hover:text-fg"
-             @click.prevent="startExport('docx')"
-             title="EndNote Cite While You Write fields (travelling library); Word without EndNote still shows the [n] text"
+             @click.prevent="startExport('docx', docxExtra())"
+             title="download the Word file with the chosen citation machinery"
              x-text="withSources || audience === 'external' ? 'download .docx+zip' : 'download .docx'">download .docx</a>
-          <a :href="'/drafts/{{ ident }}/export.docx' + exportQuery({citations: 'plain'})"
-             class="text-fg-faint underline hover:text-fg"
-             @click.prevent="startExport('docx', {citations: 'plain'})"
-             title="plain [n] markers and a References section, no EndNote fields">plain .docx</a>
           <a :href="'/drafts/{{ ident }}/pdf' + exportQuery()"
              @click.prevent="startExport('pdf')"
              class="text-fg-subtle underline hover:text-fg">download PDF</a>

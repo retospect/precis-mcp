@@ -311,6 +311,7 @@ def _run_search(
     tags: list[str],
     offset: int,
     tag_kinds: list[str] | None = None,
+    fetch_all: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Blocking search + row-build; runs in a worker thread.
 
@@ -325,6 +326,12 @@ def _run_search(
     every chip on a page pins one consistent scope; the caller passes
     the listing's ``tag_row_kinds`` when a supplementary query ran on a
     narrower set.
+
+    ``fetch_all`` (Drive tree layout) requests the whole fused set at
+    offset zero, bounded by the number of live refs of the selected kinds.
+    A lexical count cannot bound semantic-only matches. One hit per ref
+    makes the live-ref count a safe upper bound; root pagination then owns
+    slicing and the next-page probe.
     """
     query_vec = None
     if embedder is not None:
@@ -332,6 +339,21 @@ def _run_search(
             query_vec = embedder.embed_one(q)
         except Exception:
             query_vec = None
+    if not fetch_all:
+        limit = _PAGE_SIZE + 1
+        eff_offset = offset
+        flat_page = True
+    else:
+        # Browse counts add visibility/noise filters that the chunk search
+        # does not share. Count all live refs here to avoid under-fetching.
+        with store.pool.connection() as conn:
+            count = conn.execute(
+                "SELECT count(*) FROM refs WHERE kind = ANY(%s) AND retired_at IS NULL",
+                (kinds,),
+            ).fetchone()
+        limit = max(int(count[0]) if count else 0, 1)
+        eff_offset = 0
+        flat_page = False
     hits = store.chunks.search_chunks_across_kinds(
         kinds=kinds,
         q=q,
@@ -340,8 +362,8 @@ def _run_search(
         since=since,
         until=until,
         tags=tags or None,
-        limit=_PAGE_SIZE + 1,
-        offset=offset,
+        limit=limit,
+        offset=eff_offset,
         max_distance=SEMANTIC_DISTANCE_FLOOR,
     )
     # Title introducer, same gate as the single-kind paper search (first
@@ -349,10 +371,10 @@ def _run_search(
     # first (gr537785) — a tag/date facet is a deliberate filter, so it
     # bounds the pin the way ``scope=``/``after=`` bound the MCP one.
     pinned_ids: set[int] = set()
-    if offset == 0 and not tags and since is None and until is None:
+    if eff_offset == 0 and not tags and since is None and until is None:
         hits, pinned_ids = _pin_title_matches(store, hits, q=q, kinds=kinds)
-    has_next = len(hits) > _PAGE_SIZE
-    hits = hits[:_PAGE_SIZE]
+    has_next = len(hits) > _PAGE_SIZE if flat_page else False
+    hits = hits[:_PAGE_SIZE] if flat_page else hits
     ref_ids = [ref.id for _, ref, _ in hits]
     flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
     tags_bulk = store.ref_tags_bulk(ref_ids)
@@ -470,6 +492,7 @@ def _recent_rows(
     downloadable_first: bool = False,
     viewer: str | None = None,
     tag_kinds: list[str] | None = None,
+    fetch_all: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-*edited* source items, newest
     first (or most recently created when ``created=True``);
@@ -500,7 +523,52 @@ def _recent_rows(
     (see :func:`_run_search`). Returns
     ``(rows, has_next)`` via the same over-fetch-one-extra probe as
     :func:`_run_search`.
+
+    ``fetch_all=True`` (Drive's ``layout=tree``, gr664408) returns the
+    whole filtered set instead of the ``offset``/``_PAGE_SIZE`` window:
+    the caller paginates by tree roots, so the row source must not cut
+    a branch at the page boundary (which would promote the orphaned
+    children to roots). Bounded by the exact filtered count — one
+    ``count_recent_refs`` (the same ``_recent_refs_where`` filter, so
+    count and set never diverge), then one full read. ``has_next`` is
+    ``False``: root pagination recomputes it.
     """
+    if fetch_all:
+        total = store.count_recent_refs(
+            kinds,
+            tags=tags or None,
+            has_pdf=has_pdf,
+            has_chunks=has_chunks,
+            has_schedule=has_schedule,
+            has_external_id=has_external_id,
+            no_oa=no_oa,
+            parent_id=folder_id,
+            unfiled_only=unfiled_only,
+            ref_ids=ref_ids,
+            deleted=deleted,
+            viewer=viewer,
+        )
+        refs = store.recent_refs(
+            kinds,
+            tags=tags or None,
+            has_pdf=has_pdf,
+            has_chunks=has_chunks,
+            has_schedule=has_schedule,
+            has_external_id=has_external_id,
+            no_oa=no_oa,
+            parent_id=folder_id,
+            unfiled_only=unfiled_only,
+            ref_ids=ref_ids,
+            deleted=deleted,
+            oldest=oldest,
+            created=created,
+            untried=untried,
+            downloadable_first=downloadable_first,
+            viewer=viewer,
+            limit=max(total, 1),
+            offset=0,
+        )
+        return _rows_for_refs(store, refs, tag_kinds=tag_kinds or kinds), False
     refs = store.recent_refs(
         kinds,
         tags=tags or None,

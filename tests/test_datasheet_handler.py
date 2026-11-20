@@ -292,6 +292,7 @@ def test_status_view_datasheet_row_shows_part_pull(
     assert handle in out
     assert "[kxob25]" in out
     assert "stub" in out
+    assert "no-pdf  — KXOB25-05X3F" in out
     assert "C5358484" in out
     assert "pull: failed: not_pdf" in out
     assert "https://example.com/x.html" in out

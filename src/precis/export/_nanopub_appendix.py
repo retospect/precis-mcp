@@ -40,7 +40,8 @@ class PublishedClaimEntry:
     fid: int  # the claim hub's finding ref id — exporters join their per-claim records on it
     sentence: str
     trusty_uri: str
-    status_text: str
+    status_text: str  # LaTeX prints this; Word reads ``public`` instead
+    public: bool = False  # the publish row's state is ``published``
 
 
 def published_claim_entries(store: Any, trust: Any) -> list[PublishedClaimEntry]:
@@ -66,6 +67,7 @@ def published_claim_entries(store: Any, trust: Any) -> list[PublishedClaimEntry]
                 sentence=row.approved_title or f"claim fi{fid}",
                 trusty_uri=str(row.trusty_uri),
                 status_text=_status_text(store, row),
+                public=row.state == "published",
             )
         )
     return entries

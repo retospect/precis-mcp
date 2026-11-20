@@ -57,8 +57,13 @@ q='<topic>')` first, then use the integer id from the hit.
 
 A node over 24 kB returns a head plus a section outline —
 `get(kind='memory', id='me<N>~<section>')` reads one `##`-headed part,
-`id='me<N>~body'` the whole body (`view='body'` is the same read;
-`view='meta'` prints the meta JSON). Batch reads take `id=[...]`,
+`id='me<N>~body'` the body prose (`view='body'` is the same read;
+`view='meta'` prints the meta JSON). A body over the result cap pages
+instead of truncating to a dead end: the cut footer names
+`get(kind='memory', id='me<N>~body', args={'offset': <chars shown>})`,
+and following those calls reassembles the whole body. Offsets count
+characters of the displayed body; an offset at the end refuses with
+the body's character count. Batch reads take `id=[...]`,
 `~<section>` ids included. `view='links'` narrows with
 `args={'rel': 'part-of'}`, `args={'of_kind': 'todo'}` or
 `args={'direction': 'out'}`.
@@ -81,6 +86,7 @@ transcript, not landed history (those live in `git log` and the docs).
 - No landed history or children lists; use the graph's links.
 - No plan label (slice/round/R-number/leg/wave) without its handle on the same line.
 - No bare commit sha older than 30 days; cite a live `path/file.py::Symbol` instead.
+- Numbers ([[precis-notation-canon]]): en dash ranges `60–90%`, no grouping `10000`.
 
 1. **Search first.** `search(kind='memory', q='<the fact>',
    scope='title')`, then plain `search(kind='memory', q='<the fact>')`.
@@ -109,7 +115,6 @@ transcript, not landed history (those live in `git log` and the docs).
    already know"), so a memory without them can silently never come
    back. Exact-title or scoped also misses → a recall regression —
    report it (a gripe), never rewrite the claim to chase rank.
-   Retrieval keys and field fallbacks: `precis-firstline-help`.
 5. **Link it in.** One `part-of` to a hub (or to a summary node for a
    detail node) plus 0–3 typed edges — more belongs in the body as
    `[handle]` mentions (`precis-relations`, the memory↔memory block).
@@ -127,8 +132,24 @@ appear as recall. Repo-dev nodes take
 `tags=['SPACE:repo-dev', 'section:threads|runbooks|gotchas|workflow|reference']`
 and `meta={'hook': 'one line — status + resume point'}` (writable meta
 keys: `hook`, `type`, `expires`, `order`; the node type is the
-`section:<slug>` tag, never `meta['type']`). With `link=`, a create takes
-the writer annotation — see below.
+`section:<slug>` tag, never `meta['type']`; with `link=` a create also
+takes the writer annotation, below).
+
+## Expiry
+
+Set `meta={'expires': '21d'}` on a transient note to give it an explicit
+TTL. The writer may also use an ISO date. Shape defaults run from the
+last edit and give threads, handoffs, resumes and snapshots 14 days and
+incidents and campaigns 90 days. Standing notes need an explicit expiry.
+DREAM notes are excluded from these expiry displays and garden detectors.
+
+Default `get` reads and create acknowledgments show the expiry date and
+its source. The list's `exp` column shows the date or `EXPIRED` once past.
+Expiry can trigger a garden compact proposal. Rulings, specs,
+`reto-ruling` notes and notes linked to an open todo, gripe or quest
+skip that trigger and remain eligible for review. A reviewer approves a
+compaction plan before manual apply moves retained claims, repoints
+links and retires the source when the plan calls for it.
 
 ## Notation in memory text
 
@@ -293,7 +314,9 @@ kinds: `before=`/`after=` anchors, `match='unique'` (default; an ambiguous
 `mode='delete', find=...` deletes the span (`text=''` also works where
 the client passes it through; some clients mangle an empty string),
 `dry_run=True` returns the diff and writes
-nothing. `args={'meta': …}` rides along; `title`/`rule`/`warrant` (also
+nothing — it previews mutating calls (`put`/`edit`/`delete`), not `get`
+(a read writes nothing; `get(..., dry_run=True)` is refused with the
+mutating door named). `args={'meta': …}` rides along; `title`/`rule`/`warrant` (also
 in `args=`) ride any mode's transaction too — a retitle pairs with a span
 fix in one call. `title` alone (no body arg) is the retitle door; a
 metadata-only `edit(id=…, args={'title': …, 'hook': …})` corrects the
@@ -686,7 +709,9 @@ put(
 
 Write the `[handle]` exactly as a `search` / `get` result printed it
 (`[me5]` a memory, `[pa5]` / `[pc10]` a paper, `[pt6]` a patent,
-`[or3]` an oracle, …). Editing a mention out drops its link on the next
+`[or3]` an oracle, …). The same handle written as a bare whole word
+(`me5` without brackets) is the same mention: it links the same and a
+dead one warns the same. Editing a mention out drops its link on the next
 write; adding one adds the link. This is the lightweight alternative to
 an explicit `link()` — reach for it when the reference lives naturally in
 the prose, and `link()` when it doesn't. See `precis-addressing-help` for
@@ -732,6 +757,11 @@ put(
 ```
 
 The memory survives the cache's TTL and carries your own framing.
+
+When `link=` is given, `meta` keys `model`, `prompt_version`, `run_id`, `why`
+and `evidence` annotate the creation edge, not the memory (a machine-written
+edge needs the first four); other keys such as `hook` and `type` stay on the
+memory.
 
 ## Bump confidence as evidence accumulates
 ## Upgrade a tentative note to strong

@@ -256,6 +256,7 @@ UP_RELATIONS: dict[str, UpRule] = {
     "conv": UpRule((("derived-from", "out"),)),
     "memory": UpRule((("part-of", "out"),)),
     "learning": UpRule(reason="private non-ref data has no public graph container"),
+    "gtd": UpRule(reason="private non-ref data has no public graph container"),
     **{
         k: _no_container(k)
         for k in (

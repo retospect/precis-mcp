@@ -413,6 +413,43 @@ class TestFlowErrors:
         assert "kind='job' only" in body
 
 
+def test_count_goal_closed_window(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr592749 slice 4: ``group_by='tag:goal'`` + the closed window —
+    one row per goal, summing to the windowed-done total."""
+    t1, t2, t3 = _day(5), _day(3), _day(1)
+    g1 = _gripe(store, "goal:pcb")
+    g2 = _gripe(store, "goal:pathway")
+    g3 = _gripe(store, "goal:pcb")
+    g4 = _gripe(store)
+    for g in (g1, g2, g3, g4):
+        _close_gripe(store, g)
+    _backdate_status(store, g1, t2)
+    _backdate_status(store, g2, _day(2))
+    _backdate_status(store, g3, t1)
+    _backdate_status(store, g4, t2)
+    body = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "gripe",
+            "view": "count",
+            "status": "done",
+            "__extras__": {
+                "group_by": "tag:goal",
+                "closed_since": t2.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "closed_until": t3.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        },
+    )
+    # [t2, t3) holds g1 + g2 + g4's closes; g3 closed before the window.
+    assert body.startswith("# 3 gripe entries")
+    assert "closed [" in body
+    assert re.search(r"^  goal:pcb: 1", body, re.MULTILINE)
+    assert re.search(r"^  goal:pathway: 1", body, re.MULTILINE)
+    assert re.search(r"^  \(untagged\): 1", body, re.MULTILINE)
+
+
 def test_count_group_by_origin_class(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:

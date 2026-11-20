@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from precis.draftimport.tex import BibEntry
+from precis.errors import Conflict
 from precis.identity import _first_author_surname, _surname_from_string
 
 _L2T: Any = None
@@ -205,13 +206,16 @@ def resolve_key(
             for a in re.split(r"\s+and\s+", _latex_plain(entry.author or ""))
             if a.strip()
         ]
-        ref_id, _ = store.upsert_stub_paper(
-            identifiers=ids,
-            title=entry.title,
-            year=year,
-            authors=authors or None,
-            set_by=set_by,
-        )
+        try:
+            ref_id, _ = store.upsert_stub_paper(
+                identifiers=ids,
+                title=entry.title,
+                year=year,
+                authors=authors or None,
+                set_by=set_by,
+            )
+        except Conflict as exc:
+            return None, "unresolved", None, f"{key}: {exc}"
         via = "stub"
     if ref_id is None:
         return None, "unresolved", None, None
@@ -319,6 +323,8 @@ def build_keymap(
         slug, via, ref_id, quarantine = resolve_key(
             store, key, bib.get(key), create_stubs=create_stubs
         )
+        if quarantine is not None:
+            km.quarantined[key] = quarantine
         if slug is None:
             km.unresolved.append(key)
             continue
@@ -328,6 +334,4 @@ def build_keymap(
         km.via[key] = via
         if via == "stub":
             km.stubbed.append(key)
-        if quarantine is not None:
-            km.quarantined[key] = quarantine
     return km

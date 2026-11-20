@@ -919,6 +919,82 @@ def _fold_get_full_flag(
     )
 
 
+def _fold_get_dry_run(
+    cls: type[Handler],
+    method: Any,
+    kind: str,
+    args: dict[str, Any],
+    extras: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Refuse a truthy ``dry_run=`` on ``get`` with the mutating door named
+    (gr688477).
+
+    ``get`` never writes, so ``dry_run`` has nothing to preview on it — no
+    kind's ``get`` declares the flag. Callers generalise the spelling
+    anyway: the gripe's 24h ledger shows six distinct sessions passing
+    ``args={'dry_run': True}`` (once with ``view='delete'``) on
+    ``get(kind='memory', id=…)``, each refused at the extras gate as
+    ``keys ['dry_run'] not accepted by memory.get; its args= keys are
+    listed below`` — a dead end the sessions retried. The flag belongs to
+    the mutating verbs: ``put``/``edit``/``delete`` honour ``dry_run=True``
+    as the write-nothing preview, so the refusal names that door.
+
+    Mirrors :func:`_fold_get_full_flag`: a handler that declares ``dry_run``
+    on ``get`` itself or tolerates extra kwargs keeps the flag untouched, a
+    falsy flag asserts nothing and drops, and disagreeing top-level/nested
+    spellings refuse as one argument.
+    """
+    if getattr(
+        method, TOLERATES_EXTRA_KWARGS_ATTR, False
+    ) or "dry_run" in _handler_accepted_kwargs(cls, "get"):
+        return extras
+    flag = args.pop("dry_run", None)
+    if isinstance(extras, dict) and "dry_run" in extras:
+        extras = dict(extras)
+        nested = extras.pop("dry_run")
+        if (
+            flag is not None
+            and nested is not None
+            and _flag_truthy(flag) != _flag_truthy(nested)
+        ):
+            raise BadInput(
+                f"dry_run={flag!r} and args={{'dry_run': {nested!r}}} disagree — "
+                "the preview flag is one argument",
+                next=f"get(kind={kind!r}, id=<ref>) — dry_run doesn't apply to get",
+            )
+        if flag is None:
+            flag = nested
+    if not _flag_truthy(flag):
+        return extras
+    ident = args.get("id")
+    ident_s = repr(ident) if ident is not None else "N"
+    if kind == "memory":
+        # The anchored edit is the only body-edit preview: mode='replace'
+        # (the direct-handler default) refuses dry_run outright, and the
+        # find-replace anchor gate dies with text= but no find= — so the
+        # example must carry mode='find-replace', find= AND text= (the
+        # mode= spelling mirrors the refusal at memory.py's edit).
+        next_hints = [
+            f"edit(kind='memory', id={ident_s}, mode='find-replace', "
+            "find='old', text='new', dry_run=True) previews a body edit "
+            "(unified diff, nothing written)",
+            f"delete(kind='memory', id={ident_s}, dry_run=True) previews a retirement",
+            "put(kind='memory', text='...', title='...', dry_run=True) "
+            "previews a create",
+        ]
+    else:
+        next_hints = [
+            "dry_run=True previews a write on the mutating verb, not on "
+            f"get: put/edit/delete(kind={kind!r}, ..., dry_run=True)"
+        ]
+    raise BadInput(
+        f"get(kind={kind!r}) is a read — it writes nothing, so dry_run "
+        "has no meaning on it; dry_run=True is the mutating verbs' "
+        "write-nothing preview (put/edit/delete), not a get argument",
+        next=next_hints,
+    )
+
+
 def _flag_truthy(value: Any) -> bool:
     """Truthiness of a caller flag that may arrive as a JSON string —
     undeclared keys aren't schema-coerced, so ``full='false'`` must not
@@ -1684,10 +1760,13 @@ def _is_pool_timeout(exc: BaseException) -> bool:
     return False
 
 
-def _is_transient_db_fault(exc: BaseException) -> bool:
+def _is_transient_db_fault(
+    exc: BaseException, classes: tuple[type[BaseException], ...] | None = None
+) -> bool:
     """True when ``exc`` or an explicit ``raise ... from`` cause is one of
     the retryable database faults."""
-    classes = _transient_db_classes()
+    if classes is None:
+        classes = _transient_db_classes()
     seen: set[int] = set()
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
@@ -1720,7 +1799,9 @@ def _retry_sleep(attempt: int) -> None:
 class DispatchMixin(RuntimeShape):
     """Verb dispatch, kind/handler resolution, and handler invocation."""
 
-    def _dispatch_with_retry(self, verb: str, args: dict[str, Any]) -> Response:
+    def _dispatch_with_retry(
+        self, verb: str, args: dict[str, Any], *, batch_child: bool = False
+    ) -> Response:
         """:meth:`_dispatch_inner` with transient database faults retried.
 
         A persisting fault surfaces as ``Upstream`` whose text says how many
@@ -1751,7 +1832,12 @@ class DispatchMixin(RuntimeShape):
                         f"{UNREACHABLE_CAUSE} ({type(exc).__name__})",
                         next=UNREACHABLE_NEXT,
                     ) from exc
-                if not safe or attempt >= _RETRY_ATTEMPTS:
+                max_attempts = _RETRY_ATTEMPTS
+                if batch_child and _is_transient_db_fault(
+                    exc, (psycopg.errors.LockNotAvailable,)
+                ):
+                    max_attempts += 1
+                if not safe or attempt >= max_attempts:
                     if attempt == 1:
                         raise
                     mapped = map_boundary_exception(exc)
@@ -1766,7 +1852,7 @@ class DispatchMixin(RuntimeShape):
                     type(exc).__name__,
                     verb,
                     attempt,
-                    _RETRY_ATTEMPTS - 1,
+                    max_attempts - 1,
                 )
                 _retry_sleep(attempt)
                 attempt += 1
@@ -1907,7 +1993,12 @@ class DispatchMixin(RuntimeShape):
             search_trace.CURRENT.reset(token)
 
     def _dispatch_status(
-        self, verb: str, args: dict[str, Any], *, fold: bool = False
+        self,
+        verb: str,
+        args: dict[str, Any],
+        *,
+        fold: bool = False,
+        batch_child: bool = False,
     ) -> tuple[str, bool]:
         """Run one verb call and report whether it errored.
 
@@ -1987,7 +2078,12 @@ class DispatchMixin(RuntimeShape):
                 dispatch_args, deref_ack = self._dereference_write_args(verb, args)
                 _refuse_envelope_denied_verb(verb, dispatch_args, self.hub)
                 _refuse_agent_secrets(verb, dispatch_args, self.hub)
-                response = self._dispatch_with_retry(verb, dispatch_args)
+                if batch_child:
+                    response = self._dispatch_with_retry(
+                        verb, dispatch_args, batch_child=True
+                    )
+                else:
+                    response = self._dispatch_with_retry(verb, dispatch_args)
                 if deref_ack is not None:
                     response = replace(response, body=f"{deref_ack}\n{response.body}")
                 # gr515633 ask 2: a ``tags=`` that names a categorizer
@@ -2600,7 +2696,10 @@ class DispatchMixin(RuntimeShape):
                 from precis.runtime.memory_batch import dispatch_memory_batch
 
                 return dispatch_memory_batch(
-                    args, lambda child: self._dispatch_status("search", child)
+                    args,
+                    lambda child: self._dispatch_status(
+                        "search", child, batch_child=True
+                    ),
                 )
             # ``q='*'`` is the match-all spelling (gr538071): fold
             # before any routing decision (under= listing,
@@ -3287,6 +3386,10 @@ class DispatchMixin(RuntimeShape):
           3. Handler invocation with extras whitelist + defaulted-kind
              error annotation.
         """
+        if verb == "get" and args.get("kind") is None:
+            mixed = self._dispatch_mixed_get(args)
+            if mixed is not None:
+                return mixed
         # D1: accept URI-style ``id='kind:slug[~sel]'`` on input. Extract
         # the kind prefix into ``args['kind']`` (if not already set) and
         # leave the unprefixed identifier in ``args['id']``. Validation
@@ -3422,14 +3525,11 @@ class DispatchMixin(RuntimeShape):
         # An id-less ``get(kind=K, view='meta'|'tags')`` is the same
         # question asked on the wrong verb (gr492452) — serve it here
         # instead of each numeric-ref handler rejecting the view.
-        if (verb == "search" or (verb == "get" and args.get("id") is None)) and str(
-            args.get("view") or ""
-        ).strip() in (
-            "meta",
-            "tags",
-            "flow",
+        view_name = str(args.get("view") or "").strip()
+        if view_name in ("meta", "tags", "flow") and (
+            verb == "search"
+            or (verb == "get" and self._is_idless_introspection_get(kind, args))
         ):
-            view_name = str(args.get("view") or "").strip()
             # ``folder=`` folds into the include_ref_ids channel the
             # flow view reads — same trick as view='count' above,
             # otherwise it would route to the cross-kind fan-out.
@@ -3603,6 +3703,22 @@ class DispatchMixin(RuntimeShape):
         elif hint not in exc.next:
             exc.next.append(hint)
 
+    def _is_idless_introspection_get(
+        self, kind: str | None, args: dict[str, Any]
+    ) -> bool:
+        if args.get("id") is not None:
+            return False
+        # A taxon subtree selects rows for the handler's metadata table.
+        extras = args.get(_EXTRAS_KEY)
+        return not (
+            args.get("view") == "meta"
+            and self._expand_kind_code(kind or "") == "taxon"
+            and (
+                args.get("under") is not None
+                or (isinstance(extras, dict) and extras.get("under") is not None)
+            )
+        )
+
     def _resolve_kind(
         self,
         verb: str,
@@ -3728,7 +3844,7 @@ class DispatchMixin(RuntimeShape):
         """Kind of the live ref a bare positive int ``id`` names, else None."""
         if isinstance(raw, bool):
             return None
-        if isinstance(raw, str) and raw.strip().isdigit():
+        if isinstance(raw, str) and raw.strip().isdecimal():
             raw = int(raw)
         if not isinstance(raw, int) or raw <= 0:
             return None
@@ -3843,7 +3959,7 @@ class DispatchMixin(RuntimeShape):
             return None
         if isinstance(raw, str):
             stripped = raw.strip()
-            if stripped.isdigit():
+            if stripped.isdecimal():
                 raw = int(stripped)
             else:
                 return self._file_shape_hint(stripped)
@@ -4289,6 +4405,18 @@ class DispatchMixin(RuntimeShape):
             extent, reading = _eye_extent(args)
             if reading is not None:
                 readings.append(reading)
+            # A verbatim skill read with a query scans the served skill body.
+            # Neighbor-group queries still use the eye ladder.
+            skill_id = args.get("id")
+            if (
+                kind == "skill"
+                and extent == "verbatim"
+                and args.get("q") is not None
+                and isinstance(skill_id, str)
+                and skill_id.strip()
+            ):
+                extent = None
+                args.pop("view", None)
             if extent is not None:
                 # ``ring=`` narrows the rings a link/doc eye renders
                 # (``fisheye-everywhere.md`` in-scope 1); popped like
@@ -4385,7 +4513,9 @@ class DispatchMixin(RuntimeShape):
             self._bump_ref_read(kind, args.get("id"))
             if kind_was_defaulted:
                 response = self._tag_defaulted_kind(response, kind)
-            return response
+            from precis.handlers._interpret import interpreted
+
+            return interpreted(response, readings)
 
         # Creation identity is server-owned, including on edits and through
         # args={meta: ...}. Reject before any handler can merge caller data.
@@ -4483,6 +4613,7 @@ class DispatchMixin(RuntimeShape):
             )
             if reading is not None:
                 readings.append(reading)
+            extras = _fold_get_dry_run(type(handler), method, kind, args, extras)
         skill_selector_hints = {"section", "heading", "lines", "offset"}
         if (
             verb == "get"
@@ -5748,9 +5879,35 @@ class DispatchMixin(RuntimeShape):
             return True
         handler = self.hub.handler_for(resolved.kind) if self.hub else None
         if getattr(handler, "handle_routes_by_ref_id", False) is True:
+            if verb == "get":
+                # The rewrite below turns the handle into bare ref-id
+                # digits — to the cache handler a query-shaped string.
+                # Under ``args={'literal': True}`` its stored-row guard
+                # steps aside and those digits go upstream as a fresh
+                # (possibly PAID) query — reject the contradictory pair
+                # before it can spend (review td707055, gr702962).
+                extras = args.get(_EXTRAS_KEY)
+                if bool(args.get("literal")) or (
+                    isinstance(extras, dict) and extras.get("literal")
+                ):
+                    raise BadInput(
+                        f"args={{'literal': True}} contradicts the resolved "
+                        f"handle {normalized!r} — it names stored ref "
+                        f"{resolved.ref_id}, but as a literal query its "
+                        "digits would go upstream as a fresh call",
+                        next=(
+                            f"drop literal to read {normalized}, or pass the "
+                            "query text itself with args={'literal': True}"
+                        ),
+                    )
             # A query-derived slug (wikipedia's) reads as a fresh query on
             # the cache handler; the ref id is the exact stored row (gr702974).
-            args["id"] = str(resolved.ref_id) + suffix
+            # Keep handle selectors distinct from legacy numeric slugs.
+            args["id"] = (
+                f"{resolved.kind}:{resolved.ref_id}{suffix}"
+                if suffix.startswith("~") and verb == "get"
+                else str(resolved.ref_id) + suffix
+            )
         else:
             args["id"] = resolved.public_id + suffix
         parsed = handle_registry.parse(normalized)
@@ -6001,13 +6158,74 @@ class DispatchMixin(RuntimeShape):
             ),
         )
 
+    def _dispatch_mixed_get(self, args: dict[str, Any]) -> Response | None:
+        """Read heterogeneous self-identifying addresses through scalar routing."""
+        idents = args.get("id")
+        if not isinstance(idents, (list, tuple)) or not idents:
+            return None
+        kinds: list[str] = []
+        for ident in idents:
+            if not isinstance(ident, str):
+                return None
+            probe = {"id": ident}
+            self._maybe_split_prefixed_id(probe, verb="get")
+            if probe.get("kind") is None:
+                return None
+            kinds.append(probe["kind"])
+        # The common kindless batch is same-kind — it falls through to
+        # ``_infer_batch_kind`` for the handler's native batch path, so
+        # probe first and only build per-address calls on a real mix.
+        if len(set(kinds)) < 2:
+            return None
+        from precis.handlers._numeric_ref import COMPACT_BATCH_ID_CAP
+
+        if len(idents) > COMPACT_BATCH_ID_CAP:
+            raise BadInput(
+                f"mixed-kind get accepts at most {COMPACT_BATCH_ID_CAP} IDs",
+                next=f"split id= into batches of at most {COMPACT_BATCH_ID_CAP} handles",
+            )
+        children: list[dict[str, Any]] = []
+        for ident, kind in zip(idents, kinds, strict=True):
+            child = copy.deepcopy(args)
+            child["id"] = ident
+            # Scalar dispatch must resolve the original address exactly once:
+            # a public slug may itself look like another live handle.
+            child["kind"] = kind
+            children.append(child)
+        gate = _KIND_GATE.get()
+        if gate is not None:
+            for child in children:
+                gate("get", child)
+        responses = [self._dispatch_inner_core("get", child) for child in children]
+        return Response(
+            body="\n\n".join(
+                f"{ident}\n{self._render(response)}"
+                for ident, response in zip(idents, responses, strict=True)
+            ),
+            result_count=len(responses),
+            result_ids=[
+                ref_id
+                for response in responses
+                for ref_id in (
+                    response.result_ids
+                    if response.result_ids is not None
+                    else [response.ref_id]
+                    if response.ref_id is not None
+                    else []
+                )
+            ],
+            transient=any(response.transient for response in responses),
+            images=tuple(image for response in responses for image in response.images),
+        )
+
     def _infer_batch_kind(
         self, args: dict[str, Any], idents: Any, *, verb: str | None = None
     ) -> None:
         """``get(id=['pc1', 'pc2'])`` with no ``kind=``: infer the kind per
         handle via the single-id path. One shared kind → that kind's batch
-        get with the rewritten public ids; mixed kinds → ``BadInput``
-        naming them. Items that don't self-identify leave the call as is."""
+        get with the rewritten public ids. Mixed reads fan out before this
+        path; mixed writes refuse. Items that don't self-identify leave
+        the call as is."""
         if args.get("kind") is not None or not idents:
             return
         if not all(isinstance(i, str) for i in idents):
@@ -6336,6 +6554,17 @@ class DispatchMixin(RuntimeShape):
                 ),
             )
         args["kind"] = prefix
+        base, selector, _ = rest.partition("~")
+        handler = self.hub.handler_for(prefix) if self.hub else None
+        if (
+            verb == "get"
+            and selector
+            and base.isascii()
+            and base.isdecimal()
+            and getattr(handler, "handle_routes_by_ref_id", False) is True
+        ):
+            # An explicit ref selector must not become a bare numeric slug.
+            return
         args["id"] = rest
         # Only memory reads need nested handles (memory:meN). Other
         # kinds and writes retain literal identifiers, including conv:co123.

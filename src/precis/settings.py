@@ -68,8 +68,12 @@ import logging
 import os
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
+
+from psycopg import Connection
+from psycopg.pq import TransactionStatus
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -748,10 +752,17 @@ def _db_read_strict(store: Store, key: str) -> str | None:
     the row is genuinely unset, anything else raises. For callers whose
     default-on-error policy must differ from default-on-unset (a security
     control that fails closed)."""
+    # The pool may lend a caller's open transaction. Roll back a failed
+    # query before the best-effort reader catches it and uses its fallback.
     with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT value FROM app_settings WHERE key = %s", (key,)
-        ).fetchone()
+        borrowed = (
+            isinstance(conn, Connection)
+            and conn.info.transaction_status == TransactionStatus.INTRANS
+        )
+        with conn.transaction() if borrowed else nullcontext():
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = %s", (key,)
+            ).fetchone()
     return str(row[0]) if row else None
 
 

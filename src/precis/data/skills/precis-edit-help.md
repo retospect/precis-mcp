@@ -39,7 +39,10 @@ whole call as `ops[i]` (`precis-memory-help`). `finding` takes `replace`
 kinds either ignore `mode=` (metadata-patch edits on `paper`/`structure`)
 or don't support `edit` at all. A wrong `mode=` raises `BadInput`
 naming that kind's actual accepted set. Draft uses `replace-content` to
-rewrite a block's own content while keeping its children.
+rewrite a block's own content while keeping its children, and `insert`
+(needs `find=`, `text=`, `where=`; refused without `find=`) to splice text
+next to an anchor inside a chunk — to add a new paragraph use
+`put(kind='draft', ..., args={'at': {'before': 'dc<id>'}})`.
 
 Address the chunk by the **handle** get/search hands you — `mc<id>` for a
 markdown chunk, `lc<id>` plaintext, `xc<id>` tex — and paste it straight into
@@ -119,11 +122,14 @@ edit(
 )
 ```
 
-Pass `mode='delete'` with `find=` only to delete the match — `text=` is
-not given. (`text=''` is also accepted where the client passes it
-through; some clients mangle an empty string before the call reaches
-the server, which is why `mode='delete'` exists.) The `delete` verb is
-for whole files and whole chunks — not lines or tokens.
+On a file kind, delete the match by passing an empty replacement:
+`mode='find-replace', find=…, text=''`. (`mode='delete'` with `find=`
+only is the memory/todo form — some clients mangle an empty string
+before the call reaches the server, which is why that mode exists
+there — and a file kind's edit refuses it.) The `delete` verb removes
+a whole chunk, a `~L<a>-<b>` line range, or a python symbol; a whole
+file needs `confirm='delete-file-<slug>'`. A line or token inside a
+chunk is `edit`, not `delete` — see [[precis-delete-help]].
 
 ## Rewrite a whole chunk, function, or paragraph
 ## Replace an entire region by its handle
@@ -320,7 +326,7 @@ Per-kind gates:
 | Create a new file | `put(kind='<kind>', id='<slug>', text='...', mode='create')` |
 | Rewrite a region of an existing file | `edit` |
 | Remove a whole file or chunk | `delete` |
-| Remove one line or token | `edit` with `mode='delete', find=...` (or `text=''` where the client passes it through) |
+| Remove one line or token | `edit` — file kinds: `mode='find-replace', find=…, text=''`; memory/todo: `mode='delete', find=…` |
 
 `put` on a file kind is creation-only; use `edit` to modify.
 

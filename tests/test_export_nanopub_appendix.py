@@ -41,9 +41,14 @@ def _export_docx_text(hub: Hub, ref: Any, tmp_path: Path, name: str) -> str:
     out = tmp_path / f"{name}.docx"
     docx.export_docx(hub.live_store, ref, target_path=out)
     d = docx_lib.Document(str(out))
-    # The claims section is a table (gr493200): include its cell text.
-    cells = [c.text for t in d.tables for r in t.rows for c in r.cells]
-    return "\n".join([*(p.text for p in d.paragraphs), *cells])
+    return "\n".join(p.text for p in d.paragraphs)
+
+
+def _docx_link_targets(path: Path) -> list[str]:
+    """External hyperlink targets of the body (the claim's trusty URI is a
+    link target, not paragraph text)."""
+    d = docx_lib.Document(str(path))
+    return [r.target_ref for r in d.part.rels.values() if r.is_external]
 
 
 def test_signed_hub_cite_gets_appendix_entry_latex(
@@ -132,8 +137,9 @@ def test_docx_appendix_mirrors_latex(
 
     assert SECTION_TITLE in text
     assert sentence in text
-    assert str(row.trusty_uri) in text
-    assert "under embargo" in text
+    assert str(row.trusty_uri) not in text  # a linked word, no printed URL
+    assert str(row.trusty_uri) in _docx_link_targets(tmp_path / "minted.docx")
+    assert f"{sentence} link (under embargo)" in text
 
 
 def test_docx_unminted_has_no_section(hub: Hub, tmp_path: Path) -> None:

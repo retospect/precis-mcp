@@ -161,6 +161,21 @@ def test_ec_potential_without_electrolyte_flags_electrolyte_only() -> None:
     assert gap.missing == ("electrolyte",)
 
 
+def test_field_emission_is_not_ec_measurement() -> None:
+    # gr713709: fi192819 — vacuum field emission carries a current density
+    # and a bare "V" threshold field but has no electrolyte to state. Both
+    # the space unit and the gripe's slash variant stay out of ec-measurement.
+    for tail in ("at 10 mA cm⁻²", "at 10 mA/cm²"):
+        s = (
+            "Field emission measurements show that carbon nanobud and "
+            "nanographite (few-layer graphite flake) films have an "
+            "emission-site density exceeding 10⁵ cm⁻² with threshold fields "
+            f"of 1–2 V/µm {tail}."
+        )
+        assert condition_family(s) != "ec-measurement"
+        assert check_conditions(s) == []
+
+
 def test_ec_with_potential_reference_and_electrolyte_is_clean() -> None:
     assert check_conditions(FI348892 + " in 0.1 M KOH") == []
 

@@ -5,8 +5,11 @@ Phase 3 of the cold-start token budget design
 
 - :func:`precis.startup_skills.parse` parsing of the comma-list env
   value (whitespace, empties, duplicates).
-- :func:`precis.startup_skills.resolve` cap-and-lookup behaviour
-  (unknown drop-with-notice, drop-tail truncation, cap disabling).
+- :func:`precis.startup_skills.resolve` lookup behaviour
+  (unknown drop-with-notice, kind-unavailable cross-check). Pinning
+  is not body-size-capped (gr681315): the banner prints names only,
+  so a test pins six skills whose bodies exceed 50 KB together and
+  expects all six names.
 - :func:`precis.startup_skills.format_banner` rendering of the
   banner notice lines.
 - Integration with :func:`precis.server._build_instructions` so a
@@ -42,9 +45,7 @@ def test_parse_handles_single_slug() -> None:
 
 
 def test_parse_handles_multiple_slugs_preserves_order() -> None:
-    """Operator-stated order survives parsing — drop-tail truncation
-    relies on this.
-    """
+    """Operator-stated order survives parsing."""
     out = startup_skills.parse("precis-search-help,precis-paper-help,precis-tag-help")
     assert out == ["precis-search-help", "precis-paper-help", "precis-tag-help"]
 
@@ -83,70 +84,39 @@ def _fake_loader_factory(catalogue: dict[str, str]):
     return _loader, _known
 
 
-def test_resolve_passes_through_known_slugs_under_cap() -> None:
+def test_resolve_passes_through_known_slugs() -> None:
     loader, known = _fake_loader_factory(
         {"a": "x" * 100, "b": "y" * 200, "c": "z" * 50}
     )
-    result = startup_skills.resolve(
-        ["a", "b", "c"], cap_kb=1, loader=loader, known=known
-    )
+    result = startup_skills.resolve(["a", "b", "c"], loader=loader, known=known)
     assert result.pinned == ("a", "b", "c")
     assert result.unknown == ()
-    assert result.truncated == ()
-    assert result.cap_kb == 1
+
+
+def test_resolve_not_limited_by_body_size() -> None:
+    """gr681315: the banner prints names only, so pinning must not be
+    limited by body bytes. Six skills whose bodies exceed 50 KB
+    together all survive — this is the asa default pin set's shape.
+    """
+    loader, known = _fake_loader_factory(
+        {slug: "x" * 12_000 for slug in ("s1", "s2", "s3", "s4", "s5", "s6")}
+    )
+    result = startup_skills.resolve(
+        ["s1", "s2", "s3", "s4", "s5", "s6"], loader=loader, known=known
+    )
+    assert result.pinned == ("s1", "s2", "s3", "s4", "s5", "s6")
 
 
 def test_resolve_separates_unknown_slugs() -> None:
     """Unknown slugs land in ``unknown`` without affecting the
-    cap-accounting for known ones.
+    resolution of known ones.
     """
     loader, known = _fake_loader_factory({"a": "x" * 50})
     result = startup_skills.resolve(
-        ["a", "missing-one", "b"], cap_kb=10, loader=loader, known=known
+        ["a", "missing-one", "b"], loader=loader, known=known
     )
     assert result.pinned == ("a",)
     assert result.unknown == ("missing-one", "b")
-    assert result.truncated == ()
-
-
-def test_resolve_drops_tail_when_over_cap() -> None:
-    """Once we trip the cap, every remaining valid slug joins
-    ``truncated`` — we don't backfill from later smaller entries
-    (would silently invert operator priority).
-    """
-    # 600 B + 600 B + 200 B = 1400 B. Cap = 1 KB = 1024 B.
-    # a fits (600 used). b would push to 1200 > 1024 → truncated.
-    # c is small but order-after-b → also truncated (drop-tail).
-    loader, known = _fake_loader_factory(
-        {"a": "x" * 600, "b": "y" * 600, "c": "z" * 200}
-    )
-    result = startup_skills.resolve(
-        ["a", "b", "c"], cap_kb=1, loader=loader, known=known
-    )
-    assert result.pinned == ("a",)
-    assert result.truncated == ("b", "c")
-    assert result.unknown == ()
-
-
-def test_resolve_cap_zero_disables_truncation() -> None:
-    """Operator opt-out: cap_kb=0 → no truncation, any body size accepted."""
-    loader, known = _fake_loader_factory(
-        {"big": "x" * 1_000_000, "huge": "y" * 1_000_000}
-    )
-    result = startup_skills.resolve(
-        ["big", "huge"], cap_kb=0, loader=loader, known=known
-    )
-    assert result.pinned == ("big", "huge")
-    assert result.truncated == ()
-
-
-def test_resolve_records_cap_in_result() -> None:
-    """The cap-in-force flows back into Resolution so the banner can
-    cite it without re-reading config.
-    """
-    loader, known = _fake_loader_factory({"a": "x"})
-    result = startup_skills.resolve(["a"], cap_kb=42, loader=loader, known=known)
-    assert result.cap_kb == 42
 
 
 # ---------------------------------------------------------------------------
@@ -172,31 +142,18 @@ def test_format_banner_surfaces_unknown_slugs() -> None:
     assert "unknown skill ids: foo, bar." in out
 
 
-def test_format_banner_surfaces_truncation_with_cap() -> None:
-    """Cap was hit → notice cites the cap so operator can recalibrate."""
-    out = startup_skills.format_banner(
-        Resolution(truncated=("precis-tex-help",), cap_kb=50)
-    )
-    assert "truncated (50 KB cap)" in out
-    assert "precis-tex-help" in out
-
-
-def test_format_banner_combines_all_three_sections() -> None:
-    """Pinned + unknown + truncated: every section gets its own line."""
+def test_format_banner_combines_pinned_and_unknown() -> None:
+    """Pinned + unknown: every section gets its own line."""
     out = startup_skills.format_banner(
         Resolution(
             pinned=("precis-search-help",),
             unknown=("typo-skill",),
-            truncated=("precis-python-help",),
-            cap_kb=25,
         )
     )
     lines = out.split("\n")
-    assert len(lines) == 3
+    assert len(lines) == 2
     assert lines[0].startswith("Pinned skills")
     assert "typo-skill" in lines[1]
-    assert "precis-python-help" in lines[2]
-    assert "25 KB" in lines[2]
 
 
 # ---------------------------------------------------------------------------
@@ -204,9 +161,7 @@ def test_format_banner_combines_all_three_sections() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _runtime_with_startup_skills(
-    *, startup_skills_value: str | None = None, cap_kb: int = 50
-):
+def _runtime_with_startup_skills(*, startup_skills_value: str | None = None):
     """Build a PrecisRuntime with a configured PRECIS_STARTUP_SKILLS
     value and a fake hub. The hub's ``kinds`` is irrelevant to the
     pinned-skill rendering, so we leave it empty.
@@ -217,10 +172,7 @@ def _runtime_with_startup_skills(
     from precis.dispatch import Hub
     from precis.runtime import PrecisRuntime
 
-    config = PrecisConfig(
-        startup_skills=startup_skills_value,
-        startup_skills_cap_kb=cap_kb,
-    )
+    config = PrecisConfig(startup_skills=startup_skills_value)
 
     class _FakeHub:
         kinds: set[str] = set()
@@ -248,12 +200,42 @@ def test_build_instructions_includes_pinned_skills_when_configured() -> None:
     from precis import server
 
     runtime = _runtime_with_startup_skills(
-        startup_skills_value="precis-search-help,precis-overview",
-        # the banner, not the cap, is under test (drop-tail is above)
-        cap_kb=200,
+        startup_skills_value="precis-search-help,precis-overview"
     )
     out = server._build_instructions(runtime)
     assert "Pinned skills: precis-search-help, precis-overview." in out
+
+
+ASA_DEFAULT_STARTUP_SKILLS = (
+    "precis-overview",
+    "precis-oracle-help",
+    "precis-memory-help",
+    "precis-inner-life-help",
+    "precis-self-consolidation-help",
+    "precis-files-help",
+)
+
+
+def test_build_instructions_pins_asa_default_despite_large_bodies() -> None:
+    """gr681315 regression: the asa bot pins six startup skills whose
+    bodies total well past 50 KB (precis-memory-help alone is ~60 kB).
+    The banner prints names only, so all six names must survive —
+    body bytes are never a pinning criterion.
+    """
+    from precis import server
+    from precis.handlers.skill import _load_skill
+
+    total = sum(
+        len((_load_skill(s) or "").encode("utf-8")) for s in ASA_DEFAULT_STARTUP_SKILLS
+    )
+    assert total > 50 * 1024, "fixture shrank below the old cap; test is moot"
+
+    runtime = _runtime_with_startup_skills(
+        startup_skills_value=",".join(ASA_DEFAULT_STARTUP_SKILLS)
+    )
+    out = server._build_instructions(runtime)
+    expected = "Pinned skills: " + ", ".join(ASA_DEFAULT_STARTUP_SKILLS) + "."
+    assert expected in out
 
 
 def test_build_instructions_surfaces_unknown_slugs_in_banner() -> None:
@@ -321,7 +303,6 @@ def test_resolve_buckets_kind_unavailable_slugs() -> None:
     )
     result = startup_skills.resolve(
         ["precis-patent-help", "precis-search-help"],
-        cap_kb=10,
         unavailable_kinds=frozenset({"patent"}),
         loader=loader,
         known=known,
@@ -335,9 +316,7 @@ def test_resolve_no_cross_check_when_kind_set_empty() -> None:
     regardless of their front-matter. Backwards-compatible default."""
     body_with_kind = "---\napplies-to: get (kind='patent', id='ep1234567b1')\n---\n"
     loader, known = _fake_loader_factory({"precis-patent-help": body_with_kind})
-    result = startup_skills.resolve(
-        ["precis-patent-help"], cap_kb=10, loader=loader, known=known
-    )
+    result = startup_skills.resolve(["precis-patent-help"], loader=loader, known=known)
     assert result.pinned == ("precis-patent-help",)
     assert result.kind_unavailable == ()
 
@@ -364,7 +343,6 @@ def test_build_instructions_surfaces_pinned_skill_kind_unavailable() -> None:
 
     config = PrecisConfig(
         startup_skills="precis-patent-help",
-        startup_skills_cap_kb=50,
         kinds_disabled="patent",
     )
 
@@ -396,7 +374,7 @@ def test_real_skill_slugs_resolve(slug: str) -> None:
     ``precis-startup-skills-help`` actually resolve in this build.
     Catches a rename / delete that would silently break the example.
     """
-    result = startup_skills.resolve([slug], cap_kb=0)
+    result = startup_skills.resolve([slug])
     assert result.pinned == (slug,), (
         f"slug {slug!r} no longer resolves; update precis-startup-skills-help "
         f"and the design doc"

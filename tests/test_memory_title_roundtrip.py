@@ -401,6 +401,135 @@ def test_display_stamp_is_body_bound_and_needs_no_transaction(
     assert handler._body_echo_title(body, "New", {}) == "New"
 
 
+def test_eye_suppresses_the_same_stamped_echo_as_the_body_reads(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """gr715698: the note eye rendered the raw chunk, echo lead included."""
+    ref_id = _legacy_memory(store, "Old derived header", "authored tail")
+    handler.edit(id=ref_id, title="Fresh claim")
+    assert _displayed_body(handler, store, ref_id) == "authored tail"
+    for view in ("summary", "verbatim", "fisheye", "fisheye+1hop", "fisheye+2hop"):
+        out = handler.get(id=ref_id, view=view).body
+        after_head = out.split("\n", 1)[1]
+        assert after_head.startswith("authored tail"), (view, out)
+        assert "Old derived header" not in after_head
+    ref = store.get_ref(kind="memory", id=ref_id)
+    assert ref is not None
+    # Reads project the echo away; the stored chunk keeps the hidden prefix.
+    assert handler._body_text(ref) == "Old derived header\n\nauthored tail"
+
+
+def test_eye_suppresses_an_unstamped_derived_title_echo(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The derived-title case hid on the eye for the same reason."""
+    _, ref_id = handler._create_with_id(
+        text="Derived lead\n\nEvidence and tail", tags=None, link=None
+    )
+    assert _displayed_body(handler, store, ref_id) == "Evidence and tail"
+    out = handler.get(id=ref_id, view="verbatim").body
+    assert out.split("\n", 1)[1] == "Evidence and tail"
+
+
+def test_eye_preserves_an_authored_first_line_matching_the_new_title(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """A stamped no-echo decision must not hide genuinely authored prose."""
+    ref_id = _legacy_memory(
+        store,
+        "Independent original title",
+        "Historical context\n\n  Original evidence.  \n",
+        echo=False,
+    )
+    handler.edit(id=ref_id, title="Historical context")
+    out = handler.get(id=ref_id, view="fisheye").body
+    assert "Historical context\n\n  Original evidence." in out
+
+
+@pytest.mark.parametrize("extra_kind", ["memory_body", "tag_overflow"])
+def test_eye_stamp_binds_the_body_chunk_not_the_ord_join(
+    handler: MemoryHandler, store: Store, extra_kind: str
+) -> None:
+    """An extra ord≥0 chunk must not break the stamp: the ordinary and
+    ``~body`` reads fingerprint the first ``memory_body`` chunk alone."""
+    ref_id = _legacy_memory(store, "Old derived header", "authored tail")
+    with store.tx() as conn:
+        store.chunks.insert_chunks(
+            ref_id,
+            [
+                ChunkInsert(
+                    ord=1,
+                    text="extra out-of-band chunk",
+                    meta={"chunk_kind": extra_kind},
+                )
+            ],
+            conn=conn,
+        )
+    handler.edit(id=ref_id, title="Fresh claim")
+    assert _displayed_body(handler, store, ref_id) == "authored tail"
+    for view in ("summary", "verbatim", "fisheye", "fisheye+1hop"):
+        out = handler.get(id=ref_id, view=view).body
+        after_head = out.split("\n", 1)[1]
+        assert after_head.startswith("authored tail"), (view, out)
+        assert "Old derived header" not in after_head
+
+
+def test_eye_keeps_an_authored_lead_when_an_extra_chunk_joins(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The same stamp miss would strip an authored first line that
+    happens to read as the current title."""
+    ref_id = _legacy_memory(
+        store,
+        "Independent original title",
+        "Historical context\n\n  Original evidence.  \n",
+        echo=False,
+    )
+    with store.tx() as conn:
+        store.chunks.insert_chunks(
+            ref_id,
+            [
+                ChunkInsert(
+                    ord=1,
+                    text="overflow",
+                    meta={"chunk_kind": "tag_overflow"},
+                )
+            ],
+            conn=conn,
+        )
+    handler.edit(id=ref_id, title="Historical context")
+    out = handler.get(id=ref_id, view="fisheye").body
+    assert "Historical context\n\n  Original evidence." in out
+
+
+def test_eye_mention_scan_stays_bounded_to_the_shown_body(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """The rings scan the eye's bounded body: a mention past the cap must
+    not reach the courtesy ring on a summary read."""
+    with store.tx() as conn:
+        gripe = store.insert_ref(
+            kind="gripe", slug=None, title="Bounded scan", conn=conn
+        )
+        store.add_tag(
+            gripe.id,
+            Tag.parse_strict("STATUS:open", kind="gripe"),
+            set_by="agent",
+            conn=conn,
+        )
+    pad = "filler words " * 40
+    _, ref_id = handler._create_with_id(
+        text=f"A mention far ahead.\n\n{pad}gr{gripe.id} closes it.",
+        tags=None,
+        link=None,
+    )
+    summary = handler.get(id=ref_id, view="summary").body
+    assert "— referenced entities —" not in summary
+    assert f"gr{gripe.id} —" not in summary
+    fisheye = handler.get(id=ref_id, view="fisheye").body
+    assert f"gr{gripe.id} — STATUS:open" in fisheye
+
+
 def test_thread_rewrite_receipt_does_not_suggest_replacing_stale_title(
     handler: MemoryHandler, store: Store
 ) -> None:

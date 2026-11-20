@@ -212,12 +212,12 @@ class TestCountViewCohortFilters:
             kind="paper",
             slug="st-one2024",
             title="st-one2024",
-            meta={"context_sentence_failed": True},
+            meta={"s2_enrich_failed": True},
         )
         _paper(store, "st-plain2024", body=1)
-        body = papers.search(view="count", stamp="context_sentence_failed").body
+        body = papers.search(view="count", stamp="s2_enrich_failed").body
         assert body.startswith("# 1 paper entry"), body
-        assert "stamp='context_sentence_failed'" in body
+        assert "stamp='s2_enrich_failed'" in body
 
     def test_has_fulltext_filters(self, papers: PaperHandler, store: Store) -> None:
         _paper(store, "ft-yes2024", body=1)
@@ -295,6 +295,11 @@ class TestFetchStatus:
         card = _paper(store, "card2024b", card=True)
         stub = _paper(store, "stub2024c")
         refs_only = _paper(store, "refsonly2024d", card=True, refs=3)
+        store.insert_ref_identifiers(
+            full, [("doi", "10.1234/status", "test"), ("arxiv", "2611.12345", "test")]
+        )
+        store.insert_ref_identifiers(card, [("arxiv", "2611.12346", "test")])
+        store.insert_ref_identifiers(stub, [("s2", "a" * 40, "test")])
         now = datetime.now(UTC)
         _event(store, stub, "fetcher:oa", "no_oa_version", now - timedelta(hours=3))
         _event(store, stub, "fetcher:oa", "fetch_failed", now - timedelta(hours=1))
@@ -302,10 +307,16 @@ class TestFetchStatus:
             handle_registry.format_handle("paper", i)
             for i in (full, card, stub, refs_only)
         ]
-        body = papers.search(view="status", ids=ids).body
+        body = papers.get(view="status", id=[*ids]).body
+        assert body == papers.search(view="status", ids=ids).body
+        assert "[full2024a]  10.1234/status  full-text" in body
+        assert "[card2024b]  arxiv:2611.12346  card-only" in body
+        assert f"[stub2024c]  s2:{'a' * 40}  stub" in body
+        assert "[refsonly2024d]  —  card-only" in body
+        assert "never tried  — full2024a" in body
         by_slug = {}
         for line in body.splitlines():
-            m = re.search(r"\[(\w+)\]\s+(full-text|card-only|stub)", line)
+            m = re.search(r"\[(\w+)\]\s+\S+\s+(full-text|card-only|stub)", line)
             if m:
                 by_slug[m.group(1)] = (m.group(2), line)
         assert by_slug["full2024a"][0] == "full-text"
@@ -357,7 +368,9 @@ class TestFetchStatus:
         body = papers.search(view="status", ids=ids).body
         by_slug = {}
         for line in body.splitlines():
-            m = re.search(r"\[(\w+)\]\s+(full-text|thin-text|card-only|stub)", line)
+            m = re.search(
+                r"\[(\w+)\]\s+\S+\s+(full-text|thin-text|card-only|stub)", line
+            )
             if m:
                 by_slug[m.group(1)] = (m.group(2), line)
         # ≤12 chunks + no_oa_version newest → thin-text, not full-text.
@@ -450,12 +463,10 @@ class TestStampSearch:
         ).id
 
     def test_ids_and_count(self, papers: PaperHandler, store: Store) -> None:
-        a = self._stamped(store, "markeda2024", "context_sentence_failed")
+        a = self._stamped(store, "markeda2024", "s2_enrich_failed")
         _paper(store, "unstamped2024", body=1)
-        body = papers.search(stamp="context_sentence_failed").body
-        assert body.startswith("# 1 paper entry stamped 'context_sentence_failed'"), (
-            body
-        )
+        body = papers.search(stamp="s2_enrich_failed").body
+        assert body.startswith("# 1 paper entry stamped 's2_enrich_failed'"), body
         assert handle_registry.format_handle("paper", a) in body
 
     def test_cohort_total_in_headline(self, papers: PaperHandler, store: Store) -> None:
@@ -492,14 +503,12 @@ class TestStampSearch:
     def test_unstamped_ref_excluded_and_retired_excluded(
         self, papers: PaperHandler, store: Store
     ) -> None:
-        a = self._stamped(store, "markedlive2024", "context_sentence_no_abstract")
-        dead = self._stamped(store, "markeddead2024", "context_sentence_no_abstract")
+        a = self._stamped(store, "markedlive2024", "s2_enriched_at")
+        dead = self._stamped(store, "markeddead2024", "s2_enriched_at")
         store.retire_ref(dead)
         _paper(store, "unstamped2024", body=1)
-        body = papers.search(stamp="context_sentence_no_abstract").body
-        assert body.startswith(
-            "# 1 paper entry stamped 'context_sentence_no_abstract'"
-        ), body
+        body = papers.search(stamp="s2_enriched_at").body
+        assert body.startswith("# 1 paper entry stamped 's2_enriched_at'"), body
         assert handle_registry.format_handle("paper", a) in body
         assert handle_registry.format_handle("paper", dead) not in body
 
@@ -512,13 +521,11 @@ class TestStampSearch:
         """Ruling: a no-q stamp listing is not an early return —
         tags=/serves=/record_type= still narrow the cohort, and the
         headline count is the filtered total."""
-        tagged = self._stamped(store, "stagged2024", "context_sentence_failed")
-        untagged = self._stamped(store, "stuntagged2024", "context_sentence_failed")
+        tagged = self._stamped(store, "stagged2024", "s2_enrich_failed")
+        untagged = self._stamped(store, "stuntagged2024", "s2_enrich_failed")
         store.add_tag(tagged, Tag.open("studytype:review"), set_by="agent")
 
-        body = papers.search(
-            stamp="context_sentence_failed", tags=["studytype:review"]
-        ).body
+        body = papers.search(stamp="s2_enrich_failed", tags=["studytype:review"]).body
         assert body.startswith("# 1 paper entry"), body
         assert handle_registry.format_handle("paper", tagged) in body
         assert handle_registry.format_handle("paper", untagged) not in body
@@ -528,11 +535,9 @@ class TestStampSearch:
             kind="paper",
             slug="styped2024",
             title="styped2024",
-            meta={"context_sentence_failed": True, "record_type": "dataset"},
+            meta={"s2_enrich_failed": True, "record_type": "dataset"},
         ).id
-        body = papers.search(
-            stamp="context_sentence_failed", record_type="dataset"
-        ).body
+        body = papers.search(stamp="s2_enrich_failed", record_type="dataset").body
         assert body.startswith("# 1 paper entry"), body
         assert handle_registry.format_handle("paper", ds) in body
         assert handle_registry.format_handle("paper", tagged) not in body
@@ -545,18 +550,16 @@ class TestStampSearch:
             relation="serves",
             set_by="agent",
         )
-        body = papers.search(
-            stamp="context_sentence_failed", serves=f"quest:{quest.id}"
-        ).body
+        body = papers.search(stamp="s2_enrich_failed", serves=f"quest:{quest.id}").body
         assert body.startswith("# 1 paper entry"), body
         assert handle_registry.format_handle("paper", untagged) in body
         assert handle_registry.format_handle("paper", tagged) not in body
 
     def test_no_q_has_fulltext_filter(self, papers: PaperHandler, store: Store) -> None:
         full = _paper(store, "stfull2024", body=1)
-        stub = self._stamped(store, "ststub2024", "context_sentence_failed")
-        store.stamp_ref_meta(full, {"context_sentence_failed": True})
-        body = papers.search(stamp="context_sentence_failed", has_fulltext=True).body
+        stub = self._stamped(store, "ststub2024", "s2_enrich_failed")
+        store.stamp_ref_meta(full, {"s2_enrich_failed": True})
+        body = papers.search(stamp="s2_enrich_failed", has_fulltext=True).body
         assert body.startswith("# 1 paper entry"), body
         assert handle_registry.format_handle("paper", full) in body
         assert handle_registry.format_handle("paper", stub) not in body
@@ -574,47 +577,43 @@ class TestStampSearch:
         """r2 S2: the no-q stamp listing applies the include/exclude id
         channels, exclude=, after=/before= and since=/until= rather than
         dropping them — an empty include list means zero hits."""
-        a = self._stamped(store, "stina2024", "context_sentence_failed")
-        b = self._stamped(store, "stinb2024", "context_sentence_failed")
+        a = self._stamped(store, "stina2024", "s2_enrich_failed")
+        b = self._stamped(store, "stinb2024", "s2_enrich_failed")
         h_a = handle_registry.format_handle("paper", a)
         h_b = handle_registry.format_handle("paper", b)
 
-        body = papers.search(stamp="context_sentence_failed", include_ref_ids=[a]).body
+        body = papers.search(stamp="s2_enrich_failed", include_ref_ids=[a]).body
         assert h_a in body and h_b not in body, body
-        empty = papers.search(stamp="context_sentence_failed", include_ref_ids=[]).body
+        empty = papers.search(stamp="s2_enrich_failed", include_ref_ids=[]).body
         assert "no live paper entries stamped" in empty, empty
 
-        dropped = papers.search(
-            stamp="context_sentence_failed", exclude_ref_ids=[a]
-        ).body
+        dropped = papers.search(stamp="s2_enrich_failed", exclude_ref_ids=[a]).body
         assert h_a not in dropped and h_b in dropped, dropped
-        by_slug = papers.search(
-            stamp="context_sentence_failed", exclude=["stinb2024"]
-        ).body
+        by_slug = papers.search(stamp="s2_enrich_failed", exclude=["stinb2024"]).body
         assert h_b not in by_slug and h_a in by_slug, by_slug
 
         # after=/before= bound refs.year; since=/until= bound created_at.
         _backdate(store, a, datetime(2020, 1, 1, tzinfo=UTC))
-        body = papers.search(stamp="context_sentence_failed", after=2025).body
+        body = papers.search(stamp="s2_enrich_failed", after=2025).body
         assert "no live paper entries stamped" in body, body  # year is NULL here
         old = store.insert_ref(
             kind="paper",
             slug="stold2010",
             title="stold2010",
             year=2010,
-            meta={"context_sentence_failed": True},
+            meta={"s2_enrich_failed": True},
         ).id
         h_old = handle_registry.format_handle("paper", old)
-        body = papers.search(stamp="context_sentence_failed", after=2020).body
+        body = papers.search(stamp="s2_enrich_failed", after=2020).body
         assert h_old not in body, body
-        body = papers.search(stamp="context_sentence_failed", before=2015).body
+        body = papers.search(stamp="s2_enrich_failed", before=2015).body
         assert h_old in body and h_a not in body and h_b not in body, body
-        body = papers.search(stamp="context_sentence_failed", since="2021-01-01").body
+        body = papers.search(stamp="s2_enrich_failed", since="2021-01-01").body
         assert h_a not in body and h_b in body, body
-        body = papers.search(stamp="context_sentence_failed", until="2021-01-01").body
+        body = papers.search(stamp="s2_enrich_failed", until="2021-01-01").body
         assert h_a in body and h_b not in body, body
         with pytest.raises(BadInput):
-            papers.search(stamp="context_sentence_failed", after=2030, before=2010)
+            papers.search(stamp="s2_enrich_failed", after=2030, before=2010)
 
 
 class TestTagsOnlyFilters:
