@@ -170,6 +170,13 @@ log = logging.getLogger(__name__)
 
 _BODY_KIND = "gripe_body"
 _RESOLVED_PREFIX = "resolved:"
+#: land_notify's resolved comment (scripts/lib/land_notify.py), the one a
+#: direct ``scripts/ship`` land puts: ``resolved: <sha9> (main, release
+#: pending) — landed: <subject>`` — rewritten to the factory lander's
+#: partial shape when the gripe's fix build is still in flight (gr686283).
+_LAND_RESOLVED_RE = re.compile(
+    r"^resolved: (\S+) \(main, release pending\) — landed: (.+)$", re.DOTALL
+)
 #: The ``project:<slug>`` open axis (gr543639): which repo/project the
 #: gripe is against. Optional on ``put`` — the tag is written ONLY when
 #: the filer passes ``args={'project': '<slug>'}``, so a gripe carrying
@@ -203,6 +210,10 @@ VERIFY_STATUSES = AUTO_VERIFY_STATUSES | frozenset({USER_VERIFY_STATUS})
 _RESOLVED_REQUIRED_TAGS = _TERMINAL_STATUS_TAGS | {
     f"STATUS:{s}" for s in VERIFY_STATUSES
 }
+#: The verify-state STATUS tags — the gr686283 guard's trigger set: a
+#: ``resolved:`` comment plus one of these in the same put is a land
+#: resolution, demoted to ``landed (partial)`` while a fix build is open.
+_VERIFY_STATUS_TAGS = {f"STATUS:{s}" for s in VERIFY_STATUSES}
 #: STATUS values a ``claimed-by:`` lease moves to ``fixing`` (gr541800).
 _CLAIMABLE_STATUSES = frozenset({"open", "triaged", "ready_for_fix"})
 _COMMENT_KIND = "gripe_comment"
@@ -242,6 +253,17 @@ def _is_system_wake(comment: Any) -> bool:
         or meta.get(_UNPARK_NOTICE_META)
         or _SYSTEM_WAKE_RE.match(comment.text)
     )
+
+
+def _fix_open_roots(store: Store, gripe_ids: list[int]) -> dict[int, list[int]]:
+    """``{gripe_id: [chain root ids]}`` for the named gripes whose fix
+    build is still in flight — :func:`precis.workers.gripe_dispatch.
+    open_build_roots`, the factory's own in-flight predicate (gr686283).
+    Lazy import keeps the handler layer above workers in the import
+    order (the cli/gripe.py pattern)."""
+    from precis.workers.gripe_dispatch import open_build_roots
+
+    return open_build_roots(store, gripe_ids)
 
 
 #: ``STATUS:parked`` (gr543711): the gripe waits on a wake condition in
@@ -1173,6 +1195,16 @@ class GripeHandler(NumericRefHandler):
             untags = self._drop_answered_ask(
                 id, text=text, tags=tags, untags=untags, readings=readings
             )
+            # gr686283: a land resolution (``resolved:`` + a verify STATUS,
+            # land_notify's one-call shape) on a gripe whose fix build is
+            # still in flight files as ``landed (partial)``, STATUS
+            # untouched — the factory lander demotes before writing, this
+            # backstops the direct scripts/ship land and every other client.
+            text, tags, open_build_reading = self._demote_open_build_resolution(
+                id=id, text=text, tags=tags
+            )
+            if open_build_reading:
+                readings.append(open_build_reading)
             # link=/unlink=/rel= and tags=/untags= ride along: comment +
             # edge/tag edit in one transaction (comment-then-close is one
             # put, not reject + re-put + tag(); gr484232). The tag edit is
@@ -2071,6 +2103,53 @@ class GripeHandler(NumericRefHandler):
                 "STATUS:fixing → STATUS:triaged"
             )
         return add, None
+
+    def _demote_open_build_resolution(
+        self, *, id: str | int, text: str, tags: list[str] | None
+    ) -> tuple[str, list[str] | None, str | None]:
+        """gr686283, enforced server side: a land resolution — a
+        ``resolved:`` comment plus a verify STATUS in the same put, the
+        exact shape ``scripts/lib/land_notify.py`` posts for a
+        ``scripts/ship`` land — files as ``landed (partial)`` with the
+        STATUS dropped while the gripe's fix build is still in flight.
+
+        The factory lander demotes before writing
+        (``land_slice._deferred_notify``); this guard backstops every
+        other client of the write surface, so a partial hand-landed part
+        of a spec can no longer move a gripe to ``auto_verify`` while the
+        factory build is running. A read fault demotes too — a false
+        ``resolved:`` is the worse failure (the factory side's policy).
+        Terminal closes (done/wontfix) are a deliberate act and stay
+        unguarded. Returns ``(text, tags, reading)``; the reading names
+        the demotion on the ack's ``interpreted:`` line.
+        """
+        verify_adds = [str(t) for t in (tags or ()) if str(t) in _VERIFY_STATUS_TAGS]
+        if not verify_adds or not text.lstrip().startswith(_RESOLVED_PREFIX):
+            return text, tags, None
+        ref_id = self._coerce_id(id)
+        try:
+            roots = _fix_open_roots(self.store, [ref_id])
+        except Exception:
+            log.warning("gripe: open-build read failed (gr686283 guard)", exc_info=True)
+            roots = {ref_id: []}
+        if ref_id not in roots:
+            return text, tags, None
+        stripped = text.strip()
+        m = _LAND_RESOLVED_RE.match(stripped)
+        if m:
+            text = f"landed (partial): {m.group(1)} — {m.group(2)}"
+        else:
+            text = re.sub(r"^\s*resolved:", "landed (partial):", text, count=1)
+        kept = [t for t in (tags or ()) if str(t) not in verify_adds]
+        why = ", ".join(f"td{r}" for r in roots[ref_id]) or "build state unreadable"
+        return (
+            text,
+            kept or None,
+            (
+                f"fix build still in flight ({why}) — filed as landed (partial), "
+                f"{verify_adds} not written (gr686283)"
+            ),
+        )
 
     def _require_resolved_comment(self, id: str | int, add: list[str] | None) -> None:
         """A terminal STATUS — and a verify state (on main, sha noted,

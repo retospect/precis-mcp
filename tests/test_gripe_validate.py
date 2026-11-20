@@ -264,6 +264,21 @@ def test_verify_list_and_done(hub: Any, store: Store) -> None:
 
 
 @pytest.mark.db
+def test_fix_open_lists_gripes_with_an_unlanded_build(store: Store) -> None:
+    """gr686283: land-notify's pre-resolve read — a gripe whose fix build
+    is still in flight resolves no more than a ``refs`` one."""
+    from precis.cli.gripe import fix_open
+    from precis.plans.templates import mint_gripe_fix_direct
+
+    a = _gripe(store, "open")
+    b = _gripe(store, "open")
+    mint = mint_gripe_fix_direct(store, gripe_id=a)
+    assert fix_open(store, [a, b]) == {a: [int(mint.root_id)]}
+    assert fix_open(store, []) == {}
+    assert fix_open(store, [b]) == {}
+
+
+@pytest.mark.db
 def test_verify_done_refuses_a_held_gripe(hub: Any, store: Store) -> None:
     """gr547015: the prod-side verb itself honours ``hold:no-autoclose``
     — a stale caller's id list cannot close a held gripe."""

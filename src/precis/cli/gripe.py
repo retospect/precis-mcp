@@ -20,7 +20,10 @@ does not already carry it (scripts/gripe-note's one prod call after a
 landing or deploy) and prints one summary line. ``--verify-list`` /
 ``--verify-done TEXT --ids N,M`` are scripts/gripe-validate's two prod
 calls (gr541800): list the STATUS:verify gripes with their resolved sha,
-then close the ones whose sha reached origin/prod. ``--shorten-titles``
+then close the ones whose sha reached origin/prod.
+``--fix-open --ids N,M`` is the pre-resolve read for
+scripts/lib/land_notify.py (gr686283; that caller is still to wire): one
+JSON line per named gripe whose fix build is still in flight. ``--shorten-titles``
 is the one-time short-title gardening pass (:func:`shorten_titles`); it
 only lists unless ``--apply`` is given.
 """
@@ -141,6 +144,18 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
     )
     dp.add_argument(
+        "--fix-open",
+        action="store_true",
+        help=(
+            'With --ids: print one JSON line {"id": N, "builds": [root...]} '
+            "per named gripe whose fix build is still in flight (a live plan "
+            "root related-to the gripe with a non-terminal build node — "
+            "gripe_dispatch.open_build_roots). The pre-resolve read for "
+            "scripts/lib/land_notify.py (gr686283). Read-only; gripes with no open "
+            "build print nothing."
+        ),
+    )
+    dp.add_argument(
         "--shorten-titles",
         action="store_true",
         help=(
@@ -176,12 +191,19 @@ def run(args: argparse.Namespace) -> None:
         or args.verify_ask
         or args.spec_list
         or args.spec_done is not None
+        or args.fix_open
     ):
         store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
         bind_process_store(store)
         try:
             ids = [int(i) for i in args.ids.replace(" ", "").split(",") if i]
-            if args.verify_list:
+            if args.fix_open:
+                if not ids:
+                    print("--fix-open needs --ids N,M", file=sys.stderr)
+                    sys.exit(2)
+                for gid, roots in sorted(fix_open(store, ids).items()):
+                    print(json.dumps({"id": gid, "builds": roots}))
+            elif args.verify_list:
                 vrows = verify_list(store)
                 held = hold_set(store, [g for g, _st, _s in vrows])
                 cmap = check_map(store, [g for g, _st, _s in vrows])
@@ -420,6 +442,18 @@ def verify_list(store: Any) -> list[tuple[int, str, str | None]]:
 def spec_list(store: Any) -> list[int]:
     """Every live ``STATUS:needs_spec`` gripe id (gr543698)."""
     return [gid for gid, _ in _status_list(store, (NEEDS_SPEC_STATUS,))]
+
+
+def fix_open(store: Any, ids: list[int]) -> dict[int, list[int]]:
+    """Named gripes whose fix build is still in flight: ``{gid: [chain
+    root ids]}`` (gr686283 — the pre-resolve read for
+    scripts/lib/land_notify.py). The predicate is the factory's own
+    :func:`precis.workers.gripe_dispatch.open_build_roots`, so "in
+    flight" means exactly what dispatch means by it."""
+    # Lazy: cli sits above workers in the import order (see check_map).
+    from precis.workers.gripe_dispatch import open_build_roots
+
+    return open_build_roots(store, ids)
 
 
 #: The never-close mark (gr547015): a gripe carrying this (open) tag is
