@@ -35,8 +35,10 @@ gripe accepts `create` / `comment` as confirmation of what `id=` selects;
 job accepts `retry` / `retarget` / `setting` / `wake` / `extend` /
 `garden-reject`; memory accepts `process`; measure accepts `recheck`
 (the extraction-guard recheck door); fleet accepts `report` (collector
-reports only). Todo also has `mode='plan'` for plan minting (see
-`precis-plan-help`).
+reports only). Todo also has `mode='plan'` for template minting:
+pass `args={'template': '<name>', ...}` without `title/text/tags/link`.
+The template catalog and a spec-linked plain-todo recipe are in
+[[precis-todo-help]]. `precis-plan-help` describes a different kind.
 
 | Kind | Accepted put modes |
 | --- | --- |

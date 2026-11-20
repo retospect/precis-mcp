@@ -38,6 +38,52 @@ Server assigns the integer id and defaults to `STATUS:open`. Pass
 `args={'prio': N}` / `tags=` on `put` to set priority or project in one
 round-trip.
 
+## Mint a plan from a template
+## Which plan templates can I use?
+
+`mode='plan'` mints a fixed todo subtree. Supply the template name and
+its arguments in `args`; omit `title`, `text`, `tags`, and `link` because
+the template supplies the nodes. Optional `parent_id` nests the root.
+
+```python
+put(kind="todo", mode="plan", args={"template": "gripe-fix", "gripe_id": 123})
+```
+
+| Template | Required args besides `template` | Optional args |
+| --- | --- | --- |
+| `gripe-fix` | `gripe_id` | `lane` |
+| `gripe-fix-direct` | `gripe_id` | `lane` |
+| `spec-build` | `section` | `lane` |
+| `slice-tree` | `section` | — |
+| `release-pass` | — | — |
+| `pr-intake` (internal only; unavailable via `put`) | — | — |
+| `pcb-pipeline` | `board` | — |
+| `route-loop` | — | `iterations`, `after`, `context` |
+| `repo-batch` | `repo`, `slices` | `glue`, `bump` |
+
+`pr-intake` is minted automatically by PR polling; `put` cannot supply its
+required `pr` argument.
+
+`gripe_id` is a numeric ID; `section` is a spec section address;
+`board` identifies a PCB. `repo-batch` adopts existing slice todos for
+another repository. An omitted or unknown template returns the current
+names; missing required arguments return a call showing the needed keys.
+See [[precis-factory-submit-help]] for factory node shapes and submission.
+`precis-plan-help` covers the separate `kind='plan'` surface.
+
+## Link a custom plan todo to a spec memory
+
+For your own title, details, tags and spec link, omit `mode`:
+
+```python
+put(kind="todo", text="Implement the spec", body="Scope and acceptance checks…",
+    tags=["project:example"], link="me731878", rel="plan-of")
+```
+
+This creates a plain todo with the spec edge; it does not mint a factory
+subtree. For automatic execution use a template or the hand recipe in
+[[precis-factory-submit-help]].
+
 ## Comment on a todo
 
 ```python

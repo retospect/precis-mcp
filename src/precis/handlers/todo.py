@@ -1724,13 +1724,16 @@ class TodoHandler(NumericRefHandler):
     ) -> Response:
         """``put(mode='plan', args={'template': name, …})``: mint a plan
         subtree (:mod:`precis.plans.templates`) and ack with its tree."""
+        names = sorted(plan_templates.TEMPLATES)
         given = sorted(k for k, v in refused.items() if v not in (None, "", [], {}))
         if given:
             raise BadInput(
-                f"mode='plan' mints from the template; {given} are not accepted",
+                f"mode='plan' mints from the template; {given} are not accepted; "
+                f"templates: {names}. For a spec-linked todo with your own text, "
+                "omit mode; see precis-todo-help",
+                options=names,
                 next="put(kind='todo', mode='plan', args={'template': '<name>', ...})",
             )
-        names = sorted(plan_templates.TEMPLATES)
         tpl = plan_templates.TEMPLATES.get(template) if template else None
         if tpl is None:
             raise BadInput(

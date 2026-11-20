@@ -2070,7 +2070,7 @@ def put(
     # precis-job-help): force=True wakes a quota/pause park too. Declared
     # at the verb level (the gr262482 pattern) for the same reason.
     force: bool | None = None,
-    # todo plan mint (put(kind='todo', mode='plan'), see precis-plan-help):
+    # todo plan mint (put(kind='todo', mode='plan'), see precis-todo-help):
     # template= names the plan template, gripe_id=/section=/board= are its
     # arguments, lane= the optional build-lane pin of the gripe-fix forms,
     # iterations=/after=/context= the route-loop's, repo=/slices=/glue=/bump=
@@ -3200,7 +3200,9 @@ _PUT_HELP: dict[str, str] = {
     "rerun/neb/md/analyze/trust; machine sync. Numeric-ref kinds "
     "mostly omit mode=. Exceptions: gripe create/comment (confirm id= selection); "
     "job retry/retarget/setting/wake/extend/garden-reject; memory process; "
-    "measure recheck; fleet report; todo plan (outside the declared gate).",
+    "measure recheck; fleet report; todo plan requires args={'template': '<name>', ...} "
+    "without title/text/tags/link. Template catalog: precis-todo-help. "
+    "For a spec-linked todo with custom text/link, omit mode.",
     "id": "Target ref. Omit to create on numeric-ref kinds.",
     "text": "Content for create.",
     "tags": "Tags to add.",
