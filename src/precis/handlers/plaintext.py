@@ -16,8 +16,11 @@ Same address grammar:
     notes--log/raw      — full source text
     /                   — list every known plaintext file
 
-Same put modes (``create`` / ``append`` / ``replace`` / ``delete`` /
-``edit`` / ``insert``) with identical semantics to markdown.
+Like markdown, ``put`` creates files and ``edit`` handles append, insert,
+find-replace and block replacement. Whole-file delete requires explicit
+confirmation through ``args={'confirm': 'delete-file-<slug>'}`` on the tool
+surface. ``dry_run=True`` previews without retiring the ref or unlinking the file.
+Empty files keep their refs and clear their previously indexed chunks.
 """
 
 from __future__ import annotations
@@ -1224,7 +1227,22 @@ class PlaintextHandler(Handler):
             )
         )
 
-    def _delete_file(self, slug: str) -> Response:
+    def _delete_file_call(self, slug: str, reason: str | None = None) -> str:
+        """The copy-pasteable confirmed whole-file delete call for hints.
+
+        Carries a supplied ``reason=`` so replaying the hint still
+        records it on the retire's ``deleted`` event — a bare
+        ``args={'confirm': …}`` hint would retire the ref with no
+        reason recorded (td740049 review of gr676962).
+        """
+        call = f"delete(kind='{self._KIND}', id={slug!r}"
+        if reason and reason.strip():
+            call += f", reason={reason.strip()!r}"
+        return call + f", args={{'confirm': 'delete-file-{slug}'}})"
+
+    def _delete_file(
+        self, slug: str, *, dry_run: bool = False, reason: str | None = None
+    ) -> Response:
         """Remove a whole file + its ref.
 
         Symmetry with ``put(mode='create')``: anything the handler
@@ -1251,12 +1269,29 @@ class PlaintextHandler(Handler):
         race, leaving the file gone behind a ``Gone`` error. If the
         unlink fails after a successful retire, the ref is restored
         (:meth:`Store.restore_ref` is the soft-delete inverse) so the
-        caller-visible state matches the disk again; a read-only-mount
+        caller-visible state matches the disk again — and the restore
+        logs a ``restored`` ref event naming the rollback, so a
+        ``reason=``'s ``deleted`` event can't read as a landed
+        deletion. That audit row is supplemental: it rides its own
+        transaction after the restore commits, so a failed event
+        insert can't roll the restore back and re-strand the ref
+        retired beside the on-disk file (td740049 review). A
+        read-only-mount
         ``OSError`` is then re-raised unchanged so the verb
         decorator's EROFS→``Unsupported`` translation (gr311325) still
         applies, and only when the restore itself fails does the
         error truthfully acknowledge that the ref stayed retired
         while the file remains.
+
+        ``dry_run=True`` answers with the preview instead — the ref
+        and chunk count the confirmed call would retire — touching
+        neither disk nor store. ``reason=`` is stored as the
+        ``deleted`` ref event's payload reason, in the same
+        transaction as the retire (the numeric-ref
+        ``_record_delete_reason`` convention, gr503546). A file that
+        was never ingested has no ref, so there is no event to record
+        it on — the ack and preview say so rather than dropping it
+        silently (td740049 review of gr676962).
         """
         path = self._path_for_slug(slug)
         ref = self.store.get_ref(kind=self._KIND, id=slug, include_deleted=True)
@@ -1268,9 +1303,39 @@ class PlaintextHandler(Handler):
         file_existed = path.exists()
         if not file_existed and ref is None:
             self._raise_file_not_found(slug)
+        reason_orphaned = bool(reason and reason.strip()) and ref is None
+        if dry_run:
+            if ref is None:
+                note = (
+                    "; reason= would go unrecorded — no ref event to record it on"
+                    if reason_orphaned
+                    else ""
+                )
+                return Response(
+                    body=f"would delete file {slug!r} (no ref was ingested, "
+                    f"nothing retired{note})"
+                )
+            n = self.store.chunks.count_chunks(ref.id)
+            if not file_existed:
+                return Response(
+                    body=f"would retire ref {ref.id} ({n} chunks) — "
+                    "no file under this root"
+                )
+            return Response(
+                body=f"would delete file {slug!r} and retire ref {ref.id} ({n} chunks)"
+            )
         if ref is not None:
             try:
-                self.store.retire_ref(ref.id)
+                with self.store.tx() as conn:
+                    self.store.retire_ref(ref.id, conn=conn)
+                    if reason and reason.strip():
+                        self.store.append_event(
+                            ref.id,
+                            source="agent",
+                            event="deleted",
+                            payload={"reason": reason.strip()},
+                            conn=conn,
+                        )
             except NotFound:
                 # A concurrent writer retired the ref between our
                 # live resolve and the retire — report the
@@ -1290,11 +1355,11 @@ class PlaintextHandler(Handler):
                         raise  # verb decorator: EROFS → Unsupported
                     raise Upstream(
                         f"could not remove file {slug!r}: {exc}",
-                        next=f"retry delete(kind='{self._KIND}', id={slug!r}, "
-                        f"confirm='delete-file-{slug}')",
+                        next=f"retry {self._delete_file_call(slug, reason)}",
                     ) from exc
                 try:
-                    restored = self.store.restore_ref(ref.id)
+                    with self.store.tx() as conn:
+                        restored = self.store.restore_ref(ref.id, conn=conn)
                 except Exception as restore_exc:
                     # Double failure: the ref is retired, the file is
                     # still on disk, and the rollback died too. Name
@@ -1309,13 +1374,47 @@ class PlaintextHandler(Handler):
                         next=f"get(kind='{self._KIND}', id={slug!r}) to "
                         "inspect the ref state",
                     ) from exc
+                if restored:
+                    # The 'deleted'/'retired' rows above would
+                    # otherwise read as a landed deletion — the
+                    # trail must show the rollback beside them
+                    # (td740049 review of gr676962). The 0229
+                    # trail trigger already wrote its bare
+                    # ('db','restored') at the UPDATE; this row
+                    # carries WHY. It is supplemental, so it rides
+                    # its own transaction AFTER the committed
+                    # restore: an event-insert failure must not roll
+                    # the restore back and re-strand the ref retired
+                    # beside the on-disk file (td740049 review).
+                    try:
+                        self.store.append_event(
+                            ref.id,
+                            source="agent",
+                            event="restored",
+                            payload={
+                                "reason": (
+                                    f"whole-file delete of {slug!r} "
+                                    "rolled back — could not remove "
+                                    f"the file: {exc}"
+                                ),
+                            },
+                        )
+                    except Exception:
+                        log.warning(
+                            "%s delete of %r: ref id=%s restored but the "
+                            "'restored' audit event failed — the trail "
+                            "lacks the rollback's reason",
+                            self._KIND,
+                            slug,
+                            ref.id,
+                            exc_info=True,
+                        )
                 if restored and not is_readonly_fs_error(exc):
                     raise Upstream(
                         f"could not remove file {slug!r}: {exc}. The "
                         f"{self._KIND} ref retire was rolled back — nothing "
                         "was deleted",
-                        next=f"retry delete(kind='{self._KIND}', id={slug!r}, "
-                        f"confirm='delete-file-{slug}')",
+                        next=f"retry {self._delete_file_call(slug, reason)}",
                     ) from exc
                 # Read-only mount (or a concurrent writer already
                 # restored the ref): the retire is undone or out of
@@ -1332,7 +1431,12 @@ class PlaintextHandler(Handler):
                 "no file under this root (foreign workspace or already gone)"
             )
         else:
-            ack = format_write_result(verb="deleted file", file_slug=slug)
+            note = (
+                "; reason= went unrecorded — no ref event to record it on"
+                if reason_orphaned
+                else ""
+            )
+            ack = f"deleted file {slug!r} (no ref was ingested, nothing retired{note})"
         return Response(body=ack)
 
     def _put_anchored(
@@ -1585,21 +1689,26 @@ class PlaintextHandler(Handler):
         id: str | int,
         confirm: str | None = None,
         dry_run: bool = False,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Delete a paragraph / region, or the whole file.
 
         - Block-level (default): requires a selector in ``id``
           (``slug~SLUG`` / ``slug~Lstart-Lend``).
-        - File-level: pass ``confirm='delete-file-<slug>'`` with no
+        - File-level: send ``args={'confirm': 'delete-file-<slug>'}`` with no
           selector. Unlinks the file under ``PRECIS_ROOT`` and
           soft-deletes the ref. The confirm string encodes the
           slug so a stray ``confirm=True`` can't delete the wrong
           file. Matches the file-level ``put(mode='create')`` so
           ``put`` and ``delete`` are symmetric (MCP critic MINOR-C
-          2026-05-02).
-        - ``dry_run=True`` previews the selected region or whole file
-          and its line count. It writes nothing and needs no confirmation.
+          2026-05-02). ``reason=`` is stored on the retired
+          ref's ``deleted`` event — a file with no ingested ref
+          has no event to record it on, and the ack says so.
+        - ``dry_run=True`` previews without writing and needs no
+          confirmation: a selected region names its lines, a whole
+          file names the ref and chunk count the confirmed call
+          would retire (gr676962).
         """
         slug, sel, _path_view = _parse_file_id(
             str(id),
@@ -1608,13 +1717,29 @@ class PlaintextHandler(Handler):
             aliases=self._aliases,
         )
         self._refuse_ro(slug)
+        if sel is not None and reason is not None:
+            # reason= only has a home on the whole-file door — it lands
+            # on the retired ref's 'deleted' event. A region delete
+            # rewrites the file and retires nothing; accepting it here
+            # would silently drop it (td740049 review of gr676962).
+            # The hint replays the caller's own selector and preview
+            # flag so the retry drops only reason= (td740049 review).
+            retry = f"delete(kind='{self._KIND}', id={f'{slug}~{sel.value}'!r}"
+            if dry_run:
+                retry += ", dry_run=True"
+            retry += ")"
+            raise BadInput(
+                f"reason= applies to whole-file delete on {self._KIND} — "
+                "a region delete rewrites the file and retires no ref, "
+                "so there is no 'deleted' event to record it on. Drop "
+                "reason=.",
+                next=retry,
+            )
         if dry_run:
+            if sel is None:
+                return self._delete_file(slug, dry_run=True, reason=reason)
             path = self._resolve_path(slug, must_exist=True)
             text = path.read_text(encoding="utf-8")
-            if sel is None:
-                return Response(
-                    body=f"Would delete file {slug!r} ({len(text.splitlines())} lines)."
-                )
             blocks = self._parse_blocks(text)
             target = _find_block(blocks, sel)
             if target is None:
@@ -1636,17 +1761,16 @@ class PlaintextHandler(Handler):
                 raise BadInput(
                     (
                         f"delete on {self._KIND} requires a block selector - "
-                        f"id='{slug}~SLUG' - or confirm={expected_confirm!r} "
+                        f"id='{slug}~SLUG' - or args={{'confirm': {expected_confirm!r}}} "
                         "to remove the whole file"
                     ),
                     next=(
                         f"delete(kind='{self._KIND}', id='{slug}~SLUG') "
                         "to remove a paragraph, or "
-                        f"delete(kind='{self._KIND}', id={slug!r}, "
-                        f"confirm={expected_confirm!r}) to remove the file"
+                        f"{self._delete_file_call(slug, reason)} to remove the file"
                     ),
                 )
-            return self._delete_file(slug)
+            return self._delete_file(slug, reason=reason)
         return self._put_delete(slug, sel)
 
     def _resolve_pt_ref(self, id: str | int) -> tuple[str, int]:
@@ -1870,9 +1994,17 @@ class PlaintextHandler(Handler):
                     conn=conn,
                 )
             else:
-                self.store.update_ref(ref.id, title=title, meta_patch=new_meta)
+                self.store.update_ref(
+                    ref.id, title=title, meta_patch=new_meta, conn=conn
+                )
 
-            self.store.chunks.insert_chunks(ref.id, inserts, replace=True, conn=conn)
+            if inserts:
+                self.store.chunks.insert_chunks(
+                    ref.id, inserts, replace=True, conn=conn
+                )
+            else:
+                # insert_chunks treats an empty batch as a no-op.
+                conn.execute("DELETE FROM chunks WHERE ref_id = %s", (ref.id,))
 
         fresh = self.store.get_ref(kind=self._KIND, id=slug)
         if fresh is not None:

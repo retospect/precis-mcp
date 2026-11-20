@@ -1051,9 +1051,11 @@ def test_delete_racing_retire_reports_gone(
     real_retire_ref = store.retire_ref
 
     def racing_retire(ref_id, *, conn=None):
-        # Truthful race: the other writer's retire LANDS, ours then
-        # finds the tombstone.
-        real_retire_ref(ref_id, conn=conn)
+        # Truthful race: the other writer's retire LANDS on its own
+        # connection — committed before ours reads the row — so our
+        # tx's later rollback can't undo it (the delete now retires
+        # inside store.tx(), td740048).
+        real_retire_ref(ref_id)
         raise NotFound("ref is already retired")
 
     monkeypatch.setattr(store, "retire_ref", racing_retire)
@@ -1075,21 +1077,39 @@ def test_delete_unlink_failure_restores_ref(
     """An unlink failure after a successful retire must roll the ref
     back (restore_ref) and report that NOTHING was deleted — otherwise
     the caller retries into a tombstone while the file is still there
-    (td661027 review of gr660623)."""
+    (td661027 review of gr660623). The event log must show the rollback
+    too: the retire's ``deleted`` row alone would read as a landed
+    deletion (td740049 review of gr676962)."""
     _write(tex_root, "stuck.tex", r"\section{S}" + "\n")
     handler.get(id="stuck")
+    ref = store.get_ref(kind="tex", id="stuck")
+    assert ref is not None
 
     def boom(path):
         raise OSError("operation not permitted")
 
     monkeypatch.setattr("os.remove", boom)
-    with pytest.raises(Upstream, match="nothing was deleted"):
-        handler.delete(id="stuck", confirm="delete-file-stuck")
+    with pytest.raises(Upstream, match="nothing was deleted") as exc_info:
+        handler.delete(id="stuck", confirm="delete-file-stuck", reason="cleanup")
+    # The retry hint must replay the caller's reason= — a bare
+    # args={'confirm': …} hint would retire the ref with no reason
+    # recorded on the 'deleted' event (td740049 review of gr676962).
+    hint = exc_info.value.next or ""
+    assert "reason='cleanup'" in hint
+    assert "'confirm': 'delete-file-stuck'" in hint
     assert (tex_root / "stuck.tex").exists()
-    ref = store.get_ref(kind="tex", id="stuck")
-    assert ref is not None and ref.retired_at is None, (
+    live = store.get_ref(kind="tex", id="stuck")
+    assert live is not None and live.retired_at is None, (
         "the ref retire must be rolled back when the unlink fails"
     )
+    events = store.events_for(ref.id)
+    assert any(e.event == "deleted" for e in events)
+    restored = [e for e in events if e.event == "restored" and e.source == "agent"]
+    assert restored, (
+        "a rolled-back file delete must log its restore — otherwise "
+        "the 'deleted' event reads as a landed deletion"
+    )
+    assert "rolled back" in restored[0].payload["reason"]
 
 
 def test_delete_unlink_failure_restore_fails_names_both_mutations(
@@ -1117,6 +1137,49 @@ def test_delete_unlink_failure_restore_fails_names_both_mutations(
     assert (tex_root / "wedged.tex").exists()
     tomb = store.get_ref(kind="tex", id="wedged", include_deleted=True)
     assert tomb is not None and tomb.retired_at is not None
+
+
+def test_delete_unlink_failure_restore_survives_audit_failure(
+    handler: TexHandler,
+    tex_root: Path,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rollback's 'restored' audit event is supplemental — it rides
+    its own tx after the restore commits. If the event insert fails, the
+    restore must stand: a tx bundling the two would roll the restore
+    back and re-strand the ref retired beside the on-disk file
+    (td740049 review of gr676962)."""
+    _write(tex_root, "audited.tex", r"\section{A}" + "\n")
+    handler.get(id="audited")
+    ref = store.get_ref(kind="tex", id="audited")
+    assert ref is not None
+
+    def boom_remove(path):
+        raise OSError("operation not permitted")
+
+    real_append_event = store.append_event
+
+    def boom_event(ref_id, *, conn=None, event=None, **kw):
+        if event == "restored":
+            raise RuntimeError("connection reset by peer")
+        return real_append_event(ref_id, conn=conn, event=event, **kw)
+
+    monkeypatch.setattr("os.remove", boom_remove)
+    monkeypatch.setattr(store, "append_event", boom_event)
+    with pytest.raises(Upstream, match="nothing was deleted"):
+        handler.delete(id="audited", confirm="delete-file-audited", reason="cleanup")
+    assert (tex_root / "audited.tex").exists()
+    live = store.get_ref(kind="tex", id="audited")
+    assert live is not None and live.retired_at is None, (
+        "the committed restore must stand even when its audit event "
+        "fails — the ref stays live beside the on-disk file"
+    )
+    events = store.events_for(ref.id)
+    assert any(e.event == "deleted" for e in events), (
+        "the retire's 'deleted' event still commits — only the "
+        "supplemental 'restored' audit row is missing"
+    )
 
 
 # ── td661027 review of gr660623: read paths must not resurrect ──────

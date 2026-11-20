@@ -436,7 +436,7 @@ def test_file_level_delete_requires_confirm_string(
     # string.
     with pytest.raises(BadInput) as excinfo:
         handler.delete(id="tmp")
-    assert "confirm='delete-file-tmp'" in str(excinfo.value)
+    assert "args={'confirm': 'delete-file-tmp'}" in str(excinfo.value)
     # With the right confirm string — succeeds.
     resp = handler.delete(id="tmp", confirm="delete-file-tmp")
     assert "deleted file" in resp.body.lower()

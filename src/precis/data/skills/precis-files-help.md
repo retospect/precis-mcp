@@ -143,7 +143,14 @@ its stored blocks: the overview marks `on disk: no`, and `/raw`
 reconstructs the body by joining the stored blocks on blank lines.
 Writes still need the real file — `edit` and block-level `delete`
 report "not found on disk". A read never retires the ref; only
-`delete(confirm='delete-file-<slug>')` retires it.
+`delete(kind='markdown', id='<slug>', args={'confirm': 'delete-file-<slug>'})`
+removes the file and retires its ref (also plaintext and tex). Add
+`dry_run=True` to preview or `reason='...'` to record why on the
+retired ref's `deleted` event — an unindexed file has no ref, so the
+ack says when it went unrecorded. To keep an empty file, read `<slug>/raw`
+and pass the complete source, including any final newline, to
+`edit(kind='markdown', id='<slug>', mode='find-replace', find=source, text='')`.
+Skip the edit if the file is already empty.
 
 ## How do I create or rewrite a file?
 ## Write to a file (create / append / replace / delete)
@@ -183,9 +190,11 @@ edit(
 # Delete a region.
 delete(kind="markdown", id="notes/meeting.md~note-on-reagents")
 
-# Whole-file delete via edit (the delete verb only handles regions
-# with a selector in id=). Clear the file in one call:
-edit(kind="markdown", id="notes/meeting.md", mode="replace", text="")
+# Empty the file if its complete source is "# Meeting\n\nNotes.\n".
+edit(kind="markdown", id="notes/meeting.md", mode="find-replace", find="# Meeting\n\nNotes.\n", text="")
+
+# Remove the file and retire its ref:
+delete(kind="markdown", id="notes--meeting", args={"confirm": "delete-file-notes--meeting"})
 ```
 
 A block is one paragraph, one heading, one fenced code, one table, or

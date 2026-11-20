@@ -128,7 +128,8 @@ only is the memory/todo form — some clients mangle an empty string
 before the call reaches the server, which is why that mode exists
 there — and a file kind's edit refuses it.) The `delete` verb removes
 a whole chunk, a `~L<a>-<b>` line range, or a python symbol; a whole
-file needs `confirm='delete-file-<slug>'`. A line or token inside a
+file needs `args={'confirm': 'delete-file-<slug>'}` on `delete`. A
+line or token inside a
 chunk is `edit`, not `delete` — see [[precis-delete-help]].
 
 ## Rewrite a whole chunk, function, or paragraph

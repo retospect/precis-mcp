@@ -232,4 +232,15 @@ put(
 
 ## Preview a deletion
 
-`delete(kind='tex', id='doc~L1-3', dry_run=True)` previews the region and line count without writing. Omit the selector to preview deleting the whole file; a preview needs no confirmation.
+`delete(kind='tex', id='doc~L1-3', dry_run=True)` previews the region and line count without writing. Omit the selector to preview the whole-file delete — a preview needs no confirmation:
+
+```text
+delete(kind='tex', id='doc', dry_run=True)
+→ would delete file 'doc' and retire ref 42 (3 chunks)
+```
+
+`reason=` applies only to the whole-file delete — it is recorded on
+the retired ref's `deleted` event. A region delete rewrites the file
+and retires nothing, so `reason=` there is refused. A file with no
+ingested ref retires nothing either — the ack names an unrecorded
+`reason=`.

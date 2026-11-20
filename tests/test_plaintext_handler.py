@@ -10,6 +10,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import plaintext as plaintext_mod
 from precis.handlers.plaintext import PlaintextHandler
+from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.utils.plaintext_parse import parse_plaintext
 from tests.hintcheck import assert_hints_round_trip
@@ -1149,9 +1150,181 @@ def test_delete_dry_run_previews_and_keeps_file(
     text = "keep me.\n\ndrop me.\n"
     path = _write(pt_root, f"doc.{extension}", text)
     out = handler.delete(id=f"doc{selector}", dry_run=True)
-    assert "Would delete" in out.body
     assert "doc" in out.body
-    assert "lines" in out.body
     assert ("region" if selector else "file") in out.body
+    if selector:
+        assert "Would delete" in out.body
+        assert "lines" in out.body
+    else:
+        # The whole-file preview names the delete's full effect —
+        # ref and retire — not just a line count (gr676962).
+        assert "would delete file 'doc'" in out.body
+        assert "nothing retired" in out.body
     assert path.read_text(encoding="utf-8") == text
     assert handler.store.get_ref(kind=kind, id="doc") is None
+
+
+def _delete_runtime(store: Store, root: Path) -> PrecisRuntime:
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import MockEmbedder
+
+    return PrecisRuntime(
+        config=PrecisConfig(),
+        hub=boot(
+            store=store,
+            embedder=MockEmbedder(dim=store.embedding_dim()),
+            precis_root=str(root),
+        ),
+    )
+
+
+def test_delete_refusal_hint_uses_args_confirm(store: Store, pt_root: Path) -> None:
+    from precis.tools import core as tools_core
+    from precis.tools.command_parser import parse_command
+    from tests.hintcheck import extract_hints
+
+    path = _write(pt_root, "doc.txt", "hello\n")
+    runtime = _delete_runtime(store, pt_root)
+    refusal = runtime.dispatch("delete", {"kind": "plaintext", "id": "doc"})
+    hint = next(h for h in extract_hints(refusal, whole_body=True) if "args=" in h)
+    verb, kwargs = parse_command(hint)
+    assert verb == "delete"
+    assert kwargs["args"] == {"confirm": "delete-file-doc"}
+    # Replay the hint through the registered delete tool — the wrapper
+    # folds ``args=`` into the ``__extras__`` payload key dispatch reads
+    # (tools/core.py), so this covers the public call shape end to end
+    # rather than a hand-translated payload.
+    tools_core._runtime = runtime
+    try:
+        result = tools_core.delete(**kwargs)
+    finally:
+        tools_core._runtime = None
+    assert "deleted file 'doc'" in str(result)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    ("kind", "filename", "source"),
+    [
+        ("markdown", "doc.md", "# Title\n\nBody.\n"),
+        ("plaintext", "doc.txt", "First paragraph.\n\nSecond paragraph.\n"),
+        ("tex", "doc.tex", "\\section{Title}\n\nBody.\n"),
+    ],
+)
+def test_empty_file_with_full_source_find_replace(
+    store: Store,
+    pt_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    filename: str,
+    source: str,
+) -> None:
+    from precis.tools import core as tools_core
+
+    path = _write(pt_root, filename, source)
+    runtime = _delete_runtime(store, pt_root)
+    runtime.dispatch("get", {"kind": kind, "id": "doc/raw"})
+    ref = store.get_ref(kind=kind, id="doc")
+    assert ref is not None
+    assert store.chunks.count_chunks(ref.id) > 0
+    monkeypatch.setattr(tools_core, "_runtime", runtime)
+    tools_core.edit(kind=kind, id="doc", mode="find-replace", find=source, text="")
+    assert path.read_bytes() == b""
+    updated = store.get_ref(kind=kind, id="doc")
+    assert updated is not None and updated.id == ref.id
+    assert store.chunks.count_chunks(ref.id) == 0
+
+
+def test_delete_region_refuses_reason(handler: PlaintextHandler, pt_root: Path) -> None:
+    """``reason=`` records why on a whole-file retire's ``deleted`` ref
+    event — a region delete rewrites the file and retires nothing, so
+    it must refuse loudly instead of silently dropping the kwarg
+    (td740049 review of gr676962)."""
+    _write(pt_root, "doc.txt", "keep.\n\ndrop.\n")
+    with pytest.raises(BadInput, match="reason=") as exc_info:
+        handler.delete(id="doc~1", reason="cleanup")
+    # The retry hint replays the caller's own selector (not a literal
+    # ~SLUG placeholder) and preview flag so the retry drops only
+    # reason= (td740049 review of gr676962).
+    assert exc_info.value.next == "delete(kind='plaintext', id='doc~1')"
+    # The dry-run preview refuses it too — a preview of a call that
+    # would refuse is itself a refusal.
+    with pytest.raises(BadInput, match="reason=") as exc_info:
+        handler.delete(id="doc~1", dry_run=True, reason="cleanup")
+    assert exc_info.value.next == ("delete(kind='plaintext', id='doc~1', dry_run=True)")
+
+
+@pytest.mark.parametrize("ingested", [False, True])
+def test_delete_file_dry_run_is_noop(
+    store: Store, pt_root: Path, ingested: bool
+) -> None:
+    path = _write(pt_root, "doc.txt", "first\n\nsecond\n")
+    runtime = _delete_runtime(store, pt_root)
+    if ingested:
+        runtime.dispatch("get", {"kind": "plaintext", "id": "doc"})
+    ref = store.get_ref(kind="plaintext", id="doc")
+    assert (ref is not None) == ingested, (
+        "the ingested=True leg must ingest — otherwise it silently "
+        "exercises the no-ref path"
+    )
+    events = store.events_for(ref.id) if ref else []
+    result = runtime.dispatch(
+        "delete",
+        {
+            "kind": "plaintext",
+            "id": "doc",
+            "dry_run": True,
+            "reason": "cleanup",
+            "__extras__": {"confirm": "delete-file-doc"},
+        },
+    )
+    if ref:
+        n = store.chunks.count_chunks(ref.id)
+        assert f"would delete file 'doc' and retire ref {ref.id} ({n} chunks)" in result
+        assert store.events_for(ref.id) == events
+    else:
+        assert "no ref was ingested, nothing retired" in result
+        # reason= has no ref event to record on — the preview says so
+        # rather than dropping it silently (td740049 review).
+        assert "reason= would go unrecorded" in result
+    assert path.read_text(encoding="utf-8") == "first\n\nsecond\n"
+    assert store.get_ref(kind="plaintext", id="doc") == ref
+
+
+@pytest.mark.parametrize("ingested", [False, True])
+def test_delete_file_ack_names_ref_state(
+    store: Store, pt_root: Path, ingested: bool
+) -> None:
+    path = _write(pt_root, "doc.txt", "hello\n")
+    runtime = _delete_runtime(store, pt_root)
+    if ingested:
+        runtime.dispatch("get", {"kind": "plaintext", "id": "doc"})
+    ref = store.get_ref(kind="plaintext", id="doc")
+    assert (ref is not None) == ingested, (
+        "the ingested=True leg must ingest — otherwise it silently "
+        "exercises the no-ref path"
+    )
+    result = runtime.dispatch(
+        "delete",
+        {
+            "kind": "plaintext",
+            "id": "doc",
+            "reason": "cleanup",
+            "__extras__": {"confirm": "delete-file-doc"},
+        },
+    )
+    if ref:
+        assert f"deleted file 'doc' + retired its plaintext ref id={ref.id}" in result
+        retired = store.get_ref(kind="plaintext", id="doc", include_deleted=True)
+        assert retired is not None and retired.retired_at is not None
+        event = next(e for e in store.events_for(ref.id) if e.event == "deleted")
+        assert event.payload["reason"] == "cleanup"
+    else:
+        # No ref means no 'deleted' event — the ack must say the
+        # caller's reason= went unrecorded (td740049 review).
+        assert (
+            "deleted file 'doc' (no ref was ingested, nothing retired; "
+            "reason= went unrecorded — no ref event to record it on)" in result
+        )
+    assert not path.exists()

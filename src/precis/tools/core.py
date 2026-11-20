@@ -2945,9 +2945,15 @@ def delete(
 
     File kinds with selector in `id=` (markdown, plaintext, tex,
     python): delete the addressed chunk/symbol/line range.
-    Without a selector → BadInput. Use `edit(mode='replace', text='')`
-    to clear a whole file, or `edit(mode='find-replace', find='…',
-    text='')` to delete a matched span. `base_sha=` (python line
+    For markdown/plaintext/tex, no selector plus
+    `args={'confirm': 'delete-file-<slug>'}` removes the file and retires
+    its ref; `dry_run=True` previews, `reason=` records why on the
+    retired ref's 'deleted' event (a file with no ingested ref has no
+    event to record it on — the ack says so).
+    Use `edit(mode='find-replace', find='…', text='')` to delete a matched
+    span. To empty a markdown/plaintext/tex file, pass its complete
+    `/raw` source, including any final newline, as `find=` and omit the
+    selector. `base_sha=` (python line
     ranges, the `range:` line's `sha=`) pins the delete to the read's
     content; it refuses if the lines changed.
 

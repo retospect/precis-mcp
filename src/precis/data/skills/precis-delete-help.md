@@ -20,9 +20,9 @@ scope: write
 Project prose lives in the memory mesh: find the project hub with `search(kind='memory', tags=['project:<slug>'])`, then read its navigation links. Write linked memories or the bound draft; file kinds are import/export only. `meta.workspace` is the export home. Compile/export a draft only when requested. See [[precis-memory-help]] and [[precis-draft-help]].
 
 `delete` removes content two ways. Numeric-ref kinds soft-delete:
-the row hides from list/search but is recoverable. File kinds
-require a selector and rewrite the file without the addressed
-region.
+the row hides from list/search but is recoverable. File selectors
+remove the addressed region. Markdown, plaintext and tex also allow
+whole-file removal with explicit confirmation (see below).
 
 ## Soft-delete a memory, todo, or other numeric ref
 ## Remove a note I no longer want
@@ -177,12 +177,24 @@ run, same as `edit`.
 ## I want to empty this file, not delete a region
 
 ```python
-edit(kind="markdown", id="notes/foo.md", mode="replace", text="")
+edit(kind="markdown", id="notes/foo.md", mode="find-replace", find="# Title\n\nBody.\n", text="")
 ```
 
-`delete` without a selector on a file kind raises `BadInput` — the
-verb refuses to wipe a whole file by accident. Use `edit` with
-`mode='replace'` and an empty body.
+Read `get(kind='markdown', id='notes/foo.md/raw')` and pass the complete
+source, including any final newline, as `find=`. The example assumes the
+file contains exactly the source shown. Skip the edit if it is already empty.
+
+To remove a markdown, plaintext or tex file and retire its ref:
+
+```python
+delete(kind='markdown', id='<slug>', args={'confirm': 'delete-file-<slug>'})
+```
+
+Add `dry_run=True` to preview without changing disk or the ref;
+`reason='...'` records why on the retired ref's `deleted` event — a
+file that was never ingested has no ref to record it on, and the ack
+says so. Without confirmation, a whole-file delete refuses. The
+empty-body edit above keeps the file.
 
 ## Delete a single matched span (one citation, one line)
 ## Cut one occurrence of a string from a file
