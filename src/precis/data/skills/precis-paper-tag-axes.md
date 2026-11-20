@@ -19,9 +19,10 @@ kinds: [paper]
 Ingest auto-tags every paper along a fixed set of closed UPPERCASE
 **axes** (`DOMAIN:`, `SCALE:`, `DIM:`, `TRANSPORT:`, `STUDYTYPE:`,
 `MATERIAL:`, `PROPERTY:`) — the namespace is the `data/axes/<id>.yaml`
-id uppercased. Filter searches by these axes via `tags=[...]`; the
-lowercase spelling (`studytype:review`) is an *open* tag the pass never
-writes and matches nothing.
+id uppercased. Filter searches by these axes via `tags=[...]`. Pin the
+uppercase spelling (`STUDYTYPE:review`) to match only the classifier row;
+the lowercase spelling (`studytype:review`) also matches it, plus any
+literal open tag of that spelling (see `precis-tags`).
 
 For the other closed axes (`SRC:`, `CACHE:`) and the open-tag rules,
 see `precis-tags`.
