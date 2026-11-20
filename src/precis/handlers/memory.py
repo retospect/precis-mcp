@@ -2218,7 +2218,6 @@ class MemoryHandler(AuditedRetirementHandler):
         rel: str | None = None,
         auto_refresh_days: int | None = None,
         put_meta: dict[str, Any] | None = None,
-        link_meta: dict[str, Any] | None = None,
         set_by: ActorSlug = "agent",
         system_meta: dict[str, Any] | None = None,
         default_tags: bool = True,

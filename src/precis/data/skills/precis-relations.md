@@ -289,7 +289,9 @@ link(kind="memory", id=42, target="pa5", rel="see-also")
 
 `see-also` is asymmetric with **no** inverse. Use for "while reading A,
 you might want B" hints that don't fit `related-to`, `cites`, or any
-evidential edge.
+evidential edge. (The four `cited-in`/`corroborates`/`superseded-in`/
+`off-topic-for` integration-disposition relations, below, are the same
+shape — no inverse — but a different semantic.)
 
 ## Record a paper's disposition toward a topic dossier
 ## Mark a paper as woven-in / corroborating / superseded / rejected
@@ -337,10 +339,8 @@ endpoints past the `+recall` distance floor (a nearer pair is one RAG
 already co-retrieves, so the edge adds nothing). `explains` stays claim
 hub → claim hub via `taproot.hub.link_claims` and carries no evidence
 pins itself. A plain agent `link` call carries no model identity and is
-untouched. A create-time `link=` carries the same annotation via
-`meta=` in one call (`put(kind='memory', …, link='pc<N>',
-rel='derived-from', meta={…})`) — it lands on the created edge, not the
-node ([[precis-memory-help]]).
+untouched. A create-time `put(…, link='pc<N>', meta={…})` puts it on the
+edge, not the node ([[precis-memory-help]]).
 
 ## See also
 

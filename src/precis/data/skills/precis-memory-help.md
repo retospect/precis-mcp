@@ -115,13 +115,14 @@ transcript, not landed history (those live in `git log` and the docs).
    already know"), so a memory without them can silently never come
    back. Exact-title or scoped also misses → a recall regression —
    report it (a gripe), never rewrite the claim to chase rank.
+   Retrieval keys and field fallbacks: `precis-firstline-help`.
 5. **Link it in.** One `part-of` to a hub (or to a summary node for a
    detail node) plus 0–3 typed edges — more belongs in the body as
    `[handle]` mentions (`precis-relations`, the memory↔memory block).
 
 | edge you write | where it shows (`fisheye+1hop`) |
 |---|---|
-| `part-of` → hub / summary | `Parts:` on both ends; on the `section:index` hub every member lists under `contains:` |
+| `part-of` → hub / summary | `Parts:` on both ends; on the `section:index` hub every member lists under `contains:`, one line each |
 | `qualifies` gotcha → thread | `Argument:` on both ends |
 | `[handle]` mention in the body | `related-to` under `Notes & links` on the target's eye (8-cap) |
 | `cites` / `derived-from` | `Notes & links` / `Argument` |
@@ -130,10 +131,9 @@ transcript, not landed history (those live in `git log` and the docs).
 memories plus findings — a `research` memory's paper neighbours never
 appear as recall. Repo-dev nodes take
 `tags=['SPACE:repo-dev', 'section:threads|runbooks|gotchas|workflow|reference']`
-and `meta={'hook': 'one line — status + resume point'}` (writable meta
+and `meta={'hook': 'one line — status + resume point'}` (meta
 keys: `hook`, `type`, `expires`, `order`; the node type is the
-`section:<slug>` tag, never `meta['type']`; with `link=` a create also
-takes the writer annotation, below).
+`section:<slug>` tag, never `meta['type']`).
 
 ## Expiry
 
