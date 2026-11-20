@@ -44,6 +44,9 @@ model must be in the selected lane's list to prevent paid overage.
 Devin builds leave edits uncommitted; workspace sandboxing is off by
 default (``PRECIS_DEVIN_SANDBOX=1`` opts in), because cache/temp write
 scopes and Docker under Seatbelt remain unverified.
+An index-lock wait during reuse carries forward the previous job's
+skipped-commit stamp so a later retry can salvage finished edits before
+resetting the worktree.
 The coordinator supplies acceptance tests before launch: new files ride
 ``params.acceptance_tests`` as path-to-source artifacts installed after
 worktree cleanup; checked-in paths come only from explicit Acceptance tests:

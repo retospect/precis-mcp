@@ -6101,10 +6101,21 @@ def submit(ctx: Any, spec: Any) -> Any:
         # plan_dispatch re-queues the node without spending a rung.
         _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
-        unclaim_todo(ctx.store, todo_id, lane.name)
-        ctx.set_meta(**{ATTEMPT_FREE_KEY: exc.attempt_free})
+        wait_meta: dict[str, Any] = {ATTEMPT_FREE_KEY: exc.attempt_free}
         if exc.meta:
-            ctx.set_meta(index_lock=exc.meta)
+            wait_meta["index_lock"] = exc.meta
+        # This wait becomes the newest job. Carry the worker's salvage
+        # authorization forward before giving the lease back, even if
+        # the lock blocked reuse before salvage could run.
+        fallback = _skipped_commit_stamp(
+            store, todo_id, job_id=getattr(ctx, "ref_id", None)
+        )
+        if fallback is not None:
+            wait_meta["commit_skipped"] = "index-lock"
+            if fallback:
+                wait_meta["commit_skipped_msg"] = fallback
+        ctx.set_meta(**wait_meta)
+        unclaim_todo(ctx.store, todo_id, lane.name)
         ctx.record_failure(f"run_slice: {exc}")
         return None
     except admission.Refused as exc:
