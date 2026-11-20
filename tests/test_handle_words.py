@@ -153,6 +153,10 @@ class _ResidueStore:
 
     def __init__(self, ids: list[int], kind: str = "memory") -> None:
         self._refs = [SimpleNamespace(id=i, kind=kind, title=f"ref {i}") for i in ids]
+        self.chunks = self
+
+    def body_byte_counts(self, ref_ids: list[int]) -> dict[int, int]:
+        return dict.fromkeys(ref_ids, 2048)
 
     def _pool(
         self,
@@ -205,6 +209,7 @@ def test_pair_candidates_paginate() -> None:
     page1 = h.get(q="gentle beacon")
     assert "names 23 live ref(s), page 1 of 2" in page1.body
     assert page1.result_count == 20
+    assert "size" in page1.body and "2kB" in page1.body
     assert "args={'page': 2, 'page_size': 20}" in page1.body
 
     page2 = h.get(q="gentle beacon", page=2)

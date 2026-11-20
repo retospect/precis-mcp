@@ -13,9 +13,10 @@ session's word-handle switch (:mod:`precis.word_handle_session`) — while
 on, search and list rows gain a ``word`` column so a voice agent can
 speak each row without a lookup per id.
 
-Word maps are computed in code (no LLM, free); only the pair-collision
-probe touches the store, and a stateless runtime simply can't see
-clashes — the pair is still the best spoken form there.
+Word maps are computed in code (no LLM, free). Pair-collision probes use
+the store; candidate pages also read stored body lengths in one batch so
+their size column needs no per-row query or body rendering. A stateless
+runtime cannot see clashes — the pair is still the best spoken form there.
 
 A descriptive ``q`` plus ``args={'kind': 'paper'|'gripe'|'todo'|'memory'}``
 (not a word handle) runs hybrid search and returns up to five
@@ -28,6 +29,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis import word_handle_session
+from precis._result_budget import size_cell
 from precis.dispatch import Hub
 from precis.errors import BadInput, Denied, NotFound
 from precis.format import render_agent_table, serialize
@@ -316,12 +318,14 @@ class HandleHandler(Handler):
                     result_count=0,
                 )
             return Response(body=f"'{pair}' names no live ref\n", result_count=0)
+        sizes = self.hub.live_store.chunks.body_byte_counts([c.id for c in cands])
         rows = [
             {
                 "handle": handle_registry.try_format(c.kind, c.id)
                 or f"{c.kind}:{c.id}",
                 "words": to_words(c.id),
                 "kind": c.kind,
+                "size": size_cell(sizes.get(c.id, 0)),
                 "summary": (c.title or "").splitlines()[0] if c.title else "",
             }
             for c in cands
@@ -333,7 +337,9 @@ class HandleHandler(Handler):
         body = (
             header
             + " — say the three-word form to pick one:\n"
-            + render_agent_table(rows, schema=["handle", "words", "kind", "summary"])
+            + render_agent_table(
+                rows, schema=["handle", "words", "kind", "size", "summary"]
+            )
         )
         if p < pages:
             kind_arg = f", 'of_kind': {of_kind!r}" if of_kind else ""
