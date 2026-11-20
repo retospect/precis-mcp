@@ -56,7 +56,10 @@ Both measures ride the network basis: the writer merges
 (:func:`precis.quest.compute._network_basis_by_key`) with
 :func:`precis.quest.compute._network_basis` of the pathway the evaluator
 read, so :func:`precis.quest.frontier.apply_network_demotion` drops a
-mismatch and the slab falls back to the run-point cohort.
+mismatch and the slab falls back to the run-point cohort. A call without
+``pathway_meta`` (or one whose meta projects no basis) leaves the
+measures unstamped — the frontier demotes them as unprovenanced, so such
+a value never ranks.
 """
 
 from __future__ import annotations

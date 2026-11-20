@@ -726,7 +726,10 @@ required for a meta-only patch.
   share of the box that is viable and selective — a corner-only win
   cannot beat a broad one), and a slab without env_best yet falls back
   to its run-point objectives in the provisional band, labelled "no
-  env_best yet: ranked at its run point". The leaderboard and results
+  env_best yet: ranked at its run point". Env values rank only under
+  their stamped pathway basis — a basis from an incommensurate
+  network/environment, or no basis stamp at all, demotes to the same
+  run-point fallback (env values have no legacy). The leaderboard and results
   table show the env footing beside J — `computed` (a stored solve or
   sweep row at exactly that point), `interpolated` (between adjacent
   stored grid points — only marginally accurate), or `run-point` on a

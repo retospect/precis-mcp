@@ -1153,6 +1153,20 @@ def _env_best(j: float, footing: str) -> dict[str, Any]:
     }
 
 
+#: The basis an env measure must carry to rank — an unstamped env value
+#: is unprovenanced and demotes to the run-point cohort (review td659951).
+#: ``template``/``version`` match the pinned neb-tier basis these quests
+#: resolve (the tests pin ``PRECIS_AUTOCATPATH_VERSION`` to 0.25.0; a
+#: Pd-only config resolves ``parked``).
+_ENV_BASIS: dict[str, Any] = {
+    "digest": "d1",
+    "template": "parked",
+    "version": "0.25.0",
+    "environment_basis": "env-a",
+    "tpd_basis": "none",
+}
+
+
 class TestEnvResultsColumns:
     def test_no_env_quest_is_byte_identical(self, store: Any) -> None:
         """A quest that never opted into the optimizer gets the same
@@ -1183,9 +1197,10 @@ class TestEnvResultsColumns:
         assert "env_limiting" in cols
         assert "env_footing" in cols
 
-    def test_env_footing_three_values(self, store: Any) -> None:
+    def test_env_footing_three_values(self, store: Any, monkeypatch: Any) -> None:
         """computed / interpolated on env_best rows, run-point on the
         fallback row — env_limiting names the term J bottoms out on."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.25.0")
         qid = _mk_quest(store)
         store.stamp_ref_meta(qid, {"environment_space": {"axes": {"T": [350, 900]}}})
         computed = _mk_candidate(store, qid, "Cu", _dopant_ops("Cu", 1))
@@ -1203,6 +1218,10 @@ class TestEnvResultsColumns:
                 "env_best": _env_best(1.0, "computed"),
                 "env_best_J": 1.0,
                 "env_pareto_fraction": 0.9,
+                "network_basis_by_key": {
+                    "env_best_J": dict(_ENV_BASIS),
+                    "env_pareto_fraction": dict(_ENV_BASIS),
+                },
             },
         )
         store.stamp_ref_meta(
@@ -1211,6 +1230,10 @@ class TestEnvResultsColumns:
                 "env_best": _env_best(2.0, "interpolated"),
                 "env_best_J": 2.0,
                 "env_pareto_fraction": 0.1,
+                "network_basis_by_key": {
+                    "env_best_J": dict(_ENV_BASIS),
+                    "env_pareto_fraction": dict(_ENV_BASIS),
+                },
             },
         )
         rows = {r["name"]: r for r in build_results_rows(store, qid)}
@@ -1224,11 +1247,14 @@ class TestEnvResultsColumns:
         assert rows["Au"]["band"] == "provisional"
         assert rows["Au"]["env_best_J"] == "-"
 
-    def test_leaderboard_env_columns_conditional(self, store: Any) -> None:
+    def test_leaderboard_env_columns_conditional(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
         """Same conditional as the validity column: the env columns
         appear only while some row carries the stamps."""
         from precis.quest.frontier import leaderboard
 
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.25.0")
         plain = _mk_quest(store)
         _mk_candidate(store, plain, "Cu", _dopant_ops("Cu", 1))
         _rows, schema = leaderboard(quest_frontier(store, plain))
@@ -1241,7 +1267,11 @@ class TestEnvResultsColumns:
         _mk_candidate(store, env_q, "Au", _dopant_ops("Au", 1))
         store.stamp_ref_meta(
             ranked,
-            {"env_best": _env_best(1.0, "computed"), "env_best_J": 1.0},
+            {
+                "env_best": _env_best(1.0, "computed"),
+                "env_best_J": 1.0,
+                "network_basis_by_key": {"env_best_J": dict(_ENV_BASIS)},
+            },
         )
         rows, schema = leaderboard(quest_frontier(store, env_q))
         assert "env_limiting" in schema
@@ -1251,12 +1281,15 @@ class TestEnvResultsColumns:
         assert by_name["Au"]["env_footing"] == "run-point"
         assert by_name["Ag"]["env_limiting"] == "m_kin"
 
-    def test_leaderboard_shows_run_point_values(self, store: Any) -> None:
+    def test_leaderboard_shows_run_point_values(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
         """A mixed cohort shows the run-point objective values the
         fallback rows rank on (``fr.run_point_objectives``) — not a blank
         row under the env pair alone."""
         from precis.quest.frontier import leaderboard
 
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.25.0")
         qid = _mk_quest(store)
         store.stamp_ref_meta(qid, {"environment_space": {"axes": {"T": [350, 900]}}})
         ranked = _mk_candidate(store, qid, "Ag", _dopant_ops("Ag", 1))
@@ -1268,7 +1301,11 @@ class TestEnvResultsColumns:
         store.stamp_ref_meta(fallback, {"barrier": 0.5})
         store.stamp_ref_meta(
             ranked,
-            {"env_best": _env_best(1.0, "computed"), "env_best_J": 1.0},
+            {
+                "env_best": _env_best(1.0, "computed"),
+                "env_best_J": 1.0,
+                "network_basis_by_key": {"env_best_J": dict(_ENV_BASIS)},
+            },
         )
         rows, schema = leaderboard(quest_frontier(store, qid))
         # The env pair plus the run-point objective column the fallback

@@ -2443,6 +2443,12 @@ def _run_point_split(
 #: basis.
 _ENV_BASIS_KEYS: tuple[str, ...] = ("env_best_J", "env_pareto_fraction")
 
+#: The ``network_stale_basis`` marker an env measure demotes under when it
+#: carries no stamped basis at all: env values have no legacy (the stamp
+#: machinery shipped with the measures), so an unstamped one is
+#: unprovenanced, never "pre-stamp evidence".
+_UNSTAMPED_ENV_BASIS: dict[str, Any] = {"template": "unstamped", "version": None}
+
 
 def _env_footing_key(b: dict[str, Any]) -> tuple[str, ...]:
     """The canonical identity of a stamped basis for env-footing
@@ -2479,11 +2485,18 @@ def _env_footing_demotion(cands: Sequence[Candidate]) -> dict[str, Any] | None:
     :func:`_env_footing_key`. A stamped env measure whose basis fails
     :func:`same_network_basis` against the reference demotes exactly like
     a network-stale one — the slab then reads ``env_best_J``-less and
-    falls back to the run-point cohort. An env measure with no stamped
-    basis is left alone, the same legacy rule
-    :func:`apply_network_demotion` applies. Mutates ``cands``; returns the
-    reference used (``None`` when no candidate carries a stamped live env
-    measure).
+    falls back to the run-point cohort.
+
+    An env measure with no stamped basis demotes too — env values have
+    no legacy: the stamp machinery shipped with the measures
+    (:func:`precis.quest.environment_stamps.stamp_environment_results`
+    merges the pathway basis under both keys), so a live env measure
+    without one is unprovenanced — written without ``pathway_meta`` or by
+    hand — and can never be shown to share the cohort's footing. That
+    holds whether or not a reference exists: an entirely unstamped
+    cohort demotes every env value and no slab is env-ranked at all.
+    Mutates ``cands``; returns the reference used (``None`` when no
+    candidate carries a stamped live env measure).
     """
     env_bases = [
         b
@@ -2491,33 +2504,36 @@ def _env_footing_demotion(cands: Sequence[Candidate]) -> dict[str, Any] | None:
         for k, b in _key_bases(c).items()
         if k in _ENV_BASIS_KEYS and k in c.measures
     ]
-    if not env_bases:
-        return None
-    counts = Counter(_env_footing_key(b) for b in env_bases)
-    ref = max(
-        env_bases,
-        key=lambda b: (
-            counts[_env_footing_key(b)],
-            b.get("template") == _CURRENT_DISPATCH_TEMPLATE,
-            _version_key(b.get("version")),
-            bool(b.get("digest")),
-            _env_footing_key(b),
-        ),
-    )
+    ref = None
+    if env_bases:
+        counts = Counter(_env_footing_key(b) for b in env_bases)
+        ref = max(
+            env_bases,
+            key=lambda b: (
+                counts[_env_footing_key(b)],
+                b.get("template") == _CURRENT_DISPATCH_TEMPLATE,
+                _version_key(b.get("version")),
+                bool(b.get("digest")),
+                _env_footing_key(b),
+            ),
+        )
     for c in cands:
         stale: list[str] = []
         bases = _key_bases(c)
         for k in _ENV_BASIS_KEYS:
-            basis = bases.get(k)
-            if basis is None or k not in c.measures:
+            if k not in c.measures:
                 continue
-            if same_network_basis(basis, ref):
+            basis = bases.get(k)
+            if basis is not None and ref is not None and same_network_basis(basis, ref):
                 continue
             v = c.measures.pop(k, None)
             if v is not None:
                 c.flags.setdefault(f"{k}{_UNTRUSTED_VALUE_SUFFIX}", v)
             stale.append(k)
-            c.flags.setdefault("network_stale_basis", basis)
+            c.flags.setdefault(
+                "network_stale_basis",
+                basis if basis is not None else _UNSTAMPED_ENV_BASIS,
+            )
         if stale:
             c.flags["network_stale"] = True
             c.flags["network_stale_keys"] = sorted(
@@ -3101,8 +3117,10 @@ def quest_frontier(
     The env cohort is equal-footing only: the pinned basis is a
     version+template pair, so :func:`_env_footing_demotion` first demotes
     any env measure stamped under an incompatible environment/digest/tpd
-    basis — such a slab falls back to the run-point cohort rather than
-    rank its J against an incommensurate one.
+    basis — and any env measure with no stamped basis at all
+    (unprovenanced; env values have no legacy) — such a slab falls back
+    to the run-point cohort rather than rank its J against an
+    incommensurate or unverifiable one.
     """
     from precis.quest.environment_space import declares_environment_space
     from precis.quest.gaps import _live_servers
