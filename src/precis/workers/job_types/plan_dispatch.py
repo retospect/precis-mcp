@@ -875,6 +875,12 @@ MECH_RETRY_CAP = 2
 #: :data:`MECH_RETRY_CAP` — what :func:`_capped` turns into the ask.
 MECH_RETRIES_KEY = "mech_retries"
 
+#: ``land_slice.RELEASE_SYNC_CONFLICT_MARK``, restated — the dependency
+#: stays one-way (a test pins the two spellings equal): the lander's red
+#: reason when merging the moved release head into a release fix's branch
+#: conflicts (gr738762).
+RELEASE_SYNC_CONFLICT_MARK = "release sync conflict"
+
 #: Mechanical red signatures (gr604579, factory plan 3b): ``(slug, line
 #: pattern, the brief instruction)`` — the table of ship/lint reds a
 #: coordinator used to brief by hand off the error line (me588390: a
@@ -917,6 +923,23 @@ _MECHANICAL_REDS: tuple[tuple[str, re.Pattern[str], str], ...] = (
         re.compile(r"appears? in no skill", re.IGNORECASE),
         "mention the named registry value in the skill that owns it "
         "(the skill-vocabulary test, test_skill_vocabulary)",
+    ),
+    (
+        "release-conflict",
+        # gr738762: a release fix's land conflicting with the moved release
+        # head — the lander's own merge (:data:`RELEASE_SYNC_CONFLICT_MARK`)
+        # or ship's merge-tree die. The base is the node's release branch,
+        # not main, and the fix is a merge: the branch is already pushed.
+        # ``{target}`` fills from the node (:func:`_mech_red`); the paths
+        # ride in the quoted decisive line.
+        re.compile(
+            rf"{RELEASE_SYNC_CONFLICT_MARK}: merging origin/"
+            r"|release conflict — ask the coordinator"
+        ),
+        "merge origin/{target} into the branch (never origin/main, never a "
+        "rebase of pushed commits) and resolve the conflicted paths below, "
+        "keeping the release's side for anything this fix does not need to "
+        "change; then hand off again",
     ),
     (
         "conflict",
@@ -5114,6 +5137,10 @@ def _mech_hit(text: str) -> tuple[str, str, str] | None:
             continue
         for slug, pat, _brief in _MECHANICAL_REDS:
             if pat.search(line):
+                # gr738762: the raw CONFLICT lines never shadow a release
+                # conflict's — main is the wrong base for it.
+                if slug == "conflict" and found and found[0] == "release-conflict":
+                    break
                 found = (slug, line)
                 break
     if found is None:
@@ -5125,6 +5152,17 @@ def _mech_hit(text: str) -> tuple[str, str, str] | None:
     if "{paths}" in brief:
         brief = brief.replace("{paths}", _conflict_paths(text))
     return slug, brief, line
+
+
+def _node_land_target(store: Any, n: _Node) -> str:
+    """The release branch the node lands on, read as the lander reads it
+    (``meta.land_target``, else a ``land target:`` brief line); the
+    shape ``release/r<N>`` when it names none — a release conflict on a
+    node with no recorded target still must not say main."""
+    from precis.workers.job_types import run_slice
+
+    body, latest = run_slice._brief_parts(store, n.id)
+    return _release.land_target_of(n.meta, body, latest) or "release/r<N>"
 
 
 def _mech_red(
@@ -5149,6 +5187,8 @@ def _mech_red(
     if hit is None:
         return None
     slug, brief, line = hit
+    if "{target}" in brief:
+        brief = brief.replace("{target}", _node_land_target(store, n))
     repeats = 1
     for j in reversed(ended[:-1]):
         if repeats > MECH_RETRY_CAP or j.status != "failed":

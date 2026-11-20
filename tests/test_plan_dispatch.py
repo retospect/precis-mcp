@@ -21,7 +21,12 @@ from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers import job_types as job_types_pkg
 from precis.workers._mint import mint_background_job
-from precis.workers.job_types import get_job_type, known_job_types, run_slice
+from precis.workers.job_types import (
+    get_job_type,
+    known_job_types,
+    land_slice,
+    run_slice,
+)
 from precis.workers.job_types import plan_dispatch as pd
 from precis.workers.job_types import release_poll as rp
 from tests._lane_rows import seed_lane, use_lanes
@@ -2451,6 +2456,102 @@ def test_mechanical_conflict_needs_gits_own_line() -> None:
         )
         is not None
     )
+
+
+def test_release_sync_conflict_mark_is_the_landers() -> None:
+    """The restated marker is the lander's own spelling."""
+    assert (
+        pd.RELEASE_SYNC_CONFLICT_MARK
+        == land_slice.RELEASE_SYNC_CONFLICT_MARK
+        == "release sync conflict"
+    )
+
+
+_RELEASE_CONFLICT_TEXTS = [
+    (
+        f"land_slice: {land_slice.RELEASE_SYNC_CONFLICT_MARK}: merging "
+        "origin/release/r7 into the branch conflicts in src/precis/b.py; "
+        "todo td9 back to open, attempt:1"
+    ),
+    (
+        "land_slice: ship red:\n"
+        "CONFLICT (content): Merge conflict in src/precis/b.py\n"
+        "✖ release conflict — ask the coordinator (`fleet say`), nothing was "
+        "pushed. Step: apply"
+    ),
+    (
+        "land_slice: ship red:\n"
+        "✖ release conflict — ask the coordinator (`fleet say`), nothing was "
+        "pushed. Step: apply\n"
+        "CONFLICT (content): Merge conflict in src/precis/b.py"
+    ),
+]
+
+
+@pytest.mark.parametrize("text", _RELEASE_CONFLICT_TEXTS)
+def test_release_conflict_brief_names_the_release_branch_and_says_merge(
+    store: Store, monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    """gr738762: a release fix's land that conflicts with the moved release
+    head is briefed with the node's land target and a merge — not
+    "rebase on origin/main" — even when git's own CONFLICT line sits in
+    the same failure text."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(task, {"land_target": "release/r7"})
+    _red_land(store, task, text)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    (brief,) = _brief_comments(store, task)
+    assert "merge origin/release/r7 into the branch" in brief
+    assert "never origin/main" in brief
+    assert "rebase on origin/main" not in brief
+    assert "{target}" not in brief
+    assert _meta(store, task)["mech_retries"]["sig"] == "release-conflict"
+
+
+def test_release_conflict_brief_reads_the_target_from_the_brief_line(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A node whose only target record is the ``land target:`` brief line
+    (no meta) is read the way the lander reads it."""
+    use_lanes(monkeypatch)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "The task",
+            {"op": "run_slice"},
+            body="Fix it.\nland target: release/r12",
+        )
+
+    task = T._run(store, None, build).ids["task"]
+    _red_land(store, task, _RELEASE_CONFLICT_TEXTS[0])
+    pd.run_pass(store)
+    (brief,) = _brief_comments(store, task)
+    assert "merge origin/release/r12 into the branch" in brief
+
+
+def test_main_conflict_brief_is_unchanged_for_a_main_node(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A main-target node's git CONFLICT red still reads "rebase on
+    origin/main"."""
+    use_lanes(monkeypatch)
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _red_land(
+        store,
+        task,
+        "land_slice: ship red:\n"
+        "CONFLICT (content): Merge conflict in src/precis/runtime/search.py",
+    )
+    pd.run_pass(store)
+    (brief,) = _brief_comments(store, task)
+    assert "rebase on origin/main and resolve src/precis/runtime/search.py" in brief
+    assert _meta(store, task)["mech_retries"]["sig"] == "conflict"
 
 
 def test_mechanical_hit_prefers_the_tail_match() -> None:

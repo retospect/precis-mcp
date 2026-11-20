@@ -2,7 +2,8 @@
 
 Pure tests against a fake store and a fake git seam; ship is either a fake
 launcher or (one test) a stub script reached through ``PRECIS_SHIP_BIN`` and
-the real detached launcher. No DB, no real git, no real scripts/ship.
+the real detached launcher. No DB, no real scripts/ship, and no real git
+except the two ``test_real_git_*`` release-sync tests (a temp repo).
 """
 
 from __future__ import annotations
@@ -1457,6 +1458,416 @@ def test_a_release_fix_lands_on_its_release_branch_and_leaves_main_alone(
     ]
     assert _main_reads(seams) == []
     assert any(c.startswith("landed: abc123400") for c in store.comments(42))
+
+
+# ── release sync (gr738762): the moved release head is merged in first ──
+
+SHIP_LAUNCH = ["<ship launch>"]
+
+
+def _release_sync_seams(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    ancestor_rc: int = 1,
+    status: str = "",
+    merge_rc: int = 0,
+    merge_out: str = "",
+    conflicted: str = "",
+) -> list[list[str]]:
+    """Answer the sync's git reads over the fixture's fake git and put a
+    ``SHIP_LAUNCH`` marker into the same call list, so a test can assert
+    the merge came before the launch. Returns that call list."""
+    base = land_slice._git
+    base_launch = land_slice._launch
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        # The merge carries ``-c user.*=…`` before its subcommand; the call
+        # list records it without them, the identity goes to ``merge_cfg``.
+        cfg = [args[i + 1] for i in range(0, len(args) - 1, 2) if args[i] == "-c"]
+        if cfg:
+            seams.setdefault("merge_cfg", []).extend(cfg)
+            args = args[2 * len(cfg) :]
+        if args[:1] == ["merge"]:
+            seams["git"].append((args, Path(cwd)))
+            return _proc(merge_out, rc=0 if args[1] == "--abort" else merge_rc)
+        if args[:2] == ["status", "--porcelain"]:
+            seams["git"].append((args, Path(cwd)))
+            return _proc(status)
+        if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
+            seams["git"].append((args, Path(cwd)))
+            return _proc(conflicted)
+        return base(args, cwd)
+
+    def launch(argv: list[str], **kw: Any) -> int:
+        seams["git"].append((SHIP_LAUNCH, Path(kw["cwd"])))
+        return base_launch(argv, **kw)
+
+    seams["ancestor_rc"] = ancestor_rc
+    monkeypatch.setattr(land_slice, "_git", git)
+    monkeypatch.setattr(land_slice, "_launch", launch)
+    return [args for args, _cwd in seams["git"]]
+
+
+def _release_store() -> _Store:
+    store = _Store()
+    store.add_todo(42, meta={"land_target": "release/r7", "op": "run_slice"})
+    return store
+
+
+def _git_calls(seams: dict[str, Any]) -> list[list[str]]:
+    return [args for args, _cwd in seams["git"]]
+
+
+def test_a_moved_release_head_is_merged_in_before_ship_launches(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release head moved since the branch was cut and merges
+    cleanly: the merge runs BEFORE ship launches, ship still gets
+    ``--onto release/r7`` and the squash subject, and the job says which
+    head it synced onto."""
+    _release_sync_seams(seams, monkeypatch)
+    ctx, handle = _submit(_release_store(), seams)
+    assert ctx.failure is None, ctx.failure
+    calls = _git_calls(seams)
+    merge = ["merge", "--no-edit", "origin/release/r7"]
+    assert merge in calls
+    assert calls.index(merge) < calls.index(SHIP_LAUNCH)
+    [(argv, _kw)] = seams["launch"]
+    assert argv[-3:] == ["--onto", "release/r7", SUBJECT]
+    assert ctx.meta_set["release_sync"] == f"synced onto {FULL_SHA[:12]}"
+    assert handle is not None
+    # the merge commit's identity does not depend on host git config
+    assert {c.split("=")[0] for c in seams["merge_cfg"]} == {"user.name", "user.email"}
+
+
+def test_a_release_head_already_in_the_branch_is_not_merged_again(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``origin/release/r7`` is already an ancestor of HEAD: no merge, no
+    status read, ship launches."""
+    _release_sync_seams(seams, monkeypatch, ancestor_rc=0)
+    ctx, handle = _submit(_release_store(), seams)
+    assert ctx.failure is None, ctx.failure
+    calls = _git_calls(seams)
+    assert not any(args[:1] == ["merge"] for args in calls)
+    assert ["merge-base", "--is-ancestor", "origin/release/r7", "HEAD"] in calls
+    assert len(seams["launch"]) == 1 and handle is not None
+    assert ctx.meta_set["release_sync"] == "already current"
+
+
+def test_a_release_head_that_conflicts_fails_the_land_before_ship(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The merge conflicts: it is aborted (the tree is restored), ship is
+    NOT launched, and the land fails as an ordinary red — an attempt, not
+    attempt-free — whose reason carries the marker and whose handoff names
+    the path and ``origin/release/r7`` (a merge, never main or a rebase)."""
+    _release_sync_seams(seams, monkeypatch, merge_rc=1, conflicted="src/precis/b.py\n")
+    store = _release_store()
+    ctx, handle = _submit(store, seams)
+    assert handle is None and seams["launch"] == []
+    calls = _git_calls(seams)
+    merge = ["merge", "--no-edit", "origin/release/r7"]
+    assert calls.index(merge) < calls.index(["merge", "--abort"])
+    assert SHIP_LAUNCH not in calls
+    assert ctx.failure is not None
+    assert ctx.failure.startswith(
+        f"land_slice: {land_slice.RELEASE_SYNC_CONFLICT_MARK}:"
+    )
+    assert "src/precis/b.py" in ctx.failure
+    assert land_slice._rs.ATTEMPT_FREE_KEY not in ctx.meta_set
+    handoff = store.comments(42)[-1]
+    assert handoff.startswith("handoff: lander: land FAILED")
+    assert "release/r7 moved since this branch was cut" in handoff
+    assert "src/precis/b.py" in handoff
+    assert "Merge origin/release/r7 into the branch" in handoff
+    assert "never origin/main" in handoff
+    assert ctx.meta_set["release_sync"] == "conflict in src/precis/b.py"
+
+
+def test_a_main_land_never_touches_a_release_ref(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A land onto main behaves as before: no merge, no status read, no
+    ancestry read of any release ref, no ``release_sync`` on the job."""
+    _release_sync_seams(seams, monkeypatch)
+    store = _Store()
+    store.add_todo(42, meta={"op": "run_slice"})
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    calls = _git_calls(seams)
+    assert not any(args[:1] == ["merge"] for args in calls)
+    assert not any(args[:2] == ["status", "--porcelain"] for args in calls)
+    assert not any(args[:2] == ["merge-base", "--is-ancestor"] for args in calls)
+    assert not any("release/" in a for args in calls for a in args)
+    [(argv, _kw)] = seams["launch"]
+    assert "--onto" not in argv and handle is not None
+    assert "release_sync" not in ctx.meta_set
+
+
+def test_a_dirty_tree_skips_the_release_sync_and_ship_launches(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Uncommitted changes: the merge is not attempted, ship launches as
+    before."""
+    _release_sync_seams(seams, monkeypatch, status=" M src/precis/b.py\n")
+    ctx, handle = _submit(_release_store(), seams)
+    assert ctx.failure is None, ctx.failure
+    assert not any(args[:1] == ["merge"] for args in _git_calls(seams))
+    assert len(seams["launch"]) == 1 and handle is not None
+    assert ctx.meta_set["release_sync"] == "skipped: dirty tree"
+
+
+def test_a_failed_release_fetch_skips_the_sync_and_ship_launches(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release fetch fails (ship reports the network itself): no
+    merge, ship launches."""
+    _release_sync_seams(seams, monkeypatch)
+    seams["fetch_rc"] = 1
+    ctx, handle = _submit(_release_store(), seams)
+    assert ctx.failure is None, ctx.failure
+    assert not any(args[:1] == ["merge"] for args in _git_calls(seams))
+    assert len(seams["launch"]) == 1 and handle is not None
+    assert ctx.meta_set["release_sync"] == "skipped: fetch failed"
+
+
+def test_a_merge_that_fails_without_a_conflict_is_aborted_and_ship_launches(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A merge refused for a non-conflict reason (identity, an untracked
+    file in the way) names no path to resolve: aborted, ship launches."""
+    _release_sync_seams(
+        seams, monkeypatch, merge_rc=128, merge_out="fatal: unable to auto-detect"
+    )
+    ctx, handle = _submit(_release_store(), seams)
+    assert ctx.failure is None, ctx.failure
+    assert ["merge", "--abort"] in _git_calls(seams)
+    assert len(seams["launch"]) == 1 and handle is not None
+    assert ctx.meta_set["release_sync"].startswith("skipped: merge failed")
+
+
+# The same sync against real git: a fake runner cannot show the tree comes
+# back clean after an aborted merge.
+
+
+def _real_release_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    sibling_file: str,
+    sibling_text: str = "sibling\n",
+    sibling_also: dict[str, str] | None = None,
+    host_identity: bool = True,
+) -> Path:
+    """A clone on ``slice/42`` cut from ``origin/release/r7`` with a fix to
+    ``b.txt`` committed; then a sibling change to ``sibling_file`` lands on
+    origin's release branch. The process env carries no git config (a
+    private HOME, global and system config off); the commit identity is in
+    the env only with ``host_identity`` — without it the tree refuses to
+    invent one (``user.useConfigOnly``), so only an identity the merge
+    supplies itself can succeed."""
+    ident = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+    for name, value in (
+        ("GIT_CONFIG_GLOBAL", os.devnull),
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("HOME", str(tmp_path / "home")),
+    ):
+        monkeypatch.setenv(name, value)
+    for name, value in ident.items():
+        if host_identity:
+            monkeypatch.setenv(name, value)
+        else:
+            monkeypatch.delenv(name, raising=False)
+
+    def git(cwd: Path, *args: str) -> str:
+        done = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={**os.environ, **ident},
+        )
+        return done.stdout.strip()
+
+    origin = tmp_path / "origin.git"
+    seed = tmp_path / "seed"
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    git(tmp_path, "clone", "-q", str(origin), str(seed))
+    for name in ("a.txt", "b.txt"):
+        (seed / name).write_text("base\n", encoding="utf-8")
+    git(seed, "add", ".")
+    git(seed, "commit", "-q", "-m", "base")
+    git(seed, "push", "-q", "origin", "HEAD:main", "HEAD:refs/heads/release/r7")
+    tree = tmp_path / "tree"
+    git(tmp_path, "clone", "-q", str(origin), str(tree))
+    git(tree, "checkout", "-q", "-b", "slice/42", "origin/release/r7")
+    (tree / "b.txt").write_text("fix\n", encoding="utf-8")
+    git(tree, "commit", "-q", "-am", "fix b")
+    (seed / sibling_file).write_text(sibling_text, encoding="utf-8")
+    for name, text in (sibling_also or {}).items():
+        (seed / name).write_text(text, encoding="utf-8")
+    git(seed, "commit", "-q", "-am", "sibling fix")
+    git(seed, "push", "-q", "origin", "HEAD:refs/heads/release/r7")
+    if not host_identity:
+        git(tree, "config", "user.useConfigOnly", "true")
+    return tree
+
+
+def _tree_git(tree: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(tree),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def test_real_git_a_clean_release_merge_brings_the_sibling_fix_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = _real_release_tree(tmp_path, monkeypatch, sibling_file="a.txt")
+    ctx = _Ctx(_release_store(), {"todo_id": 42})
+    synced = land_slice._sync_release(ctx, tree, "release/r7", 42, "claude-sub")
+    assert synced == land_slice.SYNC_MERGED
+    assert ctx.failure is None
+    assert (tree / "a.txt").read_text(encoding="utf-8") == "sibling\n"
+    assert (tree / "b.txt").read_text(encoding="utf-8") == "fix\n"
+    assert (
+        _tree_git(
+            tree, "merge-base", "--is-ancestor", "origin/release/r7", "HEAD"
+        ).returncode
+        == 0
+    )
+    tip = _tree_git(tree, "rev-parse", "origin/release/r7").stdout.strip()
+    assert ctx.meta_set["release_sync"] == f"synced onto {tip[:12]}"
+
+
+def test_real_git_a_conflicting_release_merge_is_aborted_and_fails_the_land(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = _real_release_tree(tmp_path, monkeypatch, sibling_file="b.txt")
+    head = _tree_git(tree, "rev-parse", "HEAD").stdout.strip()
+    store = _release_store()
+    ctx = _Ctx(store, {"todo_id": 42})
+    synced = land_slice._sync_release(ctx, tree, "release/r7", 42, "claude-sub")
+    assert synced == land_slice.SYNC_FAILED
+    assert _tree_git(tree, "rev-parse", "HEAD").stdout.strip() == head
+    assert _tree_git(tree, "status", "--porcelain").stdout == ""
+    assert _tree_git(tree, "rev-parse", "-q", "--verify", "MERGE_HEAD").returncode != 0
+    assert ctx.failure is not None
+    assert land_slice.RELEASE_SYNC_CONFLICT_MARK in ctx.failure
+    assert "b.txt" in ctx.failure
+    assert "origin/release/r7" in store.comments(42)[-1]
+
+
+def test_real_git_the_release_merge_needs_no_host_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lander's git env blinds global and system config, so a host whose
+    identity lives only there used to fail the merge and launch unsynced.
+    No GIT_AUTHOR_*/GIT_COMMITTER_* in the env, no config, and a tree that
+    will not invent an identity: the merge still lands."""
+    tree = _real_release_tree(
+        tmp_path, monkeypatch, sibling_file="a.txt", host_identity=False
+    )
+    probe = subprocess.run(
+        ["git", "commit", "--allow-empty", "-q", "-m", "x"],
+        cwd=str(tree),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert probe.returncode != 0, "the fixture must refuse a bare commit"
+    ctx = _Ctx(_release_store(), {"todo_id": 42})
+    synced = land_slice._sync_release(ctx, tree, "release/r7", 42, "claude-sub")
+    assert synced == land_slice.SYNC_MERGED, ctx.meta_set
+    assert (tree / "a.txt").read_text(encoding="utf-8") == "sibling\n"
+    assert _tree_git(tree, "status", "--porcelain").stdout == ""
+
+
+def test_real_git_a_fix_a_sibling_already_landed_finishes_without_ship(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The slice was cut from an older release head and a sibling landed the
+    identical change: before the merge the trees differ (the first
+    already-landed read says no), after it HEAD equals the release head and
+    ship's onto-preflight would die "nothing to release". The land
+    finishes green as already-landed, no ship launched, no attempt charged."""
+    tree = _real_release_tree(
+        tmp_path,
+        monkeypatch,
+        sibling_file="b.txt",
+        sibling_text="fix\n",
+        sibling_also={"a.txt": "another sibling\n"},
+    )
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    monkeypatch.setattr(land_slice, "_sweep_stacks", lambda *, keep=None: [])
+    monkeypatch.setattr(land_slice, "_evict_stack", lambda project, *, volumes: True)
+    launched: list[list[str]] = []
+
+    def _fake_launch(argv: list[str], **kw: Any) -> int:
+        launched.append(argv)
+        return 4242
+
+    monkeypatch.setattr(land_slice, "_launch", _fake_launch)
+    store = _release_store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub",),
+        meta={"land_target": "release/r7", "op": "run_slice"},
+    )
+    params = {
+        "todo_id": 42,
+        "worktree": str(tree),
+        "branch": "slice/42",
+        "lane": "claude-sub",
+    }
+    # the first read, as ``_launch_ship`` makes it before the sync, says no
+    assert land_slice._already_landed(tree, SUBJECT, "release/r7") == (False, None)
+    ctx = _Ctx(store, params)
+    handle = land_slice._launch_ship(ctx, tree, "--quick", SUBJECT)
+    assert handle is None and launched == []
+    assert ctx.failure is None, ctx.failure
+    assert ctx.status == "succeeded"
+    assert ctx.meta_set["release_sync"].startswith("synced onto")
+    assert ctx.meta_set["ship_status"] == "already-landed"
+    assert "attempt:1" not in store.tag_strings(42)
+
+
+def test_a_merge_that_times_out_is_aborted_before_ship_launches(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A merge git never answered may have left a half-merged tree: it is
+    aborted before the launch, and ship still launches as today."""
+    _release_sync_seams(seams, monkeypatch)
+    answer = land_slice._git
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if "merge" in args and "--abort" not in args:
+            seams["git"].append((["merge", "<timeout>"], Path(cwd)))
+            raise subprocess.TimeoutExpired(args, 300)
+        return answer(args, cwd)
+
+    monkeypatch.setattr(land_slice, "_git", git)
+    ctx, handle = _submit(_release_store(), seams)
+    assert ctx.failure is None, ctx.failure
+    calls = _git_calls(seams)
+    assert calls.index(["merge", "<timeout>"]) < calls.index(["merge", "--abort"])
+    assert calls.index(["merge", "--abort"]) < calls.index(SHIP_LAUNCH)
+    assert ctx.meta_set["release_sync"].startswith("skipped: git did not answer")
+    assert handle is not None
 
 
 def test_a_release_fix_is_refused_once_the_release_deploy_started(

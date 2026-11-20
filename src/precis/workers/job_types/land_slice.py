@@ -238,7 +238,14 @@ already started or pinned (``precis.plans.release.deploy_started`` —
 the deploy owner's own records; ship's round lock is only this host's
 checkout), or a plan whose release is another branch, refuses
 attempt-free with ``land_again_cap`` — nothing pushed, the coordinator
-asked. A slice with no target lands on main exactly as before.
+asked. Every such launch — first and relaunch — also merges
+``origin/release/r<N>`` into the branch first (:func:`_sync_release`,
+gr738762): ship lints the branch as cut and applies its diff onto the
+release head only afterwards, and sibling fixes move that head in
+parallel. A conflict fails the land as an ordinary red
+(:data:`RELEASE_SYNC_CONFLICT_MARK`) whose handoff says to merge the
+release, never ``origin/main``. A slice with no target lands on main
+exactly as before.
 
 **Pull requests** (td543749). With ``params.pr = <n>`` (a ``pr-intake``
 plan's land node) the branch is ``slice/pr-<n>`` and the worktree is
@@ -541,6 +548,12 @@ MAIN_REFUSAL_MARKS: tuple[str, ...] = (
 #: backoff the fixers of one red release, building side by side, landed
 #: half an hour apart.
 RELEASE_BUSY_MARK = "release lifecycle busy"
+
+#: The red reason's stable first words when merging the moved release head
+#: into a release fix's branch conflicts (gr738762):
+#: ``plan_dispatch._MECHANICAL_REDS`` keys its "merge, never rebase on
+#: main" brief on it.
+RELEASE_SYNC_CONFLICT_MARK = "release sync conflict"
 RELEASE_BUSY_BACKOFF_S = 60
 MAX_RELEASE_BUSY_WAITS = 30
 HOST_REFUSAL_MARKS: tuple[str, ...] = (
@@ -2241,17 +2254,21 @@ def _release_closed(store: Any, todo_id: int, onto: str) -> str | None:
         return f"the release's deploy state is unreadable ({type(exc).__name__})"
 
 
-def _fetch_onto(tree: Path, onto: str) -> None:
+def _fetch_onto(tree: Path, onto: str) -> bool:
     """Refresh ``origin/<onto>`` in ``tree`` (best-effort: the subject and
-    already-landed reads fall back to their failure paths on a miss)."""
-    _git(
-        [
-            "fetch",
-            "--quiet",
-            "origin",
-            f"+refs/heads/{onto}:refs/remotes/origin/{onto}",
-        ],
-        tree,
+    already-landed reads fall back to their failure paths on a miss);
+    whether the fetch succeeded, for the release sync's skip."""
+    return (
+        _git(
+            [
+                "fetch",
+                "--quiet",
+                "origin",
+                f"+refs/heads/{onto}:refs/remotes/origin/{onto}",
+            ],
+            tree,
+        ).returncode
+        == 0
     )
 
 
@@ -3474,6 +3491,152 @@ def _ship_busy(tree: Path, todo_id: int, branch: str) -> dict[str, Any] | None:
     return None
 
 
+def _finish_if_landed(
+    ctx: Any,
+    tree: Path,
+    params: dict[str, Any],
+    subject: str,
+    onto: str | None,
+) -> bool:
+    """Finish the job green without a ship when the slice's work is
+    already on ``origin/<onto or main>`` (:func:`_already_landed`);
+    ``True`` when it did."""
+    landed, landed_sha = _already_landed(tree, subject, onto)
+    if not landed:
+        return False
+    where = onto or "main"
+    ctx.append_chunk(
+        "job_event",
+        f"land_slice: the slice's work is already on origin/{where}"
+        + (
+            f" (sha {landed_sha[:9]})"
+            if landed_sha
+            else f" (branch tree identical to {where}'s)"
+        )
+        + " — no scripts/ship run",
+    )
+    _landed_finish(
+        ctx,
+        {"worktree": str(tree), "subject": subject},
+        params,
+        sha=landed_sha,
+        exit_code=None,
+        status="already-landed",
+    )
+    return True
+
+
+#: :func:`_sync_release` outcomes: the land failed on a conflict, the head
+#: was merged in, or the branch was left as it was.
+SYNC_FAILED = "failed"
+SYNC_MERGED = "merged"
+SYNC_LEFT = "left"
+
+#: The merge commit's identity (it never lands — ship writes its own
+#: commit). The lander's git env blinds global and system config, so a
+#: host whose identity lives only there would otherwise fail the merge.
+_SYNC_IDENTITY = (
+    "-c",
+    "user.name=precis land_slice",
+    "-c",
+    "user.email=land-slice@precis.invalid",
+)
+
+
+def _sync_release(ctx: Any, tree: Path, onto: str, todo_id: int, lane: Any) -> str:
+    """Merge ``origin/<onto>`` into a release fix's branch before ship
+    lints it (gr738762). ``scripts/ship --onto`` lints the branch as cut
+    and only then applies its diff onto the release head with
+    ``git merge-tree``; sibling fixes land on the same release branch in
+    parallel, so the lint judged a stale tree — a red a sibling had
+    already fixed failed this land, and a real conflict surfaced only
+    after the whole gate ran. With the head merged in first, the lint
+    sees the fix on top of the current release and a conflict is the
+    builder's to resolve, briefed with the right base. Ship takes the
+    landed commit's diff from the newer merge-base, so the land is still
+    only the fix.
+
+    Skips — launching as before — when the fetch fails (ship reports the
+    network itself), the tree is dirty, git cannot answer, or the merge
+    fails without a conflict (an identity or an untracked-file refusal;
+    aborted; a merge that timed out is aborted too, so ship never gets a
+    half-merged tree). :data:`SYNC_FAILED` after failing the land on a
+    conflict (tree restored by ``merge --abort``), :data:`SYNC_MERGED`
+    when the head was merged in, else :data:`SYNC_LEFT`. What happened
+    lands on the job's ``meta.release_sync`` and a job event."""
+    note = ""
+    outcome = SYNC_LEFT
+    merging = False
+    try:
+        if not _fetch_onto(tree, onto):
+            note = "skipped: fetch failed"
+        else:
+            ref = f"origin/{onto}"
+            anc = _git(["merge-base", "--is-ancestor", ref, "HEAD"], tree).returncode
+            dirty = _git(["status", "--porcelain", "--untracked-files=no"], tree)
+            if anc == 0:
+                note = "already current"
+            elif anc != 1:
+                note = "skipped: ancestry unreadable"
+            elif dirty.returncode != 0 or dirty.stdout.strip():
+                note = "skipped: dirty tree"
+            else:
+                tip = (
+                    _git(["rev-parse", "--verify", "--quiet", ref], tree).stdout or ""
+                ).strip()
+                merging = True
+                merge = _git([*_SYNC_IDENTITY, "merge", "--no-edit", ref], tree)
+                merging = False
+                if merge.returncode == 0:
+                    note = f"synced onto {tip[:12]}"
+                    outcome = SYNC_MERGED
+                else:
+                    names = _git(["diff", "--name-only", "--diff-filter=U"], tree)
+                    paths = [p.strip() for p in names.stdout.splitlines() if p.strip()]
+                    _git(["merge", "--abort"], tree)
+                    if paths:
+                        _release_sync_conflict(ctx, todo_id, lane, onto, paths)
+                        return SYNC_FAILED
+                    detail = (merge.stderr or merge.stdout or "").strip()
+                    note = f"skipped: merge failed ({detail[:120]})"
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        note = f"skipped: git did not answer ({type(exc).__name__})"
+        if merging:
+            try:
+                _git(["merge", "--abort"], tree)
+            except (OSError, subprocess.TimeoutExpired):
+                note += "; merge --abort did not answer either"
+    ctx.set_meta(release_sync=note)
+    ctx.append_chunk("job_event", f"land_slice: release sync onto {onto}: {note}")
+    return outcome
+
+
+def _release_sync_conflict(
+    ctx: Any, todo_id: int, lane: Any, onto: str, paths: list[str]
+) -> None:
+    """Fail the land for a conflict merging ``origin/<onto>`` into the
+    branch: an ordinary red (an attempt), the handoff naming the paths
+    and the right base — a merge of the release, never ``origin/main``
+    and never a rebase of pushed commits."""
+    listed = ", ".join(paths)
+    ctx.set_meta(release_sync=f"conflict in {listed}")
+    _fail(
+        ctx,
+        todo_id,
+        lane,
+        f"{RELEASE_SYNC_CONFLICT_MARK}: merging origin/{onto} into the branch "
+        f"conflicts in {listed}",
+        handoff=(
+            f"land FAILED: {onto} moved since this branch was cut; merging "
+            f"origin/{onto} into the branch conflicts in {listed}. Merge "
+            f"origin/{onto} into the branch (never origin/main, never a "
+            "rebase of pushed commits), resolve those paths keeping the "
+            "release's side for anything this fix does not need to change, "
+            "commit, and hand off again. Nothing was pushed."
+        ),
+    )
+
+
 def _launch_ship(
     ctx: Any,
     tree: Path,
@@ -3578,29 +3741,25 @@ def _launch_ship(
                     f"lockdir names live pid {holder})",
                 )
                 return None
-            landed, landed_sha = _already_landed(tree, subject, onto)
-            if landed:
-                where = onto or "main"
-                ctx.append_chunk(
-                    "job_event",
-                    f"land_slice: the slice's work is already on origin/{where}"
-                    + (
-                        f" (sha {landed_sha[:9]})"
-                        if landed_sha
-                        else f" (branch tree identical to {where}'s)"
-                    )
-                    + " — no scripts/ship run",
-                )
-                _landed_finish(
-                    ctx,
-                    {"worktree": str(tree), "subject": subject},
-                    params,
-                    sha=landed_sha,
-                    exit_code=None,
-                    status="already-landed",
-                )
+            if _finish_if_landed(ctx, tree, params, subject, onto):
                 return None
             if not _clear_index_locks(ctx, gitdir, tree, todo_id, lane):
+                return None
+        # gr738762: a release fix is merged up to the release head here,
+        # under the land lock and past the index.lock reap, so the first
+        # launch and every relaunch (all go through this function) lint
+        # the fix on top of the current release.
+        if onto is not None:
+            synced = _sync_release(ctx, tree, onto, todo_id, lane)
+            if synced == SYNC_FAILED:
+                return None
+            # A sibling may have landed this very change: the merge makes
+            # the tree identical to the release head, which ship's
+            # onto-preflight refuses as "nothing to release" (a red), so
+            # the already-landed proof runs again on the merged tree.
+            if synced == SYNC_MERGED and _finish_if_landed(
+                ctx, tree, params, subject, onto
+            ):
                 return None
         evicted = _sweep_stacks(keep=tree)
         if evicted:
