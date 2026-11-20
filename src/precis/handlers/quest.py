@@ -974,7 +974,7 @@ def _literature_view_fit(
                 f"row does not fit under the {cap}-byte result budget",
                 next=(
                     f"get(kind='quest', id={ref.id}, view='literature', "
-                    "args={'kind': 'paper'}) — narrow the kind or tighten "
+                    "args={'kinds': 'paper'}) — narrow the kind or tighten "
                     "the since/until window"
                 ),
             )
@@ -3371,7 +3371,7 @@ class QuestHandler(NumericRefHandler):
         door) couldn't answer.
 
         ``args={'since': …, 'until': …}`` take an ISO timestamp or a
-        compact ``'7d'`` duration (either bound optional); ``args={'kind':
+        compact ``'7d'`` duration (either bound optional); ``args={'kinds':
         'paper'|'finding'}`` narrows the serving ref's kind — absent, the
         view defaults to both literature kinds (a structure or concept in
         the quest's service is not a literature arrival, so the default

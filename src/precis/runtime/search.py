@@ -1861,7 +1861,7 @@ class SearchMixin(RuntimeShape):
             if (
                 pin_ref is None
                 or (since is not None and pin_ref.created_at < since)
-                or (until is not None and pin_ref.created_at > until)
+                or (until is not None and pin_ref.created_at >= until)
             ):
                 handle_hit = None
             else:
@@ -2162,7 +2162,7 @@ class SearchMixin(RuntimeShape):
                 rid = getattr(r, "id", None)
                 cat = getattr(r, "created_at", None)
                 if rid is not None and cat is not None:
-                    created_by_ref[int(rid)] = cat.date().isoformat()
+                    created_by_ref[int(rid)] = cat.astimezone(UTC).date().isoformat()
 
         def _row_suffix(hit: Any) -> str:
             d = created_by_ref.get(hit.ref_id) if hit.ref_id is not None else None

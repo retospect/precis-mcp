@@ -465,9 +465,9 @@ class TestQuestArgsToolBoundary:
             kind="quest",
             id=qid,
             view="literature",
-            args={"kinds": ["paper", "finding"]},
+            args={"bogus": "paper"},
         )
         assert _tool_is_error(out)
         body = _tool_text(out)
-        assert "'kinds'" in body
+        assert "'bogus'" in body
         assert "not accepted" in body
