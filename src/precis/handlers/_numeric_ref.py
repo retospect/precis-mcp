@@ -62,7 +62,7 @@ from typing import Any, ClassVar
 from psycopg import Connection
 from psycopg.errors import QueryCanceled
 
-from precis import slice_tokens, worktree_server
+from precis import slice_tokens, word_handle_session, worktree_server
 from precis._result_budget import size_cell
 from precis.corrected_call import retry_call
 from precis.dispatch import Hub, InitError
@@ -75,6 +75,7 @@ from precis.errors import (
     Unsupported,
     nearest_option,
 )
+from precis.handle_words import to_words2
 from precis.handlers._eye import is_eye_view
 from precis.handlers._prio_tag import prio_display
 from precis.handlers._request_state import RequestState
@@ -5689,13 +5690,17 @@ class NumericRefHandler(Handler):
     ) -> str:
         """Render a list of refs as a single TOON table.
 
-        Columns: ``id | status? | tags? | summary | remaining_words? |
-        links? | age? | size?``. A column in ``list_drop_constant_cols``
+        Columns: ``id | word? | status? | tags? | summary | remaining_words? |
+        links? | age? | size?``. ``word`` rides only while the session's
+        word-handle switch is on. A column in ``list_drop_constant_cols``
         is omitted when every row on the page has an empty or zero value.
         Columns:
           - ``id``: the universal handle (``gr5``, ``me158``) — the one
             address form; no separate ``kind`` column, it is constant
             per single-kind listing (gr572710).
+          - ``word``: the ref's two-word spoken handle — present only
+            while the session's word-handle switch is on (gr674040;
+            opt-in per the 12 Nov ruling).
           - ``status``: lifecycle kinds only — the ``STATUS:``/state value.
           - ``tags``: rank-ordered chips, when any row has one. A kind
             with :data:`list_row_tag_prefixes` (gripe → ``cluster:``)
@@ -5750,6 +5755,7 @@ class NumericRefHandler(Handler):
         marks = self._list_row_marks(refs)
         now = datetime.now(UTC)
         time_cells = [self._list_row_time_cells(r, now) for r in refs]
+        words_on = word_handle_session.enabled()
         rows: list[dict[str, str]] = []
         for r, cells in zip(refs, time_cells):
             body = r.title or ""
@@ -5766,6 +5772,8 @@ class NumericRefHandler(Handler):
                     # the universal handle (e.g. ``me158``) is the
                     # one address form, replacing the bare numeric id.
                     "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
+                    # the two-word spoken handle, opt-in per session (gr674040)
+                    **({"word": to_words2(int(r.id))} if words_on else {}),
                     **({"status": state} if lifecycle else {}),
                     **({"tags": chip_map.get(int(r.id), "")} if any_chips else {}),
                     "summary": summary,
@@ -5778,16 +5786,18 @@ class NumericRefHandler(Handler):
             )
         schema = [
             "id",
+            *(["word"] if words_on else []),
             "summary",
             "remaining_words",
             "links",
             *time_cells[0],
             "size",
         ]
+        word_shift = 1 if words_on else 0
         if lifecycle:
-            schema.insert(1, "status")
+            schema.insert(1 + word_shift, "status")
         if any_chips:
-            schema.insert(2 if lifecycle else 1, "tags")
+            schema.insert((2 if lifecycle else 1) + word_shift, "tags")
         if marks:
             schema.append("stale")
         schema = [
@@ -6012,6 +6022,7 @@ class NumericRefHandler(Handler):
             # common "all-default" case.
             tags_per_ref = {r.id: self.store.tags_for(r.id) for r in refs}
             any_tagged = any(tags_per_ref[r.id] for r in refs)
+            words_on = word_handle_session.enabled()
             rows: list[dict[str, str]] = []
             for r in refs:
                 preview = (r.title[:80] + "…") if len(r.title) > 80 else r.title
@@ -6019,12 +6030,16 @@ class NumericRefHandler(Handler):
                     "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
                     "preview": preview,
                 }
+                if words_on:
+                    row["word"] = to_words2(int(r.id))
                 if any_tagged:
                     row["tags"] = " ".join(str(t) for t in tags_per_ref[r.id])
                 rows.append(row)
             from precis.format import render_agent_table
 
             schema = ["id", "preview", "tags"] if any_tagged else ["id", "preview"]
+            if words_on:
+                schema.insert(1, "word")
             head = f"# recent {self._sense()} ({len(refs)})"
             body = f"{head}\n\n" + render_agent_table(rows, schema=schema)
             body += render_next_section(

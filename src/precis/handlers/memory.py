@@ -4460,7 +4460,9 @@ class MemoryHandler(AuditedRetirementHandler):
         chunks (no N+1) rather than the base class's first-line split.
         """
 
+        from precis import word_handle_session
         from precis.format import render_agent_table
+        from precis.handle_words import to_words2
         from precis.utils import handle_registry
 
         if not refs:
@@ -4470,6 +4472,7 @@ class MemoryHandler(AuditedRetirementHandler):
         body_words = self.store.chunks.chunk_word_counts(ref_ids, chunk_kind=_BODY_KIND)
         sizes = self.store.chunks.body_byte_counts(ref_ids)
         now = datetime.now(UTC)
+        words_on = word_handle_session.enabled()
         rows: list[dict[str, str]] = []
         for r in refs:
             age_days = max(0, (now - r.updated_at).days)
@@ -4477,6 +4480,7 @@ class MemoryHandler(AuditedRetirementHandler):
                 {
                     "kind": self.kind,
                     "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
+                    **({"word": to_words2(r.id)} if words_on else {}),
                     "summary": r.title or "",
                     "body_words": str(body_words.get(r.id, 0)),
                     "links": str(link_counts.get(r.id, 0)),
@@ -4487,6 +4491,7 @@ class MemoryHandler(AuditedRetirementHandler):
         schema = [
             "kind",
             "id",
+            *(["word"] if words_on else []),
             "summary",
             "body_words",
             "links",

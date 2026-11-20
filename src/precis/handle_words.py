@@ -13,6 +13,15 @@ sea/see), nothing offensive in any 3-word combination by construction (every
 list is inoffensive on its own and the grammar is fixed). Lists are part of
 the id <-> words contract: append-only changes would still re-map ids, so
 treat editing them as a breaking change.
+
+Two-word handles (gr674040): :func:`to_words2` renders ``"<adjective> <noun>"``
+— the last two words of the three-word form, i.e. ``n % 16384`` encoded on the
+adjective + noun lists. Two words are easy on the ear but cover only 16384
+values, so pairs are NOT unique: two live refs can share one. Collisions are
+resolved at the handler layer (``precis.handlers.handle``): an ``id=`` whose
+pair another live ref shares answers with the full three-word form, and a
+``q=`` pair answers with a candidate list. :func:`pair_residue` inverts a pair
+back to the ``n % 16384`` residue the lookup filters on.
 """
 
 from __future__ import annotations
@@ -460,3 +469,36 @@ def to_number(words: str) -> int:
             raise ValueError("non-canonical handle (leading zero word)")
         n = n * _BASE + d
     return n
+
+
+def to_words2(n: int) -> str:
+    """Two-word spoken form of non-negative ``n``: ``"<adjective> <noun>"``.
+
+    Encodes ``n % 16384`` — the last two words of :func:`to_words`, so
+    neighbours differ (the gripe's evidence case: 674030 → ``gentle
+    beacon``, 674040 → ``gentle lizard``). NOT unique across the id
+    space: every 16384 ids reuse a pair.
+    """
+    if n < 0:
+        raise ValueError("id must be >= 0")
+    n %= _BASE * _BASE
+    return f"{_ADJECTIVES[n // _BASE]} {_NOUNS[n % _BASE]}"
+
+
+def pair_residue(words: str) -> int:
+    """Inverse of :func:`to_words2` at residue level: returns ``n % 16384``.
+
+    Accepts spaces, hyphens, commas and any case like :func:`to_number`.
+    Raises ``ValueError`` when the input isn't exactly one adjective
+    word plus one noun word — the caller then tries the full-word
+    parser or reports a bad handle.
+    """
+    toks = _WORD_RE.findall(words.lower())
+    if len(toks) != 2:
+        raise ValueError(f"need exactly 2 words, got {len(toks)}")
+    adj, noun = toks
+    if adj not in _ADJECTIVES:
+        raise ValueError(f"{adj!r} is not a valid adjective")
+    if noun not in _NOUNS:
+        raise ValueError(f"{noun!r} is not a valid noun")
+    return _ADJECTIVES.index(adj) * _BASE + _NOUNS.index(noun)

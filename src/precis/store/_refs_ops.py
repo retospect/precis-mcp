@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -2179,6 +2179,127 @@ class RefsMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (ids,)).fetchall()
         return {r[0]: _row_to_ref(r) for r in rows}
+
+    def _residue_clauses(
+        self,
+        residue: int,
+        *,
+        modulus: int,
+        kind: str | None,
+        exclude_id: int | None,
+        kinds: Sequence[str] | None = None,
+        spaces: Sequence[str] | None = None,
+        viewer: object = None,
+    ) -> tuple[str, list[Any]]:
+        """Shared WHERE clauses for the two residue probes below.
+
+        The caller's read scope rides along (gr674040 review): ``kinds``
+        fences the kinds its domain serves, ``spaces`` keeps only memory
+        in a served ``SPACE:``, and ``viewer`` owner-scopes profiles
+        (:func:`precis.profiles.visible_sql`) — a probe must not name or
+        count a ref the caller could not read.
+        """
+        from precis import profiles
+
+        sql = "FROM refs WHERE ref_id %% %s = %s AND retired_at IS NULL "
+        params: list[Any] = [modulus, residue]
+        if kind is not None:
+            sql += "AND kind = %s "
+            params.append(kind)
+        if kinds is not None:
+            sql += "AND kind = ANY(%s) "
+            params.append(list(kinds))
+        if spaces is not None:
+            sql += (
+                "AND (kind <> 'memory' OR ref_id IN ("
+                "SELECT rt.ref_id FROM ref_tags rt JOIN tags t "
+                "ON t.tag_id = rt.tag_id WHERE t.namespace = 'SPACE' "
+                "AND t.value = ANY(%s) "
+                "AND (rt.expires_at IS NULL OR rt.expires_at > now()))) "
+            )
+            params.append(list(spaces))
+        frag, frag_params = profiles.visible_sql(
+            "refs", profiles.resolve_viewer(cast("Store", self), viewer)
+        )
+        sql += f"AND {frag} "
+        params.extend(frag_params)
+        if exclude_id is not None:
+            sql += "AND ref_id != %s "
+            params.append(exclude_id)
+        return sql, params
+
+    def refs_sharing_id_residue(
+        self,
+        residue: int,
+        *,
+        modulus: int,
+        kind: str | None = None,
+        exclude_id: int | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        kinds: Sequence[str] | None = None,
+        spaces: Sequence[str] | None = None,
+        viewer: object = None,
+    ) -> list[Ref]:
+        """One page of live refs with ``ref_id % modulus == residue``,
+        newest first.
+
+        The two-word spoken handle names ``ref_id % 16384`` — this is the
+        collision probe ``kind='handle'`` runs to tell a safe short form
+        from a clashing one and to list a pair's candidates (gr674040).
+        ``kind=`` narrows the candidate list; the clash probe calls with
+        none because a pair collides across kinds. ``exclude_id=`` drops
+        the asking ref itself (the clash note lists *other* sharers).
+        ``limit``/``offset`` page the list — pair it with
+        :meth:`count_refs_sharing_id_residue`, never report the page size
+        as the total. A modulo predicate can't use an index; at
+        handle-call frequency the scan is fine.
+        """
+        tail, params = self._residue_clauses(
+            residue,
+            modulus=modulus,
+            kind=kind,
+            exclude_id=exclude_id,
+            kinds=kinds,
+            spaces=spaces,
+            viewer=viewer,
+        )
+        sql = (
+            f"SELECT {_REFS_COLS} {tail}"
+            "ORDER BY created_at DESC, ref_id DESC LIMIT %s OFFSET %s"
+        )
+        params.extend([limit, offset])
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_ref(r) for r in rows]
+
+    def count_refs_sharing_id_residue(
+        self,
+        residue: int,
+        *,
+        modulus: int,
+        kind: str | None = None,
+        exclude_id: int | None = None,
+        kinds: Sequence[str] | None = None,
+        spaces: Sequence[str] | None = None,
+        viewer: object = None,
+    ) -> int:
+        """Total live refs matching :meth:`refs_sharing_id_residue`'s
+        filters — the accurate count a truncated page can't carry
+        (gr674040 review: a silent LIMIT of 20 reported truncated
+        candidates as the complete set)."""
+        tail, params = self._residue_clauses(
+            residue,
+            modulus=modulus,
+            kind=kind,
+            exclude_id=exclude_id,
+            kinds=kinds,
+            spaces=spaces,
+            viewer=viewer,
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(f"SELECT count(*) {tail}", params).fetchone()
+        return int(row[0]) if row is not None else 0
 
     def set_prio(
         self,
