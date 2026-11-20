@@ -201,6 +201,13 @@ def _rescue_tags(store: Store, ref_id: int) -> list[str]:
     return [t for t in _open_tags(store, ref_id) if t.startswith("rescue:")]
 
 
+def _status(store: Store, ref_id: int) -> str:
+    for t in store.tags_for(ref_id):
+        if t.prefix == "STATUS":
+            return str(t.value)
+    return "?"
+
+
 def _comments(store: Store, ref_id: int) -> list[str]:
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -306,6 +313,93 @@ def test_terminal_root_rescue_waits_for_the_close_to_age(store: Store) -> None:
     res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
     assert res.rescued == [(leaf, "terminal-root", "idle")]
     assert _rescue_tags(store, leaf) == ["rescue:terminal-root"]
+
+
+def test_terminal_root_stale_job_is_cleared(store: Store) -> None:
+    """gr730548: a non-terminal job under a closed root has no consumer
+    and no reaper — the pass clears it ``STATUS:cancelled`` outright and
+    links it onto the signature gripe a rescued todo joins."""
+    root = _root(store, status="done")
+    job = _job(store, root, job_type="plan_tick", status="running")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+
+    assert res.rescued == [(job, "terminal-root", "idle")]
+    assert _status(store, job) == "cancelled"
+    assert _rescue_tags(store, job) == []
+    (gripe,) = _sig_gripes(store)
+    assert "cluster:dark-factory" in _open_tags(store, gripe)
+    assert _links(store, job) == [gripe]
+    assert "no consumer" in _job_meta(store, job)["error"]
+
+
+def test_terminal_root_job_clear_waits_for_the_close_to_age(
+    store: Store,
+) -> None:
+    """The clear holds the same grace as the todo rescue: a job silent
+    for hours under a root closed seconds ago is a fresh orphan, not an
+    old stall — an in-flight final write lands inside the deadline."""
+    root = _root(store, status="done")
+    job = _job(store, root, job_type="plan_tick", status="running")
+    _age(store, job, timedelta(hours=2))
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=19))
+    assert res.rescued == [] and _status(store, job) == "running"
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+    assert res.rescued == [(job, "terminal-root", "idle")]
+    assert _status(store, job) == "cancelled"
+
+
+def test_terminal_root_fresh_job_is_not_cleared(store: Store) -> None:
+    """A job still signalling under a dead root may still land — only a
+    signal-dead one is cleared (the td673697 live-job guard)."""
+    root = _root(store, status="done")
+    _stamp_tags(store, root, NOW - timedelta(hours=1))
+    job = _job(store, root, job_type="plan_tick", status="running")
+
+    # 19 min since mint is inside the idle deadline — the long-dead
+    # close does not rescue a job that is still talking.
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=19))
+    assert res.rescued == [] and _status(store, job) == "running"
+    assert _sig_gripes(store) == []
+
+    # Past the deadline the same job clears.
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+    assert res.rescued == [(job, "terminal-root", "idle")]
+    assert _status(store, job) == "cancelled"
+
+
+def test_terminal_root_job_clear_dry_run_writes_nothing(store: Store) -> None:
+    root = _root(store, status="done")
+    job = _job(store, root, job_type="plan_tick", status="running")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21), dry_run=True)
+
+    assert res.would_rescue == [(job, "terminal-root", "idle")]
+    assert _status(store, job) == "running"
+    assert _sig_gripes(store) == []
+
+
+def test_terminal_root_second_job_clear_shares_the_gripe(
+    store: Store,
+) -> None:
+    """Dedupe: a second dead-root job on the same signature joins the
+    first's gripe — the ``dup-suggest`` the reporter asked for."""
+    root = _root(store, status="done")
+    job = _job(store, root, job_type="plan_tick", status="running")
+
+    res = fr.run_stall_pass(store, NOW + timedelta(minutes=21))
+    assert res.rescued == [(job, "terminal-root", "idle")]
+
+    root2 = _root(store, status="done")
+    job2 = _job(store, root2, job_type="plan_tick", status="running")
+    res2 = fr.run_stall_pass(store, NOW + timedelta(minutes=40))
+    assert res2.rescued == [(job2, "terminal-root", "idle")]
+
+    (gripe,) = _sig_gripes(store)
+    assert _links(store, job) == [gripe]
+    assert _links(store, job2) == [gripe]
 
 
 def test_queued_job_deadline_is_30_minutes(store: Store) -> None:
