@@ -107,17 +107,51 @@ def _gripe_review_filed(store: Store, memory_id: int, gripe_id: int) -> bool:
     return row is not None
 
 
+def _completed_review_filed(
+    store: Store, memory_id: int, detector: str, sha: str
+) -> bool:
+    """A completed review at the same pin already settled this detector's ask."""
+    from precis.store.types import TODO_BODY_KIND
+    from precis.utils.memory_hubs import REVIEW_TAG
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM links l JOIN refs t ON t.ref_id = l.src_ref_id "
+            "WHERE l.dst_ref_id = %s AND l.relation = 'raises-concern-about' "
+            "AND t.kind = 'todo' AND t.retired_at IS NULL "
+            "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags g "
+            "ON g.tag_id = rt.tag_id WHERE rt.ref_id = t.ref_id "
+            "AND g.namespace = 'OPEN' AND g.value = %s) "
+            "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags g "
+            "ON g.tag_id = rt.tag_id WHERE rt.ref_id = t.ref_id "
+            "AND g.namespace = 'STATUS' AND g.value = 'done') "
+            "AND EXISTS (SELECT 1 FROM chunks c WHERE c.ref_id = t.ref_id "
+            "AND c.chunk_kind = %s AND strpos(c.text, %s) > 0) "
+            "LIMIT 1",
+            (
+                memory_id,
+                REVIEW_TAG,
+                TODO_BODY_KIND,
+                f"\n{_review_pin(detector, sha)}\n",
+            ),
+        ).fetchone()
+    return row is not None
+
+
+def _review_pin(detector: str, sha: str) -> str:
+    return f"Detector: {detector}\nPinned content sha: {sha}"
+
+
 #: Bound on the detector-evidence JSON excerpt a review todo's body
 #: carries — enough to name the failed anchors, retired handles or
 #: compact sentences the worker starts from (gr732271).
 _ASK_EVIDENCE_CHARS = 2000
 
 
-def _review_todo_body(cand: GardenCandidate, verdict: Verdict) -> str:
+def _review_todo_body(cand: GardenCandidate, verdict: Verdict, sha: str | None) -> str:
     """The review todo's details body: the evaluator's ask reason, the
     detector and the content sha it pinned, a bounded evidence excerpt
     and the pointer to the work-the-todo skill section (gr732271)."""
-    sha = cand.payload.get("base_sha") or cand.evidence.get("content_sha")
     evidence = json.dumps(
         cand.evidence, ensure_ascii=False, sort_keys=True, default=str
     )
@@ -127,10 +161,8 @@ def _review_todo_body(cand: GardenCandidate, verdict: Verdict) -> str:
         f"The garden evaluator's ask needs a human on memory me{cand.target_id}.",
         "",
         f"Ask: {verdict.ask}",
-        f"Detector: {cand.detector}",
+        _review_pin(cand.detector, sha) if sha else f"Detector: {cand.detector}",
     ]
-    if sha:
-        lines.append(f"Pinned content sha: {sha}")
     gripe = cand.payload.get("gripe")
     if isinstance(gripe, int):
         lines.append(f"Filing gripe: gr{gripe}")
@@ -146,7 +178,8 @@ def _review_todo_body(cand: GardenCandidate, verdict: Verdict) -> str:
 
 def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> None:
     """File the evaluator's ask: one ``memory-review`` todo pointing at
-    the memory, deduped on an already-open review todo (the key's
+    the memory, deduped on an already-open review todo or a completed
+    review for this detector and content pin (the key's
     rejection row stops the re-ask; the todo tracks the human follow-up).
     The minted body carries the ask reason, detector, pinned sha and a
     bounded evidence excerpt so the worker does not re-derive the
@@ -160,6 +193,13 @@ def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> 
     gripe = cand.payload.get("gripe") if cand.detector == "griped" else None
     if isinstance(gripe, int) and _gripe_review_filed(store, cand.target_id, gripe):
         return
+    sha = cand.payload.get("base_sha") or cand.evidence.get("content_sha")
+    if (
+        isinstance(sha, str)
+        and sha
+        and _completed_review_filed(store, cand.target_id, cand.detector, sha)
+    ):
+        return
     title = f"review memory me{cand.target_id}: {cand.title}"[:200]
     ref = store.insert_ref(
         kind="todo",
@@ -172,7 +212,7 @@ def _file_review_todo(store: Store, cand: GardenCandidate, verdict: Verdict) -> 
         [
             ChunkInsert(
                 ord=0,
-                text=_review_todo_body(cand, verdict),
+                text=_review_todo_body(cand, verdict, sha),
                 meta={"chunk_kind": TODO_BODY_KIND},
             )
         ],

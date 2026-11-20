@@ -133,13 +133,12 @@ trust acts retain the original model string.
    apply do not spend a review. A ``dangling_mention`` proposal whose ops
    are all bare swaps onto verified duplicate successors applies without a
    call (``garden.applied='mention'``, before/after spans recorded).
-   ``memory-review`` proposals stay pending for human review. The runner
-   files a ``memory-review`` todo for each ``ask`` verdict, tiered by smell
-   class. ``qualify`` also requires human review. A
-   ``griped`` apply — and an evaluator no-change once no sibling fix
-   path remains — replays the gripe's route and hub recall set and
-   closes it with a ``resolved:`` comment once the deterministic pass
-   holds (gr561873).
+   Humans review ``memory-review`` proposals and ``qualify`` verdicts.
+   An ``ask`` files a detector-tiered review todo unless a done review
+   matches the memory, detector and content SHA across proposal retries.
+   A ``griped`` apply or no-change with no remaining sibling fix
+   replays the route and hub recall set before closing the gripe
+   with ``resolved:`` (gr561873).
 
 SHA-pinned grounding audits verify passages and inference warrants.
 Exact quotes bind local premises. Each premise needs its own support

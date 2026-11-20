@@ -8,6 +8,7 @@ deterministic verdict.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -22,7 +23,7 @@ from precis.graph.garden.proposer import (
     Verdict,
     _prompt_for,
 )
-from precis.graph.garden.runner import run_garden_tick
+from precis.graph.garden.runner import _file_review_todo, run_garden_tick
 from precis.ingest.skill_template import IncludeError
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
@@ -333,6 +334,37 @@ def test_ask_files_a_memory_review_todo_by_smell_class(store: Store) -> None:
     assert again.asked == 0
     assert again.skipped_rejected >= 1
     assert review_todos(store, [rid])[rid].count(",") == 0
+
+
+@pytest.mark.parametrize(
+    ("status", "retry", "expected"),
+    [
+        ("done", {}, 1),
+        ("done", {"payload": {"base_sha": "abc1234"}}, 2),
+        ("done", {"payload": {"base_sha": "abc123"}}, 1),
+        ("done", {"detector": "anchor_rot"}, 2),
+        ("done", {"payload": {}, "evidence": {}}, 2),
+        ("won't-do", {}, 2),
+        ("auto-timeout", {}, 2),
+    ],
+)
+def test_review_todo_dedupes_completed_matching_content(
+    store: Store, status: str, retry: dict[str, Any], expected: int
+) -> None:
+    _, candidate = _title_shape_candidate(store)
+    candidate = replace(candidate, payload={}, evidence={"content_sha": "abc123"})
+    verdict = Verdict(accept=False, ask="which title does the body support?")
+    _file_review_todo(store, candidate, verdict)
+    (todo,) = store.list_refs(kind="todo", tags=["memory-review"], limit=10)
+    store.add_tag(
+        todo.id, Tag.parse_strict(f"STATUS:{status}", kind="todo"), set_by="system"
+    )
+
+    _file_review_todo(store, replace(candidate, **retry), verdict)
+
+    assert (
+        len(store.list_refs(kind="todo", tags=["memory-review"], limit=10)) == expected
+    )
 
 
 def test_ask_tier_for_content_smells(store: Store) -> None:
