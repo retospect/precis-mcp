@@ -1028,7 +1028,7 @@ def test_table_numbers_in_document_order_and_cross_reference(
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
     assert "Table 1: first legend" in text
     assert "Table 2" in text  # caption-less table still shows its number
-    assert "Compare Table 1 with Table 2 here." in text
+    assert "Compare table 1 with table 2 here." in text
 
 
 def test_render_byline_names_marks_and_ror_link() -> None:
@@ -2018,15 +2018,15 @@ def test_bare_dc_crossref_prints_section_and_figure_numbers() -> None:
     )
     assert (
         _render_text("(see [dc4]) and [¶dc4]", ctx)
-        == "(see Section 1.5.5) and Section 1.5.5"
+        == "(see section 1.5.5) and section 1.5.5"
     )
-    assert _render_text("Shown in [dc3].", ctx) == "Shown in Figure 1."
+    assert _render_text("Shown in [dc3].", ctx) == "Shown in fig. 1."
     # sentence start capitalises
     assert (
         _render_text("[dc4] covers it. [dc3] too", ctx)
-        == "Section 1.5.5 covers it. Figure 1 too"
+        == "Section 1.5.5 covers it. Fig. 1 too"
     )
-    assert _render_text("via [¶Abc]", ctx) == "via Section 1.5.5"
+    assert _render_text("via [¶Abc]", ctx) == "via section 1.5.5"
     # authored surface wins; a non-live chunk downgrades with a warning
     # and a neutral placeholder — never the bare handle (gr493181)
     assert _render_text("[the intro](dc4)", ctx) == "the intro"
@@ -2034,10 +2034,11 @@ def test_bare_dc_crossref_prints_section_and_figure_numbers() -> None:
     assert any("dc99" in w for w in ctx.warnings)
 
 
-def test_crossref_words_are_capitalised_everywhere_equations_keep_eq() -> None:
-    """gr725244: a reference to a figure, table or section prints the full
-    capitalised word mid-sentence too; an equation keeps ``Eq. (N)`` and
-    reads ``Equation (N)`` only at a sentence start."""
+def test_crossref_label_styles_short_default_full_opt_in() -> None:
+    """gr725244: the default ``xref_labels='short'`` prints the abbreviated
+    running-text nouns (capitalised at a sentence start); ``'full'`` spells
+    out Figure / Table / Section / Equation, capitalised everywhere —
+    the per-export choice most journals require."""
     from precis.export import docx as dx
 
     ctx = dx._Ctx(
@@ -2053,10 +2054,30 @@ def test_crossref_words_are_capitalised_everywhere_equations_keep_eq() -> None:
     )
     assert (
         _render_text("in [dc1], [dc2] and [dc3]", ctx)
-        == "in Figure 2, Table 1 and Section 5.4"
+        == "in fig. 2, table 1 and section 5.4"
     )
     assert _render_text("by [dc4]", ctx) == "by Eq. (1)"
+    # a sentence start capitalises even the short equation name (\Cref)
     assert _render_text("Done. [dc4] holds", ctx) == "Done. Equation (1) holds"
+    # full labels: capitalised words everywhere, equations included
+    full = dx._Ctx(
+        store=None,
+        known_handles=set(),
+        xref={
+            "dc1": ("Figure", "2"),
+            "dc2": ("Table", "1"),
+            "dc3": ("Section", "5.4"),
+        },
+        eq_numbers={"dc4": 1},
+        xref_labels="full",
+        dc_handles={"dc1", "dc2", "dc3", "dc4"},
+    )
+    assert (
+        _render_text("in [dc1], [dc2] and [dc3]", full)
+        == "in Figure 2, Table 1 and Section 5.4"
+    )
+    assert _render_text("by [dc4]", full) == "by Equation (1)"
+    assert _render_text("Done. [dc4] holds", full) == "Done. Equation (1) holds"
 
 
 def test_retired_xref_target_prints_placeholder_or_replacement() -> None:
@@ -2119,9 +2140,9 @@ def test_retired_xref_target_prints_placeholder_or_replacement() -> None:
         "models of a removed figure here"
     )
     # meta.superseded_by → the live replacement's number
-    assert _render_text("models of [dc98] here", ctx) == "models of Figure 2 here"
+    assert _render_text("models of [dc98] here", ctx) == "models of fig. 2 here"
     # a chunk-level supersedes link resolves the same way
-    assert _render_text("models of [dc97] here", ctx) == "models of Figure 3 here"
+    assert _render_text("models of [dc97] here", ctx) == "models of fig. 3 here"
     assert any("dc99" in w for w in ctx.warnings)
     assert any("resolved to its replacement dc5" in w for w in ctx.warnings)
     assert any("resolved to its replacement dc6" in w for w in ctx.warnings)
@@ -2181,8 +2202,8 @@ def test_export_numbers_headings_and_resolves_crossrefs(
     out = tmp_path / "dxr.docx"
     export_docx(hub.live_store, ref, target_path=out)
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
-    assert "As argued in Section" in text
-    assert "(see Section" in text
+    assert "As argued in section" in text
+    assert "(see section" in text
     assert "Intro" in text
 
 
@@ -2320,7 +2341,7 @@ def test_figure_captions_carry_figure_n_label(
     texts = [p.text for p in paras]
     assert "Figure 1: First widget." in texts
     assert "Figure 2: Second widget." in texts
-    assert "As in Figure 2." in texts
+    assert "As in fig. 2." in texts
     cap = next(p for p in paras if p.text.startswith("Figure 1:"))
     assert cap.style.name == "Caption"
     assert cap.alignment is None
@@ -2779,7 +2800,7 @@ def test_nested_layout_numbers_sections_from_one(
     paras = docx.Document(str(out)).paragraphs
     texts = [p.text for p in paras]
     assert "Nested" in texts and "1 Introduction" in texts and "1.1 Scope" in texts
-    assert "See Section 1.1." in texts
+    assert "See section 1.1." in texts
     head = next(p for p in paras if p.text == "1.1 Scope")
     assert head.style.name == "Heading 2"
 
@@ -2866,7 +2887,7 @@ def test_numbers_and_cross_references_are_word_fields(
 
     # visible text: as before fields existed
     assert (
-        "See Figure 1, Table 1, Section 2, and Eq. (1). Equation (1) holds."
+        "See fig. 1, table 1, section 2, and Eq. (1). Equation (1) holds."
         " Above, above is this section." in texts
     )
     assert "Figure 1: First widget." in texts
@@ -2952,8 +2973,9 @@ def test_adjacent_cross_references_print_as_one_run_of_fields(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
     """gr725244: references separated by whitespace only print as the PDF's
-    ``\\cref{a,b}`` does ("Sections 1 and 2", "Figures 1 to 3", "Sections 2
-    and 3 and Figure 1"), every number its own ``REF`` field to an existing
+    ``\\cref{a,b}`` does ("sections 1 and 2", "figs. 1 to 3", "sections 2
+    and 3 and fig. 1" in the default short label style), every number its
+    own ``REF`` field to an existing
     bookmark; a range has fields for its first and last target only; a
     reference into the citing section ("above") or an "or" ends the run;
     commas and "and" between references merge them."""
@@ -3027,32 +3049,32 @@ def test_adjacent_cross_references_print_as_one_run_of_fields(
     tail = r"\h \* MERGEFORMAT"
     sec_head = {n: f"REF _Ref_{h} {tail}" for n, h in sections.items()}
 
-    p = para("See Sections 1 and 2")
-    assert p.text == "See Sections 1 and 2."
+    p = para("See sections 1 and 2")
+    assert p.text == "See sections 1 and 2."
     assert fields(p) == [sec_head["Intro"], sec_head["Methods"]]
 
-    p = para("See Figures")
-    assert p.text == "See Figures 1 to 3."
+    p = para("See figs")
+    assert p.text == "See figs. 1 to 3."
     assert fields(p) == [f"REF _Ref_{f1} {tail}", f"REF _Ref_{f3} {tail}"]
 
-    p = para("See Sections 2")
-    assert p.text == "See Sections 2 and 3 and Figure 1."
+    p = para("See sections 2")
+    assert p.text == "See sections 2 and 3 and fig. 1."
     assert fields(p) == [
         sec_head["Methods"],
         sec_head["Results"],
         f"REF _Ref_{f1} {tail}",
     ]
 
-    p = para("See Section 1 above")
-    assert p.text == "See Section 1 above Section 2."
+    p = para("See section 1 above")
+    assert p.text == "See section 1 above section 2."
     assert fields(p) == [sec_head["Intro"], sec_head["Methods"]]
 
-    p = para("See Sections 1 to 3")
-    assert p.text == "See Sections 1 to 3."
+    p = para("See sections 1 to 3")
+    assert p.text == "See sections 1 to 3."
     assert fields(p) == [sec_head["Intro"], sec_head["Results"]]
 
-    p = para("See Section 1 or")
-    assert p.text == "See Section 1 or Section 2."
+    p = para("See section 1 or")
+    assert p.text == "See section 1 or section 2."
     assert fields(p) == [sec_head["Intro"], sec_head["Methods"]]
 
     every = [i.text.strip() for i in body.iter(qn("w:instrText"))]
@@ -3082,22 +3104,22 @@ def test_merged_run_survives_a_missing_bookmark_and_a_span_between() -> None:
     d = docx.Document()
     par = d.add_paragraph()
     dx._render_inline("See [dc1] [dc2] [dc3].", ctx, par)
-    assert par.text == "See Figures 1 to 3."
+    assert par.text == "See figs. 1 to 3."
     instrs = [i.text.strip() for i in par._p.iter(qn("w:instrText"))]
     assert instrs == [
         r"REF _Ref_dc1 \h \* MERGEFORMAT",
         r"REF _Ref_dc3 \h \* MERGEFORMAT",
     ]
     dx._unlink_dangling_refs(d)  # no bookmarks were written in this document
-    assert par.text == "See Figures 1 to 3."
+    assert par.text == "See figs. 1 to 3."
     assert not list(par._p.iter(qn("w:instrText")))
     assert not list(par._p.iter(qn("w:fldChar")))
 
     ctx.xref_types.pop("dc2")  # a target whose type is unknown prints alone
-    assert _render_text("See [dc1] [dc2].", ctx) == "See Figure 1 Figure 2."
+    assert _render_text("See [dc1] [dc2].", ctx) == "See fig. 1 fig. 2."
     ctx.xref_types["dc2"] = "figure"
     shown = _render_text("See [dc1] $x$ [dc2].", ctx)  # the math span is OMML
-    assert "Figures" not in shown and "Figure 1" in shown and "Figure 2" in shown
+    assert "figs." not in shown and "fig. 1" in shown and "fig. 2" in shown
 
 
 def test_ref_to_a_missing_bookmark_keeps_plain_number() -> None:
@@ -3225,7 +3247,7 @@ def test_crossref_into_own_section_prints_above_or_below(
     export_docx(hub.live_store, ref, target_path=out)
     texts = [p.text for p in docx.Document(str(out)).paragraphs]
     assert (
-        "(see above) and (see below). Above is the setup; Section 2 is elsewhere."
+        "(see above) and (see below). Above is the setup; section 2 is elsewhere."
         in texts
     )
 

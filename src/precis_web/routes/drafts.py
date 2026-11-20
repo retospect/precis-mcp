@@ -1506,6 +1506,11 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     ``?links=0`` drops the small ``doi`` / library-search hyperlink runs
     after each ``[n]`` marker (a submission copy); default on.
 
+    ``?labels=full`` spells out and capitalises cross-reference labels
+    (``Figure 1``, ``Table 1``, ``Section 2``, ``Equation (3)``); the
+    default ``short`` prints ``fig. 1``, ``table 1``, ``section 2``,
+    ``Eq. (3)``. An unknown value falls back to ``short``.
+
     The download name carries a UTC stamp (``<slug>-YYYYMMDD-HHMMZ``) so
     successive exports of one draft stay distinguishable on disk.
 
@@ -1579,6 +1584,11 @@ async def export_docx_route(request: Request, ident: str) -> Response:
     citations = request.query_params.get("citations", "endnote")
     if citations not in CITATION_MODES:
         citations = "endnote"
+    # The cross-reference label style is a two-value choice; anything else
+    # falls back to the default rather than reaching the exporter.
+    xref_labels = request.query_params.get("labels", "short")
+    if xref_labels not in ("short", "full"):
+        xref_labels = "short"
     # Research notes ride in the EndNote records: on for the author copy,
     # off for an external one unless ``?notes=1`` asks for them.
     notes_q = request.query_params.get("notes")
@@ -1597,6 +1607,7 @@ async def export_docx_route(request: Request, ident: str) -> Response:
             ref,
             target_path=out,
             citations=citations,
+            xref_labels=xref_labels,
             research_notes=research_notes,
             withheld_figures=pf.withheld_handles,
             doi_links=links,

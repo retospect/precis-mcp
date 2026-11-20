@@ -27,7 +27,12 @@ and written as the cached result of Word fields: a ``SEQ`` field in each
 figure / table caption and equation number, a bookmark ``_Ref_<dc>`` around
 it (and around a heading's typed number), and a ``REF`` field in each
 cross-reference, so Word renumbers on a field update (the exporter does not
-set ``w:updateFields``: the file reads correctly as written).
+set ``w:updateFields``: the file reads correctly as written). The
+cross-reference nouns follow the per-export label style
+(``xref_labels``): abbreviated lower-case forms by default, the spelled-out
+capitalised words (``Figure 1``, ``Equation (3)``) on request — the journal
+convention cleveref controls through ``\\crefname``; captions always carry
+Word's full "Figure N:" / "Table N:" label (what *Insert Caption* writes).
 """
 
 from __future__ import annotations
@@ -567,6 +572,12 @@ class _Ctx:
     zotero_cites: ZoteroCitations = field(default_factory=ZoteroCitations, repr=False)
     #: EndNote records carry the cited passage as ``<research-notes>``.
     research_notes: bool = True
+    #: Cross-reference label style: ``"short"`` (default) prints the
+    #: abbreviated running-text nouns (:data:`_SHORT_XREF_NAMES`);
+    #: ``"full"`` spells out Figure / Table / Section / Equation
+    #: (:data:`_FULL_XREF_NAMES`). The web route's ``?labels=`` picks it
+    #: per export.
+    xref_labels: str = "short"
     resolved: dict[str, dict[str, Any]] = field(default_factory=dict)  # slug→record
     doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text, no refs
     #: Append the doi hyperlink run after each plain ``[n]`` citation
@@ -874,6 +885,7 @@ def export_docx(
     audience: str = "dev",
     repeat_cites: bool = False,
     research_notes: bool = True,
+    xref_labels: str = "short",
 ) -> DocxResult:
     """Render a draft into ``target_path`` as a ``.docx``. Returns the
     path plus the cited slugs and any resolution warnings.
@@ -901,6 +913,13 @@ def export_docx(
     ``research_notes=False`` leaves ``<research-notes>`` out of every
     EndNote record (including notes merged from a dropped repeat); no
     effect in the other modes.
+
+    ``xref_labels`` picks the noun a cross-reference prints: ``"short"``
+    (default) keeps the abbreviated running-text forms ``fig. 1``,
+    ``table 1``, ``section 2`` and ``Eq. (3)`` (capitalised at a sentence
+    start); ``"full"`` spells out ``Figure 1``, ``Table 1``, ``Section 2``
+    and ``Equation (3)``, the capitalisation most journals ask for. Only
+    the web export route exposes the choice (``?labels=full``).
 
     ``doi_links=False`` / ``library_links=False`` independently turn off
     the small doi / library-search hyperlink runs normally appended after
@@ -968,6 +987,7 @@ def export_docx(
         zotero=(citations == "zotero"),
         research_notes=research_notes,
         doc_type=doc_type,
+        xref_labels=xref_labels,
         eq_numbers=nums.equations,
         doi_links=doi_links,
         library_links=library_links,
@@ -2028,6 +2048,28 @@ def _section_heading(ctx: _Ctx, number: str) -> str | None:
     return None
 
 
+#: Running-text cross-reference nouns for ``_Ctx.xref_labels="short"`` —
+#: abbreviated, lower-case (capitalised at a sentence start by
+#: :data:`_SHORT_XREF_CAPITAL`). Keys are the cleveref kinds; the figure
+#: key doubles for the single-reference path, whose label nouns
+#: (``"Figure"``/``"Table"``/``"Section"``) lower-case onto the same keys.
+_SHORT_XREF_NAMES = {
+    "figure": ("fig.", "figs."),
+    "table": ("table", "tables"),
+    "section": ("section", "sections"),
+    "subsection": ("section", "sections"),
+    "subsubsection": ("section", "sections"),
+    "equation": ("Eq.", "Eqs."),
+}
+_SHORT_XREF_CAPITAL = {
+    kind: (singular.capitalize(), plural.capitalize())
+    for kind, (singular, plural) in _SHORT_XREF_NAMES.items()
+} | walker.XREF_NAMES_CAPITAL
+#: The ``"full"`` style spells out the capitalised words most journals ask
+#: for (``Figure 1``, ``Table 1``, ``Section 2``, ``Equation (3)``).
+_FULL_XREF_NAMES = walker.XREF_NAMES | walker.XREF_NAMES_CAPITAL
+
+
 def _at_sentence_start(paragraph: Any) -> bool:
     """Is the next run the first word of a sentence (paragraph start, or
     right after ``. ``/``? ``/``! `` but not ``e.g. ``)? Drives
@@ -2471,11 +2513,13 @@ class DocxRenderer:
 
     def xref(self, sink: Any, xref: walker.Xref) -> None:
         """The surface / fallback text, or what ``\\cref`` would print —
-        ``Section 1.5.5``, ``Figure 2``, ``Table 1`` (always the capitalised
-        word), ``Eq. (3)`` (``Equation`` at a sentence start); a back-matter
-        target prints its name; a reference into the citing chunk's own
-        section prints ``above`` / ``below`` (``Above``). Nothing when there
-        is no number. References joined by whitespace, a comma or "and" print as one
+        ``Section 1.5.5``, ``Figure 2``, ``Table 1``, ``Eq. (3)``, in the
+        running-text label style (``_Ctx.xref_labels``: abbreviated by
+        default, capitalised words in ``"full"``; a sentence start
+        capitalises the short forms); a back-matter target prints its name;
+        a reference into the citing chunk's own section prints ``above`` /
+        ``below`` (``Above``). Nothing when there is no number. References
+        joined by whitespace, a comma or "and" print as one
         run (``Sections 1 and 2``; :meth:`_print_xref`)."""
         if not xref.live or xref.surface:
             text = xref.surface or xref.fallback or walker.DEAD_XREF_TEXT
@@ -2494,8 +2538,16 @@ class DocxRenderer:
             else:
                 # A target whose cleveref type is unknown (a list item, a
                 # listing): the label word and number alone, never merged.
+                shown = noun
+                if self.ctx.xref_labels != "full":
+                    names = (
+                        _SHORT_XREF_CAPITAL
+                        if _at_sentence_start(sink)
+                        else _SHORT_XREF_NAMES
+                    )
+                    shown = names.get(noun.lower(), (noun, noun))[0]
                 _flush_cites(self.ctx, sink)
-                sink.add_run(f"{noun} ")
+                sink.add_run(f"{shown} ")
                 self._ref_field(sink, xref.dc, number, noun)
                 return
         else:
@@ -2509,16 +2561,23 @@ class DocxRenderer:
         ``and``; :func:`walker.merge_xref_runs`, the rule ``\\cref{a,b}`` follows)
         takes the earlier one's runs out and prints the whole run at once
         (:func:`walker.format_xref_run`: ``Sections 1 and 2``,
-        ``Figures 1 to 3``); each number stays its own ``REF`` field."""
+        ``Figures 1 to 3``); each number stays its own ``REF`` field. The
+        label words come from the export's ``xref_labels`` style."""
         ctx = self.ctx
+        full = ctx.xref_labels == "full"
+        sentence_start = _at_sentence_start(sink)
         _flush_cites(ctx, sink)
         members = [xref]
         prior = ctx._xref_run
         if prior is not None and _reopen_run(prior, sink, xref):
             members = [*prior.members, xref]
+            sentence_start = _at_sentence_start(sink)
         n_before = len(sink._p)
         for part in walker.format_xref_run(
-            members, sentence_start=_at_sentence_start(sink)
+            members,
+            sentence_start=sentence_start and not full,
+            names=_FULL_XREF_NAMES if full else _SHORT_XREF_NAMES,
+            capital_names=_SHORT_XREF_CAPITAL,
         ):
             if part.dc:
                 self._ref_field(sink, part.dc, part.number, part.noun or None)

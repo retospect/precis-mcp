@@ -100,7 +100,9 @@ below; chunk cross-references read `Figure 1`, `Table 1`, `Section 5.4`
 (`Eq. (1)`); ones joined by whitespace, `,` or `and` merge (`Sections 1 and 2`,
 `Figures 1 to 3`; not `or`); a reference into the citing chunk's own section or an
 ancestor prints `above` (target first) or `below` (`Above` at a sentence
-start) and ends a run; same in both formats.
+start) and ends a run. The Word export abbreviates by default (`fig. 1`,
+`table 1`, `section 5.4`, `Eq. (1)`); `?labels=full` on its download URL
+keeps the spellings above.
 The byline becomes an `authblk`
 block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
 (or the byline) yourself. Citations must resolve (`[fi<id>]` → a hub

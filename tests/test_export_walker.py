@@ -782,29 +782,34 @@ _PARITY_CHUNKS = [
 
 #: ``(source, what Word prints)``; every run LaTeX merges must print the same
 #: in Word, and what LaTeX leaves apart (``or``, a semicolon, a reference
-#: into the citing chunk's own section) stays apart there too.
+#: into the citing chunk's own section) stays apart there too. Word prints
+#: its default "short" label style (:data:`docx._SHORT_XREF_NAMES`); the
+#: spellings differ from cleveref's ``\crefname`` table by design
+#: (``xref_labels="full"`` opts back in) — the parity under test is the
+#: grouping and order, so the closure below re-prints through the same
+#: short names.
 _PARITY = [
-    ("see [dc2] [dc3]", "see Sections 1 and 2"),
-    ("see [dc2][dc3] [dc6]", "see Sections 1, 2 and 4"),
-    ("see [dc2] [dc3] [dc5]", "see Sections 1 to 3"),
-    ("see [dc9] [dc7] [dc8]", "see Figures 1 to 3"),
-    ("see [dc2] [dc3] [dc9]", "see Sections 1 and 2 and Figure 3"),
-    ("see [dc10] [dc7] [dc11] [dc3]", "see Table 1, Figure 1, Eq. (1), and Section 2"),
-    ("see [dc3] [dc4]", "see Section 2 and Section 2.1"),
+    ("see [dc2] [dc3]", "see sections 1 and 2"),
+    ("see [dc2][dc3] [dc6]", "see sections 1, 2 and 4"),
+    ("see [dc2] [dc3] [dc5]", "see sections 1 to 3"),
+    ("see [dc9] [dc7] [dc8]", "see figs. 1 to 3"),
+    ("see [dc2] [dc3] [dc9]", "see sections 1 and 2 and fig. 3"),
+    ("see [dc10] [dc7] [dc11] [dc3]", "see table 1, fig. 1, Eq. (1), and section 2"),
+    ("see [dc3] [dc4]", "see section 2 and section 2.1"),
     ("[dc11] [dc12] hold.", "Equations (1) and (2) hold."),
     ("by [dc11] [dc12]", "by Eqs. (1) and (2)"),
-    ("see [dc2] [dc13] [dc3]", "see Section 1 above Section 2"),
-    ("see [dc7]", "see Figure 1"),
-    ("see [dc2] and [dc3]", "see Sections 1 and 2"),
-    ("see [dc2], [dc3]", "see Sections 1 and 2"),
-    ("see [dc2], [dc3] and [dc6]", "see Sections 1, 2 and 4"),
-    ("see [dc2], [dc3], and [dc5]", "see Sections 1 to 3"),
-    ("see [dc7] and [dc10]", "see Figure 1 and Table 1"),
-    ("[dc7] and [dc8] show", "Figures 1 and 2 show"),
-    ("see [dc2] or [dc3]", "see Section 1 or Section 2"),
-    ("see [dc2]; [dc3]", "see Section 1; Section 2"),
-    ("see [dc2] and [dc13]", "see Section 1 and above"),
-    ("see [dc13] and [dc2]", "see above and Section 1"),
+    ("see [dc2] [dc13] [dc3]", "see section 1 above section 2"),
+    ("see [dc7]", "see fig. 1"),
+    ("see [dc2] and [dc3]", "see sections 1 and 2"),
+    ("see [dc2], [dc3]", "see sections 1 and 2"),
+    ("see [dc2], [dc3] and [dc6]", "see sections 1, 2 and 4"),
+    ("see [dc2], [dc3], and [dc5]", "see sections 1 to 3"),
+    ("see [dc7] and [dc10]", "see fig. 1 and table 1"),
+    ("[dc7] and [dc8] show", "Figs. 1 and 2 show"),
+    ("see [dc2] or [dc3]", "see section 1 or section 2"),
+    ("see [dc2]; [dc3]", "see section 1; section 2"),
+    ("see [dc2] and [dc13]", "see section 1 and above"),
+    ("see [dc13] and [dc2]", "see above and section 1"),
     ("[dc2] [dc3] show it.", "Sections 1 and 2 show it."),
 ]
 
@@ -841,7 +846,8 @@ def test_word_and_pdf_merge_the_same_cross_references(
     assert paragraph.text == printed
 
     # LaTeX's \cref arguments, printed by the one formatter: the same members
-    # in the same groups and order as Word's runs.
+    # in the same groups and order as Word's runs. Word's short label style
+    # names keep the comparison about grouping, not spelling.
     def cleveref(m: re.Match[str]) -> str:
         run = [
             walker.resolve_xref(
@@ -849,7 +855,14 @@ def test_word_and_pdf_merge_the_same_cross_references(
             )
             for a in m.group(2).split(",")
         ]
-        return _printed(walker.format_xref_run(run, sentence_start=m.group(1) == "C"))
+        return _printed(
+            walker.format_xref_run(
+                run,
+                sentence_start=m.group(1) == "C",
+                names=dx._SHORT_XREF_NAMES,
+                capital_names=dx._SHORT_XREF_CAPITAL,
+            )
+        )
 
     assert re.sub(r"\\([cC])ref\{([^{}]*)\}", cleveref, tex) == printed
 

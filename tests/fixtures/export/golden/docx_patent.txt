@@ -430,7 +430,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve">. See </w:t>
 </w:r>
 <w:r>
-<w:t xml:space="preserve">Section </w:t>
+<w:t xml:space="preserve">section </w:t>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="begin">
@@ -688,7 +688,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 </w:p>
 <w:p>
 <w:r>
-<w:t xml:space="preserve">Figure </w:t>
+<w:t xml:space="preserve">Fig. </w:t>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="begin">
@@ -716,7 +716,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve"> opens a sentence. Runs </w:t>
 </w:r>
 <w:r>
-<w:t xml:space="preserve">Section </w:t>
+<w:t xml:space="preserve">section </w:t>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="begin">
@@ -756,7 +756,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve"> and a legacy </w:t>
 </w:r>
 <w:r>
-<w:t xml:space="preserve">Section </w:t>
+<w:t xml:space="preserve">section </w:t>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="begin">
@@ -784,7 +784,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve"> resolve, a run-in </w:t>
 </w:r>
 <w:r>
-<w:t xml:space="preserve">Section </w:t>
+<w:t xml:space="preserve">section </w:t>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="begin">
@@ -1172,7 +1172,7 @@ sha256 96367138dc44ce09bf2c8f0f8e49348a1478d2c5c0af69bbc2bbc38b63cdcead
 <w:t xml:space="preserve">Thanks to all; see </w:t>
 </w:r>
 <w:r>
-<w:t xml:space="preserve">Section </w:t>
+<w:t xml:space="preserve">section </w:t>
 </w:r>
 <w:r>
 <w:fldChar w:fldCharType="begin">

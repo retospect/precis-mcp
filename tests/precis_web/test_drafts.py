@@ -1141,6 +1141,41 @@ def test_export_docx_route_parses_citations_and_notes(
     assert seen[-1]["research_notes"] is notes
 
 
+@pytest.mark.parametrize(
+    ("query", "labels"),
+    [
+        ("", "short"),
+        ("labels=full", "full"),
+        ("labels=short", "short"),
+        ("labels=bogus", "short"),
+        ("labels=", "short"),
+    ],
+)
+def test_export_docx_route_parses_labels(
+    draft_client: TestClient, monkeypatch, query: str, labels: str
+) -> None:
+    """``?labels=full`` opts into the spelled-out cross-reference labels;
+    the default and any unknown value fall back to ``short`` (the raw
+    query text never reaches the exporter)."""
+    import precis.export.docx as docx_mod
+
+    seen: list[dict[str, object]] = []
+
+    def fake_report(store, ref, **kw):
+        return DraftRetractionReport(papers=[])
+
+    def fake_export_docx(store, ref, *, target_path, citations="plain", **kw):
+        seen.append({"citations": citations, **kw})
+        target_path.write_bytes(b"PK\x03\x04fake-docx")
+        return docx_mod.DocxResult(path=target_path, cited_slugs=[])
+
+    monkeypatch.setattr(retraction_mod, "draft_retraction_report", fake_report)
+    monkeypatch.setattr(docx_mod, "export_docx", fake_export_docx)
+    r = draft_client.get("/drafts/nt/export.docx?" + query)
+    assert r.status_code == 200
+    assert seen[-1]["xref_labels"] == labels
+
+
 def test_export_docx_route_unbuilt_mode_is_an_input_error(
     draft_client: TestClient, monkeypatch
 ) -> None:

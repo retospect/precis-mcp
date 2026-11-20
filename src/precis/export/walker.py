@@ -1283,7 +1283,11 @@ def _conjoin(items: list[list[XrefPart]], pair: str, last: str) -> list[XrefPart
 
 
 def format_xref_run(
-    run: Sequence[Xref], *, sentence_start: bool = False
+    run: Sequence[Xref],
+    *,
+    sentence_start: bool = False,
+    names: Mapping[str, tuple[str, str]] = XREF_NAMES,
+    capital_names: Mapping[str, tuple[str, str]] = XREF_NAMES_CAPITAL,
 ) -> list[XrefPart]:
     """What cleveref prints for ``\\cref{a,b,…}`` over ``run`` (live,
     numbered references in source order; every ``kind`` set), in the
@@ -1293,9 +1297,13 @@ def format_xref_run(
     (:func:`_xref_units`); a type's numbers read ``1 and 2`` / ``1, 2 and
     4``, the types ``Sections 1 and 2 and Figure 3`` / ``A, B, and C``.
     An equation's number sits in parentheses. ``sentence_start`` is
-    ``\\Cref``: the first type's name from :data:`XREF_NAMES_CAPITAL`.
-    The pieces come back with their numbers as :class:`XrefPart` fields
-    for the backend to print."""
+    ``\\Cref``: the first type's name from ``capital_names``.
+
+    ``names`` / ``capital_names`` override the label words (the Word
+    export's per-export label style, ``_Ctx.xref_labels``); the defaults
+    are the preamble's ``\\crefname`` / ``\\Crefname`` tables, which the
+    LaTeX backend always uses. The pieces come back with their numbers as
+    :class:`XrefPart` fields for the backend to print."""
     groups: dict[str, list[Xref]] = {}
     for x in run:
         groups.setdefault(x.kind or "", []).append(x)
@@ -1303,9 +1311,9 @@ def format_xref_run(
     for n, (kind, members) in enumerate(groups.items()):
         units = _xref_units(members)
         many = len(units) > 1 or _xref_number(units[0][0]) != _xref_number(units[0][1])
-        names = XREF_NAMES[kind]
+        kind_names = names[kind]
         if sentence_start and n == 0:
-            names = XREF_NAMES_CAPITAL.get(kind, names)
+            kind_names = capital_names.get(kind, kind_names)
 
         rendered: list[list[XrefPart]] = []
         for first, last in units:
@@ -1316,7 +1324,7 @@ def format_xref_run(
                     _number_parts(first) + [XrefPart(text=" to ")] + _number_parts(last)
                 )
         printed.append(
-            [XrefPart(text=f"{names[1 if many else 0]} ")]
+            [XrefPart(text=f"{kind_names[1 if many else 0]} ")]
             + _conjoin(rendered, " and ", " and ")
         )
     parts = _conjoin(printed, " and ", ", and ")
