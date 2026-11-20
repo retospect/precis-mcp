@@ -1882,6 +1882,11 @@ class TestHarvest:
 
         def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
             calls.append(structure_ref_id)
+            # A landed mint reports its committed jobs, as the real dispatch
+            # does — the bounded helper charges and counts only those (gr593138).
+            minted = _kw.get("minted_by_node")
+            if minted is not None and compute_mod._NO_LIVE_LANE not in dispatch_note:
+                minted["ml"] = 1
             return dispatch_note
 
         monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_dispatch)
@@ -1904,6 +1909,26 @@ class TestHarvest:
         assert meta.get("quest_autocatpath_infra_retries") == 0
         assert any("amnesty re-dispatch" in n for n in step.notes)
         assert step.ruled_out == 0
+
+    def test_off_lane_amnesty_is_held_by_zero_gpu_h_budget(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr593138: the amnesty re-dispatch is a machine-class re-mint, so it
+        takes the quest GPU-h budget like every other mechanical recovery. A
+        zero budget holds it once the restale hold has lifted — no dispatch, no
+        counter reset, no spend."""
+        qid, sid, calls = self._off_lane_harness(
+            store,
+            monkeypatch,
+            {"failure_class": "infra", "error": self._OFF_LANE_ERR},
+        )
+        store.stamp_ref_meta(qid, {"fidelity_mechanical_gpu_h_budget": 0})
+        compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == []
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_autocatpath_infra_retries") == 2
+        qmeta = store.fetch_refs_by_ids({qid})[qid].meta or {}
+        assert not qmeta.get("barrier_mechanical_gpu_h_spent")
 
     def test_off_lane_amnesty_keeps_counter_when_no_live_lane(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
@@ -2299,6 +2324,11 @@ class TestHarvest:
             _s: Any, structure_ref_id: int, _config: Any, **_kw: Any
         ) -> str:
             dispatch_calls.append({"structure_ref_id": structure_ref_id})
+            # gr593138: the amnesty re-dispatch goes through the bounded helper,
+            # which resets the counter only for a dispatch that mints a job.
+            minted = _kw.get("minted_by_node")
+            if minted is not None:
+                minted["ml"] = 1
             return "autocatpath[ml]"
 
         monkeypatch.setattr(

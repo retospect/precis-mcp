@@ -6007,19 +6007,24 @@ def harvest_measures(
                         "(re-dispatch held: fidelity_restale_cap=0)"
                     )
                 else:
-                    anote = dispatch_autocatpath(
+                    # gr593138: the lifted-hold re-dispatch is machine-class
+                    # recovery, so it takes the bounded helper — science veto,
+                    # per-candidate retry cap, quest GPU-h budget, spend. The
+                    # counter reset waits for a dispatch that mints.
+                    if _mechanical_dispatch(
                         store,
-                        s.id,
+                        quest_id,
+                        s,
                         reaction,
                         hub=hub,
+                        handle=handle,
+                        notes=notes,
+                        seeds=None,
                         tier=_retry_tier(store, cp_job_meta),
                         created_by="harvest_measures:amnesty-explore",
-                    )
-                    if is_no_live_lane(anote):
-                        # Nothing minted: keep the counter where it is (the
-                        # amnesty reset waits for a dispatch that lands).
-                        _note_no_live_lane(notes, "amnesty re-dispatch", anote)
-                    elif _dispatch_landed(anote):
+                        what="amnesty re-dispatch",
+                        rerun_held=False,
+                    ):
                         store.stamp_ref_meta(
                             s.id, {"quest_autocatpath_infra_retries": 0}
                         )
@@ -6027,10 +6032,6 @@ def harvest_measures(
                             f"stale-era autocatpath failure for [{handle}] → amnesty "
                             "re-dispatch via seed/aggregate"
                         )
-                    else:
-                        # Skipped/failed dispatch — same nothing-minted
-                        # stand-down, no counter reset (gr521073).
-                        _note_no_mint(notes, "amnesty re-dispatch", anote)
             elif cp_job_meta.get("job_type") == "autocatpath_seed":
                 # The `_stuck_seed_failure` fallback — its own WINDOWED counter
                 # (`quest_seed_infra_retries`), deliberately not
@@ -6135,25 +6136,29 @@ def harvest_measures(
                         "(re-dispatch held: fidelity_restale_cap=0)"
                     )
                 else:
-                    onote = dispatch_autocatpath(
+                    # gr593138: an off-lane reap is an infra kill, so its
+                    # re-dispatch is bounded like the explore amnesty above
+                    # (budget, retry cap, spend) — not a free re-mint.
+                    if _mechanical_dispatch(
                         store,
-                        s.id,
+                        quest_id,
+                        s,
                         reaction,
                         hub=hub,
+                        handle=handle,
+                        notes=notes,
+                        seeds=None,
                         tier=_retry_tier(store, cp_job_meta),
                         created_by="harvest_measures:amnesty-off-lane",
-                    )
-                    if is_no_live_lane(onote):
-                        _note_no_live_lane(notes, "off-lane amnesty re-dispatch", onote)
-                    elif _dispatch_landed(onote):
+                        what="off-lane amnesty re-dispatch",
+                        rerun_held=False,
+                    ):
                         store.stamp_ref_meta(
                             s.id, {"quest_autocatpath_infra_retries": 0}
                         )
                         notes.append(
                             f"off-lane-pin failure for [{handle}] → amnesty re-dispatch"
                         )
-                    else:
-                        _note_no_mint(notes, "off-lane amnesty re-dispatch", onote)
             else:
                 cp_retries = int(
                     (s.meta or {}).get("quest_autocatpath_infra_retries", 0) or 0
