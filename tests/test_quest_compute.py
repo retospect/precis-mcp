@@ -5006,6 +5006,7 @@ class TestLeaderboard:
             "energy",
             "$/rate",
             "band",
+            "trusted",
             "graduated",
             "quality",
         ]
