@@ -8,8 +8,8 @@ QSFP cable. An older standalone GPU node also exists. Serving stack: SGLang, rol
 [`gb10-distributed-llm-serving`](./gb10-distributed-llm-serving.md), is
 retired). Access:
 [`cluster-ssh-remote-access`](./cluster-ssh-remote-access.md). Starved-userland
-tell: pings but ssh banner-times-out (same class as the GB10 compute-niceness
-issue).
+tell: pings but ssh banner-times-out — from apt churn (§5) or from compute
+load saturating the cores (the starved-sshd section under §5).
 
 Addresses live in the gitignored overlay; none appear here.
 
@@ -90,6 +90,18 @@ node; harden in the bootstrap:
 
 (`systemd-sysupdate{,-reboot}.timer` already ship disabled — leave them.)
 `last reboot` / `uptime` confirms whether it bounced.
+
+## Banner-timeout under compute load = starved sshd, not auth
+
+`ssh <node>` hangs in the banner exchange — TCP on port 22 still accepts
+and ping still answers, but no banner ever arrives. That is **not** a bad
+key and **not** a Tailscale problem: a heavy run (AlphaFold3, DFT, llama
+serving) has saturated the GB10's 20 cores and sshd cannot get scheduled to
+emit its banner. Kernel is up; userland is starved — the same tell as the
+§5 apt-churn wedge, but the cause is compute load, so §5's hardening does
+not prevent it. It clears when the load drops: renice or pause the run
+rather than rebooting, and keep the §5 auto-upgrade units masked so a
+background apt burst cannot stack on top of a serving load.
 
 ## 6. Firmware — nothing to flash manually
 
