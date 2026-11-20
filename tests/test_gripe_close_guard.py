@@ -1,5 +1,7 @@
 """Closing a gripe: STATUS:done/wontfix needs a newest ``resolved:`` comment."""
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -416,3 +418,134 @@ def test_batch_close_with_parked_dependant(hub: Hub) -> None:
     h.tag(id=[gid, gid2], add=["STATUS:wontfix"])
     assert "STATUS:wontfix" in _tags(h, gid)
     assert "STATUS:wontfix" in _tags(h2, gid2)
+
+
+# ── gr686283: a land resolution demotes while the fix build is open ─────
+
+
+def _comments(h: GripeHandler, gid: int) -> list[str]:
+    return [
+        str(c.text)
+        for c in h.store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ]
+
+
+def _open_fix_chain(store: Any, gripe_id: int) -> int:
+    """Mint a live gripe-fix-direct chain against the gripe; the root id."""
+    from precis.plans.templates import mint_gripe_fix_direct
+
+    return int(mint_gripe_fix_direct(store, gripe_id=gripe_id).root_id)
+
+
+@pytest.mark.parametrize(
+    "status", ["STATUS:auto_verify", "STATUS:user_verify", "STATUS:verify"]
+)
+def test_land_resolution_demoted_while_fix_build_open(hub: Hub, status: str) -> None:
+    """gr686283: ``scripts/ship``'s land-notify puts ``resolved: <sha>
+    (main, release pending) — landed: <subject>`` with a verify STATUS in
+    one call; while the gripe's fix build is in flight the put files
+    ``landed (partial)`` and the STATUS write is dropped, so
+    gripe-validate has no verify state to auto-close on."""
+    h, gid = _gripe(hub)
+    root = _open_fix_chain(hub.store, gid)
+    resp = h.put(
+        id=gid,
+        text="resolved: abc123def (main, release pending) — landed: fix(x): y",
+        tags=[status],
+    )
+    assert _comments(h, gid)[-1] == "landed (partial): abc123def — fix(x): y"
+    assert status not in _tags(h, gid)
+    assert "STATUS:open" in _tags(h, gid)
+    assert f"td{root}" in resp.body
+    assert "landed (partial)" in resp.body
+
+
+def test_land_resolution_writes_normally_without_an_open_build(hub: Hub) -> None:
+    """No in-flight build — the same put is a plain resolution: the
+    comment keeps ``resolved:`` and the verify STATUS lands."""
+    h, gid = _gripe(hub)
+    resp = h.put(
+        id=gid,
+        text="resolved: abc123def (main, release pending) — landed: fix(x): y",
+        tags=["STATUS:auto_verify"],
+    )
+    assert _comments(h, gid)[-1].startswith("resolved: abc123def")
+    assert "STATUS:auto_verify" in _tags(h, gid)
+    assert "interpreted:" not in resp.body
+
+
+def test_land_resolution_resolves_once_the_build_lands(hub: Hub) -> None:
+    """The guard releases with the chain: a demoted land resolves on a
+    re-put after the chain root goes terminal."""
+    from precis.store.types import Tag
+
+    h, gid = _gripe(hub)
+    root = _open_fix_chain(hub.store, gid)
+    h.put(
+        id=gid,
+        text="resolved: abc123def (main, release pending) — landed: fix(x): y",
+        tags=["STATUS:auto_verify"],
+    )
+    assert _comments(h, gid)[-1].startswith("landed (partial):")
+    h.store.add_tag(
+        root, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    h.put(
+        id=gid,
+        text="resolved: def456abc (main, release pending) — landed: fix(x): y",
+        tags=["STATUS:auto_verify"],
+    )
+    assert _comments(h, gid)[-1].startswith("resolved: def456abc")
+    assert "STATUS:auto_verify" in _tags(h, gid)
+
+
+def test_open_build_read_fault_demotes_instead_of_resolving(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fault in the open-build read fails safe — partial, no STATUS —
+    and the reading names the unreadable state (the factory side's
+    policy: a false ``resolved:`` is the worse failure)."""
+    import precis.handlers.gripe as gripe_mod
+
+    def boom(store: Any, ids: list[int]) -> dict[int, list[int]]:
+        raise RuntimeError("pool gone")
+
+    monkeypatch.setattr(gripe_mod, "_fix_open_roots", boom)
+    h, gid = _gripe(hub)
+    resp = h.put(
+        id=gid,
+        text="resolved: abc123def (main, release pending) — landed: fix(x): y",
+        tags=["STATUS:auto_verify"],
+    )
+    assert _comments(h, gid)[-1].startswith("landed (partial): abc123def")
+    assert "STATUS:auto_verify" not in _tags(h, gid)
+    assert "unreadable" in resp.body
+
+
+def test_terminal_close_with_an_open_build_still_closes(hub: Hub) -> None:
+    """The guard targets the verify states only — a deliberate terminal
+    close is unaffected by an in-flight build."""
+    h, gid = _gripe(hub)
+    _open_fix_chain(hub.store, gid)
+    h.put(
+        id=gid,
+        text="resolved: wontfix — the factory build is obsolete",
+        tags=["STATUS:wontfix"],
+    )
+    assert "STATUS:wontfix" in _tags(h, gid)
+    assert _comments(h, gid)[-1].startswith("resolved: wontfix")
+
+
+def test_nonland_resolved_put_with_verify_tag_is_also_demoted(hub: Hub) -> None:
+    """Any ``resolved:`` + verify-state put is a resolution attempt — a
+    human/CLI caller gets the same protection, not just land_notify."""
+    h, gid = _gripe(hub)
+    _open_fix_chain(hub.store, gid)
+    h.put(
+        id=gid,
+        text="resolved: abc (r1) — verified by hand",
+        tags=["STATUS:auto_verify"],
+    )
+    assert _comments(h, gid)[-1] == "landed (partial): abc (r1) — verified by hand"
+    assert "STATUS:auto_verify" not in _tags(h, gid)

@@ -40,7 +40,12 @@ as partial, and lands a plain `grN` whose gripe-fix chain is still in
 flight (an open factory build) as partial too — `land_slice._deferred_notify`
 asks `gripe_dispatch.open_build_roots` after recording the land, and a
 read fault demotes every plain `grN` to partial (gr686283). Hand
-`scripts/ship` lands do not yet: use `refs grN` there. A gripe that must
+`scripts/ship` lands have no pre-write read — land_notify is not allowed
+to query the factory state — but the put handler backstops them: a
+`resolved:` comment with a verify STATUS filed while the gripe's fix
+build is still in flight demotes to `landed (partial)` and the STATUS
+write drops (`GripeHandler._demote_open_build_resolution`), so nothing
+auto-closes either way. `refs grN` stays the explicit partial spelling. A gripe that must
 *never* auto-close carries the `hold:no-autoclose` tag (a plain tag, applied with
 `tag(kind='gripe', id=N, add=['hold:no-autoclose'])`) — even if a commit
 names it plainly, gripe-validate skips it and posts a `shipped in r<N>`
