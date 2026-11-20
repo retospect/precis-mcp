@@ -2044,6 +2044,39 @@ class TestLiteralAndUnits:
         assert _row(store, run.output_id)["extraction_status"] == want
 
     @pytest.mark.parametrize(
+        "text",
+        [
+            r"The gap lies between \(1\) and \(2\) eV here.",
+            r"The gap lies between \(1\)~and \(2\) eV here.",
+        ],
+    )
+    def test_interval_literal_matches_math_delimiters_in_the_span(
+        self, store: Store, world: dict[str, Any], text: str
+    ) -> None:
+        # gr719235: arXiv chunks can retain both math delimiters and TeX ties.
+        chunk = seed_chunk(
+            store,
+            ref_id=world["paper"],
+            text=text,
+            ord=3,
+        )
+        run = store.insert_measure(
+            MeasureSpec(
+                world["energy"],
+                "1 and 2",
+                world["paper"],
+                value_low=1.0,
+                value_high=2.0,
+                anchor=MeasureAnchor(world["paper"], chunk, "sentence", "s1"),
+                reported_unit="eV",
+            ),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["extraction_status"] == "anchor_matched"
+        assert row["value_form"] == "interval"
+
+    @pytest.mark.parametrize(
         ("canonical", "reported", "literal", "expected"),
         [
             ("1", "%", "95", 0.95),

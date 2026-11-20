@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from precis.utils.text import excerpt, sci_anchor_pattern
+from precis.utils.text import excerpt, markup_surface, sci_anchor_pattern
 
 
 class TestSciAnchorPattern:
@@ -95,3 +95,22 @@ class TestExcerpt:
         assert excerpt("a b c d e f g", limit=5, ellipsis="...") == "a b...".replace(
             "...", "..."
         )
+
+
+class TestMarkupSurface:
+    """The printed-reading fold both sides of a literal-in-span check share
+    (gr511458, gr719235)."""
+
+    def test_dollar_math_delimiters_drop(self) -> None:
+        assert markup_surface("$1$ and $2$ eV") == "1 and 2 eV"
+
+    def test_paren_math_delimiters_drop(self) -> None:
+        # arXiv LaTeX bodies keep native math: \(…\) / \[…\] are delimiters,
+        # not print — a reader's verbatim literal ("1 and 2") must meet the
+        # same surface (gr719235).
+        assert markup_surface(r"between \(1\) and \(2\) eV") == "between 1 and 2 eV"
+        assert markup_surface(r"the \[0, 1\] interval") == "the 0, 1 interval"
+
+    def test_math_delimiter_fold_composes_with_the_rest(self) -> None:
+        assert markup_surface(r"\(\sim 3\) mV") == "~ 3 mV"
+        assert markup_surface(r"\(<1\)") == "<1"

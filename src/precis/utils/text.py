@@ -8,10 +8,11 @@ and tail-handling rule. They're consolidated here so adjustments
 need to change in one place.
 
 ``markup_surface``/``markup_unit`` fold the markup papers print numbers
-and units in — LaTeX (``\\pm``, ``\\text{}``, ``^{−2}``), HTML
-``<sup>``/``<sub>``, minus-sign glyphs and ``|``-separated split table
+and units in — LaTeX (``\\pm``, ``\\text{}``, ``^{−2}``, and the
+``\\(…\\)``/``\\[…\\]`` math delimiters arXiv LaTeX bodies keep raw),
+HTML ``<sup>``/``<sub>``, minus-sign glyphs and ``|``-separated split table
 cells — to the plain reading, so a check never compares markup against
-plain text (gr511458).
+plain text (gr511458, gr719235).
 
 Pure — no DB, no IO, no logging.
 """
@@ -229,10 +230,13 @@ _TEX_WRAP_RE = re.compile(
     r"\s*\{([^{}]*)\}"
 )
 _TEX_FRAC_RE = re.compile(r"\\[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}")
+_TEX_MATH_DELIMITER_RE = re.compile(r"\\[()\[\]]")
 # ``~`` is a TeX tie only between two glued tokens (``12~eV``); a leading
 # or spaced ``~`` is the approximate-value prefix (``~12``) and survives.
+_TEX_TIE = r"(?<=[\w}$])~(?=[\w\\$])"
+_TEX_TIE_RE = re.compile(_TEX_TIE)
 _TEX_SPACE_RE = re.compile(
-    r"\\[,;:]|\\ |\\(?:quad|qquad|enspace|thinspace)\b|(?<=[\w}$])~(?=[\w\\$])"
+    r"\\[,;:]|\\ |\\(?:quad|qquad|enspace|thinspace)\b|" + _TEX_TIE
 )
 _TEX_DROP_RE = re.compile(
     r"\\(?:left|right|bigg?|Bigg?|big[lr]|Big[lr]|rm|bf|it|sf|tt|cal|"
@@ -287,7 +291,10 @@ def _markup_fold(text: str) -> str:
     s = _TEX_SPACE_RE.sub(" ", s)
     s = s.replace("\\!", "")
     s = _TEX_DROP_RE.sub("", s)
-    return _TEX_LEFTOVER_RE.sub("", s)
+    s = _TEX_LEFTOVER_RE.sub("", s)
+    # Keep delimiters through command parsing, then expose tokens next to ties.
+    s, delimiters = _TEX_MATH_DELIMITER_RE.subn("", s)
+    return _TEX_TIE_RE.sub(" ", s) if delimiters else s
 
 
 def markup_surface(text: str) -> str:
@@ -297,8 +304,12 @@ def markup_surface(text: str) -> str:
     ``$-0.7 \\pm 0.1 \\text{ W m}^{-2}$`` reads ``-0.7 ± 0.1 W m-2``;
     ``<sup>−</sup>1.9`` reads ``-1.9``; ``2 \\times 10^{-3}`` reads
     ``2e-3``; ``| a | b |`` reads ``a  b`` (a cell boundary is a space).
-    Both sides of a comparison fold identically, so a verbatim-markup
-    literal still matches its markup span.
+    The math delimiters themselves are syntax, not print: ``$…$`` and
+    ``\\(…\\)`` / ``\\[…\\]`` (arXiv LaTeX bodies keep the latter raw)
+    read as nothing, so ``between \\(1\\) and \\(2\\) eV`` reads
+    ``between 1 and 2 eV`` (gr719235). Both sides of a comparison fold
+    identically, so a verbatim-markup literal still matches its markup
+    span.
     """
     s = _markup_fold(text).translate(_MINUS_TRANS)
     s = s.replace("+/-", "±")
