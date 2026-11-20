@@ -43,6 +43,74 @@ content. Git supplies file-backed section/symbol/skill snapshots; stored
 entities need revision or STATUS-event evidence. Missing history is unknown,
 not a stale claim. These signals have no apply-time re-check: their proposals
 stay pending outside consumer review, and direct memory apply refuses them.
+
+Memory detectors share bounds: at most :data:`MEMORY_REVIEW_MATCH_CAP` (20)
+matches per memory, marked when capped, to bound the judge's evidence;
+a content-sha and span pin on every proposal; DREAMs stay in the
+duplicate/merge lane and never draw a rewrite candidate.
+``dangling_mention`` is one handle scan over live bodies joined to retired
+refs — mention edges only target live refs and disappear at retirement; a
+tombstone successor must resolve to a live ref within 16 cycle-checked
+hops, keeping converted kinds' redirect, and a successor that is a verified
+duplicate (merge-made redirect to the recorded winner, or a same-title
+``supersedes`` — ``evidence.mentions[].duplicate_successor``) applies with
+no model call (``garden.applied='mention'``, gr564554). ``grab_bag`` flags a
+multi-claim title smell or >=4 top-level items whose sentence embeddings
+cluster into >=3 groups; the reviewed split mints atomic children pinned to
+the detector's sentence spans, then retires the parent
+(``meta.split_into``) or shrinks it to a <=3-line summary.
+``thread_shape`` covers tagged thread children: a missing ``Left:``,
+terminal linked work, or a Left-line sha confirmed on ``origin/prod``
+proposes supersede by the nearest live ancestor with a current ``Left:``,
+else retire — detection edits nothing; the sha-on-prod check is documented
+in ``precis-gardener-help``. ``anchor_rot`` caps each body at
+:data:`ANCHOR_MATCH_CAP` (20) lookups — Python file/symbol anchors and
+dotted qualnames, repo paths, Markdown sections and fragments, and mixed
+letter-and-digit commit shas of at least seven characters — against
+committed ``main``, pinning the memory sha and the main sha; unverifiable
+classes are ``not_checked``, never rot evidence, a body with only
+unverifiable anchors emits nothing, and a live sha proves existence, not
+that the claim around it stays current. ``compact`` owes a per-sentence
+keep/move/drop plan before retirement
+(:func:`precis.graph.garden.apply.apply_compact`); ``griped`` (gr657257)
+drains the reader-complaint queue newest first, one ``rewrite`` candidate
+per named memory, exempt from the freshly-considered skip. Memory detectors
+carry their own action sets and prompt version so their rules cannot reopen
+v2 rejections, and apply of rewrite/supersede/retire/split sits behind the
+default-off ``PRECIS_GARDEN_MEMORY_APPLY`` consumer gate.
+
+``review_due`` reasons in order: expired, never-reviewed (a demotion voids
+the stamp), sha-changed, prompt-version-bumped, then aged; a current review
+is a ``kg-review`` trust act on the pinned sha under the current
+``MEMORY_PROMPT_VERSION``. Reference and gotchas age after 30 days,
+runbooks after 60; workflow and rulings age past ``meta.review_by``;
+threads carry no age review. Expiry shapes give threads, handoffs, resumes
+and snapshot-titled nodes 14 days and incidents/campaigns 90
+(:func:`precis.utils.memory_threads.memory_expiry_shape`); ``meta.expires``
+overrides the shape (null disables) and malformed ``meta.expires``,
+``meta.review_by`` or stamp dates are ``not_checked``. A ``no-change``
+verdict stamps ``kg-review:<model>:<date>:ok`` on the pinned sha; an
+accepted change files a ``memory-review`` todo, the detector having no
+apply door (gr732278). ``restated_claim`` embeds a bounded window (128
+sentences, 20 per node) inside one ``section:index`` hub's live ``part-of``
+subtree — nested hubs stop the window — skipping headings, the title,
+``Source:``/``Left:``/``Meta:`` lines and sentences shorter than eight
+words; whole-body duplicates stay merge candidates. The keeper ranks
+``section:reference``, then ``section:gotchas``, then ``section:threads``,
+then the lower ref id, and the rewrite replaces each redundant sentence
+with ``See me<keeper>.``; both spans and both node shas are pinned.
+``title_shape`` flags slug and path-like titles, titles over sixteen
+words and dated snapshots on thread nodes; ``negative_undated`` flags
+absence wording with no date on that line — a deterministic content-word
+proxy, not a verified search; ``notation`` proposes one anchored canon
+fix per memory per pass, skipping quoted spans, code spans and math, with
+``formula-ascii-subscript`` never flagged; ``source_drift`` and
+``entity_claim_stale`` pin both content shas and the two commit pins and
+record missing history as ``not_checked``. ``host_facts`` (gr560767) flags
+a sentence naming a census machine with a state verb and neither an ISO
+date nor a machine handle — one fact one ref: verified current state
+belongs on the ``machine`` ref; the memory keeps the dated event plus
+the handle.
 """
 
 from __future__ import annotations

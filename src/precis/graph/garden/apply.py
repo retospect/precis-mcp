@@ -13,9 +13,14 @@ narrower than the proposal space.
 Memory rewrites, supersedes and retirements re-run their detector under
 the target lock. The consumer enables these only with
 ``PRECIS_GARDEN_MEMORY_APPLY`` (default off); human-origin and currently
-considered targets are held. Rewrites use the pinned ``base_sha`` and
+considered targets are held. ``md:``/``python:`` successors refuse —
+their content cannot be shown or pinned
+(:func:`precis.graph.garden.proposals.memory_successor_refusal`) — and
+supersede or retire applies only after review finds still-true claims
+preserved elsewhere. Rewrites use the pinned ``base_sha`` and
 anchored memory edit door in one ``Store.atomic`` transaction with the
-approval, reversal record and ``kg-review`` trust act. The record includes
+approval, reversal record and ``kg-review:<model>:<date>:fixed`` trust
+act. The record includes
 body bytes because the old chunk is deleted, and outgoing link rows because
 mention sync can otherwise erase provenance/route edges. Undo restores
 that snapshot and refuses to overwrite intervening work. Supersede and
@@ -1646,7 +1651,11 @@ def _restore_memory_link(
             raise MergeRefused(
                 "apply_refused",
                 "a memory link's original chunk cannot be restored",
-                next="get(kind='skill', id='precis-gardener-help')",
+                next=f"inspect link {link['link_id']} (refs "
+                f"{link['src_ref_id']} -> {link['dst_ref_id']}) and the "
+                "target's garden snapshot; restore the missing chunk "
+                "(docs/runbooks/memory-restore.md) or reconcile the "
+                "dead chunk pin, then retry",
             )
     conn.execute(
         "DELETE FROM links WHERE link_id = %(link_id)s OR "
