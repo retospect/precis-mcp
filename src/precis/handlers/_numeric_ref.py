@@ -5157,14 +5157,16 @@ class NumericRefHandler(Handler):
         endpoints: dict[int, Ref],
         arrow: str,
     ) -> str:
-        """Format one link row as ``arrow kind:id[~pos]  (relation)``.
+        """Format one link row as ``arrow kind:id[~pos]  (relation) · linked YYYY-MM-DD``.
 
         The arrow encodes direction:
           - ``→``  this ref's outbound link
           - ``←``  inbound — someone else's ref points here
 
         For inbound, we display the source ref's identifier so the
-        agent can navigate "upstream" easily.
+        agent can navigate "upstream" easily. The trailing ``linked``
+        stamp is the edge's own ``links.created_at`` day — the row's
+        age without a logbook round-trip (gr592952).
         """
         if arrow == "→":
             other_id, other_pos = link.dst_ref_id, link.dst_ord
@@ -5172,6 +5174,18 @@ class NumericRefHandler(Handler):
             other_id, other_pos = link.src_ref_id, link.src_ord
 
         ref = endpoints.get(other_id)
+        # gr592952: the edge's own age rides every row — view='links' used
+        # to carry no timestamp at all, so "what arrived this week" could
+        # not be read off a links page (the gr592952 gripe's first door).
+        linked = (
+            (
+                link.created_at.replace(tzinfo=UTC)
+                if link.created_at.tzinfo is None
+                else link.created_at.astimezone(UTC)
+            )
+            .date()
+            .isoformat()
+        )
         # gr555998 round 3: an endpoint this surface may not read — an
         # out-of-scope conv or a ref of a gated kind — collapses to the
         # same opaque placeholder the eye rings print; the relation the
@@ -5180,7 +5194,7 @@ class NumericRefHandler(Handler):
 
         placeholder = masked_ref_placeholder(ref)
         if placeholder is not None:
-            return f"{arrow} {placeholder}  ({link.relation})"
+            return f"{arrow} {placeholder}  ({link.relation}) · linked {linked}"
         if ref is None:
             target = f"<unknown ref {other_id}>"
         else:
@@ -5200,7 +5214,10 @@ class NumericRefHandler(Handler):
         # gr626896: the edge's own why renders after the relation —
         # ``meta.reason='.'`` (reviewed-obvious) prints as a bare period;
         # a ``considered`` edge prints its verdict line (gr662069).
-        return f"{arrow} {target}  ({link.relation}){link_why_suffix(link.meta)}"
+        return (
+            f"{arrow} {target}  ({link.relation}){link_why_suffix(link.meta)}"
+            f" · linked {linked}"
+        )
 
     # F8 rel-name → inbound-passive-form mapping (``_INVERSE_REL``) moved
     # to ``precis.handlers._links_render`` alongside the rest of

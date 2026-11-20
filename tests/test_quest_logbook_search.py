@@ -391,3 +391,83 @@ class TestLogbookToolBoundary:
         out = mcp_tools.search(q="vanadium redox", kind="quest", scope=f"qu{qid}")
         assert not _tool_is_error(out)
         assert "vanadium redox" in _tool_text(out)
+
+
+class TestQuestArgsToolBoundary:
+    """td702287 review: the ARGS_KEYS + reserved-key gates live on the
+    MCP boundary, which handler-level tests never cross — pin the
+    documented ``view='literature'`` window args, the logbook
+    ``args={'signal': …}`` filter, and the refusal of an undeclared
+    args key (``args={'kinds': …}`` — the plural is not a door) through
+    ``tools.get`` itself."""
+
+    def _quest_with_arrival(self, store: Any) -> int:
+        from precis.quest.logbook import append_entry
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A quest with a literature arrival"))
+        paper = store.insert_ref(
+            kind="paper", slug="amm-pd", title="Ammonia synthesis over Pd"
+        )
+        store.add_link(
+            src_ref_id=paper.id,
+            dst_ref_id=qid,
+            relation="serves",
+            set_by="agent",
+            meta={"found_by": "ammonia Pd"},
+        )
+        append_entry(
+            store,
+            qid,
+            text=f'lit-search: "ammonia Pd" → linked 1 source(s): pa{paper.id}',
+            entry_type="result",
+            by="agent",
+            extra_meta={"signal": "lit-search"},
+        )
+        return qid
+
+    def test_get_tool_literature_window_reaches_the_view(
+        self, store: Any, mcp_tools: Any
+    ) -> None:
+        qid = self._quest_with_arrival(store)
+        out = mcp_tools.get(
+            kind="quest",
+            id=qid,
+            view="literature",
+            args={"since": "2026-01-01"},
+        )
+        assert not _tool_is_error(out)
+        body = _tool_text(out)
+        assert "literature:" in body
+        assert "Ammonia synthesis over Pd" in body
+        assert 'found by "ammonia Pd"' in body
+
+    def test_get_tool_logbook_signal_reaches_the_filter(
+        self, store: Any, mcp_tools: Any
+    ) -> None:
+        qid = self._quest_with_arrival(store)
+        out = mcp_tools.get(
+            kind="quest",
+            id=qid,
+            view="logbook",
+            args={"signal": "lit-search"},
+        )
+        assert not _tool_is_error(out)
+        body = _tool_text(out)
+        assert "signal lit-search" in body
+        assert "ammonia Pd" in body
+
+    def test_get_tool_undeclared_args_key_refused_at_the_boundary(
+        self, store: Any, mcp_tools: Any
+    ) -> None:
+        qid = self._quest_with_arrival(store)
+        out = mcp_tools.get(
+            kind="quest",
+            id=qid,
+            view="literature",
+            args={"kinds": ["paper", "finding"]},
+        )
+        assert _tool_is_error(out)
+        body = _tool_text(out)
+        assert "'kinds'" in body
+        assert "not accepted" in body

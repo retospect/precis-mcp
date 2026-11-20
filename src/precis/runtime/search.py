@@ -2149,6 +2149,22 @@ class SearchMixin(RuntimeShape):
         for ref in refs[:top_k]:
             hits.extend(ref_hits_to_search_hits([(ref, 1.0)], kind=ref.kind))
         date_suffix = " in the given date window" if (since or until) else ""
+        # gr592952: a windowed listing dates its rows like the ranked
+        # path — the queryless ``serves=`` cohort read is how "what
+        # arrived this week" gets verified per row (td702287 review:
+        # this path used to be the one undated windowed search).
+        created_by_ref: dict[int, str] = {}
+        if since is not None or until is not None:
+            for r in refs:
+                rid = getattr(r, "id", None)
+                cat = getattr(r, "created_at", None)
+                if rid is not None and cat is not None:
+                    created_by_ref[int(rid)] = cat.date().isoformat()
+
+        def _row_suffix(hit: Any) -> str:
+            d = created_by_ref.get(hit.ref_id) if hit.ref_id is not None else None
+            return f" · created {d}" if d else ""
+
         response = merge_and_render(
             [hits],
             page_size=top_k,
@@ -2163,6 +2179,7 @@ class SearchMixin(RuntimeShape):
                 f"no matches across {', '.join(kinds)} for the filtered "
                 f"cohort{date_suffix}"
             ),
+            row_suffix_for=_row_suffix if created_by_ref else None,
         )
         # The "N of K" line is exact here — ``count_refs`` shares every
         # filter, not the ranked path's lexical-lower-bound estimate.

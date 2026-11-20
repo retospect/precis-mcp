@@ -999,6 +999,24 @@ class TestMemoryHandlerLinksView:
         out = memory_handler.get(id=new_id, view="links")
         assert "→ paper:wang2020state~2" in out.body
 
+    def test_link_row_carries_the_edge_date(
+        self, memory_handler: MemoryHandler, store: Store
+    ) -> None:
+        # gr592952: a view='links' row names the edge's own linked day —
+        # the age read without a logbook round-trip.
+        _seed_paper(store, slug="dated2020")
+        m = memory_handler.put(text="m", link="paper:dated2020", rel="cites")
+        new_id = id_of(m.body)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE links SET created_at = %s WHERE src_ref_id = %s",
+                ("2026-11-02T09:30:00+00:00", new_id),
+            )
+            conn.commit()
+
+        out = memory_handler.get(id=new_id, view="links")
+        assert "· linked 2026-11-02" in out.body
+
     def test_unknown_view_rejected(
         self, memory_handler: MemoryHandler, store: Store
     ) -> None:

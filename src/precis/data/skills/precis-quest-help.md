@@ -319,10 +319,14 @@ that surfaced it (the edge's `found_by` meta, else the matching
 `signal: lit-search` logbook line, else `-`). The summary counts how
 many arrivals were *newly acquired* (the ref itself minted) inside the
 window. Rows page at 100; when the window holds more, the trailer's
-`next:` repeats the resolved bounds plus an offset — never a silent cut.
+`next:` repeats the resolved bounds plus an offset — never a silent cut:
+a page that outgrows the result budget (multibyte titles, or a bound
+context cap) drops whole rows from the tail and the `next:` offset
+resumes at the first omitted row, so the window stays fully coverable.
 A date-windowed `search(…)` likewise dates its rows: each row header
 ends with ` · created YYYY-MM-DD`, so a `since=`/`until=` filter is
-verifiable per row.
+verifiable per row — the queryless `args={'serves': 'quest:<id>'}`
+cohort listing included.
 
 ## Read a quest's numbers — results, frontier, series, measures
 

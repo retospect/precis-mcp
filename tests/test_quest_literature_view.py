@@ -228,3 +228,51 @@ class TestLiteraturePaging:
 
         body = h.get(id=qid, view="literature").body
         assert body.index(f"pa{newer}") < body.index(f"pa{older}")
+
+
+class TestLiteratureBudgetFit:
+    """td702287 review: an over-cap literature page used to lose its
+    ``next:`` trailer to the generic line-fit, leaving the rest of the
+    window unreachable. The response now carries a row-granular
+    ``budget_fit``: whole rows only, resuming at the first omitted row."""
+
+    def _ten_arrivals(self, store: Any) -> tuple[Any, int]:
+        h, qid = _quest(store)
+        ids = [_paper(store, f"bf-{i}", f"Budget row {i}") for i in range(10)]
+        for i, rid in enumerate(ids):
+            _serve(store, rid, qid, linked_at=T0 + timedelta(minutes=i))
+        return h, qid
+
+    def test_under_cap_fit_returns_the_full_page(self, store: Any) -> None:
+        h, qid = self._ten_arrivals(store)
+        resp = h.get(id=qid, view="literature")
+        assert resp.budget_fit is not None
+        assert resp.budget_fit(len(resp.body.encode("utf-8"))) == resp.body
+        assert resp.budget_fit(10_000_000) == resp.body
+
+    def test_over_cap_fit_cuts_whole_rows_and_keeps_next(self, store: Any) -> None:
+        h, qid = self._ten_arrivals(store)
+        resp = h.get(id=qid, view="literature")
+        full = resp.body
+        cap = len(full.encode("utf-8")) // 2
+        fitted = resp.budget_fit(cap)
+        assert fitted != full
+        rows = [ln for ln in fitted.splitlines() if ln.startswith("- ")]
+        assert 0 < len(rows) < 10
+        # whole rows only — every surviving row is a complete line
+        assert all("found by " in ln for ln in rows)
+        # the trailer survives the cut and resumes at the first omitted row
+        assert "next:" in fitted
+        assert f"'offset': {len(rows)}" in fitted
+        # following the resume offset shows exactly the omitted tail
+        page2 = h.get(id=qid, view="literature", args={"offset": len(rows)}).body
+        page2_rows = {ln for ln in page2.splitlines() if ln.startswith("- ")}
+        assert not page2_rows.intersection(rows)
+
+    def test_fit_where_nothing_fits_raises_with_a_next(self, store: Any) -> None:
+        from precis.errors import ResultBudgetExceeded
+
+        h, qid = self._ten_arrivals(store)
+        resp = h.get(id=qid, view="literature")
+        with pytest.raises(ResultBudgetExceeded, match="even one arrival"):
+            resp.budget_fit(10)

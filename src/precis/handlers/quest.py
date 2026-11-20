@@ -43,14 +43,17 @@ import json
 import math
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
+from precis._result_budget import body_bytes
 from precis.corrected_call import retry_call
 from precis.errors import (
     BadInput,
     NotFound,
+    ResultBudgetExceeded,
     Unsupported,
     nearest_option,
 )
@@ -930,6 +933,52 @@ def _literature_offset(value: Any) -> int:
             next="get(kind='quest', id=N, view='literature', args={'offset': 0})",
         )
     return value
+
+
+def _literature_view_fit(
+    render_page: Callable[[int], str],
+    *,
+    full_body: str,
+    page_rows: int,
+    ref: Ref,
+) -> Callable[[int], str]:
+    """The ``budget_fit`` for an over-cap ``view='literature'`` page.
+
+    100 rows of multibyte titles/queries can overrun
+    ``PRECIS_MAX_BODY_BYTES`` — and always once the context cap binds —
+    and the generic line-fit then cut the trailer, dropping the ``next:``
+    continuation and leaving the rest of the window unreachable (review
+    td702287). Instead the page cuts at a whole-arrival-row boundary,
+    keeps its ``next:`` tail, and the tail's offset points at the first
+    omitted row, so following it covers every arrival exactly once —
+    the same contract :func:`precis.handlers._links_render._links_view_fit`
+    gives ``view='links'``.
+    """
+    total = body_bytes(full_body)
+
+    def fit(cap: int) -> str:
+        if total <= cap:
+            return full_body
+        lo, hi = 0, page_rows
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if body_bytes(render_page(mid)) <= cap:
+                lo = mid
+            else:
+                hi = mid - 1
+        if lo == 0:
+            raise ResultBudgetExceeded(
+                f"get: literature page is {total} bytes and even one arrival "
+                f"row does not fit under the {cap}-byte result budget",
+                next=(
+                    f"get(kind='quest', id={ref.id}, view='literature', "
+                    "args={'kind': 'paper'}) — narrow the kind or tighten "
+                    "the since/until window"
+                ),
+            )
+        return render_page(lo)
+
+    return fit
 
 
 #: Compact relative ``since=``/``until=`` — ``30m``/``12h``/``7d``/``2w`` —
@@ -2204,7 +2253,7 @@ class QuestHandler(NumericRefHandler):
             return Response(body=self._render_logbook(ref, args))
         if view == "literature" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(body=self._render_literature(ref, args))
+            return self._render_literature(ref, args)
         if view == "pourbaix" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_pourbaix(ref))
@@ -3311,7 +3360,7 @@ class QuestHandler(NumericRefHandler):
             ref, pourbaix_map.quest_maps(self.store, ref)
         )
 
-    def _render_literature(self, ref: Ref, args: dict[str, Any] | None) -> str:
+    def _render_literature(self, ref: Ref, args: dict[str, Any] | None) -> Response:
         """`view='literature'` — what arrived in this quest's service inside
         a window (gr592952): the inbound ``serves`` links whose
         ``links.created_at`` falls in ``[since, until)`` (``until``
@@ -3336,6 +3385,10 @@ class QuestHandler(NumericRefHandler):
         Paged :data:`_LITERATURE_PAGE` rows; when the window holds more,
         the trailer's ``next:`` repeats the resolved bounds (never the
         caller's relative spelling, which would re-anchor) plus the offset.
+        A page that outgrows the result budget (multibyte titles/queries,
+        or the context cap) is row-fitted: it cuts at a whole-row boundary
+        and the trailer's offset resumes at the first omitted row, so the
+        rest of the window stays reachable (review td702287).
         """
         args = args if isinstance(args, dict) else {}
         now = datetime.now(UTC)
@@ -3389,7 +3442,6 @@ class QuestHandler(NumericRefHandler):
             )
 
         acquired = sum(1 for _ln, served in rows if _in_acquired_window(served))
-        lines = [f"# quest {ref.id}: {ref.title.splitlines()[0]}"]
         spec: list[str] = []
         if since_dt is not None:
             spec.append(f"since {_iso_z(since_dt)}")
@@ -3398,39 +3450,56 @@ class QuestHandler(NumericRefHandler):
         if kind_explicit:
             spec.append(f"kind {kinds[0]}")
         spec.append("newest first")
-        lines.append(
-            f"\nliterature: {len(rows)} linked, {acquired} of them "
-            f"newly acquired in the window · {' · '.join(spec)}"
-        )
+
+        def page_body(shown: int) -> str:
+            """The page body carrying exactly ``shown`` arrival rows (``1``
+            to the page size) — the indivisible unit ``budget_fit`` cuts
+            on. The summary counts the whole window; the ``next:`` offset
+            recomputes to ``offset + shown`` so a byte-fitted page resumes
+            exactly at the first row the cut omitted."""
+            lines = [f"# quest {ref.id}: {ref.title.splitlines()[0]}"]
+            lines.append(
+                f"\nliterature: {len(rows)} linked, {acquired} of them "
+                f"newly acquired in the window · {' · '.join(spec)}"
+            )
+            for link, served in rows[offset : offset + shown]:
+                handle = (
+                    handle_registry.try_format(served.kind, served.id)
+                    or f"{served.kind}:{served.id}"
+                )
+                title = (served.title or "").splitlines()[0][:60]
+                lines.append(
+                    f"- {handle} · {served.kind} · {title} · "
+                    f"linked {_iso_z(link.created_at)} · "
+                    f"created {_utc_aware(served.created_at).date().isoformat()} · "
+                    f'found by "{_found_by(link, served)}"'
+                )
+            remaining = len(rows) - offset - shown
+            if remaining > 0:
+                call_args: list[str] = []
+                if since_dt is not None:
+                    call_args.append(f"'since': '{_iso_z(since_dt)}'")
+                if until_dt is not None:
+                    call_args.append(f"'until': '{_iso_z(until_dt)}'")
+                if kind_explicit:
+                    call_args.append(f"'kind': {kinds[0]!r}")
+                call_args.append(f"'offset': {offset + shown}")
+                lines.append(
+                    f"\nnext: get(kind='quest', id={ref.id}, view='literature', "
+                    f"args={{{', '.join(call_args)}}}) — {remaining} more "
+                    f"linked ref{'s' if remaining != 1 else ''} in the window"
+                )
+            return "\n".join(lines)
+
         page = rows[offset : offset + _LITERATURE_PAGE]
-        for link, served in page:
-            handle = (
-                handle_registry.try_format(served.kind, served.id)
-                or f"{served.kind}:{served.id}"
-            )
-            title = (served.title or "").splitlines()[0][:60]
-            lines.append(
-                f"- {handle} · {served.kind} · {title} · "
-                f"linked {_iso_z(link.created_at)} · "
-                f"created {_utc_aware(served.created_at).date().isoformat()} · "
-                f'found by "{_found_by(link, served)}"'
-            )
-        remaining = len(rows) - offset - len(page)
-        if remaining > 0:
-            call_args: list[str] = []
-            if since_dt is not None:
-                call_args.append(f"'since': '{_iso_z(since_dt)}'")
-            if until_dt is not None:
-                call_args.append(f"'until': '{_iso_z(until_dt)}'")
-            if kind_explicit:
-                call_args.append(f"'kind': {kinds[0]!r}")
-            call_args.append(f"'offset': {offset + _LITERATURE_PAGE}")
-            lines.append(
-                f"\nnext: get(kind='quest', id={ref.id}, view='literature', "
-                f"args={{{', '.join(call_args)}}}) — {remaining} more "
-                f"linked ref{'s' if remaining != 1 else ''} in the window"
-            )
-        return "\n".join(lines)
+        body = page_body(len(page))
+        return Response(
+            body=body,
+            result_count=len(page),
+            budget_fit=_literature_view_fit(
+                page_body, full_body=body, page_rows=len(page), ref=ref
+            ),
+        )
 
     def _render_tree(
         self, ref: Ref, *, depth: int = 0, visited: set[int] | None = None

@@ -180,3 +180,59 @@ def test_pinned_handle_row_is_dated_in_window(
     m = _CREATED_RE.search(rows[0])
     assert m is not None, f"pinned row has no created date: {rows[0]!r}"
     assert m.group(1) == "2026-11-09"
+
+
+def test_queryless_serves_listing_rows_are_dated_in_window(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    # td702287 review: the queryless serves= cohort listing (no q=) is a
+    # windowed search too — its rows carry the created date like the
+    # ranked path's, and the window itself excludes out-of-window refs.
+    rt = runtime_with_store
+    store: Store | None = rt.hub.store
+    assert store is not None
+    inside = _seed_at(
+        rt,
+        "paper",
+        "sv-win-a",
+        "Windowed arrival",
+        "plasmonic photocatalytic water splitting",
+        "2026-11-10T12:00:00Z",
+    )
+    outside = _seed_at(
+        rt,
+        "paper",
+        "sv-win-b",
+        "Out-of-window arrival",
+        "plasmonic photocatalytic water splitting",
+        "2026-10-01T12:00:00Z",
+    )
+    quest = store.insert_ref(kind="quest", slug=None, title="q")
+    for rid in (inside, outside):
+        store.add_link(
+            src_ref_id=rid,
+            dst_ref_id=quest.id,
+            relation="serves",
+            set_by="agent",
+        )
+
+    out = rt.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "since": "2026-11-01T00:00:00Z",
+            "until": "2026-11-16T00:00:00Z",
+            "__extras__": {"serves": f"quest:{quest.id}"},
+        },
+    )
+    rows = _row_headers(out)
+    assert len(rows) == 1, rows
+    # the window is the ref's created_at: the out-of-window serving paper
+    # is excluded even though it serves the quest
+    assert f"pa{outside}" not in out
+    assert "Out-of-window arrival" not in out
+    assert f"pa{inside}" in rows[0]
+    assert "Windowed arrival" in out
+    m = _CREATED_RE.search(rows[0])
+    assert m is not None, f"listing row has no created date: {rows[0]!r}"
+    assert m.group(1) == "2026-11-10"
