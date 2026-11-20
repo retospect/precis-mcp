@@ -22,7 +22,9 @@ held_ref_id → doi → s2_id); a non-held row's Fetch button mints the ref
 and queues it via ``Store.requeue_stubs_for_fetch``. Meta tab: reviewed
 toggle (first writer of ``refs.human_verified_at``), client-side S2
 triage prefill, backlinks panel (incoming ``links`` edges by
-``dst_ref_id``).
+``dst_ref_id``). Supplement linkage (gr613071) shows both ways — an SI
+ref links to its main paper and a main paper lists its SI refs — in the
+reader header and as Meta-tab rows (:func:`_si_links`).
 """
 
 from __future__ import annotations
@@ -53,7 +55,11 @@ from precis.handlers._paper_format import ENTRY_TYPE_CHOICES, ENTRY_TYPE_LABELS
 from precis.identity import normalize_doi
 from precis.ingest.dedup import merge_refs
 from precis.store.paper_rekey import REKEY_DEADLINE_S, rekey_paper
-from precis.store.si_links import queue_si_on_attention
+from precis.store.si_links import (
+    queue_si_on_attention,
+    supplement_children,
+    supplement_parent,
+)
 from precis.store.types import BibEntry
 from precis.utils.authors import (
     author_line,
@@ -459,6 +465,40 @@ def _detail_tags(store: Store, ref_id: int) -> list[dict[str, Any]]:
     return out
 
 
+def _si_links(
+    store: Store, ref: Any
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Supplement linkage for the reader header + Meta tab (gr613071).
+
+    An SI ref (``pdf_role='supplement'``) yields ``si_parent`` — one
+    ``{url, label}`` back to its main paper; any other ref yields
+    ``si_children`` — ``[{url, label, title}]`` for each live SI ref.
+    Both directions read the ``part-of`` edge stamped
+    ``meta.role='supplement'`` (:mod:`precis.store.si_links`); a paper
+    with no edge pays one indexed lookup and renders nothing. The label
+    is the cite_key, else the ``pa<ref_id>`` handle; the URL rides the
+    slug when minted, the numeric id otherwise (which 301s to the slug
+    when one exists).
+    """
+    if getattr(ref, "pdf_role", None) == "supplement":
+        with store.pool.connection() as conn:
+            parent = supplement_parent(conn, ref.id)
+        if parent is None:
+            return None, []
+        pid, pslug = parent
+        return {"url": f"/papers/{pslug or pid}", "label": pslug or f"pa{pid}"}, []
+    with store.pool.connection() as conn:
+        kids = supplement_children(conn, ref.id)
+    return None, [
+        {
+            "url": f"/papers/{slug or rid}",
+            "label": slug or f"pa{rid}",
+            "title": title,
+        }
+        for rid, slug, title in kids
+    ]
+
+
 def _render_detail(
     request: Request,
     ref: Any,
@@ -506,6 +546,7 @@ def _render_detail(
     stamps = store.ingest_timestamps(ref_id)
     n_chunks = store.chunks.count_chunks(ref_id)
     tags = _detail_tags(store, ref_id)
+    si_parent, si_children = _si_links(store, ref)
     initial_tab = initial_tab or ("Meta" if has_triage else "Navigate")
     # Suggest a real cite_key from the (fixed) author + year. Pre-fill the
     # field with it only when the current handle is the anon placeholder —
@@ -620,6 +661,11 @@ def _render_detail(
         # the source's canonical page. Read-only over the ``links`` reverse
         # index; rendered on the Meta tab.
         "backlinks": _backlinks(store, ref_id),
+        # Supplement linkage both ways (gr613071): ``si_parent`` ({url,
+        # label}) on an SI ref, ``si_children`` ([{url, label, title}]) on
+        # its main paper — Meta-tab rows + reader-header links.
+        "si_parent": si_parent,
+        "si_children": si_children,
         # Editable short handle (cite_key) + a free suggestion.
         "slug_default": slug_default,
         "suggested_slug": suggested_slug,
@@ -658,6 +704,11 @@ def _render_detail(
             "initial_tab": initial_tab,
             "pdf_url": f"/papers/{ref_id}/pdf",
             "meta_panel": "papers/_meta_panel.html.j2",
+            # Supplement linkage for the reader header (gr613071) — absent
+            # keys on siblings that build their own doc (pres) render as
+            # nothing under ChainableUndefined.
+            "si_parent": si_parent,
+            "si_children": si_children,
             # Sources/Cited tabs (S2 bibliography + citing papers) are
             # paper-only — cfp/pres/datasheet siblings share this reader
             # shell but have no S2 neighbour graph (``refs_panel``/

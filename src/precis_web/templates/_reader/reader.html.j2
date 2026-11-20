@@ -46,6 +46,20 @@
     <h1 class="truncate text-base font-semibold" title="{{ doc.title }}">{{ doc.title }}</h1>
     {% endif %}
     <span class="shrink-0 font-mono text-xs text-fg-faint">{{ doc.handle }}{% if doc.slug %} · {{ doc.slug }}{% endif %}</span>
+    {# Supplement linkage (gr613071): an SI ref links back to its main
+       paper; a main paper links to each live SI ref. Absent on readers
+       that build their own doc (pres) — ChainableUndefined renders the
+       missing keys as nothing. #}
+    {% if doc.si_parent %}
+    <a class="shrink-0 text-xs text-info-strong hover:underline" href="{{ doc.si_parent.url }}"
+       title="supplementary information of {{ doc.si_parent.label }}">&crarr; SI of {{ doc.si_parent.label }}</a>
+    {% elif doc.si_children %}
+    <span class="shrink-0 truncate text-xs text-fg-faint">SI:
+      {%- for si in doc.si_children -%}
+        <a class="text-info-strong hover:underline" href="{{ si.url }}" title="{{ si.title | title_plain }}">{{ si.label }}</a>{{ ", " if not loop.last }}
+      {%- endfor -%}
+    </span>
+    {% endif %}
     {% if doc.faved is defined and doc.faved is not none %}
       {# Per-user heart (gr486409); doc.faved is None when auth is off. #}
       {% set fav_kind, fav_id = doc.kind, doc.id %}

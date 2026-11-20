@@ -10474,12 +10474,12 @@ class PaperHandler(Handler):
                 return []
             p = parent[1] or str(parent[0])
             return [f"supplementary information of {p} — cite as {p}"]
-        # Parent side: an ordinary paper pays no query. Only a paper whose SI
-        # was requested (``put(mode='fetch-si')``) can have SI refs from the
-        # fetch pass; a hand-dropped SI of an unflagged paper is not listed here.
+        # Parent side: list every live SI ref unconditionally — a
+        # hand-declared supplement (``edit(supplement_of=…)`` or an inbox
+        # sidecar drop) leaves no ``si_*`` stamp on the parent, so gating
+        # on ``si_fetch``/``si_fetched`` hid exactly those links (gr613071).
+        # One indexed lookup per overview.
         meta = ref.meta or {}
-        if "si_fetch" not in meta and not meta.get("si_fetched"):
-            return []
         with self.store.pool.connection() as conn:
             kids = supplement_children(conn, ref.id)
         shown = ", ".join(k[1] or str(k[0]) for k in kids)

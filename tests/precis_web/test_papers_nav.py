@@ -42,6 +42,65 @@ def test_non_pdf_supplement_page_does_not_link_unsafe_url(client, runtime) -> No
     assert "unsafe.xlsx" not in client.get("/papers/smith2024").text
 
 
+def test_paper_page_links_ingested_supplement(client, monkeypatch) -> None:
+    """A paper with a live SI ref links to it — reader header + Meta tab
+    (gr613071: the page showed no link to the supplement)."""
+    import precis_web.routes.papers as papers_routes
+
+    monkeypatch.setattr(
+        papers_routes,
+        "supplement_children",
+        lambda _conn, rid: [(42, "smith2024si", "Supporting Information: A paper")],
+    )
+    resp = client.get("/papers/smith2024")
+    assert resp.status_code == 200
+    # header link + Meta-tab row, both to the SI ref's page
+    assert resp.text.count('href="/papers/smith2024si"') >= 2
+    assert "supplements" in resp.text
+
+
+def test_paper_page_links_unslugged_supplement_by_id(client, monkeypatch) -> None:
+    """An SI ref with no cite_key still gets a working link — the
+    ``pa<ref_id>``/numeric URL, which 301s to the slug when one lands."""
+    import precis_web.routes.papers as papers_routes
+
+    monkeypatch.setattr(
+        papers_routes,
+        "supplement_children",
+        lambda _conn, rid: [(42, None, "Supporting Information: A paper")],
+    )
+    resp = client.get("/papers/smith2024")
+    assert resp.status_code == 200
+    assert 'href="/papers/42"' in resp.text
+    assert "pa42" in resp.text
+
+
+def test_supplement_page_links_back_to_parent(client, runtime, monkeypatch) -> None:
+    """An SI ref's page names its main paper — header + Meta tab
+    (gr613071: does the supplement link back?)."""
+    import precis_web.routes.papers as papers_routes
+
+    ref = runtime.store.get_ref(kind="paper", id="smith2024")
+    ref.pdf_role = "supplement"
+    monkeypatch.setattr(
+        papers_routes,
+        "supplement_parent",
+        lambda _conn, rid: (11, "jones2025"),
+    )
+    resp = client.get("/papers/smith2024")
+    assert resp.status_code == 200
+    assert resp.text.count('href="/papers/jones2025"') >= 2
+    assert "supplement of" in resp.text
+
+
+def test_paper_page_without_supplements_shows_no_si_links(client) -> None:
+    """No SI edges -> no supplement rows (the fake pool returns empty
+    result sets, so both lookups come back empty)."""
+    resp = client.get("/papers/smith2024")
+    assert resp.status_code == 200
+    assert "supplement of" not in resp.text
+
+
 def test_detail_numeric_id_redirects_to_slug(client) -> None:
     """A numeric /papers/<id> 301-redirects to the canonical slug URL."""
     resp = client.get("/papers/10", follow_redirects=False)

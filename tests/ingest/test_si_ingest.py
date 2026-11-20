@@ -272,8 +272,8 @@ def test_overview_names_parent_and_lists_children(store, tmp_path: Path) -> None
     res = _ingest(store, pdf, sha, parent_id)
     assert res is not None
     handler = PaperHandler(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
-    # parent-side listing is gated on the paper having been SI-requested
-    handler.put(id="smith2023cat", mode="fetch-si")
+    # Parent-side listing is unconditional (gr613071): no fetch-si stamp
+    # is needed for the overview to name the SI refs.
     si_ref = store.fetch_refs_by_ids([res.ref_id])[res.ref_id]
     parent_ref = store.fetch_refs_by_ids([parent_id])[parent_id]
     assert (

@@ -5,8 +5,24 @@
    author_rows, paper_scholar_url, abstract, ingested, tags, is_reviewed,
    reviewed_at, reviewed_by, journal, issn, entry_type, entry_type_label,
    retraction, extra_identifiers, s2_citation_count, s2_fields, read_first,
-   keywords) built by papers._render_detail. #}
+   keywords, si_parent, si_children) built by papers._render_detail. #}
 <dl class="space-y-1 text-xs">
+  {# Supplement linkage (gr613071): on an SI ref a link back to the main
+     paper; on a main paper one row per live SI ref — the ``part-of``
+     edges stamped meta.role='supplement' (precis.store.si_links). #}
+  {% if si_parent %}
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">supplement of</dt><dd>
+    <a class="text-teal-strong hover:underline" href="{{ si_parent.url }}">{{ si_parent.label }}</a>
+  </dd></div>
+  {% endif %}
+  {% if si_children %}
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">supplements</dt><dd>
+    {% for si in si_children %}
+    <p><a class="text-teal-strong hover:underline" href="{{ si.url }}" title="{{ si.title | title_plain }}">{{ si.label }}</a>
+      {%- if si.title %} — <span class="tex-scope">{{ si.title | title_md | render_markdown }}</span>{% endif %}</p>
+    {% endfor %}
+  </dd></div>
+  {% endif %}
   {% if si_skipped %}
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-fg-faint">supplements</dt><dd>
     <p>supplement exists, not ingested</p>
