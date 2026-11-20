@@ -1688,6 +1688,194 @@ def _answer_ask(store: Store, ask: int, text: str) -> None:
     )
 
 
+def _capacity_land(
+    store: Store, task: int, *, minutes_old: int = 0, red_class: str = "admission"
+) -> int:
+    """A failed land with ``red_class`` — by default the capacity refusal
+    ``land_slice._fail`` marks when the host cannot admit the ship —
+    created ``minutes_old`` ago."""
+    job = _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        params={
+            "todo_id": task,
+            "worktree": f"/checkout/.claude/worktrees/slice-td{task}",
+            "branch": f"slice/{task}",
+            "target_node": "node-a",
+        },
+        meta={"attempt_free": "infra-land", "red_class": red_class},
+    )
+    if minutes_old:
+        _backdate(store, job, minutes_old)
+    return job
+
+
+def _asks_under(store: Store, root: int, task: int) -> list[int]:
+    return [c for c in _children(store, root) if c != task]
+
+
+def test_capacity_refused_lands_do_not_raise_the_outside_the_diff_ask(
+    store: Store,
+) -> None:
+    """Two lands refused for capacity are not two lands that died outside
+    the diff: no ask, and the tick mints the land again at once (two
+    identical free failures sit under ``FREE_RUN_GRACE``, so no back-off)."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    for _ in range(pd.LAND_AGAIN_CAP):
+        _capacity_land(store, task)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _asks_under(store, mint.root_id, task) == []
+    _job, meta = _jobs_under(store, task)[-1]
+    assert meta["job_type"] == "land_slice"
+    assert meta["params"]["target_node"] == "node-a"
+
+
+def test_capacity_refusals_ride_the_free_failure_backoff(store: Store) -> None:
+    """Past ``FREE_RUN_GRACE`` refusals in a row the re-mint waits out the
+    free-failure back-off instead of hot-looping, and still files no ask."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    for _ in range(pd.FREE_RUN_GRACE):
+        _capacity_land(store, task)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    assert any("held" in n and "infra-land" in n for n in res.notes)
+    res = pd.run_pass(
+        store, now=datetime.now(UTC) + pd.FREE_BACKOFF_BASE + timedelta(seconds=30)
+    )
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_one_real_infra_land_plus_one_capacity_refusal_is_one(store: Store) -> None:
+    """Mixed history: the capacity refusal is not counted toward
+    ``LAND_AGAIN_CAP``, in either order."""
+    for order in (("gate infrastructure", "admission"), ("admission", "origin-raced")):
+        mint = _one_task_plan(store)
+        task = mint.ids["task"]
+        _slice_job(store, task, "run_slice", "succeeded")
+        for red_class in order:
+            _capacity_land(store, task, red_class=red_class)
+        res = pd.run_pass(store)
+        assert (res.dispatched, res.asks) == (1, 0), order
+        assert _asks_under(store, mint.root_id, task) == []
+
+
+def test_two_real_infra_lands_still_raise_the_outside_the_diff_ask(
+    store: Store,
+) -> None:
+    """Unchanged: ``LAND_AGAIN_CAP`` real infra lands file the ask, and a
+    capacity refusal between them does not break the run."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    _capacity_land(store, task, red_class="gate infrastructure")
+    _capacity_land(store, task)
+    _capacity_land(store, task, red_class="origin-raced")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = _asks_under(store, mint.root_id, task)
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None
+    assert str(ask_ref.title) == (
+        f"td{task}: land failed outside the diff 2 times: "
+        "land again, rewrite the brief, or drop it?"
+    )
+
+
+def test_capacity_refused_over_the_wait_cap_files_the_capacity_ask(
+    store: Store,
+) -> None:
+    """Refused for capacity continuously past ``LAND_CAPACITY_WAIT_CAP``:
+    one ask with its own title, and the node parks behind it."""
+    assert timedelta(minutes=45) == pd.LAND_CAPACITY_WAIT_CAP
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _backdate(store, _slice_job(store, task, "run_slice", "succeeded"), 120)
+    _capacity_land(store, task, minutes_old=50)
+    _capacity_land(store, task, minutes_old=30)
+    _capacity_land(store, task, minutes_old=5)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 1)
+    (ask,) = _asks_under(store, mint.root_id, task)
+    ask_ref = store.get_ref(kind="todo", id=ask)
+    assert ask_ref is not None
+    assert str(ask_ref.title) == (
+        f"td{task}: land could not start for 45 min — host node-a is at capacity"
+    )
+    assert _meta(store, ask)["ask"]["options"] == ["keep waiting", "won't do"]
+    assert _blocked_by_ids(store, task) == [ask]
+    # Parked: nothing mints while the ask sits open, and no second ask.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (0, 0)
+    # "keep waiting" re-arms: the land is minted again, no second ask.
+    _answer_ask(store, ask, "keep waiting")
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _jobs_under(store, task)[-1][1]["job_type"] == "land_slice"
+
+
+def test_capacity_refusals_under_the_wait_cap_file_no_ask(store: Store) -> None:
+    """Refusals spanning less than the cap keep waiting."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _backdate(store, _slice_job(store, task, "run_slice", "succeeded"), 120)
+    _capacity_land(store, task, minutes_old=40)
+    _capacity_land(store, task, minutes_old=20)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+
+
+def test_one_refusal_of_a_long_queued_land_files_no_ask(store: Store) -> None:
+    """A land that waited over the cap for its slot and is refused once
+    has not been refused for the cap: the ask needs two refusals."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _backdate(store, _slice_job(store, task, "run_slice", "succeeded"), 120)
+    _capacity_land(store, task, minutes_old=60)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _asks_under(store, mint.root_id, task) == []
+
+
+def test_capacity_refusals_do_not_trip_the_identical_free_run_cap(
+    store: Store,
+) -> None:
+    """``FREE_RUN_CAP`` identical ``infra-land`` failures would file the
+    wedged-holder ask, but refusals for capacity are not a wedged holder:
+    inside the wait cap neither that ask nor the capacity ask is filed."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _backdate(store, _slice_job(store, task, "run_slice", "succeeded"), 120)
+    for i in range(pd.FREE_RUN_CAP):
+        _capacity_land(store, task, minutes_old=30 - i)
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert _asks_under(store, mint.root_id, task) == []
+
+
+def test_a_different_land_in_between_resets_the_capacity_window(
+    store: Store,
+) -> None:
+    """Continuous means every land since the first refusal: a land that
+    failed another way between two refusals starts the window over."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _backdate(store, _slice_job(store, task, "run_slice", "succeeded"), 120)
+    _capacity_land(store, task, minutes_old=60)
+    red = _slice_job(store, task, "land_slice", "failed")  # red on the diff
+    _backdate(store, red, 50)
+    _capacity_land(store, task, minutes_old=5)
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _asks_under(store, mint.root_id, task) == []
+
+
 def test_reland_ask_land_again_relands(store: Store) -> None:
     """gr570187: the re-land ask answered ``land again (no builder)``
     with the brief untouched re-lands the old branch — the failed job's

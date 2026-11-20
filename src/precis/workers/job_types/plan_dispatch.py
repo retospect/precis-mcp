@@ -222,7 +222,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    re-mints ``land_slice`` with the failed job's own params (idem
    ``land_slice:td<id>``) — no builder, no ladder rung, no review lane —
    up to :data:`LAND_AGAIN_CAP` consecutive infra lands, then the hygiene
-   ask offers ``land again (no builder)``. **Mechanical reds** (gr604579,
+   ask offers ``land again (no builder)``. A land the host refused for
+   capacity (``red_class == "admission"``) is not counted there: it rides
+   the free-failure backoff and asks only after
+   :data:`LAND_CAPACITY_WAIT_CAP` of unbroken refusals. **Mechanical reds** (gr604579,
    factory plan 3b): a builder task's newest failed attempt whose error
    text names a known mechanical cause — a stale or colliding migration
    number, an H2 chunk over 4000 chars, a skill file over its size cap, a
@@ -824,6 +827,13 @@ FREE_RUN_GRACE = 3
 #: die seconds after mint, so the anchor is close to the failure.
 FREE_BACKOFF_BASE = timedelta(minutes=2)
 FREE_BACKOFF_MAX = timedelta(minutes=30)
+
+#: How long a land may be refused for capacity, every land since the
+#: first refusal, before the tick files an ask (:func:`_capacity_wait_done`).
+#: Until then the refusals ride the free-failure backoff
+#: (:func:`free_backoff_ready_at`) and never count toward
+#: :data:`LAND_AGAIN_CAP`.
+LAND_CAPACITY_WAIT_CAP = timedelta(minutes=45)
 
 
 def free_backoff_ready_at(newest_created_at: datetime, run: int) -> datetime | None:
@@ -4853,6 +4863,50 @@ def _rearm_floor(n: _Node) -> int | None:
     return raw
 
 
+def _capacity_refused(j: _Node) -> bool:
+    """A failed ``land_slice`` whose ship launch the worker host refused for
+    capacity — the structured marker ``land_slice._fail`` writes
+    (``attempt_free == "infra-land"`` with ``red_class ==``
+    ``land_slice.ADMISSION_RED_CLASS``), never the error prose: the host
+    is busy, nothing is wrong with the branch or the land."""
+    from precis.workers.job_types import land_slice as _land_slice
+
+    return (
+        j.status == "failed"
+        and j.meta.get("job_type") == "land_slice"
+        and j.meta.get(ATTEMPT_FREE_KEY) == "infra-land"
+        and j.meta.get("red_class") == _land_slice.ADMISSION_RED_CLASS
+    )
+
+
+def _capacity_wait_done(plan: _Plan, n: _Node, now: datetime) -> str | None:
+    """The host name when ``n``'s land has been refused for capacity
+    continuously for longer than :data:`LAND_CAPACITY_WAIT_CAP`, else
+    ``None``. Continuous means every job since the first refusal in the
+    tail run is a capacity refusal (:func:`_capacity_refused`); any other
+    job ends the run, and so does the floor ``meta.rearmed_after_job`` — an
+    answered ask re-arms the wait. The run is measured to ``now``, not to
+    the newest refusal, so the ask lands on time while the free-failure
+    backoff is still holding the next mint. The clock starts at the first
+    refusal's mint, which a land queued for the host's slot can be old
+    before it ever ran (queue waits past 45 min happen), so one refusal
+    never fires: the run needs at least two. The host is the land's
+    ``params.target_node`` (``"unknown"`` when the params name none)."""
+    floor = _rearm_floor(n)
+    run: list[_Node] = []
+    for j in reversed(plan.jobs(n)):
+        if floor is not None and j.id <= floor:
+            break
+        if not _capacity_refused(j):
+            break
+        run.append(j)
+    if len(run) < 2 or now - run[-1].created_at <= LAND_CAPACITY_WAIT_CAP:
+        return None
+    params = run[0].meta.get("params")
+    host = params.get("target_node") if isinstance(params, dict) else None
+    return str(host) if host else "unknown"
+
+
 def _infra_red_lands(plan: _Plan, n: _Node) -> int:
     """The run of consecutive failed/timed-out ``land_slice`` jobs marked
     ``attempt_free == "infra-land"`` at the tail of ``n``'s jobs, counting
@@ -4860,12 +4914,22 @@ def _infra_red_lands(plan: _Plan, n: _Node) -> int:
     gr570187). A land red on the diff itself — or any other job — ends the
     run: the node goes back through a build, not another land. A
     wall-deadline kill carries ``STATUS:timed-out`` instead of ``failed``
-    (td648501) but is the same infra-class red."""
+    (td648501) but is the same infra-class red.
+
+    A land refused for capacity (:func:`_capacity_refused`) is neither
+    counted nor a break in the run: the host was busy, the gate never ran,
+    so nothing outside the diff went wrong that a "land again" ask could
+    answer (two refusals minutes apart filed that ask on release lands
+    while the host was full). One real infra red plus one capacity refusal is
+    one toward :data:`LAND_AGAIN_CAP`, not two; the refusals have their
+    own bound, :func:`_capacity_wait_done`."""
     floor = _rearm_floor(n)
     count = 0
     for j in reversed(plan.jobs(n)):
         if floor is not None and j.id <= floor:
             break
+        if _capacity_refused(j):
+            continue
         if not (
             j.status in ("failed", "timed-out")
             and j.meta.get("job_type") == "land_slice"
@@ -4876,13 +4940,18 @@ def _infra_red_lands(plan: _Plan, n: _Node) -> int:
     return count
 
 
-def _free_run(plan: _Plan, n: _Node) -> tuple[str | None, int]:
+def _free_run(
+    plan: _Plan, n: _Node, *, skip_capacity: bool = False
+) -> tuple[str | None, int]:
     """The consecutive run of identical ``attempt_free`` reasons on
     failed/timed-out jobs at the tail of ``n``'s jobs — ``(reason,
     count)``, ``(None, 0)`` when the newest job is not a free failure.
     Floored by ``meta.rearmed_after_job`` like :func:`_infra_red_lands`:
     an answered ask re-arms the run. A different reason, a real attempt,
-    a success or a non-ended job ends it (gr662077)."""
+    a success or a non-ended job ends it (gr662077). ``skip_capacity``
+    passes over a land refused for capacity (:func:`_capacity_refused`)
+    without counting it: the backoff paces on the full run, but the cap
+    must not read capacity refusals as a wedged holder."""
     floor = _rearm_floor(n)
     reason: str | None = None
     count = 0
@@ -4894,6 +4963,8 @@ def _free_run(plan: _Plan, n: _Node) -> tuple[str | None, int]:
         r = j.meta.get(ATTEMPT_FREE_KEY)
         if not r:
             break
+        if skip_capacity and _capacity_refused(j):
+            continue
         if reason is None:
             reason = str(r)
         elif str(r) != reason:
@@ -4905,8 +4976,10 @@ def _free_run(plan: _Plan, n: _Node) -> tuple[str | None, int]:
 def _free_done(plan: _Plan, n: _Node) -> str | None:
     """The identical ``attempt_free`` reason whose consecutive run hit
     :data:`FREE_RUN_CAP` — what :func:`_capped` turns into the
-    coordinator ask — or ``None`` while under the cap (gr662077)."""
-    reason, run = _free_run(plan, n)
+    coordinator ask — or ``None`` while under the cap (gr662077). Lands
+    refused for capacity do not count: their bound is
+    :func:`_capacity_wait_done`."""
+    reason, run = _free_run(plan, n, skip_capacity=True)
     return reason if reason is not None and run >= FREE_RUN_CAP else None
 
 
@@ -5368,6 +5441,7 @@ def _capped(
     *,
     rungs: tuple[_lanes.Rung, ...] = (),
     spend_capped: bool = False,
+    now: datetime,
 ) -> bool:
     if _pin_awaits_land(plan, n):
         return False  # the land owns the node (td659522 step 4)
@@ -5388,6 +5462,10 @@ def _capped(
     if _model_rule_hit(plan, n) is not None:
         return True
     if _land_again_capped(plan, n):
+        return True
+    # A land refused for capacity past its wait cap asks instead of
+    # waiting on: the host stayed full too long to be a blip.
+    if _capacity_wait_done(plan, n, now) is not None:
         return True
     # A mechanical signature whose brief budget is spent counts as
     # capped: the third repeat goes to the ask, not to a third same-rung
@@ -7273,7 +7351,9 @@ def _step_dispatch(
                     }
                 },
             )
-        if _capped(plan, n, cap, rungs=rungs, spend_capped=spend_hit is not None):
+        if _capped(
+            plan, n, cap, rungs=rungs, spend_capped=spend_hit is not None, now=now
+        ):
             continue
         jobs = plan.jobs(n)
         newest = jobs[-1] if jobs else None
@@ -7573,6 +7653,13 @@ _RELAND_ASK_OPTIONS: list[str] = [
     "won't do",
 ]
 
+#: Options of the ask a land refused for capacity past
+#: :data:`LAND_CAPACITY_WAIT_CAP` gets: keep waiting re-arms the wait, or stop.
+_CAPACITY_ASK_OPTIONS: list[str] = [
+    "keep waiting",
+    "won't do",
+]
+
 #: Options of the ask a human-only hit mints (td584381 S1a): no lane may
 #: write those paths — the options are the human edit landing, a new
 #: brief that stays off them, or dropping the node.
@@ -7594,6 +7681,7 @@ def _mint_ask(
     human: list[str] | None = None,
     lane_gap: str | None = None,
     mech: str | None = None,
+    capacity: str | None = None,
 ) -> int:
     newest = plan.jobs(n)[-1]
     # A deadline-killed land (``red_class == "timed-out"``,
@@ -7617,6 +7705,19 @@ def _mint_ask(
             "land again, rewrite the brief, or drop it?"
         )
         options = list(_RELAND_ASK_OPTIONS)
+    elif capacity:
+        # A land refused for capacity past LAND_CAPACITY_WAIT_CAP: the
+        # branch is fine, the host stayed full (not a re-land ask).
+        wait = f"{int(LAND_CAPACITY_WAIT_CAP.total_seconds() // 60)} min"
+        head = (
+            f"job:{newest.id} {newest.status} — the land has been refused at "
+            f"launch for capacity for over {wait} ({capacity} at capacity)"
+        )
+        title = (
+            f"td{n.id}: land could not start for {wait} — "
+            f"host {capacity} is at capacity"
+        )
+        options = list(_CAPACITY_ASK_OPTIONS)
     elif human:
         head = (
             f"job:{newest.id} {newest.status} — the branch touched "
@@ -7693,6 +7794,17 @@ def _mint_ask(
             "builder)' re-arms the re-land, 'rewrite the brief' rebuilds "
             f"from the new brief on td{n.id} (a `brief:` comment or an "
             f"edited body). Pick 'won't do' by closing "
+            f"td{n.id} STATUS:won't-do."
+        )
+    elif capacity:
+        body = (
+            f"The plan tick stopped re-minting the land of td{n.id} "
+            f"({n.title.splitlines()[0] if n.title else ''}): {head}. "
+            "Nothing is wrong with the branch or the land — the host could "
+            "not admit the ship's footprint, and every land since the first "
+            "refusal met the same full host. Answer 'keep waiting' and "
+            f"close this todo to let the tick keep re-minting td{n.id}'s "
+            f"land for another {wait}; pick 'won't do' by closing "
             f"td{n.id} STATUS:won't-do."
         )
     elif human:
@@ -8849,7 +8961,9 @@ def _step_hygiene(
                     }
                 },
             )
-        if not _capped(plan, n, cap, rungs=rungs, spend_capped=spend_hit is not None):
+        if not _capped(
+            plan, n, cap, rungs=rungs, spend_capped=spend_hit is not None, now=now
+        ):
             continue
         if plan.open_asks(n):
             continue
@@ -8861,10 +8975,12 @@ def _step_hygiene(
         model_rule = _model_rule_hit(plan, n)
         no_commit = _no_commit(plan, n)
         free_sig = _free_done(plan, n)
+        capacity_host = _capacity_wait_done(plan, n, now)
         lane_gap: str | None = None
         if (
             not human
             and not land_capped
+            and capacity_host is None
             and mech_sig is None
             and coord is None
             and model_rule is None
@@ -8886,6 +9002,7 @@ def _step_hygiene(
             and free_sig is None
             and not human
             and not land_capped
+            and capacity_host is None
             and not no_commit
             and job_type == DEFAULT_OP
             and lane_gap is None
@@ -8899,6 +9016,8 @@ def _step_hygiene(
                 or no_commit
                 or model_rule is not None
                 or free_sig is not None
+                else "file a capacity-wait ask"
+                if capacity_host is not None and not land_capped
                 else f"file an ask (retry cap {cap})"
             )
             res.notes.append(f"td{n.id}: would {what}")
@@ -9052,6 +9171,7 @@ def _step_hygiene(
                 human=human,
                 lane_gap=lane_gap,
                 mech=mech_sig,
+                capacity=capacity_host if not land_capped else None,
             )
         why = (
             "infra red routed to coordinator"
@@ -9064,6 +9184,8 @@ def _step_hygiene(
             if human
             else "re-land cap hit"
             if land_capped
+            else f"land refused for capacity on {capacity_host}"
+            if capacity_host is not None
             else "can't finish — ladder spent"
             if no_commit
             else f"identical '{free_sig}' wait x{FREE_RUN_CAP}"

@@ -341,6 +341,11 @@ log = logging.getLogger(__name__)
 
 NAME = "land_slice"
 
+#: ``red_class`` of a land whose launch the worker host refused for
+#: capacity (:class:`admission.Refused`): attempt-free, re-minted by the
+#: tick; ``plan_dispatch`` keys its capacity wait on it.
+ADMISSION_RED_CLASS = "admission"
+
 #: ``scripts/ship``'s subject hard limit, in CHARACTERS
 #: (``ship_subject_lint`` counts UTF-8 code points and refuses past 120;
 #: 72 is only its "aim for <=72" note). This used to be a 72-BYTE cap, so
@@ -3894,7 +3899,7 @@ def _launch_ship(
                     "admit the gate's footprint just now. The tick "
                     "re-mints the land attempt-free once capacity frees."
                 ),
-                attempt_free="admission",
+                attempt_free=ADMISSION_RED_CLASS,
             )
             return None
         except Exception as exc:
@@ -4735,7 +4740,7 @@ def _defer_admission_refused(
             f"{what} probe's footprint just now. The tick re-mints the land "
             "attempt-free once capacity frees."
         ),
-        attempt_free="admission",
+        attempt_free=ADMISSION_RED_CLASS,
     )
     return True
 
