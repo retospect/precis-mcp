@@ -33,6 +33,10 @@ failure mode) and degrades to ``env(name) → the call's default`` — no DB
 tier, because the DB tier needs the env-var name and compiled default the
 registry declares; an unregistered key has neither.
 
+Audited mutations lock per key before reading the predecessor or revert
+target. The transaction lock covers absent overrides too, so concurrent
+writers cannot claim the same predecessor.
+
 A ~60s TTL cache mirrors :mod:`precis.secrets`' ``_CACHE_TTL_SECONDS``
 pattern (misses never cached, so a freshly-``set`` value appears
 immediately; a hit is reused for the TTL so hot paths don't hit the DB per
@@ -70,7 +74,7 @@ import threading
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from psycopg import Connection
 from psycopg.pq import TransactionStatus
@@ -94,6 +98,9 @@ class SettingSpec:
     env_var: str | None
     default: object
     doc: str
+    #: Agents may flip this key via ``put(kind='job', id='/settings')``
+    #: after the user's in-session confirmation (bool keys only).
+    agent_settable: bool = False
 
 
 #: Known settings. Seeded from the four keys ``precis.budget.settings``
@@ -116,6 +123,15 @@ REGISTRY: dict[str, SettingSpec] = {
             env_var="PRECIS_LOCAL_FIRST",
             default=False,
             doc="Master switch for local-first LLM attempts; off preserves callers.",
+        ),
+        SettingSpec(
+            key="inbound_chase.enabled",
+            type="bool",
+            env_var="PRECIS_INBOUND_CHASE_ENABLED",
+            default=False,
+            doc="Inbound citer chase on first paper read (td489406); DB row "
+            "beats the env bootstrap default, read live without a restart.",
+            agent_settable=True,
         ),
         SettingSpec(
             key="llm.decide.mode",
@@ -1050,50 +1066,202 @@ def _db_meta(store: Store, key: str) -> tuple[object | None, str | None]:
 # ── write side (CLI + web editor) ─────────────────────────────────────────
 
 
-def set_setting(key: str, value: object, *, store: Store) -> None:
-    """Upsert ``key`` = ``str(value)`` into ``app_settings`` and invalidate
-    the cache. Records ``updated_by`` (migration 0125); tolerates a DB that
-    hasn't taken 0125 yet by retrying without it (rolling deploy) — mirrors
-    :func:`precis.secrets._reveal`'s fallback to the 1-arg ``vault.reveal``."""
+class NoSettingHistory(ValueError):
+    """There is no previous override to restore."""
+
+
+def _audit(
+    conn: Connection,
+    key: str,
+    old: str | None,
+    new: str | None,
+    *,
+    actor: str,
+    reason: str | None,
+    motivating_ref: str | None,
+    confirmed_quote: str | None,
+) -> None:
+    """Write the audit inside the mutation transaction."""
     import psycopg
 
-    sval = str(value)
-    ident = _identity_summary()
-    with store.pool.connection() as conn:
-        try:
+    try:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO app_settings_audit (key, old_value, new_value, "
+                "actor, reason, motivating_ref, confirmed_quote) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (key, old, new, actor, reason, motivating_ref, confirmed_quote),
+            )
+    except psycopg.errors.UndefinedTable:
+        # Legacy operator writes keep their rolling-deploy fallback.
+        if confirmed_quote is not None or (
+            (spec := REGISTRY.get(key)) is not None and spec.agent_settable
+        ):
+            raise
+        log.warning("settings: app_settings_audit missing (pre-0338 DB)")
+
+
+def _upsert(conn: Connection, key: str, value: str, actor: str) -> None:
+    import psycopg
+
+    try:
+        with conn.transaction():
             conn.execute(
                 "INSERT INTO app_settings (key, value, updated_at, updated_by) "
                 "VALUES (%s, %s, now(), %s) "
                 "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
                 "updated_at = now(), updated_by = EXCLUDED.updated_by",
-                (key, sval, ident),
+                (key, value, actor),
             )
-        except psycopg.errors.UndefinedColumn:
-            conn.rollback()
-            conn.execute(
-                "INSERT INTO app_settings (key, value, updated_at) "
-                "VALUES (%s, %s, now()) "
-                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
-                "updated_at = now()",
-                (key, sval),
-            )
-        conn.commit()
-    invalidate(key)
+    except psycopg.errors.UndefinedColumn:
+        # Roll back just the savepoint so the per-key lock stays held.
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at) "
+            "VALUES (%s, %s, now()) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
+            "updated_at = now()",
+            (key, value),
+        )
 
 
-def clear_setting(key: str, *, store: Store) -> None:
-    """Delete one setting (revert to the env / compiled default) and
-    invalidate the cache."""
+def _change_setting(
+    key: str,
+    value: str | None,
+    *,
+    store: Store,
+    reason: str | None,
+    motivating_ref: str | None,
+    confirmed_quote: str | None,
+    revert: bool = False,
+) -> tuple[str | None, str | None]:
+    from precis.store.revision_context import current_revision_context
+
+    context = current_revision_context()
+    actor = (context.actor if context else None) or _identity_summary()
     with store.pool.connection() as conn:
-        conn.execute("DELETE FROM app_settings WHERE key = %s", (key,))
-        conn.commit()
+        # A row lock cannot serialize writes to an absent key. Use a
+        # transaction-scoped lock shared by set, clear and revert.
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (f"app_settings:{key}",),
+        )
+        if revert:
+            previous = conn.execute(
+                "SELECT old_value FROM app_settings_audit "
+                "WHERE key = %s ORDER BY id DESC LIMIT 1",
+                (key,),
+            ).fetchone()
+            if previous is None:
+                raise NoSettingHistory(key)
+            value = previous[0]
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = %s", (key,)
+        ).fetchone()
+        old = None if row is None else str(row[0])
+        if value is None:
+            conn.execute("DELETE FROM app_settings WHERE key = %s", (key,))
+        else:
+            _upsert(conn, key, value, actor)
+        _audit(
+            conn,
+            key,
+            old,
+            value,
+            actor=actor,
+            reason=reason,
+            motivating_ref=motivating_ref,
+            confirmed_quote=confirmed_quote,
+        )
     invalidate(key)
+    return old, value
+
+
+def set_setting(
+    key: str,
+    value: object,
+    *,
+    store: Store,
+    reason: str | None = None,
+    motivating_ref: str | None = None,
+    confirmed_quote: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Upsert an audited DB override, returning its old and new raw values."""
+    return _change_setting(
+        key,
+        str(value),
+        store=store,
+        reason=reason,
+        motivating_ref=motivating_ref,
+        confirmed_quote=confirmed_quote,
+    )
+
+
+def clear_setting(
+    key: str,
+    *,
+    store: Store,
+    reason: str | None = None,
+    motivating_ref: str | None = None,
+    confirmed_quote: str | None = None,
+) -> None:
+    """Delete the override and audit the clear (new value NULL)."""
+    _change_setting(
+        key,
+        None,
+        store=store,
+        reason=reason,
+        motivating_ref=motivating_ref,
+        confirmed_quote=confirmed_quote,
+    )
+
+
+def revert_setting(
+    key: str,
+    *,
+    store: Store,
+    reason: str,
+    motivating_ref: str,
+    confirmed_quote: str,
+) -> tuple[str | None, str | None]:
+    """Restore the latest audit row's old override, or clear it if absent."""
+    return _change_setting(
+        key,
+        None,
+        store=store,
+        reason=reason,
+        motivating_ref=motivating_ref,
+        confirmed_quote=confirmed_quote,
+        revert=True,
+    )
+
+
+def audit_history(key: str, *, store: Store, limit: int = 10) -> list[dict[str, Any]]:
+    """Newest-first ``app_settings_audit`` rows for ``key``."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT id, created_at, actor, old_value, new_value, reason, "
+            "motivating_ref, confirmed_quote FROM app_settings_audit "
+            "WHERE key = %s ORDER BY id DESC LIMIT %s",
+            (key, limit),
+        ).fetchall()
+    names = (
+        "id",
+        "at",
+        "actor",
+        "old",
+        "new",
+        "reason",
+        "motivating_ref",
+        "confirmed_quote",
+    )
+    return [dict(zip(names, r, strict=True)) for r in rows]
 
 
 __all__ = [
     "REGISTRY",
     "SettingSpec",
     "advertised_env_presence",
+    "audit_history",
     "bind_store",
     "clear_setting",
     "gateway_host",
@@ -1107,5 +1275,6 @@ __all__ = [
     "list_settings",
     "register",
     "resolve",
+    "revert_setting",
     "set_setting",
 ]

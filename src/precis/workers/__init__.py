@@ -72,7 +72,7 @@ AST-parses ``cli/worker.py`` and fails CI on wiring/spec drift.
 
 Run control — ``service_config`` is live, env is deploy-time only
 -----------------------------------------------------------------
-``service_config(host, service, prio, …)`` is the sole live control
+``service_config(host, service, prio, …)`` controls host placement
 (``prio 0`` off, ``1..10`` claim weight). Registration is structural;
 ``run_loop`` resolves priority each cycle, so flips need no restart.
 ``PRECIS_*_ENABLED`` now seeds deploy-time rows only; INSERT-if-absent keeps

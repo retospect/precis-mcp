@@ -287,7 +287,7 @@ worker may claim it).
 ## Is a live switch set? — /settings
 
 ```python
-get(kind="job", id="/settings")   # every app_settings + service_config row
+get(kind="job", id="/settings")   # effective flags and allowlisted live settings
 ```
 
 `app_settings` is the generic non-secret KV (a row IS a non-default
@@ -299,9 +299,26 @@ only allowlisted key families render a row at all (the rest are a
 withheld count), unknown key segments render as `<name>`, and values
 render only as typed scalars (bool, number, timestamp, duration,
 vetted enum word — anything else is `(withheld: string, N chars)`).
-`service_config.host` is masked. Read-only — writes stay with
-a human operator. The Dark switches table on [[precis-status]] covers
-only `enable_env` services; this is every row.
+`service_config.host` is masked. The view is read-only; deploys,
+restarts and secrets stay with a human operator. The Dark switches table on [[precis-status]] covers
+only `enable_env` services.
+
+Agent-settable bool flags (today `inbound_chase.enabled`; DB row beats
+the env default, workers read it live) flip only after the user's
+explicit in-session confirmation. Both set and revert require a reason,
+a motivating ref, boolean `confirmed_by_user=True` and the user’s words.
+History covers agent-settable flags. Reverting an absent prior override
+restores the env or compiled fallback.
+
+```python
+put(kind="job", id="/settings", args={"key": "inbound_chase.enabled",
+    "value": True, "reason": "...", "motivating_ref": "td489406",
+    "confirmed_by_user": True, "user_said": "<their words>"})
+put(kind="job", id="/settings", args={"key": "inbound_chase.enabled",
+    "revert": True, "reason": "...", "motivating_ref": "td489406",
+    "confirmed_by_user": True, "user_said": "<their words>"})   # restores the previous value
+get(kind="job", id="/settings", args={"history": "inbound_chase.enabled"})
+```
 
 ## Which claim.* overrides are set? — /claim
 

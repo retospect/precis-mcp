@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -28,6 +29,7 @@ from precis.cli.worker import (
 )
 from precis.embedder import MockEmbedder, RemoteEmbedder
 from precis.format import toon
+from precis.store import Store
 from precis.workers.registry import SERVICES_BY_NAME, service_names_for_profile
 
 # ---------------------------------------------------------------------------
@@ -1368,3 +1370,70 @@ def test_chase_trigger_pass_does_not_forward_the_loop_batch_size() -> None:
         kw = {k.arg: k.value for k in call.keywords}
         assert isinstance(kw["batch_size"], ast.Constant)
         assert kw["batch_size"].value is None
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_inbound_chase_live_worker_gate(
+    store: Store, monkeypatch: pytest.MonkeyPatch, manual: bool
+) -> None:
+    from precis import settings
+    from precis.cli import worker
+    from precis.workers.service_config import ServiceConfigResolver, set_service_prio
+
+    key = "inbound_chase.enabled"
+    resolver = ServiceConfigResolver(store, "maple", ttl_s=0)
+
+    def inspect_rotation(
+        *args: Any,
+        ref_passes: list[Callable[..., Any]],
+        pass_gate: Callable[[str], bool],
+        **kwargs: Any,
+    ) -> None:
+        assert any(fn.__name__ == "_inbound_chase_pass" for fn in ref_passes)
+        assert not pass_gate("inbound_chase")
+        settings.set_setting(key, "true", store=store)
+        assert pass_gate("inbound_chase")  # no service row
+        set_service_prio(store, "*", "inbound_chase", 5, actor="test")
+        set_service_prio(store, "maple", "inbound_chase", 0, actor="test")
+        assert pass_gate("inbound_chase") is manual
+        set_service_prio(store, "maple", "inbound_chase", 5, actor="test")
+        assert pass_gate("inbound_chase")
+        settings.set_setting(key, "false", store=store)
+        assert not pass_gate("inbound_chase")  # positive service row
+
+    monkeypatch.setenv("PRECIS_INBOUND_CHASE_ENABLED", "0")
+    monkeypatch.setattr(worker, "resolve_dsn", lambda _url: "unused")
+    monkeypatch.setattr(
+        "precis.store.migrate.check_schema_at_startup", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(Store, "connect", lambda _dsn: store)
+    monkeypatch.setattr("precis.secrets.adopt_process_store", lambda _store: None)
+    monkeypatch.setattr("precis.route_log.bind_store", lambda _store: None)
+    monkeypatch.setattr("precis.budget.bind_store", lambda _store: None)
+    monkeypatch.setattr("precis.settings.bind_store", lambda _store: None)
+    monkeypatch.setattr(worker, "_attach_db_log_handler", lambda _dsn: None)
+    monkeypatch.setattr(worker, "_record_boot_event", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "precis.workers.heartbeat.advertise_boot_id_now", lambda _store: None
+    )
+    monkeypatch.setattr(worker, "_build_handlers", lambda *a: [])
+    monkeypatch.setattr(
+        worker,
+        "_should_register",
+        lambda only, name, **kwargs: (
+            name == "inbound_chase" and _should_register(only, name, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(worker, "_ClaudeLanes", lambda **kw: {})
+    monkeypatch.setattr(worker, "_install_signal_handlers", lambda: {"stop": False})
+    monkeypatch.setattr(worker, "ServiceConfigResolver", lambda *_args: resolver)
+    monkeypatch.setattr(
+        "precis.utils.llm.local_serving.release_process_holds", lambda: None
+    )
+    monkeypatch.setattr(worker, "run_loop", inspect_rotation)
+    args = ["worker", "--profile", "system", "--once"]
+    if manual:
+        args += ["--only", "inbound_chase"]
+    with monkeypatch.context() as close_patch:
+        close_patch.setattr(Store, "close", lambda _store: None)
+        worker.run(_build_parser().parse_args(args))

@@ -1032,6 +1032,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         category="discovery",
         kind=ServiceKind.PASS,
         ref_pass=True,
+        default_profiles=_SYS,
         enable_env="PRECIS_INBOUND_CHASE_ENABLED",
         uses_model=True,
         uses_external=("s2",),

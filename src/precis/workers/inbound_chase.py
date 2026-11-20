@@ -102,15 +102,12 @@ never re-sweep" policy self-terminating without extra bookkeeping: a
 sidecar render), not by leaving the pair permanently unresolved and
 endlessly re-claimed.
 
-Ship dark: ``PRECIS_INBOUND_CHASE_ENABLED`` (default ``"0"``) gates
-both the trigger (no tag is ever written while dark, so turning the
-flag off after a period fully halts new activity — existing tags/links
-are inert data, not re-processed) and the pass itself. The inbound
-path's LLM calls are gated by *this* flag, not ``PRECIS_CHASE_LLM`` —
-that flag's default is untouched; turning this pass on at all already
-implies paying for verification, so
-resolution always runs with ``with_llm=True`` once the pass is
-claiming work, independent of the old outbound flag's setting.
+The live ``inbound_chase.enabled`` setting gates new triggers and worker
+passes. An absent DB override falls back to ``PRECIS_INBOUND_CHASE_ENABLED``
+and then false. Rotating workers also honor host service priority. Disabling
+the flag stops new triggers and batches; pending tags are retained for
+resumption. Enabled batches verify with the LLM independently of the
+outbound ``PRECIS_CHASE_LLM`` flag.
 """
 
 from __future__ import annotations
@@ -270,9 +267,12 @@ class _DailyBudget:
         return True
 
 
-def inbound_chase_enabled() -> bool:
-    """``PRECIS_INBOUND_CHASE_ENABLED`` — default OFF (see module docstring)."""
-    return bool(int(os.environ.get("PRECIS_INBOUND_CHASE_ENABLED", "0") or "0"))
+def inbound_chase_enabled(*, store: Store | None = None) -> bool:
+    """``inbound_chase.enabled`` — DB row, else env
+    ``PRECIS_INBOUND_CHASE_ENABLED``, else OFF (see module docstring)."""
+    from precis import settings
+
+    return bool(settings.get_bool("inbound_chase.enabled", store=store))
 
 
 def mark_paper_active(store: Store, ref: Any) -> None:
@@ -284,7 +284,7 @@ def mark_paper_active(store: Store, ref: Any) -> None:
     from ``PaperHandler.get`` (see module docstring for why "read via
     get" was picked as the engagement event).
     """
-    if not inbound_chase_enabled():
+    if not inbound_chase_enabled(store=store):
         return
     if getattr(ref, "kind", None) != "paper":
         return
@@ -798,9 +798,8 @@ def run_inbound_chase_pass(
     expensive half — one S2 call plus N stub-mints/LLM-verifies each —
     so a small default keeps a single pass bounded even though the
     sweep itself is capped per paper). ``with_llm`` defaults True:
-    this whole pass is dark behind ``PRECIS_INBOUND_CHASE_ENABLED``, so
-    reaching here already means the LLM-cost decision was made (see
-    module docstring) — independent of ``PRECIS_CHASE_LLM``. ``now``
+    worker scheduling checks ``inbound_chase.enabled`` before calling
+    this pass, independently of ``PRECIS_CHASE_LLM``. ``now``
     pins the UTC day the daily counter keys on (tests inject it to
     drive the rollover; prod passes nothing).
 

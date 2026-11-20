@@ -99,16 +99,22 @@ own floor) — leave it unless the slice shows it under-marking.
 
 ## Inbound citer chase (td489406)
 
-Flipped 2026-10-24, review after 3 days (2026-10-27). Two gates: the DB row
-(`precis service prio <host> inbound_chase <N>`, single host like the passes above)
-and the live env var `PRECIS_INBOUND_CHASE_ENABLED=1`. The deploy renders the var
-from `precis_inbound_chase` (default true, `deploy/group_vars/all.yml`) via
-`precis_identity_env` into every worker unit and precis-web; the shared session
-MCP container gets it from `deploy/mcp-http/precis-mcp-http-ensure.sh`
-(first ensure after this lands recreates the backend once).
+Read `get(kind='job', id='/settings')` for the effective
+`inbound_chase.enabled` flag and its source. A DB override wins over the
+bootstrap `PRECIS_INBOUND_CHASE_ENABLED` environment variable, which falls
+back to false. Paper reads and worker passes pick up changes within the
+settings cache TTL (60 seconds).
 
-Caps: `PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER` (25), `PRECIS_INBOUND_CHASE_DAILY_LIMIT` (200/day).
+With the flag on, system and all worker profiles can run the pass without
+a service row. An exact-host service priority overrides the wildcard row.
+Set the effective priority to zero to stop the rotation on that host.
+Manual `--only inbound_chase` runs still require the flag.
 
-Kill switch (any one): set `precis_inbound_chase: false` and redeploy (var drops out);
-or set the var to `0`; or `PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER=0`;
-or `precis service prio <host> inbound_chase 0`.
+Set the flag to false to stop new triggers and batches fleet-wide. An
+in-flight batch can finish, and pending papers resume after re-enablement.
+Operators can use `precis settings set inbound_chase.enabled false`. For
+a confirmed MCP flip or revert and its audit history, see
+`precis-job-observe-help`.
+
+Candidate caps are `PRECIS_INBOUND_CHASE_MAX_CANDIDATES_PER_PAPER` (25)
+and `PRECIS_INBOUND_CHASE_DAILY_LIMIT` (200/day).

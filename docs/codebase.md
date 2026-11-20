@@ -189,6 +189,11 @@ Paper cards draw on the publisher abstract, a labelled generated abstract,
 or leading body prose. New nanopub approvals use chunk-anchored passages.
 RDF and LaTeX preserve context literals already frozen into publish rows.
 
+The jobs settings surface reports effective allowlisted flags. Flag updates
+and reverts take a per-key transaction lock before reading the predecessor,
+and commit the override and audit together. Inbound chase uses this setting
+for both paper-read activation and worker admission.
+
 ## Subsystems (where the code lives)
 
 | Box | Code | One-line |
