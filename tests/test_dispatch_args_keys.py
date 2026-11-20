@@ -26,7 +26,7 @@ from precis.errors import BadInput
 from precis.handlers.gripe import GripeHandler
 from precis.protocol import ArgsSpec, Handler, UndeclaredArgsKey
 from precis.runtime import PrecisRuntime
-from precis.store import Store
+from precis.store import Store, Tag
 from precis.user_context import user_scope
 from precis.users import PasswordRecord
 
@@ -429,6 +429,55 @@ def test_job_sort_recency_routes_to_the_job_listing(
         )
         assert "[error" not in out, out
         assert "no job entries" in out, out
+
+
+def test_job_queryless_recency_listing_takes_status_and_paging(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr709771: the call-errors cluster's exact shapes —
+    ``search(kind='job', sort='recency', status=…)`` with ``page=`` /
+    ``page_size=`` and no ``q=`` — died on the source-search primitive's
+    "requires q=" refusal. ``sort='recency'`` routes to the job
+    handler's own newest-created listing, which applies ``status=`` and
+    paging itself."""
+    older = store.insert_ref(kind="job", slug=None, title="td737202 older", meta={})
+    store.add_tag(older.id, Tag.closed("STATUS", "running"), set_by="system")
+    newer = store.insert_ref(kind="job", slug=None, title="td737202 newer", meta={})
+    store.add_tag(newer.id, Tag.closed("STATUS", "queued"), set_by="system")
+
+    running = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "job",
+            "page": 1,
+            "page_size": 60,
+            "sort": "recency",
+            "status": "running",
+        },
+    )
+    assert "[error" not in running, running
+    assert "td737202 older" in running, running
+    assert "td737202 newer" not in running, running
+
+    queued = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "job",
+            "page": 1,
+            "page_size": 60,
+            "sort": "recency",
+            "status": "queued",
+        },
+    )
+    assert "[error" not in queued, queued
+    assert "td737202 newer" in queued, queued
+    assert "td737202 older" not in queued, queued
+
+    bare = runtime_with_store.dispatch(
+        "search", {"kind": "job", "page": 1, "page_size": 25, "sort": "recency"}
+    )
+    assert "[error" not in bare, bare
+    assert bare.index("td737202 newer") < bare.index("td737202 older"), bare
 
 
 def test_job_since_with_q_routes_to_source_search(
