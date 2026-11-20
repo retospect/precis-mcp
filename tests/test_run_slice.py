@@ -14831,6 +14831,57 @@ def test_skipped_commit_stamp_reads_the_job_before_this_submit() -> None:
     assert run_slice._skipped_commit_stamp(store, 7) is None
 
 
+def test_submit_preserves_the_commit_stamp_across_consecutive_lock_waits(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock before reuse and a lock during salvage both leave the
+    finished edits authorized for the next retry."""
+    monkeypatch.setenv("PRECIS_LAND_INDEX_LOCK_WAIT_S", "0.05")
+    lock = _reused_tree_with_lock(seams, tmp_path, age_s=0)
+    monkeypatch.setattr(land_slice, "_git_in_tree", lambda checkout: True)
+    store = _Store()
+    store.add_todo(42, "Build the widget", body="Do X.")
+    message = "fix(slice): finish the widget (td42)\n"
+    stamp = {"commit_skipped": "index-lock", "commit_skipped_msg": message}
+    metas: dict[int, dict[str, Any]] = {900: stamp}
+    monkeypatch.setattr(store, "pool", _job_pool_store(metas).pool, raising=False)
+    fake_git = run_slice._git
+
+    def locked_add(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args == ["add", "-A"]:
+            return subprocess.CompletedProcess(
+                args, 128, stdout="", stderr="index.lock already exists"
+            )
+        return fake_git(args, cwd)
+
+    for job_id, why in ((901, None), (902, "salvage-failed")):
+        if why:
+            lock.unlink()
+            monkeypatch.setattr(run_slice, "_git", locked_add)
+        ctx = _Ctx(store, {"todo_id": 42})
+        ctx.ref_id = job_id
+        metas[job_id] = ctx.meta_set
+
+        assert run_slice.submit(ctx, None) is None
+        assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "index-lock"
+        assert (ctx.meta_set["index_lock"]["why"] == "salvage-failed") == bool(why)
+        assert ["checkout", "-f", "slice/42"] not in [a for a, _c in seams["git"]]
+
+    for job_id in (901, 902):
+        assert {key: metas[job_id].get(key) for key in stamp} == stamp
+
+    monkeypatch.setattr(run_slice, "_git", fake_git)
+    seams["staged"] = True
+    ctx = _Ctx(store, {"todo_id": 42})
+    ctx.ref_id = 903
+    metas[903] = ctx.meta_set
+
+    assert run_slice.submit(ctx, None) is not None
+    assert seams["commit_text"] == message
+    commands = [a[0] for a, _cwd in seams["git"]]
+    assert commands.index("commit") < commands.index("checkout")
+
+
 def test_ensure_worktree_salvage_uses_the_origin_ref(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
