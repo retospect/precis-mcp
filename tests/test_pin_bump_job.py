@@ -1247,6 +1247,7 @@ def test_the_handoff_mints_one_land_and_succeeds(
         "worktree": str(pin.tree()),
         "branch": "slice/77",
         "target_node": "spruce",
+        "head": commit,
     }
     rec = pin.record()
     assert rec["state"] == "handed" and rec["land_job"] == 5001

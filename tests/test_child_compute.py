@@ -98,7 +98,9 @@ def test_sigterm_ignoring_child_is_sigkilled() -> None:
     assert _gone(ready[0])
 
 
-@pytest.mark.skipif(os.name != "posix", reason="rlimits are POSIX-only")
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.name != "posix", reason="rlimits are POSIX-only"
+)
 def test_child_applies_the_mem_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     """gr595537: the spawn-started compute child applies the
     ``PRECIS_JOB_MEM_LIMIT`` cap in-process — a spawn child has no
