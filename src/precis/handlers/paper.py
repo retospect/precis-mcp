@@ -4325,7 +4325,7 @@ class PaperHandler(Handler):
         )
 
         # Everything else — validation, single-leg vs. broad (RRF-fused)
-        # retrieval, title-introducer promotion, year-omitted notice — is
+        # retrieval, title-match record callouts, year-omitted notice — is
         # FusedBlockSearch's job; PaperSearchResultRenderer turns the
         # result into the agent-facing Response (empty-hits DOI-aware
         # guidance, or headline + TOON table + steering trailer).

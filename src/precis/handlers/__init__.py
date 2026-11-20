@@ -25,11 +25,12 @@ registered worktree stays quiet, preserving its useful cold-build guidance.
 ``datasheet`` inbox-drop paths and the browser two-pane reader/citation
 detail: ``docs/runbooks/datasheet-ops.md``.
 
-Capped non-verbatim paper search keeps exact-title matches as record
-callouts without promoting rows. Its store-selected page already applies
-body preference and diversity caps; inserting a representative card after
-that slice could hide a ranked paper and repeat the title match on later
-pages. Uncapped title promotion retains its existing behavior.
+Paper-family search (``paper``, ``cfp``, ``datasheet``) keeps title
+matches in record callouts. Promoting records would consume chunk
+slots, discard same-paper hits, or displace ranked papers after
+store-side body preference and diversity caps — so no kind on the
+``FusedBlockSearch.run`` path promotes. Only ``PaperHandler.search_hits``
+retains title promotion, for the cross-kind merge.
 
 Paper same-search hints preserve scope, mode (including omission) and broad
 arguments to maintain corpus and ranking. Next-page hints preserve page size.

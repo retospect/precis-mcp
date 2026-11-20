@@ -737,18 +737,18 @@ strips `attention is all you need` to its stemmed content words, so any
 content-dense body that repeats those words outranks the paper's own
 short card. Paper search compensates — on page 1 with no
 `scope=`/`tags=`/`after=`/`before=`, a near-exact match on
-the title is promoted to the top of the table **and** named above it:
+the title is named in a record callout above the table:
 
 ```
 Title match — the paper record:
   pa2928 [held] — Ashish Vaswani et al. (2017). Attention is All you Need
 ```
 
-Read that line, not the row it promoted — the promoted row is still a
-*chunk* (often the paper's boilerplate first chunk), so its keywords can
-look nothing like your query. `held` vs `want` says whether the PDF is in
-the corpus. For every title match as a record, use `search(kind='paper',
-args={'title': '…'})`.
+Read that callout for the title match. No table row is promoted: the
+table keeps its ranked hits, and title records consume no page slots.
+Chunk keywords can therefore look unlike the title query. `held` vs
+`want` says whether the PDF is in the corpus. For every title match as a
+record, use `search(kind='paper', args={'title': '…'})`.
 
 ## Find the right skill for a task
 ## Which skill explains how to do X?

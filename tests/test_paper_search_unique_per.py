@@ -202,6 +202,69 @@ def test_scope_search_default_page_is_chunk_sized(store: Store) -> None:
     assert len(_row_chunk_handles(res.body)) == 20
 
 
+def test_chunk_title_matches_do_not_consume_page_slots(store: Store) -> None:
+    """gr681157: title records stay in the callout, leaving 20 chunk rows."""
+    query = "metal organic framework CO2 capture"
+    matching = _seed(
+        store,
+        slug="title-chunks",
+        title=query,
+        blocks=[f"{query} passage {i}" for i in range(22)],
+    )
+    record_only = _seed(
+        store,
+        slug="title-only",
+        title=query,
+        blocks=["unrelated boilerplate"],
+    )
+    h = _handler(store)
+    first = h.search(q=query, mode="lexical", unique_per="chunk")
+    assert "Title match" in first.body
+    for ref_id in (matching, record_only):
+        pa = handle_registry.format_handle("paper", ref_id)
+        assert pa in first.body
+        assert not any(line.startswith(pa + "\t") for line in first.body.splitlines())
+    assert first.body.splitlines()[0].startswith("# 20 of 22 block hits")
+    assert len(_row_chunk_handles(first.body)) == 20
+    second = h.search(q=query, mode="lexical", unique_per="chunk", page=2)
+    assert len(_row_chunk_handles(second.body)) == 2
+    assert set(_row_chunk_handles(first.body)).isdisjoint(
+        _row_chunk_handles(second.body)
+    )
+
+
+def test_datasheet_title_matches_do_not_consume_page_slots(store: Store) -> None:
+    """gr681157 review: ``cfp`` and ``datasheet`` subclass PaperHandler
+    and reuse its search path — the no-promotion contract must hold for
+    them too, not just ``kind='paper'``. A title-matched datasheet record
+    stays in the callout and every table row stays a chunk row."""
+    from precis.handlers.datasheet import DatasheetHandler
+
+    query = "ACME buck converter efficiency report"
+    e = MockEmbedder(dim=1024)
+    ref = store.insert_ref(kind="datasheet", slug="acme-buck-eff", title=query)
+    texts = [f"{query} section {i}" for i in range(22)]
+    store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(ord=i, text=t, embedding=e.embed_one(t))
+            for i, t in enumerate(texts)
+        ],
+    )
+
+    out = DatasheetHandler(hub=Hub(store=store, embedder=e)).search(
+        q=query, mode="lexical", unique_per="chunk"
+    )
+    assert "Title match" in out.body
+    ds = handle_registry.format_handle("datasheet", ref.id)
+    assert ds in out.body
+    table = out.body.split("Next:", 1)[0]
+    assert not any(ln.startswith(ds + "\t") for ln in table.splitlines())
+    assert out.body.splitlines()[0].startswith("# 20 of ")
+    rows = [ln.split("\t", 1)[0] for ln in table.splitlines() if ln.startswith("dk")]
+    assert len(rows) == 20
+
+
 def test_paper_mode_pages_papers_not_chunks(store: Store) -> None:
     """Pagination walks *papers*: page 2 returns the papers page 1's
     rows didn't cover — never the first page's second chunk. (The
@@ -385,7 +448,7 @@ def test_title_callout_does_not_promote_a_row(store: Store) -> None:
     h = PaperHandler(hub=Hub(store=store, embedder=e))
     out = h.search(q="attention is all you need")
     assert "Title match" in out.body
-    # No pool hit → the promoted record row is the only mention of the
+    # No pool hit → the title callout is the only mention of the
     # pa handle; the hits table itself is empty (callout + empty page).
     assert "no paper blocks match" in out.body
 
