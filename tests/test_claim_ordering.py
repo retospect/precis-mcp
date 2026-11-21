@@ -379,6 +379,8 @@ def test_claim_rechecks_the_source_gripes_blocked_by(
     ``related-to`` edge, outside the plan — a ``blocked-by`` linked on
     the GRIPE after mint holds the queued build too, and releases once
     the blocker goes blocker-terminal."""
+    from precis.dispatch import Hub
+    from precis.handlers.job import JobHandler
     from precis.plans.templates import mint_gripe_fix_direct
     from tests._refs import insert_gripe
 
@@ -387,12 +389,21 @@ def test_claim_rechecks_the_source_gripes_blocked_by(
     job = _slice_job(store, build)
     blocker = store.insert_ref(kind="todo", slug=None, title="The blocker")
     store.add_link(src_ref_id=gid, dst_ref_id=blocker.id, relation="blocked-by")
+    free_job = _slice_job(store, _slice_task(store, "Edit src/precis/free.py"))
+    handler = JobHandler(hub=Hub(store=store, embedder=None))
+    body = handler.get(id=job).body
+    assert (
+        f"queue: held — source gripe gr{gid} is blocked-by td{blocker.id} (open)"
+        in body
+    )
+    assert "queue: position" not in body
+    assert "queue: position 1 of 1" in handler.get(id=free_job).body
     _advertise(store, "maple", {"builder": 1, "repo_checkout": 1, "git": 1})
     with store.pool.connection() as conn:
         claimed = claim_executor_jobs(
             conn, executor="ssh_node", limit=1, reserve_host_id="maple"
         )
-        assert claimed == []
+        assert [r[0] for r in claimed] == [free_job]
         conn.rollback()
     store.add_tag(
         blocker.id,
@@ -400,6 +411,8 @@ def test_claim_rechecks_the_source_gripes_blocked_by(
         set_by="agent",
         replace_prefix=True,
     )
+    assert "queue: held" not in handler.get(id=job).body
+    assert "queue: position 1 of 2" in handler.get(id=job).body
     with store.pool.connection() as conn:
         claimed = claim_executor_jobs(
             conn, executor="ssh_node", limit=1, reserve_host_id="maple"

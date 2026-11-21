@@ -46,7 +46,10 @@ The tick stores the current dispatch hold on the todo as
 ``meta.dispatch_hold = {reason, since}``, so operators can inspect it
 independently of the tick summary. Identical reasons keep their first
 observed UTC time. File overlap can hold a queued job at claim time,
-so the tick checks queued builds as well as unminted candidates.
+so the tick checks queued builds as well as unminted candidates. A source
+gripe's open blocker holds a new build before mint and an existing job
+at claim. The chain and node stall checks also read the live edge because
+a sequenced build can be jobless and inactive for the entire stall window.
 
 A task class without an enabled lane is a configuration gap, not capacity
 pressure: dispatch blocks the node on one coordinator ask before minting a

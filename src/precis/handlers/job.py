@@ -108,6 +108,7 @@ from precis.workers.executors._common import (
     claim_age_step_s,
     claim_class_age_s,
     claim_class_rank_enabled,
+    queued_build_hold_reasons,
 )
 from precis.workers.job_describe import job_row_sentence
 from precis.workers.job_types import get_job_type, known_job_types
@@ -5681,7 +5682,8 @@ class JobHandler(NumericRefHandler):
         earned it, and the per-class count of rows ahead; the reasons are
         the claim gates visible from the row itself: operator suspension, a
         ``target_node`` pin, a live lease, and work already running on the
-        same executor.
+        same executor. Build holds are read from the claim pass's hold
+        set and excluded from the position scan.
 
         Returns ``(lines, scan_ref, scan_status)``: the scan statement
         also returns this row's ``meta``, ``updated_at`` and live
@@ -5718,6 +5720,14 @@ class JobHandler(NumericRefHandler):
         )
         susp_params: tuple[list[str], ...] = (suspended,) if suspended else ()
         with self.store.pool.connection() as conn:
+            holds = queued_build_hold_reasons(conn) if executor == "ssh_node" else {}
+            hold_sql = (
+                "AND (COALESCE({alias}.meta->>'job_type', '') <> 'run_slice'"
+                " OR {alias}.parent_id IS NULL OR {alias}.parent_id <> ALL(%s))"
+                if holds
+                else ""
+            )
+            hold_params = (sorted(holds),) if holds else ()
             row = conn.execute(
                 f"""
                 WITH q AS (
@@ -5751,6 +5761,7 @@ class JobHandler(NumericRefHandler):
                                       AND t3.namespace = %s AND t3.value = ANY(%s)
                                  )
                              AND COALESCE(r3.prio, %s)::float8 <> 1
+                             {hold_sql.format(alias="r3")}
                         ) t
                    WHERE r.kind = 'job' AND r.retired_at IS NULL
                      AND r.meta->>'executor' = %s
@@ -5759,6 +5770,7 @@ class JobHandler(NumericRefHandler):
                                   WHERE rt.ref_id = r.ref_id
                                     AND t.namespace = %s AND t.value = ANY(%s))
                      {susp_sql}
+                     {hold_sql.format(alias="r")}
                 )
                 SELECT count(*),
                        count(*) FILTER (WHERE (crank, fpref, aged, qs, ref_id) <
@@ -5798,10 +5810,12 @@ class JobHandler(NumericRefHandler):
                     STATUS_NAMESPACE,
                     list(CLAIMABLE),
                     _DEFAULT_JOB_PRIO,
+                    *hold_params,
                     executor,
                     STATUS_NAMESPACE,
                     list(CLAIMABLE),
                     *susp_params,
+                    *hold_params,
                     ref.id,
                     ref.id,
                     ref.id,
@@ -5878,6 +5892,13 @@ class JobHandler(NumericRefHandler):
                 )
             return lines, scan_ref, live_status
         job_type = meta.get("job_type")
+        hold = (
+            holds.get(ref.parent_id)
+            if job_type == "run_slice" and ref.parent_id
+            else None
+        )
+        if hold:
+            lines.append(f"queue: held — {hold}")
         if job_type in suspended_job_types():
             lines.append(
                 f"queue: held — job_type {job_type!r} is in this server's "
@@ -5885,7 +5906,7 @@ class JobHandler(NumericRefHandler):
                 "own copy); a suspended type is not claimed until the hold clears"
             )
         since = as_utc(queued_since)
-        if total and since is not None:
+        if not hold and total and since is not None:
             waited = int((datetime.now(UTC) - since).total_seconds())
             cls_name = _CLASS_NAME_BY_RANK.get(float(bclass), "background")
             # The claim ranks by origin class first (slice 6, D2/D3). A
@@ -5937,7 +5958,7 @@ class JobHandler(NumericRefHandler):
                 f"queue: running now on {executor!r}: {sum(n for _, n in running)} "
                 f"({mix}) — a worker takes queued work as it frees up"
             )
-        else:
+        elif not hold:
             lines.append(
                 f"queue: nothing running on {executor!r}; if this stays queued, "
                 "no worker is claiming that executor (get(kind='job', "

@@ -454,12 +454,17 @@ def chains(store: Store) -> list[Chain]:
     rows = _unlanded_chains(store)
     if not rows:
         return []
+    from precis.workers.executors._common import source_gripe_holds
     from precis.workers.job_types.plan_dispatch import live_and_held_nodes
 
     roots = [r[0] for r in rows]
     try:
         live, held = live_and_held_nodes(store, roots)
         plans = _plan_nodes(store, roots)
+        with store.pool.connection() as conn:
+            sequencing = source_gripe_holds(
+                conn, [b for _, _, builds in rows for b in builds]
+            )
     except Exception:
         log.warning(
             "gripe_dispatch: build liveness read failed; counting every chain live",
@@ -467,6 +472,7 @@ def chains(store: Store) -> list[Chain]:
         )
         live = {b for r in rows for b in r[2]}
         held = set()
+        sequencing = {}
         plans = {}
     return [
         Chain(
@@ -476,9 +482,10 @@ def chains(store: Store) -> list[Chain]:
             bool(live & set(builds)),
             plans.get(root, ()),
             # No plan read means no evidence of a stall: read it moving.
-            # An overlap-held node is waiting on another build's land,
-            # not stalled: it keeps the plan moving though it holds no slot.
-            root not in plans or bool((live | held) & set(plans[root])),
+            # A source-gripe hold also protects parked and jobless builds.
+            root not in plans
+            or bool((live | held) & set(plans[root]))
+            or any(b in sequencing for b in builds),
         )
         for root, gids, builds in rows
     ]
@@ -608,8 +615,8 @@ def sweep_stalled(
     work is saved, never thrown away — Reto 2026-11-16).
 
     A parked chain — build not live, no node of its plan live or held in
-    the file-overlap hold (a build blocked-by a running review, or
-    waiting on another build's land, is waiting, not stalled), no open ask
+    a sequencing or file-overlap hold (including a blocked source gripe,
+    whether or not the build has queued), no open ask
     in the plan, and nothing moved on ANY plan node (``updated_at``, tag
     stamps, jobs) for :func:`stall_hours` — gets ONE ask-user todo,
     ``td<root>: chain stalled <age> — resume, start over, or drop?``,

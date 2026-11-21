@@ -11683,6 +11683,66 @@ def test_summary_counts_the_overlap_held_candidates(store: Store) -> None:
     assert res.counts()["held"] == 2
 
 
+def test_source_gripe_hold_defers_mint_and_stall_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.workers import factory_rescue as rescue
+    from precis.workers import gripe_dispatch as gd
+
+    use_lanes(monkeypatch, seed_lane("codex"))
+    held = _file_plan(store, "Fix src/precis/workers/run_slice.py")
+    task = held.ids["task"]
+    source = insert_gripe(store, "the held fix", status="fixing")
+    blocker = insert_gripe(store, "the prerequisite", status="triaged")
+    store.add_link(src_ref_id=held.root_id, dst_ref_id=source.id, relation="related-to")
+    store.add_link(src_ref_id=source.id, dst_ref_id=blocker.id, relation="blocked-by")
+    assert pd.run_pass(store).dispatched == 0
+    reason = f"source gripe gr{source.id} is blocked-by gr{blocker.id} (triaged)"
+    hold = _meta(store, task)["dispatch_hold"]
+    assert hold["reason"] == reason
+    assert pd.run_pass(store).dispatched == 0
+    assert _meta(store, task)["dispatch_hold"] == hold
+
+    # The node watchdog also sees the hold before a job exists.
+    later = datetime.now(UTC) + timedelta(hours=48)
+    watchdog = rescue.run_stall_pass(store, later, dry_run=True)
+    assert not watchdog.would_rescue
+    assert watchdog.held == 1
+
+    # A parked, jobless build would ordinarily qualify for a stall ask.
+    store.add_tag(task, Tag.open("hold:no-dispatch"), set_by="system")
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET updated_at = now() - interval '48 hours'")
+        conn.execute("UPDATE ref_tags SET created_at = now() - interval '48 hours'")
+    (chain,) = [c for c in gd.chains(store) if c.root_id == held.root_id]
+    assert (chain.live, chain.plan_live) == (False, True)
+    assert gd._idle_hours(store, chain.plan_ids) >= gd.stall_hours(store)
+    assert gd.sweep_stalled(store, [chain]) == []
+    assert not gd._open_ask(store, held.root_id)
+
+    store.add_tag(
+        blocker.id,
+        Tag.closed("STATUS", "wontfix"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    (released,) = [c for c in gd.chains(store) if c.root_id == held.root_id]
+    assert (released.live, released.plan_live) == (False, False)
+    assert [r["root"] for r in gd.sweep_stalled(store, [released])] == [held.root_id]
+
+
+def test_queued_overlap_hold_names_the_holder(store: Store) -> None:
+    from precis.dispatch import Hub
+    from precis.handlers.job import JobHandler
+
+    blocker = _started_outside_plans(store, [_SHARED])
+    task = _file_plan(store, f"Fix {_SHARED}").ids["task"]
+    job = _job(store, task, status="queued")
+    body = JobHandler(hub=Hub(store=store, embedder=None)).get(id=job).body
+    assert f"queue: held — files overlap td{blocker}" in body
+    assert "queue: position" not in body
+
+
 def test_overlap_held_chain_holds_no_slot_but_is_never_swept_as_stalled(
     store: Store,
 ) -> None:

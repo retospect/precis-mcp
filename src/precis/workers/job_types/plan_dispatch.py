@@ -8605,20 +8605,34 @@ def _step_dispatch(
         for n in sorted(plan.todos(), key=lambda x: (-_effective_score(plan, x), x.id))
         if _dispatchable(plan, n) and n.status == "open"
     ]
-    # Diagnostic only: every doable node is queued. The claim transaction
-    # checks current holders before spending an executor slot.
-    started = _started_slices(w.store, single_flight=True) if candidates else {}
+    from precis.workers.executors._common import source_gripe_holds
+
     waiting = [
         n
         for n in candidates
         if not (_excluded(plan, n) or _claims(n))
         and not any(j.status == "running" for j in plan.jobs(n))
     ]
+    build_ids = [n.id for n in waiting if _resolve_op(n)[0] == DEFAULT_OP]
+    source_holds = {}
+    if build_ids:
+        with w.store.pool.connection() as conn:
+            source_holds = source_gripe_holds(conn, build_ids)
+    # File overlap remains a claim-time hold. Minting behind a source
+    # gripe blocker, by contrast, would leave a job waiting indefinitely.
+    started = _started_slices(w.store, single_flight=True) if candidates else {}
     held = _overlap_holds(plan, w.store, started, waiting) if started else {}
     # gr657066: governs:factory skills join the routing set — a brief
     # naming one routes to the coordinator like any deny-path text.
     deny = _lanes.deny_paths_for(w.store) + _governs.governed_skill_paths()
     for n in waiting:
+        if n.id in source_holds and _reland_params(plan, n, w.store) is None:
+            if not plan.live_job(n) or any(
+                j.status == "queued" and j.meta.get("job_type") == DEFAULT_OP
+                for j in plan.jobs(n)
+            ):
+                res.dispatch_hold(n, source_holds[n.id])
+                continue
         if (
             started is not None
             and n.id in held

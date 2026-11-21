@@ -44,7 +44,7 @@ from precis.store._todo_sql import (
 from precis.store.types import ChunkInsert, Tag
 from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
 from precis.utils import dispatch_score as _dscore
-from precis.utils import job_footprint
+from precis.utils import handle_registry, job_footprint
 from precis.utils.llm.failure import backoff_hours as _failure_backoff_hours
 from precis.utils.secret_scan import mask_secrets, mask_secrets_deep
 from precis.workers import footprint_admission as _footprint_admission
@@ -1468,6 +1468,16 @@ def build_overlap_holds(
     *,
     shared: tuple[Any | None, set[int]] | None = None,
 ) -> set[int]:
+    """Build todo ids held by started work in the claim transaction."""
+    return set(_build_overlap_details(conn, parent_ids, shared=shared))
+
+
+def _build_overlap_details(
+    conn: Connection,
+    parent_ids: list[int] | None = None,
+    *,
+    shared: tuple[Any | None, set[int]] | None = None,
+) -> dict[int, tuple[int, frozenset[str]]]:
     """Build todo ids held by started work, read in the claim transaction.
 
     Reusing the planner's file and repo resolution keeps pending pre-land
@@ -1486,15 +1496,13 @@ def build_overlap_holds(
     reader = _plan_reader(conn)
     started = pd._started_slices(reader)
     if not started:
-        return set()
+        return {}
     plan, wanted = shared or _queued_build_plan(conn, parent_ids)
-    if plan is not None:
-        return set(
-            pd._overlap_holds(
-                plan, reader, started, [n for n in plan.todos() if n.id in wanted]
-            )
-        )
-    return set()
+    if plan is None:
+        return {}
+    return pd._overlap_holds(
+        plan, reader, started, [n for n in plan.todos() if n.id in wanted]
+    )
 
 
 def _blocked_parents_sql(conn: Connection, parent_ids: list[int]) -> set[int]:
@@ -1531,9 +1539,8 @@ def _blocked_parents_sql(conn: Connection, parent_ids: list[int]) -> set[int]:
     return {int(r[0]) for r in rows}
 
 
-def _source_blocked_sql(conn: Connection, parent_ids: list[int]) -> set[int]:
-    """``parent_ids`` whose chain's source gripe has an open
-    ``blocked-by`` target of its own.
+def source_gripe_holds(conn: Connection, parent_ids: list[int]) -> dict[int, str]:
+    """Name one live source-gripe blocker per held build parent.
 
     The source sits outside the plan: ``templates._run`` hangs it off a
     ``related-to`` edge from the root, so neither ``plan.blocked`` nor
@@ -1541,7 +1548,7 @@ def _source_blocked_sql(conn: Connection, parent_ids: list[int]) -> set[int]:
     after the chain minted is rechecked here instead, on the parent and
     every ancestor (gr656970 review)."""
     if not parent_ids:
-        return set()
+        return {}
     rows = conn.execute(
         f"""
         WITH RECURSIVE up(origin, ref_id, parent_id) AS (
@@ -1551,26 +1558,34 @@ def _source_blocked_sql(conn: Connection, parent_ids: list[int]) -> set[int]:
             SELECT up.origin, r.ref_id, r.parent_id FROM refs r
               JOIN up ON r.ref_id = up.parent_id
         )
-        SELECT DISTINCT up.origin FROM up
-         JOIN links rel ON rel.src_ref_id = up.ref_id
-                      AND rel.relation = 'related-to'
-         JOIN refs g ON g.ref_id = rel.dst_ref_id
-        WHERE g.kind = 'gripe' AND g.retired_at IS NULL
-          AND EXISTS (
-             SELECT 1 FROM links l JOIN refs b ON b.ref_id = l.dst_ref_id
-              WHERE l.src_ref_id = g.ref_id AND l.relation = 'blocked-by'
-                AND b.retired_at IS NULL
-                AND COALESCE(
-                      (SELECT t.value FROM ref_tags rt
-                        JOIN tags t ON t.tag_id = rt.tag_id
-                       WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
-                       LIMIT 1),
-                      'open'
-                    ) NOT IN {blocker_terminal_sql()})
+        SELECT DISTINCT ON (up.origin)
+               up.origin, g.ref_id, b.ref_id, b.kind, bs.status
+          FROM up
+          JOIN links rel ON rel.src_ref_id = up.ref_id
+                        AND rel.relation = 'related-to'
+          JOIN refs g ON g.ref_id = rel.dst_ref_id
+          JOIN links l ON l.src_ref_id = g.ref_id AND l.relation = 'blocked-by'
+          JOIN refs b ON b.ref_id = l.dst_ref_id
+          CROSS JOIN LATERAL (
+              SELECT COALESCE(
+                  (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                    WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                    LIMIT 1), 'open') AS status
+          ) bs
+         WHERE g.kind = 'gripe' AND g.retired_at IS NULL
+           AND b.retired_at IS NULL AND bs.status NOT IN {blocker_terminal_sql()}
+         ORDER BY up.origin, g.ref_id, b.ref_id
         """,
         (parent_ids,),
     ).fetchall()
-    return {int(r[0]) for r in rows}
+    return {
+        int(parent): (
+            f"source gripe gr{source} is blocked-by "
+            f"{handle_registry.try_format(kind, blocker) or f'{kind}:{blocker}'} "
+            f"({status})"
+        )
+        for parent, source, blocker, kind, status in rows
+    }
 
 
 def build_blocked_holds(
@@ -1578,7 +1593,7 @@ def build_blocked_holds(
     parent_ids: list[int] | None = None,
     *,
     shared: tuple[Any | None, set[int]] | None = None,
-) -> set[int]:
+) -> dict[int, str]:
     """Queued ``run_slice`` parents a ``blocked-by`` edge still holds,
     read in the claim transaction (gr656970 review).
 
@@ -1589,7 +1604,7 @@ def build_blocked_holds(
     land is still held (the gr659981 hold dispatch applies), and while
     the chain's source gripe — a ``related-to`` hop off the ancestor
     chain, outside the plan model — carries an open blocked-by of its
-    own (:func:`_source_blocked_sql`). A parent no live plan covers — a
+    own (:func:`source_gripe_holds`). A parent no live plan covers — a
     ``run_slice`` minted outside plan_dispatch — falls back to the
     direct ancestors read, which lacks the land nuance but still
     honours the edge. ``shared`` is the claim pass's already-loaded
@@ -1605,8 +1620,26 @@ def build_blocked_holds(
     uncovered = wanted - covered
     if uncovered:
         held |= _blocked_parents_sql(conn, sorted(uncovered))
-    held |= _source_blocked_sql(conn, sorted(wanted))
-    return held
+    return {
+        **dict.fromkeys(held, "build todo or its ancestor has a blocked-by hold"),
+        **source_gripe_holds(conn, sorted(wanted)),
+    }
+
+
+def queued_build_hold_reasons(conn: Connection) -> dict[int, str]:
+    """The claim pass's sequencing and overlap holds for the queue view."""
+    shared = _queued_build_plan(conn, None)
+    if not shared[1]:
+        return {}
+    return {
+        **{
+            parent: f"files overlap td{holder}"
+            for parent, (holder, _) in _build_overlap_details(
+                conn, shared=shared
+            ).items()
+        },
+        **build_blocked_holds(conn, shared=shared),
+    }
 
 
 def _claim_order_sql(
@@ -2298,7 +2331,7 @@ def claim_executor_jobs(
                 # claim re-runs it so a late blocker still sequences,
                 # on the todo's ancestors and on the source gripe the
                 # chain is related-to.
-                | build_blocked_holds(conn, shared=shared)
+                | build_blocked_holds(conn, shared=shared).keys()
             ):
                 return None
         pin_hosts = _service_pin_hosts_for(meta, service_pinned)
@@ -2875,8 +2908,9 @@ def claim_executor_jobs(
     # overfetch window cannot hide an unrelated build behind held jobs.
     if executor == "ssh_node":
         shared = _shared_build_plan()
-        held_builds = build_overlap_holds(conn, shared=shared) | build_blocked_holds(
-            conn, shared=shared
+        held_builds = (
+            build_overlap_holds(conn, shared=shared)
+            | build_blocked_holds(conn, shared=shared).keys()
         )
         if held_builds:
             where_sql += (

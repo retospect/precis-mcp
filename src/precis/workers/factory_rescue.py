@@ -1574,6 +1574,22 @@ def _judge_node(
     deadline = STAGE_DEADLINES[stage]
     if now - newest <= deadline:
         return
+    if not is_gate and stage in ("idle", "queued"):
+        from precis.workers.executors._common import source_gripe_holds
+        from precis.workers.job_types import plan_dispatch as pd
+
+        waiting_to_build = (
+            j is not None and j.meta.get("job_type") == pd.DEFAULT_OP
+            if stage == "queued"
+            else pd._resolve_op(n)[0] == pd.DEFAULT_OP
+            and pd._reland_params(plan, n, store) is None
+        )
+        if waiting_to_build:
+            with store.pool.connection() as conn:
+                source_held = n.id in source_gripe_holds(conn, [n.id])
+            if source_held:
+                res.held += 1
+                return
     if stage == "queued" and j is not None:
         # gr625325: the queue itself is the clock — a same-(job_type,
         # executor) job CLAIMED inside the window (``meta.last_claimed_at``
