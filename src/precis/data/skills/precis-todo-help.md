@@ -153,6 +153,8 @@ search(kind="todo", view="done")  # completed
 search(kind="todo", view="flat")  # every live todo: id | status | parent | title (alias: 'index')
 ```
 
+`get(kind='todo', id=[1, 2], view='titles')` returns full titles for a batch (≤50 ids, never cut; pages under ~20 KB with the unread ids as `next:`).
+
 (The old `id='/open'` `/queue` `/doing` `/blocked` `/done` paths still
 work as deprecated aliases of these views.) `get(kind='todo', id=N,
 q='…')` is find-in-ref — the matching passages inside one todo

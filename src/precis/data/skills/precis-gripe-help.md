@@ -391,7 +391,7 @@ ord with the windowed call named. `view='log'` remains the audit log.
 Batch numeric-ref reads accept up to 300 IDs with `view='list'` (handle, title and tag chips)
 or `view='ids'` (bare handles). Both return one line per distinct ID in caller
 order; missing, deleted or other-kind rows get a one-line status. Other batch
-views keep the 50-ID cap. `args={'tag_prefixes': 'thread,fix'}` overrides list chips.
+views keep the 50-ID cap. `view='titles'` returns each title whole, never cut like the summary or `view='list'` — use it for title-drift checks. Output pages under ~20 KB: unread ids come back as the `next:` call. `args={'tag_prefixes': 'thread,fix'}` overrides list chips.
 
 Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
 returns one summary block per id (tags, prio, link count, first line; up to

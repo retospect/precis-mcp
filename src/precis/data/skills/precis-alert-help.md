@@ -106,6 +106,7 @@ get(kind='alert', id=42, view='context') # detail + worker_logs window (below)
 get(kind='alert', id=42, view='links')   # link graph to/from this alert
 get(kind='alert', id=42, view='raw')     # verbatim record — every meta key (oversized values elide; args={'meta_key': '<key>'} → one whole)
 get(kind='alert', id=[42, 43, 44])       # several at once: one summary block per id (≤50)
+get(kind='alert', id=[42, 43], view='titles')  # full titles, never cut; pages with a next: id list
 get(kind='alert', id=[42, 43], view='detail')  # the view maps over the batch (any single-id view)
 search(kind='alert', q='spin loop')    # lexical over titles
 search(kind='alert', tags=['alert-source:nursery:spin-loop'])

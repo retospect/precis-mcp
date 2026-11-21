@@ -1355,7 +1355,7 @@ class MemoryHandler(AuditedRetirementHandler):
             if canon is None and not isinstance(id, list):
                 resp = self._with_budget_outline(resp, id)
             return interpreted(resp, [f"view={view!r} read as {shown}"])
-        if isinstance(id, list) and view in {"list", "ids"}:
+        if isinstance(id, list) and view in {"list", "ids", "titles"}:
             return self._get_batch(
                 id, view=view, tag_prefixes=_kw.get("tag_prefixes", ...)
             )
@@ -1808,7 +1808,7 @@ class MemoryHandler(AuditedRetirementHandler):
         one trailer at the end points at the fisheye neighbourhood. A missing
         or deleted id is a one-line block.
         """
-        if view in {"list", "ids"}:
+        if view in {"list", "ids", "titles"}:
             return super()._get_batch(ids, view=view, tag_prefixes=tag_prefixes)
         ref_ids = self._coerce_ids(ids)
         if view is not None:

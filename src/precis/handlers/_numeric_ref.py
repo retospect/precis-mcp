@@ -46,7 +46,9 @@ serve concurrent requests. Batch summaries reuse their bulk tag read and
 append selected open-tag chips only when requested, preserving the compact
 default and the existing lifecycle fields. Compact batch list/ids reads
 reuse the listing renderer and allow 300 IDs because each result is one
-line; block reads and writes retain the 50-ID bound.
+line; block reads and writes retain the 50-ID bound. The batch summary
+truncates titles at the list-view budget; a batch that cut a title names
+``view='titles'`` — the full-title batch read (gr685126).
 """
 
 from __future__ import annotations
@@ -637,6 +639,12 @@ _PLAIN_LISTING_VIEWS = frozenset({"index", "ids", "list"})
 #: budget (~4 KiB) with headroom for the batch header and ``next:`` ids;
 #: a single block over budget still renders whole.
 BATCH_VIEW_PAGE_CHARS = 3500
+
+#: UTF-8 byte budget for one ``view='titles'`` batch page (gr685126).
+#: Under the runtime's 24,576-byte result cap with headroom for the
+#: header and the ``next:`` id list, so whole entries are paged by this
+#: handler rather than dropped by the cap without a continuation.
+BATCH_TITLES_PAGE_BYTES = 20_000
 
 
 @lru_cache(maxsize=1)
@@ -1359,6 +1367,15 @@ class NumericRefHandler(Handler):
             return render_retired_ref(self.store, ref)
         ref = self._resolve_live_ref(ref_id)
         if view is not None:
+            if view == "titles":
+                # A batch-only read (gr685126). A single get already
+                # renders the full title, and folding to the whole render
+                # would bury the caller's ask — name the batch shape.
+                raise Unsupported(
+                    f"view='titles' reads many {self._sense()} at once, "
+                    f"not one (id={ref.id})",
+                    next=f"get(kind={self.kind!r}, id=[{ref.id}], view='titles')",
+                )
             if view not in _BASE_VIEWS:
                 # gr613469: lead with the corrected call — the caller's
                 # own get (q=/rel=/every arg preserved, review td680653)
@@ -5155,6 +5172,10 @@ class NumericRefHandler(Handler):
 
         ``view='list'|'ids'`` takes the compact branch instead: one line
         per id (titles for ``list``), up to :data:`COMPACT_BATCH_ID_CAP`.
+        ``view='titles'`` takes the full-title branch: ``refs.title``
+        verbatim per id, never cut at the list-view budget — the summary
+        and ``view='list'`` truncate titles (gr685126), which hid tail
+        rewordings from title-drift checks.
 
         Summary-shaped by default — each block is the handle, the
         lifecycle tags (closed axes, ``alert-state``), ``prio``, the link
@@ -5169,6 +5190,8 @@ class NumericRefHandler(Handler):
         ref_ids = self._coerce_ids(
             ids, cap=COMPACT_BATCH_ID_CAP if compact else BATCH_ID_CAP, view=view
         )
+        if view == "titles":
+            return self._get_batch_titles(ref_ids)
         if compact:
             refs = self.store.fetch_refs_by_ids(ref_ids, include_deleted=True)
             compact_refs = [
@@ -5219,6 +5242,7 @@ class NumericRefHandler(Handler):
             else {}
         )
         blocks: list[str] = []
+        titles_truncated = False
         for rid in ref_ids:
             handle = handle_registry.try_format(self.kind, rid) or str(rid)
             ref = refs.get(rid)
@@ -5242,6 +5266,8 @@ class NumericRefHandler(Handler):
             if sz := size_cell(sizes.get(rid, 0)):
                 bits.append(sz)
             summary, _rest = _extract_summary(ref.title or "")
+            if summary != (ref.title or "").rstrip():
+                titles_truncated = True
             blocks.append("  ".join(bits) + "\n" + summary)
             extra = self._batch_extra_line(ref, tag_rows.get(rid, []))
             if extra is not None:
@@ -5258,19 +5284,82 @@ class NumericRefHandler(Handler):
         read_call = f"get(kind={self.kind!r}, id={first_live}"
         if self.complete_get_view is not None:
             read_call += f", view={self.complete_get_view!r}"
-        body += render_next_section(
-            [
+        nexts = [
+            (
+                read_call + ")",
+                f"read one {self._sense()} in full",
+            ),
+        ]
+        if titles_truncated:
+            # gr685126: at least one title was cut at the list-view
+            # budget — name the full-title batch read so a title-drift
+            # check sees the tail the summary hid. Silent when nothing
+            # was cut: no hint pointing at a read the caller doesn't need.
+            nexts.append(
                 (
-                    read_call + ")",
-                    f"read one {self._sense()} in full",
-                ),
-                (
-                    f"tag(kind={self.kind!r}, id=[...], add=[...])",
-                    "tag these in one transaction",
-                ),
-            ]
+                    f"get(kind={self.kind!r}, id={ref_ids!r}, view='titles')",
+                    "full titles for these ids, untruncated",
+                )
+            )
+        nexts.append(
+            (
+                f"tag(kind={self.kind!r}, id=[...], add=[...])",
+                "tag these in one transaction",
+            )
         )
+        body += render_next_section(nexts)
         return Response(body=body, result_count=len(ref_ids))
+
+    def _get_batch_titles(self, ref_ids: list[int]) -> Response:
+        """``get(id=[...], view='titles')``: the full title per id, verbatim.
+
+        gr685126: the default batch summary renders titles through
+        :func:`_extract_summary` (the :data:`_SUMMARY_MAX_CHARS` list-view
+        budget) and ``view='list'`` truncates the same way — a title-drift
+        check against draft bullets missed tail rewordings because no
+        batch view returned the full title. This view renders
+        ``refs.title`` untruncated, one entry per id in the order given;
+        a title holding a newline spans lines so the text stays verbatim
+        for exact comparison. A missing or soft-deleted id is a one-line
+        block, same as the summary form. The id bound stays
+        :data:`BATCH_ID_CAP` — full titles are wider than the compact
+        list's cells, so the 300-id compact bound does not apply. Whole
+        entries are paged under :data:`BATCH_TITLES_PAGE_BYTES`; the
+        unread ids ride the ``next:`` call as its id list.
+        """
+        refs = self.store.fetch_refs_by_ids(ref_ids, include_deleted=True)
+        lines: list[str] = []
+        for rid in ref_ids:
+            handle = handle_registry.try_format(self.kind, rid) or str(rid)
+            ref = refs.get(rid)
+            if ref is None or ref.kind != self.kind:
+                lines.append(f"{handle}  not found")
+                continue
+            if ref.retired_at is not None:
+                lines.append(f"{handle}  deleted")
+                continue
+            title = (ref.title or "").strip()
+            lines.append(f"{handle}  {title}" if title else f"{handle}  (no title)")
+        shown = 0
+        used = 0
+        for line in lines:
+            size = len(line.encode("utf-8")) + 1
+            if shown and used + size > BATCH_TITLES_PAGE_BYTES:
+                break
+            shown += 1
+            used += size
+        rest = ref_ids[shown:]
+        body = (
+            f"# {len(ref_ids)} {self._sense()} (batch, view='titles')\n\n"
+            + "\n".join(lines[:shown])
+        )
+        if rest:
+            body += (
+                f"\n\n{len(rest)} more — next: "
+                f"get(kind={self.kind!r}, "
+                f"id=[{', '.join(str(i) for i in rest)}], view='titles')"
+            )
+        return Response(body=body, result_count=shown)
 
     def _get_batch_view(self, ref_ids: list[int], *, view: str, **kw: Any) -> Response:
         """``get(id=[...], view='…')``: the single-id view mapped per id.

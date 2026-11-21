@@ -201,6 +201,78 @@ def test_get_batch_finding_title_index_views_are_the_summary(
     assert handler.get(id=_batch(*ids), view=view).body == plain
 
 
+def test_get_batch_view_titles_returns_full_titles(store: Store, hub: Hub) -> None:
+    # gr685126: the default batch summary and view='list' cut titles at
+    # the 180-char list-view budget, so a title-drift check against draft
+    # bullets missed tail rewordings. view='titles' returns titles whole.
+    from precis.handlers.finding import FindingHandler
+
+    handler = FindingHandler(hub=hub)
+    tail = " — tail wording the drift check needs verbatim"
+    long_title = "A" * 170 + tail
+    a = store.insert_ref(kind="finding", slug=None, title=long_title).id
+    b = store.insert_ref(kind="finding", slug=None, title="short title").id
+    deleted = store.insert_ref(kind="finding", slug=None, title="gone").id
+    store.retire_ref(deleted)
+    missing = max(a, b, deleted) + 100_000
+    body = handler.get(id=_batch(a, b, deleted, missing), view="titles").body
+    assert body.startswith("# 4 finding (batch, view='titles')")
+    lines = body.splitlines()[2:]
+    assert lines[0] == f"fi{a}  {long_title}"
+    assert lines[1] == f"fi{b}  short title"
+    assert lines[2] == f"fi{deleted}  deleted"
+    assert lines[3] == f"fi{missing}  not found"
+    assert "…" not in body
+    # the drift-check use: the summary hid the tail, the titles view has it
+    summary = handler.get(id=_batch(a, b)).body
+    assert tail not in summary
+    assert tail in body
+
+
+def test_get_batch_summary_names_the_titles_view_only_when_a_title_is_cut(
+    store: Store,
+    hub: Hub,
+) -> None:
+    from precis.handlers.finding import FindingHandler
+
+    handler = FindingHandler(hub=hub)
+    a = store.insert_ref(kind="finding", slug=None, title="C" * 200).id
+    b = store.insert_ref(kind="finding", slug=None, title="short").id
+    cut = handler.get(id=_batch(a, b)).body
+    assert f"get(kind='finding', id=[{a}, {b}], view='titles')" in cut
+    assert "untruncated" in cut
+    # nothing cut → no hint pointing at a read the caller doesn't need
+    assert "view='titles'" not in handler.get(id=_batch(b)).body
+
+
+def test_get_single_id_titles_view_refuses_with_the_batch_shape(
+    store: Store,
+    hub: Hub,
+) -> None:
+    from precis.handlers.finding import FindingHandler
+
+    handler = FindingHandler(hub=hub)
+    a = store.insert_ref(kind="finding", slug=None, title="some claim").id
+    with pytest.raises(Unsupported, match="reads many finding at once"):
+        handler.get(id=a, view="titles")
+
+
+@pytest.mark.parametrize("kind", ["finding", "gripe", "job", "memory"])
+def test_get_batch_view_titles_through_dispatch(
+    runtime_with_store: PrecisRuntime,
+    store: Store,
+    kind: str,
+) -> None:
+    title = "D" * 190 + " — verbatim tail"
+    ref = store.insert_ref(kind=kind, slug=None, title=title)
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": kind, "id": [ref.id], "view": "titles"}
+    )
+    assert not is_error, body
+    assert body.startswith(f"# 1 {kind} (batch, view='titles')")
+    assert title in body
+
+
 def test_link_batch_finding_is_refused_with_the_single_door(
     store: Store, hub: Hub
 ) -> None:
@@ -1019,3 +1091,28 @@ def test_batch_list_tag_prefixes(hub: Hub) -> None:
         "compact"
         not in handler.get(id=_batch(*ids), view="list", tag_prefixes="other").body
     )
+
+
+def test_get_batch_view_titles_pages_whole_entries_through_dispatch(
+    runtime_with_store: PrecisRuntime,
+    store: Store,
+    hub: Hub,
+) -> None:
+    # gr685126 review: 50 x 500-char titles overflow the runtime's
+    # 24,576-byte cap; the view pages whole entries and names the rest.
+    from precis.handlers.finding import FindingHandler
+
+    _handler = FindingHandler(hub=hub)
+    ids = [
+        store.insert_ref(kind="finding", slug=None, title=f"{i:02d}" + "E" * 498).id
+        for i in range(50)
+    ]
+    body = runtime_with_store.dispatch(
+        "get", {"kind": "finding", "id": ids, "view": "titles"}
+    )
+    assert "more — next: get(kind='finding', id=[" in body
+    shown = [i for i in ids if f"fi{i}  " in body.split("more — next")[0]]
+    assert 0 < len(shown) < 50
+    rest_part = body.split("id=[", 1)[1].split("]", 1)[0]
+    assert rest_part == ", ".join(str(i) for i in ids[len(shown) :])
+    assert all("E" * 498 in ln for ln in body.splitlines() if ln.startswith("fi"))

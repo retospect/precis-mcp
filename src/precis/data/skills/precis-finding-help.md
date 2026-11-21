@@ -380,7 +380,10 @@ begat by:                     (oldest → newest)
 status: STATUS:established
 ```
 
+`view='titles'` (batch only, ≤50 ids) returns each title whole, never cut like the summary or `view='list'` — use it for title-drift checks. Output pages under ~20 KB: unread ids come back as the `next:` call.
+
 ```python
+get(kind="finding", id=[42, 43], view="titles")  # full titles, one per id
 search(kind="finding", q="...")  # default: established findings + claim hubs
 search(kind="finding", q="...", status="tracing")
 search(kind="finding", status="staged")  # URL-backed, awaiting paper import
