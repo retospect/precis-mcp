@@ -2,8 +2,11 @@
 
 Uses precis's own ``format.toon`` serialiser (braced ``{col⇥col}`` header,
 TAB-separated homogeneous rows) so pathway output reads exactly like ``search``.
-Numbers are pre-formatted to strings (2 dp) — TOON renders floats via ``repr``
-otherwise, which spends tokens on ``0.7400000001``.
+Numbers are pre-formatted to strings (2 dp) in the per-pathway tables — TOON
+renders floats via ``repr`` otherwise, which spends tokens on
+``0.7400000001``. The compare table is the exception: its rows keep raw
+numbers so the table lens filters/sorts/aggregates on measurements, and the
+2-dp formatting moves into the display map at render time.
 
 Imports precis, so this module is handler-side (not part of the precis-free
 ``runner``/``analysis``/``text_views`` set).
@@ -14,10 +17,13 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from precis.format import toon
+from precis.format.table_lens import lens_response, parse_lens_args
 from precis.quest.correction_policy import correction_policy, policy_era
+from precis.response import Response
 from precis.utils import pathway_conditions
 from precis.utils import reaction_graph as analysis
 from precis.utils.handle_registry import try_format
@@ -1885,8 +1891,37 @@ _CONF_LEGEND = (
     "still be gate-blocked. See gate."
 )
 
+#: Row marker for a candidate the U lever could not shift (pre-CHE run,
+#: no n_H on its graph) — the paged compare response carries this on the
+#: row itself instead of naming every slug in the fixed header (gr592637
+#: review: an unbounded header list can exceed the response cap and deny
+#: even a one-row page).
+_UNSHIFTED_MARK = " [no n_H — unshifted]"
 
-def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) -> str:
+
+def compare_toon(
+    candidates: list[dict[str, Any]],
+    *,
+    U: float | None = None,
+    lens_args: dict[str, Any] | None = None,
+    lens_call: Callable[[dict[str, Any]], str] | None = None,
+) -> str:
+    """Render the comparison as text for in-process readers."""
+    return compare_response(
+        candidates, U=U, lens_args=lens_args, lens_call=lens_call
+    ).body
+
+
+_LEGEND_BUDGET = 1200  # bytes of step legend in a paged compare header
+
+
+def compare_response(
+    candidates: list[dict[str, Any]],
+    *,
+    U: float | None = None,
+    lens_args: dict[str, Any] | None = None,
+    lens_call: Callable[[dict[str, Any]], str] | None = None,
+) -> Response:
     """`candidates`: [{slug, lever, graph, root, target, candidate?, gate?,
     anchor?, ref_id?}]. Rows = candidates; ``candidate`` (optional,
     gr592665) is the ``st<N> <title>`` cell naming the structure the
@@ -1900,15 +1935,86 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
     RATE (max step), SPAN, conf. Sorted by RATE ascending (best first).
     With ``U`` (V vs RHE) every CHE-stamped candidate is re-levered to
     that potential and the table ranks by SPAN at U instead (RATE is
-    U-independent); a candidate without ``n_H`` stays unshifted and is
-    named in the header."""
+    U-independent); a candidate without ``n_H`` stays unshifted — the
+    legacy text output names it in the header, while the paged response
+    marks the row itself (``cand`` cell) and keeps only the count in the
+    header: an unbounded slug list in the fixed header could exceed the
+    response cap and deny even a one-row page (gr592637 review).
+
+    ``lens_args`` + ``lens_call`` (gr592637) put the rows through the
+    server-side table lens — ``where``/``sort``/``columns``/``limit``/
+    ``cursor`` — with a footer naming the matched count, the left-out
+    aggregates and the exact next call; both ``None`` keeps the plain dump
+    (unit-level compares). ``sort`` there names a column (``-RATE``); the
+    default order stays RATE (SPAN at ``U``) best-first.
+
+    Rows carry the RAW measurements — filtering, sorting and aggregation
+    run on the numbers, never on the 2-dp display strings (a ``where`` like
+    ``{'RATE': {'max': 0.122}}`` must see 0.121 and 0.124, not two 0.12s);
+    rounding happens only in the display map at render time."""
+    legends = "\n".join((_GATE_LEGEND, _ANCHOR_LEGEND, _CONF_LEGEND))
+
+    def _display(
+        rows: list[dict[str, Any]],
+        cols: list[str],
+        disp: Mapping[str, Callable[[Any], Any]],
+    ) -> list[dict[str, Any]]:
+        return [
+            {c: (disp[c](r.get(c)) if c in disp else r.get(c)) for c in cols}
+            for r in rows
+        ]
+
+    def _table(
+        rows: list[dict[str, Any]],
+        schema: list[str],
+        header: str,
+        disp: Mapping[str, Callable[[Any], Any]],
+        step_legend: Mapping[str, str] | None = None,
+    ) -> Response:
+        if lens_args is None or lens_call is None:
+            if step_legend is not None:
+                header += "  ".join(step_legend.values()) + "\n"
+            return Response(
+                body=f"{header}{toon.dump(_display(rows, schema, disp), schema=schema)}\n{legends}"
+            )
+        spec = parse_lens_args(lens_args, columns=schema)
+        if step_legend is not None:
+            # The paged header sits outside the byte guard: list only the
+            # steps of the selected columns and bound the text, so a wide
+            # route cannot exhaust the budget even for columns=['cand'].
+            chosen = [
+                t
+                for k, t in step_legend.items()
+                if spec.columns is None or k in spec.columns
+            ]
+            line, used = "", 0
+            for i, t in enumerate(chosen):
+                if used + len(t) > _LEGEND_BUDGET:
+                    line += (
+                        f"  (+{len(chosen) - i} more steps — select them via columns)"
+                    )
+                    break
+                line += ("  " if line else "") + t
+                used += len(t) + 2
+            header += line + "\n"
+        return lens_response(
+            rows,
+            spec,
+            columns=schema,
+            render=lambda rs, cs: toon.dump(_display(rs, cs, disp), schema=cs),
+            call=lens_call,
+            header=f"{header}{legends}\n",
+            row_unit="pathways",
+        )
+
     if not candidates:
-        return "no computed candidates to compare."
+        return Response(body="no computed candidates to compare.")
 
     notes: list[str] = []
+    unshifted: list[str] = []
+    paged = lens_args is not None and lens_call is not None
     if U is not None:
         levered: list[dict[str, Any]] = []
-        unshifted: list[str] = []
         for c in candidates:
             if analysis.has_potential_lever(c["graph"]):
                 levered.append({**c, "graph": analysis.at_potential(c["graph"], U)})
@@ -1918,9 +2024,19 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
         candidates = levered
         notes.append(f"# {potential_line(U)}; ranked by SPAN at U")
         if unshifted:
-            notes.append(
-                "# no n_H (pre-CHE run), shown unshifted: " + ", ".join(unshifted)
-            )
+            if paged:
+                # The paged header is fixed (outside the byte guard), so a
+                # growing slug list can exceed the response cap and deny
+                # even a one-row page — the count stays here and each
+                # unshifted row is marked in its cand cell instead.
+                notes.append(
+                    f"# {len(unshifted)} candidate(s) have no n_H (pre-CHE "
+                    "run) and stay unshifted — marked on their rows"
+                )
+            else:
+                notes.append(
+                    "# no n_H (pre-CHE run), shown unshifted: " + ", ".join(unshifted)
+                )
 
     profiles: list[dict[str, Any]] = []
     for c in candidates:
@@ -1943,16 +2059,31 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
 
     def _row_scalars(p: dict[str, Any]) -> dict[str, Any]:
         rl = p["summ"]["rate_limiting"] or {}
+        cand = _cand_cell(p["c"])
+        if str(p["c"].get("slug")) in unshifted:
+            # The U lever left this row's graph untouched (no n_H): the
+            # marker rides the row so a paged response reports it without a
+            # growing fixed header (gr592637 review).
+            cand += _UNSHIFTED_MARK
+        # RATE/SPAN stay raw numbers: the lens filters/sorts/aggregates on
+        # them, and ``disp`` below rounds only for display.
         return {
-            "cand": _cand_cell(p["c"]),
+            "cand": cand,
             "candidate": str(p["c"].get("candidate") or "-"),
             "gate": str(p["c"].get("gate") or "n/a"),
             "anchor": str(p["c"].get("anchor") or "n/a"),
             "lever": p["c"].get("lever", ""),
-            "RATE": _ea_or_na(rl.get("ea")),
-            "SPAN": _b(p["summ"]["span"]) or "n/a",
+            "RATE": rl.get("ea"),
+            "SPAN": p["summ"]["span"],
             "conf": _conf(rl.get("low_confidence"), known=rl.get("ea") is not None),
         }
+
+    #: Display formatting per numeric column — applied at render time only,
+    #: never to the values the lens sorts/filters/aggregates (gr592637 review).
+    _scalar_disp: dict[str, Callable[[Any], Any]] = {
+        "RATE": _ea_or_na,
+        "SPAN": lambda v: _b(v) or "n/a",
+    }
 
     def _sort_key(p: dict[str, Any]) -> tuple[bool, float]:
         # numeric, not on the 2-dp strings: "10.00" < "9.00" lexically.
@@ -1968,60 +2099,34 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
     if not aligned:
         rows = [_row_scalars(p) for p in profiles]
         note = "# networks differ — scalar comparison only (RATE = rate-limiting Eₐ)\n"
-        return (
-            prefix
-            + note
-            + toon.dump(
-                rows,
-                schema=[
-                    "cand",
-                    "candidate",
-                    "gate",
-                    "anchor",
-                    "lever",
-                    "RATE",
-                    "SPAN",
-                    "conf",
-                ],
-            )
-            + "\n"
-            + _GATE_LEGEND
-            + "\n"
-            + _ANCHOR_LEGEND
-            + "\n"
-            + _CONF_LEGEND
+        return _table(
+            rows,
+            ["cand", "candidate", "gate", "anchor", "lever", "RATE", "SPAN", "conf"],
+            prefix + note,
+            _scalar_disp,
         )
 
     # aligned: build interleaved columns from the shared coordinate.
     template = profiles[0]["cols"]
-    legend, col_names = [], []
+    step_legend: dict[str, str] = {}
+    col_names = []
     for col in template:
         if col["kind"] == "state":
             col_names.append(col["label"])
         else:
             col_names.append(col["pos"])
-            legend.append(f"{col['pos']} {col['label']}")
+            step_legend[col["pos"]] = f"{col['pos']} {col['label']}"
     schema = ["cand", "candidate", "gate", "anchor", *col_names, "RATE", "SPAN", "conf"]
 
     rows = []
+    disp: dict[str, Callable[[Any], Any]] = dict(_scalar_disp)
     for p in profiles:
         row = _row_scalars(p)
         for col, name in zip(p["cols"], col_names):
-            row[name] = (
-                _e(col["value"]) if col["kind"] == "state" else _ea_or_na(col["value"])
-            )
+            # Raw values through the lens; the display map rounds at render.
+            row[name] = col["value"]
+            disp[name] = _e if col["kind"] == "state" else _ea_or_na
         rows.append(row)
 
-    head = "# ‡ = step barrier Eₐ; state cols = rel eV vs root.  " + "  ".join(legend)
-    return (
-        prefix
-        + head
-        + "\n"
-        + toon.dump(rows, schema=schema)
-        + "\n"
-        + _GATE_LEGEND
-        + "\n"
-        + _ANCHOR_LEGEND
-        + "\n"
-        + _CONF_LEGEND
-    )
+    head = "# ‡ = step barrier Eₐ; state cols = rel eV vs root.  "
+    return _table(rows, schema, f"{prefix}{head}", disp, step_legend)

@@ -461,8 +461,17 @@ def test_kinetics_summary_views_and_args_are_declared() -> None:
 
     assert "kinetics-summary" in PathwayHandler.spec.views
     assert "kinetics-summary" in _QUEST_CONCRETE_VIEWS
-    for handler in (PathwayHandler, QuestHandler):
-        assert {"axis", "class", "page_size", "offset"} <= handler.ARGS["get"].keys
+    # Pathway's kinetics-summary keeps its class/axis paging args; quest's
+    # get dropped `class` for the table-lens where protocol (gr592637) —
+    # results refuses a `class` arg outright.
+    assert {"axis", "class", "page_size", "offset"} <= PathwayHandler.ARGS["get"].keys
+    assert {
+        "where",
+        "sort",
+        "columns",
+        "limit",
+        "cursor",
+    } <= QuestHandler.ARGS["get"].keys
 
 
 @pytest.mark.parametrize("in_args", [False, True])

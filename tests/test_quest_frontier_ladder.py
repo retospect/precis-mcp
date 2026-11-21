@@ -190,32 +190,25 @@ def test_trusted_empty_ladder_limit_widens(store: Any) -> None:
     h = QuestHandler(hub=Hub(store=store))
     body = h.get(id=qid, view="frontier", args={"trusted": True}).body
     assert "10 of 12" in body
-    assert "args={'limit': N} widens the ladder" in body
+    assert "widen: get(kind='quest'" in body
     wide = h.get(id=qid, view="frontier", args={"trusted": True, "limit": 12}).body
     assert "12 of 12" in wide
     assert "more provisional" not in wide
 
 
-def test_trusted_empty_ladder_respects_budget(store: Any) -> None:
-    """The ladder's all-empty early return goes through the same
-    ``_fit_bands`` trimming as the banded render — a tight
-    ``args={'budget'}`` drops rungs from the tail with an omitted-count,
-    even when ``args={'limit'}`` asks for more rungs than the default
-    page (review td677831: the early return used to bypass the budget)."""
+def test_trusted_empty_ladder_continues_via_cursor(store: Any) -> None:
     qid = _mk_quest(store)
     for i in range(12):
         _mk_provisional(store, qid, i)
     h = QuestHandler(hub=Hub(store=store))
-    full = h.get(id=qid, view="frontier", args={"trusted": True}).body
-    tight = h.get(id=qid, view="frontier", args={"trusted": True, "budget": 200}).body
-    assert "evidence ladder" in tight
-    assert "omitted — args={'budget': N} widens" in tight
-    assert tight.count("— clear:") < full.count("— clear:")
-    # a widened limit still yields to the budget
-    wide_tight = h.get(
-        id=qid,
-        view="frontier",
-        args={"trusted": True, "limit": 12, "budget": 200},
+    first = h.get(id=qid, view="frontier", args={"trusted": True}).body
+    import re
+
+    token = re.search(r"'cursor': '([^']+)'", first)
+    assert token is not None
+    tail = h.get(
+        id=qid, view="frontier", args={"trusted": True, "cursor": token.group(1)}
     ).body
-    assert "omitted — args={'budget': N} widens" in wide_tight
-    assert 0 < wide_tight.count("— clear:") < 12
+    assert "evidence ladder" in tail
+    assert tail.count("— clear:") == 2
+    assert "next:" not in tail

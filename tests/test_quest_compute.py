@@ -4359,7 +4359,9 @@ class TestBarrierVerdictConsistency:
         assert [pc.candidate.ref_id for pc in fr.provisional] == [sid]
         rows, _schema = leaderboard(fr)
         assert rows[0]["band"] == "provisional"
-        assert rows[0]["barrier"] == "≈0.648"
+        # the stored value rides the row raw; the ≈ mark is display state
+        assert rows[0]["barrier"] == 0.648
+        assert "barrier" in rows[0]["_untrusted"]
         assert "anchor/source mismatch" in rows[0]["quality"]
 
     def test_anchor_pathway_match_still_rides_trusted(self, store: Any) -> None:
@@ -5006,6 +5008,7 @@ class TestLeaderboard:
             "energy",
             "$/rate",
             "band",
+            "trusted",
             "graduated",
             "quality",
         ]
@@ -5019,10 +5022,10 @@ class TestLeaderboard:
         ]
         assert rows[0]["graduated"] == "★"  # st1 crossed the ceiling
         assert rows[1]["graduated"] == ""
-        assert rows[3]["barrier"] == "—"  # unevaluated: no measure
+        assert rows[3]["barrier"] is None  # unevaluated: no measure
         assert rows[0]["quality"] == ""  # no flags stamped → unknown, not flagged
         # neither candidate carries atom_cost/log_tof → $/rate is a dash
-        assert all(r["$/rate"] == "—" for r in rows)
+        assert all(r["$/rate"] is None for r in rows)
 
     def test_untrusted_barrier_flagged_in_leaderboard(self) -> None:
         from precis.quest.frontier import FrontierResult, leaderboard
@@ -5078,7 +5081,8 @@ class TestLeaderboard:
         )
         rows, _schema = leaderboard(fr)
         assert rows[0]["band"] == "provisional"
-        assert rows[0]["barrier"] == "≈0.648"
+        assert rows[0]["barrier"] == 0.648  # stored value, ≈ state below
+        assert "barrier" in rows[0]["_untrusted"]
         assert rows[0]["graduated"] == ""
         assert rows[0]["quality"] == (
             "⚠ ★ would lead — barrier untrusted: adsorbate detached"
@@ -5181,7 +5185,7 @@ class TestLeaderboard:
         )
         rows, schema = leaderboard(fr)
         assert "$/rate" in schema
-        assert rows[0]["$/rate"] == "-1"  # atom_cost(1.0) - log_tof(2.0)
+        assert rows[0]["$/rate"] == -1  # atom_cost(1.0) - log_tof(2.0)
 
     def test_dollar_per_rate_dash_when_a_component_is_missing(self) -> None:
         from precis.quest.frontier import FrontierResult, leaderboard
@@ -5189,7 +5193,7 @@ class TestLeaderboard:
         f1 = Candidate(1, "st1", "A", {"barrier": 0.3}, True)
         fr = FrontierResult(objectives=[("barrier", "min")], frontier=[f1])
         rows, _schema = leaderboard(fr)
-        assert rows[0]["$/rate"] == "—"
+        assert rows[0]["$/rate"] is None
 
     def test_dollar_per_rate_approx_marker_on_untrusted_component(self) -> None:
         from precis.quest.frontier import (
@@ -5214,7 +5218,8 @@ class TestLeaderboard:
             provisional=[pc],
         )
         rows, _schema = leaderboard(fr)
-        assert rows[0]["$/rate"] == "≈-1"  # atom_cost(0.5) - log_tof(1.5)
+        assert rows[0]["$/rate"] == -1  # atom_cost(0.5) - log_tof(1.5)
+        assert "$/rate" in rows[0]["_untrusted"]  # log_tof unconfirmed
 
 
 # ── composite rubric objective (the potential lever's weighted-sum rubric) ─

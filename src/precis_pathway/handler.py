@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput
+from precis.format.table_lens import LENS_ARG_KEYS, literal
 from precis.handlers._mode_help import require_mode
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
@@ -250,6 +251,12 @@ class PathwayHandler(Handler):
                 "environment",
                 "axis",
                 "class",
+                # view='compare' table lens (gr592637)
+                "where",
+                "sort",
+                "columns",
+                "limit",
+                "cursor",
                 "page_size",
                 "offset",
                 # view='bundle-plan'/'export' seed-job selector
@@ -1378,6 +1385,16 @@ class PathwayHandler(Handler):
                 next=f"get(kind='pathway', id={str(id)!r}, view='compare', "
                 f"args={{'gate': {gate!r}}})",
             )
+        # table-lens keys (gr592637) belong to view='compare' only
+        lens_keys = [k for k in LENS_ARG_KEYS if k in point_args]
+        if lens_keys and (view or "").lower() != "compare":
+            raise BadInput(
+                f"args={lens_keys} apply to view='compare' only",
+                next=f"get(kind='pathway', id={str(id)!r}, view='compare', "
+                f"args={{{lens_keys[0]!r}: ...}})",
+            )
+        for k in lens_keys:
+            point_args.pop(k)
         U, pH = _point_args(point_args)
         # A trailing ``~<source>→<target>`` step selector (Simulation step
         # deep-links) — dispatch's universal-handle/slug routing reattaches
@@ -1613,7 +1630,8 @@ class PathwayHandler(Handler):
 
             return Response(body=objective_text(store, ref))
         if v == "compare":
-            return Response(body=self._compare(store, ref, meta, U=U, gate=gate))
+            lens_args = {k: args[k] for k in LENS_ARG_KEYS if args and k in args}
+            return self._compare(store, ref, meta, U=U, gate=gate, lens_args=lens_args)
         if v == "staircase":
             return Response(
                 # U alone is the plain re-tilt (the structure view always
@@ -1910,7 +1928,8 @@ class PathwayHandler(Handler):
         *,
         U: float | None = None,
         gate: str | None = None,
-    ) -> str:
+        lens_args: dict[str, Any] | None = None,
+    ) -> Response:
         """Compare this pathway against every computed sibling sharing the same
         substrate→target (same reaction), as one interleaved TOON table. With
         ``U`` (V vs RHE) every CHE-stamped candidate is re-levered first and
@@ -1923,16 +1942,23 @@ class PathwayHandler(Handler):
         view='trust' headlines (td625117 review: the footnote pointing at
         view='trust' supplied no anchor and cost a lookup per row).
         ``gate='pass'|'blocked'`` filters rows by that verdict; ``n/a``
-        rows (pre-trust-schema) never survive a filter."""
+        rows (pre-trust-schema) never survive a filter.
+
+        The table is a lens (:mod:`precis.format.table_lens`, gr592637):
+        ``args={'where': {col: …}, 'sort': '-RATE', 'columns': […],
+        'limit': N, 'cursor': token}``; the footer carries the matched
+        count, aggregates of the rows left out and the exact next call."""
         from precis.utils import reaction_graph as analysis
         from precis.utils import trust_gate
 
-        from .toon_views import compare_toon, gate_verdict, row_anchor
+        from .toon_views import compare_response, gate_verdict, row_anchor
 
         r = meta.get("results", {})
         substrate, target = r.get("substrate"), r.get("target")
         if not substrate or not target:
-            return "cannot compare: this pathway has no computed results yet."
+            return Response(
+                body="cannot compare: this pathway has no computed results yet."
+            )
         with store.pool.connection() as conn:
             # Same `cand` join as _list (gr592665): the candidate structure's
             # handle + title rides each compare row; its meta feeds the
@@ -1947,7 +1973,7 @@ class PathwayHandler(Handler):
                 "WHERE refs.kind = 'pathway' AND refs.retired_at IS NULL "
                 "  AND refs.meta->'results'->>'substrate' = %s "
                 "  AND refs.meta->'results'->>'target' = %s "
-                "  AND refs.meta->>'status' = 'ready'",
+                "  AND refs.meta->>'status' = 'ready' ORDER BY refs.ref_id",
                 (substrate, target),
             ).fetchall()
         candidates = []
@@ -2027,19 +2053,38 @@ class PathwayHandler(Handler):
                     v = str(c["gate"]).split(" ", 1)[0]
                     counts[v] = counts.get(v, 0) + 1
                 tally = ", ".join(f"{n} {v}" for v, n in sorted(counts.items()))
-                return (
-                    f"no pathways with gate='{gate}' for {substrate}→{target} "
-                    f"({len(candidates)} compared: {tally}). Drop the filter "
-                    "for every row's verdict, or read view='trust' on one row."
+                return Response(
+                    body=(
+                        f"no pathways with gate='{gate}' for {substrate}→{target} "
+                        f"({len(candidates)} compared: {tally}). Drop the filter "
+                        "for every row's verdict, or read view='trust' on one row."
+                    )
                 )
             candidates = surviving
         if len(candidates) < 2 and gate is None:
-            return (
-                f"only 1 computed pathway for {substrate}→{target}; nothing to "
-                "compare yet. Run variants (different surface/dopant) to build a "
-                "leaderboard."
+            return Response(
+                body=(
+                    f"only 1 computed pathway for {substrate}→{target}; nothing to "
+                    "compare yet. Run variants (different surface/dopant) to build a "
+                    "leaderboard."
+                )
             )
-        return compare_toon(candidates, U=U)
+        call_args: dict[str, Any] = {}
+        if U is not None:
+            call_args["U"] = U
+        if gate is not None:
+            call_args["gate"] = gate
+        pw = handle_registry.try_format("pathway", int(ref.id)) or f"pw{ref.id}"
+
+        def _call(a: dict[str, Any]) -> str:
+            return (
+                f"get(kind='pathway', id='{pw}', view='compare', "
+                f"args={literal({**call_args, **a})})"
+            )
+
+        return compare_response(
+            candidates, U=U, lens_args=lens_args or {}, lens_call=_call
+        )
 
     # -- staircase (SPSO slice 3, the che_affine read) --------------------
     def _staircase(

@@ -92,11 +92,18 @@ id='<candidate>', view='pathways')` lists every pathway that ran on that
 candidate (`meta.candidate_ref`) with its title, status and a results-keys
 summary — the "which ready pathways of stN carry `che_affine`/`her`" read.
 
+On `view='compare'`, use `where` for exact values, lists or inclusive
+numeric ranges, `sort=[['RATE', 'asc']]` to order, and `columns` and `limit`
+to choose the page. The footer reports total rows and hidden-row aggregates.
+Copy its `next:` call to continue with the same potential and filters.
+
 ## Count kinetics outcomes across pathways
 
 ```python
 get(kind='pathway', view='kinetics-summary')
 get(kind='quest', id='qu123', view='kinetics-summary')
+get(kind='quest', id='qu123', view='kinetics-summary',
+    args={'where': {'failed_observables': 'yes'}, 'columns': ['pathway'], 'limit': 20})
 get(kind='pathway', view='kinetics-summary',
     args={'class': 'failed_observables=yes', 'page_size': 20, 'offset': 0})
 get(kind='pathway', view='kinetics-summary',
@@ -119,14 +126,14 @@ pages that axis's complete value list with exact counts in the same order.
 Every axis includes a `no v2 solve` class for v1-only and uncomputed pathways.
 Missing failed-observable lists are `not recorded`, not `no`.
 
-Copy any count row's entire `axis=value` token into `args={'class': ...}`
-on either call to list matching `pw…` handles and their total. Listings default
-to 20 handles, accept `page_size` 1–100 and nonnegative `offset`, and provide
-the next call. Axis pages use the same pagination arguments; `axis` and
-`class` are mutually exclusive. Basis classes accept full hashes or the
-displayed 12-character prefixes; a prefix matches all bases sharing it,
-while a full stored value selects exactly that value. Counts always group
-by full stored value. Unknown classes refuse with valid values.
+On a quest, use `where={axis: value}` to select a class and
+`columns=['pathway']` to list its handles. Follow the cursor in the footer.
+To recover full environment-basis hashes, select `columns=['environment_basis']`.
+
+On `kind='pathway'`, copy the `axis=value` token into `args={'class': ...}`.
+Class listings and axis pages accept `page_size` (1–100) and `offset`.
+Pathway class selection accepts a full basis hash or its displayed prefix.
+Counts group by full stored value.
 
 Classification uses stored fields only, never warning/reason prose. KMC's
 positive median outranks finite mean-field TOF, then finite chain TOF. Failure

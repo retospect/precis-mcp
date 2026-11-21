@@ -18,6 +18,16 @@ fixed-width text table for the tick prompt) and the quest handler's
 :mod:`precis.format.toon`; the text copy is opt-in there via
 ``args={'format': 'text'}`` — gr592661).
 
+Measure cells carry the **stored numbers**, never display roundings: the
+quest handler's TOON view pages these rows through the table lens
+(:mod:`precis.format.table_lens`), which filters, sorts and aggregates
+on the cell values themselves — a barrier of ``0.1234`` must not read
+as ``0.123`` (gr592637 review). Each row's ``_untrusted`` list names the
+≈-marked measure keys and ``_objectives`` the columns rendered at
+objective precision; :func:`display_cell` applies both at render time,
+so every renderer (text table, TOON page, series blocks) formats
+identically.
+
 Dopant/site/co-adsorbate columns are derived at READ time from the
 candidate's own ``meta.params`` when the proposer stamped one, else from the
 candidate structure's atoms (:meth:`Store.structure_load`) compared against
@@ -27,7 +37,7 @@ ambiguous site geometry degrades to ``'-'``/``'?'`` rather than raising or
 guessing hard.
 
 ``energy`` is one of the fixed columns, rendered at objective precision
-(:func:`_objective_str`, ``%g``) — a quest with no
+(:func:`_objective_cell`, ``%g``) — a quest with no
 ``meta.rubric_objectives`` ranks on it, so the converged-relax result a
 dopant-stability ranking actually ranks on keeps its decimals instead of
 collapsing to 3 significant figures (gr567692 — without it, a completed
@@ -40,7 +50,7 @@ already among the fixed pathway columns, appended in declared order.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from precis.utils import reaction_graph as analysis
@@ -91,6 +101,7 @@ _COLUMNS: tuple[str, ...] = (
     "U_L",
     "P_side",
     "trusted",
+    "assurance",
     "rls",
     "blocker",
     "worst_problem",
@@ -291,16 +302,25 @@ def _rls_display(pw_meta: dict[str, Any] | None) -> str:
 
 
 def _trusted_str(candidate: Candidate) -> str:
-    """The row's trust verdict — ``yes`` / ``no`` / ``-``, the same
-    tri-state the views' ``args={'trusted': true}`` filter reads
+    """The row's trust verdict — ``yes`` / ``no`` / ``-``, exactly the
+    tri-state the views' ``args={'trusted': true}`` filter and the table
+    lens' ``where={'trusted': 'yes'}`` read
     (:func:`precis.quest.frontier.candidate_trusted`): ``no`` on any
     unconfirmed flag or stashed value, ``yes`` on an affirmative stamp
-    with none, ``-`` on no trust signal at all (gr592277)."""
+    with none, ``-`` on no trust signal at all (gr592277). The assurance
+    verdict is a separate column (:func:`_assurance_str`), never this
+    one — mixing ``PASS``/``WARN`` in here broke the lens filter
+    (gr592637 review)."""
     from precis.quest.frontier import candidate_trusted
 
-    if candidate.flags.get("barrier_assurance"):
-        return str(candidate.flags["barrier_assurance"])
     return {True: "yes", False: "no", None: "-"}[candidate_trusted(candidate)]
+
+
+def _assurance_str(candidate: Candidate) -> str:
+    """The barrier-assurance verdict — ``PASS`` / ``WARN`` / ``FAIL``, or
+    ``-`` when the candidate carries no assurance stamp (td700775)."""
+    stamp = candidate.flags.get("barrier_assurance")
+    return str(stamp) if stamp else "-"
 
 
 def _blocker_display(candidate: Candidate) -> str:
@@ -328,28 +348,48 @@ def _blocker_display(candidate: Candidate) -> str:
     return "-"
 
 
-def _measure_str(
-    measures: dict[str, float], untrusted_keys: frozenset[str], key: str
-) -> str:
+def _raw(measures: dict[str, float], key: str) -> float | None:
+    """The STORED measurement (never a display rounding), or ``None`` when
+    unmeasured — the table lens filters/sorts/aggregates on this value, so
+    it must stay the number the quest ranks on (gr592637 review)."""
     v = measures.get(key)
-    if not isinstance(v, (int, float)):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
+def _measure_cell(v: float | None, approx: bool) -> str:
+    """3-significant-figure display of a stored measure; ``≈`` when the
+    value rides an unconfirmed flag (the row's ``_untrusted`` list)."""
+    if v is None:
         return "-"
     s = f"{v:.3g}"
-    return f"≈{s}" if key in untrusted_keys else s
+    return f"≈{s}" if approx else s
 
 
-def _objective_str(
-    measures: dict[str, float], untrusted_keys: frozenset[str], key: str
-) -> str:
-    """Like :func:`_measure_str` but ``%.6g`` (the leaderboard/frontier
+def _objective_cell(v: float | None, approx: bool) -> str:
+    """Like :func:`_measure_cell` but ``%g`` (the leaderboard/frontier
     summary convention) — an objective value is the number the quest ranks
     on, so a hundred-eV relax energy keeps its decimals instead of
     collapsing to 3 significant figures."""
-    v = measures.get(key)
-    if not isinstance(v, (int, float)):
+    if v is None:
         return "-"
     s = f"{v:g}"
-    return f"≈{s}" if key in untrusted_keys else s
+    return f"≈{s}" if approx else s
+
+
+def display_cell(row: Mapping[str, Any], col: str) -> Any:
+    """The agent-table display value for one cell of a results row
+    (:func:`build_results_rows`): raw numbers formatted at their column
+    precision (``≈``-marked when the column is in the row's ``_untrusted``
+    list), ``None`` as ``-``. Non-numeric cells pass through untouched."""
+    v = row.get(col)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return v if v is not None else "-"
+    approx = col in row.get("_untrusted", ())
+    if col in row.get("_objectives", ()):
+        return _objective_cell(v, approx)
+    return _measure_cell(v, approx)
 
 
 def results_columns(objectives: Sequence[tuple[str, str]]) -> tuple[str, ...]:
@@ -392,11 +432,13 @@ def build_results_rows(
 
     Besides the fixed :data:`_COLUMNS` keys, each row carries its value for
     every declared objective key not already among them (e.g. ``log_tof``
-    for a kinetics quest) — the measure the quest ranks on, ``'-'`` when
-    unmeasured, ``≈`` when provisional-untrusted (gr567692). ``energy``
-    renders at objective precision (:func:`_objective_str`) since a
-    no-rubric quest ranks on it. Renderers that want the appended columns
-    pass :func:`results_columns`.
+    for a kinetics quest) — the measure the quest ranks on, ``None`` when
+    unmeasured (gr567692). Measure cells are the stored numbers; the
+    ``≈``/precision display state rides the row's ``_untrusted`` and
+    ``_objectives`` lists and is applied by :func:`display_cell` at render
+    time, so the table lens filters, sorts and aggregates unrounded values
+    (gr592637 review). Renderers that want the appended columns pass
+    :func:`results_columns`.
     """
     from precis.quest.frontier import quest_frontier
 
@@ -435,25 +477,31 @@ def build_results_rows(
             "coads": coads,
             "tier": str(candidate.flags.get("tier") or "-"),
             "seeds": _seeds_display(pw_meta),
-            # Objective precision, not the 3-fig measure shorthand: a
-            # no-rubric quest ranks on energy, so -132.043 must not
-            # collapse to -132 (gr567692).
-            "energy": _objective_str(measures, untrusted, "energy"),
-            "barrier": _measure_str(measures, untrusted, "barrier"),
-            "span_at_Uopt": _measure_str(measures, untrusted, "span_at_Uopt"),
-            "U_L": _measure_str(measures, untrusted, "U_L"),
-            "P_side": _measure_str(measures, untrusted, "P_side"),
+            # STORED numbers, not display strings — the table lens filters,
+            # sorts and aggregates these cells, so a 0.1234 barrier must not
+            # read as 0.123 (gr592637 review). _untrusted names the ≈-marked
+            # cells; _objectives the columns at objective precision; both
+            # are render-only metadata dropped from every schema.
+            "energy": _raw(measures, "energy"),
+            "barrier": _raw(measures, "barrier"),
+            "span_at_Uopt": _raw(measures, "span_at_Uopt"),
+            "U_L": _raw(measures, "U_L"),
+            "P_side": _raw(measures, "P_side"),
             "trusted": _trusted_str(candidate),
+            "assurance": _assurance_str(candidate),
             "rls": _rls_display(pw_meta),
             "blocker": _blocker_display(candidate),
             "worst_problem": str(candidate.flags.get("worst_problem") or "-"),
+            "_untrusted": sorted(untrusted),
+            "_objectives": ["energy"],
         }
         # The quest's declared objective keys not already fixed columns
         # (e.g. log_tof for a kinetics quest) — the value the quest
-        # actually ranks on, or '-' when unmeasured (gr567692).
+        # actually ranks on, or None when unmeasured (gr567692).
         for key, _sense in fr.objectives:
             if key not in _COLUMNS:
-                row[key] = _objective_str(measures, untrusted, key)
+                row[key] = _raw(measures, key)
+                row["_objectives"].append(key)
         sort_key = (dopant, n_dopant, h_count, o_count, candidate.ref_id)
         mval = measures.get(sort[0]) if sort is not None else None
         built.append((sort_key, mval if isinstance(mval, (int, float)) else None, row))
@@ -475,8 +523,8 @@ def build_results_rows(
 
 
 def _cell(col: str, row: dict[str, Any]) -> str:
-    v = row.get(col, "")
-    s = "" if v is None else str(v)
+    v = display_cell(row, col)
+    s = str(v) if v is not None else ""
     limit = _COL_MAX_WIDTH.get(col)
     if limit and len(s) > limit:
         s = s[: limit - 1] + "…"
@@ -674,7 +722,7 @@ def render_series(
         widths = {c: len(c) for c in SERIES_COLUMNS}
         for row in levels:
             for c in SERIES_COLUMNS:
-                widths[c] = max(widths[c], len(str(row.get(c, ""))))
+                widths[c] = max(widths[c], len(_cell(c, row)))
         # "levels" counts DISTINCT values of the axis, not rows: a 51-row
         # dopant block over 17 elements is a 17-level series measured 51
         # times, and calling that "51 levels" would overstate the sweep.
@@ -691,7 +739,7 @@ def render_series(
         )
         lines = [head, "  ".join(c.ljust(widths[c]) for c in SERIES_COLUMNS)]
         lines += [
-            "  ".join(str(row.get(c, "")).ljust(widths[c]) for c in SERIES_COLUMNS)
+            "  ".join(_cell(c, row).ljust(widths[c]) for c in SERIES_COLUMNS)
             for row in levels
         ]
         block = "\n".join(lines)
@@ -733,6 +781,7 @@ __all__ = [
     "SERIES_COLUMNS",
     "build_results_rows",
     "build_series",
+    "display_cell",
     "render_results_table",
     "render_series",
     "results_columns",

@@ -492,7 +492,11 @@ def test_quest_membership_and_handler_scope(store: Store) -> None:
         conn.execute(
             "UPDATE refs SET retired_at = now() WHERE ref_id = %s", (candidates[3].id,)
         )
-    args = {"class": "kinetics_method=no v2 solve", "page_size": 1}
+    args = {
+        "where": {"kinetics_method": "no v2 solve"},
+        "columns": ["pathway"],
+        "limit": 1,
+    }
     handler = QuestHandler(hub=Hub(store=store))
     counts = _counts(handler.get(id=quest.id, view="kinetics-summary").body)
     assert all(sum(values.values()) == 4 for values in counts.values())
@@ -500,12 +504,9 @@ def test_quest_membership_and_handler_scope(store: Store) -> None:
         handler.get(view="kinetics-summary")
     body = handler.get(id=quest.id, view="kinetics-summary", args=args).body
     assert body == kinetics_summary(store, quest_id=quest.id, args=args)
-    assert f"id='qu{quest.id}'" in body
-    ids = _ids(
-        kinetics_summary(
-            store, quest_id=quest.id, args={"class": "kinetics_method=no v2 solve"}
-        )
-    )
+    assert f"next: get(kind='quest', id='qu{quest.id}'" in body
+    assert "'cursor':" in body
+    ids = _ids(kinetics_summary(store, quest_id=quest.id, args={**args, "limit": 20}))
     assert ids == sorted([by_candidate, by_forward, by_reverse, direct])
     assert outside not in ids and retired_candidate not in ids
     axis_args = {"axis": "kinetics_method", "page_size": 1, "offset": 0}
@@ -518,6 +519,58 @@ def test_quest_membership_and_handler_scope(store: Store) -> None:
     )
     assert "'axis': 'kinetics_method'" in axis_page
     assert "'offset': 1" in axis_page
+
+
+def test_quest_where_accepts_displayed_basis_prefix(store: Store) -> None:
+    """The axis/summary views display 12-character environment-basis
+    prefixes; a quest row-lens where with that displayed prefix must select
+    the row (gr592637 review), and a full stored hash selects exactly its
+    own row."""
+    from precis.dispatch import Hub
+    from precis.handlers.quest import QuestHandler
+
+    quest = store.insert_ref(kind="quest", slug=None, title="kinetics quest")
+    candidate = store.insert_ref(
+        kind="structure", slug="summary-candidate", title="candidate"
+    )
+    store.add_link(src_ref_id=candidate.id, dst_ref_id=quest.id, relation="serves")
+    basis = sha256(b"basis-1").hexdigest()
+    other = sha256(b"basis-2").hexdigest()
+    first = _pathway(
+        store,
+        {
+            "candidate_ref": candidate.id,
+            "results": {
+                "kinetics_v2": {"tof_mf": 1},
+                "kinetics": {"environment_basis": basis},
+            },
+        },
+    )
+    second = _pathway(
+        store,
+        {
+            "candidate_ref": candidate.id,
+            "results": {
+                "kinetics_v2": {"tof_mf": 1},
+                "kinetics": {"environment_basis": other},
+            },
+        },
+    )
+    handler = QuestHandler(hub=Hub(store=store))
+    body = handler.get(
+        id=quest.id,
+        view="kinetics-summary",
+        args={"where": {"environment_basis": basis[:12]}, "columns": ["pathway"]},
+    ).body
+    assert f"pw{first}" in body
+    assert f"pw{second}" not in body
+    full = handler.get(
+        id=quest.id,
+        view="kinetics-summary",
+        args={"where": {"environment_basis": basis}, "columns": ["pathway"]},
+    ).body
+    assert f"pw{first}" in full
+    assert f"pw{second}" not in full
 
 
 def test_pathway_handler_population_view_and_id_refusal(store: Store) -> None:

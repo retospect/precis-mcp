@@ -43,6 +43,7 @@ import json
 import math
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
@@ -53,6 +54,12 @@ from precis.errors import (
     NotFound,
     Unsupported,
     nearest_option,
+)
+from precis.format.table_lens import (
+    DEFAULT_LIMIT,
+    lens_response,
+    literal,
+    parse_lens_args,
 )
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._mode_help import require_mode
@@ -739,7 +746,6 @@ _SERVED_ROW_CAP = 200
 #: so an agent reading the standalone view gets the same slice the tick sees
 #: instead of a 60 KB paginated dump (gr345353). ``args={'budget': N}``.
 _DEFAULT_VIEW_BUDGET = 2500
-_VIEW_CHARS_PER_TOKEN = 4
 
 
 def _budget_arg(args: dict[str, Any] | None) -> int:
@@ -821,6 +827,8 @@ def _sort_arg(args: dict[str, Any] | None) -> str | None:
     if not isinstance(args, dict) or "sort" not in args:
         return None
     raw = args["sort"]
+    if isinstance(raw, (list, tuple)):
+        return None  # a table-lens column sort: _lens_args passes it through
     if not isinstance(raw, str) or not raw.strip():
         raise BadInput(
             f"args={{'sort': {raw!r}}}: sort must name a measure key",
@@ -898,6 +906,47 @@ def _shape_fr(fr: Any, *, trusted: bool, sort: tuple[str, str] | None) -> Any:
     return fr
 
 
+def _split_sort(fr: Any, key: str | None) -> tuple[tuple[str, str] | None, str | None]:
+    """``args['sort']`` → ``(legacy measure sort, lens sort)``.
+
+    A bare carried measure key keeps its gr592277 meaning (best-first on its
+    declared sense, applied before the lens); anything else — ``-col``, a
+    non-measure column — goes to the table lens as an explicit column sort.
+    """
+    if key is None or key.startswith(("-", "+")):
+        return None, key
+    try:
+        return _sort_spec_for(fr, key), None
+    except BadInput:
+        return None, key
+
+
+def _lens_args(args: dict[str, Any] | None, lens_sort: str | None) -> dict[str, Any]:
+    """``args`` with ``sort`` replaced by the lens-bound part (list sorts pass)."""
+    out = dict(args or {})
+    if lens_sort is None and isinstance(out.get("sort"), str):
+        out.pop("sort")
+    elif lens_sort is not None and isinstance(out.get("sort"), str):
+        out["sort"] = lens_sort
+    return out
+
+
+def _lens_call(
+    quest_id: int, view: str, *, trusted: bool, sort: str | None
+) -> Callable[[dict[str, Any]], str]:
+    """The literal ``get(...)`` the table-lens footer names for ``args``."""
+
+    def call(a: dict[str, Any]) -> str:
+        full = dict(a)
+        if trusted:
+            full = {"trusted": True, **full}
+        if sort is not None and "sort" not in full:
+            full["sort"] = sort
+        return f"get(kind='quest', id={quest_id}, view='{view}', args={literal(full)})"
+
+    return call
+
+
 def _view_args_line(*, trusted: bool, sort: tuple[str, str] | None) -> str | None:
     """The ``filter:`` note the candidate views print when
     ``trusted``/``sort`` shaped the listing — the answer to "trusted AND
@@ -962,19 +1011,6 @@ def _logbook_limit(value: Any) -> int:
 #: candidates printed when ``args={'trusted': true}`` leaves the confirmed
 #: frontier empty (gr592563); ``args={'limit': N}`` widens.
 _LADDER_PAGE = 10
-
-
-def _ladder_limit(value: Any) -> int:
-    """``args['limit']`` for the frontier evidence ladder — a positive int
-    (rungs), default :data:`_LADDER_PAGE`."""
-    if value is None:
-        return _LADDER_PAGE
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise BadInput(
-            f"args={{'limit': {value!r}}}: limit must be a positive int (ladder rows)",
-            next="args={'limit': 10}",
-        )
-    return value
 
 
 def _utc_aware(dt: datetime) -> datetime:
@@ -1065,41 +1101,6 @@ def _frontier_empty_lines(fr: Any) -> list[str]:
     ]
 
 
-def _fit_bands(
-    head: list[str], bands: list[tuple[str, list[str]]], *, budget: int
-) -> str:
-    """Join ``head`` + banded row lists into one body under ``budget`` tokens
-    (chars/4). Over budget, rows drop from the tail of the LAST band first
-    (each trimmed band keeps an ``(+K omitted)`` line, bands are never
-    removed), so the first band — the confirmed frontier — loses rows last.
-    """
-    kept = [list(rows) for _, rows in bands]
-    omitted = [0] * len(bands)
-
-    def _render() -> str:
-        out = list(head)
-        for i, (header, _rows) in enumerate(bands):
-            if i:
-                out.append("")
-            out.append(header)
-            out += kept[i]
-            if omitted[i]:
-                out.append(f"  (+{omitted[i]} omitted — args={{'budget': N}} widens)")
-        return "\n".join(out)
-
-    text = _render()
-    while len(text) / _VIEW_CHARS_PER_TOKEN > budget:
-        for i in range(len(bands) - 1, -1, -1):
-            if kept[i]:
-                kept[i].pop()
-                omitted[i] += 1
-                break
-        else:
-            break  # nothing left to drop
-        text = _render()
-    return text
-
-
 #: A create-time ``prio=`` plumbed from ``put`` into ``_create`` (which the
 #: base class calls with a fixed arg set). Request-scoped, not an instance
 #: attribute: one handler instance serves concurrent calls.
@@ -1117,7 +1118,6 @@ class QuestHandler(NumericRefHandler):
                 "limit",
                 "since",
                 "until",
-                "class",
                 "axis",
                 "page_size",
                 "offset",
@@ -1132,6 +1132,11 @@ class QuestHandler(NumericRefHandler):
                 # candidate-view trust filter + measure sort (gr592277)
                 "trusted",
                 "sort",
+                # table lens (gr592637): where/columns/cursor beside the
+                # existing sort/limit, on results/leaderboard/frontier
+                "where",
+                "columns",
+                "cursor",
             }
         ),
     }
@@ -1171,7 +1176,11 @@ class QuestHandler(NumericRefHandler):
             "copy instead); those three take args={'trusted': true} (only "
             "affirmatively-trusted candidates) and args={'sort': '<measure>'} "
             "(rank rows by any carried measure, on its declared objective "
-            "sense); "
+            "sense); they also take the table lens (gr592637): "
+            "args={'where': {col: value|[set]|{'min','max'}}, 'sort': '-col', "
+            "'columns': [...], 'limit': N, 'cursor': token} — the footer "
+            "carries the matched count, aggregates of the rows left out and "
+            "the exact next call; "
             "view='series' the controlled series among them (one axis varied "
             "per block); view='measures' the best live measured value per "
             "measurand over everything serving it; view='pourbaix' the "
@@ -2142,34 +2151,34 @@ class QuestHandler(NumericRefHandler):
             return Response(body=self._render_dossier(ref))
         if view == "frontier" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(
-                body=self._render_frontier(
-                    ref,
-                    budget=_budget_arg(args),
-                    trusted=_trusted_arg(args),
-                    sort=_sort_arg(args),
-                    limit=_ladder_limit(
-                        args.get("limit") if isinstance(args, dict) else None
-                    ),
-                )
+            return self._render_frontier(
+                ref,
+                trusted=_trusted_arg(args),
+                sort=_sort_arg(args),
+                args=args,
             )
         if view == "leaderboard" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(
-                body=self._render_leaderboard(
-                    ref, trusted=_trusted_arg(args), sort=_sort_arg(args)
-                )
+            return self._render_leaderboard(
+                ref,
+                trusted=_trusted_arg(args),
+                sort=_sort_arg(args),
+                args=args,
             )
         if view == "results" and concrete:
-            ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(
-                body=self._render_results(
-                    ref,
-                    budget=_budget_arg(args),
-                    fmt=_results_format_arg(args),
-                    trusted=_trusted_arg(args),
-                    sort=_sort_arg(args),
+            if args and "class" in args:
+                raise BadInput(
+                    "results uses where to select rows",
+                    next="get(kind='quest', id=N, view='results', args={'where': {'trusted': 'yes'}})",
                 )
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return self._render_results(
+                ref,
+                budget=_budget_arg(args),
+                fmt=_results_format_arg(args),
+                trusted=_trusted_arg(args),
+                sort=_sort_arg(args),
+                args=args,
             )
         if view == "series" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
@@ -2184,7 +2193,7 @@ class QuestHandler(NumericRefHandler):
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_pourbaix(ref))
         if view == "kinetics-summary":
-            from precis.utils.pathway_kinetics_summary import kinetics_summary
+            from precis.utils.pathway_kinetics_summary import kinetics_summary_response
 
             if not concrete:
                 raise BadInput(
@@ -2192,9 +2201,7 @@ class QuestHandler(NumericRefHandler):
                     next="get(kind='quest', id='qu…', view='kinetics-summary')",
                 )
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(
-                body=kinetics_summary(self.store, quest_id=ref.id, args=args)
-            )
+            return kinetics_summary_response(self.store, quest_id=ref.id, args=args)
         # gr489411: 'status' / 'rubric' are the two names callers reach
         # for when they want the lifecycle line / the measured axes
         # without the whole digest — serve them instead of erroring.
@@ -2662,46 +2669,32 @@ class QuestHandler(NumericRefHandler):
         self,
         ref: Ref,
         *,
-        budget: int = _DEFAULT_VIEW_BUDGET,
         trusted: bool = False,
         sort: str | None = None,
-        limit: int = _LADDER_PAGE,
-    ) -> str:
-        """`view='frontier'` — the Pareto frontier of candidate materials.
+        args: dict[str, Any] | None = None,
+    ) -> Response:
+        """Page the Pareto bands or the trusted view's evidence ladder.
 
-        Budgeted to ``budget`` tokens (chars/4; default = the tick's results
-        budget, ``args={'budget': N}`` overrides): rows drop from the tail of
-        the LAST band first (awaiting-a-sim → provisional → dominated →
-        frontier), each band keeping an ``(+K omitted)`` line, so the
-        confirmed frontier is the last thing to lose a row (gr345353).
-
-        ``args={'trusted': true}`` keeps only candidates with an
-        affirmative trust verdict and ``args={'sort': '<measure>'}``
-        orders each band by it on its declared sense — the "trusted AND
-        best" read (gr592277). Both print a ``filter:`` note; a filter
-        that empties the confirmed band says so under it rather than
-        misreading as "none evaluated". When ``trusted`` leaves the
-        confirmed frontier empty but provisional candidates exist, an
-        **evidence ladder** prints instead of the bare "no candidates
-        pass" line — the top ``limit`` provisional rows (default
-        :data:`_LADDER_PAGE`, ``args={'limit': N}`` widens) ranked
-        closest-to-trusted, one blocker each (gr592563).
-
-        An ``inquiry``-body quest (docs/backlog/quest-bodies-inquiry.md) has
-        no candidate materials AND NEVER WILL — it reads, reasons, and
-        synthesises, no proposals. Said plainly, ahead of computing a
-        frontier at all, rather than falling through to
-        :func:`_frontier_empty_lines`'s "(none converged yet)", which reads
-        as "nothing has converged" when the truth is "nothing ever will"."""
+        The bands are rows for the table lens (gr592637): ``band`` is a
+        column, so ``args={'where': {'band': 'pass'}}`` or a ``sort`` across
+        bands works, the footer names the call that continues the page, and
+        hidden rows keep their aggregates. When any frontier or dominated
+        candidate carries a ``barrier_assurance`` flag (td700775), the
+        frontier splits into two preserved headings — ``PASS-only Pareto
+        set`` and ``PASS+WARN Pareto set`` — with each candidate in exactly
+        one band, so totals never count a pass candidate twice.
+        """
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
         meta = ref.meta or {}
         body = meta.get(_weave_tick.QUEST_BODY_META_KEY)
         if body == _weave_tick.QUEST_BODY_INQUIRY:
-            return (
-                f"# frontier — quest {ref.id}: {head}\n\n"
-                "this is an inquiry — it reads, reasons, and synthesises; it "
-                "has no proposals and no Pareto frontier (see view='dossier' "
-                "for its living synthesis)."
+            return Response(
+                body=(
+                    f"# frontier — quest {ref.id}: {head}\n\n"
+                    "this is an inquiry — it reads, reasons, and synthesises; it "
+                    "has no proposals and no Pareto frontier (see view='dossier' "
+                    "for its living synthesis)."
+                )
             )
         # bootstrap-roadmap-quest AC7: the roadmap body has no frontier
         # either — its measured state is the capability ledger (a
@@ -2709,25 +2702,21 @@ class QuestHandler(NumericRefHandler):
         # materials). A literal equality per body, not a catch-all for
         # non-materials bodies: a future body must opt in here explicitly.
         if body == _weave_tick.QUEST_BODY_ROADMAP:
-            return (
-                f"# frontier — quest {ref.id}: {head}\n\n"
-                "this is a roadmap — it has no candidate materials and no "
-                "Pareto frontier; the body has no frontier at all. Its "
-                "measured state is the capability ledger (see view='tree' "
-                "for the table, or view='dossier' for the pinned "
-                "capability-ledger chunk)."
+            return Response(
+                body=(
+                    f"# frontier — quest {ref.id}: {head}\n\n"
+                    "this is a roadmap — it has no candidate materials and no "
+                    "Pareto frontier; the body has no frontier at all. Its "
+                    "measured state is the capability ledger (see view='tree' "
+                    "for the table, or view='dossier' for the pinned "
+                    "capability-ledger chunk)."
+                )
             )
         from precis.quest import frontier as frontier_mod
         from precis.quest import protocol as protocol_mod
 
         raw_fr = frontier_mod.quest_frontier(self.store, ref.id)
-        sort_spec = _sort_spec_for(raw_fr, sort)
-        had_candidates = bool(
-            raw_fr.frontier
-            or raw_fr.dominated
-            or raw_fr.provisional
-            or raw_fr.unevaluated
-        )
+        sort_spec, lens_sort = _split_sort(raw_fr, sort)
         fr = _shape_fr(raw_fr, trusted=trusted, sort=sort_spec)
         lines = [
             f"# frontier — quest {ref.id}: {head}",
@@ -2737,175 +2726,206 @@ class QuestHandler(NumericRefHandler):
         note = _view_args_line(trusted=trusted, sort=sort_spec)
         if note:
             lines.append(note)
-        lines.append("")
-
-        def _fmt(c: frontier_mod.Candidate) -> str:
-            ms = " ".join(f"{k}={v:g}" for k, v in sorted(c.measures.items()))
-            graduated = any(
-                str(t) == "needs-experiment" for t in self.store.tags_for(c.ref_id)
-            )
-            star = " ★ needs-experiment" if graduated else ""
-            note = frontier_mod.assurance_note(c)
-            return f"  {c.handle} {c.name} — {ms or '(no measures)'}{star}" + (
-                f" — {note}" if note else ""
-            )
-
-        def _fmt_provisional(pc: frontier_mod.ProvisionalCandidate) -> str:
-            c = pc.candidate
-            bits = []
-            for k, v in sorted(pc.measures.items()):
-                mark = " ⚠untrusted" if k in pc.untrusted_keys else ""
-                bits.append(f"{k}={v:g}{mark}")
-            ms = " ".join(bits) or "(no measures)"
-            star = " ★ provisional-frontier" if pc.on_frontier else ""
-            reasons = f" [{'; '.join(pc.reasons)}]" if pc.reasons else ""
-            return f"  {c.handle} {c.name} — {ms}{star}{reasons}"
-
-        # gr592563: a ``trusted`` read whose confirmed frontier came out
-        # empty gets the evidence ladder — the provisional candidates
-        # ranked closest-to-trusted, one blocker each — instead of the
-        # bare "no candidates pass" line.
-        ladder_band: tuple[str, list[str]] | None = None
-        if trusted and not fr.frontier and raw_fr.provisional:
-            ladder = frontier_mod.evidence_ladder(raw_fr, top_n=limit)
-            total = len(raw_fr.provisional)
-
-            def _fmt_ladder(i: int, row: frontier_mod.LadderRow) -> str:
-                pc = row.provisional
-                c = pc.candidate
-                bits = []
-                for k, v in sorted(pc.measures.items()):
-                    mark = " ⚠untrusted" if k in pc.untrusted_keys else ""
-                    bits.append(f"{k}={v:g}{mark}")
-                ms = " ".join(bits) or "(no measures)"
-                star = " ★ provisional-frontier" if pc.on_frontier else ""
-                return f"  {i}. {c.handle} {c.name} — {ms}{star} — clear: {row.blocker}"
-
-            ladder_rows = [_fmt_ladder(i, row) for i, row in enumerate(ladder, 1)]
-            if total > len(ladder):
-                ladder_rows.append(
-                    f"  (+{total - len(ladder)} more provisional — "
-                    "args={'limit': N} widens the ladder)"
-                )
-            ladder_band = (
-                "── evidence ladder — provisional candidates, closest to "
-                f"trusted ({len(ladder)} of {total}; one blocker each) ──",
-                ladder_rows,
-            )
-
-        if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
-            if ladder_band is not None:
-                # The same ``_fit_bands`` budget contract as the banded
-                # render below — a lone ladder band still trims rungs off
-                # its tail under ``args={'budget': N}`` (review td677831).
-                return _fit_bands(lines, [ladder_band], budget=budget)
-            if had_candidates:
-                lines.append(
-                    "no candidates pass the trusted filter — none carries an "
-                    "affirmative trust verdict (drop args={'trusted': true} "
-                    "for the full set)."
-                )
-            else:
-                lines.append("no candidate structures serve this quest yet.")
-            return "\n".join(lines)
-        frontier_rows = [_fmt(c) for c in fr.frontier]
-        if not frontier_rows:
+        ladder = trusted and not fr.frontier and bool(raw_fr.provisional)
+        provisional = {pc.candidate.ref_id: pc for pc in fr.provisional}
+        blockers: dict[int, str] = {}
+        if ladder:
+            rungs = frontier_mod.evidence_ladder(raw_fr, top_n=len(raw_fr.provisional))
+            provisional = {r.provisional.candidate.ref_id: r.provisional for r in rungs}
+            blockers = {r.provisional.candidate.ref_id: r.blocker for r in rungs}
+        # td700775's assurance bands as lens groups: the PASS-only set and
+        # the PASS+WARN set keep both preserved headings, but each candidate
+        # lands in exactly one group — pass candidates are NOT repeated in
+        # the frontier group — so the lens total and the hidden-row
+        # aggregates never count a candidate twice (review td700771).
+        if any(c.flags.get("barrier_assurance") for c in (*fr.frontier, *fr.dominated)):
+            pass_ids = {c.ref_id for c in fr.pass_frontier}
+            dominated_band = [c for c in fr.dominated if c.ref_id not in pass_ids]
+            band_groups: list[tuple[str, list[Any], str]] = [
+                ("pass", list(fr.pass_frontier), "PASS-only Pareto set"),
+                (
+                    "frontier",
+                    [c for c in fr.frontier if c.ref_id not in pass_ids],
+                    "PASS+WARN Pareto set",
+                ),
+            ]
+        else:
+            dominated_band = list(fr.dominated)
+            band_groups = [
+                ("frontier", list(fr.frontier), "Pareto frontier — current best")
+            ]
+        groups = [
+            *band_groups,
+            ("dominated", dominated_band, "dominated — explored + beaten"),
+            (
+                "provisional",
+                [pc.candidate for pc in provisional.values()],
+                "evidence ladder — provisional candidates, closest to trusted"
+                if ladder
+                else "provisional (measured, unconfirmed)",
+            ),
+            ("awaiting", fr.unevaluated, "awaiting a sim"),
+        ]
+        headings = {band: f"── {label} ({len(cs)}) ──" for band, cs, label in groups}
+        if not fr.frontier and not ladder and not (args or {}).get("columns"):
+            lines.append(headings["frontier"])
             if raw_fr.frontier:
-                # The unfiltered frontier is non-empty — the trusted
-                # filter alone emptied it; say that, not "none
-                # evaluated" (gr592277).
-                frontier_rows = [
+                lines.append(
                     f"  ({len(raw_fr.frontier)} frontier candidate(s) "
                     "failed the trusted filter — drop args={'trusted': true})"
-                ]
+                )
+            elif raw_fr.provisional or raw_fr.dominated or raw_fr.unevaluated:
+                lines.extend(_frontier_empty_lines(raw_fr))
             else:
-                # The empty-frontier explanation reads the UNFILTERED
-                # split — its untrusted counts + trusted-complement
-                # names are exactly what the filter hides.
-                frontier_rows = _frontier_empty_lines(raw_fr)
-        bands: list[tuple[str, list[str]]] = [
-            (
-                f"── Pareto frontier ({len(fr.frontier)}) — current best ──",
-                frontier_rows,
-            )
+                lines.append("no candidate structures serve this quest yet.")
+        rows: list[dict[str, Any]] = []
+        keys = {key for key, _ in raw_fr.objectives}
+        for band, candidates, _ in groups:
+            for c in candidates:
+                pc = provisional.get(c.ref_id)
+                measures = pc.measures if pc else c.measures
+                keys.update(measures)
+                verdict = frontier_mod.candidate_trusted(c)
+                rows.append(
+                    {
+                        **measures,
+                        "band": band,
+                        "handle": c.handle,
+                        "name": c.name,
+                        "trusted": {True: "yes", False: "no", None: "?"}[verdict],
+                        "blocker": blockers.get(c.ref_id)
+                        or ("; ".join(pc.reasons) if pc else ""),
+                        "_ref_id": c.ref_id,
+                        "_untrusted": sorted(pc.untrusted_keys) if pc else [],
+                        "_assurance": frontier_mod.assurance_note(c),
+                        "_marker": " ★ provisional-frontier"
+                        if pc and pc.on_frontier
+                        else "",
+                    }
+                )
+        columns = [
+            "band",
+            "handle",
+            "name",
+            "trusted",
+            "blocker",
+            *sorted(keys - {"band", "handle", "name", "trusted", "blocker"}),
         ]
-        if any(c.flags.get("barrier_assurance") for c in (*fr.frontier, *fr.dominated)):
-            bands.insert(
-                0, ("── PASS-only Pareto set ──", [_fmt(c) for c in fr.pass_frontier])
+        lens_args = _lens_args(args, lens_sort)
+        spec = parse_lens_args(
+            lens_args,
+            columns=columns,
+            default_limit=_LADDER_PAGE if ladder else DEFAULT_LIMIT,
+        )
+        graduated = {
+            c.ref_id
+            for c in (*fr.frontier, *fr.dominated)
+            if any(
+                str(tag) == "needs-experiment" for tag in self.store.tags_for(c.ref_id)
             )
-            bands[1] = ("── PASS+WARN Pareto set ──", frontier_rows)
-        if ladder_band is not None:
-            bands.append(ladder_band)
-        if fr.dominated:
-            bands.append(
-                (
-                    f"── dominated ({len(fr.dominated)}) — explored + beaten ──",
-                    [_fmt(c) for c in fr.dominated],
+        }
+
+        def render(page: list[dict[str, Any]], cols: list[str]) -> str:
+            out: list[str] = []
+            last = None
+            for row in page:
+                band = row["band"]
+                if band != last:
+                    out.append(headings[band])
+                    last = band
+                if spec.columns is not None:
+                    out.append(
+                        "  "
+                        + " ".join(
+                            f"{col}={row.get(col, '—')}"
+                            + (" ⚠untrusted" if col in row["_untrusted"] else "")
+                            for col in cols
+                        )
+                    )
+                    continue
+                values = " ".join(
+                    f"{key}={row[key]:g}"
+                    + (" ⚠untrusted" if key in row["_untrusted"] else "")
+                    for key in sorted(
+                        keys - {"band", "handle", "name", "trusted", "blocker"}
+                    )
+                    if key in row
                 )
-            )
-        if fr.provisional:
-            bands.append(
-                (
-                    f"── provisional (measured, unconfirmed) ({len(fr.provisional)}) ──",
-                    [_fmt_provisional(pc) for pc in fr.provisional],
-                )
-            )
-        if fr.unevaluated:
-            bands.append(
-                (
-                    f"── awaiting a sim ({len(fr.unevaluated)}) ──",
-                    [f"  {c.handle} {c.name}" for c in fr.unevaluated],
-                )
-            )
-        return _fit_bands(lines, bands, budget=budget)
+                line = f"  {row['handle']} {row['name']}"
+                if band != "awaiting":
+                    line += f" — {values or '(no measures)'}"
+                line += row["_marker"]
+                if band in {"pass", "frontier", "dominated"}:
+                    if row["_ref_id"] in graduated:
+                        line += " ★ needs-experiment"
+                    if row["_assurance"]:
+                        line += f" — {row['_assurance']}"
+                if row["blocker"]:
+                    line += (
+                        f" — clear: {row['blocker']}"
+                        if ladder
+                        else f" [{row['blocker']}]"
+                    )
+                out.append(line)
+            return "\n".join(out)
+
+        return lens_response(
+            rows,
+            spec,
+            columns=columns,
+            render=render,
+            header="\n".join(lines) + "\n\n",
+            call=_lens_call(
+                ref.id, "frontier", trusted=trusted, sort=sort if sort_spec else None
+            ),
+            row_unit="candidates",
+        )
 
     def _render_leaderboard(
-        self, ref: Ref, *, trusted: bool = False, sort: str | None = None
-    ) -> str:
+        self,
+        ref: Ref,
+        *,
+        trusted: bool = False,
+        sort: str | None = None,
+        args: dict[str, Any] | None = None,
+    ) -> Response:
         """`view='leaderboard'` — the by-total design leaderboard as a TOON table.
 
         One row per candidate design (identity · objective vector · Pareto band ·
         graduation flag), sorted best-first per band — by the primary
         objective, or by ``args={'sort': '<measure>'}`` on its declared
-        sense (gr592277). ``args={'trusted': true}`` keeps only candidates
-        carrying an affirmative trust verdict. This is the LLM-legible
-        counterpart of ``view='frontier'`` (which is the banded human summary);
-        both render the same :func:`quest_frontier`, so there is no second
-        ranking to drift.
+        sense (gr592277). ``args={'trusted': true}`` is the
+        ``where={'trusted': 'yes'}`` alias routed through the table lens
+        (gr592637): the rows stay unfiltered, so the footer keeps the
+        unfiltered total and the excluded rows' ``trusted`` histogram. This
+        is the LLM-legible counterpart of ``view='frontier'`` (which is the
+        banded human summary); both render the same
+        :func:`quest_frontier`, so there is no second ranking to drift.
         """
         from precis.format import render_agent_table
         from precis.quest import frontier as frontier_mod
 
         raw_fr = frontier_mod.quest_frontier(self.store, ref.id)
-        sort_spec = _sort_spec_for(raw_fr, sort)
+        sort_spec, lens_sort = _split_sort(raw_fr, sort)
         had_candidates = bool(
             raw_fr.frontier
             or raw_fr.dominated
             or raw_fr.provisional
             or raw_fr.unevaluated
         )
-        fr = _shape_fr(raw_fr, trusted=trusted, sort=None)
+        # The lens expresses args={'trusted': true} as where={'trusted':
+        # 'yes'} (same rows) — the rows are NOT pre-filtered, so a trusted
+        # page keeps the unfiltered total and the excluded rows' aggregates
+        # in its footer (gr592637 review).
+        fr = _shape_fr(raw_fr, trusted=False, sort=None)
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
         obj_line = _objective_line(raw_fr, ref.meta or {})
-        if not had_candidates:
-            return (
-                f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n\n"
-                "no candidate structures serve this quest yet."
-            )
-        if not (fr.frontier or fr.dominated or fr.provisional or fr.unevaluated):
-            return (
-                f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n\n"
-                "no candidates pass the trusted filter — none carries an "
-                "affirmative trust verdict (drop args={'trusted': true} "
-                "for the full set)."
-            )
         graduated = {
             c.ref_id
             for c in (*fr.frontier, *fr.dominated, *fr.unevaluated)
             if any(str(t) == "needs-experiment" for t in self.store.tags_for(c.ref_id))
         }
         rows, schema = frontier_mod.leaderboard(fr, graduated=graduated, sort=sort_spec)
-        body = render_agent_table(rows, schema=schema)
         from precis.quest import protocol as protocol_mod
 
         protocol = protocol_mod.protocol_lines(self.store, ref.id)
@@ -2918,9 +2938,43 @@ class QuestHandler(NumericRefHandler):
         proto_block = "\n".join(protocol) + "\n" if protocol else ""
         note = _view_args_line(trusted=trusted, sort=sort_spec)
         filter_block = note + "\n" if note else ""
-        return (
-            f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n"
-            f"{proto_block}tier: {tier_legend}\n{filter_block}\n{body}"
+        spec = parse_lens_args(
+            _lens_args(args, lens_sort),
+            columns=schema,
+            where_alias={"trusted": "yes"} if trusted else None,
+        )
+
+        def render(page: list[dict[str, Any]], cols: list[str]) -> str:
+            if page:
+                return render_agent_table(
+                    [
+                        {c: frontier_mod.leaderboard_display(r, c) for c in cols}
+                        for r in page
+                    ],
+                    schema=cols,
+                )
+            if not rows:
+                return "no candidate structures serve this quest yet."
+            if spec.where == {"trusted": "yes"}:
+                return "no candidates pass the trusted filter."
+            return "no rows match."
+
+        empty_note = ""
+        if not had_candidates:
+            empty_note = "no candidate structures serve this quest yet.\n"
+        return lens_response(
+            rows,
+            spec,
+            columns=schema,
+            render=render,
+            call=_lens_call(
+                ref.id, "leaderboard", trusted=False, sort=sort if sort_spec else None
+            ),
+            row_unit="designs",
+            header=(
+                f"# leaderboard — quest {ref.id}: {head}\n{obj_line}\n"
+                f"{proto_block}tier: {tier_legend}\n{filter_block}{empty_note}\n"
+            ),
         )
 
     def _render_results(
@@ -2931,7 +2985,8 @@ class QuestHandler(NumericRefHandler):
         fmt: str = "toon",
         trusted: bool = False,
         sort: str | None = None,
-    ) -> str:
+        args: dict[str, Any] | None = None,
+    ) -> Response:
         """`view='results'` — the lineage-ordered results table
         (:mod:`precis.quest.results_table`): one row per candidate across
         every Pareto band, dopant/site/co-adsorbate + trust/blocker columns.
@@ -2947,76 +3002,121 @@ class QuestHandler(NumericRefHandler):
         unconfirmed flags (:func:`precis.quest.frontier.candidate_trusted`)
         — and ``args={'sort': '<measure>'}`` orders the rows best-first by
         any carried measure on its declared objective sense, unmeasured
-        last (gr592277).
+        last (gr592277). The ``assurance`` column carries the
+        barrier-assurance verdict (``PASS``/``WARN``/``FAIL``, ``-`` when
+        unstamped) as its own filterable column, so the trusted filter
+        and the trust column stay the same tri-state.
 
-        Budgeted to ``budget`` tokens over the rendered table (default =
-        the tick's own 2500; ``args={'budget': N}`` overrides), dropping
-        rows from the lineage tail but never the newest ten, and saying
-        how many were dropped (gr345353)."""
+        The TOON table is a table lens (:mod:`precis.format.table_lens`,
+        gr592637): ``args={'where': {col: value|[set]|{'min','max'}},
+        'sort': '-col', 'columns': [...], 'limit': N, 'cursor': token}``;
+        the footer carries the matched/total counts, aggregates of the
+        rows left out and the literal next call, so every row stays
+        reachable. ``trusted: true`` is shorthand for
+        ``where={'trusted': 'yes'}``. The ``format='text'`` copy keeps the
+        tick's token ``budget`` (default 2500; ``args={'budget': N}``),
+        dropping rows from the lineage tail but never the newest ten
+        (gr345353)."""
         from precis.format import render_agent_table
         from precis.quest import frontier as frontier_mod
         from precis.quest.results_table import (
             build_results_rows,
+            display_cell,
             fit_rows_to_budget,
             render_results_table,
             results_columns,
         )
 
         raw_fr = frontier_mod.quest_frontier(self.store, ref.id)
-        sort_spec = _sort_spec_for(raw_fr, sort)
+        sort_spec, lens_sort = _split_sort(raw_fr, sort)
         had_candidates = bool(
             raw_fr.frontier
             or raw_fr.dominated
             or raw_fr.provisional
             or raw_fr.unevaluated
         )
-        fr = _shape_fr(raw_fr, trusted=trusted, sort=None)
+        # text copy keeps the candidate-level trusted filter; the TOON lens
+        # expresses it as where={'trusted': 'yes'} (same rows).
+        fr = _shape_fr(raw_fr, trusted=trusted and fmt == "text", sort=None)
         head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
         rows = build_results_rows(self.store, ref.id, fr=fr, sort=sort_spec)
-        if not rows:
-            return f"# results — quest {ref.id}: {head}\n\n" + (
-                "no candidates pass the trusted filter — none carries an "
-                "affirmative trust verdict (drop args={'trusted': true} "
-                "for the full set)."
-                if had_candidates
-                else "no candidate structures serve this quest yet."
+        if not rows and fmt == "text":
+            return Response(
+                body=f"# results — quest {ref.id}: {head}\n\n"
+                + (
+                    "no candidates pass the trusted filter — none carries an "
+                    "affirmative trust verdict (drop args={'trusted': true} "
+                    "for the full set)."
+                    if had_candidates
+                    else "no candidate structures serve this quest yet."
+                )
             )
         # The declared objectives (energy by default) extend the fixed base
         # columns — a completed relax result must be visible here, not only
         # in the logbook (gr567692).
         schema = list(results_columns(fr.objectives))
+        args_note = _view_args_line(trusted=trusted and fmt == "text", sort=sort_spec)
+        args_block = args_note + "\n" if args_note else ""
+        if fmt != "text":
+            spec = parse_lens_args(
+                _lens_args(args, lens_sort),
+                columns=schema,
+                where_alias={"trusted": "yes"} if trusted else None,
+            )
+
+            def render(page: list[dict[str, Any]], cols: list[str]) -> str:
+                if page:
+                    # Format at render time: the rows carry stored numbers
+                    # for the lens to filter/sort/aggregate (gr592637 review).
+                    return render_agent_table(
+                        [{c: display_cell(r, c) for c in cols} for r in page],
+                        schema=cols,
+                    )
+                if spec.where == {"trusted": "yes"}:
+                    return "no candidates pass the trusted filter."
+                return (
+                    "no rows match."
+                    if rows
+                    else "no candidate structures serve this quest yet."
+                )
+
+            return lens_response(
+                rows,
+                spec,
+                columns=schema,
+                render=render,
+                call=_lens_call(
+                    ref.id, "results", trusted=False, sort=sort if sort_spec else None
+                ),
+                header=(
+                    f"# results — quest {ref.id}: {head}\n{args_block}"
+                    + (
+                        "filter: trusted only\n"
+                        if spec.where.get("trusted") == "yes"
+                        else ""
+                    )
+                    + "\n"
+                ),
+                row_unit="candidates",
+            )
         # The text copy is measured against the plain fixed-width table —
         # ``fit_rows_to_budget``'s default render — not
         # ``render_results_table`` itself, which trims internally and would
         # hide drops from ``omitted``.
-        if fmt == "text":
-            kept, omitted = fit_rows_to_budget(
-                rows, token_budget=budget, columns=schema
-            )
-        else:
-            kept, omitted = fit_rows_to_budget(
-                rows,
-                token_budget=budget,
-                render=lambda rs: render_agent_table(rs, schema=schema),
-            )
+        kept, omitted = fit_rows_to_budget(rows, token_budget=budget, columns=schema)
         note = (
             f"\n(+{omitted} of {len(rows)} rows omitted for the {budget}-token "
             "budget — args={'budget': N} widens it)"
             if omitted
             else ""
         )
-        args_note = _view_args_line(trusted=trusted, sort=sort_spec)
-        args_block = args_note + "\n" if args_note else ""
-        if fmt == "text":
-            return (
+        return Response(
+            body=(
                 f"# results — quest {ref.id}: {head}\n{args_block}\n"
                 "## text table (as embedded in the tick prompt)\n"
                 f"{render_results_table(kept, token_budget=budget, columns=schema)}"
                 f"{note}"
             )
-        return (
-            f"# results — quest {ref.id}: {head}\n{args_block}\n"
-            f"{render_agent_table(kept, schema=schema)}{note}"
         )
 
     def _render_series(self, ref: Ref, *, budget: int = _DEFAULT_VIEW_BUDGET) -> str:

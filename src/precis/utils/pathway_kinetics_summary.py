@@ -25,6 +25,8 @@ from collections import Counter
 from typing import Any
 
 from precis.errors import BadInput
+from precis.format.table_lens import LENS_ARG_KEYS, lens_response, parse_lens_args
+from precis.response import Response
 from precis.store import Store
 
 _NO_V2 = "no v2 solve"
@@ -178,6 +180,44 @@ def _page_arg(args: dict[str, Any], name: str, default: int, maximum: int) -> in
     return value
 
 
+def _expand_basis_prefix(
+    args: dict[str, Any], classified: list[tuple[int, dict[str, str]]]
+) -> dict[str, Any]:
+    """Make the displayed environment-basis selector executable in ``where``.
+
+    The axis/summary/class views display :func:`_label`'s 12-character
+    prefix, but the row lens matches values verbatim against the FULL stored
+    hash — copying the displayed prefix into ``where`` selected nothing
+    (gr592637 review). Expand a string condition to the full stored hashes
+    it prefixes: one match collapses to the scalar, several become a set
+    (the lens' list semantics), none passes through so the refusal/footer
+    machinery reports it. ``not recorded``/``no v2 solve`` are exact classes
+    and never prefix-expand.
+    """
+    where = args.get("where")
+    if not isinstance(where, dict):
+        return args
+    cond = where.get("environment_basis")
+    if not isinstance(cond, str) or cond in {_MISSING, _NO_V2}:
+        return args
+    fulls = sorted(
+        {
+            classes["environment_basis"]
+            for _, classes in classified
+            if classes["environment_basis"] not in {_MISSING, _NO_V2}
+        }
+    )
+    matches = [basis for basis in fulls if basis.startswith(cond)]
+    if not matches:
+        return args
+    out = dict(args)
+    out["where"] = {
+        **where,
+        "environment_basis": matches[0] if len(matches) == 1 else matches,
+    }
+    return out
+
+
 def _label(axis: str, value: str) -> str:
     if axis == "environment_basis" and value not in {_MISSING, _NO_V2}:
         return value[:12]
@@ -187,14 +227,23 @@ def _label(axis: str, value: str) -> str:
 def kinetics_summary(
     store: Store, *, quest_id: int | None = None, args: dict[str, Any] | None = None
 ) -> str:
+    """Render kinetics summary text for in-process callers."""
+    return kinetics_summary_response(store, quest_id=quest_id, args=args).body
+
+
+def kinetics_summary_response(
+    store: Store, *, quest_id: int | None = None, args: dict[str, Any] | None = None
+) -> Response:
     """Count live pathways, page an axis's values, or list a selected class."""
     args = args or {}
-    unknown = sorted(set(args) - {"axis", "class", "page_size", "offset"})
+    allowed = {"axis", "page_size", "offset"}
+    allowed |= LENS_ARG_KEYS if quest_id is not None else {"class"}
+    unknown = sorted(set(args) - allowed)
     if unknown:
         raise BadInput(
             f"kinetics-summary does not accept args keys: {', '.join(unknown)}",
-            options=["axis", "class", "page_size", "offset"],
-            next="use args={'class': 'failed_observables=yes', 'page_size': 20, 'offset': 0}",
+            options=sorted(allowed),
+            next="use args={'axis': 'failed_observables', 'page_size': 20, 'offset': 0}",
         )
     page_size = _page_arg(args, "page_size", 20, 100)
     offset = _page_arg(args, "offset", 0, 2**63 - 1)
@@ -207,11 +256,17 @@ def kinetics_summary(
                 options=list(_VALUES),
                 next="use args={'axis': 'environment_basis', 'offset': 0}",
             )
-        if "class" in args:
+        if "class" in args or LENS_ARG_KEYS.intersection(args):
             raise BadInput(
                 "kinetics-summary axis and class are mutually exclusive",
                 next="use args={'axis': 'environment_basis', 'offset': 0}",
             )
+    row_lens = quest_id is not None and bool(LENS_ARG_KEYS.intersection(args))
+    if row_lens and {"page_size", "offset"}.intersection(args):
+        raise BadInput(
+            "kinetics-summary row queries use limit and cursor",
+            next="use args={'where': {'failed_observables': 'yes'}, 'limit': 20}",
+        )
     with store.pool.connection() as conn:
         cursor = conn.execute(
             _PROJECTION.format(scope=_QUEST_SCOPE if quest_id is not None else ""),
@@ -237,6 +292,23 @@ def kinetics_summary(
         if quest_id is not None
         else "get(kind='pathway', view='kinetics-summary'"
     )
+    if row_lens:
+        schema = ["pathway", *_VALUES]
+        spec = parse_lens_args(_expand_basis_prefix(args, classified), columns=schema)
+        return lens_response(
+            [{"pathway": f"pw{ref_id}", **classes} for ref_id, classes in classified],
+            spec,
+            columns=schema,
+            render=lambda page, cols: "\n".join(
+                [
+                    " | ".join(cols),
+                    *(" | ".join(row[col] for col in cols) for row in page),
+                ]
+            ),
+            call=lambda params: f"{call}, args={params!r})",
+            header=f"{header}\n\n",
+            row_unit="pathways",
+        )
     if "class" in args:
         selected_values: set[str] = set()
         axis, value = "", ""
@@ -275,7 +347,7 @@ def kinetics_summary(
                 "offset": offset + page_size,
             }
             lines += ["", f"next: {call}, args={next_args!r})"]
-        return "\n".join(lines)
+        return Response(body="\n".join(lines))
 
     if isinstance(axis_arg, str):
         ranked_values = sorted(
@@ -300,11 +372,16 @@ def kinetics_summary(
                 "offset": offset + page_size,
             }
             lines += ["", f"next: {call}, args={next_args!r})"]
-        return "\n".join(lines)
+        return Response(body="\n".join(lines))
 
     lines = [
         header,
-        "Each axis totals the population; copy a value into args={'class': '<axis>=<value>'}.",
+        "Each axis totals the population; copy a value into "
+        + (
+            "args={'where': {'<axis>': '<value>'}}."
+            if quest_id is not None
+            else "args={'class': '<axis>=<value>'}."
+        ),
     ]
     for axis, values in counts.items():
         ranked = sorted(values.items(), key=lambda item: (-item[1], item[0]))
@@ -328,7 +405,14 @@ def kinetics_summary(
         "Failure precedence: stored diagnosis, TOF sign, non-positive TOF, chain fallback, other failed MF.",
         "Unresolved slow mode omitted: no structured class found; warning/reason prose is not parsed.",
         "kinetics_trusted reads the pathway's stored verdict only; job verdicts cannot be tied reliably to the current solve.",
-        "Environment basis shows 12 characters of the stored v1 hash; class accepts the full hash or prefix (all matches).",
+        "Environment basis shows 12 characters of the stored v1 hash; "
+        + (
+            "where accepts that displayed prefix or a full stored hash "
+            "(a prefix matches every hash sharing it; "
+            "columns=['environment_basis'] recovers the full hashes)."
+            if quest_id is not None
+            else "class accepts the full hash or prefix (all matches)."
+        ),
         "Absent hashes and observables are not recorded, not clean/default.",
     ]
-    return "\n".join(lines)
+    return Response(body="\n".join(lines))

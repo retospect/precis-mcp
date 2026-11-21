@@ -157,17 +157,27 @@ class TestBands:
         assert by_sid[frontier_sid]["trusted"] == "yes"
         assert by_sid[provisional_sid]["trusted"] == "no"
         assert by_sid[awaiting_sid]["trusted"] == "-"
-        # the provisional row's barrier survives (untrusted-value backfill),
-        # marked with the same ≈ convention as the leaderboard/frontier text.
-        assert by_sid[provisional_sid]["barrier"] == "≈0.5"
-        assert by_sid[frontier_sid]["barrier"] == "0.3"
-        assert by_sid[awaiting_sid]["barrier"] == "-"
+        # the provisional row's barrier survives (untrusted-value backfill)
+        # as the STORED number — the ≈ mark is display state in the row's
+        # _untrusted list, and the lens filters/sorts/aggregates the raw
+        # values (gr592637 review).
+        assert by_sid[provisional_sid]["barrier"] == 0.5
+        assert "barrier" in by_sid[provisional_sid]["_untrusted"]
+        assert by_sid[frontier_sid]["barrier"] == 0.3
+        assert by_sid[awaiting_sid]["barrier"] is None
         # the objective measure rides its own column (gr573266: an
         # energy-rubric quest read every beaten row as "no energy value"
         # because only the barrier-family measures had columns).
-        assert by_sid[frontier_sid]["energy"] == "-1"
-        assert by_sid[beaten_sid]["energy"] == "-1"
-        assert by_sid[awaiting_sid]["energy"] == "-"
+        assert by_sid[frontier_sid]["energy"] == -1.0
+        assert by_sid[beaten_sid]["energy"] == -1.0
+        assert by_sid[awaiting_sid]["energy"] is None
+        # display formatting happens at render time: ≈ for unconfirmed,
+        # '-' for unmeasured.
+        from precis.quest.results_table import display_cell
+
+        assert display_cell(by_sid[provisional_sid], "barrier") == "≈0.5"
+        assert display_cell(by_sid[frontier_sid], "barrier") == "0.3"
+        assert display_cell(by_sid[awaiting_sid], "barrier") == "-"
 
 
 # ── dopant / site / co-adsorbate derivation ─────────────────────────────
@@ -503,26 +513,28 @@ class TestViewBudget:
     ) -> None:
         qid, sids = self._fifteen(store)
         h = QuestHandler(hub=Hub(store=store))
-        body = h.get(id=qid, view="results", args={"budget": 1}).body
+        body = h.get(id=qid, view="results", args={"budget": 1, "format": "text"}).body
         assert "of 15 rows omitted for the 1-token budget" in body
         rows = build_results_rows(store, qid)
         newest_ten = set(sorted(sids, reverse=True)[:10])
         for r in rows:
             present = r["handle"] in body
             assert present == (r["ref_id"] in newest_ten), r["handle"]
-        wide = h.get(id=qid, view="results", args={"budget": 100_000}).body
+        wide = h.get(
+            id=qid, view="results", args={"budget": 100_000, "format": "text"}
+        ).body
         assert "rows omitted" not in wide
         assert all(r["handle"] in wide for r in rows)
 
-    def test_frontier_view_trims_tail_band_first(self, store: Any) -> None:
+    def test_frontier_view_limit_preserves_continuation(self, store: Any) -> None:
         qid, _sids = self._fifteen(store)
         h = QuestHandler(hub=Hub(store=store))
         full = h.get(id=qid, view="frontier").body
         assert "omitted" not in full
-        tight = h.get(id=qid, view="frontier", args={"budget": 30}).body
-        assert "omitted — args={'budget': N} widens" in tight
+        tight = h.get(id=qid, view="frontier", args={"limit": 1}).body
+        assert "next: get(kind='quest'" in tight
         assert tight.startswith("# frontier — quest")
-        assert len(tight) < len(full)
+        assert len(re.findall(r"^  st\d+ ", tight, re.M)) == 1
 
     def test_bad_budget_is_bad_input(self, store: Any) -> None:
         from precis.errors import BadInput
@@ -767,15 +779,15 @@ class TestObjectiveColumns:
         fr = quest_frontier(store, qid)
         rows = build_results_rows(store, qid, fr=fr)
         by_sid = {r["ref_id"]: r for r in rows}
-        # the converged relax result is the row's objective value — %.6g,
-        # the leaderboard/frontier-summary precision, not the 3-fig measure
-        # shorthand that would collapse -132.043 to -132.
-        assert by_sid[pd]["energy"] == "-132.043"
+        # the converged relax result is the row's objective value — the
+        # STORED number; display renders it at objective precision (%g,
+        # never the 3-fig shorthand that collapses -132.043 to -132).
+        assert by_sid[pd]["energy"] == -132.04336773213768
         assert by_sid[pd]["band"] == "beaten"  # ReSub's relax is lower
-        assert by_sid[winner]["energy"] == "-137.984"
+        assert by_sid[winner]["energy"] == -137.984
         assert by_sid[winner]["band"] == "frontier"
-        # never measured → '-', not a fabricated zero
-        assert by_sid[waiting]["energy"] == "-"
+        # never measured → None, not a fabricated zero
+        assert by_sid[waiting]["energy"] is None
 
         from precis.quest.results_table import render_results_table, results_columns
 
@@ -825,7 +837,7 @@ class TestObjectiveColumns:
         fr = quest_frontier(store, qid)
         assert fr.objectives == [("log_tof", "max")]
         rows = build_results_rows(store, qid, fr=fr)
-        assert rows[0]["log_tof"] == "3.7"
+        assert rows[0]["log_tof"] == 3.7  # the stored number, not "3.7"
         body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="results").body
         assert "log_tof" in body and "3.7" in body
 
@@ -1052,6 +1064,26 @@ class TestTrustedSortViews:
             assert good_h in body, view
             assert bad_h not in body, view
 
+    def test_leaderboard_trusted_alias_equals_where(self, store: Any) -> None:
+        """``args={'trusted': true}`` and ``where={'trusted': 'yes'}`` return
+        the same rows, and the trusted page's footer keeps the unfiltered
+        total plus the excluded rows' ``trusted`` histogram (gr592637)."""
+        qid, sids = self._mixed_quest(store)
+        h = QuestHandler(hub=Hub(store=store))
+        handles = {name: self._handle(sid) for name, sid in sids.items()}
+        body = h.get(id=qid, view="leaderboard", args={"trusted": True}).body
+        via_where = h.get(
+            id=qid, view="leaderboard", args={"where": {"trusted": "yes"}}
+        ).body
+        for name, handle in handles.items():
+            wanted = name == "good"
+            assert (handle in body) == wanted
+            assert (handle in via_where) == wanted
+        # the footer keeps the unfiltered total and the excluded rows'
+        # aggregates instead of the pre-filtered emptiness
+        assert "of 1 designs matching where (3 total)" in body
+        assert "trusted: no=1" in body
+
     def test_all_filtered_out_says_why(self, store: Any) -> None:
         qid = _mk_quest(store)
         sid = _mk_candidate(store, qid, "Cu bad", _dopant_ops("Cu", 1))
@@ -1142,3 +1174,285 @@ class TestTrustedSortViews:
         body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
         assert f"barrier ×1 (trusted: {self._handle(a)})" in body
         assert "U_L_abs ×1 (trusted: none)" in body
+
+
+# ── table lens on results / leaderboard (gr592637) ───────────────────────
+
+
+class TestResultsTableLens:
+    def _many(self, store: Any, n: int = 300) -> tuple[int, list[int]]:
+        qid = _mk_quest(store)
+        # The adatom z drifts by 0.001 per candidate so periodic-symmetry
+        # canonicalization never folds two grid positions onto one
+        # structure (ensure_candidate retires symmetry twins) — the fixture
+        # really needs n rows.
+        sids = [
+            _mk_candidate(
+                store,
+                qid,
+                f"Zn n={i}",
+                [
+                    {
+                        "op": "add_atom",
+                        "element": "Zn",
+                        "frac": [
+                            0.05 + 0.04 * (i % 20),
+                            0.05 + 0.04 * (i // 20),
+                            0.45 + 0.001 * i,
+                        ],
+                    }
+                ],
+            )
+            for i in range(n)
+        ]
+        return qid, sids
+
+    def test_results_cursor_reaches_all_rows(self, store: Any) -> None:
+        qid, sids = self._many(store)
+        h = QuestHandler(hub=Hub(store=store))
+        rows = build_results_rows(store, qid)
+        body = h.get(id=qid, view="results").body
+        seen: list[str] = []
+        pages = 0
+        while True:
+            pages += 1
+            seen += [
+                r["handle"] for r in rows if re.search(rf"\b{r['handle']}\b", body)
+            ]
+            m = re.search(r"next: (get\(kind='quest'.*\))", body)
+            if m is None:
+                break
+            assert "view='results'" in m.group(1)
+            cursor = re.search(r"'cursor': '([^']+)'", m.group(1))
+            assert cursor is not None
+            body = h.get(id=qid, view="results", args={"cursor": cursor.group(1)}).body
+            assert pages < 40
+        assert pages > 1
+        assert sorted(seen) == sorted(r["handle"] for r in rows)
+        assert len(set(seen)) == len(seen) == len(sids)
+
+    def test_results_trusted_alias_equals_where(self, store: Any) -> None:
+        qid, sids = self._many(store, 6)
+        _converge(store, sids[0])
+        store.stamp_ref_meta(sids[0], {"barrier": 0.4, "barrier_trusted": True})
+        h = QuestHandler(hub=Hub(store=store))
+        a = h.get(id=qid, view="results", args={"trusted": True}).body
+        b = h.get(id=qid, view="results", args={"where": {"trusted": "yes"}}).body
+        rows = build_results_rows(store, qid)
+        for r in rows:
+            assert (r["handle"] in a) == (r["handle"] in b) == (r["trusted"] == "yes")
+
+    def test_assurance_stamp_does_not_change_trusted_verdict(self, store: Any) -> None:
+        """gr592637 review: the trusted column is the candidate_trusted
+        tri-state; the assurance verdict rides its own column. A
+        PASS-stamped affirmative candidate must survive the trusted
+        filter (it used to drop out when the column read ``PASS``)."""
+        qid, sids = self._many(store, 3)
+        _converge(store, sids[0])
+        store.stamp_ref_meta(
+            sids[0],
+            {"barrier": 0.4, "barrier_trusted": True, "barrier_assurance": "PASS"},
+        )
+        _converge(store, sids[1])
+        store.stamp_ref_meta(
+            sids[1],
+            {"barrier": 0.5, "barrier_trusted": True, "barrier_assurance": "WARN"},
+        )
+        rows = build_results_rows(store, qid)
+        by_sid = {r["ref_id"]: r for r in rows}
+        assert by_sid[sids[0]]["trusted"] == "yes"
+        assert by_sid[sids[0]]["assurance"] == "PASS"
+        assert by_sid[sids[1]]["trusted"] == "yes"
+        assert by_sid[sids[1]]["assurance"] == "WARN"
+        assert by_sid[sids[2]]["assurance"] == "-"
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(id=qid, view="results", args={"trusted": True}).body
+        assert by_sid[sids[0]]["handle"] in body
+        assert by_sid[sids[1]]["handle"] in body
+        assert by_sid[sids[2]]["handle"] not in body
+        filtered = h.get(
+            id=qid, view="results", args={"where": {"assurance": "WARN"}}
+        ).body
+        assert by_sid[sids[1]]["handle"] in filtered
+        assert by_sid[sids[0]]["handle"] not in filtered
+
+    def test_results_sort_columns_where(self, store: Any) -> None:
+        qid, _ = self._many(store, 4)
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(
+            id=qid,
+            view="results",
+            args={"columns": ["handle", "dopant"], "sort": "-handle", "limit": 2},
+        ).body
+        assert "left out (2 candidates)" in body
+
+    def test_results_numeric_where_uses_stored_measure(self, store: Any) -> None:
+        """gr592637 review: a barrier of 0.1234 displays as 0.123, but
+        ``where={'barrier': {'max': 0.123}}`` must EXCLUDE it — the lens
+        filters the stored number, never the display rounding, and the
+        hidden-row aggregates read from the same raw values."""
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store)
+        hi = _mk_candidate(store, qid, "hi", _dopant_ops("Ag", 1))
+        _converge(store, hi)
+        store.stamp_ref_meta(hi, {"barrier": 0.1234, "barrier_trusted": True})
+        lo = _mk_candidate(store, qid, "lo", _dopant_ops("Cu", 1))
+        _converge(store, lo)
+        store.stamp_ref_meta(lo, {"barrier": 0.121, "barrier_trusted": True})
+        h_hi = handle_registry.try_format("structure", hi)
+        h_lo = handle_registry.try_format("structure", lo)
+        assert h_hi is not None and h_lo is not None
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(
+            id=qid, view="results", args={"where": {"barrier": {"max": 0.123}}}
+        ).body
+        assert h_lo in body
+        assert h_hi not in body
+        assert "min=0.1234" in body  # hidden-row aggregate, raw precision
+
+    def test_results_numeric_sort_uses_stored_measure(self, store: Any) -> None:
+        """0.1234 and 0.1235 both display as 0.123 — an explicit lens sort
+        must still order them by the stored measurement (gr592637 review)."""
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store)
+        lo = _mk_candidate(store, qid, "lo", _dopant_ops("Ag", 1))
+        _converge(store, lo)
+        store.stamp_ref_meta(lo, {"barrier": 0.1234, "barrier_trusted": True})
+        hi = _mk_candidate(store, qid, "hi", _dopant_ops("Cu", 1))
+        _converge(store, hi)
+        store.stamp_ref_meta(hi, {"barrier": 0.1235, "barrier_trusted": True})
+        h_hi = handle_registry.try_format("structure", hi)
+        h_lo = handle_registry.try_format("structure", lo)
+        assert h_hi is not None and h_lo is not None
+        body = (
+            QuestHandler(hub=Hub(store=store))
+            .get(id=qid, view="results", args={"sort": "-barrier"})
+            .body
+        )
+        assert body.index(h_hi) < body.index(h_lo)
+
+    def test_leaderboard_numeric_where_uses_stored_measure(self, store: Any) -> None:
+        """The leaderboard lens sees the same stored numbers as results —
+        no display roundings in the cells it filters and aggregates."""
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store)
+        hi = _mk_candidate(store, qid, "hi", _dopant_ops("Ag", 1))
+        _converge(store, hi)
+        store.stamp_ref_meta(hi, {"barrier": 0.1234, "barrier_trusted": True})
+        lo = _mk_candidate(store, qid, "lo", _dopant_ops("Cu", 1))
+        _converge(store, lo)
+        store.stamp_ref_meta(lo, {"barrier": 0.121, "barrier_trusted": True})
+        h_hi = handle_registry.try_format("structure", hi)
+        h_lo = handle_registry.try_format("structure", lo)
+        assert h_hi is not None and h_lo is not None
+        body = (
+            QuestHandler(hub=Hub(store=store))
+            .get(
+                id=qid, view="leaderboard", args={"where": {"barrier": {"max": 0.123}}}
+            )
+            .body
+        )
+        assert h_lo in body
+        assert h_hi not in body
+        assert "min=0.1234" in body  # the excluded row's raw aggregate
+
+    def test_class_arg_refused(self) -> None:
+        keys = QuestHandler.ARGS_KEYS["get"]
+        assert "class" not in keys
+        assert {"where", "columns", "cursor", "sort", "limit"} <= set(keys)
+
+
+class TestFrontierTableLens:
+    def test_frontier_pass_only_not_repeated_in_dominated(self, store: Any) -> None:
+        """review td700771: a PASS-only candidate beaten by a WARN one sits in
+        ``fr.dominated`` too; it must appear once, in the PASS band only."""
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store)
+        pass_id = _mk_candidate(store, qid, "p", _dopant_ops("Ag", 1))
+        _converge(store, pass_id)
+        store.stamp_ref_meta(
+            pass_id,
+            {"barrier": 0.5, "barrier_trusted": True, "barrier_assurance": "PASS"},
+        )
+        warn_id = _mk_candidate(store, qid, "w", _dopant_ops("Cu", 1))
+        _converge(store, warn_id)
+        store.stamp_ref_meta(
+            warn_id,
+            {"barrier": 0.4, "barrier_trusted": True, "barrier_assurance": "WARN"},
+        )
+        h_pass = handle_registry.try_format("structure", pass_id)
+        assert h_pass is not None
+        body = QuestHandler(hub=Hub(store=store)).get(id=qid, view="frontier").body
+        assert body.count(f"  {h_pass} ") == 1
+        assert "dominated — explored + beaten (0)" in body or "dominated" not in body
+        assert "(2 candidates)" in body or "of 2 " in body
+
+    def test_frontier_provisional_paging(self, store: Any) -> None:
+        qid = _mk_quest(store)
+        sids = []
+        for i in range(284):
+            sid = _mk_candidate(
+                store,
+                qid,
+                f"Cu n={i}",
+                [
+                    {
+                        "op": "add_atom",
+                        "element": "Cu",
+                        # z drifts by 0.001 per candidate so symmetry
+                        # canonicalization never retires a grid twin — all
+                        # 284 candidates must exist (see _many above).
+                        "frac": [
+                            0.05 + 0.04 * (i % 20),
+                            0.05 + 0.04 * (i // 20),
+                            0.45 + 0.001 * i,
+                        ],
+                    }
+                ],
+            )
+            _converge(store, sid)
+            store.stamp_ref_meta(
+                sid, {"barrier": 0.3 + i / 100, "barrier_trusted": False}
+            )
+            sids.append(sid)
+        h = QuestHandler(hub=Hub(store=store))
+        args: dict[str, Any] = {}
+        seen: list[str] = []
+        for _ in range(40):
+            body = h.get(id=qid, view="frontier", args=args).body
+            assert "── provisional" in body
+            seen += re.findall(r"^  (st\d+) ", body, flags=re.M)
+            m = re.search(r"'cursor': '([^']+)'", body)
+            if m is None:
+                break
+            args = {**args, "cursor": m.group(1)}
+        else:
+            pytest.fail("cursor never ended")
+        from precis.utils import handle_registry
+
+        want = {handle_registry.try_format("structure", s) for s in sids}
+        assert len(seen) == len(set(seen)) == 284
+        assert set(seen) == want
+
+    def test_frontier_projection_and_sort_apply_to_default_view(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store)
+        for i, barrier in enumerate((0.3, 0.5, 0.4)):
+            sid = _mk_candidate(store, qid, f"Candidate {i}", _dopant_ops("Cu", i + 1))
+            _converge(store, sid)
+            store.stamp_ref_meta(sid, {"barrier": barrier, "barrier_trusted": True})
+        h = QuestHandler(hub=Hub(store=store))
+        body = h.get(
+            id=qid,
+            view="frontier",
+            args={"sort": [["barrier", "desc"]], "columns": ["barrier"], "limit": 1},
+        ).body
+        assert "  barrier=0.5" in body
+        assert not re.search(r"\bst\d+\b", body)
+        assert "Candidate " not in body
+        assert "next: get(kind='quest'" in body
