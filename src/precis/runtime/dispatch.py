@@ -792,7 +792,12 @@ def _fold_title_kwarg(
     prepends like any non-match — both values land, nothing collapses
     into one slot silently. A
     handler that declares ``title`` itself (memory, gripe, finding, …)
-    or tolerates extra kwargs keeps it untouched.
+    or tolerates extra kwargs keeps it untouched — except a
+    :attr:`~precis.protocol.Handler.title_is_first_line` kind (taxon),
+    whose declared ``title`` still names the first line of ``text=``:
+    there a ``title`` + ``text`` pair folds the same way (its only
+    reading is the ambiguity the fold resolves), while a ``title``
+    riding without ``text`` stays the handler's to compose.
 
     On ``edit`` the wrapper's default ``mode='find-replace'`` would
     misroute a folded retitle (todo's title is replace-only) — it can
@@ -809,16 +814,19 @@ def _fold_title_kwarg(
     contract).
     """
     method = getattr(handler, verb, None)
+    declared = "title" in accepted
     if (
         getattr(method, TOLERATES_EXTRA_KWARGS_ATTR, False)
         or "title" not in kw
-        or "title" in accepted
         or "text" not in accepted
+        or (declared and not getattr(handler, "title_is_first_line", False))
     ):
         return
     raw = kw.pop("title")
     title = str(raw).strip()
     if not title:
+        if declared:
+            kw["title"] = raw  # a declared title stays the handler's to judge
         return
     target = kw
     if "text" not in kw and top is not None and top.get("text") is not None:
@@ -828,7 +836,13 @@ def _fold_title_kwarg(
         kw["title"] = raw  # can't take a first line — the gate refuses
         return
     if text is None or not text.strip():
-        target["text"] = title
+        if declared:
+            # The kind's title= is the handler's own first-line slot
+            # (taxon composes title= + body= itself): with no text= to
+            # disambiguate against, the kwarg stays the handler's.
+            kw["title"] = raw
+        else:
+            target["text"] = title
     elif not _opens_with_title(text.lstrip(), title):
         target["text"] = f"{title}\n{text}"
     if verb == "edit" and "replace" in (handler.spec.edit_modes or ()):

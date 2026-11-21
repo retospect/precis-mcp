@@ -94,7 +94,12 @@ _SHIPPED_FILES = [
 #: ``[pcb-kernel]`` slice of the wheel never carries — see
 #: ``packaging/geom/pyproject.toml``'s exclude list, which must name the
 #: same set).
-_EXCLUDED = {_SRC / "precis" / "structure" / "importers"} | {
+#: ``precis/format/table_lens.py`` is server-side paging (builds a
+#: ``precis.response.Response``); nothing in the wheel imports it.
+_EXCLUDED = {
+    _SRC / "precis" / "structure" / "importers",
+    _SRC / "precis" / "format" / "table_lens.py",
+} | {
     _SRC / "precis" / "pcb" / name
     for name in (
         "_http.py",

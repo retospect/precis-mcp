@@ -2166,11 +2166,6 @@ class QuestHandler(NumericRefHandler):
                 args=args,
             )
         if view == "results" and concrete:
-            if args and "class" in args:
-                raise BadInput(
-                    "results uses where to select rows",
-                    next="get(kind='quest', id=N, view='results', args={'where': {'trusted': 'yes'}})",
-                )
             ref = self._resolve_live_ref(self._coerce_id(id))
             return self._render_results(
                 ref,

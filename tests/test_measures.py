@@ -1202,9 +1202,16 @@ class TestEscalationRepair:
         *,
         reported_unit: str | None = None,
     ) -> int:
+        # Explicit dimensionless readings need a canonical unit. Keep the
+        # original reported spelling so the migration must trim it itself.
+        count = (
+            _taxon(store, "Count")
+            if reported_unit is None
+            else _taxon(store, "Conformer count", unit="1", parent=w["start"])
+        )
         run = store.insert_measure(
             MeasureSpec(
-                _taxon(store, "Count"),
+                count,
                 "1132808",
                 w["paper"],
                 reported_unit=reported_unit,
