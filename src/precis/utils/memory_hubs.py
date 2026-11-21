@@ -724,8 +724,11 @@ def _hubless_lines(
                 "instead of keeping both",
             )
         )
+    linked = _linked_ref_ids(handler, ref_id)
     for rid, kind, _dist in cands:
         if dup is not None and rid == dup_id:
+            continue
+        if rid in linked:
             continue
         target = handle_registry.try_format(kind, rid) or f"{kind}:{rid}"
         lines.append(
@@ -741,6 +744,25 @@ def _hubless_lines(
         )
     )
     return lines
+
+
+def _linked_ref_ids(handler: Any, ref_id: int | None) -> set[int]:
+    """Refs already sharing any edge (either direction, any relation —
+    mention-generated included) with ``ref_id``: a ``link(...)`` lead to
+    one of them would re-propose a connection the node already has."""
+    if ref_id is None:
+        return set()
+    try:
+        links = handler.store.links_for(ref_id, direction="both")
+    except Exception:
+        log.debug("hub-less hint link lookup failed", exc_info=True)
+        return set()
+    out: set[int] = set()
+    for lk in links:
+        out.add(int(lk.src_ref_id))
+        out.add(int(lk.dst_ref_id))
+    out.discard(ref_id)
+    return out
 
 
 def _hubless_neighbours(

@@ -374,6 +374,43 @@ def test_hubless_space_ack_offers_leads_dup_line_and_roundtrip(
     assert "edit it instead of keeping both" in dup.body
 
 
+def test_hubless_leads_skip_targets_already_linked(hub: Hub) -> None:
+    """gr702970: the edit receipt skips the target it linked by mention."""
+    handler = MemoryHandler(hub=hub)
+    space = "SPACE:personal"
+    near = _created_id(
+        handler.put(
+            text="cavitation erodes impeller blades",
+            title="Impeller cavitation notes",
+            tags=[space],
+        )
+    )
+    resp = handler.put(
+        text="impeller pitting under vibration",
+        title="Pitting",
+        tags=[space],
+    )
+    new = _created_id(resp)
+    assert f"target='{_h(near)}', rel='related-to'" in resp.body
+    again = handler.edit(id=new, mode="append", text=f"See [{_h(near)}].")
+    assert (
+        f"added related-to {_h(new)} -> {_h(near)} (generated mention edge)"
+        in again.body
+    )
+    assert f"target='{_h(near)}', rel='related-to'" not in again.body
+
+    put = handler.put(
+        text=f"impeller wear under pressure. See [{_h(near)}].",
+        title="Wear",
+        tags=[space],
+    )
+    assert any(
+        link.dst_ref_id == near and link.meta.get("auto") == "mention"
+        for link in hub.live_store.links_for(_created_id(put), direction="out")
+    )
+    assert f"target='{_h(near)}', rel='related-to'" not in put.body
+
+
 def test_hubless_fallback_leaves_repo_dev_hub_hints_first(hub: Hub) -> None:
     """gr520279 acceptance: repo-dev behaviour unchanged — the hub
     part-of hint still leads the ack's link advice."""
