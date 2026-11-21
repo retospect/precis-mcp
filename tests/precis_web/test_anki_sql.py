@@ -1,6 +1,6 @@
 """Real-PG regression tests for the ``/anki`` route's raw SQL
 (``precis_web.routes.anki``) — the route-level ``test_anki.py`` runs against
-a fake store that never parses SQL, so ``_counts`` / ``_forge_groups`` /
+a fake store that never parses SQL, so ``_counts`` / ``_card_groups`` /
 the known/undo transaction are exercised here against the live ``store`` fixture.
 """
 
@@ -13,7 +13,7 @@ from precis.reading.flashcards import author_card
 from precis.reading.known import known_undo_entries, mark_known, undo_known
 from precis.reading.promote import create_concept
 from precis.users import hash_password
-from precis_web.routes.anki import _counts, _forge_groups
+from precis_web.routes.anki import _card_groups, _counts
 
 
 def _user(store: Any, login: str = "reto") -> str:
@@ -37,6 +37,26 @@ def _forge_card(store: Any, concept_id: int, owner: str) -> int:
     return card_id
 
 
+def _agent_card(
+    store: Any, concept_id: int, owner: str, *, source: str | None = None
+) -> int:
+    """A card the way ``AnkiHandler._create`` writes it (meta shape without
+    ``authored_by``) — what an agent's MCP put leaves behind."""
+    text = f"Agent says {{{{c1::{uuid.uuid4().hex[:6]}}}}}."
+    meta: dict[str, Any] = {
+        "notetype": "Cloze",
+        "deck": "Precis::reading",
+        "fields": {"Text": text},
+    }
+    if source is not None:
+        meta["source"] = source
+    ref = store.insert_ref(
+        kind="anki", slug=None, title=text, meta=meta, owner_login=owner
+    )
+    store.add_link(src_ref_id=concept_id, dst_ref_id=ref.id, relation="represents")
+    return ref.id
+
+
 def test_counts_split_cards_and_concepts(store: Any) -> None:
     owner = _user(store)
     before = _counts(store, owner)
@@ -58,7 +78,7 @@ def test_forge_groups_group_cards_by_concept(store: Any) -> None:
     cid = create_concept(store, name=f"grp-{uuid.uuid4().hex[:8]}")
     c1 = _forge_card(store, cid, owner)
     c2 = _forge_card(store, cid, owner)
-    groups = _forge_groups(store, owner)
+    groups = _card_groups(store, owner, forge_only=True)
     g = next(g for g in groups if g["concept_id"] == cid)
     assert {c["id"] for c in g["cards"]} == {c1, c2}
     assert g["name"].startswith("grp-")
@@ -66,8 +86,35 @@ def test_forge_groups_group_cards_by_concept(store: Any) -> None:
     # Another owner's card on the same concept must not leak in.
     other = _user(store, login="alice")
     _forge_card(store, cid, other)
-    g2 = next(g for g in _forge_groups(store, owner) if g["concept_id"] == cid)
+    g2 = next(
+        g for g in _card_groups(store, owner, forge_only=True) if g["concept_id"] == cid
+    )
     assert {c["id"] for c in g2["cards"]} == {c1, c2}
+
+
+def test_learning_groups_include_agent_cards_but_exclude_foreign(store: Any) -> None:
+    """gr742681: /learning's Current context lists every live precis-authored
+    concept card — an agent-put card (no ``authored_by``) shows there but not
+    on forge-only /anki; a read-only ``anki-foreign`` projection shows on
+    neither."""
+    owner = _user(store)
+    cid = create_concept(store, name=f"agent-{uuid.uuid4().hex[:8]}")
+    forge = _forge_card(store, cid, owner)
+    agent = _agent_card(store, cid, owner)
+    foreign = _agent_card(store, cid, owner, source="anki-foreign")
+
+    learning = next(
+        g
+        for g in _card_groups(store, owner, forge_only=False)
+        if g["concept_id"] == cid
+    )
+    assert {c["id"] for c in learning["cards"]} == {forge, agent}
+    assert foreign not in {c["id"] for c in learning["cards"]}
+
+    anki = next(
+        g for g in _card_groups(store, owner, forge_only=True) if g["concept_id"] == cid
+    )
+    assert {c["id"] for c in anki["cards"]} == {forge}
 
 
 def test_known_undo_restores_only_its_cards_and_prior_mastery(store: Any) -> None:

@@ -9,11 +9,13 @@ private notes do not enter shared ref, tool-result or mastery ledgers.
 authentication or validation refusal the page's no-store policy. The existing
 Basic gate also checks Origin/Referer before any state-changing request.
 
-The page's *current context* panel (gr664414) reuses the card forge's grouping
-(``precis_web.routes.anki._forge_groups``): this login's live forge-authored
-cards grouped by their ``represents`` concept. That read is owner-scoped by
-``refs.owner_login`` and never touches the private learning ledger; the card
-writes it offers (drop / known / boost) are the ``/anki`` routes' own.
+The page's *current context* panel (gr664414) reuses the card grouping
+(``precis_web.routes.anki._card_groups``): this login's live cards that
+represent a concept, grouped by that concept — every card authored in
+precis (forge, agent, or by hand), read-only Anki imports excepted
+(gr742681). That read is owner-scoped by ``refs.owner_login`` and never
+touches the private learning ledger; the card writes it offers
+(drop / known / boost) are the ``/anki`` routes' own.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from precis.user_context import user_scope
 from precis.users import WebUser
 from precis_web.auth import current_user
 from precis_web.deps import get_store, templates
-from precis_web.routes.anki import _forge_groups
+from precis_web.routes.anki import _card_groups
 
 router = APIRouter(prefix="/learning", tags=["learning"])
 _NO_STORE = {"Cache-Control": "no-store"}
@@ -114,11 +116,13 @@ def _render(
     learning = LearningStore(get_store(request))
     settings = learning.settings()
     activity = learning.activity(days=84)
-    # Live forge cards as the page's "current context" (gr664414): owned,
-    # non-retired anki refs grouped by concept — the same grouping /anki
-    # renders, scoped to this login. Cards carry no private learning data,
-    # and the panel's per-row writes go to the /anki routes.
-    groups = _forge_groups(get_store(request), user.login)
+    # Live cards as the page's "current context" (gr664414, widened by
+    # gr742681): owned, non-retired anki refs representing a concept —
+    # forge-, agent-, or hand-authored — grouped by concept, the same
+    # grouping /anki renders but without the forge-only filter. Cards
+    # carry no private learning data, and the panel's per-row writes go
+    # to the /anki routes.
+    groups = _card_groups(get_store(request), user.login, forge_only=False)
     selected = None
     if event:
         try:

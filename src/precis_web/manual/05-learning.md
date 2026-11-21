@@ -18,7 +18,9 @@ A rest entry does not require or record study minutes.
 ## Current context
 
 Below the calendar, **Current context** lists the cards you are learning right
-now — your live forge-authored cards, grouped by concept. Every cloze gap is
+now — every live card authored in précis (by the card forge, an agent, or by
+hand) that represents a concept, grouped by concept. Read-only imports from
+Anki do not appear. Every cloze gap is
 masked; hover it (or tab to it) to reveal the answer, so the list works as a
 self-quiz.
 

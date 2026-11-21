@@ -63,6 +63,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/anki", tags=["anki"])
 
 _FORGE_AUTHOR = "card_forge"
+_FOREIGN_SOURCE = "anki-foreign"
 
 
 def _require_user(request: Request) -> WebUser:
@@ -122,10 +123,16 @@ def _counts(store: Store, owner: str) -> dict[str, int]:
     return out
 
 
-def _forge_groups(store: Store, owner: str) -> list[dict[str, Any]]:
-    """Forge-authored live cards, grouped by their ``represents`` concept —
-    newest card first inside each group, groups ordered by their newest
-    card. ``(concept, mastery, state, [(card_id, cloze_text, boosted), …])``.
+def _card_groups(store: Store, owner: str, *, forge_only: bool) -> list[dict[str, Any]]:
+    """Live concept-representing cards, grouped by their ``represents``
+    concept — newest card first inside each group, groups ordered by their
+    newest card. ``(concept, mastery, state, [(card_id, cloze_text, boosted), …])``.
+
+    ``forge_only=True`` keeps the forge cohort (``meta.authored_by =
+    'card_forge'``) for ``/anki``. ``forge_only=False`` — ``/learning``'s
+    Current context (gr742681) — lists every card authored in precis:
+    forge, agent-put, or hand-made, i.e. anything that is not a read-only
+    Anki import (``meta.source != 'anki-foreign'``).
 
     ``boosted`` mirrors ``meta.anki_boost_due``: a queued bring-forward the
     next ``anki_sync`` tick applies, so a list row can show "boost queued"
@@ -147,13 +154,14 @@ def _forge_groups(store: Store, owner: str) -> list[dict[str, Any]]:
                                        THEN l.dst_ref_id ELSE l.src_ref_id END
         WHERE a.kind = 'anki' AND a.retired_at IS NULL
           AND a.owner_login = %s
-          AND a.meta->>'authored_by' = %s
+          AND (a.meta->>'authored_by' = %s
+               OR (NOT %s AND COALESCE(a.meta->>'source', '') != %s))
         ORDER BY a.created_at DESC, a.ref_id DESC
     """
     groups: dict[int, dict[str, Any]] = {}
     with store.pool.connection() as conn:
         for cid, name, mastery, state, card_id, cloze, boost_due in conn.execute(
-            sql, (owner, _FORGE_AUTHOR)
+            sql, (owner, _FORGE_AUTHOR, forge_only, _FOREIGN_SOURCE)
         ).fetchall():
             g = groups.setdefault(
                 int(cid),
@@ -193,7 +201,7 @@ def _render(
             "error": error,
             "notice": notice,
             "counts": _counts(store, user.login),
-            "groups": _forge_groups(store, user.login),
+            "groups": _card_groups(store, user.login, forge_only=True),
             "undo_entries": known_undo_entries(store, user),
             "return_to": "anki",
             "cap": effective_cards_per_day(store),

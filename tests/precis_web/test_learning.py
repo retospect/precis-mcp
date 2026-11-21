@@ -320,6 +320,68 @@ def test_current_context_lists_live_forge_cards_masked(
 
 
 @pytest.mark.db
+def test_current_context_includes_agent_cards_but_not_foreign(
+    store: Any, learning_users: Any
+) -> None:
+    """gr742681: /learning's Current context lists every live precis-authored
+    concept card — an agent-put card (no ``authored_by``) shows there but not
+    on forge-only /anki; a read-only ``anki-foreign`` projection shows on
+    neither."""
+    from precis.reading.flashcards import author_card
+    from precis.reading.promote import create_concept
+
+    first, _ = learning_users
+    cid = create_concept(store, name=f"ctx-agent-{uuid.uuid4().hex[:8]}")
+    forge = author_card(
+        store,
+        text="The {{c1::mitochondrion}} is the powerhouse of the cell.",
+        concept_id=cid,
+        deck="Precis::reading",
+    )
+    store.set_ref_owner(forge, first.login)
+    # An agent's MCP put leaves no ``authored_by`` on the card.
+    agent_body = "Agent wrote {{c1::this}}."
+    agent = store.insert_ref(
+        kind="anki",
+        slug=None,
+        title=agent_body,
+        meta={
+            "notetype": "Cloze",
+            "deck": "Precis::reading",
+            "fields": {"Text": agent_body},
+        },
+        owner_login=first.login,
+    ).id
+    store.add_link(src_ref_id=cid, dst_ref_id=agent, relation="represents")
+    # A read-only projection of a hand-made Anki note.
+    foreign_body = "Foreign {{c1::note}}."
+    foreign = store.insert_ref(
+        kind="anki",
+        slug=None,
+        title=foreign_body,
+        meta={
+            "notetype": "Cloze",
+            "deck": "Precis::reading",
+            "source": "anki-foreign",
+            "fields": {"Text": foreign_body},
+        },
+        owner_login=first.login,
+    ).id
+    store.add_link(src_ref_id=cid, dst_ref_id=foreign, relation="represents")
+
+    client = _client(store)
+    learning = client.get("/learning", headers=_auth())
+    assert f'"card": "{forge}"' in learning.text
+    assert f'"card": "{agent}"' in learning.text
+    assert f'"card": "{foreign}"' not in learning.text
+
+    anki = client.get("/anki", headers=_auth())
+    assert f"ak{forge}" in anki.text
+    assert f"ak{agent}" not in anki.text
+    assert f"ak{foreign}" not in anki.text
+
+
+@pytest.mark.db
 def test_foreign_and_missing_event_have_identical_refusal(
     store: Any, learning_users: Any
 ) -> None:
