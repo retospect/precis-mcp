@@ -42,6 +42,14 @@ precis_builder_subid_count: 65536
 # literal home.
 precis_fix_repo_dir: "{{ precis_builder_home }}/precis-fix-repo"
 
+# The lander's coverage map directory (PRECIS_COVERAGE_DB_DIR): land_slice runs
+# `scripts/ship --checked` as this account, and scripts/impacted-tests reads
+# <dir>/.coverage; without a map it falls back to its static, wider selection.
+# The role copies the controller's nightly map here for a managed user on macOS
+# (the copy tasks of precis_worker's coverage_map, as 20g does for deploy's
+# directory); a Linux builder has none and keeps the static selection.
+precis_builder_coverage_db_dir: "{{ precis_builder_home }}/.cache/precis/coverage-db"
+
 # The venv the worker unit execs — provisioned by precis_worker/provision
 # (imported ahead of this role in 20i); the name mirrors that role's
 # default so an override lands on both.
@@ -90,3 +98,34 @@ precis_builder_slots_host: "{{ ((precis_shared_env | default({})).PRECIS_HOST_NA
 # claim-setting door, see the spec's coordinator steps).
 precis_builder_idle_seconds: 5
 precis_builder_batch_size: 4
+
+# A second repository's clone on this host, as a dict of repo name -> absolute
+# clone path (PRECIS_SLICE_REPOS, run_slice.slice_root_for); NO default. Set it
+# in the overlay for the host and run_slice / land_slice for that repo place
+# here (the heartbeat probe advertises repo_checkout_<name>); unset or empty the
+# key is omitted from the unit and the host takes no second-repo slice. The
+# clone is the operator's to place, as on the gateway (20g's precis_slice_repos,
+# docs/runbooks/dark-factory-arming.md): an https origin without credentials,
+# readable by the builder user (a path under its home, for instance). A
+# gateway that is also a builder host sets both: the two units are separate
+# accounts with separate clones.
+#   precis_builder_slice_repos:
+#     <repo>: /Users/coder/<repo>
+
+# macOS: the builder user's colima VM size, passed to `colima start` by the
+# builder-colima unit. Empty (the default) passes no flag, so the VM takes
+# colima's own defaults, or the size of an existing profile: the same as deploy's
+# VM, which this tree does not size either (precis_worker_agent's provision half
+# only keeps `colima start` alive). CPUs, GiB of memory, GiB of disk. Applies at
+# the next `colima start` from stopped; a running VM keeps its size until
+# `colima stop` (every container in it stops: the builder's slice gates), and
+# colima can grow a disk but not shrink it.
+precis_builder_colima_cpu: ""
+precis_builder_colima_memory: ""
+precis_builder_colima_disk: ""
+# The flags those sizes render into `colima start`: integers only (anything
+# else, or 0, drops the flag), so the plist never embeds free text.
+precis_builder_colima_start_flags: >-
+  {{ (' --cpu ' ~ (precis_builder_colima_cpu | int(0))) if ((precis_builder_colima_cpu | int(0)) > 0) else ''
+  }}{{ (' --memory ' ~ (precis_builder_colima_memory | int(0))) if ((precis_builder_colima_memory | int(0)) > 0) else ''
+  }}{{ (' --disk ' ~ (precis_builder_colima_disk | int(0))) if ((precis_builder_colima_disk | int(0)) > 0) else '' }}

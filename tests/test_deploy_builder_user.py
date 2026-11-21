@@ -13,6 +13,7 @@ what it rendered before.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,7 @@ def _env() -> jinja2.Environment:
     """Jinja with the two ansible filters the role's expressions use."""
     env = jinja2.Environment(trim_blocks=True, keep_trailing_newline=True)
     env.filters["combine"] = _combine
+    env.filters["to_json"] = json.dumps
     env.filters["bool"] = lambda v: v is True or str(v).lower() in ("true", "yes", "1")
     return env
 
@@ -266,6 +268,9 @@ def _unit_env(**ctx: Any) -> dict[str, Any]:
         "precis_fix_repo_dir": ctx["precis_builder_home"] + "/precis-fix-repo",
         "precis_autocatpath_kinetics_seconds": 60,
         "precis_builder_rootless_docker": False,
+        "precis_builder_coverage_db_dir": (
+            ctx["precis_builder_home"] + "/.cache/precis/coverage-db"
+        ),
     }
     rendered = env.from_string(expr).render(**{**base, **ctx})
     return eval(rendered, {})
@@ -610,3 +615,117 @@ def test_the_slots_key_is_the_one_the_ssh_node_claim_reads(
     # The pre-fix shape: only <host> advertised (deploy's heartbeat, blind
     # to the builder's home) — the same job stays queued.
     assert not _placement_ok(meta, {"maple": set()}, host)
+
+
+# ── a second repository's clone (PRECIS_SLICE_REPOS) ──────────────────
+
+
+def test_slice_repos_renders_as_json_only_when_the_var_is_set() -> None:
+    """Mirrors 20g: the clone is the operator's to place, so there is no
+    default; unset or empty, the key is omitted and the host takes no
+    second-repo slice."""
+    repos = {"catpath": "/Users/coder/catpath"}
+    env = _unit_env(
+        os_family="darwin",
+        precis_builder_home="/Users/coder",
+        precis_builder_slice_repos=repos,
+    )
+    assert json.loads(env["PRECIS_SLICE_REPOS"]) == repos
+    base = {"os_family": "darwin", "precis_builder_home": "/Users/coder"}
+    assert "PRECIS_SLICE_REPOS" not in _unit_env(**base)
+    assert "PRECIS_SLICE_REPOS" not in _unit_env(**base, precis_builder_slice_repos={})
+    assert "precis_builder_slice_repos" not in _defaults(), "no default"
+
+
+def test_the_builder_does_not_inherit_the_gateways_slice_repos() -> None:
+    """20g's precis_slice_repos names deploy's clones; the builder account
+    has its own."""
+    env = _unit_env(
+        os_family="linux",
+        precis_builder_home="/home/coder",
+        precis_slice_repos={"catpath": "/Users/deploy/catpath"},
+    )
+    assert "PRECIS_SLICE_REPOS" not in env
+
+
+# ── the builder's colima VM size ───────────────────────────────────────
+
+_COLIMA_PLAIN = "/bin/bash -c 'colima status || { colima stop --force; colima start; }'"
+
+
+def _colima_exec(**ctx: Any) -> str:
+    """The unit's exec with the role defaults for any size not given."""
+    d = _defaults()
+    sizes = {
+        f"precis_builder_colima_{k}": d[f"precis_builder_colima_{k}"]
+        for k in ("cpu", "memory", "disk")
+    }
+    sizes.update(ctx)
+    unit = _tasks("colima.yml")[0]["vars"]
+    flags = _eval(d["precis_builder_colima_start_flags"], **sizes)
+    return _eval(unit["service_unit_exec"], precis_builder_colima_start_flags=flags)
+
+
+def test_colima_sizes_default_to_no_flags() -> None:
+    """Default unchanged: no flag, so the VM takes colima's own defaults, as
+    deploy's does (this tree sizes neither)."""
+    d = _defaults()
+    assert {d[f"precis_builder_colima_{k}"] for k in ("cpu", "memory", "disk")} == {""}
+    assert _colima_exec() == _COLIMA_PLAIN
+
+
+def test_colima_sizes_render_as_integer_flags() -> None:
+    cmd = _colima_exec(
+        precis_builder_colima_cpu=4,
+        precis_builder_colima_memory="16",
+        precis_builder_colima_disk=200,
+    )
+    assert cmd.endswith("colima start --cpu 4 --memory 16 --disk 200; }'")
+    only = _colima_exec(precis_builder_colima_memory=8)
+    assert "colima start --memory 8; }" in only
+    assert "--cpu" not in only and "--disk" not in only
+
+
+@pytest.mark.parametrize("bad", ["0", "-2", "lots", "4; touch x", "1 --x"])
+def test_colima_sizes_never_embed_free_text(bad: str) -> None:
+    """The plist embeds the command unescaped: only positive integers pass."""
+    cmd = _colima_exec(
+        precis_builder_colima_cpu=bad,
+        precis_builder_colima_memory=bad,
+        precis_builder_colima_disk=bad,
+    )
+    assert cmd == _COLIMA_PLAIN
+
+
+# ── the lander's coverage map ──────────────────────────────────────────
+
+
+def test_builder_unit_env_uses_the_role_variable_for_the_coverage_dir() -> None:
+    env = _unit_env(
+        os_family="darwin",
+        precis_builder_home="/Users/coder",
+        precis_builder_coverage_db_dir="/Users/coder/.cache/precis/coverage-db",
+    )
+    assert env["PRECIS_COVERAGE_DB_DIR"] == "/Users/coder/.cache/precis/coverage-db"
+    d = _defaults()
+    assert (
+        _eval(d["precis_builder_coverage_db_dir"], precis_builder_home="/Users/coder")
+        == "/Users/coder/.cache/precis/coverage-db"
+    )
+
+
+def test_a_managed_builder_gets_its_own_coverage_map_copy() -> None:
+    """land_slice runs scripts/ship --checked as the builder account, which
+    reads $PRECIS_COVERAGE_DB_DIR/.coverage; 20g copies only deploy's."""
+    task = _task(_tasks(), "Coverage map for the builder's lander")
+    assert task["when"] == "precis_builder_manage_user | bool"
+    imp = task["ansible.builtin.import_role"]
+    assert imp == {"name": "precis_worker", "tasks_from": "coverage_map"}
+    v = task["vars"]
+    assert v["precis_coverage_db_dir"] == "{{ precis_builder_coverage_db_dir }}"
+    assert v["precis_coverage_db_owner"] == "{{ precis_builder_user }}"
+    assert v["precis_coverage_db_group"] == "{{ precis_builder_user }}"
+    assert v["precis_coverage_db_make_parents"] is True, (
+        "a fresh home has no ~/.cache/precis; the file module would create "
+        "the parents root-owned"
+    )

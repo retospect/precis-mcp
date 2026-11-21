@@ -1,0 +1,38 @@
+---
+# One report / update pass as agent_cli_run_user (main.yml loops this over
+# agent_cli_users): the script runs as that account (become_user), so its
+# detection, installs, --version and smoke see that account's home.
+
+# check_mode false: a report is read-only and must still run under --check.
+- name: "Agent CLIs: {{ agent_cli_effective_mode }} as {{ agent_cli_run_user }}"
+  ansible.builtin.script:
+    cmd: >-
+      agent_cli.py {{ agent_cli_effective_mode }}
+      {{ '--strict' if (agent_cli_strict | bool) else '' }}
+      --config-json {{ agent_cli_config | to_json | quote }}
+    executable: python3
+    # The user's own home as cwd: on macOS the play's cwd is the
+    # connecting account's home (0750), which a builder user like coder
+    # cannot enter, and npm dies with `EACCES: process.cwd failed`. The
+    # user's home (not shared /tmp) is private to it and always readable.
+    chdir: "{{ ('/Users/' if os_family == 'darwin' else '/home/') ~ agent_cli_run_user }}"
+  become: true
+  become_user: "{{ agent_cli_run_user }}"
+  register: agent_cli_out
+  check_mode: false
+  changed_when: >-
+    agent_cli_effective_mode == 'update' and
+    (agent_cli_out.stdout | default('')) is search('· (updated|rolled-back)')
+  failed_when: false
+
+- name: "Show the agent CLI report ({{ agent_cli_run_user }})"
+  ansible.builtin.debug:
+    msg: "{{ agent_cli_out.stdout_lines | default([]) | reject('match', 'AGENT_CLI_JSON') | list }}"
+
+- name: "Fail the run on a failed update or a strict-report alert ({{ agent_cli_run_user }})"
+  when: agent_cli_out.rc != 0 and not (agent_cli_effective_mode == 'update' and agent_cli_out.rc == 2)
+  ansible.builtin.fail:
+    msg: >-
+      agent_cli {{ agent_cli_mode }} as {{ agent_cli_run_user }} exited {{ agent_cli_out.rc }}:
+      {{ agent_cli_out.stdout_lines | default([]) | select('match', 'ALERT') | list }}
+      {{ agent_cli_out.stderr | default('') }}

@@ -67,6 +67,22 @@
 # for any repo but this one fails its submit with the missing-entry message.
 # Not needed until a second repo is opened (factory.open_repos).
 #
+# BUILDS ON A BUILDER HOST. On the gateway, `precis_builder_user: coder` puts
+# a `<host>-coder` worker (20i, role precis_builder_host) beside this lane. Once
+# its cap is raised and its vendor logins are proven, set the host var
+# `precis_deploy_claims_run_slice: false` (default true): this lane and 20b's
+# collapsed unit then render `run_slice` into PRECIS_SUSPENDED_JOB_TYPES, so the
+# deploy identity claims no build (the claim path skips a suspended type) and
+# its heartbeat stops advertising the `builder` floor (the planner's capacity
+# count). Everything else on `repo_checkout` keeps running here: release_cut,
+# release_deploy, release_confirm, ci_red_digest, ci_rerun, pin_bump,
+# repo_release and any land_slice already pinned to the bare host. The same
+# switch hands the builds to OTHER builder hosts when this host has no builder
+# account of its own. The first task refuses the switch when neither holds
+# (no managed builder user here, no other host in builder_hosts), where it
+# would leave run_slice no claimant. Order and drain: dark-factory-arming.md,
+# "A host that is both the gateway and a builder host".
+#
 # NO READINESS GATE (unlike 20e/43). A repeated `--only` has no
 # append-vs-store hazard for job_ssh_node, long-registered in the installed
 # argparse choices. plan_tick is NOT in an older venv's choices, but the
@@ -87,7 +103,31 @@
     # impacted-tests reads $PRECIS_COVERAGE_DB_DIR/.coverage).
     _slices_coverage_dir: /Users/deploy/.cache/precis/coverage-db
     _slices_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+    # The operator hold list plus run_slice when this host's deploy identity
+    # has handed the builds to its builder account (header, BUILDS ON A
+    # BUILDER HOST). 20b renders the same expression as _l_b_suspended_job_types.
+    _slices_suspended_job_types: >-
+      {{ ((precis_suspended_job_types | default('')).split(',') | map('trim') | select | list
+           + ([] if (precis_deploy_claims_run_slice | default(true) | bool) else ['run_slice']))
+         | unique | join(',') }}
   tasks:
+    - name: Refuse to drop run_slice from the deploy identity when no builder would claim it
+      ansible.builtin.assert:
+        that:
+          - >-
+            (precis_deploy_claims_run_slice | default(true) | bool)
+            or (inventory_hostname in (groups['builder_hosts'] | default([]))
+                and (precis_builder_user | default('deploy')) != 'deploy')
+            or ((groups['builder_hosts'] | default([]))
+                | reject('equalto', inventory_hostname) | list | length > 0)
+        fail_msg: >-
+          precis_deploy_claims_run_slice is false on {{ inventory_hostname }},
+          but the host is not in builder_hosts with a non-deploy
+          precis_builder_user and builder_hosts names no other host: no unit
+          would claim run_slice anywhere. Run 20i first, or leave the variable
+          at its default.
+        quiet: true
+
     - name: render + load the slice poll lane unit
       ansible.builtin.import_role:
         name: service_unit
@@ -133,7 +173,7 @@
                  'PRECIS_MAX_TREE_USD': (precis_max_tree_usd | default(10.0)) | string,
                  'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
                  'PRECIS_CLAUDE_P_BILLED': ('1' if (precis_claude_p_billed | default(false)) else '0'),
-                 'PRECIS_SUSPENDED_JOB_TYPES': precis_suspended_job_types | default(''),
+                 'PRECIS_SUSPENDED_JOB_TYPES': _slices_suspended_job_types,
                  'PRECIS_SLICE_ROOT': precis_slice_root | default(precis_fix_repo_dir | default('/Users/deploy/precis-fix-repo')),
                  'PRECIS_AUTOCATPATH_KINETICS_SECONDS': precis_autocatpath_kinetics_seconds | string,
                  'PRECIS_EMBEDDER': precis_worker_agent_embedder | default('remote'),

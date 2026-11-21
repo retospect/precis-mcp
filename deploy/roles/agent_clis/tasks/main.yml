@@ -1,7 +1,8 @@
 ---
 # Report or update the agent CLIs on this host via files/agent_cli.py.
 # The script runs as agent_cli_user (become_user): the account the slice
-# lanes run as, whose HOME and user-local bin dirs hold the CLIs.
+# lanes run as, whose HOME and user-local bin dirs hold the CLIs; run.yml is
+# one pass as one account, looped over agent_cli_users.
 
 - name: Refuse an update run without --limit (never the whole fleet by accident)
   when: agent_cli_mode == 'update' and ansible_limit is not defined
@@ -31,36 +32,12 @@
     agent_cli_config: >-
       {{ agent_cli_config | combine({'launcher': {'checkout': agent_cli_launcher_checkout}}) }}
 
-# check_mode false: a report is read-only and must still run under --check.
-- name: "Agent CLIs: {{ agent_cli_effective_mode }}"
-  ansible.builtin.script:
-    cmd: >-
-      agent_cli.py {{ agent_cli_effective_mode }}
-      {{ '--strict' if (agent_cli_strict | bool) else '' }}
-      --config-json {{ agent_cli_config | to_json | quote }}
-    executable: python3
-    # agent_cli_user's own home as cwd: on macOS the play's cwd is the
-    # connecting account's home (0750), which a builder user like coder
-    # cannot enter, and npm dies with `EACCES: process.cwd failed`. The
-    # user's home (not shared /tmp) is private to it and always readable.
-    chdir: "{{ ('/Users/' if os_family == 'darwin' else '/home/') ~ agent_cli_user }}"
-  become: true
-  become_user: "{{ agent_cli_user }}"
-  register: agent_cli_out
-  check_mode: false
-  changed_when: >-
-    agent_cli_effective_mode == 'update' and
-    (agent_cli_out.stdout | default('')) is search('· (updated|rolled-back)')
-  failed_when: false
-
-- name: Show the agent CLI report
-  ansible.builtin.debug:
-    msg: "{{ agent_cli_out.stdout_lines | default([]) | reject('match', 'AGENT_CLI_JSON') | list }}"
-
-- name: Fail the run on a failed update or a strict-report alert
-  when: agent_cli_out.rc != 0 and not (agent_cli_effective_mode == 'update' and agent_cli_out.rc == 2)
-  ansible.builtin.fail:
-    msg: >-
-      agent_cli {{ agent_cli_mode }} exited {{ agent_cli_out.rc }}:
-      {{ agent_cli_out.stdout_lines | default([]) | select('match', 'ALERT') | list }}
-      {{ agent_cli_out.stderr | default('') }}
+# One pass per account that runs model CLIs on this host (agent_cli_users):
+# usually just agent_cli_user, plus deploy on a gateway that is also a builder
+# host, where deploy's own sessions (the plan ticker's in-process claude, the
+# fix lane) keep using the CLIs after the lanes moved to the builder account.
+- name: Report / update the agent CLIs for each account that runs them
+  ansible.builtin.include_tasks: run.yml
+  loop: "{{ agent_cli_users }}"
+  loop_control:
+    loop_var: agent_cli_run_user

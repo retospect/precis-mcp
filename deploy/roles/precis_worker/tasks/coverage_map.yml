@@ -5,7 +5,12 @@
 # GitHub credential for `--fetch-db`, so the controller (which has gh)
 # refreshes its own copy during scripts/deploy (best-effort) and this file
 # copies it to the lander. Included from 20g (gateway) via
-# `import_role ... tasks_from: coverage_map`.
+# `import_role ... tasks_from: coverage_map`, and from the builder-host role
+# for a managed builder account, whose lander (land_slice runs as that
+# account) reads its own directory: it passes precis_coverage_db_dir, the
+# owner and group, and precis_coverage_db_make_parents (the account's home
+# has no ~/.cache/precis yet, and the file module would otherwise create the
+# missing parents root-owned inside a 0700 home).
 #
 # Missing local map: the copy tasks skip, never fail. A stale map is not this
 # file's concern: scripts/impacted-tests judges age itself and falls back to
@@ -26,6 +31,22 @@
   delegate_to: localhost
   become: false
 
+- name: Parents of the coverage map directory (the owner's own, macOS)
+  when: >-
+    (precis_coverage_db_make_parents | default(false) | bool)
+    and os_family == "darwin"
+    and (_coverage_src.results | map(attribute='stat.exists')
+         | select('equalto', false) | list | length == 0)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ precis_coverage_db_owner | default('deploy') }}"
+    group: "{{ precis_coverage_db_group | default('staff') }}"
+  loop:
+    - "{{ precis_coverage_db_dir | dirname | dirname }}"
+    - "{{ precis_coverage_db_dir | dirname }}"
+  become: true
+
 - name: Coverage map directory for the slice lander (macOS)
   when: >-
     os_family == "darwin"
@@ -34,8 +55,8 @@
   ansible.builtin.file:
     path: "{{ precis_coverage_db_dir }}"
     state: directory
-    owner: deploy
-    group: staff
+    owner: "{{ precis_coverage_db_owner | default('deploy') }}"
+    group: "{{ precis_coverage_db_group | default('staff') }}"
     mode: "0755"
   become: true
 
@@ -49,8 +70,8 @@
   ansible.builtin.copy:
     src: "{{ _coverage_src_dir }}/{{ item }}"
     dest: "{{ precis_coverage_db_dir }}/{{ item }}"
-    owner: deploy
-    group: staff
+    owner: "{{ precis_coverage_db_owner | default('deploy') }}"
+    group: "{{ precis_coverage_db_group | default('staff') }}"
     mode: "0644"
   loop: [.coverage, .coverage.precis.json]
   become: true

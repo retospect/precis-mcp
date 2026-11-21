@@ -42,6 +42,16 @@ agent_cli_strict: false
 # host that runs its lanes as a dedicated user needs no second setting.
 agent_cli_user: "{{ (precis_builder_user | default('deploy')) if inventory_hostname in (groups['builder_hosts'] | default([])) else 'deploy' }}"
 
+# Every account whose CLIs the run reports and updates, in order. agent_cli_user
+# is first. The gateway is also a builder host when its slice lanes run as the
+# builder account, but deploy still runs model CLIs there (the plan ticker's
+# in-process claude, the fix lane), so deploy is a second pass on a gateway
+# whose agent_cli_user is not deploy. Each account logs in through the vendor's
+# own flow (no auth is copied), and a pass fails its smoke prompt until it has.
+# Override the list per host to add or drop an account.
+agent_cli_extra_users: "{{ ['deploy'] if (agent_cli_user != 'deploy' and inventory_hostname in (groups['gateway'] | default([]))) else [] }}"
+agent_cli_users: "{{ [agent_cli_user] + agent_cli_extra_users }}"
+
 # The agent-start launcher (~/.local/bin/agent-start) is for hosts where
 # people start agent sessions. A builder host runs slices through its
 # worker, not agent-start, so builder_hosts members skip it by default:

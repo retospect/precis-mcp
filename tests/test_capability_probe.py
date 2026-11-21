@@ -507,6 +507,26 @@ def test_lane_tokens_require_binary_and_login(
     assert cap._probe_builder() == int(binary and login)
 
 
+def test_builder_floor_is_withheld_while_run_slice_is_suspended(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gateway's deploy-run units hold run_slice once the builder
+    account takes the builds: their host stops advertising the ``builder``
+    floor (build_queue_supply counts only hosts that carry it) while the
+    lane-bin tokens other job types require stay."""
+    monkeypatch.setattr(cap, "_probe_claude_lane", lambda: 1)
+    monkeypatch.setattr(cap, "_probe_codex_bin", lambda: 1)
+    monkeypatch.setattr(cap, "_probe_kimi_bin", lambda: 1)
+    monkeypatch.setattr(cap, "_probe_devin_bin", lambda: 1)
+    monkeypatch.delenv("PRECIS_SUSPENDED_JOB_TYPES", raising=False)
+    assert cap._probe_builder() == 1
+    monkeypatch.setenv("PRECIS_SUSPENDED_JOB_TYPES", "autocatpath_seed")
+    assert cap._probe_builder() == 1, "another type's hold leaves the floor"
+    monkeypatch.setenv("PRECIS_SUSPENDED_JOB_TYPES", "autocatpath_seed, run_slice")
+    assert cap._probe_builder() == 0
+    assert cap._probe_claude_lane() == 1
+
+
 def test_claude_directory_without_credentials_is_not_a_login(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

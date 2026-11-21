@@ -149,3 +149,9 @@ precis_worker_hf_home: /var/lib/precis/hf-cache
 # per-test coverage DB lands, and the PRECIS_COVERAGE_DB_DIR the lander's
 # scripts/ship sees (20b/20g unit env). Missing map => static-wide selection.
 precis_coverage_db_dir: /Users/deploy/.cache/precis/coverage-db
+# Who owns the map directory and files (coverage_map.yml reads these with the
+# same fallbacks inline); the builder-host role passes its own account, and
+# precis_coverage_db_make_parents (default false) to create the account's
+# ~/.cache/precis parents.
+precis_coverage_db_owner: deploy
+precis_coverage_db_group: staff

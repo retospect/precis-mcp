@@ -402,7 +402,10 @@ def test_role_check_mode_reports_and_only_updates_count_as_changed(
         for task in tasks
         if task.get("name", "").startswith("Add the agent-start launcher")
     )
-    operation = next(task for task in tasks if "ansible.builtin.script" in task)
+    pass_tasks = yaml.safe_load(
+        (SOURCE.parents[1] / "tasks/run.yml").read_text(encoding="utf-8")
+    )
+    operation = next(task for task in pass_tasks if "ansible.builtin.script" in task)
     environment = Environment()
     environment.filters.update(bool=bool, to_json=json.dumps, quote=shlex.quote)
     environment.tests["search"] = lambda value, pattern: bool(re.search(pattern, value))

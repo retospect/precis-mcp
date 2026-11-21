@@ -9,6 +9,7 @@ without touching a real CLI.
 
 from __future__ import annotations
 
+import ast
 import importlib.machinery
 import importlib.util
 import json
@@ -500,7 +501,7 @@ def test_role_to_wrapper_exit_contract(
 
     task = next(
         t
-        for t in _role_tasks()
+        for t in _pass_tasks()
         if "ansible.builtin.fail" in t and "agent_cli_out.rc" in t.get("when", "")
     )
     assert (
@@ -812,8 +813,13 @@ def test_kimi_latest_via_the_script_resolves_with_the_vendor_lookup() -> None:
 # ── the agent-start launcher is not for builder hosts ─────────────────────
 
 
-def _role_tasks() -> list[dict[str, Any]]:
-    return yaml.safe_load((ROLE / "tasks" / "main.yml").read_text(encoding="utf-8"))
+def _role_tasks(name: str = "main.yml") -> list[dict[str, Any]]:
+    return yaml.safe_load((ROLE / "tasks" / name).read_text(encoding="utf-8"))
+
+
+def _pass_tasks() -> list[dict[str, Any]]:
+    """The tasks of one per-account pass (run.yml, looped by main.yml)."""
+    return _role_tasks("run.yml")
 
 
 def _launcher_managed(inventory_hostname: str, groups: dict[str, list[str]]) -> str:
@@ -857,9 +863,10 @@ def test_a_config_without_a_launcher_raises_no_launcher_alert(
 def test_the_script_runs_as_agent_cli_user_not_as_the_global_root_become() -> None:
     """ansible.cfg's default become is root: without become_user the script
     saw root's home and reported every user-local CLI missing."""
-    task = next(t for t in _role_tasks() if "ansible.builtin.script" in t)
+    task = next(t for t in _pass_tasks() if "ansible.builtin.script" in t)
     assert task["become"] is True
-    assert task["become_user"] == "{{ agent_cli_user }}"
+    assert task["become_user"] == "{{ agent_cli_run_user }}"
+    assert task["ansible.builtin.script"]["chdir"].endswith("~ agent_cli_run_user }}")
 
 
 def test_builder_hosts_run_the_clis_as_the_builder_user() -> None:
@@ -876,3 +883,35 @@ def test_builder_hosts_run_the_clis_as_the_builder_user() -> None:
     assert user("maple", groups) == "deploy", "builder user unset: deploy"
     assert user("gateway", groups, precis_builder_user="coder") == "deploy"
     assert user("gateway", {}) == "deploy"
+
+
+def test_each_account_that_runs_model_clis_gets_a_pass() -> None:
+    """A gateway whose lanes moved to the builder account still runs model
+    CLIs as deploy (plan ticker, fix lane): both accounts are updated."""
+    import jinja2
+
+    d = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text(encoding="utf-8"))
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+
+    def users(host: str, groups: dict[str, list[str]], **hostvars: str) -> list[str]:
+        ctx: dict[str, Any] = {
+            "inventory_hostname": host,
+            "groups": groups,
+            "precis_builder_user": hostvars.get("precis_builder_user", "deploy"),
+        }
+        ctx["agent_cli_user"] = env.from_string(d["agent_cli_user"]).render(**ctx)
+        ctx["agent_cli_extra_users"] = ast.literal_eval(
+            env.from_string(d["agent_cli_extra_users"]).render(**ctx)
+        )
+        return ast.literal_eval(env.from_string(d["agent_cli_users"]).render(**ctx))
+
+    both = {"builder_hosts": ["gw", "maple"], "gateway": ["gw"]}
+    assert users("gw", both, precis_builder_user="coder") == ["coder", "deploy"]
+    assert users("maple", both, precis_builder_user="coder") == ["coder"]
+    # Gateway not a builder host (or a deploy builder): deploy once, as before.
+    assert users("gw", {"gateway": ["gw"]}) == ["deploy"]
+    assert users("gw", both) == ["deploy"]
+    assert users("other", {}) == ["deploy"]
+    loop = next(t for t in _role_tasks() if "ansible.builtin.include_tasks" in t)
+    assert loop["loop"] == "{{ agent_cli_users }}"
+    assert loop["loop_control"] == {"loop_var": "agent_cli_run_user"}

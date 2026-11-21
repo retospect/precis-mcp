@@ -582,7 +582,18 @@ def _probe_devin_bin() -> int:
 def _probe_builder() -> int:
     """The ``builder`` token — at least one ready slice lane on this
     host: the unpinned ``run_slice`` placement floor (gr676054). The
-    pick then filters to the adapters actually present."""
+    pick then filters to the adapters actually present.
+
+    A process that holds ``run_slice`` (``PRECIS_SUSPENDED_JOB_TYPES``, the
+    claim path's operator hold) will not claim one, so its host does not
+    advertise the floor: the gateway's deploy-run units carry the hold once
+    the ``<host>-coder`` builder unit takes the builds, and
+    ``gripe_dispatch.build_queue_supply`` must not count their slots as
+    capacity. The lane-bin tokens stay — other job types require them."""
+    from precis.workers.executors import suspended_job_types
+
+    if "run_slice" in suspended_job_types():
+        return 0
     for probe in (
         _probe_claude_lane,
         _probe_codex_bin,

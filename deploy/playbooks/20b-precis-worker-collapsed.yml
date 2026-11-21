@@ -248,7 +248,7 @@
              'PRECIS_MAX_TREE_USD': (precis_max_tree_usd | default(10.0)) | string,
              'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
              'PRECIS_CLAUDE_P_BILLED': ('1' if (precis_claude_p_billed | default(false)) else '0'),
-             'PRECIS_SUSPENDED_JOB_TYPES': precis_suspended_job_types | default(''),
+             'PRECIS_SUSPENDED_JOB_TYPES': _l_b_suspended_job_types,
              'PRECIS_JOB_CPU_SHARES': precis_job_cpu_shares | default(''),
              'PRECIS_AUTOCATPATH_KINETICS_SECONDS': precis_autocatpath_kinetics_seconds | string,
            })
@@ -533,6 +533,17 @@
     _l_b_fetch_lane_on: >-
       {{ (precis_worker_fetch_dedicated | default(false) | bool)
          and (inventory_hostname in (precis_capabilities.oa_fetch | default([]))) }}
+    # ── builds on a builder host. The operator hold list plus run_slice when
+    # the host var precis_deploy_claims_run_slice is false: this unit (it runs
+    # job_ssh_node in its rotation, and heartbeats, so its probe stops
+    # advertising the `builder` floor) hands the builds to the host's builder
+    # account (20i). Only run_slice is held: release_*, ci_*, pin_bump,
+    # repo_release and land_slice keep claiming here. 20g renders the same
+    # expression as _slices_suspended_job_types; its header has the story. ──
+    _l_b_suspended_job_types: >-
+      {{ ((precis_suspended_job_types | default('')).split(',') | map('trim') | select | list
+           + ([] if (precis_deploy_claims_run_slice | default(true) | bool) else ['run_slice']))
+         | unique | join(',') }}
   # tasks: + import_role, NOT a `roles:` list — in a `roles:` entry,
   # `tasks_from:` is not a selector, it silently becomes a role VAR and the
   # role runs its FULL main.yml. That exact bug re-rendered the split
@@ -540,6 +551,23 @@
   # the daemon retire-split-agents.yml had just booted out (2026-08-04).
   # `import_role` honors tasks_from.
   tasks:
+    - name: Refuse to drop run_slice from the deploy identity when no builder would claim it
+      ansible.builtin.assert:
+        that:
+          - >-
+            (precis_deploy_claims_run_slice | default(true) | bool)
+            or (inventory_hostname in (groups['builder_hosts'] | default([]))
+                and (precis_builder_user | default('deploy')) != 'deploy')
+            or ((groups['builder_hosts'] | default([]))
+                | reject('equalto', inventory_hostname) | list | length > 0)
+        fail_msg: >-
+          precis_deploy_claims_run_slice is false on {{ inventory_hostname }},
+          but the host is not in builder_hosts with a non-deploy
+          precis_builder_user and builder_hosts names no other host: no unit
+          would claim run_slice anywhere. Run 20i first, or leave the variable
+          at its default.
+        quiet: true
+
     # still provisions the venv + deps + dirs + the shared env facts + the
     # §L system-flag seed — provisioning HALF only (units.yml is the split
     # `--profile system` render, playbook 20's rollback path; running it

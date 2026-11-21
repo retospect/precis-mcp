@@ -33,7 +33,8 @@ the vendor's own flow.
 
 The report/update runs as ``agent_cli_user`` (default deploy; builder_hosts
 members follow precis_builder_user), the account whose home holds the CLIs the
-slice lanes run. devin is found in ~/.local/bin and kimi in ~/.kimi-code/bin
+slice lanes run; a gateway that is also a builder host gets a second pass as
+deploy (agent_cli_users), whose own model sessions keep using the CLIs. devin is found in ~/.local/bin and kimi in ~/.kimi-code/bin
 as the lanes resolve them; a fresh devin installs through the vendor script,
 kimi through npm (node >= 22.19) or the vendor install.sh. The agent-start
 launcher is skipped on builder_hosts members (agent_cli_launcher_managed).

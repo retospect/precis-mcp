@@ -26,7 +26,7 @@ def test_copy_tasks_skip_when_the_controller_has_no_map() -> None:
     tasks = _tasks()
     copies = [t for t in tasks if "ansible.builtin.copy" in t]
     dirs = [t for t in tasks if "ansible.builtin.file" in t]
-    assert len(copies) == 1 and len(dirs) == 1
+    assert len(copies) == 1 and len(dirs) == 2  # the map dir and its parents
     for t in (*copies, *dirs):
         assert "_coverage_src.results" in str(t["when"]), t["name"]
     assert copies[0]["ansible.builtin.copy"]["dest"].startswith(
@@ -34,6 +34,45 @@ def test_copy_tasks_skip_when_the_controller_has_no_map() -> None:
     )
     # Manifest after the map: a half-copy never pairs new manifest, old map.
     assert copies[0]["loop"] == [".coverage", ".coverage.precis.json"]
+
+
+def test_owner_and_group_follow_the_caller_and_default_to_deploy() -> None:
+    """20g's lander is deploy; a managed builder account passes its own."""
+    tasks = _tasks()
+    owned = [
+        t[mod]
+        for t in tasks
+        for mod in ("ansible.builtin.copy", "ansible.builtin.file")
+        if mod in t
+    ]
+    assert len(owned) == 3
+    for spec in owned:
+        assert spec["owner"] == "{{ precis_coverage_db_owner | default('deploy') }}"
+        assert spec["group"] == "{{ precis_coverage_db_group | default('staff') }}"
+    defaults = yaml.safe_load(
+        (_DEPLOY / "roles" / "precis_worker" / "defaults" / "main.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert (
+        defaults["precis_coverage_db_owner"],
+        defaults["precis_coverage_db_group"],
+    ) == (
+        "deploy",
+        "staff",
+    )
+
+
+def test_parents_are_made_only_when_the_caller_asks() -> None:
+    """The file module creates missing parents root-owned: a fresh builder
+    home needs its ~/.cache/precis made as the account; deploy's exist."""
+    parents = next(t for t in _tasks() if "Parents" in t["name"])
+    assert "precis_coverage_db_make_parents | default(false) | bool" in parents["when"]
+    assert parents["loop"] == [
+        "{{ precis_coverage_db_dir | dirname | dirname }}",
+        "{{ precis_coverage_db_dir | dirname }}",
+    ]
+    assert "mode" not in parents["ansible.builtin.file"], "existing modes stay"
 
 
 def test_stat_is_local_and_never_fails_the_play() -> None:

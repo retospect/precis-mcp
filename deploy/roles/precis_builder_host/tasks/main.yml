@@ -51,6 +51,24 @@
   environment:
     HOME: "{{ precis_builder_home }}"
 
+# ── the lander's coverage map ────────────────────────────────────────
+# land_slice runs scripts/ship --checked as this account; its test selection
+# reads $PRECIS_COVERAGE_DB_DIR/.coverage. 20g copies the controller's nightly
+# map to deploy's directory; a managed builder reads its own, so it gets its
+# own copy (best-effort: no map on the controller, nothing copied, the
+# selection stays static). The copy tasks are macOS-only, like 20g's.
+
+- name: Coverage map for the builder's lander (best-effort)
+  when: precis_builder_manage_user | bool
+  ansible.builtin.import_role:
+    name: precis_worker
+    tasks_from: coverage_map
+  vars:
+    precis_coverage_db_dir: "{{ precis_builder_coverage_db_dir }}"
+    precis_coverage_db_owner: "{{ precis_builder_user }}"
+    precis_coverage_db_group: "{{ precis_builder_user }}"
+    precis_coverage_db_make_parents: true
+
 # ── docker for `scripts/test` inside slices ──────────────────────────
 # deploy on Linux gets the distro daemon + compose v2 plugin and a
 # docker-group membership (the socket's group mode is the whole grant —
@@ -287,6 +305,10 @@
       --idle-seconds {{ precis_builder_idle_seconds }}
     # Env parity with 20g's slices lane for every job_type this worker
     # can win — it shares the ssh_node queue with the compute lane.
+    # PRECIS_SLICE_REPOS (a second repo's clone, run_slice.slice_root_for)
+    # renders from precis_builder_slice_repos, a dict of name -> absolute path
+    # with no default: this account's clone is not deploy's, so 20g's
+    # precis_slice_repos must not leak across (defaults/main.yml).
     # DOCKER_HOST: darwin = the user's colima socket; Linux rootless
     # (managed non-deploy user) = /run/user/<uid>/docker.sock, with
     # XDG_RUNTIME_DIR beside it; Linux deploy = unset, the default
@@ -310,7 +332,7 @@
              'PRECIS_DATABASE_URL': precis_builder_dsn,
              'PRECIS_PROCESS': 'precis-worker-builder',
              'PRECIS_SOURCE': 'precis-worker-builder',
-             'PRECIS_COVERAGE_DB_DIR': precis_builder_home + '/.cache/precis/coverage-db',
+             'PRECIS_COVERAGE_DB_DIR': precis_builder_coverage_db_dir,
              'PRECIS_MAX_TICKS': (precis_max_ticks | default(25)) | string,
              'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
              'PRECIS_MAX_TREE_USD': (precis_max_tree_usd | default(10.0)) | string,
@@ -339,6 +361,10 @@
          | combine(
              {'PRECIS_MCP_SLICE_TOKEN_DIR': precis_mcp_slice_token_dir}
              if ((precis_mcp_slice_token_dir | default('')) | length > 0) else {}
+           )
+         | combine(
+             {'PRECIS_SLICE_REPOS': precis_builder_slice_repos | to_json}
+             if ((precis_builder_slice_repos | default({})) | length > 0) else {}
            )
          | combine(
              {'PRECIS_HOST_NAME': precis_builder_slots_host,

@@ -20,6 +20,8 @@
       PATH: /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
     # `colima status` is a cheap no-op while the VM is up; a stale hostagent
     # after a crash is force-stopped before the start. No redirections:
-    # the plist embeds this string unescaped.
+    # the plist embeds this string unescaped. The start flags are the
+    # integer-only precis_builder_colima_* sizes (defaults/main.yml); empty
+    # leaves colima's own defaults, as deploy's VM has.
     service_unit_exec: >-
-      /bin/bash -c 'colima status || { colima stop --force; colima start; }'
+      /bin/bash -c 'colima status || { colima stop --force; colima start{{ precis_builder_colima_start_flags }}; }'

@@ -758,7 +758,9 @@ The other settings a slice host reads:
   overlay, never the plist — the r224 redeploy (2026-11-06) re-rendered
   the plists with the hand-set value gone, and every slice after it
   launched "mcp token: shared" and built blind to the MCP (gr571617). The ensure script makes the dir setgid
-  group-writable; the worker user must share that group. The grant file
+  group-writable; the worker user must share that group (a builder
+  account outside it needs the grant in "A host that is both the gateway
+  and a builder host", step 3). The grant file
   holds the bearer's SHA-256 digest at mode 644, not the token: on a Mac
   host colima's virtiofs reads every mounted file as the colima user, so
   a 0600 grant owned by the worker account was unreadable to the server
@@ -834,8 +836,12 @@ Opening a second repo, in order:
    `PRECIS_SLICE_REPOS` naming an existing clone, and a second-repo
    `run_slice` / `land_slice` job is placed only on such a host. With no
    such host the job stays queued with the usual "no host advertises"
-   note. The builder-host lane (20i) does not render the variable, so
-   builder hosts do not take second-repo slices. After the first deploy,
+   note. The builder-host lane (20i) renders its own
+   `PRECIS_SLICE_REPOS` from the host var `precis_builder_slice_repos` (a
+   dict, no default, key omitted when empty; never the gateway's
+   `precis_slice_repos`): a builder account's clone is its own, placed by
+   the operator under that account. Unset, a builder host takes no
+   second-repo slices. After the first deploy,
    read the rendered units and check the value is valid JSON.
 3. Prove the factory git token from that host against the repo:
    `git ls-remote` under the credential, plus one API read.
@@ -1174,6 +1180,97 @@ Known limits:
   (env or the mounted secret) to reach the precis MCP, and the claude
   login under `HOME` (or `CLAUDE_CONFIG_DIR`); `ANTHROPIC_API_KEY` is
   not passed.
+
+## A host that is both the gateway and a builder host
+
+Ruling 2026-11-21: factory builds on the gateway run as the least-privilege
+`coder` account like the other builder hosts, not as `deploy` (which has
+sudo). Two identities then sit on one machine: `<host>` (deploy: the plan
+ticker, release jobs, the collapsed worker, the fix lane) and `<host>-coder`
+(the 20i `worker-builder` unit: `run_slice` and `land_slice`). Both claim
+`run_slice` until the deploy identity is switched off it, so the order below
+matters. Operator steps; the coordinator does not run them for a builder.
+
+1. Overlay: the host in `builder_hosts` with `precis_builder_user: coder`;
+   `precis_builder_mcp_host` set to this host (no tunnel is rendered on the MCP
+   host itself); `precis_mcp_slice_token_dir` (already set for deploy's
+   units, rendered into the builder unit too); optionally
+   `precis_builder_slice_repos` (a second repo's clone under the builder's
+   home, placed by hand) and, on macOS, `precis_builder_colima_cpu`,
+   `_memory`, `_disk` (integers, GiB; empty keeps colima's own defaults, as
+   deploy's VM has: this tree sizes neither; applies at the next
+   `colima start` from stopped).
+2. Hold the builder at zero before anything can claim: set the cap key
+   `claim.executor_cap.ssh_node.<host>-coder` to 0 through the claim-setting
+   door (`put(kind='job', mode='setting', args={'key': ..., 'value': 0,
+   'reason': '...'})`). Placement advertises a lane the moment its binary and
+   login exist, so an installed but logged-out CLI would otherwise take a
+   build and fail it.
+3. Give `coder` the slice-token directory (the operator's, setgid and
+   group-writable for a general group `coder` is deliberately not in).
+   Without it `run_slice` does not fail: `slice_tokens.registry_dir()`
+   returns `None` for a directory it cannot reach, and a failed mint is
+   logged and swallowed (`_mint_slice_token`), so the session launches on
+   "shared" (the builder has no `PRECIS_MCP_TOKEN`: preflight is skipped and
+   every MCP call answers 401). Narrowest grant: an ACL entry for `coder`
+   on that one directory, no group and no change to the ensure script
+   (its `chmod g+ws` leaves the entry in place). macOS:
+   `chmod +a "coder allow list,search,add_file,delete_child,readattr,readextattr" <slice-tokens dir>`;
+   Linux: `setfacl -m u:coder:rwx <slice-tokens dir>`. If
+   `sudo -u coder test -w <dir>` still fails, a parent denies traversal
+   (`setfacl -m u:coder:x` / `chmod +a "coder allow search"` on it). A
+   dedicated group is the alternative, but it needs `deploy` in it too
+   (its mints use the general group today) and the role's account task
+   (`groups: ""`) strips supplementary groups on every run. Untried on a
+   host: check the next launch event says `mcp token: slice td<N>j<M>`.
+4. `scripts/host-ops/play deploy/playbooks/20i-precis-builder-hosts.yml`:
+   creates the account, its checkout, rootless Docker or its own colima, the
+   coverage map copy (macOS) and the unit, which heartbeats as `<host>-coder`
+   and claims nothing at cap 0.
+5. `scripts/agent-cli-update --host <host> --apply`: one pass per account that
+   runs model CLIs, `coder` then `deploy` (`agent_cli_users`), so both stay
+   current.
+6. Vendor logins as the builder, in a real terminal:
+   `ssh -t <host> 'sudo -iu coder claude'` (then `/login`),
+   `... codex login --device-auth`, `... devin`. deploy's own logins stay.
+7. Smoke test as `coder`: `claude -p "reply ok"`,
+   `codex exec --skip-git-repo-check "reply ok"`, `docker info`; and read
+   `resource_slots` for `<host>-coder` (`builder`, `repo_checkout`, the lane
+   `*_bin` tokens).
+8. Raise the cap to the real value. Both identities now claim builds; watch
+   one build end to end as `coder` (launch event, land, `scripts/ship` gate).
+9. Drain, then switch the deploy identity off `run_slice`. A task whose hub is
+   in deploy's checkout (`meta.build_ref.host` = `<host>`, cleared when it
+   lands) pins its next build and review to `<host>`, which a switched-off
+   deploy identity will not claim: let those land first. Check:
+   `scripts/prod-psql --ro "SELECT ref_id FROM refs WHERE kind='todo' AND
+   retired_at IS NULL AND meta->'build_ref'->>'host' = '<host>'"`. Then set
+   `precis_deploy_claims_run_slice: false` on the host and redeploy 20b and 20g.
+
+What the switch does, and does not: both deploy units render `run_slice` into
+`PRECIS_SUSPENDED_JOB_TYPES`, so the deploy identity claims no build, and its
+heartbeat stops advertising the `builder` floor, so `gripe_dispatch` stops
+counting its slots as build capacity. The plan tick keeps minting builds; the
+lane picker and the host-agnostic placement are untouched. release_cut,
+release_deploy, release_confirm, ci_red_digest, ci_rerun, pin_bump,
+repo_release and any `land_slice` pinned to the bare `<host>` keep draining on
+deploy; a land minted by a `coder` build pins to `<host>-coder`. Existing
+knobs were checked and do not do this: the per-host executor cap and reserve
+act on all of `ssh_node`, `claim.max_running.<job_type>` has no per-host form,
+and `service_config` pins apply to no run_slice. The play refuses the switch
+when the host has no managed builder user and `builder_hosts` names no other
+host. A fleet-wide operator hold of
+`run_slice` now also withdraws the `builder` floor everywhere, so queued
+builds raise the unschedulable alert for its duration. Rollback: the variable
+back to `true` and redeploy.
+
+Builds on other builder hosts only: the same variable works before the gateway
+has a builder account of its own. With `precis_deploy_claims_run_slice: false`
+and at least one other host in `builder_hosts`, the gateway keeps the plan
+ticker and the release jobs and builds nothing; the builder hosts whose cap
+key is above 0 take every build. Step 9's drain applies unchanged. Until the
+"Before a second build host is enabled" items below are closed, keep exactly
+one builder host above cap 0.
 
 ## Disposable workspaces (where a build's work lives)
 
