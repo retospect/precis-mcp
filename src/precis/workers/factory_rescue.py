@@ -2614,7 +2614,7 @@ def _diagnose_body(store: Store, plan: Any, n: Any, cls: str) -> str:
     does)."""
     from precis.workers.job_types.run_slice import _brief_parts
 
-    node_body, latest = _brief_parts(store, n.id)
+    node_body, latest, _latest_ord = _brief_parts(store, n.id)
     evidence = _newest_comment(store, n.id, "rescue:") or "(no rescue: comment)"
     sig = _sig_gripe_of(store, n.id)
     jobs = plan.jobs(n)

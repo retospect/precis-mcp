@@ -55,7 +55,14 @@ that holds the lane's credentials with ``params.target_node``):
   ``handoff: lander:``, ``handoff: review: FIX|REVERT`` or the tick's
   mechanical-red ``brief:`` (gr705291) skips that second arm since the
   work is mid-fix by design (the reviewer's reject wants the rebuild,
-  not a route back into the same review). The job records the commit it
+  not a route back into the same review). A brief written after an ask
+  opened, or an acknowledged answer, also requests a build (gr747453):
+  the ask's brief becomes the session's brief only at a higher comment
+  ``ord`` than the one brief selection kept, so a newer lander failure
+  handoff or marked pre-land review hand-back still wins, and the steer
+  reads as spent once a build pushed past it or a builder/reviewer
+  handoff comment came after it.
+  The job records the commit it
   started from as ``meta.start`` (``{sha, ref, wip}``, absent at the base
   tip) and ``meta.base``, the poll arm's evidence for the same ruling;
   the brief of an attempt that continues says so, and how to keep or
@@ -2631,7 +2638,7 @@ def _review_target(
         if hit:
             landed = hit.group(1)
             break
-    body, latest = _brief_parts(store, target_id)
+    body, latest, _latest_ord = _brief_parts(store, target_id)
     # release-train T3 review F3: a release fix's squash is on its release
     # branch, not main — fetched here (the reviewer's worktree shares
     # the checkout's objects and refs) and named in the brief.
@@ -2885,7 +2892,7 @@ def _review_target_repo(
         shas.append(sha)
         title = str(getattr(ref, "title", "") or "").strip()
         titles.append(f"td{tid}: {title}")
-        body, latest = _brief_parts(store, tid)
+        body, latest, _latest_ord = _brief_parts(store, tid)
         text = (body or "").strip()
         if latest:
             text = f"{text}\n\n{latest.strip()}".strip()
@@ -4291,8 +4298,8 @@ def _wants_session(steer: str) -> bool:
     return text.lower().startswith("brief:") and MECH_BRIEF_MARK in text
 
 
-def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
-    """``(body, newest brief:/handoff: comment)`` of the todo.
+def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None, int]:
+    """``(body, newest brief:/handoff: comment, that comment's ord)`` of the todo.
 
     gr571311: a failed attempt still posts its session's last message as
     a ``handoff:`` comment — a dead session's one-liner is not a brief,
@@ -4316,7 +4323,14 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
     already fixed (td677548 re-judged resolved lines to attempt:3).
     The tick's marked hand-back lands on the builder todo, never here,
     so every unmarked ``handoff: review:`` a reviewer carries is its
-    own output and drops out of the scan."""
+    own output and drops out of the scan.
+
+    gr747453: the return carries the chosen comment's ``ord`` (``-1``
+    when none) so a caller holding a rival steer — a human ``brief:``
+    written after a coordinator ask closed — can weigh it against the
+    exact comment this selection kept: the ask brief wins only at a
+    higher ``ord`` than the chosen one, never over a newer lander
+    failure handoff or marked pre-land review hand-back."""
     ref = store.get_ref(kind="todo", id=todo_id)
     meta = ref.meta if ref is not None else None
     reviewer = node_kind(meta) == "generator" and _generate_role(meta) == "reviewer"
@@ -4324,7 +4338,7 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
     body = "\n\n".join(
         str(c.text) for c in chunks if c.chunk_kind == TODO_BODY_KIND and c.text
     )
-    latest = _select_slice_brief(
+    latest, latest_ord = _select_slice_brief(
         (
             (int(c.ord), str(c.text or ""))
             for c in chunks
@@ -4333,7 +4347,91 @@ def _brief_parts(store: Any, todo_id: int) -> tuple[str, str | None]:
         reviewer=reviewer,
         open_tags=lambda: _open_tag_values(store, todo_id),
     )
-    return body, latest
+    return body, latest, latest_ord
+
+
+def _stamp_dt(value: Any) -> datetime | None:
+    """Parse a ``meta`` UTC stamp (``_TS_FMT``), else ``None``."""
+    try:
+        return datetime.strptime(str(value), _TS_FMT).replace(tzinfo=UTC)
+    except (TypeError, ValueError):
+        return None
+
+
+def _utc(value: datetime) -> datetime:
+    """A ``datetime`` pinned to UTC — a naive one is read as UTC."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _ask_steer_spent(
+    meta: dict[str, Any], comments: list[Any], since: datetime
+) -> bool:
+    """Whether the post-ask rebuild already ran without ``built_for_ask``
+    — tasks re-armed before that stamp existed (gr747453) read as
+    unbuilt from the stamp alone. Two todo-visible traces spend the
+    steer: a push landed after the reference moment (a build session
+    ran past it), or a builder/reviewer ``handoff:`` comment is newer
+    than it (a session ended, or the reviewer handed back, after it).
+    ``since`` is the post-ask brief's ``created_at``, else the ask's."""
+    from precis.plans.templates import BUILD_REF_KEY
+
+    since = _utc(since)
+    rec = meta.get(BUILD_REF_KEY)
+    if isinstance(rec, dict) and not rec.get("wip"):
+        at = _stamp_dt(rec.get("at"))
+        if at is not None and at > since:
+            return True
+    return any(
+        _utc(c.created_at) > since
+        and str(c.text or "").lstrip().lower().startswith("handoff:")
+        for c in comments
+    )
+
+
+def _answered_ask_steer(
+    store: Any, todo_id: int, meta: dict[str, Any]
+) -> tuple[int, str | None, int] | None:
+    """Return the re-arming ask, its fresh brief and that brief's ``ord``,
+    pending a builder launch.
+
+    The brief half is the newest ``brief:`` comment posted after the ask
+    closed; an ``acknowledged`` answer with no fresh brief also steers,
+    with no text. The steer spends once — the launch stamps
+    ``built_for_ask`` — and reads as spent without the stamp when the
+    rebuild demonstrably already happened (:func:`_ask_steer_spent`)."""
+    ask_id = meta.get("rearmed_by_ask")
+    if not isinstance(ask_id, int) or ask_id == meta.get("built_for_ask"):
+        return None
+    ask = store.get_ref(kind="todo", id=ask_id)
+    if ask is None or _todo_status(store, ask_id) != "done":
+        return None
+    comments = [
+        c for c in _todo_chunks(store, todo_id) if c.chunk_kind == _COMMENT_KIND
+    ]
+    brief = max(
+        (
+            c
+            for c in comments
+            if str(c.text or "").lstrip().lower().startswith("brief:")
+            and _utc(c.created_at) > _utc(ask.created_at)
+        ),
+        key=lambda c: c.ord,
+        default=None,
+    )
+    since = brief.created_at if brief is not None else ask.created_at
+    if _ask_steer_spent(meta, comments, since):
+        return None
+    if brief is not None:
+        return ask_id, str(brief.text).lstrip(), int(brief.ord)
+    answer = _release._newest_answer(store, ask_id)
+    if answer is None:
+        comment = max(
+            (c for c in _todo_chunks(store, ask_id) if c.chunk_kind == _COMMENT_KIND),
+            key=lambda c: c.ord,
+            default=None,
+        )
+        answer = comment.text.strip() if comment is not None else ""
+    return (ask_id, None, -1) if answer.lower().startswith("acknowledged") else None
 
 
 def _select_slice_brief(
@@ -4341,8 +4439,13 @@ def _select_slice_brief(
     *,
     reviewer: bool,
     open_tags: Callable[[], Iterable[str]],
-) -> str | None:
-    """Select the brief from ordered comment positions and retry tags."""
+) -> tuple[str | None, int]:
+    """Select the brief from ordered comment positions and retry tags.
+
+    Returns the chosen text and its ``ord`` (``-1`` when no comment
+    qualifies) — :func:`_brief_parts` hands the position to callers
+    weighing a rival steer against the comment this selection kept
+    (gr747453)."""
     latest: str | None = None
     latest_ord = -1
     steer: str | None = None
@@ -4367,8 +4470,8 @@ def _select_slice_brief(
         and latest_ord > steer_ord
         and any(_ATTEMPT_RE.match(v) for v in open_tags())
     ):
-        latest = steer
-    return latest
+        latest, latest_ord = steer, steer_ord
+    return latest, latest_ord
 
 
 # ── Submit gate ────────────────────────────────────────────────────
@@ -7399,14 +7502,23 @@ def submit(ctx: Any, spec: Any) -> Any:
             return None
     _claim_todo(store, todo_id, lane.name)
 
-    body, latest = _brief_parts(store, todo_id)
+    body, latest, latest_ord = _brief_parts(store, todo_id)
+    is_generator = node_kind(todo.meta) == "generator"
+    ask_steer = (
+        None if is_generator else _answered_ask_steer(store, todo_id, todo.meta or {})
+    )
+    if ask_steer is not None and ask_steer[1] is not None and ask_steer[2] > latest_ord:
+        # The ask's brief steers only while nothing newer outranks it: a
+        # lander failure handoff or a marked pre-land review hand-back at
+        # a higher comment position is a newer instruction (gr684815) and
+        # stays the brief (gr747453 review).
+        latest = ask_steer[1]
     artifacts = params.get("acceptance_tests", {})
     if artifacts:
         body += (
             "\n\nSupplied acceptance test files (installed before build):\n"
             + "\n".join(f"- `{path}`" for path in sorted(artifacts))
         )
-    is_generator = node_kind(todo.meta) == "generator"
     # td659522 step 5: a reviewer of a second-repo slice reads the landed
     # commit in a detached tree of that repo's clone, with no MCP of either
     # kind (its verdict is the first line of its final message).
@@ -7534,8 +7646,9 @@ def submit(ctx: Any, spec: Any) -> Any:
             # mechanical-red brief that follows the lander's — the
             # rejected branch wants its rebuild, not a defer back into the
             # same open review (gr674785 review, td675373) or another land
-            # of the head that just failed (gr705291). ``_wants_session``
-            # names those three. A ``wip:`` snapshot is unfinished work: it
+            # of the head that just failed (gr705291). An answered ask
+            # may also request a rebuild (gr747453).
+            # A ``wip:`` snapshot is unfinished work: it
             # never routes to a land.
             resume = (latest or "").lstrip()
             if (
@@ -7553,7 +7666,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                     lane.name,
                     opened.start,
                     other_repo=profile is not None,
-                    rebuild=_wants_session(resume),
+                    rebuild=ask_steer is not None or _wants_session(resume),
                 )
             ):
                 _drop_unlaunched(tree)
@@ -7839,6 +7952,10 @@ def submit(ctx: Any, spec: Any) -> Any:
     # any is logged (and said on the job when that still works), never
     # raised — a raise would leave a live session with no handle.
     try:
+        if ask_steer is not None and conflict is None:
+            # A refusal or a conflict-only session leaves the ask's steer
+            # pending. An actual build spends it once.
+            store.stamp_ref_meta(todo_id, {"built_for_ask": ask_steer[0]})
         token_note = (
             f"slice {grant['name']}"
             if grant
@@ -8133,7 +8250,7 @@ def _land_base(store: Any, todo_id: int) -> str:
     and changes. An unreadable todo reads ``origin/main``."""
     try:
         ref = store.get_ref(kind="todo", id=todo_id)
-        body, latest = _brief_parts(store, todo_id)
+        body, latest, _latest_ord = _brief_parts(store, todo_id)
         target = _release.land_target_of(ref.meta if ref else None, body, latest)
     except Exception:
         return "origin/main"
@@ -9278,10 +9395,12 @@ def _route_started_work(
     route could not be taken (the session's own poll then mints the land as
     before), or a steer asking for the session stands (``rebuild``) — the
     lander's failure brief, the pre-land reviewer's FIX/REVERT
-    back-to-builder (gr674785 review, td675373), or the tick's
-    mechanical-red ``brief:`` posted after the lander's handoff
-    (gr705291): the work is mid-fix by design and wants the rebuild that
-    steer asked for, not a route back into the same review or land. The
+    back-to-builder (gr674785 review, td675373), the tick's mechanical-red
+    ``brief:`` posted after the lander's handoff (gr705291). A closed ask
+    also steers the build if it has a fresh build brief or an
+    acknowledged answer (gr747453) — unless that steer already reads as
+    spent (:func:`_ask_steer_spent`, the pre-stamp tasks).
+    Each steer sends the work to a builder before review or land. The
     land is minted for ``start.ref`` at ``start.sha`` — the commit the
     hub already holds."""
     try:

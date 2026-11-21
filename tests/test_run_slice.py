@@ -72,6 +72,8 @@ class _Chunk:
     ord: int
     text: str
     chunk_kind: str
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    id: int = 0
 
 
 @dataclass
@@ -80,6 +82,7 @@ class _Ref:
     title: str
     meta: dict[str, Any] = field(default_factory=dict)
     parent_id: int | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 class _Chunks:
@@ -1290,7 +1293,7 @@ def test_brief_render_takes_newest_brief_or_handoff(seams: dict[str, Any]) -> No
             "landed? not yet",
         ),
     )
-    body, latest = run_slice._brief_parts(store, 42)
+    body, latest, _latest_ord = run_slice._brief_parts(store, 42)
     assert body == "Do X, then Y."
     assert latest == "handoff: second session stopped at Y"
     brief = run_slice.render_brief(
@@ -1388,11 +1391,11 @@ def test_brief_parts_prefers_brief_over_dead_attempt_handoff() -> None:
         ),
         tags=("attempt:1",),
     )
-    _body, latest = run_slice._brief_parts(store, 42)
+    _body, latest, _latest_ord = run_slice._brief_parts(store, 42)
     assert latest == "brief: the real brief"
     # No failed attempt: the newest brief-ish comment decides, as before.
     store.remove_tag(42, Tag.open("attempt:1"))
-    _body, latest = run_slice._brief_parts(store, 42)
+    _body, latest, _latest_ord = run_slice._brief_parts(store, 42)
     assert latest == "handoff: first fork is back; waiting on the other three"
 
 
@@ -1407,7 +1410,7 @@ def test_brief_parts_keeps_dead_attempt_handoff_when_no_brief() -> None:
         comments=("handoff: got as far as the parser",),
         tags=("attempt:2",),
     )
-    _body, latest = run_slice._brief_parts(store, 42)
+    _body, latest, _latest_ord = run_slice._brief_parts(store, 42)
     assert latest == "handoff: got as far as the parser"
 
 
@@ -1430,7 +1433,7 @@ def test_brief_parts_keeps_lander_handoff_over_brief() -> None:
         ),
         tags=("attempt:1",),
     )
-    _body, latest = run_slice._brief_parts(store, 42)
+    _body, latest, _latest_ord = run_slice._brief_parts(store, 42)
     assert latest == "handoff: lander: land FAILED on slice/42: ✖ ruff — fix it"
     # The lander marker is what saves it: the same text without the
     # marker is a builder's handoff and loses to the brief again.
@@ -1444,7 +1447,7 @@ def test_brief_parts_keeps_lander_handoff_over_brief() -> None:
         ),
         tags=("attempt:1",),
     )
-    _body, latest = run_slice._brief_parts(store, 43)
+    _body, latest, _latest_ord = run_slice._brief_parts(store, 43)
     assert latest == "brief: the real brief"
 
 
@@ -1473,7 +1476,7 @@ def test_brief_parts_keeps_review_handback_over_brief() -> None:
         comments=("brief: a coordinator note", handback),
         tags=("attempt:1",),
     )
-    _body, latest = run_slice._brief_parts(store, 42)
+    _body, latest, _latest_ord = run_slice._brief_parts(store, 42)
     assert latest == handback
     store.add_todo(
         43,
@@ -1485,7 +1488,7 @@ def test_brief_parts_keeps_review_handback_over_brief() -> None:
         ),
         tags=("attempt:1",),
     )
-    _body, latest = run_slice._brief_parts(store, 43)
+    _body, latest, _latest_ord = run_slice._brief_parts(store, 43)
     assert latest == "brief: the branch is fixed; verify with git show"
     # The rebuild died and left its own last message: the finding is
     # still the newest steer, so the retry gets it, not the older brief.
@@ -1500,7 +1503,7 @@ def test_brief_parts_keeps_review_handback_over_brief() -> None:
         ),
         tags=("attempt:1",),
     )
-    _body, latest = run_slice._brief_parts(store, 44)
+    _body, latest, _latest_ord = run_slice._brief_parts(store, 44)
     assert latest == handback
 
 
@@ -1526,7 +1529,7 @@ def test_brief_parts_drops_reviewer_own_verdict() -> None:
         comments=("brief: judge the branch as pushed", verdict),
         meta=reviewer_meta,
     )
-    _body, latest = run_slice._brief_parts(store, 77)
+    _body, latest, _latest_ord = run_slice._brief_parts(store, 77)
     assert latest == "brief: judge the branch as pushed"
     # No brief at all: the verdict drops instead of briefing the re-run.
     store.add_todo(
@@ -1536,7 +1539,7 @@ def test_brief_parts_drops_reviewer_own_verdict() -> None:
         comments=(verdict,),
         meta=reviewer_meta,
     )
-    _body, latest = run_slice._brief_parts(store, 78)
+    _body, latest, _latest_ord = run_slice._brief_parts(store, 78)
     assert latest is None
     # The same unmarked comment on a builder todo still wins by recency —
     # ``_review_revert``'s ``reverted by td<N>`` hand-back is one, and it
@@ -1551,7 +1554,7 @@ def test_brief_parts_drops_reviewer_own_verdict() -> None:
             "reverted by td9 — rebuild after it lands)",
         ),
     )
-    _body, latest = run_slice._brief_parts(store, 43)
+    _body, latest, _latest_ord = run_slice._brief_parts(store, 43)
     assert latest == (
         "handoff: review: REVERT — broke the gate\n\n(review td77; "
         "reverted by td9 — rebuild after it lands)"
@@ -7368,6 +7371,142 @@ def test_submit_review_handoff_still_launches_on_an_ahead_branch(
     assert handle is not None and ctx.failure is None
     assert seams["lands"] == [] and seams["push"] == []
     assert len(seams["launch"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("answer", "fresh_brief", "spent", "launches"),
+    [
+        ("continue", True, False, True),
+        ("acknowledged", False, False, True),
+        ("Acknowledged — see td123", False, False, True),
+        ("acknowledged.", False, False, True),
+        ("continue", False, False, False),
+        ("acknowledged", True, True, False),
+    ],
+)
+def test_submit_answered_ask_on_an_ahead_branch(
+    seams: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+    fresh_brief: bool,
+    spent: bool,
+    launches: bool,
+) -> None:
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        comments=(
+            # the pre-ask build's handoff sits below both briefs in
+            # position and time, so the spent-without-stamp traces
+            # (:func:`run_slice._ask_steer_spent`) do not fire — only
+            # ``built_for_ask`` spends
+            "handoff: the widget is ready",
+            "brief: older instruction",
+            "brief: apply the coordinator's ruling",
+        ),
+        meta={"rearmed_by_ask": 56, "built_for_ask": 56 if spent else None},
+    )
+    store.add_todo(
+        56, "Review loop stopped", status="done", comments=(f"answer: {answer}",)
+    )
+    comments = store.chunks.rows[42]
+    ask_at = store.refs[56].created_at
+    comments[0].created_at = ask_at - timedelta(seconds=2)
+    comments[1].created_at = ask_at - timedelta(seconds=2)
+    comments[2].created_at = ask_at + timedelta(seconds=1 if fresh_brief else -1)
+    tree = _ahead_retry(seams, tmp_path)
+    seams["preland"] = 55
+    monkeypatch.setattr(run_slice, "_carried_on_base", lambda *a, **k: None)
+    ctx, handle = _submit(store, seams)
+
+    assert (handle is not None) is launches
+    if launches:
+        assert ctx.failure is None
+        assert store.refs[42].meta["built_for_ask"] == 56
+        assert "pending_land" not in store.refs[42].meta
+        if fresh_brief:
+            brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+            assert "apply the coordinator's ruling" in brief
+            assert "the widget is ready" not in brief
+    else:
+        assert ctx.meta_set["preland_review"] == 55
+
+
+def test_submit_answered_ask_yields_to_a_newer_marked_handback(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr747453 review: the ask's brief wins only by comment position. A
+    marked pre-land review hand-back newer than the post-ask brief stays
+    the session's brief — otherwise the gr684815/td675373 loop returns:
+    the rebuild never sees the FIX and the reviewer hands it back again."""
+    from precis.plans.templates import PRELAND_HANDBACK_MARK
+
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        comments=(
+            "brief: apply the coordinator's ruling",
+            "handoff: review: FIX — the widget check is wrong "
+            f"(review td55, {PRELAND_HANDBACK_MARK})",
+        ),
+        meta={"rearmed_by_ask": 56},
+    )
+    store.add_todo(
+        56, "Review loop stopped", status="done", comments=("answer: continue",)
+    )
+    comments = store.chunks.rows[42]
+    ask_at = store.refs[56].created_at
+    comments[0].created_at = ask_at + timedelta(seconds=1)
+    comments[1].created_at = ask_at + timedelta(seconds=2)
+    tree = _ahead_retry(seams, tmp_path)
+    seams["preland"] = 55
+    monkeypatch.setattr(run_slice, "_carried_on_base", lambda *a, **k: None)
+    ctx, handle = _submit(store, seams)
+
+    assert handle is not None and ctx.failure is None
+    assert seams["lands"] == []
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert "the widget check is wrong" in brief
+    assert "apply the coordinator's ruling" not in brief
+
+
+def test_submit_answered_ask_spent_by_a_newer_comment_without_stamp(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr747453 review: ``built_for_ask`` is new, so tasks re-armed before
+    it existed read as unbuilt from the stamp alone. A builder/reviewer
+    comment newer than the post-ask brief spends the steer without the
+    stamp: the head routes back to its review, no extra session, and the
+    launch never overwrites the reviewer's word with the stale brief."""
+    store = _Store()
+    store.add_todo(
+        42,
+        "Fix the widget",
+        comments=(
+            "brief: apply the coordinator's ruling",
+            "handoff: built the head the review is judging",
+        ),
+        meta={"rearmed_by_ask": 56},
+    )
+    store.add_todo(
+        56, "Review loop stopped", status="done", comments=("answer: acknowledged",)
+    )
+    comments = store.chunks.rows[42]
+    ask_at = store.refs[56].created_at
+    comments[0].created_at = ask_at + timedelta(seconds=1)
+    comments[1].created_at = ask_at + timedelta(seconds=2)
+    _ahead_retry(seams, tmp_path)
+    seams["preland"] = 55
+    monkeypatch.setattr(run_slice, "_carried_on_base", lambda *a, **k: None)
+    ctx, handle = _submit(store, seams)
+
+    assert handle is None and ctx.status == "failed"
+    assert seams["launch"] == [] and seams["lands"] == []
+    assert ctx.meta_set["preland_review"] == 55
+    assert "built_for_ask" not in store.refs[42].meta
 
 
 def test_submit_attempt_tagged_review_handoff_still_launches(

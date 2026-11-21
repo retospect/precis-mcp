@@ -5861,7 +5861,7 @@ def _node_land_target(store: Any, n: _Node) -> str:
     node with no recorded target still must not say main."""
     from precis.workers.job_types import run_slice
 
-    body, latest = run_slice._brief_parts(store, n.id)
+    body, latest, _latest_ord = run_slice._brief_parts(store, n.id)
     return _release.land_target_of(n.meta, body, latest) or "release/r<N>"
 
 
@@ -8459,7 +8459,7 @@ def _overlap_inputs(
             and text
             and text.lstrip().lower().startswith(run_slice._BRIEF_PREFIXES)
         ]
-        latest = run_slice._select_slice_brief(
+        latest, _latest_ord = run_slice._select_slice_brief(
             briefs, reviewer=False, open_tags=partial(iter, tags)
         )
         meta = {_release.LAND_TARGET_KEY: target}

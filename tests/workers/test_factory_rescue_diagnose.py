@@ -466,7 +466,7 @@ def test_rearm_once_rearms_and_clears_the_tag(store: Store) -> None:
     assert f"slice/{task}" in newest and "abc1234" in newest
     from precis.workers.job_types import run_slice
 
-    _body_txt, latest = run_slice._brief_parts(store, task)
+    _body_txt, latest, _latest_ord = run_slice._brief_parts(store, task)
     assert latest == newest
     # the audit line sits under it, still naming the diagnose task
     assert comments[-2].startswith(f"rescue: re-armed from td{diag}")

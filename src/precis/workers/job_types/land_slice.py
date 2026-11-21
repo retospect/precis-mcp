@@ -1242,7 +1242,7 @@ def _node_subject(store: Any, todo_id: int) -> str | None:
     carry one). ``None`` when the brief states none (gr574383)."""
     if store is None:
         return None
-    body, latest = _rs._brief_parts(store, todo_id)
+    body, latest, _latest_ord = _rs._brief_parts(store, todo_id)
     for text in (body, latest or ""):
         for line in text.splitlines():
             m = _SUBJECT_LINE_RE.match(line.strip())
@@ -2472,7 +2472,7 @@ def land_target(store: Any, params: dict[str, Any], todo_id: int) -> str | None:
     ref = store.get_ref(kind="todo", id=todo_id)
     if ref is None:
         return None
-    body, latest = _rs._brief_parts(store, todo_id)
+    body, latest, _latest_ord = _rs._brief_parts(store, todo_id)
     return _release.land_target_of(ref.meta, body, latest)
 
 

@@ -45,6 +45,13 @@ approved edits against rule body text.
 vendor. Availability drives fallback so a held or saturated lane cannot
 keep a pre-land review and its build's file-overlap hold waiting when
 another lane can run the review.
+After a coordinator ask re-arms a build, a fresh brief or an acknowledged
+answer sends the pushed head to a builder before it can return to review.
+The ask's brief wins only at a higher comment ``ord`` than the brief
+selection's own pick — a newer lander failure handoff or marked pre-land
+review hand-back stays the brief — and the request reads as spent once a
+build pushed past it or a builder/reviewer handoff comment came after it,
+so subsequent attempts route normally.
 
 Release fixers receive the pass and fix-loop briefs when the digest posts,
 so the owner can steer future iterations before their fix todos exist.
