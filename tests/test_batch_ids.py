@@ -264,13 +264,25 @@ def test_get_batch_view_titles_through_dispatch(
     kind: str,
 ) -> None:
     title = "D" * 190 + " — verbatim tail"
-    ref = store.insert_ref(kind=kind, slug=None, title=title)
+    if kind == "gripe":
+        # No 190-char gripe title exists: put derives and caps the stored
+        # title at TITLE_MAX (precis.handlers._gripe_title, gr524014), and
+        # a gripe ref must carry exactly one STATUS tag (gripe_status_check),
+        # so the bare insert_ref below is refused twice over. Mint through
+        # the handler and expect the stored title back, verbatim.
+        ref_id = id_of(GripeHandler(hub=runtime_with_store.hub).put(text=title).body)
+        stored = store.get_ref(kind="gripe", id=ref_id, include_deleted=True)
+        assert stored is not None
+        expect = stored.title or ""
+    else:
+        ref_id = store.insert_ref(kind=kind, slug=None, title=title).id
+        expect = title
     body, is_error = runtime_with_store.dispatch_with_status(
-        "get", {"kind": kind, "id": [ref.id], "view": "titles"}
+        "get", {"kind": kind, "id": [ref_id], "view": "titles"}
     )
     assert not is_error, body
     assert body.startswith(f"# 1 {kind} (batch, view='titles')")
-    assert title in body
+    assert expect in body
 
 
 def test_link_batch_finding_is_refused_with_the_single_door(
