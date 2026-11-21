@@ -33,6 +33,7 @@ from __future__ import annotations
 import dataclasses
 import re
 from typing import Any, ClassVar
+from uuid import uuid4
 
 from precis.anki.cloze import has_cloze, space_adjacent_braces, strip_cloze
 from precis.errors import BadInput
@@ -40,6 +41,7 @@ from precis.format import render_agent_table
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
+from precis.store import Tag
 
 #: A lone ``---`` line separating the cloze body from an optional Back Extra.
 _EXTRA_SEP_RE = re.compile(r"\n[ \t]*---[ \t]*\n")
@@ -50,7 +52,9 @@ _NOTETYPE = "Cloze"
 #: A ``deck-<topic>`` tag files the card under the ``Precis::<topic>`` sub-deck
 #: (Anki auto-creates it on sync). No deck tag → the base ``Precis`` deck. The
 #: topic is a slug; keeps model-authored cards under one namespace, away from
-#: hand-made decks. Only the first deck- tag wins.
+#: hand-made decks. With several deck- tags the *filed* deck wins while its tag
+#: remains (at create, request order picks it — ``tags_for`` order would not be
+#: stable); remove the tag to re-file onto a surviving one.
 _DECK_TAG_RE = re.compile(r"^deck-([a-z0-9][a-z0-9-]*)$", re.IGNORECASE)
 
 
@@ -148,6 +152,76 @@ class AnkiHandler(NumericRefHandler):
         cloze_text, extra = _split_extra(text)
         stripped = _strip_cloze(cloze_text)
         return f"{stripped}\n\n{extra}".rstrip() if extra else stripped
+
+    def _after_tag_mutation(
+        self,
+        ref_id: int,
+        added: list[Tag],
+        removed: list[Tag],
+        *,
+        conn: Any,
+    ) -> None:
+        """Keep ``meta.deck`` following the ``deck-<topic>`` tag (gr735742).
+
+        ``_initial_meta`` stamps the deck only at put-create, so a retag used
+        to leave the card syncing to a deck its tags no longer name. Runs
+        inside the tag tx: any ``deck-`` add or remove recomputes the deck
+        from the ref's whole post-edit tag set and patches meta only when it
+        differs.
+
+        Two order hazards shape the recompute:
+
+        * ``FOR NO KEY UPDATE`` serialises the recalculation per ref — a
+          concurrent tag tx on the same card blocks here until this one
+          commits, then reads a fresh snapshot that sees the earlier tx's
+          committed tag writes. Without it a ``remove deck-a`` racing an
+          ``add deck-b`` can commit last while having computed over a
+          snapshot where deck-b was absent, leaving the tag set ``{deck-b}``
+          with ``meta.deck = Precis``. NO KEY UPDATE, not UPDATE: the FK
+          check on this tx's own ``ref_tags`` inserts holds FOR KEY SHARE on
+          the refs row, and FOR UPDATE conflicts with that — two tag txs
+          would deadlock on the upgrade. NO KEY UPDATE is compatible with
+          KEY SHARE yet still serialises against other meta writers.
+        * The filed deck is *preserved* while its backing tag remains.
+          ``tags_for`` orders by ``(ref_tags.created_at, tags.tag_id)`` and
+          every tag one tx adds shares the tx-start timestamp, so the order
+          degenerates to the global tag id — first-ever-use order, not the
+          request order ``_initial_meta`` won by. Recomputing blind could
+          re-file a card onto a deck tag that merely sorts earlier, even on
+          a no-op retag.
+
+        A read-only foreign projection's deck mirrors the real Anki deck
+        (``project_cards``); corpus tags can't move a note precis doesn't
+        own, so leave those alone."""
+        if not any(_DECK_TAG_RE.match(str(t)) for t in (*added, *removed)):
+            return
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+            (ref_id,),
+        ).fetchone()
+        meta = dict(row[0]) if row and row[0] else {}
+        if meta.get("source") == "anki-foreign" or meta.get("readonly"):
+            return
+        prefix = f"{_DECK}::"
+        topics = [
+            m.group(1).lower()
+            for t in self.store.tags_for(ref_id, conn=conn)
+            if (m := _DECK_TAG_RE.match(str(t).strip()))
+        ]
+        current = meta.get("deck")
+        if (
+            isinstance(current, str)
+            and current.startswith(prefix)
+            and current[len(prefix) :] in topics
+        ):
+            return  # the filed deck's tag survives — keep it
+        deck = f"{prefix}{topics[0]}" if topics else _DECK
+        if current != deck:
+            self.store.update_ref(
+                ref_id,
+                meta_patch={"deck": deck, "anki_deck_revision": uuid4().hex},
+                conn=conn,
+            )
 
     def _create(self, *, text: str | None, **kw: Any):
         # Reject a non-cloze body up front (before the insert tx) so a bad

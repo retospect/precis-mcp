@@ -13,7 +13,11 @@ precis can never clobber an account. Media never syncs (cards are text).
 Soft-deleted refs retire their notes on the next tick, scoped to their
 owner — own-guid lookups only, 90-day window, ``--no-retire`` opts out. Decay
 stats read back into ``meta.anki_stats``; a ``deck-<topic>`` tag maps to a
-``Precis::<topic>`` sub-deck.
+``Precis::<topic>`` sub-deck. An effective deck retag stamps a revision
+atomically with the desired deck. The sync worker acknowledges that exact
+revision after a completed push, so full-sync interruptions and overlapping
+retags leave work pending. Existing notes without a recorded retag keep
+their Anki deck on rollout, preserving manual moves.
 
 Anki-side deletions retire the authored ref rather than recreating its note.
 The pre-download mirror and ``meta.anki_synced_at`` distinguish missing

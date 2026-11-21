@@ -88,11 +88,10 @@ def _sync_one_user(
     claimed = store.claim_unowned_refs("anki", login) if claim else 0
     claim_note = f" ({claimed} unowned ref(s) claimed for {login})" if claimed else ""
 
-    refs = store.list_refs(kind="anki", owner_login=login, limit=limit)
-    specs = [s for s in (spec_from_ref(r) for r in refs) if s is not None]
-    retire_ids = [] if no_retire else retired_ref_ids(store, login=login)
-
     if dry_run:
+        refs = store.list_refs(kind="anki", owner_login=login, limit=limit)
+        specs = [s for s in (spec_from_ref(r) for r in refs) if s is not None]
+        retire_ids = [] if no_retire else retired_ref_ids(store, login=login)
         boosts = sum(1 for s in specs if s.boost)
         boost_note = (
             f", {boosts} boost(s) would bring due forward to today" if boosts else ""
@@ -102,32 +101,6 @@ def _sync_one_user(
             f"{len(retire_ids)} retired ref(s) would be removed from the "
             f"mirror{boost_note}.{claim_note}"
         )
-
-    # No-op shortcut: nothing to push and nothing to retire means this tick
-    # cannot change either side, so skip the AnkiWeb round-trip entirely — no
-    # ``sync_login``, no ``sync_collection``. Previously a user with zero cards
-    # still cost a full password authentication plus two sync calls per fire.
-    #
-    # Deliberately NOT widened to "specs unchanged since the last sync":
-    # reviews happen on AnkiWeb, so the remote side moves even when local
-    # content doesn't, and skipping on a local-only fingerprint would freeze
-    # ``meta.anki_stats`` for anyone who reviews without authoring new cards.
-    if not specs and not retire_ids:
-        return (
-            f"{prefix}: nothing to sync (0 cards, 0 retired ref(s)) — "
-            f"skipped the AnkiWeb round-trip.{claim_note}"
-        )
-
-    creds = get_user_credentials(store, login)
-    if creds is None:  # pragma: no cover - anki_logins() already filtered these out
-        raise AnkiSyncMisconfigured(
-            f"{login!r} has no AnkiWeb credentials configured on /account."
-        )
-    email, password = creds
-
-    mirror_dir = root / login
-    mirror_dir.mkdir(parents=True, exist_ok=True)
-    mirror_path = str(mirror_dir / "mirror.anki2")
 
     # Per-user advisory lock: only one sync per AnkiWeb account at a time,
     # but two different users' syncs never contend on each other's lock.
@@ -139,6 +112,36 @@ def _sync_one_user(
     with try_xact_advisory_lock(store.dsn, _ANKI_SYNC_LOCK, text_key=login) as got:
         if not got:
             return f"{prefix}: another sync holds the lock; skipping."
+        refs = store.list_refs(kind="anki", owner_login=login, limit=limit)
+        specs = [s for s in (spec_from_ref(r) for r in refs) if s is not None]
+        retire_ids = [] if no_retire else retired_ref_ids(store, login=login)
+
+        # No-op shortcut: nothing to push and nothing to retire means this tick
+        # cannot change either side, so skip the AnkiWeb round-trip entirely — no
+        # ``sync_login``, no ``sync_collection``. Previously a user with zero cards
+        # still cost a full password authentication plus two sync calls per fire.
+        #
+        # Deliberately NOT widened to "specs unchanged since the last sync":
+        # reviews happen on AnkiWeb, so the remote side moves even when local
+        # content doesn't, and skipping on a local-only fingerprint would freeze
+        # ``meta.anki_stats`` for anyone who reviews without authoring new cards.
+        if not specs and not retire_ids:
+            return (
+                f"{prefix}: nothing to sync (0 cards, 0 retired ref(s)) — "
+                f"skipped the AnkiWeb round-trip.{claim_note}"
+            )
+
+        creds = get_user_credentials(store, login)
+        if creds is None:  # pragma: no cover - anki_logins() already filtered these out
+            raise AnkiSyncMisconfigured(
+                f"{login!r} has no AnkiWeb credentials configured on /account."
+            )
+        email, password = creds
+
+        mirror_dir = root / login
+        mirror_dir.mkdir(parents=True, exist_ok=True)
+        mirror_path = str(mirror_dir / "mirror.anki2")
+
         result, stats = sync_tick(
             mirror_path=mirror_path,
             user=email,
@@ -150,6 +153,17 @@ def _sync_one_user(
             retire_ref_ids=retire_ids,
         )
         now = datetime.now(UTC).isoformat()
+        # Acknowledge the revision from the pushed snapshot. A retag that
+        # lands mid-tick has a different revision and stays pending.
+        pushed_revisions = (
+            {}
+            if result.aborted
+            else {
+                s.ref_id: s.pending_deck_revision
+                for s in specs
+                if s.pending_deck_revision is not None
+            }
+        )
         for ref_id in result.deleted_ref_ids:
             # Specs are owner-scoped authored refs. Retiring keeps the deletion
             # durable across ticks; a new explicit add gets a new ref/guid.
@@ -159,10 +173,10 @@ def _sync_one_user(
             # nested `{"anki": {...}}` would REPLACE the whole meta.anki
             # object (wiping guid/content_sha the projection dedups on —
             # the 2026-07 incident). Patch top-level keys only.
-            store.update_ref(
-                ref_id,
-                meta_patch={"anki_stats": st, "anki_synced_at": now},
-            )
+            patch: dict[str, Any] = {"anki_stats": st, "anki_synced_at": now}
+            if ref_id in pushed_revisions:
+                patch["anki_synced_deck_revision"] = pushed_revisions[ref_id]
+            store.update_ref(ref_id, meta_patch=patch)
         if not result.aborted:
             # Consumed boosts only (a mirror card actually moved — its due
             # date rode this push forward). A `meta ||` merge cannot express

@@ -135,6 +135,92 @@ class TestAnkiCard:
         assert after == before
 
 
+class TestDeckRetag:
+    """gr735742: a ``deck-<topic>`` retag re-files the card — ``meta.deck``
+    must follow the post-edit tag set, or the card keeps syncing to a deck
+    its tags no longer name."""
+
+    def _put(self, h, tags: list[str]) -> int:
+        resp = h.put(text="A {{c1::test}} card.", tags=tags)
+        return int(_search(r"id=(\d+)", resp.body).group(1))
+
+    def test_retag_moves_deck(self, store) -> None:
+        h = _make_handler(store)
+        ref_id = self._put(h, ["deck-aixmat-2026"])
+        h.tag(
+            id=ref_id,
+            add=["aixmat-2026", "deck-ml-potentials"],
+            remove=["deck-aixmat-2026"],
+        )
+        from precis.anki.notes import spec_from_ref
+
+        spec = spec_from_ref(store.get_ref(kind="anki", id=ref_id))
+        assert spec is not None
+        assert spec.deck == "Precis::ml-potentials"
+        assert spec.pending_deck_revision is not None
+        h.tag(id=ref_id, add=["deck-ml-potentials"])
+        assert spec_from_ref(store.get_ref(kind="anki", id=ref_id)) == spec
+
+    def test_removing_last_deck_tag_returns_to_base_deck(self, store) -> None:
+        h = _make_handler(store)
+        ref_id = self._put(h, ["deck-chinese"])
+        h.tag(id=ref_id, remove=["deck-chinese"])
+        assert store.get_ref(kind="anki", id=ref_id).meta["deck"] == "Precis"
+
+    def test_adding_second_deck_tag_keeps_the_first(self, store) -> None:
+        """ "First deck- tag wins" — the earlier tag keeps filing the card;
+        the caller must remove it to move the card."""
+        h = _make_handler(store)
+        ref_id = self._put(h, ["deck-a"])
+        h.tag(id=ref_id, add=["deck-b"])
+        assert store.get_ref(kind="anki", id=ref_id).meta["deck"] == "Precis::a"
+        h.tag(id=ref_id, remove=["deck-a"])
+        assert store.get_ref(kind="anki", id=ref_id).meta["deck"] == "Precis::b"
+
+    def test_noop_retag_keeps_the_filed_deck(self, store) -> None:
+        """Create picks the winner by request order; ``tags_for`` orders by
+        (ref_tags.created_at, global tag_id) — one tx shares its timestamp,
+        so global first-use order wins, NOT request order. A no-op retag must
+        not re-file the card onto a deck tag that merely sorts earlier."""
+        h = _make_handler(store)
+        # Seed deck-a's tag row first so its tag_id is lower than deck-z's:
+        # on the second card tag order puts deck-a ahead even though the
+        # put listed deck-z first.
+        self._put(h, ["deck-a"])
+        ref_id = self._put(h, ["deck-z", "deck-a"])
+        assert store.get_ref(kind="anki", id=ref_id).meta["deck"] == "Precis::z"
+        h.tag(id=ref_id, add=["deck-z"])  # no-op — deck-z already present
+        assert store.get_ref(kind="anki", id=ref_id).meta["deck"] == "Precis::z"
+        # Removing the winner re-files onto the surviving deck tag.
+        h.tag(id=ref_id, remove=["deck-z"])
+        assert store.get_ref(kind="anki", id=ref_id).meta["deck"] == "Precis::a"
+
+    def test_non_deck_retag_leaves_deck(self, store) -> None:
+        h = _make_handler(store)
+        ref_id = self._put(h, ["deck-chinese"])
+        h.tag(id=ref_id, add=["ml"])
+        assert store.get_ref(kind="anki", id=ref_id).meta["deck"] == "Precis::chinese"
+
+    def test_foreign_projection_deck_not_rewritten(self, store) -> None:
+        """A read-only projection mirrors the real Anki deck; corpus tags
+        must not rewrite it (the card is never pushed back)."""
+        h = _make_handler(store)
+        with store.tx() as conn:
+            ref = store.insert_ref(
+                kind="anki",
+                slug=None,
+                title="foreign card",
+                meta={
+                    "source": "anki-foreign",
+                    "readonly": True,
+                    "deck": "HandMade",
+                },
+                conn=conn,
+            )
+        h.tag(id=ref.id, add=["deck-ml"])
+        assert store.get_ref(kind="anki", id=ref.id).meta["deck"] == "HandMade"
+
+
 class TestLeeches:
     """`get(kind='anki', id='/leeches')` surfaces bad-recall cards (high lapses
     or collapsed ease) from `meta.anki_stats` — the fix-cloze-or-study loop."""

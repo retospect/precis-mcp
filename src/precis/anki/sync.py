@@ -96,7 +96,9 @@ def upsert_notes(
 ) -> tuple[int, int]:
     """Insert-or-update our authored notes by deterministic guid. Returns
     ``(pushed, updated)``. Add-only-own-notes: only touches notes whose guid we
-    minted, so a foreign note is unreachable here."""
+    minted, so a foreign note is unreachable here. A pending deck retag
+    relocates the existing note's cards in place. Otherwise the cards keep
+    their Anki deck, including manual moves made before retag tracking."""
     cloze = col.models.by_name("Cloze")
     if cloze is None:
         raise AnkiSyncError("stock Cloze notetype missing from the collection")
@@ -118,6 +120,13 @@ def upsert_notes(
                 changed = True
             if changed:
                 col.update_note(note)
+            if spec.pending_deck_revision is not None:
+                target_did = col.decks.id(spec.deck or deck)
+                cids = [c.id for c in note.cards() if c.did != target_did]
+                if cids:
+                    col.set_deck(cids, target_did)
+                    changed = True
+            if changed:
                 updated += 1
         else:
             note = col.new_note(cloze)
@@ -300,9 +309,11 @@ def sync_tick(
     try:
         # Remember our notes before pulling remote deletions. Persisted sync
         # receipts also cover a lost/rebuilt mirror and retries after a crash.
+        # Locally dirty notes (usn = -1) can be unpushed adds from an aborted
+        # tick. A full download dropping them is no evidence of remote deletion.
         known_refs = {
             rid
-            for (guid,) in col.db.all("select guid from notes")
+            for (guid,) in col.db.all("select guid from notes where usn != -1")
             if (rid := ref_id_from_guid(guid)) is not None
         }
         auth = col.sync_login(user, password, endpoint)
@@ -359,13 +370,14 @@ def sync_tick(
         )
 
         out2 = col.sync_collection(auth, False)
-        if out2.required == CR.FULL_UPLOAD:
-            # Our incremental add somehow escalated — do NOT overwrite the
-            # account. Our notes stay in the mirror; the next tick retries.
+        if out2.required in (CR.FULL_UPLOAD, CR.FULL_SYNC, CR.FULL_DOWNLOAD):
+            # The push didn't complete. Leave the mirror for the next tick's
+            # guarded pull, and keep pending edits eligible to replay.
             result.aborted = (
-                "incremental push escalated to FULL_UPLOAD — refused; notes "
-                "held locally, will retry next tick"
+                f"incremental push required {CR.Name(out2.required)}; "
+                "will retry next tick without uploading the mirror"
             )
+            return result, {}
 
         stats = read_precis_stats(col)
         result.stats_written = len(stats)

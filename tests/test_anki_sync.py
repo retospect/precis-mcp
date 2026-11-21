@@ -71,6 +71,49 @@ def test_remote_deletion_is_not_recreated(
     col.close.assert_called_once()
 
 
+@pytest.mark.parametrize("required", ["FULL_UPLOAD", "FULL_SYNC", "FULL_DOWNLOAD"])
+def test_post_upsert_full_sync_leaves_retag_pending(
+    monkeypatch: pytest.MonkeyPatch, required: str
+) -> None:
+    from precis.anki import sync
+
+    col = MagicMock()
+    col.db.all.return_value = [(guid_for(7),)]
+    changes = SimpleNamespace(
+        FULL_UPLOAD=1, FULL_SYNC=2, FULL_DOWNLOAD=3, Name=lambda _: required
+    )
+    col.sync_collection.side_effect = [
+        SimpleNamespace(required=0, new_endpoint=None),
+        SimpleNamespace(required=getattr(changes, required)),
+    ]
+    sp = SimpleNamespace(
+        SyncCollectionResponse=SimpleNamespace(ChangesRequired=changes),
+        SyncAuth=lambda **kw: SimpleNamespace(**kw),
+    )
+    monkeypatch.setattr(sync, "_import_anki", lambda: (lambda path: col, sp))
+    upsert = MagicMock(return_value=(0, 1))
+    monkeypatch.setattr(sync, "upsert_notes", upsert)
+    read_stats = MagicMock()
+    monkeypatch.setattr(sync, "read_precis_stats", read_stats)
+    specs = [
+        AnkiCardSpec(
+            7, {"Text": "{{c1::x}}"}, deck="Precis::b", pending_deck_revision="retag"
+        )
+    ]
+
+    result, stats = sync.sync_tick(
+        mirror_path="unused", user="user", password="pw", specs=specs, project=True
+    )
+
+    assert result.aborted and required in result.aborted
+    upsert.assert_called_once_with(col, specs, "Precis")
+    col.full_upload_or_download.assert_not_called()
+    read_stats.assert_not_called()
+    assert result.all_cards is None
+    assert stats == {}
+    col.close.assert_called_once()
+
+
 def test_boosted_specs_bring_due_forward_before_the_push(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -202,6 +245,27 @@ class TestPureHelpers:
         assert spec is not None and spec.fields["Text"] == "Body {{c1::x}}"
         assert "Back Extra" not in spec.fields
 
+    @pytest.mark.parametrize(
+        ("revision", "synced_revision", "pending"),
+        [(None, None, None), ("new", "old", "new"), ("new", "new", None)],
+    )
+    def test_spec_from_ref_carries_only_pending_deck_retags(
+        self, revision: str | None, synced_revision: str | None, pending: str | None
+    ) -> None:
+        ref = SimpleNamespace(
+            id=5,
+            title="x {{c1::y}}",
+            meta={
+                "deck": "Precis::ml-potentials",
+                "anki_deck_revision": revision,
+                "anki_synced_deck_revision": synced_revision,
+            },
+        )
+        spec = spec_from_ref(ref)
+        assert spec is not None
+        assert spec.deck == "Precis::ml-potentials"
+        assert spec.pending_deck_revision == pending
+
     def test_spec_from_ref_carries_the_boost_flag(self) -> None:
         """gr664414: ``meta.anki_boost_due`` (the /learning boost button)
         flags the spec so the tick brings the mirror card's due forward."""
@@ -329,6 +393,42 @@ class TestUpsert:
         )
         # Anki auto-creates the sub-deck; the note lands in it, not bare Precis.
         assert len(col.find_notes("deck:Precis::chinese")) == 1
+
+    def test_deck_change_moves_existing_notes_cards(self, col) -> None:
+        from precis.anki.sync import upsert_notes
+
+        upsert_notes(col, _specs((7, {"Text": "{{c1::x}} and {{c2::y}}"})))
+        nid = col.db.list("select id from notes where guid = ?", guid_for(7))[0]
+        old_ids = {card.id for card in col.get_note(nid).cards()}
+        pushed, updated = upsert_notes(
+            col,
+            [
+                AnkiCardSpec(
+                    ref_id=7,
+                    fields={"Text": "{{c1::x}} and {{c2::y}}"},
+                    deck="Precis::ml-potentials",
+                    pending_deck_revision="retag",
+                )
+            ],
+        )
+        assert (pushed, updated) == (0, 1)
+        cards = col.get_note(nid).cards()
+        assert {card.id for card in cards} == old_ids
+        assert all(
+            col.decks.name(card.did) == "Precis::ml-potentials" for card in cards
+        )
+
+    def test_manual_anki_move_is_not_undone_without_recorded_retag(self, col) -> None:
+        from precis.anki.sync import upsert_notes
+
+        upsert_notes(col, _specs((7, {"Text": "{{c1::x}}"})))
+        nid = col.db.list("select id from notes where guid = ?", guid_for(7))[0]
+        note = col.get_note(nid)
+        hand_did = col.decks.id("HandFiling")
+        col.set_deck([c.id for c in note.cards()], hand_did)
+        assert upsert_notes(col, _specs((7, {"Text": "{{c1::x}}"}))) == (0, 0)
+        note = col.get_note(nid)
+        assert all(col.decks.name(c.did) == "HandFiling" for c in note.cards())
 
 
 class TestReadBack:
@@ -805,6 +905,58 @@ class TestRunAnkiSyncBoost:
             run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
         meta = store.get_ref(kind="anki", id=card.id).meta or {}
         assert meta.get("anki_boost_due") == "2026-11-17"
+
+
+class TestDeckRetagReceipt:
+    @pytest.mark.parametrize("aborted", [False, True])
+    def test_tick_acknowledges_only_the_pushed_revision(
+        self,
+        store,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        aborted: bool,
+    ) -> None:
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import AnkiSyncError, SyncResult
+        from precis.workers.anki_sync import run_anki_sync
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        card = store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::x}}",
+            meta={
+                "deck": "Precis::ml-potentials",
+                "anki_deck_revision": "retag-1",
+            },
+            owner_login="reto",
+        )
+
+        def sync_tick(**kwargs: Any) -> tuple[SyncResult, dict[int, dict[str, int]]]:
+            assert kwargs["specs"][0].pending_deck_revision == "retag-1"
+            # A retag arriving while AnkiWeb sync is in flight stays pending.
+            store.update_ref(
+                card.id,
+                meta_patch={"deck": "Precis::b", "anki_deck_revision": "retag-2"},
+            )
+            if aborted:
+                return SyncResult(aborted="incremental push required FULL_SYNC"), {}
+            return SyncResult(updated=1), {card.id: {"cards": 1}}
+
+        monkeypatch.setattr(sync_mod, "sync_tick", sync_tick)
+        cfg = _cfg(mirror_dir=str(tmp_path))
+        if aborted:
+            with pytest.raises(AnkiSyncError, match="FULL_SYNC"):
+                run_anki_sync(store, cfg)
+        else:
+            run_anki_sync(store, cfg)
+        ref = store.get_ref(kind="anki", id=card.id)
+        assert (ref.meta or {}).get("anki_synced_deck_revision") == (
+            None if aborted else "retag-1"
+        )
+        spec = spec_from_ref(ref)
+        assert spec is not None and spec.pending_deck_revision == "retag-2"
 
 
 class TestNoOpShortcut:

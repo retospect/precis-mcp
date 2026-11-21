@@ -60,6 +60,9 @@ class AnkiCardSpec:
     deck: str = PRECIS_DECK  # meta.deck; a `Precis::<topic>` sub-deck or Precis
     previously_synced: bool = False
     boost: bool = False  # meta.anki_boost_due set — bring due forward to today
+    # The unacknowledged retag revision, if any. A missing revision preserves
+    # manual deck moves on existing notes, including notes synced before rollout.
+    pending_deck_revision: str | None = None
 
 
 def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
@@ -82,12 +85,18 @@ def spec_from_ref(ref: Any) -> AnkiCardSpec | None:
     extra = fields_meta.get("Back Extra")
     if extra:
         out["Back Extra"] = extra
+    deck_revision = meta.get("anki_deck_revision")
     return AnkiCardSpec(
         ref_id=ref.id,
         fields=out,
         deck=meta.get("deck") or PRECIS_DECK,
         previously_synced=bool(meta.get("anki_synced_at")),
         boost=bool(meta.get("anki_boost_due")),
+        pending_deck_revision=(
+            deck_revision
+            if deck_revision != meta.get("anki_synced_deck_revision")
+            else None
+        ),
     )
 
 

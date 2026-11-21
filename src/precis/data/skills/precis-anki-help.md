@@ -130,6 +130,15 @@ tag(kind="anki", id=204, add=["topic:cell-bio"])
 link(kind="anki", id=204, target="pc12", rel="derived-from")
 ```
 
+To re-file a card, retag it — add the new `deck-<topic>` tag and remove the
+old one in the same `tag()` call; `meta.deck` follows the surviving deck tag
+and the Anki move lands on the **next successful `anki-sync` push**. Keep one deck tag
+per card: the filed deck wins while its tag remains, so a second deck tag
+does nothing until the first is removed. A card you move by hand inside Anki
+keeps its deck until a precis retag changes the filed deck. On rollout,
+existing Anki cards keep their decks unless there is a recorded retag to
+apply. If a push requires a full sync, the retag stays pending for retry.
+
 ## Edit or remove a card
 
 Bodies are immutable (like all numeric-ref kinds): to reword a card,
