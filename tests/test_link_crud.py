@@ -28,6 +28,7 @@ from precis.handlers.gripe import GripeHandler
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.todo import TodoHandler
 from precis.ingest.dedup import merge_refs
+from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store
 from precis.store.types import Relation
 from precis.utils import handle_registry
@@ -739,6 +740,50 @@ class TestPluginRelationVocabulary:
 
 
 class TestMemoryHandlerLink:
+    def test_put_stores_provenance_on_create_edge(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        """gr715254: the precis-read-paper provenance recipe — an agent
+        ``put(link='pc…', rel='derived-from', args={'writer': …})`` keeps
+        the machine-edge keys on the creation edge, off the node meta."""
+        paper = _seed_paper(store)
+        chunk = store.chunks.insert_chunks(
+            paper, [ChunkInsert(ord=0, text="Plane-wave cutoff: 520 eV.")]
+        )[0]
+        target = f"pc{chunk.id}"
+        provenance = {
+            "model": "test-model",
+            "prompt_version": "v1",
+            "run_id": "setup-run",
+            "why": "The passage states the plane-wave cutoff.",
+            "evidence": [target],
+        }
+        out, error = runtime_with_store.dispatch_with_status(
+            "put",
+            {
+                "kind": "memory",
+                "text": "Plane-wave cutoff: 520 eV.",
+                "link": target,
+                "rel": "derived-from",
+                "meta": {"hook": "Plane-wave cutoff", **provenance},
+                # The direct-dispatch channel spells the extras dict
+                # ``__extras__``; the MCP tool layer lifts wire-level
+                # ``args=`` into it before dispatch (tools/core.py).
+                "__extras__": {"writer": {"model": "test-model"}},
+            },
+        )
+        assert not error, out
+        new_id = id_of(out)
+        ref = store.get_ref(kind="memory", id=new_id)
+        assert ref is not None and ref.meta is not None
+        assert ref.meta["hook"] == "Plane-wave cutoff"
+        assert not provenance.keys() & ref.meta.keys()
+        (edge,) = store.links_for(new_id, direction="out", relation="derived-from")
+        assert edge.dst_chunk_id == chunk.id
+        assert edge.meta is not None
+        assert {key: edge.meta[key] for key in provenance} == provenance
+        assert "hook" not in edge.meta
+
     def test_link_on_create(self, memory_handler: MemoryHandler, store: Store) -> None:
         target = _seed_paper(store)
         out = memory_handler.put(text="see this paper", link="paper:wang2020state")
