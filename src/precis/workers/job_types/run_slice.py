@@ -1208,6 +1208,24 @@ def _git_env() -> dict[str, str]:
     return env
 
 
+def _attempt_ceiling(cwd: Path) -> str | None:
+    """``GIT_CEILING_DIRECTORIES`` for a git run in ``cwd``: the folder's
+    parent when ``cwd`` is an attempt folder (``slice-td<N>-j<M>`` —
+    :func:`_slice_ws.parse_attempt_dir`), ``None`` anywhere else.
+
+    gr742505: attempt folders live under the host checkout's
+    ``.claude/worktrees``, so a folder that lost its ``.git`` makes git
+    walk up and answer for the host. The ceiling makes that folder "not a
+    git repository" to every call that carries it — :func:`_git` here and
+    ``_slice_park``'s private-index plumbing, which builds an env of its
+    own. Only an attempt folder gets one: other callers pass a repository
+    root or a subdirectory of one (:func:`slice_root`), where a ceiling
+    would hide the repository."""
+    if _slice_ws.parse_attempt_dir(Path(cwd)) is not None:
+        return str(Path(cwd).parent)
+    return None
+
+
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     """Run ``git <args>`` in ``cwd``; never raises on a non-zero exit.
 
@@ -1219,13 +1237,9 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     (:data:`~precis.workers.factory_git_mirror.TRUSTED_ARGS`). Credentialed
     network git is :func:`_prepare_repo`'s ``fetch_ref_into``.
 
-    gr742505: in an attempt folder (``slice-td<N>-j<M>``, a clone under the
-    host checkout's ``.claude/worktrees``) ``GIT_CEILING_DIRECTORIES`` is
-    the folder's parent, so a folder that lost its ``.git`` is "not a git
-    repository" and never the host checkout git would find above it. Only
-    an attempt folder gets it: other callers pass a repository root or a
-    subdirectory of one (:func:`slice_root`), where a ceiling would hide the
-    repository.
+    gr742505: an attempt folder runs with :func:`_attempt_ceiling` — a
+    folder that lost its ``.git`` is "not a git repository" and never the
+    host checkout git would find above it.
 
     A ``cwd`` that is gone (a folder deleted under a dead job) is a failed
     git, not an exception: ``subprocess.run`` raises before git starts, and
@@ -1238,8 +1252,9 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
             f"fatal: cannot change to '{cwd}': No such file or directory",
         )
     env = _git_env()
-    if _slice_ws.parse_attempt_dir(Path(cwd)) is not None:
-        env["GIT_CEILING_DIRECTORIES"] = str(Path(cwd).parent)
+    ceiling = _attempt_ceiling(Path(cwd))
+    if ceiling is not None:
+        env["GIT_CEILING_DIRECTORIES"] = ceiling
     return subprocess.run(
         ["git", *_factory_git_mirror.TRUSTED_ARGS, *args],
         cwd=str(cwd),

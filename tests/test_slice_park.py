@@ -102,6 +102,48 @@ def test_a_tree_holding_only_secret_named_files_has_nothing_to_snapshot(
     assert _slice_park._snapshot_commit(tree, 7, "run ended") is None
 
 
+def test_a_snapshot_in_an_attempt_folder_never_acts_on_the_host(
+    tmp_path: Path,
+) -> None:
+    """gr742505: the snapshot's plumbing runs on an env of its own (a
+    private index), so it must carry ``run_slice._git``'s ceiling itself.
+    An attempt folder that lost its ``.git`` is "not a git repository" to
+    it — never the host checkout above, whose index, locks and worktree
+    would otherwise answer for it."""
+    host = tmp_path / "host"
+    _rg(tmp_path, "init", "-q", "-b", "main", str(host))
+    (host / "a.txt").write_text("host\n", encoding="utf-8")
+    _rg(host, "add", "-A")
+    _rg(host, "commit", "-qm", "host")
+    head = _rg(host, "rev-parse", "HEAD")
+    folder = host / ".claude" / "worktrees" / "slice-td7-j1"
+    folder.mkdir(parents=True)
+    (folder / "stray.txt").write_text("x\n", encoding="utf-8")
+    # the hazard: plain git in the folder answers for the host
+    bare = subprocess.run(
+        ["git", "rev-parse", "--absolute-git-dir"],
+        cwd=str(folder),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        env={k: v for k, v in os.environ.items() if k != "GIT_CEILING_DIRECTORIES"},
+    )
+    assert Path(bare.stdout.strip()).resolve() == (host / ".git").resolve()
+    with pytest.raises(RuntimeError, match="not a git repository"):
+        _slice_park._snapshot_commit(folder, 7, "run ended", parent=head)
+    # nothing of the host was read, staged or committed
+    assert _rg(host, "rev-parse", "HEAD") == head
+    assert _rg(host, "status", "--porcelain") == "?? .claude/"
+    # a real clone under an attempt name: the ceiling changes nothing
+    clone = folder.with_name("slice-td7-j2")
+    _rg(tmp_path, "clone", "-q", str(host), str(clone))
+    (clone / "new.txt").write_text("n\n", encoding="utf-8")
+    snap = _slice_park._snapshot_commit(clone, 7, "run ended")
+    assert snap is not None
+    assert _rg(clone, "show", "--name-only", "--format=", snap).split() == ["new.txt"]
+
+
 def test_is_wip_reads_the_subject(tree: Path) -> None:
     head = _rg(tree, "rev-parse", "HEAD")
     assert _slice_park.is_wip(tree, head) is False

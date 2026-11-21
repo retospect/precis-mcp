@@ -1475,8 +1475,12 @@ def _undo_inflight(
         return f"{tree} is not a git folder; next: look at it by hand"
     gitdir = Path(gitdir_text)
     # A folder that lost its own .git resolves to the host checkout above
-    # it (gr742505): its locks and its in-flight rebase are not ours.
-    if os.path.realpath(gitdir) != os.path.realpath(tree / ".git"):
+    # it (gr742505): its locks and its in-flight rebase are not ours. A
+    # ``.git`` symlink (a clone's is always a real directory) resolves
+    # identically on both sides — refuse it on the link itself.
+    if (tree / ".git").is_symlink() or os.path.realpath(gitdir) != os.path.realpath(
+        tree / ".git"
+    ):
         return (
             f"{tree} has no repository of its own (git resolved {gitdir}); "
             "next: look at it by hand"

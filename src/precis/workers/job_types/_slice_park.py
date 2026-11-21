@@ -116,6 +116,12 @@ def _snapshot_commit(
     tmp = Path(tempfile.mkdtemp(prefix="slice-park-"))
     try:
         env = {**rs._git_env(), "GIT_INDEX_FILE": str(tmp / "index")}
+        ceiling = rs._attempt_ceiling(tree)
+        if ceiling is not None:
+            # gr742505: an attempt folder that lost its ``.git`` must be
+            # "not a git repository" to this plumbing too — never the host
+            # checkout above it.
+            env["GIT_CEILING_DIRECTORIES"] = ceiling
 
         def git(args: list[str], stdin: str | None = None) -> str:
             proc = subprocess.run(

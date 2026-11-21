@@ -128,6 +128,10 @@ class _Rig:
 def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Rig:
     for k, v in _GIT_ENV.items():
         monkeypatch.setenv(k, v)
+    for var in (ws.ENV_TODO, ws.ENV_JOB, ws.ENV_WORKER):
+        # A run under a slice session carries these; tests that push set
+        # their own, and no push may inherit a foreign session identity.
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
     return _Rig(tmp_path)
