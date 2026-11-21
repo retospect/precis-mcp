@@ -49,7 +49,10 @@ Compute-adjacent seams, each with its own module docstring:
   on their computed version, and new requests preserve existing results.
 - `preflight` — the tier-0 element-agnostic sanity gate in front of any MLIP
   spend (``PRECIS_STRUCTURE_PREFLIGHT``, default OFF); catches *authoring*
-  faults, never physical verdicts.
+  faults, never physical verdicts. It does not assume a slab: a 3D-periodic
+  cell that is not a slab scene is judged as a bulk crystal (covalent-sphere
+  packing of the whole cell), never refused as a slab with no vacuum
+  (gr736332).
 - `check` — the DB-free chemistry check: `validate` + `vsepr.advisories` +
   `probe.fragments` + open valences not declared as a port or radical, with
   the nearest user frame per finding. `Run.finish()` and the workspace

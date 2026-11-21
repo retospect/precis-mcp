@@ -202,6 +202,12 @@ MIN_DENSITY_FRAC = 0.7
 #: well above normal interlayer spacing (a few percent of the cell).
 INTERNAL_VOID_FRAC = 0.15
 
+#: A fully periodic cell with no vacuum band is a bulk crystal, judged by
+#: the covalent-sphere volume fraction of the whole cell (any compound: MgB2
+#: ~0.6, A15 Nb3Sn ~0.7), not by an elemental fcc density. Below this the
+#: cell is a gas in a box, not a crystal.
+MIN_BULK_PACKING = 0.2
+
 #: fcc close-packing fraction, used as the "ideal bulk" density reference for
 #: the porosity check's close-packing estimate.
 FCC_PACKING_FRACTION = 0.7405
@@ -723,6 +729,43 @@ def _buried_reasons(
     return reasons, notes
 
 
+def _bulk_porosity(
+    scene: Scene, atoms, labels: list[str], cell: np.ndarray
+) -> list[PreflightReason]:
+    """Refuse a fully periodic cell that is mostly empty space (gas in a box).
+
+    Compares the summed covalent-sphere volume of all atoms to the cell volume,
+    so a multi-element crystal is not measured against one element's fcc."""
+    from ase.data import atomic_numbers, covalent_radii
+
+    volume = abs(float(np.linalg.det(cell)))
+    if volume < 1e-9:
+        return []
+    sphere_volume = 0.0
+    for la in labels:
+        el = scene.atoms[la].element
+        z = atomic_numbers.get(el)
+        if z is not None and 0 <= z < len(covalent_radii) and covalent_radii[z] > 0:
+            r = float(covalent_radii[z])
+        else:
+            r = elements.covalent_radius(el)
+        sphere_volume += (4.0 / 3.0) * np.pi * r**3
+    packing = sphere_volume / volume
+    if packing >= MIN_BULK_PACKING:
+        return []
+    return [
+        PreflightReason(
+            code="porous",
+            message=(
+                f"periodic cell is ~{(1.0 - packing) * 100:.0f}% empty space "
+                "(atomic spheres fill "
+                f"{packing * 100:.1f}% of it) — not a bulk crystal; shrink "
+                "the cell or add the missing atoms."
+            ),
+        )
+    ]
+
+
 def _geometry_checks(scene: Scene, atoms, labels: list[str]) -> list[PreflightReason]:
     reasons: list[PreflightReason] = []
     n = len(labels)
@@ -739,6 +782,24 @@ def _geometry_checks(scene: Scene, atoms, labels: list[str]) -> list[PreflightRe
     # and density checks below don't apply (gr496330). Clash (above) does.
     if not any(scene.cell.pbc):
         return reasons
+
+    # -- bulk: a 3D-periodic cell that is NOT a slab scene is a bulk crystal
+    # (gr736332). It has no surface normal, so the vacuum-headroom, ceiling,
+    # internal-void and slab-density checks below don't apply — and its
+    # minority-element sites are lattice atoms, not adsorbates, so this must
+    # classify before the detached check. Slab-ness is
+    # :func:`ops._is_slab_scene`'s call (≥2 dense metal layers + an atom-free
+    # span along the stack axis only), NOT vacuum adequacy: the ``slab`` op
+    # stamps pbc all-true, so a fully periodic slab with a 4-6 Å gap is still
+    # a slab and must still fail ``no_vacuum`` below, not be excused as bulk.
+    if all(scene.cell.pbc):
+        from .ops import _is_slab_scene
+
+        if not _is_slab_scene(scene):
+            reasons.extend(
+                _bulk_porosity(scene, atoms, labels, np.asarray(atoms.get_cell()))
+            )
+            return reasons
 
     # -- detached: an adsorbate atom too far from the slab and from every
     # adsorbate atom already anchored to it (gr544002: an O or CH4 sitting

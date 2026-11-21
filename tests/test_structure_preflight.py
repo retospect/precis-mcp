@@ -528,3 +528,52 @@ class TestDomainCaveats:
         verdict = pf.preflight(scene)
         assert any(c.code == "domain_straddle" for c in verdict.caveats)
         assert verdict.ok is True  # advisory caveat never blocks a clean geometry
+
+
+class TestBulk:
+    """gr736332: a 3D-periodic bulk crystal has no surface normal and must
+    not be refused as a slab with no vacuum — and a fully periodic slab
+    with a sub-6 Å gap is still a slab, not an excuse to skip no_vacuum."""
+
+    def test_bulk_mgb2_passes(self) -> None:
+        a, c = 3.086, 3.524
+        scene = Scene(cell=Cell.from_lengths_angles(a, a, c, 90, 90, 120))
+        sites = [
+            ("Mg", [0, 0, 0]),
+            ("B", [1 / 3, 2 / 3, 0.5]),
+            ("B", [2 / 3, 1 / 3, 0.5]),
+        ]
+        for i, (el, frac) in enumerate(sites):
+            label = f"a{el}{i + 1}"
+            scene.atoms[label] = Atom(label=label, element=el, frac=np.array(frac))
+        verdict = pf.preflight(scene)
+        assert verdict.ok is True, verdict.reasons
+        assert not any(
+            r.code in ("no_vacuum", "ceiling", "internal_void", "porous")
+            for r in verdict.reasons
+        ), verdict.reasons
+
+    def test_fully_periodic_slab_with_insufficient_headroom_fails(self) -> None:
+        """The ``slab`` op stamps pbc all-true, so a slab IS a fully periodic
+        cell. A 3-layer metal slab in a 10 Å cell has only a ~5.6 Å headroom
+        gap: ``ops._is_slab_scene`` recognizes it as a slab (≥2 dense metal
+        layers + an atom-free span along the stack axis), and preflight must
+        take slab-ness from that predicate, not from vacuum adequacy — a 4-6 Å
+        gap still fails ``no_vacuum`` instead of being excused as a bulk cell
+        (gr736332)."""
+        a = 2.8
+        scene = Scene(cell=Cell(np.diag([a, a, 10.0]), (True, True, True)))
+        n = 0
+        for z in (0.3, 2.5, 4.7):
+            for fx in (0.0, 0.5):
+                for fy in (0.0, 0.5):
+                    n += 1
+                    scene.atoms[f"aPd{n}"] = Atom(
+                        label=f"aPd{n}",
+                        element="Pd",
+                        frac=np.array([fx, fy, z / 10.0]),
+                        fixed=FIX_ALL,
+                    )
+        verdict = pf.preflight(scene)
+        assert verdict.ok is False
+        assert any(r.code == "no_vacuum" for r in verdict.reasons)

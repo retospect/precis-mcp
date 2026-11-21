@@ -1625,8 +1625,11 @@ class StructureHandler(Handler):
         reference record with caller geometry), and its method fingerprint
         records that the caller supplied the CIF.
 
-        The Tier-0 preflight gate is not run: its vacuum-headroom and porous-
-        slab checks assume a slab, and a CIF is usually a 3D framework."""
+        The Tier-0 preflight gate is not run: preflight gates authored
+        candidates before an MLIP spend, and an imported CIF is reference
+        geometry, not a proposal. (Preflight itself no longer assumes a
+        slab — a 3D-periodic non-slab cell is classified as bulk and judged
+        on packing, gr736332.)"""
         if cif_text is not None and cif_url is not None:
             raise BadInput(
                 "put(kind='structure') takes args cif= or cif_url=, not both",
