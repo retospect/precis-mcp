@@ -99,6 +99,16 @@ PLUGIN_TABLE_PREFIXES: tuple[str, ...] = ("se_",)
 #: keep/promote/index judgment is docs/backlog/jsonb-column-review.md.
 JSONB_COLUMNS: frozenset[str] = frozenset(
     {
+        # 0344: owner-scoped undo receipts for mark-known. prior_mastery is
+        # the concept's mastery meta keys snapshotted before dismissal and
+        # restored whole by undo (meta || prior_mastery, never queried by
+        # key — the revisions.prev_state family). card_retirements is a
+        # {card ref_id: retired_at} receipt map whose key domain is ref ids,
+        # not a stable column set; merged with || on re-dismissal and read
+        # whole via RETURNING — the ->> timestamp check in undo_known runs
+        # on the bag passed back as a parameter, not on the column.
+        "anki_known_undo.prior_mastery",
+        "anki_known_undo.card_retirements",
         # 0296: bounded, ten-minute SDK AuthorizationParams snapshot, validated
         # again on load and never queried by JSON key. Durable grant identity,
         # scopes, resource and token lifecycle fields use typed columns.
