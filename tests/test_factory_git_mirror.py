@@ -1835,15 +1835,18 @@ def test_fetch_source_mirror_keeps_the_token_out_of_argv_and_the_mirror(
                 assert not _inside(Path(args[args.index("-C") + 1]), mirror), args
 
 
-@pytest.mark.parametrize("step", ["init", "push", "rev-parse", "fetch"])
+@pytest.mark.parametrize("step", ["init", "mirror-fetch", "rev-parse", "fetch"])
 @pytest.mark.parametrize("timeout", [False, True])
 def test_populate_handles_raised_refresh_errors(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, step: str, timeout: bool
 ) -> None:
     inner = _populate_run([])
+    mirror = tmp_path / "m.git"
 
     def fail(args: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
-        if _sub(args) == step:
+        sub = _sub(args)
+        stage = "mirror-fetch" if sub == "fetch" and kw["cwd"] == mirror else sub
+        if stage == step:
             if timeout:
                 raise subprocess.TimeoutExpired(args, 1, stderr=b"connection lost")
             raise OSError("connection lost")
@@ -1852,30 +1855,27 @@ def test_populate_handles_raised_refresh_errors(
     monkeypatch.setattr(fgm, "_run", fail)
     why: list[str] = []
     assert (
-        fgm.populate(
-            tmp_path / "m.git", tmp_path / "c.git", "https://x", None, env={}, why=why
-        )
+        fgm.populate(mirror, tmp_path / "c.git", "https://x", None, env={}, why=why)
         is None
     )
-    assert step in why[-1]
+    assert step.removeprefix("mirror-") in why[-1]
     assert "connection lost" in why[-1]
 
 
 def test_populate_cache_priming_exception_is_best_effort(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     inner = _populate_run([])
+    cache = tmp_path / "c.git"
 
     def fail(args: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
-        if _sub(args) == "fetch" and "https://x" not in args:
+        if _sub(args) == "fetch" and str(cache) in args:
             raise subprocess.TimeoutExpired(args, 1, stderr=b"cache unavailable")
         return inner(args, **kw)
 
     monkeypatch.setattr(fgm, "_run", fail)
-    assert (
-        fgm.populate(tmp_path / "m.git", tmp_path / "c.git", "https://x", None, env={})
-        == TIPS
-    )
+    assert fgm.populate(tmp_path / "m.git", cache, "https://x", None, env={}) == TIPS
+    assert "cache unavailable" in caplog.text
 
 
 @pytest.mark.parametrize("ops_init", [False, True])
