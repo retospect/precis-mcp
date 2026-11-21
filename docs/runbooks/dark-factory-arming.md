@@ -679,6 +679,65 @@ bound source (`tick_context(source = spec.name)` in the executor)
 lands `worker:ci_watch`. `fix:infra`
 gripes stay out of the lanes; route them to an operator.
 
+## Todo dispatch (todos tagged factory:build)
+
+A second source of work next to gripes: a plain open todo carrying the
+open tag `factory:build` gets a chain (brief session, build, pre-land
+review, `sha-in-prod` gate). The pass (`workers/todo_dispatch.py`) runs
+right after `gripe_dispatch` in the same 10-minute fire, so only on a host
+where `gripe_dispatch` is lit; under the kill switch it mints nothing.
+Dark by default:
+
+    scripts/prod-precis settings set factory.todo_dispatch.enabled true
+    scripts/prod-precis settings set factory.todo_dispatch.max_open 3
+    scripts/prod-precis settings set factory.todo_dispatch.enabled false
+
+Off reads and writes nothing; started chains keep running. `max_open`
+(default 3; negative reads as 0) bounds unlanded todo chains, a chain in
+its brief step or stalled included. A pass where the gripe pass had free
+build slots and found no eligible gripe may grow past it into those
+slots; at most 3 new chains per pass, none ever cancelled.
+
+Read a pass in the worker log of the lit host:
+`todo_dispatch: base=… free=… open=… budget=… minted=… refused=… failed=…`.
+The pass result also carries `minted`, `skipped` (first 50, plus
+`skipped_total`), `refused`, `refusals_applied`, `released`, `closed` and
+`open_todo`; the scheduler logs only the line and the claimed / ok /
+failed counts. Reason words in `skipped`: `not-open`, `plan-node`, `ask`,
+`hold-tag`, `needs-spec`, `skip-tag`, `open-child`, `blocked`, `chained`
+(live chain), `closing` (landed, source not yet closed), `other-repo`
+(a `repo:` / `project:` tag the factory does not land; one comment),
+`settling` (changed in the last 15 minutes). `factory:skip` (set by the
+todo triage session for "other lane or fenced") wins over `factory:build`.
+
+Stop conditions:
+
+- **Refused by code, no session spent.** A todo whose title or body
+  names a path no lane may write, or a skill that governs the factory
+  (by path or slug), gets one ask (reason `decide`, `fenced-path` in the
+  report) and `needs-spec`; prod-graph-only work gets reason `not-code`.
+- **Refused by the brief session.** One big-model session writes the
+  builder's brief or refuses (`rewrite`, `split`, `decide`, `built`,
+  `not-code`): one ask to the owner on the source todo, `needs-spec` on
+  it, the chain closed `won't-do`. The owner answers in the ask with
+  exactly one of `rewrite` (drops `needs-spec`; offered again once
+  settled), `split` or `drop` (drop `needs-spec` and `factory:build`),
+  `close as done` (also closes the todo). Read 2 minutes after the ask
+  closes; none or several named: nothing changes, one comment says so.
+- **Chain ended without a land** (dropped, or closed with no commit): the
+  source loses `factory:build` with one comment; tag it again to offer it
+  again. A brief session that ends as neither brief nor refusal is a
+  failed attempt; at the retry cap (2 by default) the brief node enters
+  rescue and files a rescue gripe like any exhausted node.
+- **Tag withdrawn while a chain is live:** the build stops dispatching;
+  after the stall window (`factory.gripe_dispatch.stall_hours`, default
+  6) the gripe pass's stall sweep files a stalled-chain ask.
+
+Completion: the land puts `landed: <sha>` on the source todo, which stays
+open; once the sha is in prod the gate closes it with a
+`done: <sha> is in prod` comment. A sweep each pass closes any the gate
+missed.
+
 ## Kill switch
 
 - `PRECIS_FACTORY=off` in the worker's environment: `run_slice`,

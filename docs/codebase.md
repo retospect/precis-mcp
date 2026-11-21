@@ -162,6 +162,11 @@ their place.
 Host executor claims enforce capacity and skip file overlaps with started,
 unlanded builds; gripe intake bounds minting by queued builds per free
 executor slot (`factory.gripe_dispatch.queue_depth`, default 2).
+A todo tagged `factory:build` is the factory's second source of work:
+`workers/todo_dispatch.py` (switch `factory.todo_dispatch.enabled`, off by
+default; runs after the gripe pass in its scheduler fire) mints its chain
+through `plans/templates.py::mint_todo_build`; `plans/todo_chain.py` holds
+the tags, brief and refusal parsing and the source todo's close.
 `reports.weekly` collects factory tables for the deterministic `weekly_report`
 job. It shares gripe closure clocks with the flow view and replaces direct
 draft-section table children atomically, preserving authored prose. Its weekly
