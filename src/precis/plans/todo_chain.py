@@ -80,8 +80,13 @@ SPLIT_PARENT_TAG = "factory:split"
 REFUSAL_REASONS: tuple[str, ...] = ("rewrite", "split", "decide", "built", "not-code")
 
 #: Longest part title, and longest value of one of a part's three lines.
-_PART_TITLE_CAP = 200
-_PART_FIELD_CAP = 1500
+#: A ``split:`` message rides the ``handoff:`` comment ``run_slice`` clips
+#: at its handoff cap (the brief's closing section asks for under 5000
+#: characters): a four-part split at both caps — ``split: 4`` plus four
+#: ``part k:`` / ``Change:`` / ``Where:`` / ``Done when:`` frames (~160
+#: characters of labels) — stays under both, so no valid split is clipped.
+_PART_TITLE_CAP = 120
+_PART_FIELD_CAP = 350
 
 #: What a brief session ends with — the one place the closing section in
 #: ``run_slice`` and the verdict parser share. Every outcome rides the
@@ -1096,6 +1101,10 @@ def sweep_landed_sources(store: Store, *, limit: int = SWEEP_LIMIT) -> list[int]
     return closed
 
 
+#: The pieces of the ``done:`` comment :func:`_close_split_source` writes
+#: and the sweep's SQL excludes on: ``done: every part is done (td<id>, …)``.
+_SPLIT_DONE_MID = "every part is done ("
+_SPLIT_DONE_TAIL = ")"
 #: ``STATUS:done`` parts of ``%(parts)s`` (a jsonb array of ids) — the
 #: parts that are live and done; a split source closes when it is all of them.
 _DONE_PARTS_SQL = """
@@ -1155,6 +1164,13 @@ def _closable_parts(conn: Connection, source: Any, tags: list[Tag]) -> list[int]
     return []
 
 
+def _split_done_note(parts: list[int]) -> str:
+    """The ``done:`` comment a split close writes for ``parts`` — the exact
+    text the once-only check looks for, in :func:`_close_split_source` and
+    the sweep's candidate pass."""
+    return f"{_DONE_HEAD}{_SPLIT_DONE_MID}{_handles(parts)}{_SPLIT_DONE_TAIL}"
+
+
 def _close_split_source(store: Store, source_id: int) -> bool:
     """Close one split source whose parts are all done; ``False`` when it is
     not (any more) closable or already carries this close's comment (a
@@ -1176,7 +1192,7 @@ def _close_split_source(store: Store, source_id: int) -> bool:
         parts = _closable_parts(conn, source, tags)
         if not parts:
             return False
-        note = f"{_DONE_HEAD}every part is done ({_handles(parts)})"
+        note = _split_done_note(parts)
         existing = list(store.chunks.list_chunks_for_ref(source_id, conn=conn))
         if any(
             c.chunk_kind == _COMMENT_KIND and str(c.text or "") == note
@@ -1204,14 +1220,17 @@ def sweep_splits(store: Store, *, limit: int = SWEEP_LIMIT) -> list[int]:
 
     A source carrying :data:`SPLIT_KEY`, live and not terminal, whose
     recorded parts are every one live and ``STATUS:done`` gets one ``done:
-    every part is done`` comment and :func:`set_source_done`. A part that is
-    ``won't-do``, retired or still open leaves the source alone. So does a
-    live, non-terminal parent carrying :data:`SPLIT_PARENT_TAG` (a split by
-    hand) with at least one child todo and every live child todo done; an
-    ask among the children only has to be terminal, a ``won't-do`` or open
-    child leaves the parent alone. A source with both is judged by its
-    recorded parts. At most ``limit`` sources per call, lowest id first; a
-    close that fails is logged and the sweep goes on."""
+    every part is done`` comment and :func:`set_source_done` — once: a
+    source that already carries that comment (a person reopened it) is
+    passed over before the limit counts, so it never fills the window and
+    starves a later completed split. A part that is ``won't-do``, retired
+    or still open leaves the source alone. So does a live, non-terminal
+    parent carrying :data:`SPLIT_PARENT_TAG` (a split by hand) with at
+    least one child todo and every live child todo done; an ask among the
+    children only has to be terminal, a ``won't-do`` or open child leaves
+    the parent alone. A source with both is judged by its recorded parts.
+    At most ``limit`` sources per call, lowest id first; a close that
+    fails is logged and the sweep goes on."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
@@ -1239,10 +1258,23 @@ def sweep_splits(store: Store, *, limit: int = SWEEP_LIMIT) -> list[int]:
             if len(candidates) >= max(0, limit):
                 break
             ref = store.get_ref(kind="todo", id=int(source_id), conn=conn)
-            if ref is not None and _closable_parts(
+            if ref is None:
+                continue
+            parts = _closable_parts(
                 conn, ref, store.tags_for(int(source_id), conn=conn)
-            ):
-                candidates.append(int(source_id))
+            )
+            if not parts:
+                continue
+            # A source carrying this close's comment was closed once and
+            # reopened: it is never a candidate again, and never fills the
+            # window (:func:`_close_split_source` would refuse it anyway).
+            if conn.execute(
+                "SELECT 1 FROM chunks WHERE ref_id = %s AND chunk_kind = %s "
+                "AND retired_at IS NULL AND text = %s LIMIT 1",
+                (int(source_id), _COMMENT_KIND, _split_done_note(parts)),
+            ).fetchone():
+                continue
+            candidates.append(int(source_id))
     closed: list[int] = []
     for source_id in candidates:
         try:

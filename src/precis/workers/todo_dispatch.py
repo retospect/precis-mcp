@@ -18,7 +18,8 @@ reads nothing and writes nothing). Switched on, one fire does, in order:
   ``factory:split`` once every one of its child todos is done. Each sweep
   fails on its own.
 * **Survey.** :func:`survey` lists the tagged todos that are eligible — open,
-  not a plan node or an ask, no open child, no open blocker, no hold tag
+  not a plan node or an ask, no open child, no open blocker (a split part
+  counts every predecessor that is not live and ``done``), no hold tag
   (the gripe dispatcher's, ``needs-spec``, ``factory:skip``), no live chain
   and none whose land is still being closed out, landable in the repository the gripe dispatcher lands in and unchanged for
   its settle time — by priority, then age; every other tagged todo comes back
@@ -62,6 +63,7 @@ from precis.plans.todo_chain import (
     REFUSAL_KEY,
     SKIP_TAG,
     SOURCE_TODO_KEY,
+    SPLIT_PART_KEY,
     refuse_source,
     set_source_done,
     sweep_landed_sources,
@@ -71,7 +73,7 @@ from precis.principal import worker_comment_meta
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.todo import TERMINAL_TODO_STATUSES
-from precis.todo.blocked import open_blocked_by
+from precis.todo.blocked import open_blocked_by, undone_blocked_by
 from precis.workers.gripe_dispatch import (
     _LANDABLE_PROJECTS,
     _MIN_AGE_MINUTES,
@@ -269,9 +271,10 @@ def survey(store: Store) -> tuple[list[TodoPick], list[dict[str, Any]]]:
     ``skipped`` has one ``{todo, reason}`` per other tagged todo, the reason
     the first failing condition's word: ``not-open``, ``plan-node``,
     ``ask``, ``hold-tag``, ``needs-spec``, ``skip-tag``, ``open-child``,
-    ``blocked``, ``chained``, ``closing`` (its chain landed and the source
-    is not yet closed), ``other-repo``, ``settling``. A todo that
-    does not carry the tag is never read."""
+    ``blocked`` (for a split part: any predecessor not live and ``done``,
+    dropped or retired included), ``chained``, ``closing`` (its chain
+    landed and the source is not yet closed), ``other-repo``,
+    ``settling``. A todo that does not carry the tag is never read."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             _SURVEY_SQL,
@@ -284,6 +287,13 @@ def survey(store: Store) -> tuple[list[TodoPick], list[dict[str, Any]]]:
             },
         ).fetchall()
     blocked = open_blocked_by(store, [int(r[0]) for r in rows])
+    # A split part sequences on its predecessor: only a live, done one
+    # releases it — a dropped (``won't-do``, ``auto-timeout``) or retired
+    # part holds the next, where an ordinary blocker clears on terminal.
+    undone = undone_blocked_by(
+        store,
+        [int(r[0]) for r in rows if isinstance((r[3] or {}).get(SPLIT_PART_KEY), dict)],
+    )
     holds = set(HOLD_TAGS)
     eligible: list[TodoPick] = []
     skipped: list[dict[str, Any]] = []
@@ -316,7 +326,7 @@ def survey(store: Store) -> tuple[list[TodoPick], list[dict[str, Any]]]:
             reason = "skip-tag"
         elif child:
             reason = "open-child"
-        elif todo in blocked:
+        elif todo in blocked or todo in undone:
             reason = "blocked"
         elif chained:
             reason = "chained"

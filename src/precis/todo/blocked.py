@@ -48,4 +48,35 @@ def open_blocked_by(
     return {src: tuple(targets) for src, targets in grouped.items()}
 
 
-__all__ = ["open_blocked_by"]
+def undone_blocked_by(
+    store: Store, ref_ids: list[int], *, conn: Connection | None = None
+) -> set[int]:
+    """The subset of ``ref_ids`` with a ``blocked-by`` target that is not
+    finished — retired, dropped (a blocker-terminal status short of
+    ``done``) or simply not done yet — where :func:`open_blocked_by` reads
+    only the still-open ones.
+
+    The strict read a sequenced split part (``meta.todo_split_part``)
+    uses: only a live ``STATUS:done`` predecessor releases the next part;
+    a ``won't-do``, ``auto-timeout`` or retired one holds it forever."""
+    if not ref_ids:
+        return set()
+    if conn is None:
+        with store.pool.connection() as read_conn:
+            return undone_blocked_by(store, ref_ids, conn=read_conn)
+    rows = conn.execute(
+        """SELECT DISTINCT l.src_ref_id FROM links l
+            LEFT JOIN refs b ON b.ref_id = l.dst_ref_id
+            WHERE l.src_ref_id = ANY(%s) AND l.relation = 'blocked-by'
+              AND (b.ref_id IS NULL OR b.retired_at IS NOT NULL
+                   OR NOT EXISTS (
+                       SELECT 1 FROM ref_tags rt
+                        JOIN tags t ON t.tag_id = rt.tag_id
+                        WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                          AND t.value = 'done'))""",
+        (list(ref_ids),),
+    ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
+__all__ = ["open_blocked_by", "undone_blocked_by"]

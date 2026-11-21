@@ -1600,7 +1600,9 @@ def source_todo_holds(
     its key names. The source holds the build while it carries an open
     ``blocked-by``, one of the dispatcher's hold tags, ``needs-spec`` or
     ``factory:skip``, no longer carries ``factory:build``, or is terminal
-    or retired.
+    or retired. When the source is a split part (``meta.todo_split_part``)
+    the blocker read is stricter: the part stays held until its
+    predecessor is live and ``done`` — a dropped or retired one holds too.
     ``blockers_only`` keeps the open-blocker reason alone: the
     stalled-chain census shields a chain only for a blocker — a withdrawn
     tag is a stall to ask about."""
@@ -1611,6 +1613,7 @@ def source_todo_holds(
         NEEDS_SPEC_TAG,
         SKIP_TAG,
         SOURCE_TODO_KEY,
+        SPLIT_PART_KEY,
     )
     from precis.workers.gripe_dispatch import _TERMINAL_STATUSES, HOLD_TAGS
 
@@ -1668,8 +1671,11 @@ def source_todo_holds(
                           LIMIT 1), 'open') AS status
                 ) bs
                WHERE l.src_ref_id = g.ref_id AND l.relation = 'blocked-by'
-                 AND b.retired_at IS NULL
-                 AND bs.status NOT IN {blocker_terminal_sql()}
+                 AND ((g.meta ? %s
+                         AND (b.retired_at IS NOT NULL OR bs.status <> 'done'))
+                      OR (NOT (g.meta ? %s)
+                          AND b.retired_at IS NULL
+                          AND bs.status NOT IN {blocker_terminal_sql()}))
                ORDER BY b.ref_id LIMIT 1
           ) bl ON TRUE
          ORDER BY up.origin, g.ref_id
@@ -1681,6 +1687,8 @@ def source_todo_holds(
             list(_TERMINAL_STATUSES),
             SOURCE_TODO_KEY,
             SOURCE_TODO_KEY,
+            SPLIT_PART_KEY,
+            SPLIT_PART_KEY,
         ),
     ).fetchall()
     held: dict[int, str] = {}

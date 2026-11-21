@@ -733,7 +733,9 @@ Stop conditions:
   one before it, removes `factory:build` from the source and closes the
   chain with no build and no ask. Each part is then an ordinary tagged
   todo, so only the first is eligible and the next is briefed once the
-  earlier one has landed. The source stays open and is closed `done` by a
+  earlier one has landed. A part is offered only once its predecessor is
+  live and `done`: a dropped or retired part holds the next one back (and
+  the source stays open), it is never skipped. The source stays open and is closed `done` by a
   sweep (`split_closed` in the pass result) when every part is done; a
   refused or dropped part leaves it open. A part is never split again (a
   brief session that would split one refuses with `split`), and more than

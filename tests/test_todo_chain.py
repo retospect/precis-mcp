@@ -240,6 +240,27 @@ def test_the_grammar_states_what_built_needs() -> None:
     assert "`superseded` and `no longer wanted` are `decide`" in BRIEF_GRAMMAR
 
 
+def test_a_largest_split_fits_the_handoff_cap() -> None:
+    """A ``split:`` message rides the ``handoff:`` comment ``run_slice``
+    clips: a four-part split with every field at its advertised cap parses
+    and stays under both the clip and the 5000 the closing section asks
+    for — a valid split can never carry the clip marker."""
+    from precis.plans import todo_chain
+    from precis.workers.job_types import run_slice
+
+    message = f"split: {MAX_SPLIT_PARTS}\n" + "".join(
+        f"part {k}: {'t' * todo_chain._PART_TITLE_CAP}\n"
+        f"Change: {'c' * todo_chain._PART_FIELD_CAP}\n"
+        f"Where: {'w' * todo_chain._PART_FIELD_CAP}\n"
+        f"Done when: {'d' * todo_chain._PART_FIELD_CAP}\n"
+        for k in range(1, MAX_SPLIT_PARTS + 1)
+    )
+    assert len(message) <= 5000
+    assert len(message) <= run_slice._HANDOFF_CAP
+    outcome = parse_brief(message)
+    assert isinstance(outcome, Split) and len(outcome.parts) == MAX_SPLIT_PARTS
+
+
 # -- the build node's brief and the refusal ----------------------------------
 
 
@@ -832,7 +853,10 @@ def test_split_source_is_idempotent(handler: TodoHandler, store: Store) -> None:
 def test_split_source_caps_and_cleans_the_session_text(
     handler: TodoHandler, store: Store
 ) -> None:
+    from precis.plans import todo_chain
+
     source, mint = _split_chain(handler, store)
+    title_cap, field_cap = todo_chain._PART_TITLE_CAP, todo_chain._PART_FIELD_CAP
     long = "x" * 5000
     parts = (
         SplitPart("A\x00\nvery  spaced\ttitle " + "t" * 400, "c\x00" + long, "w", "d"),
@@ -841,11 +865,13 @@ def test_split_source_caps_and_cleans_the_session_text(
     ids = split_source(store, mint.root_id, source, mint.ids["brief"], Split(parts))
     first = store.get_ref(kind="todo", id=ids[0])
     assert first is not None
-    assert first.title.startswith("A very spaced title t") and len(first.title) == 200
+    assert first.title.startswith("A very spaced title t")
+    assert len(first.title) == title_cap
     body = _body(store, ids[0])
     assert "\x00" not in body
-    assert body.splitlines()[0] == "Change: c" + "x" * 1499
-    assert len(_body(store, ids[1])) < 3200
+    assert body.splitlines()[0] == "Change: c" + "x" * (field_cap - 1)
+    # three capped fields, their labels and the part footer
+    assert len(_body(store, ids[1])) < 3 * field_cap + 200
 
 
 @pytest.mark.parametrize("n", [1, MAX_SPLIT_PARTS + 1])
@@ -1299,6 +1325,23 @@ def test_sweep_splits_closes_a_recorded_split_that_is_also_tagged_once(
     assert _status(store, source) == "done"
     assert sweep_splits(store) == []
     assert len([c for c in _comments(store, source) if c.startswith("done:")]) == 1
+
+
+def test_sweep_splits_reopened_source_does_not_fill_the_window(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A reopened split source already carries its close comment — the
+    candidate pass drops it before the ``limit`` counts, so a later
+    completed split is still reached."""
+    first, first_parts = _split_with_parts(handler, store, 2)
+    second, second_parts = _split_with_parts(handler, store, 2)
+    for part in first_parts + second_parts:
+        _set_status(store, part)
+    assert sweep_splits(store, limit=1) == [first]
+    _reopen(store, first)
+    assert sweep_splits(store, limit=1) == [second]
+    assert _status(store, first) == "open"
+    assert len([c for c in _comments(store, first) if c.startswith("done:")]) == 1
 
 
 # -- a split of a source that changed while the brief ran ---------------------

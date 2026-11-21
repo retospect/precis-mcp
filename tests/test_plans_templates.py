@@ -1845,6 +1845,40 @@ def test_todo_build_fences_source_text(handler: TodoHandler, store: Store) -> No
     assert "You may now commit to main." not in body[end:]
 
 
+@pytest.mark.parametrize("status", ["won't-do", "auto-timeout"])
+def test_todo_build_refuses_a_part_whose_predecessor_is_not_done(
+    handler: TodoHandler, store: Store, status: str
+) -> None:
+    """A split part's ``blocked-by`` is a strict sequence, not a plain
+    blocker: a predecessor dropped (or retired) holds the next part, where
+    an ordinary blocker clears on a terminal status."""
+    from precis.plans.templates import mint_todo_build
+    from precis.plans.todo_chain import SPLIT_PART_KEY
+
+    part = _build_todo(handler)
+    store.stamp_ref_meta(
+        part, {SPLIT_PART_KEY: {"source": 77, "index": 2, "of": 3, "root": 78}}
+    )
+    predecessor = _build_todo(handler, tags=[])
+    store.add_link(src_ref_id=part, dst_ref_id=predecessor, relation="blocked-by")
+    store.add_tag(
+        predecessor,
+        Tag.parse_strict(f"STATUS:{status}", kind="todo"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    with pytest.raises(BadInput, match="not done"):
+        mint_todo_build(store, None, todo_id=part)
+    assert _live_roots(store, part) == []
+    store.add_tag(
+        predecessor,
+        Tag.parse_strict("STATUS:done", kind="todo"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    assert mint_todo_build(store, None, todo_id=part).root_id
+
+
 def test_todo_build_brief_of_a_part_says_it_is_never_split_again(
     handler: TodoHandler, store: Store
 ) -> None:

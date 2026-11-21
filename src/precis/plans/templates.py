@@ -47,7 +47,7 @@ from precis.plans.todo_chain import (
 from precis.store import Store, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.todo import TERMINAL_TODO_STATUSES
-from precis.todo.blocked import open_blocked_by
+from precis.todo.blocked import open_blocked_by, undone_blocked_by
 from precis.todo.guards import (
     check_ask_meta,
     check_no_cycle,
@@ -1764,12 +1764,23 @@ def mint_todo_build(
                 f"carries hold tags: {', '.join(holds)}",
                 "clear the hold tags before offering the todo again",
             )
-        blockers = open_blocked_by(m.store, [todo_id], conn=m.conn)
-        if todo_id in blockers:
-            raise refuse(
-                "has an open blocker",
-                "resolve the blocked-by targets before offering the todo again",
+        if isinstance(meta.get(SPLIT_PART_KEY), dict):
+            # A split part builds only after the part before it: a
+            # predecessor that is not live and done — dropped or retired
+            # included — holds it where a plain blocker clears on terminal.
+            blockers: Any = undone_blocked_by(m.store, [todo_id], conn=m.conn)
+            blocked_what = "has a predecessor part that is not done"
+            blocked_next = (
+                "the split's parts build in order; wait for the one before it"
             )
+        else:
+            blockers = open_blocked_by(m.store, [todo_id], conn=m.conn)
+            blocked_what = "has an open blocker"
+            blocked_next = (
+                "resolve the blocked-by targets before offering the todo again"
+            )
+        if todo_id in blockers:
+            raise refuse(blocked_what, blocked_next)
         live = m.conn.execute(
             """
             SELECT r.ref_id FROM refs r

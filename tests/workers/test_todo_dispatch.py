@@ -1149,6 +1149,48 @@ def test_ended_sweep_leaves_a_source_closed_as_built_alone(store: Store) -> None
     assert td.survey(store) == ([], [])
 
 
+@pytest.mark.parametrize("drop", ["won't-do", "auto-timeout", "retired"])
+def test_an_unfinished_predecessor_holds_the_next_part(store: Store, drop: str) -> None:
+    """A part builds only after its predecessor is live and ``done``: a
+    dropped or retired one is never skipped over — the next part reads
+    ``blocked`` at survey and the mint refuses it too."""
+    src, (first, second) = _split_source(store)
+    if drop == "retired":
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET retired_at = now() WHERE ref_id = %s", (first,)
+            )
+    else:
+        _close(store, first, drop)
+    eligible, skipped = td.survey(store)
+    assert eligible == []
+    assert {"todo": second, "reason": "blocked"} in skipped
+    with pytest.raises(BadInput, match="not done"):
+        T.mint_todo_build(store, todo_id=second)
+    assert _roots(store, second) == []
+    _on(store)
+    res = _run(store)
+    assert res.extra["minted"] == [] and res.extra["split_closed"] == []
+    assert _status(store, src) == "open"
+
+
+def test_a_dropped_predecessor_holds_the_next_parts_build(store: Store) -> None:
+    """The queue-time hold reads the same rule: minted while the
+    predecessor was done, the next part's build is held again when the
+    predecessor stops being done."""
+    from precis.workers.executors._common import source_todo_holds
+
+    _src, (first, second) = _split_source(store)
+    _close(store, first, "done")
+    build = T.mint_todo_build(store, todo_id=second).ids["build"]
+    with store.pool.connection() as conn:
+        assert source_todo_holds(conn, [build]) == {}
+    _close(store, first, "won't-do")
+    with store.pool.connection() as conn:
+        held = source_todo_holds(conn, [build])
+    assert f"td{second} is blocked-by td{first} (won't-do)" in held[build]
+
+
 # -- failures -----------------------------------------------------------------
 
 
