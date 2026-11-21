@@ -1172,6 +1172,28 @@ def test_search_no_match(handler: TodoHandler) -> None:
     assert "no todo entries match" in r.body
 
 
+def test_open_search_excludes_retired_todo(
+    handler: TodoHandler, runtime_with_store: PrecisRuntime
+) -> None:
+    """gr684306: retiring a todo leaves its open tag for audit."""
+    live_id = handler.put(text="Keep estimating").ref_id
+    retired_id = handler.put(text="Obsolete estimate").ref_id
+    assert live_id is not None and retired_id is not None
+
+    query = {"kind": "todo", "status": "open", "page_size": 20}
+    before = runtime_with_store.dispatch("search", query.copy())
+    assert f"td{live_id}" in before and f"td{retired_id}" in before
+
+    handler.delete(id=retired_id)
+    assert any(str(tag) == "STATUS:open" for tag in handler.store.tags_for(retired_id))
+    with pytest.raises(Gone, match="soft-deleted"):
+        handler.get(id=retired_id)
+
+    after = runtime_with_store.dispatch("search", query.copy())
+    assert f"td{live_id}" in after
+    assert f"td{retired_id}" not in after
+
+
 # ── Next: trailer hint round-trips ─────────────────────────────────────
 
 
