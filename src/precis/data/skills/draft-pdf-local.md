@@ -2,7 +2,7 @@
 id: draft-pdf-local
 family: work
 title: precis — compile a draft export to PDF locally (texlive-nanobud image)
-summary: export a draft's LaTeX project with the prod CLI and compile it inside the pinned texlive-nanobud container — the Mac's tectonic cannot run biber, and the image carries the extra packages the export preamble loads
+summary: export a draft's LaTeX project with the prod CLI and compile it with LuaLaTeX, biber and makeglossaries in the texlive-nanobud container
 answers:
   - how do I build a draft's PDF locally instead of through the prod job?
   - which container image compiles a draft export, and how do I build it?
@@ -22,18 +22,36 @@ the prod PDF job's figure-licensing gate would refuse the export.
 
 ## Build the compile image once
 
-`texlive-nanobud:latest` is the upstream TeX Live medium image plus the
-packages the draft preamble loads (glossaries, glossaries-extra,
-biblatex-chem, datetime2, marginnote, authblk and relatives):
+`texlive-nanobud:latest` adds packages for article and poster exports
+to the upstream TeX Live medium image.
 
 ```dockerfile
 FROM texlive/texlive:latest-medium
-RUN tlmgr install glossaries glossaries-extra biblatex-chem pdfcomment \
-    preprint cleveref csquotes datetime2 datetime2-english zref marginnote
+RUN tlmgr install glossaries glossaries-extra pdfcomment preprint \
+    cleveref csquotes datetime2 datetime2-english zref marginnote \
+    biblatex-chem biblatex-nature embedfile pdfpages beamerposter was
 ```
 
-(`preprint` is the CTAN bundle that carries authblk.) Build with
-`docker build -t texlive-nanobud:latest - < Dockerfile`.
+- `preprint` is the CTAN bundle that carries authblk; `pdfcomment` pulls
+  the datetime2 / zref / marginnote set, named here so the dependency
+  shows in the recipe.
+- `biblatex-chem` covers `--bib-style chem-rsc` / `chem-acs`;
+  `biblatex-nature` covers `nature` — all three are styles the export
+  CLI advertises, so all three must resolve in the image.
+- The article preamble always loads `pdfpages`. Passing `--include-sources`
+  adds the cited-PDF appendix that uses it.
+- Article exports load `embedfile` for the figure snapshot Data Package
+  or the Data Supplement. External article exports add the Data Supplement
+  even when the draft has no figure snapshots.
+- The A0 poster template loads `beamerposter` and `upgreek` (from `was`).
+
+An earlier verified recipe additionally installed environ, tcolorbox,
+xpatch, enumitem, caption, float, wrapfig, multirow, upquote, selnolig,
+lualatex-math, unicode-math and luatexbase. The current article and
+poster exports do not load these packages directly. `tlmgr install`
+resolves transitive dependencies of the listed packages.
+
+Build with `docker build -t texlive-nanobud:latest - < Dockerfile`.
 
 ## Export the LaTeX project from prod
 
@@ -47,9 +65,10 @@ scripts/prod-precis draft export <numeric id> --bib-style rsc --out <dir>
   that does.
 - Runs longer than five minutes on a large draft — background it and
   watch the log.
-- Writes `main.tex`, `refs.bib`, `preamble.tex` and `.latexmkrc` into
-  `<dir>`; the rc wires biber + makeglossaries, so one latexmk call runs
-  every pass.
+- Writes `main.tex`, `refs.bib` and `.latexmkrc` into `<dir>`.
+  Article exports also write `preamble.tex`. For `doc_type=poster`,
+  the exporter generates `main.tex` from `poster.tex` and writes
+  `poster_profile.json`.
 
 ## Compile inside the container
 
@@ -58,12 +77,15 @@ docker run --rm -v <dir>:/work -w /work texlive-nanobud:latest \
     latexmk -lualatex -interaction=nonstopmode -halt-on-error main.tex
 ```
 
-The TeX Live bin directory must be on PATH or `makeglossaries` is not
-found and the acronym/glossary lists never build. Inside the image it
-sits at `/usr/local/texlive/<year>/bin/<arch>-linux` (e.g.
-`.../2026/bin/aarch64-linux` on Apple Silicon); the base image puts it
-there by default, so a "makeglossaries: not found" means a `-e` env or a
-custom entrypoint clobbered PATH. The deliverable is `<dir>/main.pdf`.
+The exported `.latexmkrc` already selects LuaLaTeX and configures the
+biber and makeglossaries passes. The command also selects LuaLaTeX
+explicitly.
+
+Use the image's default PATH, which includes the TeX Live bin directory
+for its release and architecture. A hard-coded `-e PATH=...` can miss that
+directory after an image update or on a different architecture. If
+`makeglossaries` is missing, check PATH inside the running container.
+The deliverable is `<dir>/main.pdf`.
 
 ## The CLI export has no figure-licensing gate
 
