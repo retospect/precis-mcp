@@ -85,6 +85,13 @@ parented put otherwise defaults `llm_tier='opus'` and double-dispatches
 a `plan_tick` ([[precis-todo-tree-help]]). Never give a builder node
 `meta.executor` or an `executor:*` tag — the tick owns the jobs.
 
+A root that reached `STATUS:done` or `STATUS:won't-do` drops out of
+`plan_dispatch`'s candidate scan with its whole subtree (me570515,
+td573294): a new leaf armed under a closed root sits live and silent —
+never dispatched, and the dead-root sweep may close it `won't-do`
+(gr612091). Reopen the root before arming the leaf:
+`tag(kind='todo', id=<root>, add=['STATUS:open'])`.
+
 ## What the pipeline does with it
 
 1. **build** — `run_slice` launches the lane's vendor in a fresh clone
