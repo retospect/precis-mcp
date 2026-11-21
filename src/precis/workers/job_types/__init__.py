@@ -913,6 +913,14 @@ def _load_pcb_review() -> JobTypeSpec:
     return pcb_review.SPEC
 
 
+def _load_anki_sync() -> JobTypeSpec:
+    # On-demand AnkiWeb sync of one user's cards (gr747312). job_inproc
+    # plugin dispatch, held for a host advertising the anki_sync capability.
+    from precis.workers.job_types import anki_sync
+
+    return anki_sync.SPEC
+
+
 def _load_paper_pull() -> JobTypeSpec:
     # Fetch an agent-supplied PDF URL into the watch inbox with a fetch
     # sidecar for a paper stub — the enqueued half of
@@ -1236,6 +1244,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "pcb_argue",
     "pcb_review",
     "paper_pull",
+    "anki_sync",
     "paper_ingest",
     "paper_reextract",
     "pres_reextract",
@@ -1492,6 +1501,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "pcb_review":
         _REGISTRY["pcb_review"] = _load_pcb_review()
         return _REGISTRY["pcb_review"]
+    if name == "anki_sync":
+        _REGISTRY["anki_sync"] = _load_anki_sync()
+        return _REGISTRY["anki_sync"]
     if name == "paper_pull":
         _REGISTRY["paper_pull"] = _load_paper_pull()
         return _REGISTRY["paper_pull"]

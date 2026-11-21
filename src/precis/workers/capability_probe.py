@@ -81,6 +81,11 @@ _CONTAINER_AGENT_CAP = 1
 #: still advertises and the run path surfaces the read failure.
 _UPLOAD_STAGING_RESOURCE = "upload_staging"
 
+#: The soft ``anki_sync`` gauge (gr747312): ``1`` on a host that can run the
+#: AnkiWeb sync (enabled, mirror configured, and the ``anki`` wheel importable) —
+#: the capability an on-demand ``anki_sync`` job is held queued for.
+_ANKI_SYNC_RESOURCE = "anki_sync"
+
 #: Nominal capacity per soft resource, for the heartbeat writer (each soft gauge
 #: has its own — ``mem`` is a multi-bucket headroom, ``container_agent`` is 0/1).
 _SOFT_CAPS = {_MEM_RESOURCE: _MEM_CAP, _CONTAINER_AGENT_RESOURCE: _CONTAINER_AGENT_CAP}
@@ -92,7 +97,7 @@ _SOFT_CAPS = {_MEM_RESOURCE: _MEM_CAP, _CONTAINER_AGENT_RESOURCE: _CONTAINER_AGE
 #: opted-in host, so its absence means "opted out → retract the stale chip".
 #: ``upload_staging`` the same: a host whose env went away stops advertising.
 RETRACTABLE_SOFT_SIGNALS = frozenset(
-    {_CONTAINER_AGENT_RESOURCE, _UPLOAD_STAGING_RESOURCE}
+    {_CONTAINER_AGENT_RESOURCE, _UPLOAD_STAGING_RESOURCE, _ANKI_SYNC_RESOURCE}
 )
 
 
@@ -419,6 +424,21 @@ def _probe_repo_checkout() -> int | None:
         log.warning("capability_probe: repo_checkout git probe failed", exc_info=True)
         return None
     return 1 if root.is_dir() and (root / ".git").exists() else 0
+
+
+def _probe_anki_sync() -> int:
+    """``1`` when THIS process can run the AnkiWeb sync
+    (enabled, mirror configured, and the ``anki`` wheel importable), else ``0``."""
+    import importlib.util
+
+    from precis.config import load_config
+
+    cfg = load_config()
+    return int(
+        cfg.anki_enabled
+        and bool(cfg.anki_mirror_dir and cfg.anki_mirror_dir.strip())
+        and importlib.util.find_spec("anki") is not None
+    )
 
 
 def _make_repo_probe(name: str) -> Callable[[], int | None]:
@@ -816,6 +836,11 @@ def probe_soft_signals() -> dict[str, int | None]:
         # A probe error must not break the (liveness-critical) heartbeat;
         # not reporting leaves any stale row for the retractable sweep.
         log.warning("capability_probe: upload_staging probe raised", exc_info=True)
+    try:
+        if _probe_anki_sync() == 1:
+            signals[_ANKI_SYNC_RESOURCE] = 1
+    except Exception:
+        log.warning("capability_probe: anki_sync probe raised", exc_info=True)
     return signals
 
 

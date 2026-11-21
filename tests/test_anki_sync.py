@@ -794,16 +794,18 @@ class TestRunAnkiSyncClaim:
 
 
 class TestRunAnkiSyncLock:
-    def test_held_per_user_lock_skips_that_user_only(
+    def test_held_per_user_lock_raises_busy_when_everything_is_held(
         self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        """The per-user xact lock is held elsewhere => skip message, no
-        ``sync_tick``; another login's lock is independent (gr463966)."""
+        """The per-user xact lock is held elsewhere => ``AnkiSyncBusy``, no
+        ``sync_tick`` — a run that synced nobody is neither a clean tick
+        nor a sync failure, so a caller's shared backoff stays as it is
+        (gr463966, td750309 review)."""
         import precis.anki.sync as sync_mod
         from precis.anki.notes import ANKI_SYNC_LOCK
         from precis.anki.sync import SyncResult
         from precis.store.advisory import try_xact_advisory_lock
-        from precis.workers.anki_sync import run_anki_sync
+        from precis.workers.anki_sync import AnkiSyncBusy, run_anki_sync
         from tests.workers._helpers import skip_if_backends_multiplexed
 
         _add_user(store, "reto", "rs")
@@ -827,12 +829,61 @@ class TestRunAnkiSyncLock:
         cfg = _cfg(mirror_dir=str(tmp_path))
         with try_xact_advisory_lock(store.dsn, ANKI_SYNC_LOCK, text_key="reto") as h:
             assert h is True
-            summary = run_anki_sync(store, cfg)
-        assert "another sync holds the lock; skipping." in summary
+            with pytest.raises(AnkiSyncBusy, match="another sync holds the lock"):
+                run_anki_sync(store, cfg)
         assert not called
         # Released on exit: the next tick syncs.
         run_anki_sync(store, cfg)
         assert len(called) == 1
+
+    def test_held_lock_skips_that_user_only_when_others_sync(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """A busy login is a summary line, not a raised ``AnkiSyncBusy``,
+        when another requested login did sync — another login's lock is
+        independent (gr463966)."""
+        import precis.anki.sync as sync_mod
+        from precis.anki.notes import ANKI_SYNC_LOCK
+        from precis.anki.sync import SyncResult
+        from precis.store.advisory import try_xact_advisory_lock
+        from precis.workers.anki_sync import run_anki_sync
+        from tests.workers._helpers import skip_if_backends_multiplexed
+
+        _add_user(store, "reto", "rs")
+        _add_user(store, "alice", "al")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        _configure_creds(monkeypatch, "alice", "alice@example.com")
+        store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::x}}",
+            meta={"notetype": "Cloze", "fields": {"Text": "{{c1::x}}"}},
+            owner_login="reto",
+        )
+        # Alice needs a card too: a card-less leg takes the no-op shortcut
+        # and never reaches sync_tick.
+        store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::y}}",
+            meta={"notetype": "Cloze", "fields": {"Text": "{{c1::y}}"}},
+            owner_login="alice",
+        )
+        called: list[dict] = []
+
+        def _fake(**kw):
+            called.append(kw)
+            return SyncResult(), {}
+
+        monkeypatch.setattr(sync_mod, "sync_tick", _fake)
+        assert store.dsn
+        skip_if_backends_multiplexed(store.dsn)
+        with try_xact_advisory_lock(store.dsn, ANKI_SYNC_LOCK, text_key="reto") as h:
+            assert h is True
+            summary = run_anki_sync(store, _cfg(mirror_dir=str(tmp_path)))
+        assert "anki-sync[reto]: another sync holds the lock; skipping." in summary
+        # Alice's lock is independent — her leg still ran sync_tick.
+        assert len(called) == 1 and called[0]["user"] == "alice@example.com"
 
 
 class TestRunAnkiSyncFanOut:
@@ -1141,7 +1192,9 @@ class TestAnkiCadenceBackoff:
         assert scheduler._anki_fail_count(store) == 2
         assert second is not None and second > first
 
-        scheduler._anki_clear_backoff(store)
+        scheduler._anki_clear_backoff(
+            store, store.get_setting(scheduler._ANKI_NEXT_ATTEMPT_KEY)
+        )
         assert scheduler._anki_fail_count(store) == 0
         assert scheduler._anki_backoff_until(store) is None
 
@@ -1199,3 +1252,52 @@ class TestAnkiCadenceBackoff:
         scheduler._run_anki_sync(store, 1)
         assert scheduler._anki_fail_count(store) == 0
         assert scheduler._anki_backoff_until(store) is None
+
+    @pytest.mark.parametrize("prior_failure", [False, True])
+    def test_clean_tick_preserves_failure_recorded_during_sync(
+        self, store: Store, monkeypatch: pytest.MonkeyPatch, prior_failure: bool
+    ) -> None:
+        from precis.workers import scheduler
+
+        if prior_failure:
+            scheduler._anki_record_failure(store)
+            store.set_setting(
+                scheduler._ANKI_NEXT_ATTEMPT_KEY,
+                (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+            )
+
+        def sync(*args: Any, **kwargs: Any) -> str:
+            scheduler._anki_record_failure(store)
+            return "ok"
+
+        monkeypatch.setattr("precis.workers.anki_sync.run_anki_sync", sync)
+        scheduler._run_anki_sync(store, 1)
+        assert scheduler._anki_fail_count(store) == 1 + int(prior_failure)
+        deadline = scheduler._anki_backoff_until(store)
+        assert deadline is not None and deadline > datetime.now(UTC)
+
+    def test_a_lock_busy_tick_touches_neither_backoff_direction(
+        self, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``AnkiSyncBusy`` means nothing synced: the cadence must not
+        clear the backoff (no proof AnkiWeb is healthy) nor widen it (no
+        new failure) — it returns quietly."""
+        from precis.workers import scheduler
+        from precis.workers.anki_sync import AnkiSyncBusy
+
+        scheduler._anki_record_failure(store)
+        # Wind the window back so the gate lets this tick through.
+        store.set_setting(
+            scheduler._ANKI_NEXT_ATTEMPT_KEY,
+            (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        )
+
+        def _busy(*a, **kw):
+            raise AnkiSyncBusy(
+                "anki-sync[reto]: another sync holds the lock; skipping."
+            )
+
+        monkeypatch.setattr("precis.workers.anki_sync.run_anki_sync", _busy)
+        scheduler._run_anki_sync(store, 1)  # returns quietly
+        assert scheduler._anki_fail_count(store) == 1
+        assert scheduler._anki_backoff_until(store) is not None

@@ -111,7 +111,11 @@ def run(args: argparse.Namespace) -> None:
 
 def _run_sync(args: argparse.Namespace, cfg: Any, store: Store) -> None:
     from precis.anki.sync import AnkiNotInstalled, AnkiSyncError
-    from precis.workers.anki_sync import AnkiSyncMisconfigured, run_anki_sync
+    from precis.workers.anki_sync import (
+        AnkiSyncBusy,
+        AnkiSyncMisconfigured,
+        run_anki_sync,
+    )
 
     try:
         summary = run_anki_sync(
@@ -133,6 +137,12 @@ def _run_sync(args: argparse.Namespace, cfg: Any, store: Store) -> None:
     except AnkiNotInstalled as e:
         print(f"anki-sync: {e}", file=sys.stderr)
         sys.exit(3)
+    except AnkiSyncBusy as e:
+        # Every requested account's lock is held by another run — nothing
+        # synced. Checked BEFORE the AnkiSyncError it subclasses: a skip is
+        # not a sync failure.
+        print(f"anki-sync: {e}", file=sys.stderr)
+        sys.exit(1)
     except AnkiSyncError as e:
         print(f"anki-sync: sync failed: {e}", file=sys.stderr)
         sys.exit(1)

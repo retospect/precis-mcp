@@ -175,7 +175,7 @@ removes it from the corpus.
 
 ## Sync to AnkiWeb
 
-Authoring a card stores it in precis; the **`precis anki-sync`** tick (a cron on
+Authoring a card stores it in precis; the **`precis anki-sync`** tick (a daily cadence on
 the one designated runner, gated `PRECIS_ANKI_ENABLED`) pushes each web user's
 own precis-authored cloze cards to *their own* AnkiWeb account — the
 credentials you set on `/account` — by a stable per-ref guid (re-sync
@@ -184,6 +184,15 @@ credentials you set on `/account` — by a stable per-ref guid (re-sync
 carries `refs.owner_login`, so one sync tick never touches another user's
 account or mirror. The sync is account-safe: it will download to resolve a
 divergence but **refuses any full upload** that would overwrite AnkiWeb.
+
+**Sync now.** After a batch of edits, don't wait for the daily tick:
+`put(kind='job', job_type='anki_sync', parent_id=<todo id>,
+params={'user': '<your login>'})` syncs just your cards. `user` binds to
+your own login (it may be omitted; you cannot sync another user's account,
+and a session with no authenticated login is refused). It is refused within 10
+minutes of your last manual sync and while a failed sync is backing off,
+so it cannot hammer AnkiWeb; if another sync already holds the account's
+lock the job says so instead of running.
 
 **Boost a card (show it sooner).** The `/learning` page's *boost* button (and
 `meta.anki_boost_due = <today's date>` written directly) queues a card to come

@@ -142,8 +142,8 @@ def process_unclaimable_job_types() -> frozenset[str]:
     ``PRECIS_SLICE_ROOT`` the host advertises ``repo_checkout`` and every
     checkout-less ``job_inproc`` process beside it passes the gate, claims
     ``release_poll`` and fails closed in ``run_slice.slice_root()``. The
-    process-local capabilities are probed here instead — only ``repo_checkout``
-    differs between processes on one host (env-driven); the rest stay with
+    process-local capabilities are probed here instead — only ``repo_checkout`` and
+    ``anki_sync`` differ between processes on one host (env-driven); the rest stay with
     the host-level gate. A probe of ``None`` (unknown) excludes nothing. A
     job_type whose ``requires`` / ``conditional_requires`` names a missing
     capability is returned, to be excluded in the claim SQL so the row stays
@@ -154,6 +154,11 @@ def process_unclaimable_job_types() -> frozenset[str]:
     missing: set[str] = set()
     if capability_probe._probe_repo_checkout() == 0:
         missing.add("repo_checkout")
+    try:
+        if capability_probe._probe_anki_sync() == 0:
+            missing.add("anki_sync")
+    except Exception:  # unknown config state excludes nothing
+        log.warning("job_inproc: anki_sync probe raised", exc_info=True)
     if not missing:
         return frozenset()
     out: set[str] = set()

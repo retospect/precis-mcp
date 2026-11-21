@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from precis.anki.notes import ANKI_SYNC_LOCK
-from precis.anki.sync import AnkiSyncError
+from precis.anki.sync import AnkiNotInstalled, AnkiSyncError
 from precis.errors import PrecisError
 from precis.learning import LearningStore
 from precis.store.advisory import try_xact_advisory_lock
@@ -43,6 +43,19 @@ log = logging.getLogger(__name__)
 
 class AnkiSyncMisconfigured(AnkiSyncError):
     """Required Anki config (a user's credentials, or the mirror dir) is unset."""
+
+
+class AnkiSyncBusy(AnkiSyncError):
+    """Every requested login's per-account sync lock is held elsewhere.
+
+    Raised by :func:`run_anki_sync` when no requested login actually synced
+    (a concurrent run — another cadence fire, a manual ``precis anki-sync``,
+    or an on-demand ``anki_sync`` job — holds each lock). It subclasses
+    :class:`AnkiSyncError` so naive ``except AnkiSyncError`` callers keep
+    working, but it is NOT a sync failure: callers must catch it first and
+    leave the shared failure backoff untouched — a tick that ran nothing
+    proves neither that AnkiWeb is healthy again (clearing the backoff)
+    nor that it is still hurting (widening it)."""
 
 
 def retired_ref_ids(store: Store, *, login: str, window_days: int = 90) -> list[int]:
@@ -84,9 +97,6 @@ def _sync_one_user(
 
     prefix = f"anki-sync[{login}]"
 
-    claimed = store.claim_unowned_refs("anki", login) if claim else 0
-    claim_note = f" ({claimed} unowned ref(s) claimed for {login})" if claimed else ""
-
     if dry_run:
         refs = store.list_refs(kind="anki", owner_login=login, limit=limit)
         specs = [s for s in (spec_from_ref(r) for r in refs) if s is not None]
@@ -98,7 +108,7 @@ def _sync_one_user(
         return (
             f"{prefix} [DRY-RUN]: {len(specs)} cloze card(s) would sync, "
             f"{len(retire_ids)} retired ref(s) would be removed from the "
-            f"mirror{boost_note}.{claim_note}"
+            f"mirror{boost_note}."
         )
 
     # Per-user advisory lock: only one sync per AnkiWeb account at a time,
@@ -110,7 +120,14 @@ def _sync_one_user(
         raise AnkiSyncMisconfigured("the store has no DSN to hold the sync lock on.")
     with try_xact_advisory_lock(store.dsn, ANKI_SYNC_LOCK, text_key=login) as got:
         if not got:
-            return f"{prefix}: another sync holds the lock; skipping."
+            raise AnkiSyncBusy(f"{prefix}: another sync holds the lock; skipping.")
+        # The claim catch-up is a write: it belongs INSIDE the lock (a busy
+        # run leaves every row alone) and below the dry-run return (a
+        # listing pass counts cards but never mutates ownership).
+        claimed = store.claim_unowned_refs("anki", login) if claim else 0
+        claim_note = (
+            f" ({claimed} unowned ref(s) claimed for {login})" if claimed else ""
+        )
         refs = store.list_refs(kind="anki", owner_login=login, limit=limit)
         specs = [s for s in (spec_from_ref(r) for r in refs) if s is not None]
         retire_ids = [] if no_retire else retired_ref_ids(store, login=login)
@@ -135,8 +152,8 @@ def _sync_one_user(
             password=password,
             specs=specs,
             deck=cfg.anki_deck,
-            fix=fix or cfg.anki_fix_enabled,
-            project=project or cfg.anki_project_enabled,
+            fix=fix,
+            project=project,
             retire_ref_ids=retire_ids,
         )
         now = datetime.now(UTC).isoformat()
@@ -209,6 +226,7 @@ def run_anki_sync(
     project: bool = False,
     no_retire: bool = False,
     login: str | None = None,
+    honor_cfg_flags: bool = True,
 ) -> str:
     """One sync tick over every user with AnkiWeb credentials configured (or
     just ``login``, when given). Returns a human-readable summary — one line
@@ -224,11 +242,26 @@ def run_anki_sync(
       instead.
     * :class:`precis.anki.sync.AnkiNotInstalled` — the ``anki`` wheel isn't
       importable on this runner.
+    * :class:`AnkiSyncBusy` — every requested login's per-account lock was
+      held by a concurrent run: nothing synced, and the summary says so per
+      login. A caller with a shared failure backoff must leave it alone —
+      not a clean tick, not a failed one. A busy login alongside a clean
+      sync stays a line in the returned summary (partial busy is not this
+      case: something did run).
     * :class:`precis.anki.sync.AnkiSyncError` — a user's guarded sync itself
       failed or aborted (a ``FULL_UPLOAD`` risk — never allowed). One user's
-      failure doesn't stop the others; if any user's sync raised, a single
-      ``AnkiSyncError`` summarising all of them is raised after every user
-      has been attempted.
+      failure doesn't stop the others. After all accounts are attempted,
+      the summary is raised as ``AnkiSyncError`` if any sync failed,
+      including bare AnkiWeb errors such as a 429. If the failures were
+      all local setup errors, the summary keeps the first exception's type.
+
+    ``honor_cfg_flags`` (default ``True``, the operator-triggers' posture):
+    ``cfg.anki_fix_enabled`` / ``cfg.anki_project_enabled`` may turn the
+    precis-fix pass and the whole-collection foreign-card projection on
+    even when ``fix``/``project`` are ``False``. The on-demand
+    ``anki_sync`` job passes ``False`` so its documented scope — "sync this
+    login's authored cards", no LLM fix pass, no foreign projection —
+    holds even on a host whose env flags are set.
     """
     from precis.anki.creds import anki_logins, user_anki_configured
 
@@ -249,13 +282,19 @@ def run_anki_sync(
         raise AnkiSyncMisconfigured("set PRECIS_ANKI_MIRROR_DIR.")
     root = Path(cfg.anki_mirror_dir).expanduser()
 
+    if honor_cfg_flags:
+        fix = fix or cfg.anki_fix_enabled
+        project = project or cfg.anki_project_enabled
+
     # The claim-unowned-refs catch-up only fires when there's a single
     # configured user fleet-wide (not merely a single ``--user`` filter) —
     # with more than one, an unowned legacy row has no unambiguous owner.
     solo = all_logins[0] if len(all_logins) == 1 else None
 
     lines: list[str] = []
-    failed: list[str] = []
+    sync_failed = False
+    local_error: AnkiSyncMisconfigured | AnkiNotInstalled | None = None
+    busy: list[str] = []
     for user_login in logins:
         try:
             lines.append(
@@ -272,17 +311,34 @@ def run_anki_sync(
                     claim=(user_login == solo),
                 )
             )
-        except AnkiSyncError as exc:
-            failed.append(user_login)
+        except AnkiSyncBusy as exc:
+            busy.append(user_login)
+            lines.append(str(exc))
+        except (AnkiSyncMisconfigured, AnkiNotInstalled) as exc:
+            if local_error is None:
+                local_error = exc
+            lines.append(f"anki-sync[{user_login}]: sync failed: {exc}")
+        except Exception as exc:
+            # A bare AnkiWeb / ``anki``-pylib error escaping ``sync_tick``'s
+            # guard (a 429, a network abort, ``anki.errors.SyncError``) —
+            # fold it into the per-user failure set so one user's crash can
+            # neither abort the fan-out nor slip past a caller's
+            # ``except AnkiSyncError`` failure backoff.
+            sync_failed = True
             lines.append(f"anki-sync[{user_login}]: sync failed: {exc}")
 
     summary = "\n".join(lines)
-    if failed:
+    if sync_failed:
         raise AnkiSyncError(summary)
+    if local_error is not None:
+        raise type(local_error)(summary) from local_error
+    if len(busy) == len(logins):
+        raise AnkiSyncBusy(summary)
     return summary
 
 
 __all__ = [
+    "AnkiSyncBusy",
     "AnkiSyncMisconfigured",
     "retired_ref_ids",
     "run_anki_sync",

@@ -17,21 +17,12 @@ and polls.
 
 Pass taxonomy
 -------------
-Three pass shapes share ``run_loop``'s rotation (``runner.py``):
-
-* **Chunk passes** — :class:`WorkerHandler` subclasses (``embed``,
-  ``summarize``, ``chunk_keywords``).
-* **Ref-passes** — self-contained claim/compute/write closures over
-  ``refs`` (``classify``, ``chase``, ``fetch``, ``nursery``, ``heartbeat``,
-  ``news_poll``, … — roster: ``registry.py``;
-  ``news_poll``/``briefing`` dedup, backoff and
-  delivery detail: ``docs/runbooks/news-ops.md``).
-* **Executor passes** — drain ``kind='job'`` rows (:mod:`.executors`).
-  ``dispatch`` bridges intent to compute: each open todo with
-  ``meta.executor`` mints a child job inheriting parent ``prio`` so urgency
-  flows down the DAG. Rejections and capabilities: ``docs/runbooks/minter-ops.md``.
-
-Claiming ref-passes use :mod:`.ref_lease` to manage ``claimed_by``.
+* **Chunk passes** subclass :class:`WorkerHandler`.
+* **Ref-passes** claim, compute and write over ``refs``. :mod:`.ref_lease`
+  manages ``claimed_by``. See ``registry.py`` and ``docs/runbooks/news-ops.md``.
+* **Executor passes** drain ``kind='job'`` rows (:mod:`.executors`).
+  ``dispatch`` mints jobs for open todos with ``meta.executor``, passing
+  parent ``prio`` down the DAG. See ``docs/runbooks/minter-ops.md``.
 
 Factory queues doable nodes; claims own capacity and overlaps.
 Gripe intake bounds frozen reports (``precis-work-help``).
@@ -51,12 +42,10 @@ so silent work is distinguishable from a dead worker.
 
 Job digests
 -------------
-Every pass ends in one **digest row**: a :class:`.runner.BatchResult`
-that :func:`run_loop` logs into ``worker_logs.payload`` (read it with
-``precis logs --pass <name> --payload``). Pass counters ride in
-``BatchResult.extra``, blocked claims set ``report_only`` (rules +
-example row on the class); crash paths log an errored row under the same
-``payload.handler`` so the pass-dead probe sees them (gr328589).
+:func:`run_loop` logs one :class:`.runner.BatchResult` per pass to
+``worker_logs.payload`` (``precis logs --pass <name> --payload``). Counters
+use ``extra`` and blocked claims set ``report_only``. Crashes log under the
+same ``payload.handler`` so the pass-dead probe sees them (gr328589).
 
 Profiles + service registry
 ---------------------------
@@ -142,6 +131,10 @@ Two SQL watchdog passes and two agentic reviewers, plus disk:
 
 Notable pass mechanics
 ----------------------
+* ``anki_sync`` runs as a daily cadence and as an owner-bound on-demand job.
+  Both use the per-account sync lock. The job needs a runner with a configured
+  mirror and shares the cadence's AnkiWeb failure backoff. A successful cadence
+  clears only the deadline it saw at start, preserving newer failures.
 * ``chunk_keywords`` embeds claimed chunks' paper-local candidates once via
   ``Embedder.embed``, then scores per-chunk slices (per-chunk RPCs held the
   fleet advisory lock ~2 min/32 chunks, gr547587); no pooled connection

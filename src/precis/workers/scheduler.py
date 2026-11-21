@@ -537,42 +537,75 @@ _ANKI_NEXT_ATTEMPT_KEY = "anki_sync:next_attempt_at"
 
 def _anki_fail_count(store: Store) -> int:
     """Consecutive ``anki_sync`` cadence failures; 0 when unset/unparsable."""
+    return _parse_anki_fail_count(store.get_setting(_ANKI_FAIL_COUNT_KEY))
+
+
+def _parse_anki_fail_count(raw: str | None) -> int:
     try:
-        return max(0, int(store.get_setting(_ANKI_FAIL_COUNT_KEY) or 0))
+        return max(0, int(raw or 0))
     except (TypeError, ValueError):
         return 0
 
 
-def _anki_backoff_until(store: Store) -> datetime | None:
-    """When the next cadence attempt is allowed, or None if unthrottled."""
+def _parse_anki_backoff(raw: str | None) -> datetime | None:
     from precis.utils.timeutil import as_utc
 
-    raw = store.get_setting(_ANKI_NEXT_ATTEMPT_KEY)
     return as_utc(raw) if raw else None
+
+
+def _anki_backoff_until(store: Store) -> datetime | None:
+    """When the next cadence attempt is allowed, or None if unthrottled."""
+    return _parse_anki_backoff(store.get_setting(_ANKI_NEXT_ATTEMPT_KEY))
+
+
+_ANKI_BACKOFF_UPSERT = (
+    "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()"
+)
 
 
 def _anki_record_failure(store: Store) -> None:
     """Widen the backoff after a failed tick. Best-effort: a failed stamp must
     not mask the sync error the caller is about to re-raise."""
-    count = _anki_fail_count(store) + 1
-    hours = min(count, _ANKI_MAX_BACKOFF_STEPS) * _ANKI_BACKOFF_STEP_HOURS
     try:
-        store.set_setting(_ANKI_FAIL_COUNT_KEY, str(count))
-        store.set_setting(
-            _ANKI_NEXT_ATTEMPT_KEY,
-            (datetime.now(UTC) + timedelta(hours=hours)).isoformat(),
-        )
+        with store.pool.connection() as conn, conn.transaction():
+            # Both writers lock next_attempt_at first, so the deadline and
+            # count change together even when a cadence and manual job overlap.
+            conn.execute(
+                "INSERT INTO app_state (key, value) VALUES (%s, '') "
+                "ON CONFLICT (key) DO NOTHING",
+                (_ANKI_NEXT_ATTEMPT_KEY,),
+            )
+            conn.execute(
+                "SELECT value FROM app_state WHERE key = %s FOR UPDATE",
+                (_ANKI_NEXT_ATTEMPT_KEY,),
+            )
+            row = conn.execute(
+                "SELECT value FROM app_state WHERE key = %s",
+                (_ANKI_FAIL_COUNT_KEY,),
+            ).fetchone()
+            count = _parse_anki_fail_count(row[0] if row else None) + 1
+            hours = min(count, _ANKI_MAX_BACKOFF_STEPS) * _ANKI_BACKOFF_STEP_HOURS
+            deadline = (datetime.now(UTC) + timedelta(hours=hours)).isoformat()
+            conn.execute(_ANKI_BACKOFF_UPSERT, (_ANKI_FAIL_COUNT_KEY, str(count)))
+            conn.execute(_ANKI_BACKOFF_UPSERT, (_ANKI_NEXT_ATTEMPT_KEY, deadline))
     except Exception:
         log.exception("scheduler: could not record anki_sync backoff")
 
 
-def _anki_clear_backoff(store: Store) -> None:
-    """Drop the backoff after a clean tick. Best-effort, same reasoning."""
-    if not _anki_fail_count(store) and not store.get_setting(_ANKI_NEXT_ATTEMPT_KEY):
+def _anki_clear_backoff(store: Store, observed_deadline: str | None) -> None:
+    """Clear only the backoff the clean cadence started with."""
+    if not observed_deadline:
         return
     try:
-        store.set_setting(_ANKI_FAIL_COUNT_KEY, "0")
-        store.set_setting(_ANKI_NEXT_ATTEMPT_KEY, "")
+        with store.pool.connection() as conn, conn.transaction():
+            updated = conn.execute(
+                "UPDATE app_state SET value = '', updated_at = now() "
+                "WHERE key = %s AND value = %s RETURNING key",
+                (_ANKI_NEXT_ATTEMPT_KEY, observed_deadline),
+            ).fetchone()
+            if updated is not None:
+                conn.execute(_ANKI_BACKOFF_UPSERT, (_ANKI_FAIL_COUNT_KEY, "0"))
     except Exception:
         log.exception("scheduler: could not clear anki_sync backoff")
 
@@ -587,11 +620,20 @@ def _run_anki_sync(store: Store, batch_size: int) -> None:
 
     Wrapped in the failure backoff above: a throttled tick logs and returns
     without touching AnkiWeb, a failure widens the window and re-raises so
-    the generic cadence wrapper still logs it, and a clean tick clears it."""
+    the generic cadence wrapper still logs it, and a clean tick clears it.
+    The backoff is shared with the on-demand ``anki_sync`` job: a manual
+    failure widens it, but a manual success never clears it — only this
+    cadence does."""
+    from precis.anki.sync import AnkiNotInstalled
     from precis.config import load_config
-    from precis.workers.anki_sync import run_anki_sync
+    from precis.workers.anki_sync import (
+        AnkiSyncBusy,
+        AnkiSyncMisconfigured,
+        run_anki_sync,
+    )
 
-    until = _anki_backoff_until(store)
+    observed_deadline = store.get_setting(_ANKI_NEXT_ATTEMPT_KEY)
+    until = _parse_anki_backoff(observed_deadline)
     now = datetime.now(UTC)
     if until is not None and now < until:
         log.info(
@@ -607,10 +649,17 @@ def _run_anki_sync(store: Store, batch_size: int) -> None:
         summary = run_anki_sync(
             store, cfg, fix=cfg.anki_fix_enabled, project=cfg.anki_project_enabled
         )
+    except AnkiSyncBusy as exc:
+        # Every account's lock is held by a concurrent run — nothing synced
+        # this tick, so the shared backoff is neither widened nor cleared.
+        log.info("scheduler: anki_sync — skipped: %s", exc)
+        return
+    except (AnkiSyncMisconfigured, AnkiNotInstalled):
+        raise
     except Exception:
         _anki_record_failure(store)
         raise
-    _anki_clear_backoff(store)
+    _anki_clear_backoff(store, observed_deadline)
     log.info("scheduler: anki_sync — %s", summary)
 
 

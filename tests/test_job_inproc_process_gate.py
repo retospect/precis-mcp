@@ -30,8 +30,10 @@ _PROCESS_CACHE = job_inproc.process_unclaimable_job_types
 
 
 @pytest.fixture(autouse=True)
-def _fresh_process_cache() -> Any:
-    """The per-process cache must not leak between probe stubs."""
+def _fresh_process_cache(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The per-process cache must not leak between probe stubs; the
+    anki_sync gate is stubbed open unless a test closes it."""
+    monkeypatch.setattr(capability_probe, "_probe_anki_sync", lambda: 1)
     _PROCESS_CACHE.cache_clear()
     yield
     _PROCESS_CACHE.cache_clear()
@@ -107,6 +109,17 @@ def test_checkoutless_process_leaves_release_poll_queued(
         ).fetchone()
     assert meta is not None
     assert not (meta[0] or {}).get("lease_until")
+
+
+def test_ankiless_process_excludes_anki_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(capability_probe, "_probe_repo_checkout", lambda: 1)
+    monkeypatch.setattr(capability_probe, "_probe_anki_sync", lambda: 0)
+    assert "anki_sync" in job_inproc.process_unclaimable_job_types()
+    _PROCESS_CACHE.cache_clear()
+    monkeypatch.setattr(capability_probe, "_probe_anki_sync", lambda: 1)
+    assert "anki_sync" not in job_inproc.process_unclaimable_job_types()
 
 
 def test_checkout_process_claims_release_poll(

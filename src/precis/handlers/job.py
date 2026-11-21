@@ -4216,6 +4216,11 @@ class JobHandler(NumericRefHandler):
             "executor": resolved_executor,
             "params": params,
         }
+        if spec.name == "anki_sync":
+            # Verified owner binding: ``validate`` proved params.user is the
+            # authenticated caller's login; only this door stamps it, so a
+            # todo-minted job (params copied from a todo) never carries it.
+            meta["owner_login"] = params["user"]
         # Scheduling class (job-scheduling-fairness D1). A job parent
         # means worker fan-out: the child takes the parent's class
         # (validated; 'background' when it has none) regardless of the

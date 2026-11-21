@@ -224,6 +224,9 @@ notes for the next sync.
 Anki card creation can snapshot a public image with the ref. The per-owner
 Anki sync worker adds the snapshot to the mirror's media collection, embeds
 its filename in the cloze note, and waits for incremental media sync.
+An authenticated caller can queue the same sync for their own cards through
+the `anki_sync` job type. The worker claim gate requires a configured Anki
+mirror, and the job shares the daily cadence's failure backoff.
 
 The jobs settings surface reports effective allowlisted flags. Flag updates
 and reverts take a per-key transaction lock before reading the predecessor,
