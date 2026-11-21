@@ -90,6 +90,12 @@ distribution). ``marker`` only parses whatever alt/caption text the
 returned markdown carries, so a caption-prompt change is a dependency
 bump, not an edit here (gr514334).
 
+Marker table cleanup collapses malformed exact numeric repeats inside their
+cells before splitting rows into chunks. A valid integer under a Count header
+is shortened only when at least two malformed repeats and no ordinary
+numeric cells corroborate duplication in its row. Single-digit pairs such
+as 22 are always kept because their intended value is ambiguous.
+
 Multi-article page spreads (gr463414): before Marker blocks become chunks,
 :mod:`precis.ingest.article_spread` splits a spread into articles on
 end/start evidence and keeps the one matching the target title or DOI. The

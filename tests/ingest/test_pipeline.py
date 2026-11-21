@@ -82,6 +82,31 @@ def test_pdf_body_excludes_confirmed_ads_and_sentence_loops(
     assert {chunk.page_first for chunk in body.chunks} == ({2} if trimmed else {0, 2})
 
 
+def test_marker_table_repairs_doubled_numbers_within_cells() -> None:
+    markdown = (
+        "| Atom | Count | Accuracy | Rate | Notes |\n"
+        "| --- | ---: | ---: | ---: | --- |\n"
+        "| H | 1818 | 94.694.6 | 94.6%94.6% | |\n"
+        "| C | 1212 | 90.9 | 90.9% | A \\| 94.694.6 |\n"
+        "| O | 2020 | 95.595.5 | 95.5% | |\n"
+        "| N | 22 | 94.694.6 | 94.6%94.6% | |\n"
+        "| F | 1010 | 94.694.6 | | |\n\n"
+        "The unprocessed value was 94.694.6."
+    )
+    chunks = _blocks_to_chunks(_parse_marker_markdown(markdown, {}, {}, "paper"))
+
+    assert chunks[0].text == (
+        "| Atom | Count | Accuracy | Rate | Notes |\n"
+        "| --- | ---: | ---: | ---: | --- |\n"
+        "| H | 18 | 94.6 | 94.6% | |\n"
+        "| C | 1212 | 90.9 | 90.9% | A \\| 94.694.6 |\n"
+        "| O | 2020 | 95.5 | 95.5% | |\n"
+        "| N | 22 | 94.6 | 94.6% | |\n"
+        "| F | 1010 | 94.6 | | |"
+    )
+    assert chunks[1].text == "The unprocessed value was 94.694.6."
+
+
 # ---------------------------------------------------------------------------
 # _blocks_to_chunks — pure mapping
 # ---------------------------------------------------------------------------

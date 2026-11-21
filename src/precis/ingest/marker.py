@@ -936,6 +936,8 @@ def _parse_marker_markdown(
             # Still emit the heading as a block
         elif block_type == "skip":
             continue
+        elif block_type == "table":
+            text = _repair_repeated_table_numbers(text)
         elif block_type in ("text", "list", "figure"):
             cleaned = _strip_ocr_loops(text)
             if text and not cleaned and block_type != "figure":
@@ -1130,6 +1132,57 @@ def _encode_pil_image(img: Any) -> tuple[str, str]:
     img.save(buf, format=fmt)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return b64, mime
+
+
+_TABLE_CELL_BREAK_RE = re.compile(r"((?<!\\)(?:\\\\)*\|)")
+_TABLE_NUMBER_RE = re.compile(r"[+−-]?[0-9]+(?:\.[0-9]+)?(?:[ \t]*%)?")
+
+
+def _repair_repeated_table_numbers(text: str) -> str:
+    """Repair exact doubled numeric cells before table splitting.
+
+    A syntactically valid integer is ambiguous. Infer a doubled count only
+    under a Count header in a row with at least two malformed numeric repeats
+    and no ordinary numeric cells. Keep single-digit pairs such as 22 even
+    with that corroboration.
+    """
+    rows = text.split("\n")
+    count_columns = (
+        {
+            index
+            for index, cell in enumerate(_TABLE_CELL_BREAK_RE.split(rows[0]))
+            if index % 2 == 0 and cell.strip().casefold() == "count"
+        }
+        if len(rows) > 1 and _is_table_separator(rows[1])
+        else set()
+    )
+    lines = []
+    for line in rows:
+        parts = _TABLE_CELL_BREAK_RE.split(line)
+        malformed: dict[int, str] = {}
+        counts: dict[int, str] = {}
+        has_single_number = False
+        for index in range(2, len(parts), 2):
+            value = parts[index].strip()
+            half = value[: len(value) // 2]
+            is_number = _TABLE_NUMBER_RE.fullmatch(value) is not None
+            if value == half + half and _TABLE_NUMBER_RE.fullmatch(half):
+                if not is_number:
+                    malformed[index] = half
+                    continue
+                if index in count_columns and len(half) > 1:
+                    counts[index] = half
+                    continue
+            if is_number:
+                has_single_number = True
+
+        if len(malformed) >= 2 and not has_single_number:
+            malformed.update(counts)
+        for index, half in malformed.items():
+            cell = parts[index]
+            parts[index] = cell.replace(cell.strip(), half, 1)
+        lines.append("".join(parts))
+    return "\n".join(lines)
 
 
 def _table_cells(line: str) -> list[str]:
