@@ -65,44 +65,28 @@ trust acts retain the original model string.
    ``untagged`` (a ref missing a namespace its kind already uses),
    ``polysemy`` (split signals), ``sibling_confusion`` (exclusive-axis
    siblings one classification run can't tell apart).
-   The ``memory`` pass adds ``dangling_mention``: one handle scan over
-   live memory bodies joined to retired refs, since mention edges only
-   target live refs and disappear after retirement. ``grab_bag`` flags a
-   memory carrying many independent claims — a multi-claim title smell,
-   or >=4 top-level items whose sentence embeddings cluster into >=3
-   groups — and the evaluator proposes atomic children pinned to the
-   detector's sentence spans; the reviewed split door mints them, then
-   retires the parent (tombstone carries ``meta.split_into``) or shrinks
-   it to a <=3-line summary. Rewrite proposals pin
-   the content SHA and spans, with tombstone/edge successors as evidence.
-   Unresolved replacement text stays null and outside consumer review;
-   DREAMs are excluded.
-   Tombstone successors must resolve to a live ref within 16 cycle-checked
-   hops, using the tombstone reader's resolver so converted kinds retain
-   their redirect. Each memory carries at most 20 matches, marked when capped,
-   to bound the judge's evidence. Memory detectors have their own action sets
-   and prompt version so their rules cannot reopen existing v2 rejections.
-   These rewrites can use the reviewed memory door behind the default-off
-   ``PRECIS_GARDEN_MEMORY_APPLY`` consumer gate; a mention whose successor
-   is a verified duplicate (merge-made redirect whose target is the
-   tombstone's recorded merge winner, or a same-title
-   ``supersedes`` target — ``evidence.mentions[].duplicate_successor``)
-   applies with no model call, recorded ``garden.applied='mention'``
-   (gr564554).
-   ``thread_shape`` covers tagged thread children too: missing ``Left:``,
-   terminal todo/gripe work, or a Left-line commit sha confirmed on
-   ``origin/prod`` proposes supersede by the nearest live ancestor with a
-   current ``Left:``, else retire. No edits occur at detection; the
-   sha-on-prod check is documented in ``precis-gardener-help``.
-   Cold alone queues decaying shapes for ``compact``; standing memories
-   keep cold evidence alongside history (gr732284).
-   ``precis garden apply`` runs the per-sentence plan atomically via
-   ``apply_compact``; ``undo_compact`` uses its single reversal record
-   (gr561025). The consumer only reviews. See ``precis-gardener-memory-help``.
-   ``griped`` (gr657257) is the reader-complaint queue: open
-   ``project:memory`` gripes naming live memories, newest first — one
-   ``rewrite`` candidate per named memory, exempt from the
-   freshly-considered skip.
+   The ``memory`` pass adds ``dangling_mention`` (a handle naming a
+   retired ref), ``grab_bag`` (one memory carrying many independent
+   claims — a split candidate), ``thread_shape`` (a thread ``Left:``
+   missing or done, or a Left-line sha confirmed on ``origin/prod``),
+   ``anchor_rot`` (a cited file/symbol, path, section or sha anchor no
+   longer resolving on committed ``main``), ``compact`` (expired,
+   half-history or retire-pending, plus cold alone on decaying shapes
+   — owes a per-sentence keep/move/drop plan;
+   :func:`precis.graph.garden.apply.apply_compact`) and ``griped``
+   (open ``project:memory`` complaints, newest first). The opt-in
+   ``memory-review`` pass is proposal-only — no apply door — and adds
+   ``review_due`` (expired, unreviewed, sha- or version-moved, or aged:
+   30 days for reference/gotchas, 60 for runbooks, ``meta.review_by``
+   for workflow/rulings, threads never; expiry shapes give threads and
+   snapshots 14 days, incidents/campaigns 90), ``restated_claim`` (a
+   sentence of eight or more words restating a hub sibling's claim; the
+   keeper ranks reference, gotchas, threads, then the lower ref id),
+   ``title_shape``, ``negative_undated``, ``notation``,
+   ``source_drift`` and ``entity_claim_stale``; the one-off
+   ``host-facts`` pass flags census-machine state claims with no date
+   or machine handle. Per-detector thresholds, caps, sha/key pins and
+   evidence shapes: :mod:`precis.graph.garden.candidates`.
 2. Proposer (:mod:`precis.graph.garden.proposer`) — one routed LLM call
    per candidate returns structured ``accept``/rationale. Memory detectors'
    body candidates receive fisheye+1hop and verbatim
@@ -130,6 +114,9 @@ trust acts retain the original model string.
    apply do not spend a review. A ``dangling_mention`` proposal whose ops
    are all bare swaps onto verified duplicate successors applies without a
    call (``garden.applied='mention'``, before/after spans recorded).
+   ``md:``/``python:`` successors refuse (their content cannot be
+   shown or pinned); human-origin and currently ``considered`` targets
+   are held for a human.
    Humans review ``memory-review`` proposals and ``qualify`` verdicts.
    An ``ask`` files a detector-tiered review todo unless a done review
    matches the memory, detector and content SHA across proposal retries.

@@ -266,10 +266,18 @@ def test_restore_link_missing_chunk_refusal_has_next_step(store: Store) -> None:
             "SELECT COALESCE(MAX(chunk_id), 0) + 1 FROM chunks"
         ).fetchone()
         assert missing is not None
-        snapshot = {**original[0], "src_chunk_id": int(missing[0])}
+        src_missing = int(missing[0])
+        dst_missing = src_missing + 1
+        snapshot = {
+            **original[0],
+            "src_chunk_id": src_missing,
+            "dst_chunk_id": dst_missing,
+        }
         with pytest.raises(doors.MergeRefused, match="original chunk") as exc:
             doors._restore_memory_link(store, conn, snapshot, actor="operator")
-        assert exc.value.next
+        assert f"link {link.id} (refs {target} -> {destination})" in str(exc.value)
+        assert f"missing chunk IDs: {src_missing}, {dst_missing}" in str(exc.value)
+        assert "docs/runbooks/memory-restore.md" in (exc.value.next or "")
     assert _links(store, target) == before
 
 

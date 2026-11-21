@@ -89,3 +89,25 @@ taken 03:30 UTC, so it is up to a day old), then copy only the rows you need
 into prod: the `refs` row, its `chunks` (append-only: INSERT, never UPDATE),
 `ref_tags`, and `links` for those ids. Keep the original `ref_id` only if it is
 free in prod. Never restore the whole dump over prod for a node.
+
+## 4. Gardener undo refuses a missing link chunk
+
+`src/precis/graph/garden/apply.py::_restore_memory_link` reports the link ID,
+source and destination ref IDs, and the missing chunk IDs. The undo needs
+those exact chunk IDs because the saved link points to specific passages.
+
+1. Give the database recovery owner the failed command, garden reversal
+   record ID, link and ref IDs, and every missing chunk ID. Use the saved
+   link to map each ID to its source or destination ref.
+2. In the isolated backup from section 3, look up each ID with
+   `SELECT * FROM chunks WHERE chunk_id IN (<missing IDs>)`. Verify the
+   owning ref, chunk ordinal and body against the saved garden state and
+   passage evidence. Have the owner check live IDs and ref/ordinal slots
+   for conflicts and verify that inserting the original rows is consistent
+   with the current bodies.
+3. If verified and conflict-free, the owner can insert only the exact
+   missing rows with their original IDs in a transaction, verify the IDs
+   and owners, then retry the original undo. If any row is unavailable,
+   ambiguous or conflicts with live content, leave the undo blocked and
+   have the owner reconcile the link against the current passage. A text
+   edit creates a new chunk ID and cannot repair the saved pin.

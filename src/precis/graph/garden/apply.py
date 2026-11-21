@@ -13,9 +13,14 @@ narrower than the proposal space.
 Memory rewrites, supersedes and retirements re-run their detector under
 the target lock. The consumer enables these only with
 ``PRECIS_GARDEN_MEMORY_APPLY`` (default off); human-origin and currently
-considered targets are held. Rewrites use the pinned ``base_sha`` and
+considered targets are held. ``md:``/``python:`` successors refuse —
+their content cannot be shown or pinned
+(:func:`precis.graph.garden.proposals.memory_successor_refusal`) — and
+supersede or retire applies only after review finds still-true claims
+preserved elsewhere. Rewrites use the pinned ``base_sha`` and
 anchored memory edit door in one ``Store.atomic`` transaction with the
-approval, reversal record and ``kg-review`` trust act. The record includes
+approval, reversal record and ``kg-review:<model>:<date>:fixed`` trust
+act. The record includes
 body bytes because the old chunk is deleted, and outgoing link rows because
 mention sync can otherwise erase provenance/route edges. Undo restores
 that snapshot and refuses to overwrite intervening work. Supersede and
@@ -1642,11 +1647,16 @@ def _restore_memory_link(
             "SELECT chunk_id FROM chunks WHERE chunk_id = ANY(%s)",
             (list(chunk_ids),),
         ).fetchall()
-        if chunk_ids != {row[0] for row in present}:
+        missing = chunk_ids - {row[0] for row in present}
+        if missing:
+            missing_ids = ", ".join(str(chunk_id) for chunk_id in sorted(missing))
             raise MergeRefused(
                 "apply_refused",
-                "a memory link's original chunk cannot be restored",
-                next="get(kind='skill', id='precis-gardener-memory-help')",
+                f"a memory link's original chunk cannot be restored: "
+                f"link {link['link_id']} (refs {link['src_ref_id']} -> "
+                f"{link['dst_ref_id']}), missing chunk IDs: {missing_ids}",
+                next="recover the exact chunk rows or escalate using "
+                "docs/runbooks/memory-restore.md",
             )
     conn.execute(
         "DELETE FROM links WHERE link_id = %(link_id)s OR "
@@ -3029,6 +3039,19 @@ def apply_compact(
     verdict_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a reviewed per-sentence compaction plan as one undoable unit.
+
+    The detector flags expiry, cold reads (alone on decaying shapes,
+    standing memories only alongside qualifying history), bodies with
+    at least half history lines, or pending retire proposals.
+    Rulings, specs and memories linked to live, non-terminal todos,
+    gripes or quests are shielded from the expiry trigger alone.
+    Retirement refuses while a compact proposal is pending or current
+    content still owes a plan.
+
+    The plan accounts for each detector sentence: keep it on the shell,
+    move it to a related node, mint an atomic child, or drop it as
+    history or restatement. Apply is explicit via ``precis garden apply``;
+    the consumer can review the plan.
 
     Edits apply on the pinned related nodes, atomic children mint under
     the shell's hub, and the shell retires through the delete door (with
