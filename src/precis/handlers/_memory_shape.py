@@ -67,6 +67,7 @@ _CLAIM = re.compile(
     r"returns?)\s+(?:[<>~=]\s*)?\d+(?:\.\d+)?\b",
     re.I,
 )
+_SOURCE = re.compile(r"(?<![\w-])(?<!\bopen\s)Source:\s+[\w<\[/~`]", re.I)
 _STOP = frozenset(
     [
         "a",
@@ -322,6 +323,8 @@ def audit_shape(
     claims (gr631570). Only their grab-bag check is exempt, not the other
     shape checks. A section:index hub is a member list by design, so it is
     grab-bag exempt on the same terms.
+    A ``Source:`` is a route wherever it sits on a line: prose names its
+    evidence in a parenthesis as often as on a line of its own (gr677478).
     """
     lines = _prose_lines(body)
     findings: list[ShapeFinding] = []
@@ -383,7 +386,7 @@ def audit_shape(
     route = has_evidence or any(
         t.startswith("route:") and t[6:].strip() for t in tag_set
     )
-    route = route or any(re.match(r"^\s*Source:\s*\S", line, re.I) for line in lines)
+    route = route or any(_SOURCE.search(line) for line in lines)
     confident = any(
         _CLAIM.search(line)
         and not _HEDGE.search(line)
@@ -396,7 +399,7 @@ def audit_shape(
             ShapeFinding(
                 "missing-route",
                 "confident reference claim has no route; add a cites/derived-from "
-                "edge, a Source: line, or a route: tag",
+                "edge, a route: tag, or `Source: <ref>` anywhere on a body line",
             )
         )
     if (

@@ -267,6 +267,48 @@ def test_reference_route_forms(route):
     )
 
 
+@pytest.mark.parametrize(
+    "aside",
+    [
+        "(Source: perplexity-research some-slug)",
+        "(research report, section 4; Source: perplexity-research some-slug)",
+    ],
+)
+def test_inline_source_is_a_reference_route(aside):
+    """gr677478: prose names its evidence in mid-line, often in parentheses;
+    that ``Source:`` is a route, and the advice names the accepted shape."""
+    title = "Fans tip above the fee floor"
+    claim = "the cooperative averaged 6.78 USD per contributing fan."
+    tags = ("section:reference",)
+    assert "missing-route" not in _codes(
+        title=title, body=f"Evidence so far {aside}: {claim}", tags=tags
+    )
+    audit = shape.audit_shape(
+        title=title, body=f"Evidence so far (research report): {claim}", tags=tags
+    )
+    finding = next(f for f in audit.findings if f.code == "missing-route")
+    assert "`Source: <ref>` anywhere on a body line" in finding.advisory()
+
+
+@pytest.mark.parametrize(
+    "aside",
+    [
+        "(Source: )",
+        "(Resource: some-slug)",
+        "(open-source: yes)",
+        "the `Source:` line is required",
+        "**Source:**",
+        "Open Source: license is MIT",
+    ],
+)
+def test_source_lookalikes_are_not_a_route(aside):
+    assert "missing-route" in _codes(
+        title="Fans tip above the fee floor",
+        body=f"Evidence so far {aside}: the cooperative averaged 6.78 USD per fan.",
+        tags=("section:reference",),
+    )
+
+
 def test_uncertain_reference_and_workflow_do_not_need_route():
     assert "missing-route" not in _codes(
         title="The parser might preserve input",
