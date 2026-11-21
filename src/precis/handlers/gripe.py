@@ -10,9 +10,10 @@ Surface (see ``precis-gripe-help``):
 - ``put(kind='gripe', text=...)`` creates a new gripe with a
   ``gripe_body`` chunk and ``STATUS:open`` tag. The create path also
   runs the recurring-theme registry (:mod:`._gripe_themes`): a filing
-  matching exactly one theme folds into that theme's live
-  ``theme:<slug>`` keeper as a ``+1`` comment — or becomes the keeper
-  itself when none exists — so filers never have to dedup first.
+  matching exactly one theme can fold into a live ``theme:<slug>``
+  keeper as a ``+1`` comment when project and cluster agree.
+  A keeper outside that scope is suggested in the filing receipt
+  because a recurring theme can span unrelated defects (gr735596).
   Minting and merging both need two pattern hits or a title hit; a
   ``thread:<slug>`` filing themes only within its own thread
   (gr599069). Only filings of at most 1500 characters without a
@@ -111,7 +112,7 @@ import difflib
 import logging
 import re
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1257,15 +1258,15 @@ class GripeHandler(NumericRefHandler):
                     )
             return interpreted(resp, readings)
         # Recurring-theme merge (gripe-ux batch, Reto 2026-10-24): a filing
-        # hitting exactly one registered theme joins that theme's live
+        # hitting exactly one registered theme can join a scope-matched live
         # ``theme:<slug>`` keeper as a '+1' comment instead of minting a
         # duplicate ref; with no live keeper the new gripe takes the tag
         # and becomes it. Filers never search first — matching lives here.
         # A read-only filing skips the merge entirely: the '+1' would be a
         # comment INSERT on someone else's ref — exactly the write
         # ``agent_ro`` lacks (gr516603; filers file, triage dedups).
-        # gr599069 guards: minting a keeper takes a stronger match than
-        # merging (``keeper_mint_match``), and a ``thread:<slug>`` filing
+        # gr599069 guards: both operations require ``keeper_mint_match``,
+        # and a ``thread:<slug>`` filing
         # only ever joins a keeper inside that same thread — a weak or
         # cross-thread match files standalone, untagged.
         # A keyed filing holds its (kind, key) advisory lock across the
@@ -1351,19 +1352,16 @@ class GripeHandler(NumericRefHandler):
             threads = sorted(
                 t for t in tags or () if t.lower().startswith(THREAD_TAG_PREFIX)
             )
-            keeper = self._theme_keeper(
-                slug,
-                memory=self.kind == "gripe" and "project:memory" in (tags or ()),
-                threads=threads,
-            )
-            if (
-                keeper is not None
-                and keeper_mint_match(text or "", slug)
+            keeper, suggestion = self._theme_keepers(slug, tags or [], threads)
+            strong_match = keeper_mint_match(text or "", slug)
+            merge_eligible = (
+                strong_match
                 and len(text or "") <= 1500
                 and not re.search(
                     r"^\s*spec:", text or "", re.IGNORECASE | re.MULTILINE
                 )
-            ):
+            )
+            if keeper is not None and merge_eligible:
                 with _PUT_UNTIL.bind(until), _translate_status_check():
                     return self._merge_into_keeper(
                         keeper,
@@ -1384,17 +1382,30 @@ class GripeHandler(NumericRefHandler):
                     f"matched theme {slug} but it has no live keeper in "
                     f"{', '.join(threads)} — filed separately (no theme tag)"
                 )
-            elif keeper is None and keeper_mint_match(text or "", slug):
+                if suggestion is not None:
+                    note = (
+                        f"matched theme {slug} but the thread keeper has a different "
+                        "project or cluster — filed separately (no theme tag)"
+                    )
+            elif keeper is None and strong_match:
                 tags = [*(tags or []), f"{THEME_TAG_PREFIX}{slug}"]
                 note = (
-                    f"tagged {THEME_TAG_PREFIX}{slug} — no live keeper existed, "
+                    f"tagged {THEME_TAG_PREFIX}{slug} — no live keeper in this scope, "
                     "so this gripe is now the theme keeper; later matching "
-                    "filings merge into it as '+1' comments"
+                    "filings in its project and cluster can merge as '+1' comments"
                 )
             else:
                 note = (
                     f"matched theme {slug} — filed separately (no theme tag): "
                     "weak match or standalone filing does not merge or mint a keeper"
+                )
+            if keeper is None and suggestion is not None and merge_eligible:
+                from precis.utils.handle_registry import format_handle
+
+                handle = format_handle(self.kind, suggestion)
+                note += (
+                    f"\nPossible duplicate: {handle} (theme {slug}; "
+                    "project or cluster differs). Review before merging."
                 )
         elif len(matched) > 1:
             note = f"matched themes: {', '.join(matched)} — filed separately (no merge)"
@@ -1424,44 +1435,54 @@ class GripeHandler(NumericRefHandler):
             resp = replace(resp, body=f"{resp.body}\n{note}")
         return resp
 
-    def _theme_keeper(
+    @staticmethod
+    def _theme_scope(tags: Iterable[str]) -> tuple[set[str], set[str]]:
+        projects = set()
+        clusters = set()
+        for tag in tags:
+            axis, _, value = tag.strip().removeprefix("OPEN:").lower().partition(":")
+            if axis == "project":
+                projects.add(value)
+            elif axis == "cluster":
+                clusters.add(value)
+        return projects or {_DEFAULT_PROJECT}, clusters
+
+    def _theme_keepers(
         self,
         slug: str,
-        *,
-        memory: bool = False,
-        threads: list[str] | None = None,
-    ) -> int | None:
-        """The oldest live gripe tagged ``theme:<slug>``, or ``None``.
+        filing_tags: list[str],
+        threads: list[str],
+    ) -> tuple[int | None, int | None]:
+        """Find the oldest compatible live keeper and a fallback suggestion.
 
-        "Live" = not carrying a terminal STATUS — a triaged/in-review
-        keeper still collects ``+1``s; once it closes, the next matching
-        filing becomes the new keeper. Memory complaints have separate
-        keepers so merging cannot hide a code bug from coder intake.
-        ``threads`` scopes the search to refs also carrying one of the
-        filing's ``thread:<slug>`` tags (gr599069): a theme belongs to a
-        thread only while a live keeper already carries that thread's
-        tag, so a thread-tagged filing never joins a foreign keeper.
+        Thread-tagged filings consider only keepers in those threads
+        (gr599069). Untagged projects use the gripe queue's precis default.
         """
-        tags = [f"{THEME_TAG_PREFIX}{slug}"]
+        theme_tag = f"{THEME_TAG_PREFIX}{slug}"
         exclude_tags = sorted(_OPEN_EXCLUDED_TAGS)
-        if self.kind == "gripe":
-            if memory:
-                tags.append("project:memory")
-            else:
-                exclude_tags.append("project:memory")
-        candidates: list[int] = []
+        candidates: set[int] = set()
         scopes: list[str | None] = [*threads] if threads else [None]
         for scope in scopes:
-            want = tags if scope is None else [*tags, scope]
+            want = [theme_tag] if scope is None else [theme_tag, scope]
             refs = self.store.list_refs(
                 kind=self.kind,
                 tags=want,
                 exclude_tags=exclude_tags,
-                order_by="created_asc",
-                limit=1,
+                limit=None,
             )
-            candidates.extend(r.id for r in refs)
-        return min(candidates) if candidates else None
+            candidates.update(r.id for r in refs)
+        ordered = sorted(candidates)
+        tags_by_ref = self.store.ref_tags_bulk(ordered)
+        filing_scope = self._theme_scope(filing_tags)
+        for ref_id in ordered:
+            candidate_scope = self._theme_scope(
+                value
+                for namespace, value in tags_by_ref.get(ref_id, ())
+                if namespace == "OPEN"
+            )
+            if candidate_scope == filing_scope:
+                return ref_id, None
+        return None, ordered[0] if ordered else None
 
     def _keyed_filing(self, conn: Any, key: str) -> Response | None:
         """What ``key`` already filed: a minted ref, or a '+1' merge comment.

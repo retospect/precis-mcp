@@ -137,15 +137,23 @@ the disagreement, repair through the ledger, and close or ask.
 above; the tool does the matching. The text is checked against a
 registry of recurring-friction themes. Exactly one match with a live
 `theme:<slug>`-tagged gripe (the *keeper*) folds your filing into it as
-a `+1 (<first line>): <text>` comment; the ack says so.
+a `+1 (<first line>): <text>` comment only when its project and cluster
+tag sets match the filing's; the ack says so. No `project:` tag means
+`project:precis`; a missing cluster only matches another missing cluster.
 <!-- write -->
 It names `args={'new': True}` as the bypass if you meant a standalone
-gripe. One match with no live keeper tags the new gripe `theme:<slug>`,
-making it the keeper. Minting and merging both need two distinct pattern
+gripe. A keeper with a different project or cluster is only a suggestion:
+the receipt says `Possible duplicate` and asks you to review before merging.
+One match with no live keeper in the filing's scope tags the new gripe
+`theme:<slug>`, making it that scope's keeper. Later filings with matching
+scope can merge there even when an older keeper exists in another scope.
+Minting and merging both need two distinct pattern
 hits or a title hit; one incidental body hit files standalone. Filings
 over 1,500 characters or carrying a `spec:` line never merge. A merge
 echoes your tags in its comment and leaves keeper tags unchanged. A filing
-carrying `thread:<slug>` only ever joins a keeper inside that same thread. Several matches file normally — the ack
+carrying `thread:<slug>` only ever joins a scope-matched keeper inside
+that same thread; without one it files separately without a theme tag.
+Several matches file normally — the ack
 lists them (add the one you meant as `theme:<slug>` yourself if you want
 it on a keeper). Comments (`put(id=N, …)`) never match.
 <!-- /write -->

@@ -174,6 +174,37 @@ def test_match_with_open_keeper_merges_as_plus1_comment(gripe: GripeHandler) -> 
     assert "args={'new': True}" in out.body
 
 
+@pytest.mark.parametrize(
+    "keeper_scope",
+    [
+        ["project:pcb", "cluster:topoplace"],
+        ["project:pcb", "cluster:dark-factory"],
+        ["project:precis", "cluster:topoplace"],
+        ["project:precis"],
+    ],
+)
+def test_theme_scope_mismatch_suggests_keeper_and_files_separately(
+    gripe: GripeHandler, keeper_scope: list[str]
+) -> None:
+    keeper = gripe.put(
+        text="PCB topoplace cause label",
+        tags=["theme:brief-quality", *keeper_scope],
+    ).ref_id
+    assert keeper is not None
+    tags = ["project:precis", "cluster:dark-factory"]
+    text = "Lander brief missing rebase conflict handling"
+    filed = gripe.put(text=text, tags=["PRIO:2", *tags])
+
+    assert filed.ref_id is not None and filed.ref_id != keeper
+    assert f"Possible duplicate: gr{keeper}" in filed.body
+    assert set(tags) <= _tags(gripe, filed.ref_id)
+    assert not _comments(gripe, keeper)
+
+    repeat = gripe.put(text=text, tags=tags)
+    assert f"merged into gr{filed.ref_id}" in repeat.body
+    assert not _comments(gripe, keeper)
+
+
 def test_multi_line_merge_keeps_first_line_gist(gripe: GripeHandler) -> None:
     """A multi-line filing still gets the ``+1 (<first line>):`` shape —
     the parenthetical is the gist a skimming reader needs."""
