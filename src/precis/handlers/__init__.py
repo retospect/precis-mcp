@@ -59,6 +59,7 @@ Routine reads cap child collections and link to full views
 comment in full and summarize older rows (:mod:`precis.handlers._comment_timeline`).
 
 Paper ``view='measures'``: :mod:`precis.handlers._paper_measures`.
+Range summaries reuse ordinal filtering.
 
 Paper ``view='sentences'`` reuses the anchor splitter. It fits pages after
 runtime reserves suffix bytes so the continuation names the first unseen

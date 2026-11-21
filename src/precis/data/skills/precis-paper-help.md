@@ -555,6 +555,7 @@ context directly.
 ```python
 get(kind="paper", id="pa40", view="toc")  # whole-paper survey start
 get(kind="paper", id="pa40", view="summaries")  # per-chunk gloss + keywords
+get(kind="paper", id="pa40~49..151", view="summaries")  # inclusive chunk range
 get(id="pc512")  # single block by chunk handle
 get(id="pc512", extent="fisheye")  # a known block + its surrounding context
 get(kind="paper", id="pa40", view="abstract")
@@ -589,8 +590,8 @@ paper's own reference list), `bibtex` (`cite/bib`), `ris` (`cite/ris`),
 above). All are ref-level except `sentences`, which is chunk-scoped: a
 `pc<id>` chunk handle takes no other `view=` —
 `get(id='pc512', view='abstract')` is refused; use the paper handle
-(`pa<id>`) for every view but `'toc'` (which also scopes to
-`pa<id>~N..M`) and `'sentences'` (which needs the chunk —
+(`pa<id>`) for every view but `'toc'` and `'summaries'` (which also
+scope to `pa<id>~N..M`) and `'sentences'` (which needs the chunk —
 `id='pc512'` or `pa<id>~N`).
 
 ## Find and read a paper's tables and extracted measures

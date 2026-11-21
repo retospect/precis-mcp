@@ -2893,11 +2893,13 @@ class PaperHandler(Handler):
                 next=(f"get(id='{_pa(ref)}', view='comments', args={{'comments': 5}})"),
             )
 
-        # Combined form: ``slug~A..B/toc`` → range-scoped TOC drill-down.
-        # ``toc`` and ``sentences`` are the views with a sensible
-        # "this range only" meaning; anything else with a chunk_spec is
-        # refused below.
+        # Combined form: ``slug~A..B/<view>`` → a range-scoped read.
+        # ``toc``, ``sentences`` and ``summaries`` are the range-capable
+        # views — the ones with a sensible "this range only" meaning;
+        # anything else with a chunk_spec is refused below.
         if chunk_spec is not None and effective_view is not None:
+            if effective_view == "summaries":
+                return self._render_summaries(ref, scope=chunk_spec)
             if effective_view == "toc":
                 return self._render_toc(ref, scope=chunk_spec)
             if effective_view == "sentences":
@@ -2923,7 +2925,7 @@ class PaperHandler(Handler):
                 next=(
                     f"the view is ref-level — drop the selector: "
                     f"get(id='{_pa(ref)}', view={effective_view!r}); "
-                    f"or keep the range with view='toc' or 'sentences': "
+                    f"or keep the range with view='toc', 'sentences' or 'summaries': "
                     f"get(id='{recovery_id}')"
                 ),
             )
@@ -12108,8 +12110,12 @@ class PaperHandler(Handler):
             embedder=self.embedder,
         )
 
-    def _render_summaries(self, ref: Ref) -> Response:
-        """``view='summaries'`` — per-chunk summary list for the whole body.
+    def _render_summaries(
+        self, ref: Ref, *, scope: tuple[int, int] | None = None
+    ) -> Response:
+        """``view='summaries'`` — per-chunk summary list for the whole body,
+        or for one chunk range when ``get`` carries a ``~A..B`` selector
+        (gr714541).
 
         One row per body chunk: its ``ord`` handle, the ``llm-v1`` summary
         (``chunk_summaries``), and the KeyBERT keyword string. This is the
@@ -12121,8 +12127,12 @@ class PaperHandler(Handler):
         fallback the reader falls back to. For a clustered overview use
         ``view='toc'``; for a chunk's full text use ``get(id='pa<id>~N')``.
         """
-        summaries = self.store.chunks.chunk_llm_summaries_for_ref(ref.id)
+        summaries = self.store.chunks.chunk_llm_summaries_for_ref(
+            ref.id, pos_range=scope
+        )
         if not summaries:
+            if scope is not None:
+                raise _blocks_range_not_found(self.store, ref, scope[0], scope[1])
             return Response(
                 body=(
                     f"# {_pa(ref)} — no body chunks to summarise\n\n"
@@ -12135,8 +12145,8 @@ class PaperHandler(Handler):
         with self.store.pool.connection() as conn:
             for o, n in conn.execute(
                 "SELECT ord, octet_length(text) FROM chunks "
-                "WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL",
-                (ref.id,),
+                "WHERE ref_id = %s AND ord = ANY(%s) AND retired_at IS NULL",
+                (ref.id, [g["ord"] for g in summaries]),
             ).fetchall():
                 chunk_sizes[int(o)] = int(n)
         rows = [
@@ -12152,6 +12162,8 @@ class PaperHandler(Handler):
         head = (
             f"# {_pa(ref)} summaries — {len(rows)} chunks, {n_summ} with an llm summary"
         )
+        if scope is not None:
+            head += f" (range ~{scope[0]}..{scope[1]})"
         table = render_agent_table(
             rows, schema=["handle", "summary", "keywords", "size"]
         )
