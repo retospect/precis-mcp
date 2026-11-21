@@ -334,7 +334,7 @@ def is_served_skill_slug(token: str) -> bool:
 def _skill_slugs() -> frozenset[str]:
     """Slugs of the skills shipped under ``precis.data.skills`` -- the
     offline fallback for ``_SKILL_SLUG_PROBE``, walking the corpus the
-    same way ``precis.handlers.skill._walk_skill_root`` does (minus the
+    same way ``precis.utils.skill_common.walk_skill_root`` does (minus the
     plugin roots, which only the probe sees)."""
     try:
         root = resources.files("precis.data.skills")

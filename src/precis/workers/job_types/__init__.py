@@ -28,6 +28,17 @@ brick the worker.
 expected-count guard and dry-run default re-arm existing fetch pins without
 removing body/hash/event evidence or calling a provider/model.
 
+``skill_garden`` reviews skill rules against their ``rulings:`` monthly:
+per-section records (a section citing a ruling handle is attributed to
+it; ambiguous or unruled sections go to Reto), one routed verdict per
+incident-born item, and ``limit`` bounding judge attempts. Proposals need
+a done gripe with a resolution SHA and a quote grounded in the gripe or
+a successful example replay. The private replay runtime suppresses recall
+stamps and ref read counts so worker reads do not affect agent telemetry.
+Collection, judging and reporting share one skill scope, including an
+explicit empty selection. The report on the dispatching todo verifies
+approved edits against rule body text.
+
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 
 ``plan_dispatch`` prefers review lanes outside every contributing builder's
@@ -1204,6 +1215,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "gripe_validate",
     "diagnose_gripe",
     "graph_garden",
+    "skill_garden",
     "secret_status",
     "good_search",
     "good_search_triage",
@@ -1413,6 +1425,13 @@ def get_job_type(name: str) -> JobTypeSpec | None:
         return _REGISTRY["diagnose_gripe"]
     if name == "graph_garden":
         from precis.workers.job_types.graph_garden import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
+    if name == "skill_garden":
+        # Monthly skill-rules review vs rulings — proposals-only into the
+        # reviews ledger, job_inproc plugin dispatch (gr658419).
+        from precis.workers.job_types.skill_garden import SPEC
 
         _REGISTRY[name] = SPEC
         return SPEC

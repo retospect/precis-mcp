@@ -92,7 +92,7 @@ def build_skill_graph(files: dict[str, str]) -> SkillGraph:
 
     Pure function of the corpus text — every call re-derives from
     scratch (skills are static for the life of the process, same
-    assumption as ``handlers.skill._SKILLS_MAP_CACHE``, so callers
+    assumption as ``skill_common._SKILLS_MAP_CACHE``, so callers
     typically build this once and hold onto it). ``files`` is expected
     to already be the corpus a caller wants graphed — the server seam
     builds it from every shipped + plugin-contributed skill.

@@ -1799,6 +1799,8 @@ def _retry_sleep(attempt: int) -> None:
 class DispatchMixin(RuntimeShape):
     """Verb dispatch, kind/handler resolution, and handler invocation."""
 
+    track_ref_reads: bool = True
+
     def _dispatch_with_retry(
         self, verb: str, args: dict[str, Any], *, batch_child: bool = False
     ) -> Response:
@@ -5135,6 +5137,8 @@ class DispatchMixin(RuntimeShape):
         a neighbour line. An in-process TTL cache absorbs repeat reads, and the
         stamp itself is ONE throttled UPDATE (no id lookup). Best-effort: a
         failed stamp never fails the read."""
+        if not self.track_ref_reads:
+            return
         try:
             if ident is None or isinstance(ident, (list, tuple)):
                 return
@@ -5173,6 +5177,8 @@ class DispatchMixin(RuntimeShape):
         ``user:<abbrev>`` actor — the /eye route); every other caller is
         ``agent``, debounced on the acting user, the MCP session id or
         the declared client, in that order."""
+        if not self.track_ref_reads:
+            return
         try:
             if ident is None or isinstance(ident, (list, tuple)):
                 return

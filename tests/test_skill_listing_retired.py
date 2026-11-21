@@ -22,9 +22,8 @@ from precis.cli.mirror_links import (
 from precis.dispatch import Hub
 from precis.handlers._roots import MirrorRoot
 from precis.handlers.markdown import MarkdownHandler
-from precis.handlers.skill import _walk_skill_root
 from precis.store import Store
-from precis.utils.skill_common import parse_frontmatter
+from precis.utils.skill_common import parse_frontmatter, walk_skill_root
 
 SKILLS_DIR = Path(__file__).resolve().parents[1] / "src" / "precis" / "data" / "skills"
 
@@ -33,7 +32,7 @@ def test_skill_index_from_graph_equals_file_walk(
     hub: Hub, store: Store, tmp_path: Path
 ) -> None:
     shipped: dict[str, str] = {}
-    _walk_skill_root(resources.files("precis.data.skills"), shipped)
+    walk_skill_root(resources.files("precis.data.skills"), shipped)
     walk = {slug: parse_frontmatter(text) for slug, text in shipped.items()}
     from_files = skill_tree_lines(skill_parents(walk))
 

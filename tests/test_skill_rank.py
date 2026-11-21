@@ -126,12 +126,13 @@ def test_search_ranking_independent_of_corpus_order(
     carries the same flat boost) must not inherit that order, or the same
     query ranks differently per environment."""
     import precis.handlers.skill as skill_mod
+    import precis.utils.skill_common as skill_common
     from precis.handlers.skill import _load_skills_map
 
     corpus = _load_skills_map()
 
     def _ranked(files: dict[str, str]) -> list[str]:
-        monkeypatch.setattr(skill_mod, "_SKILLS_MAP_CACHE", files)
+        monkeypatch.setattr(skill_common, "_SKILLS_MAP_CACHE", files)
         monkeypatch.setattr(skill_mod, "_SKILL_GRAPH_CACHE", None)
         return _ranked_slugs(skill.search(q="memory").body)
 

@@ -421,6 +421,24 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "model as `graph_garden:review` degenerates the check."
         ),
     ),
+    "skill_garden:propose": OpDefault(
+        tier=Tier.MEDIUM,
+        model=None,
+        label="Skill gardener proposer",
+        description=(
+            "The per-rule verdict inside the `skill_garden` job "
+            "(gr658419) — decides whether an incident-born skill caution "
+            "still holds (keep) or its gripe's cause is gone "
+            "(simplify/drop, one-line evidence quote required). Writes "
+            "proposed reviews rows only, never skill edits."
+        ),
+        note=(
+            "MEDIUM by default — monthly cadence, bounded by the job's "
+            "`limit` param, and an unevidenced simplify/drop is demoted "
+            "to keep in code so a weak judge errs conservative. Steer "
+            "with an `llm.op.skill_garden:propose` row."
+        ),
+    ),
     "graph_garden:consume": OpDefault(
         tier=Tier.FRONTIER,
         model=None,

@@ -17,8 +17,9 @@ import pytest
 def _install_corpus(monkeypatch: pytest.MonkeyPatch, files: dict[str, str]) -> None:
     """Replace the module-wide skill corpus + derived graph for one test."""
     import precis.handlers.skill as skill_mod
+    import precis.utils.skill_common as skill_common
 
-    monkeypatch.setattr(skill_mod, "_SKILLS_MAP_CACHE", dict(files))
+    monkeypatch.setattr(skill_common, "_SKILLS_MAP_CACHE", dict(files))
     monkeypatch.setattr(skill_mod, "_SKILL_GRAPH_CACHE", None)
 
 

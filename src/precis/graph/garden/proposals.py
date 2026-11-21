@@ -462,14 +462,18 @@ def record_rejection(
     prompt_version: str,
     model: str | None = None,
     reason: str | None = None,
+    key: str | None = None,
 ) -> int:
     """Write the proposer's ``rejected`` row for ``candidate`` — the memory
     that keeps the next run from re-asking (see the module docstring).
     ``reason`` is a machine-readable code when a deterministic rule, not
-    the model, rejected it. Returns the new ``review_id``."""
+    the model, rejected it. ``key`` overrides the dedup token, like
+    :func:`emit_proposal`'s — a caller whose question key differs from
+    ``candidate.key`` (e.g. pins external evidence sha) passes its own.
+    Returns the new ``review_id``."""
     body: dict[str, Any] = {
         "v": 1,
-        "key": candidate.key,
+        "key": key or candidate.key,
         "action": candidate.action,
         "detector": candidate.detector,
         "title": candidate.title,

@@ -94,10 +94,11 @@ def test_content_change_changes_rev(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import precis.handlers.skill as skill_mod
+    import precis.utils.skill_common as skill_common
 
     _install_corpus(monkeypatch, {"a": _md(body="body v1")})
     rev1 = _rev_of(skill.get(id="a").body)
-    monkeypatch.setattr(skill_mod, "_SKILLS_MAP_CACHE", {"a": _md(body="body v2")})
+    monkeypatch.setattr(skill_common, "_SKILLS_MAP_CACHE", {"a": _md(body="body v2")})
     monkeypatch.setattr(skill_mod, "_SKILL_GRAPH_CACHE", None)
     out = skill.get(id="a", have=rev1)
     assert "body v2" in out.body

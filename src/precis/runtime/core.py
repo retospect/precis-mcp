@@ -112,6 +112,9 @@ class PrecisRuntime(
     #: into "the DB migrated under this process — restart the server".
     boot_migration_head: str | None = field(default_factory=_shipped_migration_head)
 
+    #: Synthetic worker replays do not count as agent reads.
+    track_ref_reads: bool = True
+
     # ----- delegating properties ---------------------------------------
 
     @property

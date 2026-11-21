@@ -15,11 +15,15 @@ discriminator), decision 9 (runbook orchestration), decision 13
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
-from typing import Final
+from importlib import resources
+from typing import Any, Final
 
 from precis.utils.handle_registry import code_for_kind, is_known_kind, parse
+
+log = logging.getLogger(__name__)
 
 #: Defined flavours, per decision 7. The frontmatter field
 #: ``flavor: <value>`` is emitted as a ``FLAVOR:<value>`` tag (uppercase
@@ -565,3 +569,139 @@ def extract_wikilinks(text: str) -> tuple[str, ...]:
     for m in WIKILINK_RE.finditer(text):
         seen.setdefault(m.group(1), None)
     return tuple(seen)
+
+
+# ---------------------------------------------------------------------------
+# The shipped corpus — ``{slug → raw markdown}`` for every skill
+# ---------------------------------------------------------------------------
+#
+# The corpus map lives here, not in ``precis.handlers.skill``, because
+# layers below handlers need the same corpus the server serves: the
+# import-linter contract "workers import store and utils, never handlers"
+# bars ``precis.workers`` from reaching the handler module, and the
+# ``skill_garden`` job (gr658419) is the first worker-side reader.
+# ``handlers/skill.py`` re-exports these names, so pre-move imports such
+# as ``from precis.handlers.skill import skill_corpus_texts`` still work.
+
+#: Slugs are conservative: lowercase ASCII alphanumerics + hyphens.
+SLUG_RE: Final = re.compile(r"^[a-z0-9][a-z0-9\-]*$")
+
+#: The entry-point group third-party packages use to contribute a skill
+#: root — each entry point's value is an importlib-resources package
+#: anchor walked like the packaged root.
+SKILL_PLUGIN_GROUP: Final = "precis.skills"
+
+#: Process-wide cache of ``{slug → raw markdown body}``. First call
+#: to :func:`load_skills_map` populates it; subsequent calls reuse
+#: it. Tests that mutate the on-disk skill corpus must call
+#: :func:`skills_map_cache_clear` to force a re-scan (handlers'
+#: ``_load_skills_map_cache_clear`` wraps it).
+_SKILLS_MAP_CACHE: dict[str, str] | None = None
+
+
+def walk_skill_root(node: Any, out: dict[str, str]) -> None:
+    """Add every ``*.md`` skill under ``node`` to ``out`` (first writer
+    wins, so built-ins beat plugins on a slug clash)."""
+    for entry in node.iterdir():
+        name = entry.name
+        if name.startswith("__"):
+            continue  # skip __pycache__, __init__.py, etc.
+        if entry.is_dir():
+            walk_skill_root(entry, out)
+            continue
+        if not name.endswith(".md"):
+            continue
+        stem = name[:-3]
+        if not SLUG_RE.match(stem) or stem in out:
+            continue
+        try:
+            out[stem] = entry.read_text(encoding="utf-8")
+        except (OSError, FileNotFoundError) as exc:
+            log.warning("could not read skill %s: %s", stem, exc)
+
+
+def plugin_skill_roots() -> list[Any]:
+    """Resolve skill roots contributed via the ``precis.skills``
+    entry-point group. Failures are logged, never raised — one broken
+    plugin must not brick the skill surface (mirrors ``_load_plugins``)."""
+    roots: list[Any] = []
+    try:
+        from importlib.metadata import entry_points
+
+        eps = entry_points(group=SKILL_PLUGIN_GROUP)
+    except Exception as exc:  # defensive — importlib surface is stable
+        log.warning("precis.skills discovery failed: %s", exc)
+        return roots
+    for ep in eps:
+        try:
+            roots.append(resources.files(ep.value))
+        except Exception as exc:
+            log.warning(
+                "precis.skills plugin %r (%s) failed: %s", ep.name, ep.value, exc
+            )
+    return roots
+
+
+def load_skills_map() -> dict[str, str]:
+    """Return ``{slug → raw markdown body}`` for every shipped skill.
+
+    Walks ``src/precis/data/skills/`` recursively so subdirectory
+    organisation (``personas/``, ``refs/``, …) is invisible to callers
+    — every ``*.md`` whose stem matches :data:`SLUG_RE` is reachable
+    via the handler's ``_load_skill`` regardless of its directory. Then
+    walks any skill roots contributed by third-party packages via the
+    ``precis.skills`` entry-point group (built-ins win slug collisions).
+
+    Cached on first call. Process-wide; restart the server to pick
+    up new files on disk in production. Tests that mutate the corpus
+    call :func:`skills_map_cache_clear`.
+    """
+    global _SKILLS_MAP_CACHE
+    if _SKILLS_MAP_CACHE is not None:
+        return _SKILLS_MAP_CACHE
+
+    out: dict[str, str] = {}
+    try:
+        root = resources.files("precis.data.skills")
+    except (ModuleNotFoundError, FileNotFoundError):
+        log.warning("precis.data.skills package missing")
+    else:
+        walk_skill_root(root, out)
+
+    for proot in plugin_skill_roots():
+        walk_skill_root(proot, out)
+
+    _SKILLS_MAP_CACHE = out
+    return out
+
+
+def skills_map_cache_clear() -> None:
+    """Drop the cached ``{slug → raw}`` map (tests after corpus edits).
+    The derived skill-graph cache stays a handler concern —
+    ``handlers.skill._load_skills_map_cache_clear`` clears both."""
+    global _SKILLS_MAP_CACHE
+    _SKILLS_MAP_CACHE = None
+
+
+def skill_exists(slug: str) -> bool:
+    """Whether ``slug`` names a shipped (or plugin-contributed) skill.
+
+    Cheap: one dict-membership probe against the process-wide skills map
+    (gr332020 item 2 — the auto-generated ``precis-<kind>-help`` error
+    breadcrumb must not point at a skill that doesn't exist)."""
+    return slug in load_skills_map()
+
+
+def skill_corpus_texts() -> dict[str, str]:
+    """Public accessor: ``{slug: raw markdown body}`` for every shipped
+    (or plugin-contributed) skill.
+
+    Thin wrapper over :func:`load_skills_map` so a caller outside this
+    module — the server seam's graph build
+    (:func:`precis.skill_index.build_skill_graph`), slice 4's kind-help
+    injection — doesn't reach through a leading-underscore private to
+    get the corpus (docs/backlog/skill-graph.md slice 1, item 3).
+    Returns a fresh copy each call so a caller can't mutate the
+    process-wide cache.
+    """
+    return dict(load_skills_map())
