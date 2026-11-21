@@ -16,6 +16,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.anki import AnkiHandler, _split_extra, _strip_cloze
+from precis.store import Store, Tag
 
 
 def _search(pattern: str, text: str) -> re.Match[str]:
@@ -133,6 +134,46 @@ class TestAnkiCard:
             h.put(text="no cloze here")
         after = len(store.list_refs(kind="anki", limit=1000))
         assert after == before
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "Catpath {{c1::gap C18}} has no prior-art node.",
+            "We {{c1::lack}} a multi-temperature sweep.",
+            "Our spec has no {{c1::tolerances}}.",
+            "Missing is {{c1::a sensitivity analysis}}.",
+        ],
+    )
+    def test_rejects_work_item_clozes(self, store: Store, body: str) -> None:
+        with pytest.raises(BadInput, match="tracks project work"):
+            _make_handler(store).put(text=body)
+        assert not store.list_refs(kind="anki")
+
+    @pytest.mark.parametrize("tag", ["SPACE:repo-dev", "section:threads", None])
+    def test_rejects_work_tracking_source(self, store: Store, tag: str | None) -> None:
+        source = store.insert_ref(
+            kind="memory",
+            slug=None,
+            title="Catpath notes" if tag else "Catpath gap list",
+        )
+        if tag:
+            store.add_tag(source.id, Tag.parse(tag))
+        with pytest.raises(BadInput, match="tracks project work"):
+            _make_handler(store).put(
+                text="A miscibility gap is a region of {{c1::phase separation}}.",
+                link=f"me{source.id}",
+                rel="derived-from",
+            )
+        assert not store.list_refs(kind="anki")
+
+    def test_accepts_standalone_concept_from_factual_source(self, store: Store) -> None:
+        source = store.insert_ref(kind="memory", slug=None, title="Phase equilibria")
+        response = _make_handler(store).put(
+            text="A miscibility gap is a region of {{c1::phase separation}}.",
+            link=f"memory:{source.id}",
+            rel="derived-from",
+        )
+        assert _search(r"id=(\d+)", response.body)
 
 
 class TestDeckRetag:

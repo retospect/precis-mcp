@@ -266,6 +266,36 @@ class TestCardsPerDay:
             )
 
 
+class TestForgeRefusesWorkTracking:
+    def test_gap_concept_refused_without_model_call(self, store: Any) -> None:
+        co = f"wt-{uuid.uuid4().hex[:8]}"
+        cid = create_concept(
+            store,
+            name="Catpath gap C1",
+            definition="our spec has no observables",
+            cohort=co,
+        )
+        client = _FakeClient({"cards": [{"text": "A {{c1::b}}."}]})
+        report = run_card_forge(store, client=client, cohort=co, act=False)
+        assert report.minted == []
+        assert [c for c, _ in report.refused] == [cid]
+        assert client.calls == []
+
+    def test_generated_gap_card_is_dropped(self, store: Any) -> None:
+        co = f"wt-{uuid.uuid4().hex[:8]}"
+        create_concept(store, name=f"c-{uuid.uuid4().hex[:8]}", cohort=co)
+        client = _FakeClient(
+            {"cards": [{"text": "Catpath gap C1: we lack {{c1::observables}}."}]}
+        )
+        report = run_card_forge(store, client=client, cohort=co, act=False)
+        assert report.minted == []
+
+    def test_mint_prompt_names_work_tracking(self) -> None:
+        from precis.reading.flashcards import _MINT_SYS
+
+        assert "to-do or gap about OUR OWN system" in _MINT_SYS
+
+
 def _open_tag() -> Any:
     from precis.store import Tag
 

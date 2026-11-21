@@ -41,12 +41,18 @@ from precis.anki.cloze import (
     space_adjacent_braces,
     strip_cloze,
 )
+from precis.anki.work_tracking import (
+    has_work_source_tag,
+    is_work_item_text,
+    is_work_title,
+)
 from precis.errors import BadInput
 from precis.format import render_agent_table
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
+from precis.utils.link_target import parse_link_target
 
 #: A lone ``---`` line separating the cloze body from an optional Back Extra.
 _EXTRA_SEP_RE = re.compile(r"\n[ \t]*---[ \t]*\n")
@@ -104,7 +110,9 @@ class AnkiHandler(NumericRefHandler):
         description=(
             "A spaced-repetition cloze card ({{c1::…}}) that lives in the "
             "corpus and syncs to AnkiWeb. Body is cloze markup; meta carries "
-            "the generic Anki note shape. Anki owns scheduling — no SM-2 here."
+            "the generic Anki note shape. Before put, search Anki for the "
+            "concept and fact to avoid duplicates. Use factual sources and "
+            "refuse repo work tracking, including gap and backlog lists."
         ),
         supports_get=True,
         supports_search=True,
@@ -228,15 +236,52 @@ class AnkiHandler(NumericRefHandler):
                 conn=conn,
             )
 
-    def _create(self, *, text: str | None, **kw: Any):
+    def _guard_work_tracking(
+        self, cloze_text: str, tags: list[str] | None, link: str | None
+    ) -> None:
+        # Check the revealed sentence so a cloze around the work-item wording
+        # cannot hide it.
+        is_work_tracking = is_work_item_text(
+            _strip_cloze(cloze_text)
+        ) or has_work_source_tag(tags or [])
+        if link is not None and not is_work_tracking:
+            target = parse_link_target(link, store=self.store)
+            is_work_tracking = target.kind in {"todo", "gripe"}
+            if target.kind == "memory":
+                ref = self.store.get_ref(kind="memory", id=target.ref_id)
+                is_work_tracking = bool(
+                    has_work_source_tag(self.store.tags_for(target.ref_id))
+                    or (ref is not None and is_work_title(ref.title))
+                )
+        if is_work_tracking:
+            raise BadInput(
+                "Anki cards need a durable fact. This card or its source "
+                "tracks project work.",
+                next=(
+                    "Use a factual source for any underlying concept, write "
+                    "the concept in isolation, and run search(kind='anki', "
+                    "q='<concept and fact>') before put."
+                ),
+            )
+
+    def _create(
+        self,
+        *,
+        text: str | None,
+        tags: list[str] | None,
+        link: str | None,
+        **kw: Any,
+    ) -> Response:
         # Reject a non-cloze body up front (before the insert tx) so a bad
         # card writes nothing — mirrors the atomic-create contract.
         spaced = 0
         leaks: list[str] = []
         if text is not None and text.strip():
-            leaks = acronym_hint_leaks(self._validate_cloze(text))
+            cloze_text = self._validate_cloze(text)
+            self._guard_work_tracking(cloze_text, tags, link)
+            leaks = acronym_hint_leaks(cloze_text)
             text, spaced = _space_cloze_braces(text)
-        ack = super()._create(text=text, **kw)
+        ack = super()._create(text=text, tags=tags, link=link, **kw)
         body = ack.body
         if spaced:
             body += (

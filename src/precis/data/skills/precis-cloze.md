@@ -42,6 +42,10 @@ In the automated `card_forge` mint path, refusing means returning an empty
 cards list with a `skip_reason`; authoring by hand, it just means not writing
 it. Refuse when the "concept" is:
 
+- **A to-do or gap about our own system** — refuse `SPACE:repo-dev` memories,
+  `section:threads`, gap/backlog lists and lines like *"we lack"*, *"our
+  spec has no"* or *"missing is"*. Use a factual source to teach any
+  underlying concept on its own. Drop gap IDs and run rule 1 before minting.
 - **A topic label or research-direction, not a fact** — *"new trends"*, *"new
   compounds"*, *"recent advances"*, *"critical evaluation"*. The card can only
   restate the label (*"a major new trend is novel compounds"*) — there is no

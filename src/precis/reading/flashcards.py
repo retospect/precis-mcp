@@ -41,6 +41,11 @@ from datetime import UTC, datetime, time
 from typing import TYPE_CHECKING, Any
 
 from precis.anki.cloze import acronym_hint_leaks, has_cloze, space_adjacent_braces
+from precis.anki.work_tracking import (
+    has_work_source_tag,
+    is_work_item_text,
+    is_work_title,
+)
 from precis.handlers.anki import _split_extra, _strip_cloze
 from precis.reading.concepts import STATE_ACTIVE, STATE_MASTERED
 from precis.reading.mastery import (
@@ -86,8 +91,14 @@ _MINT_SYS = (
     "- an incidental proper noun or one-of-many example the source merely names "
     "in passing (a place/org/acronym mentioned once) — not the subject being "
     "learned;\n"
+    "- a to-do or gap about OUR OWN system (a repo-dev memory, a threads "
+    "section, a gap or backlog list, or wording like 'we lack', 'our spec has "
+    "no', 'missing is') — work tracking is not a fact; if it names a real "
+    "concept, card the concept alone with no 'gap Cn' framing;\n"
     "- so generic that every cloze would just echo the words already on the "
     "card.\n"
+    "Cards must not duplicate existing ones: the caller only offers concepts "
+    "with no card yet, so write each card around one new fact. "
     "When in doubt, refuse: a missing card costs nothing; a bad one wastes "
     "reviews forever and buries the good cards.\n"
     "If it IS worth teaching, write 1-3 cloze cards: one idea per card, the "
@@ -284,6 +295,18 @@ def _cardless_concepts(
     return [(int(r[0]), r[1] or "", r[2] or "") for r in rows]
 
 
+def _concept_is_work_tracking(
+    store: Store, concept_id: int, name: str, definition: str
+) -> bool:
+    """The concept's name/definition is work-item wording, or it is tagged as
+    a work-tracking source (same predicate as `AnkiHandler._create`)."""
+    return (
+        is_work_title(name)
+        or is_work_item_text(definition)
+        or has_work_source_tag(store.tags_for(concept_id))
+    )
+
+
 def _neighbor_names(store: Store, concept_id: int, *, mastered_only: bool) -> list[str]:
     """Names of graph-adjacent concepts (optionally only mastered ones) — the
     context a new didactic can lean on."""
@@ -326,6 +349,13 @@ def mint_daily_cards(
     for concept_id, name, definition in _cardless_concepts(
         store, cohort=cohort, limit=remaining
     ):
+        if _concept_is_work_tracking(store, concept_id, name, definition):
+            # Work tracking is not a fact (precis-cloze rule 0): refuse before
+            # spending a model call, and stamp so the pass never retries it.
+            why = "work tracking (a to-do or gap about our own system), not a fact"
+            store.update_ref(concept_id, meta_patch={"card_forge_skip": why})
+            report.refused.append((concept_id, why))
+            continue
         lines = [f"CONCEPT: {name}"]
         if definition:
             lines.append(f"DEFINITION: {definition}")
@@ -350,6 +380,8 @@ def mint_daily_cards(
             if extra:
                 text = f"{text}\n---\n{extra}"
             try:
+                if is_work_item_text(_strip_cloze(_split_extra(text)[0])):
+                    raise ValueError("card is a to-do or gap about our own system")
                 minted.append(
                     author_card(store, text=text, concept_id=concept_id, deck=deck)
                 )
