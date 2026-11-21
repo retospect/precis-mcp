@@ -27,6 +27,7 @@ from precis.dispatch import Hub
 from precis.embedder import MockEmbedder
 from precis.errors import BadInput, NotFound
 from precis.handlers.paper import PaperHandler
+from precis.runtime import PrecisRuntime
 from precis.store import ChunkInsert, Store
 from precis.store.types import Tag
 from precis.workers._mint import mint_background_job
@@ -634,6 +635,80 @@ class TestGetQueueBounds:
         assert len(jobs) == 3
         assert all(j["meta"].get("discovered_via") == "get" for j in jobs)
 
+    def test_capped_answer_names_the_explicit_resubmit(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr740575: the capped ack must leave a working queue path —
+        ``put`` by DOI was itself broken in prod (gr740076), so the
+        answer names the same-call resubmit too."""
+        monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
+        handler.get(id="10.1021/capmsg0")
+        resp = handler.get(id="10.1021/capmsg1")
+        assert "daily get-queue cap reached" in resp.body
+        assert "args={'queue': 'explicit'}" in resp.body
+        assert "put(kind='paper', doi='10.1021/capmsg1')" in resp.body
+
+    def test_explicit_resubmit_queues_past_the_daily_cap(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr740575: ``args={'queue': 'explicit'}`` is the deliberate
+        lane the review left unbounded — it mints past the spent cap,
+        stamped ``discovered_via='get-explicit'`` so it never counts
+        toward the implicit lane's bound."""
+        monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "4")
+        dois = [f"10.1021/expcap{i}" for i in range(5)]
+        for doi in dois[:3]:
+            assert "queued ingest job" in handler.get(id=doi).body
+        resp = handler.get(id=dois[3], args={"queue": "explicit"})
+        assert "queued ingest job" in resp.body
+        jobs = _jobs(store)
+        assert len(jobs) == 4
+        assert jobs[-1]["meta"].get("discovered_via") == "get-explicit"
+        # The explicit mint did not count toward the 'get' cap — the
+        # fourth implicit mint still fits under cap=4 (only then does
+        # the fifth read as capped).
+        assert "queued ingest job" in handler.get(id=dois[4]).body
+        resp = handler.get(id="10.1021/expcap5")
+        assert "daily get-queue cap reached" in resp.body
+
+    def test_explicit_batch_resubmit_queues_past_daily_cap(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
+        handler.get(id="10.1021/expbatch0")
+        dois: list[str | int] = [f"10.1021/expbatch{i}" for i in range(1, 3)]
+        resp = handler.get(id=dois, args={"queue": "explicit"})
+        assert resp.body.count("queued ingest job") == 2
+        assert len(_jobs(store)) == 3
+
+    def test_explicit_resubmit_via_find_in_ref(
+        self, store: Store, handler: PaperHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
+        handler.get(id="10.1021/expfind0")
+        resp = handler.get(id=DOI, q="band gap", args={"queue": "explicit"})
+        assert "queued ingest job" in resp.body
+        assert len(_jobs(store)) == 2
+
+    def test_explicit_does_not_override_a_recent_failure(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Explicit lifts the spend bound only — a DOI whose last
+        attempt failed inside the window still reports that attempt."""
+        _mint_terminal_job(store, DOI, finished=datetime.now(UTC))
+        resp = handler.get(id=DOI, args={"queue": "explicit"})
+        assert len(_jobs(store)) == 1
+        assert "not requeueing" in resp.body
+
+    def test_explicit_is_not_a_read_door(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """A view get stays a read even with the flag — ``queue`` names
+        intent, it does not turn a read into a write."""
+        with pytest.raises(NotFound, match="not ingested"):
+            handler.get(id=DOI, view="bibtex", args={"queue": "explicit"})
+        assert _jobs(store) == []
+
     def test_batch_over_cap_asks_for_confirmation(
         self, store: Store, handler: PaperHandler
     ) -> None:
@@ -720,3 +795,99 @@ class TestGetQueueBounds:
         assert "STATUS:failed" in resp.body
         assert "not requeueing" in resp.body
         assert f"jo{jobs[0]['id']}" in resp.body
+
+
+class TestExplicitResubmitThroughDispatch:
+    """gr740575: the capped ack's advertised resubmit must survive the
+    dispatch layer too — the direct-handler tests above bypass both
+    gates the flag had to pass: the ``get`` ``ARGS_KEYS`` extras gate
+    (``queue`` was undeclared) and the find-in-ref route's own extras
+    whitelist (``context`` only)."""
+
+    def test_plain_get_dispatch_accepts_queue_explicit(
+        self,
+        runtime_with_store: PrecisRuntime,
+        store: Store,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
+        runtime_with_store.dispatch("get", {"kind": "paper", "id": "10.1021/disp0"})
+        out = runtime_with_store.dispatch(
+            "get",
+            {
+                "kind": "paper",
+                "id": "10.1021/disp1",
+                "__extras__": {"queue": "explicit"},
+            },
+        )
+        assert "[error" not in out, out
+        assert "queued ingest job" in out, out
+        jobs = _jobs(store)
+        assert len(jobs) == 2
+        assert jobs[-1]["meta"].get("discovered_via") == "get-explicit"
+
+    def test_find_in_ref_dispatch_accepts_queue_explicit(
+        self,
+        runtime_with_store: PrecisRuntime,
+        store: Store,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``get(kind='paper', id=<doi>, q=…, args={'queue': …})`` is
+        routed to ``find_in_ref`` before ``get`` runs — its extras
+        whitelist must let the flag through to the one kind whose
+        find declares it."""
+        monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
+        runtime_with_store.dispatch("get", {"kind": "paper", "id": "10.1021/dfind0"})
+        out = runtime_with_store.dispatch(
+            "get",
+            {
+                "kind": "paper",
+                "id": "10.1021/dfind1",
+                "q": "band gap",
+                "__extras__": {"queue": "explicit"},
+            },
+        )
+        assert "[error" not in out, out
+        assert "queued ingest job" in out, out
+        assert len(_jobs(store)) == 2
+
+    def test_find_in_ref_batch_cap_guides_retry(
+        self,
+        runtime_with_store: PrecisRuntime,
+        store: Store,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(paper_ingest.GET_DOI_QUEUE_DAILY_ENV, "1")
+        dois = [f"10.1021/dfindbatch{i}" for i in range(7)]
+        request = {
+            "kind": "paper",
+            "id": dois,
+            "q": "band gap",
+            "__extras__": {"queue": "explicit"},
+        }
+        out = runtime_with_store.dispatch("get", request)
+        assert out.count("queued ingest job") == 5
+        assert out.count("retry capped IDs in batches of at most 5") == 2
+        assert "put(kind='paper'" not in out
+        assert len(_jobs(store)) == 5
+
+        out = runtime_with_store.dispatch("get", {**request, "id": dois[5:]})
+        assert out.count("queued ingest job") == 2
+        assert len(_jobs(store)) == 7
+
+    def test_find_in_ref_queue_refused_on_a_kind_without_the_door(
+        self, runtime_with_store: PrecisRuntime
+    ) -> None:
+        """The extras key is per-kind: a ``find_in_ref`` that never
+        declared ``queue`` refuses it instead of silently dropping it."""
+        out = runtime_with_store.dispatch(
+            "get",
+            {
+                "kind": "skill",
+                "id": "precis-paper-help",
+                "q": "ingest",
+                "__extras__": {"queue": "explicit"},
+            },
+        )
+        assert "[error:BadInput]" in out, out
+        assert "not accepted by skill find-in-ref" in out, out

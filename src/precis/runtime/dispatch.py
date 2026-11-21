@@ -4505,21 +4505,32 @@ class DispatchMixin(RuntimeShape):
                 )
             extras = args.get(_EXTRAS_KEY)
             context = None
+            queue = None
             if isinstance(extras, dict):
-                unknown = sorted(set(extras) - {"context"})
+                # ``queue`` is paper's deliberate-resubmit flag
+                # (gr740575 — the capped-DOI answer names
+                # ``args={'queue': 'explicit'}``): only a find_in_ref
+                # that declares the kwarg accepts the extras key —
+                # anywhere else it refuses rather than dropping.
+                accepted_extras = {"context"} | (
+                    {"queue"} & _handler_accepted_kwargs(type(handler), "find_in_ref")
+                )
+                unknown = sorted(set(extras) - accepted_extras)
                 if unknown:
                     raise BadInput(
                         f"keys {unknown!r} not accepted by {kind} find-in-ref; "
-                        "its args= key is 'context'",
+                        f"its args= keys are {sorted(accepted_extras)}",
                         next="args={'context': 5} widens the ±3-line window",
                     )
                 context = extras.get("context")
+                queue = extras.get("queue")
             try:
                 response = handler.find_in_ref(
                     id=args.get("id"),
                     q=args["q"],
                     view=args.get("view"),
                     **({"context": context} if context is not None else {}),
+                    **({"queue": queue} if queue is not None else {}),
                 )
             except PrecisError as exc:
                 if kind_was_defaulted:

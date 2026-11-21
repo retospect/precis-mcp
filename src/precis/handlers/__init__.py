@@ -15,6 +15,8 @@ Superseded handles, restoration and DOI status: :mod:`precis.handlers.paper`.
 Crossref misses leave DOI health unverified because other agencies register DOIs.
 Paper tag batches commit edits with audit events.
 Abstract checks never queue paper ingest.
+An unheld DOI lookup can queue ingest. Explicit retries bypass the daily
+cap, while batch passage searches keep their per-call mint limit.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root
 views; Git observations do not attest indexed bytes. Entry metadata and runtrace

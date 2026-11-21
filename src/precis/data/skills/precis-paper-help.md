@@ -73,8 +73,14 @@ queue at all for a DOI whose paper was deleted, on a read-only serve,
 or behind a `view=` (a view is a read: an unheld DOI answers not found,
 single or batch, with or without `confirm_bulk`). To acquire, use a
 plain `get` or an explicit `put`.
-Past a bound the `get` answers the plain `not ingested` text — use
-`put(kind="paper", doi=…)` to ingest explicitly regardless.
+Past the daily bound the `get` answers the plain `not ingested` text —
+resubmit the same `get` with `args={"queue": "explicit"}` to queue the
+ingest anyway (a deliberate ask rides the unbounded-explicit lane, like
+`put`), or `put(kind="paper", doi=…)` to mint the stub directly. The
+flag lifts the daily cap only. Without `q=`, a batch over the per-call
+mint bound asks for `args={"confirm_bulk": True}` up front. With `q=`,
+the call can queue up to five jobs before reporting capped IDs. Retry
+those IDs with the same query in batches of at most five.
 
 ```python
 get(kind="paper", id="10.1126/sciadv.aeh2779")  # → queued ingest job jo<N>

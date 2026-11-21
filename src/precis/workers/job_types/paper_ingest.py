@@ -100,6 +100,13 @@ GET_DOI_QUEUE_DAILY_DEFAULT = 50
 #: stamps on the stub it mints).
 GET_ORIGIN_VALUE = "get"
 
+#: The marker an *explicit* get resubmit carries instead
+#: (``args={'queue': 'explicit'}``, gr740575): a deliberate ask past the
+#: cap is the same "explicit mint stays unbounded" lane
+#: ``put(kind='paper', doi=…)`` rides, so it neither counts toward the
+#: get-origin cap nor is refused by it.
+GET_EXPLICIT_ORIGIN_VALUE = "get-explicit"
+
 #: Advisory-lock idem key serialising the daily-cap count + mint across
 #: distinct DOIs — the per-DOI idem lock alone would let a parallel
 #: probing burst race the count past the cap.
@@ -166,7 +173,7 @@ def _within_window(finished_at: str | None, *, now: datetime) -> bool:
     return now < finished + timedelta(hours=REQUEUE_WINDOW_HOURS)
 
 
-def ensure_queued(store: Store, doi: str) -> QueueOutcome:
+def ensure_queued(store: Store, doi: str, *, explicit: bool = False) -> QueueOutcome:
     """Mint (or reuse) the ``paper_ingest`` job for ``doi``.
 
     One advisory-locked tx: the idem lock lands BEFORE any read
@@ -180,7 +187,15 @@ def ensure_queued(store: Store, doi: str) -> QueueOutcome:
     re-mint; the fleet-wide daily cap refuses a fresh mint once
     get-triggered mints hit :func:`_get_doi_queue_daily` in the rolling
     24 h; anything else mints fresh, stamped ``discovered_via='get'``
-    so the cap can count it."""
+    so the cap can count it.
+
+    ``explicit=True`` (the caller resubmitted the get with
+    ``args={'queue': 'explicit'}`` after the capped answer named that
+    spelling — gr740575) is the deliberate lane the review left open
+    for ``put``: it skips the daily-cap count/check and stamps
+    :data:`GET_EXPLICIT_ORIGIN_VALUE` so the mint never counts toward
+    the cap either. The reuse and recent-failure doors are unchanged —
+    explicit only lifts the spend bound, not the per-DOI gates."""
     from precis.workers._mint import (
         active_job_id,
         idem_lock_key,
@@ -208,17 +223,19 @@ def ensure_queued(store: Store, doi: str) -> QueueOutcome:
                     finished_at=finished_at,
                     error=error,
                 )
-        conn.execute(
-            "SELECT pg_advisory_xact_lock(%s)", (idem_lock_key(_CAP_LOCK_IDEM),)
-        )
-        minted_24h = meta_marked_mints_24h(
-            conn,
-            job_type=JOB_TYPE,
-            meta_key="discovered_via",
-            meta_value=GET_ORIGIN_VALUE,
-        )
-        if minted_24h >= _get_doi_queue_daily():
-            return QueueOutcome("capped", None)
+        if not explicit:
+            conn.execute(
+                "SELECT pg_advisory_xact_lock(%s)",
+                (idem_lock_key(_CAP_LOCK_IDEM),),
+            )
+            minted_24h = meta_marked_mints_24h(
+                conn,
+                job_type=JOB_TYPE,
+                meta_key="discovered_via",
+                meta_value=GET_ORIGIN_VALUE,
+            )
+            if minted_24h >= _get_doi_queue_daily():
+                return QueueOutcome("capped", None)
         job_id, _reused = mint_job_once(
             store,
             conn=conn,
@@ -227,7 +244,11 @@ def ensure_queued(store: Store, doi: str) -> QueueOutcome:
             title=f"ingest DOI {doi}",
             params={"doi": doi},
             idem_key=idem,
-            meta_extra={"discovered_via": GET_ORIGIN_VALUE},
+            meta_extra={
+                "discovered_via": (
+                    GET_EXPLICIT_ORIGIN_VALUE if explicit else GET_ORIGIN_VALUE
+                )
+            },
         )
         return QueueOutcome("queued", job_id)
 

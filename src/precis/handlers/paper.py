@@ -376,7 +376,7 @@ _BATCH_ID_CAP = 50
 #: N distinct unheld DOIs would otherwise mint N jobs in one call —
 #: each of which can end on the paid OpenAlex Content leg. Past this
 #: many fresh mints a DOI element renders as plain not-ingested with the
-#: explicit-``put`` hint (reused/blocked outcomes don't spend the cap).
+#: split-batch hint.
 _BATCH_DOI_QUEUE_CAP = 5
 
 _SUPPORTED_VIEWS = (
@@ -973,6 +973,12 @@ class PaperHandler(Handler):
                 # the per-call DOI queue cap in one call —
                 # :meth:`_get_batch`.
                 "confirm_bulk",
+                # gr740575: ``args={'queue': 'explicit'}`` is the
+                # deliberate resubmit the daily-cap answer names —
+                # :func:`_queue_doi_ingest` lifts the fleet 24 h cap for
+                # it, and the dispatcher forwards the key into
+                # ``find_in_ref`` on the ``q=`` path.
+                "queue",
             }
         ),
         # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
@@ -2548,6 +2554,7 @@ class PaperHandler(Handler):
         q: Any = None,
         view: Any = None,
         context: Any = None,
+        queue: Any = None,
         _queue_budget: list[int] | None = None,
     ) -> Response:
         """``get(id='<slug>', q='…')`` — matching passages inside one paper.
@@ -2557,9 +2564,13 @@ class PaperHandler(Handler):
         bare ``get(kind='paper', q='…')`` shape doesn't regress
         (gr486840). cfp/datasheet inherit this unchanged.
 
-        ``_queue_budget`` is the per-batch mint counter
-        (:data:`_BATCH_DOI_QUEUE_CAP`) the list form threads into each
-        element's unheld-DOI queue door — private, one mutable slot.
+        ``queue`` is the raw ``args={'queue': …}`` value — the
+        dispatcher forwards it because this signature declares the
+        kwarg (gr740575); :func:`_queue_explicit_value` reads the
+        'explicit' spelling out of it. ``_queue_budget`` is the
+        per-batch mint counter (:data:`_BATCH_DOI_QUEUE_CAP`) the list
+        form threads into each element's unheld-DOI queue door —
+        private, one mutable slot.
         """
         from precis.handlers._find_in_ref import find_preflight, find_response
 
@@ -2609,6 +2620,7 @@ class PaperHandler(Handler):
                             id=elem,
                             view=view,
                             q=q,
+                            queue=queue,
                             _queue_budget=queue_budget,
                         ).body
                     )
@@ -2635,7 +2647,11 @@ class PaperHandler(Handler):
             # mint budget through ``_queue_budget``). A view is a read
             # and never queues (gr717456, gr715493).
             queued = _queue_doi_ingest(
-                self.store, str(id), budget=_queue_budget, queue=queues
+                self.store,
+                str(id),
+                budget=_queue_budget,
+                queue=queues,
+                explicit=_queue_explicit_value(queue),
             )
             if queued is not None:
                 return queued
@@ -2720,7 +2736,9 @@ class PaperHandler(Handler):
                 result_count=1,
             )
         if q is not None and not is_eye_view(view):
-            return self.find_in_ref(id=id, view=view, q=q)
+            return self.find_in_ref(
+                id=id, view=view, q=q, queue=(args or {}).get("queue")
+            )
         # Round-2 picky 2026-05-30: ``get(kind='paper', q='...')`` was
         # silently dropping ``q=`` and rendering the paper list,
         # leaving callers confused why their search returned no
@@ -2750,7 +2768,9 @@ class PaperHandler(Handler):
             # gr551840 (Reto ruling 2026-11-02): a well-formed DOI nobody
             # holds earns an ingest job, not a repeated error — the ack
             # names it and the retry lands on the same door.
-            queued = _queue_doi_ingest(self.store, str(id), queue=queues)
+            queued = _queue_doi_ingest(
+                self.store, str(id), queue=queues, explicit=_queue_explicit(args)
+            )
             if queued is not None:
                 return queued
             raise
@@ -3062,7 +3082,11 @@ class PaperHandler(Handler):
                 # carrying a view is a read, so the door stays shut
                 # (gr715493) and the element reads as plain not-found.
                 queued = _queue_doi_ingest(
-                    self.store, shown, budget=queue_budget, queue=queues
+                    self.store,
+                    shown,
+                    budget=queue_budget,
+                    queue=queues,
+                    explicit=_queue_explicit(args),
                 )
                 blocks.append(
                     queued
@@ -12940,12 +12964,33 @@ def _retired_paper_id_for_doi(store: Store, doi: str) -> int | None:
     return int(row[0]) if row else None
 
 
+def _queue_explicit(args: dict[str, Any] | None) -> bool:
+    """``args={'queue': 'explicit'}`` — the deliberate resubmit past the
+    daily get-queue cap (gr740575): the capped answer names the
+    spelling, and the mint it allows rides the same unbounded-explicit
+    lane ``put(kind='paper', doi=…)`` does, so it is neither counted
+    toward nor refused by the ``discovered_via='get'`` cap. A bare
+    ``queue=True`` reads as the same intent."""
+    return _queue_explicit_value((args or {}).get("queue"))
+
+
+def _queue_explicit_value(val: Any) -> bool:
+    """The raw ``args['queue']`` value → the explicit lane (gr740575).
+
+    ``find_in_ref`` takes the value forwarded by the dispatcher rather
+    than the ``args`` dict itself, so the parse lives one level down."""
+    if val is True:
+        return True
+    return isinstance(val, str) and val.strip().lower() == "explicit"
+
+
 def _queue_doi_ingest(
     store: Store,
     raw: str,
     *,
     budget: list[int] | None = None,
     queue: bool = True,
+    explicit: bool = False,
 ) -> Response | None:
     """gr551840 (Reto ruling 2026-11-02): a well-formed DOI no live paper
     holds earns an ingest job, not a repeated "not ingested" — the gripe
@@ -12965,8 +13010,13 @@ def _queue_doi_ingest(
     Refusals that stay non-error acks (the review's bounds on the mint):
     a DOI whose only carrier is a retired ref answers the tombstone
     hint (re-ingesting a deleted paper is not the get's call); the
-    fleet-wide daily cap and the per-batch cap answer the plain
-    not-ingested text with the explicit-``put`` hint. ``budget``
+    fleet-wide daily cap and the per-batch cap answer with retry
+    instructions. ``explicit``
+    (gr740575 — the capped get's ``args={'queue': 'explicit'}``
+    resubmit) lifts the daily cap only: the mint lands stamped
+    ``discovered_via='get-explicit'``, so the deliberate ask stays
+    unbounded like ``put`` while the implicit lane keeps its bound.
+    ``budget``
     carries the batch caller's remaining mint allowance — a one-element
     list so the decrement survives the batch loop; a fresh mint
     (``state == 'queued'``) spends one, reuse/blocked/capped outcomes
@@ -13013,13 +13063,13 @@ def _queue_doi_ingest(
             body=(
                 f"paper with DOI {doi!r} not ingested; batch get-queue "
                 f"cap reached ({_BATCH_DOI_QUEUE_CAP} per call) — "
-                f"put(kind='paper', doi='{doi}') to ingest explicitly"
+                f"retry capped IDs in batches of at most {_BATCH_DOI_QUEUE_CAP}"
             )
         )
     from precis.workers.job_types import paper_ingest
 
     try:
-        outcome = paper_ingest.ensure_queued(store, doi)
+        outcome = paper_ingest.ensure_queued(store, doi, explicit=explicit)
     except (
         psycopg.errors.ReadOnlySqlTransaction,
         psycopg.errors.InsufficientPrivilege,
@@ -13029,8 +13079,9 @@ def _queue_doi_ingest(
         return Response(
             body=(
                 f"paper with DOI {doi!r} not ingested; daily get-queue "
-                "cap reached — "
-                f"put(kind='paper', doi='{doi}') to ingest explicitly"
+                "cap reached — resubmit with args={'queue': 'explicit'} "
+                "to queue it anyway, or "
+                f"put(kind='paper', doi='{doi}') to mint the stub directly"
             )
         )
     if outcome.state == "blocked":
