@@ -160,6 +160,7 @@ from precis.workers.executors._common import (
 # store handle + ref_id).
 from precis.workers.executors.claude_inproc import _build_dispatch_context
 from precis.workers.job_types import (
+    TIDY_JOB_TYPES,
     JobTypeSpec,
     Reconcile,
     get_job_type,
@@ -741,9 +742,10 @@ def _watch_lock(store: Store, node: str | None) -> Iterator[bool]:
 
 
 def _watch_in_flight(store: Store, node: str | None) -> tuple[int, int]:
-    """Steps 0-0.5 of the pass, under :func:`_watch_lock`: poll the
+    """Steps 0-0.6 of the pass, under :func:`_watch_lock`: poll the
     in-flight detached jobs pinned to this host, drive the cancelling ones
-    to cancelled, reap orphaned computes. Returns ``(ok, failed)``."""
+    to cancelled, reap orphaned computes, then run the job types' host
+    sweeps (:func:`_run_tidy_hooks`). Returns ``(ok, failed)``."""
     ok = 0
     failed = 0
 
@@ -794,7 +796,26 @@ def _watch_in_flight(store: Store, node: str | None) -> tuple[int, int]:
     # before claiming anything new, so freed memory/GPU is back before
     # the next submit.
     _reap_detached_orphans(store, node)
+
+    # 0.6) The job types' host sweeps (``JobTypeSpec.tidy``), still under the
+    # watch lock: one at a time per host, between the polls, never beside one.
+    _run_tidy_hooks(store, node)
     return ok, failed
+
+
+def _run_tidy_hooks(store: Store, node: str | None) -> None:
+    """Call ``tidy(store, node)`` once for each job type that declares one
+    (``TIDY_JOB_TYPES``; only those are loaded, never every job type's
+    module). A hook, or a job type that cannot be loaded, that raises is
+    logged and skipped: the pass and the other hooks go on."""
+    for name in TIDY_JOB_TYPES:
+        try:
+            spec = get_job_type(name)
+            tidy = getattr(spec, "tidy", None) if spec is not None else None
+            if tidy is not None:
+                tidy(store, node)
+        except Exception:
+            log.warning("ssh_node: tidy hook of %s raised", name, exc_info=True)
 
 
 def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:

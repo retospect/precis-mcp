@@ -70,6 +70,9 @@ scripts/quest-homes::run 1
 scripts/reap-idle-gates::_docker 1
 scripts/reap-idle-gates::_sessions 1
 scripts/reap-index-locks::_run 1
+scripts/rehearsal/proc.py::popen 1
+scripts/rehearsal/proc.py::run 1
+scripts/rehearsal/shim.py::Session.do_check 1
 scripts/release::_probe_run 1
 scripts/release::note_gripes 1
 scripts/release::rnd 2
@@ -127,6 +130,7 @@ src/precis/workers/heartbeat.py::_temp_from_cmd 1
 src/precis/workers/heartbeat.py::_temp_from_macos_smc 1
 src/precis/workers/heartbeat.py::collect_worker_units 2
 src/precis/workers/job_types/_slice_adapters.py::devin_auth_status 1
+src/precis/workers/job_types/_slice_ws.py::seed_env 1
 src/precis/workers/job_types/boundary_probe.py::_container_present 1
 src/precis/workers/job_types/boundary_probe.py::_rm_container 1
 src/precis/workers/job_types/boundary_probe.py::_rm_tagged 2

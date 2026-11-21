@@ -128,9 +128,23 @@ _SCRUB_PREFIXES = (
 )
 
 
-def _stage(tmp_path: Path, name: str = "outtest") -> Path:
-    """A throwaway repo directory holding the real script."""
+def _stage(tmp_path: Path, name: str = "outtest", *, linked: bool = False) -> Path:
+    """A throwaway repo directory holding the real script.
+
+    By default the tree is its own repository (the shape of a factory
+    clone: ``<tree>/.git`` is a directory). ``linked=True`` makes it a
+    linked worktree of a sibling repository, so ``.git`` is a file and the
+    git dir lives elsewhere.
+    """
     tree = tmp_path / name
+    if linked:
+        main = tmp_path / f"{name}-main"
+        main.mkdir()
+        _git_init(main)
+        subprocess.run(
+            ["git", "-C", str(main), "worktree", "add", "-q", str(tree), "-b", "wt"],
+            check=True,
+        )
     (tree / "scripts" / "lib").mkdir(parents=True)
     (tree / "docker" / "dev").mkdir(parents=True)
     shutil.copy2(REPO / "scripts" / "test", tree / "scripts" / "test")
@@ -142,17 +156,42 @@ def _stage(tmp_path: Path, name: str = "outtest") -> Path:
     # scripts/test refuses a positional path that does not exist (gr514948).
     (tree / "tests").mkdir()
     (tree / "tests" / "x.py").write_text("", encoding="utf-8")
-    subprocess.run(["git", "init", "-q", str(tree)], check=True)
+    if not linked:
+        subprocess.run(["git", "init", "-q", str(tree)], check=True)
     return tree
+
+
+def _git_init(path: Path) -> None:
+    """A repository with one commit (``git worktree add`` needs a HEAD)."""
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "root",
+        ],
+        check=True,
+    )
 
 
 def _setup(
     tmp_path: Path,
     extra_env: dict[str, str] | None = None,
     name: str = "outtest",
+    *,
+    linked: bool = False,
 ) -> tuple[Path, dict[str, str], Path]:
     """Stage tree + fake docker; return (tree, env, docker log path)."""
-    tree = _stage(tmp_path, name)
+    tree = _stage(tmp_path, name, linked=linked)
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir(exist_ok=True)
     docker = fakebin / "docker"
@@ -174,9 +213,10 @@ def _run(
     *,
     args: tuple[str, ...] = ("-n0", "tests/x.py"),
     extra_env: dict[str, str] | None = None,
+    linked: bool = False,
 ) -> tuple[int, str, list[str], str]:
     """Run staged scripts/test; return (rc, stdout, docker log, stderr)."""
-    tree, env, log = _setup(tmp_path, extra_env)
+    tree, env, log = _setup(tmp_path, extra_env, linked=linked)
     proc = subprocess.run(
         ["bash", str(tree / "scripts" / "test"), *args],
         cwd=tree,
@@ -347,23 +387,56 @@ def test_compose_run_uses_quiet_progress(tmp_path: Path) -> None:
     assert envs == ["env|COMPOSE_PROGRESS=quiet"], envs
 
 
-def test_git_common_dir_is_mounted(tmp_path: Path) -> None:
-    """gr515188: the worktree's .git file points at the host git-common
-    dir, which /app doesn't cover — it must be mounted at its own absolute
-    path so repo-git tests run in-container. Read-only (gr684320): an
-    in-container git must not be able to leave an index.lock behind in the
-    host's git dir."""
-    rc, _, log, stderr = _run(tmp_path)
-    assert rc == 0, stderr
-    common = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        cwd=tmp_path / "outtest",
+def _git_out(tree: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=tree,
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=True,
     ).stdout.strip()
-    assert f"-v {common}:{common}:ro " in _run_line(log)
+
+
+def test_git_common_dir_is_mounted(tmp_path: Path) -> None:
+    """gr515188: a linked worktree's .git file points at the host
+    git-common dir, which /app doesn't cover — it must be mounted at its
+    own absolute path so repo-git tests run in-container. Read-only
+    (gr684320): an in-container git must not be able to leave an index.lock
+    behind in the host's git dir."""
+    rc, _, log, stderr = _run(tmp_path, linked=True)
+    assert rc == 0, stderr
+    tree = tmp_path / "outtest"
+    assert (tree / ".git").is_file()
+    common = _git_out(tree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    assert Path(common) != tree / ".git"
+    line = _run_line(log)
+    assert f"-v {common}:{common}:ro " in line
+    # Nothing is mounted over the /app/.git FILE: it must keep resolving.
+    assert ":/app/.git" not in line
+
+
+def test_clone_git_dir_is_mounted_read_only_over_app(tmp_path: Path) -> None:
+    """A standalone clone's git dir is <tree>/.git, inside the tree /app
+    mounts read-write: the read-only protection (gr684320) must be a mount
+    at /app/.git, because a mount at the host path protects nothing the
+    container reads."""
+    rc, _, log, stderr = _run(tmp_path)
+    assert rc == 0, stderr
+    tree = tmp_path / "outtest"
+    assert (tree / ".git").is_dir()
+    line = _run_line(log)
+    assert f"-v {tree}/.git:/app/.git:ro " in line
+    # The /app mount stays read-write, and no second mount of the host path.
+    assert f"-v {tree}:/app " in line
+    assert f"{tree}/.git:{tree}/.git" not in line
+
+
+def test_typecheck_mounts_the_clone_git_dir_read_only_too(tmp_path: Path) -> None:
+    """--typecheck builds its own compose run line: same protection."""
+    rc, _, log, stderr = _run(tmp_path, args=("--typecheck",))
+    assert rc == 0, stderr
+    assert f"-v {tmp_path / 'outtest'}/.git:/app/.git:ro " in _run_line(log)
 
 
 def test_typecheck_retries_once_on_oom_137(tmp_path: Path) -> None:

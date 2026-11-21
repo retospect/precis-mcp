@@ -340,7 +340,8 @@ Rescue is a machine verdict, not a human hold: a node parked on a human
 (`waiting-for:`, an open blocking `ask-user`, `halt`, `STATUS:paused`,
 `won't-do`) is not in rescue, and a `rescue-sig:<hash>` tag marks a
 signature gripe, never a rescued node. A node in rescue keeps its
-worktree and branch, named on the evidence comment.
+work in the build host's hub (`meta.build_ref`); the evidence comment
+names its branch and head.
 
 ## What happens to a node in rescue?
 
@@ -352,8 +353,8 @@ it meanwhile. The session replies with one first line:
   `STATUS:doing` node returns to `open` (the tick only dispatches
   `open`), `meta.rescue` (`n`, `at`, `diagnose`, `cls`) and the re-arm
   floor are stamped, and the corrected `brief:` comment goes on the
-  node; the rebuilt run resumes on `slice/<id>`, reusing worktree and
-  branch.
+  node; the rebuilt run continues from the node's newest pushed work
+  in a fresh clone on the host that holds it.
 - `rescue: NOFIX fixed <sha> — <why>` — fixed by `<sha>`; verified on
   `origin/main`, the node closes and the gripe goes to verify.
 - `rescue: NOFIX — <why>` — the cause is outside the brief.
@@ -389,7 +390,7 @@ of its final message (`review: LAND`, `review: FIX — <findings>`,
 `review: REVERT — <why>`), which `run_slice` posts as the `handoff:`
 comment and `plan_dispatch` reads there; it is read-only and ends the
 verdict with `(read-only, tests not run)`. The reviewed todo's `landed:`
-sha and brief are inlined, so `git show <sha>` in the slice worktree is
+sha and brief are inlined, so `git show <sha>` in its own clone is
 all it needs. A validate's
 `validated: <why>` first line closes it the same way; a gripe chain's
 validate body carries the gripe report verbatim. Devin fits `code`,

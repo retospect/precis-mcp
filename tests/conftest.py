@@ -1055,6 +1055,28 @@ def _no_live_jlcpcb_http(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_host_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr741695: ``ssh_node``'s watch pass ends with the job types' host
+    sweeps (``JobTypeSpec.tidy``). ``run_slice``'s walks the attempt folders
+    of the checkout the code runs from and settles them by the job rows the
+    worker reads. In a test those rows are another database's, and on a
+    developer's or a build host's checkout the folders are somebody's real
+    work. Deny by default: an executor pass in a test runs no sweep.
+
+    A test of the hook names the types itself
+    (``monkeypatch.setattr(ssh_node, "TIDY_JOB_TYPES", ...)``, which runs
+    after this fixture and wins) or calls ``run_slice.tidy`` directly with
+    its roots under ``tmp_path``. Patched only where the executor is already
+    imported, so this pulls it into no test that does not use it; a module
+    that runs a pass imports the executor at its top."""
+    import sys
+
+    executor = sys.modules.get("precis.workers.executors.ssh_node")
+    if executor is not None:
+        monkeypatch.setattr(executor, "TIDY_JOB_TYPES", ())
+
+
+@pytest.fixture(autouse=True)
 def _pin_load_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
     """Neutralise the 1-min load-average gate so load-gated worker passes
     run deterministically under parallel test load.

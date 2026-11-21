@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -230,7 +231,16 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         if args[:2] == ["log", "--reverse"]:
             return _proc("".join(f"{s}\n" for s in calls["subjects"]))
         if args[:3] == ["rev-parse", "--verify", "--quiet"]:
+            if args[3].endswith("^{commit}") and "hub_commits" in calls:
+                # the hub's answer for the commit to land (gr741695)
+                sha = calls["hub_commits"].get(args[3][: -len("^{commit}")])
+                return _proc(sha + "\n") if sha else _proc(rc=1)
             return _proc(FULL_SHA + "\n")
+        if args == ["rev-parse", "HEAD"]:
+            return _proc((calls.get("cut_head") or "") + "\n")
+        if args[:2] == ["checkout", "-q"]:
+            calls["checkout"] = args
+            return _proc()
         if args[:1] == ["rev-parse"] and len(args) == 2 and args[1].startswith("refs/"):
             # A bare ref-tip read — ``_pushed_tip_ahead`` (gr681208)
             # reads the ``refs/remotes/origin/`` tracking tip after its
@@ -318,18 +328,129 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     # tests asserting "no credential wiring without a token" must hold on
     # the factory host too, where the worker env carries the token
     monkeypatch.delenv("PRECIS_FACTORY_GIT_TOKEN", raising=False)
-    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    # gr741695: the land's own clone, named by the job that cut it. Most
+    # tests stand the folder already there (a job resumed in its own
+    # folder, which cuts nothing); ``seams["ws"]`` holds the workspace
+    # layer's calls for the ones that cut (``_fake_workspace``).
+    _fake_workspace(monkeypatch, calls, tmp_path)
+    tree = calls["attempt_dir"](tmp_path, 42, 901, "land")
     (tree / "scratch").mkdir(parents=True)
+    # a folder that stands for a job already launched in it: the ship's log
+    # is the evidence a resubmit keeps the folder (a folder with none is an
+    # unfinished cut and is cut again)
+    (tree / "scratch" / "land_slice.log").write_text("", encoding="utf-8")
     calls["tree"] = tree
     calls["gitdir"] = str(tmp_path / "gitdir")
     Path(calls["gitdir"]).mkdir()
     return calls
 
 
+#: The repository's GitHub url the fixture's checkout names.
+GITHUB_URL = "https://github.com/example/precis.git"
+
+
+def _fake_workspace(
+    monkeypatch: pytest.MonkeyPatch, calls: dict[str, Any], root: Path
+) -> None:
+    """Stand ``_slice_ws`` (the workspace layer, tested by its owner) as a
+    recorder: its calls go to ``calls["ws"]`` as ``(name, args)`` in order;
+    ``cut`` makes the folder and ``drop`` removes it, as the real ones do.
+    Its pure path functions (``attempt_dir``, ``parse_attempt_dir``,
+    ``hub_path``, ``build_ref``) are the real ones; the hub sits in the
+    checkout's git common dir, which the fixture makes."""
+    from precis.workers.job_types import _slice_ws
+
+    ws: list[tuple[str, Any]] = []
+    calls["ws"] = ws
+    calls["hub_tips"] = {}
+    calls["legacy_tip"] = None
+    calls["cut_error"] = None
+    calls["hub_error"] = None
+    calls["sync_tip"] = "b" * 40  # None: GitHub could not be read
+    calls["wip"] = set()  # the shas whose commit subject is ``wip: ...``
+    (root / ".git").mkdir(exist_ok=True)
+
+    def ensure_hub(r: Path, *, notes: list[str] | None = None) -> Path:
+        ws.append(("ensure_hub", r))
+        if calls["hub_error"]:
+            raise _slice_ws.WorkspaceError(calls["hub_error"])
+        return _slice_ws.hub_path(r)
+
+    def sync_hub(r: Path, *, url: str, base: str, **kw: Any) -> str | None:
+        ws.append(("sync_hub", {"url": url, "base": base, **kw}))
+        return calls["sync_tip"]
+
+    def hub_tip(hub: Path, ref: str) -> str | None:
+        ws.append(("hub_tip", ref))
+        return calls["hub_tips"].get(ref)
+
+    def import_legacy(hub: Path, url: str, todo: int, **kw: Any) -> str | None:
+        ws.append(("import_legacy", {"url": url, "todo": todo}))
+        tip = calls["legacy_tip"]
+        if tip is not None:
+            calls["hub_tips"][f"refs/factory/build/{todo}/0"] = tip
+        return tip
+
+    def cut(hub: Path, tree: Path, **kw: Any) -> str:
+        ws.append(("cut", {"hub": hub, "tree": tree, **kw}))
+        if calls["cut_error"]:
+            raise _slice_ws.WorkspaceError(calls["cut_error"])
+        (tree / "scratch").mkdir(parents=True)
+        # the real cut checks out the start commit (the ref's tip)
+        calls["cut_head"] = kw["start"].sha
+        return str(calls["cut_head"])
+
+    def drop(tree: Path, *, notes: list[str] | None = None) -> bool:
+        ws.append(("drop", tree))
+        import shutil
+
+        shutil.rmtree(tree, ignore_errors=True)
+        return not tree.exists()
+
+    def delete_builds(hub: Path, todo: int) -> str:
+        ws.append(("delete_builds", todo))
+        return f"attempt refs of td{todo}: deleted"
+
+    def _is_wip(hub: Path, sha: str) -> bool:
+        return sha in calls["wip"]
+
+    for fn in (
+        _is_wip,
+        ensure_hub,
+        sync_hub,
+        hub_tip,
+        import_legacy,
+        cut,
+        drop,
+        delete_builds,
+    ):
+        monkeypatch.setattr(_slice_ws, fn.__name__, fn)
+    calls["attempt_dir"] = _slice_ws.attempt_dir
+    monkeypatch.setattr(land_slice, "_github_url", lambda root: GITHUB_URL)
+
+
+def _ws_names(seams: dict[str, Any]) -> list[str]:
+    """The workspace layer's calls so far, by name and in order."""
+    return [name for name, _arg in seams["ws"]]
+
+
+def _ws_args(seams: dict[str, Any], name: str) -> list[Any]:
+    return [arg for n, arg in seams["ws"] if n == name]
+
+
+def _legacy_handle(handle: dict[str, Any], tmp_path: Path) -> Path:
+    """Re-point ``handle`` at a linked worktree of the host checkout, as a
+    land minted before gr741695 and still running holds: a folder that is
+    not one of the lander's own clones (``slice-td<id>``)."""
+    legacy = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    (legacy / "scratch").mkdir(parents=True, exist_ok=True)
+    handle["worktree"] = str(legacy)
+    return legacy
+
+
 def _params(seams: dict[str, Any]) -> dict[str, Any]:
     return {
         "todo_id": 42,
-        "worktree": str(seams["tree"]),
         "branch": "slice/42",
         "lane": "claude-sub",
     }
@@ -510,6 +631,10 @@ def test_submit_refuses_another_repo_before_any_work(
     assert seams["tree"].is_dir() and ctx.meta_set == {}
     # An explicit default repo lands as before.
     store.add_todo(44)
+    (seams["attempt_dir"](tmp_path, 44, 901, "land") / "scratch").mkdir(parents=True)
+    (
+        seams["attempt_dir"](tmp_path, 44, 901, "land") / "scratch" / "land_slice.log"
+    ).touch()
     ctx = _Ctx(store, {**_params(seams), "todo_id": 44, "repo": "precis"})
     handle = land_slice.submit(ctx, None)
     assert ctx.failure is None and handle is not None
@@ -929,6 +1054,35 @@ def test_ship_output_parsers() -> None:
 # ── submit ─────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("breaks", ["set_meta", "append_chunk"])
+def test_submit_returns_the_ships_handle_when_the_bookkeeping_after_it_raises(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, breaks: str
+) -> None:
+    """Once the ship is launched its handle must reach the executor: a raise
+    in the bookkeeping after the launch would end the job while the ship
+    goes on, and the host sweep would then stop that ship."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx = _Ctx(store, _params(seams))
+    real_meta, real_chunk = ctx.set_meta, ctx.append_chunk
+
+    def set_meta(**kw: Any) -> None:
+        if breaks == "set_meta" and "land_subject" in kw:
+            raise RuntimeError("the database went away")
+        real_meta(**kw)
+
+    def append_chunk(kind: str, text: str) -> None:
+        if breaks == "append_chunk" and " pid 5151 " in text:
+            raise RuntimeError("the database went away")
+        real_chunk(kind, text)
+
+    monkeypatch.setattr(ctx, "set_meta", set_meta)
+    monkeypatch.setattr(ctx, "append_chunk", append_chunk)
+    handle = land_slice.submit(ctx, None)
+    assert isinstance(handle, dict) and handle["pid"] == 5151
+    assert ctx.failure is None and ctx.status is None
+
+
 def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
@@ -1135,6 +1289,11 @@ def test_ship_env_is_token_free_with_mirrored_git_credentials(
     assert ctx.failure is None and ctx.status is None
     # the mirror replaced the broker: exactly ONE launch — ship itself
     assert len(seams["launch"]) == 1
+    # gr741695: the mirrored env keeps the host-state roots of the clone
+    ship_env = seams["launch"][0][1]["env"]
+    host_common = str((tmp_path / ".git").resolve())
+    assert ship_env["PRECIS_GATE_SLOT_ROOT"] == host_common
+    assert ship_env["PRECIS_ROUND_STATE_ROOT"] == host_common
     # review findings 1+2 (regression): every credential-bearing call is a
     # `git` argv whose cwd is OUTSIDE the slice tree — nothing
     # branch-importable runs while the token is live, so a branch-added
@@ -2044,8 +2203,8 @@ def test_submit_nothing_to_land_closes_done(
     assert store.comments(42)[-1] == land_slice.NO_DIFF_NOTE
     tags = store.tag_strings(42)
     assert "STATUS:done" in tags and "claimed-by:lane-claude-sub" not in tags
-    # the useless branch and worktree are still cleaned up
-    assert ["branch", "-D", "slice/42"] in _cleanup_cmds(seams)
+    # the useless clone and the todo's attempt refs are still cleaned up
+    assert _ws_names(seams) == ["drop", "delete_builds"]
 
 
 def _oracle(monkeypatch: pytest.MonkeyPatch, remote: dict[str, str] | None) -> None:
@@ -2196,13 +2355,477 @@ def test_submit_nothing_to_land_clears_a_crashed_predecessors_mirror(
     assert store.comments(42)[-1] == land_slice.NO_DIFF_NOTE
 
 
-def test_submit_missing_worktree_fails(seams: dict[str, Any], tmp_path: Path) -> None:
+def test_submit_ignores_the_builders_worktree_param(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """gr741695: the builder's folder is gone by the time the lander runs;
+    ``params.worktree`` is ignored — the land goes on in its own folder."""
     store = _Store()
     store.add_todo(42)
     ctx = _Ctx(store, {**_params(seams), "worktree": str(tmp_path / "gone")})
+    handle = land_slice.submit(ctx, None)
+    assert ctx.failure is None and handle is not None
+    assert handle["worktree"] == str(seams["tree"])
+    assert _ws_names(seams) == []  # the folder was there: nothing cut
+
+
+# ── the land's own clone (gr741695) ────────────────────────────────
+
+REF = "refs/factory/build/42/7"
+HEAD = "1" * 40
+SNAPSHOT = "2" * 40
+
+
+def _no_folder(seams: dict[str, Any]) -> None:
+    """The first submit of a land job: its folder is not there yet."""
+    import shutil
+
+    shutil.rmtree(seams["tree"])
+
+
+def _cut_params(seams: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    return {**_params(seams), "ref": REF, "head": HEAD, **extra}
+
+
+def _cut_seams(seams: dict[str, Any], *, tip: str = HEAD) -> None:
+    """The hub holds ``REF`` at ``tip`` and knows ``HEAD``; the folder is
+    not there yet."""
+    _no_folder(seams)
+    seams["hub_tips"][REF] = tip
+    seams["hub_commits"] = {HEAD: HEAD, tip: tip}
+
+
+def _cut_submit(store: _Store, seams: dict[str, Any], **extra: Any) -> tuple[_Ctx, Any]:
+    ctx = _Ctx(store, _cut_params(seams, **extra))
+    return ctx, land_slice.submit(ctx, None)
+
+
+def test_submit_cuts_its_own_clone_at_the_commit_to_land(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """gr741695: the builder's folder is gone — the land cuts a clone of the
+    host's hub at ``params.head``, held by ``params.ref``, in the folder its
+    own job id names, then points the clone's origin at GitHub (what ship
+    and the mirror's url rewrite expect) and runs ship there."""
+    _cut_seams(seams)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert ctx.failure is None and handle is not None
+    assert _ws_names(seams) == ["ensure_hub", "sync_hub", "hub_tip", "cut"]
+    [sync] = _ws_args(seams, "sync_hub")
+    assert sync["url"] == GITHUB_URL and sync["base"] == "main"
+    [cut] = _ws_args(seams, "cut")
+    assert cut["tree"] == seams["tree"] and handle["worktree"] == str(seams["tree"])
+    assert cut["base"] == "main"
+    assert str(cut["tree"]).endswith("/slice-td42-land-j901")
+    assert cut["branch"] == "slice/42" and cut["seed_from"] == tmp_path
+    assert cut["start"].sha == HEAD and cut["start"].ref == REF
+    assert cut["hub"] == tmp_path / ".git" / "precis-hub.git"
+    # origin is GitHub's url in the clone, set after the cut and before ship
+    gits = [(a, c) for a, c in seams["git"]]
+    assert (["remote", "set-url", "origin", GITHUB_URL], seams["tree"]) in gits
+    [(argv, kw)] = seams["launch"]
+    assert kw["cwd"] == seams["tree"] and argv[1] == "--quick"
+    assert any("cut slice-td42-land-j901 at 111111111111" in t for _k, t in ctx.chunks)
+    # the lander launched in the clone, so it holds the todo's lock there
+    lock_dir, lock_name = _land_lock(seams)
+    assert f"tree={seams['tree']}" in (lock_dir / lock_name).read_text(encoding="utf-8")
+
+
+def test_ship_env_carries_the_host_checkouts_state_roots(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    """A clone's git dir is its own, so ship (and the verify probes that run
+    ``scripts/test``) get ``PRECIS_GATE_SLOT_ROOT`` and
+    ``PRECIS_ROUND_STATE_ROOT`` set to the host checkout's git common dir:
+    gate slots stay shared and ``ship --onto`` reads the host's round
+    journal. A PR land's linked worktree already shares that dir and gets
+    neither."""
+    host_common = str((tmp_path / ".git").resolve())
+    assert Path(host_common).is_absolute()
+    store = _Store()
+    store.add_todo(42)
+    _ctx, handle = _submit(store, seams)
+    env = seams["launch"][0][1]["env"]
+    assert env["PRECIS_GATE_SLOT_ROOT"] == host_common
+    assert env["PRECIS_ROUND_STATE_ROOT"] == host_common
+    # a verify probe in the clone queues on the same slots
+    verify = land_slice._launch_verify(
+        seams["tree"], ["t.py::x"], phase="alone", run_tree=seams["tree"]
+    )
+    assert verify is not None
+    assert seams["launch"][-1][1]["env"]["PRECIS_GATE_SLOT_ROOT"] == host_common
+    # not a land clone: nothing set
+    assert (
+        land_slice._host_state_env(tmp_path / ".claude" / "worktrees" / "slice-pr-7")
+        == {}
+    )
+    assert handle is not None
+
+
+def test_a_release_land_cuts_from_the_release_branch(
+    seams: dict[str, Any],
+) -> None:
+    """The hub's copy of the land target is the release branch; the clone's
+    base — what the branch subjects and the diff read — is it."""
+    _cut_seams(seams)
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub",),
+        meta={"land_target": "release/r7", "op": "run_slice"},
+    )
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert ctx.failure is None and handle is not None
+    [sync] = _ws_args(seams, "sync_hub")
+    [cut] = _ws_args(seams, "cut")
+    assert sync["base"] == cut["base"] == "release/r7"
+
+
+def test_the_land_takes_head_when_the_ref_holds_a_snapshot_above_it(
+    seams: dict[str, Any],
+) -> None:
+    """The worker may have saved uncommitted leftovers as a ``wip:`` commit
+    on top of the builder's last real commit: the ref's tip is that
+    snapshot, ``head`` is its parent, and the land takes ``head``. The cut
+    starts at the ref's tip (the workspace layer refuses a start commit its
+    ref does not hold); the clone's branch is then put on ``head`` before
+    ship runs."""
+    _cut_seams(seams, tip=SNAPSHOT)  # ancestor_rc 0: HEAD is below the tip
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert ctx.failure is None and handle is not None
+    [cut] = _ws_args(seams, "cut")
+    assert cut["start"].sha == SNAPSHOT and cut["start"].ref == REF
+    hub = Path(seams["tree"]).parents[2] / ".git" / "precis-hub.git"
+    assert (["merge-base", "--is-ancestor", HEAD, SNAPSHOT], hub) in seams["git"]
+    assert seams["checkout"] == ["checkout", "-q", "-B", "slice/42", HEAD]
+    gits = [a for a, _c in seams["git"]]
+    assert gits.index(seams["checkout"]) < gits.index(
+        ["remote", "set-url", "origin", GITHUB_URL]
+    )
+    assert any(f"cut slice-td42-land-j901 at {HEAD[:12]}" in t for _k, t in ctx.chunks)
+
+
+def test_a_cut_at_head_needs_no_checkout(seams: dict[str, Any]) -> None:
+    _cut_seams(seams)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _cut_submit(store, seams)
+    assert ctx.failure is None and handle is not None
+    assert "checkout" not in seams
+
+
+def test_a_ref_that_no_longer_holds_head_fails_attempt_free(
+    seams: dict[str, Any],
+) -> None:
+    """The ref was replaced (a rebuild force-pushed it): ``head`` is no
+    longer its tip or an ancestor. Nothing is cut and nothing lands; the
+    job fails attempt-free under ``infra-land`` with the reason."""
+    _cut_seams(seams, tip=SNAPSHOT)
+    seams["ancestor_rc"] = 1
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert handle is None and ctx.status == "failed"
+    assert f"{REF} no longer holds {HEAD[:12]}" in (ctx.failure or "")
+    assert f"it is at {SNAPSHOT[:12]}" in (ctx.failure or "")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert ctx.meta_set["red_class"] == "infra-land"
+    assert "attempt:1" not in store.tag_strings(42)
+    assert "cut" not in _ws_names(seams) and seams["launch"] == []
+    assert any("land DEFERRED" in c for c in store.comments(42))
+    assert not any(c.startswith("landed:") for c in store.comments(42))
+
+
+def test_a_head_the_hub_does_not_hold_fails_attempt_free(
+    seams: dict[str, Any],
+) -> None:
+    _cut_seams(seams)
+    seams["hub_commits"] = {}  # the hub has no such commit
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert handle is None and "does not have it" in (ctx.failure or "")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert "cut" not in _ws_names(seams)
+
+
+def test_a_ref_missing_from_this_hosts_hub_fails_attempt_free(
+    seams: dict[str, Any],
+) -> None:
+    """A land runs on the host whose hub holds the work; another host's
+    hub has no such ref."""
+    _cut_seams(seams)
+    seams["hub_tips"].clear()
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert handle is None and f"holds no {REF}" in (ctx.failure or "")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert "cut" not in _ws_names(seams) and seams["launch"] == []
+
+
+def test_an_unreadable_ancestry_fails_attempt_free(seams: dict[str, Any]) -> None:
+    _cut_seams(seams, tip=SNAPSHOT)
+    seams["ancestor_rc"] = 128
+    store = _Store()
+    store.add_todo(42)
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert handle is None and "could not say whether" in (ctx.failure or "")
+    assert "cut" not in _ws_names(seams)
+
+
+def test_a_legacy_land_imports_the_work_github_holds(seams: dict[str, Any]) -> None:
+    """A land minted before the switch has no ``ref``: the work GitHub
+    holds under ``refs/factory/slice/<id>`` is imported into the hub and
+    its ref used; ``head`` comes from the land's params."""
+    _no_folder(seams)
+    seams["legacy_tip"] = HEAD
+    seams["hub_commits"] = {HEAD: HEAD}
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx = _Ctx(store, {**_params(seams), "head": HEAD})
+
+    handle = land_slice.submit(ctx, None)
+
+    assert ctx.failure is None and handle is not None
+    [legacy] = _ws_args(seams, "import_legacy")
+    assert legacy == {"url": GITHUB_URL, "todo": 42}
+    names = _ws_names(seams)
+    assert names[:2] == ["ensure_hub", "sync_hub"]
+    assert names.index("import_legacy") < names.index("cut")
+    [cut] = _ws_args(seams, "cut")
+    assert cut["start"].ref == "refs/factory/build/42/0"
+    assert cut["start"].sha == HEAD
+
+
+def test_a_legacy_land_takes_head_from_the_pending_land_then_the_tip(
+    seams: dict[str, Any],
+) -> None:
+    """``head``: ``params.head``, else ``meta.pending_land.head``, else the
+    imported ref's tip."""
+    _no_folder(seams)
+    seams["legacy_tip"] = SNAPSHOT
+    seams["hub_commits"] = {HEAD: HEAD, SNAPSHOT: SNAPSHOT}
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub",),
+        meta={"pending_land": {"head": HEAD}},
+    )
+    ctx = _Ctx(store, _params(seams))
+    assert land_slice.submit(ctx, None) is not None
+    [cut] = _ws_args(seams, "cut")
+    assert cut["start"].sha == SNAPSHOT  # the cut starts at the ref's tip
+    assert seams["checkout"][-1] == HEAD  # the land takes the pending head
+
+    import shutil
+
+    shutil.rmtree(seams["tree"])
+    seams["ws"].clear()
+    store.refs[42].meta.pop("pending_land")
+    ctx = _Ctx(store, _params(seams))
+    assert land_slice.submit(ctx, None) is not None
+    [cut] = _ws_args(seams, "cut")
+    assert cut["start"].sha == SNAPSHOT
+
+
+def test_a_legacy_land_whose_work_is_nowhere_fails_attempt_free(
+    seams: dict[str, Any],
+) -> None:
+    _no_folder(seams)
+    store = _Store()
+    store.add_todo(42)
+    ctx = _Ctx(store, {**_params(seams), "head": HEAD})
+
     assert land_slice.submit(ctx, None) is None
-    assert ctx.failure is not None and "missing" in ctx.failure
-    assert "attempt:1" in store.tag_strings(42)
+
+    assert "names no hub ref" in (ctx.failure or "")
+    assert "refs/factory/slice/42" in (ctx.failure or "")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+
+
+@pytest.mark.parametrize(
+    "what",
+    ["hub", "cut", "url"],
+)
+def test_a_workspace_error_fails_the_land_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, what: str
+) -> None:
+    """Any refusal of the workspace layer (or an unnameable origin) ends the
+    job attempt-free under ``infra-land`` with its own message; no ship,
+    no landed record, no attempt charged."""
+    _cut_seams(seams)
+    if what == "hub":
+        seams["hub_error"] = "the hub cannot be made; next: check the disk"
+    elif what == "cut":
+        seams["cut_error"] = "git clone failed; next: retry"
+    else:
+        monkeypatch.setattr(land_slice, "_github_url", lambda root: None)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert handle is None and ctx.status == "failed"
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert "attempt:1" not in store.tag_strings(42)
+    assert seams["launch"] == []
+    assert not any(c.startswith("landed:") for c in store.comments(42))
+    if what != "url":
+        assert (seams["hub_error"] or seams["cut_error"]) in (ctx.failure or "")
+    # a failed cut leaves no folder (the real cut renames a finished one)
+    assert not seams["tree"].exists()
+
+
+def test_a_clone_without_the_base_tracking_ref_fails_the_land(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Everything the lander reads before ship's own fetch must be in the
+    clone: a hub that holds no ``main`` yields a clone without
+    ``origin/main``, and the land says so instead of reading blind."""
+    _cut_seams(seams)
+    inner = land_slice._git
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args[:3] == ["rev-parse", "--verify", "--quiet"] and args[3].startswith(
+            "refs/remotes/origin/"
+        ):
+            return _proc(rc=1)
+        return inner(args, cwd)
+
+    monkeypatch.setattr(land_slice, "_git", git)
+    store = _Store()
+    store.add_todo(42)
+    ctx, handle = _cut_submit(store, seams)
+    assert handle is None and "origin/main is missing" in (ctx.failure or "")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+
+
+def test_a_resumed_land_finds_its_own_folder_and_cuts_nothing(
+    seams: dict[str, Any],
+) -> None:
+    """A job re-submitted after an outage names the same folder: it is
+    there, a ship was launched in it (the fixture's folder holds the ship's
+    log), it is the job's own — nothing is cut (and no hub is touched)."""
+    seams["hub_tips"][REF] = HEAD
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert ctx.failure is None and handle["worktree"] == str(seams["tree"])
+    assert _ws_names(seams) == []
+
+
+def test_a_folder_with_no_launch_on_record_is_dropped_and_cut_again(
+    seams: dict[str, Any],
+) -> None:
+    """The worker died between the cut's rename and its last step: the
+    resubmitted job finds a folder nothing was ever launched in and no ship
+    is behind. A land folder holds nothing of its own — it is dropped and
+    cut again."""
+    _cut_seams(seams)
+    (seams["tree"]).mkdir(parents=True)  # the unfinished folder
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert ctx.failure is None and handle is not None
+    names = _ws_names(seams)
+    assert names.index("drop") < names.index("cut")
+    assert _ws_args(seams, "drop") == [seams["tree"]]
+    assert any("left unfinished" in t for _k, t in ctx.chunks)
+
+
+@pytest.mark.parametrize("evidence", ["compute_handle", "exit_file"])
+def test_a_folder_with_a_launch_on_record_is_kept(
+    seams: dict[str, Any], evidence: str
+) -> None:
+    (seams["tree"] / "scratch" / "land_slice.log").unlink()
+    seams["hub_tips"][REF] = HEAD
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx = _Ctx(store, _cut_params(seams))
+    if evidence == "compute_handle":
+        ctx.meta["compute_handle"] = {"pid": 5150}
+    else:
+        (seams["tree"] / "scratch" / "land_slice.exit").write_text(
+            "0\n", encoding="utf-8"
+        )
+
+    assert land_slice.submit(ctx, None) is not None
+    assert _ws_names(seams) == []
+
+
+def test_an_unfinished_folder_that_cannot_be_dropped_fails_attempt_free(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (seams["tree"] / "scratch" / "land_slice.log").unlink()
+    monkeypatch.setattr(land_slice._slice_ws, "drop", lambda tree, *, notes=None: False)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert handle is None and "could not be removed" in (ctx.failure or "")
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert "cut" not in _ws_names(seams) and seams["launch"] == []
+
+
+def test_a_ship_of_this_todo_in_another_jobs_folder_defers_without_a_cut(
+    seams: dict[str, Any],
+) -> None:
+    """The lock is the todo's, in the host checkout: a ship an ended job
+    left running in ITS folder still owns the todo's mirror. A later job
+    never adopts it (its folder holds none of that ship's work) and never
+    cuts: it defers attempt-free."""
+    _cut_seams(seams)
+    other = seams["tree"].parent / "slice-td42-land-j800"
+    held, fd, _detail = land_slice._try_land_lock(*_land_lock(seams))
+    assert not held and fd is not None
+    land_slice._stamp_lock_holder(fd, 5150, 42, "slice/42", SUBJECT, tree=str(other))
+    try:
+        store = _Store()
+        store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+        ctx, handle = _cut_submit(store, seams)
+    finally:
+        os.close(fd)
+    assert handle is None and ctx.status == "failed"
+    assert "another land's folder" in (ctx.failure or "")
+    assert ctx.meta_set["red_class"] == "ship-busy"
+    assert _ws_names(seams) == [] and seams["launch"] == []
+
+
+def test_the_land_lock_of_a_pr_land_stays_in_its_worktrees_gitdir(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    pr_tree = tmp_path / ".claude" / "worktrees" / "slice-pr-73"
+    gitdir = Path(seams["gitdir"])
+    assert land_slice._land_lock_where(pr_tree, 42, gitdir) == (
+        gitdir,
+        land_slice.LAND_LOCK_FILE,
+    )
+    assert land_slice._land_lock_where(seams["tree"], 42, gitdir) == _land_lock(seams)
+    assert land_slice._land_lock_where(pr_tree, 42, None) is None
 
 
 def test_submit_refuses_when_factory_off(
@@ -2231,7 +2854,14 @@ def test_poll_green_after_land_notify(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     store = _Store()
-    store.add_todo(42, tags=("claimed-by:lane-claude-sub", "plan:40"))
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub", "plan:40"),
+        meta={
+            "build_ref": {"state": "pushed", "ref": "refs/factory/build/42/7"},
+            "conflict": {"head": "0" * 40, "files": ["src/precis/x.py"]},
+        },
+    )
     store.add_todo(
         44,
         status="open",
@@ -2283,11 +2913,22 @@ def test_poll_green_after_land_notify(
         "args": {"sha": FULL_SHA},
     }
     assert store.comments(44)[-1] == f"sha: {FULL_SHA} — landed by td42"
-    tree = str(seams["tree"])
-    assert _cleanup_cmds(seams) == [
-        ["worktree", "remove", tree],
-        ["branch", "-D", "slice/42"],
-    ]
+    # gr741695: the land's clone goes through the workspace layer — the
+    # folder, then the todo's attempt refs in the hub — never a
+    # worktree remove / branch -D in a host checkout, and the task's
+    # ``meta.build_ref`` is cleared
+    assert _ws_args(seams, "drop") == [seams["tree"]]
+    assert _ws_names(seams) == ["drop", "delete_builds"]
+    assert _ws_args(seams, "delete_builds") == [42]
+    assert _cleanup_cmds(seams) == []
+    assert store.refs[42].meta["build_ref"] is None
+    # and so is the conflict an earlier land stamped: it is resolved
+    assert store.refs[42].meta["conflict"] is None
+    # ... and the build floor is this land job's id (the clone's name)
+    assert store.refs[42].meta["build_floor"] == 901
+    # the land's per-todo lock file does not pile up in the host's git dir
+    lock_dir, lock_name = _land_lock(seams)
+    assert not (lock_dir / lock_name).exists()
     # the origin branch delete is an authenticated transport: it ran as
     # a `push --delete` to the trusted url from a fresh ops gitdir under
     # the mirror root — never `push origin` in the shared, branch-
@@ -2568,6 +3209,10 @@ def test_poll_green_replays_the_local_main_advance_only_after_the_sync(
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     ctx, handle = _submit(store, seams)
+    # a linked worktree shares the host checkout's main (a land minted
+    # before gr741695, a PR land); a land's own clone shares none — the
+    # test below
+    _legacy_handle(handle, tmp_path)
     handle["factory_mirror_tips"] = {"main": "d" * 40}
     _finish(handle, 0, GREEN_LOG)
     pctx = _Ctx(store, _params(seams))
@@ -2601,12 +3246,40 @@ def test_poll_nothing_new_replays_the_advance_to_the_launch_tip(
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     ctx, handle = _submit(store, seams)
+    _legacy_handle(handle, tmp_path)
     tip = "f" * 40
     handle["factory_mirror_tips"] = {"main": tip}
     _finish(handle, 0, NO_DIFF_LOG)
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is True
     assert advanced == [(common, tip)]
+
+
+def test_poll_green_skips_the_local_main_advance_in_a_land_clone(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gr741695: a land's clone has a git dir of its own and no main in
+    common with the host checkout, and it is dropped right after the land:
+    the advance has nothing to protect and is skipped, with a note."""
+    _patch_sync_seams(monkeypatch)
+    advanced: list[Any] = []
+
+    def moved(*a: Any, **k: Any) -> str:
+        advanced.append((a, k))
+        return "moved"
+
+    monkeypatch.setattr(land_slice._factory_git_mirror, "advance_local_main", moved)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    handle["factory_mirror_tips"] = {"main": "d" * 40}
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and advanced == []
+    assert any(
+        "local main advance: skipped" in t for k, t in pctx.chunks if k == "job_event"
+    )
 
 
 def test_poll_green_release_land_never_advances_main(
@@ -3051,6 +3724,8 @@ def test_poll_green_moves_the_plans_gripe_to_verify(seams: dict[str, Any]) -> No
     # A second land on the same plan (a fix slice) does not repeat the comment.
     store.tags[42] = [Tag.closed("STATUS", "doing"), Tag.open("plan:40")]
     store.chunks.rows[42] = []
+    (seams["tree"] / "scratch").mkdir(parents=True)  # the first land dropped it
+    (seams["tree"] / "scratch" / "land_slice.log").touch()
     ctx, handle = _submit(store, seams)
     _finish(handle, 0, GREEN_LOG)
     pctx = _Ctx(store, _params(seams))
@@ -3124,8 +3799,8 @@ def test_poll_nothing_new_lands_no_sha(
     [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
     assert "e249413a7" not in summary
     assert "no net diff" in summary and "gate td44: left pending" in summary
-    # the branch and worktree are still cleaned up
-    assert ["branch", "-D", "slice/42"] in _cleanup_cmds(seams)
+    # the clone and the todo's attempt refs are still cleaned up
+    assert _ws_names(seams) == ["drop", "delete_builds"]
 
 
 def test_poll_no_diff_reland_fills_the_gate_from_the_landed_comment(
@@ -3275,13 +3950,18 @@ def test_poll_green_writes_the_land_when_land_notify_did_not(
 # ── stack eviction (gr570133) ──────────────────────────────────────
 
 
-def test_poll_green_evicts_the_slice_stack(seams: dict[str, Any]) -> None:
+def test_poll_green_evicts_the_slice_stack(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
     """gr570133: a landed slice's warm compose stack comes down (-v —
     the tree goes too) BEFORE `git worktree remove`; a left-up project
-    kept a postgres and a sleep-infinity gate on the docker VM."""
+    kept a postgres and a sleep-infinity gate on the docker VM. A land's
+    own clone gets the same from ``_slice_ws.drop``; this is the linked
+    worktree (a PR land, a land minted before gr741695)."""
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     _ctx, handle = _submit(store, seams)
+    _legacy_handle(handle, tmp_path)
     _finish(handle, 0, GREEN_LOG)
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is True
@@ -3295,13 +3975,14 @@ def test_poll_green_evicts_the_slice_stack(seams: dict[str, Any]) -> None:
     assert "compose down: ok" in summary
 
 
-def test_cleanup_down_failure_is_a_note(seams: dict[str, Any]) -> None:
+def test_cleanup_down_failure_is_a_note(seams: dict[str, Any], tmp_path: Path) -> None:
     """A failed `compose down` is a cleanup note, never a job failure —
     the land is real either way."""
     seams["evict_ok"] = False
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     _ctx, handle = _submit(store, seams)
+    legacy = _legacy_handle(handle, tmp_path)
     _finish(handle, 0, GREEN_LOG)
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is True
@@ -3309,8 +3990,239 @@ def test_cleanup_down_failure_is_a_note(seams: dict[str, Any]) -> None:
     cleanup = pctx.meta_set["cleanup"]
     assert any(n.startswith("compose down: FAILED") for n in cleanup)
     # the rest of cleanup still ran
-    assert ["worktree", "remove", str(seams["tree"])] in _cleanup_cmds(seams)
+    assert ["worktree", "remove", str(legacy)] in _cleanup_cmds(seams)
     assert "compose down: ok" not in cleanup
+
+
+def test_a_failed_folder_drop_is_a_note_never_a_failure(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr741695: ``_slice_ws.drop`` answering ``False`` (or raising) is a
+    cleanup note — the land is real — and the hub's refs and the task's
+    ``build_ref`` are still cleared."""
+    from precis.workers.job_types import _slice_ws
+
+    monkeypatch.setattr(_slice_ws, "drop", lambda tree, *, notes=None: False)
+    store = _Store()
+    store.add_todo(
+        42, tags=("claimed-by:lane-claude-sub",), meta={"build_ref": {"a": 1}}
+    )
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert any(n.startswith("folder drop: FAILED") for n in pctx.meta_set["cleanup"])
+    assert _ws_args(seams, "delete_builds") == [42]
+    assert store.refs[42].meta["build_ref"] is None
+
+
+def test_the_build_floor_is_stamped_whatever_delete_builds_answered(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The floor is what makes a ref left behind harmless: a failing delete
+    (or one that raises) changes nothing about it."""
+
+    def boom(hub: Path, todo: int) -> str:
+        raise RuntimeError("update-ref failed")
+
+    monkeypatch.setattr(land_slice._slice_ws, "delete_builds", boom)
+    store = _Store()
+    store.add_todo(
+        42, tags=("claimed-by:lane-claude-sub",), meta={"build_ref": {"a": 1}}
+    )
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert any("delete FAILED" in n for n in pctx.meta_set["cleanup"])
+    assert store.refs[42].meta["build_floor"] == 901
+    assert store.refs[42].meta["build_ref"] is None
+
+
+def test_the_attempt_refs_stay_when_the_floor_could_not_be_stamped(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refs deleted under a ``build_ref`` that still names them, with no
+    floor in, refuse a reopened task at launch. With the store down for the
+    floor and the clearing stamp the refs are kept; the land stands."""
+    store = _Store()
+    store.add_todo(
+        42, tags=("claimed-by:lane-claude-sub",), meta={"build_ref": {"a": 1}}
+    )
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    real = store.stamp_ref_meta
+
+    def down(ref_id: int, stamps: dict[str, Any], *a: Any, **kw: Any) -> Any:
+        if "build_floor" in stamps or "build_ref" in stamps:
+            raise RuntimeError("store down")
+        return real(ref_id, stamps, *a, **kw)
+
+    monkeypatch.setattr(store, "stamp_ref_meta", down)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    assert _ws_args(seams, "delete_builds") == []
+    assert any(n.startswith("attempt refs kept") for n in pctx.meta_set["cleanup"])
+    assert store.refs[42].meta["build_ref"] == {"a": 1}
+    assert "build_floor" not in store.refs[42].meta
+
+
+def test_the_floor_is_stamped_before_the_land_record(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash between the land record and the cleanup (here: before the
+    record) must find the floor already on the task."""
+
+    def die(*a: Any, **k: Any) -> list[str]:
+        raise SystemExit("worker died")
+
+    monkeypatch.setattr(land_slice, "_record_land", die)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    with pytest.raises(SystemExit):
+        land_slice.poll(_Ctx(store, _params(seams)), handle)
+    assert store.refs[42].meta["build_floor"] == 901
+    assert _ws_names(seams) == []  # the cleanup never ran
+
+
+def test_a_conflict_stamp_reads_head_and_ref_from_the_cut(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A legacy land has no ``params.ref``, and ship's squash moved the
+    clone's branch: the stamp carries what the cut resolved and recorded on
+    the job."""
+    _conflict_git(seams, monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 1, REBASE_CONFLICT_LOG)
+    pctx = _Ctx(store, _params(seams))  # no params.head, no params.ref
+    pctx.meta[land_slice.LAND_START_KEY] = {
+        "head": HEAD,
+        "ref": "refs/factory/build/42/0",
+    }
+    assert land_slice.poll(pctx, handle) is True
+    conflict = store.refs[42].meta["conflict"]
+    assert conflict["head"] == HEAD and conflict["ref"] == "refs/factory/build/42/0"
+    assert conflict["job"] == 901 and isinstance(conflict["job"], int)
+
+
+def test_a_cut_records_what_it_resolved_on_the_job(seams: dict[str, Any]) -> None:
+    _cut_seams(seams, tip=SNAPSHOT)
+    store = _Store()
+    store.add_todo(42)
+    ctx, handle = _cut_submit(store, seams)
+    assert handle is not None
+    assert ctx.meta_set[land_slice.LAND_START_KEY] == {"head": HEAD, "ref": REF}
+
+
+def test_the_land_lock_file_goes_with_a_failed_land_whose_ship_is_gone(
+    seams: dict[str, Any],
+) -> None:
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    lock_dir, lock_name = _land_lock(seams)
+    assert (lock_dir / lock_name).exists()  # the launch took it
+    _finish(handle, 1, "x\n\x1b[31m✖ ruff: 1 error\x1b[0m\n")
+    assert land_slice.poll(_Ctx(store, _params(seams)), handle) is True
+    assert not (lock_dir / lock_name).exists()
+
+
+def test_a_held_land_lock_file_is_left_alone(seams: dict[str, Any]) -> None:
+    """Removing the file is only done while holding the lock: a ship (or
+    its orphan) still behind it keeps the file — and nobody can then take a
+    lock on a file that is no longer the one at the path."""
+    lock_dir, lock_name = _land_lock(seams)
+    held, fd, _detail = land_slice._try_land_lock(lock_dir, lock_name)
+    assert not held and fd is not None
+    try:
+        land_slice._unlink_land_lock(seams["tree"], 42)
+        assert (lock_dir / lock_name).exists()
+        busy, none_fd, _ = land_slice._try_land_lock(lock_dir, lock_name)
+        assert busy and none_fd is None
+    finally:
+        os.close(fd)
+    land_slice._unlink_land_lock(seams["tree"], 42)
+    assert not (lock_dir / lock_name).exists()
+
+
+def test_a_lock_on_a_replaced_file_is_not_a_lock(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A process that opened the lock file before another unlinked it must
+    not take a lock on the dead inode: ``_try_land_lock`` re-checks that the
+    file it locked is still the one at the path."""
+    lock_dir, lock_name = _land_lock(seams)
+    path = lock_dir / lock_name
+    real_open = os.open
+    opened: list[int] = []
+
+    def open_then_unlink(p: Any, flags: int, mode: int = 0o777) -> int:
+        fd = real_open(p, flags, mode)
+        if str(p) == str(path) and not opened:
+            opened.append(fd)
+            os.unlink(p)  # the land that held it removed it just now
+        return fd
+
+    monkeypatch.setattr(land_slice.os, "open", open_then_unlink)
+    held, fd, _detail = land_slice._try_land_lock(lock_dir, lock_name)
+    assert not held and fd is not None
+    # the lock we got is on the file that is there now
+    assert os.fstat(fd).st_ino == os.stat(path).st_ino
+    os.close(fd)
+
+
+def test_every_fail_reached_under_the_land_lock_names_its_folder_mode() -> None:
+    """The reviewer's guard: ``_fail`` drops the job's clone unless told
+    otherwise, and a failure reached while this worker holds the land lock
+    would read that lock as a ship. Every ``_fail`` call in
+    ``_launch_ship`` and in each function it can reach passes ``folder=``
+    explicitly — a new call site that forgets fails here."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(land_slice))
+    funcs = {
+        n.name: n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.col_offset == 0
+    }
+
+    def called(fn: ast.FunctionDef) -> set[str]:
+        return {
+            c.func.id
+            for c in ast.walk(fn)
+            if isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Name)
+            and c.func.id in funcs
+        }
+
+    reach: set[str] = set()
+    todo = ["_launch_ship"]
+    while todo:
+        name = todo.pop()
+        if name in reach:
+            continue
+        reach.add(name)
+        todo.extend(called(funcs[name]))
+    # the walk is not vacuous: it reaches the helpers that fail under the lock
+    assert {"_land_busy", "_clear_index_locks", "_sync_release"} <= reach
+    missing = [
+        f"{name}:{c.lineno}"
+        for name in sorted(reach - {"_fail", "_fail_workspace"})
+        for c in ast.walk(funcs[name])
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Name)
+        and c.func.id == "_fail"
+        and "folder" not in {k.arg for k in c.keywords}
+    ]
+    assert missing == [], f"_fail without folder= under the land lock: {missing}"
 
 
 def test_cleanup_skips_a_non_slice_tree_name(
@@ -3321,10 +4233,10 @@ def test_cleanup_skips_a_non_slice_tree_name(
     cleanup note says 'skipped', never 'FAILED'."""
     tree = tmp_path / ".claude" / "worktrees" / "pr-7-relock"
     (tree / "scratch").mkdir(parents=True)
-    seams["tree"] = tree
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     _ctx, handle = _submit(store, seams)
+    handle["worktree"] = str(tree)
     _finish(handle, 0, GREEN_LOG)
     pctx = _Ctx(store, _params(seams))
     assert land_slice.poll(pctx, handle) is True
@@ -3387,9 +4299,191 @@ def test_poll_red_lint_fails_with_the_cross_line(seams: dict[str, Any]) -> None:
     )
     assert "test_se_flow_tab.py:193: error:" in handoff
     assert "Found 2 errors" not in handoff and "All checks passed" not in handoff
-    # the branch and worktree stay for the fix round
+    # gr741695: nothing is kept for the fix round — the hub holds the
+    # commit — so the land's clone is dropped (and no branch is pushed);
+    # the attempt refs stay: the rebuild continues from them
     assert _cleanup_cmds(seams) == []
+    assert _ws_names(seams) == ["drop"]
+    assert not seams["tree"].exists()
     assert "landed_sha" not in pctx.meta_set
+
+
+def test_a_red_land_saves_nothing_and_leaves_the_hub_alone(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old park-save pushed the branch tip to GitHub on every red; the
+    lander adds no work of its own now, so nothing is pushed."""
+    pushed: list[Any] = []
+
+    def push(*a: Any, **k: Any) -> str:
+        pushed.append(a)
+        return "ok"
+
+    monkeypatch.setattr(land_slice, "_push_branch", push)
+    store = _Store()
+    store.add_todo(
+        42, tags=("claimed-by:lane-claude-sub",), meta={"build_ref": {"a": 1}}
+    )
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 1, "x\n\x1b[31m✖ ruff: 1 error\x1b[0m\n")
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed" and pushed == []
+    assert _ws_names(seams) == ["drop"]  # no delete_builds: the work is unlanded
+    assert store.refs[42].meta["build_ref"] == {"a": 1}
+    assert any("dropped" in t for k, t in pctx.chunks if k == "job_event")
+
+
+def test_a_red_with_a_ship_still_behind_the_folder_keeps_it(
+    seams: dict[str, Any],
+) -> None:
+    """The folder is dropped only once the ship is gone: a descendant of the
+    exited ship still holds the land lock, so the clone is left for the
+    host sweep (which settles a terminal land's folder as holding nothing)."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 1, "x\n\x1b[31m✖ ruff: 1 error\x1b[0m\n")
+    held, fd, _detail = land_slice._try_land_lock(*_land_lock(seams))
+    assert not held and fd is not None
+    land_slice._stamp_lock_holder(fd, 99999, 42, "slice/42", SUBJECT)
+    seams["alive"] = False
+    try:
+        pctx = _Ctx(store, _params(seams))
+        assert land_slice.poll(pctx, handle) is True
+    finally:
+        os.close(fd)
+    assert pctx.status == "failed"
+    assert _ws_names(seams) == [] and seams["tree"].is_dir()
+    assert any(
+        "kept for the host sweep" in t for k, t in pctx.chunks if k == "job_event"
+    )
+
+
+def test_a_failure_before_launch_drops_the_folder_it_cut(
+    seams: dict[str, Any],
+) -> None:
+    """A deferral before any ship (here a blind drift probe past its cap)
+    holds the land lock itself; that is not a ship, so the clone goes."""
+    seams["preflight"] = _preflight(0, "", BLIND_DIAG)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = land_slice._launch_ship(
+        _Ctx(store, _params(seams)),
+        seams["tree"],
+        "--quick",
+        SUBJECT,
+        carry={"main_refusals": land_slice.MAX_MAIN_REFUSALS},
+    )
+    assert handle is None
+    assert _ws_args(seams, "drop") == [seams["tree"]]
+
+
+# ── a land red on a conflict stamps the task (gr741695) ────────────
+
+REBASE_CONFLICT_LOG = (
+    "quick ship (--quick)\n"
+    "CONFLICT (content): Merge conflict in src/precis/x.py\n"
+    "\x1b[31m✖ rebase conflict onto origin/main — resolve in /w, then 'git add "
+    "-A && GIT_EDITOR=true git rebase --continue' and re-run scripts/ship (or "
+    "'git rebase --abort' to back out).\x1b[0m\n"
+    "SHIP_STATUS: conflict\n"
+)
+MERGE_CONFLICT_LOG = REBASE_CONFLICT_LOG.replace(
+    "rebase conflict onto origin/main", "merge conflict integrating origin/main"
+)
+BASE_TIP = "b" * 40
+
+
+def _conflict_git(seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """The clone as ship left it mid-rebase: two conflicted paths and an
+    ``origin/main`` tip; reads are recorded with the folder's existence."""
+    inner = land_slice._git
+    seams["conflict_reads"] = []
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args == ["diff", "--name-only", "--diff-filter=U"]:
+            seams["conflict_reads"].append(Path(cwd).exists())
+            return _proc("src/precis/x.py\ntests/test_x.py\n")
+        if args == ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"]:
+            return _proc(BASE_TIP + "\n")
+        return inner(args, cwd)
+
+    monkeypatch.setattr(land_slice, "_git", git)
+
+
+@pytest.mark.parametrize("log", [REBASE_CONFLICT_LOG, MERGE_CONFLICT_LOG])
+def test_a_rebase_or_merge_conflict_stamps_the_task_before_the_drop(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, log: str
+) -> None:
+    _conflict_git(seams, monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx = _Ctx(store, {**_params(seams), "head": HEAD, "ref": REF})
+    handle = land_slice.submit(ctx, None)
+    _finish(handle, 1, log)
+    pctx = _Ctx(store, {**_params(seams), "head": HEAD, "ref": REF})
+
+    assert land_slice.poll(pctx, handle) is True
+
+    # the red is the ordinary one: an attempt is charged, the handoff as ever
+    assert pctx.status == "failed" and "attempt:1" in store.tag_strings(42)
+    assert store.comments(42)[-1].startswith("handoff: lander: land FAILED on slice/42")
+    conflict = store.refs[42].meta["conflict"]
+    assert conflict["head"] == HEAD and conflict["base_tip"] == BASE_TIP
+    assert conflict["ref"] == REF
+    assert conflict["files"] == ["src/precis/x.py", "tests/test_x.py"]
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", conflict["at"])
+    # the dispatcher compares job ids, not this host's clock with the database's
+    assert conflict["job"] == 901 and isinstance(conflict["job"], int)
+    assert set(conflict) == {"head", "ref", "base_tip", "files", "at", "job"}
+    # read from the clone while it was still there, then the folder went
+    assert seams["conflict_reads"] == [True]
+    assert _ws_names(seams) == ["drop"] and not seams["tree"].exists()
+
+
+def test_a_conflict_stamp_falls_back_to_the_pending_land_then_the_branch(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _conflict_git(seams, monkeypatch)
+    store = _Store()
+    store.add_todo(
+        42,
+        tags=("claimed-by:lane-claude-sub",),
+        meta={"pending_land": {"head": HEAD}},
+    )
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 1, REBASE_CONFLICT_LOG)
+    assert land_slice.poll(_Ctx(store, _params(seams)), handle) is True
+    assert store.refs[42].meta["conflict"]["head"] == HEAD
+
+
+@pytest.mark.parametrize(
+    "log",
+    [
+        "x\n\x1b[31m✖ ruff: 1 error\x1b[0m\n",  # an ordinary red
+        # outside the diff: attempt-free, nothing to resolve
+        "x\n\x1b[31m✖ gate exited 137 (SIGKILL)\x1b[0m\n",
+    ],
+)
+def test_no_conflict_stamp_without_a_conflict_line(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, log: str
+) -> None:
+    _conflict_git(seams, monkeypatch)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 1, log)
+    land_slice.poll(_Ctx(store, _params(seams)), handle)
+    assert "conflict" not in store.refs[42].meta
+    assert seams["conflict_reads"] == []
+
+
+def test_is_conflict_refusal() -> None:
+    assert land_slice.is_conflict_refusal("✖ rebase conflict onto origin/main — x")
+    assert land_slice.is_conflict_refusal("✖ merge conflict integrating origin/main")
+    assert not land_slice.is_conflict_refusal("✖ release conflict — ask")
+    assert not land_slice.is_conflict_refusal(None)
 
 
 # ── the failing lines survive (gr573347 a) ─────────────────────────
@@ -4318,8 +5412,10 @@ def test_preflight_past_the_cap_fails_blocked_without_a_launch(
         + land_slice.UNKNOWN_GATE_CROSS
     ) in pctx.failure
     assert any("land BLOCKED on slice/42" in c for c in store.comments(42))
-    [(kind, text)] = pctx.chunks
+    [(kind, text)] = [c for c in pctx.chunks if c[0] == "job_summary"]
     assert kind == "job_summary" and BLIND_DIAG in text
+    # nothing was launched, so the clone is dropped with the failure
+    assert _ws_args(seams, "drop") == [seams["tree"]]
 
 
 def test_drift_preflight_prefers_mains_helper_over_the_branchs(
@@ -5046,6 +6142,9 @@ def test_collected_count_parses_the_selected_items(
     """``-m 'not slow'`` deselects inside the collect: the FIRST number
     of ``N/M tests collected`` is what the gate runs; a collect that
     fails or selects nothing is unbounded (``None``), not zero."""
+    # land_env resolves the host root for the git ceiling: pin it, so the
+    # patched subprocess.run below sees only the collect probe
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
     argv_seen: list[list[str]] = []
 
     def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
@@ -5884,49 +6983,48 @@ def test_poll_deselect_wait_re_arms_the_wall(
     )
 
 
-def test_kill_pushes_the_slice_branch_to_origin(
+def test_kill_signals_ship_and_pushes_nothing(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr598110: a killed land pushes ``slice/<id>`` to origin first —
-    the commit survives a worktree reap."""
+    """gr741695: a killed land SIGTERMs ship and pushes no branch (it used
+    to push ``slice/<id>`` so the commit survived a worktree reap, gr598110:
+    the hub holds the commit now). The clone is left for the janitor."""
     pushed: list[tuple[str, str]] = []
 
-    def fake_push(tree: Path, branch: str) -> str:
+    def push(tree: Path, branch: str, sha: str | None = None) -> str:
         pushed.append((str(tree), branch))
         return "ok"
 
-    monkeypatch.setattr(land_slice, "_push_branch", fake_push)
+    monkeypatch.setattr(land_slice, "_push_branch", push)
+    signalled: list[tuple[int, int]] = []
     # The fake ship pgid (5151) is a real id on the runner: never signal it.
-    monkeypatch.setattr(land_slice._rs, "_signal_group", lambda pgid, sig: None)
+    monkeypatch.setattr(
+        land_slice._rs, "_signal_group", lambda pgid, sig: signalled.append((pgid, sig))
+    )
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     _ctx, handle = _submit(store, seams)
     ctx = _Ctx(store, _params(seams))
     land_slice.kill(ctx, handle)
-    assert pushed == [(str(seams["tree"]), "slice/42")]
+    assert signalled == [(5151, signal.SIGTERM)]
+    assert pushed == []
+    assert seams["tree"].is_dir() and _ws_names(seams) == []
 
 
 def test_kill_skips_a_pgid_owned_by_another_user(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A reused pgid owned by another user (EPERM) is skipped, not raised:
-    the branch push still runs (r331's red gate, a real 5151 on the runner)."""
-    pushed: list[str] = []
+    """A reused pgid owned by another user (EPERM) is skipped, not raised
+    (r331's red gate, a real 5151 on the runner)."""
 
     def eperm(pgid: int, sig: int) -> None:
         raise PermissionError(1, "Operation not permitted")
 
-    def fake_push(tree: Path, branch: str) -> str:
-        pushed.append(branch)
-        return "ok"
-
-    monkeypatch.setattr(land_slice, "_push_branch", fake_push)
     monkeypatch.setattr(land_slice._rs, "_signal_group", eperm)
     store = _Store()
     store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
     _ctx, handle = _submit(store, seams)
     land_slice.kill(_Ctx(store, _params(seams)), handle)
-    assert pushed == ["slice/42"]
 
 
 # ── outside-diff reds verified before charging (gr573347 b) ────────
@@ -6074,6 +7172,35 @@ def test_poll_checked_red_outside_alone_green_is_attempt_free(
     assert "green standalone" in summary and OUTSIDE_ID in summary
 
 
+def test_main_probe_skips_the_refresh_when_the_hub_cannot_be_synced(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hub's main is only as new as the sync: when GitHub cannot be read
+    the forced fetch is skipped — it could move the checkout's origin/main
+    backwards — the probe tests what the checkout has, and the job event
+    says so."""
+    monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
+    monkeypatch.setattr(land_slice, "_checked_selection_full", lambda tree: False)
+    seams["diff_names"] = "src/precis/x.py\n"
+    seams["sync_tip"] = None
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    handle = _checked_submit(store, seams)
+    _finish(handle, 1, CHECKED_RED_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    _verify_finish(handle, 1)
+    assert land_slice.poll(pctx, handle) is False
+    assert handle["verify"]["phase"] == "main"
+    calls = [a for a, _ in seams["git"]]
+    assert not any(
+        a[0] == "fetch" and a[-1] == "+refs/heads/main:refs/remotes/origin/main"
+        for a in calls
+    )
+    assert any(a[:2] == ["worktree", "add"] for a in calls)  # still probes
+    assert any("could not be synced" in t for k, t in pctx.chunks if k == "job_event")
+
+
 def test_poll_checked_red_outside_alone_red_main_red_deselects_then_quick(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6099,6 +7226,20 @@ def test_poll_checked_red_outside_alone_red_main_red_deselects_then_quick(
     assert verify["phase"] == "main" and verify["run_tree"] == str(main_tree)
     adds = [a for a, _ in seams["git"] if a[:2] == ["worktree", "add"]]
     assert adds == [["worktree", "add", "--detach", str(main_tree), "origin/main"]]
+    # the host checkout's origin/main comes from the hub first: no land
+    # fetches in that checkout any more
+    calls = [a for a, _ in seams["git"]]
+    refresh = next(
+        i
+        for i, a in enumerate(calls)
+        if a[0] == "fetch" and a[-1] == "+refs/heads/main:refs/remotes/origin/main"
+    )
+    assert calls[refresh][-2].endswith("precis-hub.git")
+    assert refresh < calls.index(adds[0])
+    # and the hub is synced from GitHub (main) first, so the forced fetch
+    # cannot move the checkout's origin/main backwards
+    syncs = [a for a in _ws_args(seams, "sync_hub") if a["base"] == "main"]
+    assert len(syncs) == 1 and syncs[0]["url"] == GITHUB_URL  # the folder was there
     argv, kw = seams["launch"][-1]
     assert argv == [str(main_tree / "scripts" / "test"), OUTSIDE_ID]
     assert kw["cwd"] == main_tree
@@ -7066,6 +8207,8 @@ def test_stub_ship_through_the_real_launcher(
 
     monkeypatch.setattr(land_slice, "_launch", real_launch)
     monkeypatch.setattr(land_slice, "_process_alive", run_slice._process_alive)
+    # the clone's drop would take the ship log with it: leave the folder
+    monkeypatch.setattr(land_slice._slice_ws, "drop", lambda tree, *, notes=None: True)
     store = _Store()
     store.add_todo(42)
     ctx, handle = _submit(store, seams)
@@ -7352,6 +8495,13 @@ def _job_events(ctx: _Ctx) -> str:
     return "\n".join(t for k, t in ctx.chunks if k == "job_event")
 
 
+def _land_lock(seams: dict[str, Any], todo: int = 42) -> tuple[Path, str]:
+    """Where a land's own clone takes its lock (gr741695): the host
+    checkout's git common dir (the hub's parent), one file per todo."""
+    root = Path(seams["tree"]).parents[2]
+    return root / ".git", land_slice.LAND_LOCK_TODO_FILE.format(todo=todo)
+
+
 def test_foreign_ship_lockdir_holder_defers_retryable(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -7389,8 +8539,7 @@ def test_foreign_slice_land_lock_defers_retryable(
     """gr650484: a live pid holds ``<gitdir>/precis-land.lock`` behind a
     DIFFERENT slice's stamp — not adoptable, so the job defers
     attempt-free; a green exit could leave no land record anywhere."""
-    gitdir = Path(seams["gitdir"])
-    held, fd, _detail = land_slice._try_land_lock(gitdir)
+    held, fd, _detail = land_slice._try_land_lock(*_land_lock(seams))
     assert not held and fd is not None
     land_slice._stamp_lock_holder(fd, 5150, 99, "slice/99", "feat(x): w (td99)")
     try:
@@ -7436,10 +8585,11 @@ def test_own_ship_stamp_is_adopted_not_relaunched(
     slice's stamp — the earlier land's ship is still running, so this
     job adopts it (polls its exit file, lands the record) instead of
     exiting clean or launching a second ship."""
-    gitdir = Path(seams["gitdir"])
-    held, fd, _detail = land_slice._try_land_lock(gitdir)
+    held, fd, _detail = land_slice._try_land_lock(*_land_lock(seams))
     assert not held and fd is not None
-    land_slice._stamp_lock_holder(fd, 5150, 42, "slice/42", SUBJECT)
+    land_slice._stamp_lock_holder(
+        fd, 5150, 42, "slice/42", SUBJECT, tree=str(seams["tree"])
+    )
     try:
         store = _Store()
         store.add_todo(42)
@@ -7486,9 +8636,8 @@ def test_second_submit_in_the_prelaunch_window_never_adopts_the_worker(
     assert ctx2.meta_set["attempt_free"] == "infra-land"
     assert ctx2.meta_set["red_class"] == "ship-busy"
     # Once ship is up the stamp names its pid, not the worker's.
-    stamp = (Path(seams["gitdir"]) / land_slice.LAND_LOCK_FILE).read_text(
-        encoding="utf-8"
-    )
+    lock_dir, lock_name = _land_lock(seams)
+    stamp = (lock_dir / lock_name).read_text(encoding="utf-8")
     assert f"pid={os.getpid()} " not in stamp and "pid=5151" in stamp
     for own in (
         {"pid": os.getpid(), "pgid": os.getpgrp()},
@@ -7507,8 +8656,7 @@ def test_adopted_checked_ship_full_refusal_relaunches_quick(
     one, instead of a flagless handle's default reading ``--quick`` and
     turning the lane refusal into a red land."""
     monkeypatch.delenv("PRECIS_LAND_FULL_FALLBACK", raising=False)
-    gitdir = Path(seams["gitdir"])
-    held, fd, _detail = land_slice._try_land_lock(gitdir)
+    held, fd, _detail = land_slice._try_land_lock(*_land_lock(seams))
     assert not held and fd is not None
     os.write(
         fd,
@@ -7549,8 +8697,7 @@ def test_dead_stamp_pid_with_live_holders_is_retryable_orphan(
     still held — orphaned descendants pin the inherited fd — so the job
     fails retryable naming the holder pids lsof reports, never
     "already shipping"."""
-    gitdir = Path(seams["gitdir"])
-    held, fd, _detail = land_slice._try_land_lock(gitdir)
+    held, fd, _detail = land_slice._try_land_lock(*_land_lock(seams))
     assert not held and fd is not None
     land_slice._stamp_lock_holder(fd, 99999, 42, "slice/42", SUBJECT)
     seams["alive"] = False  # the stamped pid is dead
@@ -7608,11 +8755,13 @@ def test_launch_passes_the_land_flock_fd_to_ship(
     assert fds and all(isinstance(fd, int) and fd >= 100 for fd in fds)
     # The holder stamp names the launched ship's pid and slice for the
     # next land's adopt-or-defer decision.
-    stamp = (gitdir / land_slice.LAND_LOCK_FILE).read_text(encoding="utf-8")
+    lock_dir, lock_name = _land_lock(seams)
+    stamp = (lock_dir / lock_name).read_text(encoding="utf-8")
     assert "pid=5151" in stamp and "td=42" in stamp
+    assert f"tree={seams['tree']}" in stamp
     # The parent closed its copies after launch; with no real child
     # keeping it the lock is acquirable again (never a wedging residue).
-    held, fd, _detail = land_slice._try_land_lock(gitdir)
+    held, fd, _detail = land_slice._try_land_lock(lock_dir, lock_name)
     try:
         assert not held
     finally:
@@ -7864,9 +9013,7 @@ def test_already_on_main_identical_tree_finishes_green_without_ship(
     assert ctx.meta_set["ship_status"] == "already-landed"
     assert ctx.meta_set.get("landed_sha") is None
     assert any("landed: nothing" in c for c in store.comments(42))
-    gits = [a for a, _cwd in seams["git"]]
-    assert ["worktree", "remove", str(seams["tree"])] in gits
-    assert ["branch", "-D", "slice/42"] in gits
+    assert _ws_names(seams) == ["drop", "delete_builds"]
 
 
 def test_already_on_main_subject_match_finishes_with_sha(
@@ -8184,3 +9331,56 @@ def test_reconcile_free_lock_without_current_evidence_is_unknown(
     assert land_slice._ship_busy(Path(seams["tree"]), 42, "slice/42") is None
     assert land_slice.reconcile(ctx) is None
     assert seams["launch"] == []
+
+
+# ── a tip that is a wip snapshot is never landed unnamed ───────────
+
+
+def test_head_below_a_wip_tip_still_lands_head(seams: dict[str, Any]) -> None:
+    """``head`` is named: the wip snapshot above it is not what lands."""
+    _cut_seams(seams, tip=SNAPSHOT)
+    seams["wip"].add(SNAPSHOT)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+
+    ctx, handle = _cut_submit(store, seams)
+
+    assert ctx.failure is None and handle is not None
+    assert seams["checkout"][-1] == HEAD
+
+
+def test_no_head_and_a_wip_tip_is_refused_attempt_free(seams: dict[str, Any]) -> None:
+    """Nothing names the commit to land and the ref's newest commit is an
+    unfinished snapshot (it can carry stashes and other branches as extra
+    parents — content no reviewer saw): refused, nothing cut or landed."""
+    _no_folder(seams)
+    seams["hub_tips"][REF] = SNAPSHOT
+    seams["wip"].add(SNAPSHOT)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx = _Ctx(store, {**_params(seams), "ref": REF})
+
+    assert land_slice.submit(ctx, None) is None
+
+    assert ctx.failure is not None
+    assert "newest work of td42" in ctx.failure
+    assert "unfinished snapshot; next: let a build finish it" in ctx.failure
+    assert ctx.meta_set["attempt_free"] == "infra-land"
+    assert "attempt:1" not in store.tag_strings(42)
+    assert "cut" not in _ws_names(seams) and seams["launch"] == []
+    assert not seams["tree"].exists()
+
+
+def test_no_head_and_a_finished_tip_lands_the_tip(seams: dict[str, Any]) -> None:
+    _no_folder(seams)
+    seams["hub_tips"][REF] = SNAPSHOT  # not a wip commit here
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx = _Ctx(store, {**_params(seams), "ref": REF})
+
+    handle = land_slice.submit(ctx, None)
+
+    assert ctx.failure is None and handle is not None
+    [cut] = _ws_args(seams, "cut")
+    assert cut["start"].sha == SNAPSHOT
+    assert ctx.meta_set[land_slice.LAND_START_KEY]["head"] == SNAPSHOT

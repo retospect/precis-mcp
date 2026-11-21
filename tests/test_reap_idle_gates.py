@@ -192,6 +192,23 @@ class Env:
         self.age_tree(path, idle_h)
         return path
 
+    def clone(self, name: str) -> Path:
+        """A factory attempt folder: a standalone clone (not a registered
+        worktree) under the primary's ``.claude/worktrees``, idle and with
+        no session, so only its not being a worktree protects it."""
+        path = self.primary / ".claude" / "worktrees" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "clone", "-q", "--local", str(self.primary), str(path)],
+            check=True,
+            capture_output=True,
+        )
+        t = self.now - 30 * HOUR
+        for p in (path / ".git" / "index", path / ".git" / "HEAD"):
+            if p.exists():
+                os.utime(p, (t, t))
+        return path
+
     def age_tree(self, path: Path, idle_h: float) -> None:
         gitdir = Path(
             (path / ".git").read_text(encoding="utf-8").split("gitdir: ")[1].strip()
@@ -490,6 +507,38 @@ def test_orphan_gate_cache_volume_is_reaped_only_when_unminted(env: Env) -> None
     out = env.run()
     assert "reaped 1: precis-test-long-gone_gate-cache" in out.stdout
     assert env.removals() == [["volume", "rm", "precis-test-long-gone_gate-cache"]]
+
+
+@pytest.mark.parametrize("name", ["slice-td5-j6", "slice-td5-land-j7"])
+def test_attempt_clone_pair_is_never_reaped(env: Env, name: str) -> None:
+    """A factory attempt folder is a clone, not a worktree: however idle its
+    warm pair is, the engine's janitor owns it and this reaper keeps it."""
+    clone = env.clone(name)
+    env.pair(f"precis-test-{name}", clone)
+    out = env.run()
+    assert out.returncode == 0, out.stderr
+    assert env.removals() == []
+    assert f"precis-test-{name}_gate-cache" in env.remaining()["volumes"]
+    assert (
+        f"keep precis-test-{name}: not a registered worktree"
+        in env.run("--dry-run").stdout
+    )
+
+
+def test_gate_cache_volume_of_a_live_attempt_clone_is_kept(env: Env) -> None:
+    """Between two compose runs a live clone has no container; the orphan
+    volume pass must still count its folder as minting the project name.
+    Once the folder is gone the volume is an orphan like any other."""
+    clone = env.clone("slice-td5-j6")
+    env.volume("precis-test-slice-td5-j6")
+    env.volume("precis-test-slice-td5-j9")  # no such folder
+    out = env.run()
+    assert "reaped 1: precis-test-slice-td5-j9_gate-cache" in out.stdout
+    assert env.removals() == [["volume", "rm", "precis-test-slice-td5-j9_gate-cache"]]
+    shutil.rmtree(clone)
+    env.state["volumes"] = [v for v in env.state["volumes"] if "j9" not in v["Name"]]
+    out = env.run()
+    assert env.removals() == [["volume", "rm", "precis-test-slice-td5-j6_gate-cache"]]
 
 
 def test_no_autoreap_is_a_no_op(env: Env) -> None:

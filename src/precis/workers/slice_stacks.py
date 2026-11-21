@@ -245,8 +245,11 @@ def _tree_of(containers: list[Container]) -> Path | None:
 
 
 def _git_dir(tree: Path) -> Path | None:
-    """The tree's real git dir — ``.git`` itself, or the ``gitdir:`` a
-    worktree's ``.git`` file points at."""
+    """The tree's real git dir — ``.git`` itself (a standalone clone, the
+    shape of a factory attempt folder), or the ``gitdir:`` a linked
+    worktree's ``.git`` file points at. Either way it is the directory
+    ``scripts/test`` writes its run markers under
+    (``git rev-parse --absolute-git-dir``)."""
     dotgit = tree / ".git"
     if dotgit.is_dir():
         return dotgit

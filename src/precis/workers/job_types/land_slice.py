@@ -2,17 +2,70 @@
 
 Spec: `me692430` § "Branches: who merges what, how"
 (the builder commits on its branch only; the lander lands it with
-``scripts/ship`` and deletes the branch and its worktree). Mechanical: no
+``scripts/ship`` and drops its folder). Mechanical: no
 LLM. :mod:`precis.workers.job_types.run_slice` mints one of these (idem key
-``land_slice:td<id>``, a child of the slice todo, pinned to the host that
-holds the worktree) once a build session exited clean and its branch passed
-the deny-path check. The land re-checks the resolved deny set before
-launching ship — the last gate (gr645524): a denied diff is refused with
-the ``human_only_hit`` stamp, so the tick's ruling ask opens on the frozen
-branch rather than a rebuild that can never land. One named exception
-(td659522): the ``autocatpath_min_version`` line of
+``land_slice:td<id>``, a child of the slice todo, pinned to the host whose
+hub holds the build) once a build session exited clean, its work was pushed
+to the hub and its branch passed the deny-path check. The land re-checks the
+resolved deny set before launching ship — the last gate (gr645524): a denied
+diff is refused with the ``human_only_hit`` stamp, so the tick's ruling ask
+opens on the frozen branch rather than a rebuild that can never land. One
+named exception (td659522): the ``autocatpath_min_version`` line of
 ``deploy/group_vars/all.yml`` in a pin-bump node's own commit, proved by
 :func:`pin_bump.land_refusal` (:func:`_pin_exempt`).
+
+**The land's own folder** (gr741695, :mod:`._slice_ws`). The builder's
+folder is gone by the time the lander runs, and the lander never enters a
+folder another job made: :func:`submit` cuts a fresh clone,
+``_slice_ws.attempt_dir(root, todo, <this job>, ROLE_LAND)`` (``slice-td<id>-
+land-j<job>``), from the host's hub at ``params.head``, the commit to land,
+which the hub holds under ``params.ref``
+(:func:`_cut_land_folder`, :func:`_land_start`). The hub's copy of the land
+target is synced from GitHub first (``sync_hub``); ``params.worktree`` is
+ignored. ``head`` must be the ref's tip or an ancestor of it — the ref may
+carry a ``wip:`` snapshot on top, and the land takes ``head``; a ref that no
+longer holds it, a ref the host's hub lacks or an unreadable hub fails the
+land attempt-free under ``infra-land`` with the workspace layer's message
+(:func:`_fail_workspace`), nothing landed. A land minted before the switch
+has no ``ref``: its work is looked for in the hub's own
+``refs/factory/build/<id>/0`` (deleted and imported again when it does not
+hold ``head``), then in the host checkout's local ``slice/<id>`` (fetched
+into the hub from the checkout's path when it holds ``head``), then on
+GitHub under ``refs/factory/slice/<id>`` (``import_legacy``); ``head`` falls
+back to ``meta.pending_land.head``, else that ref's tip. What the cut
+resolved (``{head, ref}``) goes on the job meta (:data:`LAND_START_KEY`) for
+the conflict stamp. The clone's ``origin`` is
+then set to the repository's GitHub url (what the mirror's url rewrite and
+``scripts/ship`` expect; the cut pointed it at the hub) while the base's
+tracking ref it fetched stays. A folder that already exists under the job's
+own name is the job's when a ship was ever launched in it (the job's
+``meta.compute_handle``, a proven launch, or the ship's log or exit file in
+the folder; :func:`_launch_on_record`): a job resumed after an outage, or
+adopting a ship it launched, re-enters it and cuts nothing. A folder with no
+launch on record and no ship behind it is an unfinished cut (the worker died
+between the cut's rename and its last step): it holds nothing of its own, so
+it is dropped and cut again. Everything from there to the end
+of the ship runs in the clone exactly as it did in the builder's worktree —
+locks, ``index.lock`` handling, the release sync, the stack sweep, the
+mirror populate, the drift preflight, the launch and the verify phases; only
+the ``slice-main-td<id>`` probe tree stays a worktree of the host checkout.
+The clone's git dir is ``<clone>/.git`` and is its own: nothing in it is
+shared with another land or with the host checkout, so the land's ``precis-
+land.lock`` for a clone lives in the host checkout's git common dir, one
+file per todo (:func:`_land_lock_where`) — what it serialises was only ever
+two ships of one slice (the old file sat in each slice's own worktree
+gitdir), which share the todo's mirror. Its stamp names the folder
+(``tree=``), and a ship of the same todo running in another job's folder is
+a retryable busy, not an adoption. The lock file is removed when the land
+that held it ends and nothing holds it (:func:`_unlink_land_lock`); a lock
+counts only when the file locked is still the one at the path
+(:func:`_try_land_lock`), which is what makes the removal safe. A PR land
+(``params.pr``) keeps its worktree and the old per-gitdir lock. After a land
+the task's ``meta.build_floor`` is this land job's id (stamped when the land
+record starts and again by the cleanup): an attempt ref below it is never
+continued from, whatever the cleanup could delete. The main probe syncs the
+hub's main from GitHub before refreshing the host checkout's ``origin/main``
+from it, and skips the refresh when the sync cannot say.
 
 Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
 
@@ -23,7 +76,7 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   ``(td<id>)`` so ``scripts/lib/land_notify.py`` moves the todo, the
   whole capped at :data:`SUBJECT_CAP` characters cut at a word boundary
   (gr574383). Then it launches
-  ``scripts/ship --quick "<subject>"`` detached in the worktree
+  ``scripts/ship --quick "<subject>"`` detached in the land's clone
   (``PRECIS_SHIP_BIN`` overrides the
   path; ``PRECIS_SHIP_VERBOSE=1`` so the log holds the whole transcript;
   ``PRECIS_GATE_N`` caps the checked gate's xdist workers at
@@ -58,7 +111,8 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   mirror. Every credential-bearing call runs through the trusted
   boundary — a fresh ops gitdir, hooks off, no system/global/local
   config, no ``refs/replace`` substitution — because the mirror, the
-  worktree gitdir and the shared common dir are all branch-writable; and
+  clone's gitdir and the host checkout's common dir are all
+  branch-writable; and
   every GitHub answer is compared
   against an ``ls-remote`` oracle no on-disk config can redirect. The
   launch tips that CAS those pushes persist beside the mirror — never
@@ -113,12 +167,18 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   ``gripe-fix`` plan's gate also moves the plan's gripe to the verify rung
   (``resolved: <sha>`` + ``STATUS:verify``, :func:`_notify_gripe`;
   gr561932), so ``gripe_validate`` closes it once the sha is on prod. Then
-  cleanup (:func:`_cleanup`): the tree's ``precis-test-slice-*`` compose
-  project is brought down (``-v``; it used to stay warm forever —
-  gr570133, and the SessionStart reapers never run on this host), then
-  ``git worktree remove``, ``git branch -D slice/<id>`` and, when the
-  ``ls_remote`` oracle shows the branch on origin, an ops-repo
-  ``push --delete`` (:func:`_delete_remote_branch`). A cleanup
+  cleanup (:func:`_cleanup`): the land's clone is dropped
+  (:func:`_slice_ws.drop`: its ``precis-test-slice-*`` compose project
+  down with ``-v`` — it used to stay warm forever, gr570133, and the
+  SessionStart reapers never run on this host — then the directory, the
+  branch with it), the todo's attempt refs are deleted from the hub
+  (``delete_builds``) and ``meta.build_ref`` is cleared on the task (a ref
+  left behind would start a later attempt from commits already landed),
+  and, when the ``ls_remote`` oracle shows a legacy ``slice/<id>`` ref on
+  origin (what the engine before gr741695 pushed), an ops-repo
+  ``push --delete`` removes it (:func:`_delete_remote_branch`). A PR
+  land's worktree is still removed with ``worktree remove`` and
+  ``branch -D``. A cleanup
   step that fails is reported in the summary, not a job failure: the land
   is real. Every launch — the first and each deferral relaunch — first
   sweeps the host's other finished slice stacks
@@ -147,13 +207,19 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   set: ``plan_dispatch`` goes to the re-land ask — never an automatic
   re-land (the same 137 can be the branch's own memory). The one
   exception is a plain ``index.lock`` wait (gr684320): the lander never
-  force-reaps (that is the slice submit's, D2), so a lock still held
-  past the brief wait fails attempt-free ``"index-lock"`` *verbatim* —
-  the dispatcher reads a plain wait as self-clearing (exempt from the
-  re-land cap and the free-failure ask) and re-mints the land; every
-  reap, either side, records job meta ``index_lock_reaped`` for the
-  re-formed-lock escalation. The branch and
-  worktree stay for that session. A ✖ about *main* (:func:`is_main_refusal`:
+  force-reaps, so a lock still held past the brief wait fails
+  attempt-free ``"index-lock"`` *verbatim* — the dispatcher re-mints the
+  land without a builder and outside the re-land cap, backs off like any
+  repeated free failure and asks once the same reason has run to its
+  cap. Nothing is saved on a red: the lander adds no
+  work of its own and the hub holds the commit that was to land, so the
+  land's clone is dropped once no ship is behind it
+  (:func:`_drop_land_folder`; a folder with a live ship is left for the
+  host sweep). An ordinary red whose ship line is a rebase or merge conflict
+  (:data:`CONFLICT_MARKS`) first stamps the task's ``meta.conflict``
+  (:data:`CONFLICT_KEY`: ``{head, ref, base_tip, files, at, job}``, the
+  conflicted paths as git reports them in the clone), which the dispatcher
+  reads to mint a conflict-only attempt. A ✖ about *main* (:func:`is_main_refusal`:
   the drift guard's two refusals) is a deferral, not a red: poll counts it
   (``handle.main_refusals``), parks the handle for
   :func:`refusal_backoff_s` (``handle.not_before``, default 30 min), then
@@ -217,7 +283,9 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   exclusion-record failure falls back to the ordinary red.
 * :func:`kill` SIGTERMs the live phase's process group (a running
   verify's during verify, ship's otherwise) and drops the main probe's
-  worktree and stack. A WALL-DEADLINE kill additionally carries
+  worktree and stack; it pushes no branch (gr741695: the hub holds the
+  commit to land) and leaves the clone for the host sweep. A
+  WALL-DEADLINE kill additionally carries
   :data:`DEADLINE_KILL_META` — applied by ``ssh_node``'s terminalize write
   as :attr:`~precis.workers.job_types.JobTypeSpec.deadline_kill_meta`:
   the land reads as a distinct timed-out verdict (attempt-free,
@@ -259,7 +327,9 @@ plan's land node) the branch is ``slice/pr-<n>`` and the worktree is
 ``params.worktree`` when ``dep_check`` pinned one (it must exist: it holds
 the relock commit), else ``slice-pr-<n>``, cut here from ``git fetch origin
 +pull/<n>/head`` and refused when the head is not the sha the intake
-classified (``meta.pr.head_sha`` on the plan root). The subject is the PR
+classified (``meta.pr.head_sha`` on the plan root). A PR land is not
+touched by the clone cut (gr741695): it keeps its linked worktree of the
+host checkout, the per-gitdir land lock and the worktree cleanup. The subject is the PR
 title made lint-clean (:func:`precis.plans.pr_class.land_subject`) plus
 ``(td<id>)``. Every land ships ``--quick`` (:func:`ship_flag`; Reto
 2026-11-05, gr570221 — lint only; the release gate on ``/go`` runs the
@@ -282,8 +352,10 @@ the attribution gap of gr543694 applies). A failed close is reported in
 the summary, not a job failure.
 
 **Pre-launch hygiene** (gr650484). Before ship runs, :func:`_launch_ship`
-serialises lands on the worktree: the lander's ``precis-land.lock``
-flock is probed first because its stamp carries the slice's identity —
+serialises lands of one slice: the lander's ``precis-land.lock`` flock
+(in a land's clone, the host checkout's per-todo file,
+:func:`_land_lock_where`) is probed first because its stamp carries the
+slice's identity —
 held by a live pid behind this slice's stamp, the running ship is
 adopted (this job polls its exit file and lands the record); held by a
 foreign stamp, a dead stamp's orphaned descendants, or ship's own
@@ -301,9 +373,9 @@ slice's work is already on ``origin/main`` — a tree-identical branch,
 or the squash subject already on main with the slice's changed paths
 verified identical (:func:`_already_landed`) — the land finishes green
 without a ship (:func:`_landed_finish`, the same tail poll's green
-runs); and every ``index.lock`` the ship would hit — the slice's and,
-for a linked worktree, the primary checkout's its main-sync
-fast-forwards — is reaped when provably stale (:data:`INDEX_LOCK_STALE_S`
+runs); and every ``index.lock`` the ship would hit — the folder's and,
+for a linked worktree (a PR land's; a clone's git dir is its own), the
+primary checkout's its main-sync fast-forwards — is reaped when provably stale (:data:`INDEX_LOCK_STALE_S`
 plus no live git in the checkout and no open handle — the reaper's
 keep-on-doubt rule) or waited on briefly then failed retryable
 (``attempt_free``, never the red path; :func:`_clear_index_locks`).
@@ -335,6 +407,8 @@ from precis.plans import lanes as _lanes
 from precis.plans import release as _release
 from precis.plans.logbook import log_plan_event
 from precis.plans.templates import (
+    BUILD_FLOOR_KEY,
+    BUILD_REF_KEY,
     PENDING_LAND_KEY,
     PENDING_SHA,
     PRELAND_DEFER_FAILED_KEY,
@@ -348,7 +422,7 @@ from precis.workers import admission
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _factory_git_mirror
 from precis.workers import slice_stacks as _slice_stacks
-from precis.workers.job_types import JobTypeSpec, Reconcile, _slice_park
+from precis.workers.job_types import JobTypeSpec, Reconcile, _slice_ws
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -612,12 +686,18 @@ GATE_KILL_BACKOFF_S = 120
 GATE_KILL_CROSS = "gate killed (exit 137, VM memory) - infrastructure, not the branch"
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
-#: The flock file in the worktree's gitdir. One land holds it for the
-#: ship's whole life — the fd is passed to the launched ship process —
-#: so a second land on the same worktree finds it held: its own stamp
-#: means adopt the running ship; a foreign or orphaned holder means a
-#: retryable busy (gr650484).
+#: The flock file in the worktree's gitdir (a PR land's worktree, a land
+#: minted before gr741695). One land holds it for the ship's whole life —
+#: the fd is passed to the launched ship process — so a second land on the
+#: same worktree finds it held: its own stamp means adopt the running ship;
+#: a foreign or orphaned holder means a retryable busy (gr650484). A land
+#: that cut its own clone (gr741695) holds a per-todo file of this shape in
+#: the host checkout's git common dir instead (:func:`_land_lock_where`):
+#: every land job of one todo has a folder of its own, so a per-folder file
+#: could no longer tell a second job that a ship of the same slice, left
+#: running by a job that ended, still owns the todo's mirror.
 LAND_LOCK_FILE = "precis-land.lock"
+LAND_LOCK_TODO_FILE = "precis-land-td{todo}.lock"
 
 #: scripts/ship's own per-worktree lock dir in the gitdir
 #: (scripts/lib/ship-lock.sh). A live holder means a ship is already in
@@ -643,15 +723,20 @@ PARAMS_SCHEMA: dict[str, Any] = {
     "properties": {
         # The slice todo.
         "todo_id": {"type": "integer"},
-        # The slice's worktree (run_slice's handle.worktree).
+        # A pull request's pinned worktree (dep_check's relock). A slice
+        # land cuts its own clone and ignores this (gr741695).
         "worktree": {"type": "string"},
         # The slice's branch, slice/<id>.
         "branch": {"type": "string"},
-        # The build tip used by the overlap hold.
+        # The commit to land: the builder's last real commit (gr741695;
+        # also the build tip the overlap hold uses).
         "head": {"type": "string"},
+        # The hub ref that holds ``head`` (``refs/factory/build/<todo>/<job>``);
+        # absent on a land minted before gr741695 (``_slice_ws.import_legacy``).
+        "ref": {"type": "string"},
         # The lane holding the lease (released on a red land).
         "lane": {"type": "string"},
-        # ssh_node's host pin: the host that holds the worktree.
+        # ssh_node's host pin: the host whose hub holds the work.
         "target_node": {"type": "string"},
         # A pull request's land (worktree/branch then optional, see above).
         "pr": {"type": "integer"},
@@ -671,10 +756,12 @@ REQUIRES: frozenset[str] = frozenset()
 
 DESCRIPTION: str = (
     "Land one finished slice: scripts/ship --quick with the squash subject "
-    "(the brief's `subject:` line, else the last non-test commit's) in its "
-    "worktree, the landed sha on the todo and into the plan's "
-    "pending sha-in-prod gate, then delete the worktree and the slice/<id> "
-    "branch (local and origin). A red ship reopens the todo with attempt:<n>; "
+    "(the brief's `subject:` line, else the last non-test commit's) in a "
+    "fresh clone it cuts from the host's hub at params.head (held by "
+    "params.ref), the landed sha on the todo and into the plan's "
+    "pending sha-in-prod gate, then drop the clone, the todo's attempt refs "
+    "in the hub and any legacy slice/<id> branch on origin. A red ship "
+    "drops the clone too and reopens the todo with attempt:<n>; "
     "a refusal about main's state (drift guard) retries ship every 30 min, up to 8 times. "
     "Minted by run_slice; with params.pr it lands a pull request's head "
     "(slice/pr-<n>, --checked when the selection is a spot check) and "
@@ -860,6 +947,54 @@ _LAND_ENV_SECRET_RE = re.compile(
 )
 
 
+_CEILING_CACHE: dict[str, tuple[str, ...]] = {}
+
+
+def _worktrees_ceiling(root_env: str) -> tuple[str, ...]:
+    """The host checkout's worktrees directory, as ``GIT_CEILING_DIRECTORIES``
+    entries (the path as named and, when different, resolved — git compares
+    the literal text). The land clone and every other folder under it must
+    be a repository of its own: a folder that lost its ``.git`` would
+    otherwise resolve to the host checkout above it, and a ``reset``,
+    ``checkout``, ``clean`` or lock removal would act on that
+    (gr742505). Cached per ``PRECIS_SLICE_ROOT`` value (``root_env``): with
+    none set, resolving the root runs git. A failure is not cached — it
+    answers ``()`` for that call only."""
+    cached = _CEILING_CACHE.get(root_env)
+    if cached is not None:
+        return cached
+    try:
+        folder = _rs.worktrees_dir(_rs.slice_root())
+    except Exception:
+        return ()
+    entries = [str(folder)]
+    try:
+        real = str(folder.resolve())
+    except OSError:
+        real = str(folder)
+    if real not in entries:
+        entries.append(real)
+    _CEILING_CACHE[root_env] = tuple(entries)
+    return _CEILING_CACHE[root_env]
+
+
+def _with_ceiling(env: dict[str, str], *extra: Path) -> dict[str, str]:
+    """``env`` with ``GIT_CEILING_DIRECTORIES`` naming the host's worktrees
+    directory (:func:`_worktrees_ceiling`) and each ``extra`` directory, after
+    whatever the worker env already named. The ceiling stops git walking UP
+    into those directories; a process whose cwd is the host checkout itself,
+    or a folder that has its own ``.git`` (a clone, or a linked worktree's
+    ``.git`` file), never reaches it."""
+    entries = [e for e in env.get("GIT_CEILING_DIRECTORIES", "").split(os.pathsep) if e]
+    entries += _worktrees_ceiling(os.environ.get("PRECIS_SLICE_ROOT", ""))
+    for folder in extra:
+        entries += [str(folder), os.path.realpath(folder)]
+    deduped = list(dict.fromkeys(entries))
+    if deduped:
+        env["GIT_CEILING_DIRECTORIES"] = os.pathsep.join(deduped)
+    return env
+
+
 def land_env() -> dict[str, str]:
     """The scrubbed environment every land-spawned child starts from:
     :data:`LAND_ENV_NAMES` plus the :data:`_LAND_ENV_PREFIXES` names that
@@ -881,7 +1016,10 @@ def land_env() -> dict[str, str]:
     nested ``/usr/bin/env uv`` helpers must still resolve it; the append
     preserves the operator's PATH precedence
     (:func:`~precis.workers.job_types.run_slice.path_with_user_uv`, the
-    same rule ``slice_env`` gives the session itself)."""
+    same rule ``slice_env`` gives the session itself). ``GIT_CEILING_DIRECTORIES``
+    names the host checkout's worktrees directory (:func:`_with_ceiling`), so
+    a land folder that lost its ``.git`` is an error for ship and everything
+    under it, never the host checkout above (gr742505)."""
     env = {k: os.environ[k] for k in LAND_ENV_NAMES if os.environ.get(k)}
     for name, value in os.environ.items():
         if (
@@ -894,7 +1032,7 @@ def land_env() -> dict[str, str]:
     patched = _rs.path_with_user_uv(env.get("PATH"))
     if patched != (env.get("PATH") or os.defpath):
         env["PATH"] = patched
-    return env
+    return _with_ceiling(env)
 
 
 # ── Seams (tests monkeypatch these) ────────────────────────────────
@@ -913,11 +1051,24 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     off (:data:`~precis.workers.factory_git_mirror.TRUSTED_ARGS`). The
     transports that need the credential — the origin branch delete in
     :func:`_cleanup`, :func:`_push_branch` — ride the mirror's fresh
-    ops gitdir instead."""
+    ops gitdir instead.
+
+    A ``cwd`` directly under a ``.claude/worktrees`` directory (a land's
+    clone, a PR land's or a probe's worktree — in any repository, the
+    second-repository lander included) also gets that directory as a git
+    ceiling: if the folder lost its ``.git`` the call fails instead of
+    running in the checkout above it (gr742505). The folder's own ``.git``
+    file or directory is found first, so a worktree works as before."""
+    folder = Path(cwd).parent
+    extra = (
+        (folder,)
+        if folder.name == "worktrees" and folder.parent.name == ".claude"
+        else ()
+    )
     return subprocess.run(
         ["git", *_factory_git_mirror.TRUSTED_ARGS, *args],
         cwd=str(cwd),
-        env=_factory_git_mirror.local_env(land_env()),
+        env=_factory_git_mirror.local_env(_with_ceiling(land_env(), *extra)),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -1986,14 +2137,98 @@ def _deferred_notify(
 # ── Cleanup ────────────────────────────────────────────────────────
 
 
-def _cleanup(tree: Path, branch: str) -> list[str]:
-    """Remove the worktree, the local branch and the origin branch (when
-    pushed). One note per step; failures are reported, not raised."""
+def _land_clone(tree: Path) -> bool:
+    """Whether ``tree`` is a clone this lander cut
+    (:func:`_slice_ws.attempt_dir` with :data:`_slice_ws.ROLE_LAND`), as
+    against a linked worktree of the host checkout (a PR land's, or a slice
+    land minted before gr741695 and still running)."""
+    parsed = _slice_ws.parse_attempt_dir(tree)
+    return parsed is not None and parsed[2] == _slice_ws.ROLE_LAND
+
+
+def _land_floor(tree: Path) -> int | None:
+    """The land job's id, which names its clone: the task's
+    ``meta.build_floor`` once this land has landed (an attempt ref of a job
+    with a smaller id is never continued from). ``None`` for a folder that
+    is not a land clone."""
+    parsed = _slice_ws.parse_attempt_dir(tree)
+    if parsed is None or parsed[2] != _slice_ws.ROLE_LAND:
+        return None
+    return parsed[1]
+
+
+def _cleanup(tree: Path, branch: str, todo_id: int = 0, store: Any = None) -> list[str]:
+    """After a land: remove the folder, the attempt refs and the origin
+    branch (when pushed). One note per step; failures are reported, not
+    raised.
+
+    A land's own clone (:func:`_land_clone`) goes through
+    :func:`_slice_ws.drop` (its Compose project, then the directory; the
+    clone's branch goes with it), then :func:`_slice_ws.delete_builds`
+    deletes the todo's attempt refs in the hub and the task's
+    ``meta.build_ref`` is cleared: the work is on main now, and a ref left
+    behind would start a later attempt of the same todo from commits that
+    are already landed. ``meta.conflict`` (:data:`CONFLICT_KEY`) goes with
+    it: the conflict an earlier land stamped is resolved. The same write
+    stamps ``meta.build_floor`` with this land job's id, always — also
+    stamped when the land record is written (:func:`_landed_finish`), so a
+    crash between the record and this cleanup is covered. That write comes
+    before the refs are deleted, and they are kept when it fails. A linked worktree
+    (a PR land, a land minted before
+    gr741695) is removed as before, with its stack and its branch. Either
+    way a legacy ``refs/factory/slice/<id>`` / ``refs/heads/slice/<id>`` on
+    GitHub is deleted as before."""
     notes: list[str] = []
     try:
         root = _rs.slice_root()
     except RuntimeError as exc:
         return [f"cleanup skipped: {exc}"]
+
+    if _land_clone(tree):
+        drop_notes: list[str] = []
+        try:
+            gone = _slice_ws.drop(tree, notes=drop_notes)
+        except Exception as exc:  # the land is real; a note, not a failure
+            gone = False
+            drop_notes.append(f"{type(exc).__name__}: {exc}")
+        notes.append(
+            "folder drop: ok"
+            if gone
+            else f"folder drop: FAILED ({'; '.join(drop_notes)[:200]})"
+        )
+        if todo_id > 0:
+            # The stamp first, and the delete only when it took (repo_land's
+            # rule): refs deleted under a ``build_ref`` that still names
+            # them, with no floor in, refuse a reopened task at launch. With
+            # the floor in, a ref left behind (a failed delete, a ref in
+            # another host's hub) is never read.
+            stamped = store is None
+            if store is not None:
+                stamps: dict[str, Any] = {BUILD_REF_KEY: None, CONFLICT_KEY: None}
+                floor = _land_floor(tree)
+                if floor is not None:
+                    stamps[BUILD_FLOOR_KEY] = floor
+                try:
+                    store.stamp_ref_meta(todo_id, stamps)
+                    stamped = True
+                    notes.append(
+                        f"meta.{BUILD_REF_KEY}: cleared"
+                        + (f", {BUILD_FLOOR_KEY} {floor}" if floor is not None else "")
+                    )
+                except Exception as exc:
+                    notes.append(f"meta.{BUILD_REF_KEY}: clear FAILED ({exc})")
+            if stamped:
+                try:
+                    notes.append(
+                        _slice_ws.delete_builds(_slice_ws.hub_path(root), todo_id)
+                    )
+                except Exception as exc:
+                    notes.append(f"attempt refs: delete FAILED ({exc})")
+            else:
+                notes.append("attempt refs kept: the task's meta could not be stamped")
+        _unlink_land_lock(tree, todo_id)
+        notes.extend(_delete_remote_branch(root, branch))
+        return notes
 
     def step(label: str, args: list[str]) -> bool:
         proc = _git(args, root)
@@ -2378,6 +2613,113 @@ class _MirrorRefreshError(RuntimeError):
     so the land ends attempt-free (gr730461)."""
 
 
+#: The task meta key a land red on a conflict leaves (gr741695):
+#: ``{head, ref, base_tip, files, at, job}`` — the commit that was to land and
+#: the hub ref that holds it, the base's tip it conflicted with, the
+#: conflicted paths as git reports them, when, and the land job's id
+#: (``job``, an int: the dispatcher compares job ids, not this host's clock
+#: in ``at`` against the database's, which a few seconds of skew misread).
+#: The dispatcher reads it
+#: to mint the conflict-only attempt; a land clears it (:func:`_cleanup`).
+CONFLICT_KEY = "conflict"
+
+#: Job meta ``land_start`` (:func:`_cut_land_folder`): ``{head, ref}`` the cut
+#: resolved — the commit the clone stands on and the hub ref that holds it.
+LAND_START_KEY = "land_start"
+
+#: Ship's two ``die`` lines for a branch that does not integrate with the
+#: base (``scripts/ship``: ``_squash_and_rebase`` and the in-lock forward
+#: merge), the ✖ line the poll reads.
+CONFLICT_MARKS: tuple[str, ...] = (
+    "rebase conflict onto origin/main",
+    "merge conflict integrating origin/main",
+)
+
+
+#: :func:`_drop_land_folder` modes: look for a ship behind the folder first
+#: (the default: a failure after a ship ran), the caller knows none is
+#: (a failure before any launch, which holds the land lock itself and would
+#: read as one), or the caller knows one is (it is left for the host sweep).
+FOLDER_PROBE = "probe"
+FOLDER_DROP = "drop"
+FOLDER_KEEP = "keep"
+
+
+def is_conflict_refusal(cross: str | None) -> bool:
+    """True when ``cross`` (a :func:`cross_line` result) is ship's rebase or
+    merge conflict against the base (:data:`CONFLICT_MARKS`)."""
+    return bool(cross) and any(mark in str(cross) for mark in CONFLICT_MARKS)
+
+
+def _stamp_conflict(
+    ctx: Any, todo_id: int, tree: Path, params: dict[str, Any], *, onto: str | None
+) -> None:
+    """Stamp ``meta.conflict`` (:data:`CONFLICT_KEY`) on the task from the
+    clone ship left mid-rebase or mid-merge: the conflicted paths
+    (``git diff --diff-filter=U``, as git prints them), the base tip ship
+    integrated (``origin/<onto or main>`` in the clone) and the commit that
+    was to land and the hub ref that holds it: what the cut resolved and
+    recorded on the job (:data:`LAND_START_KEY` — a legacy land has no
+    ``params.ref``, and ship's squash moves the clone's branch off
+    ``head``), else ``params.head``, the task's pending land, the clone's
+    branch. Best-effort and before the folder is dropped; a read
+    that fails stamps what is known, and nothing here fails the land."""
+    try:
+        names = _git(["diff", "--name-only", "--diff-filter=U"], tree)
+        files = (
+            [p for p in (names.stdout or "").splitlines() if p.strip()]
+            if names.returncode == 0
+            else []
+        )
+        base_tip = (
+            _git(
+                [
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    f"refs/remotes/origin/{onto or 'main'}",
+                ],
+                tree,
+            ).stdout
+            or ""
+        ).strip()
+        cut_at = (getattr(ctx, "meta", None) or {}).get(LAND_START_KEY)
+        cut_at = cut_at if isinstance(cut_at, dict) else {}
+        head = (
+            str(cut_at.get("head") or "").strip()
+            or str(params.get("head") or "").strip()
+            or _pending_land_head(ctx.store, todo_id)
+        )
+        if not head:
+            branch = str(params.get("branch") or _rs.slice_branch(todo_id))
+            head = (
+                _git(
+                    ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], tree
+                ).stdout
+                or ""
+            ).strip()
+        stamp: dict[str, Any] = {
+            "head": head,
+            "ref": str(cut_at.get("ref") or params.get("ref") or ""),
+            "base_tip": base_tip,
+            "files": files,
+            "at": _now().strftime(_TS_FMT),
+        }
+        # No id, no ``job``: the dispatcher then compares clocks, as it does
+        # for a stamp from before the field.
+        job = int(getattr(ctx, "ref_id", 0) or 0)
+        if job > 0:
+            stamp["job"] = job
+        ctx.store.stamp_ref_meta(todo_id, {CONFLICT_KEY: stamp})
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: conflict stamped on td{todo_id}: "
+            f"{len(files)} conflicted path(s) against {base_tip[:12] or 'the base'}",
+        )
+    except Exception:
+        log.warning("land_slice: conflict stamp on td%d failed", todo_id, exc_info=True)
+
+
 def _fail(
     ctx: Any,
     todo_id: int,
@@ -2387,6 +2729,7 @@ def _fail(
     handoff: str,
     attempt_free: str | None = None,
     verbatim: bool = False,
+    folder: str = FOLDER_PROBE,
 ) -> None:
     """The red path: a ``handoff:`` for the next build session, the lease
     released (``attempt:<n>``), the job failed with ``reason``. The comment
@@ -2403,8 +2746,14 @@ def _fail(
     at the ask instead: the tick does not re-land it on its own.
     ``verbatim=True`` (gr684320: a plain index.lock wait) stamps
     ``meta.attempt_free`` with the given reason itself — the dispatcher
-    reads a plain lock wait as self-clearing, exempt from the re-land
-    cap — while the lease still goes back clean."""
+    keeps a plain lock wait outside the re-land cap — while the lease
+    still goes back clean.
+
+    The job's own clone is dropped last (:func:`_drop_land_folder`; the
+    ``folder`` modes are its) unless a ship is still behind it; nothing is
+    saved first, because the lander adds no work of its own and the hub
+    holds the commit that was to land (gr741695: the old park-save pushed
+    the branch tip to GitHub here)."""
     attempt = None
     try:
         _rs._append_comment(
@@ -2445,19 +2794,55 @@ def _fail(
             _rs.rearm_preland_review(ctx.store, todo_id)
         except Exception:  # pragma: no cover — defensive; the job still fails
             log.warning("land_slice: pre-land re-arm on td%d failed", todo_id)
-        # Park = save (``_slice_park``): the lander's tree may sit
-        # mid-rebase, so only the branch tip is pushed — never the dirty
-        # tree. A second repo's tree is not this remote's to push.
-        if _rs.job_repo(getattr(ctx, "meta", None) or {}) == _lanes.DEFAULT_REPO:
-            _slice_park.save_at_job_end(
-                ctx,
-                _rs.worktrees_dir(_rs.slice_root()) / _rs.slice_name(int(todo_id)),
-                int(todo_id),
-                reason,
-                base=_rs._land_base(ctx.store, int(todo_id)),
-                include_dirty=False,
-            )
+    # The lander adds no work of its own, so nothing is saved: the hub
+    # holds the commit that was to land (gr741695).
+    _drop_land_folder(ctx, todo_id, folder=folder)
     ctx.record_failure(f"land_slice: {reason}{suffix}")
+
+
+def _drop_land_folder(ctx: Any, todo_id: int, *, folder: str = FOLDER_PROBE) -> None:
+    """Drop this land job's clone once its ship is gone — on every failed
+    land, whatever the class. A folder with a ship still behind it (the
+    land lock held, or ship's own worktree lock live: :func:`_ship_busy`)
+    is left for the host sweep, which settles a terminal land's folder as
+    holding nothing (``run_slice``'s ``settle``); ``folder`` says whether
+    to look (:data:`FOLDER_PROBE`) or that the caller already knows
+    (:data:`FOLDER_DROP`, :data:`FOLDER_KEEP`). No folder, or one that is
+    not a land clone (a PR land's worktree, a land minted before
+    gr741695), is not touched. Never raises: the land's verdict stands."""
+    try:
+        if folder == FOLDER_KEEP:
+            return
+        root = _rs.slice_root()
+        job_id = int(getattr(ctx, "ref_id", 0) or 0)
+        tree = _slice_ws.attempt_dir(root, todo_id, job_id, _slice_ws.ROLE_LAND)
+        if job_id <= 0 or not tree.exists():
+            return
+        busy = (
+            _ship_busy(tree, todo_id, _rs.slice_branch(todo_id))
+            if folder == FOLDER_PROBE
+            else None
+        )
+        if busy is not None:
+            ctx.append_chunk(
+                "job_event",
+                f"land_slice: folder {tree.name} kept for the host sweep: {busy['why']}",
+            )
+            return
+        notes: list[str] = []
+        gone = _slice_ws.drop(tree, notes=notes)
+        if gone:
+            _unlink_land_lock(tree, todo_id)
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: folder {tree.name} "
+            + ("dropped" if gone else "NOT dropped (left for the host sweep)")
+            + (f" ({'; '.join(notes)[:200]})" if notes else ""),
+        )
+    except Exception:
+        log.warning(
+            "land_slice: dropping td%d's land folder failed", todo_id, exc_info=True
+        )
 
 
 def _pin_exempt(
@@ -2514,9 +2899,276 @@ def _pin_exempt(
     return rest, None, False
 
 
+def _launch_on_record(ctx: Any, tree: Path) -> bool:
+    """Whether a ship was ever launched for this job in ``tree``: the job's
+    ``meta.compute_handle`` (a launch, a parked deferral), a proven launch
+    of the current submit attempt (:func:`run_slice._recover_launch`), or
+    the ship's own log or exit file in the folder (the paths a launch
+    without an attempt directory uses). Doubt counts as a launch: the
+    folder is then kept, as before."""
+    try:
+        if (getattr(ctx, "meta", None) or {}).get("compute_handle"):
+            return True
+        if _rs._recover_launch(ctx) is not None:
+            return True
+    except Exception:
+        return True
+    scratch = tree / "scratch"
+    return (scratch / "land_slice.log").exists() or (
+        scratch / "land_slice.exit"
+    ).exists()
+
+
+def _fail_workspace(ctx: Any, todo_id: int, lane: Any, why: str) -> None:
+    """A land that could not get its folder (:class:`_slice_ws.WorkspaceError`,
+    an unreadable checkout root) fails attempt-free under ``infra-land`` with
+    the reason on the handoff: no attempt is burned and nothing was landed;
+    the tick re-mints the land, or asks once its cap is spent."""
+    _fail(
+        ctx,
+        todo_id,
+        lane,
+        why,
+        handoff=(
+            f"land DEFERRED (not red): the lander could not cut its folder: {why} "
+            "Nothing was landed; the tick re-mints the land attempt-free."
+        ),
+        attempt_free="infra-land",
+        folder=FOLDER_DROP,
+    )
+
+
+def _pending_land_head(store: Any, todo_id: int) -> str:
+    """The task's ``meta.pending_land.head``, ``""`` when it holds none."""
+    try:
+        ref = store.get_ref(kind="todo", id=todo_id)
+    except Exception:
+        return ""
+    pending = ((getattr(ref, "meta", None) or {}).get(PENDING_LAND_KEY)) or {}
+    head = pending.get("head") if isinstance(pending, dict) else None
+    return head.strip() if isinstance(head, str) else ""
+
+
+def _ref_holds(hub: Path, tip: str, head: str) -> bool | None:
+    """Whether the commit ``head`` is ``tip`` or an ancestor of it in the
+    hub: ``True``/``False``, ``None`` when git cannot say."""
+    if head == tip:
+        return True
+    anc = _git(["merge-base", "--is-ancestor", head, tip], hub).returncode
+    return True if anc == 0 else (False if anc == 1 else None)
+
+
+def _import_local_slice_branch(
+    root: Path, hub: Path, todo_id: int, head: str
+) -> str | None:
+    """A land minted by the engine before gr741695 may still have its
+    branch in the host checkout (the builder's worktree shared its git
+    dir): when ``refs/heads/slice/<todo>`` exists there and holds ``head``
+    (tip or ancestor; any tip when no head is known), bring it into the hub
+    as ``refs/factory/build/<todo>/0`` with a fetch from the checkout's
+    path — local, no hook, no credential — and return its tip. ``None``
+    when there is no such branch, it does not hold ``head`` or the fetch
+    failed."""
+    branch = _rs.slice_branch(todo_id)
+    shown = _git(
+        ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}"], root
+    )
+    tip = (shown.stdout or "").strip()
+    if shown.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", tip):
+        return None
+    if head:
+        found = _git(["rev-parse", "--verify", "--quiet", f"{head}^{{commit}}"], root)
+        full = (found.stdout or "").strip()
+        if found.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", full):
+            return None
+        if full != tip and (
+            _git(["merge-base", "--is-ancestor", full, tip], root).returncode != 0
+        ):
+            return None
+    ref = _slice_ws.build_ref(todo_id, 0)
+    got = _git(
+        [
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--",
+            str(root),
+            f"+refs/heads/{branch}:{ref}",
+        ],
+        hub,
+    )
+    if got.returncode != 0 or _slice_ws.hub_tip(hub, ref) != tip:
+        return None
+    return tip
+
+
+def _land_start(
+    ctx: Any, params: dict[str, Any], todo_id: int, hub: Path, url: str, root: Path
+) -> tuple[_slice_ws.Start, str]:
+    """``(start, head)``: where the cut starts (:class:`_slice_ws.Start`, the
+    hub ref and the tip it holds) and the commit to land, both checked
+    against the hub.
+
+    ``params.ref`` names the attempt's ref. A land minted before gr741695
+    has none, and its work is found in this order: the hub's own
+    ``refs/factory/build/<todo>/0`` from an earlier import when it holds
+    ``head`` (one that does not is deleted and the import runs again — it
+    would fail every later land otherwise); the host checkout's local
+    ``slice/<todo>`` (:func:`_import_local_slice_branch`); then what GitHub
+    holds under ``refs/factory/slice/<todo>`` (:func:`_slice_ws.import_legacy`).
+    The commit to land is ``params.head``, else the task's
+    ``meta.pending_land.head``, else the ref's tip — unless that tip is a
+    ``wip:`` snapshot, which is refused (a snapshot can carry stashes and
+    other branches as extra parents). It must be the ref's
+    tip or an ancestor of it: the ref may hold a ``wip:`` snapshot the
+    worker made on top of the builder's last real commit, and the land
+    takes the commit below it. The cut starts at the ref's tip, whatever
+    ``head`` is (:func:`_slice_ws.cut` refuses a start commit its ref does
+    not hold); the caller then puts the clone's branch on ``head``. A ref
+    that no longer holds the commit, or a commit the hub does not have, is
+    a :class:`_slice_ws.WorkspaceError` — nothing is cut and nothing
+    lands."""
+    ref = str(params.get("ref") or "").strip()
+    head = str(params.get("head") or "").strip() or _pending_land_head(
+        ctx.store, todo_id
+    )
+    if not ref:
+        legacy = _slice_ws.build_ref(todo_id, 0)
+        have = _slice_ws.hub_tip(hub, legacy)
+        if have is not None and head:
+            shown = _git(
+                ["rev-parse", "--verify", "--quiet", f"{head}^{{commit}}"], hub
+            )
+            full = (shown.stdout or "").strip()
+            if shown.returncode != 0 or _ref_holds(hub, have, full) is not True:
+                # an import of an earlier, different state of the branch
+                _git(["update-ref", "-d", legacy], hub)
+                have = None
+        if have is None:
+            have = _import_local_slice_branch(root, hub, todo_id, head)
+        if have is None:
+            have = _slice_ws.import_legacy(hub, url, todo_id)
+        if have is None:
+            raise _slice_ws.WorkspaceError(
+                f"the land of td{todo_id} names no hub ref, and neither the host "
+                f"checkout's {_rs.slice_branch(todo_id)} (holding the commit to "
+                f"land) nor GitHub's {_slice_ws.legacy_ref(todo_id)} has the work; "
+                "next: rebuild the slice"
+            )
+        ref = legacy
+    tip = _slice_ws.hub_tip(hub, ref)
+    if tip is None:
+        raise _slice_ws.WorkspaceError(
+            f"this host's hub holds no {ref}; next: land on the host that built "
+            f"td{todo_id}, or rebuild the slice"
+        )
+    start = _slice_ws.Start(sha=tip, ref=ref)
+    if not head:
+        # Nothing named the commit to land, so the ref's tip would be it —
+        # but a ``wip:`` snapshot is never landed: it can carry stashes and
+        # other branches as extra parents, content no reviewer saw.
+        if _slice_ws._is_wip(hub, tip):
+            raise _slice_ws.WorkspaceError(
+                f"the newest work of td{todo_id} ({ref}) is an unfinished snapshot; "
+                "next: let a build finish it"
+            )
+        return start, tip
+    shown = _git(["rev-parse", "--verify", "--quiet", f"{head}^{{commit}}"], hub)
+    sha = (shown.stdout or "").strip()
+    if shown.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise _slice_ws.WorkspaceError(
+            f"{ref} no longer holds {head[:12]} (the hub does not have it); "
+            f"next: rebuild the slice"
+        )
+    held = _ref_holds(hub, tip, sha)
+    if held is False:
+        raise _slice_ws.WorkspaceError(
+            f"{ref} no longer holds {head[:12]} (it is at {tip[:12]}); "
+            "next: rebuild the slice"
+        )
+    if held is None:
+        raise _slice_ws.WorkspaceError(
+            f"git could not say whether {ref} holds {head[:12]}; next: retry the land"
+        )
+    return start, sha
+
+
+def _cut_land_folder(
+    ctx: Any,
+    params: dict[str, Any],
+    todo_id: int,
+    tree: Path,
+    onto: str | None,
+    branch: str,
+) -> None:
+    """Cut ``tree``, this land job's own clone (gr741695): the hub synced
+    to GitHub's tip of the land target, the commit to land
+    (:func:`_land_start`) checked out on ``branch``, the ``.venv`` seeded
+    from the host checkout. Then the clone's ``origin`` is made GitHub's
+    url — the cut points it at the hub, but ``scripts/ship``, the mirror's
+    url rewrite (:func:`~precis.workers.factory_git_mirror.mirror_ship_env`)
+    and the lander's own fetches all expect the real origin there; the
+    base's tracking ref (``origin/main``, or the release branch) the cut
+    fetched stays, so every read the lander makes before ship's own fetch
+    finds it. Raises :class:`_slice_ws.WorkspaceError`; the caller
+    (:func:`_fail_workspace`) drops a folder a later step left behind."""
+    root = _rs.slice_root()
+    url = _github_url(root)
+    if url is None:
+        raise _slice_ws.WorkspaceError(
+            "the factory checkout names no trusted origin url; next: set "
+            "remote.origin.url of the host checkout to its github.com https url"
+        )
+    base = onto or "main"
+    hub = _slice_ws.ensure_hub(root)
+    _slice_ws.sync_hub(root, url=url, base=base)
+    start, head = _land_start(ctx, params, todo_id, hub, url, root)
+    notes: list[str] = []
+    _slice_ws.cut(
+        hub,
+        tree,
+        base=base,
+        branch=branch,
+        start=start,
+        seed_from=root,
+        notes=notes,
+    )
+    if _git(["rev-parse", "HEAD"], tree).stdout.strip() != head:
+        # The ref holds a snapshot above the commit to land and the cut
+        # checked the ref's tip out: the land takes the commit below it.
+        back = _git(["checkout", "-q", "-B", branch, head], tree)
+        if back.returncode != 0:
+            raise _slice_ws.WorkspaceError(
+                f"git could not check out {head[:12]} in {tree.name}: "
+                f"{(back.stderr or back.stdout).strip()[:160]}; next: retry the land"
+            )
+    seturl = _git(["remote", "set-url", "origin", url], tree)
+    if seturl.returncode != 0:
+        raise _slice_ws.WorkspaceError(
+            f"git could not set origin in {tree.name}: "
+            f"{(seturl.stderr or seturl.stdout).strip()[:160]}; next: retry the land"
+        )
+    tracking = f"refs/remotes/origin/{base}"
+    if _git(["rev-parse", "--verify", "--quiet", tracking], tree).returncode:
+        raise _slice_ws.WorkspaceError(
+            f"origin/{base} is missing in {tree.name} (the hub holds no {base}); "
+            "next: retry the land once the hub has synced"
+        )
+    # What the cut resolved, for the conflict stamp: a legacy land has no
+    # ``params.ref``, and ship's squash moves the clone's branch off ``head``.
+    ctx.set_meta(**{LAND_START_KEY: {"head": head, "ref": start.ref}})
+    ctx.append_chunk(
+        "job_event",
+        f"land_slice: cut {tree.name} at {head[:12]} from {start.ref}"
+        + (f" ({'; '.join(notes)})" if notes else ""),
+    )
+
+
 def submit(ctx: Any, spec: Any) -> Any:
-    """Detached submit half: launch ship. Returns the handle, or ``None``
-    after driving the job terminal."""
+    """Detached submit half: cut this land's own clone from the hub at the
+    commit to land (:func:`_cut_land_folder`; a PR land keeps its worktree),
+    then launch ship in it. Returns the handle, or ``None`` after driving
+    the job terminal."""
     params = dict((ctx.meta or {}).get("params") or {})
     todo_id = params.get("todo_id")
     if _rs.factory_off():
@@ -2539,30 +3191,6 @@ def submit(ctx: Any, spec: Any) -> Any:
     lane = params.get("lane")
     number = _pr_param(params)
     pr = _plan_pr(ctx.store, todo_id) if number is not None else None
-    if number is not None:
-        found, why = _pr_worktree(params, number, str((pr or {}).get("head_sha") or ""))
-        if found is None:
-            _fail(ctx, todo_id, lane, why, handoff=f"land FAILED: {why}.")
-            return None
-        tree = found
-    else:
-        tree = Path(str(params.get("worktree") or ""))
-        if not str(params.get("worktree") or "") or not tree.is_dir():
-            _fail(
-                ctx,
-                todo_id,
-                lane,
-                f"worktree {tree} is missing on this host",
-                handoff=f"land FAILED: worktree {tree} is missing; rebuild the slice.",
-            )
-            return None
-    # gr650484: a ship already running in this worktree owns the land —
-    # resolve before the branch-subject/changed-path reads below, whose
-    # git could bump into the running ship's index.lock. Ours (the land
-    # lock's stamp names this slice/branch behind a live pid) is
-    # adopted so its land record still lands here; anything else —
-    # foreign stamp, orphaned flock, hand-run ship — defers retryable.
-    # `_launch_ship` re-checks while actually acquiring (the race window).
     branch_hint = str(
         params.get("branch")
         or (
@@ -2571,13 +3199,70 @@ def submit(ctx: Any, spec: Any) -> Any:
             else _rs.slice_branch(int(todo_id))
         )
     )
+    onto = land_target(ctx.store, params, todo_id)
+    if number is not None:
+        found, why = _pr_worktree(params, number, str((pr or {}).get("head_sha") or ""))
+        if found is None:
+            _fail(ctx, todo_id, lane, why, handoff=f"land FAILED: {why}.")
+            return None
+        tree = found
+    else:
+        # gr741695: the land cuts its own clone — ``params.worktree`` (the
+        # builder's folder, gone by now) is ignored. The name carries this
+        # job's id, so a job resumed or re-submitted after an outage finds
+        # its own folder again; a folder that is there is this job's.
+        try:
+            root = _rs.slice_root()
+            job_id = int(getattr(ctx, "ref_id", 0) or 0)
+            if job_id <= 0:
+                raise _slice_ws.WorkspaceError(
+                    "the land job has no id to name its folder; next: re-mint the land"
+                )
+            tree = _slice_ws.attempt_dir(root, todo_id, job_id, _slice_ws.ROLE_LAND)
+        except (RuntimeError, _slice_ws.WorkspaceError) as exc:
+            _fail_workspace(ctx, todo_id, lane, str(exc))
+            return None
+    # gr650484: a ship already running in this worktree owns the land —
+    # resolve before the branch-subject/changed-path reads below, whose
+    # git could bump into the running ship's index.lock. Ours (the land
+    # lock's stamp names this slice/branch behind a live pid — and, for a
+    # land's own clone, this job's folder) is adopted so its land record
+    # still lands here; anything else — foreign stamp, orphaned flock,
+    # hand-run ship — defers retryable. Before the cut: a land that must
+    # defer cuts nothing. `_launch_ship` re-checks while actually acquiring
+    # (the race window).
     busy = _ship_busy(tree, int(todo_id), branch_hint)
     if busy is not None:
         if busy["kind"] == "mine":
             return _adopt_ship(ctx, tree, int(todo_id), busy)
         _land_busy(ctx, int(todo_id), lane, busy["why"])
         return None
-    onto = land_target(ctx.store, params, todo_id)
+    if number is None and tree.exists() and not _launch_on_record(ctx, tree):
+        # The folder is there but nothing was ever launched in it and no
+        # ship is behind it (checked above): a worker that died between the
+        # cut's rename and its last step (the branch on ``head``, ``origin``
+        # set) left it. A land folder holds nothing of its own — cut again.
+        dropped: list[str] = []
+        if not _slice_ws.drop(tree, notes=dropped):
+            _fail_workspace(
+                ctx,
+                todo_id,
+                lane,
+                f"the unfinished folder {tree.name} could not be removed "
+                f"({'; '.join(dropped)[:160]}); next: retry the land",
+            )
+            return None
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: {tree.name} was left unfinished by an earlier run "
+            "(no launch on record) — dropped, cut again",
+        )
+    if number is None and not tree.exists():
+        try:
+            _cut_land_folder(ctx, params, todo_id, tree, onto, branch_hint)
+        except _slice_ws.WorkspaceError as exc:
+            _fail_workspace(ctx, todo_id, lane, str(exc))
+            return None
     if onto is not None:
         _fetch_onto(tree, onto)
         ctx.set_meta(land_target=onto)
@@ -2805,23 +3490,35 @@ def submit(ctx: Any, spec: Any) -> Any:
     handle = _launch_ship(ctx, tree, flag, subject)
     if handle is None:
         return None
-    ctx.set_meta(land_subject=subject)
-    if handle.get("not_before"):
-        return handle  # parked before launch; the deferral event says why
-    target = f" --onto {onto}" if onto else ""
-    ctx.append_chunk(
-        "job_event",
-        f"land_slice: scripts/ship {flag}{target} {subject!r} pid {handle['pid']} "
-        f"in {tree} (gate_n={test_nproc()}, slots={land_gate_slots()})",
-    )
+    # The ship may run from here on, so nothing below may lose its handle:
+    # a raise would end the job while the ship goes on, and the sweep would
+    # then stop that ship, possibly in the middle of its push.
+    try:
+        ctx.set_meta(land_subject=subject)
+        # A handle parked before launch has no pid; its deferral event says why.
+        if not handle.get("not_before"):
+            target = f" --onto {onto}" if onto else ""
+            ctx.append_chunk(
+                "job_event",
+                f"land_slice: scripts/ship {flag}{target} {subject!r} pid "
+                f"{handle['pid']} in {tree} (gate_n={test_nproc()}, "
+                f"slots={land_gate_slots()})",
+            )
+    except Exception:
+        log.warning(
+            "land_slice: bookkeeping after the launch of td%d failed",
+            todo_id,
+            exc_info=True,
+        )
     return handle
 
 
 def _worktree_gitdir(tree: Path) -> Path | None:
-    """The worktree's own git dir (a linked worktree's is
-    ``<repo>/.git/worktrees/<name>``); ``None`` when git cannot answer —
-    the locks below are skipped then and ship's own worktree lock is all
-    that serialises."""
+    """The folder's own git dir: a land's clone has ``<clone>/.git``, its
+    own and shared with no other job (gr741695); a linked worktree (a PR
+    land's) has ``<repo>/.git/worktrees/<name>``. ``None`` when git cannot
+    answer — the locks below are skipped then and ship's own worktree lock
+    is all that serialises."""
     proc = _git(["rev-parse", "--absolute-git-dir"], tree)
     raw = (proc.stdout or "").strip()
     return Path(raw) if proc.returncode == 0 and raw else None
@@ -2830,7 +3527,8 @@ def _worktree_gitdir(tree: Path) -> Path | None:
 def _git_common_dir(gitdir: Path, tree: Path) -> Path | None:
     """The shared ``.git`` behind a linked worktree's gitdir — its
     ``index.lock`` belongs to the primary checkout. ``None`` for a
-    primary checkout or when git cannot answer."""
+    primary checkout, a land's clone (its git dir is its own common dir)
+    or when git cannot answer."""
     proc = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], tree)
     raw = (proc.stdout or "").strip()
     if proc.returncode != 0 or not raw:
@@ -2870,14 +3568,19 @@ def _stamp_lock_holder(
     subject: str = "",
     flag: str = "",
     attempt: str = "",
+    tree: str = "",
 ) -> None:
     """Record the holder in the lock file — ``pid=N td=M branch=B
-    flag=F subject=S`` — so the next land can tell its own
+    flag=F tree=T subject=S`` — so the next land can tell its own
     already-running ship (adopt it, keeping its flag) from a foreign or
     orphaned holder (retryable). ``pid`` is the ship's, never the
     worker's: ``None`` before ship exists stamps no pid, which a second
-    land reads as an orphan and defers (td652194). Best-effort: a failed
-    write never wedges the lock — the flock itself is the gate."""
+    land reads as an orphan and defers (td652194). ``tree`` is the folder
+    the ship runs in: the lock of a land's own clone is per todo, so a
+    later land job of the same todo reads a stamp naming another job's
+    folder as foreign (:func:`_classify_land_lock`) — no job enters a
+    folder another job made. Best-effort: a failed write never wedges the
+    lock — the flock itself is the gate."""
     if fd is None:
         return
     parts = [f"pid={pid}"] if pid is not None else []
@@ -2889,6 +3592,8 @@ def _stamp_lock_holder(
         parts.append(f"flag={flag}")
     if attempt:
         parts.append(f"attempt={attempt}")
+    if tree:
+        parts.append(f"tree={tree}")
     if subject:
         parts.append(f"subject={subject.splitlines()[0]}")
     try:
@@ -2913,6 +3618,7 @@ def _lock_holder_stamp(text: str) -> dict[str, str]:
         ("branch", r"\bbranch=(\S+)", head),
         ("flag", r"\bflag=(--\S+)", head),
         ("attempt", r"\battempt=([0-9a-f]{32})\b", head),
+        ("tree", r"\btree=(\S+)", head),
         ("subject", r"\bsubject=([^\n]*)", text),
     ):
         m = re.search(pat, where)
@@ -2922,23 +3628,42 @@ def _lock_holder_stamp(text: str) -> dict[str, str]:
 
 
 def _classify_land_lock(
-    gitdir: Path, todo_id: int, branch: str, holder_text: str
+    gitdir: Path,
+    todo_id: int,
+    branch: str,
+    holder_text: str,
+    *,
+    name: str = LAND_LOCK_FILE,
+    tree: Path | None = None,
 ) -> dict[str, Any]:
-    """Read a held ``precis-land.lock``'s stamp into a verdict.
+    """Read a held land lock's stamp into a verdict (``gitdir / name`` is
+    the lock file, :func:`_land_lock_where`).
 
     ``"mine"`` — the stamp names this same slice or branch and the
     stamped pid is alive: the caller adopts the running ship
-    (:func:`_adopt_ship`). ``"orphan"`` — the stamped pid is dead or
-    unreadable while some descendant still pins the fd
-    (:func:`_lock_holders` names them). ``"other"`` — a live pid behind
-    a different slice's stamp. Anything but ``"mine"`` is a retryable
-    busy for the caller."""
+    (:func:`_adopt_ship`). When ``tree`` is given and the stamp names a
+    folder, it must be that folder: a ship of the same todo running in
+    another land job's clone is ``"other"`` (gr741695: the adopter's
+    folder holds none of that ship's work, and no job enters another's
+    folder). ``"orphan"`` — the stamped pid is dead or unreadable while
+    some descendant still pins the fd (:func:`_lock_holders` names them).
+    ``"other"`` — a live pid behind a different slice's stamp. Anything
+    but ``"mine"`` is a retryable busy for the caller."""
     stamp = _lock_holder_stamp(holder_text)
     pid = int(stamp["pid"]) if stamp.get("pid") else None
     if pid is not None and _process_alive(pid):
         if stamp.get("td") == str(todo_id) or (
             branch and stamp.get("branch") == branch
         ):
+            foreign = stamp.get("tree")
+            if tree is not None and foreign and foreign != str(tree):
+                return {
+                    "kind": "other",
+                    "pid": pid,
+                    "stamp": stamp,
+                    "why": f"a ship of this slice is running in another land's "
+                    f"folder (pid {pid}, {Path(foreign).name})",
+                }
             return {
                 "kind": "mine",
                 "pid": pid,
@@ -2952,7 +3677,7 @@ def _classify_land_lock(
             "stamp": stamp,
             "why": f"the land lock is held by a live pid {pid} ({who})",
         }
-    holders = _lock_holders(gitdir / LAND_LOCK_FILE) or []
+    holders = _lock_holders(gitdir / name) or []
     holding = ", ".join(p for p, _c in holders) if holders else "no live holder listed"
     state = (
         f"stamped pid {pid} is dead"
@@ -2967,10 +3692,64 @@ def _classify_land_lock(
     }
 
 
-def _try_land_lock(gitdir: Path) -> tuple[bool, int | None, str]:
+#: The two variables that keep a clone's gate slots and release round state
+#: in the host checkout's git common dir (``scripts/lib/gate-slot.sh``,
+#: ``scripts/lib/round-lock.sh``): a clone's own git dir is its job's, so
+#: without them its gates would queue on slots no sibling sees and a
+#: release-fix land (``ship --onto``) would read an empty round journal
+#: while the host's release deploys.
+HOST_STATE_ENV_NAMES: tuple[str, ...] = (
+    "PRECIS_GATE_SLOT_ROOT",
+    "PRECIS_ROUND_STATE_ROOT",
+)
+
+
+def _host_state_env(tree: Path) -> dict[str, str]:
+    """:data:`HOST_STATE_ENV_NAMES`, each the host checkout's git common
+    dir (an absolute path; the hub's parent), for a land's own clone; ``{}``
+    for any other folder, whose git dir already is that dir, and when the
+    dir is not there (both scripts refuse a set-but-missing directory)."""
+    if not _land_clone(tree):
+        return {}
+    try:
+        common = _slice_ws.hub_path(_rs.slice_root()).parent.resolve()
+    except Exception:
+        return {}
+    if not common.is_dir():
+        return {}
+    return {name: str(common) for name in HOST_STATE_ENV_NAMES}
+
+
+def _land_lock_where(
+    tree: Path, todo_id: int, gitdir: Path | None
+) -> tuple[Path, str] | None:
+    """``(directory, file name)`` of the land lock for ``tree``, or
+    ``None`` when there is none to take.
+
+    A land's own clone (:func:`_land_clone`) takes a per-todo file in the
+    host checkout's git common dir — the hub's parent
+    (:func:`_slice_ws.hub_path`): the clone's own git dir is its job's and
+    a second land job of the todo never sees it. What the lock serialised
+    was never two slices (the old file sat in each slice's own worktree
+    gitdir) but two ships of one slice, which share the todo's mirror and
+    launch tips (``mirror_dir(root, "td<id>")``). Any other tree (a PR
+    land's worktree, a land minted before gr741695) keeps the file in its
+    own gitdir."""
+    if _land_clone(tree):
+        try:
+            hub = _slice_ws.hub_path(_rs.slice_root())
+        except Exception:
+            return None
+        return hub.parent, LAND_LOCK_TODO_FILE.format(todo=todo_id)
+    return (gitdir, LAND_LOCK_FILE) if gitdir is not None else None
+
+
+def _try_land_lock(
+    gitdir: Path, name: str = LAND_LOCK_FILE
+) -> tuple[bool, int | None, str]:
     """One ``flock(LOCK_EX|LOCK_NB)`` attempt on
-    ``<gitdir>/precis-land.lock``. ``(False, fd, "")`` — ours: the fd IS
-    the lock, and :func:`_launch` passes it to the ship process so a
+    ``<gitdir>/<name>`` (:func:`_land_lock_where`). ``(False, fd, "")`` —
+    ours: the fd IS the lock, and :func:`_launch` passes it to the ship process so a
     second land finds it held for the run's whole life, not just this
     call's (a worker dying mid-land is exactly the window a retried
     land_slice would otherwise relaunch in — jo650396's duplicate
@@ -2980,25 +3759,63 @@ def _try_land_lock(gitdir: Path) -> tuple[bool, int | None, str]:
     because ship's own ``precis-ship-worktree.lock.d`` still serialises
     a real overlap. The holder stamp is the caller's write —
     :func:`_launch_ship` stamps it once it owns the fd."""
-    path = gitdir / LAND_LOCK_FILE
-    try:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-    except OSError as exc:
-        return False, None, f"{exc}"
-    try:
-        import fcntl
+    path = gitdir / name
+    # A lock file may be unlinked by the land that held it last
+    # (:func:`_unlink_land_lock`, while holding it), so a lock is ours only
+    # when the file we locked is still the one at the path: otherwise
+    # another process may have made a new file and locked that, and two
+    # ships of one todo would each think they own it.
+    for _attempt in range(3):
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        except OSError as exc:
+            return False, None, f"{exc}"
+        try:
+            import fcntl
 
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except ImportError:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except ImportError:
+            os.close(fd)
+            return False, None, "fcntl unavailable"
+        except BlockingIOError:
+            os.close(fd)
+            return True, None, _lock_holder_text(path)
+        except OSError as exc:
+            os.close(fd)
+            return False, None, f"{exc}"
+        try:
+            same = os.fstat(fd).st_ino == os.stat(path).st_ino
+        except OSError:
+            same = False
+        if same:
+            return False, fd, ""
         os.close(fd)
-        return False, None, "fcntl unavailable"
-    except BlockingIOError:
-        os.close(fd)
-        return True, None, _lock_holder_text(path)
-    except OSError as exc:
-        os.close(fd)
-        return False, None, f"{exc}"
-    return False, fd, ""
+    return False, None, "the lock file was replaced under the lock three times"
+
+
+def _unlink_land_lock(tree: Path, todo_id: int) -> None:
+    """Remove a land clone's per-todo lock file from the host checkout's git
+    common dir once the land that held it is over: one file per todo would
+    pile up there for good. Only while holding the lock ourselves (so no
+    ship or orphan of the todo is behind it) and only for a land's own
+    clone; :func:`_try_land_lock` re-checks the file's identity after it
+    locks, so a process that opened the file before this unlink can never
+    take a lock on the removed one. A lock still held — by a ship, or by
+    this very worker inside :func:`_launch_ship` — leaves the file. Never
+    raises."""
+    try:
+        where = _land_lock_where(tree, todo_id, None)
+        if where is None or not _land_clone(tree):
+            return
+        held, fd, _detail = _try_land_lock(*where)
+        if held or fd is None:
+            return
+        try:
+            (where[0] / where[1]).unlink(missing_ok=True)
+        finally:
+            os.close(fd)
+    except Exception:
+        log.warning("land_slice: land lock of td%d not removed", todo_id, exc_info=True)
 
 
 def _land_busy(ctx: Any, todo_id: int, lane: Any, why: str) -> None:
@@ -3025,6 +3842,7 @@ def _land_busy(ctx: Any, todo_id: int, lane: Any, why: str) -> None:
             "already-landed check — finishes the slice."
         ),
         attempt_free="ship-busy",
+        folder=FOLDER_KEEP,
     )
 
 
@@ -3098,12 +3916,21 @@ def _adopt_ship(
     )
     if ps_identity is not None:
         handle["ps_identity"] = ps_identity
-    ctx.set_meta(land_subject=subject)
-    ctx.append_chunk(
-        "job_event",
-        f"land_slice: adopted the already-running ship pid {pid} in "
-        f"{tree} — its exit file lands this job's record",
-    )
+    # As after a launch: the ship runs, so its handle is returned whatever
+    # the bookkeeping does.
+    try:
+        ctx.set_meta(land_subject=subject)
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: adopted the already-running ship pid {pid} in "
+            f"{tree} — its exit file lands this job's record",
+        )
+    except Exception:
+        log.warning(
+            "land_slice: bookkeeping after adopting the ship pid %d failed",
+            pid,
+            exc_info=True,
+        )
     return handle
 
 
@@ -3460,6 +4287,7 @@ def _clear_index_locks(
                         "that checkout."
                     ),
                     attempt_free="index-lock",
+                    folder=FOLDER_KEEP,
                     verbatim=True,
                 )
                 return False
@@ -3582,19 +4410,31 @@ def _ship_busy(tree: Path, todo_id: int, branch: str) -> dict[str, Any] | None:
     retryable too. Submit's early peek: a free flock is released at
     once; :func:`_launch_ship` makes the same checks while actually
     acquiring. Kept to lock files and ``rev-parse`` so the peek never
-    collides with the running ship's ``index.lock``."""
-    gitdir = _worktree_gitdir(tree)
-    if gitdir is None:
+    collides with the running ship's ``index.lock``. ``tree`` need not
+    exist yet (a land probes before it cuts its clone): the todo's lock
+    in the host checkout's git common dir (:func:`_land_lock_where`) is
+    probed either way, ship's own worktree lock only in a folder that is
+    there."""
+    gitdir = _worktree_gitdir(tree) if tree.is_dir() else None
+    where = _land_lock_where(tree, todo_id, gitdir)
+    if where is None:
         return None
-    held, fd, detail = _try_land_lock(gitdir)
+    held, fd, detail = _try_land_lock(*where)
     if fd is not None:
         try:
             os.close(fd)
         except OSError:
             pass
     if held:
-        return _classify_land_lock(gitdir, todo_id, branch, detail)
-    holder = _ship_lock_holder(gitdir)
+        return _classify_land_lock(
+            where[0],
+            todo_id,
+            branch,
+            detail,
+            name=where[1],
+            tree=tree if _land_clone(tree) else None,
+        )
+    holder = _ship_lock_holder(gitdir) if gitdir is not None else None
     if holder is not None:
         return {
             "kind": "ship",
@@ -3751,6 +4591,7 @@ def _release_sync_conflict(
             "release's side for anything this fix does not need to change, "
             "commit, and hand off again. Nothing was pushed."
         ),
+        folder=FOLDER_DROP,
     )
 
 
@@ -3798,11 +4639,13 @@ def _launch_ship(
                 f"{onto} takes no more fixes: {closed}",
                 handoff=(
                     f"land REFUSED: {closed}, so a fix landing on {onto} now "
-                    "would not ship with it. Nothing was pushed; the branch "
-                    "stays. A coordinator call: land it on main, or onto the "
-                    "next release once it is cut."
+                    "would not ship with it. Nothing was pushed; the work stays "
+                    "in the hub. A coordinator call: land it on main, or onto "
+                    "the next release once it is cut."
                 ),
                 attempt_free="release-deployed",
+                # before the land lock is taken: look for a ship as usual
+                folder=FOLDER_PROBE,
             )
             return None
     # gr650484 — serialize ships before anything else touches the tree.
@@ -3828,9 +4671,20 @@ def _launch_ship(
                 "ship's own worktree lock still serialises",
             )
         else:
-            held, lock_fd, detail = _try_land_lock(gitdir)
+            lock_dir, lock_name = _land_lock_where(tree, todo_id, gitdir) or (
+                gitdir,
+                LAND_LOCK_FILE,
+            )
+            held, lock_fd, detail = _try_land_lock(lock_dir, lock_name)
             if held:
-                busy = _classify_land_lock(gitdir, todo_id, branch, detail)
+                busy = _classify_land_lock(
+                    lock_dir,
+                    todo_id,
+                    branch,
+                    detail,
+                    name=lock_name,
+                    tree=tree if _land_clone(tree) else None,
+                )
                 if busy["kind"] == "mine":
                     return _adopt_ship(
                         ctx, tree, todo_id, busy, subject=subject, flag=flag
@@ -3847,7 +4701,9 @@ def _launch_ship(
                 # td652194: no pid until ship's exists — the worker's own
                 # would read as "mine" to a second land in this window,
                 # and its adopted handle's kill would signal the worker.
-                _stamp_lock_holder(lock_fd, None, todo_id, branch, subject, flag)
+                _stamp_lock_holder(
+                    lock_fd, None, todo_id, branch, subject, flag, tree=str(tree)
+                )
             holder = _ship_lock_holder(gitdir)
             if holder is not None:
                 _land_busy(
@@ -3898,7 +4754,7 @@ def _launch_ship(
         # the trusted boundary (fresh ops gitdir, hooks off, no
         # system/global config) because the mirror and the checkout are
         # adversary-writable (review finding 2).
-        ship_env = land_env()
+        ship_env = {**land_env(), **_host_state_env(tree)}
         if _carries_pin(ctx.store, todo_id):
             # td659522 F7: ship's land_notify would close a pin-bump node
             # on the land; it stays open for the gate image wait, so the
@@ -3957,6 +4813,7 @@ def _launch_ship(
                         if isinstance(exc, _MirrorRefreshError)
                         else None
                     ),
+                    folder=FOLDER_DROP,
                 )
                 return None
         else:
@@ -4005,7 +4862,14 @@ def _launch_ship(
                     f"land_slice td{todo_id}: BLOCKED — {UNKNOWN_GATE_CROSS}\n"
                     f"drift probe (lander identity): {pre['diag']}",
                 )
-                _fail(ctx, todo_id, params.get("lane"), reason, handoff=handoff)
+                _fail(
+                    ctx,
+                    todo_id,
+                    params.get("lane"),
+                    reason,
+                    handoff=handoff,
+                    folder=FOLDER_DROP,
+                )
                 return None
             _defer_to_main(ctx, parked, UNKNOWN_GATE_CROSS, refusals, probe=pre["diag"])
             return parked
@@ -4088,11 +4952,12 @@ def _launch_ship(
                 ship_env["PATH"] = (
                     str(shim) + os.pathsep + (ship_env.get("PATH") or os.defpath)
                 )
-            attempt_dir = (
-                _rs._submit_attempt_dir(ctx, todo_id) if carry is None else None
-            )
-            if attempt_dir is not None:
-                attempt_dir.mkdir(parents=True)
+            # A parked relaunch (``carry``) has no submit intent: it mints a run
+            # dir of its own, so a ship whose handle was never saved can be
+            # found by the host sweep like any other launch's.
+            attempt_dir = None
+            if carry is not None or _rs._submit_attempt_dir(ctx, todo_id) is not None:
+                attempt_dir = _rs._launch_attempt_dir(ctx, todo_id)
                 exit_path = attempt_dir / "exit"
             else:
                 exit_path.unlink(missing_ok=True)
@@ -4191,9 +5056,13 @@ def _launch_ship(
                     "re-mints the land attempt-free once capacity frees."
                 ),
                 attempt_free=ADMISSION_RED_CLASS,
+                folder=FOLDER_DROP,
             )
             return None
         except Exception as exc:
+            # A launch that raised may still have started a ship: the
+            # folder is kept for the host sweep, which drops it once none is
+            # behind it.
             log.warning("land_slice: launch for td%d failed", todo_id, exc_info=True)
             _fail(
                 ctx,
@@ -4201,17 +5070,25 @@ def _launch_ship(
                 params.get("lane"),
                 f"ship launch failed: {exc}",
                 handoff=f"land FAILED: scripts/ship did not start ({exc}).",
+                folder=FOLDER_KEEP,
             )
             return None
-        _stamp_lock_holder(
-            lock_fd,
-            pid,
-            todo_id,
-            branch,
-            subject,
-            flag,
-            attempt_dir.name if attempt_dir is not None else "",
-        )
+        # The ship runs: nothing below may lose its handle.
+        try:
+            _stamp_lock_holder(
+                lock_fd,
+                pid,
+                todo_id,
+                branch,
+                subject,
+                flag,
+                attempt_dir.name if attempt_dir is not None else "",
+                str(tree),
+            )
+        except Exception:
+            log.warning(
+                "land_slice: lock stamp for td%d failed", todo_id, exc_info=True
+            )
         _rs._record_launched_process(handle, pid, attempt_dir)
         return handle
     finally:
@@ -4474,7 +5351,7 @@ def _repair_origin_state(
     phantom_main: str | None,
 ) -> list[str]:
     """Rollback notes for ship's post-land shared state after a sync that
-    did NOT place it on origin (review td660513 finding 4): the slice
+    did NOT place it on origin (review td660513 finding 4): a linked
     worktree shares the main checkout's common git dir, so ship's pushes
     moved ``refs/remotes/origin/*`` for every worktree — and a ship that
     slipped its git shim (an adopted launch from before the shim, or a
@@ -4482,7 +5359,10 @@ def _repair_origin_state(
     the primary's ``main`` to a squash only the mirror holds.
     :func:`factory_git_mirror.repair_origin` resets the tracking refs to
     GitHub's real tips and rewinds the phantom main under the same
-    trusted boundary as the sync. Best-effort; never raises."""
+    trusted boundary as the sync. A land's clone (gr741695) has a git dir
+    of its own (``<clone>/.git``): the repair runs there, which is what
+    the relaunch in the same clone reads — nothing outside it was ever
+    moved. Best-effort; never raises."""
     if url is None:
         return [
             "origin repair: no trusted origin url — shared refs left for the relaunch"
@@ -4521,10 +5401,17 @@ def _advance_local_main(
     sat on a commit only the mirror holds — so the lander does it here,
     on the verified sha (the launch tip when ship squashed nothing), in
     the shared git dir and under a credential-free env. Main lands
-    only: a release fix's ship never touched main. Best-effort notes;
-    never raises."""
+    only: a release fix's ship never touched main. A land's clone
+    (gr741695) shares no main with the host checkout and is dropped right
+    after the land, so the advance is skipped there: moving the clone's own
+    ``main`` would be a note and nothing else. (The host checkout's local
+    ``main`` and ``origin/*`` no longer move with a land; the hub's copy
+    of the base is what the next build and land start from.)
+    Best-effort notes; never raises."""
     if onto is not None:
         return []
+    if _land_clone(tree):
+        return ["local main advance: skipped (the land's clone shares no main)"]
     target = expected_sha or tips.get("main")
     if not target or not re.fullmatch(r"[0-9a-f]{40}", target):
         return ["local main advance: no verified sha — left alone"]
@@ -4965,6 +5852,8 @@ def _launch_verify(
             # fetch, push or `gh` call (gr659929).
             env={
                 **land_env(),
+                # a land clone's gates queue on the host's slots, not its own
+                **_host_state_env(run_tree),
                 "UV_PYTHON": ship_python(),
                 "PRECIS_TEST_NPROC": test_nproc(),
                 "PRECIS_GATE_SLOTS": land_gate_slots(),
@@ -5074,8 +5963,8 @@ def _probe_red(v: dict[str, Any], ids: list[str]) -> bool:
 def _start_main_verify(ctx: Any, handle: dict[str, Any], v: dict[str, Any]) -> bool:
     """Phase ``main`` of the outside-diff verify: cut ``slice-main-td<id>``
     — a detached ``origin/main`` worktree under the worktrees dir
-    (``slice_root()/.claude/worktrees``, where
-    :func:`run_slice._ensure_worktree` puts the slice trees), so its
+    (``slice_root()/.claude/worktrees``, where the attempt clones live:
+    :func:`_slice_ws.attempt_dir`), so its
     compose project carries the slice prefix and the stack sweep reaps
     it — and run the ids there. The worktree is dropped on every later
     exit path (:func:`_drop_main_verify`), and on a launch refused for
@@ -5103,6 +5992,37 @@ def _start_main_verify(ctx: Any, handle: dict[str, Any], v: dict[str, Any]) -> b
     ctx.set_meta(main_probe={"tree": str(main_tree), "stack": project})
     if not _clear_stale_main_probe(ctx, root, main_tree, project, todo_id):
         return False
+    # Lands run in their own clones, so nothing fetches in the host checkout
+    # any more: its ``origin/main`` is refreshed here from the hub. The hub's
+    # main dates from this land's submit (a PR land never synced it), so it
+    # is synced from GitHub first — the forced fetch below must not move the
+    # checkout's ``origin/main`` backwards. When the sync cannot say (no
+    # trusted url, GitHub unreadable) the fetch is skipped and the probe
+    # tests the tip the checkout last had; the job event says so.
+    synced: str | None = None
+    try:
+        main_url = _github_url(root)
+        if main_url is not None:
+            synced = _slice_ws.sync_hub(root, url=main_url, base="main")
+    except Exception:
+        log.warning("land_slice: hub sync before the main probe failed", exc_info=True)
+    if synced is None:
+        ctx.append_chunk(
+            "job_event",
+            "land_slice: main probe: the hub could not be synced from GitHub — "
+            "probing the tip the host checkout's origin/main already has",
+        )
+    else:
+        _git(
+            [
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                str(_slice_ws.hub_path(root)),
+                "+refs/heads/main:refs/remotes/origin/main",
+            ],
+            root,
+        )
     add = _git(["worktree", "add", "--detach", str(main_tree), "origin/main"], root)
     if add.returncode != 0:
         ctx.append_chunk(
@@ -5740,6 +6660,12 @@ def poll(ctx: Any, handle: Any) -> bool:
             f"{handle.get('log')}" + (f"\n{detail}" if detail else ""),
         )
         tail = masked_log[-_TAIL_CAP:].strip()
+        if side is None and red_class is None and is_conflict_refusal(cross):
+            # Before ``_fail`` drops the folder: the paths git names are
+            # only in the clone's index (gr741695).
+            _stamp_conflict(
+                ctx, todo_id, tree, params, onto=land_target(ctx.store, params, todo_id)
+            )
         _fail(
             ctx,
             todo_id,
@@ -5927,6 +6853,19 @@ def _landed_finish(
     landed = f"landed {sha[:9]} — {subject}" if sha else NO_DIFF_NOTE
     summary = [f"land_slice td{todo_id}: {landed}"]
     store = ctx.store
+    # The first write after the land: the task's build floor is this land's
+    # job id, so the attempt refs below it are harmless from here on even if
+    # the worker dies before the land record or the cleanup (the cleanup
+    # stamps it again with the rest).
+    floor = _land_floor(tree)
+    if floor is not None:
+        try:
+            store.stamp_ref_meta(todo_id, {BUILD_FLOOR_KEY: floor})
+        except Exception as exc:  # pragma: no cover — the cleanup stamps it again
+            log.warning(
+                "land_slice: build floor of td%d failed", todo_id, exc_info=True
+            )
+            summary.append(f"build floor: stamp FAILED ({exc})")
     if sha is not None:
         try:
             skill_note = _mint_skill_edit(store, todo_id, sha)
@@ -6040,7 +6979,7 @@ def _landed_finish(
     except Exception as exc:  # pragma: no cover — reported, the land stands
         log.warning("land_slice: logbook write for td%d failed", todo_id, exc_info=True)
         summary.append(f"logbook: write FAILED ({exc})")
-    cleanup = _cleanup(tree, branch)
+    cleanup = _cleanup(tree, branch, todo_id, store)
     summary += cleanup
     closed_pr = None
     try:
@@ -6186,11 +7125,15 @@ def kill(ctx: Any, handle: Any) -> None:
     """Wall-clock / operator kill: SIGTERM the live phase's process group —
     a running verify's during verify, ship's otherwise (a ship that
     already exited must never be signaled: the pgid may have been
-    reused) — then push the slice branch to origin (gr598110: a killed
-    land's commit must survive a worktree reap) and drop the main-probe
-    worktree and stack the job meta recorded
-    (:func:`_start_main_verify` writes them before the add), so a killed
-    land leaves neither behind. A handle naming the worker's own pid or
+    reused) — then drop the main-probe worktree and stack the job meta
+    recorded (:func:`_start_main_verify` writes them before the add), so a
+    killed land leaves neither behind. The branch is not pushed any more
+    (gr741695; it was, so a worktree reap could not lose the land's
+    commit — gr598110): the commit to land lives in the hub, and the
+    land's clone holds nothing else. The clone itself is left for the
+    host sweep, which settles a terminal land's folder as holding nothing
+    (``run_slice``'s ``settle``) and drops it once no ship is behind it.
+    A handle naming the worker's own pid or
     process group is never signaled (td652194: a pre-launch stamp once
     carried the worker's pid into an adopted handle)."""
     if _repo_handle(ctx, handle):
@@ -6213,26 +7156,6 @@ def kill(ctx: Any, handle: Any) -> None:
                 # The pgid now belongs to another user's process (reused
                 # after ship exited): not ours to signal, so skip it.
                 log.warning("land_slice: kill skipped — pgid %d is not ours", pgid)
-    params = (getattr(ctx, "meta", None) or {}).get("params") or {}
-    todo_id = params.get("todo_id")
-    number = _pr_param(params)
-    default_branch = (
-        f"slice/pr-{number}"
-        if number is not None
-        else _rs.slice_branch(int(todo_id or 0))
-    )
-    branch = str(params.get("branch") or default_branch)
-    worktree = (
-        str((handle or {}).get("worktree") or params.get("worktree") or "")
-        if isinstance(handle, dict)
-        else str(params.get("worktree") or "")
-    )
-    if branch and Path(worktree).is_dir():
-        note = _push_branch(Path(worktree), branch)
-        try:
-            ctx.append_chunk("job_event", f"land_slice: {note}")
-        except Exception:  # pragma: no cover — a kill never raises
-            log.info("land_slice: %s", note)
     probe = (getattr(ctx, "meta", None) or {}).get("main_probe") or {}
     tree = str(probe.get("tree") or "")
     if not tree:
@@ -6265,8 +7188,11 @@ SPEC = JobTypeSpec(
 
 __all__ = [
     "ALREADY_LANDED_WINDOW",
+    "BUILD_REF_KEY",
     "CHECKED_RED_MARK",
     "COMPATIBLE_EXECUTORS",
+    "CONFLICT_KEY",
+    "CONFLICT_MARKS",
     "DEADLINE_KILL_META",
     "DESCRIPTION",
     "DRIFT_PROBE_TIMEOUT_S",
@@ -6275,9 +7201,11 @@ __all__ = [
     "GATE_KILL_CROSS",
     "GATE_KILL_XDIST_RE",
     "HOST_REFUSAL_MARKS",
+    "HOST_STATE_ENV_NAMES",
     "INDEX_LOCK_STALE_S",
     "INDEX_LOCK_WAIT_S",
     "LAND_LOCK_FILE",
+    "LAND_LOCK_TODO_FILE",
     "MAIN_REFUSAL_BACKOFF_S",
     "MAIN_REFUSAL_MARKS",
     "MAX_GATE_KILL_RETRIES",
@@ -6300,6 +7228,7 @@ __all__ = [
     "host_refusal_line",
     "index_lock_stale_s",
     "index_lock_wait_s",
+    "is_conflict_refusal",
     "is_host_refusal",
     "is_main_refusal",
     "kill",

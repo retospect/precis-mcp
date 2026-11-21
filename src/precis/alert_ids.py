@@ -864,6 +864,21 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "lane probes again after the backoff, and a launch resolves this.",
     ),
     AlertRule(
+        "run_slice:kept:{host}",
+        "{folder}",
+        "A build or land attempt folder was kept because its work is not "
+        "(provably) in the host's hub: a push the hub's secret scan "
+        "withheld, a failed push, or a folder the host sweep could not "
+        "drop. One alert per folder; it clears when the folder is gone.",
+        "warn",
+        "run_slice",
+        triage="The alert detail names the host and the folder. On that "
+        "host read the folder: push its HEAD to the attempt ref once any "
+        "withheld secret is out of every commit, or keep what is needed, "
+        "then remove the folder; the host's sweep clears the alert within "
+        "about a minute of the folder being gone.",
+    ),
+    AlertRule(
         "repo_lease",
         "stale-holder:{repo}/{job_id}",
         "A job still holds a second repo's land/release lease but its "

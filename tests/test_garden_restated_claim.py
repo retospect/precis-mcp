@@ -385,14 +385,9 @@ def test_tick_records_rewrite_without_opening_consumer_apply(
         considered_days=0,
         propose=lambda *_: Verdict(accept=True, rationale="fixture same claim"),
     )
-    assert outcome.candidates == outcome.proposals == 4
+    assert (outcome.candidates, outcome.proposals, outcome.routed) == (4, 1, 3)
     proposals = pending_proposals(store, action="rewrite")
-    assert {(p.detector, p.target_id) for p in proposals} == {
-        ("restated_claim", b),
-        ("review_due", hub),
-        ("review_due", a),
-        ("review_due", b),
-    }
+    assert {(p.detector, p.target_id) for p in proposals} == {("restated_claim", b)}
     (proposal,) = [p for p in proposals if p.detector == "restated_claim"]
     assert proposal.detector == "restated_claim"
     assert not _reviewable(proposal)

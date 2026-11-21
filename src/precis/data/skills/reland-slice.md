@@ -42,8 +42,11 @@ comment or origin/main before landing again.
 
 ## Hand re-land
 
-1. Copy `branch`, `worktree` and `target_node` (and `lane`, `todo_id`, if
-   present) from the red job's params. Run the diff's cheap parity tests
+1. Copy `branch`, `ref`, `head` and `target_node` (and `lane`, `todo_id`,
+   `repo`, if present) from the red job's params. A red land leaves the
+   work in the build host's hub, so `ref` still holds `head`, and
+   `target_node` must stay that host (the todo's `meta.build_ref.host`).
+   Run the diff's cheap parity tests
    yourself before going on; a quick land that reddens main is the next
    tree's problem.
 2. Clear the failure bubble. The red land tagged the todo
@@ -62,31 +65,34 @@ comment or origin/main before landing again.
        args={'parent_id': T, 'job_type': 'land_slice',
              'idem_key': 'land_slice:td<T>',
              'params': {'branch': 'slice/<T>', 'todo_id': T,
-                        'worktree': '<path>', 'target_node': '<node>'}})
+                        'ref': '<ref>', 'head': '<sha>',
+                        'target_node': '<node>'}})
    ```
 
 4. A queued job you no longer want: `tag(kind='job', id=N,
    add=['STATUS:cancel_requested'])` (a queued job cancels directly).
 5. Hold any open retry-cap ask until the hand land succeeded, then close it
-   as moot. Answering it earlier re-arms the node, and a builder could launch
-   into the worktree the lander ships from.
+   as moot. Answering it earlier re-arms the node, and a builder could start
+   a new attempt of the task while the land runs.
 6. On green, land notification marks the todo `landed:` + `STATUS:done`.
 
 ## Local pre-land check
 
 A slice carrying a migration or a harness file cannot run tests before main:
 lands are lint-only and the release gate runs the suite. To test the branch
-first, bring it local from the host that holds it:
+first, bring it local from the build host's hub (the todo's
+`meta.build_ref`: `host`, `ref`, and `head`, the commit a land takes):
 
-1. On that host, in the slice worktree: `git status --short` and `git log
-   --oneline origin/main..HEAD`. Unstaged rewraps after a failed land are
-   ship's lint autofix, not builder work; a bundle carries commits only.
+1. On that host, the hub is `precis-hub.git` in the checkout's git common
+   dir: `git --git-dir <hub> log --oneline main..<ref>`. A top commit
+   `wip: snapshot` is unfinished work above `head`.
 2. Bundle the commits and stream them to a local file over ssh:
-   `git bundle create - origin/main..slice/<id>`.
-3. Locally, fetch it into a scratch branch and add a worktree:
+   `git --git-dir <hub> bundle create - main..<ref>`.
+3. Locally, fetch `head` into a scratch branch and add a worktree:
 
    ```
-   git fetch <bundle> refs/heads/slice/<id>:refs/heads/<scratch>
+   git fetch <bundle> <ref>
+   git branch <scratch> <head>
    git worktree add .claude/worktrees/<scratch> <scratch>
    ```
 

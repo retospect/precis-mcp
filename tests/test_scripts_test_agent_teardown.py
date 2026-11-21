@@ -78,6 +78,13 @@ exit 0
 """
 
 
+@pytest.fixture(autouse=True)
+def _no_slot_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A factory build exports PRECIS_GATE_SLOT_ROOT; these tests hold
+    slots in the staged tree's own git dir."""
+    monkeypatch.delenv("PRECIS_GATE_SLOT_ROOT", raising=False)
+
+
 def _stage(tmp_path: Path, name: str) -> Path:
     """A throwaway repo directory called ``name`` holding the real script."""
     tree = tmp_path / name

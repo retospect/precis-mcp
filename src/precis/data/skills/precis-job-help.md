@@ -75,8 +75,8 @@ door for a mechanical op on an existing todo. If the todo carries
 `meta.llm_tier`, the dispatcher additionally mints a `plan_tick`
 on it — clear it first (`edit(meta={'llm_tier': None})`) or
 expect both jobs. A `run_slice` dispatch is a real build: it
-launches the lane's vendor, writes `slice/<id>` and, on green,
-lands it. For the usual submit
+launches the lane's vendor in its own clone, keeps the work in the
+build host's hub and, on green, lands it. For the usual submit
 shape — build + pre-land reviewer — use a plan template instead
 ([[precis-factory-submit-help]]). A lane class with no enabled
 offering, or a brief naming a deny path, files a coordinator ask

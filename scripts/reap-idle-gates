@@ -201,6 +201,25 @@ def _worktrees() -> tuple[list[str], str]:
     return paths, (paths[0] if paths else "")
 
 
+def _attempt_clones(primary: str) -> list[str]:
+    """Existing factory attempt folders (gr741695) under the primary's
+    ``.claude/worktrees``: ``slice-td<todo>-j<job>`` (build) and
+    ``slice-td<todo>-land-j<job>`` (land). They are standalone clones, not
+    registered worktrees, so ``git worktree list`` never names them and
+    ``judge`` keeps every pair of theirs ("not a registered worktree"). The
+    engine's own janitor owns the folder and its stack; the orphan-volume
+    pass below only needs to know their project names are still minted."""
+    if not primary:
+        return []
+    base = Path(primary) / ".claude" / "worktrees"
+    try:
+        return sorted(
+            os.path.realpath(p) for p in base.glob("slice-td*-j[0-9]*") if p.is_dir()
+        )
+    except OSError:
+        return []
+
+
 def _sessions() -> dict[str, str] | None:
     """realpath -> inflight ``session`` field; None when inflight can't answer."""
     inflight = ROOT / "scripts" / "inflight"
@@ -506,7 +525,9 @@ def main(argv: list[str]) -> int:
         judge(p, cs, worktrees, primary, sessions, now)
         for p, cs in sorted(groups.items())
     ]
-    orphans = orphan_volumes(set(groups), worktrees)
+    # A live attempt clone between two compose runs has no container but still
+    # owns its gate-cache volume: count its folder as minting the name.
+    orphans = orphan_volumes(set(groups), worktrees + _attempt_clones(primary))
 
     acted: list[str] = []
     for v in verdicts:

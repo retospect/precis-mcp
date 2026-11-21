@@ -105,7 +105,13 @@ instead of holding a live db or OOM-killing a sibling's run at random
 the VM itself (gr514466): `min(floor((MemTotal - 16 GiB) / 4.5 GiB),
 NCPU / 2)`, min 1 — probed via `docker info`, with host sysctl/nproc as
 fallback; 6 on the 47 GiB / 12-CPU OrbStack VM (a run peaks ~4.5 GiB).
-`PRECIS_GATE_SLOTS` overrides. A `--fast` run selects only no-DB tests, so
+`PRECIS_GATE_SLOTS` overrides. The slot dirs, the queue and the hold-time
+stats live in the git common dir, so every worktree of a checkout shares one
+semaphore; a standalone clone (a factory attempt) has a common dir of its
+own, and `PRECIS_GATE_SLOT_ROOT=<dir>` points it at the host checkout's
+instead (the directory must exist, else the run refuses). Unset, an
+attempt clone (`<host>/.claude/worktrees/slice-td<N>[-land]-j<M>`)
+derives the host checkout's common dir from its own path, or refuses. A `--fast` run selects only no-DB tests, so
 it starts no Postgres and takes no slot. Each gate/dev container also
 carries a 24 GiB `mem_limit` (`docker/dev/compose.yaml`), so a runaway
 OOMs alone and the kill is reported as OOM rather than a silent death.

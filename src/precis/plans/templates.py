@@ -283,25 +283,35 @@ PENDING_LAND_KEY = "pending_land"
 #: a later successful defer clears it, ``land_slice._record_land``
 #: discharges it.
 PRELAND_DEFER_FAILED_KEY = "preland_defer_failed"
+#: ``meta.build_ref`` on a build todo (gr741695): where its newest pushed
+#: work is, ``_slice_ws.Pushed.as_meta()`` of the last ``run_slice``
+#: finalize whose state was ``pushed`` — ``{state, ref, sha, head, wip,
+#: by, note, host, at}``: ``ref`` the attempt ref in the host's hub,
+#: ``host`` the host whose hub holds it. The next build, the review and
+#: the land of the task run on that host. ``run_slice`` stamps it; a land
+#: and a start-over clear it.
+BUILD_REF_KEY = "build_ref"
+#: ``meta.build_floor`` on a build todo (gr741695): a job id. An attempt
+#: ref of a job with a smaller id is stale — its work has landed or was
+#: dropped by a start-over — and no attempt starts from it, on any host,
+#: whether or not the ref was deleted. The land stamps its own job id; a
+#: start-over launch stamps its own.
+BUILD_FLOOR_KEY = "build_floor"
 #: ``meta.branch_files`` on a build todo: the repo paths its slice branch
 #: touched (the diff against its land base), stamped by ``run_slice`` at
 #: each land handoff.
 BRANCH_FILES_KEY = "branch_files"
 #: The tip covered by a complete branch_files stamp, null if incomplete.
 BRANCH_FILES_HEAD_KEY = "branch_files_head"
-#: Where the factory keeps a slice branch on origin: a hidden namespace,
-#: not ``refs/heads/``, so GitHub lists no branch and offers no "Compare
-#: & pull request" for it (Reto 2026-11-15) — landing is ship's squash,
-#: never a PR. A plain ``git fetch origin`` skips it, so every reader
-#: fetches it by name (:func:`slice_fetch_cmd`).
+#: The factory's hidden ref namespace: not ``refs/heads/``, so GitHub
+#: lists no branch and offers no "Compare & pull request" for it (Reto
+#: 2026-11-15) — landing is ship's squash, never a PR. A build's work now
+#: lives in the build host's hub under ``refs/factory/build/<todo>/<job>``
+#: (gr741695, ``_slice_ws``) and never on GitHub; the lander still reads
+#: ``refs/factory/slice/<id>`` there for a build pushed before that
+#: change. A plain ``git fetch origin`` skips the namespace, so a reader
+#: fetches by name.
 SLICE_REF_NS = "refs/factory/"
-
-
-def slice_fetch_cmd(branch: str) -> str:
-    """The fetch that makes ``origin/<branch>`` resolve in a reviewer's
-    checkout: the hidden :data:`SLICE_REF_NS` ref into the usual
-    remote-tracking name, so the ``git diff`` after it is unchanged."""
-    return f"git fetch -q origin +{SLICE_REF_NS}{branch}:refs/remotes/origin/{branch}"
 
 
 #: The trailer ``plan_dispatch`` ends a pre-land FIX/REVERT hand-back
@@ -366,12 +376,11 @@ def _reviewer_brief(
     if preland:
         intro = "Review BEFORE land, from another lane than the builder's."
         what = (
-            f"td{target_id}'s branch is pushed to origin as the hidden ref "
-            f"`{SLICE_REF_NS}slice/{target_id}` (a plain `git fetch` skips "
-            f"it): `git fetch -q origin main`, "
-            f"`{slice_fetch_cmd(f'slice/{target_id}')}`, then "
-            f"`git diff origin/main...origin/slice/"
-            f"{target_id}` against td{target_id}'s brief chunk "
+            f"td{target_id}'s branch is not on main yet. Your checkout "
+            f"already holds it as `origin/slice/{target_id}` (the session "
+            "brief names where it was pushed and its head): read "
+            f"`git diff origin/main...origin/slice/{target_id}` against "
+            f"td{target_id}'s brief chunk "
             f"(`get(kind='todo', id={target_id})`)."
         )
     elif slices:

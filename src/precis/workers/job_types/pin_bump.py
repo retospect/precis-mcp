@@ -38,8 +38,9 @@ this job). Phases, in the handle's ``phase``:
   behind the pin, a deploy floor above the release) or goes on: the dependency's own ``pyproject.toml`` at the old and the new sha
   must agree on dependencies, ``requires-python`` and ``[build-system]``
   (``uv lock --check`` compares text only, so a text-edited lock would be
-  wrong otherwise), then a worktree ``pin-td<id>`` on ``slice/<id>`` (what
-  ``land_slice`` lands) gets the three edited files. Nothing is committed.
+  wrong otherwise), then a worktree ``pin-td<id>`` on ``slice/<id>`` of the
+  host checkout (this job's own; the lander lands the commit from the hub
+  and never uses it) gets the three edited files. Nothing is committed.
 * ``derive`` (detached, credential-free): ``uv lock --check``, ``uv sync
   --frozen`` into a venv outside the tree, then a worker-written script
   asserts the installed engine's version and computes the coverage anchor
@@ -63,16 +64,23 @@ this job). Phases, in the handle's ``phase``:
   the job ends; the scripts and logs stay for the operator. The transport
   classifier reads only the text before a failing ``lock`` / ``sync`` step's
   marker.
-* ``handoff`` (parked, due at once): a committed bump mints the
-  ``land_slice`` for the branch (``run_slice``'s own mint: idem key
-  ``land_slice:td<id>``, a child of the node), stamps the record ``handed``
-  and succeeds. A refused or failed mint fails attempt-free
-  (:data:`HANDOFF_CLASS`); the record stays ``committed`` and the next job
-  resumes straight here (a live land under the idem key is adopted). A
-  committed record whose commit is still the branch head on the same tip is
-  resumed to it. A no-op mints no land: it runs the same gripe resolution,
-  writes one ``pinned:`` comment (never ``landed:``) and goes on to
-  ``image``.
+* ``handoff`` (parked, due at once): a committed bump first puts its commit
+  in the hub of the host checkout as this job's attempt ref
+  (``_slice_ws.push_commit``, gr741695: the lander cuts its own clone from
+  the hub and never sees the pin tree), then mints the ``land_slice``
+  (``run_slice``'s own mint: idem key ``land_slice:td<id>``, a child of the
+  node, params ``ref`` and ``head``), stamps the record ``handed`` and
+  succeeds. A push that does not end ``pushed`` and a refused or failed mint
+  fail attempt-free (:data:`HANDOFF_CLASS`) with nothing minted for the
+  push; the record stays ``committed``, its tree and branch stay, and the
+  next job resumes straight here (a live land under the idem key is
+  adopted). A committed record whose commit is still the branch head on
+  the same tip, with its tree, is resumed to it. The tree and branch this
+  job made are removed only once the record says ``handed`` (or already
+  ``landed``): the hub then holds the commit, and the lander uses and
+  removes neither. A no-op mints no land: it runs the same gripe
+  resolution, writes one ``pinned:`` comment (never ``landed:``) and goes
+  on to ``image``.
 * ``image`` (parked, F7; Reto 2026-11-15): the node stays open until the
   gate image on the land host carries the new engine, so glue blocked by
   it does not unblock on the land alone. A ``landed`` record (the
@@ -139,7 +147,7 @@ from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git_mirror as _mirror
 from precis.workers import repo_land as _rl
 from precis.workers._mint import JOB_TERMINAL_STATUSES
-from precis.workers.job_types import JobTypeSpec
+from precis.workers.job_types import JobTypeSpec, _slice_ws
 from precis.workers.job_types import land_slice as _ls
 from precis.workers.job_types import repo_release as _rr
 from precis.workers.job_types import run_slice as _rs
@@ -1566,7 +1574,10 @@ def _poll_resolve(run: _Run) -> bool:
     landed = _stored(ctx.store, todo_id)
     if _waits_for_image(landed, params):
         # The pin is on main (or was a no-op): only the gate image wait is
-        # left, and nothing here reads the release or fetches.
+        # left, and nothing here reads the release or fetches. A tree and
+        # branch an earlier hand-off left behind (the worker died between the
+        # stamp and the removal) are of no use to anything now.
+        _drop_made(root, todo_id)
         ctx.append_chunk(
             "job_event",
             f"pin_bump: the pin of td{todo_id} has landed; waiting for the "
@@ -2601,7 +2612,10 @@ def _poll_handoff(run: _Run) -> bool:
         )
     version = str(record.get("version"))
     if record.get("state") != "committed":
-        # Already handed (a repeated poll): succeed again, mint nothing.
+        # Already handed (a repeated poll): succeed again, mint nothing. The
+        # hub holds the commit and the lander cuts its own clone, so a tree
+        # and branch a dead worker left behind after the stamp go now.
+        _drop_made(root, todo_id)
         return _succeed(
             run,
             f"pin_bump td{todo_id}: v{version} committed {commit[:9]}, handed to "
@@ -2613,8 +2627,38 @@ def _poll_handoff(run: _Run) -> bool:
             f"{branch} no longer points at the committed commit",
             f"{branch} moved off the committed commit {commit[:9]}; nothing is landed.",
         )
+    # The lander cuts its own clone from the hub and never sees the pin tree
+    # (gr741695): put the commit in the hub as this job's attempt ref first.
+    # Anything but ``pushed`` is attempt-free with the note, and nothing is
+    # minted.
     try:
-        land = _rs._mint_land(ctx, todo_id, Path(str(record["worktree"])), None)
+        hub = _slice_ws.ensure_hub(root)
+    except _slice_ws.WorkspaceError as exc:
+        return run.free(
+            f"the hub is not ready: {exc}",
+            f"the pin commit could not be put in the hub ({exc}); retried.",
+            HANDOFF_CLASS,
+        )
+    pushed = _slice_ws.push_commit(
+        _tree_path(root, todo_id), todo_id, _rl._job_id(ctx), commit, hub=hub
+    )
+    if pushed.state != _slice_ws.PUSHED:
+        return run.free(
+            f"the pin commit {commit[:9]} is not in the hub ({pushed.state}): "
+            f"{pushed.note}",
+            f"the pin commit could not be put in the hub ({pushed.state}: "
+            f"{pushed.note}); retried.",
+            HANDOFF_CLASS,
+        )
+    try:
+        land = _rs._mint_land(
+            ctx,
+            todo_id,
+            _tree_path(root, todo_id),
+            None,
+            ref=pushed.ref,
+            head=commit,
+        )
     except Exception as exc:
         log.warning("pin_bump: land_slice mint for td%d failed", todo_id, exc_info=True)
         return run.free(
@@ -2623,9 +2667,14 @@ def _poll_handoff(run: _Run) -> bool:
             HANDOFF_CLASS,
         )
     # The land may already have run and finished: stamp over a record that is
-    # still the committed one, never over a ``landed`` one.
+    # still the committed one, never over a ``landed`` one. From the moment
+    # the land is minted nothing needs the tree and branch: the hub holds the
+    # commit and the lander neither uses nor removes them, so this job removes
+    # them, but only after the record says ``handed`` (until then a repeated
+    # hand-off resumes from the committed tree and branch).
     latest = _stored(ctx.store, todo_id) or {}
     if latest.get("commit") == commit and latest.get("state") in ("handed", "landed"):
+        _drop_made(root, todo_id)
         return _succeed(
             run,
             f"pin_bump td{todo_id}: v{version} committed {commit[:9]}, handed to "
@@ -2638,12 +2687,17 @@ def _poll_handoff(run: _Run) -> bool:
             "the committed record on the node changed while the land was minted; "
             "see the land job.",
         )
-    if not _stamp(ctx, todo_id, {**latest, "state": "handed", "land_job": land}):
+    if not _stamp(
+        ctx,
+        todo_id,
+        {**latest, "state": "handed", "land_job": land, "ref": pushed.ref},
+    ):
         return run.free(
             f"could not stamp the pin record on td{todo_id}",
             "the node could not be marked (infrastructure); retried.",
             RECORD_CLASS,
         )
+    _drop_made(root, todo_id)
     return _succeed(
         run,
         f"pin_bump td{todo_id}: v{version} committed {commit[:9]}, handed to "

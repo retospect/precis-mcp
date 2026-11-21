@@ -48,6 +48,13 @@ def _this_host() -> str:
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_slot_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A factory build exports PRECIS_GATE_SLOT_ROOT; these tests stage
+    their own slot dirs in a throwaway repo's git dir."""
+    monkeypatch.delenv("PRECIS_GATE_SLOT_ROOT", raising=False)
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A throwaway git repo whose common dir hosts the queue and slot dirs."""

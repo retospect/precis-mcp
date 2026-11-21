@@ -35,7 +35,11 @@ the absolute paths the copy carries:
 
 The copy is staged at ``<tree>/.venv-seed-<pid>`` and renamed into place,
 so a failed seed never leaves a half venv that ``uv`` would try to reuse.
-An existing ``<tree>/.venv`` and a src with none are both no-ops.
+An existing ``<tree>/.venv`` and a src with none are both no-ops. In a
+standalone clone (``git clone``, a factory attempt) the git common dir is
+the clone's own ``.git``, so the default src would be the tree itself: with
+no ``[src]`` the script says so and does nothing; pass the host checkout
+as ``[src]`` and the seed works as for a worktree.
 Wired into ``scripts/devin-tree`` and ``scripts/fleet-wave``'s
 ``_ensure_tree``; the ``claude -w`` path lives in .claude hooks.
 """
@@ -227,7 +231,20 @@ def main(argv: list[str]) -> int:
         print("usage: seed-worktree-venv <tree> [src]", file=sys.stderr)
         return 2
     tree = Path(argv[1])
-    src = Path(argv[2]) if len(argv) == 3 else _main_checkout(tree)
+    if len(argv) == 3:
+        src = Path(argv[2])
+    else:
+        src = _main_checkout(tree)
+        if src.resolve() == tree.resolve():
+            # A standalone clone: its git common dir is its own .git, so the
+            # "main checkout" found through it is the tree itself. There is
+            # nothing to seed from; the caller names the source.
+            print(
+                f"seed-worktree-venv: {tree} is its own repository (a clone, "
+                "not a linked worktree), so there is no main checkout to "
+                "seed from — nothing done; pass [src] to seed from one"
+            )
+            return 0
     outcome = seed_tree(tree, src)
     print(f"seed-worktree-venv: {tree}/.venv {outcome}")
     return 0

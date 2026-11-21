@@ -2276,6 +2276,13 @@ case "${args[0]:-}" in
     exit 0
     ;;
   network)
+    # `network ls` answers from FAKE_DOCKER_NETWORKS (rows: name|project)
+    # when set; `network rm` is logged as `network-rm|<name>`.
+    if [ "${args[1]:-}" = "ls" ] && [ -n "${FAKE_DOCKER_NETWORKS:-}" ]; then
+        cat "$FAKE_DOCKER_NETWORKS"
+    elif [ "${args[1]:-}" = "rm" ]; then
+        echo "network-rm|${args[2]:-}" >> "$LOG"
+    fi
     exit 0
     ;;
   compose)
@@ -3850,3 +3857,116 @@ def test_reap_worktrees_report_buckets_and_removes_nothing(
         assert (wt_root / name).is_dir(), name
     assert _lock_reason_for(primary, wt_root / "wt-lock-live") == "pid 1"
     assert _lock_reason_for(primary, wt_root / "wt-lock-dead") == f"pid {dead_pid}"
+
+
+# --- gr741695: factory attempt clones are not worktrees -----------------
+#
+# `slice-td<todo>-j<job>` / `slice-td<todo>-land-j<job>` folders under
+# .claude/worktrees are standalone clones: the worktree list never shows
+# them, so scripts/inflight and the worktree reapers never see them. The two
+# reap-test-dbs passes that reach a folder by way of its compose project
+# (idle-stack stop, bare-network sweep) must leave a present one alone.
+
+
+def _clone_into(primary: Path, name: str) -> Path:
+    clone = primary / ".claude" / "worktrees" / name
+    subprocess.run(
+        ["git", "clone", "-q", "--local", str(primary), str(clone)],
+        check=True,
+        capture_output=True,
+    )
+    old = time.time() - 30 * 3600
+    for rel in ("index", "HEAD", "logs/HEAD"):
+        p = clone / ".git" / rel
+        if p.exists():
+            os.utime(p, (old, old))
+    return clone
+
+
+@pytest.mark.parametrize("name", ["slice-td5-j6", "slice-td5-land-j7"])
+def test_reap_test_dbs_leaves_a_present_attempt_clone_stack_running(
+    reap_db_repo: dict[str, Path], tmp_path: Path, name: str
+) -> None:
+    """An idle, sessionless clone whose db and warm gate are up for days:
+    neither the carve-out (worktrees only) nor the idle-stack stop (which
+    reads the folder off the container label) may stop or down it."""
+    primary = reap_db_repo["primary"]
+    clone = _clone_into(primary, name)
+    proj = f"precis-test-{name}"
+    cfg = f"{clone}/docker/dev/compose.yaml"
+    containers = [
+        f"{proj}|dbcid1|precis-test-db|{cfg}|running|2020-01-01T00:00:00Z|0",
+        f"{proj}|gatecid1|precis-gate|{cfg}|running|2020-01-01T00:00:00Z|0",
+    ]
+    created = [f"dbcid1|{_iso_created(3)}", f"gatecid1|{_iso_created(3)}"]
+
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+
+    assert result.returncode == 0, result.stderr
+    assert proj not in log, (result.stdout, log)
+    assert proj not in result.stdout
+
+
+def test_reap_test_dbs_idle_stack_stop_still_stops_a_real_worktree(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """Control for the test above: the same stack on a registered worktree
+    IS stopped, so the clone case passes because of the skip, not because
+    the pass never fires in this fixture."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    old = time.time() - 30 * 3600
+    gitdir = Path((b / ".git").read_text(encoding="utf-8").split("gitdir: ")[1].strip())
+    for p in (gitdir / "index", gitdir / "HEAD", gitdir / "logs" / "HEAD"):
+        if p.exists():
+            os.utime(p, (old, old))
+    cfg = f"{b}/docker/dev/compose.yaml"
+    containers = [
+        f"precis-test-b|dbcid1|precis-test-db|{cfg}|running|2020-01-01T00:00:00Z|0",
+        f"precis-test-b|gatecid1|precis-gate|{cfg}|running|2020-01-01T00:00:00Z|0",
+    ]
+    created = [f"dbcid1|{_iso_created(0.1)}", f"gatecid1|{_iso_created(0.1)}"]
+
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+
+    assert result.returncode == 0, result.stderr
+    assert "stop|precis-test-b" in log, (result.stdout, result.stderr, log)
+
+
+def test_reap_test_dbs_gone_attempt_clone_stack_is_still_reconciled(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """A stack whose clone folder no longer exists cannot be live: the label
+    sweep still downs it (with -v), as it does for any gone tree."""
+    primary = reap_db_repo["primary"]
+    gone = primary / ".claude" / "worktrees" / "slice-td5-j6"
+    containers = [
+        f"precis-test-slice-td5-j6|dbcid1|precis-test-db|{gone}/docker/dev/compose.yaml"
+    ]
+    result, log = _run_reap_test_dbs(
+        primary, tmp_path, containers, [f"dbcid1|{_iso_created(3)}"]
+    )
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-slice-td5-j6" in log, (result.stdout, log)
+
+
+def test_reap_test_dbs_keeps_the_network_of_a_present_attempt_clone(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """The bare-network sweep removes a container-less project's network
+    unless a worktree mints the name. A present attempt clone between two
+    compose runs has no container: its network stays; the network of a
+    folder that is gone goes."""
+    primary = reap_db_repo["primary"]
+    _clone_into(primary, "slice-td5-j6")
+    nets = tmp_path / "networks"
+    nets.write_text(
+        "precis-test-slice-td5-j6_default|precis-test-slice-td5-j6\n"
+        "precis-test-slice-td5-j9_default|precis-test-slice-td5-j9\n",
+        encoding="utf-8",
+    )
+    result, log = _run_reap_test_dbs(
+        primary, tmp_path, [], [], extra_env={"FAKE_DOCKER_NETWORKS": str(nets)}
+    )
+    assert result.returncode == 0, result.stderr
+    assert "network-rm|precis-test-slice-td5-j9_default" in log, (result.stdout, log)
+    assert "network-rm|precis-test-slice-td5-j6_default" not in log, log

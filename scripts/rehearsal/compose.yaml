@@ -1,0 +1,32 @@
+# Scratch database for scripts/factory-rehearsal: one throwaway pgvector
+# Postgres, published on loopback only, removed with its volume at the end.
+# Always run with a project name starting `precis-rehearsal` (db.py does);
+# nothing here is shared with the dev/test stack in docker/dev/compose.yaml.
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    init: true
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: precis_rehearsal
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - postgres
+      - -c
+      - fsync=off
+      - -c
+      - full_page_writes=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - max_connections=200
+    ports:
+      # 127.0.0.1 only, container port 5432, host port chosen by Docker.
+      - "127.0.0.1::5432"
+    tmpfs:
+      - /var/lib/postgresql/data:size=2g
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "precis_rehearsal"]
+      interval: 1s
+      timeout: 5s
+      retries: 60

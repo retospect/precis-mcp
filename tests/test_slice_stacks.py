@@ -11,6 +11,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -387,3 +388,123 @@ def test_docker_failure_returns_empty(docker: _Docker, tmp_path: Path) -> None:
     assert docker.calls == [
         ["ps", "-a", "-q", "--filter", "label=com.docker.compose.project"]
     ]
+
+
+# --- attempt clones (gr741695): ``slice-td<todo>-j<job>`` folders -----------
+
+_COMPOSE_PROJECT_LIB = (
+    Path(__file__).resolve().parent.parent / "scripts" / "lib" / "compose-project.sh"
+)
+
+
+@pytest.mark.parametrize(
+    ("folder", "project"),
+    [
+        ("slice-td123-j456", "precis-test-slice-td123-j456"),
+        ("slice-td123-land-j456", "precis-test-slice-td123-land-j456"),
+    ],
+)
+def test_attempt_folder_projects_are_valid_slice_projects(
+    tmp_path: Path, folder: str, project: str
+) -> None:
+    """A build's and a lander's folder both name a compose project that
+    keeps the ``precis-test-slice-`` prefix (so ``sweep`` and
+    ``evict_project`` see it), uses compose's charset, and is the same
+    string in the shell and Python derivations."""
+    tree = tmp_path / folder
+    tree.mkdir()
+    assert slice_stacks.project_for_tree(tree) == project
+    assert project.startswith(slice_stacks.SLICE_PREFIX)
+    assert re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project)
+    shell = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source "{_COMPOSE_PROJECT_LIB}"; compose_project_for "{tree}"',
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+    assert shell == project
+
+
+def _real_clone(tmp_path: Path, name: str) -> Path:
+    """A real standalone clone of a one-commit repository."""
+    host = tmp_path / "host"
+    host.mkdir(exist_ok=True)
+    if not (host / ".git").exists():
+        subprocess.run(["git", "init", "-q", str(host)], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(host),
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "root",
+            ],
+            check=True,
+        )
+    clone = tmp_path / name
+    subprocess.run(["git", "clone", "-q", "--local", str(host), str(clone)], check=True)
+    return clone
+
+
+def test_run_marker_dir_of_a_real_clone_is_where_scripts_test_writes_it(
+    tmp_path: Path,
+) -> None:
+    """``scripts/test`` writes ``$(git rev-parse --absolute-git-dir)/
+    precis-test-runs/<pid>``; in a clone that is ``<clone>/.git``, and
+    ``_live_run_marker`` must look in exactly that directory."""
+    clone = _real_clone(tmp_path, "slice-td9-j10")
+    out = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "--absolute-git-dir"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    assert slice_stacks._git_dir(clone) == Path(out)
+    assert slice_stacks._live_run_marker(clone) is False
+    runs = Path(out) / slice_stacks.RUN_MARKER_DIR
+    runs.mkdir()
+    (runs / str(os.getpid())).write_text("", encoding="utf-8")
+    assert slice_stacks._live_run_marker(clone) is True
+    (runs / str(os.getpid())).unlink()
+    (runs / str(_dead_pid())).write_text("", encoding="utf-8")
+    assert slice_stacks._live_run_marker(clone) is False
+
+
+def test_sweep_keeps_a_clone_stack_with_a_live_run_marker(
+    docker: _Docker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end on a real clone: over the cap and long idle, but a live
+    marker in ``<clone>/.git/precis-test-runs`` keeps the stack; once the
+    marker is dead the same stack is evicted without ``-v``."""
+    monkeypatch.setenv("PRECIS_SLICE_STACK_CAP", "0")
+    clone = _real_clone(tmp_path, "slice-td9-land-j11")
+    old = time.time() - 99999
+    for rel in ("index", "HEAD", "logs/HEAD"):
+        p = clone / ".git" / rel
+        if p.exists():
+            os.utime(p, (old, old))
+    runs = clone / ".git" / slice_stacks.RUN_MARKER_DIR
+    runs.mkdir()
+    marker = runs / str(os.getpid())
+    marker.write_text("", encoding="utf-8")
+    project = "precis-test-slice-td9-land-j11"
+    docker.containers = [_container(project, clone, started_s_ago=99999)]
+    assert slice_stacks.sweep() == []
+    assert docker.downs() == []
+    marker.unlink()
+    (runs / str(_dead_pid())).write_text("", encoding="utf-8")
+    assert slice_stacks.sweep() == [project]
+    assert docker.downs() == [["compose", "-p", project, "down", "--remove-orphans"]]

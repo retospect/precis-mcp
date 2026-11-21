@@ -519,10 +519,22 @@ COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
 # the handle open, so every later `git add` on the host failed. The suite
 # only reads repo git (rev-parse, ls-files, check-ignore, status); a test
 # that needs to write does so in a repo of its own under tmp_path.
+#
+# A standalone clone (a factory attempt) is the other shape: its git dir is
+# `<tree>/.git`, INSIDE the tree that /app mounts read-write, so the mount
+# above would protect only a host path the container never reads and the
+# in-container git would write the clone's real .git through /app. There the
+# same directory is mounted read-only over /app/.git instead (a nested mount:
+# docker applies it after the /app one whatever the flag order).
 GIT_DIR_MOUNT=()
 _git_common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-[[ -n "$_git_common" && -d "$_git_common" ]] \
-    && GIT_DIR_MOUNT=(-v "${_git_common}:${_git_common}:ro")
+if [[ -n "$_git_common" && -d "$_git_common" ]]; then
+    if [[ -d "${WORKTREE}/.git" ]]; then
+        GIT_DIR_MOUNT=(-v "${WORKTREE}/.git:/app/.git:ro")
+    else
+        GIT_DIR_MOUNT=(-v "${_git_common}:${_git_common}:ro")
+    fi
+fi
 # Gate-slot admission (gr202193): the test container runs on one shared
 # Docker VM with every sibling worktree's — cap concurrency so runs queue
 # briefly instead of OOM-killing each other at random. A runaway's own

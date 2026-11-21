@@ -158,6 +158,23 @@ subagent_task_clear() {
     return 1
 }
 
+# Factory attempt folders (gr741695) are standalone clones —
+# `<checkout>/.claude/worktrees/slice-td<todo>-j<job>` for a build,
+# `slice-td<todo>-land-j<job>` for a land — not git worktrees, so nothing
+# that reads `git worktree list` (the carve-out below, scripts/inflight, the
+# worktree reapers) ever sees them. The engine's own janitor owns each
+# folder and its stack. Two passes here would still reach one by way of its
+# compose project: the idle-stack stop (it reads the tree off the container
+# label) and the bare-network sweep (it asks whether a worktree mints the
+# name). Both skip it: a gone folder is still reconciled by the label sweep
+# above, which only ever sees a stack whose folder no longer exists.
+is_attempt_clone() {  # <tree-root>
+    case "$1" in
+        */.claude/worktrees/slice-td*-j[0-9]*) return 0 ;;
+    esac
+    return 1
+}
+
 REAPED=()
 STOPPED=()
 SEEN=""
@@ -190,7 +207,9 @@ while IFS='|' read -r proj cfg; do
 
     if [ -d "$root" ]; then
         # Tree still there — not this sweep's business. It goes on the
-        # idle-stack list judged after the removal passes (gr544054).
+        # idle-stack list judged after the removal passes (gr544054) —
+        # unless it is an attempt clone, which the engine's janitor owns.
+        is_attempt_clone "$root" && continue
         PRESENT="${PRESENT}${proj}|${root}
 "
         continue
@@ -242,6 +261,15 @@ if [ -n "$ROOT" ] && [ -f "$ROOT/scripts/lib/compose-project.sh" ] \
         p="$(compose_project_for "$wt_path" 2>/dev/null || true)"
         [ -n "$p" ] && LIVE_PROJECTS="$LIVE_PROJECTS $p"
     done < <(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
+    # Attempt clones are not in that list, but an existing folder still owns
+    # the project name it mints (the engine may be between two compose runs).
+    # They live under the primary checkout's .claude/worktrees.
+    _clone_base="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
+    for _clone in "${_clone_base:-$ROOT}"/.claude/worktrees/slice-td*-j[0-9]*; do
+        [ -d "$_clone" ] || continue
+        p="$(compose_project_for "$_clone" 2>/dev/null || true)"
+        [ -n "$p" ] && LIVE_PROJECTS="$LIVE_PROJECTS $p"
+    done
 
     # Live task markers also protect bare networks: the tree a marker
     # scopes to can be gone already (the task fell back to the parent), so

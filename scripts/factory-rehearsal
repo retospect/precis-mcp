@@ -1,0 +1,45 @@
+#!/usr/bin/env -S uv run python
+"""scripts/factory-rehearsal - rehearse the dark-factory build engine (gr741695).
+
+    uv run scripts/factory-rehearsal                    # every registered scenario
+    uv run scripts/factory-rehearsal -s smoke           # one scenario (repeatable)
+    uv run scripts/factory-rehearsal --list
+    uv run scripts/factory-rehearsal -s smoke --keep    # leave the world up
+    uv run scripts/factory-rehearsal --clean            # remove leftovers
+
+Stands up a scratch world (a bare repository standing in for GitHub seeded
+from this checkout's ``disposable-workspaces``, a host checkout cloned from
+it, one throwaway Postgres container in its own Compose project), starts the
+real worker against it with scripted sessions in place of the model CLIs,
+and runs the named scenarios through the real ``plan_dispatch`` /
+``run_slice`` / ``land_slice`` code. One result line per scenario; exits
+non-zero when any fails. It refuses to start unless the database host is
+loopback and the database name contains ``rehearsal``, and it never reads a
+database DSN, token or vault name from the environment (see
+``scripts/rehearsal/safety.py``). Scratch state lives under
+``scratch/rehearsal/``.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+# Before anything imports ``precis``: its configuration layer reads
+# PRECIS_DATABASE_URL from the environment and a .env from the working
+# directory. Scrub the one, leave the other behind.
+from rehearsal.safety import scrub_process_env  # noqa: E402
+
+scrub_process_env()
+_SCRATCH = HERE.parent / "scratch" / "rehearsal"
+_SCRATCH.mkdir(parents=True, exist_ok=True)
+os.chdir(_SCRATCH)
+
+from rehearsal.runner import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

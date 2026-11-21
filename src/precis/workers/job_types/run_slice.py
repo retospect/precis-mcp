@@ -25,38 +25,47 @@ that holds the lane's credentials with ``params.target_node``):
   the job plus ``meta.decision`` — the :func:`decide() <precis.utils.llm.decide.decide>`
   shadow beside the pick, read-only telemetry (:mod:`_lane_decide`,
   td572552 S4b) — takes the lease on the todo (``claimed-by:lane-<lane>`` + ``STATUS:doing``),
-  cuts worktree ``slice-td<id>`` on branch ``slice/<id>`` from
-  ``origin/main`` under the checkout root (:func:`slice_root`) — a reused
-  tree is reset to a clean checkout of its branch tip first
-  (:func:`_reset_reused_worktree`, gr571311), after a dead git's stale
-  ``index.lock`` there is reaped by land_slice's keep-on-doubt rule (only
-  *git* holders keep a lock); a live one is waited out briefly, then
-  fails the submit ``attempt_free``, and one still held past
-  :func:`index_lock_hard_s` has its git holders killed and is removed
-  (:func:`_clear_slice_index_lock`, gr650484, gr662077, gr684320 — every
-  reap leaves job meta ``index_lock_reaped`` and a todo comment). A
-  finished session whose commit met a held lock fails the poll
-  attempt-free "index-lock" — never "no commit", whatever the branch
-  holds — and the next submit commits its edits before the reset
-  (:func:`_salvage_skipped_commit`, authorized by the poll's own
-  ``commit_skipped`` job stamp and revalidated against the deny paths;
-  the reset is withheld if that fails)
-  — a reused branch holding commits ahead of ``origin/<base>`` is
-  judged before the brief is written (:func:`_route_ahead_branch`,
+  cuts the job's own clone ``slice-td<id>-j<job>`` on branch
+  ``slice/<id>`` from the host's hub (gr741695, :mod:`._slice_ws`; the
+  design is gr741695's and the rule is *nothing important lives only in a
+  build folder*): the hub (a bare repository beside the checkout
+  root's, :func:`slice_root`) is made and synced to the base GitHub holds,
+  and the clone starts at the task's newest pushed attempt
+  (``meta.build_ref``; a start-over answer deletes the attempts and starts
+  at the base; work pushed to GitHub before the switch is imported once;
+  an unreadable hub or a moved attempt ref ends the job ``attempt_free``
+  ``workspace`` — never a start from the base) — no job ever enters a
+  folder another job made, so nothing is reset or salvaged for a
+  successor, and a launch never settles a folder that is not its own: while
+  an earlier folder of the same task has no stored push record the launch
+  parks (``not_before``, one job_event) and the poll retries it, ending it
+  attempt-free after 15 minutes with the kept alert
+  (:func:`_wait_for_earlier_folder`). An outage relaunch in the same job
+  finalizes and drops its own folder first and cuts again from what it
+  pushed (:func:`_open_attempt`). Pushed work an attempt would continue is
+  judged before the brief is written (:func:`_route_started_work`,
   gr674785 — td665126 burned all five rungs re-finding a fix a sibling
   had landed): a change already patch-equivalent on the base
   (:func:`_carried_on_base` — a cherry-picked, merged or squash-carried
   land) closes the node done with the landing sha, the job ending
-  ``attempt_free`` "already-on-main"; commits ahead with novel work go
-  to the land — the pre-land reviewer when one gates it, else a
-  ``land_slice`` mint — ``attempt_free`` "branch-ahead", and a
+  ``attempt_free`` "already-on-main"; complete pushed work (never a
+  ``wip:`` snapshot) with novel changes goes to the land — the pre-land
+  reviewer when one gates it, else a ``land_slice`` mint, both naming the
+  attempt ref and head — ``attempt_free`` "branch-ahead", and a
   ``handoff: lander:``, ``handoff: review: FIX|REVERT`` or the tick's
   mechanical-red ``brief:`` (gr705291) skips that second arm since the
-  branch is mid-fix by design (the reviewer's reject wants the rebuild,
-  not a route back into the same review);
-  the submit-time ``branch_tip``/``branch_ahead``
-  the job records is the poll arm's evidence for the same ruling —
-  writes
+  work is mid-fix by design (the reviewer's reject wants the rebuild,
+  not a route back into the same review). The job records the commit it
+  started from as ``meta.start`` (``{sha, ref, wip}``, absent at the base
+  tip) and ``meta.base``, the poll arm's evidence for the same ruling;
+  the brief of an attempt that continues says so, and how to keep or
+  drop a ``wip:`` snapshot's edits. The brief ends in the builder's
+  finish steps — commit, rebase onto ``origin/<base>``, the checks again,
+  push to its own ref ``refs/factory/build/<todo>/<job>``, read it back —
+  for a lane that pushes (:attr:`Adapter.pushes`: claude, devin, kimi);
+  codex, whose sandbox keeps ``.git`` read-only and has no network, keeps
+  the commit steps and the worker commits and pushes after it exits. The
+  brief is written to
   ``scratch/brief.md`` there and launches the lane's adapter (``claude_p``,
   ``codex_exec``, ``devin_tree`` or ``kimi_tree``) detached. Claude's argv
   and MCP grant are unchanged; the other vendors receive no precis MCP
@@ -75,12 +84,14 @@ that holds the lane's credentials with ``params.target_node``):
   :data:`precis.plans.lanes.HOST_REFUSAL_BACKOFF` in the pick, raising
   one deduped alert, and counting as no attempt at the retry cap
   (gr571395). A ``codex_exec`` launch grants its sandbox writable
-  roots beyond the tree (:func:`_codex_writable_roots`): the shared git
-  common dir — worktree index/refs, objects, and the gate queue the
+  roots beyond the tree (:func:`_codex_writable_roots`): the host
+  checkout's git common dir — the gate queue and slot locks the
   session's ``scripts/test`` writes — plus the Docker socket's parent
   (gr570533). The env is
   an allowlist (:func:`slice_env`): no DB DSN, no vault variables reach
-  the session. The handle is ``{pid, pgid, worktree, log, exit_file,
+  the session; ``PRECIS_SLICE_JOB`` names the attempt ref the hub's hook
+  lets it push and ``PRECIS_GATE_SLOT_ROOT`` the host's gate (the common
+  dir of the checkout, absolute). The handle is ``{pid, pgid, worktree, log, exit_file,
   started_at}`` plus ``boot_id``/``start_time`` (the Linux process
   identity ssh_node's orphan reaper checks) when ``/proc`` has them.
   On Darwin it carries ``ps_identity`` (start time + user); polling
@@ -121,11 +132,24 @@ that holds the lane's credentials with ``params.target_node``):
   (a release-fix node's ``gripe:``/``unfixed:`` lines in it are filed as
   gripes and a plan-root comment, :mod:`precis.workers.release_fix_handoff`),
   records the branch state (dirty count, commits ahead of
-  ``origin/main``) in the job summary. On a clean exit (0, no claude
+  ``origin/main``) in the job summary. gr741695, in this order while the
+  folder still exists: the log and the result are read, the deny-path
+  check runs on the folder, Devin's worker-run acceptance tests run, the
+  worker commits what a session left with a commit message
+  (:func:`_commit_for_session`), then :func:`_slice_ws.finalize` makes the
+  hub hold what the folder holds — a builder's own push is only verified,
+  anything else (a crash, a kill, codex) is pushed from the worker, a
+  snapshot of uncommitted work included as a ``wip:`` commit — and stamps
+  job ``meta.push`` and, when the hub holds the work, the task's
+  ``meta.build_ref``; the arms below follow, and at the end the folder is
+  dropped when the hub holds its head, else it stays and the task gets a
+  comment naming host and folder. On a clean exit (0, no claude
   error, no deny hit) with commits on the branch it mints one
   ``land_slice`` job (:mod:`precis.workers.job_types.land_slice`; idem key
-  ``land_slice:td<id>``, a child of the todo, params ``{todo_id, worktree,
-  branch, lane, target_node}``) and ends ``succeeded``; the lease stays
+  ``land_slice:td<id>``, a child of the todo, params ``{todo_id, branch,
+  ref, head, lane, target_node}`` — the attempt ref in the host's hub and
+  the builder's last real commit, only when the hub holds them; no
+  worktree) and ends ``succeeded``; the lease stays
   until the land. A clean exit also finishes the ``waiting-for:mint``
   holds on the settled todos its job window minted under the plan
   (:func:`_release_mint_holds`, gr603945 — the mint barrier's hold,
@@ -172,8 +196,10 @@ that holds the lane's credentials with ``params.target_node``):
   (<handles>)`` subject (:func:`_commit_blocked`,
   :func:`_session_commit_fallback`; gr702644: a sandboxed codex build
   that cannot write ``.git`` must not round-trip through the no-commit
-  retry holding the file-overlap slot). A commit that still fails
-  park-saves the tree (:mod:`_slice_park`) like every failed run. Only
+  retry holding the file-overlap slot; the session is dead and the
+  folder is the job's own, so a stale ``index.lock`` there is simply
+  removed). Work a commit that still fails leaves is snapshotted by the
+  finalize below. Only
   a no-commit exit carrying no verdict anywhere is the failure below.
   Every one of those closes and the ``land_slice`` mint stands only on
   the every-run hard gates (:mod:`precis.plans.outcome`, gr595545 —
@@ -199,9 +225,9 @@ that holds the lane's credentials with ``params.target_node``):
   (:func:`_fix_declared`, gr648125 — the empty branch is itself the
   proof nothing is left to land; a ``no_commit`` stamp would only
   climb the ladder into a rescue the work never needed). Before the
-  ``no_commit`` stamp the poll also re-judges the branch the run
-  INHERITED (gr674785): the submit-time ``branch_tip`` already
-  patch-equivalent on the base (:func:`_carried_on_base` — a session
+  ``no_commit`` stamp the poll also re-judges the work the run
+  INHERITED (gr674785): the pushed commit it started from (``meta.start``)
+  already patch-equivalent on the base (:func:`_carried_on_base` — a session
   that rebases its branch onto main drops the carried commits and then
   reports "nothing left") closes done tagged ``verdict:moot`` with the
   landing sha, the same close a verified claim lands. Otherwise
@@ -227,7 +253,78 @@ that holds the lane's credentials with ``params.target_node``):
   burned; the run's result is discarded and one comment says so.
 * :func:`kill` SIGTERMs the session's process group. :func:`release`
   revokes the MCP grant and releases the todo even when the poison
-  guard cannot safely signal a process (poll may never run).
+  guard cannot safely signal a process (poll may never run); it touches no
+  folder, because it also runs from the executor's claim step.
+
+  *Who writes a folder.* An attempt folder is finalized (its work saved to
+  the hub) and dropped only inside the executor's watch pass, which does
+  one job after another and runs one worker at a time per host
+  (``ssh_node._watch_lock``), and there from exactly two places: the job's
+  own poll when its session ends (it needs the push record to mint the
+  land; an outage relaunch of the same job also settles that job's own
+  previous folder, :func:`_open_attempt`), and the host sweep, :func:`tidy`,
+  the job type's ``tidy`` hook, for every folder whose job is terminal.
+  There is no lock: no two writers meet, because the sweep leaves a running
+  job's folder alone and a job's poll is not run beside the sweep. This
+  rests on the executor's serialisation, and its two documented exceptions
+  (the lock connection cannot be opened; a holder stuck past
+  ``_WATCH_LOCK_MAX``) can let two passes overlap, as for every job type.
+  The sweep's ``settle`` function (:func:`_settle`, handed to
+  :func:`_slice_ws.sweep`) sends SIGKILL to a group that still answers once
+  the job has been terminal for 30 seconds (when :func:`_may_signal`
+  allows it), finalizes a folder the poll never judged (a cancel, a
+  deadline kill, a crash) and stamps the job's ``meta.push`` and the task's
+  ``meta.build_ref``, returns the stored ``meta.push`` of a folder the poll
+  judged, and reads a land folder as empty once its job ended; a folder the
+  hub does not hold stays and is reported (:func:`_alert_kept_folders`:
+  the task's comment and the alert).
+  The sweep judges a folder only by a job row of its own task
+  (``params.todo_id``); a folder with no such row is never touched, and one
+  alert says so (:func:`_unowned_folder`). A stored ``FAILED`` push is tried
+  again after 30, 60, 120 and 240 seconds (:data:`PUSH_RETRY_AFTER_S`). One
+  call of the sweep has a time budget shared by the roots (:data:`TIDY_BUDGET_S`).
+  A build folder is deleted only in the pass that finalized it
+  (:func:`_slice_ws.finalize`, which is idempotent) and got a safe state: a
+  stored safe ``meta.push`` is never by itself a licence to delete, so the
+  sweep (:func:`_settle`) and the poll's adopted record
+  (:func:`_confirm_adopted`) confirm it first, and work committed after the
+  record was made is saved. Every launch has a run dir
+  (:func:`_launch_attempt_dir`, ``<ops>/td<todo>/<attempt>`` with
+  ``baseline``, ``handle`` and ``pid``), a launch from the poll included, so
+  a session whose handle was never saved is found by the task and job ids
+  (:func:`_live_session_for`), by the sweep for a build or a land folder and
+  by the poll for any parked handle. An identity that cannot be read with
+  the pid answering is a live session, here and in the run-dir lookup; only
+  a mismatch is another process. A signal goes out only where one identity
+  read of its own says the number is still the session's
+  (:func:`_signal_target_ok`, behind :func:`_may_signal`); a live
+  acceptance-test group keeps the folder like a session does.
+  An outage park saves the dead session's work first (:func:`_save_before_park`)
+  and the relaunch, which alone may finalize and drop the job's own folder
+  (``own_folder``, :class:`Relaunch`), looks for a live session of the job the
+  way a restart does (:func:`_live_session_for`) and adopts it rather than
+  launching over it; the sweep does the same before it judges a handle that
+  names no pid.
+  A stored push belongs to the launch it judged (``push.launch``, pid and
+  start time; :func:`_stored_push`; a handle with no pid, an outage park's,
+  trusts any stored record): an outage relaunch's settle writes
+  the first session's, a new launch clears it, and the sweep finalizes any
+  folder whose stored push is not its launch's. A pid counts as the session
+  only when the identity the launch recorded (boot id and start time, or
+  the ps identity) matches; a recovered exit (a worker restart) answers by
+  its process group alone. The poll looks at the job row before it writes
+  in the folder (:func:`_poll_look`): a job that is already terminal means
+  it writes nothing, and a push this launch already stored is its own
+  earlier pass (a crash between the record and the land) and is adopted.
+  The poll never finalizes while the session's process group still
+  answers: after the exit file it sends the group SIGTERM, SIGKILL after
+  the grace, and finishes once it is gone (:func:`_stop_session_group`); a
+  launch with no recorded identity is never signalled
+  (:func:`_may_signal`), the poll holds and the job's deadline stops it.
+  A reviewer's folder is an attempt folder of its own job: the worker
+  fetches the reviewed attempt's ref from the hub into it as
+  ``origin/slice/<target todo>`` (:func:`_preland_head`), and a
+  second-repository reviewer is cut at the landed commit.
 
 Deny paths are enforced twice for Claude: the session gets them as ``Edit``/
 ``Write``/``MultiEdit``/``NotebookEdit`` deny rules through ``--settings``
@@ -241,9 +338,10 @@ vendor receives the paths in its brief and gets the poll check. The
 poll check is pre-land: the session only commits on its branch, and
 nothing is landed until the check passed.
 
-The land is the lander's: the brief ends with "commit on the branch, leave
-the tree clean, stop", and ``land_slice`` runs ``scripts/ship``, whose
-land_notify closes the todo. A generator node is the exception: its brief
+The land is the lander's: the brief ends with the finish steps (commit,
+rebase, push the attempt ref, stop), and ``land_slice`` cuts its own clone
+from the hub at ``head`` and runs ``scripts/ship``, whose land_notify
+closes the todo. A generator node is the exception: its brief
 ends with "create the child todos", no land job is minted, and the plan
 tick closes it once its children are closed (it reopens one a session
 marked done too early). A child-minting generator that exits 0 with no
@@ -274,15 +372,19 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from precis.alert_ids import RULES_BY_ID
-from precis.alerts import raise_alert, resolve_alert_by_fingerprint
+from precis.alerts import (
+    raise_alert,
+    resolve_alert_by_fingerprint,
+    resolve_stale_alerts,
+)
 from precis.plans import governs as _governs
 from precis.plans import lanes as _lanes
 from precis.plans import outcome as _outcome
@@ -312,6 +414,7 @@ from precis.workers.job_types import (
     _lane_decide,
     _run_features,
     _slice_park,
+    _slice_ws,
 )
 from precis.workers.job_types._slice_adapters import (
     ADAPTERS,
@@ -354,7 +457,7 @@ _LANDER_HANDOFF_PREFIX = "handoff: lander:"
 #: (``plan_dispatch._review_back_to_builder``). A reviewer session's own
 #: last message can begin the same way, so :func:`_outranks_brief` also
 #: wants the tick's trailer (gr684815). The hand-back bypasses
-#: ``_route_ahead_branch``'s land route like a lander handoff (gr674785
+#: ``_route_started_work``'s land route like a lander handoff (gr674785
 #: review, td675373): the branch it rejected wants the rebuild the
 #: verdict asked for, not a defer back into the same open review.
 _REVIEW_HANDBACK_PREFIX = "handoff: review:"
@@ -371,11 +474,17 @@ _DEFAULT_EFFORT = "high"
 LANE_FULL_BACKOFF = timedelta(minutes=10)
 
 #: Job-meta key marking a failure that burned no attempt, its value the
-#: reason (``"lane-wait"``/``"index-lock"`` here; ``land_slice`` writes
+#: reason (``"lane-wait"``/``"workspace"`` here; ``land_slice`` writes
 #: ``"infra-land"``).
 #: ``plan_dispatch._attempts`` skips a job carrying it (gr570187,
 #: gr572118); the key is restated there — the dependency stays one-way.
 ATTEMPT_FREE_KEY = "attempt_free"
+
+#: ``meta.attempt_free`` of a job whose workspace could not be made or read
+#: (gr741695): the hub could not be read, a recorded attempt ref moved, the
+#: clone could not be cut. No attempt is burned and no ladder rung spent:
+#: the task's pushed work is intact and a later launch continues from it.
+WORKSPACE_KEY = "workspace"
 
 #: Job-meta key listing the :data:`precis.plans.lanes.HUMAN_ONLY_PATHS`
 #: globs the failed attempt's branch touched (td584381 S1a). A stamped
@@ -469,15 +578,6 @@ _TESTS_MARKER_RE = re.compile(r"\btests:\s*(\w+)", re.IGNORECASE)
 #: skipped/failed" notes deliberately do not start with it.
 WORKER_COMMITTED = "worker committed"
 
-#: Prefix of the ``_commit_for_session`` note when ``git add`` met a
-#: held ``index.lock`` the judge could not clear (gr684320): the session's
-#: edits are intact, so the poll fails attempt-free rather than reading
-#: "no commit", and the next submit commits them
-#: (:func:`_salvage_skipped_commit`) — the stamp that authorizes the
-#: salvage rides the job's own meta (``commit_skipped``), never a file
-#: in the session-writable tree.
-COMMIT_SKIPPED_LOCK = "worker commit skipped: index-lock"
-
 #: Parent-env names the session inherits; everything else is dropped, so
 #: no ``PRECIS_DB_*``/``PG*``/``DATABASE_URL`` DSN and no vault variable
 #: reaches it. ``PRECIS_MCP_TOKEN`` is how the session reaches the precis
@@ -509,10 +609,6 @@ ENV_ALLOWLIST: tuple[str, ...] = (
     # finds the socket on the slice host — colima under the unit's HOME.
     "DOCKER_HOST",
 )
-
-#: Branch name an earlier attempt cut before the ``slice/<id>`` spelling.
-_LEGACY_BRANCH = "slice-td{todo_id}"
-
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -552,6 +648,15 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "type": "object",
             "additionalProperties": {"type": "string"},
         },
+        # A conflict-only attempt (gr741695, gr735593): the tick mints it
+        # after a land failed on a rebase or merge conflict — {head, ref,
+        # base_tip, files, try}. The brief is the conflict brief; the job
+        # always runs a session, never a route to the land.
+        "conflict": {"type": "object"},
+        # A resolution-only review (gr741695): {of, ref} — the head that
+        # failed to land and the hub ref holding it. The reviewer judges
+        # only what the resolution changed.
+        "resolution": {"type": "object"},
         # Shared job budget key; sizes the lease and the kill deadline.
         "resources": {
             "type": "object",
@@ -782,15 +887,30 @@ def job_repo(job: Mapping[str, Any]) -> str:
     return _lanes.DEFAULT_REPO
 
 
+def gate_slot_root(root: Path) -> Path | None:
+    """``PRECIS_GATE_SLOT_ROOT`` for a session built from the checkout at
+    ``root``: that checkout's git common dir, absolute (gr741695). The
+    session's folder is a clone with a ``.git`` of its own, so the gate
+    queue and slot locks ``scripts/test`` keeps must be named from here;
+    ``None`` when git cannot say (the clone's own dir then stands in)."""
+    proc = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
+    out = proc.stdout.strip() if proc.returncode == 0 else ""
+    return Path(out) if out else None
+
+
 def slice_name(todo_id: int) -> str:
-    """Worktree directory name of a slice: ``slice-td<id>``."""
+    """The base of a slice's folder names: ``slice-td<id>``. gr741695: an
+    attempt's folder is ``slice-td<id>-j<job>`` (a clone, one per job;
+    :func:`_slice_ws.attempt_dir`), so this is the prefix, not a path."""
     return f"slice-td{todo_id}"
 
 
 def worktrees_dir(root: Path) -> Path:
-    """The dir slice worktrees are cut under: ``<root>/.claude/worktrees``
-    — slices themselves, and land_slice's throwaway ``slice-main-td<id>``
-    probe trees."""
+    """The dir attempt folders are cut under: ``<root>/.claude/worktrees``
+    (the name is historic; gr741695: what lives there are clones, one per
+    job — ``slice-td<id>-j<job>`` for a build, ``slice-td<id>-land-j<job>``
+    for a land — plus land_slice's throwaway ``slice-main-td<id>`` probe
+    trees)."""
     return root / ".claude" / "worktrees"
 
 
@@ -829,6 +949,23 @@ def _submit_attempt_dir(ctx: Any, todo_id: int) -> Path | None:
     ):
         return None
     return ops_root() / f"td{todo_id}" / attempt
+
+
+def _launch_attempt_dir(ctx: Any, todo_id: int) -> Path:
+    """The run dir of one launch, created: the submit intent's own
+    (``meta.submit_attempt``, a first launch from the executor's claim step),
+    else — a launch from the poll (an outage relaunch, a first launch resumed
+    after a wait for an earlier folder), which has no intent — a fresh
+    ``<ops>/td<todo>/<uuid4 hex>``. Either way the launch writes ``baseline``,
+    ``pid`` and ``handle`` there, so a restart, a relaunch and the host sweep
+    can find a session whose handle was never saved
+    (:func:`_live_session_for`). Nothing deletes run dirs."""
+    attempt_dir = _submit_attempt_dir(ctx, todo_id)
+    if attempt_dir is None:
+        attempt_dir = ops_root() / f"td{todo_id}" / uuid.uuid4().hex
+    attempt_dir.parent.mkdir(parents=True, exist_ok=True)
+    attempt_dir.mkdir()
+    return attempt_dir
 
 
 def uv_cache_dir() -> Path:
@@ -871,7 +1008,14 @@ def path_with_user_uv(path: str | None) -> str:
 
 
 def slice_env(
-    todo_id: int, effort: str, *, mcp_token: str | None = None, mcp: bool = True
+    todo_id: int,
+    effort: str,
+    *,
+    mcp_token: str | None = None,
+    mcp: bool = True,
+    job_id: int | None = None,
+    gate_slot_root: Path | None = None,
+    worktrees_root: Path | None = None,
 ) -> dict[str, str]:
     """The session's environment: :data:`ENV_ALLOWLIST` names present in
     the worker's env, the MCP token (env, else the mounted secret), the
@@ -880,6 +1024,15 @@ def slice_env(
     ``Not logged in``), and ``PRECIS_SLICE_ID``/``PRECIS_SLICE_EFFORT``.
     Nothing else — in particular no ``ANTHROPIC_API_KEY``, so the session
     cannot fall onto the per-token billed path.
+
+    gr741695: ``job_id`` is ``PRECIS_SLICE_JOB`` — with ``PRECIS_SLICE_ID``
+    it names the session's own attempt ref, the only ref the hub's
+    pre-receive hook lets it push. ``gate_slot_root`` is
+    ``PRECIS_GATE_SLOT_ROOT``, the host checkout's git common dir
+    (absolute): the session's folder is a clone with a ``.git`` of its
+    own, so ``scripts/test`` finds the host's gate queue and slot locks
+    there, not through the clone, and every build on the host still
+    queues in one place.
 
     ``mcp_token`` is the per-slice bearer :func:`_mint_slice_token`
     minted (gr543694); given, it replaces the shared token outright so
@@ -918,12 +1071,21 @@ def slice_env(
         if mcp_token:
             env["PRECIS_MCP_TOKEN"] = mcp_token
     env["PRECIS_SLICE_ID"] = f"td{todo_id}"
+    if job_id is not None:
+        env["PRECIS_SLICE_JOB"] = str(job_id)
+    if gate_slot_root is not None:
+        env["PRECIS_GATE_SLOT_ROOT"] = str(gate_slot_root)
+    if worktrees_root is not None:
+        # gr742505: a session whose folder lost its ``.git`` gets "not a git
+        # repository", not the host checkout's repository above it.
+        env["GIT_CEILING_DIRECTORIES"] = str(worktrees_root)
     env["PRECIS_SLICE_EFFORT"] = effort
     # The checkout's SessionEnd hook (scripts/hooks/session-end-reap.sh)
     # removes a clean, merged, sessionless worktree when the session ends —
     # which a triage slice's tree is. jo544355: it reaped slice-td543632 under
     # the poll, the exit record was never written, and the job sat until the
-    # crash-loop guard. The factory owns slice trees (the lander deletes them).
+    # crash-loop guard. The factory owns slice trees (the job's own poll or the
+    # host sweep drops them).
     env["PRECIS_NO_AUTOREAP"] = "1"
     # uv's cache under a dir this worker owns (see uv_cache_dir).
     env["UV_CACHE_DIR"] = str(uv_cache_dir())
@@ -1003,11 +1165,33 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     factory token and the DSN in a spawned child's env. The env is
     :func:`_git_env` and hooks are off
     (:data:`~precis.workers.factory_git_mirror.TRUSTED_ARGS`). Credentialed
-    network git is :func:`_prepare_repo`'s ``fetch_ref_into``."""
+    network git is :func:`_prepare_repo`'s ``fetch_ref_into``.
+
+    gr742505: in an attempt folder (``slice-td<N>-j<M>``, a clone under the
+    host checkout's ``.claude/worktrees``) ``GIT_CEILING_DIRECTORIES`` is
+    the folder's parent, so a folder that lost its ``.git`` is "not a git
+    repository" and never the host checkout git would find above it. Only
+    an attempt folder gets it: other callers pass a repository root or a
+    subdirectory of one (:func:`slice_root`), where a ceiling would hide the
+    repository.
+
+    A ``cwd`` that is gone (a folder deleted under a dead job) is a failed
+    git, not an exception: ``subprocess.run`` raises before git starts, and
+    a poll that raises is run again on every pass."""
+    if not Path(cwd).is_dir():
+        return subprocess.CompletedProcess(
+            ["git", *args],
+            128,
+            "",
+            f"fatal: cannot change to '{cwd}': No such file or directory",
+        )
+    env = _git_env()
+    if _slice_ws.parse_attempt_dir(Path(cwd)) is not None:
+        env["GIT_CEILING_DIRECTORIES"] = str(Path(cwd).parent)
     return subprocess.run(
         ["git", *_factory_git_mirror.TRUSTED_ARGS, *args],
         cwd=str(cwd),
-        env=_git_env(),
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -1191,15 +1375,47 @@ def _group_alive(pgid: int) -> bool:
 
 
 def _session_alive(handle: dict[str, Any]) -> bool:
+    """The session still runs, or a member of its process group still
+    answers. Callers hold the folder (poll, the sweep's :func:`_settle`)
+    while this is True and never finalize or drop
+    under it. A ``recovered_exit`` handle (the exit was read back after a
+    worker restart, :func:`_recover_launch`) has no leader to identify, but
+    a backgrounded child of the group may still write in the folder, so it
+    answers by the group alone. :func:`_may_signal` stays False for it:
+    nothing is signalled, the caller waits and the job's deadline stops
+    it. An identity that cannot be read now (``ps`` timed out, ``/proc``
+    unreadable) with the pid answering is a live session: only a positive
+    mismatch means the number went to another process."""
     if handle.get("recovered_exit"):
-        return False
+        return _group_alive(_handle_pgid(handle))
     pid = int(handle.get("pid") or 0)
     if pid > 1:
         if "ps_identity" in handle:
             expected = handle.get("ps_identity")
-            if expected and _darwin_process_identity(pid) == expected:
+            seen = _darwin_process_identity(pid) if expected else None
+            if expected and seen == expected:
                 if _process_alive(pid, identity_matches=True):
                     return True
+            elif expected and seen is None and _process_alive(pid):
+                # ``ps`` failed or timed out: nothing says the pid was reused,
+                # and a live leader that "left" its own group would read as
+                # dead below. Only a positive mismatch means another process.
+                return True
+        # Linux: the boot id and start time the launch recorded. A pid the
+        # kernel gave to an unrelated process since is not the session
+        # (gr741695: the sweep would otherwise signal it, or keep a
+        # folder for it forever).
+        elif handle.get("boot_id") is not None and handle.get("start_time") is not None:
+            try:
+                expected_id = (str(handle["boot_id"]), int(handle["start_time"]))
+            except (TypeError, ValueError):
+                expected_id = None
+            seen_id = _process_identity(pid) if expected_id is not None else None
+            if expected_id is not None and seen_id == expected_id:
+                if _process_alive(pid):
+                    return True
+            elif expected_id is not None and seen_id is None and _process_alive(pid):
+                return True  # /proc cannot be read: as above, not a mismatch
         # If ps failed at submit there is no ps_identity, so Darwin falls
         # back to the legacy rule: EPERM without matching identity is not
         # ours.
@@ -1212,25 +1428,115 @@ def _session_alive(handle: dict[str, Any]) -> bool:
     return _group_alive(_handle_pgid(handle))
 
 
+def _has_identity(handle: dict[str, Any]) -> bool:
+    """The launch recorded who the session is: the ps identity (macOS) or the
+    boot id and start time (Linux)."""
+    return bool(handle.get("ps_identity")) or (
+        handle.get("boot_id") is not None and handle.get("start_time") is not None
+    )
+
+
+def _leader_state(handle: dict[str, Any]) -> str:
+    """One read of the recorded leader's identity (``ps`` on macOS, ``/proc``
+    on Linux) against what the launch recorded: ``"match"`` (reads back as
+    recorded and the pid answers), ``"unreadable"`` (reads back as nothing and
+    the pid answers: ``ps`` timed out, ``/proc`` unreadable), ``"gone"`` (the
+    pid does not answer, or the handle names none) and ``"mismatch"`` (reads
+    back as something else: the number went to another process). A handle that
+    recorded no identity reads as ``"gone"``."""
+    pid = int(handle.get("pid") or 0)
+    if pid <= 1:
+        return "gone"
+    if handle.get("ps_identity"):
+        seen = _darwin_process_identity(pid)
+        if seen == handle.get("ps_identity"):
+            return "match" if _process_alive(pid, identity_matches=True) else "gone"
+    elif handle.get("boot_id") is not None and handle.get("start_time") is not None:
+        try:
+            expected = (str(handle["boot_id"]), int(handle["start_time"]))
+        except (TypeError, ValueError):
+            return "gone"
+        seen_id = _process_identity(pid)
+        if seen_id == expected:
+            return "match" if _process_alive(pid) else "gone"
+        seen = None if seen_id is None else "other"
+    else:
+        return "gone"
+    if seen is None:
+        return "unreadable" if _process_alive(pid) else "gone"
+    return "mismatch"
+
+
+def _signal_target_ok(handle: dict[str, Any]) -> bool:
+    """Whether a signal to this handle's group may go out in this pass, from
+    ONE identity read (:func:`_leader_state`): a match, yes; an unreadable
+    identity, no (nothing in this pass says the number is still the
+    session's; a later pass that reads it signals); a leader that is gone or
+    whose number went to another process: the group's survivors are the
+    session's unless the group was re-led (:func:`_group_alive`). Always behind
+    :func:`_may_signal`. The read is the signal's own: a read made earlier by
+    :func:`_session_alive` that timed out cannot disagree with it."""
+    state = _leader_state(handle)
+    if state == "match":
+        return True
+    if state == "unreadable":
+        return False
+    return _group_alive(_handle_pgid(handle))
+
+
+def _may_signal(handle: dict[str, Any]) -> bool:
+    """A signal to the handle's group is only ever sent when the launch
+    recorded an identity (gr741695). A handle with none cannot tell the
+    session's group from an unrelated one that reused the number, so a TERM
+    or KILL could land on another build; ``recovered_exit`` handles (the
+    exit was read back after a worker restart) never signal either. Every
+    signal site gates on this: the settle stop, the poll's group stop and
+    the budget watch, and each of them also waits out a pass in which the
+    leader answers but cannot be identified (:func:`_signal_target_ok`).
+    When the budget is over and the gate is closed, the
+    watch writes one job_event per handle (``budget_unsignalled``) saying
+    the budget is exceeded, the session cannot be signalled because the
+    launch recorded no identity, and the job's deadline will stop it.
+    ``kill()`` is not gated here: the ssh_node path checks identity before
+    it calls, and the deadline sweep stops a session that has none."""
+    return (
+        not handle.get("recovered_exit")
+        and _has_identity(handle)
+        and bool(_handle_pgid(handle))
+    )
+
+
 def _signal_group(pgid: int, sig: int) -> None:
     """Send ``sig`` to the process group ``pgid``."""
     os.killpg(pgid, sig)
 
 
 def _land_params(
-    ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool
+    ctx: Any,
+    todo_id: int,
+    lane: Any,
+    checked: bool,
+    *,
+    ref: str | None,
+    head: str | None,
 ) -> dict[str, Any]:
     """The ``land_slice`` params for this run's slice — what
     :func:`_mint_land` mints with, and what ``meta.pending_land`` holds
     while a pre-land review gates the mint (:data:`PENDING_LAND_KEY`,
-    gr570506)."""
+    gr570506). gr741695: ``ref`` is the attempt ref in the host's hub that
+    holds the work and ``head`` the builder's last real commit — the commit
+    to land (the lander checks it is the ref's tip or an ancestor of it).
+    No ``worktree``: the lander cuts its own clone from the hub."""
     meta = ctx.meta or {}
     run_params = meta.get("params") or {}
     params: dict[str, Any] = {
         "todo_id": todo_id,
-        "worktree": str(tree),
         "branch": slice_branch(todo_id),
     }
+    if ref:
+        params["ref"] = ref
+    if head:
+        params["head"] = head
     if lane:
         params["lane"] = str(lane)
     if checked:
@@ -1282,24 +1588,31 @@ def _land_head(tree: Path, ref: str) -> str | None:
 
 
 def _mint_land(
-    ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool = False
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    lane: Any,
+    checked: bool = False,
+    *,
+    ref: str | None = None,
+    head: str | None = None,
 ) -> int:
     """Mint the ``land_slice`` job for the slice (idem key
     ``land_slice:td<id>``, a child of the todo, pinned to this run's host so
-    the claimant holds the worktree), stamped with this build's own
+    the claimant holds the hub with the work), stamped with this build's own
     ``dispatch_score`` floored at ``FINISH_FIRST_SCORE`` so the land
     claims ahead of fresh builds. ``checked`` sets
     ``params["checked"]`` — what ``land_slice.ship_flag`` reads as
     ``--checked`` when the builder's test evidence is missing (gr573563).
-    Returns its id."""
+    ``ref`` and ``head`` are the pushed work (gr741695: ``meta.push`` of the
+    run); ``head`` falls back to the commit ``tree`` stands on, for a
+    caller (``pin_bump``) that holds its own tree. Returns its id."""
     from precis.workers._mint import mint_job_once
 
     meta = ctx.meta or {}
-    params = _land_params(ctx, todo_id, tree, lane, checked)
-    head = _land_head(tree, "HEAD")
+    head = head or _land_head(tree, "HEAD")
+    params = _land_params(ctx, todo_id, lane, checked, ref=ref, head=head)
     _stamp_branch_files(ctx.store, todo_id, tree, head)
-    if head:
-        params["head"] = head
     extra = {"plan_root": meta["plan_root"]} if meta.get("plan_root") else None
     # Finishing started work outranks starting new work: a queued land
     # keeps its build's files held.
@@ -1404,38 +1717,39 @@ def rearm_preland_review(store: Any, todo_id: int) -> list[int]:
 
 
 def _defer_land_for_review(
-    ctx: Any, todo_id: int, tree: Path, lane: Any, checked: bool, reviewer: int
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    lane: Any,
+    checked: bool,
+    reviewer: int,
+    *,
+    ref: str | None,
+    head: str | None,
 ) -> str:
     """Hold the land behind the pre-land review td<reviewer> (gr570506):
-    push the slice branch to origin's hidden ``refs/factory/`` namespace
-    (the reviewer's worktree reads the
-    diff off it; a reaped worktree loses nothing), stamp the land's
-    params as ``meta.pending_land`` and close the todo — the tick
-    releases the reviewer, which gates the ``land_slice`` mint on its
-    LAND verdict. A defer that made it here succeeded, so a stale
-    ``meta.preland_defer_failed`` (gr663738) clears with the same
-    write, as does the ``meta.preland_held`` stash a FIX/REVERT left
-    (gr681208). Returns the push note for the job summary."""
+    stamp the land's params as ``meta.pending_land`` and close the todo —
+    the tick releases the reviewer, which gates the ``land_slice`` mint on
+    its LAND verdict. gr741695: nothing is pushed here any more — the work
+    is already in the host's hub under ``ref`` (the reviewer's clone
+    fetches it from there; ``head`` is the commit it judges). A defer that
+    made it here succeeded, so a stale ``meta.preland_defer_failed``
+    (gr663738) clears with the same write, as does the
+    ``meta.preland_held`` stash a FIX/REVERT left (gr681208). Returns a
+    note for the job summary."""
     from precis.plans.templates import (
         PENDING_LAND_KEY,
         PRELAND_DEFER_FAILED_KEY,
         PRELAND_HELD_KEY,
     )
-    from precis.workers.job_types import land_slice as _ls
 
-    note = _ls._push_branch(tree, slice_branch(todo_id))
-    if "FAILED" in note:
-        raise RuntimeError(note)
-    params = _land_params(ctx, todo_id, tree, lane, checked)
-    # The pushed tip, for plan_dispatch's send-back checks (gr688058):
-    # a FIX round whose verdict judged this same head means the rebuild
-    # added nothing; a verdict naming another head read a stale branch.
-    # The preland_held stash and its re-hold carry it like the other
-    # params.
-    pushed = _land_head(tree, f"refs/heads/{slice_branch(todo_id)}")
-    _stamp_branch_files(ctx.store, todo_id, tree, pushed)
-    if pushed:
-        params["head"] = pushed
+    note = f"branch held in the hub as {ref}" if ref else "branch held in the hub"
+    # The tip, for plan_dispatch's send-back checks (gr688058): a FIX round
+    # whose verdict judged this same head means the rebuild added nothing;
+    # a verdict naming another head read a stale branch. The
+    # preland_held stash and its re-hold carry it like the other params.
+    params = _land_params(ctx, todo_id, lane, checked, ref=ref, head=head)
+    _stamp_branch_files(ctx.store, todo_id, tree, head)
     ctx.store.stamp_ref_meta(
         todo_id,
         {
@@ -1454,151 +1768,6 @@ def _defer_land_for_review(
     )
     close_todo(ctx.store, todo_id, str(lane) if lane else None)
     return note
-
-
-class _RestoreOutcome(Enum):
-    """The non-tip outcomes of :func:`_restore_reviewed_branch` (gr698949):
-    the verdict hold must tell "origin verifiably holds no reviewed
-    branch" apart from "the pushed state could not be verified or git
-    refused the move" — the first has nothing to hold or lose, the second
-    may heal on a later run."""
-
-    #: The ``ls_remote`` oracle answered and no namespace holds
-    #: ``<branch>`` (never pushed or already deleted), or the tip it holds
-    #: carries nothing beyond ``base`` — provably nothing reviewed exists
-    #: on origin, so the bare verdict close is safe.
-    ABSENT = "absent"
-    #: GitHub could not be read, the tracking-ref fetch failed or landed
-    #: off the oracle's sha, ``merge-base`` could not say, the checkout
-    #: refused, or git raised — the pushed state is unknown or unrestored,
-    #: so the leave-open arm (now capped) applies.
-    UNRESTORABLE = "unrestorable"
-
-
-#: Attempt-free ``preland-hold-unrestored`` repeats on one todo before the
-#: leave-open arm burns a real attempt instead (gr698949): the repeats end
-#: the job ``succeeded``, so ``plan_dispatch``'s ``FREE_RUN_CAP`` (which
-#: walks failed/timed-out jobs only) never bounds them — without a local
-#: count an unrestorable tip relaunches forever, burning nothing (38 runs
-#: on td697701). Mirrors ``plan_dispatch.FREE_RUN_CAP``.
-PRELAND_HOLD_UNRESTORED_CAP = 6
-
-#: The ``_preland_verdict_hold`` leave-open arm's ``meta.attempt_free``
-#: reason — also the run length :func:`_unrestored_free_run` counts.
-PRELAND_HOLD_UNRESTORED = "preland-hold-unrestored"
-
-
-def _unrestored_free_run(store: Any, todo_id: int, job_id: int) -> int:
-    """The consecutive run of ``todo_id``'s jobs stamped
-    ``meta.attempt_free = "preland-hold-unrestored"``, newest first
-    (gr698949): the verdict hold's leave-open repeats. The count rides the
-    job metas of completed runs before this job — the current running job
-    has no attempt-free stamp yet and must not reset the count. The todo's tags carry no attempt-free history."""
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT r.meta->>'attempt_free' AS free
-              FROM refs r
-             WHERE r.kind = 'job' AND r.parent_id = %s
-               AND r.ref_id < %s
-               AND EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
-                      AND t.value IN ('succeeded', 'failed', 'cancelled'))
-             ORDER BY r.ref_id DESC
-            """,
-            (todo_id, job_id),
-        ).fetchall()
-    run = 0
-    for (free,) in rows:
-        if free != PRELAND_HOLD_UNRESTORED:
-            break
-        run += 1
-    return run
-
-
-def _restore_reviewed_branch(
-    tree: Path, branch: str, base: str
-) -> str | _RestoreOutcome:
-    """Make ``tree``'s checkout the tip the pre-land review judged —
-    ``origin/<branch>``'s — and return that sha. When it cannot be, return
-    a :class:`_RestoreOutcome` telling the caller WHY (gr698949):
-    ``ABSENT`` when the ``ls_remote`` oracle VERIFIED origin holds no
-    reviewed branch — no ``<branch>`` in either home (never pushed or
-    already deleted), or a tip that carries nothing beyond ``base`` —
-    there is nothing reviewed to hold and nothing the hold could lose, so
-    the bare verdict close is safe; ``UNRESTORABLE`` when the pushed state
-    could not be verified or git refused the move (the pushed state is
-    unknown, a later run's tree may still hold it). The
-    verdict-hold's fallback names THIS run's worktree in
-    ``meta.pending_land``, but a recut or cross-host tree reads empty
-    while ``origin/<branch>`` still carries the reviewed commits
-    (review td682306 on gr681208): holding as-is would land the empty
-    local tip, and the land's cleanup can delete the unlanded remote
-    branch. The tip the restore trusts is the ``ls_remote`` oracle's —
-    the same read ``land_slice._delete_remote_branch`` makes before its
-    ``push --delete`` — and the tracking-ref fetch only materializes
-    the objects; a local ref at any other tip is clobbered to origin's
-    — review ruled on the pushed state, never on what a rebuild's tree
-    happens to hold — and HEAD moves with it, since the lander's ship
-    reads the checkout. ``checkout -f -B`` refuses a branch checked out
-    in another worktree, which is the wanted failure."""
-    from precis.plans.templates import SLICE_REF_NS
-
-    ref = f"refs/heads/{branch}"
-    remote_ref = f"refs/remotes/origin/{branch}"
-    try:
-        env = _factory_git.git_auth_env(base=_git_env())
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        url = _factory_git_mirror.github_url(slice_root(), env=env)
-        if url is None:
-            return _RestoreOutcome.UNRESTORABLE
-        tip: str | None = None
-        src: str | None = None
-        for ns in (SLICE_REF_NS, "refs/heads/"):
-            remote = _factory_git_mirror.ls_remote(
-                url, (branch,), env=env, namespace=ns
-            )
-            if remote is None:
-                # GitHub cannot be read: the pushed state is unknown.
-                return _RestoreOutcome.UNRESTORABLE
-            tip = remote.get(branch)
-            if tip is not None:
-                src = f"{ns}{branch}"
-                break
-        if tip is None or src is None:
-            # The oracle ANSWERED and GitHub holds no <branch> in either
-            # home — never pushed or already deleted; nothing reviewed
-            # exists to restore or to lose (gr698949).
-            return _RestoreOutcome.ABSENT
-        fetch = _git(["fetch", "-q", "origin", f"+{src}:{remote_ref}"], tree)
-        got = (_git(["rev-parse", remote_ref], tree).stdout or "").strip()
-        if fetch.returncode != 0 or got != tip:
-            # The tip is the ``ls_remote`` oracle's — what GitHub serves
-            # — never the ``refs/remotes/origin/*`` ref a builder session
-            # can rewrite in the shared common dir. The fetch only
-            # materializes the tip's objects, and its answer is trusted
-            # only when the tracking ref lands exactly on the oracle's
-            # sha — a ``url.insteadOf`` redirect cannot pass that check.
-            return _RestoreOutcome.UNRESTORABLE
-        ancestor_rc = _git(["merge-base", "--is-ancestor", tip, base], tree).returncode
-        if ancestor_rc == 0:
-            # The remote tip carries nothing beyond base: origin holds
-            # nothing reviewed for the land to ship (gr698949).
-            return _RestoreOutcome.ABSENT
-        if ancestor_rc != 1:
-            # Git cannot say whether the tip is ahead: the pushed state
-            # is unverified.
-            return _RestoreOutcome.UNRESTORABLE
-        local = (_git(["rev-parse", ref], tree).stdout or "").strip()
-        head = (_git(["symbolic-ref", "-q", "HEAD"], tree).stdout or "").strip()
-        if local == tip and head == ref:
-            return tip
-        if _git(["checkout", "-f", "-B", branch, tip], tree).returncode == 0:
-            return tip
-    except (OSError, subprocess.TimeoutExpired, RuntimeError):
-        pass
-    return _RestoreOutcome.UNRESTORABLE
 
 
 def _preland_verdict_hold(
@@ -1620,30 +1789,19 @@ def _preland_verdict_hold(
     as a fresh defer does. Returns the job summary line when it handled
     the close, else ``None``.
 
-    The hold names the checkout ``land_slice`` ships, so it may only name
-    a tree verified to carry the pushed tip review judged (review
-    td682306): this run's worktree can sit at base while
-    ``origin/slice/<id>`` still carries the reviewed commits — a recut,
-    a reset branch, a fresh node — and holding unverified would land
-    the empty tip while the land's ``no_land`` cleanup deletes the
-    unlanded remote branch. The ``meta.preland_held`` params a
-    FIX/REVERT stashed name the DEFER's worktree — usually this same
-    ``slice-td<id>`` path, but on a cross-host rebuild the equal string
-    is another machine's tree — so they are never stamped back
-    unverified: :func:`_restore_reviewed_branch` puts the pushed tip on
-    THIS tree's branch first, and this run's
-    :func:`_land_params` (pinning this host) take the hold. An
-    unrestorable tip leaves the todo open, like the defer-failed arm —
-    the next run's tree may still hold it — but not forever: the
-    repeats are clean-exit successes plan_dispatch's ``FREE_RUN_CAP``
-    never sees, so after :data:`PRELAND_HOLD_UNRESTORED_CAP`
-    attempt-free repeats the arm burns a real attempt and the node's
-    retry cap parks the spin on the coordinator ask (gr698949). A tip
-    the oracle verified ABSENT from origin (never pushed or already
-    deleted, or nothing beyond base) is different: there is nothing
-    reviewed to hold or lose, so the plain verdict close takes over
-    and the tick's dead-chain sweep closes the stale reviewer
-    won't-do (gr698949).
+    gr741695: the hold names the task's pushed work — ``meta.build_ref``,
+    the newest attempt whose ref holds it — not the clone this run
+    happens to hold: the clone can sit at the base (a session that reset
+    it, a carried branch) while the hub still carries the reviewed
+    commits, and the land cuts its own clone from the hub. Such a run ends
+    ``empty`` (:func:`_slice_ws.finalize`: nothing beyond the base), which
+    never touches ``meta.build_ref``: the record from before the run is
+    what the hold reads, so ``pending_land.head`` and ``build_ref`` stay on
+    the reviewed work and never move to the base tip. A task with no
+    recorded pushed work has nothing reviewed to hold or lose, so the
+    plain verdict close takes over and the tick's dead-chain sweep closes
+    the stale reviewer won't-do (gr698949). The earlier restore of the
+    reviewed tip into a reused tree is retired with the reused trees.
 
     ``meta.preland_defer_failed`` (gr663738) gets the same protection
     the tick's verdict step gives it, on any verdict kind: the stamp
@@ -1672,75 +1830,29 @@ def _preland_verdict_hold(
     if reviewer is None:
         return None
     branch = slice_branch(todo_id)
-    restored = _restore_reviewed_branch(tree, branch, base)
-    if isinstance(restored, _RestoreOutcome):
-        if restored is _RestoreOutcome.ABSENT:
-            # gr698949: the oracle VERIFIED origin holds no reviewed
-            # branch (never pushed or already deleted, or carrying
-            # nothing beyond base) — there is nothing to hold and
-            # nothing the hold could lose. The plain verdict close
-            # takes over: the tick's dead-chain sweep closes the stale
-            # reviewer won't-do (its target closed with no `landed:`).
-            _append_comment(
-                ctx.store,
-                todo_id,
-                f"run_slice: `{kind}:` under the live pre-land review "
-                f"td{reviewer}, but origin holds no {branch} in either "
-                "ref home — never pushed or already deleted, so there "
-                f"is nothing reviewed to hold; td{todo_id} takes the "
-                "plain verdict close and the tick closes the stale "
-                f"review td{reviewer} (gr698949).",
-            )
-            return None
-        prior = _unrestored_free_run(ctx.store, todo_id, ctx.ref_id)
-        if prior >= PRELAND_HOLD_UNRESTORED_CAP:
-            # gr698949: the repeats are clean-exit successes, so
-            # plan_dispatch's FREE_RUN_CAP never sees them — after the
-            # cap, the leave-open arm burns a real attempt (the job
-            # carries no ``attempt_free`` and the lease bumps
-            # ``attempt:<n>``), so the node's retry cap finally reaches
-            # the spin and parks it on the coordinator ask.
-            release_todo(ctx.store, todo_id, str(lane) if lane else None)
-            _append_comment(
-                ctx.store,
-                todo_id,
-                f"run_slice: `{kind}:` under the live pre-land review "
-                f"td{reviewer}, but origin/{branch}'s reviewed tip "
-                f"could not be restored here on {prior} consecutive "
-                f"runs — burning an attempt now so the retry cap can "
-                f"reach the spin (gr698949); td{todo_id} back to open.",
-            )
-            return (
-                f"Land: none — `{kind}:` under pre-land review "
-                f"td{reviewer} but origin/{branch}'s tip is "
-                f"unrestorable here after {prior} attempt-free "
-                f"repeats; td{todo_id} back to open, attempt burned "
-                "(gr698949)."
-            )
-        unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
-        ctx.set_meta(**{ATTEMPT_FREE_KEY: PRELAND_HOLD_UNRESTORED})
+    rec = _recorded_build_ref(ctx.store, todo_id)
+    tip = str((rec or {}).get("head") or (rec or {}).get("sha") or "")
+    pushed_ref = str((rec or {}).get("ref") or "")
+    if not tip or not pushed_ref:
+        # The task has no pushed work in a hub: nothing reviewed exists to
+        # hold or lose, so the plain verdict close takes over and the
+        # tick's dead-chain sweep closes the stale reviewer won't-do.
         _append_comment(
             ctx.store,
             todo_id,
             f"run_slice: `{kind}:` under the live pre-land review "
-            f"td{reviewer}, but origin/{branch}'s reviewed tip "
-            f"could not be restored into this worktree — td{todo_id} "
-            "stays open for a run whose tree still holds the "
-            "pushed branch (gr681208).",
+            f"td{reviewer}, but no pushed work is recorded for {branch} "
+            "(meta.build_ref) — there is nothing reviewed to hold; "
+            f"td{todo_id} takes the plain verdict close and the tick closes "
+            f"the stale review td{reviewer} (gr698949).",
         )
-        return (
-            f"Land: none — `{kind}:` under pre-land review "
-            f"td{reviewer} but origin/{branch}'s tip is "
-            f"unrestorable here; td{todo_id} back to open with no "
-            "attempt (gr681208)."
-        )
-    tip = restored
+        return None
     _stamp_branch_files(ctx.store, todo_id, tree, tip)
-    params = _land_params(ctx, todo_id, tree, lane, checked)
-    # The restored pushed tip — the head the next verdict judges
-    # (gr688058): unchanged on a second send-back, the tick's
-    # unchanged-head stop reads it.
-    params["head"] = tip
+    # The task's pushed work, never what this run's clone holds: a session
+    # that reset its clone to the base still leaves the reviewed attempt in
+    # the hub. Its head is the one the next verdict judges (gr688058):
+    # unchanged on a second send-back, the tick's unchanged-head stop reads it.
+    params = _land_params(ctx, todo_id, lane, checked, ref=pushed_ref, head=tip)
     ctx.store.stamp_ref_meta(
         todo_id,
         {
@@ -2185,22 +2297,20 @@ def _followups_on_main(root: Path, landed: str) -> list[str]:
     return [line for line in proc.stdout.splitlines() if line.strip()][:10]
 
 
-def _fetch_review_branch(branch: str, *, namespace: str = "refs/heads/") -> str | None:
-    """Best-effort fetch of origin's ``<namespace><branch>`` into the slice
-    checkout's ``origin/<branch>``, so a reviewer's ``git show`` of a
-    release-branch squash resolves (release-train T3 review F3); a held
-    slice passes the hidden ``refs/factory/`` namespace. ``None`` when
-    the fetch ran clean, else why it did not (git's last line) — the
-    tracking ref then still holds whatever this checkout last saw."""
+def _fetch_review_branch(
+    tree: Path, branch: str, *, ref: str | None = None
+) -> str | None:
+    """Best-effort fetch, from the reviewer clone's ``origin`` (the host's
+    hub, gr741695), of ``ref`` — default ``refs/heads/<branch>`` — into the
+    clone's ``origin/<branch>``, so a reviewer's ``git show`` of a
+    release-branch squash resolves (release-train T1 review F3) and a held
+    slice reads as ``git diff origin/<base>...origin/<branch>``. ``None``
+    when the fetch ran clean, else why it did not (git's last line) — the
+    tracking ref then still holds whatever this clone last saw."""
+    src = ref or f"refs/heads/{branch}"
     try:
         proc = _git(
-            [
-                "fetch",
-                "-q",
-                "origin",
-                f"+{namespace}{branch}:refs/remotes/origin/{branch}",
-            ],
-            slice_root(),
+            ["fetch", "-q", "origin", f"+{src}:refs/remotes/origin/{branch}"], tree
         )
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
         return f"{type(exc).__name__}: {exc}"[:200]
@@ -2217,62 +2327,56 @@ def _sha_matches(a: str, b: str) -> bool:
 
 
 def _preland_head(
-    branch: str, expected: str | None = None
+    tree: Path, branch: str, ref: str, expected: str | None = None
 ) -> tuple[str | None, str | None]:
-    """Fetch ``origin/main`` and ``origin/<branch>`` into the slice
-    checkout and return ``(head, stale)``: the branch head, ``None``
-    when unreadable (gr681634), and ``stale`` — why this checkout could
-    not be brought to the ``expected`` pushed tip
-    (``meta.pending_land.head``), else ``None``. The worker fetches
-    because a sandboxed reviewer lane
-    cannot write the checkout's ``FETCH_HEAD``: left to its own
-    ``git fetch`` it read whatever head this checkout last saw, and a
-    branch pushed from another clone was reviewed stale. A stale
-    ``origin/main`` would also widen the three-dot diff with main's own
-    commits once the branch is rebased past it.
+    """Fetch the reviewed attempt's ``ref`` from the hub into the reviewer's
+    clone as ``origin/<branch>`` (gr741695) and return ``(head, stale)``:
+    the commit the reviewer judges, ``None`` when unreadable (gr681634),
+    and ``stale`` — why this clone could not be brought to the
+    ``expected`` head (``meta.pending_land.head``), else ``None``. The
+    worker fetches because a sandboxed reviewer lane cannot write the
+    clone's ``FETCH_HEAD``. The head the reviewer judges is
+    ``pending_land.head``: the ref may hold a ``wip:`` snapshot above it,
+    so when ``expected`` is an ancestor of the fetched tip the tracking ref
+    is set to ``expected`` itself (the lander lands that commit).
 
     A failed fetch leaves the old tracking ref in place, and the brief
     used to name it as the head (td707034: the reviewer judged the tip
-    of two days earlier). So with ``expected`` known, a head that is not
-    it retries the hidden-ref fetch once. The retry still off, the head
-    is stale whatever the fetch's exit code said (td730820): a clean
-    fetch that disagrees with ``expected`` means origin's branch moved
-    after the defer stamped the tip (or the stamp names another push) —
-    either way the brief must not hand the reviewer a head the pending
-    stamp does not hold, or its LAND would release a land for a commit
-    the review never read."""
-    from precis.plans.templates import SLICE_REF_NS
-
-    _fetch_review_branch("main")
-    # The slice lives under the hidden namespace, not refs/heads/ (no
-    # GitHub branch, no PR — Reto 2026-11-15). A slice pushed before
-    # that is still a branch: fetch it first, so the hidden ref (when
-    # there is one) overwrites it and an absent one leaves it in place.
-    _fetch_review_branch(branch)
-    head: str | None = None
-    failed: str | None = None
-    for _attempt in range(2):
-        failed = _fetch_review_branch(branch, namespace=SLICE_REF_NS)
-        try:
-            proc = _git(
-                ["rev-parse", "--verify", "-q", f"origin/{branch}"], slice_root()
-            )
-        except (RuntimeError, OSError, subprocess.TimeoutExpired):
-            return None, None
-        out = proc.stdout.strip()
-        head = out if proc.returncode == 0 and out else None
-        if not expected or (head is not None and _sha_matches(head, expected)):
-            return head, None
+    of two days earlier). With ``expected`` known, a head that is not it
+    is stale whatever the fetch's exit code said (td730820): the brief
+    must not hand the reviewer a head the pending stamp does not hold, or
+    its LAND would release a land for a commit the review never read."""
+    failed = _fetch_review_branch(tree, branch, ref=ref)
+    try:
+        proc = _git(["rev-parse", "--verify", "-q", f"origin/{branch}"], tree)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        return None, None
+    out = proc.stdout.strip()
+    head = out if proc.returncode == 0 and out else None
+    if not expected or (head is not None and _sha_matches(head, expected)):
+        return head, None
+    if failed is None and head is not None:
+        # The ref holds more than the head the pending stamp names (a worker
+        # snapshot on top of the builder's last commit): judge the head.
+        full = _land_head(tree, f"{expected}^{{commit}}")
+        anc = (
+            _git(["merge-base", "--is-ancestor", full, head], tree)
+            if full is not None
+            else None
+        )
+        if full is not None and anc is not None and anc.returncode == 0:
+            moved = _git(["update-ref", f"refs/remotes/origin/{branch}", full], tree)
+            if moved.returncode == 0:
+                return full, None
     if failed is None:
         failed = (
             f"origin/{branch} reads {head or 'nothing'} after a clean fetch, "
-            f"not the pushed tip {expected}"
+            f"not the pushed head {expected}"
         )
     log.warning(
-        "run_slice: pre-land fetch of %s%s could not reach the pushed tip "
-        "(%s); origin/%s is at %s, the pushed tip is %s",
-        SLICE_REF_NS,
-        branch,
+        "run_slice: pre-land fetch of %s could not reach the pushed head "
+        "(%s); origin/%s is at %s, the pushed head is %s",
+        ref,
         failed,
         branch,
         head,
@@ -2281,19 +2385,96 @@ def _preland_head(
     return head, failed
 
 
-def _review_target(store: Any, meta: Any) -> str | None:
+def _pending_ref(
+    root: Path | None, target_id: int, pending: dict[str, Any]
+) -> str | None:
+    """The hub ref that holds a held land's work: ``pending_land.ref``, or
+    — for a land stamped before gr741695, which names only its GitHub ref —
+    the ref :func:`_slice_ws.import_legacy` brings it into. ``None`` when
+    neither exists."""
+    ref = pending.get("ref")
+    if isinstance(ref, str) and ref:
+        return ref
+    if root is None:
+        return None
+    try:
+        hub = _slice_ws.ensure_hub(root)
+        url = _hub_url(root, None)
+        if url and _slice_ws.import_legacy(hub, url, target_id):
+            return _attempt_ref(target_id, 0)
+    except _slice_ws.WorkspaceError:
+        log.warning("run_slice: legacy import for td%d failed", target_id)
+    return None
+
+
+def _resolution_of(resolution: Mapping[str, Any] | None) -> tuple[str, str] | None:
+    """``(of, ref)`` of a reviewer job's ``params.resolution``, else ``None``."""
+    if not isinstance(resolution, Mapping):
+        return None
+    of, ref = resolution.get("of"), resolution.get("ref")
+    if isinstance(of, str) and of and isinstance(ref, str) and ref:
+        return of, ref
+    return None
+
+
+def _fetch_resolution_base(tree: Path, target_id: int, of: str, ref: str) -> None:
+    """Make the reviewed head ``of`` (the commit that failed to land) present
+    in the reviewer's clone: fetch ``ref`` from the hub into a tracking ref
+    beside the reviewed attempt's (``refs/remotes/origin/resolution-of/
+    slice/<id>``) and read ``of`` back. Raises :class:`_ReviewRefusal`
+    (attempt-free) when the hub no longer holds it."""
+    why: str | None = _fetch_review_branch(
+        tree, f"resolution-of/slice/{target_id}", ref=ref
+    )
+    if why is None:
+        try:
+            got = _git(["cat-file", "-e", f"{of}^{{commit}}"], tree)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise _ReviewRefusal(
+                f"td{target_id}: the reviewed head {of[:12]} could not be read "
+                f"({type(exc).__name__}); next: retry the review"
+            ) from exc
+        if got.returncode == 0:
+            return
+        why = f"{ref} does not hold {of[:12]}"
+    raise _ReviewRefusal(
+        f"td{target_id}: the hub no longer holds the reviewed head {of[:12]} "
+        f"of this resolution ({why}); next: the tick re-runs the review or "
+        "mints a fresh resolution"
+    )
+
+
+def _review_target(
+    store: Any,
+    meta: Any,
+    tree: Path | None = None,
+    root: Path | None = None,
+    resolution: Mapping[str, Any] | None = None,
+) -> str | None:
     """What a reviewer judges, inlined so a lane without the precis MCP can
     review (td564019 cut 1): the reviewed todo's title, its newest
     ``landed: <sha>`` comment and its brief (body plus the newest
     ``brief:``/``handoff:``), capped. Commits on main since the squash
     that touch the same files are named (gr568824) — a finding a
     follow-up already fixed is not a finding. ``None`` for any other
-    node."""
-    from precis.plans.templates import (
-        PENDING_LAND_KEY,
-        SLICE_REF_NS,
-        slice_fetch_cmd,
-    )
+    node.
+
+    gr741695: ``tree`` is the reviewer's own clone of the host's hub. A
+    held slice's attempt ref (``pending_land.ref``) is fetched from the
+    hub into it as ``origin/slice/<target todo>``, so the brief's
+    ``git diff origin/main...origin/slice/<id>`` reads as it always did; a
+    pending land stamped before the switch has no ``ref`` and its GitHub
+    ref is imported into the hub first. ``root`` is the host checkout
+    (the hub's home, for that import and for a release branch's sync).
+
+    ``resolution`` is the reviewer job's ``params.resolution`` (``{of,
+    ref}``, gr741695): the held branch is the rebase of a branch that was
+    built and reviewed and failed to land, so the reviewer judges only what
+    the resolution changed — ``git range-diff origin/<base> <of>
+    origin/slice/<id>`` replaces the diff instruction, ``of`` being made
+    present in the clone first (:class:`_ReviewRefusal`, attempt-free, when
+    the hub no longer holds it)."""
+    from precis.plans.templates import PENDING_LAND_KEY
 
     if _generate_role(meta) != "reviewer":
         return None
@@ -2321,16 +2502,20 @@ def _review_target(store: Any, meta: Any) -> str | None:
     lines = [f"td{target_id}: {str(ref.title or '').strip()}", ""]
     if landed:
         if onto:
-            _fetch_review_branch(onto)
+            if tree is not None:
+                if root is not None:
+                    # the hub follows the release branch before the clone asks
+                    _sync_base(root, onto, None)
+                _fetch_review_branch(tree, onto)
             lines.append(
                 f"Landed squash: `{landed}` — it is on {ref_name}, not main: "
                 f"run `git fetch -q origin {onto}`, then read it with "
-                f"`git show {landed}` in this worktree."
+                f"`git show {landed}` in this clone."
             )
         else:
             lines.append(
                 f"Landed squash: `{landed}` — read it with `git show {landed}` "
-                "in this worktree (it is on origin/main)."
+                "in this clone (it is on origin/main)."
             )
         try:
             followups = [] if onto else _followups_on_main(slice_root(), landed)
@@ -2353,11 +2538,19 @@ def _review_target(store: Any, meta: Any) -> str | None:
         head: str | None = None
         stale: str | None = None
         pushed = str(pending.get("head") or "") if isinstance(pending, dict) else ""
+        hub_ref = (
+            _pending_ref(root, target_id, pending)
+            if isinstance(pending, dict) and pending
+            else None
+        )
         if pending:
-            head, stale = _preland_head(branch, pushed or None)
+            if tree is None or hub_ref is None:
+                head, stale = None, "no hub ref for this held land in this clone"
+            else:
+                head, stale = _preland_head(tree, branch, hub_ref, pushed or None)
         if stale:
-            # td707034 / td730820: never name a head this checkout could
-            # not bring to the pushed tip as the one to judge — a failed
+            # td707034 / td730820: never name a head this clone could
+            # not bring to the pushed head as the one to judge — a failed
             # fetch, or a clean fetch whose answer disagrees with the
             # stamp, both leave the reviewer unable to read the commit
             # the held land ships. A run that leaves no ``review:``
@@ -2365,8 +2558,8 @@ def _review_target(store: Any, meta: Any) -> str | None:
             # so the next run gets a fresh fetch.
             lines.append(
                 f"STALE CHECKOUT — judge nothing. td{target_id}'s branch is "
-                f"pushed to origin as `{SLICE_REF_NS}{branch}` at "
-                f"`{pushed}`, but this checkout cannot read that tip "
+                f"pushed to this host's hub as `{hub_ref}` at "
+                f"`{pushed}`, but this clone cannot read that commit "
                 f"({stale}) and origin/{branch} still reads "
                 f"`{head or 'nothing'}`. Run `git rev-parse "
                 f"origin/{branch}`: unless it prints `{pushed}`, write NO "
@@ -2375,16 +2568,46 @@ def _review_target(store: Any, meta: Any) -> str | None:
                 "this review again."
             )
         elif pending:
-            lines.append(
-                "Pre-land review (gr570506): nothing is on main yet — the "
-                f"diff is td{target_id}'s branch, pushed to origin as the "
-                f"hidden ref `{SLICE_REF_NS}{branch}`. This "
-                "checkout fetched it before your session started: read "
-                f"`git diff origin/main...origin/{branch}`. A `git fetch` "
-                "of your own may be refused by the sandbox; you do not "
-                "need one (if you do fetch, a plain `git fetch` skips the "
-                f"hidden ref: `{slice_fetch_cmd(branch)}`)."
-            )
+            res = _resolution_of(resolution)
+            if res is not None and tree is not None:
+                of, of_ref = res
+                _fetch_resolution_base(tree, target_id, of, of_ref)
+                lines.append(
+                    "Pre-land review of a conflict resolution (gr741695): "
+                    f"td{target_id}'s branch was built and reviewed, then "
+                    "failed to land because the base moved; the rebase that "
+                    "followed is the only thing to judge. This clone fetched "
+                    f"both before your session started: the reviewed head "
+                    f"`{of}` and the resolution `origin/{branch}` (pushed to "
+                    f"this host's hub as `{hub_ref}`). Read `git range-diff "
+                    f"{ref_name} {of} origin/{branch}`: commits marked `=` "
+                    "are unchanged and already reviewed; judge the changed "
+                    "ones, and whether the result still does what the task "
+                    "asked. A resolution that rewrote more than the conflict "
+                    "needed is a FIX. A `git fetch` of your own may be "
+                    "refused by the sandbox; you do not need one (if you do "
+                    "fetch, a plain `git fetch` skips the hidden ref: "
+                    f"`git fetch -q origin +{hub_ref}:refs/remotes/origin/"
+                    f"{branch}`). A fetch instruction in the task text that "
+                    "names `refs/factory/slice/` is from the old engine: "
+                    "ignore it, this clone already holds "
+                    f"`origin/{branch}`."
+                )
+            else:
+                lines.append(
+                    "Pre-land review (gr570506): nothing is on main yet — the "
+                    f"diff is td{target_id}'s branch, pushed to this host's hub "
+                    f"as `{hub_ref}`. This "
+                    "clone fetched it before your session started: read "
+                    f"`git diff origin/main...origin/{branch}`. A `git fetch` "
+                    "of your own may be refused by the sandbox; you do not "
+                    "need one (if you do fetch, a plain `git fetch` skips the "
+                    "hidden ref: `git fetch -q origin "
+                    f"+{hub_ref}:refs/remotes/origin/{branch}`). A fetch "
+                    "instruction in the task text that names "
+                    "`refs/factory/slice/` is from the old engine: ignore it, "
+                    f"this clone already holds `origin/{branch}`."
+                )
             if head:
                 lines.append(
                     f"The branch head is `{head}`. If `git rev-parse "
@@ -2479,7 +2702,7 @@ def _review_target_repo(
     one-sentence refusal ending in ``next:``,
     a ``str`` where success is a :class:`RepoReviewTarget`. A caller with
     several shas detaches at the fetched base tip: they are all ancestors
-    of it (:func:`_ensure_review_tree`)."""
+    of it (:func:`_review_commit`)."""
     name = profile.name
     if _generate_role(meta) != "reviewer":
         return "this node is not a reviewer; next: dispatch only reviewer nodes here"
@@ -2543,55 +2766,41 @@ def _review_sha(target: RepoReviewTarget, tip: str) -> str:
     """The commit a second-repo reviewer's tree is cut at. Several landed
     commits: the fetched base tip, which has them all as ancestors. One: the
     ``landed:`` comment's sha (the lander writes nine hex;
-    :func:`_ensure_review_tree` expands it in the clone). The full sha lives
+    :func:`_review_commit` expands it in the clone). The full sha lives
     only on the land job's ``meta.landed_sha``, never on the todo."""
     if len(target.shas) != 1:
         return tip
     return target.shas[0]
 
 
-def _ensure_review_tree(
-    profile: _lanes.RepoProfile, root: Path, todo_id: int, sha: str, tip: str
-) -> Path | str:
-    """A fresh detached worktree ``<root>/.claude/worktrees/slice-td<id>`` of
-    the clone at ``root``, at the landed commit ``sha`` (7-40 hex, expanded
-    here), for a second-repo reviewer. No branch is created and no network
-    is touched: the caller already fetched through :func:`_prepare_repo`
-    and passes ``tip``, the fetched base tip sha. ``sha`` must be an
-    ancestor of ``tip``. A tree left there by an earlier launch is removed
-    first: a reviewer's tree is re-cut on every launch, never reused. The
-    clone's ``info/exclude`` is :func:`_prepare_repo`'s per-clone job, not
-    this tree's. Returns the path, or a one-sentence refusal ending in
+def _review_commit(profile: _lanes.RepoProfile, root: Path, sha: str, tip: str) -> str:
+    """The full sha of the landed commit ``sha`` (7-40 hex, expanded here in
+    the clone at ``root``) a second-repo reviewer's clone is cut at
+    (gr741695: a clone of the host's hub, not a worktree of ``root``). No
+    branch is made and no network is touched: the caller already fetched
+    through :func:`_prepare_repo` and passes ``tip``, the fetched base tip
+    sha. ``sha`` must be an ancestor of ``tip``. Raises
+    :class:`_ReviewRefusal` with a one-sentence reason ending in
     ``next:``."""
     name = profile.name
     if not _REVIEW_SHA_RE.fullmatch(sha):
-        return f"'{sha}' is not a commit sha; next: fix the landed comment"
+        raise _ReviewRefusal(
+            f"'{sha}' is not a commit sha; next: fix the landed comment"
+        )
     full = _git(["rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"], root)
     if full.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", full.stdout.strip()):
-        return (
+        raise _ReviewRefusal(
             f"the '{name}' clone does not know commit {sha[:12]}; "
             "next: check that the land pushed it"
         )
     full_sha = full.stdout.strip()
     anc = _git(["merge-base", "--is-ancestor", full_sha, tip], root)
     if anc.returncode != 0:
-        return (
+        raise _ReviewRefusal(
             f"commit {full_sha[:12]} is not on the fetched {name} "
             f"{profile.base} ({tip[:12]}); next: wait for the land to reach it"
         )
-    tree = worktrees_dir(root) / slice_name(todo_id)
-    if tree.exists():
-        gone = _git(["worktree", "remove", "--force", str(tree)], root)
-        if gone.returncode != 0 or tree.exists():
-            shutil.rmtree(tree, ignore_errors=True)
-    _git(["worktree", "prune"], root)
-    if tree.exists():
-        return f"could not clear the old review tree {tree}; next: remove it by hand"
-    add = _git(["worktree", "add", "--detach", str(tree), full_sha], root)
-    if add.returncode != 0:
-        tail = " ".join((add.stderr or "").split())[-200:]
-        return f"git worktree add failed for the review tree ({tail}); next: retry"
-    return tree
+    return full_sha
 
 
 def _render_repo_review_brief(
@@ -2692,7 +2901,7 @@ def _render_repo_review_brief(
     return "\n".join(lines) + "\n"
 
 
-def _cut_review_tree(
+def _review_start(
     store: Any,
     todo: Any,
     todo_id: int,
@@ -2700,14 +2909,15 @@ def _cut_review_tree(
     root: Path,
     brief_kwargs: dict[str, Any],
     tip: str | None,
-) -> tuple[Path, str | None]:
+) -> _slice_ws.Start:
     """The launch half of a second-repo reviewer, after
     :func:`_prepare_repo_tip`, whose fetched base tip sha is ``tip`` (the
     launch fetches once): the review target again (it may have changed
-    since the submit-time check), the sha to review (:func:`_review_sha`)
-    and the detached tree at it. Fills ``brief_kwargs["review"]`` for
-    :func:`render_brief`. Returns the tree and its head sha. Every refusal
-    is a :class:`_ReviewRefusal`."""
+    since the submit-time check) and the commit to review
+    (:func:`_review_sha`, checked by :func:`_review_commit`) as the start
+    of the reviewer's own clone (:func:`_open_attempt`, ``at=``). Fills
+    ``brief_kwargs["review"]`` for :func:`render_brief`. Every refusal is a
+    :class:`_ReviewRefusal`."""
     if tip is None:
         raise _ReviewRefusal(
             f"git fetch origin {profile.base} (or its oracle check) failed for "
@@ -2718,9 +2928,7 @@ def _cut_review_tree(
     if isinstance(target, str):
         raise _ReviewRefusal(target)
     sha = _review_sha(target, tip)
-    tree = _ensure_review_tree(profile, root, todo_id, sha, tip)
-    if isinstance(tree, str):
-        raise _ReviewRefusal(tree)
+    full = _review_commit(profile, root, sha, tip)
     brief_kwargs["review"] = dict(
         sha=sha,
         tip=tip,
@@ -2728,32 +2936,7 @@ def _cut_review_tree(
         target_brief=target.brief,
         shas=target.shas,
     )
-    head = _git(["rev-parse", "HEAD"], tree)
-    full = head.stdout.strip() if head.returncode == 0 else ""
-    return tree, full if re.fullmatch(r"[0-9a-f]{40}", full) else None
-
-
-def _drop_review_tree(handle: dict[str, Any]) -> None:
-    """Remove a second-repo reviewer's detached tree after its run, whatever
-    the outcome: ``git worktree remove --force`` through the trusted
-    :func:`_git`, then a prune. Only a ``slice-td<N>`` directory under the
-    repo's own worktrees dir is touched. A failure is logged, not raised."""
-    try:
-        repo = str(handle.get("repo") or "")
-        tree = Path(str(handle.get("worktree") or ""))
-        root = slice_root_for(repo)
-        if tree.parent != worktrees_dir(root) or not tree.name.startswith("slice-td"):
-            log.warning("run_slice: review tree %s is not under %s", tree, root)
-            return
-        if tree.exists():
-            gone = _git(["worktree", "remove", "--force", str(tree)], root)
-            if gone.returncode != 0 or tree.exists():
-                shutil.rmtree(tree, ignore_errors=True)
-        _git(["worktree", "prune"], root)
-        if tree.exists():
-            log.warning("run_slice: review tree %s was not removed", tree)
-    except Exception:
-        log.warning("run_slice: review tree drop failed", exc_info=True)
+    return _slice_ws.Start(sha=full, ref=None)
 
 
 #: The lint the land runs on the whole tree before it merges, in the
@@ -2843,7 +3026,7 @@ _SESSION_RULES = (
     "subagent and wait for it; do your research in the foreground, "
     "then finish the work in this same turn (gr571311: a builder "
     "that yielded to wait on forks lost the whole session). Work "
-    "only in this worktree."
+    "only in this clone."
 )
 
 
@@ -2874,17 +3057,23 @@ def _brief_intro(
     adapter: str | None = None,
     *,
     foreign: bool = False,
+    job_id: int | None = None,
 ) -> list[str]:
     """The brief's heading and session paragraph, repo-neutral up to and
-    including "Work only in this worktree." — each brief appends its own
+    including "Work only in this clone." — each brief appends its own
     reading list. ``foreign`` marks a repo-profile brief: its Devin turn
-    rule omits the precis repo's ``scripts/`` poll commands."""
+    rule omits the precis repo's ``scripts/`` poll commands. The session
+    works in a fresh clone of the host's hub (gr741695), named for its job
+    when ``job_id`` is known (``slice-td<id>-j<job>``)."""
+    folder = (
+        f"slice-td{todo_id}-j{job_id}" if job_id is not None else slice_name(todo_id)
+    )
     lines = [
         f"# Slice td{todo_id}: {title.strip()}",
         "",
         f"You are a headless build session on lane `{lane}` "
         f"(model `{model or 'account default'}`, "
-        f"effort `{effort}`), in git worktree `{slice_name(todo_id)}` on branch "
+        f"effort `{effort}`), in git clone `{folder}` on branch "
         f"`{slice_branch(todo_id)}`, cut from `origin/{base}`." + _SESSION_RULES,
     ]
     if adapter == "devin_tree":
@@ -2895,7 +3084,11 @@ def _brief_intro(
 def _no_mcp_lines(read_mcp: str | None) -> list[str]:
     """The brief paragraph for a lane without the full precis MCP: the
     ``reader`` or ``triage`` scope's own text (gr574082), else the
-    no-MCP notice."""
+    no-MCP notice. gr741695: the python kind's ``wt-<tree>`` aliases come
+    from the checkout's linked-worktree registry
+    (``handlers/_python_worktrees``: ``<main>/.git/worktrees/<id>/gitdir``);
+    an attempt's clone is not a linked worktree, so it is never indexed and
+    the brief no longer names a ``wt-slice-td<id>`` id."""
     if read_mcp == "reader":
         return [
             "",
@@ -2903,9 +3096,9 @@ def _no_mcp_lines(read_mcp: str | None) -> list[str]:
             "Before grepping or reading a whole .py file: "
             "search(kind='python', mode='pattern', q='<name>'), then "
             "get(kind='python', id='main::<qualname>', view='source'). "
-            "wt-slice-td<id>::<qualname> reads your own tree if it "
-            "resolves; main:: is the shared checkout and may lag your "
-            "branch. Repo prose: get(kind='md', id='main/docs/...'). "
+            "main:: is the shared checkout and may lag your branch; your "
+            "own clone is not indexed, read your files directly. Repo "
+            "prose: get(kind='md', id='main/docs/...'). "
             "Your task's comments: get(kind='todo', id='td<id>', "
             "view='comments'). Skills: search(kind='skill', q='<task>'). "
             "Nothing else is served and nothing is writable; your "
@@ -2917,9 +3110,9 @@ def _no_mcp_lines(read_mcp: str | None) -> list[str]:
             "This lane's precis MCP is scoped to structure reads and "
             "gripe triage. Reads: search(kind='python', mode='pattern', "
             "q='<name>'), then get(kind='python', id='main::<qualname>', "
-            "view='source'); wt-slice-td<id>::<qualname> reads your own "
-            "tree if it resolves; main:: is the shared checkout and may "
-            "lag your branch. Repo prose: get(kind='md', "
+            "view='source'); main:: is the shared checkout and may "
+            "lag your branch; your own clone is not indexed, read your "
+            "files directly. Repo prose: get(kind='md', "
             "id='main/docs/...'). Your task's comments: get(kind='todo', "
             "id='td<id>', view='comments'). Skills: search(kind='skill', "
             "q='<task>'). Gripes: search(kind='gripe', q='STATUS:open') "
@@ -2973,15 +3166,14 @@ def _task_lines(body: str, latest: str | None, target: str | None) -> list[str]:
     return lines
 
 
-def _devin_leave_edits(todo_id: int) -> str:
-    """The Devin contract's worktree-only, leave-the-edits sentences."""
+def _devin_clone_text() -> str:
+    """The Devin contract's clone-only sentences. Since gr741695 Devin
+    commits and pushes like the other pushing lanes (the finish steps
+    follow); the old "leave the edits" contract is gone."""
     return (
-        "Make the change only inside this slice worktree; cwd is pinned "
+        "Make the change only inside this slice clone; cwd is pinned "
         "and --sandbox is off by default (operator opt-in: "
-        "PRECIS_DEVIN_SANDBOX=1). Do not commit, push, land or "
-        "open a PR. Leave the edits in the working tree and write a "
-        f"conventional subject (`type(scope): what (td{todo_id})`) and "
-        "short body to `scratch/commit-msg.txt`."
+        "PRECIS_DEVIN_SANDBOX=1). Do not land or open a PR."
     )
 
 
@@ -3000,7 +3192,7 @@ def _devin_verdict_text(base: str) -> str:
         "with no changes is a failed attempt. "
         "Otherwise report what changed and what remains. End with "
         "`tests: ran` or `tests: NOT RUN — <why>`; the harness still "
-        "runs the supplied tests itself before committing."
+        "runs the supplied tests itself once you exit."
     )
 
 
@@ -3050,6 +3242,105 @@ def _commit_steps(todo_id: int, first: int) -> tuple[str, str]:
     )
 
 
+def _attempt_ref(todo_id: int, job_id: int | None) -> str:
+    """The session's own ref in the host's hub, ``refs/factory/build/
+    <todo>/<job>`` (:func:`_slice_ws.build_ref`; ``<job>`` when a bare
+    render knows no job)."""
+    if job_id is None:
+        return f"{_slice_ws.REF_NS}{_slice_ws.BUILD_NS}{todo_id}/<job>"
+    return _slice_ws.build_ref(todo_id, job_id)
+
+
+def _adapter_pushes(adapter: str | None) -> bool:
+    """Whether the lane's session pushes its own work (:attr:`Adapter.pushes`);
+    no adapter (a bare render) or an unknown one is a pushing lane."""
+    spec = ADAPTERS.get(adapter or "")
+    return True if spec is None else spec.pushes
+
+
+def _push_steps(
+    todo_id: int,
+    job_id: int | None,
+    base: str,
+    first: int,
+    checks: str,
+    *,
+    fixers: str = "(`ruff check --fix`, `ruff format`) ",
+) -> list[str]:
+    """The finish steps of a lane that pushes (Claude, Devin, Kimi;
+    gr741695), numbered from ``first``, the stop step last, then the
+    "cannot finish" rule.
+    ``checks`` says which earlier steps to run again after the rebase —
+    the caller's own lint and test steps, never restated here. The order
+    is the contract's: commit, fetch and rebase, checks, push, read the
+    ref back. The hub's refusal begins ``precis-hub: refused``
+    (:data:`_slice_ws.HOOK_REFUSED`)."""
+    ref = _attempt_ref(todo_id, job_id)
+    return [
+        f"{first}. Commit on `{slice_branch(todo_id)}` with a conventional "
+        f"subject (`type(scope): what (td{todo_id})`, at most 72 bytes), "
+        "message via `git commit -F scratch/commit-msg.txt`. One commit "
+        "is best: the lander squashes the branch under that subject — or "
+        "under a `subject: type(scope): what` line in your final message "
+        "when you state one (it wins over every commit subject). Leave the "
+        "working tree clean (`git status --porcelain` prints nothing).",
+        f"{first + 1}. `git fetch origin {base}`, then `git rebase "
+        f"origin/{base}`. Resolve every conflict, keeping the base's side "
+        "for changes that are not yours.",
+        f"{first + 2}. Run {checks} again after the rebase. Then "
+        "`git status --short` must print nothing: the checks' fixers "
+        f"{fixers}rewrite files, so stage what they changed and amend it "
+        "into the last commit (`git commit --amend --no-edit`) before the "
+        "push.",
+        f"{first + 3}. `git push origin +HEAD:{ref}`. A refused push starts "
+        f"with `{_slice_ws.HOOK_REFUSED} (<reason>)` and says what to fix; "
+        "fix it and push again (a secret has to leave every commit: amend "
+        "or rebase it out — a later commit that deletes it is not enough).",
+        f"{first + 4}. `git ls-remote origin {ref}` must print the same "
+        "commit as `git rev-parse HEAD`. Only then write your final message.",
+        f"{first + 5}. Stop. Do not land, comment `landed:` or tag this todo "
+        "done: once you exit cleanly, the lander lands every commit on the "
+        "branch, so commit only work fit to land. Never open a pull request "
+        "(`gh pr create` and friends): the factory's squash merge is the "
+        "only path to main (gr570506).",
+        "",
+        "Cannot finish? Commit what exists with the subject "
+        "`wip: snapshot — <why>`, push it the same way, and say in your "
+        "final message what is missing.",
+    ]
+
+
+def _continuing_lines(base: str, start: Mapping[str, Any] | None) -> list[str]:
+    """The brief paragraph of an attempt that starts from pushed work, not
+    from ``origin/<base>`` (job meta ``start``: ``{sha, ref, wip}``, gr741695):
+    which commit it starts from and, when the top commit is a worker's
+    ``wip:`` snapshot, how to keep or drop the edits it holds. Empty for an
+    attempt that starts at the base."""
+    sha = str((start or {}).get("sha") or "")
+    if not sha:
+        return []
+    ref = str((start or {}).get("ref") or "")
+    lines = [
+        "",
+        "This attempt continues earlier work: this clone starts at "
+        f"`{sha[:12]}`"
+        + (f" (the tip of `{ref}` in the hub)" if ref else "")
+        + f", not at `origin/{base}`. Read `git log origin/{base}..HEAD` and "
+        f"`git diff origin/{base}...HEAD` first, then build on that work "
+        "instead of redoing it.",
+    ]
+    if (start or {}).get("wip"):
+        lines += [
+            "",
+            "The top commit is a `wip:` snapshot the worker saved from an "
+            "attempt that did not finish; its edits are in that commit. "
+            "`git reset --soft HEAD~1` keeps them as uncommitted changes; "
+            "`git reset --hard HEAD~1` discards them and returns to the last "
+            "real commit.",
+        ]
+    return lines
+
+
 def _builder_verdict_text(base: str) -> str:
     """The builder's commit-less exits: the first-line ``validated:``/
     ``no-op:``/``moot:`` verdicts poll reads."""
@@ -3086,9 +3377,12 @@ def render_brief(
     profile: _lanes.RepoProfile | None = None,
     review: Mapping[str, Any] | None = None,
     task_class: str = "code",
+    job_id: int | None = None,
+    start: Mapping[str, Any] | None = None,
+    conflict: Mapping[str, Any] | None = None,
 ) -> str:
     """The prompt a slice session starts from. ``base`` is the branch the
-    worktree is cut from (``main``, or a release fix's ``release/r<N>``).
+    clone is cut from (``main``, or a release fix's ``release/r<N>``).
     ``profile`` (td659522) names the repo: ``None`` or the default repo's
     profile renders the precis brief below; any other profile renders
     :func:`_render_repo_brief` (builder and Devin variants only — a
@@ -3096,18 +3390,48 @@ def render_brief(
     reviewer of a profile whose ``reviewer`` is set: its brief is
     :func:`_render_repo_review_brief` over the ``review`` keywords).
     Ends with the commit-and-
-    hand-off instruction (the ``land_slice`` job lands the branch); a
+    hand-off instruction (the ``land_slice`` job lands the branch): for a
+    lane that pushes (:attr:`Adapter.pushes`) the finish steps — commit,
+    rebase, checks, push to the attempt ref ``refs/factory/build/<todo>/
+    <job>``, read the ref back (:func:`_push_steps`, gr741695) — for a lane
+    that cannot (codex) the commit steps and the worker commits and pushes
+    after it exits. ``job_id`` names the attempt ref and the folder;
+    ``start`` is job meta ``start`` (``{sha, ref, wip}``): an attempt that
+    starts from pushed work says so (:func:`_continuing_lines`).
+    ``conflict`` is ``params.conflict`` of a conflict-only attempt
+    (``{head, ref, base_tip, files, try}``, gr741695): the brief is then
+    :func:`_render_conflict_brief`, not the task's build brief. A
     ``generator`` brief ends with the child-todo instruction instead (the
     plan tick closes it), and a generator whose ``role`` is in ``_ROLE_CLOSE``
     (reviewer: one verdict comment; analyst: one analysis comment) ends with
     that role's instruction, worded for a lane with or without the MCP.
     ``target`` (:func:`_review_target`) is the reviewed todo inlined for a
     reviewer. Names the ``deny_paths`` the session may not write.
-    Devin's ``adapter`` instead leaves edits for worker-owned tests and
-    commit; missing supplied tests fall back to the checked land.
+    Devin's ``adapter`` also gets its worker-run supplied-test contract;
+    missing supplied tests fall back to the checked land.
     ``read_mcp`` (:func:`_read_mcp_scope`) swaps the no-MCP paragraph for
     the scope's: ``reader`` reads only, ``triage`` also names its write
     set (gr574082)."""
+    if conflict and not generator:
+        return _render_conflict_brief(
+            todo_id=todo_id,
+            title=title,
+            latest=latest,
+            lane=lane,
+            model=model,
+            effort=effort,
+            mcp=mcp,
+            read_mcp=read_mcp,
+            deny_paths=deny_paths,
+            adapter=adapter,
+            base=profile.base if profile is not None else base,
+            profile=profile
+            if profile is not None and profile.name != _lanes.DEFAULT_REPO
+            else None,
+            job_id=job_id,
+            start=start,
+            conflict=conflict,
+        )
     if profile is not None and profile.name != _lanes.DEFAULT_REPO:
         if generator and role == "reviewer" and profile.reviewer:
             if review is None:
@@ -3137,8 +3461,13 @@ def render_brief(
             deny_paths=deny_paths,
             target=target,
             adapter=adapter,
+            job_id=job_id,
+            start=start,
         )
-    lines = _brief_intro(todo_id, title, lane, model, effort, base, adapter)
+    pushes = _adapter_pushes(adapter)
+    lines = _brief_intro(
+        todo_id, title, lane, model, effort, base, adapter, job_id=job_id
+    )
     lines[-1] += (
         " Read CLAUDE.md and AGENTS.md here before "
         "editing; their rules bind you — except the round rule: a slice "
@@ -3147,6 +3476,8 @@ def render_brief(
     )
     if not mcp:
         lines += _no_mcp_lines(read_mcp)
+    if not generator:
+        lines += _continuing_lines(base, start)
     if deny_paths is None:
         deny_paths = _lanes.deny_paths_for(None)
     lines += _deny_lines(deny_paths)
@@ -3190,31 +3521,31 @@ def render_brief(
             lines += _generator_close(todo_id, lane_models)
         return "\n".join(lines) + "\n"
     if adapter == "devin_tree":
+        n = len(_land_lint_steps(base))
         lines += [
             "",
             "## Finishing contract (overrides conflicting task instructions)",
             "",
             "Tests for the ask must be written before the build and supplied "
             "by the coordinator. Supplied test artifacts are installed in "
-            "this worktree before launch; checked-in test paths must be "
+            "this clone before launch; checked-in test paths must be "
             "named in the task body or latest brief. "
             "Use available supplied tests as acceptance criteria; do not "
             "weaken them. When none are available, proceed with the task: "
             "the land runs its normal --checked gate. Non-code and no-commit "
             "nodes are exempt from the worker acceptance-test gate.",
             "",
-            _devin_leave_edits(todo_id) + " Our harness runs the "
-            "available supplied tests with `scripts/test <test paths>`, "
-            "commits the changes if that gate passes or is absent, and "
-            "hands the branch to the separate land_slice job with --checked, "
-            "subject to review. Worker-run tests do not replace the "
-            "lander's impacted-test rerun.",
+            _devin_clone_text() + " Our harness runs the available "
+            "supplied tests with `scripts/test <test paths>` once you exit; a "
+            "failing run fails this attempt. The separate land_slice job "
+            "lands what you push, with --checked, subject to review; "
+            "worker-run tests do not replace the lander's impacted-test "
+            "rerun.",
             "",
             _devin_verdict_text(base),
             "",
-            "Land lint steps (the last two inspect committed work and belong "
-            "to the lander after the worker commit; run the earlier checks "
-            "before handoff when available):",
+            "Land lint steps (the last two read committed work only: run "
+            "them after your commit):",
             *[f"{i}. `{step}`" for i, step in enumerate(_land_lint_steps(base), 1)],
             "",
             "For skill changes also run `scripts/test tests/test_skill_ingest.py`: "
@@ -3222,6 +3553,16 @@ def render_brief(
             "new migration number as minted. The land renumbers a migration "
             f"you added to origin/{base}'s next free number (filename and its "
             "own header); never renumber or edit an already-landed migration.",
+            "",
+            "## When done: commit, push and hand off",
+            "",
+            *_push_steps(
+                todo_id,
+                job_id,
+                base,
+                n + 1,
+                f"the land lint steps above (1 to {n}) and the supplied tests",
+            ),
             "",
             _DEVIN_HANDOFF_TEXT,
         ]
@@ -3257,12 +3598,25 @@ def render_brief(
         "",
         _TESTS_MARKER_TEXT,
         "",
-        *_commit_steps(todo_id, n + 2),
-        f"{n + 4}. Stop. Do not land, push, comment `landed:` or tag this "
-        "todo done: once you exit cleanly, the lander lands every commit "
-        "on the branch, so commit only work fit to land. Never open a pull "
-        "request (`gh pr create` and friends): the factory's squash merge "
-        "is the only path to main (gr570506).",
+        *(
+            _push_steps(
+                todo_id,
+                job_id,
+                base,
+                n + 2,
+                f"the checks above (steps 1 to {n}) and your tests (step {n + 1})",
+            )
+            if pushes
+            else [
+                *_commit_steps(todo_id, n + 2),
+                f"{n + 4}. Stop. Do not land, push, comment `landed:` or tag "
+                "this todo done: once you exit cleanly, the lander lands "
+                "every commit on the branch, so commit only work fit to "
+                "land. Never open a pull request (`gh pr create` and "
+                "friends): the factory's squash merge is the only path to "
+                "main (gr570506).",
+            ]
+        ),
         "",
         _builder_verdict_text(base),
         "",
@@ -3299,39 +3653,65 @@ def _lander_conflict(latest: str | None) -> bool:
 def _repo_rules_lines(
     profile: _lanes.RepoProfile,
     todo_id: int,
-    devin: bool,
+    pushes: bool,
     latest: str | None = None,
 ) -> list[str]:
     """The rules section of a non-default repo's brief. It binds over the
     task text: task bodies written for precis still say to rebase on
     ``origin/main``, bump the version or open a pull request. The one
     merge it allows is ``git merge origin/<base>`` after a lander conflict
-    handoff (``latest``), to resolve that conflict."""
+    handoff (``latest``), to resolve that conflict.
+
+    A lane that pushes (gr741695) works in a clone whose ``origin`` is the
+    host's local hub, not GitHub: its finish steps fetch and rebase onto
+    ``origin/<base>`` and push the attempt ref, so the rules neither ban
+    those nor the push (a pull and a merge from origin stay banned; the
+    lander-conflict handoff is resolved by that rebase, not by a merge).
+    A lane that cannot push keeps the earlier rules word for word."""
     base = f"origin/{profile.base}"
-    finish = (
-        "Leave your edits in the working tree: the harness commits them."
-        if devin
-        else f"Commit your work on this branch (`{slice_branch(todo_id)}`) and stop."
-    )
-    if _lander_conflict(latest):
-        sync = (
-            f"- This worktree is current with `{base}`. Do not `git fetch`, "
-            f"`git pull` or rebase. The latest handoff says the lander found a "
-            f"merge conflict: run `git merge {base}` (the local ref, no fetch) "
-            "once, resolve the conflicts, and commit the merge. Never merge "
-            "anything else."
+    if pushes:
+        finish = (
+            f"Commit your work on this branch (`{slice_branch(todo_id)}`) and "
+            "push it, as the finish steps below say."
         )
+        hub = (
+            f"- This clone is current with `{base}` (`origin` is a local hub "
+            "on this host, not GitHub). "
+        )
+        if _lander_conflict(latest):
+            sync = (
+                hub + "Do not `git pull`. The latest handoff says the lander "
+                "found a merge conflict: the rebase in the finish steps is "
+                "where you resolve it. Never merge anything else."
+            )
+        else:
+            sync = hub + (
+                "Do not `git pull` or merge from origin; the finish steps "
+                f"below fetch and rebase onto `{base}`."
+            )
     else:
-        sync = (
-            f"- This worktree is already current with `{base}`. Do not `git fetch`, "
-            "`git pull`, rebase or merge from origin."
+        finish = (
+            f"Commit your work on this branch (`{slice_branch(todo_id)}`) and stop."
         )
+        if _lander_conflict(latest):
+            sync = (
+                f"- This worktree is current with `{base}`. Do not `git fetch`, "
+                f"`git pull` or rebase. The latest handoff says the lander found a "
+                f"merge conflict: run `git merge {base}` (the local ref, no fetch) "
+                "once, resolve the conflicts, and commit the merge. Never merge "
+                "anything else."
+            )
+        else:
+            sync = (
+                f"- This worktree is already current with `{base}`. Do not `git fetch`, "
+                "`git pull`, rebase or merge from origin."
+            )
     return [
         "",
         f"## Rules for this repo ({profile.name}); they win over the task text",
         "",
         sync,
-        "- Do not push.",
+        *([] if pushes else ["- Do not push."]),
         "- Do not bump the version, edit the version line in `pyproject.toml`, "
         "tag or release: a mechanical release job does that.",
         "- Never open a pull request (`gh pr create` and friends).",
@@ -3395,6 +3775,8 @@ def _render_repo_brief(
     deny_paths: tuple[str, ...] | None = None,
     target: str | None = None,
     adapter: str | None = None,
+    job_id: int | None = None,
+    start: Mapping[str, Any] | None = None,
 ) -> str:
     """The prompt for a slice in a repo other than the default (td659522),
     from the repo's :class:`lanes.RepoProfile`: no precis convention docs,
@@ -3406,11 +3788,13 @@ def _render_repo_brief(
     the ``handoff:`` comment) come from the helpers
     :func:`render_brief` uses. The read-MCP paragraph is kept only for a
     profile whose tree carries the precis MCP. ``deny_paths`` is the
-    lane's list, used only when the profile carries none."""
+    lane's list, used only when the profile carries none. The finish steps
+    and the continuing paragraph follow :func:`render_brief` (gr741695)."""
     base = profile.base
     devin = adapter == "devin_tree"
+    pushes = _adapter_pushes(adapter)
     lines = _brief_intro(
-        todo_id, title, lane, model, effort, base, adapter, foreign=True
+        todo_id, title, lane, model, effort, base, adapter, foreign=True, job_id=job_id
     )
     lines[-1] += f" This is the `{profile.name}` repository."
     if profile.read_first:
@@ -3421,7 +3805,8 @@ def _render_repo_brief(
         )
     if profile.mcp and not mcp:
         lines += _no_mcp_lines(read_mcp)
-    lines += _repo_rules_lines(profile, todo_id, devin, latest)
+    lines += _continuing_lines(base, start)
+    lines += _repo_rules_lines(profile, todo_id, pushes, latest)
     lines += _repo_check_lines(profile)
     deny = profile.deny_paths
     if deny is None:
@@ -3435,34 +3820,242 @@ def _render_repo_brief(
             "## Finishing contract (overrides conflicting task instructions)",
             "",
             "Supplied test files, if any, are already installed in this "
-            "worktree: use them as acceptance criteria and do not weaken "
+            "clone: use them as acceptance criteria and do not weaken "
             "them.",
             "",
-            _devin_leave_edits(todo_id)
+            _devin_clone_text()
             + " Run lint and the tests you touched yourself; our harness runs "
-            "no tests here. It commits the changes and hands the branch to "
-            "the separate lander, which runs the full suite, subject to "
-            "review.",
+            "no tests here. The separate lander lands what you push and runs "
+            "the full suite, subject to review.",
             "",
             _devin_verdict_text(base),
+            "",
+            "## When done: commit, push and hand off",
+            "",
+            *_push_steps(
+                todo_id,
+                job_id,
+                base,
+                1,
+                "the lint and test commands above",
+                fixers="",
+            ),
             "",
             _DEVIN_HANDOFF_TEXT,
         ]
         return "\n".join(lines) + "\n"
-    commit, clean = _commit_steps(todo_id, 1)
     lines += [
         "",
         "## When done: commit on the branch and hand off",
         "",
         _TESTS_MARKER_TEXT,
         "",
-        commit,
-        clean,
-        "3. Stop. Do not land, push, comment `landed:` or tag this todo done: "
-        "once you exit cleanly, the lander lands every commit on the branch, "
-        "so commit only work fit to land.",
+        *(
+            _push_steps(
+                todo_id,
+                job_id,
+                base,
+                1,
+                "the lint and test commands above",
+                fixers="",
+            )
+            if pushes
+            else [
+                *_commit_steps(todo_id, 1),
+                "3. Stop. Do not land, push, comment `landed:` or tag this todo "
+                "done: once you exit cleanly, the lander lands every commit on "
+                "the branch, so commit only work fit to land.",
+            ]
+        ),
         "",
         _builder_verdict_text(base),
+        "",
+        _BUILDER_HANDOFF_TEXT,
+    ]
+    return "\n".join(lines) + "\n"
+
+
+#: Conflict tries before the coordinator ask (``plan_dispatch.CONFLICT_TRIES``;
+#: restated — the dependency stays one-way): the brief names the try as ``n of``.
+_CONFLICT_TRIES = 3
+
+
+def _render_conflict_brief(
+    *,
+    todo_id: int,
+    title: str,
+    latest: str | None,
+    lane: str,
+    model: str | None,
+    effort: str,
+    mcp: bool,
+    read_mcp: str | None,
+    deny_paths: tuple[str, ...] | None,
+    adapter: str | None,
+    base: str,
+    profile: _lanes.RepoProfile | None,
+    job_id: int | None,
+    start: Mapping[str, Any] | None,
+    conflict: Mapping[str, Any],
+) -> str:
+    """The brief of a conflict-only attempt (gr741695, Reto's ruling
+    gr735593: "mint a conflict-only attempt from the branch tip; review only
+    the resolution; land it next"). The branch was built and reviewed and
+    failed to land because the base moved; the session's one job is a plain
+    rebase onto ``origin/<base>`` that resolves the conflicts, keeping the
+    commits as they are and the base's side for changes that are not the
+    task's, then the checks and the ordinary push. ``conflict`` is
+    ``params.conflict`` (``{head, ref, base_tip, files, try}``); the brief
+    names the try and, from the second on, that earlier tries failed. The
+    task's own body is not repeated: the work is done."""
+    try:
+        n = max(1, int(conflict.get("try") or 1))
+    except (TypeError, ValueError):
+        n = 1
+    head = str(conflict.get("head") or (start or {}).get("sha") or "")
+    files = [str(f) for f in (conflict.get("files") or ()) if f][:40]
+    pushes = _adapter_pushes(adapter)
+    lines = _brief_intro(
+        todo_id,
+        title,
+        lane,
+        model,
+        effort,
+        base,
+        adapter,
+        foreign=profile is not None,
+        job_id=job_id,
+    )
+    if profile is None:
+        lines[-1] += (
+            " Read CLAUDE.md and AGENTS.md here before editing; their "
+            "rules bind you — except the round rule: a slice is not a "
+            "round peer, so never run `scripts/round` (any verb); the mark "
+            "belongs to the coordinator."
+        )
+        if not mcp:
+            lines += _no_mcp_lines(read_mcp)
+        deny = deny_paths if deny_paths is not None else _lanes.deny_paths_for(None)
+    else:
+        lines[-1] += f" This is the `{profile.name}` repository."
+        if profile.mcp and not mcp:
+            lines += _no_mcp_lines(read_mcp)
+        deny = (
+            profile.deny_paths
+            if profile.deny_paths is not None
+            else deny_paths
+            if deny_paths is not None
+            else _lanes.deny_paths_for(None)
+        )
+    lines += _continuing_lines(base, start)
+    if profile is not None:
+        lines += _repo_check_lines(profile)
+    lines += _deny_lines(deny)
+    if profile is not None:
+        lines += ["", _ALWAYS_DENIED_TEXT]
+    lines += [
+        "",
+        f"## Conflict-only attempt (try {n} of {_CONFLICT_TRIES})",
+        "",
+        f"The work on `{slice_branch(todo_id)}` was built and reviewed, and "
+        f"it failed to land because `origin/{base}` moved: it conflicts with "
+        "it. This clone starts at the branch's tip"
+        + (f" (`{head[:12]}`)" if head else "")
+        + ". That work is done. Your one job is to rebase it onto "
+        f"`origin/{base}` and resolve the conflicts.",
+    ]
+    if files:
+        lines += [
+            "",
+            "The land conflicted in these files (the base may have moved "
+            "again since, so the rebase may report others, or fewer):",
+            "",
+            *[f"- `{f}`" for f in files],
+        ]
+    if n > 1:
+        lines += [
+            "",
+            f"This is try {n}: "
+            + ("the earlier try" if n == 2 else f"the {n - 1} earlier tries")
+            + " at this conflict failed. Read what the base changed in "
+            "each conflicting file before you resolve it, and "
+            "check the result builds.",
+        ]
+    lines += [
+        "",
+        "Rules:",
+        "",
+        "- A plain rebase: keep the commits as they are. No squash, no "
+        "reordering, no new changes beyond what resolving a conflict needs.",
+        "- Where a conflicting change is not this task's, keep the base's side.",
+        "- Build nothing new, fix no other problem and touch no file the "
+        "conflict does not involve.",
+    ]
+    lines += ["", "## When done: rebase, check, push", ""]
+    steps = [
+        f"`git fetch origin {base}`, then `git rebase origin/{base}`. At "
+        "each conflict: edit the files, `git add` them, `git rebase "
+        "--continue`; repeat until the rebase is done.",
+    ]
+    lines += [f"{i}. {t}" for i, t in enumerate(steps, 1)]
+    n_steps = len(steps)
+    if profile is None:
+        lint = _land_lint_steps(base)
+        lines += [
+            f"{n_steps + 1}. Run the checks the land runs, in this order, "
+            "and fix only what the resolution broke:",
+            "",
+            *[f"   {i}. `{step}`" for i, step in enumerate(lint, 1)],
+            "",
+            f"{n_steps + 2}. Run the tests for the files the resolution "
+            "touched with `scripts/test <paths>` (a bare `pytest` or "
+            "`uv run pytest` with no file, or on `tests/`, is refused on "
+            "this lane). Then `git status --short` must print nothing: "
+            "stage what the checks' fixers changed and amend it into the "
+            "last commit (`git commit --amend --no-edit`) before the push.",
+        ]
+        n_steps += 2
+        checks = f"steps {n_steps - 1} and {n_steps}"
+    else:
+        lines += [
+            f"{n_steps + 1}. Run the lint and test commands above on the "
+            "files the resolution touched, and fix only what it broke. "
+            "Then `git status --short` must print nothing: stage what the "
+            "checks changed and amend it into the last commit "
+            "(`git commit --amend --no-edit`) before the push.",
+        ]
+        n_steps += 1
+        checks = "the lint and test commands above"
+    if pushes:
+        ref = _attempt_ref(todo_id, job_id)
+        lines += [
+            f"{n_steps + 1}. `git push origin +HEAD:{ref}`. A refused push "
+            f"starts with `{_slice_ws.HOOK_REFUSED} (<reason>)` and says "
+            "what to fix; fix it and push again (a secret has to leave "
+            "every commit: amend or rebase it out).",
+            f"{n_steps + 2}. `git ls-remote origin {ref}` must print the "
+            "same commit as `git rev-parse HEAD`. Only then write your "
+            "final message.",
+            f"{n_steps + 3}. Stop. Do not land, comment `landed:` or tag "
+            "this todo done: the land is the lander's. Never open a pull "
+            "request (`gh pr create` and friends).",
+            "",
+            "Cannot finish? Commit what exists with the subject "
+            "`wip: snapshot — <why>` (finish or abort the rebase first, "
+            f"then re-run {checks} if you can), push it the same way, and "
+            "say in your final message what is missing.",
+        ]
+    else:
+        lines += [
+            f"{n_steps + 1}. Stop with the rebased branch committed: the "
+            "worker pushes it after you exit. Do not land, comment "
+            "`landed:` or tag this todo done. Never open a pull request.",
+        ]
+    lines += [
+        "",
+        "End your final message with exactly one line naming the checks' "
+        "outcome: `tests: ran`, or `tests: NOT RUN — <which step, why>` "
+        "when a step could not run in this sandbox.",
         "",
         _BUILDER_HANDOFF_TEXT,
     ]
@@ -3735,7 +4328,7 @@ def validate_submit(
     # A refusal at submit mints no job, so it would earn no backoff, no
     # attempt-free cap and no ask: the dispatcher would re-note it every
     # tick and the release behind the reviewer would wait forever. submit's
-    # ``_cut_review_tree`` checks it at launch, where a refusal is an
+    # ``_review_start`` checks it at launch, where a refusal is an
     # attempt-free ``_ReviewRefusal`` under the cap.
     reason = _repo_param_rejection(
         store, params.get("todo_id"), job_repo(params), target=False
@@ -3769,26 +4362,6 @@ def validate_submit(
 # ── Detached protocol ──────────────────────────────────────────────
 
 
-def _branch_exists(root: Path, branch: str) -> bool:
-    proc = _git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], root)
-    return proc.returncode == 0
-
-
-def _adopt_legacy_branch(root: Path, todo_id: int) -> None:
-    """Rename an earlier attempt's ``slice-td<id>`` branch to
-    ``slice/<id>`` (its commits carry over; a checked-out branch renames
-    in place). No-op when ``slice/<id>`` exists or there is no legacy one."""
-    branch = slice_branch(todo_id)
-    legacy = _LEGACY_BRANCH.format(todo_id=todo_id)
-    if _branch_exists(root, branch) or not _branch_exists(root, legacy):
-        return
-    move = _git(["branch", "-m", legacy, branch], root)
-    if move.returncode != 0:
-        raise RuntimeError(
-            f"git branch -m {legacy} {branch} failed: {move.stderr.strip()}"
-        )
-
-
 #: ``meta.attempt_free`` of a second-repo reviewer that could not launch (the
 #: repo, its review target or its tree was not ready): no attempt is spent.
 REVIEW_WAIT_KEY = "review-wait"
@@ -3798,192 +4371,6 @@ class _ReviewRefusal(RuntimeError):
     """A second-repo reviewer's pre-launch refusal (td659522 step 5); the
     text is a one-sentence reason ending in ``next:``. Submit gives the
     lease back with ``meta.attempt_free = "review-wait"``."""
-
-
-class _IndexLockWait(RuntimeError):
-    """A reused slice tree's ``index.lock`` that a live (or unjudgeable)
-    git still holds past the brief wait (gr650484): an infra wait, not
-    the build's failure. Submit gives the lease back with
-    ``meta.attempt_free = "index-lock"``, so no ``attempt:<n>`` and no
-    ladder rung is spent on it; the tick backs off a sustained run of
-    identical waits instead of re-minting every pass (gr662077).
-    ``attempt_free`` is ``"index-lock"`` unless the exception says
-    ``"index-lock-stuck"`` (a forced reap that could not clear it);
-    ``meta`` rides to the job (``index_lock = {age_s, why}``)."""
-
-    attempt_free = "index-lock"
-
-    def __init__(
-        self,
-        msg: str,
-        *,
-        attempt_free: str = "index-lock",
-        meta: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(msg)
-        self.attempt_free = attempt_free
-        self.meta = meta or {}
-
-
-#: Age at which a lock land_slice still calls live is reaped anyway at
-#: reuse (gr684320 D2): ``PRECIS_LAND_INDEX_LOCK_HARD_S``.
-INDEX_LOCK_HARD_S = 1800
-
-
-def index_lock_hard_s() -> float:
-    try:
-        return float(
-            os.environ.get("PRECIS_LAND_INDEX_LOCK_HARD_S") or INDEX_LOCK_HARD_S
-        )
-    except ValueError:
-        return float(INDEX_LOCK_HARD_S)
-
-
-def _etime_s(etime: str) -> int | None:
-    """``ps etime`` (``[[DD-]HH:]MM:SS``) in seconds; ``None`` unparseable."""
-    m = re.fullmatch(r"(?:(\d+)-)?(?:(\d{1,2}):)?(\d{1,2}):(\d{2})", etime.strip())
-    if m is None:
-        return None
-    days, hours, minutes, seconds = (int(g) if g else 0 for g in m.groups())
-    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
-
-
-def _git_pid_cmd(pid: int) -> str | None:
-    """The pid's current command line: ``""`` when the pid is gone,
-    ``None`` when ps cannot answer (a None never authorizes a signal —
-    the holder's identity stays uncertain, keep-on-doubt)."""
-    try:
-        cp = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    lines = [ln for ln in cp.stdout.splitlines() if ln.strip()]
-    return lines[0].strip() if lines else ""
-
-
-def _tree_git_procs(
-    lock: Path, tree: Path, age_s: int
-) -> list[tuple[int, str, str]] | None:
-    """This user's git/git-* processes that can own a lock ``age_s``
-    seconds old: holding ``lock`` open or with their cwd in ``tree``,
-    AND started before the lock did (their ``etime`` covers its age — a
-    git started later cannot be the writer, never signal it). ``None``
-    when the inspection cannot answer (lsof/ps failed, an etime
-    unparseable): the caller keeps the lock on doubt. ``(pid, etime,
-    command)`` triples otherwise."""
-    from precis.workers.job_types import land_slice as _ls
-
-    held_list = _ls._lock_holders(lock)
-    if held_list is None:
-        return None
-    try:
-        cp = subprocess.run(
-            ["ps", "-U", str(os.getuid()), "-o", "pid=,etime=,command="],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if cp.returncode != 0:
-        return None
-    held = {p for p, c in held_list if _ls._is_git_comm(c)}
-    root = os.path.realpath(tree)
-    out: list[tuple[int, str, str]] = []
-    for ln in cp.stdout.splitlines():
-        parts = ln.split(None, 2)
-        if len(parts) != 3 or not parts[0].isdigit():
-            continue
-        pid, etime, command = parts
-        exe = command.split(None, 1)[0]
-        if not _ls._is_git_comm(exe):
-            continue
-        up = _etime_s(etime)
-        if up is None or up < age_s:
-            continue
-        cwd = _ls._proc_cwd(pid)
-        real = os.path.realpath(cwd) if cwd else ""
-        if pid in held or real == root or real.startswith(root + os.sep):
-            out.append((int(pid), etime, command[:300]))
-    return out
-
-
-def _kill_git_procs(procs: list[tuple[int, str, str]]) -> bool:
-    """SIGTERM, 5 s, SIGKILL — git processes only (D3), each pid's
-    identity re-read before every signal (a recycled pid is never
-    signalled on the old identity's say-so). ``True`` only when every
-    pid is confirmed gone; ``False`` on any uncertainty — the caller
-    keeps the lock."""
-    from precis.workers.job_types import land_slice as _ls
-
-    def _state(pid: int, cmd: str) -> bool | None:
-        """``True`` still the same git, ``False`` gone or no longer git,
-        ``None`` cannot tell."""
-        cur = _git_pid_cmd(pid)
-        if cur is None:
-            return None
-        if cur == "":
-            return False
-        return _ls._is_git_comm(cur)
-
-    def _reap(pending: dict[int, str]) -> bool | None:
-        """Drop every pid confirmed gone; ``True`` all gone, ``False``
-        some alive, ``None`` an answer failed."""
-        alive = False
-        for pid, cmd in list(pending.items()):
-            st = _state(pid, cmd)
-            if st is None:
-                return None
-            if st:
-                alive = True
-            else:
-                del pending[pid]
-        return not alive
-
-    pending = {pid: cmd for pid, _e, cmd in procs}
-    for pid, cmd in list(pending.items()):
-        st = _state(pid, cmd)
-        if st is None:
-            return False
-        if st:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        done = _reap(pending)
-        if done is None:
-            return False
-        if done:
-            return True
-        time.sleep(0.2)
-    for pid, cmd in list(pending.items()):
-        st = _state(pid, cmd)
-        if st is None:
-            return False
-        if st:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline:
-        done = _reap(pending)
-        if done is None:
-            return False
-        if done:
-            return True
-        time.sleep(0.2)
-    return False
 
 
 def _record_reap(
@@ -3996,10 +4383,12 @@ def _record_reap(
     holders: list[str],
     todo_id: int | None = None,
 ) -> None:
-    """Every reap of a slice tree's ``index.lock`` — stale, forced or at
-    commit time — leaves job meta ``index_lock_reaped`` (the dispatcher
-    counts these per node: a lock that keeps re-forming escalates) and a
-    comment on the slice todo (gr684320)."""
+    """Every reap of an ``index.lock`` leaves job meta ``index_lock_reaped``
+    (the dispatcher counts these per node: a lock that keeps re-forming
+    escalates) and a comment on the slice todo (gr684320). gr741695: no
+    ``run_slice`` path reaps a slice tree's lock any more (a build folder
+    has one owner); this is the lander's recorder for the ship folder's own
+    lock handling (``land_slice`` calls it), and stays with it."""
     age = int(time.time() - st.st_mtime)
     ctx.set_meta(
         index_lock_reaped={
@@ -4023,189 +4412,6 @@ def _record_reap(
             f"{'forced, ' if forced else ''}kept as '{why}', holders killed: "
             f"{holders or 'none'}",
         )
-
-
-def _forced_reap_index_lock(
-    ctx: Any, lock: Path, tree: Path, st: os.stat_result, why: str
-) -> bool:
-    """gr684320 slice 2 — the lock is past :func:`index_lock_hard_s` and
-    still "live": kill the git holders, then reap with the identity
-    check. Records a job_event and :func:`_record_reap`. Only the reuse
-    path (:func:`_clear_slice_index_lock`) may force: the submit holds
-    the lease and is about to ``checkout -f``.
-
-    Fail-safe throughout (review td700716): the tree's linked gitdir is
-    verified to own ``lock`` before anything is signalled or unlinked; a
-    holder is only signalled when its elapsed time covers the lock's age
-    and its identity is re-confirmed before every signal and its exit
-    after SIGKILL. Any uncertainty (gitdir unverifiable, lsof/ps
-    failed, exit unconfirmed) keeps the lock — ``False`` and the caller
-    waits it out plain. Raises :class:`_IndexLockWait` with
-    ``attempt_free="index-lock-stuck"`` only when the holders were
-    confirmed dead yet the very same lock file survived the reap."""
-    from precis.workers.job_types import land_slice as _ls
-
-    age = int(time.time() - st.st_mtime)
-    gitdir = _ls._worktree_gitdir(tree)
-    if gitdir is None or os.path.realpath(gitdir / "index.lock") != os.path.realpath(
-        lock
-    ):
-        return False
-    procs = _tree_git_procs(lock, tree, age)
-    if procs is None:
-        return False
-    if procs and not _kill_git_procs(procs):
-        log.warning(
-            "run_slice: forced reap of %s held — a git holder's exit "
-            "stayed unconfirmed (pids %s)",
-            lock,
-            [p for p, _e, _c in procs],
-        )
-        return False
-    holders = [f"{pid} {etime} {cmd}" for pid, etime, cmd in procs]
-    if not _ls._reap_index_lock(ctx, lock, st, who=NAME):
-        try:
-            now = lock.stat()
-        except OSError:
-            return True  # gone — a sibling reaper got it
-        if (
-            now.st_dev == st.st_dev
-            and now.st_ino == st.st_ino
-            and now.st_mtime_ns == st.st_mtime_ns
-        ):
-            # The holders are confirmed dead and the judged file itself
-            # could not be unlinked — nothing a wait changes.
-            raise _IndexLockWait(
-                f"index.lock {lock} survived its holders' kill and the "
-                f"reap (age {age}s, kept as '{why}')",
-                attempt_free="index-lock-stuck",
-                meta={"age_s": age, "why": why},
-            )
-        return False  # replaced under us — a live writer's, wait it out
-    ctx.append_chunk(
-        "job_event",
-        f"{NAME}: forced reap of index.lock {lock} (age {age}s, why {why}, "
-        f"killed {len(procs)} git)",
-    )
-    _record_reap(ctx, lock, st, why=why, forced=True, holders=holders)
-    return True
-
-
-def _git_or_raise(args: list[str], tree: Path) -> None:
-    """``git <args>`` in a reused tree; a non-zero exit raises — as
-    :class:`_IndexLockWait` when git names an ``index.lock``."""
-    proc = _git(args, tree)
-    if proc.returncode == 0:
-        return
-    err = proc.stderr.strip()[:200]
-    cls = _IndexLockWait if "index.lock" in err else RuntimeError
-    raise cls(f"git {' '.join(args)} in reused worktree failed: {err}")
-
-
-def _clear_slice_index_lock(ctx: Any, tree: Path) -> None:
-    """gr650484 — reap a reused slice tree's stale ``index.lock`` before
-    :func:`_reset_reused_worktree`'s ``checkout -f`` meets it: a dead
-    git's 0-byte remnant failed every retry with "File exists" and spent
-    the node's whole ladder. land_slice's keep-on-doubt judge decides
-    (:func:`land_slice._index_lock_state`, scripts/reap-index-locks'
-    rule): provably dead is removed with a job_event line — the judged
-    inode/mtime rides to the unlink so a lock replaced after the verdict
-    is never unlinked. A live or unjudgeable lock gets the brief
-    :func:`land_slice.index_lock_wait_s` wait first (gr662077): the
-    previous attempt's own git often still holds the lock when the retry
-    lands, and finishing it beats bouncing back to the tick — only a
-    lock still held past the wait raises :class:`_IndexLockWait`. Past
-    :func:`index_lock_hard_s` a lock still judged live is forced (D2:
-    this slice tree's own lock, at reuse only): its git holders —
-    identified by elapsed time and re-confirmed per signal — are
-    signalled, the lock removed; any uncertainty keeps the lock as a
-    plain wait, and only a lock that survives its dead holders raises
-    the ``"index-lock-stuck"`` wait (:func:`_forced_reap_index_lock`).
-    Every reap, stale or forced, records
-    :func:`_record_reap`. No tree yet, or no gitdir git will name:
-    nothing to clear."""
-    if not tree.exists():
-        return
-    # land_slice imports this module at load time; the lazy import keeps
-    # the dependency one-way at import.
-    from precis.workers.job_types import land_slice as _ls
-
-    gitdir = _ls._worktree_gitdir(tree)
-    if gitdir is None:
-        return
-    lock = gitdir / "index.lock"
-    deadline = time.monotonic() + _ls.index_lock_wait_s()
-    while True:
-        state, judged = _ls._index_lock_state(lock, tree)
-        if state == "absent":
-            return
-        _s, _j, why, ignored = _ls._index_lock_judge(lock, tree)
-        if (
-            state == "stale"
-            and judged is not None
-            and _ls._reap_index_lock(ctx, lock, judged, who=NAME)
-        ):
-            _record_reap(
-                ctx,
-                lock,
-                judged,
-                why="stale",
-                forced=False,
-                holders=[f"{pid} {cmd}" for pid, cmd in ignored],
-            )
-            return
-        if judged is not None and time.time() - judged.st_mtime >= index_lock_hard_s():
-            # D2: this slice tree's own lock, past the hard cap, at reuse.
-            # _forced_reap_index_lock raises the "index-lock-stuck" wait
-            # itself when the holders died yet the lock survived; a False
-            # means the inspection stayed uncertain — a plain wait, the
-            # next retry re-judges.
-            if _forced_reap_index_lock(ctx, lock, tree, judged, why or state):
-                return
-            raise _IndexLockWait(
-                f"index.lock {lock} could not be safely judged or reaped "
-                f"after {index_lock_hard_s():.0f}s (kept as '{why or state}')",
-                meta={"age_s": int(time.time() - judged.st_mtime), "why": why},
-            )
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            age = int(time.time() - judged.st_mtime) if judged is not None else 0
-            raise _IndexLockWait(
-                f"index.lock {lock} was still held after "
-                f"{_ls.index_lock_wait_s():.0f}s — kept as '{why}' (age "
-                f"{age}s); a live git owns the checkout, it is younger than "
-                f"{_ls.index_lock_stale_s():.0f}s, or its holder cannot be "
-                "ruled out; the reuse checkout waits for it",
-                meta={"age_s": age, "why": why},
-            )
-        time.sleep(min(1.0, remaining))
-
-
-def _reset_reused_worktree(tree: Path, branch: str) -> None:
-    """Return a reused worktree to a clean checkout of ``branch``'s tip:
-    abort an in-flight merge/rebase, switch back to the slice branch,
-    drop a dead attempt's uncommitted edits — staged or not — and its
-    untracked leftovers (gr571311: a retry launched into the dirty tree
-    read the predecessor's partial work as the starting state). Committed
-    work keeps — the branch tip is the retry's base as before. The
-    gitignored ``scratch/``/``.devin/``/``.claude/`` dirs get an ``-x``
-    clean of their own: a stale ``commit-msg.txt``, MCP config or
-    settings.local must not leak into the retry either; ``.venv`` and
-    other ignored state stay so the retry keeps its environment."""
-    for op in ("rebase", "merge", "cherry-pick", "am"):
-        _git([op, "--abort"], tree)  # exits non-zero when nothing is in flight
-    for args in (
-        ["checkout", "-f", branch],
-        ["reset", "--hard", "HEAD"],
-        ["clean", "-fd"],
-    ):
-        _git_or_raise(args, tree)
-    for stale in ("scratch", ".devin", ".claude"):
-        if (tree / stale).is_dir():
-            _git_or_raise(["clean", "-fdx", "--", stale], tree)
-    # The -x clean may have removed a nested worktree a session cut under
-    # its own .claude/worktrees/; drop stale registrations. Best-effort.
-    _git(["worktree", "prune"], tree)
 
 
 #: Env vars a credentialed git needs besides PATH and HOME: locale, the
@@ -4415,123 +4621,1169 @@ def _prepare_repo_tip(
     return None, fetched
 
 
-def _ensure_worktree(
-    root: Path,
-    todo_id: int,
-    base: str = "main",
-    *,
-    fetched: bool = False,
-    store: Any = None,
-    keep_wip: bool = False,
-    start_over: bool = False,
-    saved_head: str | None = None,
-    notes: list[str] | None = None,
-    job_id: int | None = None,
-) -> Path:
-    """Worktree ``<root>/.claude/worktrees/slice-td<id>`` on branch
-    ``slice/<id>``, cut from ``origin/<base>`` — ``main``, or the
-    ``release/r<N>`` a release fix lands on (``meta.land_target``,
-    release-train T1). A retry reuses an existing
-    tree and branch (the branch stays owned by its slice until it lands or
-    is abandoned) — a finished session whose commit met a held index.lock
-    is salvaged first (:func:`_salvage_skipped_commit`, gr684320; ``store``
-    supplies the worker-owned stamp, ``job_id`` the running submit's own
-    job that read must skip), then the tree is reset to a clean
-    checkout of the branch tip (:func:`_reset_reused_worktree`); a legacy
-    ``slice-td<id>`` branch is renamed first. ``fetched`` skips the
-    fetch: the caller already fetched ``origin/<base>`` under the
-    credential (:func:`_prepare_repo`).
+# ── Attempt workspaces (gr741695) ──────────────────────────────────
+#
+# Every job cuts its own clone of the host's hub (:mod:`._slice_ws`) and
+# nothing is kept only in a folder: the builder pushes its attempt ref
+# before it exits, the worker pushes for one that did not, and the folder
+# is dropped once the hub holds its head.
 
-    **Park = save, resume anywhere** (:mod:`._slice_park`): with no local
-    tree the slice's pushed ``refs/factory/slice/<id>`` is fetched, and
-    when origin holds it the tree is cut from that tip, not from
-    ``origin/<base>`` — a re-armed build on another host carries on from
-    the work a failed run pushed. ``keep_wip`` (the node is parked:
-    ``meta.parked``) keeps the ``wip: parked`` snapshot on top of it, and
-    also moves a reused local tree's branch onto the snapshot
-    (``saved_head`` is ``meta.parked.head``, found locally when the same
-    host saved it); an ordinary retry resumes from the last real commit.
-    An unavailable recorded snapshot refuses launch before cleanup; only an
-    explicit start-over may discard it. Committed work is never reset away.
-    ``start_over`` (the closing answer said so) first drops the local tree and branch and origin's saved ref,
-    and cuts from ``origin/<base>``. ``notes`` collects what happened
-    (``resumed from <sha>``) for the job's events."""
-    tree = worktrees_dir(root) / slice_name(todo_id)
-    branch = slice_branch(todo_id)
-    note = notes if notes is not None else []
-    _adopt_legacy_branch(root, todo_id)
-    if start_over:
-        note.extend(_slice_park.drop_saved(root, todo_id))
-    # Resolve before any destructive cleanup: a withheld/failed push must
-    # never turn a parked resume into a fresh build or use an older ref.
-    parked_tip = None
-    if keep_wip and not start_over:
-        if saved_head and _slice_park._HEX40.fullmatch(saved_head):
-            have = _git(["cat-file", "-e", f"{saved_head}^{{commit}}"], root)
-            if have.returncode == 0:
-                parked_tip = saved_head
-        if parked_tip is None:
-            parked_tip = _slice_park.fetch_saved(root, todo_id)
-        if parked_tip is None or (saved_head and parked_tip != saved_head):
-            raise RuntimeError(
-                f"parked snapshot {saved_head or todo_id} is unavailable; "
-                "resume on the saving host or explicitly start over"
-            )
-        saved_head = parked_tip
-    if tree.exists():
-        salvage_note = _salvage_skipped_commit(
-            tree, todo_id, store=store, base=f"origin/{base}", job_id=job_id
+
+def _start_meta(start: _slice_ws.Start | None) -> dict[str, Any] | None:
+    """Job meta ``start``: ``{sha, ref, wip}`` the attempt started from, or
+    ``None`` for the base tip."""
+    if start is None:
+        return None
+    return {"sha": start.sha, "ref": start.ref, "wip": start.wip}
+
+
+def _start_from_meta(meta: Any) -> _slice_ws.Start | None:
+    """The :class:`Start` job meta ``start`` records, else ``None``."""
+    raw = (meta or {}).get("start")
+    if not isinstance(raw, dict) or not raw.get("sha"):
+        return None
+    ref = raw.get("ref")
+    return _slice_ws.Start(
+        sha=str(raw["sha"]),
+        ref=str(ref) if ref else None,
+        wip=bool(raw.get("wip")),
+    )
+
+
+def _factory_credential_env() -> dict[str, str]:
+    """The env a credentialed fetch of a private repository runs under
+    (:func:`precis.workers.factory_git.git_auth_env`)."""
+    env = _factory_git.git_auth_env(base=_git_env())
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def _hub_url(root: Path, profile: _lanes.RepoProfile | None) -> str | None:
+    """The GitHub url the hub of the checkout at ``root`` follows: the
+    profile's remote for another repository, else the main checkout's
+    origin (:func:`factory_git_mirror.github_url`). ``None`` when nothing
+    trustworthy answers."""
+    if profile is not None:
+        return profile.remote
+    return _factory_git_mirror.github_url(root, env=_git_env())
+
+
+def _sync_base(
+    root: Path,
+    base: str,
+    profile: _lanes.RepoProfile | None,
+    notes: list[str] | None = None,
+) -> str | None:
+    """Move the hub's ``<base>`` to the tip GitHub holds
+    (:func:`_slice_ws.sync_hub`) and return it, or ``None`` when the remote
+    could not be read: the hub keeps the tip it had and the launch goes on
+    (a stale base costs a rebase, never a failed launch). A private
+    repository fetches under the factory credential."""
+    url = _hub_url(root, profile)
+    if url is None:
+        if notes is not None:
+            notes.append(f"the origin url of {root} is unreadable; hub base not synced")
+        return None
+    private = profile is not None and profile.private
+    return _slice_ws.sync_hub(
+        root,
+        url=url,
+        base=base,
+        private=private,
+        env=_factory_credential_env() if private else None,
+    )
+
+
+def _recorded_build_ref(store: Any, todo_id: int) -> dict[str, Any] | None:
+    """The task's ``meta.build_ref`` (:data:`BUILD_REF_KEY`), freshly read."""
+    from precis.plans.templates import BUILD_REF_KEY
+
+    ref = store.get_ref(kind="todo", id=todo_id)
+    rec = ((ref.meta if ref is not None else None) or {}).get(BUILD_REF_KEY)
+    return dict(rec) if isinstance(rec, dict) and rec.get("sha") else None
+
+
+def _launch_key(handle: Any) -> str | None:
+    """Names one launch of a job's session: its pid and start time off the
+    handle. An outage relaunch runs a second session in the same job; a
+    stored ``meta.push`` belongs to the launch it judged
+    (:func:`_push_belongs`), never to the next one (gr741695)."""
+    if not isinstance(handle, dict):
+        return None
+    pid, started = handle.get("pid"), handle.get("started_at")
+    if not pid or not started:
+        return None
+    return f"{pid}@{started}"
+
+
+def _push_belongs(stored: Any, handle: Any) -> bool:
+    """``stored`` (job ``meta.push``) records a judgement of the launch
+    ``handle`` names. The poll and the sweep trust a stored push only then;
+    any other folder is finalized again."""
+    if not isinstance(stored, dict) or not stored.get("state"):
+        return False
+    key = _launch_key(handle)
+    return key is not None and stored.get("launch") == key
+
+
+def _record_push(
+    ctx: Any, todo_id: int, pushed: _slice_ws.Pushed, handle: Any = None
+) -> dict[str, Any]:
+    """Stamp what :func:`_slice_ws.finalize` found: job ``meta.push`` always
+    (keyed by the launch it judged, when ``handle`` names one), the task's
+    ``meta.build_ref`` when the hub holds the work (``pushed``). Returns the
+    record."""
+    from precis.plans.templates import BUILD_REF_KEY
+
+    record = pushed.as_meta()
+    launch = _launch_key(handle)
+    if launch:
+        record["launch"] = launch
+    ctx.set_meta(push=record)
+    if pushed.state == _slice_ws.PUSHED:
+        ctx.store.stamp_ref_meta(todo_id, {BUILD_REF_KEY: record})
+    return record
+
+
+def _task_floor(tmeta: Mapping[str, Any]) -> int | None:
+    """The task's ``meta.build_floor`` (a job id) as an int, else ``None``."""
+    from precis.plans.templates import BUILD_FLOOR_KEY
+
+    raw = tmeta.get(BUILD_FLOOR_KEY)
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _job_base(meta: Any, todo_id: int, store: Any) -> str:
+    """The base branch a job was cut from (job ``meta.base``, stamped by
+    submit), else the land target's name (:func:`_land_base`) for a job that
+    predates the stamp."""
+    base = (meta or {}).get("base")
+    if isinstance(base, str) and base:
+        return base
+    return _land_base(store, todo_id).removeprefix("origin/")
+
+
+def _finalize_folder(
+    tree: Path,
+    todo_id: int,
+    job_id: int,
+    *,
+    hub: Path,
+    base: str,
+    start_sha: str | None,
+    reason: str,
+) -> _slice_ws.Pushed:
+    """The one place ``run_slice`` calls :func:`_slice_ws.finalize`: the
+    job's own poll (:func:`_finalize_attempt`), an outage relaunch of the
+    same job (:func:`_open_attempt`) and the host sweep (:func:`_settle`)
+    make the hub hold a folder's work through it, and nothing else does
+    (the module docstring has the rule). ``branch`` names the line
+    the clone was cut on, so a session that ended on another branch or a
+    detached HEAD still has its real tip judged as the attempt's head."""
+    return _slice_ws.finalize(
+        tree,
+        todo_id,
+        job_id,
+        hub=hub,
+        base=base,
+        start_sha=start_sha,
+        reason=reason,
+        branch=slice_branch(todo_id),
+    )
+
+
+def _finalize_attempt(
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    *,
+    repo: str,
+    base: str,
+    start: _slice_ws.Start | None,
+    reason: str,
+    handle: Any = None,
+) -> tuple[dict[str, Any] | None, Path | None]:
+    """Step 5 of the poll (gr741695): :func:`_slice_ws.finalize` on the
+    job's folder and the stamps it earns (:func:`_record_push`). Returns the
+    ``meta.push`` record and the hub, or ``(None, None)`` when the host
+    checkout cannot be named (the folder then stays, unjudged). The poll
+    runs inside the executor's watch pass, which does one job at a time on a
+    host, and the sweep leaves a running job's folder alone, so nothing else
+    writes the folder meanwhile."""
+    try:
+        hub = _slice_ws.hub_path(slice_root_for(repo))
+    except RuntimeError:
+        log.warning("run_slice: no host checkout for repo %s", repo, exc_info=True)
+        return None, None
+    if not tree.is_dir():
+        return None, hub
+    pushed = _finalize_folder(
+        tree,
+        todo_id,
+        int(ctx.ref_id),
+        hub=hub,
+        base=base,
+        start_sha=start.sha if start is not None else None,
+        reason=reason,
+    )
+    return _record_push(ctx, todo_id, pushed, handle), hub
+
+
+def _land_source(
+    push: Mapping[str, Any] | None, start: _slice_ws.Start | None
+) -> tuple[str | None, str | None]:
+    """``(ref, head)`` of the work a clean run may land or hold for review:
+    this run's own push (``pushed``: the attempt ref and the builder's last
+    real commit — a ``wip:`` snapshot above it never lands), or, when the
+    run added nothing (``empty``), the complete pushed attempt it
+    continued. ``(None, None)`` when the hub holds nothing to land."""
+    state = str((push or {}).get("state") or "")
+    if state == _slice_ws.PUSHED and push is not None:
+        ref, head = push.get("ref"), push.get("head")
+        if ref and head:
+            return str(ref), str(head)
+    if state == _slice_ws.EMPTY and start is not None and start.ref and not start.wip:
+        return start.ref, start.sha
+    return None, None
+
+
+def _push_summary(push: Mapping[str, Any] | None) -> str:
+    """One phrase for the job summary: what finalize found."""
+    if not push:
+        return "not finalized"
+    bits = [str(push.get("state") or "?")]
+    if push.get("by"):
+        bits.append(f"by the {push['by']}")
+    if push.get("sha"):
+        bits.append(f"{str(push['sha'])[:12]} on {push.get('ref')}")
+    if push.get("wip"):
+        bits.append("a wip snapshot")
+    if push.get("note"):
+        bits.append(str(push["note"]))
+    return ", ".join(bits)
+
+
+def _unsaved(push: Mapping[str, Any]) -> tuple[str, str]:
+    """``(why, state)`` of a folder whose work the hub does not hold:
+    ``why`` is the full words (with finalize's note), ``state`` their stable
+    lead, the one :func:`_report_kept` dedupes the comment on."""
+    return (
+        f"the hub does not hold its work ({_push_summary(push)})",
+        f"the hub does not hold its work ({push.get('state') or '?'}",
+    )
+
+
+def _kept_source(host: str) -> str:
+    """The alert source of the folders kept on ``host``: one source per
+    host, so :func:`resolve_stale_alerts` can clear what this host's
+    folders no longer account for without touching another host's alerts
+    (``run_slice:kept:{host}`` in :mod:`precis.alert_ids`; the fingerprint
+    is the folder's name)."""
+    return f"run_slice:kept:{host}"
+
+
+def _raise_kept_alert(store: Any, tree: Path, why: str, *, kind: str = "work") -> None:
+    """One alert per kept folder (gr741695): raised, and refreshed rather
+    than duplicated (``raise_alert`` dedups on source and fingerprint, and
+    throttles an unchanged repeat to one write per quarter hour), when a job
+    ends with work the hub does not hold or the host sweep reports a folder
+    it could not drop. The host and the path go in the stored alert body
+    only. Best effort: an alert failure never masks the outcome.
+
+    ``kind`` says what the next step is. ``work``: the folder holds work the
+    hub lacks, push it. ``running``: the job of an earlier folder has not ended;
+    ``unread``: its job's row could not be read; ``sweepfail``: the host sweep
+    failed on it. ``unremovable``: the hub holds the work, only the
+    directory could not be removed: remove it by hand. ``stuck``: a process of
+    the session still runs in the folder, which was not judged: stop the
+    process. ``leftover``: the remains of a dropped or failed-cut folder,
+    which holds nothing the hub lacks: remove it by hand. ``unowned``: no job
+    of this worker's database owns the folder: look at it by hand."""
+    host = _slice_park.node_name()
+    parsed = _slice_ws.parse_attempt_dir(tree)
+    ref = (
+        _slice_ws.build_ref(parsed[0], parsed[1])
+        if parsed is not None
+        else "refs/factory/build/<todo>/<job>"
+    )
+    if kind == "leftover":
+        title = f"build folder leftover: {tree.name}"
+        detail = (
+            f"The leftover {tree} on host {host} could not be removed: {why}. "
+            "It holds no work the hub lacks. What to do: on "
+            f"{host}, remove it by hand (it may need another account's "
+            "rights). The alert clears when it is gone."
         )
-        if salvage_note:
-            log.info("run_slice: td%d salvage: %s", todo_id, salvage_note)
-            if salvage_note.startswith(WORKER_COMMITTED):
-                pass  # the finished edits are on the branch — reset freely
-            elif salvage_note.startswith("salvage refused"):
-                # A deny-path hit is the session's violation, not infra:
-                # a real failure (an attempt, the normal failure routing)
-                # — and the tree stays un-reset for the record.
-                raise RuntimeError(f"td{todo_id}: {salvage_note}")
-            else:
-                # The finished edits are not on the branch: resetting
-                # would drop them. An infra wait, the tree stays as is.
-                raise _IndexLockWait(
-                    f"td{todo_id}: finished edits could not be committed "
-                    f"before reuse ({salvage_note}); the reset is withheld",
-                    meta={"why": "salvage-failed"},
-                )
-        _reset_reused_worktree(tree, branch)
-        if keep_wip and not start_over:
-            moved = _slice_park.apply_saved_wip(root, tree, todo_id, saved_head)
-            if moved:
-                note.append(f"resumed from {moved}")
-        return tree
-    extra = [] if base == "main" else [f"+refs/heads/{base}:refs/remotes/origin/{base}"]
-    if not fetched:
-        fetch = _git(["fetch", "origin", "main", *extra], root)
-        if fetch.returncode != 0:
-            raise RuntimeError(
-                f"git fetch origin {base} failed: {fetch.stderr.strip()}"
+    elif kind == "running":
+        title = f"build folder kept: {tree.name}"
+        detail = (
+            f"The attempt folder {tree} on host {host} was kept: {why}. A "
+            "launch for its task waited for it and gave up. What to do: find out why "
+            f"that job has not ended (look at it on {host}); the host sweep "
+            "saves and removes the folder once it has. The alert clears when "
+            "the folder is gone."
+        )
+    elif kind == "unread":
+        title = f"build folder kept: {tree.name}"
+        detail = (
+            f"The attempt folder {tree} on host {host} was kept: {why}. What to do: "
+            "check this worker's database access; the host sweep judges the "
+            "folder once it can read its job. The alert clears when the "
+            "folder is gone."
+        )
+    elif kind == "sweepfail":
+        title = f"build folder kept: {tree.name}"
+        detail = (
+            f"The attempt folder {tree} on host {host} was kept: {why}. The "
+            f"host sweep failed on it before it was judged. What to do: on {host}, "
+            "look in the worker's log for the error that names the folder; "
+            "the folder was not touched. The alert clears when it is gone."
+        )
+    elif kind == "unremovable":
+        title = f"build folder kept: {tree.name}"
+        detail = (
+            f"The attempt folder {tree} on host {host} was kept: {why}. Its "
+            f"work is in the host's hub; only the directory could not be "
+            f"removed. What to do: on {host}, remove it by hand (it may need another "
+            "account's rights). The alert clears when the folder is gone."
+        )
+    elif kind == "stuck":
+        title = f"build folder kept: {tree.name}"
+        detail = (
+            f"The attempt folder {tree} on host {host} was kept: {why}. A "
+            "process of its session is still running in it, so the folder was "
+            f"not judged. What to do: on {host}, find the process (the folder is its "
+            "working directory) and stop it; the host sweep then saves and "
+            "removes the folder. The alert clears when the folder is gone."
+        )
+    elif kind == "unowned":
+        title = f"build folder kept: {tree.name}"
+        detail = (
+            f"The attempt folder {tree} on host {host} was kept: {why}. Its "
+            f"work was not judged. What to do: on {host}, look at the folder by "
+            "hand; the alert clears when the folder is gone."
+        )
+    else:
+        title = f"build folder kept: {tree.name}"
+        detail = (
+            f"The attempt folder {tree} on host {host} was kept: {why}. "
+            "Its work is not (or not provably) in the host's hub. "
+            f"What to do: on {host}, from inside the folder, run "
+            f"`{_slice_ws.ENV_WORKER}=1 git push origin HEAD:{ref}` "
+            "(the hub's hook refuses a push with no identity; never add "
+            "`+`, it can drop commits the hub ref already holds). A "
+            "refusal as not a fast-forward means the hub already holds "
+            "other work under that ref: leave the folder as it is and "
+            "file a gripe naming the folder. A "
+            f"refusal that starts `{_slice_ws.HOOK_REFUSED} "
+            f"({_slice_ws.HOOK_SECRET})` means the secret it names must "
+            "leave every commit first (amend or rebase it out), then "
+            "push again. Or read the folder and keep what is needed. "
+            "Then remove the folder; the alert clears when the folder "
+            "is gone."
+        )
+    try:
+        raise_alert(
+            store,
+            source=_kept_source(host),
+            fingerprint=tree.name,
+            title=title,
+            detail=detail,
+            severity="warn",
+        )
+    except Exception:
+        log.warning("run_slice: kept-folder alert for %s failed", tree, exc_info=True)
+
+
+def _host_roots() -> list[Path]:
+    """Every checkout this host builds in: the default one and each second
+    repository's (``PRECIS_SLICE_REPOS``). These are all the worker can know
+    without a job in hand; a checkout named nowhere in the environment is
+    not swept."""
+    roots: list[Path] = []
+    try:
+        roots.append(slice_root())
+    except RuntimeError:
+        pass
+    try:
+        raw = json.loads(os.environ.get(SLICE_REPOS_ENV) or "{}")
+    except ValueError:
+        raw = {}
+    if isinstance(raw, dict):
+        # resolved, as :func:`slice_root_for` has them: the launch records
+        # name the folders by that spelling
+        roots += [Path(v).resolve() for v in raw.values() if isinstance(v, str) and v]
+    return roots
+
+
+def _host_folder_names() -> set[str]:
+    """The names of every attempt folder on this host, in the default
+    checkout and in each second repository's: what keeps a kept-folder alert
+    open."""
+    names: set[str] = set()
+    for root in _host_roots():
+        folders = worktrees_dir(root)
+        try:
+            names |= {e.name for e in folders.iterdir() if e.is_dir()}
+        except OSError:
+            continue
+    return names
+
+
+_STATE_LEAD = re.compile(
+    rf"({'|'.join((_slice_ws.PUSHED, _slice_ws.EMPTY, _slice_ws.WITHHELD, _slice_ws.FAILED))}): "
+)
+
+#: The stable leads of the kept-folder comments that are not about a push:
+#: the comment is written once per folder and lead, whatever the details say.
+_UNREMOVABLE = "it could not be removed"
+_SWEEP_FAILED = "the host sweep failed on it"
+
+
+def _alert_kept_folders(store: Any, root: Path, notes: list[str]) -> None:
+    """The host sweep's side of the kept-folder reports (gr741695): for each
+    folder it reported as ``kept``, the task's comment naming host and
+    folder and the alert (:func:`_report_kept`, deduplicated across
+    sweeps), then resolve every alert of this host whose folder is gone (a
+    person removed it, or a later sweep dropped it). A leftover of a dropped
+    or failed-cut folder (a name that is no attempt folder's) gets the alert
+    only: it holds no work, and its task is none of its name's business."""
+    for note in notes:
+        if not note.startswith("kept "):
+            continue
+        name, _sep, why = note[len("kept ") :].partition(": ")
+        if not name:
+            continue
+        folder = worktrees_dir(root) / name
+        parsed = _slice_ws.parse_attempt_dir(folder)
+        if parsed is None:
+            _raise_kept_alert(store, folder, why or "kept", kind="leftover")
+            continue
+        state_lead = _STATE_LEAD.match(why)
+        kept_state: str | None
+        if state_lead:
+            # a folder the hub does not hold: the words every report of it uses
+            record = {"state": state_lead.group(1), "note": why[state_lead.end() :]}
+            why, kept_state = _unsaved(record)
+        elif why.startswith("could not be removed"):
+            why, kept_state = (
+                _UNREMOVABLE + why[len("could not be removed") :],
+                _UNREMOVABLE,
             )
-    saved = (
-        None
-        if start_over or _branch_exists(root, branch)
-        else parked_tip or _slice_park.resume_tip(root, todo_id, keep_wip=keep_wip)
+        elif why.startswith("sweep failed"):
+            kept_state = _SWEEP_FAILED
+        else:
+            kept_state = None
+        alert_kind = (
+            "unremovable"
+            if kept_state == _UNREMOVABLE
+            else "sweepfail"
+            if kept_state == _SWEEP_FAILED
+            else "work"
+        )
+        _report_kept(
+            None,
+            parsed[0],
+            folder,
+            why or "kept",
+            _slice_park.node_name(),
+            store=store,
+            state=kept_state,
+            kind=alert_kind,
+        )
+    try:
+        resolve_stale_alerts(
+            store,
+            source=_kept_source(_slice_park.node_name()),
+            live_fingerprints=_host_folder_names(),
+        )
+    except Exception:
+        log.warning("run_slice: kept-folder alert clearing failed", exc_info=True)
+
+
+def _report_kept(
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    why: str,
+    host: str,
+    *,
+    store: Any = None,
+    state: str | None = None,
+    kind: str = "work",
+) -> str:
+    """A folder that stays (gr741695): the job event, the task's comment
+    naming host and folder, and the kept-folder alert. Returns the note. One
+    comment and one alert per folder and state: the alert dedups on its
+    fingerprint, and the comment is not written again when the task already
+    carries one for the same folder and state (a relaunch that could not
+    save the folder, then the sweep's re-judgement, then its later
+    sweeps all say it). ``state`` is the stable lead of ``why`` (see
+    :func:`_unsaved`); the rest of ``why`` may differ between settles (each
+    builds its own snapshot, so the commit a refusal names differs) and does
+    not make a second comment. ``None``: the whole of ``why`` is the state.
+    ``kind`` is the alert's next step (:func:`_raise_kept_alert`).
+    ``ctx`` is ``None`` for the sweep, which has no job to write events
+    on."""
+    store = store if store is not None else ctx.store
+    note = f"the folder {tree} on host {host} was kept: {why}"
+    if ctx is not None:
+        ctx.append_chunk("job_event", f"run_slice: td{todo_id} {note}")
+    _raise_kept_alert(store, tree, why, kind=kind)
+    text = f"run_slice: {note}."
+    lead = f"run_slice: the folder {tree} on host {host} was kept: {state or why}"
+    try:
+        seen = any(
+            c.chunk_kind == _COMMENT_KIND
+            and (
+                str(c.text or "").startswith(lead)
+                if state
+                else str(c.text or "") == text
+            )
+            for c in _todo_chunks(store, todo_id)
+        )
+        if not seen:
+            _append_comment(store, todo_id, text)
+    except Exception:  # pragma: no cover — the outcome still lands
+        log.warning("run_slice: kept-folder comment on td%d failed", todo_id)
+    return note
+
+
+def _settle_folder(
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    handle: dict[str, Any],
+    push: Mapping[str, Any] | None,
+) -> str | None:
+    """Step 8 of the poll (gr741695): drop the folder when the hub holds its
+    head (``push.safe``: ``pushed`` or ``empty``). Otherwise it stays: the
+    task gets a comment naming the host and the folder, the job an event,
+    and the returned note joins the job summary. Neither blocks the
+    outcome. A folder that cannot be removed stays for the sweep."""
+    if push is None or not tree.is_dir():
+        return None
+    state = str(push.get("state") or "")
+    if state in (_slice_ws.PUSHED, _slice_ws.EMPTY):
+        _kill_acceptance(handle)
+        acceptance = handle.get("acceptance_handle")
+        if isinstance(acceptance, dict) and _session_alive(acceptance):
+            return None  # tests still write here: kept for the sweep
+        notes: list[str] = []
+        if _slice_ws.drop(tree, notes=notes):
+            return None
+        why, kept_state = _UNREMOVABLE, _UNREMOVABLE
+    else:
+        why, kept_state = _unsaved(push)
+    # the folder is on this host: the same words as every other report of it
+    return _report_kept(
+        ctx,
+        todo_id,
+        tree,
+        why,
+        _slice_park.node_name(),
+        state=kept_state,
+        kind="unremovable" if kept_state == _UNREMOVABLE else "work",
     )
-    add = _git(
-        ["worktree", "add", "-b", branch, str(tree), saved or f"origin/{base}"], root
+
+
+def _refresh_base(repo: str, base: str) -> None:
+    """Best effort: move the hub's ``<base>`` to the tip GitHub holds, so the
+    verdict arms' ``git fetch origin <base>`` in the folder sees a fresh
+    base (a ``moot:`` claim is verified against it, gr674785). A failure
+    keeps the tip the hub had."""
+    try:
+        profile = None if repo == _lanes.DEFAULT_REPO else _lanes.repo_profile(repo)
+        _sync_base(slice_root_for(repo), base, profile)
+    except Exception:
+        log.warning("run_slice: hub base refresh for %s failed", repo, exc_info=True)
+
+
+@dataclass(frozen=True)
+class _Opened:
+    """What :func:`_open_attempt` made: the host's hub, the job's own clone
+    and the commit it starts from (``start`` is ``None`` at the base tip)."""
+
+    hub: Path
+    tree: Path
+    start: _slice_ws.Start | None
+    sha: str
+
+
+def _open_attempt(
+    ctx: Any,
+    store: Any,
+    todo_id: int,
+    root: Path,
+    base: str,
+    profile: _lanes.RepoProfile | None,
+    notes: list[str],
+    *,
+    at: _slice_ws.Start | None = None,
+    relaunch: bool = False,
+) -> _Opened:
+    """Steps 1 to 5 of the submit's workspace (gr741695): make and sync the
+    hub, settle this job's own folder when an outage relaunch left one, pick
+    the start point and cut the clone. ``root`` is the host checkout (the
+    repository's own for a second repository). ``at`` fixes the start commit
+    (a second repository's reviewer reads the landed commit). Raises
+    :class:`_slice_ws.WorkspaceError` (``HubUnreadable``, ``RefMoved``
+    included): the caller ends the job attempt-free, never from the base.
+
+    A launch never settles a folder that is not its own: the host sweep
+    (:func:`tidy`) does, and the launch waits for it where the task's
+    earlier folder matters (:func:`_wait_for_earlier_folder`). The outage
+    relaunch (``relaunch``: the poll runs submit again for the same job,
+    inside the executor's watch pass) is the one exception, for the job's
+    own folder: its work is finalized with reason ``relaunch`` — which
+    stamps ``meta.push`` and the task's ``meta.build_ref`` — and dropped when
+    safe, so the new clone starts from what the first session pushed. (The
+    contract lists the start resolution first; resolving after the stamp is
+    the same rule with the stamp applied.) A first launch that finds a
+    folder of its own job fails attempt-free instead: nothing says its
+    session is gone."""
+    from precis.plans.templates import BUILD_FLOOR_KEY, BUILD_REF_KEY
+
+    job_id = int(ctx.ref_id)
+    tree = _slice_ws.attempt_dir(root, todo_id, job_id)
+    hub = _slice_ws.ensure_hub(root, notes=notes)
+    _sync_base(root, base, profile, notes)
+    if tree.exists() and not relaunch:
+        raise _slice_ws.WorkspaceError(
+            f"the folder {tree} of this job is already there and this is not "
+            "a relaunch; next: leave it, the sweep settles it once the job ends"
+        )
+    if tree.exists():
+        # The same job runs submit again with its folder still there. The
+        # park ran only after the group was found gone, but a launch whose
+        # new handle was never saved leaves a handle that names no pid
+        # while its session runs: look the way a restart recovers one, and
+        # never finalize or drop a folder under a live session.
+        live = _live_session_for(todo_id, tree)
+        if live is not None:
+            raise _slice_ws.WorkspaceError(
+                f"a session of this job (pid {live.get('pid')}) is still "
+                f"running in {tree}; next: leave the folder alone, the poll "
+                "adopts the session"
+            )
+        earlier = _start_from_meta(ctx.meta)
+        pushed = _finalize_folder(
+            tree,
+            todo_id,
+            job_id,
+            hub=hub,
+            base=base,
+            start_sha=earlier.sha if earlier else None,
+            reason="relaunch",
+        )
+        _record_push(ctx, todo_id, pushed)
+        notes.append(
+            f"relaunch: folder {tree.name} finalized as {pushed.state}"
+            + (f" ({pushed.note})" if pushed.note else "")
+        )
+        if pushed.safe:
+            _slice_ws.drop(tree, notes=notes)
+        if tree.exists():
+            # Nothing is written past this raise: say here, once, that the
+            # folder stays — the job event, the task's comment naming host
+            # and folder, the alert (the submit's handler writes the notes).
+            # A folder the hub holds that could not be removed says so: its
+            # work is safe, only the directory is in the way.
+            if pushed.safe:
+                why, kept_state = _UNREMOVABLE, _UNREMOVABLE
+            else:
+                why, kept_state = _unsaved(pushed.as_meta())
+            _report_kept(
+                ctx,
+                todo_id,
+                tree,
+                why,
+                _slice_park.node_name(),
+                state=kept_state,
+                kind="unremovable" if pushed.safe else "work",
+            )
+            raise _slice_ws.WorkspaceError(
+                f"the folder {tree} of this job could not be removed; "
+                "next: the sweep reports it, remove it by hand"
+                if pushed.safe
+                else f"the folder {tree} of this job still holds work the "
+                f"hub does not ({pushed.state}); next: keep it, the sweep "
+                "reports it and a person saves it"
+            )
+    start = at
+    todo_now = store.get_ref(kind="todo", id=todo_id)
+    tmeta = (todo_now.meta if todo_now is not None else None) or {}
+    start_over = bool(tmeta.get(_slice_park.START_OVER_KEY))
+    floor = _task_floor(tmeta)
+    if at is None:
+        if start_over:
+            # The closing answer said "start over": the pushed attempts go
+            # and the attempt starts at the base. The floor is this job: no
+            # attempt ref of an earlier job is ever a start again, on any
+            # host's hub (gr741695).
+            notes.append(_slice_ws.delete_builds(hub, todo_id))
+            store.stamp_ref_meta(
+                todo_id, {BUILD_REF_KEY: None, BUILD_FLOOR_KEY: job_id}
+            )
+        else:
+            recorded = _recorded_build_ref(store, todo_id)
+            start = _slice_ws.resolve_start(
+                hub, todo_id, recorded=recorded, floor=floor
+            )
+            if start is None and recorded is None and profile is None and floor is None:
+                # Work pushed to GitHub before the switch, once — and only
+                # for a task that never had a floor (a legacy ref of a task
+                # that has one is stale). A failed import raises
+                # HubUnreadable: the job ends attempt-free, never at the
+                # base.
+                url = _hub_url(root, profile)
+                if url and _slice_ws.import_legacy(hub, url, todo_id):
+                    start = _slice_ws.resolve_start(hub, todo_id)
+    sha = _slice_ws.cut(
+        hub,
+        tree,
+        base=base,
+        branch=slice_branch(todo_id),
+        start=start,
+        seed_from=root,
+        notes=notes,
     )
-    if add.returncode == 0 and saved:
-        note.append(f"resumed from {saved}")
-    if add.returncode != 0:
-        # The branch outlived its tree (an earlier attempt): re-attach it.
-        add = _git(["worktree", "add", str(tree), branch], root)
-        if add.returncode != 0:
-            raise RuntimeError(f"git worktree add failed: {add.stderr.strip()}")
-        if keep_wip and not start_over:
-            moved = _slice_park.apply_saved_wip(root, tree, todo_id, saved_head)
-            if moved:
-                note.append(f"resumed from {moved}")
-    return tree
+    if profile is not None:
+        # The excludes were written into the host checkout's common dir,
+        # which worktrees shared; a clone has its own ``.git/info/exclude``
+        # (scratch/ files must not be swept into commits and snapshots).
+        _ensure_info_exclude(tree, profile.exclude)
+    if start_over:
+        # Consumed: the pushed attempts are gone and the node is no longer
+        # parked work.
+        store.stamp_ref_meta(
+            todo_id,
+            {_slice_park.START_OVER_KEY: None, _slice_park.PARKED_KEY: None},
+        )
+    ctx.set_meta(start=_start_meta(start), base=base)
+    return _Opened(hub=hub, tree=tree, start=start, sha=sha)
+
+
+#: How long a job may be terminal with its process group still answering
+#: before the sweep sends SIGKILL (gr741695): the stop's own TERM and the
+#: poll's escalation get this long first.
+SETTLE_KILL_AFTER_S = 30.0
+
+#: After this long (seconds) with the group still answering, the sweep
+#: reports the folder kept (the alert and the task's comment, deduplicated
+#: across sweeps) and goes on returning ``None``.
+SETTLE_STUCK_AFTER_S = 900.0
+
+
+#: The status :func:`_job_row` reports for a job that is not there, as against
+#: ``None`` (the database could not be read).
+ROW_ABSENT = "absent"
+
+
+def _job_row(store: Any, job_id: int) -> tuple[str | None, dict[str, Any]] | None:
+    """``(STATUS, meta)`` of a job ref. ``None`` when the row cannot be read
+    (a database error: the sweep judges nothing it cannot read and tries
+    again); ``(ROW_ABSENT, {})`` when there is no such job. ``meta`` carries
+    ``_status_at``, the ISO time the STATUS tag was set, for a job that
+    never recorded ``meta.finished_at``."""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT (SELECT t.value
+                          FROM ref_tags rt JOIN tags t USING (tag_id)
+                         WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                         LIMIT 1),
+                       r.meta,
+                       (SELECT rt.created_at
+                          FROM ref_tags rt JOIN tags t USING (tag_id)
+                         WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                         LIMIT 1)
+                  FROM refs r
+                 WHERE r.kind = 'job' AND r.ref_id = %s
+                """,
+                (job_id,),
+            ).fetchone()
+    except Exception:
+        log.warning("run_slice: job row %s unreadable", job_id, exc_info=True)
+        return None
+    if row is None:
+        return ROW_ABSENT, {}
+    meta = dict(row[1]) if isinstance(row[1], dict) else {}
+    if row[2] is not None:
+        meta["_status_at"] = row[2].isoformat()
+    return (str(row[0]) if row[0] is not None else None), meta
+
+
+def _pushed_from_meta(record: Mapping[str, Any]) -> _slice_ws.Pushed:
+    """The :class:`_slice_ws.Pushed` a stored ``meta.push`` records."""
+    return _slice_ws.Pushed(
+        state=str(record.get("state") or _slice_ws.FAILED),
+        ref=str(record.get("ref") or ""),
+        sha=str(record["sha"]) if record.get("sha") else None,
+        head=str(record["head"]) if record.get("head") else None,
+        wip=bool(record.get("wip")),
+        by=str(record.get("by") or ""),
+        note=str(record.get("note") or ""),
+    )
+
+
+def _seconds_since(stamp: Any) -> float | None:
+    """Seconds since an ISO timestamp (``meta.finished_at``), else ``None``."""
+    try:
+        then = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - then).total_seconds()
+
+
+#: A stored ``FAILED`` push (a transient push failure, a timeout) is tried
+#: again by the sweep after 30, 60, 120 and 240 seconds, counted in the
+#: record's ``tries``; after the fourth try it is final. ``WITHHELD`` never
+#: is: the secret has to leave the commits first.
+PUSH_RETRY_AFTER_S = (30.0, 60.0, 120.0, 240.0)
+
+#: A push's own time: what a finalize may take on top of the schedule (the
+#: git push timeout).
+PUSH_TRY_ALLOWANCE_S = 120.0
+
+#: The host sweep runs at most this often in one process (the executor's watch
+#: pass is every few seconds).
+TIDY_EVERY_S = 30.0
+
+
+def _job_event(store: Any, job_id: int, text: str) -> None:
+    """One job_event on a job the sweep has no context for. Best effort."""
+    try:
+        from precis.workers.executors._common import JOB_EVENT_KIND, append_chunk
+
+        append_chunk(store, job_id, JOB_EVENT_KIND, text)
+    except Exception:
+        log.warning("run_slice: job event on j%d failed", job_id, exc_info=True)
+
+
+def _confirm_words(stored: Mapping[str, Any], pushed: _slice_ws.Pushed) -> str:
+    """What a confirming finalize found that differs from the stored safe
+    record, in words that fit the state: another sha the hub now holds is
+    newer work; a result that is not safe is a folder that could not be
+    checked against the hub (the stored sha is named, the note quoted)."""
+    held = str(stored.get("sha") or "")[:12]
+    if pushed.safe and pushed.sha:
+        return (
+            "held work newer than the stored record, now held as "
+            f"{str(pushed.sha)[:12]}"
+        )
+    if pushed.safe:
+        return f"holds nothing the hub lacks ({pushed.state}); the stored record held {held}"
+    return (
+        f"could not be checked against the hub ({pushed.state}: "
+        f"{(pushed.note or 'no note')[:160]}); the stored record held {held}"
+    )
+
+
+def _stored_push(meta: Mapping[str, Any], handle: Any = None) -> dict[str, Any] | None:
+    """The job's ``meta.push`` when it judges the folder: a record with a
+    state, of this job's launch when the handle names one (a launch key needs
+    a pid), else — the handle of an outage park has none, a job that never
+    launched has no handle — any such record."""
+    stored = meta.get("push")
+    if not isinstance(stored, dict) or not stored.get("state"):
+        return None
+    key = _launch_key(handle)
+    if key is not None and stored.get("launch") != key:
+        return None
+    return stored
+
+
+def _push_tries(stored: Mapping[str, Any]) -> int:
+    try:
+        return int(stored.get("tries") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _retry_pending(stored: Mapping[str, Any]) -> bool:
+    """A ``FAILED`` record that the sweep will still try again."""
+    return stored.get("state") == _slice_ws.FAILED and _push_tries(stored) < len(
+        PUSH_RETRY_AFTER_S
+    )
+
+
+def _retry_due(stored: Mapping[str, Any]) -> bool:
+    if not _retry_pending(stored):
+        return False
+    age = _seconds_since(stored.get("at"))
+    return age is not None and age >= PUSH_RETRY_AFTER_S[_push_tries(stored)]
+
+
+def _build_ref_may_take(store: Any, todo_id: int, job_id: int) -> bool:
+    """Whether this job's pushed record may become the task's ``build_ref``:
+    not over a newer attempt's (a folder settled late), and not below the
+    task's floor (``meta.build_floor``). An unreadable task stamps nothing."""
+    from precis.plans.templates import BUILD_REF_KEY
+
+    try:
+        todo = store.get_ref(kind="todo", id=todo_id)
+    except Exception:
+        return False
+    tmeta = (todo.meta if todo is not None else None) or {}
+    floor = _task_floor(tmeta)
+    if floor is not None and job_id < floor:
+        return False
+    current = tmeta.get(BUILD_REF_KEY)
+    if isinstance(current, dict) and current.get("ref"):
+        parsed = _slice_ws.parse_build_ref(str(current["ref"]))
+        if parsed is not None and parsed[1] > job_id:
+            return False
+    return True
+
+
+def _unowned_folder(store: Any, tree: Path, todo_id: int) -> None:
+    """A folder whose job row is absent, or is another task's (a worker
+    reading another database than the one the folder was cut under, or a job
+    row that is gone): never judged. One alert, no task comment (the task id
+    may belong to another database), the same words every sweep."""
+    _raise_kept_alert(
+        store,
+        tree,
+        f"no job of td{todo_id} in this worker's database owns this folder "
+        "(it was cut under another database, or its job row is gone); "
+        "next: look at it by hand",
+        kind="unowned",
+    )
+
+
+def _settle(
+    store: Any, root: Path, tree: Path, todo_id: int, job_id: int, role: str
+) -> _slice_ws.Pushed | None:
+    """The sweep's judgement of one folder from its job row (gr741695,
+    ``settle`` of :func:`_slice_ws.sweep`), the only path of a terminal
+    job's folder: ``release`` touches no folder, so everything it used to do
+    for one (the push record, the task's ``build_ref``, the kept reports)
+    happens here and in :func:`_alert_kept_folders`:
+
+    * the row cannot be read (a database error): ``None``, a later sweep
+      tries again;
+    * there is no such job, or the row is not a job of this folder's task
+      (``params.todo_id``): ``None`` and one alert (:func:`_unowned_folder`).
+      A worker pointed at another database than the one the folder was cut
+      under would otherwise judge, signal and delete by a stranger's row
+      that happens to share the id;
+    * the job still runs: ``None``;
+    * the job is terminal and its process group still answers: ``None``,
+      after a SIGKILL once it has been terminal for
+      :data:`SETTLE_KILL_AFTER_S` (a later pass then finds it gone; the
+      time is ``meta.finished_at``, else when the STATUS tag was set). A
+      handle with no pid (an outage park, a launch whose handle was never
+      saved) is looked for the way :func:`_recover_launch` does
+      (:func:`_live_session_for`): a session found alive keeps the folder;
+    * a land folder (``ROLE_LAND``) holds no work of its own: ``EMPTY``;
+    * else the ``meta.push`` that judges the folder (:func:`_stored_push`),
+      or, when none does (a stop, a crash), a :func:`_slice_ws.finalize`
+      whose record is stamped on the job and, when the hub holds the work, on
+      the task (unless a newer attempt's record or the task's floor is
+      above this job). A stored ``FAILED`` record is tried again
+      (:data:`PUSH_RETRY_AFTER_S`), a ``WITHHELD`` one never and is returned
+      as stored. A stored safe record is confirmed by a finalize before the
+      folder is dropped (finalize is idempotent: a clean folder whose tip the
+      hub holds returns ``PUSHED`` without pushing): the same sha keeps the
+      stored record as it is, another one means the folder held newer work,
+      which is stamped (job, and task when allowed) with one job_event.
+
+    A group that still answers (:func:`_session_alive`, a recovered exit
+    included) keeps the folder: the settle sends SIGKILL only when
+    :func:`_may_signal` allows it and reports the stuck group otherwise."""
+    from precis.plans.templates import BUILD_REF_KEY
+    from precis.workers._mint import JOB_TERMINAL_STATUSES
+
+    got = _job_row(store, job_id)
+    if got is None:
+        return None
+    status, meta = got
+    params = meta.get("params")
+    row_todo = params.get("todo_id") if isinstance(params, dict) else None
+    if status == ROW_ABSENT or row_todo != todo_id:
+        _unowned_folder(store, tree, todo_id)
+        return None
+    if status not in JOB_TERMINAL_STATUSES:
+        return None
+    row_handle = meta.get("compute_handle")
+    # A live process in the folder keeps it: the row's handle, or — a handle
+    # that was never saved (a launch that raised, a relaunch whose handle save
+    # failed, a parked relaunch) leaves the row naming a dead one — the session
+    # the run dirs name; and the job's detached acceptance-test group.
+    alive_handle: dict[str, Any] | None = None
+    if isinstance(row_handle, dict) and _session_alive(row_handle):
+        alive_handle = row_handle
+    else:
+        alive_handle = _live_session_for(todo_id, tree)
+    acceptance = (
+        row_handle.get("acceptance_handle") if isinstance(row_handle, dict) else None
+    )
+    acceptance_alive = False
+    if isinstance(acceptance, dict):
+        exited = _read_exit(acceptance) is not None
+        if _has_identity(acceptance):
+            # The exit file is the wrapper's last act: it marks the leader's
+            # end, not the group's, so a child that lingers is judged by the
+            # group alone.
+            acceptance_alive = (
+                _group_alive(_handle_pgid(acceptance))
+                if exited
+                else _session_alive(acceptance)
+            )
+        else:
+            # A bare pid may be any process later: no identity, no signal, and
+            # the hold is bounded by the tests' own timeout (the poll holds the
+            # same way; after it the group is nobody the sweep can name).
+            started = float(acceptance.get("started") or 0)
+            acceptance_alive = (
+                not exited
+                and time.time() - started < _ACCEPTANCE_TEST_TIMEOUT_S
+                and _session_alive(acceptance)
+            )
+    if alive_handle is not None or acceptance_alive:
+        age = _seconds_since(meta.get("finished_at"))
+        if age is None:
+            age = _seconds_since(meta.get("_status_at"))
+        signalled = True
+        if alive_handle is not None:
+            pgid = _handle_pgid(alive_handle)
+            signalled = _may_signal(alive_handle)
+            if (
+                pgid
+                and age is not None
+                and age >= SETTLE_KILL_AFTER_S
+                and signalled
+                and _signal_target_ok(alive_handle)
+            ):
+                try:
+                    _signal_group(pgid, signal.SIGKILL)
+                except OSError:
+                    pass
+        if (
+            acceptance_alive
+            and isinstance(row_handle, dict)
+            and age is not None
+            and age >= SETTLE_KILL_AFTER_S
+        ):
+            _kill_acceptance(row_handle)  # gated on one identity read inside
+        if age is not None and age >= SETTLE_STUCK_AFTER_S:
+            # The group still answers a long while after the job ended
+            # (uninterruptible, or a handle with no identity to signal by):
+            # the folder is not judged, and a person is told, once.
+            what = (
+                "its session's process group"
+                if alive_handle is not None
+                else "its acceptance-test group"
+            )
+            _report_kept(
+                None,
+                todo_id,
+                tree,
+                f"{what} still answers after the job ended"
+                + (
+                    ""
+                    if signalled
+                    else " and cannot be signalled (no recorded identity)"
+                ),
+                _slice_park.node_name(),
+                store=store,
+                kind="stuck",
+            )
+        return None
+    ref = _slice_ws.build_ref(todo_id, job_id)
+    if role == _slice_ws.ROLE_LAND:
+        return _slice_ws.Pushed(state=_slice_ws.EMPTY, ref=ref)
+    stored = _stored_push(meta, row_handle)
+    tries = 0
+    confirming = False
+    if stored is not None:
+        if stored.get("state") in (_slice_ws.PUSHED, _slice_ws.EMPTY):
+            # A stored safe record is never a licence to delete by itself: a
+            # folder is dropped only in the pass that finalized it (the
+            # session may have committed again after the record was made).
+            confirming = True
+        elif not _retry_due(stored):
+            return _pushed_from_meta(stored)
+        else:
+            tries = _push_tries(stored) + 1
+    if not tree.is_dir():
+        return None
+    start = _start_from_meta(meta)
+    base = _job_base(meta, todo_id, store)
+    pushed = _finalize_folder(
+        tree,
+        todo_id,
+        job_id,
+        hub=_slice_ws.hub_path(root),
+        base=base,
+        start_sha=start.sha if start is not None else None,
+        reason="run ended",
+    )
+    if (
+        confirming
+        and stored is not None
+        and pushed.safe
+        and pushed.sha == (stored.get("sha") or None)
+    ):
+        return _pushed_from_meta(stored)  # confirmed: the record stands as it is
+    record = pushed.as_meta()
+    launch = _launch_key(row_handle)
+    if launch:
+        record["launch"] = launch
+    if tries:
+        record["tries"] = tries
+    try:
+        store.stamp_ref_meta(job_id, {"push": record})
+        if pushed.state == _slice_ws.PUSHED and _build_ref_may_take(
+            store, todo_id, job_id
+        ):
+            store.stamp_ref_meta(todo_id, {BUILD_REF_KEY: record})
+    except Exception:
+        log.warning("run_slice: stamping the sweep's push of j%d failed", job_id)
+    if confirming and stored is not None:
+        _job_event(
+            store,
+            job_id,
+            f"run_slice: the folder {tree.name} {_confirm_words(stored, pushed)}",
+        )
+    return pushed
+
+
+def _settler(
+    store: Any, root: Path
+) -> Callable[[Path, int, int, str], _slice_ws.Pushed | None]:
+    """``settle`` for :func:`_slice_ws.sweep` over the checkout at
+    ``root`` (:func:`_settle`)."""
+
+    def settle(
+        tree: Path, todo_id: int, job_id: int, role: str
+    ) -> _slice_ws.Pushed | None:
+        return _settle(store, root, tree, todo_id, job_id, role)
+
+    return settle
+
+
+def _drop_unlaunched(tree: Path | None) -> None:
+    """Drop a clone no session ever ran in (a launch that failed or was
+    refused before the child existed): it holds only its start commit, which
+    the hub has. A failure is logged, the sweep finds the folder."""
+    if tree is None:
+        return
+    try:
+        _slice_ws.drop(tree)
+    except Exception:
+        log.warning(
+            "run_slice: dropping the unlaunched clone %s failed", tree, exc_info=True
+        )
 
 
 #: The MCP preflight's HTTP call — a seam for tests.
@@ -4674,18 +5926,27 @@ def _devin_mcp_config(tree: Path, url: str, token: str) -> Path:
     return path
 
 
-def _codex_writable_roots(tree: Path) -> tuple[Path, ...]:
+def _codex_writable_roots(gate_root: Path | None) -> tuple[Path, ...]:
     """Extra ``--add-dir`` writable roots for the codex sandbox
-    (gr570533): the shared git common dir — the worktree's index and
-    refs under ``worktrees/<name>``, the object store, loose/packed
-    refs, and the gate queue + slot locks + hold stats ``scripts/test``
-    writes — plus the Docker socket's parent dir so ``docker`` inside
-    the gate connects. Without them ``git commit`` and ``scripts/test``
-    die on the sandbox and the slice exits with work but no commit."""
+    (gr570533): the host checkout's git common dir (``gate_root``,
+    ``PRECIS_GATE_SLOT_ROOT``) — the gate queue + slot locks + hold stats
+    ``scripts/test`` writes there — plus the Docker socket's parent dir so
+    ``docker`` inside the gate connects. Without them ``scripts/test``
+    dies on the sandbox. gr741695: the grant is not narrowed to fixed gate
+    paths because there are none: ``scripts/lib/gate-slot.sh`` takes a slot
+    by ``mkdir`` of ``precis-gate-slot-<i>.lock.d`` (the slot count is
+    ``PRECIS_GATE_SLOTS`` or a host-sized default) and the queue is
+    ``precis-gate-queue.d``, all created and removed directly inside the
+    named directory, so only a grant of that directory lets ``mkdir`` work;
+    a sub-directory would split the host's one semaphore from the lander's
+    and ship's. The hub lives in the same directory: the hook guards
+    against mistakes, not a session that writes the hub's files. The
+    session's own clone is its tree and
+    needs no grant; its ``.git`` stays read-only to codex — the worker
+    commits and pushes after it exits."""
     roots: list[Path] = []
-    common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], tree)
-    if common.returncode == 0 and common.stdout.strip():
-        roots.append(Path(common.stdout.strip()))
+    if gate_root is not None:
+        roots.append(gate_root)
     docker = os.environ.get("DOCKER_HOST", "")
     sock_dir: Path | None
     if docker.startswith("unix://"):
@@ -5278,11 +6539,176 @@ def _lane_waited(meta: Any) -> timedelta:
     )
 
 
+@dataclass(frozen=True)
+class Relaunch:
+    """What the poll hands :func:`submit` as ``spec`` when it runs a parked
+    job's launch again (:func:`_relaunch_when_due`): the parked handle. The
+    executor's own call passes ``None``: a first launch.
+
+    Only an outage park (:func:`_park_outage`) records ``own_folder``: the
+    session ran in the job's own folder, its poll found it dead and saved
+    its work, and the relaunch may finalize and drop that folder. A park for
+    an earlier folder of the task (:func:`_wait_for_earlier_folder`) is a
+    first launch still, with no folder of its own to touch."""
+
+    handle: dict[str, Any]
+
+    @property
+    def own_folder(self) -> bool:
+        return bool(self.handle.get("own_folder"))
+
+
+#: How often a parked launch looks again, and how long it waits for the
+#: task's earlier attempt folder to be settled by the sweep: the whole retry
+#: schedule of a failed push (:data:`PUSH_RETRY_AFTER_S`) plus, for the first
+#: sweep and for each retry, the sweep's cadence (:data:`TIDY_EVERY_S`) and a
+#: push's own timeout (:data:`PUSH_TRY_ALLOWANCE_S`) — about twenty minutes.
+EARLIER_FOLDER_RETRY_S = 30.0
+EARLIER_FOLDER_WAIT_S = sum(PUSH_RETRY_AFTER_S) + (len(PUSH_RETRY_AFTER_S) + 1) * (
+    TIDY_EVERY_S + PUSH_TRY_ALLOWANCE_S
+)
+
+
+def _push_settled(meta: Mapping[str, Any]) -> bool:
+    """The job's stored ``meta.push`` judges its folder (:func:`_stored_push`)
+    in any state, and no retry of a transient ``FAILED`` push is left
+    (:func:`_retry_pending`). A folder still there with a stored safe record
+    counts as settled although the sweep has not dropped it: every path that
+    could leave a stale safe record clears ``meta.push`` (a relaunch, an
+    adoption) and the confirm before a delete saves any newer work, so the
+    worst case is a new attempt that does not continue from it."""
+    stored = _stored_push(meta, meta.get("compute_handle"))
+    return stored is not None and not _retry_pending(stored)
+
+
+def _unsettled_earlier_folder(
+    store: Any, root: Path, todo_id: int, job_id: int
+) -> Path | None:
+    """An attempt folder of ``todo_id`` (build role, another job) on this
+    host whose job has no stored push record yet: the sweep has not saved
+    its work. ``None`` when every earlier folder is settled (a record of any
+    state: ``pushed``/``empty`` the sweep drops, ``withheld`` stays and is
+    reported, ``failed`` stays once its retries are spent,
+    :data:`PUSH_RETRY_AFTER_S` — a launch waits for them, up to
+    :data:`EARLIER_FOLDER_WAIT_S`). A folder whose job row is absent or is
+    another task's is skipped: the sweep never settles it
+    (:func:`_unowned_folder` reports it), so waiting would fail every launch of
+    the task. An unreadable row counts as unsettled."""
+    from precis.workers._mint import JOB_TERMINAL_STATUSES
+
+    try:
+        entries = sorted(worktrees_dir(root).iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        parsed = _slice_ws.parse_attempt_dir(entry)
+        if parsed is None or parsed[2] != _slice_ws.ROLE_BUILD:
+            continue
+        if parsed[0] != todo_id or parsed[1] == job_id or not entry.is_dir():
+            continue
+        got = _job_row(store, parsed[1])
+        if got is None:
+            return entry
+        status, meta = got
+        params = meta.get("params")
+        row_todo = params.get("todo_id") if isinstance(params, dict) else None
+        if status == ROW_ABSENT or row_todo != parsed[0]:
+            continue
+        if status not in JOB_TERMINAL_STATUSES:
+            return entry
+        if not _push_settled(meta):
+            return entry
+    return None
+
+
+def _earlier_folder_state(store: Any, folder: Path) -> tuple[str, str]:
+    """Why a folder counts as unsettled, in words that are true of its job's
+    row now (the launch's bound message), and the kept alert's ``kind`` that
+    fits: the next step is not "push it" for a job that is still running or
+    whose row could not be read."""
+    from precis.workers._mint import JOB_TERMINAL_STATUSES
+
+    parsed = _slice_ws.parse_attempt_dir(folder)
+    got = _job_row(store, parsed[1]) if parsed is not None else None
+    if got is None:
+        return "its job's row could not be read", "unread"
+    status, meta = got
+    if status not in JOB_TERMINAL_STATUSES:
+        return f"its job is still {status or 'without a status'}", "running"
+    stored = _stored_push(meta, meta.get("compute_handle"))
+    if stored is None:
+        return "its job has no push record", "work"
+    if _retry_pending(stored):
+        left = len(PUSH_RETRY_AFTER_S) - _push_tries(stored)
+        return f"its push failed and {left} retries are left", "work"
+    return f"its push record says {stored.get('state')}", "work"
+
+
+def _wait_for_earlier_folder(
+    ctx: Any, store: Any, todo_id: int, repo: str, relaunch: Relaunch | None
+) -> tuple[bool, Any]:
+    """Launch ordering (gr741695): a launch for a task does not start while an
+    earlier attempt folder of the task is on this host and not settled — the
+    clone would be cut before the earlier session's work reached the hub.
+    The launch never settles that folder itself; the host sweep does
+    (:func:`tidy`). ``(True, None)``: go on. ``(False, result)``: ``submit``
+    returns ``result``: a parked handle (``not_before``; the poll runs the
+    launch again, :func:`_relaunch_when_due`) after one job_event, or
+    ``None`` after the bound, when the job ended attempt-free with the
+    folder reported."""
+    try:
+        root = slice_root_for(repo)
+    except RuntimeError:
+        return True, None  # the workspace step fails with the real reason
+    folder = _unsettled_earlier_folder(store, root, todo_id, int(ctx.ref_id))
+    if folder is None:
+        return True, None
+    prior = relaunch.handle if relaunch is not None else {}
+    now = time.time()
+    since = float(prior.get("folder_wait_since") or now)
+    if now - since >= EARLIER_FOLDER_WAIT_S:
+        state_words, alert_kind = _earlier_folder_state(store, folder)
+        why = (
+            f"the earlier folder {folder} of td{todo_id} was still not settled "
+            f"after {(now - since) / 60:.0f} minutes "
+            f"({state_words}); next: look at it by hand"
+        )
+        _report_kept(
+            ctx, todo_id, folder, why, _slice_park.node_name(), kind=alert_kind
+        )
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: WORKSPACE_KEY})
+        ctx.record_failure(
+            f"run_slice: td{todo_id} launch not started: {why}; no attempt burned"
+        )
+        return False, None
+    if "folder_wait_since" not in prior:
+        ctx.append_chunk(
+            "job_event",
+            f"run_slice: td{todo_id} launch waits for the earlier folder "
+            f"{folder.name} to be settled (the sweep saves its work to the "
+            "hub first)",
+        )
+    due = datetime.now(UTC) + timedelta(seconds=EARLIER_FOLDER_RETRY_S)
+    parked: dict[str, Any] = {
+        "not_before": due.strftime(_NOT_BEFORE_FMT),
+        "folder_wait_since": since,
+        "folder_wait": folder.name,
+    }
+    if prior.get("outage_parks"):
+        parked["outage_parks"] = prior["outage_parks"]
+    if prior.get("own_folder"):
+        parked["own_folder"] = True  # still an outage relaunch, only waiting
+    return False, parked
+
+
 def submit(ctx: Any, spec: Any) -> Any:
     """Detached submit half (see the module docstring). Returns the handle,
     or ``None`` after driving the job terminal (or parking it when every
-    fit lane, or the lane ``params.lane`` pins, is at its cap)."""
-    del spec
+    fit lane, or the lane ``params.lane`` pins, is at its cap). A launch that
+    must wait for the task's earlier folder returns a parked handle
+    (:func:`_wait_for_earlier_folder`). ``spec`` is a :class:`Relaunch` when
+    the poll runs a parked job's launch again."""
+    relaunch = spec if isinstance(spec, Relaunch) else None
     params = dict((ctx.meta or {}).get("params") or {})
     store = ctx.store
     todo_id = params.get("todo_id")
@@ -5315,6 +6741,9 @@ def submit(ctx: Any, spec: Any) -> Any:
     if repo != _lanes.DEFAULT_REPO:
         profile = _lanes.repo_profile(repo)
         assert profile is not None
+    go, waiting = _wait_for_earlier_folder(ctx, store, todo_id, repo, relaunch)
+    if not go:
+        return waiting
 
     task_class = str((todo.meta or {}).get("task_class") or _DEFAULT_TASK_CLASS)
     # A relaunch after a lane's quota/rate window (gr565359) skips that
@@ -5766,9 +7195,16 @@ def submit(ctx: Any, spec: Any) -> Any:
         mcp=use_mcp,
         deny_paths=_slice_deny(store, repo, lane),
         lane_models=lane.models,
-        target=None if repo_review else _review_target(store, todo.meta),
+        target=None,
         adapter=adapter.name,
+        job_id=getattr(ctx, "ref_id", None),
     )
+    # A conflict-only attempt (gr741695) carries its own brief and always
+    # runs a session.
+    conflict = params.get("conflict")
+    conflict = conflict if isinstance(conflict, dict) and conflict else None
+    if conflict is not None and not is_generator:
+        brief_kwargs["conflict"] = conflict
     # release-train T1: a release fix branches from the release it lands on.
     base = _release.land_target_of(todo.meta, body, latest) or "main"
     if base != "main":
@@ -5778,15 +7214,18 @@ def submit(ctx: Any, spec: Any) -> Any:
     grant: dict[str, Any] | None = None
     mint_error: str | None = None
     read_url: str | None = None
-    # A second-repo reviewer's detached tree once cut: every launch failure
-    # after that drops it (the run's own end drops it in poll).
-    review_tree: Path | None = None
+    # The job's clone once cut: a launch failure before the child exists
+    # drops it (a session's run is finalized and dropped by poll).
+    tree: Path | None = None
     # A crash past ``_launch`` but before this function's own record /
     # the executor's handle persist leaves a live orphan: the generic
     # except below kills the group when ``pid`` is already assigned
     # (gr708457). The child-written pid file still names the compute
     # for the *hard* kill a plain except cannot reach.
     pid: int | None = None
+    # What the workspace steps did (:func:`_open_attempt`): job events, also
+    # when a step raises before the launch.
+    notes: list[str] = []
     try:
         repo_root: Path | None = None
         base_tip: str | None = None
@@ -5801,105 +7240,79 @@ def submit(ctx: Any, spec: Any) -> Any:
             if not_ready is not None:
                 raise (_ReviewRefusal if repo_review else RuntimeError)(not_ready)
         review_head: str | None = None
+        root = repo_root or slice_root()
         if repo_review:
             assert profile is not None and repo_root is not None
-            tree, review_head = _cut_review_tree(
+            at = _review_start(
                 store, todo, todo_id, profile, repo_root, brief_kwargs, base_tip
             )
-            review_tree = tree
+            opened = _open_attempt(
+                ctx,
+                store,
+                todo_id,
+                root,
+                base,
+                profile,
+                notes,
+                at=at,
+                relaunch=relaunch is not None and relaunch.own_folder,
+            )
+            review_head = opened.sha
         else:
-            _clear_slice_index_lock(
-                ctx, worktrees_dir(repo_root or slice_root()) / slice_name(todo_id)
+            # gr741695: the job's own clone of the host's hub — hub sync,
+            # start point (the task's newest pushed attempt, else the base
+            # tip), cut. A WorkspaceError ends the job attempt-free.
+            opened = _open_attempt(
+                ctx,
+                store,
+                todo_id,
+                root,
+                base,
+                profile,
+                notes,
+                relaunch=relaunch is not None and relaunch.own_folder,
             )
-            # Park = save, resume anywhere (_slice_park): a re-armed
-            # parked node resumes from its saved branch; ``start over``
-            # in the closing answer drops it.
-            parked = (todo.meta or {}).get(_slice_park.PARKED_KEY)
-            park_kw: dict[str, Any] = {
-                "keep_wip": isinstance(parked, dict),
-                "start_over": bool((todo.meta or {}).get(_slice_park.START_OVER_KEY)),
-                "saved_head": str(parked.get("head") or "")
-                if isinstance(parked, dict)
-                else None,
-                "notes": [],
-            }
-            if profile is None:
-                tree = _ensure_worktree(
-                    slice_root(),
-                    todo_id,
-                    *(() if base == "main" else (base,)),
-                    store=store,
-                    job_id=getattr(ctx, "ref_id", None),
-                    **park_kw,
-                )
-            else:
-                assert repo_root is not None
-                tree = _ensure_worktree(
-                    repo_root,
-                    todo_id,
-                    base=profile.base,
-                    fetched=True,
-                    store=store,
-                    job_id=getattr(ctx, "ref_id", None),
-                    **park_kw,
-                )
-            for line in park_kw["notes"]:
-                ctx.append_chunk("job_event", f"run_slice: td{todo_id} {line}")
-            if park_kw["start_over"]:
-                # Consumed: the saved branch is gone; the node is no
-                # longer parked work.
-                store.stamp_ref_meta(
-                    todo_id,
-                    {_slice_park.START_OVER_KEY: None, _slice_park.PARKED_KEY: None},
-                )
-            # gr674785 (td665126 spent its whole ladder on a fix a
-            # sibling had landed): judge the branch the retry reused
-            # BEFORE a session spends a rung. The recorded tip is the
-            # poll-side arm's evidence when the session rewrites the
-            # branch out from under it (a rebase that drops carried
-            # commits reads "nothing left"). A git hiccup stamps nothing
-            # — the launch proceeds as before.
-            tip_now: subprocess.CompletedProcess[str] | None = None
-            ahead_now: subprocess.CompletedProcess[str] | None = None
-            try:
-                tip_now = _git(["rev-parse", "HEAD"], tree)
-                ahead_now = _git(["log", "--oneline", f"origin/{base}..HEAD"], tree)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            tip_sha = ""
-            if tip_now is not None and tip_now.returncode == 0:
-                parts = tip_now.stdout.strip().splitlines()
-                tip_sha = parts[0] if parts else ""
-            ahead_n = (
-                len([ln for ln in ahead_now.stdout.splitlines() if ln.strip()])
-                if ahead_now is not None and ahead_now.returncode == 0
-                else 0
-            )
-            if tip_sha:
-                ctx.set_meta(branch_tip=tip_sha, branch_ahead=ahead_n)
-            # A steer asking for the session skips the land route: the
-            # lander's failure brief, the tick's pre-land review
-            # hand-back, or the tick's mechanical-red brief that follows
-            # the lander's — the rejected branch wants its rebuild, not a
-            # defer back into the same open review (gr674785 review,
-            # td675373) or another land of the head that just failed
-            # (gr705291). ``_wants_session`` names those three.
+        tree = opened.tree
+        # A stored push judged the earlier session's folder (an outage
+        # relaunch settled it just now): it must never read as the new
+        # session's, nor be inherited by the clone cut after it (gr741695).
+        ctx.set_meta(push=None)
+        for line in notes:
+            ctx.append_chunk("job_event", f"run_slice: td{todo_id} {line}")
+        if opened.start is not None:
+            brief_kwargs["start"] = _start_meta(opened.start)
+        if not repo_review:
+            # gr674785 (td665126 spent its whole ladder on a fix a sibling
+            # had landed): judge the pushed work this attempt would
+            # continue BEFORE a session spends a rung. A steer asking for
+            # the session skips the land route: the lander's failure
+            # brief, the tick's pre-land review hand-back, or the tick's
+            # mechanical-red brief that follows the lander's — the
+            # rejected branch wants its rebuild, not a defer back into the
+            # same open review (gr674785 review, td675373) or another land
+            # of the head that just failed (gr705291). ``_wants_session``
+            # names those three. A ``wip:`` snapshot is unfinished work: it
+            # never routes to a land.
             resume = (latest or "").lstrip()
             if (
-                ahead_n
+                opened.start is not None
+                and not opened.start.wip
+                and conflict is None
                 and not is_generator
                 and _no_commit_kind(store, todo_id) is None
                 and (profile is not None or not _fix_node(store, todo_id))
-                and _route_ahead_branch(
+                and _route_started_work(
                     ctx,
                     todo_id,
                     tree,
                     f"origin/{base}",
                     lane.name,
+                    opened.start,
                     other_repo=profile is not None,
                     rebuild=_wants_session(resume),
                 )
             ):
+                _drop_unlaunched(tree)
                 return None
         governed: tuple[str, ...] | None = ()
         if profile is None:
@@ -5916,6 +7329,16 @@ def submit(ctx: Any, spec: Any) -> Any:
             )
         deny = _slice_deny(store, repo, lane) + governed
         brief_kwargs["deny_paths"] = deny
+        if not repo_review:
+            # A held slice's attempt ref is fetched into this clone before
+            # the brief names the head to judge (gr741695).
+            brief_kwargs["target"] = _review_target(
+                store,
+                todo.meta,
+                tree=tree,
+                root=root,
+                resolution=params.get("resolution"),
+            )
         brief = render_brief(**brief_kwargs, read_mcp=read_scope)
         if not repo_review:
             _install_acceptance_tests(tree, artifacts, deny)
@@ -5928,14 +7351,10 @@ def submit(ctx: Any, spec: Any) -> Any:
         ops = run_dir(todo_id)
         log_path = ops / "run_slice.log"
         exit_path = ops / "run_slice.exit"
-        attempt_dir = _submit_attempt_dir(ctx, todo_id)
-        if attempt_dir is not None:
-            attempt_dir.mkdir()
-            exit_path = attempt_dir / "exit"
-        else:
-            exit_path.unlink(missing_ok=True)
+        attempt_dir = _launch_attempt_dir(ctx, todo_id)
+        exit_path = attempt_dir / "exit"
         log_path = _attempt_log(attempt_dir, log_path)
-        pid_path = attempt_dir / "pid" if attempt_dir is not None else None
+        pid_path = attempt_dir / "pid"
         if use_mcp:
             assert model is not None
             grant = _mint_slice_token(ctx, todo_id, model=model, brief=brief)
@@ -5989,7 +7408,9 @@ def submit(ctx: Any, spec: Any) -> Any:
             max_turns=_max_turns(),
             models=lane.models,
             writable_roots=(
-                _codex_writable_roots(tree) if adapter.name == "codex_exec" else ()
+                _codex_writable_roots(gate_slot_root(repo_root or slice_root()))
+                if adapter.name == "codex_exec"
+                else ()
             ),
             read_mcp_url=read_url if grant else None,
             export_path=atif_path,
@@ -6000,6 +7421,9 @@ def submit(ctx: Any, spec: Any) -> Any:
             effort,
             mcp_token=grant["token"] if grant else None,
             mcp=adapter.mcp,
+            job_id=getattr(ctx, "ref_id", None),
+            gate_slot_root=gate_slot_root(repo_root or slice_root()),
+            worktrees_root=worktrees_dir(repo_root or slice_root()),
         )
         if profile is not None:
             if not use_mcp:
@@ -6069,8 +7493,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         # refusal stamps the lane's backoff on this job (gr571395):
         # lane_backoffs skips the lane until then, and plan_dispatch never
         # counts the job as an attempt.
-        if review_tree is not None:
-            _drop_review_tree({"repo": repo, "worktree": str(review_tree)})
+        _drop_unlaunched(tree)
         _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         unclaim_todo(ctx.store, todo_id, lane.name)
@@ -6087,44 +7510,37 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     except _ReviewRefusal as exc:
         # A reviewer has no work to burn an attempt on: the repo, the
-        # target or the tree is not ready. Same give-back as the lock wait;
-        # a sustained identical run is plan_dispatch's ask.
+        # target or the tree is not ready. Same give-back as the host
+        # refusal; a sustained identical run is plan_dispatch's ask.
+        _drop_unlaunched(tree)
         _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         unclaim_todo(ctx.store, todo_id, lane.name)
         ctx.set_meta(**{ATTEMPT_FREE_KEY: REVIEW_WAIT_KEY})
         ctx.record_failure(f"run_slice: td{todo_id} review not launched: {exc}")
         return None
-    except _IndexLockWait as exc:
-        # gr650484: a live git's index.lock in the reused tree is a wait,
-        # not the build's failure — the lease goes back unburned and
-        # plan_dispatch re-queues the node without spending a rung.
+    except _slice_ws.WorkspaceError as exc:
+        # gr741695: the hub could not be read, a recorded attempt ref moved,
+        # the clone could not be cut. Never a fall back to the base — the
+        # task's pushed work is intact and a later launch continues from it.
+        # An infra wait, not the build's failure: the lease goes back
+        # unburned and plan_dispatch re-queues the node without spending a
+        # rung.
+        _drop_unlaunched(tree)
+        for line in notes:
+            ctx.append_chunk("job_event", f"run_slice: td{todo_id} {line}")
         _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
-        wait_meta: dict[str, Any] = {ATTEMPT_FREE_KEY: exc.attempt_free}
-        if exc.meta:
-            wait_meta["index_lock"] = exc.meta
-        # This wait becomes the newest job. Carry the worker's salvage
-        # authorization forward before giving the lease back, even if
-        # the lock blocked reuse before salvage could run.
-        fallback = _skipped_commit_stamp(
-            store, todo_id, job_id=getattr(ctx, "ref_id", None)
-        )
-        if fallback is not None:
-            wait_meta["commit_skipped"] = "index-lock"
-            if fallback:
-                wait_meta["commit_skipped_msg"] = fallback
-        ctx.set_meta(**wait_meta)
         unclaim_todo(ctx.store, todo_id, lane.name)
-        ctx.record_failure(f"run_slice: {exc}")
+        ctx.set_meta(**{ATTEMPT_FREE_KEY: WORKSPACE_KEY})
+        ctx.record_failure(f"run_slice: td{todo_id} workspace not ready: {exc}")
         return None
     except admission.Refused as exc:
         # The host is full, not the build broken: the same give-back as
-        # the lock wait — attempt-free, so plan_dispatch re-queues the
+        # the host refusal — attempt-free, so plan_dispatch re-queues the
         # node when capacity returns instead of spending a rung on the
         # host's moment (review td702053).
-        if review_tree is not None:
-            _drop_review_tree({"repo": repo, "worktree": str(review_tree)})
+        _drop_unlaunched(tree)
         _drop_submit_key(ctx)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         unclaim_todo(ctx.store, todo_id, lane.name)
@@ -6150,50 +7566,70 @@ def submit(ctx: Any, spec: Any) -> Any:
                 os.killpg(pid, signal.SIGKILL)
             except OSError:
                 pass
-        if review_tree is not None:
-            _drop_review_tree({"repo": repo, "worktree": str(review_tree)})
+        else:
+            _drop_unlaunched(tree)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         _fail_submit(ctx, todo_id, lane.name, f"launch failed: {exc}")
         return None
 
-    token_note = (
-        f"slice {grant['name']}"
-        if grant
-        else f"none ({mint_error})"
-        if mint_error
-        else "shared"
-        if use_mcp
-        else "none"
-    )
-    ctx.append_chunk(
-        "job_event",
-        f"run_slice: launched td{todo_id} on lane {lane.name} (model {model}, "
-        f"effort {effort}) pid {pid} in {tree} "
-        f"(mcp token: {token_note})",
-    )
-    # A launch on a lane that once refused is the probe that clears both
-    # the backoff (this job is newer than the marked one) and the alert.
-    _resolve_lane_refusal(ctx.store, lane.name)
-    # gr595544: one features row per launch, beside the job ref the
-    # attempts ledger already keeps — cheap text/graph features plus
-    # this pick's lane context, the substrate a learned router is fit
-    # on. An outage relaunch re-enters submit on the same job ref, so
-    # rows key (job, launch) not (job, attempt). Best-effort: a miss
-    # never blocks the launch.
-    _run_features.record(
-        store,
-        job_ref_id=getattr(ctx, "ref_id", None),
-        todo_id=todo_id,
-        todo=todo,
-        task_text="\n\n".join(
-            part for part in (str(todo.title or ""), body, latest or "") if part
-        ),
-        brief=brief,
-        lane=lane,
-        model=model,
-        effort=effort,
-        task_class=task_class,
-    )
+    # The session runs: from here on nothing may lose its handle. The event,
+    # the refusal's clearing and the features row are bookkeeping; a failure of
+    # any is logged (and said on the job when that still works), never
+    # raised — a raise would leave a live session with no handle.
+    try:
+        token_note = (
+            f"slice {grant['name']}"
+            if grant
+            else f"none ({mint_error})"
+            if mint_error
+            else "shared"
+            if use_mcp
+            else "none"
+        )
+        ctx.append_chunk(
+            "job_event",
+            f"run_slice: launched td{todo_id} on lane {lane.name} (model {model}, "
+            f"effort {effort}) pid {pid} in {tree} "
+            f"(mcp token: {token_note})",
+        )
+    except Exception:
+        log.warning("run_slice: launch event for td%d failed", todo_id, exc_info=True)
+    try:
+        # A launch on a lane that once refused is the probe that clears both
+        # the backoff (this job is newer than the marked one) and the alert.
+        _resolve_lane_refusal(ctx.store, lane.name)
+        # gr595544: one features row per launch, beside the job ref the
+        # attempts ledger already keeps — cheap text/graph features plus
+        # this pick's lane context, the substrate a learned router is fit
+        # on. An outage relaunch re-enters submit on the same job ref, so
+        # rows key (job, launch) not (job, attempt). Best-effort: a miss
+        # never blocks the launch.
+        _run_features.record(
+            store,
+            job_ref_id=getattr(ctx, "ref_id", None),
+            todo_id=todo_id,
+            todo=todo,
+            task_text="\n\n".join(
+                part for part in (str(todo.title or ""), body, latest or "") if part
+            ),
+            brief=brief,
+            lane=lane,
+            model=model,
+            effort=effort,
+            task_class=task_class,
+        )
+    except Exception:
+        log.warning(
+            "run_slice: launch bookkeeping for td%d failed", todo_id, exc_info=True
+        )
+        try:
+            ctx.append_chunk(
+                "job_event",
+                f"run_slice: td{todo_id} launch bookkeeping failed; the session "
+                f"(pid {pid}) runs and the job goes on",
+            )
+        except Exception:
+            pass
     return handle
 
 
@@ -6231,13 +7667,16 @@ def _record_launched_process(
     handle: dict[str, Any], pid: int, attempt_dir: Path | None
 ) -> None:
     handle.update(pid=pid, pgid=pid)
-    identity = _process_identity(pid)
-    if identity is not None:
-        handle["boot_id"], handle["start_time"] = identity
-    if sys.platform == "darwin":
-        ps_identity = _darwin_process_identity(pid)
-        if ps_identity is not None:
-            handle["ps_identity"] = ps_identity
+    try:
+        identity = _process_identity(pid)
+        if identity is not None:
+            handle["boot_id"], handle["start_time"] = identity
+        if sys.platform == "darwin":
+            ps_identity = _darwin_process_identity(pid)
+            if ps_identity is not None:
+                handle["ps_identity"] = ps_identity
+    except Exception:  # the pid is in the handle; an identity is a bonus
+        log.warning("run_slice: reading the identity of pid %s failed", pid)
     if attempt_dir is not None:
         try:
             _write_launch_record(attempt_dir / "handle", handle)
@@ -6327,6 +7766,14 @@ def _recover_launch(ctx: Any) -> Reconcile | None:
     attempt_dir = _submit_attempt_dir(ctx, todo_id)
     if attempt_dir is None:
         return None
+    handle = _recover_attempt(attempt_dir)
+    return Reconcile(handle=handle) if handle is not None else None
+
+
+def _recover_attempt(attempt_dir: Path) -> dict[str, Any] | None:
+    """The handle of the session one run dir (``<ops>/td<todo>/<attempt>``)
+    launched, proven by its pid and the identity the launch recorded (or its
+    exit); ``None`` when nothing proves it."""
     pid = _launch_pid(attempt_dir / "pid")
     handle = _read_launch_record(attempt_dir / "handle")
     if handle is not None:
@@ -6335,23 +7782,57 @@ def _recover_launch(ctx: Any) -> Reconcile | None:
             return None
         if pid is not None and pid != recorded_pid:
             return None
-        if sys.platform == "darwin":
-            identity = handle.get("ps_identity")
-            live = bool(identity and _darwin_process_identity(recorded_pid) == identity)
-        else:
-            identity = _process_identity(recorded_pid)
-            live = identity is not None and identity == (
-                handle.get("boot_id"),
-                handle.get("start_time"),
-            )
-        if live:
-            return Reconcile(handle=handle)
-        if _read_exit(handle) is not None:
-            return Reconcile(handle={**handle, "recovered_exit": True})
+        # One identity read: a match, or an identity that cannot be read now
+        # with the pid answering (``ps`` timed out), is the session — not
+        # "no session", which would let a relaunch or the sweep delete the
+        # folder of a running one. Only a mismatch or a gone pid is not.
+        state = _leader_state(handle)
+        if state == "match":
+            return handle
+        if _read_exit(handle) is not None:  # the leader finished: the exit proves it
+            return {**handle, "recovered_exit": True}
+        if state == "unreadable":
+            return handle
     if pid is not None:
-        handle = _rebuild_handle_from_pid(attempt_dir, pid)
-        if handle is not None:
-            return Reconcile(handle=handle)
+        return _rebuild_handle_from_pid(attempt_dir, pid)
+    return None
+
+
+def _same_path(recorded: str, tree: Path) -> bool:
+    """The launch record names the folder by the spelling the launch had; the
+    caller may have another (a symlinked checkout path): compare resolved."""
+    if not recorded:
+        return False
+    try:
+        return Path(recorded).resolve() == tree.resolve()
+    except OSError:
+        return Path(recorded) == tree
+
+
+def _live_session_for(todo_id: int, tree: Path) -> dict[str, Any] | None:
+    """The handle of a session of the job that owns the folder ``tree`` that
+    is still running (or whose process group still answers), found the way
+    :func:`_recover_launch` finds one: the newest run dir of the task whose
+    launch record names this folder, its pid and its identity check. Used
+    where a handle with no pid (an outage park, a launch whose handle was
+    never saved) would otherwise read as "no session": nothing finalizes or
+    drops a folder under a live session."""
+    try:
+        task_dir = ops_root() / f"td{todo_id}"
+        attempts = sorted(
+            (d for d in task_dir.iterdir() if d.is_dir()),
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
+    for attempt_dir in attempts:
+        record = _read_launch_record(attempt_dir / "baseline")
+        if record is None or not _same_path(str(record.get("worktree") or ""), tree):
+            continue
+        handle = _recover_attempt(attempt_dir)
+        # the newest run dir that names this folder is the one that counts
+        return handle if handle is not None and _session_alive(handle) else None
     return None
 
 
@@ -6471,115 +7952,6 @@ def _commit_message(tree: Path, todo_id: int) -> str | None:
     return "\n".join([subject, *body]).strip() + "\n"
 
 
-class _NullCtx:
-    """A job sink for reaps that run outside a job context."""
-
-    meta: dict[str, Any] = {}
-    store: Any = None
-
-    def append_chunk(self, kind: str, text: str) -> None:
-        log.info("run_slice: %s: %s", kind, text)
-
-    def set_meta(self, **meta: Any) -> None:
-        log.info("run_slice: meta %s", meta)
-
-
-def _reap_lock_for_commit(tree: Path, ctx: Any, todo_id: int) -> bool:
-    """Reap the slice tree's ``index.lock`` at commit time when the
-    keep-on-doubt judge calls it stale; ``True`` when it is gone. Never
-    signals a process: forcing a held lock belongs to the next submit's
-    reuse (:func:`_clear_slice_index_lock`, D2) — a still-held lock here
-    leaves the edits in the tree for :func:`_salvage_skipped_commit`
-    instead."""
-    from precis.workers.job_types import land_slice as _ls
-
-    gitdir = _ls._worktree_gitdir(tree)
-    if gitdir is None:
-        return False
-    lock = gitdir / "index.lock"
-    state, judged = _ls._index_lock_state(lock, tree)
-    ignored = _ls._index_lock_judge(lock, tree)[3]
-    if state == "absent":
-        return True
-    if state != "stale" or judged is None:
-        return False
-    if not _ls._reap_index_lock(ctx, lock, judged, who=NAME):
-        return False
-    _record_reap(
-        ctx,
-        lock,
-        judged,
-        why="stale",
-        forced=False,
-        holders=[f"{pid} {cmd}" for pid, cmd in ignored],
-        todo_id=todo_id,
-    )
-    return True
-
-
-def _skipped_commit_stamp(
-    store: Any, todo_id: int, *, job_id: int | None = None
-) -> str | None:
-    """The previous job's ``commit_skipped`` stamp for this todo: the
-    fallback message the poll recorded when the worker's commit met a
-    held ``index.lock`` (gr684320), or ``None`` when that job was not
-    lock-blocked. ``job_id`` is the running submit's own job — at reuse
-    time it IS the newest job row, so reading it finds no stamp and the
-    salvage never fires (review td700716). Job meta is worker-owned — a
-    session cannot write it — so this stamp, not anything in the tree,
-    is the proof that the edits it salvages were left by a session the
-    poll saw finish."""
-    try:
-        with store.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT meta FROM refs WHERE kind = 'job' AND parent_id = %s"
-                + (" AND ref_id != %s" if job_id is not None else "")
-                + " ORDER BY ref_id DESC LIMIT 1",
-                (todo_id, job_id) if job_id is not None else (todo_id,),
-            ).fetchone()
-    except Exception:  # pragma: no cover — a store fault strands nothing
-        log.warning("run_slice: skipped-commit stamp read for td%d failed", todo_id)
-        return None
-    meta = row[0] if row else None
-    if not isinstance(meta, dict) or meta.get("commit_skipped") != "index-lock":
-        return None
-    return str(meta.get("commit_skipped_msg") or "")
-
-
-def _salvage_skipped_commit(
-    tree: Path,
-    todo_id: int,
-    *,
-    store: Any = None,
-    base: str = "origin/main",
-    job_id: int | None = None,
-) -> str | None:
-    """gr684320: the previous session finished but its commit met a held
-    ``index.lock`` — the poll stamped ``commit_skipped`` on its job and
-    the edits are still in the tree; commit them before
-    :func:`_reset_reused_worktree` would drop them. The message is the
-    session's ``scratch/commit-msg.txt``, else the poll-recorded
-    fallback. The stamp is revalidated before anything is committed:
-    the deny-path check reruns on this tree (reuse stages it before the
-    poll's checks repeat) against ``base`` — the land target ref,
-    ``origin/main`` or a release fix's ``origin/release/r<N>``; an
-    unprefixed branch name diffs a stale or absent local ref instead
-    (review td700716) — and a refusal is returned as a ``"salvage
-    refused"`` note — never committed, never an infra wait. ``job_id``
-    is the running submit's own job, skipped on the stamp read.
-    ``None`` when there was no stamp or nothing to commit."""
-    if store is None:
-        return None
-    fallback = _skipped_commit_stamp(store, todo_id, job_id=job_id)
-    if fallback is None:
-        return None
-    denied, _human = _deny_reason(tree, _lanes.deny_paths_for(store), base)
-    if denied:
-        return f"salvage refused: {denied}"
-    note = _commit_for_session(tree, todo_id, fallback_message=fallback or None)
-    return note
-
-
 def _session_commit_fallback(store: Any, todo_id: int) -> str:
     """The worker-generated conventional subject
     :func:`_commit_for_session` uses when the session left no
@@ -6631,14 +8003,12 @@ def _commit_for_session(
     todo_id: int,
     *,
     fallback_message: str | None = None,
-    ctx: Any = None,
 ) -> str | None:
     """Commit the working tree a clean session left uncommitted, with its
     ``scratch/commit-msg.txt``. Returns a note for the summary, or ``None``
     when there was nothing to do (no message or fallback, nothing staged).
-    Devin supplies a fallback so a missing message cannot strand its edits;
-    so does any adapter whose session reported its commit blocked
-    (:func:`_commit_blocked`, gr702644).
+    A session that reported its commit blocked gets a worker-generated
+    fallback subject (:func:`_commit_blocked`, gr702644).
 
     gr564261's first codex-direct run (jo565335): ``codex exec`` under
     ``--sandbox workspace-write`` keeps ``.git`` read-only, so the session
@@ -6646,24 +8016,19 @@ def _commit_for_session(
     create ``index.lock``; the poll then read 0 commits ahead as "nothing to
     land" and burned an attempt. The worker runs outside that sandbox, so
     it commits in the session's stead. The deny check ran on the working
-    tree before this, so a denied path never reaches the commit."""
+    tree before this, so a denied path never reaches the commit.
+
+    gr741695: the session is dead and the folder is this job's own, so a
+    stale ``index.lock`` in it is simply removed — nothing judges, reaps or
+    skips it any more."""
     message = _commit_message(tree, todo_id)
     source = COMMIT_MSG_REL.as_posix() if message else "a worker-generated subject"
     message = message or fallback_message
     if message is None:
         return None
+    (tree / ".git" / "index.lock").unlink(missing_ok=True)
     # scratch/ is gitignored on main, so the message file never rides along.
     add = _git(["add", "-A"], tree)
-    if add.returncode != 0 and "index.lock" in add.stderr:
-        # gr684320: the lock is the tree's, not the session's failure —
-        # judge it, reap a stale one and add again. A lock still held
-        # leaves the edits in the tree: the poll stamps commit_skipped
-        # on the job and the next submit salvages them
-        # (:func:`_salvage_skipped_commit`).
-        if _reap_lock_for_commit(tree, ctx if ctx is not None else _NullCtx(), todo_id):
-            add = _git(["add", "-A"], tree)
-        if add.returncode != 0 and "index.lock" in add.stderr:
-            return f"{COMMIT_SKIPPED_LOCK} ({add.stderr.strip()[:200]})"
     if add.returncode != 0:
         return f"worker commit skipped: git add failed ({add.stderr.strip()[:200]})"
     staged = _git(["diff", "--cached", "--quiet"], tree)
@@ -6753,6 +8118,22 @@ def _slice_test_exists(tree: Path, path: str) -> bool:
     )
 
 
+def _acceptance_env(handle: dict[str, Any]) -> dict[str, str]:
+    """The env of the worker-run supplied tests: the worker's own, plus
+    ``PRECIS_GATE_SLOT_ROOT`` so ``scripts/test`` in the job's clone queues
+    on the host checkout's gate, not on a queue of the clone's own
+    (gr741695)."""
+    env = dict(os.environ)
+    try:
+        repo = str(handle.get("repo") or _lanes.DEFAULT_REPO)
+        gate = gate_slot_root(slice_root_for(repo))
+    except RuntimeError:
+        gate = None
+    if gate is not None:
+        env["PRECIS_GATE_SLOT_ROOT"] = str(gate)
+    return env
+
+
 def _devin_acceptance_tests(
     tree: Path, handle: dict[str, Any], ctx: Any
 ) -> tuple[bool, str | None] | None:
@@ -6794,7 +8175,7 @@ def _devin_acceptance_tests(
                 stdin=None,
                 log=Path(test_handle["log"]),
                 exit_file=Path(test_handle["exit_file"]),
-                env=dict(os.environ),
+                env=_acceptance_env(handle),
                 store=ctx.store,
                 work_class="acceptance",
             )
@@ -6804,14 +8185,29 @@ def _devin_acceptance_tests(
             return None
         except OSError as exc:
             return True, f"Devin acceptance tests could not run: {exc}"
+        # the identity every signal to this group is gated on (a bare pid
+        # may be another process's by the time anything signals it)
+        identity = _process_identity(test_handle["pid"])
+        if identity is not None:
+            test_handle["boot_id"], test_handle["start_time"] = identity
         if sys.platform == "darwin":
-            test_handle["ps_identity"] = _darwin_process_identity(test_handle["pid"])
+            # only a read that returned something: a ``None`` key would send
+            # ``_session_alive`` to the group check, false for a live leader
+            ps_identity = _darwin_process_identity(test_handle["pid"])
+            if ps_identity is not None:
+                test_handle["ps_identity"] = ps_identity
         handle["acceptance_handle"] = test_handle
         ctx.set_meta(compute_handle=handle)
     code = _read_exit(test_handle)
     if code is None:
         if time.time() - test_handle["started"] >= _ACCEPTANCE_TEST_TIMEOUT_S:
             _kill_acceptance(handle)
+            if _session_alive(test_handle):
+                # Still answering (an identity that cannot be read this pass,
+                # or none recorded: nothing is signalled then). The poll holds
+                # the folder, bounded by the job's deadline; a group that was
+                # never signalled ends on its own.
+                return None
             return True, "Devin acceptance tests timed out"
         if _session_alive(test_handle):
             return None
@@ -6829,13 +8225,15 @@ def _devin_acceptance_tests(
 def _kill_acceptance(handle: dict[str, Any]) -> None:
     """Stop only the detached acceptance group; never wait in a worker pass."""
     test_handle = handle.get("acceptance_handle")
-    if isinstance(test_handle, dict) and _session_alive(test_handle):
+    if not isinstance(test_handle, dict) or not _has_identity(test_handle):
+        return  # a bare pid may be another process's: nothing is signalled
+    if _session_alive(test_handle) and _signal_target_ok(test_handle):
         try:
             pgid = _handle_pgid(test_handle)
             if pgid:
                 _signal_group(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except OSError:
+            pass  # gone, or not ours to signal: never escapes
 
 
 def skills_named(text: str | None) -> tuple[str, ...] | None:
@@ -7588,36 +8986,42 @@ def _carried_on_base(
     return {"how": "cherry", "sha": sha}
 
 
-def _route_ahead_branch(
+def _route_started_work(
     ctx: Any,
     todo_id: int,
     tree: Path,
     base: str,
     lane: str | None,
+    start: _slice_ws.Start,
     *,
     other_repo: bool = False,
     rebuild: bool = False,
 ) -> bool:
-    """Judge the branch a retry reuses BEFORE a session spends a rung
-    re-discovering its state (gr674785 — td665126 burned all five rungs
-    handing off "nothing left" on a fix a sibling had landed).
-    ``base`` is the ``origin/<target>`` ref the land measures against.
+    """Judge the pushed work an attempt would continue BEFORE a session
+    spends a rung re-discovering its state (gr674785 — td665126 handing
+    off "nothing left" on a fix a sibling had landed). gr741695: decided
+    from the start point (``start`` — the task's newest pushed attempt, a
+    complete one, never a ``wip:`` snapshot), no longer from a reused
+    folder; ``tree`` is the fresh clone cut at it. ``base`` is the
+    ``origin/<target>`` ref the land measures against.
 
     ``True`` when the node was disposed of without a launch: a change
     already on ``base`` (:func:`_carried_on_base`) closes the node done
     tagged ``verdict:moot`` with the landing sha on the job — the same
-    close ``poll``'s verified-moot arm lands — and commits ahead with
-    novel work go to their land (the pre-land reviewer when one gates
-    it, gr570506; else a ``land_slice`` mint) — either way the job ends
+    close ``poll``'s verified-moot arm lands — and pushed work with novel
+    changes goes to its land (the pre-land reviewer when one gates it,
+    gr570506; else a ``land_slice`` mint) — either way the job ends
     ``attempt_free``, no attempt burned, no ladder rung spent. ``False``
-    when the branch is empty, git cannot judge, the route could not be
-    taken (the session's own poll then mints the land as before), or a
-    steer asking for the session stands (``rebuild``) — the lander's
-    failure brief, the pre-land reviewer's FIX/REVERT back-to-builder
-    (gr674785 review, td675373), or the tick's mechanical-red ``brief:``
-    posted after the lander's handoff (gr705291): the branch is mid-fix
-    by design and wants the rebuild that steer asked for, not a route
-    back into the same review or land."""
+    when the clone holds nothing ahead of the base, git cannot judge, the
+    route could not be taken (the session's own poll then mints the land as
+    before), or a steer asking for the session stands (``rebuild``) — the
+    lander's failure brief, the pre-land reviewer's FIX/REVERT
+    back-to-builder (gr674785 review, td675373), or the tick's
+    mechanical-red ``brief:`` posted after the lander's handoff
+    (gr705291): the work is mid-fix by design and wants the rebuild that
+    steer asked for, not a route back into the same review or land. The
+    land is minted for ``start.ref`` at ``start.sha`` — the commit the
+    hub already holds."""
     try:
         _fetch_main(tree, base)
         cherry = _git(["cherry", base, "HEAD"], tree)
@@ -7645,6 +9049,10 @@ def _route_ahead_branch(
                 ATTEMPT_FREE_KEY: "already-on-main",
             }
         )
+        # The clone goes BEFORE the job ends: a terminal job whose folder has
+        # no push record is what the host sweep judges, and it must not meet
+        # a folder that is being deleted.
+        _drop_unlaunched(tree)
         ctx.record_failure(
             f"run_slice: {line}; td{todo_id} closed done — "
             "no build attempt burned (gr674785)"
@@ -7658,7 +9066,9 @@ def _route_ahead_branch(
 
             refused = _ls.validate_submit(
                 ctx.store,
-                params=_land_params(ctx, todo_id, tree, lane, True),
+                params=_land_params(
+                    ctx, todo_id, lane, True, ref=start.ref, head=start.sha
+                ),
             )
             if refused:
                 _append_comment(
@@ -7669,11 +9079,22 @@ def _route_ahead_branch(
                 raise RuntimeError(refused)
         preland = None if other_repo else _preland_reviewer(ctx.store, todo_id)
         if preland is not None:
-            note = _defer_land_for_review(ctx, todo_id, tree, lane, True, preland)
+            note = _defer_land_for_review(
+                ctx,
+                todo_id,
+                tree,
+                lane,
+                True,
+                preland,
+                ref=start.ref,
+                head=start.sha,
+            )
             ctx.set_meta(preland_review=preland)
             what = f"held for the pre-land review td{preland} ({note})"
         else:
-            land_job = _mint_land(ctx, todo_id, tree, lane, checked=True)
+            land_job = _mint_land(
+                ctx, todo_id, tree, lane, checked=True, ref=start.ref, head=start.sha
+            )
             ctx.set_meta(land_job=land_job)
             what = f"land_slice job:{land_job} minted"
     except Exception:
@@ -7682,6 +9103,7 @@ def _route_ahead_branch(
         )
         return False
     ctx.set_meta(**{ATTEMPT_FREE_KEY: "branch-ahead"})
+    _drop_unlaunched(tree)  # before the job ends, see above
     ctx.record_failure(
         f"run_slice: {slice_branch(todo_id)} already holds "
         f"{len(lines)} commit(s) ahead of {base} — {what}; "
@@ -8083,8 +9505,14 @@ def _park_outage(
         )
         where = f"lane {lane} once its window resets"
     parks = int(handle.get("outage_parks") or 0) + 1
+    # ``own_folder``: the session's folder is this job's own, its work was
+    # saved by the poll just before the park, and the relaunch may finalize
+    # and drop it (:class:`Relaunch`).
     handle.update(
-        not_before=due.strftime(_NOT_BEFORE_FMT), outage=cls, outage_parks=parks
+        not_before=due.strftime(_NOT_BEFORE_FMT),
+        outage=cls,
+        outage_parks=parks,
+        own_folder=True,
     )
     what = (
         f"auth failure (auth:{phrase or 'unclassified'}); lane parked"
@@ -8220,6 +9648,42 @@ def _budget_bound(ctx: Any) -> float:
     return budget if math.isfinite(budget) and budget > 0 else 0.0
 
 
+def _budget_unsignalled(
+    ctx: Any,
+    handle: dict[str, Any],
+    *,
+    usd: float | None,
+    budget: float,
+    blind: bool = False,
+) -> None:
+    """The budget is over but :func:`_may_signal` is closed: nothing is
+    sent. One job_event per handle (the ``budget_unsignalled`` marker lives
+    in the handle, so a later pass or a restarted worker stays quiet); the
+    job's deadline stops the session."""
+    if handle.get("budget_unsignalled"):
+        return
+    handle["budget_unsignalled"] = True
+    ctx.set_meta(compute_handle=handle)
+    why = (
+        "the launch recorded no process group"
+        if not _handle_pgid(handle)
+        else "the launch recorded no identity"
+    )
+    spent = (
+        "its spend is unobservable"
+        if blind
+        else f"${usd:.2f} >= ${budget:.2f}"
+        if usd is not None
+        else f"bound ${budget:.2f}"
+    )
+    ctx.append_chunk(
+        "job_event",
+        f"run_slice: the session's budget is exceeded ({spent}), but it "
+        f"cannot be signalled because {why}; the job's deadline will "
+        "stop it",
+    )
+
+
 def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
     """The remaining-allowance bound (td601015): ``params.budget_usd``
     is the node's allowance ``plan_dispatch._escalate`` left after
@@ -8261,7 +9725,10 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
             return
         # The grace expired (or the TERM never landed): SIGKILL —
         # retried every live pass while the group keeps answering.
-        if pgid:
+        if not _may_signal(handle):
+            _budget_unsignalled(ctx, handle, usd=None, budget=budget)
+            return
+        if pgid and _signal_target_ok(handle):
             try:
                 _signal_group(pgid, signal.SIGKILL)
             except (ProcessLookupError, OSError):
@@ -8298,6 +9765,11 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
         if not (watched and usd <= 0 and _devin_price_table() is None):
             return
         blind = True
+    if not _may_signal(handle):
+        _budget_unsignalled(ctx, handle, usd=usd, budget=budget, blind=blind)
+        return
+    if not _signal_target_ok(handle):
+        return  # nothing is recorded: the next pass decides again
     kill = {
         "budget_usd": budget,
         "usd": round(usd, 4),
@@ -8330,6 +9802,21 @@ def _watch_budget(ctx: Any, handle: dict[str, Any]) -> None:
     )
 
 
+def _live_session_of_job(ctx: Any, handle: dict[str, Any]) -> dict[str, Any] | None:
+    """A running session of this job in its own folder, found by the task and
+    job ids (the checkout of the handle's repo, else the job's), or ``None``."""
+    params = (ctx.meta or {}).get("params") or {}
+    todo_id = int(params.get("todo_id") or 0)
+    if not todo_id:
+        return None
+    try:
+        repo = str(handle.get("repo") or job_repo(ctx.meta or {}))
+        tree = _slice_ws.attempt_dir(slice_root_for(repo), todo_id, int(ctx.ref_id))
+    except RuntimeError:
+        return None
+    return _live_session_for(todo_id, tree)
+
+
 def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
     """Poll half of a parked outage: ``False`` before ``not_before``; at or
     after it, run :func:`submit` again (a fresh lane pick, the excluded
@@ -8343,14 +9830,58 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
         due = datetime.now(UTC)  # unreadable marker: do not park forever
     if datetime.now(UTC) < due:
         return False
-    fresh = submit(ctx, None)
+    parks = handle.get("outage_parks")
+    # A launch that started a session and died before it saved the handle
+    # leaves the stored one parked while the session runs in the job's own
+    # folder (``slice-td<T>-j<J>``: a live session there can only be this
+    # job's). The folder is named by the ids, never by the handle (a wait for
+    # an earlier folder has no ``worktree`` in it), and the session is found
+    # the way a restart does. Adopt it instead of launching a second one.
+    # ``own_folder`` governs only whether a relaunch may finalize and drop that
+    # folder (:class:`Relaunch`), not this.
+    live = _live_session_of_job(ctx, handle)
+    if live is not None:
+        handle.clear()
+        handle.update(live)
+        if parks:
+            handle["outage_parks"] = parks
+        params = (ctx.meta or {}).get("params") or {}
+        todo_id = int(params.get("todo_id") or 0)
+        lane = (ctx.meta or {}).get("lane")
+        ctx.append_chunk(
+            "job_event",
+            f"run_slice: adopted the live session (pid {live.get('pid')}) of "
+            "a launch whose handle was never saved",
+        )
+        # The record of an earlier session's save (an outage park's) is not
+        # this session's; and the park gave the lease back — take it again
+        # (idempotent for this job) while the todo still sits open. The
+        # session's own MCP grant, if the park revoked it, cannot be handed
+        # to a running process: its MCP calls fail until it ends.
+        ctx.set_meta(push=None)
+        if lane and todo_id and _todo_status(ctx.store, todo_id) == "open":
+            if _terminal_ruling(ctx.store, todo_id) is None:
+                _claim_todo(ctx.store, todo_id, str(lane))
+        ctx.set_meta(
+            compute_handle=handle,
+            compute_handle_released=False,
+            deadline=datetime.now(UTC).timestamp() + wall_seconds(),
+            exclude_vendor=None,
+            attempt_free=None,
+        )
+        return False
+    fresh = submit(ctx, Relaunch(dict(handle)))
     if fresh is None:
         return True
-    parks = handle.get("outage_parks")
     handle.clear()
     handle.update(fresh)
     if parks:
         handle["outage_parks"] = parks  # the cap counts across relaunches
+    if fresh.get("not_before"):
+        # Parked again (the task's earlier folder is not settled yet): the
+        # deadline and the lease keep running as they were.
+        ctx.set_meta(compute_handle=handle)
+        return False
     ctx.set_meta(
         compute_handle=handle,
         compute_handle_released=False,
@@ -8407,8 +9938,6 @@ def poll(ctx: Any, handle: Any) -> bool:
             # A deny-path violation or vanished tree can end the job while
             # its detached tests still run. Do not leave that group behind.
             _kill_acceptance(handle)
-    if done and isinstance(handle, dict) and isinstance(handle.get("review"), dict):
-        _drop_review_tree(handle)
     return done
 
 
@@ -8436,10 +9965,301 @@ def _review_violation(
     )
 
 
+def _note_unsignalled_group(ctx: Any, handle: dict[str, Any]) -> None:
+    """The session exited but its process group still answers and
+    :func:`_may_signal` is closed (a recovered exit after a worker restart,
+    or a launch that recorded no identity): the poll holds the folder and
+    sends nothing. One job_event per handle (``group_unsignalled``) says
+    so; the job's deadline stops the group."""
+    if handle.get("group_unsignalled"):
+        return
+    handle["group_unsignalled"] = True
+    ctx.set_meta(compute_handle=handle)
+    ctx.append_chunk(
+        "job_event",
+        f"run_slice: the session exited, its process group "
+        f"{_handle_pgid(handle)} still answers, and the launch has no "
+        "identity to signal it with; waiting for it to end (the job's "
+        "deadline stops it)",
+    )
+
+
+def _stop_session_group(ctx: Any, handle: dict[str, Any]) -> None:
+    """The session wrote its exit file but its process group still answers:
+    SIGTERM the group once (``handle["term_at"]``, persisted with the
+    handle), SIGKILL it on each pass once :data:`SETTLE_KILL_AFTER_S` has
+    passed. The caller returns "not done" until the group is gone."""
+    pgid = _handle_pgid(handle)
+    if not pgid or not _may_signal(handle) or not _signal_target_ok(handle):
+        return
+    now = time.time()
+    termed = handle.get("term_at")
+    sig = (
+        signal.SIGKILL
+        if isinstance(termed, (int, float)) and now - termed >= SETTLE_KILL_AFTER_S
+        else signal.SIGTERM
+    )
+    if isinstance(termed, (int, float)) and sig == signal.SIGTERM:
+        return  # TERM already sent; wait out the grace
+    try:
+        _signal_group(pgid, sig)
+    except OSError:
+        return
+    if termed is None:
+        handle["term_at"] = now
+        ctx.set_meta(compute_handle=handle)
+        ctx.append_chunk(
+            "job_event",
+            f"run_slice: the session exited but its process group {pgid} still "
+            "answers; sent SIGTERM, the folder is finalized once it is gone",
+        )
+
+
+def _poll_look(
+    ctx: Any, handle: dict[str, Any]
+) -> tuple[bool, dict[str, Any] | None, dict[str, Any]]:
+    """What the job row says before the poll writes anything: ``(over,
+    record, meta)``. ``over``: the job is already terminal (a cancel, a
+    deadline sweep), so everything of it is the host sweep's and the poll
+    writes nothing, not even an outage park or a usage stamp. ``record``: the
+    push this launch already stored — the poll's own earlier pass, which died
+    between the record and the land, or between the drop and the end (the
+    sweep only settles terminal jobs, so nobody else writes one while the job
+    runs); it is adopted, nothing is judged or written again. ``meta`` is the
+    row's meta (empty when the row could not be read)."""
+    from precis.workers._mint import JOB_TERMINAL_STATUSES
+
+    got = _job_row(ctx.store, int(ctx.ref_id))
+    if got is None:
+        return False, None, {}
+    status, meta = got
+    if status in JOB_TERMINAL_STATUSES:
+        return True, None, meta
+    stored = meta.get("push")
+    if _push_belongs(stored, handle):
+        assert isinstance(stored, dict)
+        return False, stored, meta
+    return False, None, meta
+
+
+def _save_before_park(
+    ctx: Any, handle: dict[str, Any], todo_id: int, tree: Path
+) -> None:
+    """An outage park leaves the session's work only in its folder until the
+    relaunch, hours later. The session is provably dead here (the poll passed
+    :func:`_session_alive`), so the poll saves it now: finalize and record,
+    before the park. The relaunch's own finalize then finds nothing new, and
+    the record (of this launch; the parked handle has no launch key, so
+    :func:`_stored_push` trusts it) tells the sweep the folder is settled if
+    the job ends while parked. A failure here is logged, the park goes on."""
+    try:
+        repo = str(handle.get("repo") or job_repo(ctx.meta or {}))
+        _finalize_attempt(
+            ctx,
+            todo_id,
+            tree,
+            repo=repo,
+            base=_job_base(ctx.meta, todo_id, ctx.store),
+            start=_start_from_meta(ctx.meta),
+            reason="session stopped",
+            handle=handle,
+        )
+    except Exception:
+        log.warning(
+            "run_slice: saving the folder before the park failed", exc_info=True
+        )
+
+
+def _finish_after_drop(
+    ctx: Any,
+    handle: dict[str, Any],
+    record: dict[str, Any],
+    meta: Mapping[str, Any],
+    todo_id: int,
+    lane: Any,
+) -> bool:
+    """The poll's own earlier pass ran every arm, stamped ``meta.outcome``,
+    dropped the folder and died before it ended the job: the next pass finds
+    no folder. The stored record says the hub holds the work, so the run is
+    not a vanished tree: finish it from what that pass decided
+    (``outcome.outcome == "completed"`` is its success arm) — the grant, the
+    lease and the status, nothing else is written again."""
+    outcome = meta.get("outcome")
+    done = isinstance(outcome, dict) and outcome.get("outcome") == "completed"
+    ctx.append_chunk(
+        "job_summary",
+        f"run_slice td{todo_id} on lane {lane}: finished after a restart — the "
+        f"run's arms and the folder's drop were done (Push: "
+        f"{_push_summary(record)}; outcome "
+        f"{outcome.get('outcome') if isinstance(outcome, dict) else '?'}).",
+    )
+    grant = _handle_grant(handle)
+    if done:
+        _revoke_slice_grant(ctx, todo_id, grant, "ok")
+        ctx.set_status("succeeded")
+        return True
+    _revoke_slice_grant(ctx, todo_id, grant, "failed")
+    attempt = None
+    try:
+        attempt = release_todo(ctx.store, todo_id, str(lane) if lane else None)
+    except Exception:  # pragma: no cover — defensive; the job still fails
+        log.warning("run_slice: lease release on td%d failed", todo_id, exc_info=True)
+    lease_note = (
+        f"todo td{todo_id} back to open, attempt:{attempt}"
+        if attempt is not None
+        else f"todo td{todo_id} lease released (no attempt recorded)"
+    )
+    ctx.record_failure(
+        f"run_slice: session for td{todo_id} ended as "
+        f"{outcome.get('outcome') if isinstance(outcome, dict) else '?'} "
+        f"(finished after a restart); {lease_note}"
+    )
+    return True
+
+
+def _land_state(
+    store: Any, todo_id: int, job_meta: Mapping[str, Any] | None
+) -> str | None:
+    """What the run's arms already did with the land: ``"review"`` (the task
+    carries ``meta.pending_land``: held for the pre-land reviewer, STATUS:done,
+    claim dropped by ``close_todo``), ``"minted"`` (the job carries
+    ``meta.land_job``: the lease stays, STATUS:doing, until the land), else
+    ``None``."""
+    try:
+        todo = store.get_ref(kind="todo", id=todo_id)
+    except Exception:
+        todo = None
+    from precis.plans.templates import PENDING_LAND_KEY
+
+    if ((todo.meta if todo is not None else None) or {}).get(PENDING_LAND_KEY):
+        return "review"
+    return "minted" if (job_meta or {}).get("land_job") else None
+
+
+def _end_after_drop_without_outcome(
+    ctx: Any,
+    handle: dict[str, Any],
+    record: dict[str, Any],
+    todo_id: int,
+    lane: Any,
+    row_meta: Mapping[str, Any] | None = None,
+) -> bool:
+    """The folder is gone and this launch's record is stored, but no
+    ``meta.outcome``: the outcome stamp failed (its exception is swallowed)
+    and the poll died after the drop, or the folder went some other way. The
+    hub holds what the record says, and a land may have been minted, so the
+    run is not a vanished tree and burns no attempt: the job ends
+    attempt-free (the same class as a workspace refusal). What happens to the
+    task follows what the arms did with the land (:func:`_land_state`): a land
+    held for review loses only its claim (as the hold did), a minted land
+    leaves claim and STATUS as the success arm does (the lease stays until the
+    land), else the task goes back to open to continue from what the hub
+    holds."""
+    ctx.append_chunk(
+        "job_summary",
+        f"run_slice td{todo_id} on lane {lane}: the folder is gone and the run "
+        f"left no outcome (Push: {_push_summary(record)}); no attempt burned.",
+    )
+    _revoke_slice_grant(ctx, todo_id, _handle_grant(handle), "failed")
+    # Opening the task would have plan_dispatch build the same work again
+    # while its land or review is pending.
+    land = _land_state(ctx.store, todo_id, row_meta)
+    if land == "review":
+        if lane:
+            ctx.store.remove_tag(todo_id, Tag.open(f"claimed-by:lane-{lane}"))
+        todo_note = "todo stays held for its pre-land review"
+    elif land == "minted":
+        todo_note = "todo keeps its lease until its land"
+    else:
+        unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
+        todo_note = "todo back to open"
+    ctx.set_meta(**{ATTEMPT_FREE_KEY: WORKSPACE_KEY})
+    ctx.record_failure(
+        f"run_slice: td{todo_id} the folder was dropped and the run left no "
+        f"outcome; the hub holds its work ({_push_summary(record)}); "
+        f"{todo_note}, no attempt burned"
+    )
+    return True
+
+
+def _confirm_adopted(
+    ctx: Any,
+    todo_id: int,
+    tree: Path,
+    handle: dict[str, Any],
+    adopted: dict[str, Any],
+    *,
+    repo: str,
+    base: str,
+    start: _slice_ws.Start | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """A record of an earlier pass of this poll is adopted, and this pass then
+    drops the folder without having finalized it: confirm first (the same rule
+    as the sweep's, :func:`_settle`). Returns ``(arms, folder)``: the record the
+    outcome arms use and the one the folder's drop follows (``None``: leave it).
+
+    The same sha keeps the stored record for both. Another sha the hub now
+    holds is newer work: the fresh record is stamped at once (job, and task
+    when :func:`_build_ref_may_take` allows) and both follow it. A fresh result
+    that is NOT safe (a push timeout, no ops repository) costs the run nothing
+    and stamps nothing: the arms go on with the stored record (the hub holds
+    that sha), the folder is kept, and one job_event says so. Stamping the
+    not-safe record here would leave it for the next pass to adopt if this one
+    died before it ended the job; once the job is terminal the sweep's own
+    confirm stamps it and starts the retry schedule. No host checkout: the
+    same."""
+    if adopted.get("state") not in (_slice_ws.PUSHED, _slice_ws.EMPTY):
+        return adopted, adopted  # nothing is dropped on it
+    from precis.plans.templates import BUILD_REF_KEY
+
+    try:
+        hub = _slice_ws.hub_path(slice_root_for(repo))
+    except RuntimeError:
+        log.warning("run_slice: no host checkout for repo %s", repo, exc_info=True)
+        return adopted, None
+    pushed = _finalize_folder(
+        tree,
+        todo_id,
+        int(ctx.ref_id),
+        hub=hub,
+        base=base,
+        start_sha=start.sha if start is not None else None,
+        reason="session exited",
+    )
+    if pushed.safe and pushed.sha == (adopted.get("sha") or None):
+        return adopted, adopted
+    ctx.append_chunk(
+        "job_event",
+        f"run_slice: td{todo_id} the folder {_confirm_words(adopted, pushed)}",
+    )
+    if not pushed.safe:
+        return adopted, None
+    record = pushed.as_meta()
+    launch = _launch_key(handle)
+    if launch:
+        record["launch"] = launch
+    ctx.set_meta(push=record)
+    if pushed.state == _slice_ws.PUSHED and _build_ref_may_take(
+        ctx.store, todo_id, int(ctx.ref_id)
+    ):
+        ctx.store.stamp_ref_meta(todo_id, {BUILD_REF_KEY: record})
+    return record, record
+
+
 def _poll_session(ctx: Any, handle: Any) -> bool:
     if not isinstance(handle, dict):
         _drop_submit_key(ctx)
         ctx.record_failure(f"run_slice: malformed handle {handle!r}")
+        return True
+    # A job that is already terminal (a cancel, a deadline sweep) is the host
+    # sweep's, folder and all: nothing below writes for it — no relaunch, no
+    # park, no usage stamp, no signal to the session's group, no write in the
+    # folder. (The :func:`poll` wrapper still stops the job's detached
+    # acceptance-test group, a child of its own that nobody else would.) A
+    # push this launch already stored is its own earlier pass (see
+    # :func:`_poll_look`).
+    over, adopted, row_meta = _poll_look(ctx, handle)
+    if over:
         return True
     if handle.get("not_before"):
         return _relaunch_when_due(ctx, handle)
@@ -8447,6 +10267,8 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
     tree = Path(str(handle.get("worktree") or ""))
     vanished = not tree.is_dir()
     if not vanished and _session_alive(handle):
+        if exit_code is not None and not _may_signal(handle):
+            _note_unsignalled_group(ctx, handle)
         _watch_budget(ctx, handle)
         # An exit file is the wrapper's end, not the group's (td603296):
         # while the group still answers and a bound applies — a stop
@@ -8459,9 +10281,22 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             or _budget_bound(ctx) > 0
         ):
             return False
+        # gr741695: the exit file is there and a member of the group still
+        # answers (a backgrounded ``scripts/test`` or ``uv run`` child).
+        # ``finalize`` needs no process of the session alive: stop the
+        # group (TERM, then KILL after the grace) and poll again when it is
+        # gone — never finalize and drop a folder a child still writes in.
+        _stop_session_group(ctx, handle)
+        return False
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
     lane = (ctx.meta or {}).get("lane")
+    if vanished and adopted is not None:
+        if isinstance(row_meta.get("outcome"), dict):
+            return _finish_after_drop(ctx, handle, adopted, row_meta, todo_id, lane)
+        return _end_after_drop_without_outcome(
+            ctx, handle, adopted, todo_id, lane, row_meta
+        )
     log_text = _read_log(handle)
     adapter_name = (ctx.meta or {}).get("adapter")
     if not adapter_name:
@@ -8524,6 +10359,9 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             parks = int(handle.get("outage_parks") or 0)
             if parks < OUTAGE_PARK_CAP:
                 # The lane's window, not the task: no attempt, no handoff.
+                # The work in the folder reaches the hub first.
+                if adopted is None:
+                    _save_before_park(ctx, handle, todo_id, tree)
                 return _park_outage(ctx, handle, todo_id, lane, *outage)
             # Parked and relaunched OUTAGE_PARK_CAP times already: this
             # window counts as a failed attempt, so the retry cap and the
@@ -8542,13 +10380,20 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
     # below are gated on it; a handle without the key polls as before.
     repo = str(handle.get("repo") or job_repo(ctx.meta or {}))
     other_repo = repo != _lanes.DEFAULT_REPO
-    denied, human_hits = _deny_reason(
-        tree,
-        _poll_deny_paths(ctx.store, repo),
-        base,
-        # Governed skills are precis files: nothing to scan in another repo.
-        governed_scan=not other_repo,
-        allow_only=_skill_allow_only(ctx.store, todo_id),
+    start = _start_from_meta(ctx.meta)
+    # A folder that is gone has no branch to check: the run is judged as
+    # vanished below, not as a deny check that could not read its branch.
+    denied, human_hits = (
+        (None, [])
+        if vanished
+        else _deny_reason(
+            tree,
+            _poll_deny_paths(ctx.store, repo),
+            base,
+            # Governed skills are precis files: nothing to scan in another repo.
+            governed_scan=not other_repo,
+            allow_only=_skill_allow_only(ctx.store, todo_id),
+        )
     )
     # Deny paths and commit lines are session text too (the session names
     # its files and writes its messages): the same scrub applies — redact
@@ -8582,6 +10427,9 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
     worker_tests_ran = False
     verdict = generator_verdict(result)
     no_commit = _no_commit_kind(ctx.store, todo_id)
+    # gr741695: ``adopted`` (see :func:`_poll_look`, at the top): a push this
+    # launch already stored is the poll's own earlier pass; nothing is
+    # committed or judged again.
     if (
         exit_code == 0
         and not is_error
@@ -8619,12 +10467,21 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                     p.startswith("tests/") for p in paths
                 )
                 if test_failure is None and not preserve_verdict:
-                    commit_fallback = _session_commit_fallback(ctx.store, todo_id)
-                    committed = _commit_for_session(
-                        tree,
-                        todo_id,
-                        fallback_message=commit_fallback,
-                        ctx=ctx,
+                    # gr741695: Devin pushes its own commit like the other
+                    # lanes; the worker commits only what step 4 allows —
+                    # edits left with a commit message, or a commit the
+                    # session reported blocked.
+                    commit_fallback = (
+                        _session_commit_fallback(ctx.store, todo_id)
+                        if _commit_blocked(result)
+                        else None
+                    )
+                    committed = (
+                        _commit_for_session(
+                            tree, todo_id, fallback_message=commit_fallback
+                        )
+                        if adopted is None
+                        else None
                     )
                 ctx.set_meta(
                     acceptance_tests={
@@ -8642,27 +10499,63 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                     # gr702644: a session that says its commit was
                     # blocked gets the worker's commit under a
                     # generated subject even without
-                    # scratch/commit-msg.txt; a commit that still
-                    # fails park-saves the tree on the failure path
-                    # (_slice_park.save_at_job_end). The same fallback
-                    # is stamped on a lock-skipped commit so the next
-                    # submit's salvage has a message
-                    # (:func:`_salvage_skipped_commit`, review td700716).
+                    # scratch/commit-msg.txt; work a commit that still
+                    # fails leaves is snapshotted by the finalize below.
                     commit_fallback = (
                         _session_commit_fallback(ctx.store, todo_id)
                         if _commit_blocked(result)
                         else None
                     )
-                    committed = _commit_for_session(
-                        tree,
-                        todo_id,
-                        fallback_message=commit_fallback,
-                        ctx=ctx,
+                    committed = (
+                        _commit_for_session(
+                            tree, todo_id, fallback_message=commit_fallback
+                        )
+                        if adopted is None
+                        else None
                     )
+    # gr741695, step 5: make sure the hub holds what the folder holds. The
+    # session is dead (or reaped by now); a builder that pushed already left
+    # nothing to do, anything else is pushed from here — a snapshot of
+    # uncommitted work included — before any outcome arm below reads the
+    # branch. Stamps job ``meta.push`` and, when the hub holds the work,
+    # the task's ``meta.build_ref``.
+    push_record: dict[str, Any] | None = None
+    folder_record: dict[str, Any] | None = None
+    push_hub: Path | None = None
+    if not vanished:
+        if adopted is not None:
+            # This poll's own earlier pass wrote the record and died before
+            # the land: it stands — once confirmed, because this pass drops
+            # the folder and a stored record is no licence to delete by
+            # itself (the session may have committed after it was made).
+            push_record, folder_record = _confirm_adopted(
+                ctx,
+                todo_id,
+                tree,
+                handle,
+                adopted,
+                repo=repo,
+                base=_job_base(ctx.meta, todo_id, ctx.store),
+                start=start,
+            )
+        else:
+            push_record, push_hub = _finalize_attempt(
+                ctx,
+                todo_id,
+                tree,
+                repo=repo,
+                base=_job_base(ctx.meta, todo_id, ctx.store),
+                start=start,
+                handle=handle,
+                reason=(
+                    "session exited"
+                    if exit_code == 0 and not is_error
+                    else "budget stop"
+                    if budget_note is not None
+                    else f"session failed (exit {exit_code})"
+                ),
+            )
     full_handoff = handoff
-    commit_lock_blocked = committed is not None and committed.startswith(
-        COMMIT_SKIPPED_LOCK
-    )
     if unscrubbed:
         # The raw result may quote a key the poll cannot name — the todo
         # gets the withheld comment instead of any session text (review
@@ -8728,6 +10621,8 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         f"{'?' if dirty is None else dirty} uncommitted path(s), "
         f"{len(commits)} commit(s) ahead of {base}.",
     ]
+    if push_record is not None:
+        summary.append(f"Push: {_push_summary(push_record)}.")
     if review_note:
         summary.append(f"Read-only violation: {review_note}.")
     if denied:
@@ -8877,31 +10772,8 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
             _discarded_writeback(ctx.store, todo_id, terminal)
         except Exception:  # pragma: no cover — the job outcome still lands
             log.warning("run_slice: discarded-run comment on td%d failed", todo_id)
-    elif commit_lock_blocked:
-        # gr684320: the session's leftover edits met a held index.lock —
-        # the edits are intact in the tree, the next submit's reuse
-        # salvages them (:func:`_salvage_skipped_commit`). An infra wait,
-        # not "no commit": no land mints on a tree whose finished work
-        # never reached the branch (a branch with commits ahead is not
-        # exempt — its uncommitted edits would read as nothing), no
-        # verdict close either, and the lease goes back unburned
-        # (``unclaim_todo`` below) so no ladder rung is spent on it.
-        land = False
-        stamp: dict[str, Any] = {
-            ATTEMPT_FREE_KEY: "index-lock",
-            "commit_skipped": "index-lock",
-        }
-        if commit_fallback:
-            # The message the salvage commits with when the session left
-            # no scratch/commit-msg.txt — recorded worker-side.
-            stamp["commit_skipped_msg"] = commit_fallback
-        ctx.set_meta(**stamp)
-        nothing = (
-            "the worker's commit met a held index.lock — the session's "
-            "edits stay in the tree for the next submit's salvage (gr684320)"
-        )
-        summary.append(f"Land: none — {nothing}.")
     elif land and not commits and gate_ok:
+        _refresh_base(repo, _job_base(ctx.meta, todo_id, ctx.store))
         # A ``moot:`` claim on a CODE task must verify before it may
         # close the plan (td584381 S1d): first line or anywhere in the
         # result — the ``handoff:`` comment's source text, already
@@ -8998,21 +10870,17 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         )
         # gr674785 (td665126 burned all five rungs on this): before the
         # arms below rule on what the session SAID, re-judge the branch
-        # it INHERITED — the submit-time ``branch_tip``/``branch_ahead``
-        # the job meta recorded. A session that rebases its slice branch
-        # onto main drops the already-carried commits itself; the tree
-        # then reads empty and its "nothing left" is the carry, not a
+        # it INHERITED — the pushed work the attempt started from (job
+        # ``meta.start``, gr741695). A session that rebases its slice
+        # branch onto main drops the already-carried commits itself; the
+        # tree then reads empty and its "nothing left" is the carry, not a
         # failure. Patch-equivalence of that tip on the base is the same
         # proof the verified-moot arm lands.
-        tip = str((ctx.meta or {}).get("branch_tip") or "")
-        ahead = (ctx.meta or {}).get("branch_ahead")
         carried_tip = (
-            _carried_on_base(tree, base, tip)
+            _carried_on_base(tree, base, start.sha)
             if (
-                tip
-                and isinstance(ahead, int)
-                and not isinstance(ahead, bool)
-                and ahead > 0
+                start is not None
+                and not start.wip
                 and no_commit is None
                 and not vanished
             )
@@ -9300,14 +11168,38 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         # The pre-land review (its branch push needs the credential) stays
         # precis-only: a second repo's reviewer runs after the land, in a
         # detached tree at the landed sha (td659522 step 5).
+        # gr741695: only work the hub holds can be landed or reviewed — its
+        # ref and head come from this run's finalize (``meta.push``), or from
+        # the pushed attempt it continued when it added nothing.
+        land_ref, land_head = _land_source(push_record, start)
         preland = None if other_repo else _preland_reviewer(ctx.store, todo_id)
-        if preland is not None:
+        if land_head is not None and _slice_park.is_wip(tree, land_head):
+            # The builder's own "cannot finish" snapshot (``wip: snapshot —
+            # <why>``): unfinished work is never landed or reviewed; it is
+            # the next attempt's start point.
+            nothing = (
+                "exited clean but its last commit is a `wip:` snapshot — the "
+                "builder could not finish; the next attempt continues from it"
+            )
+        elif land_ref is None or land_head is None:
+            nothing = (
+                "exited clean but the hub holds no pushed work to land "
+                f"({_push_summary(push_record)})"
+            )
+        elif preland is not None:
             # gr570506 (Reto 2026-11-12): the review gates the land — the
             # squash onto main is the LAST step, minted by the tick on the
             # reviewer's LAND verdict, not here.
             try:
                 note = _defer_land_for_review(
-                    ctx, todo_id, tree, lane, checked, preland
+                    ctx,
+                    todo_id,
+                    tree,
+                    lane,
+                    checked,
+                    preland,
+                    ref=land_ref,
+                    head=land_head,
                 )
             except Exception as exc:
                 log.warning("run_slice: pre-land defer for td%d failed", todo_id)
@@ -9353,7 +11245,14 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
 
                     refused = _ls.validate_submit(
                         ctx.store,
-                        params=_land_params(ctx, todo_id, tree, lane, checked),
+                        params=_land_params(
+                            ctx,
+                            todo_id,
+                            lane,
+                            checked,
+                            ref=land_ref,
+                            head=land_head,
+                        ),
                     )
                     if refused:
                         _append_comment(
@@ -9362,7 +11261,15 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
                             f"{_LANDER_HANDOFF_PREFIX} land FAILED: {refused}",
                         )
                         raise RuntimeError(refused)
-                land_job = _mint_land(ctx, todo_id, tree, lane, checked=checked)
+                land_job = _mint_land(
+                    ctx,
+                    todo_id,
+                    tree,
+                    lane,
+                    checked=checked,
+                    ref=land_ref,
+                    head=land_head,
+                )
             except Exception as exc:
                 log.warning("run_slice: land_slice mint for td%d failed", todo_id)
                 nothing = f"exited clean but the land_slice mint failed ({exc})"
@@ -9434,6 +11341,11 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         log.warning("run_slice: outcome stamp on td%d failed", todo_id)
     if commits:
         summary += ["", *commits[:20]]
+    if adopted is None:
+        folder_record = push_record
+    kept = _settle_folder(ctx, todo_id, tree, handle, folder_record)
+    if kept:
+        summary.append(f"Folder: {kept}.")
     ctx.append_chunk("job_summary", "\n".join(summary))
 
     grant = _handle_grant(handle)
@@ -9443,28 +11355,9 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
         return True
 
     _revoke_slice_grant(ctx, todo_id, grant, "failed")
-    if not vanished and not isinstance(review, dict) and not other_repo:
-        # Park = save (_slice_park): whether this failure ends in a retry
-        # or a park is the tick's call, made on another host — so the
-        # work is saved here, on the host that holds the tree, before the
-        # tick sees the failure. Never blocks or masks the failure.
-        _slice_park.save_at_job_end(
-            ctx,
-            tree,
-            todo_id,
-            budget_note or denied or test_failure or nothing or f"exit {exit_code}",
-            base=base,
-        )
     attempt = None
     try:
-        if commit_lock_blocked:
-            # gr684320: a lock-blocked commit is an infra wait — the
-            # lease goes back clean, like the submit-side lock wait;
-            # ``release_todo`` would burn an ``attempt:<n>`` the
-            # dispatcher reads as the ladder floor.
-            unclaim_todo(ctx.store, todo_id, str(lane) if lane else None)
-        else:
-            attempt = release_todo(ctx.store, todo_id, str(lane) if lane else None)
+        attempt = release_todo(ctx.store, todo_id, str(lane) if lane else None)
     except Exception:  # pragma: no cover — defensive; the job still fails
         log.warning("run_slice: lease release on td%d failed", todo_id, exc_info=True)
     tail = log_text[-_TAIL_CAP:].strip()
@@ -9484,8 +11377,6 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
     )
     if attempt is not None:
         lease_note = f"todo td{todo_id} back to open, attempt:{attempt}"
-    elif commit_lock_blocked and _terminal_status(ctx.store, todo_id) is None:
-        lease_note = f"todo td{todo_id} back to open (no attempt: index-lock)"
     elif (standing := _terminal_status(ctx.store, todo_id)) is not None:
         lease_note = f"todo td{todo_id} stays STATUS:{standing} (result discarded)"
     else:
@@ -9497,10 +11388,94 @@ def _poll_session(ctx: Any, handle: Any) -> bool:
     return True
 
 
+#: One call's time under the watch lock (:data:`ssh_node._WATCH_LOCK_MAX` is
+#: fifteen minutes): shared by the roots, the first of which rotates from call
+#: to call so that a slow one cannot starve the other.
+TIDY_BUDGET_S = 60.0
+_tidy_last: float | None = None
+_tidy_turn = 0
+
+
+def tidy(store: Any, node: str | None) -> None:
+    """The host sweep (gr741695), the ``tidy`` hook of the job type: the
+    executor calls it once per watch pass, under the watch lock, so it runs
+    one at a time on a host and between the polls, never beside one. It
+    settles every attempt folder of every checkout this host builds in
+    (:func:`_host_roots`): a terminal job's folder gets its push record
+    (:func:`_settle`), is dropped when the hub holds its head, and otherwise
+    stays with a report (:func:`_alert_kept_folders`). At most one sweep per
+    :data:`TIDY_EVERY_S` in this process. Every worker that runs the
+    executor calls this, also on a host that builds nothing: a checkout
+    with neither a hub nor a folders directory is passed over before any
+    database read.
+
+    One call has a shared budget, :data:`TIDY_BUDGET_S`: each root is given
+    what is left as its sweep's ``budget_s`` and a root reached with nothing
+    left waits for the next call. The root that goes first rotates between
+    calls. A failure of one root's sweep or reports does not skip the
+    others."""
+    del node
+    global _tidy_last, _tidy_turn
+    now = time.monotonic()
+    if _tidy_last is not None and now - _tidy_last < TIDY_EVERY_S:
+        return
+    _tidy_last = now
+    roots = [
+        root
+        for root in _host_roots()
+        if worktrees_dir(root).is_dir() or (_slice_ws.hub_path(root) / "HEAD").is_file()
+    ]
+    if not roots:
+        return
+    turn = _tidy_turn % len(roots)
+    _tidy_turn += 1
+    for root in roots[turn:] + roots[:turn]:
+        left = TIDY_BUDGET_S - (time.monotonic() - now)
+        if left <= 0:
+            log.info("run_slice: sweep budget spent; %s waits for the next", root)
+            continue
+        notes: list[str] = []
+        try:
+            notes = _slice_ws.sweep(root, _settler(store, root), budget_s=left)
+        except Exception:  # best effort: one root's failure spares the next
+            log.warning("run_slice: sweep of %s failed", root, exc_info=True)
+        for note in notes:
+            log.info("run_slice: sweep %s: %s", root, note)
+        try:
+            _alert_kept_folders(store, root, notes)
+        except Exception:
+            log.warning(
+                "run_slice: kept-folder reports for %s failed", root, exc_info=True
+            )
+
+
 def release(ctx: Any, handle: Any) -> None:
-    """Release the failed run's lease/grant without signaling any process."""
+    """Release the failed run's lease/grant without signaling any process.
+    It touches no folder: ``release`` also runs from the executor's claim
+    step, outside the watch pass, and a terminal job's folder is the sweep's
+    (:func:`tidy`)."""
     _drop_submit_key(ctx)
     meta = getattr(ctx, "meta", None) or {}
+    if (
+        isinstance(handle, dict)
+        and handle.get("not_before")
+        and handle.get("folder_wait")
+        and not handle.get("own_folder")
+    ):
+        # A first launch parked for the task's earlier folder
+        # (:func:`_wait_for_earlier_folder`) never claimed the todo or
+        # minted a grant: another job may hold the claim now (this job may
+        # even carry an earlier run's ``meta.lane``), and this one has
+        # nothing to give back — unless it relaunched, launched and lost the
+        # save of the new handle: a session of this job runs in its folder
+        # (:func:`_live_session_of_job`), and its grant and claim are
+        # released with the live handle. A claim records only the lane tag and
+        # STATUS (:func:`_claim_todo`), no job, so nothing else says whose it
+        # is; the live session is the evidence.
+        live = _live_session_of_job(ctx, handle)
+        if live is None:
+            return
+        handle = live
     todo_id = int((meta.get("params") or {}).get("todo_id") or 0)
     grant = _handle_grant(handle)
     if grant is not None:
@@ -9508,8 +11483,6 @@ def release(ctx: Any, handle: Any) -> None:
             _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         except Exception:  # pragma: no cover — the lease still releases
             log.warning("run_slice: slice-token revoke on release failed")
-    if isinstance(handle, dict) and isinstance(handle.get("review"), dict):
-        _drop_review_tree(handle)
     lane = meta.get("lane")
     if lane and f"claimed-by:lane-{lane}" not in _open_tag_values(ctx.store, todo_id):
         return

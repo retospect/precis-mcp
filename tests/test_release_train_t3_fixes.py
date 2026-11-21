@@ -201,26 +201,40 @@ def test_a_reviewer_of_a_release_fix_reads_and_fetches_its_branch(
             )
         ],
     )
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], Path]] = []
 
     def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-        calls.append(args)
+        calls.append((args, Path(cwd)))
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
+    synced: list[tuple[Path, str]] = []
     monkeypatch.setattr(run_slice, "_git", fake_git)
     monkeypatch.setattr(run_slice, "slice_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        run_slice,
+        "_sync_base",
+        lambda root, base, profile, notes=None: synced.append((root, base)),
+    )
+    clone = tmp_path / "clone"
+    clone.mkdir()
     meta = {"generate": {"role": "reviewer", "from": f"td{target.id}"}}
-    text = run_slice._review_target(store, meta)
+    text = run_slice._review_target(store, meta, tree=clone, root=tmp_path)
     assert text is not None
     assert "on origin/release/r7, not main" in text
     assert "git fetch -q origin release/r7" in text
     assert "(it is on origin/main)" not in text
-    assert [
-        "fetch",
-        "-q",
-        "origin",
-        "+refs/heads/release/r7:refs/remotes/origin/release/r7",
-    ] in calls
+    # gr741695: the reviewer has its own clone of the host's hub. The hub
+    # follows the release branch first, then the clone fetches it from there.
+    assert synced == [(tmp_path, "release/r7")]
+    assert (
+        [
+            "fetch",
+            "-q",
+            "origin",
+            "+refs/heads/release/r7:refs/remotes/origin/release/r7",
+        ],
+        clone,
+    ) in calls
 
 
 # ── F4: a busy round lock is an attempt-free wait ────────────────────

@@ -2,16 +2,50 @@
 
 ``land_slice`` lands precis slices through the tree's own ``scripts/ship``.
 A repo described by a :class:`~precis.plans.lanes.RepoProfile` has no such
-script, so this module lands its slice branch from the profile's constants
+script, so this module lands its slice from the profile's constants
 alone: take the repo's lease (:mod:`~precis.workers.repo_lease`, held for the
 whole land, gate included; a taken lease parks the job and :func:`poll`
-tries again every :data:`LEASE_PARK_S`), fetch the base tip, cut a
-throwaway *land tree* on it, squash the
-slice branch in as ONE commit, refuse what the profile denies, and launch
-the profile's setup, lint and test commands against that commit detached.
+tries again every :data:`LEASE_PARK_S`), read the commit to land out of the
+host's hub (below), fetch the base tip, cut a throwaway *land tree* on it,
+squash that commit in as ONE commit, refuse what the profile denies, and
+launch the profile's setup, lint and test commands against that commit
+detached.
 ``land_slice`` keeps the job type and hands :func:`submit`, :func:`poll`
 and :func:`kill` a job whose repo is not the default, once
 ``land_slice._repo_refusal`` admits it.
+
+The work to land (gr741695). A build of this repository pushes its work to
+the hub of the repository's host checkout
+(:func:`~precis.workers.job_types._slice_ws.hub_path`) as
+``refs/factory/build/<todo>/<job>`` and its own clone is gone by the time the
+land runs; no local ``slice/<id>`` branch exists in the host checkout. The
+land's params carry ``ref`` (that hub ref) and ``head`` (the commit to land:
+the ref's tip, or an ancestor of it when the tip is a ``wip:`` snapshot).
+:func:`_land_source` checks both against the hub, as
+``land_slice._land_start`` does for the main lander, with one difference:
+a land without ``ref`` is refused (this repository has no GitHub slice ref
+from before the switch to fall back on), and nothing else is ever tried.
+:func:`_bring_commit` then fetches the ref into the host checkout's object
+store, so the squash, the poll's re-checks and the push read it where they
+always read: no builder folder is entered.
+
+The land tree stays a detached worktree of the host checkout, now one per
+job (``_slice_ws.attempt_dir(root, todo, job, ROLE_LAND)``, which the
+janitor settles as a land folder). It was not turned into a clone cut from
+the hub because the gate, the lease and the credential handling all hang on
+the host's object store: the base tip is fetched into it
+(:func:`~precis.workers.job_types.run_slice.fetch_base_tip`), the squash
+commit is made in it and the poll re-reads and pushes it from there, with
+the ops gitdir borrowing that store. A clone would need its own base fetch,
+its own object dir for ``push_cas`` and every poll read re-pointed, for no
+gain: the worktree holds nothing a job outside this one reads.
+
+After a green land (or a branch with nothing new) :func:`_cleanup` drops the
+land tree, deletes the task's attempt refs in the hub, clears the task's
+``meta.build_ref`` and ``meta.conflict`` and stamps ``meta.build_floor`` with
+this job's id, so no later attempt continues from an earlier job's ref even
+when a delete failed. A failed land keeps the refs: the next build continues
+from them.
 
 Trust boundary. The gate runs builder-written code on the host, so it
 gets no credential: :func:`gate_env` is the scrubbed land env minus the
@@ -59,10 +93,12 @@ from pathlib import Path
 from typing import Any
 
 from precis.plans import lanes as _lanes
+from precis.plans.templates import BUILD_FLOOR_KEY, BUILD_REF_KEY
 from precis.utils.secret_scan import mask_secrets
 from precis.workers import factory_git as _factory_git
 from precis.workers import factory_git_mirror as _mirror
 from precis.workers import repo_lease as _repo_lease
+from precis.workers.job_types import _slice_park, _slice_ws
 from precis.workers.job_types import land_slice as _ls
 from precis.workers.job_types import run_slice as _rs
 
@@ -151,11 +187,143 @@ def version_changed(tip_text: str | None, sha_text: str | None) -> bool:
     return versions[0] != versions[1]
 
 
+# ── The commit to land ─────────────────────────────────────────────
+
+_FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _ref_param(params: dict[str, Any], todo_id: int) -> str:
+    """``params.ref``: the attempt ref of this todo in the host's hub that
+    holds the work. A second repository has no GitHub slice ref from before
+    gr741695, so a land without one is refused with the reason; a ref that is
+    not one of this todo's attempt refs is refused too. Raises
+    :class:`_slice_ws.WorkspaceError`."""
+    ref = str(params.get("ref") or "").strip()
+    if not ref:
+        raise _slice_ws.WorkspaceError(
+            f"the land of td{todo_id} names no hub ref, and a second repository "
+            "has no GitHub slice ref to fall back on; next: rebuild the slice"
+        )
+    parsed = _slice_ws.parse_build_ref(ref)
+    if parsed is None or parsed[0] != todo_id:
+        raise _slice_ws.WorkspaceError(
+            f"the land of td{todo_id} names {ref!r}, which is not an attempt ref "
+            f"of td{todo_id}; next: rebuild the slice"
+        )
+    return ref
+
+
+def _land_source(
+    ctx: Any, root: Path, params: dict[str, Any], todo_id: int
+) -> tuple[Path, str, str]:
+    """``(hub, ref, head)``: the hub of the checkout at ``root``, the attempt
+    ref and the commit to land, checked against the hub as
+    ``land_slice._land_start`` checks the main lander's.
+
+    ``head`` is ``params.head``, else the task's ``meta.pending_land.head``,
+    else the ref's tip. It must be a full commit id the hub has, and the
+    ref's tip or an ancestor of it: the tip may be a ``wip:`` snapshot the
+    worker made on top of the builder's last real commit, and the land takes
+    the commit below it. With no ``head`` a ``wip:`` tip is refused: such a
+    snapshot can carry stashes and other branches' tips as extra parents, so
+    squashing it would land content no reviewer saw. A host with no hub (one
+    that never built this repository: nothing is created to refuse the
+    land), a ref the hub does not hold (this land belongs on the host that
+    built it), a ref that moved off ``head``, or a hub git cannot read, is a
+    :class:`_slice_ws.WorkspaceError` naming it: nothing is brought in and
+    nothing lands."""
+    ref = _ref_param(params, todo_id)
+    hub = _slice_ws.hub_path(root)
+    if not (hub / "HEAD").is_file():
+        raise _slice_ws.WorkspaceError(
+            f"this host has no hub for {root.name}, so it never built td{todo_id}; "
+            f"next: land on the host that built td{todo_id}, or rebuild the slice"
+        )
+    tip = _slice_ws.hub_tip(hub, ref)
+    if tip is None:
+        raise _slice_ws.WorkspaceError(
+            f"this host's hub holds no {ref}; next: land on the host that built "
+            f"td{todo_id}, or rebuild the slice"
+        )
+    head = str(params.get("head") or "").strip() or _ls._pending_land_head(
+        ctx.store, todo_id
+    )
+    if not head:
+        if _slice_park.is_wip(hub, tip):
+            raise _slice_ws.WorkspaceError(
+                f"{ref} ends in a wip: snapshot ({tip[:12]}) and the land names no "
+                f"head, so it will not squash unreviewed content; next: rebuild "
+                f"the slice so it finishes, or mint the land with its head"
+            )
+        return hub, ref, tip
+    if not _FULL_SHA_RE.fullmatch(head):
+        raise _slice_ws.WorkspaceError(
+            f"the land of td{todo_id} names {head[:40]!r}, which is not a full "
+            "commit id; next: rebuild the slice"
+        )
+    shown = _ls._git(["rev-parse", "--verify", "--quiet", f"{head}^{{commit}}"], hub)
+    if shown.returncode != 0 or (shown.stdout or "").strip() != head:
+        raise _slice_ws.WorkspaceError(
+            f"{ref} no longer holds {head[:12]} (the hub does not have it); "
+            "next: rebuild the slice"
+        )
+    if head != tip:
+        anc = _ls._git(["merge-base", "--is-ancestor", head, tip], hub).returncode
+        if anc == 1:
+            raise _slice_ws.WorkspaceError(
+                f"{ref} no longer holds {head[:12]} (it is at {tip[:12]}); "
+                "next: rebuild the slice"
+            )
+        if anc != 0:
+            raise _slice_ws.WorkspaceError(
+                f"git could not say whether {ref} holds {head[:12]}; "
+                "next: retry the land"
+            )
+    return hub, ref, head
+
+
+def _bring_commit(root: Path, hub: Path, ref: str, head: str) -> None:
+    """Make ``head`` readable in the host checkout at ``root``: a plain
+    ``git fetch`` of ``ref`` from the hub (a local path, so no credential
+    and no network) puts the commit and everything under it in ``root``'s
+    object store, where the squash, the poll's re-checks and the push read
+    it. A commit the store already has is not fetched again. Raises
+    :class:`_slice_ws.WorkspaceError` when the fetch fails or still leaves
+    the commit missing (the ref moved off it in between)."""
+    probe = ["cat-file", "-e", f"{head}^{{commit}}"]
+    if _ls._git(probe, root).returncode == 0:
+        return
+    got = _ls._git(["fetch", "--quiet", "--no-tags", "--", str(hub), ref], root)
+    if got.returncode != 0:
+        why = " ".join((got.stderr or got.stdout or "").split())[:160]
+        raise _slice_ws.WorkspaceError(
+            f"git could not fetch {ref} from the hub ({why}); next: retry the land"
+        )
+    if _ls._git(probe, root).returncode != 0:
+        raise _slice_ws.WorkspaceError(
+            f"{ref} no longer holds {head[:12]} (the fetch did not bring it); "
+            "next: rebuild the slice"
+        )
+
+
 # ── Land tree ──────────────────────────────────────────────────────
 
 
-def _land_tree_path(root: Path, todo_id: int) -> Path:
-    return _rs.worktrees_dir(root) / f"land-td{todo_id}"
+def _land_tree_path(root: Path, todo_id: int, job_id: int) -> Path:
+    """This job's land tree: ``slice-td<todo>-land-j<job>`` under the repo's
+    worktrees dir (:func:`_slice_ws.attempt_dir`), the name the janitor
+    settles as a land folder."""
+    return _slice_ws.attempt_dir(root, todo_id, job_id, _slice_ws.ROLE_LAND)
+
+
+def _tree_of(ctx: Any, handle: dict[str, Any], root: Path, todo_id: int) -> Path:
+    """The land tree of ``handle``: the path it carries, else the job's own
+    name."""
+    named = str(handle.get("land_tree") or "")
+    if named:
+        return Path(named)
+    job_id = int(getattr(ctx, "ref_id", 0) or 0)
+    return _land_tree_path(root, todo_id, job_id)
 
 
 def _drop_land_tree(root: Path, land_tree: Path) -> None:
@@ -169,21 +337,22 @@ def _drop_land_tree(root: Path, land_tree: Path) -> None:
         log.warning("repo_land: dropping %s failed", land_tree, exc_info=True)
 
 
-def _land_tree(root: Path, todo_id: int, tip: str) -> Path | None:
-    """A fresh detached worktree of ``tip`` at ``<root>/.claude/worktrees/
-    land-td<id>``, any stale one removed first. ``None`` when git fails."""
-    land_tree = _land_tree_path(root, todo_id)
+def _land_tree(root: Path, land_tree: Path, tip: str) -> Path | None:
+    """A fresh detached worktree of ``tip`` at ``land_tree``, any stale one
+    of the same name (this job's own, from a relaunch, or a folder the
+    janitor removed without its worktree record) removed first. ``None``
+    when git fails."""
     _drop_land_tree(root, land_tree)
     land_tree.parent.mkdir(parents=True, exist_ok=True)
     add = _ls._git(["worktree", "add", "--detach", str(land_tree), tip], root)
     return land_tree if add.returncode == 0 else None
 
 
-def _squash(land_tree: Path, branch: str, ident: list[str]) -> tuple[str, str]:
-    """``merge --squash`` of ``refs/heads/<branch>`` into the land tree.
+def _squash(land_tree: Path, head: str, ident: list[str]) -> tuple[str, str]:
+    """``merge --squash`` of the commit ``head`` into the land tree.
     ``("ok", "")``; ``("conflict", <CONFLICT lines>)``; or
     ``("error", <git's message>)``."""
-    proc = _ls._git([*ident, "merge", "--squash", f"refs/heads/{branch}"], land_tree)
+    proc = _ls._git([*ident, "merge", "--squash", head], land_tree)
     if proc.returncode == 0:
         return "ok", ""
     # The index, not git's (localised) prose, says whether it was a conflict.
@@ -223,35 +392,29 @@ def _changed_paths(land_tree: Path, tip: str, sha: str) -> list[str] | None:
     return sorted(p for p in out.split("\0") if p)
 
 
-def _branch_author(root: Path, branch: str) -> tuple[str, str] | None:
-    """The slice branch tip's author name and email."""
-    out = _read(root, ["log", "-1", "--format=%an%x00%ae", f"refs/heads/{branch}"])
+def _branch_author(root: Path, head: str) -> tuple[str, str] | None:
+    """The commit ``head``'s author name and email."""
+    out = _read(root, ["log", "-1", "--format=%an%x00%ae", head])
     if out is None or "\0" not in out:
         return None
     name, _, email = out.strip().partition("\0")
     return (name, email) if name and email else None
 
 
-def _branch_subjects(root: Path, tip: str, branch: str) -> list[str]:
+def _branch_subjects(root: Path, tip: str, head: str) -> list[str]:
     out = _read(
         root,
-        [
-            "log",
-            "--reverse",
-            "--no-merges",
-            "--format=%s",
-            f"{tip}..refs/heads/{branch}",
-        ],
+        ["log", "--reverse", "--no-merges", "--format=%s", f"{tip}..{head}"],
     )
     return out.splitlines() if out else []
 
 
-def _ident_args(root: Path, branch: str) -> list[str]:
-    """``-c user.*`` args naming the slice branch tip's author. The
+def _ident_args(root: Path, head: str) -> list[str]:
+    """``-c user.*`` args naming ``head``'s author. The
     ``GIT_AUTHOR_*``/``GIT_COMMITTER_*`` env, when set, still wins (git
     prefers it to config); git's global config is blinded, so without
     this a bare host has no identity (``merge --squash`` wants one too)."""
-    author = _branch_author(root, branch)
+    author = _branch_author(root, head)
     if author is None:
         return []
     return ["-c", f"user.name={author[0]}", "-c", f"user.email={author[1]}"]
@@ -305,20 +468,28 @@ def submit(ctx: Any, spec: Any) -> Any:
     except RuntimeError as exc:
         ctx.record_failure(f"repo_land: {exc}")
         return None
+    # 0. A land with no usable hub ref is refused before it waits for a lease:
+    # there is nothing else it could land (gr741695).
+    # The refusal is deterministic (the same params are refused again), so
+    # it carries ``land_again_cap``: the plan tick asks instead of re-minting
+    # the land up to ``LAND_AGAIN_CAP`` times (the lander's own capped class).
+    try:
+        _ref_param(params, todo_id)
+    except _slice_ws.WorkspaceError as exc:
+        ctx.set_meta(land_again_cap=True)
+        _ls._fail_workspace(ctx, todo_id, params.get("lane"), str(exc))
+        return None
     # 1. The per-repo lease, taken before anything touches the clone and held
     # for the whole land (gate and push). A taken lease parks the job.
     blocker = _repo_lease.acquire(
         ctx.store, profile.name, job_id=_job_id(ctx), kind="land"
     )
     if blocker is not None:
-        branch, slice_tree = _slice_names(params, root, todo_id)
         handle: dict[str, Any] = {
             "lander": "repo_land",
             "repo": profile.name,
             "phase": LEASE_PHASE,
-            "worktree": slice_tree,
-            "slice_tree": slice_tree,
-            "branch": branch,
+            "branch": _branch_name(params, todo_id),
             "lease_since": _ls._now().timestamp(),
         }
         _park(ctx, handle, blocker)
@@ -331,13 +502,11 @@ def _job_id(ctx: Any) -> int:
     return int(ctx.ref_id)
 
 
-def _slice_names(params: dict[str, Any], root: Path, todo_id: int) -> tuple[str, str]:
-    """``(branch, slice tree)`` of the job's slice."""
-    branch = str(params.get("branch") or _rs.slice_branch(todo_id))
-    slice_tree = str(params.get("worktree") or "") or str(
-        _rs.worktrees_dir(root) / _rs.slice_name(todo_id)
-    )
-    return branch, slice_tree
+def _branch_name(params: dict[str, Any], todo_id: int) -> str:
+    """The slice's branch name, for messages and the handle. It names no
+    ref the lander reads: the commit comes from ``params.ref`` and
+    ``params.head``."""
+    return str(params.get("branch") or _rs.slice_branch(todo_id))
 
 
 def park_until(ctx: Any, handle: dict[str, Any], seconds: float) -> datetime:
@@ -390,17 +559,28 @@ def stamp_identity(handle: dict[str, Any], pid: int) -> None:
 def _start(
     ctx: Any, profile: _lanes.RepoProfile, root: Path, params: dict[str, Any]
 ) -> Any:
-    """Everything from the base fetch on, with the lease held: fetch the tip,
-    cut the land tree, squash, commit, run the deny and version checks and
-    launch the gate. Returns what :func:`submit` returns."""
+    """Everything after the lease, with it held: check the commit to land
+    against the hub (:func:`_land_source`), fetch the base tip, bring the
+    commit into the host checkout (:func:`_bring_commit`), cut the land
+    tree, squash, commit, run the deny and version checks and launch the
+    gate. Returns what :func:`submit` returns."""
     todo_id = params["todo_id"]
     lane = params.get("lane")
-    branch, slice_tree = _slice_names(params, root, todo_id)
+    branch = _branch_name(params, todo_id)
+    job_id = _job_id(ctx)
 
     def fail(why: str, handoff: str, *, attempt_free: str | None = None) -> None:
         _ls._fail(ctx, todo_id, lane, why, handoff=handoff, attempt_free=attempt_free)
 
-    # 2. The base tip, fetched under the credential through the ops gitdir.
+    # 2. The commit to land, read out of the hub. A ref that is gone or has
+    # moved off the commit is refused attempt-free with the reason; nothing
+    # else is ever tried.
+    try:
+        hub, ref, head = _land_source(ctx, root, params, todo_id)
+    except _slice_ws.WorkspaceError as exc:
+        _ls._fail_workspace(ctx, todo_id, lane, str(exc))
+        return None
+    # 3. The base tip, fetched under the credential through the ops gitdir.
     tip = _rs.fetch_base_tip(profile, root)
     if tip is None:
         fail(
@@ -410,8 +590,14 @@ def _start(
             attempt_free="origin-fetch",
         )
         return None
-    # 3. A throwaway tree on that tip.
-    land_tree = _land_tree(root, todo_id, tip)
+    # 4. The commit into the host checkout's object store, then a throwaway
+    # tree of this job's own on the tip.
+    try:
+        _bring_commit(root, hub, ref, head)
+    except _slice_ws.WorkspaceError as exc:
+        _ls._fail_workspace(ctx, todo_id, lane, str(exc))
+        return None
+    land_tree = _land_tree(root, _land_tree_path(root, todo_id, job_id), tip)
     if land_tree is None:
         fail(
             f"git worktree add failed for the land tree of td{todo_id}",
@@ -424,9 +610,9 @@ def _start(
         _drop_land_tree(root, land_tree)
         fail(why, handoff)
 
-    # 4. Squash.
-    ident = _ident_args(root, branch)
-    state, text = _squash(land_tree, branch, ident)
+    # 5. Squash.
+    ident = _ident_args(root, head)
+    state, text = _squash(land_tree, head, ident)
     if state != "ok":
         if state == "conflict":
             refuse(
@@ -441,7 +627,7 @@ def _start(
                 f"land FAILED: git could not squash {branch} ({text}).",
             )
         return None
-    # 5. Nothing new to land.
+    # 6. Nothing new to land.
     empty = _staged_empty(land_tree)
     if empty is None:
         refuse(
@@ -451,10 +637,10 @@ def _start(
         return None
     if empty:
         _drop_land_tree(root, land_tree)
-        return {"no_land": True, "worktree": slice_tree, "repo": profile.name}
-    # 6. Commit.
+        return {"no_land": True, "worktree": str(land_tree), "repo": profile.name}
+    # 7. Commit.
     subject = _ls.squash_subject(
-        _branch_subjects(root, tip, branch),
+        _branch_subjects(root, tip, head),
         todo_id,
         node=_ls._node_subject(ctx.store, todo_id),
     )
@@ -473,7 +659,7 @@ def _start(
             f"{profile.base}; rebuild the slice.",
         )
         return None
-    # 7. Deny paths and the version line.
+    # 8. Deny paths and the version line.
     paths = _changed_paths(land_tree, tip, sha)
     if paths is None:
         refuse(
@@ -510,7 +696,7 @@ def _start(
             "pyproject.toml may not change in a slice. Revert that line.",
         )
         return None
-    # 8. Launch the gate detached in the land tree.
+    # 9. Launch the gate detached in the land tree.
     try:
         run = _rs.run_dir(todo_id)
         script = run / GATE_SCRIPT
@@ -533,17 +719,18 @@ def _start(
             f"land FAILED: the gate did not start ({exc}).",
         )
         return None
-    # 9. The handle.
+    # 10. The handle.
     launched = _ls._now()
     handle: dict[str, Any] = {
         "lander": "repo_land",
         "repo": profile.name,
         "pid": pid,
         "pgid": pid,
-        "worktree": slice_tree,
+        "worktree": str(land_tree),
         "land_tree": str(land_tree),
-        "slice_tree": slice_tree,
         "branch": branch,
+        "ref": ref,
+        "head": head,
         "tip": tip,
         "sha": sha,
         "subject": subject,
@@ -582,8 +769,11 @@ TIMED_OUT_CLASS = "timed-out"
 
 
 def _drop_slice(root: Path, slice_tree: Path, branch: str) -> list[str]:
-    """Remove the slice worktree (only one under the repo's worktrees dir)
-    and delete the local slice branch; one note per step."""
+    """Remove a worktree of the host checkout (only one under the repo's
+    worktrees dir) and delete a local branch; one note per step. The lander
+    no longer uses it (a build's own clone is gone and its branch never
+    reached the host checkout); ``pin_bump`` removes the tree and branch it
+    made itself through it."""
     notes: list[str] = []
     if slice_tree.parent == _rs.worktrees_dir(root) and slice_tree.exists():
         proc = _ls._git(["worktree", "remove", "--force", str(slice_tree)], root)
@@ -596,18 +786,76 @@ def _drop_slice(root: Path, slice_tree: Path, branch: str) -> list[str]:
     return notes
 
 
-def _cleanup(root: Path, slice_tree: Path, land_tree: Path, branch: str) -> list[str]:
-    """The green path's tidy-up: the land tree, the slice worktree and the
-    local slice branch (never pushed, so no origin delete). Best effort:
-    never raises."""
+def _stamp_floor(
+    ctx: Any, todo_id: int, job_id: int, notes: list[str] | None = None
+) -> bool:
+    """Stamp ``meta.build_floor`` with this land job's id on the task: an
+    attempt ref of a job below it is never continued from. ``True`` when it
+    is stamped (a job with no id stamps nothing and answers ``False``).
+    Never raises."""
+    if job_id <= 0:
+        return False
+    try:
+        ctx.store.stamp_ref_meta(todo_id, {BUILD_FLOOR_KEY: job_id})
+        return True
+    except Exception as exc:
+        log.warning("repo_land: build floor of td%d failed", todo_id, exc_info=True)
+        if notes is not None:
+            notes.append(f"meta: {BUILD_FLOOR_KEY} stamp FAILED ({exc})")
+        return False
+
+
+def _cleanup(
+    ctx: Any,
+    root: Path,
+    land_tree: Path,
+    todo_id: int,
+    job_id: int,
+    floored: bool = False,
+) -> list[str]:
+    """After a land that took (a push, or a branch with nothing new): drop
+    the land tree, delete the task's attempt refs in the hub, clear the
+    task's ``meta.build_ref`` and ``meta.conflict`` and stamp
+    ``meta.build_floor`` with this job's id (gr741695). The work is on the
+    base now: a ref left behind would start a later attempt of the same todo
+    from commits that are already landed, and the floor keeps an attempt
+    ref that outlived a failed delete (or sits in another host's hub) from
+    ever being continued. Nothing was pushed to GitHub for the slice, so
+    there is no origin ref to delete. One note per step; best effort:
+    never raises.
+
+    The floor is stamped first (:func:`_stamp_floor`, the first write after
+    the push; ``floored`` says it took): a stamp that fails after the refs
+    are gone would leave a ``build_ref`` naming a deleted ref with no floor,
+    and every later launch of a reopened task would raise ``RefMoved``. With
+    the floor in, a recorded ref below it is never read. When the floor is
+    not in (the early stamp failed and one retry fails too) the refs are
+    left alone."""
     notes: list[str] = []
     try:
         _drop_land_tree(root, land_tree)
         notes.append("land tree dropped")
-        notes += _drop_slice(root, slice_tree, branch)
+        if not floored:
+            floored = _stamp_floor(ctx, todo_id, job_id, notes)
+        if floored:
+            notes.append(_slice_ws.delete_builds(_slice_ws.hub_path(root), todo_id))
+        else:
+            notes.append("attempt refs kept: the build floor could not be stamped")
     except Exception as exc:  # pragma: no cover - cleanup is best effort
         log.warning("repo_land: cleanup failed", exc_info=True)
         notes.append(f"cleanup FAILED ({exc})")
+    try:
+        stamp: dict[str, Any] = {BUILD_REF_KEY: None, _ls.CONFLICT_KEY: None}
+        if job_id > 0:
+            stamp[BUILD_FLOOR_KEY] = job_id
+        ctx.store.stamp_ref_meta(todo_id, stamp)
+        notes.append(
+            f"meta: {BUILD_REF_KEY} and {_ls.CONFLICT_KEY} cleared"
+            + (f", {BUILD_FLOOR_KEY} j{job_id}" if job_id > 0 else "")
+        )
+    except Exception as exc:
+        log.warning("repo_land: meta stamp on td%d failed", todo_id, exc_info=True)
+        notes.append(f"meta: stamp FAILED ({exc})")
     return notes
 
 
@@ -703,7 +951,7 @@ def _poll_red(
         "job_summary",
         f"repo_land td{todo_id}: RED - {where}\nsubject: {handle.get('subject')}",
     )
-    _drop_land_tree(root, _land_tree_path(root, todo_id))
+    _drop_land_tree(root, _tree_of(ctx, handle, root, todo_id))
     _ls._fail(
         ctx,
         todo_id,
@@ -726,7 +974,7 @@ def _poll_green(
 ) -> bool:
     """Exit 0: re-check the handle's sha, push it, record the land."""
     sha, tip = _hex(handle.get("sha")), _hex(handle.get("tip"))
-    land_tree = _land_tree_path(root, todo_id)
+    land_tree = _tree_of(ctx, handle, root, todo_id)
 
     def free(why: str, handoff: str, red_class: str) -> bool:
         _drop_land_tree(root, land_tree)
@@ -848,18 +1096,18 @@ def _poll_green(
         )
     subject = str(handle.get("subject") or "")
     summary = [f"repo_land td{todo_id}: landed {sha[:9]} - {subject}"]
+    # The first write after the push: the task's build floor is this land's
+    # job id, so the attempt refs below it are harmless from here on even if
+    # the worker dies before the land record or the cleanup (the cleanup
+    # deletes the refs only once this is in).
+    floored = _stamp_floor(ctx, todo_id, _job_id(ctx), summary)
     try:
         wrote = _ls._record_land(ctx.store, todo_id, sha, subject)
         summary.append("todo: " + ", ".join(wrote) + " written")
     except Exception as exc:  # pragma: no cover - the land is real; report it
         log.warning("repo_land: land record on td%d failed", todo_id, exc_info=True)
         summary.append(f"todo: land record FAILED ({exc})")
-    cleanup = _cleanup(
-        root,
-        Path(str(handle.get("slice_tree") or "")),
-        land_tree,
-        str(handle.get("branch") or ""),
-    )
+    cleanup = _cleanup(ctx, root, land_tree, todo_id, _job_id(ctx), floored)
     summary += cleanup
     # Pushed and recorded: the critical section is over (the terminal status
     # below frees the lease anyway; this keeps the key off a succeeded row).
@@ -877,6 +1125,7 @@ def _poll_no_land(ctx: Any, handle: dict[str, Any], todo_id: int) -> bool:
     """A branch with nothing new: the nothing-new record, done, no push."""
     root = _handle_root(handle)
     summary = [f"repo_land td{todo_id}: {_ls.NO_DIFF_NOTE}"]
+    floored = _stamp_floor(ctx, todo_id, _job_id(ctx), summary)
     try:
         wrote = _ls._record_land(ctx.store, todo_id, None, "")
         summary.append("todo: " + ", ".join(wrote) + " written")
@@ -886,10 +1135,12 @@ def _poll_no_land(ctx: Any, handle: dict[str, Any], todo_id: int) -> bool:
     cleanup: list[str] = []
     if root is not None:
         cleanup = _cleanup(
+            ctx,
             root,
-            Path(str(handle.get("worktree") or "")),
-            _land_tree_path(root, todo_id),
-            str(((ctx.meta or {}).get("params") or {}).get("branch") or ""),
+            _tree_of(ctx, handle, root, todo_id),
+            todo_id,
+            _job_id(ctx),
+            floored,
         )
     ctx.set_meta(exit_code=0, landed_sha=None, cleanup=cleanup)
     ctx.append_chunk("job_summary", "\n".join(summary + cleanup))
@@ -1011,7 +1262,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             return False
         _signal_gate(handle)
         if root is not None:
-            _drop_land_tree(root, _land_tree_path(root, todo_id))
+            _drop_land_tree(root, _tree_of(ctx, handle, root, todo_id))
         # land_slice's wall verdict (DEADLINE_KILL_META): attempt-free, and
         # parked at the ask rather than re-landed on its own.
         ctx.set_meta(compute_handle_released=True, land_again_cap=True)
@@ -1037,12 +1288,13 @@ def poll(ctx: Any, handle: Any) -> bool:
 
 def kill(ctx: Any, handle: Any) -> None:
     """Wall-clock / operator kill: SIGTERM the gate's process group (never
-    the worker's own) and drop the land tree. The slice tree and branch
-    stay: nothing of the slice was pushed."""
+    the worker's own) and drop the land tree. Nothing else is touched: the
+    attempt refs stay in the hub for the next land."""
     if not isinstance(handle, dict) or handle.get("phase") == LEASE_PHASE:
         return  # a parked handle has no gate and no land tree yet
     _signal_gate(handle)
     params = (getattr(ctx, "meta", None) or {}).get("params") or {}
     root = _handle_root(handle)
     if root is not None:
-        _drop_land_tree(root, _land_tree_path(root, int(params.get("todo_id") or 0)))
+        todo_id = int(params.get("todo_id") or 0)
+        _drop_land_tree(root, _tree_of(ctx, handle, root, todo_id))

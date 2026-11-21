@@ -33,6 +33,14 @@
 # (gr202363) — otherwise a release firing after a sibling steals our slot
 # (>45-min hold, or a late EXIT trap) deletes THEIR fresh slot instead.
 #
+# PRECIS_GATE_SLOT_ROOT moves the slot dirs, the queue and the stats file out
+# of this tree's git common dir into the directory it names (which must
+# exist). A factory attempt is a standalone clone whose common dir is its own
+# .git, so without it the clone would count against a one-folder semaphore;
+# the engine points every attempt at the host checkout's git common dir, the
+# same place humans' worktrees use, and all of them share one semaphore.
+# Unset or empty, the common dir is used exactly as before.
+#
 # PRECIS_GATE_SLOTS overrides the cap; unset, gate_slot_default derives it
 # from the VM the containers run on (gr514466 — the flat 3 starved small runs
 # behind ~25 sharing agents). Callers must arrange `gate_slot_release` on
@@ -205,7 +213,8 @@ _gate_eta_hint() { # <common> <slots>
 }
 
 # gr567623: the queue ticket and every slot lock live in the shared git
-# common dir. A sandbox that denies writes there used to degrade silently —
+# common dir (or PRECIS_GATE_SLOT_ROOT). A sandbox that denies writes there
+# used to degrade silently —
 # `mkdir -p`/`touch`/`mkdir` all failed under `|| true`, the waiter fell back
 # to "always eligible", every slot mkdir failed identically, and the run
 # spun at "position 1 of 0, all slots free" until someone killed it. Access
@@ -213,7 +222,7 @@ _gate_eta_hint() { # <common> <slots>
 # the permission needed; only genuine contention reaches the wait loop.
 _gate_access_fail() { # <operation> <path> <detail>
     echo "gate slot: cannot $1 — $2${3:+: $3}" >&2
-    echo "gate slot: needs write access to ${GATE_SLOT_COMMON:-the shared git dir} — the queue ticket and slot locks live there; allow writes under it and re-run" >&2
+    echo "gate slot: needs write access to ${GATE_SLOT_COMMON:-the shared git dir or PRECIS_GATE_SLOT_ROOT} — the queue ticket and slot locks live there; allow writes under it and re-run" >&2
 }
 
 _gate_queue_prune() { # <qdir> <max_age_min>
@@ -234,6 +243,51 @@ _gate_queue_prune() { # <qdir> <max_age_min>
     done
 }
 
+# Prints the host checkout root and returns 0 when this tree is a factory
+# attempt clone: a standalone clone (its .git is a directory) at
+# <host>/.claude/worktrees/slice-td<N>[-land]-j<M>. Returns 1 for any other
+# tree (primary checkout, linked worktree, clone elsewhere). Prints an empty
+# root when the path has nothing before /.claude/worktrees.
+_gate_slot_attempt_host() { # -> host root on stdout
+    local top base parent
+    top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+    [[ -d "$top/.git" ]] || return 1
+    base="${top##*/}"
+    [[ "$base" =~ ^slice-td[0-9]+(-land)?-j[0-9]+$ ]] || return 1
+    parent="${top%/*}"
+    [[ "$parent" == */.claude/worktrees ]] || return 1
+    printf '%s\n' "${parent%/.claude/worktrees}"
+}
+
+# Where the semaphore lives: PRECIS_GATE_SLOT_ROOT when set, else this tree's
+# git common dir. A set-but-missing root is a refusal (rc 1, message on
+# stderr), never a quiet fallback: a clone that fell back to its own .git
+# would run outside the shared semaphore and defeat the cap. The same goes
+# for an attempt clone run without the override: it derives its host
+# checkout's common dir from its own path, or refuses when it cannot.
+_gate_slot_root() { # -> path on stdout
+    local host common
+    if [[ -n "${PRECIS_GATE_SLOT_ROOT:-}" ]]; then
+        if [[ ! -d "$PRECIS_GATE_SLOT_ROOT" ]]; then
+            echo "gate slot: PRECIS_GATE_SLOT_ROOT=${PRECIS_GATE_SLOT_ROOT} is not an existing directory — create it or unset the variable" >&2
+            return 1
+        fi
+        printf '%s\n' "$PRECIS_GATE_SLOT_ROOT"
+        return 0
+    fi
+    if host="$(_gate_slot_attempt_host)"; then
+        if [[ -n "$host" && -e "$host/.git" ]] \
+            && common="$(git -C "$host" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+            && [[ -d "$common" ]]; then
+            printf '%s\n' "$common"
+            return 0
+        fi
+        echo "gate slot: this is an attempt clone and its host checkout's git dir cannot be derived from its path (host root '${host}') — set PRECIS_GATE_SLOT_ROOT to the host's git common dir" >&2
+        return 1
+    fi
+    git rev-parse --git-common-dir
+}
+
 gate_slot_acquire() {
     local slots="${PRECIS_GATE_SLOTS:-$(gate_slot_default)}"
     local common i d holder reason host name my_rank depth other seen_self
@@ -245,7 +299,7 @@ gate_slot_acquire() {
     # instead of quietly queueing forever.
     local wait_cap="${PRECIS_GATE_WAIT_MAX_S:-1800}"
     local wait_start=$SECONDS
-    common="$(git rev-parse --git-common-dir)"
+    common="$(_gate_slot_root)" || return 2
     GATE_SLOT_COMMON="$common"
     host="$(lock_holder_hostname)"
     local qdir="${common}/precis-gate-queue.d"

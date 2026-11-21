@@ -29,6 +29,7 @@ import pytest
 from precis.plans import lanes
 from precis.store.types import Tag
 from precis.workers import _mint, factory_git_mirror
+from precis.workers.job_types import _slice_ws as ws
 from precis.workers.job_types import land_slice, repo_release, run_slice
 from precis.workers.job_types import pin_bump as pb
 from tests import test_pin_bump as tpb
@@ -1242,26 +1243,34 @@ def test_the_handoff_mints_one_land_and_succeeds(
     (mint,) = pin.mints
     assert mint["job_type"] == "land_slice" and mint["executor"] == "ssh_node"
     assert mint["idem_key"] == "land_slice:td77" and mint["parent_id"] == PIN
+    ref = ws.build_ref(PIN, 901)  # this job's attempt ref in the hub
     assert mint["params"] == {
         "todo_id": PIN,
-        "worktree": str(pin.tree()),
         "branch": "slice/77",
         "target_node": "spruce",
-        # the build tip the overlap hold reads: the slice branch's head
+        # the commit to land, and the hub ref that holds it; no worktree
+        "ref": ref,
         "head": commit,
     }
-    assert mint["params"]["head"] == pin.branch_head()
+    # the commit is in the hub, from where the lander cuts its own clone
+    assert ws.hub_tip(pin.rig.hub, ref) == commit
     rec = pin.record()
     assert rec["state"] == "handed" and rec["land_job"] == 5001
-    assert rec["commit"] == commit and rec["worktree"] == str(pin.tree())
+    assert rec["commit"] == commit and rec["ref"] == ref
     assert ctx.chunks[-1] == (
         "job_summary",
         f"pin_bump td77: v0.50.0 committed {commit[:9]}, handed to land_slice jo5001",
     )
     assert ctx.meta_set["land_job"] == 5001
-    assert pin.tree().is_dir() and pin.branch_head() == commit
+    # the pin tree and branch are this job's own and nothing needs them now
+    _tree_and_branch_gone(pin)
     assert pin.store.comments(PIN) == []
     _clean(pin, ctx)
+
+
+def _tree_and_branch_gone(pin: Pin) -> None:
+    assert not pin.tree().exists() and pin.branch_head() is None
+    assert str(pin.tree()) not in _g(pin.rig.clone, "worktree", "list")
 
 
 def test_a_second_poll_of_a_handed_bump_mints_nothing(pin: Pin) -> None:
@@ -1271,6 +1280,121 @@ def test_a_second_poll_of_a_handed_bump_mints_nothing(pin: Pin) -> None:
     assert pb.poll(ctx, handle) is True
     assert len(pin.mints) == 1 and ctx.status == "succeeded"
     assert pin.record()["land_job"] == 5001
+    _tree_and_branch_gone(pin)
+
+
+def test_a_repeated_poll_removes_what_a_dead_worker_left_after_the_stamp(
+    pin: Pin,
+) -> None:
+    """If this fails a worker that died between the ``handed`` stamp and the
+    removal leaves the pin tree and branch behind for good."""
+    ctx, handle = _handoff(pin)
+    assert pb.poll(ctx, handle) is True
+    commit = handle["commit"]
+    # what a crash right after the stamp would have left
+    _g(
+        pin.rig.clone,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "slice/77",
+        str(pin.tree()),
+        commit,
+    )
+    assert pb.poll(ctx, handle) is True
+    assert len(pin.mints) == 1
+    _tree_and_branch_gone(pin)
+
+
+def test_the_handoff_puts_the_commit_in_the_hub_for_the_main_lander(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails the land is minted for a commit only the pin tree holds,
+    which the lander (it cuts its own clone from the hub) never sees: its
+    ``_land_start`` must accept the params, and the clone it cuts must carry
+    exactly the pin commit, on which the lander's pin exemption must pass."""
+    monkeypatch.setenv("PRECIS_NODE", "spruce")
+    ctx, handle = _handoff(pin)
+    commit = handle["commit"]
+    assert ws.hub_builds(pin.rig.hub, PIN) == {}
+    assert pb.poll(ctx, handle) is True
+    (mint,) = pin.mints
+    params = mint["params"]
+    assert (params["ref"], params["head"]) == (ws.build_ref(PIN, 901), commit)
+    assert ws.hub_builds(pin.rig.hub, PIN) == {901: commit}
+    _tree_and_branch_gone(pin)
+    # the main lander's own validation of what it was minted with
+    lander = _Ctx(pin.store, params)
+    start, head = land_slice._land_start(
+        lander, params, PIN, pin.rig.hub, ORIGIN, pin.rig.clone
+    )
+    assert head == commit and start == ws.Start(sha=commit, ref=params["ref"])
+    # the lander's clone, cut from the hub as ``_cut_land_folder`` cuts it
+    ws.sync_hub(pin.rig.clone, url=str(pin.rig.origin), base="main")
+    tree = ws.attempt_dir(pin.rig.clone, PIN, 902, ws.ROLE_LAND)
+    ws.cut(pin.rig.hub, tree, base="main", branch="slice/77", start=start)
+    assert _g(tree, "rev-parse", "HEAD") == commit
+    # ... where the pin exemption finds what it reads: the record and the head
+    pin.store.refs[PIN].meta["op"] = "pin_bump"
+    record = pin.record()
+    base = pin.tip()
+    paths = run_slice.changed_paths(tree, base)
+    assert paths is not None and "deploy/group_vars/all.yml" in paths
+    assert pb.land_refusal(pin.store, PIN, tree, base, paths) is None
+    # a re-land after the main moved on is a new clone of the same hub ref
+    moved = pin.precis_commit({"README.md": "main moved\n"})
+    ws.sync_hub(pin.rig.clone, url=str(pin.rig.origin), base="main")
+    again = ws.attempt_dir(pin.rig.clone, PIN, 903, ws.ROLE_LAND)
+    ws.cut(pin.rig.hub, again, base="main", branch="slice/77", start=start)
+    assert pb.land_refusal(pin.store, PIN, again, moved, paths) is None
+    assert record["state"] == "handed"
+    # ... and the record the exemption reads needs neither tree nor branch
+    assert "worktree" in record and not Path(record["worktree"]).exists()
+
+
+@pytest.mark.parametrize("how", ["withheld", "failed", "hub-missing"])
+def test_a_commit_that_is_not_pushed_mints_nothing_and_fails_attempt_free(
+    pin: Pin, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """If this fails a land is minted for a commit the hub does not hold, or
+    the failed push is charged to the node, or the committed tree and branch
+    are dropped so the next job cannot resume to the hand-off."""
+    ctx, handle = _handoff(pin)
+    commit = handle["commit"]
+    real_ensure, real_push = ws.ensure_hub, ws.push_commit
+    if how == "hub-missing":
+
+        def no_hub(root: Path, **kw: Any) -> Path:
+            raise ws.WorkspaceError("no hub; next: x")
+
+        monkeypatch.setattr(ws, "ensure_hub", no_hub)
+    else:
+        state = ws.WITHHELD if how == "withheld" else ws.FAILED
+        monkeypatch.setattr(
+            ws,
+            "push_commit",
+            lambda *a, **kw: ws.Pushed(state, ws.build_ref(PIN, 901), note="because"),
+        )
+    assert pb.poll(ctx, handle) is True
+    _attempt_free(ctx, "pin-handoff")
+    assert pin.mints == []
+    assert "because" in str(ctx.failure) or how == "hub-missing"
+    assert "pin bump FAILED" in pin.store.comments(PIN)[-1]
+    assert pin.record()["state"] == "committed" and pin.record()["commit"] == commit
+    assert pin.branch_head() == commit and pin.tree().is_dir()
+    assert ws.hub_builds(pin.rig.hub, PIN) == {}
+    monkeypatch.setattr(ws, "ensure_hub", real_ensure)
+    monkeypatch.setattr(ws, "push_commit", real_push)
+    # the next job resumes to the hand-off and pushes then
+    ctx2, handle2 = _submitted(pin)
+    assert pb.poll(ctx2, handle2) is False
+    assert handle2["phase"] == "handoff" and handle2["commit"] == commit
+    _due_now(handle2)
+    assert pb.poll(ctx2, handle2) is True
+    assert ctx2.status == "succeeded" and len(pin.mints) == 1
+    assert ws.hub_builds(pin.rig.hub, PIN) == {901: commit}
+    _tree_and_branch_gone(pin)
 
 
 def test_a_resumed_job_adopts_a_live_land_instead_of_minting_another(
@@ -1302,6 +1426,8 @@ def test_a_failed_mint_is_attempt_free_and_the_next_job_resumes_to_it(
     _attempt_free(ctx, "pin-handoff")
     assert pin.record()["state"] == "committed" and pin.record()["commit"] == commit
     assert pin.branch_head() == commit and pin.tree().is_dir()
+    # the commit is already in the hub; the next job's push finds it there
+    assert ws.hub_builds(pin.rig.hub, PIN) == {901: commit}
     assert pin.store.comments(PIN)[-1].startswith("handoff: pin bump FAILED:")
     pin.mint_error = None
     launches = len(pin.rig.launches)
@@ -1312,6 +1438,7 @@ def test_a_failed_mint_is_attempt_free_and_the_next_job_resumes_to_it(
     assert pb.poll(ctx2, handle2) is True
     assert ctx2.status == "succeeded" and len(pin.mints) == 1
     assert pin.record()["state"] == "handed"
+    _tree_and_branch_gone(pin)
 
 
 def test_a_branch_moved_before_the_handoff_mints_nothing(pin: Pin) -> None:
@@ -1575,8 +1702,8 @@ def test_a_main_pin_does_not_count_when_the_land_is_not_under_main(
     """If this fails main's locked sha passes for a pin whose own land is not
     on that main (the label says nothing about A then)."""
     ctx, handle = _image_wait(pin)
-    branch = pin.branch_head()  # the bump's own commit, never merged to main
-    assert branch is not None and branch != pin.tip()
+    branch = pin.record()["commit"]  # the bump's own commit, never merged to main
+    assert branch and branch != pin.tip()
     pin.store.refs[PIN].meta["pin_bump"]["landed_sha"] = branch
     newer = pin.cut("0.51.0")
     pin.precis_commit(pin.texts("0.51.0", newer))
@@ -2502,6 +2629,7 @@ def test_a_land_that_finished_before_the_handoff_stamp_is_not_overwritten(
     assert ctx.status == "succeeded" and ctx.failure is None
     assert pin.record()["state"] == "landed" and pin.record()["landed_sha"] == SHA
     assert "land_job" not in pin.record() and len(pin.mints) == 1
+    _tree_and_branch_gone(pin)
 
 
 def test_a_commit_made_before_a_crash_is_adopted_not_charged(

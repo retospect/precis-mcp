@@ -81,6 +81,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import signal
 import socket
 import subprocess
 import threading
@@ -489,12 +490,25 @@ def spawn(
         raise
     if adm is not None:
         ttl = footprint.hold_ttl_s()
-        threading.Thread(
-            target=_babysit,
-            args=(store, proc, adm, ttl),
-            name=f"admission-babysit-{int(proc.pid)}",
-            daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=_babysit,
+                args=(store, proc, adm, ttl),
+                name=f"admission-babysit-{int(proc.pid)}",
+                daemon=True,
+            ).start()
+        except Exception:
+            # The child runs but nobody will ever know its pid (the caller
+            # sees only the raise) and no babysitter renews or releases its
+            # holds: stop its process group (``start_new_session``: the group
+            # is the child's own) and release the holds before the error
+            # propagates, like a Popen failure does.
+            try:
+                os.killpg(int(proc.pid), signal.SIGKILL)
+            except OSError:
+                pass
+            _release_quietly(store, adm)
+            raise
     return int(proc.pid)
 
 

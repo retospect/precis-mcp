@@ -240,15 +240,11 @@ def test_gripe_fix_shape(handler: TodoHandler, store: Store) -> None:
     # Pre-land brief (gr570506): the reviewer reads the pushed branch diff,
     # not a landed squash — LAND lets the held land_slice mint.
     assert "Review BEFORE land" in _body(store, mint.ids["review"])
-    assert "git fetch -q origin" in _body(store, mint.ids["review"])
-    # The branch lives under the hidden refs/factory/ namespace (no GitHub
-    # branch, no PR): a plain fetch skips it, so the brief fetches it by
-    # name into the origin/slice/<id> the diff reads.
-    build = mint.ids["build"]
-    assert (
-        f"git fetch -q origin +refs/factory/slice/{build}:"
-        f"refs/remotes/origin/slice/{build}"
-    ) in _body(store, mint.ids["review"])
+    # The branch is in the build host's hub and the reviewer's clone holds
+    # it before the session starts (gr741695): the body names no fetch. A
+    # fetch of the old GitHub ref fails in a clone, whose origin is the hub.
+    assert "git fetch" not in _body(store, mint.ids["review"])
+    assert "refs/factory/slice/" not in _body(store, mint.ids["review"])
     assert f"git diff origin/main...origin/slice/{mint.ids['build']}" in _body(
         store, mint.ids["review"]
     )

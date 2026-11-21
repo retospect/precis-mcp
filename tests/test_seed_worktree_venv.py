@@ -181,3 +181,74 @@ def test_main_checkout_resolves_via_git_common_dir() -> None:
         check=True,
     )
     assert mod._main_checkout(Path.cwd()) == Path(out.stdout.strip()).parent
+
+
+def _clone_of_host(tmp_path: Path) -> tuple[Path, Path]:
+    """A host checkout with one commit and a standalone clone of it (the
+    shape of a factory attempt: ``<clone>/.git`` is its own repository)."""
+    import subprocess
+
+    host, clone = tmp_path / "host", tmp_path / "clone"
+    host.mkdir()
+    subprocess.run(["git", "init", "-q", str(host)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(host),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "root",
+        ],
+        check=True,
+    )
+    subprocess.run(["git", "clone", "-q", "--local", str(host), str(clone)], check=True)
+    return host, clone
+
+
+def test_main_checkout_of_a_clone_is_the_clone_itself(tmp_path: Path) -> None:
+    """The reason the no-src case needs a guard: in a clone the git common
+    dir is the clone's own ``.git``, so the "main checkout" it names is the
+    tree."""
+    _, clone = _clone_of_host(tmp_path)
+    assert mod._main_checkout(clone).resolve() == clone.resolve()
+
+
+def test_clone_without_src_is_a_clean_noop(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    host, clone = _clone_of_host(tmp_path)
+    _fake_venv(host, tmp_path / "third")  # a venv exists, but not where we look
+
+    assert mod.main(["seed-worktree-venv", str(clone)]) == 0
+
+    out = capsys.readouterr().out
+    assert "its own repository" in out
+    assert "nothing done" in out
+    assert "pass [src]" in out
+    assert not (clone / ".venv").exists()
+
+
+def test_clone_with_explicit_src_seeds_from_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    host, clone = _clone_of_host(tmp_path)
+    stale = tmp_path / "third"
+    stale.mkdir()
+    _fake_venv(host, stale)
+
+    assert mod.main(["seed-worktree-venv", str(clone), str(host)]) == 0
+
+    assert "seeded" in capsys.readouterr().out
+    assert (
+        (clone / ".venv" / "bin" / "pytest")
+        .read_text(encoding="utf-8")
+        .startswith(f"#!{clone.resolve()}/.venv/bin/python\n")
+    )
+    assert not list(clone.glob(".venv-seed-*"))

@@ -2083,9 +2083,9 @@ def run_stall_pass(store: Store, now: datetime, dry_run: bool = False) -> StallR
 # (tag off, ``STATUS:doing`` back to ``open``, ``meta.rescue`` plus the
 # ``rearmed_*`` floor stamps, a
 # ``brief:`` comment the rebuilt run reads back through
-# ``run_slice._brief_parts``, resuming on ``slice/<id>`` — the tree and
-# branch are reused; nothing pins the run to the host holding the tree,
-# the known gap); ``rescue: NOFIX fixed <sha> — <why>`` closes the node
+# ``run_slice._brief_parts``, continuing from the node's
+# ``meta.build_ref`` in a fresh clone, pinned to the host whose hub holds
+# that work, gr741695); ``rescue: NOFIX fixed <sha> — <why>`` closes the node
 # ``won't-do`` and the plan's gripe ``verify`` with no ask once ``<sha>``
 # is an ancestor of origin/main in the worker's fix repo (gr635531; an
 # unverifiable sha falls through to the ask below); ``rescue: NOFIX —
@@ -2637,10 +2637,14 @@ def _diagnose_body(store: Store, plan: Any, n: Any, cls: str) -> str:
             "",
             "## What you may do",
             "Read through the precis MCP (`get`, `search` of todo, gripe, "
-            f"job) and run read-only git (`git log {branch}`, `git show "
-            f"{head or '<sha>'}`, `git diff origin/main...{branch}`; the "
-            "branch may not be in your clone — then say so and use the "
-            "head sha and the log tail). You may NOT `put`, `edit`, "
+            f"job) and run read-only git (`git show {head or '<sha>'}`, "
+            f"`git log {head or '<sha>'}`, `git diff origin/main..."
+            f"{head or '<sha>'}`). The work is in the build host's hub "
+            f"under `refs/factory/build/{n.id}/`, not on a local branch: "
+            "if your clone lacks the commit, run `git fetch -q origin "
+            f"'+refs/factory/build/{n.id}/*:refs/remotes/build/*'` once; "
+            "if that fails, say so and use the head sha and the log tail. "
+            "You may NOT `put`, `edit`, "
             "`tag`, `link` or `delete` anything, mint nothing, commit "
             "nothing, push or ship nothing, and do not tag this todo "
             "done (the tick reads your reply and closes it).",

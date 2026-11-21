@@ -580,10 +580,9 @@ returns `STATUS:doing` to `open` (the tick only dispatches `open`),
 stamps `meta.rescue` (`n`, `at`, `diagnose`, `cls`) and the re-arm floor
 (`rearmed_after_job` on the newest ended job, `rearmed_ask_at`,
 `rearmed_answer` — so an infra-red land's re-land stays off), and posts
-the corrected `brief:` comment the rebuilt run reads; the run resumes
-on `slice/<id>` through `run_slice._ensure_worktree` (the tree and
-branch are reused; nothing pins the run to the host holding the tree —
-on another host it starts from origin/main and rebuilds). `rescue:
+the corrected `brief:` comment the rebuilt run reads; the run continues
+from the task's newest pushed work (`meta.build_ref`) in a fresh clone,
+pinned to the host whose hub holds it (§Disposable workspaces). `rescue:
 NOFIX fixed <sha> — <why>` (gr635531) closes the node `won't-do` and
 the plan gripe `verify` with no ask when `<sha>` is an ancestor of
 origin/main in the worker's fix repo (`PRECIS_FIX_REPO_DIR`); an
@@ -677,9 +676,10 @@ A slice host is any worker whose heartbeat advertises `repo_checkout`,
 `claude_bin` and `git`. No host is named anywhere: `run_slice` and
 `lane_health` are claimed
 only by a worker advertising all three; `land_slice`, `release_cut`,
-`release_deploy` and `release_confirm` need `repo_checkout` + `git` (the
-lander and a re-cut, deploy or confirm stay pinned to the host that ran
-the slice or the cut). Until a host
+`release_deploy` and `release_confirm` need `repo_checkout` + `git` (a
+task's next build, review and land stay pinned to the host whose hub
+holds its work, a re-cut, deploy or confirm to the host that ran the
+cut). Until a host
 qualifies, the job waits `STATUS:queued` — it is not failed or counted as
 an attempt — the sweeper raises `scheduler/unschedulable:<job id>`, and
 after 10 min the tick notes `td<id>: job jo<N> queued <m> min — no host
@@ -714,15 +714,17 @@ next heartbeat advertises the tokens. To check what a host advertises:
 
 The other settings a slice host reads:
 
-- `PRECIS_SLICE_ROOT`: the repo checkout `run_slice` cuts `slice-td<id>`
-  worktrees (branch `slice/<id>`) under. Default: the main checkout of
-  the repo the worker runs from. Set it when the worker has no git
-  checkout around its code. A leftover `slice-td<id>` branch from an
-  earlier attempt is renamed to `slice/<id>`.
+- `PRECIS_SLICE_ROOT`: the host checkout. Its git common dir holds the
+  hub (`precis-hub.git`), and `run_slice` and `land_slice` cut their
+  attempt clones under its `.claude/worktrees/`
+  (§Disposable workspaces). Default: the main checkout of the repo the
+  worker runs from. Set it when the worker has no git checkout around
+  its code.
 
-  Finished stacks: a landed slice's `precis-test-slice-td<N>` compose
-  project is brought down (`-v`) before its worktree is removed, and
-  every land launch first sweeps the host's other slice stacks
+  Finished stacks: an attempt folder's compose project
+  (`precis-test-<folder name>`) is brought down (`-v`) whenever the
+  folder is dropped, and every land launch first sweeps the host's other
+  slice stacks
   (`precis.workers.slice_stacks`): gone trees (`-v`), quiet stacks idle
   past `PRECIS_SLICE_STACK_IDLE_S` (default 3600 s — the gate-cache
   volume is kept) and the oldest quiet stacks over
@@ -792,32 +794,36 @@ The other settings a slice host reads:
   `src/precis/workers/repo_land.py`. For a non-default repo the only
   generator admitted is a reviewer (`templates.mint_reviewer(repo=)`),
   and only when the profile sets `reviewer` (catpath does, td659522 step
-  5): it runs read-only in a detached tree of the repo's clone at the
-  landed sha (`run_slice._cut_review_tree`) and leaves one verdict. Every
+  5): it runs read-only in its own attempt clone, cut from the
+  repository's hub at the landed sha, and leaves one verdict. Every
   other generator node stays refused there. Its review target is checked
   at launch, not at submit: a target that does not resolve yet is an
   attempt-free `review-wait`, backed off under the attempt-free cap.
 - A non-default repo builds from its `lanes.RepoProfile`
   (`lanes.REPO_PROFILES`). `run_slice.submit` finds the clone through
   `PRECIS_SLICE_REPOS`, writes the profile's exclude lines into the
-  clone's `.git/info/exclude`, fetches the base (`run_slice.fetch_base_tip`: a fresh
+  clone's and the attempt clone's `.git/info/exclude`, fetches the base (`run_slice.fetch_base_tip`: a fresh
   ops gitdir outside the clone under the factory git credential, so no
   credential-bearing git runs inside the clone) and refuses unless the
   rev the precis `origin/main` `uv.lock` pins for the package is an
   ancestor of the repo's `origin/<base>` (`run_slice._prepare_repo`). The
   session gets a repo-specific brief (`run_slice._render_repo_brief`:
   read-first files, setup and lint commands, touched tests only, the
-  profile's deny paths, and rules that beat the task text: no fetch,
-  rebase, push, version bump, tag or pull request; after a lander conflict
-  handoff, one `git merge origin/<base>` is allowed), those deny paths, the
-  profile's `UV_PYTHON` and no precis MCP.
+  profile's deny paths, and rules that beat the task text: no pull, no
+  merge from origin, version bump, tag or pull request; a lane that
+  pushes rebases onto `origin/<base>` from the local hub and pushes its
+  attempt ref as its finish steps say, and a lander conflict is resolved
+  in that rebase; Codex, which cannot push, gets no fetch, rebase or
+  push, and after a lander conflict handoff one `git merge
+  origin/<base>`), those deny paths, the profile's `UV_PYTHON` and no
+  precis MCP.
 
 Opening a second repo, in order:
 
 1. Clone it once on the slice host with an https origin and no
    credentials in the URL. The worker never clones; it refuses a missing
    clone, an `origin` that is not the profile's https remote, or one with
-   userinfo.
+   userinfo. The repository's hub lives in that clone's git dir.
 2. Set `PRECIS_SLICE_REPOS` in the worker's environment: a JSON object,
    repo name to absolute clone path on that host, e.g.
    `{"<repo>": "/path/to/clone"}`. The slice lane (playbook 20g) and the
@@ -848,9 +854,12 @@ How a second-repo slice lands (`src/precis/workers/repo_land.py`), in order:
 
 1. Take the repo's lease (`src/precis/workers/repo_lease.py`). A land that
    finds it taken parks and tries again every two minutes.
-2. Fetch the base tip (`run_slice.fetch_base_tip`).
-3. Squash the slice branch into one commit in a throwaway land tree cut on
-   that tip.
+2. Read the commit to land from the repository's hub: `params.ref` must
+   hold `params.head` (a land without `ref` is refused); fetch it into
+   the host checkout. Then fetch the base tip (`run_slice.fetch_base_tip`).
+3. Squash that commit into one commit in the job's land tree, a detached
+   worktree of the host checkout (`slice-td<id>-land-j<job>`) cut on that
+   tip.
 4. Refuse the profile's deny paths and any change of `[project].version`
    in `pyproject.toml`.
 5. Launch the profile's setup, lint and test commands detached, under an
@@ -862,13 +871,14 @@ How a second-repo slice lands (`src/precis/workers/repo_land.py`), in order:
    admission rules (`land_slice._repo_refusal`: the lander, `factory.open_repos`,
    the todo's tag against the job's repo), stamp `meta.landed_repo`, then
    push that sha as a plain fast-forward (`factory_git_mirror.push_cas`).
-7. Write `landed: <sha>`, close the todo, remove the land tree, the slice
-   tree and the local branch, release the lease.
+7. Write `landed: <sha>`, close the todo, remove the land tree, delete the
+   task's hub refs, clear `meta.build_ref` and `meta.conflict`, stamp
+   `meta.build_floor`, release the lease.
 
 On the todo: a `landed: <sha>` comment on success. A `handoff: lander:`
 comment marks a charged attempt: a red gate, a merge conflict, a deny-path
-hit or a version change. The todo reopens with `attempt:<n>` and the branch
-stays for the next build. These are attempt-free and the land is minted
+hit or a version change. The todo reopens with `attempt:<n>` and the hub
+refs stay for the next build. These are attempt-free and the land is minted
 again: a raced or unverifiable push, a gate that was killed or died without
 an exit code, a setup failure with no dependency file in the diff, a
 factory git mirror refresh that still fails after its retries
@@ -1102,8 +1112,8 @@ Known limits:
   td574934 A3 hold deploys. The poll re-checks the branch diff and
   working tree; a hit fails the attempt and reopens the todo. The
   session never lands: a clean exit mints a `land_slice` job on the
-  same host that runs `scripts/ship --quick` in the worktree
-  (`PRECIS_SHIP_BIN` overrides it), so the check is pre-land; that host
+  same host that runs `scripts/ship --quick` in its own clone cut from
+  the hub (`PRECIS_SHIP_BIN` overrides it), so the check is pre-land; that host
   needs the ship's git push and land_notify DSN. A land whose diff
   touches an `ENGINE_PATHS` glob stamps `meta.engine_paths` on its job
   and ships `--checked` when the selector's answer is a small spot
@@ -1164,6 +1174,291 @@ Known limits:
   (env or the mounted secret) to reach the precis MCP, and the claude
   login under `HOME` (or `CLAUDE_CONFIG_DIR`); `ANTHROPIC_API_KEY` is
   not passed.
+
+## Disposable workspaces (where a build's work lives)
+
+Nothing important lives only in a build folder (gr741695). The rules are
+the docstrings of `src/precis/workers/job_types/_slice_ws.py` and
+`src/precis/utils/hub_hook.py`; this section is the operator's view.
+
+Where the work is, stage by stage:
+
+- **The hub.** One bare repository per host checkout, `precis-hub.git`
+  in the checkout's git common dir (`git -C <checkout> rev-parse
+  --path-format=absolute --git-common-dir`). The worker makes it
+  (`_slice_ws.ensure_hub`) and moves its `refs/heads/<base>` to
+  GitHub's tip by a hub-side fetch at each launch. Nobody works in it.
+  Builder traffic stays on the host: sessions push to the hub, never to
+  GitHub; only the lander writes to GitHub.
+- **A build or review.** Each `run_slice` job cuts its own fresh clone
+  `<checkout>/.claude/worktrees/slice-td<todo>-j<job>` from the hub, on
+  local branch `slice/<todo>`, `origin` = the hub. It starts at the
+  task's newest pushed attempt, else the base tip. No folder is reused
+  by a later job. A reviewer's clone gets the reviewed attempt's ref
+  fetched as `origin/slice/<target>`.
+- **The job's hub ref**, `refs/factory/build/<todo>/<job>`, one per job.
+  Lanes that push (Claude, Devin, Kimi) finish by committing, rebasing
+  onto the hub's `origin/<base>`, running the checks again, pushing to
+  that ref and reading it back. Codex does not push: the worker commits
+  and pushes after it exits.
+- **Job end.** The worker finalizes the folder (`_slice_ws.finalize`):
+  every tip it holds reaches the job's ref, unfinished work as one
+  `wip: snapshot` commit, other branches, stashes or an in-flight rebase
+  as extra parents of one more commit. The job's `meta.push.state` is
+  `pushed`, `empty` (nothing new), `withheld` (the hub's secret scan
+  refused) or `failed`. On `pushed` or `empty` the folder is dropped,
+  its compose test project with it. Otherwise it is kept: the task gets
+  a comment `run_slice: the folder <path> on host <host> was kept:
+  <why>.` and a warn alert `build folder kept: <folder>` is raised.
+  The job's own poll does this when its session ends. For a job that
+  ended any other way (a stop, a deadline, a crash) the host sweep does
+  it, within about half a minute. A `failed` push is tried again by the
+  sweep after 30, 60, 120 and 240 seconds before the folder counts as
+  kept; a `withheld` one is not, the secret has to leave the commits
+  first.
+- **A land.** `land_slice` cuts its own clone
+  `slice-td<todo>-land-j<job>` from the hub at `params.head`, points
+  its `origin` at GitHub and runs `scripts/ship` there. Green: the clone
+  is dropped, the task's hub refs deleted, `meta.build_ref` and
+  `meta.conflict` cleared and `meta.build_floor` stamped with the land
+  job's id (an attempt ref of an earlier job is stale from then on).
+  Red: nothing is saved, the hub already holds the commit; the clone is
+  dropped. The second-repository lander keeps a detached worktree of
+  the host checkout under the same name. `pin_bump` puts its commit in
+  the hub as its own attempt ref before it mints the land. A PR land
+  (`params.pr`) keeps its linked worktree.
+
+**No locks; one writer at a time.** Nothing here takes a lock, on a
+folder or in the hub. A job has its own clone and no job enters
+another's. Every save and every delete of a build folder runs in the
+worker's watch pass on its host (`ssh_node`, one worker at a time per
+host, one folder after another): the job's own poll when its session
+ends, else the host sweep (`run_slice.tidy`, at most every 30 seconds,
+`_slice_ws.sweep`). A launch cleans nothing up and `release` touches no
+folder. The sweep also raises the alert for each folder it keeps,
+resolves the alert of a folder that is gone and removes failed cuts
+(`*.cut-*`) and half-removed folders (`*.drop-*`) older than an hour.
+
+Three rules decide what the pass may do with a folder:
+
+- **Deleted only after a save in the same pass.** A folder is removed
+  only when a finalize of it in that pass came back `pushed` or
+  `empty`. A stored `meta.push` alone never licenses a delete; a
+  finalize of an unchanged folder gives the same commit again and
+  pushes nothing.
+- **Never under a live session.** Every launch leaves a run dir,
+  `<ops>/td<todo>/<32 hex>/` with `baseline`, `pid`, `handle`, `exit`
+  and `log` (`<ops>` is `precis-slice-ops` in the worker's temp dir).
+  A job whose stored handle names no process (a paused job, a launch
+  whose handle was never saved) is looked up there. A session found
+  alive keeps its folder, and a relaunch adopts it instead of starting
+  a second one. A process whose identity cannot be read in a pass (`ps`
+  timed out) counts as alive in that pass.
+- **No signal without an identity.** A stop signal goes to a process
+  group only when the launch recorded who its leader is and one read in
+  that pass confirms it, or the leader is gone and only its group's
+  members answer. Otherwise the pass waits; the job's deadline ends it.
+  A terminal job's session that still answers is stopped after 30
+  seconds and reported as stuck after 15 minutes.
+
+A launch for a task whose earlier build folder on the host is not yet
+settled waits for the sweep: one job event, `run_slice: td<N> launch
+waits for the earlier folder <folder> to be settled`, then a look every
+30 seconds. This costs no attempt. After 20 minutes (the push retries
+plus their allowance) the job ends attempt-free (`workspace`) and the
+message names the earlier job's state; the usual cause is a job row
+that never went terminal or a session process that will not die. A
+folder whose job row is missing, or belongs to another task, is not
+waited for.
+
+**What a kept-folder alert asks for.** The alert `build folder kept:
+<folder>` says which case it is:
+
+- the work is not in the hub (a failed or withheld push): read and push
+  it, see "A kept folder" below;
+- the work is in the hub but the folder could not be removed: remove
+  the directory by hand;
+- a process still answers in it after the job ended: find and stop the
+  process, then the sweep settles the folder;
+- no job of this worker's database owns the folder (it was cut under
+  another database, or its job row is gone): look at it by hand, the
+  sweep never judges it;
+- a leftover (`*.cut-*`, `*.drop-*`, or a name that is no attempt
+  folder) that could not be removed: it holds no work the hub lacks,
+  remove it by hand;
+- the sweep itself failed on it: the alert quotes the error.
+
+**Hub tidy-up.** Once a day the sweep runs git's incremental
+maintenance on the hub (`git maintenance run --task=loose-objects
+--task=incremental-repack`). A run packs loose objects and combines
+small packs, and deletes only the files the run before it replaced, so
+a clone, a push or a fetch beside it loses nothing and nothing waits
+for it. It never removes objects nothing refers to (a landed task's
+old attempts), so a hub grows slowly. Never run `git gc` or `git
+repack -d` on a hub while jobs can start: they write and delete packs
+in one step, and a clone that copies files in that moment can come out
+incomplete. With the factory stopped and no `run_slice`/`land_slice`
+job running on the host:
+
+    git --git-dir "$hub" gc --prune=2.weeks.ago
+
+(`--prune=now` reclaims everything at once, including the commits of an
+attempt ref deleted by mistake.) The tidy-up needs git 2.30 or newer;
+on an older git the sweep logs `hub maintenance FAILED` once a day and
+nothing else changes.
+
+**Host pin.** A hub is local to its host. While a task's
+`meta.build_ref` names a host, its next build, review and land are
+minted with `params.target_node` = that host (job `meta.hub_pin`); a
+`target_node` naming another host loses to the pin, with a note.
+
+**A task's newest work.** `get(kind='todo', id=T)` shows
+`meta.build_ref = {state, ref, sha, head, wip, by, note, host, at}`:
+`ref` is the hub ref, `sha` its tip, `head` the builder's last real
+commit (`sha`, or the commit under a `wip:` snapshot; a land takes
+`head`), `by` builder or worker, `host` the build host. A job's own
+result is its `meta.push` (same shape); `meta.start` is the commit it
+started from. On the build host:
+
+    hub=<git common dir>/precis-hub.git
+    git --git-dir "$hub" for-each-ref refs/factory/build/<T>/
+    git --git-dir "$hub" log --oneline main..refs/factory/build/<T>/<J>
+    git --git-dir "$hub" reflog refs/factory/build/<T>/<J>
+
+A launch whose recorded ref no longer holds `build_ref.sha` ends
+attempt-free (`workspace`) with the reflog command in its message: put
+the ref back, or clear `meta.build_ref`. It never falls back to the
+base.
+
+**A kept folder.** On the build host, read it (`git status`, `git log
+origin/<base>..`). To keep its work, push it from the folder with the
+worker's flag; the hub's hook refuses a push with no session or worker
+identity:
+
+    PRECIS_HUB_WORKER=1 git push origin HEAD:refs/factory/build/<T>/<J>
+
+Never add `+`: it can drop commits the hub ref already holds. A refusal
+as not a fast-forward means the hub holds other work under that ref:
+leave the folder as it is and file a gripe naming it. A `precis-hub:
+refused (secret-scan)` names `path:line`: take the secret out of every
+commit (amend or rebase) and push again. The next attempt continues
+from the newest attempt ref by job id at or above `meta.build_floor`.
+To discard the work, remove the folder (bring its `precis-test-<folder
+name>` compose project down with `-v` first, if it has one). The alert
+clears at the next sweep on that host once the folder is gone (within
+about a minute while a worker runs there), or by hand:
+`tag(kind='alert', id=<id>, add=['alert-state:resolved'])`.
+
+**A task pinned to a dead host.** The pinned job stays queued. After 30
+minutes the dispatcher files one ruling ask, `td<N>: job jo<J>
+unplaceable <m>m — provision a host, wait, or drop the node?`, whose
+body names the pin. A `start over` answer cannot help: its launch must
+run on that host too. To release the pin by hand: cancel the job and
+clear `meta.build_ref` (and `meta.conflict` and `meta.conflict_tries`,
+and `meta.pending_land`, if set) on the task. That loses the work held
+on that host: the task builds again from the base. The agent edit
+doors do not take these keys; it is an operator write on prod:
+
+    scripts/prod-psql "UPDATE refs SET meta = meta - 'build_ref' - 'conflict'
+      - 'conflict_tries' - 'pending_land', updated_at = now() WHERE ref_id = <T>"
+
+**A land conflict.** A land red on a rebase or merge conflict against
+the base stamps `meta.conflict = {head, ref, base_tip, files, at}` on
+the task, which reopens with `meta.build_ref` standing. The next build
+is a conflict-only attempt (`params.conflict`, `try` from 1): tries 1
+and 2 on the rung the build ran on, try 3 on the ladder's top rung,
+counted in `meta.conflict_tries` and not as ordinary attempts. A try
+fails when it ends without pushed work, when the land conflicts again,
+or when its review says FIX. A pushed resolution gets a resolution-only
+pre-land review (`params.resolution = {of, ref}`; the reviewer reads a
+`git range-diff`), then its land; both claim first. While that land is
+pending, the tick mints no other land of the same repository and base,
+for at most 45 minutes from the push. A third failed try files one
+coordinator ask, `td<N>: land conflict not cleared by 3 attempts — a
+coordinator call`: resolve by hand or leave a `brief:` and close the
+ask `acknowledged` (a fresh set of tries), answer `start over`, or close
+the task `STATUS:won't-do`. Once a later land ends for another reason,
+or `build_ref` is gone, the tick clears `meta.conflict` and
+`meta.conflict_tries` with a note.
+
+**Harness variables in a clone.** A clone's git dir is its own, so the
+worker names the host's shared state in the env: a build session gets
+`PRECIS_SLICE_ID=td<todo>` and `PRECIS_SLICE_JOB=<job>` (the identity
+the hub's hook admits) and `PRECIS_GATE_SLOT_ROOT` (the host checkout's
+git common dir, so `scripts/test` queues on the host's gate); a land
+clone gets `PRECIS_GATE_SLOT_ROOT` and `PRECIS_ROUND_STATE_ROOT` (so a
+`ship --onto` reads the host's release round journal and lock). Without
+them, `scripts/lib/gate-slot.sh` and `scripts/lib/round-lock.sh` in an
+attempt clone derive the host's common dir from its path, or refuse; a
+set but missing directory refuses.
+
+Still the host's, unchanged: the per-slice Docker test stack and its
+cap, and the lander's own `index.lock` wait in its ship folder (an
+attempt-free `index-lock` re-land without a builder).
+
+Cutover checklist (the deploy that brings this in):
+
+- Zero queued AND running `run_slice`/`land_slice` jobs before the
+  deploy.
+- Survey, then remove, the old `slice-td<id>` worktrees and local
+  `slice/<id>` branches on the build host. One with a large unsaved
+  change goes to Reto first. A launch imports a task's work from
+  GitHub's `refs/factory/slice/<id>` once, so only work that never left
+  the host is at stake; a land minted before the switch (no `ref`) also
+  reads the local `slice/<id>`, so keep that branch until it landed.
+- Open asks titled "index.lock stuck/re-formed" no longer close by
+  themselves: close them by hand.
+- The worker's interpreter must be able to import `precis`: the hub's
+  hook stub runs it.
+- An existing hub gets its hook path and the new hook stub at the first
+  `ensure_hub`.
+- `git --version` as the worker's user is 2.30 or newer (the hub's daily
+  tidy-up).
+
+Before a second build host is enabled:
+
+- git 2.30 or newer on that host.
+- Every worker process on a host gets the same `PRECIS_SLICE_ROOT` and
+  `PRECIS_SLICE_REPOS`: a process with another list would resolve the
+  other's kept-folder alerts on every pass.
+- Lane choice must respect the pinned host (`_escalate`,
+  `_review_lane` and the conflict path's try 3 do not check it yet).
+- A reviewer whose targets sit on different hosts needs a rule (today it
+  is pinned to the first by id).
+- Stale refs of a task in another host's hub after a start-over must be
+  handled.
+- Releasing a task pinned to a dead host must be an answer on its ask,
+  not a hand edit of the task's meta.
+- The Codex sandbox can write the hub directory (gr742453).
+
+Known limits:
+
+- A land minted directly by a builder job, or already queued, is not
+  held behind a pending conflict resolution.
+- Work a session has not pushed is lost if the host's disk is lost
+  before the job ends.
+- The watch pass is one at a time per host by a database lock with two
+  exceptions, as for every job type: the lock's connection cannot be
+  opened, or a pass holds it longer than 15 minutes. Two workers on the
+  host can then run the pass at once.
+- A clone cut in the same second as the hub's daily tidy-up can fail on
+  a file deleted under it. The launch then ends attempt-free
+  (`workspace`) and the next one succeeds.
+- A second-repository squash conflict takes the ordinary charged
+  handoff, not the conflict path.
+- The hub's daily tidy-up runs inside the watch pass and outside the
+  sweep's 60-second budget: once a day the polls of that host can wait
+  on it, for seconds as a rule, for at most five minutes.
+- A Devin lane's acceptance-test run whose process identity could not
+  be recorded at its launch is never signalled. The poll holds the
+  folder until the job's deadline; after that the sweep does not count
+  that run, and can save the folder while it still writes.
+- A new attempt can start while an earlier folder of the task with a
+  stored `pushed` record is still on disk. If that folder held work
+  newer than its record, the sweep saves it under the earlier job's
+  ref and the new attempt does not continue from it.
+- Run dirs under the worker's `precis-slice-ops` are never removed
+  (gr743294).
 
 ## Slice write scope (mcp.slice_scope)
 
@@ -1251,9 +1546,10 @@ known set fails closed — a minted `scope=` can only name these.
 
 The scope value a python get takes is the checkout alias, not a file:
 `main::<qualname>` is the shared `/main` checkout (it can lag the
-slice's branch); `wt-slice-td<id>::<qualname>` reads the slice's own
-worktree when the alias resolves — the python kind only sees worktrees
-under the server's own checkout. Reads the brief tells the session:
+slice's branch). The python kind's `wt-<tree>` aliases come from the
+checkout's linked-worktree registry, and an attempt clone is not a
+linked worktree, so the slice's own clone is never indexed: the session
+reads its files directly. Reads the brief tells the session:
 `search(kind='python', mode='pattern', q='<name>')` first, then
 `get(kind='python', id='main::<qualname>', view='source')`.
 

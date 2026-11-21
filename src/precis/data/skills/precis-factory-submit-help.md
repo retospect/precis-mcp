@@ -62,7 +62,7 @@ tag(kind="todo", id=<root>, add=["plan:<root>"])
 put(kind="todo", parent_id=<root>,
     text="Add --json to the board export",
     body="Implement … Acceptance: scripts/test tests/test_board.py. "
-         "Commit on this branch and stop — the lander lands it.",
+         "Commit on this branch — the lander lands it.",
     tags=["plan:<root>"],
     meta={"llm_tier": None, "op": {"type": "run_slice", "params": {"lane": "devin"}},
           "task_class": "code"})
@@ -87,25 +87,28 @@ a `plan_tick` ([[precis-todo-tree-help]]). Never give a builder node
 
 ## What the pipeline does with it
 
-1. **build** — `run_slice` launches the lane's vendor in a worktree on
-   `slice/<todo id>` with the body as its brief. A clean committed
-   exit pushes the branch to origin as the hidden ref
-   `refs/factory/slice/<id>` (no GitHub branch, no PR) and, when a
+1. **build** — `run_slice` launches the lane's vendor in a fresh clone
+   on `slice/<todo id>`, cut from the build host's hub, with the body as
+   its brief. The work goes to the job's hub ref
+   `refs/factory/build/<todo>/<job>` (no GitHub branch, no PR); the
+   worker saves what a session left. A clean committed exit, when a
    `preland_review` reviewer gates it, stamps `meta.pending_land` and
    closes the todo — the land is held, not minted.
 2. **review** — the released reviewer (another vendor than the
-   builder) fetches that ref by name (`git fetch origin
-   +refs/factory/slice/<id>:refs/remotes/origin/slice/<id>` — a plain
-   fetch skips it), reads `git diff origin/main...origin/slice/<id>` and posts
-   one verdict comment: `review: LAND` · `review: FIX — <findings>` ·
+   builder) runs in its own clone, into which the worker fetched that
+   ref as `origin/slice/<id>`; it reads `git diff
+   origin/main...origin/slice/<id>` and posts one verdict comment: `review: LAND` · `review: FIX — <findings>` ·
    `review: REVERT — <why>`. LAND mints the held `land_slice`;
    FIX/REVERT send the branch back to the builder with the findings as
    its handoff — nothing is on main to fix or revert. Three send-backs
    in a row, or the same finding twice running, stop the loop: the
    build is held on an `ask-coordinator` ask instead of rebuilding.
-3. **land** — `land_slice` runs `scripts/ship --quick`: rebase, lint,
-   squash-merge onto main, `landed: <sha>` on the todo, then deletes
-   branch and worktree. **No pull requests, ever** — `gh pr` is denied
+3. **land** — `land_slice` cuts its own clone from the hub at the pushed
+   head and runs `scripts/ship --quick`: rebase, lint, squash-merge onto
+   main, `landed: <sha>` on the todo, then drops the clone and deletes
+   the task's hub refs. A rebase conflict at land sends the task to a
+   conflict-only attempt and a resolution review before the next land.
+   **No pull requests, ever** — `gh pr` is denied
    in the lane settings; the squash merge is the only path to main.
 4. Downstream nodes — a `sha-in-prod` gate fills from the `landed:`
    sha, a validate task re-proves the fix. The root closes when they

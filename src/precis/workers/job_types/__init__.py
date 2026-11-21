@@ -35,10 +35,17 @@ vendor. Availability drives fallback so a held or saturated lane cannot
 keep a pre-land review and its build's file-overlap hold waiting when
 another lane can run the review.
 
-Park snapshots scan every unpublished commit, because even credentials
-deleted at the tip become fetchable when history is pushed. Parked resumes
-require the recorded snapshot before cleanup; unavailable saves must resume
-on their saving host or receive an explicit start-over.
+Build folders are disposable (gr741695, ``_slice_ws``): every ``run_slice``
+and ``land_slice`` job cuts its own clone of the host's hub (a bare
+repository, one ref ``refs/factory/build/<todo>/<job>`` per attempt) and no
+job enters a folder another job made. The builder pushes its ref before it
+exits; the worker's finalize pushes for a builder that did not, a
+``wip:`` snapshot of uncommitted work included, and the hub's hook scans
+every pushed commit because even credentials deleted at the tip become
+fetchable when history is pushed. A folder is dropped once the hub holds
+its head; the next attempt, the review and the land start from the hub on
+the host named by ``meta.build_ref.host`` (a start-over answer deletes the
+task's attempts).
 
 ``run_slice`` delegates CLI argv, stdin and output parsing to
 ``_slice_adapters``. Only ``claude_p`` gets a precis MCP grant; Codex and
@@ -46,15 +53,16 @@ Devin hand off through their final output, and all three pass the same
 pre-land deny-path check. Persisting ``meta.adapter`` keeps an in-flight
 job's parser stable when lane configuration changes. Devin's explicit
 model must be in the selected lane's list to prevent paid overage.
-Devin builds leave edits uncommitted; workspace sandboxing is off by
-default (``PRECIS_DEVIN_SANDBOX=1`` opts in), because cache/temp write
-scopes and Docker under Seatbelt remain unverified.
-An index-lock wait during reuse carries forward the previous job's
-skipped-commit stamp so a later retry can salvage finished edits before
-resetting the worktree.
+Claude, Devin and Kimi commit, rebase and push their own attempt ref
+(``Adapter.pushes``); Codex, whose sandbox keeps ``.git`` read-only, leaves
+its edits and the worker commits and pushes after it exits. Workspace
+sandboxing is off by default (``PRECIS_DEVIN_SANDBOX=1`` opts in), because
+cache/temp write scopes and Docker under Seatbelt remain unverified.
+A stale ``index.lock`` in a dead session's folder is simply removed; the
+job's folder has one owner.
 The coordinator supplies acceptance tests before launch: new files ride
-``params.acceptance_tests`` as path-to-source artifacts installed after
-worktree cleanup; checked-in paths come only from explicit Acceptance tests:
+``params.acceptance_tests`` as path-to-source artifacts installed in the
+fresh clone; checked-in paths come only from explicit Acceptance tests:
 or File set: lines in the body/latest brief, so quoted symptom paths do
 not become acceptance requests. Acceptance runs exclude nightly tests,
 matching the regular check gate.
@@ -87,7 +95,7 @@ user's uv install directory as a fallback so non-login coder services can
 run ship's nested helpers and the gate (gr702380). A clean exit whose
 session reported its commit blocked still lands: the worker commits the
 tree under a generated subject when no commit-msg.txt exists (gr702644),
-and a commit that fails park-saves the tree like every failed run.
+and work a commit that fails leaves is pushed as a ``wip:`` snapshot.
 
 Builder ``skills:`` markers create skill-editor children after a successful
 land. A receipt under the source row lock prevents duplicate follow-ups
@@ -375,6 +383,14 @@ class JobTypeSpec:
     #: poison failure or operator/deadline terminalization even when
     #: process identity cannot authorize ``kill``.
     release: Callable[..., Any] | None = None
+    #: Optional host sweep, ``tidy(store, node)``. ``ssh_node`` calls it once
+    #: per watch pass, at the end, under the host's watch lock: one worker at
+    #: a time per host, after every in-flight job was polled and none beside
+    #: it. For work that belongs to no job in hand — ``run_slice`` saves and
+    #: drops the attempt folders of ended jobs there. A hook that raises is
+    #: logged and never breaks the pass; it is not called on a tick whose
+    #: watch lock another worker holds. The hook throttles itself.
+    tidy: Callable[..., Any] | None = None
     #: Optional model the job_type loads when ``params.model`` is omitted
     #: (td655172) — the dispatch fallback and footprint admission share
     #: this one definition, so an implicit default never bypasses VRAM
@@ -802,6 +818,7 @@ def _load_run_slice() -> JobTypeSpec:
         reconcile=run_slice.reconcile,
         kill=run_slice.kill,
         release=run_slice.release,
+        tidy=run_slice.tidy,
         wall_seconds=run_slice.wall_seconds,
     )
 
@@ -1218,6 +1235,13 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "boundary_probe",
 )
 
+#: The job types that declare a ``tidy`` hook (:attr:`JobTypeSpec.tidy`).
+#: ``ssh_node`` loads these and no others on its watch pass: walking every
+#: known type there would import every job type's module into every
+#: worker (``fix_gripe`` alone pulls the LLM router in). A test holds this
+#: equal to the specs that set ``tidy=``.
+TIDY_JOB_TYPES: tuple[str, ...] = ("run_slice",)
+
 
 def get_job_type(name: str) -> JobTypeSpec | None:
     if name in _REGISTRY:
@@ -1544,6 +1568,7 @@ def known_job_types() -> list[str]:
 
 __all__ = [
     "JOB_TYPE_PLUGIN_GROUP",
+    "TIDY_JOB_TYPES",
     "JobTypeSpec",
     "Reconcile",
     "_reset_plugin_cache",

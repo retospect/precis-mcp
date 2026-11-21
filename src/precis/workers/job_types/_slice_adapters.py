@@ -6,10 +6,12 @@ gr574082) when ``PRECIS_SLICE_READ_MCP`` arms it, and otherwise use
 their host account login and return their handoff through output; the worker
 checks every vendor's branch against the lane's deny paths before land.
 Codex's ``workspace-write`` sandbox needs ``--add-dir`` for anything the
-session must write outside its tree — ``run_slice`` passes the shared
-git dir (worktree index/refs, objects, the gate queue + slot locks) and
-the Docker socket's parent so a slice can ``git commit`` and run
-``scripts/test`` (gr570533).
+session must write outside its tree — ``run_slice`` passes the host
+checkout's git common dir (the gate queue + slot locks) and the Docker
+socket's parent so a slice can run ``scripts/test`` (gr570533). Its own
+clone's ``.git`` stays read-only and it has no network (gr741695): it
+leaves its edits (and ``scratch/commit-msg.txt``) and the worker commits
+and pushes after it exits (:attr:`Adapter.pushes` is ``False``).
 Devin's model allowlist is supplied by the selected lane, never inferred
 from a vendor-wide default: unattended runs must not buy overage.
 
@@ -606,13 +608,19 @@ class Adapter:
     derives spend — devin's paid ATIF carries tokens only, priced at
     the account's ``devin models list`` rates (gr628944). An adapter
     with neither refuses a capped launch rather than run one unbounded
-    (codex/kimi report no spend at all — td601426)."""
+    (codex/kimi report no spend at all — td601426). ``pushes`` means the
+    session itself publishes its work to the host's hub before it exits
+    (a ``git push`` to its attempt ref, gr741695): the brief then ends in
+    the commit, rebase and push steps. Codex alone is ``False``: its own
+    sandbox keeps ``.git`` read-only and has no network, so it commits
+    when it can and the worker commits and pushes after it exits."""
 
     name: str
     mcp: bool
     read_mcp: bool = False
     budget_capable: bool = False
     budget_watch: bool = False
+    pushes: bool = True
 
     def argv(
         self,
@@ -817,7 +825,7 @@ class Adapter:
 
 ADAPTERS: dict[str, Adapter] = {
     "claude_p": Adapter("claude_p", mcp=True, budget_capable=True),
-    "codex_exec": Adapter("codex_exec", mcp=False, read_mcp=True),
+    "codex_exec": Adapter("codex_exec", mcp=False, read_mcp=True, pushes=False),
     "devin_tree": Adapter("devin_tree", mcp=False, read_mcp=True, budget_watch=True),
     "kimi_tree": Adapter("kimi_tree", mcp=False),
 }

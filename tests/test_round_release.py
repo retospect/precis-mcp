@@ -4420,3 +4420,128 @@ def test_a_waived_certificate_must_still_bind_to_the_candidate(
     assert "lacks its CI workflow/run/attempt certificate" in mod._refusal(
         rig.root, facts
     )
+
+
+def test_round_state_root_makes_a_clone_share_the_hosts_lifecycle_state(
+    rig: Rig, tmp_path: Path
+) -> None:
+    """A factory attempt is a standalone clone: its git common dir is its
+    own, so ``ship --onto``'s round lock and journal check read an empty
+    state and pass while the host's release is mid-deploy. With
+    PRECIS_ROUND_STATE_ROOT at the host's git dir both bind to the host's
+    lock file and round.json; an override that is not a directory refuses
+    instead of falling back."""
+    head = _cut(rig)
+    assert rig.round("deploy", DEPLOY_STUB_RC="7", **_verdict(head)).returncode == 7
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", "--local", str(rig.root), str(clone)], check=True
+    )
+    lib = Path(__file__).resolve().parents[1] / "scripts/lib/round-lock.sh"
+    host_git = str(rig.root / ".git")
+
+    def sh(code: str, **env: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", "-c", f'. "{lib}"; {code}'],
+            cwd=clone,
+            env={**rig.env, **env},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+    journal = "acquire_round_lock && release_journal_clear"
+    # Unchanged default: the clone's own (empty) state, so nothing blocks.
+    assert sh(journal).returncode == 0
+    # Overridden: the host's journal owns the head.
+    assert sh(journal, PRECIS_ROUND_STATE_ROOT=host_git).returncode == 1
+
+    with (rig.root / ".git/precis-round-lifecycle.lock").open(
+        "a", encoding="utf-8"
+    ) as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        assert sh("acquire_round_lock").returncode == 0
+        busy = sh("acquire_round_lock", PRECIS_ROUND_STATE_ROOT=host_git)
+        assert busy.returncode == 1
+        assert "lifecycle busy" in busy.stderr
+
+    bad = sh("acquire_round_lock", PRECIS_ROUND_STATE_ROOT=str(tmp_path / "nope"))
+    assert bad.returncode == 1
+    assert "not an existing directory" in bad.stderr
+
+
+def _attempt_clone(host: Path, name: str) -> Path:
+    clone = host / ".claude" / "worktrees" / name
+    clone.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "clone", "-q", "--local", str(host), str(clone)], check=True)
+    return clone
+
+
+def _round_sh(tree: Path, code: str, env: dict[str, str]) -> Any:
+    lib = Path(__file__).resolve().parents[1] / "scripts/lib/round-lock.sh"
+    env = {k: v for k, v in env.items() if k != "PRECIS_ROUND_STATE_ROOT"}
+    return subprocess.run(
+        ["bash", "-c", f'. "{lib}"; {code}'],
+        cwd=tree,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("name", ["slice-td7-j9", "slice-td7-land-j9"])
+def test_round_state_root_in_an_attempt_clone_derives_the_hosts_dir(
+    rig: Rig, name: str
+) -> None:
+    clone = _attempt_clone(rig.root, name)
+    out = _round_sh(clone, "round_state_root", rig.env)
+    assert out.returncode == 0, out.stderr
+    assert Path(out.stdout.strip()).resolve() == (rig.root / ".git").resolve()
+
+
+def test_round_state_root_of_a_clone_outside_the_layout_is_its_own(
+    rig: Rig, tmp_path: Path
+) -> None:
+    clone = tmp_path / "elsewhere" / "clone"
+    clone.parent.mkdir()
+    subprocess.run(
+        ["git", "clone", "-q", "--local", str(rig.root), str(clone)], check=True
+    )
+    out = _round_sh(clone, "round_state_root", rig.env)
+    assert out.returncode == 0, out.stderr
+    assert Path(out.stdout.strip()).resolve() == (clone / ".git").resolve()
+    # Names that only look like an attempt clone are not one.
+    for name in ("slice-td7-j9.cut-123", "slice-tdx-j9", "slice-td7-j9-foo"):
+        near = _attempt_clone(rig.root, name)
+        out = _round_sh(near, "round_state_root", rig.env)
+        assert out.returncode == 0, out.stderr
+        assert Path(out.stdout.strip()).resolve() == (near / ".git").resolve(), name
+
+
+def test_round_state_root_in_an_attempt_clone_with_underivable_host_refuses(
+    rig: Rig, tmp_path: Path
+) -> None:
+    clone = tmp_path / "nohost" / ".claude" / "worktrees" / "slice-td7-j9"
+    clone.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "clone", "-q", "--local", str(rig.root), str(clone)], check=True
+    )
+    out = _round_sh(clone, "round_state_root", rig.env)
+    assert out.returncode == 1
+    assert "PRECIS_ROUND_STATE_ROOT" in out.stderr
+    assert out.stdout.strip() == ""
+    locked = _round_sh(clone, "acquire_round_lock", rig.env)
+    assert locked.returncode == 1
+
+
+def test_attempt_clone_without_override_reads_the_hosts_journal(rig: Rig) -> None:
+    head = _cut(rig)
+    assert rig.round("deploy", DEPLOY_STUB_RC="7", **_verdict(head)).returncode == 7
+    clone = _attempt_clone(rig.root, "slice-td7-land-j9")
+    journal = "acquire_round_lock && release_journal_clear"
+    # The host's journal owns the head; the clone's own empty state must not
+    # be what this reads.
+    assert _round_sh(clone, journal, rig.env).returncode == 1

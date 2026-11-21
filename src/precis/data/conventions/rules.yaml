@@ -304,6 +304,30 @@
     startup-frozen config would be wrong. Keep the read small and commented.
   enforcers: []
 
+# --------------------------------------------------------------- grounding-eval
+- id: grounding-eval/proposal-only
+  file: docs/conventions/grounding-eval.md
+  section: null
+  title: "The grounding auditor stays proposal-only: register no apply door for grounding_audit proposals."
+  body: >-
+    The eval harness authorises no automatic writes, new model choice or service
+    activation. Any step beyond proposal-only is a separate owner decision
+    recorded in the convention, not implied by a green report.
+  enforcers:
+    - path: tests/test_garden_grounding_proposals.py
+      what: "grounding_audit is absent from MEMORY_APPLY_DETECTORS; the proposal stays pending"
+- id: grounding-eval/trial-safety-rails
+  file: docs/conventions/grounding-eval.md
+  section: "Trial protocol (opt-in, proposal-only)"
+  title: "A grounding trial must pass tests/test_garden_grounding_safety.py before its report is read."
+  body: >-
+    Untouched sentences are preserved, a stale sha is refused at apply,
+    human-origin and DREAM memories are held, apply/undo restores the body and
+    repeat runs add no proposals.
+  enforcers:
+    - path: tests/test_garden_grounding_safety.py
+      what: "preservation, stale-sha refusal, human/DREAM hold, apply/undo, repeat-run idempotence"
+
 # ------------------------------------------------------------------ invariants
 - id: invariants/forward-only-migrations
   file: docs/conventions/invariants.md

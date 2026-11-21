@@ -422,6 +422,7 @@ class TestAutoPrune:
 class _Ctx:
     def __init__(self, store: Any, params: dict[str, Any]) -> None:
         self.store = store
+        self.ref_id = 1
         self.meta: dict[str, Any] = {"params": params}
         self.events: list[tuple[str, str]] = []
         self.failure: str | None = None

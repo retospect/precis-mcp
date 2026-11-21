@@ -1484,119 +1484,26 @@ def test_identical_free_failures_cap_to_a_coordinator_ask(
     assert (res.dispatched, res.asks) == (1, 0)
 
 
-def test_plain_index_lock_waits_mint_no_ask(store: Store) -> None:
-    """gr684320 D4: a plain index-lock wait clears itself — never an ask."""
+def test_index_lock_waits_get_the_generic_free_failure_treatment(
+    store: Store,
+) -> None:
+    """The lander still stamps ``attempt_free = "index-lock"`` for its own
+    ship folder; it has no exemption any more — it asks at the same
+    :data:`FREE_RUN_CAP` as every other free reason."""
     mint = _one_task_plan(store)
     task = mint.ids["task"]
-    for _ in range(8):
+    for _ in range(pd.FREE_RUN_CAP - 1):
         _index_lock_job(store, task)
-    res = pd.run_pass(store)
-    assert res.asks == 0
-
-
-def test_stuck_index_lock_asks_at_two(store: Store) -> None:
-    mint = _one_task_plan(store)
-    task = mint.ids["task"]
-    for _ in range(pd.INDEX_LOCK_STUCK_CAP):
-        _index_lock_job(
-            store, task, "index-lock-stuck", index_lock={"age_s": 4000, "why": "x"}
-        )
+    plan = pd._load(store)
+    assert pd._free_done(plan, plan.nodes[task]) is None
+    _index_lock_job(store, task)
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (0, 1)
     (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
     ask_ref = store.get_ref(kind="todo", id=ask)
     assert ask_ref is not None
-    title = str(ask_ref.title)
-    assert f"x{pd.INDEX_LOCK_STUCK_CAP}" in title and "x6" not in title
-    # No reap evidence: the escalation ask stays open and the node stays
-    # parked — it never closes on its context alone (review td700716).
-    res = pd.run_pass(store)
-    assert (res.dispatched, res.asks) == (0, 0)
-    ask_ref = store.get_ref(kind="todo", id=ask)
-    assert ask_ref is not None and _status(store, ask) not in ("done", "won't-do")
-
-
-def test_index_lock_ask_closes_on_reap_evidence(store: Store) -> None:
-    """Recovery evidence — a job of the blocked node recording
-    ``index_lock_reaped`` after the ask was raised — closes the ask
-    acknowledged and re-arms the node."""
-    mint = _one_task_plan(store)
-    task = mint.ids["task"]
-    for _ in range(pd.INDEX_LOCK_STUCK_CAP):
-        _index_lock_job(store, task, "index-lock-stuck")
-    pd.run_pass(store)
-    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
-    _index_lock_job(
-        store,
-        task,
-        "index-lock",
-        index_lock_reaped={
-            "age_s": 4000,
-            "why": "held-by-git",
-            "forced": True,
-            "holders": ["1 00:40 git add"],
-        },
-    )
-    res = pd.run_pass(store)
-    assert _status(store, ask) == "done"
-    notes = [
-        c.text
-        for c in store.chunks.list_chunks_for_ref(ask)
-        if c.chunk_kind == "todo_comment"
-    ]
-    assert any("reaper (gr684320)" in str(t) for t in notes)
-    assert res.dispatched == 1
-
-
-def test_reformed_index_lock_parks_the_node(store: Store) -> None:
-    mint = _one_task_plan(store)
-    task = mint.ids["task"]
-    for _ in range(pd.INDEX_LOCK_REAP_CAP):
-        _index_lock_job(
-            store,
-            task,
-            "other",
-            index_lock_reaped={
-                "age_s": 2000,
-                "why": "held-by-git",
-                "holders": ["1 00:30 git add"],
-            },
-        )
-    res = pd.run_pass(store)
-    assert res.asks == 1
-    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
-    ask_ref = store.get_ref(kind="todo", id=ask)
-    assert ask_ref is not None and "re-formed x3" in str(ask_ref.title)
-
-
-def test_old_index_lock_ask_closes_itself(store: Store) -> None:
-    """A legacy pre-reaper ask (``attempt_free 'index-lock' x6``) has no
-    reap evidence, so the tick bootstrap-closes it exactly once, with an
-    explicit note, to let the owning host's reaper act — it does not
-    close on the context prefix alone (review td700716)."""
-    mint = _one_task_plan(store)
-    task = mint.ids["task"]
-    for _ in range(pd.INDEX_LOCK_STUCK_CAP):
-        _index_lock_job(store, task, "index-lock-stuck")
-    pd.run_pass(store)
-    (ask,) = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
-    store.stamp_ref_meta(
-        ask,
-        {
-            "ask": {
-                **_meta(store, ask)["ask"],
-                "context": "attempt_free 'index-lock' x6",
-            }
-        },
-    )
-    res = pd.run_pass(store)
-    assert res.dispatched == 1
-    notes = [
-        c.text
-        for c in store.chunks.list_chunks_for_ref(ask)
-        if c.chunk_kind == "todo_comment"
-    ]
-    assert any("bootstrap close (gr684320)" in str(t) for t in notes)
+    assert "'index-lock'" in str(ask_ref.title)
+    assert f"x{pd.FREE_RUN_CAP}" in str(ask_ref.title)
 
 
 @pytest.mark.parametrize("no_lanes", [False, True])
@@ -1680,6 +1587,292 @@ def test_infra_red_second_repo_land_relands_with_the_repo_param(
     assert meta["job_type"] == "land_slice"
     assert meta["params"] == land_params and meta["params"]["repo"] == "catpath"
     assert meta["idem_key"] == f"land_slice:td{task}"
+
+
+def test_an_index_lock_land_wait_relands_without_a_builder(store: Store) -> None:
+    """The lander's own ship-folder lock wait (``attempt_free =
+    "index-lock"``) is still a re-land, not a rebuild."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    land_params = {"todo_id": task, "branch": f"slice/{task}", "target_node": "h1"}
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        params=land_params,
+        meta={"attempt_free": "index-lock"},
+    )
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["job_type"] == "land_slice" and meta["params"] == land_params
+
+
+# ── the host pin (gr741695): a hub is local to its host ─────────────
+
+_HUB = "build-host-1"
+
+
+def _build_ref(task: int, host: str = _HUB, job: int = 7) -> dict[str, Any]:
+    """A task's ``meta.build_ref`` as the worker stamps it after a push."""
+    return {
+        "state": "pushed",
+        "ref": f"refs/factory/build/{task}/{job}",
+        "sha": "a" * 40,
+        "head": "a" * 40,
+        "wip": False,
+        "by": "builder",
+        "note": "",
+        "host": host,
+        "at": "2026-11-20T10:00:00Z",
+    }
+
+
+def test_templates_build_ref_key_is_the_one_the_tick_reads() -> None:
+    assert T.BUILD_REF_KEY == "build_ref"
+
+
+def test_a_task_without_a_build_ref_mints_unpinned(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    assert pd.run_pass(store).dispatched == 1
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert "target_node" not in meta["params"] and pd.HUB_PIN_KEY not in meta
+
+
+def test_a_task_with_a_build_ref_builds_on_its_host(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(task, {"build_ref": _build_ref(task)})
+    assert pd.run_pass(store).dispatched == 1
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["job_type"] == "run_slice"
+    assert meta["params"]["target_node"] == _HUB
+    assert meta[pd.HUB_PIN_KEY] == {"host": _HUB, "todo": task}
+
+
+def test_a_retry_after_a_red_stays_on_the_hub_host(store: Store) -> None:
+    """Every path that mints a ``run_slice`` for the task — here the retry
+    of a failed attempt — carries the pin."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(task, {"build_ref": _build_ref(task)})
+    _failed_job(store, task, "build red on the diff", lane="claude-sub")
+    assert pd.run_pass(store).dispatched == 1
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["params"]["target_node"] == _HUB
+
+
+def test_a_start_over_launch_keeps_the_pin(store: Store) -> None:
+    """``meta.start_over`` is set and ``meta.build_ref`` still stands: the
+    launch deletes the task's refs in THAT host's hub, so it runs there."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(
+        task, {"build_ref": _build_ref(task), "start_over": 99, "parked": None}
+    )
+    assert pd.run_pass(store).dispatched == 1
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["params"]["target_node"] == _HUB
+    assert _meta(store, task)["build_ref"]["host"] == _HUB
+
+
+def test_an_explicit_target_node_naming_another_host_loses_to_the_pin(
+    store: Store,
+) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(
+        task,
+        {
+            "build_ref": _build_ref(task),
+            "op": {"type": "run_slice", "params": {"target_node": "other-host"}},
+        },
+    )
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["params"]["target_node"] == _HUB
+    assert any("'other-host' replaced by the hub pin" in n for n in res.notes)
+
+
+def test_an_explicit_target_node_equal_to_the_pin_is_silent(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(
+        task,
+        {
+            "build_ref": _build_ref(task),
+            "op": {"type": "run_slice", "params": {"target_node": _HUB}},
+        },
+    )
+    res = pd.run_pass(store)
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["params"]["target_node"] == _HUB
+    assert not any("replaced by the hub pin" in n for n in res.notes)
+
+
+@pytest.mark.parametrize("have", [None, "other-host"])
+def test_a_reland_takes_its_host_from_the_build_ref(
+    store: Store, have: str | None
+) -> None:
+    """A re-land whose failed job's params lack ``target_node`` (or name
+    another host) gets the hub host; the rest of the params ride along."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.stamp_ref_meta(task, {"build_ref": _build_ref(task)})
+    _slice_job(store, task, "run_slice", "succeeded")
+    land_params: dict[str, Any] = {"todo_id": task, "branch": f"slice/{task}"}
+    if have:
+        land_params["target_node"] = have
+    _slice_job(
+        store,
+        task,
+        "land_slice",
+        "failed",
+        params=land_params,
+        meta={"attempt_free": "infra-land", "red_class": "gate infrastructure"},
+    )
+    assert pd.run_pass(store).dispatched == 1
+    _job_id, meta = _jobs_under(store, task)[-1]
+    assert meta["job_type"] == "land_slice"
+    assert meta["params"] == {**land_params, "target_node": _HUB}
+
+
+def test_the_held_preland_land_mints_on_the_hub_host(store: Store) -> None:
+    """``_mint_preland_land``: the stamp's params carry no ``target_node``
+    (or a stale one); the task's ``build_ref`` host is what the land gets."""
+    mint = _reviewed_pending(store, "review: LAND")
+    build = mint.ids["build"]
+    store.stamp_ref_meta(build, {"build_ref": _build_ref(build)})
+    pd.run_pass(store)
+    (land,) = [
+        m for _jid, m in _jobs_under(store, build) if m.get("job_type") == "land_slice"
+    ]
+    assert land["params"]["target_node"] == _HUB
+    assert land[pd.HUB_PIN_KEY] == {"host": _HUB, "todo": build}
+
+
+def test_the_held_preland_land_keeps_its_own_target_node(store: Store) -> None:
+    """No ``build_ref`` (a land held before the switch): the stamp's own
+    ``target_node`` is left as it is."""
+    mint = _reviewed_pending(store, "review: LAND")
+    build = mint.ids["build"]
+    held = dict(_meta(store, build)["pending_land"])
+    store.stamp_ref_meta(build, {"pending_land": {**held, "target_node": "old-host"}})
+    pd.run_pass(store)
+    (land,) = [
+        m for _jid, m in _jobs_under(store, build) if m.get("job_type") == "land_slice"
+    ]
+    assert land["params"]["target_node"] == "old-host"
+
+
+def test_a_preland_reviewer_runs_on_its_targets_host(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer reads the reviewed attempt out of the hub, so its
+    ``run_slice`` is pinned to the target's ``build_ref.host``."""
+    use_lanes(monkeypatch)
+    mint = _review_plan(store, preland=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    store.stamp_ref_meta(
+        build,
+        {
+            "build_ref": _build_ref(build),
+            "pending_land": {
+                "todo_id": build,
+                "branch": f"slice/{build}",
+                "ref": f"refs/factory/build/{build}/7",
+                "head": "a" * 40,
+                "lane": "claude-sub",
+            },
+        },
+    )
+    _mark_done(store, build)
+    pd.run_pass(store)
+    jobs = _jobs_under(store, review)
+    assert jobs, "the reviewer was not dispatched"
+    _job_id, meta = jobs[-1]
+    assert meta["params"]["target_node"] == _HUB
+    assert meta[pd.HUB_PIN_KEY] == {"host": _HUB, "todo": build}
+
+
+def test_a_reviewer_falls_back_to_the_held_lands_target_node(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A held land from before the switch has no ``build_ref``; its
+    ``pending_land.target_node`` is the pin."""
+    use_lanes(monkeypatch)
+    mint = _review_plan(store, preland=True)
+    build, review = mint.ids["build"], mint.ids["review"]
+    store.stamp_ref_meta(
+        build,
+        {
+            "pending_land": {
+                "todo_id": build,
+                "branch": f"slice/{build}",
+                "target_node": "old-host",
+                "lane": "claude-sub",
+            }
+        },
+    )
+    _mark_done(store, build)
+    pd.run_pass(store)
+    _job_id, meta = _jobs_under(store, review)[-1]
+    assert meta["params"]["target_node"] == "old-host"
+
+
+def test_a_pinned_job_no_host_claims_asks_how_to_release_the_pin(
+    store: Store,
+) -> None:
+    """The hub host is dark: unlike an unpinned job (``host-dark`` page
+    only) the pinned one files the placement ask, and the ask says that
+    clearing ``meta.build_ref`` releases the pin and loses the work."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(
+        store,
+        task,
+        "run_slice",
+        "queued",
+        params={"todo_id": task, "target_node": _HUB},
+        meta={"adapter": "claude_p", pd.HUB_PIN_KEY: {"host": _HUB, "todo": task}},
+    )
+    _backdate(store, job, 35)
+    _dark_advertise(store, _HUB, {"repo_checkout": 1, "claude_bin": 1, "git": 1})
+    res = pd.run_pass(store)
+    assert res.asks == 1
+    ask = int(_meta(store, task)[pd._UNPLACED_ASK_KEY]["ask"])
+    body = next(
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(ask)
+        if c.chunk_kind == TODO_BODY_KIND
+    )
+    assert f"pinned to host `{_HUB}`" in body
+    assert "clear `meta.build_ref`" in body and "loses the work" in body
+    assert "`meta.conflict` and `meta.conflict_tries`" in body
+    assert f"cancel job jo{job}" in body
+
+
+def test_an_unpinned_job_on_a_dark_host_still_files_no_ask(store: Store) -> None:
+    """The dark-host suppression stays for every job without a hub pin."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(
+        store,
+        task,
+        "run_slice",
+        "queued",
+        params={"todo_id": task, "target_node": _HUB},
+        meta={"adapter": "claude_p"},
+    )
+    _backdate(store, job, 35)
+    _dark_advertise(store, _HUB, {"repo_checkout": 1, "claude_bin": 1, "git": 1})
+    res = pd.run_pass(store)
+    assert res.asks == 0
+    assert any(f"host-dark:{_HUB}" in n for n in res.notes)
 
 
 def test_succeeded_second_repo_land_closes_the_task(store: Store) -> None:

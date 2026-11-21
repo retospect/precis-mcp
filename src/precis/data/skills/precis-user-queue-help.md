@@ -121,8 +121,8 @@ history but does not suppress the renewed one.
 ## Mark a chore the person must run at a terminal (needs-terminal)
 
 A queue item asking a person to do something only a shell, vault or
-host login can do — set a prod vault secret, rescue a stale
-`index.lock`, run a deploy — carries the **`needs-terminal`** tag
+host login can do — set a prod vault secret, recover a kept build
+folder, run a deploy — carries the **`needs-terminal`** tag
 alongside `waiting-for:<login>` (Reto 2026-11-13). The tag is the
 convention that makes the whole class listable with one search:
 

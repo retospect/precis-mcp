@@ -1,13 +1,17 @@
 """repo_land, the second-repo lander's submit half (td659522 step 2).
 
-Real temp git repos (an "origin" bare repo and a clone carrying a
-``slice/42`` branch); the credentialed fetch is replaced by a plain local
-fetch and the detached launch by a recorder. The fake store and ctx are
+Real temp git repos (gr741695): an "origin" bare repo standing in for the
+second repository's GitHub, a clone of it that is the host checkout, the
+host's real hub (``_slice_ws.ensure_hub``) and a separate builder clone whose
+commits reach the host only through an attempt ref in the hub, as a build's
+do. The credentialed fetch is replaced by a plain local fetch and the
+detached launch by a recorder. The fake store and ctx are
 ``test_land_slice``'s.
 """
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import time
@@ -19,7 +23,9 @@ from typing import Any
 import pytest
 
 from precis.plans import lanes
+from precis.plans.templates import BUILD_FLOOR_KEY, BUILD_REF_KEY
 from precis.workers import factory_git, factory_git_mirror, repo_land, repo_lease
+from precis.workers.job_types import _slice_ws as ws
 from precis.workers.job_types import land_slice, run_slice
 from tests.test_land_slice import _Ctx, _Store
 
@@ -77,28 +83,70 @@ class FakeLease:
         self.releases.append((repo, job_id))
 
 
+TODO = 42
+JOB = 901  # the fake ctx's ref_id: the land job
+BUILD_JOB = 7  # the build that pushed the attempt
+
+
 @dataclass
 class Rig:
     origin: Path
     clone: Path
+    builder: Path
+    hub: Path
     launches: list[tuple[list[str], dict[str, Any]]]
     fetches: list[str]
     lease: FakeLease = field(default_factory=FakeLease)
+    #: The attempt ``commit_on_branch`` last pushed: its hub ref and the
+    #: builder's commit (the land's ``ref`` and ``head``).
+    ref: str = ""
+    head: str = ""
 
-    def land_tree(self) -> Path:
-        return self.clone / ".claude" / "worktrees" / "land-td42"
+    def land_tree(self, job: int = JOB) -> Path:
+        return ws.attempt_dir(self.clone, TODO, job, ws.ROLE_LAND)
+
+    def push_attempt(self, sha: str, *, job: int = BUILD_JOB) -> str:
+        """What a build leaves in the hub: the attempt's ref at ``sha``. A
+        fetch into the bare hub from the builder's clone (no hook, as the
+        worker's own writes)."""
+        ref = ws.build_ref(TODO, job)
+        _g(self.hub, "fetch", "-q", "--no-tags", str(self.builder), f"+{sha}:{ref}")
+        assert ws.hub_tip(self.hub, ref) == sha
+        return ref
 
     def commit_on_branch(
         self, files: dict[str, str], msg: str = "feat(x): widget"
     ) -> None:
-        _g(self.clone, "checkout", "-q", "slice/42")
+        """The builder commits on its ``slice/42`` and pushes the attempt
+        ref to the hub; the host checkout never sees the commit."""
+        _g(self.builder, "checkout", "-q", "slice/42")
         for name, text in files.items():
-            path = self.clone / name
+            path = self.builder / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
-        _g(self.clone, "add", "-A")
-        _g(self.clone, "commit", "-q", "-m", msg)
-        _g(self.clone, "checkout", "-q", "main")
+        _g(self.builder, "add", "-A")
+        _g(self.builder, "commit", "-q", "-m", msg)
+        self.head = _g(self.builder, "rev-parse", "HEAD")
+        self.ref = self.push_attempt(self.head)
+
+    def snapshot_on_top(self) -> str:
+        """A ``wip:`` snapshot commit on top of the builder's head, pushed
+        as the attempt's tip (what ``finalize`` makes for leftovers)."""
+        (self.builder / "leftover.txt").write_text("unfinished\n", encoding="utf-8")
+        _g(self.builder, "add", "leftover.txt")
+        _g(
+            self.builder,
+            "commit",
+            "-q",
+            "-m",
+            f"wip: snapshot session exited (td{TODO})",
+        )
+        snap = _g(self.builder, "rev-parse", "HEAD")
+        self.push_attempt(snap)
+        return snap
+
+    def refs(self) -> dict[int, str]:
+        return ws.hub_builds(self.hub, TODO)
 
     def advance_origin(self, files: dict[str, str]) -> None:
         for name, text in files.items():
@@ -125,8 +173,13 @@ def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Rig:
     _g(clone, "commit", "-q", "-m", "chore: seed")
     _g(clone, "push", "-q", "origin", "main")
     _g(clone, "fetch", "-q", "origin")
-    _g(clone, "branch", "-q", "slice/42")
-    rig = Rig(origin, clone, [], [])
+    # The builder's own clone: slice/42 at the seed. Its commits reach the
+    # host only through the hub's attempt ref.
+    builder = tmp_path / "builder"
+    _g(tmp_path, "clone", "-q", str(origin), str(builder))
+    _g(builder, "checkout", "-q", "-b", "slice/42")
+    hub = ws.ensure_hub(clone)
+    rig = Rig(origin, clone, builder, hub, [], [])
 
     def fake_fetch(
         dest: Path,
@@ -164,19 +217,32 @@ def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Rig:
     return rig
 
 
-def _submit(rig: Rig) -> tuple[_Ctx, Any, _Store]:
+def _params(rig: Rig, **extra: Any) -> dict[str, Any]:
+    """The land's params as a build mints them: the hub ref and the commit,
+    and no ``worktree``."""
+    params: dict[str, Any] = {
+        "todo_id": 42,
+        "repo": "catpath",
+        "branch": "slice/42",
+        "lane": "claude-sub",
+    }
+    if rig.ref:
+        params["ref"] = rig.ref
+    if rig.head:
+        params["head"] = rig.head
+    return {**params, **extra}
+
+
+def _submit(rig: Rig, **extra: Any) -> tuple[_Ctx, Any, _Store]:
     store = _Store()
-    store.add_todo(42, tags=("claimed-by:lane-claude-sub", "repo:catpath"))
-    ctx = _Ctx(
-        store,
-        {
-            "todo_id": 42,
-            "repo": "catpath",
-            "branch": "slice/42",
-            "lane": "claude-sub",
-            "worktree": str(rig.clone / ".claude" / "worktrees" / "slice-td42"),
-        },
-    )
+    meta: dict[str, Any] = {}
+    if rig.ref:  # what the build recorded when it pushed, and a land's conflict
+        meta = {
+            BUILD_REF_KEY: {"ref": rig.ref, "sha": rig.head, "host": "here"},
+            land_slice.CONFLICT_KEY: {"head": rig.head, "ref": rig.ref},
+        }
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub", "repo:catpath"), meta=meta)
+    ctx = _Ctx(store, _params(rig, **extra))
     return ctx, repo_land.submit(ctx, None), store
 
 
@@ -185,6 +251,12 @@ def test_happy_path_squashes_one_commit_on_the_tip_and_launches_the_gate(
 ) -> None:
     rig.commit_on_branch({"src/a.py": "x = 2\n", "src/b.py": "y = 1\n"})
     rig.advance_origin({"README.md": "hi\n"})
+    # the host checkout has neither the builder's commit nor a slice branch
+    probe = subprocess.run(
+        ["git", "cat-file", "-e", f"{rig.head}^{{commit}}"], cwd=rig.clone
+    )
+    assert probe.returncode != 0
+    assert _g(rig.clone, "branch", "--list", "slice/42") == ""
     ctx, handle, _ = _submit(rig)
     assert ctx.failure is None and handle is not None
     assert handle["repo"] == "catpath" and handle["pid"] == 4242
@@ -193,19 +265,27 @@ def test_happy_path_squashes_one_commit_on_the_tip_and_launches_the_gate(
     sha = handle["sha"]
     assert _g(rig.clone, "rev-parse", f"{sha}^") == tip
     assert _g(rig.clone, "log", "-1", "--format=%s", sha) == "feat(x): widget (td42)"
-    # the commit's change is the branch's change, nothing from main's move
+    # the commit's change is the builder's change, nothing from main's move
     changed = _g(rig.clone, "diff", "--name-only", tip, sha).splitlines()
     assert changed == ["src/a.py", "src/b.py"]
     assert _g(rig.clone, "rev-parse", f"{sha}:src/a.py") == _g(
-        rig.clone, "rev-parse", "refs/heads/slice/42:src/a.py"
+        rig.builder, "rev-parse", f"{rig.head}:src/a.py"
     )
-    # identity: no env set, so the branch tip's author (the setup identity)
+    # identity: no env set, so the head's author (the setup identity)
     assert _g(rig.clone, "log", "-1", "--format=%an", sha) == "Setup"
-    # the handle carries what the poll half needs
+    # the handle carries what the poll half needs: the job's own land tree,
+    # a detached worktree of the host checkout, and the commit it took
     land_tree = Path(handle["land_tree"])
     assert land_tree == rig.land_tree() and land_tree.is_dir()
+    assert land_tree.name == f"slice-td42-land-j{JOB}"
+    assert handle["worktree"] == handle["land_tree"]
+    assert "slice_tree" not in handle
+    assert (handle["ref"], handle["head"]) == (rig.ref, rig.head)
+    assert _g(land_tree, "rev-parse", "HEAD") == sha
     for key in ("branch", "log", "exit_file", "started_at", "deadline", "subject"):
         assert handle[key]
+    # nothing is landed yet: the hub still holds the attempt
+    assert rig.refs() == {BUILD_JOB: rig.head}
     # one detached launch: cwd the land tree, no credential, UV_PYTHON set
     assert len(rig.launches) == 1
     argv, kw = rig.launches[0]
@@ -313,6 +393,9 @@ def test_other_pyproject_edit_is_allowed(rig: Rig) -> None:
 
 
 def test_empty_diff_takes_the_no_land_path_and_launches_nothing(rig: Rig) -> None:
+    # a build that changed nothing: the attempt ref sits on the base tip
+    rig.head = _g(rig.clone, "rev-parse", "refs/heads/main")
+    rig.ref = rig.push_attempt(rig.head)
     ctx, handle, _ = _submit(rig)
     assert ctx.failure is None and ctx.status is None
     assert handle is not None and handle["no_land"] is True
@@ -322,7 +405,7 @@ def test_empty_diff_takes_the_no_land_path_and_launches_nothing(rig: Rig) -> Non
 
 def test_already_on_main_branch_is_no_land(rig: Rig) -> None:
     rig.commit_on_branch({"src/a.py": "x = 2\n"})
-    _g(rig.clone, "push", "-q", "origin", "slice/42:main")
+    _g(rig.builder, "push", "-q", "origin", "slice/42:main")
     ctx, handle, _ = _submit(rig)
     assert ctx.failure is None and handle is not None and handle["no_land"] is True
     assert rig.launches == []
@@ -486,8 +569,6 @@ def _gated(
 ) -> tuple[_Ctx, dict[str, Any], _Store]:
     """A submitted land whose gate has finished with ``exit_code``."""
     rig.commit_on_branch(files or {"src/a.py": "x = 2\n"})
-    slice_tree = rig.clone / ".claude" / "worktrees" / "slice-td42"
-    _g(rig.clone, "worktree", "add", "-q", str(slice_tree), "slice/42")
     ctx, handle, store = _submit(rig)
     assert isinstance(handle, dict) and "sha" in handle
     Path(handle["log"]).write_text(log_text, encoding="utf-8")
@@ -496,8 +577,13 @@ def _gated(
     return ctx, handle, store
 
 
-def _branches(rig: Rig) -> str:
-    return _g(rig.clone, "branch", "--list", "slice/42")
+def _kept(rig: Rig, store: _Store) -> None:
+    """A land that did not take leaves the work where the next attempt
+    continues from it: the hub's attempt ref and the task's ``build_ref``
+    are as they were, and no floor was stamped."""
+    assert rig.refs() == {BUILD_JOB: rig.head}
+    assert store.refs[42].meta[BUILD_REF_KEY]["sha"] == rig.head
+    assert BUILD_FLOOR_KEY not in store.refs[42].meta
 
 
 def _attempt_free(ctx: _Ctx, store: _Store, red_class: str) -> None:
@@ -522,7 +608,7 @@ def test_a_repo_closed_during_the_gate_is_not_pushed(
     assert repo_land.poll(ctx, handle) is True
     assert calls == []
     _attempt_free(ctx, store, repo_land.CLOSED_CLASS)
-    assert _branches(rig).strip()  # the slice branch is kept
+    _kept(rig, store)
     assert lanes.LANDED_REPO_KEY not in store.refs[42].meta
 
 
@@ -561,12 +647,6 @@ def test_the_factory_switch_off_during_the_gate_is_not_pushed(
     _attempt_free(ctx, store, repo_land.CLOSED_CLASS)
 
 
-def test_submit_handle_worktree_is_the_slice_tree(rig: Rig) -> None:
-    _, handle, _ = _gated(rig, exit_code=None)
-    assert handle["worktree"] == handle["slice_tree"]
-    assert handle["worktree"] != handle["land_tree"]
-
-
 def test_green_pushes_the_handle_sha_and_records_the_land(
     rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -589,9 +669,16 @@ def test_green_pushes_the_handle_sha_and_records_the_land(
     assert "STATUS:done" in store.tag_strings(42)
     assert not [t for t in store.tag_strings(42) if t.startswith("attempt:")]
     assert [k for k, _ in ctx.chunks if k != "job_summary"] == ["job_event"]
+    # the tidy-up: the land tree and its worktree record are gone, the hub's
+    # attempt refs are deleted, the task's build_ref and conflict are cleared
+    # and the floor is this land job's id
     assert not rig.land_tree().exists()
-    assert not Path(handle["slice_tree"]).exists()
-    assert _branches(rig) == ""
+    assert str(rig.land_tree()) not in _g(rig.clone, "worktree", "list")
+    assert rig.refs() == {}
+    meta = store.refs[42].meta
+    assert meta[BUILD_REF_KEY] is None and meta[land_slice.CONFLICT_KEY] is None
+    assert meta[BUILD_FLOOR_KEY] == JOB
+    assert not [t for t in ctx.meta_set["cleanup"] if "FAILED" in t]
 
 
 def test_push_uses_the_handle_sha_after_the_clone_refs_were_rewritten(
@@ -600,7 +687,7 @@ def test_push_uses_the_handle_sha_after_the_clone_refs_were_rewritten(
     ctx, handle, _ = _gated(rig, exit_code=0)
     pushes = _fake_push(monkeypatch)
     seed = _g(rig.clone, "rev-parse", "refs/heads/main")
-    _g(rig.clone, "update-ref", "refs/heads/slice/42", seed)
+    _g(rig.clone, "update-ref", "refs/heads/decoy", seed)
     _g(rig.clone, "update-ref", "refs/remotes/origin/main", handle["sha"])
     assert repo_land.poll(ctx, handle) is True
     assert [(c.sha, c.tip) for c in pushes] == [(handle["sha"], handle["tip"])]
@@ -630,7 +717,7 @@ def test_raced_is_attempt_free_and_keeps_the_slice(
     assert repo_land.poll(ctx, handle) is True
     _attempt_free(ctx, store, repo_land.RACED_CLASS)
     assert not rig.land_tree().exists()
-    assert Path(handle["slice_tree"]).is_dir() and _branches(rig) != ""
+    _kept(rig, store)
 
 
 def test_push_error_is_attempt_free_and_keeps_the_slice(
@@ -641,7 +728,7 @@ def test_push_error_is_attempt_free_and_keeps_the_slice(
     assert repo_land.poll(ctx, handle) is True
     _attempt_free(ctx, store, repo_land.PUSH_ERROR_CLASS)
     assert not rig.land_tree().exists()
-    assert Path(handle["slice_tree"]).is_dir() and _branches(rig) != ""
+    _kept(rig, store)
 
 
 def test_a_sha_that_is_not_a_child_of_the_tip_is_never_pushed(
@@ -684,7 +771,7 @@ def test_red_test_phase_is_charged_with_a_handoff_naming_phase_and_command(
     assert "gate test failed: uv run pytest -q" in handoff
     assert "tests/test_x.py::test_a" in handoff
     assert not rig.land_tree().exists()
-    assert Path(handle["slice_tree"]).is_dir() and _branches(rig) != ""
+    _kept(rig, store)
 
 
 def test_red_log_is_scrubbed_before_it_reaches_the_todo(
@@ -769,8 +856,8 @@ def test_past_the_deadline_the_gate_is_killed_and_the_land_fails_free(
 def test_no_land_handle_records_nothing_new_and_never_pushes(
     rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    slice_tree = rig.clone / ".claude" / "worktrees" / "slice-td42"
-    _g(rig.clone, "worktree", "add", "-q", str(slice_tree), "slice/42")
+    rig.head = _g(rig.clone, "rev-parse", "refs/heads/main")
+    rig.ref = rig.push_attempt(rig.head)  # a build that changed nothing
     ctx, handle, store = _submit(rig)
     assert isinstance(handle, dict) and handle["no_land"] is True
     pushes = _fake_push(monkeypatch)
@@ -780,12 +867,15 @@ def test_no_land_handle_records_nothing_new_and_never_pushes(
     assert "STATUS:done" in store.tag_strings(42)
     assert ctx.meta_set["landed_sha"] is None
     assert lanes.LANDED_REPO_KEY not in store.refs[42].meta
+    # the work is on the base already: the attempt is retired like a landed one
+    assert rig.refs() == {} and store.refs[42].meta[BUILD_REF_KEY] is None
+    assert store.refs[42].meta[BUILD_FLOOR_KEY] == JOB
 
 
 def test_kill_signals_the_gate_group_and_drops_the_land_tree(
     rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ctx, handle, _ = _gated(rig, exit_code=None)
+    ctx, handle, store = _gated(rig, exit_code=None)
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(
         run_slice, "_signal_group", lambda pgid, sig: signals.append((pgid, int(sig)))
@@ -793,7 +883,7 @@ def test_kill_signals_the_gate_group_and_drops_the_land_tree(
     repo_land.kill(ctx, handle)
     assert signals == [(4242, 15)]
     assert not rig.land_tree().exists()
-    assert Path(handle["slice_tree"]).is_dir() and _branches(rig) != ""
+    _kept(rig, store)
 
 
 def test_kill_permission_denied_still_drops_the_land_tree(
@@ -802,7 +892,7 @@ def test_kill_permission_denied_still_drops_the_land_tree(
     """gr702533: a reused foreign pgid must not prevent land cleanup."""
     import os
 
-    ctx, handle, _ = _gated(rig, exit_code=None)
+    ctx, handle, store = _gated(rig, exit_code=None)
     signals: list[tuple[int, int]] = []
 
     def denied(pgid: int, sig: int) -> None:
@@ -813,7 +903,7 @@ def test_kill_permission_denied_still_drops_the_land_tree(
     land_slice.kill(ctx, handle)
     assert signals == [(4242, 15)]
     assert not rig.land_tree().exists()
-    assert Path(handle["slice_tree"]).is_dir() and _branches(rig) != ""
+    _kept(rig, store)
     assert "permission denied for pgid 4242" in caplog.text
 
 
@@ -832,6 +922,280 @@ def test_kill_never_signals_the_workers_own_pid_or_group(
         repo_land.kill(ctx, handle)
     assert signals == []
     assert not rig.land_tree().exists()
+
+
+# ── The commit to land comes from the hub (gr741695) ───────────────
+
+
+def _real_origin(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the profile's remote at the local origin so the land's push is
+    the real ``push_cas``."""
+    monkeypatch.setattr(
+        lanes, "repo_profile", lambda name: replace(PROFILE, remote=str(rig.origin))
+    )
+
+
+def test_a_pushed_attempt_lands_through_the_green_path_with_a_wip_tip(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a second-repository land either reads something other
+    than the hub (a builder folder, a local branch), takes the ``wip:``
+    snapshot on top of the head, or leaves the attempt behind to be
+    continued from after it landed."""
+    _real_origin(rig, monkeypatch)
+    rig.commit_on_branch({"src/a.py": "x = 2\n", "src/b.py": "y = 1\n"})
+    snap = rig.snapshot_on_top()
+    assert ws.hub_tip(rig.hub, rig.ref) == snap != rig.head  # the tip is the wip
+    rig.advance_origin({"README.md": "hi\n"})
+    ctx, handle, store = _submit(rig)
+    assert ctx.failure is None and isinstance(handle, dict)
+    assert handle["head"] == rig.head
+    Path(handle["log"]).write_text("", encoding="utf-8")
+    Path(handle["exit_file"]).write_text("0\n", encoding="utf-8")
+    assert repo_land.poll(ctx, handle) is True
+    assert ctx.status == "succeeded", ctx.failure
+    landed = _g(rig.origin, "rev-parse", "refs/heads/main")
+    assert landed == handle["sha"] and ctx.meta_set["landed_sha"] == landed
+    # one commit on the base tip with exactly head's changes: the snapshot's
+    # leftover file and main's own move are not in it
+    assert _g(rig.origin, "rev-parse", f"{landed}^") == handle["tip"]
+    changed = _g(rig.origin, "diff", "--name-only", handle["tip"], landed).splitlines()
+    assert changed == ["src/a.py", "src/b.py"]
+    assert (
+        _g(rig.origin, "log", "-1", "--format=%s", landed) == "feat(x): widget (td42)"
+    )
+    # the tidy-up
+    assert rig.refs() == {} and not rig.land_tree().exists()
+    meta = store.refs[42].meta
+    assert meta[BUILD_REF_KEY] is None and meta[land_slice.CONFLICT_KEY] is None
+    assert meta[BUILD_FLOOR_KEY] == JOB
+    assert meta[lanes.LANDED_REPO_KEY] == "catpath"
+    assert "STATUS:done" in store.tag_strings(42)
+
+
+def test_head_below_a_wip_tip_is_the_commit_squashed(rig: Rig) -> None:
+    rig.commit_on_branch({"src/a.py": "x = 2\n"})
+    snap = rig.snapshot_on_top()
+    ctx, handle, _ = _submit(rig)
+    assert ctx.failure is None and isinstance(handle, dict)
+    tree = Path(handle["land_tree"])
+    # the snapshot was never brought into the squash
+    assert not (tree / "leftover.txt").exists()
+    assert (tree / "src" / "a.py").read_text(encoding="utf-8") == "x = 2\n"
+    assert handle["head"] == rig.head and handle["head"] != snap
+
+
+def test_no_head_and_a_wip_tip_is_refused_not_squashed(rig: Rig) -> None:
+    """If this fails a land minted without a head squashes a ``wip:``
+    snapshot, whose extra parents (stashes, other branches) carry content no
+    reviewer saw."""
+    rig.commit_on_branch({"src/a.py": "x = 2\n"})
+    snap = rig.snapshot_on_top()
+    ctx, handle, store = _submit(rig, head="")
+    assert handle is None and ctx.status == "failed"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "infra-land"
+    note = store.comments(42)[-1]
+    assert "wip: snapshot" in note and snap[:12] in note and "next:" in note
+    assert rig.launches == [] and rig.fetches == []
+    assert not rig.land_tree().exists()
+    assert rig.refs() == {BUILD_JOB: snap}
+
+
+def test_no_head_and_a_finished_tip_lands_the_tip(rig: Rig) -> None:
+    rig.commit_on_branch({"src/a.py": "x = 2\n"})
+    ctx, handle, _ = _submit(rig, head="")
+    assert ctx.failure is None and isinstance(handle, dict)
+    assert handle["head"] == rig.head
+    a_py = Path(handle["land_tree"]) / "src" / "a.py"
+    assert a_py.read_text(encoding="utf-8") == "x = 2\n"
+
+
+def test_a_host_with_no_hub_refuses_without_creating_one(rig: Rig) -> None:
+    """If this fails a land that reaches a host that never built the
+    repository creates and seeds a hub there only to refuse it."""
+    rig.commit_on_branch({"src/a.py": "x = 2\n"})
+    shutil.rmtree(rig.hub)
+    ctx, handle, store = _submit(rig)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "infra-land"
+    assert "has no hub" in store.comments(42)[-1]
+    assert not rig.hub.exists() and rig.launches == []
+    assert not rig.land_tree().exists()
+
+
+def test_a_moved_ref_is_refused_attempt_free_and_lands_nothing(rig: Rig) -> None:
+    """If this fails a ref replaced by something else (a force push, a hand
+    edit of the hub) lands the wrong commit, or falls back to another source."""
+    rig.commit_on_branch({"src/a.py": "x = 2\n"})
+    # the attempt ref is replaced by an unrelated commit
+    _g(rig.builder, "checkout", "-q", "-B", "other", "main")
+    (rig.builder / "other.txt").write_text("else\n", encoding="utf-8")
+    _g(rig.builder, "add", "other.txt")
+    _g(rig.builder, "commit", "-q", "-m", "feat: elsewhere")
+    rig.push_attempt(_g(rig.builder, "rev-parse", "HEAD"))
+    ctx, handle, store = _submit(rig)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.meta_set["red_class"] == "infra-land"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "infra-land"
+    handoff = store.comments(42)[-1]
+    assert "no longer holds" in handoff and rig.head[:12] in handoff
+    assert not [t for t in store.tag_strings(42) if t.startswith("attempt:")]
+    assert rig.launches == [] and rig.fetches == []
+    assert not rig.land_tree().exists()
+    assert list(rig.refs()) == [BUILD_JOB]  # the ref is left as it is
+
+
+def test_a_ref_the_hub_does_not_hold_is_refused_attempt_free(rig: Rig) -> None:
+    rig.commit_on_branch({"src/a.py": "x = 2\n"})
+    ctx, handle, store = _submit(rig, ref=ws.build_ref(TODO, 99))
+    assert handle is None and ctx.status == "failed"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "infra-land"
+    assert "holds no refs/factory/build/42/99" in store.comments(42)[-1]
+    assert rig.launches == [] and rig.fetches == []
+
+
+@pytest.mark.parametrize(
+    ("extra", "why"),
+    [
+        ({"ref": ""}, "names no hub ref"),
+        ({"ref": "refs/factory/build/43/7"}, "not an attempt ref of td42"),
+        ({"ref": "refs/heads/main"}, "not an attempt ref of td42"),
+        ({"head": "main"}, "not a full commit id"),
+    ],
+)
+def test_a_land_without_a_usable_ref_or_head_is_refused_with_the_reason(
+    rig: Rig, extra: dict[str, Any], why: str
+) -> None:
+    """If this fails a land with no hub ref falls back to a GitHub slice ref
+    (a second repository has none) or to some other branch, or takes a head
+    that names a ref rather than a commit."""
+    rig.commit_on_branch({"src/a.py": "x = 2\n"})
+    ctx, handle, store = _submit(rig, **extra)
+    assert handle is None and ctx.status == "failed"
+    assert ctx.meta_set[run_slice.ATTEMPT_FREE_KEY] == "infra-land"
+    assert why in store.comments(42)[-1]
+    assert not [t for t in store.tag_strings(42) if t.startswith("attempt:")]
+    # nothing was fetched, taken, cut or launched; the lease was never asked for
+    assert rig.fetches == [] and rig.launches == []
+    assert not rig.land_tree().exists()
+    if "ref" in extra:
+        assert rig.lease.acquires == []
+    if extra.get("ref") == "":
+        # deterministic: the same params are refused again, so the plan tick
+        # asks instead of re-minting the land
+        assert ctx.meta_set["land_again_cap"] is True
+
+
+def _floor_spy(rig: Rig, store: _Store, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Record what the hub's attempt refs and the task meta looked like at
+    each ``delete_builds`` call."""
+    seen: list[Any] = []
+    real = ws.delete_builds
+
+    def spy(hub: Path, todo_id: int) -> str:
+        seen.append((dict(store.refs[42].meta), rig.refs()))
+        return real(hub, todo_id)
+
+    monkeypatch.setattr(ws, "delete_builds", spy)
+    return seen
+
+
+def test_the_floor_is_stamped_before_the_refs_are_deleted(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If this fails a stamp that fails after the refs are gone leaves a
+    ``build_ref`` naming a deleted ref and no floor, and every launch of a
+    reopened task raises ``RefMoved``."""
+    _fake_push(monkeypatch)
+    ctx, handle, store = _gated(rig, exit_code=0)
+    seen = _floor_spy(rig, store, monkeypatch)
+    assert repo_land.poll(ctx, handle) is True and ctx.status == "succeeded"
+    ((meta, refs),) = seen
+    assert meta[BUILD_FLOOR_KEY] == JOB and refs == {BUILD_JOB: rig.head}
+    assert meta[BUILD_REF_KEY] is not None  # not cleared yet: the later stamp
+
+
+def test_a_failed_clearing_stamp_leaves_the_floor_and_no_refmoved(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_push(monkeypatch)
+    ctx, handle, store = _gated(rig, exit_code=0)
+    recorded = dict(store.refs[42].meta[BUILD_REF_KEY])
+    real = store.stamp_ref_meta
+
+    def flaky(ref_id: int, updates: dict[str, Any]) -> None:
+        if BUILD_REF_KEY in updates:
+            raise RuntimeError("store down")
+        real(ref_id, updates)
+
+    monkeypatch.setattr(store, "stamp_ref_meta", flaky)
+    assert repo_land.poll(ctx, handle) is True and ctx.status == "succeeded"
+    meta = store.refs[42].meta
+    assert meta[BUILD_FLOOR_KEY] == JOB
+    assert meta[BUILD_REF_KEY] == recorded  # the clear failed
+    assert rig.refs() == {}  # the refs are gone
+    assert any("meta: stamp FAILED" in n for n in ctx.meta_set["cleanup"])
+    # a later launch with that record neither starts from it nor raises
+    recorded["ref"] = ws.build_ref(TODO, BUILD_JOB)
+    got = ws.resolve_start(
+        rig.hub, TODO, recorded=recorded, floor=meta[BUILD_FLOOR_KEY]
+    )
+    assert got is None
+
+
+def test_without_the_floor_the_refs_are_not_deleted(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_push(monkeypatch)
+    ctx, handle, store = _gated(rig, exit_code=0)
+    real = store.stamp_ref_meta
+
+    def flaky(ref_id: int, updates: dict[str, Any]) -> None:
+        if BUILD_FLOOR_KEY in updates:
+            raise RuntimeError("store down")
+        real(ref_id, updates)
+
+    monkeypatch.setattr(store, "stamp_ref_meta", flaky)
+    assert repo_land.poll(ctx, handle) is True and ctx.status == "succeeded"
+    assert rig.refs() == {BUILD_JOB: rig.head}
+    assert BUILD_FLOOR_KEY not in store.refs[42].meta
+
+
+def test_a_head_the_hub_does_not_have_is_refused(rig: Rig) -> None:
+    rig.commit_on_branch({"src/a.py": "x = 2\n"})
+    ctx, handle, store = _submit(rig, head="1" * 40)
+    assert handle is None and ctx.status == "failed"
+    assert "the hub does not have it" in store.comments(42)[-1]
+    assert rig.launches == []
+
+
+def test_a_parked_land_whose_ref_vanished_fails_attempt_free_on_waking(
+    rig: Rig,
+) -> None:
+    ctx, handle, store = _parked(rig)
+    assert handle["phase"] == "lease" and "worktree" not in handle
+    ws.delete_builds(rig.hub, TODO)
+    _due(handle)
+    rig.lease.blocker = None
+    assert repo_land.poll(ctx, handle) is True
+    assert ctx.status == "failed" and ctx.meta_set["red_class"] == "infra-land"
+    assert "holds no refs/factory/build/42/7" in store.comments(42)[-1]
+    assert rig.launches == []
+
+
+def test_a_land_folder_the_janitor_dropped_does_not_block_the_same_job(
+    rig: Rig,
+) -> None:
+    """The janitor removes a terminal land's folder with ``_slice_ws.drop``,
+    which leaves the host checkout's worktree record; a relaunch of the same
+    job must still cut its folder."""
+    rig.commit_on_branch({"src/a.py": "x = 2\n"})
+    ctx, handle, _ = _submit(rig)
+    assert isinstance(handle, dict)
+    assert ws.drop(rig.land_tree())
+    ctx2, handle2, _ = _submit(rig)
+    assert ctx2.failure is None and isinstance(handle2, dict)
+    assert rig.land_tree().is_dir()
 
 
 # ── The per-repo lease ─────────────────────────────────────────────
