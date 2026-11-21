@@ -37,10 +37,16 @@ from precis.plans import release as _release
 from precis.plans.gates import resolve_board
 from precis.plans.logbook import first_line, log_plan_event
 from precis.plans.nodes import finish_mint, node_kind, validate_plan_meta
-from precis.plans.todo_chain import FACTORY_BUILD_TAG, SOURCE_TODO_KEY
+from precis.plans.todo_chain import (
+    FACTORY_BUILD_TAG,
+    NEEDS_SPEC_TAG,
+    SKIP_TAG,
+    SOURCE_TODO_KEY,
+)
 from precis.store import Store, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.todo import TERMINAL_TODO_STATUSES
+from precis.todo.blocked import open_blocked_by
 from precis.todo.guards import (
     check_ask_meta,
     check_no_cycle,
@@ -1669,13 +1675,15 @@ def mint_todo_build(
 
     Refuses (nothing minted) a source that does not exist, is not a todo,
     is not ``STATUS:open``, no longer carries :data:`FACTORY_BUILD_TAG`, is a
-    plan node or an ask, or already has a live chain. The tag check and the
-    live-chain check run in the mint's transaction with the source row
-    locked, so two passes cannot mint two chains for one todo.
+    plan node or an ask, has a hold tag or open blocker, or already has a
+    live chain. The eligibility checks run in the mint's transaction with
+    the source row locked so stale surveys cannot mint held or duplicate work.
 
     Deliberately NOT in :data:`TEMPLATES`: a hand mint through ``put`` would
     bypass the dispatch switch and the open-chain budget, which only
     ``workers.todo_dispatch`` applies."""
+    from precis.workers.gripe_dispatch import HOLD_TAGS
+
     if isinstance(todo_id, bool) or not isinstance(todo_id, int):
         raise BadInput(
             f"todo_id={todo_id!r} is not a todo id",
@@ -1717,6 +1725,21 @@ def mint_todo_build(
             raise refuse(
                 f"does not carry {FACTORY_BUILD_TAG}",
                 f"tag the todo {FACTORY_BUILD_TAG} to offer it to the factory",
+            )
+        holds = sorted(
+            {str(t.value) for t in tags if t.prefix is None}
+            & {*HOLD_TAGS, NEEDS_SPEC_TAG, SKIP_TAG}
+        )
+        if holds:
+            raise refuse(
+                f"carries hold tags: {', '.join(holds)}",
+                "clear the hold tags before offering the todo again",
+            )
+        blockers = open_blocked_by(m.store, [todo_id], conn=m.conn)
+        if todo_id in blockers:
+            raise refuse(
+                "has an open blocker",
+                "resolve the blocked-by targets before offering the todo again",
             )
         meta = dict(src.meta or {})
         if any(str(t.value).startswith("plan:") for t in tags if t.prefix is None):

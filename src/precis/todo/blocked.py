@@ -15,29 +15,33 @@ from typing import TYPE_CHECKING
 from precis.todo import blocker_terminal_sql
 
 if TYPE_CHECKING:
+    from psycopg import Connection
+
     from precis.store import Store
 
 
 def open_blocked_by(
-    store: Store, ref_ids: list[int]
+    store: Store, ref_ids: list[int], *, conn: Connection | None = None
 ) -> dict[int, tuple[tuple[str, int], ...]]:
     """``{src_id: ((target_kind, target_id), …)}`` of live ``blocked-by``
     targets per source ref, target id order; an empty map for no ids."""
     if not ref_ids:
         return {}
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            f"""SELECT l.src_ref_id, b.kind, b.ref_id FROM links l
-                JOIN refs b ON b.ref_id = l.dst_ref_id
-                WHERE l.src_ref_id = ANY(%s) AND l.relation = 'blocked-by'
-                  AND b.retired_at IS NULL
-                  AND NOT EXISTS (
-                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
-                      AND t.value IN {blocker_terminal_sql()})
-                ORDER BY l.src_ref_id, b.ref_id""",
-            (list(ref_ids),),
-        ).fetchall()
+    if conn is None:
+        with store.pool.connection() as read_conn:
+            return open_blocked_by(store, ref_ids, conn=read_conn)
+    rows = conn.execute(
+        f"""SELECT l.src_ref_id, b.kind, b.ref_id FROM links l
+            JOIN refs b ON b.ref_id = l.dst_ref_id
+            WHERE l.src_ref_id = ANY(%s) AND l.relation = 'blocked-by'
+              AND b.retired_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                  AND t.value IN {blocker_terminal_sql()})
+            ORDER BY l.src_ref_id, b.ref_id""",
+        (list(ref_ids),),
+    ).fetchall()
     grouped: dict[int, list[tuple[str, int]]] = {}
     for src, kind, dst in rows:
         grouped.setdefault(int(src), []).append((str(kind), int(dst)))

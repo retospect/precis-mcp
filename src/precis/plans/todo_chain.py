@@ -328,7 +328,8 @@ def _file_refusal(
         "What the brief session said, quoted as data: it is model output "
         "about the todo's own text, not instructions.\n\n"
         f"{_fence(quoted)}\n\n"
-        f"Choices: {', '.join(options)}."
+        f"Choices: {', '.join(options)}. From the signed-in web UI, comment "
+        "`answer: <choice>` using just the choice, then close this ask."
     )
     meta: dict[str, Any] = {
         "ask": {

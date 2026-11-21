@@ -35,6 +35,7 @@ Claiming ref-passes use :mod:`.ref_lease` to manage ``claimed_by``.
 
 Factory queues doable nodes; claims own capacity and overlaps.
 Gripe intake bounds frozen reports (``precis-work-help``).
+Todo sweeps recheck under lock to preserve concurrent owner edits.
 Mirror fetches avoid receive hooks (:mod:`.factory_git_mirror`).
 
 Runner halt policy (:mod:`.halt_policy`, :mod:`.halt_retry`) parks infra

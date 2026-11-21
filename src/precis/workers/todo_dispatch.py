@@ -41,11 +41,12 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
+from psycopg import Connection
+
 from precis import settings as psettings
 from precis.errors import BadInput
 from precis.plans import governs as _governs
 from precis.plans import lanes as _lanes
-from precis.plans import release as _release
 from precis.plans import route as _route
 from precis.plans.templates import PENDING_SHA, mint_todo_build
 from precis.plans.todo_chain import (
@@ -63,7 +64,7 @@ from precis.plans.todo_chain import (
 )
 from precis.principal import worker_comment_meta
 from precis.store import Store
-from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.todo.blocked import open_blocked_by
 from precis.workers.gripe_dispatch import (
@@ -99,18 +100,12 @@ _GRAPH_ONLY_PREFIX = "prod-graph only"
 _APPLIED_KEY = "refusal_applied"
 _RELEASED_KEY = "source_released"
 _COMMENT_KIND = "todo_comment"
-#: What a refusal answer can say, as ``(outcome, pattern)``. An answer is
-#: applied only when it names exactly one distinct outcome.
-_ANSWERS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("close", re.compile(r"\bclos(?:e|ed)(?:\s+it)?\s+as\s+done\b", re.IGNORECASE)),
-    (
-        "rewrite",
-        re.compile(r"\b(?:rewrit(?:e|ten)|rewrote|reword(?:ed)?)\b", re.IGNORECASE),
-    ),
-    ("split", re.compile(r"\bsplit\b", re.IGNORECASE)),
-    ("drop", re.compile(r"\bdrop(?:ped)?\b", re.IGNORECASE)),
-)
-#: The outcome of an answer that names none or several of :data:`_ANSWERS`.
+_ANSWERS = {
+    "close as done": "close",
+    "rewrite": "rewrite",
+    "split": "split",
+    "drop": "drop",
+}
 _UNREAD = "unread"
 #: A closed refusal ask waits this long before its answer is read, so a
 #: comment posted just after the close is not missed.
@@ -453,28 +448,25 @@ def fenced_refusal(store: Store, pick: TodoPick) -> tuple[str, str] | None:
 # -- sweeps ------------------------------------------------------------------
 
 
-def _answer_text(store: Store, ask_id: int) -> str:
-    """The owner's answer on a closed ask: the ``answer:`` comment, else
-    its newest comment (as ``plan_dispatch._answers_start_over`` reads one).
-    The ask's body names the options and is never read."""
-    answer = _release._newest_answer(store, ask_id)
-    if answer is not None:
-        return answer
+def _answer_text(store: Store, ask_id: int, *, conn: Connection) -> str:
+    """Read the newest explicit answer stamped by the authenticated web UI."""
     comments = [
         c
-        for c in store.chunks.list_chunks_for_ref(ask_id)
-        if c.chunk_kind == _COMMENT_KIND and str(c.text or "").strip()
+        for c in store.chunks.list_chunks_for_ref(ask_id, conn=conn)
+        if c.chunk_kind == _COMMENT_KIND
+        and str(c.meta.get("principal") or "").startswith("user:")
+        and str(c.text or "").lstrip().lower().startswith("answer:")
     ]
     if not comments:
         return ""
-    return str(max(comments, key=lambda c: (c.ord, c.id)).text)
+    return str(max(comments, key=lambda c: (c.ord, c.id)).text).lstrip()[
+        len("answer:") :
+    ]
 
 
 def _outcome(answer: str) -> str:
-    """``close``, ``rewrite``, ``split`` or ``drop`` when the answer names
-    exactly one of them; :data:`_UNREAD` when it names none or several."""
-    named = [name for name, pat in _ANSWERS if pat.search(answer)]
-    return named[0] if len(named) == 1 else _UNREAD
+    """Accept one literal choice, with case and whitespace normalized."""
+    return _ANSWERS.get(" ".join(answer.lower().split()), _UNREAD)
 
 
 _APPLIED_TEXT = {
@@ -487,64 +479,80 @@ _APPLIED_TEXT = {
     "todo as done",
 }
 _UNREAD_TEXT = (
-    "dispatch: could not read the answer on td{ask} as one of rewrite, split, "
-    "drop, close as done. Nothing changed: remove `needs-spec` to offer the "
+    "dispatch: could not read an owner answer on td{ask}. Expected one literal "
+    "`answer:` choice from the signed-in web UI. Nothing changed: remove "
+    "`needs-spec` to offer the "
     f"todo again, or remove `{FACTORY_BUILD_TAG}` to drop it."
 )
 
 
-def _answered_refusals(store: Store) -> list[tuple[int, int]]:
+def _answered_refusals(
+    conn: Connection, *, source: int | None = None
+) -> list[tuple[int, int]]:
     """``(source, ask)`` for each open todo tagged ``needs-spec`` whose
     newest refusal ask has been terminal for :data:`_ANSWER_GRACE_MINUTES`
     and is not yet applied."""
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT s.ref_id, a.ref_id
-              FROM refs s
-              JOIN LATERAL (
-                  SELECT x.ref_id, x.meta FROM refs x
-                   WHERE x.kind = 'todo' AND x.retired_at IS NULL
-                     AND x.parent_id = s.ref_id AND x.meta ? %(rk)s
-                   ORDER BY x.ref_id DESC LIMIT 1) a ON TRUE
-             WHERE s.kind = 'todo' AND s.retired_at IS NULL
-               AND NOT (a.meta ? %(applied)s)
-               AND EXISTS (SELECT 1 FROM ref_tags nt JOIN tags t USING (tag_id)
-                            WHERE nt.ref_id = s.ref_id
-                              AND t.namespace IN ('OPEN', 'FLAG')
-                              AND t.value = %(needs)s)
-               AND NOT EXISTS (SELECT 1 FROM ref_tags st JOIN tags t USING (tag_id)
-                                WHERE st.ref_id = s.ref_id AND t.namespace = 'STATUS'
-                                  AND t.value = ANY(%(terminal)s))
-               AND EXISTS (SELECT 1 FROM ref_tags ast JOIN tags t USING (tag_id)
-                            WHERE ast.ref_id = a.ref_id AND t.namespace = 'STATUS'
-                              AND t.value = ANY(%(terminal)s)
-                              AND ast.created_at
-                                  < now() - %(grace)s * interval '1 minute')
-             ORDER BY s.ref_id
-            """,
-            {
-                "rk": REFUSAL_KEY,
-                "applied": _APPLIED_KEY,
-                "needs": NEEDS_SPEC_TAG,
-                "terminal": sorted(TERMINAL_TODO_STATUSES),
-                "grace": _ANSWER_GRACE_MINUTES,
-            },
-        ).fetchall()
+    rows = conn.execute(
+        """
+        SELECT s.ref_id, a.ref_id
+          FROM refs s
+          JOIN LATERAL (
+              SELECT x.ref_id, x.meta, x.created_at FROM refs x
+               WHERE x.kind = 'todo' AND x.retired_at IS NULL
+                 AND x.parent_id = s.ref_id AND x.meta ? %(rk)s
+               ORDER BY x.ref_id DESC LIMIT 1) a ON TRUE
+         WHERE s.kind = 'todo' AND s.retired_at IS NULL
+           AND (%(source)s::bigint IS NULL OR s.ref_id = %(source)s)
+           AND NOT (a.meta ? %(applied)s)
+           AND a.meta->%(rk)s::text->>'source' = s.ref_id::text
+           AND EXISTS (SELECT 1 FROM ref_tags nt JOIN tags t USING (tag_id)
+                        WHERE nt.ref_id = s.ref_id
+                          AND t.namespace IN ('OPEN', 'FLAG')
+                          AND t.value = %(needs)s AND nt.created_at <= a.created_at)
+           AND EXISTS (SELECT 1 FROM ref_tags st JOIN tags t USING (tag_id)
+                        WHERE st.ref_id = s.ref_id AND t.namespace = 'STATUS'
+                          AND t.value = 'open' AND st.created_at <= a.created_at)
+           AND EXISTS (SELECT 1 FROM ref_tags ft JOIN tags t USING (tag_id)
+                        WHERE ft.ref_id = s.ref_id
+                          AND t.namespace IN ('OPEN', 'FLAG')
+                          AND t.value = %(build)s AND ft.created_at <= a.created_at)
+           AND EXISTS (SELECT 1 FROM ref_tags ast JOIN tags t USING (tag_id)
+                        WHERE ast.ref_id = a.ref_id AND t.namespace = 'STATUS'
+                          AND t.value = ANY(%(terminal)s)
+                          AND ast.created_at
+                              < now() - %(grace)s * interval '1 minute')
+         ORDER BY s.ref_id
+        """,
+        {
+            "rk": REFUSAL_KEY,
+            "source": source,
+            "applied": _APPLIED_KEY,
+            "needs": NEEDS_SPEC_TAG,
+            "build": FACTORY_BUILD_TAG,
+            "terminal": sorted(TERMINAL_TODO_STATUSES),
+            "grace": _ANSWER_GRACE_MINUTES,
+        },
+    ).fetchall()
     return [(int(s), int(a)) for s, a in rows]
 
 
-def _apply_refusal(store: Store, source: int, ask: int) -> str:
-    outcome = _outcome(_answer_text(store, ask))
+def _apply_refusal(store: Store, source: int, ask: int) -> str | None:
     with store.tx() as conn:
         conn.execute("SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (source,))
+        conn.execute("SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (ask,))
+        if (source, ask) not in _answered_refusals(conn, source=source):
+            return None
+        outcome = _outcome(_answer_text(store, ask, conn=conn))
         tags = store.tags_for(source, conn=conn)
         if outcome == _UNREAD:
             _comment(store, source, _UNREAD_TEXT.format(ask=ask), conn=conn)
         else:
-            store.remove_tag(source, Tag.open(NEEDS_SPEC_TAG), conn=conn)
+            remove = {NEEDS_SPEC_TAG}
             if outcome != "rewrite":
-                store.remove_tag(source, Tag.open(FACTORY_BUILD_TAG), conn=conn)
+                remove.add(FACTORY_BUILD_TAG)
+            for tag in tags:
+                if tag.prefix is None and tag.value in remove:
+                    store.remove_tag(source, tag, conn=conn)
             _comment(
                 store,
                 source,
@@ -561,8 +569,8 @@ def _apply_refusal(store: Store, source: int, ask: int) -> str:
 def sweep_refusals(store: Store) -> list[dict[str, Any]]:
     """Apply the owner's answer to every closed, unapplied refusal ask
     (:func:`~precis.plans.todo_chain.refuse_source`) that has been closed for
-    :data:`_ANSWER_GRACE_MINUTES`. An answer that names exactly one outcome
-    is applied: ``rewrite`` removes ``needs-spec`` (the tag stays, so the
+    :data:`_ANSWER_GRACE_MINUTES`. An explicit authenticated owner answer
+    with one literal choice is applied: ``rewrite`` removes ``needs-spec`` (the tag stays, so the
     todo re-enters intake), ``split`` also removes ``factory:build`` from
     the original, ``drop`` removes both, ``close as done`` removes both and
     closes the source as done. An answer that names none or several (or no
@@ -571,7 +579,9 @@ def sweep_refusals(store: Store) -> list[dict[str, Any]]:
     ask's meta is stamped so it is handled once. Returns ``{todo, ask,
     outcome}`` per ask handled."""
     applied: list[dict[str, Any]] = []
-    for source, ask in _answered_refusals(store):
+    with store.pool.connection() as conn:
+        candidates = _answered_refusals(conn)
+    for source, ask in candidates:
         try:
             outcome = _apply_refusal(store, source, ask)
         except Exception:
@@ -582,11 +592,14 @@ def sweep_refusals(store: Store) -> list[dict[str, Any]]:
                 exc_info=True,
             )
             continue
-        applied.append({"todo": source, "ask": ask, "outcome": outcome})
+        if outcome is not None:
+            applied.append({"todo": source, "ask": ask, "outcome": outcome})
     return applied
 
 
-def _ended_roots(store: Store) -> list[tuple[int, int, str]]:
+def _ended_roots(
+    conn: Connection, *, root: int | None = None
+) -> list[tuple[int, int, str]]:
     """``(root, source, root status)`` of each todo chain root in a terminal
     status that has not released its source, where the source is still
     open, tagged ``factory:build`` (a tag set before the root ended: a tag a
@@ -595,63 +608,64 @@ def _ended_roots(store: Store) -> list[tuple[int, int, str]]:
     refusal), a root whose land is being closed out
     (:func:`_closing_sql`) and a source that carries this root's ``done:``
     comment (a person reopened it)."""
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT root.ref_id, s.ref_id, rs.value
-              FROM refs root
-              JOIN refs s ON s.kind = 'todo' AND s.retired_at IS NULL
-               AND s.ref_id::text = root.meta->>%(key)s
-              JOIN LATERAL (
-                  SELECT t.value, rt.created_at
-                    FROM ref_tags rt JOIN tags t USING (tag_id)
-                   WHERE rt.ref_id = root.ref_id AND t.namespace = 'STATUS'
-                     AND t.value = ANY(%(terminal)s)
-                   ORDER BY rt.created_at DESC LIMIT 1) rs ON TRUE
-             WHERE root.kind = 'todo' AND root.retired_at IS NULL
-               AND root.meta ? %(key)s AND NOT (root.meta ? %(released)s)
-               AND EXISTS (SELECT 1 FROM ref_tags st JOIN tags t USING (tag_id)
-                            WHERE st.ref_id = s.ref_id AND t.namespace = 'STATUS'
-                              AND t.value = 'open')
-               AND EXISTS (SELECT 1 FROM ref_tags ft JOIN tags t USING (tag_id)
-                            WHERE ft.ref_id = s.ref_id
+    rows = conn.execute(
+        f"""
+        SELECT root.ref_id, s.ref_id, rs.value
+          FROM refs root
+          JOIN refs s ON s.kind = 'todo' AND s.retired_at IS NULL
+           AND s.ref_id::text = root.meta->>%(key)s
+          JOIN LATERAL (
+              SELECT t.value, rt.created_at
+                FROM ref_tags rt JOIN tags t USING (tag_id)
+               WHERE rt.ref_id = root.ref_id AND t.namespace = 'STATUS'
+                 AND t.value = ANY(%(terminal)s)
+               ORDER BY rt.created_at DESC LIMIT 1) rs ON TRUE
+         WHERE root.kind = 'todo' AND root.retired_at IS NULL
+           AND (%(root)s::bigint IS NULL OR root.ref_id = %(root)s)
+           AND root.meta ? %(key)s AND NOT (root.meta ? %(released)s)
+           AND EXISTS (SELECT 1 FROM ref_tags st JOIN tags t USING (tag_id)
+                        WHERE st.ref_id = s.ref_id AND t.namespace = 'STATUS'
+                          AND t.value = 'open' AND st.created_at < rs.created_at)
+           AND EXISTS (SELECT 1 FROM ref_tags ft JOIN tags t USING (tag_id)
+                        WHERE ft.ref_id = s.ref_id
+                          AND t.namespace IN ('OPEN', 'FLAG')
+                          AND t.value = %(build)s
+                          AND ft.created_at < rs.created_at)
+           AND NOT EXISTS (SELECT 1 FROM ref_tags nt JOIN tags t USING (tag_id)
+                            WHERE nt.ref_id = s.ref_id
                               AND t.namespace IN ('OPEN', 'FLAG')
-                              AND t.value = %(build)s
-                              AND ft.created_at < rs.created_at)
-               AND NOT EXISTS (SELECT 1 FROM ref_tags nt JOIN tags t USING (tag_id)
-                                WHERE nt.ref_id = s.ref_id
-                                  AND t.namespace IN ('OPEN', 'FLAG')
-                                  AND t.value = %(needs)s)
-               AND NOT EXISTS (SELECT 1 FROM refs a
-                                WHERE a.kind = 'todo' AND a.meta ? %(rk)s
-                                  AND a.meta->%(rk)s::text->>'root' = root.ref_id::text)
-               AND NOT EXISTS (SELECT 1 FROM refs live
-                                WHERE live.kind = 'todo' AND live.retired_at IS NULL
-                                  AND live.meta->>%(key)s = s.ref_id::text
-                                  AND NOT EXISTS (SELECT 1 FROM ref_tags lt
-                                                    JOIN tags t USING (tag_id)
-                                                   WHERE lt.ref_id = live.ref_id
-                                                     AND t.namespace = 'STATUS'
-                                                     AND t.value = ANY(%(terminal)s)))
-               AND NOT EXISTS (SELECT 1 FROM chunks d
-                                WHERE d.ref_id = s.ref_id
-                                  AND d.chunk_kind = 'todo_comment'
-                                  AND d.retired_at IS NULL
-                                  AND d.text LIKE %(done_head)s || '%%'
-                                      || %(done_mid)s || root.ref_id || %(done_tail)s)
-               AND NOT {_closing_sql("root", "s")}
-             ORDER BY root.ref_id
-            """,
-            {
-                "key": SOURCE_TODO_KEY,
-                "released": _RELEASED_KEY,
-                "build": FACTORY_BUILD_TAG,
-                "needs": NEEDS_SPEC_TAG,
-                "rk": REFUSAL_KEY,
-                "terminal": sorted(TERMINAL_TODO_STATUSES),
-                **_CLOSING_PARAMS,
-            },
-        ).fetchall()
+                              AND t.value = %(needs)s)
+           AND NOT EXISTS (SELECT 1 FROM refs a
+                            WHERE a.kind = 'todo' AND a.meta ? %(rk)s
+                              AND a.meta->%(rk)s::text->>'root' = root.ref_id::text)
+           AND NOT EXISTS (SELECT 1 FROM refs live
+                            WHERE live.kind = 'todo' AND live.retired_at IS NULL
+                              AND live.meta->>%(key)s = s.ref_id::text
+                              AND NOT EXISTS (SELECT 1 FROM ref_tags lt
+                                                JOIN tags t USING (tag_id)
+                                               WHERE lt.ref_id = live.ref_id
+                                                 AND t.namespace = 'STATUS'
+                                                 AND t.value = ANY(%(terminal)s)))
+           AND NOT EXISTS (SELECT 1 FROM chunks d
+                            WHERE d.ref_id = s.ref_id
+                              AND d.chunk_kind = 'todo_comment'
+                              AND d.retired_at IS NULL
+                              AND d.text LIKE %(done_head)s || '%%'
+                                  || %(done_mid)s || root.ref_id || %(done_tail)s)
+           AND NOT {_closing_sql("root", "s")}
+         ORDER BY root.ref_id
+        """,
+        {
+            "key": SOURCE_TODO_KEY,
+            "released": _RELEASED_KEY,
+            "root": root,
+            "build": FACTORY_BUILD_TAG,
+            "needs": NEEDS_SPEC_TAG,
+            "rk": REFUSAL_KEY,
+            "terminal": sorted(TERMINAL_TODO_STATUSES),
+            **_CLOSING_PARAMS,
+        },
+    ).fetchall()
     return [(int(r[0]), int(r[1]), str(r[2])) for r in rows]
 
 
@@ -665,26 +679,35 @@ def sweep_ended(store: Store) -> list[int]:
     may tag it again later). See :func:`_ended_roots` for what is left
     alone. Returns the ids of the sources released."""
     released: list[int] = []
-    for root, source, status in _ended_roots(store):
-        if status == "won't-do":
-            text = (
-                f"dispatch: the chain td{root} was dropped; removed "
-                f"`{FACTORY_BUILD_TAG}`. Tag the todo again to offer it "
-                "to the factory."
-            )
-        else:
-            text = (
-                f"dispatch: the chain td{root} ended without a land (see its "
-                f"build node); removed `{FACTORY_BUILD_TAG}`. Tag the todo "
-                "again to offer it to the factory."
-            )
+    with store.pool.connection() as conn:
+        candidates = _ended_roots(conn)
+    for root, source, _status in candidates:
         try:
             with store.tx() as conn:
                 conn.execute(
                     "SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (source,)
                 )
-                store.remove_tag(source, Tag.open(FACTORY_BUILD_TAG), conn=conn)
-                _comment(store, source, text, conn=conn)
+                conn.execute("SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (root,))
+                current = _ended_roots(conn, root=root)
+                if not current or current[0][1] != source:
+                    continue
+                status = current[0][2]
+                reason = (
+                    "was dropped"
+                    if status == "won't-do"
+                    else "ended without a land (see its build node)"
+                )
+                for tag in store.tags_for(source, conn=conn):
+                    if tag.prefix is None and tag.value == FACTORY_BUILD_TAG:
+                        store.remove_tag(source, tag, conn=conn)
+                _comment(
+                    store,
+                    source,
+                    f"dispatch: the chain td{root} {reason}; removed "
+                    f"`{FACTORY_BUILD_TAG}`. Tag the todo again to offer it "
+                    "to the factory.",
+                    conn=conn,
+                )
                 store.stamp_ref_meta(root, {_RELEASED_KEY: source}, conn=conn)
         except Exception:
             log.warning(

@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from psycopg import Connection
 
 from precis import settings as psettings
+from precis.errors import BadInput
 from precis.plans import governs as _governs
 from precis.plans import route as _route
 from precis.plans import templates as T
@@ -617,6 +619,8 @@ def _answer(
     status: str = "done",
     *,
     aged: bool = True,
+    principal: str = "user:owner",
+    prefix: str = "answer: ",
 ) -> None:
     """Answer and close the ask; ``aged`` makes the close older than the
     answer grace time, so the sweep may read it."""
@@ -627,8 +631,8 @@ def _answer(
             [
                 ChunkInsert(
                     ord=max(int(c.ord) for c in existing) + 1,
-                    text=f"answer: {text}",
-                    meta={"chunk_kind": "todo_comment"},
+                    text=f"{prefix}{text}",
+                    meta={"chunk_kind": "todo_comment", "principal": principal},
                 )
             ],
         )
@@ -659,7 +663,7 @@ def test_rewrite_answer_makes_eligible(store: Store) -> None:
 
 def test_split_answer_removes_tag(store: Store) -> None:
     src, ask = _refused(store, "split")
-    _answer(store, ask, "split — two todos: the API and the docs")
+    _answer(store, ask, "split")
     [res] = td.sweep_refusals(store)
     assert res["outcome"] == "split"
     assert _tags(store, src) == set() and _status(store, src) == "open"
@@ -667,7 +671,7 @@ def test_split_answer_removes_tag(store: Store) -> None:
 
 def test_drop_removes_tag(store: Store) -> None:
     src, ask = _refused(store)
-    _answer(store, ask, "Drop it, not worth it")
+    _answer(store, ask, "Drop")
     [res] = td.sweep_refusals(store)
     assert res["outcome"] == "drop"
     assert _tags(store, src) == set() and _status(store, src) == "open"
@@ -685,23 +689,24 @@ def test_close_as_done_closes_source(store: Store) -> None:
 
 
 @pytest.mark.parametrize(
-    ("answer", "outcome"),
+    ("answer", "principal", "prefix"),
     [
-        ("rewrote it", "rewrite"),
-        ("I reworded the title", "rewrite"),
-        ("rewritten, see the new text", "rewrite"),
-        ("closed as done", "close"),
-        ("Close as done please", "close"),
-        ("dropped", "drop"),
-        ("split into two", "split"),
+        ("close as done", "slice:td123j456:brief", "answer: "),
+        ("close as done", "install", "answer: "),
+        ("close as done", "personal:123", "answer: "),
+        ("close as done", "user:owner", ""),
+        ("do not close as done", "user:owner", "answer: "),
+        ("rewrite, or else split it", "user:owner", "answer: "),
     ],
 )
-def test_answer_verb_forms(store: Store, answer: str, outcome: str) -> None:
+def test_refusal_requires_explicit_owner_choice(
+    store: Store, answer: str, principal: str, prefix: str
+) -> None:
     src, ask = _refused(store, "built")
-    _answer(store, ask, answer)
-    assert td.sweep_refusals(store) == [{"todo": src, "ask": ask, "outcome": outcome}]
-    assert NEEDS_SPEC_TAG not in _tags(store, src)
-    assert (FACTORY_BUILD_TAG in _tags(store, src)) == (outcome == "rewrite")
+    _answer(store, ask, answer, principal=principal, prefix=prefix)
+    assert td.sweep_refusals(store) == [{"todo": src, "ask": ask, "outcome": "unread"}]
+    assert _tags(store, src) == {FACTORY_BUILD_TAG, NEEDS_SPEC_TAG}
+    assert _status(store, src) == "open"
 
 
 def test_ambiguous_answer_changes_nothing(store: Store) -> None:
@@ -711,7 +716,7 @@ def test_ambiguous_answer_changes_nothing(store: Store) -> None:
     assert _tags(store, src) == {FACTORY_BUILD_TAG, NEEDS_SPEC_TAG}
     assert _status(store, src) == "open"
     [_refused_note, note] = _comments(store, src)
-    assert note.startswith(f"dispatch: could not read the answer on td{ask}")
+    assert note.startswith(f"dispatch: could not read an owner answer on td{ask}")
     assert "Nothing changed" in note
     ask_ref = store.get_ref(kind="todo", id=ask)
     assert ask_ref is not None
@@ -927,6 +932,79 @@ def test_tag_added_after_the_chain_ended_is_kept(store: Store) -> None:
     _age(store, mint.root_id, 600)
     assert td.sweep_ended(store) == []
     assert FACTORY_BUILD_TAG in _tags(store, src)
+
+
+@pytest.mark.parametrize("change", ["released", "retagged", "reopened"])
+def test_ended_sweep_rechecks_selected_root(
+    store: Store, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    src = _todo(store)
+    root = T.mint_todo_build(store, todo_id=src).root_id
+    _close(store, root, "won't-do")
+    with store.pool.connection() as conn:
+        stale = td._ended_roots(conn)
+    assert stale == [(root, src, "won't-do")]
+    if change == "released":
+        assert td.sweep_ended(store) == [src]
+        store.add_tag(src, Tag.open(FACTORY_BUILD_TAG), set_by="agent")
+    elif change == "retagged":
+        store.remove_tag(src, Tag.open(FACTORY_BUILD_TAG))
+        store.add_tag(src, Tag.open(FACTORY_BUILD_TAG), set_by="agent")
+    else:
+        _close(store, src, "done")
+        _close(store, src, "open")
+    before = _comments(store, src)
+    real = td._ended_roots
+
+    def survey_first(
+        conn: Connection, *, root: int | None = None
+    ) -> list[tuple[int, int, str]]:
+        return stale if root is None else real(conn, root=root)
+
+    monkeypatch.setattr(td, "_ended_roots", survey_first)
+    assert td.sweep_ended(store) == []
+    assert FACTORY_BUILD_TAG in _tags(store, src)
+    assert _comments(store, src) == before
+
+
+@pytest.mark.parametrize(
+    "change", ["applied", "ask reopened", "source reopened", "retagged"]
+)
+def test_refusal_sweep_rechecks_selected_ask(store: Store, change: str) -> None:
+    src, ask = _refused(store)
+    _answer(store, ask, None)
+    with store.pool.connection() as conn:
+        assert td._answered_refusals(conn) == [(src, ask)]
+    if change == "applied":
+        assert len(td.sweep_refusals(store)) == 1
+    elif change == "ask reopened":
+        _close(store, ask, "open")
+    elif change == "source reopened":
+        _close(store, src, "done")
+        _close(store, src, "open")
+    else:
+        store.remove_tag(src, Tag.open(NEEDS_SPEC_TAG))
+        store.add_tag(src, Tag.open(NEEDS_SPEC_TAG), set_by="agent")
+    before = _comments(store, src)
+    assert td._apply_refusal(store, src, ask) is None
+    assert _comments(store, src) == before
+
+
+@pytest.mark.parametrize("hold", [*td.HOLD_TAGS, NEEDS_SPEC_TAG, SKIP_TAG, None])
+def test_mint_rechecks_holds_added_after_survey(store: Store, hold: str | None) -> None:
+    src = _todo(store)
+    eligible, _ = td.survey(store)
+    assert [pick.todo_id for pick in eligible] == [src]
+    if hold is None:
+        blocker = _todo(store, tags=())
+        store.add_link(src_ref_id=src, dst_ref_id=blocker, relation="blocked-by")
+        reason = "open blocker"
+    else:
+        store.add_tag(src, Tag.open(hold), set_by="agent")
+        reason = "hold tags"
+    with pytest.raises(BadInput, match=reason):
+        T.mint_todo_build(store, todo_id=src)
+    assert _roots(store, src) == []
 
 
 def test_each_sweep_fails_on_its_own(
