@@ -79,6 +79,9 @@ The lanes
   tick, synchronous ``dispatch(ctx, spec)``, no submit/poll, no kill
   hook. Exists for job_types that need a counted ``resource_slots``
   reservation and finish in minutes (``embed_batch`` is the first).
+  The gateway drain playbook runs a release-only process. Claim rank can
+  reorder the queue but cannot free a process occupied by bulk work.
+  The dedicated process filters both fresh claims and stale reclaims.
 * ``devin_api`` — hands a ``devin_task`` job to a cloud Devin session
   via the official REST API v3: mint with the prompt, record the
   session id, poll politely, collect the result + PR link; quota-class

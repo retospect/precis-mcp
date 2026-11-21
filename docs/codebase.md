@@ -148,6 +148,8 @@ The detached executor records a submit intent before launching either job.
 Recovery uses launch evidence from that attempt and host to resume poll,
 including a ship that finished before publishing its mirror squash.
 Plan dispatch queues every doable node with its score and release band.
+The gateway's `20d-precis-worker-drain.yml` provisions a release-only
+`job_inproc` claimant so bulk jobs cannot consume its worker slot.
 `release_confirm` attests the workers' heartbeat sha and, from the
 `release.mcp_served` stamp the shared session MCP writes itself
 (`mcp_served_stamp.py`; store only, no token), the sha that server serves:

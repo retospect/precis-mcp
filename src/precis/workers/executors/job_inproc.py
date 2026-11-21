@@ -59,11 +59,12 @@ from precis.workers.executors._common import (
     JOB_EVENT_KIND as _JOB_EVENT_KIND,
 )
 from precis.workers.executors._common import (
-    RUNNING as _RUNNING,
-)
-from precis.workers.executors._common import (
+    RELEASE_LEG_JOB_TYPES,
     _error_meta,
     claim_executor_jobs,
+)
+from precis.workers.executors._common import (
+    RUNNING as _RUNNING,
 )
 from precis.workers.executors._common import (
     append_chunk as _append_chunk,
@@ -227,6 +228,7 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     makes the host advertise ``repo_checkout`` for every process on it.
     """
     node = os.environ.get("PRECIS_NODE")
+    release_only = os.environ.get("PRECIS_JOB_INPROC_RELEASE_ONLY") == "1"
     poisoned = 0
     to_run: list[tuple[int, str, dict[str, Any]]] = []
     with store.pool.connection() as conn:
@@ -239,6 +241,8 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
             respect_reserve=True,
             check_job_type_requires=True,
             exclude_job_types=process_unclaimable_job_types(),
+            include_job_types=RELEASE_LEG_JOB_TYPES if release_only else None,
+            reclaim_counts_toward_limit=release_only,
         )
         if not rows:
             conn.commit()

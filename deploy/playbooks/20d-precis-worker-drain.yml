@@ -20,6 +20,10 @@
 # risk — job_inproc's own module docstring already requires every job_type on
 # this lane to self-limit its own work and support concurrent claims.
 #
+# An additional worker-drain-0 unit polls only release-band job types.
+# The derived_drain running cap leaves shared claimants exposed to other
+# bulk work (gr746114); this unit keeps a slot for release jobs.
+#
 # SCOPE / DEPENDENCIES. `gateway` group only — the host `derived_drain`'s
 # `params.target_node` pins to today (materialize.py's
 # `PRECIS_SMALL_DRAIN_TARGET_NODE`, code default the SMALL-model host). This
@@ -69,7 +73,7 @@
 # launchd equivalent is added here since this playbook is a manual,
 # infrequent operator action, not part of the redeploy path).
 
-- name: Deploy the dedicated SMALL derived-drain lane(s) (job_inproc only)
+- name: Deploy the dedicated drain and release lanes (job_inproc only)
   hosts: gateway
   become: true
   vars:
@@ -134,7 +138,7 @@
     - name: render + load each drain lane's worker unit
       ansible.builtin.include_role:
         name: service_unit
-      loop: "{{ range(1, (precis_worker_drain_lanes | int) + 1) | list }}"
+      loop: "{{ range(0, (precis_worker_drain_lanes | int) + 1) | list }}"
       loop_control:
         loop_var: lane
         label: "worker-drain-{{ lane }}"
@@ -168,6 +172,7 @@
           {{ _drain_base_env | combine({
                'PRECIS_PROCESS': 'precis-worker-drain-' ~ lane,
                'PRECIS_SOURCE': 'precis-worker-drain-' ~ lane,
+               'PRECIS_JOB_INPROC_RELEASE_ONLY': '1' if lane == 0 else '0',
              }) }}
   # `precis` family tag so `--tags precis` fans this out with the other
   # precis-* plays; `precis-worker-drain` for a targeted refresh.

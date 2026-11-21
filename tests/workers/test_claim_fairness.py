@@ -20,6 +20,7 @@ import pytest
 
 from precis.store import Store
 from precis.store.types import Tag
+from precis.workers.executors import job_inproc
 from precis.workers.executors._common import (
     _MAX_RUNNING_DEFAULTS,
     CLAIM_CLASS_RANK_ENV,
@@ -546,7 +547,48 @@ def test_uncapped_jobs_claim_through_starved_lane(store: Store) -> None:
     assert _claim(store, limit=10) == [embed]
 
 
-def test_drain_cap_leaves_a_lane_free_of_the_deployed_drain_lanes() -> None:
+@pytest.mark.parametrize("release_status", ["queued", "running"])
+def test_release_worker_skips_fresh_and_stale_bulk(
+    store: Store, monkeypatch: pytest.MonkeyPatch, release_status: str
+) -> None:
+    """Bulk backlog and expired bulk leases cannot occupy the release slot."""
+    host = "h1"
+    ran: list[int] = []
+    monkeypatch.setenv("PRECIS_HOST_NAME", host)
+    monkeypatch.setenv("PRECIS_JOB_INPROC_RELEASE_ONLY", "1")
+    monkeypatch.setattr(job_inproc, "process_unclaimable_job_types", frozenset)
+    monkeypatch.setattr(job_inproc, "_run_one", lambda ctx: ran.append(ctx.ref_id))
+    stale_bulk = _job(
+        store, origin="background", prio=1, job_type="embed_batch", status="running"
+    )
+    _job(store, origin="human", prio=1, job_type="derived_drain")
+    release = _job(
+        store,
+        origin="recurring",
+        prio=2,
+        job_type="release_poll",
+        status=release_status,
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts) VALUES (%s, now()) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts",
+            (host,),
+        )
+        expired = [stale_bulk, release] if release_status == "running" else [stale_bulk]
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "'lease_until', (now() - interval '1 minute')::text) "
+            "WHERE ref_id = ANY(%s)",
+            (expired,),
+        )
+    store.sync_host_resource_slots(host, {"repo_checkout": 1})
+    assert job_inproc.run_job_inproc_pass(store)["claimed"] == 1
+    assert ran == [release]
+    assert job_inproc.run_job_inproc_pass(store)["claimed"] == 0
+
+
+def test_drain_cap_leaves_a_lane_free_of_derived_drain() -> None:
     """gr646119: the ``derived_drain`` cap must stay strictly below the
     dedicated drain-lane count the playbook deploys by default — a cap
     equal to the lane count (it was 2 of 2) lets drains hold every

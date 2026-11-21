@@ -1859,6 +1859,7 @@ def claim_executor_jobs(
     check_job_type_requires: bool = False,
     reclaim_counts_toward_limit: bool = False,
     exclude_job_types: frozenset[str] = frozenset(),
+    include_job_types: tuple[str, ...] | None = None,
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """Lock up to ``limit`` claimable jobs for ``executor``.
 
@@ -2248,6 +2249,11 @@ def claim_executor_jobs(
         suspend_sql = """
            AND COALESCE(r.meta->>'job_type', '') <> ALL(%s)"""
         suspend_params = (sorted(suspended),)
+
+    # Restrict both fresh claims and stale reclaims on dedicated lanes.
+    if include_job_types is not None:
+        suspend_sql += " AND r.meta->>'job_type' = ANY(%s)"
+        suspend_params += (list(include_job_types),)
 
     # ── Shared per-row bookkeeping (reservation + lease-identity stamp) ──
     # Computed once; used by BOTH the reclaim-only pre-pass and the

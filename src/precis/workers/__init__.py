@@ -42,12 +42,11 @@ failures and gives task-design failures one repair attempt. :mod:`.halt_recovery
 keeps the infra breaker and cohort probe. :mod:`.halt_heal` locks
 cadence halt state when applying a supervisor verdict.
 
-``run_loop`` is serial round-robin, so one slow handler starves other passes;
-hence scheduler leases, the separate GPU lane (``deploy/README.md``), and the
-heartbeat daemon thread (a wedged rotation must not raise a false host-dark
-alert; the in-rotation heartbeat is an idempotent backstop). :mod:`.activity`
-stamps each ref pass so silent work is not mistaken for a dead worker
-(``host_heartbeat.meta.activity``, Status **Now**).
+``run_loop`` rotates serially. Scheduler leases, the separate GPU lane
+(``deploy/README.md``), and a heartbeat thread isolate slow handlers.
+The in-rotation heartbeat is an idempotent backstop. :mod:`.activity`
+stamps each ref pass in ``host_heartbeat.meta.activity`` (Status **Now**)
+so silent work is distinguishable from a dead worker.
 
 Job digests
 -------------

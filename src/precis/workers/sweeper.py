@@ -212,10 +212,9 @@ def _alert_starved_control_jobs(store: Store) -> int:
     heartbeats queue for a full drain duration per turnover, and a full
     drain backlog starves them unboundedly (release_poll missing its
     10-minute cadence → no release cut, factory_rescue_tick late). The
-    per-host ``max_running`` cap on ``derived_drain`` is the bound this
-    alert watches: when a control-class row sits claimable past
-    :func:`_starved_control_minutes`, the cap isn't holding (or the lane
-    is otherwise wedged) and a human should look. Self-resolving via
+    release-only gateway claimant protects release job types from bulk
+    work. This alert watches queue age across the broader control class,
+    using :func:`_starved_control_minutes` as its threshold. Self-resolving via
     ``resolve_stale_alerts`` on the dedicated source; returns the number
     of offenders.
 
@@ -285,10 +284,9 @@ def _alert_starved_control_jobs(store: Store) -> int:
             ),
             detail=(
                 "Recurring/release-class jobs sat claimable past the "
-                f"{threshold_min:.0f}m bound while bulk drains hold the "
-                "lane. Check claim.max_running.derived_drain, the host's "
-                "job_inproc claimants, and whether queued derived_drain "
-                "rows occupy every slot. Offenders: "
+                f"{threshold_min:.0f}m bound. Check the eligible job_inproc "
+                "claimants and the gateway's release-only worker-drain-0 "
+                "unit for release jobs. Offenders: "
                 + "; ".join(
                     f"job #{rid} ({jt}, queued {age}m)" for rid, jt, age in offenders
                 )
