@@ -8600,7 +8600,7 @@ def _step_dispatch(
         for n in sorted(plan.todos(), key=lambda x: (-_effective_score(plan, x), x.id))
         if _dispatchable(plan, n) and n.status == "open"
     ]
-    from precis.workers.executors._common import source_gripe_holds
+    from precis.workers.executors._common import source_holds as _read_source_holds
 
     waiting = [
         n
@@ -8612,9 +8612,10 @@ def _step_dispatch(
     source_holds = {}
     if build_ids:
         with w.store.pool.connection() as conn:
-            source_holds = source_gripe_holds(conn, build_ids)
+            source_holds = _read_source_holds(conn, build_ids)
     # File overlap remains a claim-time hold. Minting behind a source
-    # gripe blocker, by contrast, would leave a job waiting indefinitely.
+    # (gripe or todo) hold, by contrast, would leave a job waiting
+    # indefinitely.
     started = _started_slices(w.store, single_flight=True) if candidates else {}
     held = _overlap_holds(plan, w.store, started, waiting) if started else {}
     # gr657066: governs:factory skills join the routing set — a brief

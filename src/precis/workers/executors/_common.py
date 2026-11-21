@@ -1588,6 +1588,110 @@ def source_gripe_holds(conn: Connection, parent_ids: list[int]) -> dict[int, str
     }
 
 
+def source_todo_holds(
+    conn: Connection, parent_ids: list[int], *, blockers_only: bool = False
+) -> dict[int, str]:
+    """Name one reason per build parent whose chain's source todo holds it.
+
+    The source of a todo chain is the todo named by ``meta.source_todo``
+    on the plan root (the parent or an ancestor), read here after mint:
+    it holds the build while it carries an open ``blocked-by``, one of the
+    dispatcher's hold tags or ``needs-spec``, no longer carries
+    ``factory:build``, or is terminal or retired. ``blockers_only`` keeps
+    the open-blocker reason alone: the stalled-chain census shields a
+    chain only for a blocker — a withdrawn tag is a stall to ask about."""
+    if not parent_ids:
+        return {}
+    from precis.plans.todo_chain import (
+        FACTORY_BUILD_TAG,
+        NEEDS_SPEC_TAG,
+        SOURCE_TODO_KEY,
+    )
+    from precis.workers.gripe_dispatch import HOLD_TAGS
+
+    rows = conn.execute(
+        f"""
+        WITH RECURSIVE up(origin, ref_id, parent_id) AS (
+            SELECT ref_id, ref_id, parent_id FROM refs
+             WHERE ref_id = ANY(%s)
+            UNION
+            SELECT up.origin, r.ref_id, r.parent_id FROM refs r
+              JOIN up ON r.ref_id = up.parent_id
+        )
+        SELECT DISTINCT ON (up.origin)
+               up.origin, g.ref_id, g.retired_at IS NOT NULL,
+               (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                 WHERE rt.ref_id = g.ref_id AND t.namespace = 'STATUS'
+                 LIMIT 1),
+               EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                        WHERE rt.ref_id = g.ref_id
+                          AND t.namespace IN ('OPEN', 'FLAG')
+                          AND t.value = %s),
+               (SELECT min(t.value) FROM ref_tags rt JOIN tags t USING (tag_id)
+                 WHERE rt.ref_id = g.ref_id AND t.namespace IN ('OPEN', 'FLAG')
+                   AND t.value = ANY(%s)),
+               bl.ref_id, bl.kind, bl.status
+          FROM up
+          JOIN refs u ON u.ref_id = up.ref_id
+          JOIN refs g ON g.kind = 'todo'
+                     AND g.ref_id = CASE
+                         WHEN u.meta->>%s ~ '^[0-9]{{1,15}}$'
+                         THEN (u.meta->>%s)::bigint END
+          LEFT JOIN LATERAL (
+              SELECT b.ref_id, b.kind, bs.status
+                FROM links l
+                JOIN refs b ON b.ref_id = l.dst_ref_id
+                CROSS JOIN LATERAL (
+                    SELECT COALESCE(
+                        (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                          WHERE rt.ref_id = b.ref_id AND t.namespace = 'STATUS'
+                          LIMIT 1), 'open') AS status
+                ) bs
+               WHERE l.src_ref_id = g.ref_id AND l.relation = 'blocked-by'
+                 AND b.retired_at IS NULL
+                 AND bs.status NOT IN {blocker_terminal_sql()}
+               ORDER BY b.ref_id LIMIT 1
+          ) bl ON TRUE
+         ORDER BY up.origin, g.ref_id
+        """,
+        (
+            parent_ids,
+            FACTORY_BUILD_TAG,
+            [*HOLD_TAGS, NEEDS_SPEC_TAG],
+            SOURCE_TODO_KEY,
+            SOURCE_TODO_KEY,
+        ),
+    ).fetchall()
+    held: dict[int, str] = {}
+    for parent, source, retired, status, tagged, hold, blocker, kind, bstatus in rows:
+        reason = None
+        if not blockers_only:
+            if retired or status in TERMINAL_TODO_STATUSES:
+                reason = f"source todo td{source} is {'retired' if retired else status}"
+            elif not tagged:
+                reason = f"source todo td{source} no longer carries {FACTORY_BUILD_TAG}"
+            elif hold is not None:
+                reason = f"source todo td{source} carries hold tag {hold}"
+        if reason is None and blocker is not None:
+            reason = (
+                f"source todo td{source} is blocked-by "
+                f"{handle_registry.try_format(kind, blocker) or f'{kind}:{blocker}'} "
+                f"({bstatus})"
+            )
+        if reason is not None:
+            held[int(parent)] = reason
+    return held
+
+
+def source_holds(conn: Connection, parent_ids: list[int]) -> dict[int, str]:
+    """:func:`source_gripe_holds` and :func:`source_todo_holds` together:
+    one reason per build parent whose gripe or todo source holds it."""
+    return {
+        **source_todo_holds(conn, parent_ids),
+        **source_gripe_holds(conn, parent_ids),
+    }
+
+
 def build_blocked_holds(
     conn: Connection,
     parent_ids: list[int] | None = None,
@@ -1604,7 +1708,8 @@ def build_blocked_holds(
     land is still held (the gr659981 hold dispatch applies), and while
     the chain's source gripe — a ``related-to`` hop off the ancestor
     chain, outside the plan model — carries an open blocked-by of its
-    own (:func:`source_gripe_holds`). A parent no live plan covers — a
+    own (:func:`source_gripe_holds`), or its source todo holds it
+    (:func:`source_todo_holds`). A parent no live plan covers — a
     ``run_slice`` minted outside plan_dispatch — falls back to the
     direct ancestors read, which lacks the land nuance but still
     honours the edge. ``shared`` is the claim pass's already-loaded
@@ -1622,7 +1727,7 @@ def build_blocked_holds(
         held |= _blocked_parents_sql(conn, sorted(uncovered))
     return {
         **dict.fromkeys(held, "build todo or its ancestor has a blocked-by hold"),
-        **source_gripe_holds(conn, sorted(wanted)),
+        **source_holds(conn, sorted(wanted)),
     }
 
 

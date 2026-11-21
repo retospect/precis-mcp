@@ -155,6 +155,7 @@ from precis.plans import lanes as _lanes
 from precis.plans import route as _route
 from precis.plans.nodes import finish_mint
 from precis.plans.templates import gripe_report_texts, mint_gripe_fix_direct
+from precis.plans.todo_chain import SOURCE_TODO_KEY
 from precis.principal import worker_comment_meta
 from precis.store import Store
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -343,9 +344,11 @@ def lane_capacity(
 
 @dataclass(frozen=True, slots=True)
 class Chain:
-    """A live plan root ``related-to`` a gripe whose build is unlanded."""
+    """A live plan root ``related-to`` a gripe, or to the source todo its
+    ``meta.source_todo`` names, whose build is unlanded."""
 
     root_id: int
+    #: Source gripes; empty for a todo chain.
     gripe_ids: tuple[int, ...]
     #: Non-terminal :data:`_BUILD_OPS` nodes of the chain (task class code).
     build_ids: tuple[int, ...]
@@ -360,6 +363,9 @@ class Chain:
     #: file-overlap hold (:func:`plan_dispatch.live_and_held_nodes`): the
     #: chain is moving, whatever its build is doing.
     plan_live: bool = True
+    #: Source todos (:data:`~precis.plans.todo_chain.SOURCE_TODO_KEY`);
+    #: empty for a gripe chain.
+    todo_ids: tuple[int, ...] = ()
 
 
 def _plan_nodes(store: Store, roots: list[int]) -> dict[int, tuple[int, ...]]:
@@ -386,9 +392,11 @@ def _plan_nodes(store: Store, roots: list[int]) -> dict[int, tuple[int, ...]]:
 
 def _unlanded_chains(
     store: Store,
-) -> list[tuple[int, tuple[int, ...], tuple[int, ...]]]:
-    """``(root, gripes, build nodes)`` of every live plan root
-    ``related-to`` a gripe, with its non-terminal build nodes.
+) -> list[tuple[int, tuple[int, ...], tuple[int, ...], tuple[int, ...]]]:
+    """``(root, gripes, todos, build nodes)`` of every live plan root
+    ``related-to`` a gripe — or ``related-to`` the todo its
+    ``meta.source_todo`` names; a link to any other todo makes no chain —
+    with its non-terminal build nodes.
 
     A chain is unlanded while an ``op`` node of a :data:`_BUILD_OPS` type
     under the root (every plan node carries the ``plan:<root>`` tag)
@@ -401,7 +409,10 @@ def _unlanded_chains(
         rows = conn.execute(
             """
             SELECT r.ref_id,
-                   array_agg(DISTINCT g.ref_id),
+                   COALESCE(array_agg(DISTINCT g.ref_id)
+                            FILTER (WHERE g.kind = 'gripe'), '{}'),
+                   COALESCE(array_agg(DISTINCT g.ref_id)
+                            FILTER (WHERE g.kind = 'todo'), '{}'),
                    (SELECT array_agg(bn.ref_id ORDER BY bn.ref_id)
                       FROM refs bn
                       JOIN ref_tags bpt ON bpt.ref_id = bn.ref_id
@@ -419,7 +430,10 @@ def _unlanded_chains(
                                           AND bs.value = ANY(%s)))
               FROM refs r
               JOIN links l ON l.src_ref_id = r.ref_id AND l.relation = 'related-to'
-              JOIN refs g ON g.ref_id = l.dst_ref_id AND g.kind = 'gripe'
+              JOIN refs g ON g.ref_id = l.dst_ref_id
+                         AND (g.kind = 'gripe'
+                              OR (g.kind = 'todo'
+                                  AND r.meta->>%s = g.ref_id::text))
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND EXISTS (SELECT 1 FROM ref_tags pt JOIN tags p ON p.tag_id = pt.tag_id
                             WHERE pt.ref_id = r.ref_id AND p.namespace = 'OPEN'
@@ -435,13 +449,19 @@ def _unlanded_chains(
                 _BUILD_TASK_CLASS,
                 _BUILD_TASK_CLASS,
                 sorted(TERMINAL_TODO_STATUSES),
+                SOURCE_TODO_KEY,
                 list(_TERMINAL_STATUSES),
             ),
         ).fetchall()
     return [
-        (int(r[0]), tuple(int(x) for x in r[1]), tuple(int(x) for x in r[2]))
+        (
+            int(r[0]),
+            tuple(int(x) for x in r[1]),
+            tuple(int(x) for x in r[2]),
+            tuple(int(x) for x in r[3]),
+        )
         for r in rows
-        if r[2]
+        if r[3]
     ]
 
 
@@ -454,7 +474,10 @@ def chains(store: Store) -> list[Chain]:
     rows = _unlanded_chains(store)
     if not rows:
         return []
-    from precis.workers.executors._common import source_gripe_holds
+    from precis.workers.executors._common import (
+        source_gripe_holds,
+        source_todo_holds,
+    )
     from precis.workers.job_types.plan_dispatch import live_and_held_nodes
 
     roots = [r[0] for r in rows]
@@ -462,15 +485,19 @@ def chains(store: Store) -> list[Chain]:
         live, held = live_and_held_nodes(store, roots)
         plans = _plan_nodes(store, roots)
         with store.pool.connection() as conn:
-            sequencing = source_gripe_holds(
-                conn, [b for _, _, builds in rows for b in builds]
-            )
+            all_builds = [b for _, _, _, builds in rows for b in builds]
+            # Only an open blocker reads a todo chain as moving: a
+            # withdrawn tag, hold tag or terminal source is a stall.
+            sequencing = {
+                **source_todo_holds(conn, all_builds, blockers_only=True),
+                **source_gripe_holds(conn, all_builds),
+            }
     except Exception:
         log.warning(
             "gripe_dispatch: build liveness read failed; counting every chain live",
             exc_info=True,
         )
-        live = {b for r in rows for b in r[2]}
+        live = {b for r in rows for b in r[3]}
         held = set()
         sequencing = {}
         plans = {}
@@ -482,28 +509,32 @@ def chains(store: Store) -> list[Chain]:
             bool(live & set(builds)),
             plans.get(root, ()),
             # No plan read means no evidence of a stall: read it moving.
-            # A source-gripe hold also protects parked and jobless builds.
+            # A source-gripe hold, or a source-todo open blocker, also
+            # protects parked and jobless builds.
             root not in plans
             or bool((live | held) & set(plans[root]))
             or any(b in sequencing for b in builds),
+            tids,
         )
-        for root, gids, builds in rows
+        for root, gids, tids, builds in rows
     ]
 
 
 def open_chain_count(store: Store) -> int:
-    """Chains holding a build slot: unlanded chains whose build is live.
+    """Gripe chains holding a build slot: unlanded chains with a source
+    gripe whose build is live. Todo chains are counted apart: they never
+    gate the gripe pass.
 
     A parked build (``ask-user``, ``waiting-for:*``, ``child-failed:*``,
     paused, blocked, file-overlap held, claim-less and job-less) holds no
     slot — its branch is saved and :func:`sweep_stalled` asks about it
     once the plan has stood still (gr687946)."""
-    return sum(1 for c in chains(store) if c.live)
+    return sum(1 for c in chains(store) if c.gripe_ids and c.live)
 
 
 def parked_chain_count(store: Store) -> int:
-    """Unlanded chains whose build is not live."""
-    return sum(1 for c in chains(store) if not c.live)
+    """Unlanded gripe chains whose build is not live."""
+    return sum(1 for c in chains(store) if c.gripe_ids and not c.live)
 
 
 def max_parked(store: Store) -> int:
@@ -625,11 +656,12 @@ def sweep_stalled(
     keeps it out of dispatch and of this sweep (an open ask in the plan
     shields it), and closing the ask re-arms the build —
     ``plan_dispatch._step_rearm``, which resumes from the saved branch or,
-    on ``start over``, drops it. Each gripe carries ``chain-stalls:<n>``
-    (replaced per ask); the count no longer holds the gripe — the open ask
-    does. At most ``limit`` chains are asked about per pass, idlest first.
-    Returns one dict per ask: ``root``, ``gripes``, ``idle_hours``,
-    ``stalls``, ``ask``."""
+    on ``start over``, drops it. Each source gripe or todo carries
+    ``chain-stalls:<n>`` (replaced per ask); the count no longer holds
+    the source — the open ask does. At most ``limit`` chains are asked
+    about per pass, idlest first. Returns one dict per ask: ``root``,
+    ``gripes``, ``idle_hours``, ``stalls``, ``ask`` (and ``todos`` for a
+    todo chain)."""
     hours = stall_hours(store)
     due: list[tuple[float, Chain]] = []
     for c in parked:
@@ -796,8 +828,18 @@ def _write_stalled_ask(store: Store, c: Chain, idle: float) -> dict[str, Any]:
         }
     }
     check_ask_meta(meta)
+    origin = "; ".join(
+        part
+        for part in (
+            f"gripe {', '.join(f'gr{g}' for g in c.gripe_ids)}" if c.gripe_ids else "",
+            f"source todo {', '.join(f'td{t}' for t in c.todo_ids)}"
+            if c.todo_ids
+            else "",
+        )
+        if part
+    )
     body = (
-        f"The plan under {handle} (gripe {', '.join(f'gr{g}' for g in c.gripe_ids)}) "
+        f"The plan under {handle} ({origin}) "
         f"has stood still for {age}: {found}\n\n{where}\n\n"
         "Nothing was closed and nothing is thrown away. Answer with the "
         "option you pick and close this todo: `resume` re-arms the build to "
@@ -827,13 +869,28 @@ def _write_stalled_ask(store: Store, c: Chain, idle: float) -> dict[str, Any]:
             f"dispatch: chain {handle} stalled {age} — ask td{ask} "
             f"(resume, start over, or drop); stall {stalls}.",
         )
-    return {
+    for tid in c.todo_ids:
+        prev, held = _stall_count(store, tid)
+        stalls = prev + 1
+        for v in held:
+            store.remove_tag(tid, Tag.open(v))
+        store.add_tag(tid, Tag.open(f"{STALL_TAG_PREFIX}{stalls}"), set_by="system")
+        _comment_todo(
+            store,
+            tid,
+            f"dispatch: chain {handle} stalled {age} — ask td{ask} "
+            f"(resume, start over, or drop); stall {stalls}.",
+        )
+    out: dict[str, Any] = {
         "root": c.root_id,
         "gripes": list(c.gripe_ids),
         "idle_hours": round(idle, 1),
         "stalls": stalls,
         "ask": ask,
     }
+    if c.todo_ids:
+        out["todos"] = list(c.todo_ids)
+    return out
 
 
 def candidates(store: Store, limit: int) -> list[DispatchPick]:
@@ -939,8 +996,14 @@ def _candidate_picks(
     ]
 
 
-def build_queue_supply(store: Store) -> tuple[int, int]:
+def build_queue_supply(
+    store: Store, *, exclude_todo_chains: bool = False
+) -> tuple[int, int]:
     """Free host executor slots and queued builds; lane caps are not capacity.
+
+    ``exclude_todo_chains`` leaves out queued builds whose plan root
+    carries ``meta.source_todo``: the gripe pass must not lose slots to
+    todo-sourced builds.
 
     Use the claimer's live host advertisements, executor cap and reserved
     bands. An unavailable host contributes nothing, and a queued or held
@@ -994,8 +1057,21 @@ def build_queue_supply(store: Store) -> tuple[int, int]:
             "AND NOT EXISTS (SELECT 1 FROM ref_tags bt JOIN tags s USING (tag_id) "
             "WHERE bt.ref_id = b.ref_id AND s.namespace = 'STATUS' "
             "AND s.value = ANY(%s))) "
-            "AND t.namespace = 'STATUS' AND t.value = 'queued'",
-            (sorted(TERMINAL_TODO_STATUSES),),
+            "AND t.namespace = 'STATUS' AND t.value = 'queued'"
+            + (
+                " AND NOT EXISTS (WITH RECURSIVE up(ref_id, parent_id) AS ("
+                "SELECT ref_id, parent_id FROM refs WHERE ref_id = r.parent_id "
+                "UNION SELECT x.ref_id, x.parent_id FROM refs x "
+                "JOIN up ON x.ref_id = up.parent_id) "
+                "SELECT 1 FROM refs a JOIN up ON a.ref_id = up.ref_id "
+                "WHERE a.meta->>%s IS NOT NULL)"
+                if exclude_todo_chains
+                else ""
+            ),
+            (
+                sorted(TERMINAL_TODO_STATUSES),
+                *([SOURCE_TODO_KEY] if exclude_todo_chains else []),
+            ),
         ).fetchone()
     return free, int(row[0]) if row else 0
 
@@ -1030,9 +1106,12 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
     # enqueue below: its fresh job stamps would read as plan movement.
     stalled = sweep_stalled(store, [c for c in census if not c.live])
     enqueue_roots(store, [c.root_id for c in census])
-    capacity, queued = build_queue_supply(store)
-    open_chains = sum(1 for c in census if c.live)
-    parked = sum(1 for c in census if not c.live)
+    capacity, queued = build_queue_supply(store, exclude_todo_chains=True)
+    # Gripes keep priority: only gripe chains count toward the backstop;
+    # todo chains are reported apart.
+    open_chains = sum(1 for c in census if c.gripe_ids and c.live)
+    parked = sum(1 for c in census if c.gripe_ids and not c.live)
+    todo_chains = [c for c in census if c.todo_ids and not c.gripe_ids]
     cap_parked = max_parked(store)
     depth = max(
         1, psettings.get_int("factory.gripe_dispatch.queue_depth", store=store) or 2
@@ -1070,6 +1149,8 @@ def run_gripe_dispatch_pass(store: Store, *, host: str | None = None) -> BatchRe
         "queue_depth": depth,
         "open_chains": open_chains,
         "parked": parked,
+        "todo_chains": len(todo_chains),
+        "todo_parked": sum(1 for c in todo_chains if not c.live),
         "max_parked": cap_parked,
         "stalled": stalled,
         "breaker": breaker,

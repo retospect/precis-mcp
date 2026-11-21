@@ -1761,3 +1761,152 @@ def test_deny_path_evidence_sentence_mints_build(store: Store, two_lanes: Any) -
     res = gd.run_gripe_dispatch_pass(store, host="h1")
     assert "routed" not in res.extra
     assert [m["gripe"] for m in res.extra["minted"]] == [gid]
+
+
+def _todo_source(
+    store: Store,
+    title: str = "a source todo",
+    *,
+    tags: tuple[str, ...] = ("factory:build",),
+) -> int:
+    """A plain open todo, tagged for the factory — the source of a todo chain."""
+    ref = store.insert_ref(kind="todo", slug=None, title=title)
+    store.add_tag(ref.id, Tag.closed("STATUS", "open"), set_by="agent")
+    for t in tags:
+        store.add_tag(ref.id, Tag.open(t), set_by="agent")
+    return int(ref.id)
+
+
+def _todo_chain_for(store: Store, source: int) -> tuple[int, int]:
+    """A todo chain: a plan root ``related-to`` ``source`` carrying
+    ``meta.source_todo``. Nothing mints one yet, so the chain is a gripe
+    chain (of a throwaway gripe held out of dispatch) re-pointed at the
+    source; returns ``(root, build node)``."""
+    scratch = _gripe(store, "scratch", tags=("fix:code", "hold:no-dispatch"))
+    root, build = _chain_for(store, scratch)
+    store.remove_link(src_ref_id=root, dst_ref_id=scratch, relation="related-to")
+    store.add_link(src_ref_id=root, dst_ref_id=source, relation="related-to")
+    store.stamp_ref_meta(root, {"source_todo": source})
+    return root, build
+
+
+def test_todo_chain_in_inventory_with_source(store: Store) -> None:
+    source = _todo_source(store)
+    root, build = _todo_chain_for(store, source)
+    [chain] = [c for c in gd.chains(store) if c.root_id == root]
+    assert chain.todo_ids == (source,) and chain.gripe_ids == ()
+    assert chain.build_ids == (build,)
+    assert (root, (), (source,), (build,)) in gd._unlanded_chains(store)
+    # a chain with a closed build is no longer unlanded
+    store.add_tag(
+        build, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+    assert root not in {c.root_id for c in gd.chains(store)}
+
+
+def test_related_todo_without_source_key_is_not_a_chain(store: Store) -> None:
+    source = _todo_source(store)
+    other = _todo_source(store, "another todo")
+    # the key names another todo than the one the root is related to
+    root, _build = _todo_chain_for(store, source)
+    store.stamp_ref_meta(root, {"source_todo": other})
+    assert root not in {c.root_id for c in gd.chains(store)}
+    # no key at all: the related-to link alone makes no chain
+    root2, _build2 = _todo_chain_for(store, source)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta - 'source_todo' WHERE ref_id = %s", (root2,)
+        )
+    assert root2 not in {c.root_id for c in gd.chains(store)}
+
+
+def test_gripe_rows_unchanged(store: Store) -> None:
+    g = _gripe(store, "a")
+    root, build = _chain_for(store, g)
+    other = _todo_source(store)
+    # a related-to link to an unrelated todo leaves the gripe row alone
+    store.add_link(src_ref_id=root, dst_ref_id=other, relation="related-to")
+    assert gd._unlanded_chains(store) == [(root, (g,), (), (build,))]
+    [chain] = gd.chains(store)
+    assert (chain.root_id, chain.gripe_ids, chain.todo_ids) == (root, (g,), ())
+    assert chain.build_ids == (build,)
+    # a todo chain adds its own row without touching the gripe's
+    t_root, t_build = _todo_chain_for(store, other)
+    rows = gd._unlanded_chains(store)
+    assert (root, (g,), (), (build,)) in rows
+    assert (t_root, (), (other,), (t_build,)) in rows
+
+
+def test_stalled_todo_chain_gets_one_ask(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _one_lane(monkeypatch, cap=2)
+    _light(store)
+    source = _todo_source(store)
+    root, build = _todo_chain_for(store, source)
+    _park(store, build, "paused")
+    _age_node(store, build, 7)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    [z] = res.extra["stalled"]
+    assert z["root"] == root and z["todos"] == [source] and z["gripes"] == []
+    assert z["stalls"] == 1
+    [ask] = _asks_on(store, root)
+    assert z["ask"] == ask
+    ref = store.get_ref(kind="todo", id=ask)
+    assert ref is not None
+    assert ref.meta["ask"]["options"] == ["resume", "start over", "drop"]
+    body = next(
+        c.text
+        for c in store.chunks.list_chunks_for_ref(ask)
+        if c.chunk_kind == "todo_body"
+    )
+    assert f"source todo td{source}" in body and "gripe" not in body
+    # the marker and the comment go on the source todo
+    assert "chain-stalls:1" in _open_tags(store, source)
+    texts = [c.text for c in store.chunks.list_chunks_for_ref(source)]
+    assert any("stalled" in t and f"ask td{ask}" in t for t in texts)
+    # one ask: the open ask shields the chain from the next sweep
+    _age_node(store, build, 9)
+    again = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert again.extra["stalled"] == [] and _asks_on(store, root) == [ask]
+
+
+def test_queued_todo_builds_do_not_reduce_gripe_slots(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _one_lane(monkeypatch)
+    _light(store)
+    source = _todo_source(store)
+    _root, build = _todo_chain_for(store, source)
+    _queue_build(store, build)
+    free, queued = gd.build_queue_supply(store)
+    assert queued == 1 and free > 0
+    assert gd.build_queue_supply(store, exclude_todo_chains=True) == (free, 0)
+    # the gripe pass reads the supply without the todo build: its slot stays
+    g = _gripe(store, "a", prio=1)
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.ok == 1 and _roots_for(store, g)
+    assert res.extra["queued_builds"] == 0
+    # a queued gripe build still counts under the exclusion
+    _queue_build(store, _build_node(store, _roots_for(store, g)[0]))
+    assert gd.build_queue_supply(store, exclude_todo_chains=True) == (free, 1)
+    assert gd.build_queue_supply(store) == (free, 2)
+
+
+def test_parked_todo_chains_do_not_trip_gripe_backstop(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gripes keep priority: a parked todo chain is reported apart and
+    never counts toward ``max_parked``."""
+    _one_lane(monkeypatch, cap=3)
+    _light(store)
+    psettings.set_setting(gd.MAX_PARKED_KEY, "1", store=store)
+    source = _todo_source(store)
+    _root, build = _todo_chain_for(store, source)
+    _park(store, build, "paused")
+    g = _gripe(store, "a", prio=1)
+    assert gd.parked_chain_count(store) == 0 and gd.open_chain_count(store) == 0
+    res = gd.run_gripe_dispatch_pass(store, host="h1")
+    assert res.ok == 1 and _roots_for(store, g)
+    assert res.extra["parked"] == 0 and res.extra["max_parked"] == 1
+    assert (res.extra["todo_chains"], res.extra["todo_parked"]) == (1, 1)

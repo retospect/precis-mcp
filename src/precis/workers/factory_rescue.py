@@ -1575,7 +1575,7 @@ def _judge_node(
     if now - newest <= deadline:
         return
     if not is_gate and stage in ("idle", "queued"):
-        from precis.workers.executors._common import source_gripe_holds
+        from precis.workers.executors._common import source_holds
         from precis.workers.job_types import plan_dispatch as pd
 
         waiting_to_build = (
@@ -1586,7 +1586,7 @@ def _judge_node(
         )
         if waiting_to_build:
             with store.pool.connection() as conn:
-                source_held = n.id in source_gripe_holds(conn, [n.id])
+                source_held = n.id in source_holds(conn, [n.id])
             if source_held:
                 res.held += 1
                 return
