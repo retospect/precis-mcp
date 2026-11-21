@@ -75,19 +75,23 @@ _GENERATED = {
     "backlog/INDEX.md",
     "backlog/threads/PRIORITIES.md",
     "codebase-map.md",
+    "repo-dev-start-page.md",
     "runbooks/INDEX.md",
 }
+
+
+def _written_docs() -> list[Path]:
+    return [
+        p
+        for p in sorted(DOCS.rglob("*.md"))
+        if p.relative_to(DOCS).as_posix() not in _GENERATED
+    ]
 
 
 def _durable_docs() -> list[Path]:
     """docs/ minus docs/backlog/ (dated work-in-progress evidence) and the
     generated views."""
-    return [
-        p
-        for p in sorted(DOCS.rglob("*.md"))
-        if p.relative_to(DOCS).parts[0] != "backlog"
-        and p.relative_to(DOCS).as_posix() not in _GENERATED
-    ]
+    return [p for p in _written_docs() if p.relative_to(DOCS).parts[0] != "backlog"]
 
 
 def _count(fn, files: list[Path]) -> int:
@@ -104,7 +108,12 @@ def test_no_bare_line_refs_in_durable_docs() -> None:
 
 def test_coderef_drift_ratchet() -> None:
     r = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "coderef"), "check", "docs"],
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "coderef"),
+            "check",
+            *(str(p.relative_to(ROOT)) for p in _written_docs()),
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,
