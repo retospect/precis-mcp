@@ -155,6 +155,17 @@ def _update(store: Store, sql: str, params: tuple[Any, ...]) -> None:
         conn.execute(sql, params)
 
 
+def _run_escalation_repair() -> None:
+    from precis.store.migrate import _execute_dump_sql
+    from tests.conftest import _active_dsn
+
+    (migration,) = MIGRATIONS_DIR.glob("*_measures_escalation_repair.sql")
+    sql = migration.read_text(encoding="utf-8")
+    with psycopg.connect(_active_dsn(), autocommit=True) as conn:
+        with conn.cursor() as cur:
+            _execute_dump_sql(cur, sql)
+
+
 # ── AC 1: compatibility views over measures ────────────────────────────────
 
 
@@ -1113,6 +1124,155 @@ def test_a_rejected_row_with_a_corrected_label_yields_but_keeps_its_row(
 
 
 # ── slice 8: implausible-value and glyph-damage sanity flags ───────────────
+
+
+def test_a_unitless_count_is_not_an_outlier(
+    store: Store, world: dict[str, Any]
+) -> None:
+    # gr722340: a dataset size has no unit prefix to strip, so a total far
+    # above the median of unrelated counts is not flagged.
+    count = _taxon(store, "Count")
+    for v in ("100", "150", "170", "200"):
+        sample = store.insert_measure(
+            MeasureSpec(count, v, world["paper"]), actor="reader"
+        )
+        store.record_target_review(
+            "measure", sample.output_id, actor="checker", verdict="approved"
+        )
+    big = store.insert_measure(
+        MeasureSpec(count, "1132808", world["paper"]), actor="reader"
+    )
+    assert _row(store, big.output_id)["meta"].get("escalation") is None
+
+
+@pytest.mark.parametrize("reported_unit", ["1", "\t1\t"])
+def test_a_bare_one_count_is_not_an_outlier(
+    store: Store, world: dict[str, Any], reported_unit: str
+) -> None:
+    # gr722340: the extractor writes '1' for a unitless cell on a
+    # canonical-'1' measurand — that bare token is the unitless case too.
+    count = _taxon(store, "conformer count", unit="1", parent=world["start"])
+    for v in ("100", "150", "170", "200"):
+        sample = store.insert_measure(
+            MeasureSpec(count, v, world["paper"], reported_unit="1"),
+            actor="reader",
+        )
+        store.record_target_review(
+            "measure", sample.output_id, actor="checker", verdict="approved"
+        )
+    big = store.insert_measure(
+        MeasureSpec(count, "1132808", world["paper"], reported_unit=reported_unit),
+        actor="reader",
+    )
+    assert _row(store, big.output_id)["meta"].get("escalation") is None
+
+
+def test_a_spelled_unit_ratio_keeps_the_outlier_check(
+    store: Store, world: dict[str, Any]
+) -> None:
+    # gr722340: the exemption is on the reading, not the measurand — a ratio
+    # reported in '%' keeps the check though it stores under canonical '1'.
+    yield_tax = _taxon(store, "reaction yield", unit="1", parent=world["start"])
+    for v in ("90", "85", "95", "88"):
+        sample = store.insert_measure(
+            MeasureSpec(yield_tax, v, world["paper"], reported_unit="%"),
+            actor="reader",
+        )
+        store.record_target_review(
+            "measure", sample.output_id, actor="checker", verdict="approved"
+        )
+    outlier = store.insert_measure(
+        MeasureSpec(yield_tax, "900000", world["paper"], reported_unit="%"),
+        actor="reader",
+    )
+    (esc,) = _row(store, outlier.output_id)["meta"]["escalation"]
+    assert esc["rule"] == "implausible_value"
+
+
+class TestEscalationRepair:
+    """gr722340 data repair and restoration of the append-only guard."""
+
+    _DOOR = "SELECT set_config('precis.allow_measure_escalation_repair', 'on', true)"
+
+    def _flagged(
+        self,
+        store: Store,
+        w: dict[str, Any],
+        entries: list[dict[str, Any]],
+        *,
+        reported_unit: str | None = None,
+    ) -> int:
+        run = store.insert_measure(
+            MeasureSpec(
+                _taxon(store, "Count"),
+                "1132808",
+                w["paper"],
+                reported_unit=reported_unit,
+                meta={"escalation": entries},
+            ),
+            actor="reader",
+        )
+        return run.output_id
+
+    def test_glyph_flag_stays_frozen_after_migration(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        run = store.insert_measure(
+            MeasureSpec(
+                world["energy"],
+                "1",
+                world["paper"],
+                reported_unit="eV",
+                meta={"escalation": [{"rule": "glyph_suspected"}]},
+            ),
+            actor="reader",
+        )
+        _run_escalation_repair()
+        with store.pool.connection() as conn, conn.transaction():
+            conn.execute(self._DOOR)
+            with pytest.raises(psycopg.errors.CheckViolation, match="append-only"):
+                conn.execute(
+                    "UPDATE measures SET meta = meta - 'escalation' WHERE id = %s",
+                    (run.output_id,),
+                )
+        assert _row(store, run.output_id)["meta"]["escalation"] == [
+            {"rule": "glyph_suspected"}
+        ]
+
+    @pytest.mark.parametrize("reported_unit", [None, "\t1\t", "\u00a01\u3000"])
+    def test_migration_repairs_the_rows_the_new_check_no_longer_flags(
+        self, store: Store, world: dict[str, Any], reported_unit: str | None
+    ) -> None:
+        # The migration itself is the repair path for the rows the old check
+        # flagged (mx6128): replaying it lifts the implausible_value entry —
+        # and the key — off a unitless row, keeps unrelated rules, and
+        # leaves a spelled-unit row alone.
+        bad = self._flagged(
+            store, world, [{"rule": "implausible_value"}], reported_unit=reported_unit
+        )
+        assert _row(store, bad)["reported_unit"] == reported_unit
+        mixed = self._flagged(
+            store,
+            world,
+            [{"rule": "implausible_value"}, {"rule": "no_molar_mass"}],
+        )
+        yield_tax = _taxon(store, "reaction yield", unit="1", parent=world["start"])
+        spelled = store.insert_measure(
+            MeasureSpec(
+                yield_tax,
+                "900000",
+                world["paper"],
+                reported_unit="%",
+                meta={"escalation": [{"rule": "implausible_value"}]},
+            ),
+            actor="reader",
+        ).output_id
+        _run_escalation_repair()
+        assert "escalation" not in _row(store, bad)["meta"]
+        assert _row(store, mixed)["meta"]["escalation"] == [{"rule": "no_molar_mass"}]
+        assert _row(store, spelled)["meta"]["escalation"] == [
+            {"rule": "implausible_value"}
+        ]
 
 
 def test_an_order_of_magnitude_outlier_escalates_for_review(

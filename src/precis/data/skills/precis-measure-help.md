@@ -376,6 +376,9 @@ put(kind="measure", text="95",
   `glyph_suspected` (the source paper's extracted text is flagged) — or
   `anchor_mismatch` (the literal is not in the anchored span: check the chunk).
 
+A reading with no stated unit or the bare unit `1` skips the
+`implausible_value` check. A printed scale such as `%` still gets checked.
+
 ## Recheck a batch
 
 `measure_accept` samples a run's rows and has a frontier model verdict

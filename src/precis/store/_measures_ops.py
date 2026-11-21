@@ -1224,6 +1224,7 @@ class MeasuresMixin:
         price_year: int | None = None,
         currency_taxon: bool = False,
         canonical_unit: str | None = None,
+        reported_unit: str | None = None,
     ) -> list[dict[str, Any]]:
         """Slice-8 sanity flags on an output row (canonical ``values`` are
         ``(value_num, value_low, value_high)``). Both are needs-review, never
@@ -1237,6 +1238,10 @@ class MeasuresMixin:
         unconverted currencies and price years never mix (gr510555 S1). On a
         measurand that is not a currency measurand at all every approved row is
         in the one group and no unit is parsed."""
+        # A reading with no unit has no prefix to lose (gr722340).
+        # A printed scale such as '%' still needs the check.
+        if (reported_unit or "").strip() in ("", "1"):
+            values = ()
         out: list[dict[str, Any]] = []
         nums = [float(v) for v in values if v is not None and v != 0]
         mags: list[float] = []
@@ -1582,6 +1587,7 @@ class MeasuresMixin:
                     price_year=price_year,
                     currency_taxon=is_currency_taxon,
                     canonical_unit=canonical,
+                    reported_unit=reported_unit,
                 )
             )
         if escalation:

@@ -160,6 +160,12 @@ with an explicit count, while ids and explicit semantic/lexical modes bypass
 the gap cut. ``PRECIS_SEARCH_GAP_CUT`` overrides delta;
 ``PRECIS_SEARCH_FIXED_FLOORS=1`` restores the old table for one release.
 The delta is provisional: local hash embeddings do not calibrate prod bge-m3.
+
+The magnitude check skips readings with an absent, blank or bare ``1``
+reported unit because there is no unit prefix to lose. The data migration
+removes the old magnitude flags from those live outputs without changing
+their other flags or review hashes. It restores the frozen-row trigger
+before commit so subsequent writes cannot remove review flags.
 """
 
 from __future__ import annotations
