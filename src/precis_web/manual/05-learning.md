@@ -36,6 +36,12 @@ self-quiz.
 
 The panel is yours alone: it lists only the signed-in account's cards.
 
+## Your recent walk
+
+**Your recent walk** shows the pages you visited through `/eye` while signed
+in, newest first, from the past 90 days. Only your account can see this
+history. Select **Clear walk** to delete all your recorded visits.
+
 ## Set your pacing
 
 On the same page, set your timezone and an optional typical session length.

@@ -43,6 +43,27 @@
   </div>
 </section>
 
+{% if walk %}
+<section aria-labelledby="walk-heading" class="mb-6 max-w-3xl rounded-lg border border-line bg-surface p-4">
+  <h2 id="walk-heading" class="text-sm font-semibold">Your recent walk</h2>
+  <p class="mt-1 text-xs text-fg-subtle">The /eye pages you focused most recently, newest first. Only you can see this trail; it keeps handles and times — never page content.</p>
+  <ol class="mt-3 space-y-1 text-sm">
+    {% for row in walk %}
+    {% set step = row.step %}
+    <li class="flex flex-wrap items-baseline gap-x-2">
+      <span class="text-xs text-fg-faint" title="{{ step.visited_at }} UTC">{{ step.visited_at | ago }}</span>
+      <a href="{{ row.href }}" class="eye-handle text-info underline">{{ step.handle }}</a>
+      <span class="text-xs text-fg-faint">[{{ step.kind }}]</span>
+      {% if step.previous_handle %}<span class="text-xs text-fg-faint" title="The step before this one">from {{ step.previous_handle }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  <form method="post" action="/learning/walk/clear" class="mt-3">
+    <button type="submit" class="rounded border border-line px-2 py-0.5 text-xs text-fg-muted hover:text-danger hover:border-danger transition">Clear walk</button>
+  </form>
+</section>
+{% endif %}
+
 {% if selected %}
 <section id="day-detail" aria-labelledby="day-heading" class="mb-6 max-w-3xl rounded-lg border border-line bg-surface p-4">
   <h2 id="day-heading" class="text-sm font-semibold">{{ selected.study_date }} · {{ selected.status }}</h2>

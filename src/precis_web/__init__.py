@@ -178,6 +178,8 @@ cards + live-routing header, budget cap/pause controls, and **Now**
 ``/factory`` and ``/budget`` GETs redirect into their sub-tab; POST
 routes unchanged.
 
+**Recent walk** — ``precis.eye_visits`` records authenticated ``/eye`` visits for ``/learning``.
+
 **Work (`/work`)** — ``routes/work.py``: read-only quest → root → slices
 hierarchy off ``precis.todo.work_view.work_model`` (the data the MCP
 ``view='work'`` formats as text); rows carry ``data-handle`` and link to
@@ -193,11 +195,9 @@ from ``wontfix``). Filing appends ``— filed by <login> …``; body is the reco
 block/port selection for finding messages: view-state only, with an
 activation recheck refusing stale rows.
 
-**Manual (`/manual`)** — ``routes/manual.py`` renders user how-to chapters
-from ``src/precis_web/manual/``. They live in-package because the wheel ships
-only ``src/``; each chapter ships with its described button. Ordered filenames
-(``01-writing-a-paper.md`` → ``/manual/writing-a-paper``) supply routes;
-title/blurb come from the first heading+paragraph, avoiding a drifting TOC.
+**Manual (`/manual`)** — ``routes/manual.py`` renders in-package chapters
+from ``src/precis_web/manual/`` so the wheel includes them. Ordered filenames
+determine routes. First headings and paragraphs supply TOC titles and blurbs.
 Distinct from agent-facing ``precis/data/skills/`` and repo-dev ``docs/``.
 
 **Categorizers (`/categorizers`)** — ``routes/categorizers.py``: axes/topics,

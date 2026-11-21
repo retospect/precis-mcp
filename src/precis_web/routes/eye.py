@@ -7,7 +7,10 @@ agent's, not a second renderer), with every handle in it linked to its own
 focus page. It renders, it does not act: the ``focus`` verb and the
 render→act loop stay in ``context-navigation.md`` §8; the picture (radial SVG,
 ``/graph/<kind>/<id>``) is ``web-graph-navigation.md``'s and the two
-cross-link.
+cross-link. The one write is the owner's own walk: each authenticated focus
+render appends a per-login row (handle, kind, previous handle, UTC ts — no
+query text or content) so /learning can show "your recent walk"
+(gr743231, :mod:`precis.eye_visits`).
 
 * ``GET /eye/`` — a box that takes a handle (``me4641``, ``pc13234``,
   ``sk:precis-get-help``) or a query. A handle redirects to its focus; a
@@ -33,6 +36,7 @@ resolves ``include_deleted``: a soft-deleted focus 404s its body on
 from __future__ import annotations
 
 import html
+import logging
 import re
 import time
 from collections.abc import Collection
@@ -41,9 +45,13 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
 
 from precis import profiles
+from precis.eye_visits import EyeVisitStore
 from precis.handlers._eye import EYE_LADDER, is_eye_view
+from precis.user_context import user_scope
+from precis.users import WebUser
 from precis.utils import handle_registry
 from precis.utils.eye_render import _TREE_KINDS
 from precis.utils.refeye import resolve_up
@@ -54,6 +62,7 @@ from precis_web.linkify import _anchor_html
 from precis_web.ref_urls import ref_url
 
 router = APIRouter(prefix="/eye", tags=["eye"])
+log = logging.getLogger(__name__)
 
 #: The rung the page opens on: the neighbourhood is why one comes here.
 DEFAULT_EXTENT = "fisheye+1hop"
@@ -531,6 +540,21 @@ async def eye_index(request: Request, q: str | None = None) -> Any:
     )
 
 
+def _record_walk(request: Request, user: WebUser, handle: str, kind: str) -> None:
+    """Append this login's walk step (gr743231) — best-effort, never fatal.
+
+    Runs on a worker thread after the dispatch read; a ledger failure must
+    not turn a rendered focus into an error page, so every exception is
+    logged and swallowed. The row carries handles only — no query text, no
+    rendered content — and :func:`current_user` being ``None`` (auth off)
+    means the caller never reaches here, so nothing is written."""
+    try:
+        with user_scope(user.id):
+            EyeVisitStore(get_store(request)).record(handle=handle, kind=kind)
+    except Exception:
+        log.warning("eye walk record failed for %r", user.login, exc_info=True)
+
+
 @router.get("/{handle:path}", response_class=HTMLResponse)
 async def eye_focus(
     request: Request,
@@ -612,6 +636,11 @@ async def eye_focus(
         first = body.splitlines()[0] if body else ""
         status = 404 if "[error:NotFound]" in first or "[error:Gone]" in first else 200
     canonical = handle.strip()
+    user = current_user(request)
+    if user is not None:
+        await run_in_threadpool(
+            _record_walk, request, user, canonical, str(target["kind"])
+        )
     return timed_response(
         request,
         templates.TemplateResponse(

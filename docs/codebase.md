@@ -75,6 +75,12 @@ share that store. `runtime.private` routes the kinds in the `private_kinds`
 registry (learning and gtd today) around shared payload ledgers and continuation
 caches; learning events record engagement, never concept mastery.
 
+`eye_visits` stores each authenticated `/eye/<handle>` focus with the web
+user ID, handle, kind, previous handle and UTC timestamp. The owner alone
+can see the latest steps on `/learning`, which shows a 90-day window. Each
+append prunes expired rows for that owner. `POST /learning/walk/clear`
+deletes the owner's entire walk.
+
 `precis.oauth` adds independently revocable user/app grants backed by the same
 account IDs. Web routes own consent and token exchange; `oauth_transport`
 publishes MCP resource discovery. Request identity and dispatch revalidation

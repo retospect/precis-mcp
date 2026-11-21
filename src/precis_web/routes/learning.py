@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import APIRouter, Request
@@ -30,6 +31,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from precis.errors import BadInput, Conflict, Denied, NotFound
+from precis.eye_visits import WALK_LIMIT, EyeVisitStore
 from precis.learning import LearningStore, timezone_choices
 from precis.reading.known import known_undo_entries
 from precis.user_context import user_scope
@@ -104,6 +106,19 @@ def _refusal(request: Request, detail: str, status: int) -> HTMLResponse:
     )
 
 
+def _walk_rows(request: Request) -> list[dict[str, Any]]:
+    """This login's recent /eye steps, hrefs precomputed for the template.
+
+    The handle is URL-quoted with the eye route's own ``safe`` set — focus
+    handles carry ``~``/``:``/``#`` that a naive template ``urlencode``
+    would mangle or leave raw."""
+    rows = [
+        {"href": f"/eye/{quote(step.handle, safe=':~')}", "step": step}
+        for step in EyeVisitStore(get_store(request)).recent(limit=WALK_LIMIT)
+    ]
+    return rows
+
+
 def _render(
     request: Request,
     *,
@@ -141,6 +156,7 @@ def _render(
             "settings": settings,
             "activity": activity,
             "groups": groups,
+            "walk": _walk_rows(request),
             "undo_entries": known_undo_entries(get_store(request), user),
             "return_to": "learning",
             "selected": selected,
@@ -192,6 +208,7 @@ def _page(request: Request, user: WebUser) -> HTMLResponse:
                 "checkin": "Study check-in saved.",
                 "undo-known": "Dismissal undone. Restored cards will sync back to Anki.",
                 "settings": "Learning preferences saved.",
+                "walk-cleared": "Your recent walk was cleared.",
             }.get(saved, "")
             return _render(
                 request,
@@ -266,6 +283,29 @@ async def settings(request: Request) -> Response:
         )
     form = await request.form()
     return await run_in_threadpool(_save, request, user, form, settings=True)
+
+
+@router.post("/walk/clear", response_class=HTMLResponse)
+async def walk_clear(request: Request) -> Response:
+    user = current_user(request)
+    if user is None:
+        return _refusal(
+            request,
+            "Sign in with PRECIS_WEB_AUTH enabled before clearing your walk.",
+            503,
+        )
+    return await run_in_threadpool(_clear_walk, request, user)
+
+
+def _clear_walk(request: Request, user: WebUser) -> Response:
+    with user_scope(user.id):
+        try:
+            EyeVisitStore(get_store(request)).clear()
+        except (BadInput, Denied, NotFound) as exc:
+            return _refusal(request, str(exc), _error_status(exc))
+    return RedirectResponse(
+        "/learning?saved=walk-cleared", status_code=303, headers=_NO_STORE
+    )
 
 
 __all__ = ["LearningPrivacyMiddleware", "router"]
