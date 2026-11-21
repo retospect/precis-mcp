@@ -1,10 +1,9 @@
-"""PresentationHandler attribution, citation export and soft deletion.
+"""PresentationHandler attribution, record views and soft deletion.
 
 Covers the ``edit`` verb (writes attribution into ``meta``), the
 ``view='bibtex'`` / ``'ris'`` render it feeds, and the two pure helpers
-(``_normalize_pres_authors`` / ``_format_pres_citation``). The shared
-get/search/put machinery is exercised by the ingest tests; here we only
-assert attribution and the reversible deletion surface.
+(``_normalize_pres_authors`` / ``_format_pres_citation``). Also covers parent
+record views reached through slide handles and the reversible deletion surface.
 
 DB-bound tests use the ``store`` fixture and skip when no postgres is
 reachable (see ``tests/conftest.py``).
@@ -286,6 +285,42 @@ def test_meta_view_dumps_ref_meta(store) -> None:
 
     assert "CASTEP Workshop, Durham" in out.body
     assert '"venue"' in out.body
+
+
+def test_record_views_on_slide_handles(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    handler = PresentationHandler(hub=Hub(store=store))
+    slug = _mk_deck(handler)
+    ref = store.get_ref(kind="pres", id=slug)
+    assert ref is not None
+    (slide,) = store.chunks.list_chunks_for_ref(ref.id)
+    parent_handle = f"pr{ref.id}"
+    slide_handle = f"ps{slide.id}"
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "pres", "id": slide_handle}
+    )
+    assert not is_error, body
+    assert slide.text in body
+
+    for view, expected in (
+        ("links", f"# pres {ref.id} - links"),
+        ("log", f"for ref_id={ref.id}"),
+        ("raw", f"# raw pres {parent_handle}"),
+    ):
+        for ident, args in (
+            (parent_handle, {"view": view}),
+            (slide_handle, {"view": view}),
+            (f"{slide_handle}/{view}", {}),
+            (f"{slug}~0..0", {"view": view}),
+        ):
+            body, is_error = runtime_with_store.dispatch_with_status(
+                "get", {"kind": "pres", "id": ident, **args}
+            )
+            assert not is_error, body
+            assert expected in body
+            assert slide.text not in body
 
 
 def test_unknown_view_lists_accepted_options(store) -> None:

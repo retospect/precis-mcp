@@ -18,6 +18,8 @@ is enabled. The overview shows stored PDF metadata; ``pdf_link`` shares
 the document-family signed download renderer in
 :mod:`precis.handlers._doc_pdf`, ``meta`` dumps the ref's full ``meta``
 JSON, and ``tags`` lists the stored tags.
+The record views ``links``, ``log``, and ``raw`` address the parent
+presentation even when the identifier selects a slide or range.
 
 Writes: ``put(id='<slug>', text='<slide body>', pos=N, ...)`` is
 the bridge for both human ingest (one call per slide while
@@ -39,7 +41,9 @@ swaps changed bodies after extraction succeeds.
 
 from __future__ import annotations
 
+import json
 import re
+from dataclasses import asdict
 from typing import Any, ClassVar
 
 from precis._result_budget import (
@@ -56,6 +60,12 @@ from precis.errors import (
     Unsupported,
 )
 from precis.handlers._doc_pdf import pdf_overview_line, render_pdf_link
+from precis.handlers._event_log_render import render_event_log
+from precis.handlers._links_render import (
+    DEFAULT_LINK_ROW_CAP,
+    render_links_section,
+    render_links_view,
+)
 from precis.handlers._numeric_ref import BATCH_ID_CAP, _id_batch_next
 from precis.handlers._paper_format import (
     _clean_inline_text,
@@ -69,7 +79,7 @@ from precis.handlers._slug_ref_shared import (
 )
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
-from precis.store.types import ChunkInsert
+from precis.store.types import ChunkInsert, Ref
 from precis.utils import handle_registry
 from precis.utils.block_selector import parse_block_selector
 from precis.utils.link_tag_ops import (
@@ -126,11 +136,17 @@ class PresentationHandler(Handler):
         self.hub = hub
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
-        # First entry is the conventional default (overview). ``full``
-        # renders every slide; ``bibtex`` / ``ris`` export the deck's
-        # attribution for citing slides; ``links`` is the F8 graph view
-        # (OPEN-ITEMS.md 🕸️ graph-completeness audit item 1).
-        return ["full", "bibtex", "ris", "links", "pdf_link", "tags", "meta"]
+        return [
+            "full",
+            "bibtex",
+            "ris",
+            "links",
+            "log",
+            "raw",
+            "pdf_link",
+            "tags",
+            "meta",
+        ]
 
     # ── get ─────────────────────────────────────────────────────────
 
@@ -150,6 +166,18 @@ class PresentationHandler(Handler):
         ref = resolve_live_slug_ref(self.store, kind="pres", id=slug)
 
         effective_view = path_view or view
+        if effective_view == "links":
+            return render_links_view(
+                self.store,
+                ref,
+                sense="pres",
+                limit=limit,
+                cursor=cursor,
+            )
+        if effective_view == "log":
+            return render_event_log(self.store, ref.id)
+        if effective_view == "raw":
+            return self._render_raw(ref)
         if chunk is not None:
             if isinstance(chunk, int):
                 return self._render_block(slug, ref.id, chunk)
@@ -165,19 +193,6 @@ class PresentationHandler(Handler):
         if effective_view == "tags":
             handle = handle_registry.format_handle("pres", ref.id)
             return Response(body=f"# {handle} — tags\n{self._tags_line(ref.id)}")
-        if effective_view == "links":
-            # Graph-completeness audit item 1 (OPEN-ITEMS.md 🕸️) — sweep of
-            # every Handler-direct kind alongside the paper fix.
-            # args={'limit'|'cursor'} page it (gr627629).
-            from precis.handlers._links_render import render_links_view
-
-            return render_links_view(
-                self.store,
-                ref,
-                sense="pres",
-                limit=limit,
-                cursor=cursor,
-            )
         if effective_view is not None:
             raise Unsupported(
                 f"unknown pres view {effective_view!r}",
@@ -661,16 +676,25 @@ class PresentationHandler(Handler):
         tags = ", ".join(str(tag) for tag in self.store.tags_for(ref_id))
         return f"tags: {tags or '(none)'}"
 
+    def _render_raw(self, ref: Ref) -> Response:
+        handle = handle_registry.format_handle("pres", ref.id)
+        record = asdict(ref)
+        record["tags"] = [str(tag) for tag in self.store.tags_for(ref.id)]
+        body = f"# raw pres {handle}\n" + json.dumps(
+            record, indent=2, sort_keys=True, default=str
+        )
+        body += render_links_section(
+            self.store, ref, limit=DEFAULT_LINK_ROW_CAP, priority=True
+        )
+        return Response(body=body, result_count=1)
+
     def _render_meta(self, ref: Any) -> Response:
         """``view='meta'`` — the ref's full ``meta`` dict as JSON.
 
         The overview surfaces only the attribution keys (authors /
-        venue / date); ingest-written keys like ``source_pdf`` /
-        ``slide_count`` / ``pdf_sha256`` live nowhere else readable
-        (gr563572 — callers guessed ``view='meta'`` for exactly this).
+        venue / date). This view isolates ingest-written keys like
+        ``source_pdf`` and ``slide_count`` from the rest of the record.
         """
-        import json
-
         handle = handle_registry.format_handle("pres", ref.id)
         body = f"# {handle} — meta\n" + json.dumps(
             ref.meta or {}, indent=2, sort_keys=True, default=str
@@ -852,11 +876,11 @@ def _parse_pres_id(raw: str) -> tuple[str, int | tuple[int, int] | None, str | N
     """Parse pres ids, sharing paper's single/range selector grammar."""
     if "~" in raw:
         slug, _, sel = raw.partition("~")
-        selector = sel.split("/", 1)[0]
+        selector, _, view = sel.partition("/")
         lo, hi = parse_block_selector(selector, raw=raw)
         # Keep ~N's existing single-block heading; ~N..N is a range read.
         chunk = lo if re.fullmatch(r"-?\d+", selector) else (lo, hi)
-        return slug, chunk, None
+        return slug, chunk, view or None
     if "/" in raw:
         slug, _, view = raw.partition("/")
         return slug, None, view
