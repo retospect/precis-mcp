@@ -540,7 +540,8 @@ a tag facet land in `(untagged)`; other missing facet values land in
 filter as the listing, so they match the "N of K" page headers;
 `args={'folder'}` and `args={'under'}` fold in as ref-set filters, and
 `args={'since'}`/`args={'until'}` bound on
-creation date (`until=` exclusive). `kind='job'` counts also tail a
+creation date — an ISO bound or a span (`'30m'`, `'2h'`, `'3d'`,
+`'1w'`, "now minus that long"); `until=` exclusive. `kind='job'` counts also tail a
 bounded "error heads" section — the top normalized first-line errors per
 failing job_type — so "what's failing, and how" is one call. One kind
 per call — no cross-kind or `sort=` on this shape.
@@ -570,8 +571,8 @@ search(kind="job", view="flow",
 overrides the per-kind terminal set — gripe `done,wontfix`, todo
 `done,won't-do,auto-timeout`, job `succeeded,failed,cancelled,
 timed-out`, every other kind falls back to `done,wontfix,won't-do`.
-`since=`/`until=` take an ISO bound or the job age spellings
-(`'7d'`, `'24'`) and bound the *event* clock — a ref opened before
+`since=`/`until=` take an ISO bound or a span (`'7d'`, `'30m'`;
+`kind='job'` also a bare `'24'` = hours) and bound the *event* clock — a ref opened before
 the window but closed inside it lands on the closed side, the
 burn-down semantic you want. `tags=`/`status=`/`args={'job_type'}`/
 `under=`/`folder=` filter the cohort on both sides. A close is the
