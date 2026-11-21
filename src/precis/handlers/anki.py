@@ -26,6 +26,9 @@ Authoring conventions (taught by ``precis-anki-help``):
 - **Optional terse "Back Extra"**: a short answer-side note — a source, a
   mnemonic, a gotcha. Supply it after a lone ``---`` line at the end of the
   body. Used sparingly ("terse or omit").
+- **Put-time lint (non-fatal)**: when the words just before a cloze already
+  announce its hint (*"The term {{c1::…::term}}"*), the ack carries a
+  cut-the-lead-in note pointing at ``precis-cloze`` rule 4.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from uuid import uuid4
 
 from precis.anki.cloze import (
     acronym_hint_leaks,
+    cloze_hints,
     has_cloze,
     space_adjacent_braces,
     strip_cloze,
@@ -75,6 +79,44 @@ def _deck_from_tags(tags: list[str]) -> str:
         if m:
             return f"{_DECK}::{m.group(1).lower()}"
     return _DECK
+
+
+#: How many words before a cloze count as its lead-in (gr743086).
+_HINT_LEAD_WORDS = 3
+
+#: Lead-in words that announce what a hint already names — checked alongside
+#: the hint itself in the words before a cloze at put time. Keyed by hint;
+#: values are the lead-in words that name the same thing. Tiny on purpose:
+#: it is a nudge, not a parser of meaning.
+_HINT_LEAD_SYNONYMS = {
+    "term": {"word", "name"},
+    "kanji": {"character", "letter", "glyph"},
+    "pronunciation": {"pronounced"},
+    "meaning": {"means"},
+}
+
+
+def _hint_lead_dupes(text: str) -> list[str]:
+    """One message per cloze whose hint is already announced by the ≤3 words
+    before it (gr743086) — *"The term {{c1::available::term}} …"* wastes the
+    lead-in on every sibling card and on the revealed sentence, since the
+    hint shows on its own card anyway. Lint only: the put still succeeds."""
+    out: list[str] = []
+    for start, hint in cloze_hints(text):
+        hint_l = hint.strip().lower()
+        if not hint_l:
+            continue
+        lead = strip_cloze(text[:start])  # earlier clozes' hints aren't prose
+        words = re.findall(r"[A-Za-zÀ-ÿ]+", lead)[-_HINT_LEAD_WORDS:]
+        named = {hint_l, *_HINT_LEAD_SYNONYMS.get(hint_l, set())}
+        hit = next((w for w in words if w.lower() in named), None)
+        if hit:
+            out.append(
+                f"hint '{hint}' is announced by the preceding word "
+                f"'{hit}' — cut the lead-in scaffolding "
+                "(get(kind='skill', id='precis-cloze'), rule 4)"
+            )
+    return out
 
 
 def _split_extra(text: str) -> tuple[str, str]:
@@ -279,11 +321,13 @@ class AnkiHandler(NumericRefHandler):
         # card writes nothing — mirrors the atomic-create contract.
         spaced = 0
         leaks: list[str] = []
+        dupes: list[str] = []
         if text is not None and text.strip():
             cloze_text = self._validate_cloze(text)
             self._guard_work_tracking(cloze_text, tags, link)
             leaks = acronym_hint_leaks(cloze_text)
             text, spaced = _space_cloze_braces(text)
+            dupes = _hint_lead_dupes(text)
         ack = super()._create(text=text, tags=tags, link=link, **kw)
         body = ack.body
         if spaced:
@@ -296,6 +340,8 @@ class AnkiHandler(NumericRefHandler):
                 f"\nWarning ({', '.join(leaks)}): the hint's initials spell the "
                 "answer. Show the short form and cloze its expansion or meaning."
             )
+        if dupes:
+            body += "\n" + "\n".join(dupes)
         return dataclasses.replace(ack, body=body) if body != ack.body else ack
 
     # ── list views ─────────────────────────────────────────────────────

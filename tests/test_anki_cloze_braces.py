@@ -9,6 +9,7 @@ import pytest
 
 from precis.anki.cloze import (
     acronym_hint_leaks,
+    cloze_hints,
     has_cloze,
     space_adjacent_braces,
     strip_cloze,
@@ -145,3 +146,61 @@ def test_back_extra_not_touched(store) -> None:
 def test_no_cloze_still_bad_input(store) -> None:
     with pytest.raises(BadInput):
         _h(store).put(text=r"\sqrt{x^{2}} has no cloze")
+
+
+# ── cloze_hints (put-time lint source) ───────────────────────────────
+
+
+def test_cloze_hints_reports_hint_and_position() -> None:
+    text = "The {{c1::heart::organ}} pumps {{c2::blood}}."
+    assert cloze_hints(text) == [
+        (text.index("{{c1"), "organ"),
+        (text.index("{{c2"), ""),
+    ]
+
+
+def test_cloze_hints_latex_answer_with_braces() -> None:
+    text = r"{{c1::\sqrt{x^{2}}::latex}} is the root"
+    [(start, hint)] = cloze_hints(text)
+    assert hint == "latex"
+    assert text[start:].startswith("{{c1::")
+
+
+def test_cloze_hints_unterminated_left_alone() -> None:
+    assert cloze_hints("ok {{c1::a}} then {{c2::open") == [(3, "")]
+
+
+# ── put-time hint/lead-in lint (gr743086) ────────────────────────────
+
+WARN = "cut the lead-in scaffolding"
+
+
+def test_put_warns_when_lead_in_repeats_hint(store) -> None:
+    body, _text, _card = _put(
+        store,
+        "The term {{c1::available::term}} means ready for use.",
+    )
+    assert WARN in body
+    assert "'term'" in body
+
+
+def test_put_warns_on_synonym_lead_in(store) -> None:
+    body, _text, _card = _put(store, "The character {{c1::字::kanji}}.")
+    assert WARN in body
+
+
+def test_put_silent_on_clean_card(store) -> None:
+    body, _text, _card = _put(
+        store,
+        "{{c1::Available::term}} means capable of being {{c2::obtained::action}}.",
+    )
+    assert WARN not in body
+
+
+def test_put_silent_when_earlier_cloze_hint_sits_in_lead_window(store) -> None:
+    # The first cloze's *hint* token must not count as prose for the second.
+    body, _text, _card = _put(
+        store,
+        "{{c1::Mitochondrion::term}} makes {{c2::ATP::molecule}}.",
+    )
+    assert WARN not in body

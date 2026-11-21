@@ -238,6 +238,7 @@ class TestMint:
         ref = store.get_ref(kind="anki", id=cards[0])
         assert ref.meta["fields"]["Back Extra"] == "src"
         assert ref.meta["deck"] == f"Precis::{co}"
+        assert ref.meta["recoverability_check"] == "unchecked"
         assert store.get_ref(kind="concept", id=concept_id).meta["state"] == "active"
 
     def test_rerun_tops_up_to_cap_not_beyond(self, store: Any) -> None:
@@ -265,6 +266,38 @@ class TestMint:
         co = f"mint-{uuid.uuid4().hex[:8]}"
         _concept(store, cohort=co)
         client = _FakeClient({"cards": [{"text": text}]})
+        report = mint_daily_cards(store, client=client, per_day=1, cohort=co)
+        assert report.minted == [] and report.skipped == 1
+
+    def test_self_check_failing_card_is_dropped_and_pass_is_stamped(
+        self, store: Any
+    ) -> None:
+        # gr743086: the model returns a per-card recoverability verdict. A
+        # failing card is not minted; a passing card carries the verdict in
+        # meta so the mint stays auditable.
+        co = f"mint-{uuid.uuid4().hex[:8]}"
+        _concept(store, cohort=co)
+        client = _FakeClient(
+            {
+                "cards": [
+                    {"text": "A {{c1::b}}.", "check": "pass"},
+                    {"text": "C {{c1::d}}.", "check": "fail: c1 has two answers"},
+                ]
+            }
+        )
+        report = mint_daily_cards(store, client=client, per_day=1, cohort=co)
+        assert len(report.minted) == 1
+        _cid, cards = report.minted[0]
+        assert len(cards) == 1
+        ref = store.get_ref(kind="anki", id=cards[0])
+        assert ref.meta["recoverability_check"] == "pass"
+
+    def test_all_cards_failing_self_check_counts_as_skipped(self, store: Any) -> None:
+        co = f"mint-{uuid.uuid4().hex[:8]}"
+        _concept(store, cohort=co)
+        client = _FakeClient(
+            {"cards": [{"text": "A {{c1::b}}.", "check": "fail: vague blank"}]}
+        )
         report = mint_daily_cards(store, client=client, per_day=1, cohort=co)
         assert report.minted == [] and report.skipped == 1
 
@@ -333,6 +366,7 @@ class TestRework:
         assert store.get_ref(kind="anki", id=card_id) is None  # old card retired
         new = store.get_ref(kind="anki", id=d.new_card_id)
         assert new.meta["rework_of"] == card_id
+        assert new.meta["recoverability_check"] == "unchecked"
         assert store.get_ref(kind="concept", id=cid).meta["remunge_streak"] == 1
 
     def test_rewrite_with_acronym_hint_preserves_the_old_card(self, store: Any) -> None:
@@ -344,6 +378,20 @@ class TestRework:
         assert decision.action == "rewrite" and not decision.applied
         assert store.get_ref(kind="anki", id=card_id) is not None
         assert store.get_ref(kind="concept", id=cid).meta.get("remunge_streak") is None
+
+    def test_self_check_failure_leaves_card_in_place(self, store: Any) -> None:
+        # gr743086: a replacement the model itself flags as unrecoverable is
+        # not swapped in — the leech stays live for a future pass.
+        cid = _concept(store)
+        card_id = self._stale_leech(store, cid)
+        client = _FakeClient(
+            {"text": "New {{c1::angle}}.", "check": "fail: not recoverable"}
+        )
+        report = rework_stale_cards(store, client=client, act=True)
+        d = next(d for d in report.decisions if d.card_id == card_id)
+        assert d.action == "rewrite" and not d.applied
+        assert "self-check failed" in d.reason
+        assert store.get_ref(kind="anki", id=card_id) is not None  # kept
 
     def test_mastered_concept_retires_the_leech(self, store: Any) -> None:
         cid = _concept(store, state="mastered")

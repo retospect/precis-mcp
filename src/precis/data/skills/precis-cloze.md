@@ -2,7 +2,7 @@
 id: precis-cloze
 family: memory
 title: precis — authoring excellent Anki cloze cards
-summary: how to write good spaced-repetition cloze cards — refuse non-facts (the gate), dedup, one cluster per card, easiest-to-hardest cN ordering, specific uniquely-recoverable answers, hint types, ruthlessly terse, contextual Back Extra; with language/math worked examples
+summary: how to write good spaced-repetition cloze cards — refuse non-facts (the gate), dedup, one cluster per card, easiest-to-hardest cN ordering on new cards only (never renumber reviewed cards), hint/prose non-duplication (cut "The term"-style lead-ins), specific uniquely-recoverable answers, telegraphic with no in-sentence context (context lives in tags), contextual Back Extra; with language/math worked examples
 answers:
   - how do I write a good spaced-repetition cloze card instead of a bad one?
   - how do I decide which deck a card goes in?
@@ -101,7 +101,7 @@ answer (same failure as rule 5) — it isn't extra practice, it's required:
 `{{c1::heart}} pumps blood through the arteries, capillaries, and veins back
 to the {{c1::heart}}.`
 
-## How do I write good anki cards? — rules 3+
+## How do I write good anki cards? — rules 3–4
 
 ### 3. Order cN by difficulty — easiest first, hardest last
 
@@ -117,6 +117,15 @@ recall:
 Meaning-before-label is the common case of this: meaning is usually easier to
 reconstruct from context than the exact term, so it earns the low index.
 
+This is authoring guidance for a **new** card only — the index is a fresh
+choice at authoring time. **Never renumber an existing card**: Anki keys
+review history to the cN ordinal, so renumbering moves the learner's lapse
+and interval history onto different text. A failing card gets a *new* card
+(delete + put), not renumbered indices. And don't try to rank difficulty by
+guessability at write time — the learner's own review grades are the
+difficulty signal; easiest-first is a ramp for the first encounter, not a
+measurement.
+
 ### 4. Hint the *type* of thing being recalled
 
 `{{cN::answer::hint}}` — the hint names the category, so the card is answerable
@@ -128,6 +137,21 @@ For an acronym or abbreviation, show the short form and cloze the expansion
 or meaning. Never hide the short form with its expansion as the hint.
 `RMSD ({{c1::root-mean-square deviation::expansion}})` tests recall of what
 RMSD stands for. A put warning flags hints whose initials spell the answer.
+
+**The hint and the prose must not duplicate each other.** The hint shows only
+on its own card; every other word of the sentence shows on *every* sibling
+card and on the fully revealed sentence. So:
+
+- **Cut lead-in scaffolding that merely announces what the hint already
+  names** — *"The term {{c1::available::term}} means …"* → *"{{c1::Available::term}}
+  means …"*; *"The character {{c1::字::kanji}} …"* → *"{{c1::字::kanji}} …"*.
+  "The term", "The character", "A X is" carry no fact — the learner reads them
+  on every review of every sibling. (The put-time lint warns when a word right
+  before a cloze repeats its hint.)
+- **A hint that only restates what the grammar already forces adds nothing** —
+  in *"capable of being {{c2::obtained::action}}"*, "action" is recoverable
+  from "being …-ed" alone. Drop the hint, or make it carry something the
+  sentence does not: the field, a distinction, a register.
 
 **But a hint can't rescue an answer that isn't specific.** Only cloze a span
 that is load-bearing and has *one* right value the rest of the sentence points
@@ -144,6 +168,8 @@ to — a term, number, name, mechanism. Never cloze:
   one interchangeable instance of it. If the *category* is the point, cloze the
   category, not a sample member.
 
+## How do I write good anki cards? — rules 5–6
+
 ### 5. No cloze gives away another on the same card
 
 If hiding `{{c1::X}}` makes `{{c2::Y}}` obvious (or vice-versa), split them across
@@ -151,19 +177,34 @@ cards or rephrase. Each deletion must be independently earned.
 
 ### 6. Terse — but never at the cost of comprehension
 
-No filler, no full sentences **unless needed for comprehension** (or grammar).
-Drop articles and scaffolding words that don't carry meaning — "The heart
-pumps the blood" → "Heart pumps blood." Keep whatever the reader needs to
+Telegraphic by default: no filler, no full sentences **unless needed for
+comprehension** (or grammar). Drop articles and scaffolding words that don't
+carry meaning — "The heart pumps the blood" → "Heart pumps blood." That
+includes lead-in scaffolding that only announces a cloze's hint ("The term",
+"The character", "A X is") — rule 4. Keep whatever the reader needs to
 actually understand the prompt; cut until it's tight, not until it's
 ambiguous.
 
+**No context prefix inside the sentence.** An opening clause like "In cell
+biology, …" is a tax on every review, and sentence text cannot be regrouped
+in bulk — cards are kept forever, so anything you may want to re-group later
+must not be baked into thousands of card bodies. Context lives in tags: the
+Anki viewer shows tags, and tags can be re-grouped across the whole
+collection at once. Keep the sentence the bare fact; file the card with
+`deck-<topic>` and topic tags instead.
+
+## How do I write good anki cards? — the final check
+
 ### Before you save: check each cN in turn
 
-Walk the clozes one at a time. For each `cN`, ask: does hiding this test a
-fact worth recalling, or is it filler/inferable-from-grammar? Is the answer
-**specific** enough that its context determines it — not a vague phrase, not
-one of many equally-valid fillers? Drop the cloze (leave it as plain text) — or
-the whole card — if any answer is no. If dropping the clozes leaves nothing
+Walk the clozes one at a time and render each as the learner sees it — read
+the sentence with only that `cN` hidden: *"Available means capable of being
+[action] or accessed."* For each rendered prompt, ask: does hiding this test
+a fact worth recalling, or is it filler/inferable-from-grammar? Does the
+blank have **one** answer its context determines — a field-knowledgeable
+learner could recover it — not a vague phrase, not one of many
+equally-valid fillers? Drop the cloze (leave it as plain text) — or the
+whole card — if any answer is no. If dropping the clozes leaves nothing
 worth testing, the concept failed rule 0: refuse the card entirely.
 
 ### Aim for ~3–4 cards per concept
@@ -207,9 +248,12 @@ its pronunciation at the same cN index** so they hide/reveal together
 - **Intro card** (one per character — the exception: split char + pronunciation
   into separate indices for independent first exposure):
   ```
-  The character {{c1::字::kanji}} is pronounced {{c2::pinyin::Mandarin}} in
-  Chinese and {{c3::yomi::Japanese}} in Japanese.
+  {{c1::字::kanji}} is pronounced {{c2::pinyin::Mandarin}} and
+  {{c3::yomi::Japanese}}.
   ```
+  No "The character" — the `::kanji` hint already names it (rule 4); no "in
+  Chinese"/"in Japanese" — the `::Mandarin`/`::Japanese` hints carry the
+  language.
 - **Tone card** (Mandarin — isolate the tone):
   ```
   Tone {{c1::2::number}} — {{c2::rising::shape}}
@@ -228,7 +272,7 @@ the **raw LaTeX** (what you'd type) at the highest index, hinted `::latex`.
 
 ```
 \(A^{\top}\) denotes the {{c1::transpose::meaning}} of A, written
-{{c2::^\top::latex}} in LaTeX.
+{{c2::^\top::latex}}.
 ```
 
 - **To render**, wrap in Anki's MathJax delimiters: `\(...\)` inline,

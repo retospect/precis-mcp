@@ -17,6 +17,9 @@ package holds the concept-graph layer:
 - `known` — records exactly which cards a login dismissed and the prior
   shared mastery fields. Undo restores those cards in the same transaction
   as the last dismissal's reversal of the shared mastery stamp.
+- `flashcards` — mint and rework record the model's recoverability verdict.
+  Missing verdicts are marked ``unchecked`` to preserve compatibility with
+  older replies and distinguish them from explicit passes.
 - `term_quality` — the non-concept filter (the ``precis-cloze`` rule-0
   taxonomy), gating both the glossary build and the promotion chokepoint so
   topic-labels / stock phrases / front-matter never become concepts

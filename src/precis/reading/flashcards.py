@@ -103,16 +103,30 @@ _MINT_SYS = (
     "When in doubt, refuse: a missing card costs nothing; a bad one wastes "
     "reviews forever and buries the good cards.\n"
     "If it IS worth teaching, write 1-3 cloze cards: one idea per card, the "
-    "concept before the label, easiest cN first / hardest exact term last, a "
-    "::hint naming the category. Every {{cN::…}} answer must be SPECIFIC and "
-    "UNIQUELY recoverable from the rest of the sentence — never cloze a vague "
-    "phrase ('improved properties', 'various applications'), and never cloze "
-    "one arbitrary member of a large open set (do not hide 'Machu Picchu' as "
-    "'an example of a World Heritage Site' — a thousand others fit). "
-    + _HINT_RULE
-    + "Optionally add a terse Back Extra (source, mnemonic, gotcha) or omit it. "
-    "Reply with ONLY JSON: "
-    '{"cards":[{"text":"<cloze>","back_extra":"<terse or empty>"}],'
+    "concept before the label, easiest cN first / hardest exact term last "
+    "(a NEW card only — never renumber existing cards: Anki keys review "
+    "history to the cN ordinal). Write the fully revealed sentence (every "
+    "answer shown) telegraphic: no filler, no lead-in scaffolding that only "
+    "names what a hint already names ('The term', 'The character', 'A X is') "
+    "— the hint shows on its own card only, the prose shows on every "
+    "sibling and on the revealed sentence. No context prefix inside the "
+    "sentence ('In cell biology, ...') — context lives in tags. A ::hint "
+    "must carry what the sentence does not (category, field, distinction); "
+    "drop a hint that only restates the grammar. Every {{cN::…}} answer "
+    "must be SPECIFIC and UNIQUELY recoverable from the rest of the "
+    "sentence — never cloze a vague phrase ('improved properties', "
+    "'various applications'), and never cloze one arbitrary member of a "
+    "large open set (do not hide 'Machu Picchu' as 'an example of a World "
+    "Heritage Site' — a thousand others fit). For EACH card verify every "
+    "blank has exactly ONE answer a learner who knows the field could "
+    "recover from the rest of the sentence. Report the verdict in the "
+    "required 'check' field: 'pass' or 'fail: <which blank and why>' — a recoverability "
+    "verdict, NOT a difficulty score: the learner's own grades are the "
+    "difficulty signal, and you already know the fact, so you cannot rank "
+    "difficulty for them. " + _HINT_RULE + "Optionally add a terse Back "
+    "Extra (source, mnemonic, gotcha) or omit it. Reply with ONLY JSON: "
+    '{"cards":[{"text":"<cloze>","back_extra":"<terse or empty>",'
+    '"check":"pass|<fail: which blank and why>"}],'
     '"skip_reason":"<empty, or why you refused>"}'
 )
 
@@ -121,13 +135,21 @@ _REWORK_SYS = (
     "the didactic — not the learner — is at fault. Write ONE replacement card "
     "with a genuinely different breakdown: a new angle, a smaller step, or an "
     "anchor on the neighboring concepts the learner already knows. Keep it a "
-    "single cloze sentence with {{c1::…}} deletions, and make each answer "
-    "SPECIFIC and uniquely recoverable from its context — never cloze a vague "
-    "phrase or one arbitrary member of a large open set. If the underlying "
+    "single cloze sentence with {{c1::…}} deletions, telegraphic: no filler, "
+    "no lead-in scaffolding that only names what a hint already names ('The "
+    "term', 'The character'), no context prefix — context lives in tags. A "
+    "::hint must carry what the sentence does not; drop one that only "
+    "restates the grammar. Make each answer SPECIFIC and uniquely recoverable "
+    "from its context — never cloze a vague phrase or one arbitrary member of "
+    "a large open set — and verify each blank has exactly ONE answer a "
+    "learner who knows the field could recover from the rest of the sentence; "
+    "report the verdict in the required 'check' field: 'pass' or 'fail: <why>'. "
+    "If the underlying "
     "concept is not actually a learnable fact (a topic label, stock phrase, or "
     "front-matter), do not manufacture another card — reply with an empty "
     "text. " + _HINT_RULE + "Reply with ONLY JSON: "
-    '{"text":"<cloze sentence or empty>","back_extra":"<terse or empty>"}'
+    '{"text":"<cloze sentence or empty>","back_extra":"<terse or empty>",'
+    '"check":"pass|<fail: why>"}'
 )
 
 
@@ -328,6 +350,12 @@ def _neighbor_names(store: Store, concept_id: int, *, mastered_only: bool) -> li
     return [r[0] for r in rows if r[0]][:8]
 
 
+def _check_failed(check: str) -> bool:
+    """The model's per-card recoverability verdict (gr743086) — 'fail: …'
+    means at least one blank has no single recoverable answer."""
+    return check.strip().lower().startswith("fail")
+
+
 def mint_daily_cards(
     store: Store,
     *,
@@ -376,6 +404,17 @@ def mint_daily_cards(
         for card in cards[:_MAX_CARDS_PER_CONCEPT]:
             if not isinstance(card, dict):
                 continue
+            check = str(card.get("check") or "").strip()
+            if _check_failed(check):
+                # The model's own recoverability verdict failed (gr743086):
+                # a blank with no single recoverable answer — mint nothing
+                # rather than ship an unanswerable card.
+                log.info(
+                    "cards: dropped self-check-failing card for concept %s: %s",
+                    concept_id,
+                    check,
+                )
+                continue
             text = str(card.get("text") or "").strip()
             extra = str(card.get("back_extra") or "").strip()
             if extra:
@@ -384,7 +423,14 @@ def mint_daily_cards(
                 if is_work_item_text(_strip_cloze(_split_extra(text)[0])):
                     raise ValueError("card is a to-do or gap about our own system")
                 minted.append(
-                    author_card(store, text=text, concept_id=concept_id, deck=deck)
+                    author_card(
+                        store,
+                        text=text,
+                        concept_id=concept_id,
+                        deck=deck,
+                        # The verdict rides the card so the mint is auditable.
+                        extra_meta={"recoverability_check": check or "unchecked"},
+                    )
                 )
             except ValueError as exc:
                 log.info("cards: dropped card for concept %s: %s", concept_id, exc)
@@ -565,6 +611,11 @@ def rework_stale_cards(
                 ]
             )
             data = extract_json_object(getattr(out, "text", "") or "") or {}
+            check = str(data.get("check") or "").strip()
+            if _check_failed(check):
+                d.reason += f" — model self-check failed ({check}), card left in place"
+                report.decisions.append(d)
+                continue
             text = str(data.get("text") or "").strip()
             extra = str(data.get("back_extra") or "").strip()
             if extra:
@@ -577,7 +628,10 @@ def rework_stale_cards(
                     text=text,
                     concept_id=concept_id,
                     deck=deck,
-                    extra_meta={"rework_of": card_id},
+                    extra_meta={
+                        "rework_of": card_id,
+                        "recoverability_check": check or "unchecked",
+                    },
                 )
             except ValueError:
                 d.reason += " — model gave no valid cloze, card left in place"

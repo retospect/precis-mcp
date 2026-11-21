@@ -141,6 +141,22 @@ def acronym_hint_leaks(text: str) -> list[str]:
     return leaks
 
 
+def cloze_hints(text: str) -> list[tuple[int, str]]:
+    """Each well-formed cloze as ``(open_index, hint)`` — hint ``""`` when the
+    cloze carries none. For lint-style passes over authored bodies (e.g. the
+    put-time hint-duplication warning) — indices address the original text."""
+    out: list[tuple[int, str]] = []
+    i = 0
+    while (m := _OPEN_RE.search(text, i)) is not None:
+        res = _walk(text, m.start())
+        if res is None:
+            i = m.end()
+            continue
+        out.append((m.start(), res[4]))
+        i = res[2]
+    return out
+
+
 def strip_cloze(text: str) -> str:
     """Replace every cloze with its answer (hint dropped)."""
     return _rewrite(text, strip=True)[0]
