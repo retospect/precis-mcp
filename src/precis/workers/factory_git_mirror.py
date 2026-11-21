@@ -40,8 +40,7 @@ So three boundaries, not one:
    oracle ``ls-remote``, the branch push and the origin-state repair —
    runs in a fresh, lander-created gitdir with a random name:
    ``-c core.hooksPath=/dev/null`` (a planted ``hooks/pre-push`` in the
-   mirror or the worktree gitdir never runs; command-scope ``-c``
-   propagates to a spawned ``git-receive-pack``), plus
+   mirror or the worktree gitdir never runs), plus
    ``GIT_CONFIG_NOSYSTEM`` and ``GIT_CONFIG_GLOBAL=/dev/null`` so a
    rewritten ``~/.gitconfig`` adds no ``url.insteadOf``, ``http.proxy``
    or helper — repo config would let a redirect fetch or a weakened TLS
@@ -56,7 +55,7 @@ So three boundaries, not one:
    into code run under the token was the reported hole (review
    td660513, pre-land pass). The mirror itself is only ever
    operated on with unauthenticated *local* git (ref reads, the
-   tmp→mirror push), because its config is adversary-writable; whatever
+   tmp→mirror fetch), because its config is adversary-writable; whatever
    the mirror then claims is verified against the **oracle** — an
    ``ls-remote`` run from a non-repo cwd with system/global config off,
    which sees only env-scoped config. Populate refuses a launch whose
@@ -67,9 +66,9 @@ So three boundaries, not one:
 
 3. **Local ops never carry the token** (:func:`local_env`). Every op
    that touches only local state — the cache/common-dir fetches whose
-   spawned upload-pack reads the peer's writable config, the pushes to
-   local paths, the primary checkout's ``status``/``reset``/``merge`` —
-   runs credential-free, because a planted ``core.fsmonitor``, filter
+   spawned upload-pack reads the peer's writable config, the fetches
+   that copy verified refs out of an ops repo, and the primary checkout's
+   ``status``/``reset``/``merge`` — runs credential-free, because a planted ``core.fsmonitor``, filter
    or ``packObjectsHook`` in the repo being repaired would otherwise
    execute with the token in its env (review td660513, second pass).
 
@@ -119,9 +118,11 @@ MIRROR_REFS = ("main", "prod")
 POPULATE_TIMEOUT_S = 300.0
 SYNC_TIMEOUT_S = 120.0
 
-#: Prepended to every mirror/op git argv: repo hooks (``pre-push``,
-#: ``pre-receive``, ``pre-auto-gc``) never run — the value propagates to a
-#: spawned ``git-receive-pack`` through ``GIT_CONFIG_PARAMETERS`` — and
+#: Prepended to every mirror/op git argv. The hooksPath override applies
+#: to the invoking Git process. Local transports clear command-scope
+#: config before spawning receive-pack, so its hooks still run on a push.
+#: Internal mirror transfers fetch into the destination instead.
+#:
 #: ``--no-replace-objects`` blinds ``refs/replace/*`` and ``info/grafts``:
 #: the mirror, the shared dir and the worktree gitdir are all same-uid
 #: writable, so a replacement planted for an oracle-verified sha must
@@ -327,6 +328,29 @@ def local_env(env: Mapping[str, str]) -> dict[str, str]:
     inherit nothing to steal. Idempotent."""
     out = {k: v for k, v in env.items() if not _CREDENTIAL_ENV_RE.fullmatch(k)}
     return trusted_env(out)
+
+
+def _local_fetch_args(dest: Path, ops: Path, *refspecs: str) -> list[str]:
+    """Copy explicit refs from a fresh ops repo without invoking receive-pack."""
+    return [
+        "git",
+        *TRUSTED_ARGS,
+        "-C",
+        str(dest),
+        "fetch",
+        "--quiet",
+        "--atomic",
+        "--no-tags",
+        "--no-prune",
+        "--no-prune-tags",
+        "--refmap=",
+        "--no-write-fetch-head",
+        "--no-recurse-submodules",
+        "--no-auto-maintenance",
+        "--",
+        str(ops),
+        *refspecs,
+    ]
 
 
 def _init_bare(
@@ -589,7 +613,7 @@ def _populate(
     The fetch runs in a fresh :func:`_ops_repo` (primed from ``cache``
     so only the delta crosses the wire), the fetched tips are compared
     against the :func:`ls_remote` oracle — a config redirect or a
-    tampered fetch source is refused, never launched on — then pushed
+    tampered fetch source is refused, never launched on — then fetched
     into ``mirror`` over an unauthenticated local transport. The network
     steps (oracle + fetch + compare, the oracle re-read each try) are
     tried :data:`POPULATE_TRIES` times with a short backoff. ``None``
@@ -612,7 +636,7 @@ def _populate(
     # ``env`` may carry the credential; only the GitHub-facing calls get
     # it. Everything local — the bare inits, the cache priming fetch
     # (whose spawned upload-pack reads the cache's writable config), the
-    # tmp→mirror push, the tip reads — runs credential-free so no
+    # tmp→mirror fetch, the tip reads — runs credential-free so no
     # planted hook/filter meets the token (review td660513).
     local = local_env(env)
     for repo in (cache, mirror):
@@ -667,24 +691,17 @@ def _populate(
             )
         if oracle is None:
             return refuse(f"{reason} (after {POPULATE_TRIES} tries)")
-        push = _refresh_run(
-            [
-                "git",
-                *TRUSTED_ARGS,
-                "-C",
-                str(ops),
-                "push",
-                "--quiet",
-                str(mirror),
-                *refspecs,
-            ],
-            cwd=ops,
+        into = _refresh_run(
+            _local_fetch_args(
+                mirror, ops, *(f"+{oracle[r]}:refs/heads/{r}" for r in refs)
+            ),
+            cwd=mirror,
             env=local,
             timeout=120.0,
         )
-        if push.returncode != 0:
+        if into.returncode != 0:
             return refuse(
-                f"local push to the mirror rc={push.returncode}: {_tail(push)}"
+                f"local fetch into the mirror rc={into.returncode}: {_tail(into)}"
             )
     finally:
         _drop_ops(ops)
@@ -848,8 +865,8 @@ def fetch_ref_into(
     ``dest`` — a clone a builder session can write — without running one
     credential-bearing git inside it. The fetch lands in a fresh
     :func:`_ops_repo`, its tip is compared with the :func:`ls_remote`
-    oracle, and only then does an unauthenticated LOCAL push move the
-    objects and force-update exactly ``dest_ref`` (say
+    oracle, and only then does a credential-free fetch into the destination
+    move the objects and force-update exactly ``dest_ref`` (say
     ``refs/remotes/origin/main``) in ``dest``. The tip sha, or ``None``
     on any failure — a git failure or timeout never raises."""
     local = local_env(env)
@@ -877,24 +894,13 @@ def fetch_ref_into(
         )
         if cp.returncode != 0 or _tip(ops, ref, env=local) != oracle:
             return None
-        # Local transport, credential-free: dest's spawned receive-pack
-        # reads its writable config and inherits nothing worth stealing.
-        push = _run(
-            [
-                "git",
-                *TRUSTED_ARGS,
-                "-C",
-                str(ops),
-                "push",
-                "--quiet",
-                str(dest),
-                f"+{oracle}:{dest_ref}",
-            ],
-            cwd=ops,
+        into = _run(
+            _local_fetch_args(dest, ops, f"+{oracle}:{dest_ref}"),
+            cwd=dest,
             env=local,
             timeout=120.0,
         )
-        return oracle if push.returncode == 0 else None
+        return oracle if into.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired):
         return None
     finally:
@@ -910,7 +916,7 @@ def fetch_source_mirror(
     :func:`mirror_root`; the caller picks the path), fetch branch ``ref``
     of ``url`` into it under the factory credential through
     :func:`fetch_ref_into` (fresh ops gitdir, oracle-checked tip, then a
-    credential-free local push; nothing reads config from the mirror), and
+    credential-free fetch into the mirror), and
     return the tip sha, or ``None`` on any failure (the error text is
     never surfaced, so no token can leak through it).
 
@@ -1337,25 +1343,16 @@ def repair_origin(
                 timeout=POPULATE_TIMEOUT_S,
             )
         for ref, tip in oracle.items():
-            push = _run(
-                [
-                    "git",
-                    *TRUSTED_ARGS,
-                    "-C",
-                    str(ops),
-                    "push",
-                    "--quiet",
-                    str(common),
-                    f"{tip}:refs/remotes/origin/{ref}",
-                ],
-                cwd=ops,
+            into = _run(
+                _local_fetch_args(common, ops, f"{tip}:refs/remotes/origin/{ref}"),
+                cwd=common,
                 env=local,
                 timeout=60.0,
             )
             notes.append(
                 f"origin/{ref} → {tip[:9]}"
-                if push.returncode == 0
-                else f"origin/{ref} repair FAILED (push exit {push.returncode})"
+                if into.returncode == 0
+                else f"origin/{ref} repair FAILED (fetch exit {into.returncode})"
             )
     finally:
         _drop_ops(ops)

@@ -4627,7 +4627,7 @@ def fetch_base_tip(profile: _lanes.RepoProfile, root: Path) -> str | None:
     can write: :func:`factory_git_mirror.fetch_ref_into` fetches the
     profile's remote constant in a fresh ops gitdir under the precis
     checkout's scratch, checks the tip against the ``ls-remote`` oracle, and
-    moves the ref in with a credential-free local push. Callers use the
+    copies the verified ref with a credential-free fetch into the clone. Callers use the
     returned sha, not the tracking ref a session could rewrite afterwards
     (the second-repo lander squashes onto it and pushes from it)."""
     common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root)
@@ -4694,7 +4694,7 @@ def _prepare_repo_tip(
     if profile.private:
         # Credentialed fetch never runs git inside the clone (a session can
         # write its config): a fresh ops gitdir outside it fetches under the
-        # token, and a credential-free local push moves the ref in.
+        # token, then the clone fetches the verified ref without credentials.
         if not _factory_git.factory_git_token():
             return (
                 f"no {_factory_git.SECRET_NAME} configured on this host, so the "

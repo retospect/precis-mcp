@@ -137,7 +137,7 @@ def _populate_run(
     real_init: bool = False,
 ) -> Callable[..., subprocess.CompletedProcess[str]]:
     """A fake git seam for one populate: the oracle ls-remote, the ops-repo
-    fetches, the tmp→mirror push, rev-parse tips. ``fetched`` is what the
+    fetches, the tmp→mirror fetch, rev-parse tips. ``fetched`` is what the
     ops repo ends up holding — set it different from ``oracle`` to model a
     tampered fetch. ``real_init`` runs a real ``git init`` (needed only
     when a test asserts on the created gitdir — it needs a real PATH)."""
@@ -157,8 +157,6 @@ def _populate_run(
             return _proc(_ls_remote_text(oracle))
         if sub == "fetch":
             return _proc(rc=fetch_rc)
-        if sub == "push":
-            return _proc()
         if sub == "rev-parse":
             tips = fetched if fetched is not None else oracle
             if tips is None:
@@ -189,7 +187,7 @@ def test_populate_creates_per_launch_mirror_and_returns_oracle_tips(
     assert (mirror / "HEAD").exists() and (cache / "HEAD").exists()
     # the oracle answered first; the github fetch ran in an ops repo, not
     # in the mirror or any slice tree; the mirror got the refs by a LOCAL
-    # tmp→mirror push
+    # tmp→mirror fetch
     subs = [_sub(a) for a, _c, _e in calls]
     gh_fetch_at = next(
         i
@@ -208,9 +206,14 @@ def test_populate_creates_per_launch_mirror_and_returns_oracle_tips(
     ]
     assert str(github_fetch[1]).startswith(str(mirror.parent))
     assert github_fetch[1] != mirror
-    local_push = next(a for a, _c, _e in calls if _sub(a) == "push")
-    assert str(mirror) in local_push
-    assert "github.com" not in " ".join(local_push)
+    local_fetch = next(
+        a for a, cwd, _e in calls if _sub(a) == "fetch" and cwd == mirror
+    )
+    assert local_fetch[-2:] == [
+        f"+{SHA_A}:refs/heads/main",
+        f"+{SHA_B}:refs/heads/prod",
+    ]
+    assert "push" not in subs
     # review finding 2 (regression): every call ran hooks-off with no
     # system/global config and no refs/replace substitution — the
     # trusted boundary, argv and env halves alike
@@ -877,10 +880,10 @@ def test_repair_origin_resets_tracking_refs_and_rewinds_the_phantom(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Review finding 4 (regression): after a sync that did not place the
-    land, the shared dir's ``origin/*`` are pushed back to GitHub's real
+    land, the shared dir's ``origin/*`` are reset to GitHub's real
     tips and a local main sitting on the unpushed squash is rewound."""
     common = tmp_path / "gitdir"
-    pushes: list[list[str]] = []
+    ref_writes: list[list[str]] = []
     updated: list[list[str]] = []
 
     def fake_run(
@@ -889,11 +892,8 @@ def test_repair_origin_resets_tracking_refs_and_rewinds_the_phantom(
         sub = _sub(args)
         if sub == "ls-remote":
             return _proc(_ls_remote_text(TIPS))
-        if sub == "fetch":
-            return _proc()
-        if sub == "push":
-            pushes.append(list(args))
-            return _proc()
+        if sub == "fetch" and cwd == common:
+            ref_writes.append(list(args))
         if sub == "rev-parse":
             return _proc(SHA_C + "\n")
         if sub == "worktree":
@@ -907,7 +907,6 @@ def test_repair_origin_resets_tracking_refs_and_rewinds_the_phantom(
     notes = fgm.repair_origin(
         common, "https://x", ("main", "prod"), phantom_main=SHA_C, env={"PATH": "/x"}
     )
-    ref_writes = [a for a in pushes if any("refs/remotes/origin/" in x for x in a)]
     assert {x for a in ref_writes for x in a if ":refs/remotes/" in x} == {
         f"{SHA_A}:refs/remotes/origin/main",
         f"{SHA_B}:refs/remotes/origin/prod",
@@ -1018,7 +1017,7 @@ def test_repair_origin_keeps_the_token_off_the_local_ops(
     """Second-pass review (regression): inside repair_origin only the
     oracle and the fetch from origin run under the credential env — the
     ops-repo init, the priming fetch (whose spawned upload-pack reads
-    the common dir's writable config), the tracking-ref pushes, the
+    the common dir's writable config), the tracking-ref fetches, the
     primary worktree's status/reset and the ref moves run
     credential-free."""
     url = "https://github.com/example/precis.git"
@@ -1062,7 +1061,7 @@ def test_populate_keeps_the_token_off_the_local_transport(
     """Second-pass review (regression): the populate's credential is
     confined to the oracle and the fetch from GitHub — the bare inits,
     the cache-priming fetch (whose spawned upload-pack reads the cache's
-    writable config), the tmp→mirror push and the tip reads run
+    writable config), the tmp→mirror fetch and the tip reads run
     credential-free."""
     url = "https://github.com/example/precis.git"
     calls: list = []
@@ -1350,6 +1349,12 @@ def test_fetch_ref_into_writes_the_tracking_ref_and_drops_the_ops(
     new = _commit(dest, "two")  # a second commit, pushed to the remote
     _git(dest, "push", "-q", str(remote), "HEAD:refs/heads/main")
     _git(dest, "update-ref", "refs/remotes/origin/main", tip)
+    # A local push would invoke the destination's receiver despite TRUSTED_ARGS.
+    hooks = dest / ".git" / "hooks"
+    _git(dest, "config", "core.hooksPath", str(hooks))
+    hook = hooks / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
     calls = _record_real(monkeypatch)
     ops_parent = tmp_path / "ops"
     got = fgm.fetch_ref_into(
@@ -1370,6 +1375,27 @@ def test_fetch_ref_into_writes_the_tracking_ref_and_drops_the_ops(
         assert not _inside(cwd, dest), args
         if "-C" in args:
             assert not _inside(Path(args[args.index("-C") + 1]), dest), args
+
+
+def test_repair_origin_updates_a_tracking_ref_with_a_receive_hook(
+    tmp_path: Path,
+) -> None:
+    remote, dest, tip = _lander_repos(tmp_path)
+    new = _commit(dest, "two")
+    _git(dest, "push", "-q", str(remote), "HEAD:refs/heads/main")
+    ref = "refs/remotes/origin/main"
+    _git(dest, "update-ref", ref, tip)
+    common = dest / ".git"
+    hook = common / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    notes = fgm.repair_origin(
+        common, str(remote), ("main",), phantom_main=None, env=_real_env()
+    )
+
+    assert notes == [f"origin/main → {new[:9]}"]
+    assert _git(dest, "rev-parse", ref) == new
 
 
 def test_fetch_ref_into_refuses_when_the_oracle_disagrees(

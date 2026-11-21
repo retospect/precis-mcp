@@ -31,11 +31,11 @@ Three pass shapes share ``run_loop``'s rotation (``runner.py``):
   ``meta.executor`` mints a child job inheriting parent ``prio`` so urgency
   flows down the DAG. Rejections and capabilities: ``docs/runbooks/minter-ops.md``.
 
-Adding a claiming ref-pass: follow the recipe in :mod:`.ref_lease`, not
-hand-rolled ``claimed_by`` UPDATEs.
+Claiming ref-passes use :mod:`.ref_lease` to manage ``claimed_by``.
 
 Factory queues doable nodes; claims own capacity and overlaps.
 Gripe intake bounds frozen reports (``precis-work-help``).
+Mirror fetches avoid receive hooks (:mod:`.factory_git_mirror`).
 
 Planner-declared halts are runner-owned class transitions
 (:mod:`.halt_policy`, retry receipt :mod:`.halt_retry`): infra failures
