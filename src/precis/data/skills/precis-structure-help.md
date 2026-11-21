@@ -172,7 +172,7 @@ The rest of the op vocabulary, also used by `edit`:
 
 | op | args | effect |
 |----|------|--------|
-| `vacancy` | `atom` | remove an atom (label not recycled) |
+| `vacancy` | `atom` \| `atoms:[…]` \| `site:{type:"top"\|"subsurface"\|"bottom", element?, near?, count?\|fraction?}` | remove atom(s) — labels not recycled; `site` picks from the named z-layer of `element`'s own sublattice (an anion like N resolves too) or the slab's majority host, and `count`/`fraction`>1 removes a maximally-spaced **ordered** vacancy set (the boridene/defect-ordered derivative off a relaxed parent) |
 | `displace` | `atom`, `vector:[dx,dy,dz]`, `cartesian?` | nudge (Cartesian Å by default; `cartesian:false` for a fractional delta) |
 | `add_bond` | `i`, `j`, `order?`, `image?:[i,j,k]` | declare a bond (intent) |
 | `remove_bond` | `i`, `j` | drop a declared bond |

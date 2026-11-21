@@ -22,7 +22,13 @@ nearest ``near`` (else the cell centre), "free" meaning no placed atom
 within bond-inference range of a non-anchor atom — the validator's own
 bond rule, so an auto-placed group never trips an overlap or an extra
 bond. It never binds to a ``near`` atom; naming that atom as an anchor
-does. ``set_element`` takes the same by-site form for substitutions.
+does. ``set_element`` takes the same by-site form for substitutions, and
+``vacancy`` mirrors it for removal — ``atom``/``atoms`` by label or
+``site`` by layer, with ``count``/``fraction`` >1 removing a maximally-
+spaced *ordered* vacancy set (gr733200 — the vacancy-ordered boridene/
+defect-ordered slab derivative a ``derive_from`` clone of a relaxed
+parent needs; surviving atoms keep their labels, so two variants derived
+from one parent stay label-matched).
 ``add_adsorbate`` is its multi-atom twin: a catalogued group (H · O · N ·
 OH · H2O · NH · NH2 · NH3 · C · CH · CH2 · CH3 · CH4) placed from the same
 named site with its own gas-phase internal geometry and bonds, so a
@@ -106,6 +112,20 @@ class OpError(ValueError):
         super().__init__(f"valid form: {example} — {cause}" if example else cause)
 
 
+#: Names a model guesses for the atom-removal op that are NOT in the
+#: catalog — the refusal names the real op and its forms instead of a bare
+#: "unknown op" (gr733200: a quest concluded no remove-site op existed
+#: because it never saw ``vacancy`` named).
+_OPS_ALIASES = {
+    "delete_atom": "vacancy",
+    "delete_atoms": "vacancy",
+    "delete_site": "vacancy",
+    "remove_atom": "vacancy",
+    "remove_site": "vacancy",
+    "remove_sites": "vacancy",
+}
+
+
 def apply_ops(scene: Scene, ops: list[dict[str, Any]]) -> Scene:
     """Apply a list of typed ops to ``scene`` in order, mutating it."""
     for op in ops:
@@ -114,6 +134,15 @@ def apply_ops(scene: Scene, ops: list[dict[str, Any]]) -> Scene:
         name = op["op"]
         handler = _OPS.get(name)
         if handler is None:
+            alias = _OPS_ALIASES.get(str(name))
+            if alias is not None:
+                raise OpError(
+                    f"unknown op: {name!r} — {alias!r} is the remove-atom(s) "
+                    "op ({'op':'vacancy','atom':'<label>'}, 'atoms': […] or "
+                    "'site': {'type': 'top', 'element': <el>, 'count': n})",
+                    example=_VACANCY_EXAMPLE,
+                    next=_VACANCY_HINT,
+                )
             raise OpError(f"unknown op: {name!r}")
         handler(scene, op)
     return scene
@@ -278,7 +307,13 @@ _SUBST_HINT = (
 )
 
 
-def _check_site_keys(site: dict[str, Any], allowed: tuple[str, ...]) -> None:
+def _check_site_keys(
+    site: dict[str, Any],
+    allowed: tuple[str, ...],
+    *,
+    example: str | None = None,
+    next: str | None = None,
+) -> None:
     """Refuse a site object carrying a key outside ``allowed``, naming it
     and the valid ones (``did you mean 'anchors'?`` for its misspellings)."""
     unknown = sorted(str(k) for k in site if k not in allowed)
@@ -290,9 +325,13 @@ def _check_site_keys(site: dict[str, Any], allowed: tuple[str, ...]) -> None:
         else ""
     )
     form = (
-        (_SITE_EXAMPLE, _SITE_HINT)
-        if allowed == _SITE_KEYS
-        else (_SUBST_EXAMPLE, _SUBST_HINT)
+        (example, next)
+        if example is not None
+        else (
+            (_SITE_EXAMPLE, _SITE_HINT)
+            if allowed == _SITE_KEYS
+            else (_SUBST_EXAMPLE, _SUBST_HINT)
+        )
     )
     raise OpError(
         f"unknown site key(s) {unknown}; a site reads only {list(allowed)}{guess}",
@@ -452,8 +491,18 @@ def _metal_layers(scene: Scene) -> list[tuple[float, list[str]]]:
         for label, a in scene.atoms.items()
         if elements.max_valence(a.element) is None
     )
+    return _z_layers(metal)
+
+
+def _z_layers(pairs: list[tuple[float, str]]) -> list[tuple[float, list[str]]]:
+    """Cluster sorted ``(cart-z Å, label)`` pairs into z-layers.
+
+    Same rule :func:`_metal_layers` applies: a cluster counts as a layer
+    only when it holds more than half the fullest cluster's atoms, so a
+    sparse partial layer (a lone dopant, a pair of interstitials) is not
+    mistaken for a slab layer."""
     clusters: list[list[tuple[float, str]]] = []
-    for z, label in metal:
+    for z, label in pairs:
         if clusters and z - clusters[-1][-1][0] <= _LAYER_TOL:
             clusters[-1].append((z, label))
         else:
@@ -967,11 +1016,198 @@ def _lattice_atom(scene: Scene, site: dict[str, Any]) -> str:
     )
 
 
+#: ``vacancy`` site types: which z-layer of the candidate pool a by-site
+#: removal lands in — ``top``/``subsurface`` count down from the surface,
+#: ``bottom`` is the lowest layer (a vacancy order on a slab's second face,
+#: or a bulk layer).
+_VACANCY_LAYER = {"top": -1, "subsurface": -2, "bottom": 0}
+
+_VACANCY_EXAMPLE = '{"op":"vacancy","atom":"aMo3"}'
+_VACANCY_SITE_EXAMPLE = (
+    '{"op":"vacancy","site":{"type":"top","element":"Mo","fraction":0.333}}'
+)
+_VACANCY_HINT = (
+    "'atom' removes one label, 'atoms' a label list, 'site' picks from a "
+    "layer — {'type': 'top'|'subsurface'|'bottom', 'element'?: <el>, "
+    "'near'?: <label or element>, 'count'?: n | 'fraction'?: f}; "
+    "count/fraction >1 removes a maximally-spaced ORDERED vacancy set "
+    "(e.g. a 1/3-vacancy boridene derived from an MBene parent)"
+)
+
+
 def _op_vacancy(scene: Scene, op: dict[str, Any]) -> None:
-    label = op["atom"]
-    _require_atom(scene, label)
-    del scene.atoms[label]
-    scene.bonds = [b for b in scene.bonds if label not in (b.i, b.j)]
+    """Remove atom(s): by label (``atom``), a label list (``atoms``), or a
+    layer spec (``site`` — the remove-site / vacancy-ordering form,
+    gr733200). ``site`` selects a layer of the candidate pool — the named
+    ``element``'s own sublattice (an anion sublattice like N works too),
+    or the metal slab layer and its majority element when ``element`` is
+    absent — then takes the atom nearest ``near``, or, with
+    ``count``/``fraction`` >1, that many atoms maximally spaced in-plane:
+    the ordered-vacancy derivative a ``derive_from`` clone of an already-
+    relaxed parent needs (labels of the survivors are preserved)."""
+    forms = [k for k in ("atom", "atoms", "site") if op.get(k) is not None]
+    if len(forms) != 1:
+        raise OpError(
+            "vacancy takes exactly one of 'atom' (a label), 'atoms' (a "
+            "label list) or 'site' (a layer spec)",
+            example=_VACANCY_EXAMPLE,
+            next=_VACANCY_HINT,
+        )
+    if forms[0] == "atom":
+        labels = [str(op["atom"])]
+    elif forms[0] == "atoms":
+        raw = op["atoms"]
+        if not isinstance(raw, list) or not raw:
+            raise OpError(
+                "vacancy 'atoms' must be a non-empty list of atom labels",
+                example=_VACANCY_EXAMPLE,
+                next=_VACANCY_HINT,
+            )
+        labels = [str(a) for a in raw]
+        if len(set(labels)) != len(labels):
+            raise OpError(f"vacancy 'atoms' has duplicate labels: {labels!r}")
+    else:
+        labels = _vacancy_site_labels(scene, op["site"])
+    for label in labels:
+        _require_atom(scene, label)
+    gone = set(labels)
+    for label in labels:
+        del scene.atoms[label]
+    scene.bonds = [b for b in scene.bonds if b.i not in gone and b.j not in gone]
+
+
+def _vacancy_site_labels(scene: Scene, site: Any) -> list[str]:
+    """Resolve a ``vacancy`` ``site`` spec to the label(s) it removes.
+
+    The layer is the ``type``-named z-layer of the candidate pool
+    (:func:`_vacancy_layer`). One pick is the pool atom nearest ``near``
+    (else nearest the cell's in-plane centre — :func:`_lattice_atom`'s
+    rule). A ``count``/``fraction`` >1 pick is the maximally-spaced subset:
+    seed nearest ``near``, then each next pick the pool atom whose minimum
+    MIC distance to the chosen set is largest — the spread an *ordered*
+    vacancy pattern wants, deterministic (ties break by label)."""
+    if not isinstance(site, dict):
+        raise OpError(
+            "vacancy 'site' must be an object: {'type': "
+            "'top'|'subsurface'|'bottom', 'element'?: <el>, 'near'?: "
+            "<label or element>, 'count'?: n | 'fraction'?: f}",
+            example=_VACANCY_SITE_EXAMPLE,
+            next=_VACANCY_HINT,
+        )
+    _check_site_keys(
+        site,
+        ("type", "element", "near", "count", "fraction"),
+        example=_VACANCY_SITE_EXAMPLE,
+        next=_VACANCY_HINT,
+    )
+    if site.get("type") not in _VACANCY_LAYER:
+        raise OpError(
+            f"vacancy site 'type' must be one of "
+            f"{sorted(_VACANCY_LAYER)}, got {site.get('type')!r}",
+            example=_VACANCY_SITE_EXAMPLE,
+            next=_VACANCY_HINT,
+        )
+    pool = _vacancy_layer(scene, site)
+    count = site.get("count")
+    fraction = site.get("fraction")
+    if count is not None and fraction is not None:
+        raise OpError(
+            "a vacancy site takes 'count' or 'fraction', not both",
+            example=_VACANCY_SITE_EXAMPLE,
+            next=_VACANCY_HINT,
+        )
+    if fraction is not None:
+        try:
+            f = float(fraction)
+        except (TypeError, ValueError) as exc:
+            raise OpError(
+                f"vacancy site 'fraction' must be a number, got {fraction!r}"
+            ) from exc
+        if not 0.0 < f < 1.0:
+            raise OpError(
+                f"vacancy site 'fraction' must sit in (0, 1), got {f:g} — "
+                "removing the whole layer is 'atoms' (name them)"
+            )
+        k = max(1, round(f * len(pool)))
+    elif count is not None:
+        try:
+            k = int(count)
+            if isinstance(count, bool) or k != count:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise OpError(
+                f"vacancy site 'count' must be an integer, got {count!r}"
+            ) from exc
+    else:
+        k = 1
+    if not 1 <= k <= len(pool):
+        raise OpError(
+            f"vacancy site asks for {k} atom(s) but the {site['type']!r} "
+            f"layer's candidate pool holds {len(pool)} — widen 'element' or "
+            "pick another layer",
+            example=_VACANCY_SITE_EXAMPLE,
+            next=_VACANCY_HINT,
+        )
+    near = _near_fracs(scene, site.get("near"))
+    fracs = {la: scene.atoms[la].frac for la in pool}
+    first = min(
+        pool,
+        key=lambda la: (round(_ref_dist(scene, fracs[la], near), 6), la),
+    )
+    if k == 1:
+        return [first]
+    chosen = [first]
+    rest = [la for la in pool if la != first]
+    while len(chosen) < k:
+        sel = np.array([fracs[la] for la in chosen])
+        spread = {la: _mic_dists(scene, fracs[la], sel).min() for la in rest}
+        pick = min(rest, key=lambda la: (-round(spread[la], 6), la))
+        chosen.append(pick)
+        rest.remove(pick)
+    return chosen
+
+
+def _vacancy_layer(scene: Scene, site: dict[str, Any]) -> list[str]:
+    """The candidate labels a ``vacancy`` site draws from: the ``type``-
+    named z-layer of the ``element`` sublattice (its own z-clusters, so a
+    non-metal sublattice — an anion vacancy — resolves), or of the metal
+    slab layers restricted to the layer's majority element when
+    ``element`` is absent (:func:`_lattice_atom`'s rule, so a lone dopant
+    is never the default pick)."""
+    element = site.get("element")
+    if element is not None:
+        element = str(element)
+        pairs = sorted(
+            (float(scene.cell.frac_to_cart(a.frac)[2]), label)
+            for label, a in scene.atoms.items()
+            if a.element == element
+        )
+        if not pairs:
+            raise OpError(
+                f"vacancy site 'element' {element!r} has no atoms in the "
+                f"scene — {_no_atom_msg(scene, element)}",
+                example=_VACANCY_SITE_EXAMPLE,
+                next=_VACANCY_HINT,
+            )
+        layers = _z_layers(pairs)
+        prefix = f"{element!r}-"
+    else:
+        layers = _metal_layers(scene)
+        prefix = ""
+    depth = _VACANCY_LAYER[str(site["type"])]
+    if len(layers) < abs(depth) or (depth >= 0 and not layers):
+        raise OpError(
+            f"a {site['type']!r} vacancy site needs a {prefix}stack with at "
+            f"least {abs(depth) or 1} layer(s) (found {len(layers)}) — a "
+            "sparse partial layer does not count",
+            example=_VACANCY_SITE_EXAMPLE,
+            next=_VACANCY_HINT,
+        )
+    layer = layers[depth][1]
+    if element is not None:
+        return layer
+    host = Counter(scene.atoms[la].element for la in layer).most_common(1)[0][0]
+    return [la for la in layer if scene.atoms[la].element == host]
 
 
 def _op_displace(scene: Scene, op: dict[str, Any]) -> None:

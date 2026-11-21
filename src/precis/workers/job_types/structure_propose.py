@@ -53,7 +53,8 @@ DESCRIPTION = (
 
 #: Op vocabulary shown to the model (kept in sync with structure/ops.py).
 _OP_VOCAB = (
-    "add_atom{element,frac:[x,y,z]} · set_element{atom,element} · vacancy{atom} · "
+    "add_atom{element,frac:[x,y,z]} · set_element{atom,element} · "
+    "vacancy{atom|atoms:[…]|site:{type,element?,near?,count?|fraction?}} · "
     "displace{atom,vector:[dx,dy,dz],cartesian?} · add_bond{i,j,order?,image?} · "
     "remove_bond{i,j} · constrain{atoms:[…],kind:fixed-x|y|z|all} · "
     "transfer{atom|from,to,distance?} · "

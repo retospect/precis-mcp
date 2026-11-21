@@ -270,7 +270,7 @@ _STRUCTURE_OP_SIGNATURES: dict[str, str] = {
     "add_atom_site": "add_atom_site{element,site:'top:aX'|'bridge:aX,aY'|'hollow:aX,aY,aZ',height?}",
     "add_adsorbate": "add_adsorbate{species:H|O|N|OH|H2O|NH|NH2|NH3,site,height?,rotate?}",
     "set_element": "set_element{atom,element}",
-    "vacancy": "vacancy{atom}",
+    "vacancy": "vacancy{atom|atoms:[…]|site:{type,element?,near?,count?|fraction?}}",
     "displace": "displace{atom,vector:[dx,dy,dz],cartesian?}",
     "add_bond": "add_bond{i,j,order?,kind?,image?}",
     "remove_bond": "remove_bond{i,j}",

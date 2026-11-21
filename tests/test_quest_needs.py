@@ -880,3 +880,29 @@ class TestKnownCapabilityNeeds:
             "already exists" in t and "no archive" in t and "bench:index" in t
             for t in _log_texts(store, qid)
         )
+
+    def test_vacancy_op_need_is_answered_not_filed(self, store: Any) -> None:
+        """gr733200 — the need this fix ships: qu682293 declared a
+        ``delete_atom``/``remove-site``/vacancy-ordering op missing while
+        the ``vacancy`` op covered (and now covers the site form of) all
+        three. A re-declaration answers with the op and its forms, never
+        a blocking ``needs-tool`` gripe."""
+        qid = _mk_quest(store)
+        out = needs_mod.apply_needs(
+            store,
+            qid,
+            [
+                _need(
+                    "a delete_atom / remove-site op (or a vacancy-ordering "
+                    "helper) in the structure builder"
+                ),
+                _need("ordered-vacancy pattern helper"),
+            ],
+        )
+        assert out.gripes == ()
+        assert _gripes(store) == []
+        assert len(out.answered) == 2
+        assert any(
+            "already exists" in t and '"op":"vacancy"' in t
+            for t in _log_texts(store, qid)
+        )

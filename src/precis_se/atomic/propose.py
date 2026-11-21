@@ -137,7 +137,8 @@ _OP_VOCAB = (
     "attach{from,to,order?,distance?,direction?:[x,y,z],from_direction?:[x,y,z]} · "
     "add_atom{element,frac|cart:[x,y,z],label?} · "
     "add_bond{i,j,order?,kind?} · set_element{atom,element} · "
-    "vacancy{atom} · displace{atom,vector:[dx,dy,dz],cartesian?}"
+    "vacancy{atom|atoms:[…]|site:{type,element?,near?,count?|fraction?}} · "
+    "displace{atom,vector:[dx,dy,dz],cartesian?}"
 )
 
 #: Fit-check tolerance (Å). Deliberately the SAME constant

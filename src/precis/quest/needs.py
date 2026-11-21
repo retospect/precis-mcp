@@ -191,6 +191,26 @@ def _bench_retention_hint() -> str:
     )
 
 
+def _structure_vacancy_hint() -> str:
+    """The ``vacancy`` structure op — the remove-atom / remove-site /
+    ordered-vacancy capability a ``delete_atom``/``remove-site`` need is
+    already covered by (gr733200 — qu682293 could not see the op because
+    the generic prompt never named it; it exists on every ``ops`` list,
+    including a proposal's ``derive_from`` clone)."""
+    return (
+        'the `vacancy` structure op removes atoms — {"op":"vacancy","atom":'
+        '"<label>"} for one, "atoms":[…] for a set, or "site":{"type":'
+        '"top"|"subsurface"|"bottom","element":<el>,"count"|<n>|"fraction":'
+        "<f>} for a maximally-spaced ORDERED vacancy set off a slab layer "
+        "(an anion element like N resolves on its own sublattice). On a "
+        "`derive_from` clone the surviving atoms keep their labels, so two "
+        "vacancy variants off one parent stay label-matched; the clone is "
+        "not NEB-pairable with the parent (its atom set changed) — for a "
+        "vacancy-hop pair remove the SAME atoms in both endpoints, then "
+        "`displace` the hopping atom in the FS"
+    )
+
+
 #: Capabilities a tick already HAS under another name than the model
 #: declares — ``(needle, hint-builder)`` pairs. The needle is matched
 #: lowercase as a substring of the declared ``tool`` text AND its
@@ -205,6 +225,18 @@ def _bench_retention_hint() -> str:
 #: needles keep a ``-reader`` tail on purpose: ``bench-reader`` alone
 #: would substring-hit ``workbench-reader``.
 _HAVE_CAPABILITIES: tuple[tuple[str, Callable[[], str]], ...] = (
+    # gr733200 — qu682293 declared a delete_atom / remove-site /
+    # vacancy-ordering op missing; ``vacancy`` already covers all three
+    # (site form added under the same gripe). Needles stay compound —
+    # a bare "vacancy" would answer needs about vacancy *energy* lanes.
+    ("delete-atom", _structure_vacancy_hint),
+    ("delete-site", _structure_vacancy_hint),
+    ("remove-atom", _structure_vacancy_hint),
+    ("remove-site", _structure_vacancy_hint),
+    ("remove-sites", _structure_vacancy_hint),
+    ("ordered-vacancy", _structure_vacancy_hint),
+    ("vacancy-ordering", _structure_vacancy_hint),
+    ("vacancy-ordered", _structure_vacancy_hint),
     ("benchmark-log-reader", _bench_reader_hint),
     ("benchmark-results-reader", _bench_reader_hint),
     ("bench-log-reader", _bench_reader_hint),
