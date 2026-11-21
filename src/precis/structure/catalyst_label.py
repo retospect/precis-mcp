@@ -27,6 +27,15 @@ Two recorded facts do the quiet lifting:
   ``site.near`` target (or a ``near``/``colocated`` extra on the vacancy
   op itself — the engine ignores it, the record keeps it) renders
   ``co-located`` on the vacancy.
+- **Anonymous picks stay counted.** ``site``-form ``set_element`` and
+  ``vacancy`` never name their atom, but the record still names layer,
+  element and count: the bookkeeping tracks what each accounted label
+  currently IS plus the layer deltas anonymous ops imply, so a dopant a
+  ``site``/``atoms`` vacancy removed leaves the rendered count and a
+  later ``fraction`` pick's pool sizes off honest layer composition
+  (gr733200 / review td743564). A ``site`` substitution whose ``near``
+  is itself a live majority atom of the target layer resolves exactly —
+  distance 0 is the unique minimum — and books the label.
 
 Pure stdlib on purpose: importable from ``precis_pathway.persist``'s
 cheap-import surface and the structure card alike.
@@ -37,7 +46,10 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections import Counter
 from typing import Any
+
+from . import elements
 
 #: Atom-label shape (``a<El><n>`` — minted in op order, never recycled).
 _LABEL_RE = re.compile(r"^a([A-Z][a-z]?)(\d+)$")
@@ -67,6 +79,12 @@ _COLOCATED_KEYS = ("colocated", "co_located", "co-located")
 #: :mod:`precis.structure.ops`): the layer a by-site substitution lands
 #: in, as depth from the top.
 _SUBST_DEPTH = {"top": 1, "subsurface": 2}
+
+#: ``vacancy``'s by-site layer pick (``_VACANCY_LAYER`` in
+#: :mod:`precis.structure.ops`), as the index into the resolved candidate
+#: pool's z-groups ordered shallowest→deepest — the metal slab layers when
+#: ``element`` is absent, the element's own sublattice when named.
+_VAC_GROUP_IDX = {"top": 0, "subsurface": 1, "bottom": -1}
 
 
 def catalyst_label(source: Any) -> str | None:
@@ -249,6 +267,7 @@ def _render_mods(mods: list[dict[str, Any]]) -> list[str]:
                 and r.get("words") == m.get("words")
                 and r.get("depth") == m.get("depth")
                 and r.get("colocated") == m.get("colocated")
+                and r.get("vague") == m.get("vague")
             ):
                 run[1] += 1
                 break
@@ -272,6 +291,10 @@ def _render_run(m: dict[str, Any], n: int) -> str:
     words = _depth_words(m.get("depth"))
     if m.get("colocated"):
         words = f"{words}, co-located" if words else "co-located"
+    if m.get("vague"):
+        # a ``fraction`` pick whose pool the bookkeeping can't size —
+        # removals happened, how many is unknown
+        return "vacancies" + (f" ({words})" if words else "")
     noun = "vacancies" if n > 1 else "vacancy"
     return f"{count}{noun}" + (f" ({words})" if words else "")
 
@@ -281,7 +304,17 @@ def _from_ops(ops: list[dict[str, Any]], meta: dict[str, Any]) -> str | None:
     modification op in recipe order (a ``None`` tombstone where a later
     op undid one); ``slab_depth`` maps each slab-atom label to its depth
     from the top; ``near_labels`` is every label a placement op named as
-    its neighbour, for the vacancy's co-location pass at the end."""
+    its neighbour, for the vacancy's co-location pass at the end.
+
+    The element bookkeeping keeps anonymous picks counted: ``elem_of`` is
+    what each accounted label currently IS, ``band_of`` the z-band
+    non-slab mints sit in (the above-surface ``None`` group, or a marker
+    atom's measured depth), ``atom_mod`` the mod entries a label backs,
+    and ``anon``/``anon_mod`` the atoms a by-site op placed without naming
+    — a ``site`` substitution consumes one majority atom of its layer, a
+    ``site`` vacancy removes whatever its spec's pool resolves to. That
+    is what lets a removed dopant leave the rendered count and a later
+    ``fraction`` pick size its pool off honest layer composition."""
     host = facet = None
     hi: dict[str, int] = {}
     slab_depth: dict[str, int] = {}
@@ -291,6 +324,106 @@ def _from_ops(ops: list[dict[str, Any]], meta: dict[str, Any]) -> str | None:
     sub_pos: dict[str, int] = {}
     near_labels: set[str] = set()
     vac_idx: list[int] = []
+    elem_of: dict[str, str] = {}
+    band_of: dict[str, int | None] = {}
+    atom_mod: dict[str, list[int]] = {}
+    anon: dict[int | None, Counter[str]] = {}
+    anon_mod: dict[tuple[int | None, str], list[int]] = {}
+
+    def _band(label: str) -> int | None:
+        """The z-band an accounted atom sits in — its slab depth, a
+        marker's measured depth, else the above-surface ``None`` group."""
+        if label in slab_depth:
+            return slab_depth[label]
+        return band_of.get(label)
+
+    def _composition(depth: int) -> dict[str, int]:
+        """The layer's element counts — accounted slab labels (mint
+        order, approximating the scene's atom order for tie-breaks) plus
+        the anonymous by-site deltas."""
+        counts: dict[str, int] = {}
+        for la, d in slab_depth.items():
+            if d == depth and la in elem_of:
+                el = elem_of[la]
+                counts[el] = counts.get(el, 0) + 1
+        for el, n in anon.get(depth, {}).items():
+            counts[el] = counts.get(el, 0) + n
+        return counts
+
+    def _majority_of(depth: int) -> str | None:
+        """The layer's majority METAL element — the pool an element-less
+        by-site pick draws from (``_lattice_atom`` / ``_vacancy_layer``
+        count only ``max_valence is None`` atoms)."""
+        counts = _composition(depth)
+        best = None
+        for el, n in counts.items():
+            if (
+                n > 0
+                and elements.max_valence(el) is None
+                and (best is None or n > counts[best])
+            ):
+                best = el
+        return best
+
+    def _el_groups(el: str) -> list[int | None]:
+        """``el``'s populated z-bands shallowest→deepest — the
+        above-surface ``None`` group first, then marker/slab depths —
+        sparse groups dropped like ``_z_layers``' half-the-fullest rule."""
+        counts: dict[int | None, int] = {}
+        for la, e2 in elem_of.items():
+            if e2 == el:
+                b = _band(la)
+                counts[b] = counts.get(b, 0) + 1
+        for b, m in anon.items():
+            n = m.get(el, 0)
+            if n > 0:
+                counts[b] = counts.get(b, 0) + n
+        if not counts:
+            return []
+        full = max(counts.values())
+        return sorted(
+            (b for b, n in counts.items() if n > full / 2),
+            key=lambda b: -1 if b is None else b,
+        )
+
+    def _el_count(el: str, band: int | None) -> int:
+        mm = anon.get(band)
+        n = mm.get(el, 0) if mm is not None else 0
+        for la, e2 in elem_of.items():
+            if e2 == el and _band(la) == band:
+                n += 1
+        return n
+
+    def _die(label: str) -> None:
+        """``label`` is gone: tombstone every mod it backed and drop it
+        from the counts, so its element stops rendering."""
+        for idx in atom_mod.pop(label, ()):
+            mods[idx] = None
+        sub_pos.pop(f"atom:{label}", None)
+        elem_of.pop(label, None)
+        slab_depth.pop(label, None)
+        band_of.pop(label, None)
+
+    def _kill(el: str, band: int | None, k: int) -> None:
+        """``k`` atoms of ``el`` in ``band`` removed by an anonymous pick.
+        Anonymous units die first — a later by-label op may still name a
+        tracked atom — the rest come off accounted labels."""
+        m = anon.get(band)
+        take = min(k, max(0, m.get(el, 0) if m is not None else 0))
+        if take:
+            assert m is not None
+            m[el] -= take
+            k -= take
+            idxs = anon_mod.get((band, el), [])
+            for _ in range(min(take, len(idxs))):
+                mods[idxs.pop()] = None
+        if k:
+            victims = [
+                la for la, e2 in elem_of.items() if e2 == el and _band(la) == band
+            ]
+            for la in victims[:k]:
+                _die(la)
+
     for i, op in enumerate(ops):
         name = op.get("op")
         near = _near_label(op)
@@ -323,11 +456,18 @@ def _from_ops(ops: list[dict[str, Any]], meta: dict[str, Any]) -> str | None:
             near_labels.clear()
             vac_idx.clear()
             slab_depth.clear()
+            elem_of.clear()
+            band_of.clear()
+            atom_mod.clear()
+            anon.clear()
+            anon_mod.clear()
             trusted = True
             start = hi.get(host, 0)
             for atom_i in range(1, nx * ny * nz + 1):
                 layer = (atom_i - 1) // (nx * ny) + 1  # 1 = bottom, nz = top
-                slab_depth[f"a{host}{start + atom_i}"] = nz - layer + 1
+                label = f"a{host}{start + atom_i}"
+                slab_depth[label] = nz - layer + 1
+                elem_of[label] = host
             hi[host] = start + nx * ny * nz
         elif name == "set_element":
             el = _element_of(op)
@@ -335,14 +475,43 @@ def _from_ops(ops: list[dict[str, Any]], meta: dict[str, Any]) -> str | None:
                 continue
             atom = op.get("atom")
             site = op.get("site")
+            resolved: str | None = None
             if atom is not None:
-                key = f"atom:{atom}"
-                depth = slab_depth.get(str(atom)) if trusted else None
+                resolved = str(atom)
+                depth = slab_depth.get(resolved) if trusted else None
             elif isinstance(site, dict):
-                key = f"site:{i}"  # unique per op — precis picks the atom
                 depth = _SUBST_DEPTH.get(str(site.get("type")))
+                n = site.get("near")
+                if (
+                    trusted
+                    and depth is not None
+                    and isinstance(n, str)
+                    and _LABEL_RE.match(n)
+                    and slab_depth.get(n) == depth
+                    and elem_of.get(n) is not None
+                    and elem_of[n] == _majority_of(depth)
+                ):
+                    # ``near`` IS a live majority atom of the target
+                    # layer — distance 0 is the unique minimum, so the
+                    # pick lands on it exactly and the label stays
+                    # tombstone-able.
+                    resolved = n
+                if resolved is None and trusted and depth is not None:
+                    # anonymous pick: some majority atom of the layer
+                    # becomes ``el`` — keep the layer's counts honest
+                    # without inventing a label.
+                    m_delta = anon.setdefault(depth, Counter())
+                    maj = _majority_of(depth)
+                    if maj is not None:
+                        m_delta[maj] -= 1
+                    m_delta[el] += 1
             else:
                 continue
+            if resolved is not None:
+                key = f"atom:{resolved}"
+                elem_of[resolved] = el
+            else:
+                key = f"site:{i}"  # unique per op — precis picks the atom
             words = _subst_words(depth)
             if key in sub_pos:
                 idx = sub_pos[key]
@@ -350,21 +519,37 @@ def _from_ops(ops: list[dict[str, Any]], meta: dict[str, Any]) -> str | None:
                     # transmuted back to the host — the dopant is gone
                     mods[idx] = None
                     del sub_pos[key]
+                    if resolved is not None:
+                        lst = atom_mod.get(resolved)
+                        if lst and idx in lst:
+                            lst.remove(idx)
                 else:
                     mods[idx] = {"kind": "subst", "what": el, "words": words}
             elif el != host:
                 sub_pos[key] = len(mods)
                 mods.append({"kind": "subst", "what": el, "words": words})
+                if resolved is not None:
+                    atom_mod.setdefault(resolved, []).append(len(mods) - 1)
+                elif trusted and depth is not None:
+                    anon_mod.setdefault((depth, el), []).append(len(mods) - 1)
         elif name in ("add_atom", "add_atom_site"):
             el = _element_of(op)
             if el is None:
                 continue
             if "label" not in op:
                 hi[el] = hi.get(el, 0) + 1
+                label = f"a{el}{hi[el]}"
+            else:
+                label = str(op["label"])
+            marker = op.get("site")
+            m_depth: int | None = None
+            if name == "add_atom" and marker in ("subsurface", "interstitial"):
+                m_depth = _marker_depth(op, slab_state, meta)
+            elem_of[label] = el
+            band_of[label] = m_depth
             if el == host:
                 continue  # more host atoms are never a modification
             if name == "add_atom":
-                marker = op.get("site")
                 if marker in ("subsurface", "interstitial"):
                     if marker == "interstitial":
                         words = "interstitial"
@@ -372,22 +557,21 @@ def _from_ops(ops: list[dict[str, Any]], meta: dict[str, Any]) -> str | None:
                         # The marker records intent, not depth — the layer
                         # is real only when the record's geometry places
                         # the atom there, else the plain intent word.
-                        depth = _marker_depth(op, slab_state, meta)
-                        words = _depth_words(depth) or "subsurface"
+                        words = _depth_words(m_depth) or "subsurface"
                     mods.append({"kind": "add", "what": el, "words": words})
                 elif el in _ADSORBATE_ELEMENTS:
                     mods.append({"kind": "ads", "what": el, "words": ""})
                 else:
                     mods.append({"kind": "adatom", "what": el, "words": ""})
             else:
-                site = op.get("site")
                 t = (
-                    str(site.get("type"))
-                    if isinstance(site, dict) and site.get("type")
+                    str(marker.get("type"))
+                    if isinstance(marker, dict) and marker.get("type")
                     else ""
                 )
                 kind = "ads" if el in _ADSORBATE_ELEMENTS else "adatom"
                 mods.append({"kind": kind, "what": el, "words": t})
+            atom_mod.setdefault(label, []).append(len(mods) - 1)
         elif name == "add_adsorbate":
             sp = op.get("species")
             if not isinstance(sp, str) or not sp.strip():
@@ -399,37 +583,134 @@ def _from_ops(ops: list[dict[str, Any]], meta: dict[str, Any]) -> str | None:
                 else ""
             )
             mods.append({"kind": "ads", "what": sp.strip(), "words": t})
+            ad_idx = len(mods) - 1
             counts = _formula_counts(sp.strip())
             if counts is None:
                 trusted = False
             else:
                 for e, n in counts.items():
-                    hi[e] = hi.get(e, 0) + n
+                    start = hi.get(e, 0)
+                    for k_at in range(1, n + 1):
+                        lab = f"a{e}{start + k_at}"
+                        elem_of[lab] = e
+                        band_of[lab] = None
+                        atom_mod.setdefault(lab, []).append(ad_idx)
+                    hi[e] = start + n
         elif name == "vacancy":
-            atom = op.get("atom")
-            if atom is None:
-                continue
-            atom = str(atom)
-            depth = slab_depth.get(atom) if trusted else None
-            if depth is None:
-                site = op.get("site")
-                if isinstance(site, dict):
-                    depth = _SUBST_DEPTH.get(str(site.get("type")))
+            site = op.get("site")
             coloc = bool(op.get("near")) or any(op.get(k) for k in _COLOCATED_KEYS)
-            # A vacancy of a substituted atom removes the dopant too.
-            dead = f"atom:{atom}"
-            if dead in sub_pos:
-                mods[sub_pos.pop(dead)] = None
-            mods.append(
-                {"kind": "vacancy", "depth": depth, "colocated": coloc, "atom": atom}
-            )
-            vac_idx.append(len(mods) - 1)
+            if isinstance(site, dict) and site.get("near"):
+                coloc = True
+            labels: list[str] = []
+            if op.get("atom") is not None:
+                labels = [str(op["atom"])]
+            elif isinstance(op.get("atoms"), list):
+                labels = [str(a) for a in op["atoms"]]
+            if labels:
+                for atom in labels:
+                    depth = slab_depth.get(atom) if trusted else None
+                    if depth is None and isinstance(site, dict):
+                        depth = _SUBST_DEPTH.get(str(site.get("type")))
+                    # A vacancy of a substituted atom removes the dopant
+                    # too — and every count the label fed.
+                    _die(atom)
+                    mods.append(
+                        {
+                            "kind": "vacancy",
+                            "depth": depth,
+                            "colocated": coloc,
+                            "atom": atom,
+                        }
+                    )
+                    vac_idx.append(len(mods) - 1)
+                continue
+            if not isinstance(site, dict):
+                continue
+            # ``site`` — the remove-site / ordered-vacancy form
+            # (gr733200): the record names layer, element and count but
+            # not the atoms. Resolve the pool against the element
+            # bookkeeping and tombstone what the pick removed; whatever
+            # can't be resolved still renders.
+            vtype = str(site.get("type"))
+            vel = site.get("element")
+            vel = str(vel) if vel is not None else None
+            cnt, frac = site.get("count"), site.get("fraction")
+            vband: int | None = None
+            pool = 0
+            placed = False
+            if trusted and vtype in _VAC_GROUP_IDX:
+                if vel is not None:
+                    groups = _el_groups(vel)
+                    gi = _VAC_GROUP_IDX[vtype]
+                    if -len(groups) <= gi < len(groups):
+                        vband = groups[gi]
+                        pool = _el_count(vel, vband)
+                        placed = True
+                else:
+                    vband = _SUBST_DEPTH.get(vtype)
+                    if vband is None and vtype == "bottom" and slab_state is not None:
+                        vband = int(slab_state["nz"])
+                    if vband is not None:
+                        placed = True
+                        maj = _majority_of(vband)
+                        if maj is not None:
+                            vel = maj
+                            pool = _composition(vband).get(maj, 0)
+            k: int | None
+            if (
+                isinstance(cnt, (int, float))
+                and not isinstance(cnt, bool)
+                and int(cnt) >= 1
+            ):
+                k = int(cnt)
+            elif (
+                isinstance(frac, (int, float))
+                and not isinstance(frac, bool)
+                and 0 < float(frac) < 1
+            ):
+                k = max(1, round(float(frac) * pool)) if pool > 0 else None
+            elif cnt is None and frac is None:
+                k = 1
+            else:
+                k = None
+            if placed and vel is not None and k:
+                _kill(vel, vband, k)
+            depth = vband if placed else _SUBST_DEPTH.get(vtype)
+            if depth is None and vtype == "bottom" and slab_state is not None:
+                depth = int(slab_state["nz"])
+            if k is None:
+                mods.append(
+                    {
+                        "kind": "vacancy",
+                        "depth": depth,
+                        "colocated": coloc,
+                        "atom": None,
+                        "vague": True,
+                    }
+                )
+                vac_idx.append(len(mods) - 1)
+            else:
+                for _ in range(k):
+                    mods.append(
+                        {
+                            "kind": "vacancy",
+                            "depth": depth,
+                            "colocated": coloc,
+                            "atom": None,
+                        }
+                    )
+                    vac_idx.append(len(mods) - 1)
         elif name == "ring":
             el = _element_of(op)
             ring_n = op.get("n")
             ring_n = int(ring_n) if isinstance(ring_n, (int, float, str)) else 0
             if el is not None and ring_n > 0:
-                hi[el] = hi.get(el, 0) + ring_n
+                start = hi.get(el, 0)
+                for k_at in range(1, ring_n + 1):
+                    lab = f"a{el}{start + k_at}"
+                    elem_of[lab] = el
+                    band_of[lab] = None
+                hi[el] = start + ring_n
         elif name in _UNCOUNTABLE_MINTS:
             trusted = False
         # every other op mints no atoms and rewrites no labels — nothing
