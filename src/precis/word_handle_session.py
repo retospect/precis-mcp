@@ -6,28 +6,18 @@ a voice agent never has to look ids up one by one before it can speak
 them. Off by default — the 12 Nov ruling is opt-in only, and normal agent
 traffic pays no extra tokens for a column it never reads.
 
-Two ways on:
+Stateful transports use the live MCP session object. Stateless HTTP has
+no cross-request session identity, so it uses the authenticated connector
+credential (an OAuth grant survives access-token refresh). The bounded
+process-local cache keeps flags off other credentials and avoids sharing a
+preference through the installation-wide bearer.
 
-- ``put(kind='handle', text='on'|'off')`` — the session switch. State
-  keys on the session object ``serve_ledger`` binds for the call, stored
-  in a :class:`~weakref.WeakKeyDictionary` so a closed session's flag is
-  reclaimed with it (same argument ``hint_ledger`` makes for its seen-set;
-  an un-weak-referenceable session falls back to an ``id()``-keyed dict
-  capped at :data:`_MAX_FALLBACK_SESSIONS`). An explicit ``off`` beats
-  the env rule below. Nothing is persisted across sessions by design.
-- ``PRECIS_WORD_HANDLE_CLIENTS`` — comma-separated case-insensitive
-  substrings matched against the bound client's ``name/version`` label
-  (``tool_ledger.current_client``); a declaring voice client gets word
-  handles without asking. Empty/unset matches nothing.
-
-A sessionless caller (CLI, inproc tick, direct handler call, tests) can
-only reach the env rule — there is no session to pin a flag to, and
-``set_enabled`` reports that rather than pretending the switch took.
-
-Under ``PRECIS_MCP_STATELESS_HTTP`` every request binds a fresh session
-object, so a flag set on one request is invisible to the next — the
-switch is per-session by contract, not per-process; the env rule is the
-door for transports that can't hold session state.
+An explicit switch wins over auto-enable. The built-in Claude connector
+registration identifies Claude across stateless requests, where initialize
+clientInfo is unavailable. It covers both voice and text because the
+connector does not declare a conversation's modality. Deployments may
+also match clientInfo, OAuth client id or HTTP User-Agent substrings via
+``PRECIS_WORD_HANDLE_CLIENTS``. Those labels affect presentation only.
 """
 
 from __future__ import annotations
@@ -35,11 +25,17 @@ from __future__ import annotations
 import os
 import weakref
 from collections import OrderedDict
-from typing import Any
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from threading import Lock
+from typing import Any, Literal
 
+from precis.principal import current_owner_key
 from precis.serve_ledger import current_session
+from precis.tool_ledger import _stateless_http, current_client
 
-#: Env var naming clientInfo substrings that auto-enable word handles.
+#: Client-label substrings that auto-enable word handles.
 CLIENTS_ENV = "PRECIS_WORD_HANDLE_CLIENTS"
 
 #: Fallback-dict bound for un-weak-referenceable sessions.
@@ -51,21 +47,44 @@ _flags: weakref.WeakKeyDictionary[Any, bool] = weakref.WeakKeyDictionary()
 _flags_fallback: OrderedDict[int, tuple[Any, bool]] = OrderedDict()
 
 
-def _env_auto() -> bool:
-    """True when the bound client's label matches ``PRECIS_WORD_HANDLE_CLIENTS``."""
-    raw = os.environ.get(CLIENTS_ENV, "")
-    if not raw.strip():
-        return False
-    from precis.tool_ledger import current_client
+_connector: ContextVar[tuple[str, str] | None] = ContextVar(
+    "word_handle_connector", default=None
+)
+_connector_flags: OrderedDict[str, bool] = OrderedDict()
+_connector_lock = Lock()
 
-    client = current_client()
-    if not client:
-        return False
-    label = client.casefold()
+
+@contextmanager
+def http_scope(client_id: str, user_agent: str) -> Iterator[None]:
+    """Bind presentation metadata from the authenticated HTTP request."""
+    token = _connector.set((client_id, user_agent))
+    try:
+        yield
+    finally:
+        _connector.reset(token)
+
+
+def _switch_target() -> tuple[object | None, str | None]:
+    """Prefer a live session except when the HTTP transport discards it."""
+    session = current_session()
+    if _connector.get() is None or (session is not None and not _stateless_http()):
+        return session, None
+    owner = current_owner_key()
+    return None, owner if owner != "install" else None
+
+
+def _auto_enabled() -> bool:
+    client_id, user_agent = _connector.get() or ("", "")
+    from precis.oauth.config import CLAUDE_CLIENT_ID
+
+    if client_id == CLAUDE_CLIENT_ID:
+        return True
+    tokens = os.environ.get(CLIENTS_ENV, "").casefold().split(",")
+    labels = tuple(
+        label.casefold() for label in (current_client() or "", client_id, user_agent)
+    )
     return any(
-        token in label
-        for token in (part.strip().casefold() for part in raw.split(","))
-        if token
+        token in label for part in tokens if (token := part.strip()) for label in labels
     )
 
 
@@ -82,31 +101,32 @@ def _flag_for(session: Any) -> bool | None:
 
 
 def enabled() -> bool:
-    """True while the bound session wants word handles.
-
-    An explicit ``put`` flag wins either way (``off`` suppresses even an
-    env-matched client); with no flag the env rule decides. Sessionless
-    callers only see the env rule — there is no flag to read.
-    """
-    session = current_session()
+    """Resolve an explicit session or connector switch before auto-enable."""
+    session, owner = _switch_target()
     if session is not None:
         flag = _flag_for(session)
         if flag is not None:
             return flag
-    return _env_auto()
+    if owner is not None:
+        with _connector_lock:
+            if owner in _connector_flags:
+                _connector_flags.move_to_end(owner)
+                return _connector_flags[owner]
+    return _auto_enabled()
 
 
-def set_enabled(on: bool) -> bool:
-    """Pin the switch on the bound session.
-
-    Returns ``False`` when no session is bound — a CLI or direct-dispatch
-    ``put`` has nothing durable to key the flag to, so it reports the
-    switch did not take rather than leaking a flag onto every later
-    sessionless call.
-    """
-    session = current_session()
+def set_enabled(on: bool) -> Literal["connector credential", "session"] | None:
+    """Set the switch and return the scope that received it, if any."""
+    session, owner = _switch_target()
+    if owner is not None:
+        with _connector_lock:
+            _connector_flags[owner] = on
+            _connector_flags.move_to_end(owner)
+            if len(_connector_flags) > _MAX_FALLBACK_SESSIONS:
+                _connector_flags.popitem(last=False)
+        return "connector credential"
     if session is None:
-        return False
+        return None
     try:
         _flags[session] = on
     except TypeError:
@@ -115,10 +135,11 @@ def set_enabled(on: bool) -> bool:
         _flags_fallback.move_to_end(key)
         while len(_flags_fallback) > _MAX_FALLBACK_SESSIONS:
             _flags_fallback.popitem(last=False)
-    return True
+    return "session"
 
 
 def _clear_for_tests() -> None:
     """Drop all session switch state (test isolation)."""
     _flags.clear()
     _flags_fallback.clear()
+    _connector_flags.clear()

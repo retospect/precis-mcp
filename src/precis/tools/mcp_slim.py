@@ -64,13 +64,13 @@ read; only implementing kinds accept scope= — a refusal names the
 rest. `status=` filters by
 `STATUS:` tag on kinds that carry that axis. Rows: `id`, `summary`,
 `remaining_words`, `links`, `tags` — the legend is in the skill.
+In voice chat, describe the ref first. Speak its `word` handle, never its number.
+See get(kind='skill', id='precis-word-handles-help').
 `queries=` (paper + `answers=`; skill: fused sections) and
 `batch=` (memory) are verb params; other kinds refuse `not on <kind>
 yet`. `NotFound … routes
-through host(s)` = a host-gated kind. Kind-specific fields (`exclude`, `reach`,
-`folder`, `per_paper`, `trust`, `wants`, `compose`,
-`property`/`min`/`max`/`unit`, ...) go in `args={...}`; an unknown key
-fails the call with `[error:BadInput]` listing the kind's accepted ones.
+through host(s)` = a host-gated kind. Pass kind fields in `args={...}`. Unknown keys raise `[error:BadInput]`
+with accepted keys.
 
 Full docs: get(kind='skill', id='precis-search-help').
 """

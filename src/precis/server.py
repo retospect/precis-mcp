@@ -843,7 +843,9 @@ _INSTRUCTIONS = (
     "Gripe: put(kind='gripe', text='<command + expected + actual>') — file "
     "the moment a call or a skill misbehaves, no asking first. "
     "Conduct: get(kind='skill', id='soul'). "
-    "Build/sha/DB: get(kind='skill', id='precis-status')."
+    "Build/sha/DB: get(kind='skill', id='precis-status'). "
+    "Voice: describe the reference first and never read its numeric id aloud. "
+    "See get(kind='skill', id='precis-word-handles-help')."
 )
 
 # Sanity check the instructions actually advertise every verb. The MCP

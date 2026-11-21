@@ -16,6 +16,7 @@ from precis.private_kinds import PRIVATE_KINDS
 #: the always-available full-access grant on top.
 _PRIVATE_SCOPES = tuple(sorted(entry.oauth_scope for entry in PRIVATE_KINDS.values()))
 KNOWN_SCOPES = frozenset(_PRIVATE_SCOPES) | {"mcp:full"}
+CLAUDE_CLIENT_ID = "precis-claude"
 _CLIENT_ID = re.compile(r"[A-Za-z0-9._-]{1,100}\Z")
 
 
@@ -103,8 +104,8 @@ class OAuthConfig:
                 "OAuth requires both PRECIS_OAUTH_ISSUER and PRECIS_OAUTH_RESOURCE"
             )
         clients = {
-            "precis-claude": OAuthClient(
-                "precis-claude", "Claude", ("https://claude.ai/api/mcp/auth_callback",)
+            CLAUDE_CLIENT_ID: OAuthClient(
+                CLAUDE_CLIENT_ID, "Claude", ("https://claude.ai/api/mcp/auth_callback",)
             )
         }
         if raw_clients:

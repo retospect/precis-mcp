@@ -191,13 +191,10 @@ class HandleHandler(Handler):
         )
 
     def put(self, *, text: str | None = None, **_kw: Any) -> Response:
-        """Flip this session's word-handle switch: ``text='on'`` or ``'off'``.
+        """Set the word-handle preference with ``text='on'`` or ``'off'``.
 
-        Nothing is created — the verb is the user-facing "use word
-        handles" affordance; the flag lives on the bound MCP session
-        (:mod:`precis.word_handle_session`). A sessionless ``put`` has
-        nothing to pin the flag to, so the ack says the switch did not
-        take rather than pretend.
+        The switch uses the MCP session or authenticated connector credential
+        (see :mod:`precis.word_handle_session`).
         """
         value = (text or "").strip().lower()
         if value not in ("on", "off"):
@@ -206,14 +203,16 @@ class HandleHandler(Handler):
                 next="put(kind='handle', text='on')",
             )
         on = value == "on"
-        if not word_handle_session.set_enabled(on):
-            return Response(
-                body=(
-                    "word handles stay off: the switch is per-session and "
-                    "no session is bound — nothing to pin it on\n"
-                )
+        scope = word_handle_session.set_enabled(on)
+        if scope is None:
+            raise BadInput(
+                "word-handle switch needs a live MCP session or a dedicated "
+                "connector credential. Reconnect through OAuth to use the "
+                "switch from stateless HTTP",
+                next="get(kind='handle', id=648264) for one-off conversion "
+                "(replace 648264 with the ref id)",
             )
-        body = f"word handles {value} for this session.\n"
+        body = f"word handles {value} for this {scope}.\n"
         if on:
             body += (
                 "search and list rows gain a 'word' column; "

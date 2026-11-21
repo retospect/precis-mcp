@@ -109,6 +109,11 @@ receipts and hint suppression remain in process memory. Opt-in
 ``PRECIS_MCP_STATELESS_HTTP`` authenticates every request and groups ledger
 calls by credential/hour; persisted ordinals are allocated under a database
 lock so restart cannot reorder recall routes. Public rollout is separate.
+The word-handle switch uses the live session where available. Stateless
+HTTP uses a bounded process-local cache keyed by the authenticated
+connector credential. Claude OAuth connections default to spoken handles
+because the connector registration identifies the app across requests.
+
 
 ```
   precis add <input>

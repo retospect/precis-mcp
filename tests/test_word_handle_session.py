@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from precis import serve_ledger, word_handle_session
+from precis import principal, serve_ledger, word_handle_session
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.handle import HandleHandler
@@ -62,8 +62,9 @@ def test_switch_rejects_bad_text() -> None:
 
 
 def test_switch_sessionless_does_not_take() -> None:
-    out = _handler().put(text="on")
-    assert "stay off" in out.body
+    with pytest.raises(BadInput, match="live MCP session") as exc:
+        _handler().put(text="on")
+    assert "get(kind='handle', id=648264)" in str(exc.value.next)
     assert not word_handle_session.enabled()
 
 
@@ -77,6 +78,29 @@ def test_env_client_automatch(monkeypatch: pytest.MonkeyPatch) -> None:
     with serve_ledger.session_scope(_Session(name="term-cli")):
         assert not word_handle_session.enabled()
     # sessionless: no client label to match, so the env turns nothing on
+    assert not word_handle_session.enabled()
+
+
+def test_unbound_http_switch_uses_the_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(word_handle_session.CLIENTS_ENV, "VoiceBox")
+    with word_handle_session.http_scope("", "VoiceBox/1"):
+        assert word_handle_session.enabled()
+        with principal.bind("oauth:1"):
+            _handler().put(text="off")
+        with principal.bind("oauth:2"):
+            assert word_handle_session.enabled()
+        with principal.bind("install"), pytest.raises(BadInput):
+            _handler().put(text="off")
+    with word_handle_session.http_scope("", ""):
+        with principal.bind("oauth:1"):
+            assert not word_handle_session.enabled()
+            _handler().put(text="on")
+        with principal.bind("oauth:2"):
+            assert not word_handle_session.enabled()
+        with principal.bind("oauth:1"):
+            assert word_handle_session.enabled()
     assert not word_handle_session.enabled()
 
 

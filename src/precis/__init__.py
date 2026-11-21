@@ -32,7 +32,9 @@ plugins and bridges sharing the repo:
   ``handlers/`` — one adapter per kind implementing ``protocol.Handler`` and
   declaring a ``KindSpec``; ``dispatch.py`` holds the registry, plugin loading
   and the service ``Hub``. ``response.py`` and ``hints.py`` shape what comes
-  back.
+  back. The word-handle switch uses the OAuth grant on stateless HTTP so
+  token refresh and per-request SDK sessions preserve the connector's
+  preference. See ``word_handle_session.py``.
 - *Storage.* ``store/`` (psycopg3 pool, forward-only ``Migrator``, composed
   sub-stores) over ``migrations/``; ``settings.py`` / ``secrets.py`` are the
   DB-resident config and vault layers.

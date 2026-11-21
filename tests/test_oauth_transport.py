@@ -259,6 +259,59 @@ def test_oauth_sessions_are_bound_to_user_and_connection(
     assert current_principal() is None
 
 
+def test_stateless_claude_word_handles_follow_the_connector(
+    store: Store,
+    oauth_config: OAuthConfig,
+    runtime_with_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis import word_handle_session
+
+    monkeypatch.setenv("PRECIS_MCP_STATELESS_HTTP", "1")
+    monkeypatch.delenv(word_handle_session.CLIENTS_ENV, raising=False)
+    monkeypatch.setenv("PRECIS_AGENT_TABLE_FORMAT", "toon")
+    user = _user(store, "alice")
+    first, _ = _grant(store, oauth_config, user.id, ("mcp:full",))
+    other, _ = _grant(store, oauth_config, user.id, ("mcp:full",))
+    store.insert_ref(kind="memory", slug="voice-test", title="Voice test")
+    app = _app(store, oauth_config, runtime_with_store, monkeypatch, stateless=True)
+
+    async def exercise() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url=oauth_config.resource.removesuffix("/mcp"),
+            ) as client,
+        ):
+
+            async def body(raw: str, verb: str, args: dict[str, str]) -> str:
+                reply = await _call(client, raw, None, 1, verb, args)
+                assert reply.status_code == 200, reply.text
+                assert "mcp-session-id" not in reply.headers
+                result = reply.json()["result"]
+                assert not result.get("isError"), result
+                return str(result["content"][0]["text"])
+
+            listing = {"kind": "memory", "id": "/recent"}
+            assert "\tword\t" in await body(first, "get", listing)
+            assert "word handles off for this connector credential." in await body(
+                first, "put", {"kind": "handle", "text": "off"}
+            )
+            assert "\tword\t" not in await body(first, "get", listing)
+            assert "\tword\t" in await body(other, "get", listing)
+            assert "word handles on for this connector credential." in await body(
+                first, "put", {"kind": "handle", "text": "on"}
+            )
+            assert "\tword\t" in await body(first, "get", listing)
+
+    word_handle_session._clear_for_tests()
+    try:
+        asyncio.run(exercise())
+    finally:
+        word_handle_session._clear_for_tests()
+
+
 def test_stateless_oauth_receipts_authenticate_each_request(
     store: Store,
     oauth_config: OAuthConfig,

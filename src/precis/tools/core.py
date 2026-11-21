@@ -329,8 +329,22 @@ def _build_runtime_locked() -> None:
 def _dispatch(
     verb: str, payload: dict[str, Any], ctx: Context | None = None
 ) -> _ToolReturn:
-    """Bind this request's personal identity, dispatch, then always reset it."""
-    with _ctx_user_scope(ctx):
+    """Bind this request's personal identity and connector metadata."""
+    scope = _asgi_scope(ctx)
+    connector: contextlib.AbstractContextManager[None] = contextlib.nullcontext()
+    if scope.get("type") == "http":
+        from starlette.datastructures import Headers
+
+        from precis.mcp_identity import SCOPE_OAUTH_IDENTITY
+        from precis.oauth.store import OAuthIdentity
+        from precis.word_handle_session import http_scope
+
+        oauth = scope.get(SCOPE_OAUTH_IDENTITY)
+        connector = http_scope(
+            oauth.client_id if isinstance(oauth, OAuthIdentity) else "",
+            Headers(scope=scope).get("user-agent", "")[:200],
+        )
+    with _ctx_user_scope(ctx), connector:
         return _dispatch_as_user(verb, payload, ctx)
 
 
