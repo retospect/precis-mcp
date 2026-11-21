@@ -435,6 +435,16 @@ def test_ascii_x_multiplier_does_not_fire_on_handle_range() -> None:
     assert "ascii-x-multiplier" not in codes, codes
 
 
+def test_ascii_x_multiplier_does_not_fire_on_standard_name() -> None:
+    # 'LPDDR5x' is a memory-standard name (gr695731): the digit follows a
+    # letter, so no word boundary sits before it.
+    sentence = "273 GB/s of local LPDDR5x"
+    assert not any("ascii-x-multiplier" in w for w in lint_notation(sentence))
+    out, codes = normalize_notation(sentence)
+    assert out.rstrip(".") == sentence, out
+    assert "ascii-x-multiplier" not in codes, codes
+
+
 def test_ascii_x_multiplier_exempts_slice_and_board_labels() -> None:
     # 'Slice 1x' / 'the 2x board' name a slice or board, not a multiplier;
     # following the audit would rename it.
@@ -872,6 +882,12 @@ _NOMENCLATURE_HYPHEN_SENTENCES: list[str] = [
     "E. coli K-12 was cultured overnight.",
     "The K-12 strain was cultured overnight.",
     "The cycle-00 label is preserved.",
+    # gr695731: an article directly before the token marks a name (an
+    # eval-set id, a ribbon label), not a unit written after a value.
+    "the km-8 taxonomy set, llm_eval compare harness",
+    "The ruling skips the km-8 quality gate.",
+    "Scored on a km-8 rerun.",
+    "An N-6-ZGNR edge binds the adatom.",
 ]
 
 
@@ -902,6 +918,8 @@ def test_real_unit_minus_exponents_still_fire_and_convert() -> None:
         ("Sheet resistance falls off as cm-2.", "cm⁻²"),
         ("Sensitivity is 2 K-1.", "K⁻¹"),
         ("The decay rate is 2 cycle-1.", "cycle⁻¹"),
+        # `A` is the ampere here, not the article (gr695731).
+        ("The cell ran at 2 A cm-2.", "A cm⁻²"),
     ]
     for sentence, expected_fragment in cases:
         warnings = lint_notation(sentence)
@@ -918,6 +936,15 @@ def test_explicit_kelvin_minus_exponent_is_not_a_strain_name() -> None:
     assert out == "The coefficient has units K⁻¹²."
     # Caret normalization runs before the bare-minus normalization.
     assert "caret-exponent" in codes
+
+
+def test_explicit_caret_exponent_after_an_article_still_fires() -> None:
+    # The article exemption covers the bare form only (gr695731): a caret
+    # asks for an exponent outright, as with `K^-12`.
+    sentence = "The response follows the V^-1 term."
+    assert any("ascii-minus-exponent" in w for w in lint_notation(sentence))
+    out, _codes = normalize_notation(sentence)
+    assert out == "The response follows the V⁻¹ term."
 
 
 def test_fully_canon_compliant_sentence_produces_no_warnings() -> None:

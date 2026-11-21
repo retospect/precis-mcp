@@ -428,8 +428,17 @@ _UNIT_TOKEN_ALT = "|".join(
 #: rewriting it would corrupt prose. Bare `K-12` is also ambiguous with
 #: the conventional E. coli strain designation, so preserve it; an
 #: explicit caret (`K^-12`) still unambiguously requests an exponent.
+#: An article directly before the bare form marks a name, not a unit
+#: (gr695731): `the km-8 taxonomy set` is an eval-set id, `an N-6-ZGNR
+#: edge` a ribbon label, and SI writes a unit symbol after a value or
+#: another unit, never after an article. A 2026-11-21 dry run over memory
+#: and finding bodies found only names behind an article and no real
+#: exponent. `a` is matched lowercase only, since `2 A cm-2` is amperes;
+#: the caret form (`the V^-1 term`) stays an exponent, as with `K^-12`.
+_NO_ARTICLE_LEFT = r"(?<!\b[Tt]he )(?<!\b[Aa]n )(?<!\ba )"
 _ASCII_MINUS_EXP_RE = re.compile(
-    rf"(?<![A-Za-zµμΩ])(?!K-12\b)(?P<unit>{_UNIT_TOKEN_ALT})"
+    rf"(?<![A-Za-zµμΩ])(?!K-12\b)(?:{_NO_ARTICLE_LEFT}|(?=[^\W\d]+\^))"
+    rf"(?P<unit>{_UNIT_TOKEN_ALT})"
     rf"\^?-(?!0+\b)(\d+)\b(?!\s?(?P=unit)\b)"
 )
 
