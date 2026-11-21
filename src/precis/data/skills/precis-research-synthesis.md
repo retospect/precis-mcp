@@ -78,6 +78,11 @@ each substantive conclusion, the added inference steps, counterevidence and
 remaining questions. Preserve access to the atomic claims from any summary.
 The summary provides organization; it need not repeat every claim body.
 
+A requested write-up — a summary, digest or report — is a precis draft,
+never a markdown file: persist it with `put(kind='draft', …)` bound to the
+project's todo and cite `[fi…]` hubs or `[pc…]` passages, not hand-typed
+DOIs ([[precis-draft-help]], [[precis-draft-cite-help]]).
+
 For requested graph changes, reuse existing claim identities and precise scope.
 [[precis-taproot-mint-help]] owns evidence attachment and claim refinement;
 [[precis-make-memory]] owns reconciliation of durable notes using

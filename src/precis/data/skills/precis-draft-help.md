@@ -17,6 +17,8 @@ kinds: [draft]
 A `draft` is a project's **editable, chunk-native write-up**. Postgres is
 canonical; export supports LaTeX/PDF/Word. Unlike frozen `paper`s, draft
 chunks can be reordered, reparented and rewritten. **One draft per project.**
+A write-up deliverable — a summary, digest or report — is a draft, never a
+markdown file.
 
 Five verbs, no new ones: `put` (create / add a chunk), `edit` (change text
 **or** structure), `get` (outline / verbatim), `delete` (soft-retire),
@@ -70,7 +72,7 @@ resolves the project todo and returns the bound draft's outline
 
 ```python
 get(kind="draft")  # list ALL drafts
-get(kind="draft", project="<project-todo-id>")  # → that project's draft outline
+get(kind="draft", project=745644)  # → that project's draft outline
 ```
 
 Unbind or rebind the owner with `link(kind='draft', id='<slug>',
@@ -86,7 +88,7 @@ the draft carries `path`/`format`.
 put(
     kind="draft",
     id="nanotrans",
-    project="<project-todo-id>",
+    project=745644,  # bare int todo id (or "todo:N"); a td-handle is refused
     title="Nanoscale Transistors",
     meta={"workspace": {"path": "projects/nanotrans", "format": "tex"}},
 )  # 1 — creates the draft + its title heading dc1
