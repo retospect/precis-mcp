@@ -14159,7 +14159,7 @@ def test_built_refusal_with_withdrawn_tag_files_ask(store: Store, hub: Any) -> N
 
 def test_built_refusal_without_evidence_files_ask(store: Store, hub: Any) -> None:
     source, mint = _todo_chain(store, hub)
-    _brief_session(store, mint, "refuse: built — it is already there")
+    _brief_session(store, mint, "refuse: built — the UI/API already does this")
     res = pd.run_pass(store)
     assert len(_asks_on(store, source)) == 1
     assert _status(store, source) == "open"

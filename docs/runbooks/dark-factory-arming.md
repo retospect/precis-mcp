@@ -752,9 +752,9 @@ Stop conditions:
   todo and remove the tag to undo one. Any other `built` refusal gets the
   ordinary ask.
 - **Split by hand.** A parent todo tagged `factory:split` is closed `done`
-  by the same sweep (`split_closed`) once it has a child todo and every
-  child todo is done; an ask among the children only has to be answered. A
-  `won't-do` or open child leaves it open.
+  by the same sweep (`split_closed`) once it has at least one non-ask child
+  todo, every live non-ask child is done and every live ask is resolved as
+  `done` or `won't-do`. An ask in `auto-timeout` leaves the parent open.
 - **Chain ended without a land** (dropped, or closed with no commit): the
   source loses `factory:build` with one comment; tag it again to offer it
   again. A brief session that ends as neither brief nor refusal is a

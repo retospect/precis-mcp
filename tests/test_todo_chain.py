@@ -1176,6 +1176,7 @@ def test_close_built_honours_the_holds(handler: TodoHandler, store: Store) -> No
         "see src/precis/x.py",
         "x.py::name has it",
         "(widget.py:12)",
+        "see docker/dev/Dockerfile",
     ],
 )
 def test_close_built_accepts_evidence_that_names_something(
@@ -1188,7 +1189,15 @@ def test_close_built_accepts_evidence_that_names_something(
 
 @pytest.mark.parametrize(
     "why",
-    ["it is already there", "e.g. it is done", "deadbeef", "abcdefg1 and td", "   "],
+    [
+        "it is already there",
+        "the UI/API already does this",
+        "see src/precis/",
+        "e.g. it is done",
+        "deadbeef",
+        "abcdefg1 and td",
+        "   ",
+    ],
 )
 def test_close_built_writes_nothing_for_evidence_that_names_nothing(
     handler: TodoHandler, store: Store, why: str
@@ -1265,13 +1274,15 @@ def test_sweep_splits_leaves_a_tagged_parent_without_children(
     assert _status(store, parent) == "open"
 
 
-def test_sweep_splits_leaves_a_tagged_parent_with_an_open_ask(
-    handler: TodoHandler, store: Store
+@pytest.mark.parametrize("status", ["open", "auto-timeout"])
+def test_sweep_splits_leaves_a_tagged_parent_with_an_unanswered_ask(
+    handler: TodoHandler, store: Store, status: str
 ) -> None:
     parent = _hand_split(handler)
     _add_child(store, parent, status="done")
-    ask = _add_child(store, parent, status="open", ask=True)
+    ask = _add_child(store, parent, status=status, ask=True)
     assert sweep_splits(store) == []
+    assert _status(store, parent) == "open"
     _set_status(store, ask, "done")
     assert sweep_splits(store) == [parent]
 
@@ -1327,13 +1338,18 @@ def test_sweep_splits_closes_a_recorded_split_that_is_also_tagged_once(
     assert len([c for c in _comments(store, source) if c.startswith("done:")]) == 1
 
 
+@pytest.mark.parametrize("hand_split", [False, True])
 def test_sweep_splits_reopened_source_does_not_fill_the_window(
-    handler: TodoHandler, store: Store
+    handler: TodoHandler, store: Store, hand_split: bool
 ) -> None:
     """A reopened split source already carries its close comment — the
     candidate pass drops it before the ``limit`` counts, so a later
     completed split is still reached."""
-    first, first_parts = _split_with_parts(handler, store, 2)
+    if hand_split:
+        first = _hand_split(handler)
+        first_parts = [_add_child(store, first, status="open")]
+    else:
+        first, first_parts = _split_with_parts(handler, store, 2)
     second, second_parts = _split_with_parts(handler, store, 2)
     for part in first_parts + second_parts:
         _set_status(store, part)

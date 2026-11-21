@@ -522,26 +522,26 @@ def close_built(
 
 _HANDLE_RE = re.compile(r"(?:td|gr)\d+", re.IGNORECASE)
 _SHA_RE = re.compile(r"[0-9a-f]{7,40}", re.IGNORECASE)
-_FILE_RE = re.compile(r"\S*\w\.[A-Za-z]{1,4}(?::\S*)?")
+_FILE_RE = re.compile(
+    r"/?(?:[\w.-]+/)*(?:[\w.-]*\w\.[A-Za-z][A-Za-z0-9]*|Makefile|Dockerfile)"
+    r"(?::\d+(?::\d+)?|::[\w.]+)?"
+)
 _INITIALS_RE = re.compile(r"(?:[A-Za-z]\.)*[A-Za-z]")
 _EDGE_PUNCT = "()[]{}<>,;:'\"`."
 
 
 def _names_evidence(text: str) -> bool:
     """Whether ``text`` names a handle (``td123``, ``gr123``), a commit sha
-    (a 7 to 40 hex token with a digit) or a file (a token with ``/`` or a
-    short extension, ``x.py::name`` too; ``e.g.`` is not one). A floor
-    against an empty claim, not a proof: it checks that something is named,
-    not that it is true."""
+    (a 7 to 40 hex token with a digit) or a file reference with a filename,
+    optionally followed by a line number or symbol. This checks the shape of
+    the reference; the brief session verifies the evidence itself."""
     for raw in text.split():
         token = raw.strip(_EDGE_PUNCT)
         if _HANDLE_RE.fullmatch(token):
             return True
         if _SHA_RE.fullmatch(token) and any(ch.isdigit() for ch in token):
             return True
-        if "/" in token or (
-            _FILE_RE.fullmatch(token) and not _INITIALS_RE.fullmatch(token)
-        ):
+        if _FILE_RE.fullmatch(token) and not _INITIALS_RE.fullmatch(token):
             return True
     return False
 
@@ -1135,12 +1135,12 @@ _CHILDREN_SQL = """
 def _done_children(conn: Connection, source_id: int) -> list[int]:
     """The done non-ask child todos of a ``factory:split`` parent when it may
     close, else ``[]``: at least one such child, every live non-ask child
-    ``STATUS:done`` and every live ask child terminal (answered). A
-    ``won't-do`` or open child leaves the parent alone."""
+    ``STATUS:done`` and every live ask child resolved as ``done`` or
+    ``won't-do``. A timed-out ask still leaves the parent open."""
     done: list[int] = []
     for child_id, is_ask, status in conn.execute(_CHILDREN_SQL, (source_id,)):
         if is_ask:
-            if status not in TERMINAL_TODO_STATUSES:
+            if status not in ("done", "won't-do"):
                 return []
         elif status == "done":
             done.append(int(child_id))
@@ -1226,9 +1226,9 @@ def sweep_splits(store: Store, *, limit: int = SWEEP_LIMIT) -> list[int]:
     starves a later completed split. A part that is ``won't-do``, retired
     or still open leaves the source alone. So does a live, non-terminal
     parent carrying :data:`SPLIT_PARENT_TAG` (a split by hand) with at
-    least one child todo and every live child todo done; an ask among the
-    children only has to be terminal, a ``won't-do`` or open child leaves
-    the parent alone. A source with both is judged by its recorded parts.
+    least one non-ask child todo, every live non-ask child done, and
+    every live ask resolved as ``done`` or ``won't-do``. A source with
+    both is judged by its recorded parts.
     At most ``limit`` sources per call, lowest id first; a close that
     fails is logged and the sweep goes on."""
     with store.pool.connection() as conn:
