@@ -17,6 +17,8 @@ Paper tag batches commit edits with audit events.
 Abstract checks never queue paper ingest.
 An unheld DOI lookup can queue ingest. Explicit retries bypass the daily
 cap, while batch passage searches keep their per-call mint limit.
+arXiv DataCite DOIs can use stored arXiv aliases. On an alias miss,
+paper reads check the DOI itself before considering acquisition.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root
 views; Git observations do not attest indexed bytes. Entry metadata and runtrace

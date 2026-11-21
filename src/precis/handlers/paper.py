@@ -12866,6 +12866,13 @@ def _maybe_resolve_doi(store: Store, raw: str, *, will_queue: bool = True) -> st
     if scheme is None:
         return raw
     slug = store.find_paper_slug_by_identifier(base)
+    if slug is None and scheme == "arxiv":
+        # A DataCite DOI can resolve through an arXiv alias, but DOI
+        # ingest also creates stubs that carry only the DOI.
+        doi = _queueable_doi(base)
+        if doi is not None:
+            slug = store.find_paper_slug_by_identifier(f"doi:{doi}")
+            scheme = "doi"
     if slug is None and base.isdigit():
         # Pure digits are also the digits→ref_id fallback the slug
         # resolver admonishes (resolve_live_slug_ref's A1 branch) —
@@ -12897,8 +12904,9 @@ def _maybe_resolve_doi(store: Store, raw: str, *, will_queue: bool = True) -> st
         # _BATCH_DOI_QUEUE_CAP per batch — and lands here when a cap is
         # spent, the scope is read-only, the DOI is malformed, or the
         # get named a view (gr715493: a view get is a read of stored
-        # data and never mints). The non-DOI schemes never queue: the
-        # hint text keeps that split honest. Kept short: the MCP client
+        # data and never mints). arXiv DataCite DOIs enter the DOI
+        # path above. Other arXiv identifiers get only the acquire hint.
+        # Kept short: the MCP client
         # already appends the tool schema on isError, so a long hint
         # lands twice (gr516710).
         from precis.runtime.scope import current_scope
@@ -12932,12 +12940,11 @@ def _maybe_resolve_doi(store: Store, raw: str, *, will_queue: bool = True) -> st
 
 
 def _queueable_doi(raw: str) -> str | None:
-    """The canonical DOI a get id asks about, else ``None`` — every
-    non-DOI shape (non-DOI scheme, malformed DOI-looking id, a bare
-    slug, a chunk selector's empty base) keeps the caller's
-    NotFound/BadInput path untouched."""
+    """Return the canonical DOI from a get id, including an arXiv
+    DataCite DOI detected as arXiv. Return ``None`` for other identifier
+    shapes so the caller retains its normal NotFound/BadInput path."""
     base, _, _sel = raw.partition("~")
-    if not base or detect_identifier_scheme(base) != "doi":
+    if detect_identifier_scheme(base) not in ("doi", "arxiv"):
         return None
     from precis.identity import normalize_doi
 
@@ -13000,10 +13007,9 @@ def _queue_doi_ingest(
     showed one probing client re-asking the same DOI 30× in a day and
     getting an error every time.
 
-    Returns the ack for a queueable DOI id; ``None`` for every other
-    shape so the caller's NotFound/BadInput path stays untouched — a
-    malformed DOI-looking id and a non-DOI scheme keep the acquire-hint
-    error :func:`_maybe_resolve_doi` raises. No network, no fetch, no
+    Returns the ack for a queueable DOI id, including an arXiv
+    DataCite DOI. Other identifier shapes return ``None`` and follow
+    the caller's normal NotFound/BadInput path. No network, no fetch, no
     resolver call here: minting the ``paper_ingest`` row is the whole
     call — the worker's dispatch verifies the DOI and the ``fetch_oa``
     pass pulls the paper. The job's ``paper_ingest:<canonical doi>``

@@ -36,6 +36,7 @@ from precis.workers.job_types import get_job_type, paper_ingest
 from tests.extract_helpers import fake_ctx
 
 DOI = "10.1021/ja01019a011"
+ARXIV_DOI = "10.48550/arXiv.1703.00593"
 
 
 def _seed_paper(
@@ -155,6 +156,27 @@ def test_doi_status_reports_availability_without_queuing(
 
 
 class TestUnheldDoiGetQueues:
+    @pytest.mark.parametrize("batch", [False, True])
+    def test_arxiv_doi_queues_and_reuses_job(
+        self, store: Store, handler: PaperHandler, batch: bool
+    ) -> None:
+        paper_id: str | list[str | int] = [DOI, ARXIV_DOI] if batch else ARXIV_DOI
+        resp = handler.get(id=paper_id)
+        doi = ARXIV_DOI.lower()
+        assert "queued ingest job" in resp.body
+        assert f"for {doi}" in resp.body
+        retry = handler.get(id=f"doi:{doi}")
+        jobs = [job for job in _jobs(store) if job["meta"]["params"] == {"doi": doi}]
+        assert len(jobs) == 1
+        assert f"jo{jobs[0]['id']}" in retry.body
+
+    def test_arxiv_doi_reads_paper_with_only_doi_alias(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        _seed_paper(store, doi=ARXIV_DOI)
+        assert "A held paper" in handler.get(id=ARXIV_DOI).body
+        assert _jobs(store) == []
+
     def test_held_abstract_still_reads(
         self, store: Store, handler: PaperHandler
     ) -> None:
