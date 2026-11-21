@@ -751,8 +751,10 @@ def finalize(
     ``FAILED`` and the folder stays.
 
     The attempt's *line* is the local branch ``branch`` (the one the clone
-    was cut on; ``None``: the branch ``HEAD`` is on, else ``HEAD``). In
-    order:
+    was cut on; ``None``: the branch ``HEAD`` is on, else ``HEAD``). A
+    named branch the session moved off and deleted is read as ``None`` when
+    no commit is named by a reflog alone; any other missing branch is
+    ``FAILED``. In order:
 
     1. Remove stale locks (the folder has one owner and it is dead). When
        a rebase, merge, cherry-pick, revert, am or bisect is in progress,
@@ -1547,6 +1549,24 @@ def _local_tips(
     return tips
 
 
+def _left_branch(tree: Path, branch: str) -> bool:
+    """Whether ``HEAD``'s reflog shows a checkout away from ``branch``: the
+    branch was this folder's and the session moved off it before it went."""
+    proc = _git(["reflog", "show", "--format=%gs", "HEAD"], tree)
+    if proc.returncode != 0:
+        return False
+    left = f"checkout: moving from {branch} to "
+    return any(line.startswith(left) for line in proc.stdout.splitlines())
+
+
+def _reflog_only(tree: Path) -> bool:
+    """Whether the folder holds a commit that no ref and not ``HEAD`` reaches,
+    only a reflog entry (a commit left behind by a deleted branch, an amend
+    or a dropped stash). ``True`` too when git could not tell."""
+    proc = _git(["rev-list", "-n", "1", "--reflog", "--not", "--all"], tree)
+    return proc.returncode != 0 or bool(proc.stdout.strip())
+
+
 def _only_in_folder(
     tree: Path, tips: Sequence[_Tip], top: str, remotes: Sequence[str]
 ) -> list[_Tip]:
@@ -1661,12 +1681,29 @@ def _finalize(
             _git(["rev-parse", "--verify", "--quiet", f"{line_ref}^{{commit}}"], tree)
         )
         if not _SHA.fullmatch(line):
-            return Pushed(
-                FAILED,
-                ref,
-                note=f"the folder has no local branch {branch}; next: look at "
-                "the folder by hand",
-            )
+            # The session removed the branch it was cut on (a validate
+            # session with nothing to commit that tidied up after itself).
+            # When ``HEAD`` is known to have left that branch and no commit
+            # is named by a reflog alone, nothing went with the branch, and
+            # the line is what ``HEAD`` is on, as for ``branch=None``.
+            # Otherwise the folder stays for a human.
+            if not _left_branch(tree, branch):
+                return Pushed(
+                    FAILED,
+                    ref,
+                    note=f"the folder has no local branch {branch}; next: look "
+                    "at the folder by hand",
+                )
+            if _reflog_only(tree):
+                return Pushed(
+                    FAILED,
+                    ref,
+                    note=f"the folder has no local branch {branch} and holds "
+                    "commits that only a reflog names; next: look at the "
+                    "folder by hand",
+                )
+            line_ref = symbolic if on_branch else None
+            line = head_commit
     else:
         line_ref = symbolic if on_branch else None
         line = head_commit

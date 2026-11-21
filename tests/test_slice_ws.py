@@ -1104,6 +1104,58 @@ def test_finalize_of_a_clone_reset_to_the_base_is_empty(rig: _Rig) -> None:
     assert again is not None and again.sha == work
 
 
+def test_finalize_of_a_folder_whose_session_deleted_its_branch(rig: _Rig) -> None:
+    """A validate session with nothing to commit switched to main and deleted
+    the branch it was cut on (td741766, the first job on the new engine):
+    the folder holds nothing, so it is EMPTY, not a folder kept for a human.
+    Work it left on another line is still pushed, and a commit that went
+    with the branch keeps the folder."""
+    branch = f"slice/{TD}"
+
+    def gone(job: int) -> Path:
+        tree = rig.cut(job=job)
+        assert _g(tree, "symbolic-ref", "HEAD") == f"refs/heads/{branch}"
+        return tree
+
+    def final(tree: Path, job: int) -> ws.Pushed:
+        return ws.finalize(
+            tree,
+            TD,
+            job,
+            hub=rig.hub,
+            base="main",
+            start_sha=None,
+            reason="x",
+            branch=branch,
+        )
+
+    tree = gone(1)
+    _git(tree, "checkout", "-q", "main")
+    _git(tree, "branch", "-q", "-D", branch)
+    got = final(tree, 1)
+    assert got.state == ws.EMPTY and got.safe and got.sha is None
+    assert rig.hub_ref(ws.build_ref(TD, 1)) is None
+
+    # Uncommitted and committed work on the line HEAD moved to is saved.
+    tree = gone(2)
+    _git(tree, "checkout", "-q", "main")
+    _git(tree, "branch", "-q", "-D", branch)
+    head = _commit(tree, "on-main.txt")
+    got = final(tree, 2)
+    assert (got.state, got.sha) == (ws.PUSHED, head)
+    assert rig.hub_ref(ws.build_ref(TD, 2)) == head
+
+    # A commit that only the reflog names after the delete: nothing is guessed.
+    tree = gone(3)
+    _commit(tree, "lost.txt")
+    _git(tree, "checkout", "-q", "main")
+    _git(tree, "branch", "-q", "-D", branch)
+    got = final(tree, 3)
+    assert got.state == ws.FAILED and not got.safe
+    assert "only a reflog names" in got.note
+    assert rig.hub_ref(ws.build_ref(TD, 3)) is None
+
+
 def test_resolve_start_reads_a_builders_own_snapshot_as_unfinished(rig: _Rig) -> None:
     """A builder that could not finish pushes its own ``wip: snapshot``
     commit; the worker records it with wip false (it made no snapshot). The

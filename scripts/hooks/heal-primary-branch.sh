@@ -36,6 +36,18 @@ git show-ref --verify --quiet refs/heads/main || BASE=master
 PRIMARY=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
 [ -z "$PRIMARY" ] && exit 0
 
+# A factory attempt folder is a clone of its own (run_slice cuts one per job
+# as slice-td<todo>-j<job>, on branch slice/<todo>, and sets PRECIS_SLICE_ID
+# for the session): it is its own primary checkout, and freshly cut it is
+# "merged and clean" by construction. Healing it deleted the branch under
+# every build session (the first four jobs on the disposable-workspace
+# engine ended "the folder has no local branch"). It is never a drifted
+# primary: leave it alone.
+[ -n "${PRECIS_SLICE_ID:-}" ] && exit 0
+case "$(basename "$PRIMARY")" in
+    slice-td[0-9]*-j[0-9]*) exit 0 ;;
+esac
+
 BRANCH=$(git -C "$PRIMARY" symbolic-ref --quiet --short HEAD 2>/dev/null)
 [ -z "$BRANCH" ] && exit 0          # detached HEAD — leave it alone
 [ "$BRANCH" = "$BASE" ] && exit 0   # already healthy, nothing to do
