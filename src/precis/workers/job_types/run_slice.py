@@ -59,7 +59,12 @@ that holds the lane's credentials with ``params.target_node``):
   started from as ``meta.start`` (``{sha, ref, wip}``, absent at the base
   tip) and ``meta.base``, the poll arm's evidence for the same ruling;
   the brief of an attempt that continues says so, and how to keep or
-  drop a ``wip:`` snapshot's edits. The brief ends in the builder's
+  drop a ``wip:`` snapshot's edits. Before a session runs on that work
+  the submit rebases the clone's branch onto the current ``origin/<base>``
+  (:func:`_slice_ws.rebase_start`; ``meta.start`` gains ``onto``,
+  ``rebased``, ``conflicts``); on a conflict the rebase is aborted, the
+  clone stays at the pushed commit and the brief names the paths (a lane
+  that pushes is told to do that rebase first). The brief ends in the builder's
   finish steps — commit, rebase onto ``origin/<base>``, the checks again,
   push to its own ref ``refs/factory/build/<todo>/<job>``, read it back —
   for a lane that pushes (:attr:`Adapter.pushes`: claude, devin, kimi);
@@ -3310,26 +3315,79 @@ def _push_steps(
     ]
 
 
-def _continuing_lines(base: str, start: Mapping[str, Any] | None) -> list[str]:
+def _continuing_lines(
+    base: str, start: Mapping[str, Any] | None, *, pushes: bool = False
+) -> list[str]:
     """The brief paragraph of an attempt that starts from pushed work, not
     from ``origin/<base>`` (job meta ``start``: ``{sha, ref, wip}``, gr741695):
     which commit it starts from and, when the top commit is a worker's
     ``wip:`` snapshot, how to keep or drop the edits it holds. Empty for an
-    attempt that starts at the base."""
+    attempt that starts at the base.
+
+    The submit rebases that work onto the base before the session
+    (:func:`_slice_ws.rebase_start`; meta ``rebased``, ``conflicts``): the
+    paragraph then says the clone is on the current base, or names the
+    paths the rebase stopped on — and a lane that rebases in its finish
+    steps (``pushes``) is told to do that rebase first."""
     sha = str((start or {}).get("sha") or "")
     if not sha:
         return []
     ref = str((start or {}).get("ref") or "")
-    lines = [
-        "",
-        "This attempt continues earlier work: this clone starts at "
-        f"`{sha[:12]}`"
-        + (f" (the tip of `{ref}` in the hub)" if ref else "")
-        + f", not at `origin/{base}`. Read `git log origin/{base}..HEAD` and "
-        f"`git diff origin/{base}...HEAD` first, then build on that work "
-        "instead of redoing it.",
-    ]
-    if (start or {}).get("wip"):
+    rebased = str((start or {}).get("rebased") or "")
+    conflicts = [str(p) for p in ((start or {}).get("conflicts") or []) if p]
+    read = (
+        f"Read `git log origin/{base}..HEAD` and `git diff origin/{base}...HEAD` "
+        "first, then build on that work instead of redoing it."
+    )
+    held = f"`{sha[:12]}`" + (f" (the tip of `{ref}` in the hub)" if ref else "")
+    onto = str((start or {}).get("onto") or "")
+    all_on_base = bool(rebased) and rebased == onto
+    if all_on_base:
+        lines = [
+            "",
+            f"This attempt continues earlier work: {held}. The worker rebased "
+            f"it onto the current `origin/{base}` when it cut this clone and "
+            f"every commit of it is already on `origin/{base}`, so `HEAD` is "
+            f"the base tip (`{rebased[:12]}`) and "
+            f"`git log origin/{base}..HEAD` is empty.",
+        ]
+    elif rebased:
+        lines = [
+            "",
+            f"This attempt continues earlier work: {held}. The worker rebased "
+            f"it onto the current `origin/{base}` when it cut this clone, so "
+            f"`HEAD` is `{rebased[:12]}`: its changes replayed on the current "
+            "base (a commit already on the base is dropped). " + read,
+        ]
+    else:
+        lines = [
+            "",
+            f"This attempt continues earlier work: this clone starts at {held}, "
+            f"not at `origin/{base}`. " + read,
+        ]
+        if (start or {}).get("onto"):
+            where = (
+                "on conflicts in " + ", ".join(f"`{p}`" for p in conflicts[:12])
+                if conflicts
+                else "before it finished"
+            )
+            lines += [
+                "",
+                f"The worker tried to rebase that work onto the current "
+                f"`origin/{base}` when it cut this clone and git stopped "
+                f"{where}. The rebase was aborted; the clone is unchanged."
+                + (
+                    f" Do that rebase first, before any other change: `git "
+                    f"rebase origin/{base}`, resolve every conflict keeping "
+                    "the base's side for changes that are not yours, then go "
+                    "on with the task on the rebased branch."
+                    if pushes
+                    else " Keep your changes clear of those lines where the "
+                    "task allows it, and do not rebase unless another section "
+                    "of this brief tells you to."
+                ),
+            ]
+    if (start or {}).get("wip") and not all_on_base:
         lines += [
             "",
             "The top commit is a `wip:` snapshot the worker saved from an "
@@ -3477,7 +3535,7 @@ def render_brief(
     if not mcp:
         lines += _no_mcp_lines(read_mcp)
     if not generator:
-        lines += _continuing_lines(base, start)
+        lines += _continuing_lines(base, start, pushes=pushes)
     if deny_paths is None:
         deny_paths = _lanes.deny_paths_for(None)
     lines += _deny_lines(deny_paths)
@@ -3805,7 +3863,7 @@ def _render_repo_brief(
         )
     if profile.mcp and not mcp:
         lines += _no_mcp_lines(read_mcp)
-    lines += _continuing_lines(base, start)
+    lines += _continuing_lines(base, start, pushes=pushes)
     lines += _repo_rules_lines(profile, todo_id, pushes, latest)
     lines += _repo_check_lines(profile)
     deny = profile.deny_paths
@@ -3913,6 +3971,7 @@ def _render_conflict_brief(
     except (TypeError, ValueError):
         n = 1
     head = str(conflict.get("head") or (start or {}).get("sha") or "")
+    rebased = str((start or {}).get("rebased") or "")
     files = [str(f) for f in (conflict.get("files") or ()) if f][:40]
     pushes = _adapter_pushes(adapter)
     lines = _brief_intro(
@@ -3947,7 +4006,7 @@ def _render_conflict_brief(
             if deny_paths is not None
             else _lanes.deny_paths_for(None)
         )
-    lines += _continuing_lines(base, start)
+    lines += _continuing_lines(base, start, pushes=pushes)
     if profile is not None:
         lines += _repo_check_lines(profile)
     lines += _deny_lines(deny)
@@ -3959,10 +4018,20 @@ def _render_conflict_brief(
         "",
         f"The work on `{slice_branch(todo_id)}` was built and reviewed, and "
         f"it failed to land because `origin/{base}` moved: it conflicts with "
-        "it. This clone starts at the branch's tip"
-        + (f" (`{head[:12]}`)" if head else "")
-        + ". That work is done. Your one job is to rebase it onto "
-        f"`origin/{base}` and resolve the conflicts.",
+        "it. "
+        + (
+            "The worker already rebased the branch's tip"
+            + (f" (`{head[:12]}`)" if head else "")
+            + f" onto the current `origin/{base}` when it cut this clone and "
+            f"the rebase went through: `HEAD` is `{rebased[:12]}`, so the "
+            f"`git rebase origin/{base}` below is a no-op and you go straight "
+            "to the checks and the push. That work is done."
+            if rebased
+            else "This clone starts at the branch's tip"
+            + (f" (`{head[:12]}`)" if head else "")
+            + ". That work is done. Your one job is to rebase it onto "
+            f"`origin/{base}` and resolve the conflicts."
+        ),
     ]
     if files:
         lines += [
@@ -4631,7 +4700,9 @@ def _prepare_repo_tip(
 
 def _start_meta(start: _slice_ws.Start | None) -> dict[str, Any] | None:
     """Job meta ``start``: ``{sha, ref, wip}`` the attempt started from, or
-    ``None`` for the base tip."""
+    ``None`` for the base tip. The submit adds ``{onto, rebased, conflicts}``
+    when it tried to rebase that work onto the base before the session
+    (:func:`_slice_ws.rebase_start`): ``sha`` stays the commit the hub held."""
     if start is None:
         return None
     return {"sha": start.sha, "ref": start.ref, "wip": start.wip}
@@ -4841,7 +4912,12 @@ def _land_source(
     this run's own push (``pushed``: the attempt ref and the builder's last
     real commit — a ``wip:`` snapshot above it never lands), or, when the
     run added nothing (``empty``), the complete pushed attempt it
-    continued. ``(None, None)`` when the hub holds nothing to land."""
+    continued. A continuing clone is rebased onto the base at the cut
+    (:func:`_slice_ws.rebase_start`), so ``empty`` then means the clone
+    stayed at ``start.sha`` (the base had not moved, the work holds a merge
+    commit, or the rebase conflicted) or holds nothing beyond the base; a
+    rebase that went through makes the rebased commits this run's own
+    ``pushed`` work. ``(None, None)`` when the hub holds nothing to land."""
     state = str((push or {}).get("state") or "")
     if state == _slice_ws.PUSHED and push is not None:
         ref, head = push.get("ref"), push.get("head")
@@ -7314,6 +7390,24 @@ def submit(ctx: Any, spec: Any) -> Any:
             ):
                 _drop_unlaunched(tree)
                 return None
+            if opened.start is not None:
+                # A session will run on pushed work: put that work on the
+                # current base first, so it builds and is checked against
+                # what the land will meet, and a conflict is the first
+                # thing the session reads instead of the lander's red.
+                rebase_notes: list[str] = []
+                rebased = _slice_ws.rebase_start(tree, base=base, notes=rebase_notes)
+                for line in rebase_notes:
+                    ctx.append_chunk("job_event", f"run_slice: td{todo_id} {line}")
+                if rebased is not None:
+                    started = {
+                        **(_start_meta(opened.start) or {}),
+                        "onto": rebased.onto,
+                        "rebased": rebased.sha,
+                        "conflicts": list(rebased.conflicts),
+                    }
+                    brief_kwargs["start"] = started
+                    ctx.set_meta(start=started)
         governed: tuple[str, ...] | None = ()
         if profile is None:
             # gr657066: governs:factory skills join the lane's deny set —

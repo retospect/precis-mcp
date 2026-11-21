@@ -690,6 +690,111 @@ def test_cut_refuses_a_ref_that_holds_another_commit(rig: _Rig) -> None:
     assert not tree.exists() and not list(tree.parent.glob("*.cut-*"))
 
 
+def _continued(rig: _Rig, name: str, text: str) -> tuple[Path, str]:
+    """A clone of job 3 that continues the commit job 2 pushed (``name`` with
+    ``text``), cut after GitHub's main moved on by one commit to ``first.txt``."""
+    first = rig.cut(job=2)
+    done = _commit(first, name, text)
+    assert _session_push(first, "HEAD:" + ws.build_ref(TD, 2), job=2).returncode == 0
+    rig.advance_github("first.txt", "first\nand a second line from main\n")
+    assert ws.sync_hub(rig.root, url=str(rig.github), base="main")
+    tree = rig.tree(job=3)
+    ws.cut(
+        rig.hub,
+        tree,
+        base="main",
+        branch="slice/5",
+        start=ws.resolve_start(rig.hub, TD),
+    )
+    return tree, done
+
+
+def test_rebase_start_puts_continued_work_on_the_current_base(rig: _Rig) -> None:
+    """Continued work sits on the base it was made on. Left there, the session
+    builds and tests against an old main and the conflict shows only at the
+    land; rebased at the cut, the work is on today's base and is pushed like
+    any commit of the attempt."""
+    tree, done = _continued(rig, "work.txt", "work\n")
+    notes: list[str] = []
+    got = ws.rebase_start(tree, base="main", notes=notes)
+    base_tip = _g(tree, "rev-parse", "origin/main")
+    assert got is not None and got.conflicts == () and got.onto == base_tip
+    assert got.sha == _g(tree, "rev-parse", "HEAD") != done
+    assert _g(tree, "rev-parse", "HEAD~1") == base_tip
+    assert _g(tree, "rev-parse", "--abbrev-ref", "HEAD") == "slice/5"
+    assert (tree / "work.txt").read_text(encoding="utf-8") == "work\n"
+    assert "second line from main" in (tree / "first.txt").read_text(encoding="utf-8")
+    assert any("rebased the earlier work" in n for n in notes)
+    pushed = ws.finalize(
+        tree, TD, 3, hub=rig.hub, base="main", start_sha=done, reason="session exited"
+    )
+    assert (pushed.state, pushed.sha) == (ws.PUSHED, got.sha)
+
+
+def test_rebase_start_aborts_on_a_conflict_and_names_the_paths(rig: _Rig) -> None:
+    """A rebase that stops must leave the clone exactly at its start commit:
+    the session gets the conflict as its first job, not a half-applied tree."""
+    tree, done = _continued(rig, "first.txt", "first\nand a line from the task\n")
+    notes: list[str] = []
+    got = ws.rebase_start(tree, base="main", notes=notes)
+    assert got is not None and got.sha is None and got.conflicts == ("first.txt",)
+    assert _g(tree, "rev-parse", "HEAD") == done
+    assert _g(tree, "rev-parse", "--abbrev-ref", "HEAD") == "slice/5"
+    assert _g(tree, "status", "--porcelain") == ""
+    assert not (tree / ".git" / "rebase-merge").exists()
+    assert any("does not rebase" in n and "first.txt" in n for n in notes)
+
+
+def test_rebase_start_leaves_work_with_a_merge_commit_alone(rig: _Rig) -> None:
+    """A snapshot that kept other tips has extra parents: a plain rebase would
+    replay the commits only those parents reach into the branch, so such work
+    is left at its start commit."""
+    first = rig.cut(job=2)
+    _git(first, "checkout", "-q", "-b", "side")
+    _commit(first, "side.txt", "side\n")
+    _git(first, "checkout", "-q", "slice/5")
+    _commit(first, "work.txt", "work\n")
+    _git(first, "merge", "-q", "--no-ff", "-m", "merge side", "side")
+    done = _g(first, "rev-parse", "HEAD")
+    assert _g(first, "rev-list", "--count", "--merges", "origin/main..HEAD") == "1"
+    pushed = _session_push(first, "HEAD:" + ws.build_ref(TD, 2), job=2)
+    assert pushed.returncode == 0, pushed.stderr
+    rig.advance_github("first.txt", "first\nand a second line from main\n")
+    assert ws.sync_hub(rig.root, url=str(rig.github), base="main")
+    tree = rig.tree(job=3)
+    ws.cut(
+        rig.hub,
+        tree,
+        base="main",
+        branch="slice/5",
+        start=ws.resolve_start(rig.hub, TD),
+    )
+    notes: list[str] = []
+    assert ws.rebase_start(tree, base="main", notes=notes) is None
+    assert _g(tree, "rev-parse", "HEAD") == done
+    assert _g(tree, "rev-parse", "--abbrev-ref", "HEAD") == "slice/5"
+    assert _g(tree, "status", "--porcelain") == ""
+    assert any("holds a merge commit" in n for n in notes)
+
+
+def test_rebase_start_leaves_work_that_is_on_the_base_tip_alone(rig: _Rig) -> None:
+    """When the base did not move the head must not change, so the plan tick's
+    unchanged-head stop on a review loop still works."""
+    first = rig.cut(job=2)
+    done = _commit(first, "work.txt", "work\n")
+    assert _session_push(first, "HEAD:" + ws.build_ref(TD, 2), job=2).returncode == 0
+    tree = rig.tree(job=3)
+    ws.cut(
+        rig.hub,
+        tree,
+        base="main",
+        branch="slice/5",
+        start=ws.resolve_start(rig.hub, TD),
+    )
+    assert ws.rebase_start(tree, base="main") is None
+    assert _g(tree, "rev-parse", "HEAD") == done
+
+
 def test_cut_seeds_the_environment_from_the_named_checkout(
     rig: _Rig, tmp_path: Path
 ) -> None:

@@ -3474,7 +3474,9 @@ def _preland_round(
     Jaccard >= :data:`PRELAND_SAME_FINDING_JACCARD`; a shared anchor
     alone is a new finding at the same function, gr702711),
     the reviewed head is unchanged
-    since the previous send-back (the builder is not acting), the head
+    since the previous send-back (the builder is not acting; a continuing
+    attempt is rebased onto the base at the cut, so this stop needs the
+    base not to have moved between the pushes), the head
     the verdict JUDGED is not the pushed tip (the reviewer is reading a
     stale branch — read only on a single-target review, whose verdict
     can name just the one tip), or the count reaches

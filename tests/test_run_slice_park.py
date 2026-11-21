@@ -926,6 +926,27 @@ def test_the_conflict_brief_is_the_rebase_brief_not_the_build_brief() -> None:
     assert "Do not push" not in brief
 
 
+def test_the_conflict_brief_after_a_rebase_that_went_through_names_the_head() -> None:
+    """The worker's rebase moved HEAD off the branch tip; a brief that still
+    says the clone starts at the tip sends the session to redo a done rebase."""
+    start = {
+        "sha": "a" * 40,
+        "ref": PUSHED_REF,
+        "wip": False,
+        "onto": "b" * 40,
+        "rebased": "c" * 40,
+        "conflicts": [],
+    }
+    brief = _conflict_brief(start=start)
+    assert f"`HEAD` is `{'c' * 12}`" in brief
+    assert "is a no-op and you go straight to the checks and the push" in brief
+    assert "This clone starts at the branch's tip" not in brief
+    # without a rebase the text is the old one
+    plain = _conflict_brief()
+    assert "This clone starts at the branch's tip (`aaaaaaaaaaaa`)" in plain
+    assert "no-op" not in plain
+
+
 @pytest.mark.parametrize(
     ("n", "phrase"),
     [

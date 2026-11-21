@@ -1840,6 +1840,92 @@ def test_continuing_attempt_says_where_it_starts() -> None:
     )
 
 
+def test_continuing_attempt_that_was_rebased_says_so() -> None:
+    """A session told its clone is on today's base reads the diff against it
+    and does not redo a rebase the worker already did."""
+    start = {
+        "sha": "a" * 40,
+        "ref": "refs/factory/build/42/70",
+        "wip": False,
+        "onto": "c" * 40,
+        "rebased": "d" * 40,
+        "conflicts": [],
+    }
+    brief = _builder_brief(start=start)
+    assert "The worker rebased it onto the current `origin/main`" in brief
+    assert f"`{'a' * 12}`" in brief and f"`{'d' * 12}`" in brief
+    assert "tried to rebase" not in brief
+
+
+def test_continuing_attempt_whose_commits_are_all_on_the_base_says_so() -> None:
+    """When every commit is already on the base HEAD is the base tip; telling
+    the session to build on that work would send it looking for a diff."""
+    start = {
+        "sha": "a" * 40,
+        "ref": "refs/factory/build/42/70",
+        "wip": True,
+        "onto": "c" * 40,
+        "rebased": "c" * 40,
+        "conflicts": [],
+    }
+    brief = _builder_brief(start=start)
+    assert "every commit of it is already on `origin/main`" in brief
+    assert "`git log origin/main..HEAD` is empty" in brief
+    assert f"`{'c' * 12}`" in brief
+    assert "build on that work" not in brief
+    assert "`wip:` snapshot" not in brief
+
+
+def test_continuing_attempt_rebased_with_commits_left_does_not_overclaim() -> None:
+    """A rebase drops commits already on the base; 'the same changes' would
+    then be false and the session would hunt for a dropped change."""
+    start = {
+        "sha": "a" * 40,
+        "ref": "refs/factory/build/42/70",
+        "wip": False,
+        "onto": "c" * 40,
+        "rebased": "d" * 40,
+        "conflicts": [],
+    }
+    brief = _builder_brief(start=start)
+    assert "a commit already on the base is dropped" in brief
+    assert "the same changes" not in brief
+    assert "build on that work" in brief
+
+
+def test_rebase_conflict_on_a_pushing_lane_says_rebase_first() -> None:
+    """A lane that rebases in its finish steps meets the conflict at the push
+    anyway; told first, it resolves before piling more work on it."""
+    start = {
+        "sha": "a" * 40,
+        "ref": "refs/factory/build/42/70",
+        "wip": False,
+        "onto": "c" * 40,
+        "rebased": None,
+        "conflicts": ["a.py"],
+    }
+    brief = _builder_brief(start=start)
+    assert "git stopped on conflicts in `a.py`" in brief
+    assert "Do that rebase first, before any other change" in brief
+
+
+def test_rebase_conflict_on_a_lane_that_cannot_push_is_not_told_to_rebase() -> None:
+    """A lane that does not push must not be told to rebase: the conflict is
+    named so it keeps clear of those lines, and the clone stays as it is."""
+    start = {
+        "sha": "a" * 40,
+        "ref": "refs/factory/build/42/70",
+        "wip": False,
+        "onto": "c" * 40,
+        "rebased": None,
+        "conflicts": ["a.py"],
+    }
+    brief = _builder_brief(start=start, adapter="codex_exec", mcp=False)
+    assert "`a.py`" in brief
+    assert "Do that rebase first" not in brief
+    assert "do not rebase unless another section" in brief
+
+
 def test_continuing_attempt_from_a_snapshot_names_both_resets() -> None:
     start = {"sha": "b" * 40, "ref": "refs/factory/build/42/70", "wip": True}
     for brief in (

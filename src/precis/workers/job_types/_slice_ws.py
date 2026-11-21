@@ -38,7 +38,10 @@ holds for ``run_slice`` and ``land_slice``:
 * **The next attempt continues from the hub.** :func:`resolve_start`
   names the commit a new attempt starts from: the task's newest pushed
   attempt, else the base tip. The folder of the earlier attempt is never
-  consulted.
+  consulted. When a session will run on that work, :func:`rebase_start`
+  first rebases the clone's branch onto the current base; a conflict
+  aborts the rebase, leaves the clone at the start commit and names the
+  paths, so the brief can tell the session before it builds on the work.
 * **No lock.** Nothing here takes one. A folder has one writer at a
   time because every save and every delete of one runs in the executor's
   watch pass, one after another (``run_slice.tidy``). The hub is shared
@@ -652,6 +655,102 @@ def cut(
     return sha
 
 
+@dataclass(frozen=True)
+class Rebase:
+    """What :func:`rebase_start` did to a clone that continues pushed work."""
+
+    #: The tip of ``origin/<base>`` the rebase aimed at.
+    onto: str
+    #: The clone's ``HEAD`` after a rebase that went through, else ``None``.
+    sha: str | None = None
+    #: The paths a rebase stopped on. It was aborted: the clone is back at
+    #: its start commit.
+    conflicts: tuple[str, ...] = ()
+
+
+def rebase_start(
+    tree: Path, *, base: str, notes: list[str] | None = None
+) -> Rebase | None:
+    """Rebase the branch of a freshly cut clone onto ``origin/<base>``, so
+    an attempt that continues pushed work builds on the current base and a
+    conflict with it shows before the session starts, not at the land.
+
+    ``None`` when ``HEAD`` already holds the base tip, ``origin/<base>`` is
+    missing, git cannot say, or the work holds a merge commit (a worker's
+    ``wip: snapshot`` that kept other tips has extra parents, and a plain
+    rebase would replay the commits only those parents reach into the
+    branch; a note says so). A rebase that goes through moves the branch (:attr:`Rebase.sha`): the
+    rebased commits are this attempt's work like any the session adds, and
+    :func:`finalize` pushes them. One that stops is aborted and the clone
+    is back at its start commit (:attr:`Rebase.conflicts` names the paths;
+    empty when git stopped for another reason). Raises
+    :class:`WorkspaceError` when the clone could not be put back: the
+    caller drops it and ends the job attempt-free."""
+    notes = notes if notes is not None else []
+    onto_ref = f"refs/remotes/origin/{base}"
+    head = _out(_git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], tree))
+    onto = _out(
+        _git(["rev-parse", "--verify", "--quiet", f"{onto_ref}^{{commit}}"], tree)
+    )
+    branch = _out(_git(["symbolic-ref", "--quiet", "HEAD"], tree))
+    if not head or not onto or not branch:
+        return None
+    if _git(["merge-base", "--is-ancestor", onto, head], tree).returncode == 0:
+        return None
+    merges = _git(["rev-list", "--count", "--merges", f"{onto}..HEAD"], tree)
+    if merges.returncode != 0 or _out(merges) != "0":
+        notes.append(
+            f"the earlier work holds a merge commit; not rebased onto origin/{base}"
+        )
+        return None
+    proc = _git(["-c", "commit.gpgSign=false", "rebase", "--quiet", onto_ref], tree)
+    gitdir = tree / ".git"
+
+    def midway() -> bool:
+        return (gitdir / "rebase-merge").exists() or (gitdir / "rebase-apply").exists()
+
+    def at() -> str:
+        return _out(_git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], tree))
+
+    if proc.returncode == 0 and not midway():
+        now = at()
+        if now and now != head:
+            notes.append(
+                f"rebased the earlier work onto origin/{base} at {onto[:12]}: "
+                f"{head[:12]} is now {now[:12]}"
+            )
+            return Rebase(onto, sha=now)
+    conflicts = tuple(
+        _out(_git(["diff", "--name-only", "--diff-filter=U"], tree)).splitlines()
+    )
+    why = _err(proc, 160)
+    if midway():
+        _git(["rebase", "--abort"], tree)
+    dirty = _git(["status", "--porcelain", "--untracked-files=no"], tree)
+    if (
+        midway()
+        or at() != head
+        or _out(_git(["symbolic-ref", "--quiet", "HEAD"], tree)) != branch
+        or dirty.returncode != 0
+        or dirty.stdout.strip()
+    ):
+        raise WorkspaceError(
+            f"a rebase of {tree.name} onto origin/{base} stopped and the clone "
+            f"could not be put back at {head[:12]} ({why}); next: launch again, "
+            "the folder is dropped"
+        )
+    notes.append(
+        f"the earlier work does not rebase onto origin/{base} at {onto[:12]} "
+        + (
+            "(conflicts in " + ", ".join(conflicts[:8]) + ")"
+            if conflicts
+            else f"({why})"
+        )
+        + f"; left at {head[:12]}"
+    )
+    return Rebase(onto, conflicts=conflicts)
+
+
 def seed_env(src_root: Path, tree: Path, *, notes: list[str] | None = None) -> None:
     """Best effort: copy ``src_root``'s ``.venv`` into ``tree`` with
     ``src_root``'s own ``scripts/seed-worktree-venv`` (never the clone's
@@ -779,7 +878,11 @@ def finalize(
        drops commits it held).
     4. ``EMPTY`` when there is no snapshot, the line's tip is
        ``start_sha`` (or not ahead of ``origin/<base>`` when ``start_sha``
-       is ``None``), and nothing is kept.
+       is ``None``), and nothing is kept. A clone rebased at the cut
+       (:func:`rebase_start`) is not at ``start_sha``: its rebased commits
+       are this attempt's work and are pushed even when the session added
+       nothing (only a rebase that left the line on the base tip is
+       ``EMPTY``).
     5. ``PUSHED`` by the builder when the hub ref already holds the
        commit (the head, or the snapshot).
     6. Otherwise the worker pushes to :func:`build_ref`: the head or the

@@ -329,6 +329,116 @@ def test_a_continuing_attempt_starts_at_the_pushed_commit_and_the_brief_says_so(
     assert "git reset --soft" not in brief
 
 
+def _pushed_then_main_moved(rig: _Rig, text: str) -> str:
+    """Job 900 pushes ``widget.py`` and fails its gates; GitHub's main then
+    gains its own ``widget.py`` holding ``text`` (the same file when ``text``
+    is set, else another file); the lander's handoff asks for a session."""
+    ctx, handle = rig.submit()
+    tree = rig.tree()
+    head = _commit(tree, "widget.py", "VALUE = 1\n")
+    ref = "refs/factory/build/42/900"
+    assert rig.builder_push(tree, ref, rig.session_env()).returncode == 0
+    assert rig.poll(ctx, handle, result="done, no marker").status == "failed"
+    _commit(rig.root, "widget.py" if text else "other.py", text or "OTHER = 1\n")
+    _g(rig.root, "push", "-q", "origin", "main")
+    run_slice._append_comment(
+        rig.store, 42, "handoff: lander: land FAILED: ruff check . is red"
+    )
+    return head
+
+
+def test_a_continuing_attempt_is_rebased_onto_the_base_that_moved(rig: _Rig) -> None:
+    """Work pushed on an older main must be on today's main before the session
+    builds on it: otherwise it is built, checked and reviewed against code the
+    land will not meet."""
+    head = _pushed_then_main_moved(rig, "")
+    ctx2, handle2 = rig.submit(job=902)
+    assert handle2 is not None and ctx2.failure is None, ctx2.failure
+    tree2 = rig.tree(902)
+    now = _g(tree2, "rev-parse", "HEAD")
+    assert now != head
+    assert _g(tree2, "rev-parse", "HEAD~1") == _g(tree2, "rev-parse", "origin/main")
+    assert (tree2 / "other.py").exists() and (tree2 / "widget.py").exists()
+    start = ctx2.meta_set["start"]
+    assert (start["sha"], start["rebased"], start["conflicts"]) == (head, now, [])
+    brief = (tree2 / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert "The worker rebased it onto the current `origin/main`" in brief
+    assert head[:12] in brief and now[:12] in brief
+    assert any("rebased the earlier work" in t for k, t in ctx2.chunks)
+
+
+def test_a_rebased_attempt_that_added_nothing_is_pushed_and_landed_as_rebased(
+    rig: _Rig,
+) -> None:
+    """The rebased commits are this attempt's work: a session that adds
+    nothing still leaves them pushed under its own ref, and the land is for
+    that ref and head, not for the old attempt's."""
+    old = _pushed_then_main_moved(rig, "")
+    ctx2, handle2 = rig.submit(job=902)
+    assert handle2 is not None and ctx2.failure is None, ctx2.failure
+    tree2 = rig.tree(902)
+    rebased = _g(tree2, "rev-parse", "HEAD")
+    assert rebased != old
+    rig.seams["ahead"] = "abc1234 feat(x): add widget.py (td42)\n"
+    rig.seams["land_kw"].clear()
+    pctx = rig.poll(ctx2, handle2)
+    assert pctx.status == "succeeded", pctx.failure
+    push = pctx.meta_set["push"]
+    assert (push["state"], push["by"]) == ("pushed", "worker")
+    assert push["sha"] == rebased
+    assert rig.hub_ref(902) == rebased
+    assert rig.hub_ref(900) == old
+    assert rig.store.refs[42].meta["build_ref"] == push
+    assert rig.seams["land_kw"] == [
+        {"ref": "refs/factory/build/42/902", "head": rebased}
+    ]
+    assert not tree2.exists()
+
+
+def test_a_rebased_attempt_that_was_killed_leaves_the_rebased_commit_in_the_hub(
+    rig: _Rig,
+) -> None:
+    """A kill after the worker's rebase must not lose it or fall back to the
+    old attempt: the hub holds the rebased commit under this job's ref."""
+    old = _pushed_then_main_moved(rig, "")
+    ctx2, handle2 = rig.submit(job=902)
+    assert handle2 is not None and ctx2.failure is None, ctx2.failure
+    tree2 = rig.tree(902)
+    rebased = _g(tree2, "rev-parse", "HEAD")
+    assert rebased != old and _g(tree2, "status", "--porcelain") == ""
+    rig.seams["land_kw"].clear()
+    pctx = rig.poll(ctx2, handle2, code=137, result="", is_error=True)
+    assert pctx.status == "failed"
+    rec = rig.store.refs[42].meta["build_ref"]
+    assert rec["state"] == "pushed" and rec["sha"] == rebased
+    assert rec["ref"] == "refs/factory/build/42/902"
+    assert rig.hub_ref(902) == rebased
+    assert not tree2.exists()
+    assert rig.seams["land_kw"] == []
+
+
+def test_a_continuing_attempt_that_conflicts_with_the_base_is_told_first(
+    rig: _Rig,
+) -> None:
+    """A conflict with main is cheapest to resolve before more work is piled
+    on it: the clone stays at the pushed commit and the brief names the paths."""
+    head = _pushed_then_main_moved(rig, "VALUE = 'from main'\n")
+    ctx2, handle2 = rig.submit(job=902)
+    assert handle2 is not None and ctx2.failure is None, ctx2.failure
+    tree2 = rig.tree(902)
+    assert _g(tree2, "rev-parse", "HEAD") == head
+    assert _g(tree2, "status", "--porcelain") == ""
+    start = ctx2.meta_set["start"]
+    assert (start["sha"], start["rebased"], start["conflicts"]) == (
+        head,
+        None,
+        ["widget.py"],
+    )
+    brief = (tree2 / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert "git stopped on conflicts in `widget.py`" in brief
+    assert "Do that rebase first, before any other change" in brief
+
+
 def test_a_withheld_push_keeps_the_folder_and_names_host_and_folder(
     rig: _Rig,
 ) -> None:
@@ -471,8 +581,9 @@ def test_a_resolution_review_has_both_heads_and_a_working_range_diff(
     rig: _Rig,
 ) -> None:
     """The reviewed head (job 900, before the base moved) and the resolution
-    (job 901, rebased onto the moved base) are both in the reviewer's clone;
-    the range-diff the brief names runs and marks the commit changed."""
+    (job 901, rebased onto the moved base by the worker at the cut) are both
+    in the reviewer's clone; the range-diff the brief names runs and marks
+    the commit changed."""
     ctx, handle = rig.submit()
     tree = rig.tree()
     first = _commit(tree, "widget.py", "VALUE = 1\n")
@@ -484,17 +595,20 @@ def test_a_resolution_review_has_both_heads_and_a_working_range_diff(
     # the base moves under it
     _commit(rig.root, "other.py", "OTHER = 1\n", "feat(y): other (td43)")
     _g(rig.root, "push", "-q", "origin", "main")
-    # job 901 is the resolution: a rebase onto the moved base, pushed
+    # job 901 is the resolution: the worker rebases the pushed work onto the
+    # moved base at the cut; the session's own rebase finds nothing to do
     run_slice._append_comment(
         rig.store, 42, "handoff: lander: land FAILED: conflicts with origin/main"
     )
     ctx2, handle2 = rig.submit(job=901)
     assert handle2 is not None and ctx2.failure is None, ctx2.failure
     tree2 = rig.tree(901)
-    assert _g(tree2, "rev-parse", "HEAD") == first
+    assert _g(tree2, "rev-parse", "HEAD") != first
+    assert _g(tree2, "rev-parse", "HEAD~1") == _g(tree2, "rev-parse", "origin/main")
+    before = _g(tree2, "rev-parse", "HEAD")
     assert _git(tree2, "rebase", "origin/main").returncode == 0
     resolved = _g(tree2, "rev-parse", "HEAD")
-    assert resolved != first
+    assert resolved == before != first
     assert (
         rig.builder_push(
             tree2, "refs/factory/build/42/901", rig.launch_env()

@@ -1290,9 +1290,15 @@ Where the work is, stage by stage:
 - **A build or review.** Each `run_slice` job cuts its own fresh clone
   `<checkout>/.claude/worktrees/slice-td<todo>-j<job>` from the hub, on
   local branch `slice/<todo>`, `origin` = the hub. It starts at the
-  task's newest pushed attempt, else the base tip. No folder is reused
-  by a later job. A reviewer's clone gets the reviewed attempt's ref
-  fetched as `origin/slice/<target>`.
+  task's newest pushed attempt, else the base tip. Before a session runs
+  on pushed work the worker rebases it onto the current `origin/<base>`
+  (`_slice_ws.rebase_start`; work that holds a merge commit is left
+  alone). The rebased commits are that job's own work, pushed under its
+  ref even when the session adds nothing. On a conflict the worker
+  aborts the rebase, leaves the clone at the pushed commit and names the
+  paths in the brief. No folder is reused by a later job. A reviewer's
+  clone gets the reviewed attempt's ref fetched as
+  `origin/slice/<target>`.
 - **The job's hub ref**, `refs/factory/build/<todo>/<job>`, one per job.
   Lanes that push (Claude, Devin, Kimi) finish by committing, rebasing
   onto the hub's `origin/<base>`, running the checks again, pushing to
