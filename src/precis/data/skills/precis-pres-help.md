@@ -177,6 +177,18 @@ changed text replaces the slide body, removing old chunk links. Extraction
 failure leaves the previous body intact. The successful outcome is recorded
 in `meta.reextract`, and job failures name the next step.
 
+## Record views: links, log, raw
+
+```python
+get(kind="pres", id="pr123", view="links")
+get(kind="pres", id="pr123", view="log")  # event log
+get(kind="pres", id="pr123", view="raw")  # full ref record + tags + links
+get(kind="pres", id="pr123~2/links")  # slide selector: still the deck's links
+```
+
+`links`, `log` and `raw` always describe the parent deck, even when the id
+selects a slide (`~N`) or range (`~N..M`); the selector is ignored for them.
+
 ## Browse what's been stored
 
 ```python
