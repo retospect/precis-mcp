@@ -235,7 +235,7 @@
          | combine({
              'HOME': ('/var/lib/precis' if os_family == 'linux' else '/Users/deploy'),
              'PATH': (
-               precis_worker_venv + '/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin'
+               precis_worker_venv + '/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
                if os_family == 'darwin'
                else precis_worker_venv + '/bin:/usr/local/bin:/usr/bin:/bin'
              ),

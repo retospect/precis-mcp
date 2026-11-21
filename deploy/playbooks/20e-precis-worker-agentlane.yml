@@ -98,7 +98,8 @@
 #     collapsed unit's wins embedded fine — the gr346813 shape again, one
 #     env key over.
 # So the base env is: the DB DSN mechanism + PGPASSFILE + PATH (to find
-# `precis`/`claude`) + PRECIS_MCP_CONFIG + the embedder pair + the four
+# `precis`/`claude`; /usr/sbin:/sbin for `sysctl` and friends in the
+# capacity probe) + PRECIS_MCP_CONFIG + the embedder pair + the four
 # planner-guardrail cost caps + PRECIS_SUSPENDED_JOB_TYPES +
 # precis_shared_env/precis_identity_env
 # (API-key parity with every other precis-* unit, mirrors 43/20d) + the
@@ -294,7 +295,7 @@
              | combine(precis_identity_env | default({}))
              | combine({
                  'HOME': '/Users/deploy',
-                 'PATH': _agentlane_venv + '/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin',
+                 'PATH': _agentlane_venv + '/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
                  'PGPASSFILE': '/Users/deploy/.pgpass',
                  'PRECIS_DATABASE_URL': _agentlane_dsn,
                  'PRECIS_PROCESS': 'precis-worker-agentlane',

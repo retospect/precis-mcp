@@ -928,21 +928,46 @@ def _linux_mem_total_mb() -> int | None:
 
 
 def _darwin_mem_total_mb() -> int | None:
-    """``sysctl -n hw.memsize`` in MiB (macOS)."""
+    """Installed physical memory in MiB (macOS): ``sysctl -n hw.memsize``
+    by absolute path, then by bare name, else ``os.sysconf`` page counts.
+
+    A launchd unit's ``PATH`` may omit ``/usr/sbin``; the bare name is then
+    not found, and an unknown total keeps the host's ``mem_mb`` row from
+    ever being published. The two calls keep literal argv: they are the
+    ``sysctl`` probe the launch-admission ratchet reads by its head."""
+    for absolute in (True, False):
+        try:
+            res = (
+                subprocess.run(
+                    ["/usr/sbin/sysctl", "-n", "hw.memsize"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=10,
+                    check=False,
+                )
+                if absolute
+                else subprocess.run(
+                    ["sysctl", "-n", "hw.memsize"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=10,
+                    check=False,
+                )
+            )
+            if res.returncode == 0:
+                return int(res.stdout.strip()) // (1024 * 1024)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
     try:
-        res = subprocess.run(
-            ["sysctl", "-n", "hw.memsize"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=10,
-            check=False,
-        )
-        if res.returncode != 0:
-            return None
-        return int(res.stdout.strip()) // (1024 * 1024)
-    except (OSError, subprocess.SubprocessError, ValueError):
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, AttributeError):
         return None
+    if pages <= 0 or page_size <= 0:
+        return None
+    return pages * page_size // (1024 * 1024)
 
 
 def _total_mem_mb() -> int | None:

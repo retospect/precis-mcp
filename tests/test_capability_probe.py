@@ -862,3 +862,51 @@ def test_devin_status_logged_in_reading(stdout: str, rc: int, expected: bool) ->
 
     status = subprocess.CompletedProcess([], rc, stdout, "")
     assert devin_status_logged_in(status) is expected
+
+
+def test_darwin_mem_total_uses_absolute_sysctl_when_path_lacks_sbin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A launchd PATH without /usr/sbin must not blank the host's mem_mb row."""
+    seen: list[str] = []
+
+    def run(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        seen.append(argv[0])
+        if argv[0] == "sysctl":
+            raise FileNotFoundError("sysctl")
+        assert argv == ["/usr/sbin/sysctl", "-n", "hw.memsize"]
+        return SimpleNamespace(returncode=0, stdout="68719476736\n")
+
+    monkeypatch.setattr(cap.subprocess, "run", run)
+    assert cap._darwin_mem_total_mb() == 65536
+    assert seen[0] == "/usr/sbin/sysctl"
+
+
+def test_darwin_mem_total_falls_back_to_sysconf_when_sysctl_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no usable sysctl the page-count product still gives the total."""
+
+    def run(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        raise FileNotFoundError(argv[0])
+
+    values = {"SC_PHYS_PAGES": 4194304, "SC_PAGE_SIZE": 16384}
+    monkeypatch.setattr(cap.subprocess, "run", run)
+    monkeypatch.setattr(cap.os, "sysconf", lambda name: values[name])
+    assert cap._darwin_mem_total_mb() == 65536
+
+
+def test_darwin_mem_total_none_when_every_source_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown stays None (row left alone), never a made-up number."""
+
+    def run(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(returncode=1, stdout="")
+
+    def sysconf(name: str) -> int:
+        raise ValueError(name)
+
+    monkeypatch.setattr(cap.subprocess, "run", run)
+    monkeypatch.setattr(cap.os, "sysconf", sysconf)
+    assert cap._darwin_mem_total_mb() is None
