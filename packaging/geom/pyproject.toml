@@ -92,6 +92,7 @@ pcb-kernel = [
 [tool.hatch.build.targets.wheel]
 exclude = [
     "precis/structure/importers",
+    "precis/format/table_lens.py",
     "precis/pcb/_http.py",
     "precis/pcb/argue.py",
     "precis/pcb/catalog.py",
