@@ -913,6 +913,19 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "(the alert detail names the parked reason); a green probe "
         "unparks the lane and resolves this — `enabled` stays human.",
     ),
+    AlertRule(
+        "halt_heal",
+        "{key}",
+        "A cadence halted itself and its supervisor session could not clear "
+        "the halt, or the halt came back inside the 24h heal window.",
+        "critical",
+        None,
+        triage="The detail holds the halt note, the supervisor's model "
+        "diagnosis and the exact human action; fix the cause, then clear "
+        "the halt key (the registry's reset hint). The alert resolves when "
+        "the cadence runs a good batch again, never on age.",
+        budget="24h heal window; one supervisor session per halt key",
+    ),
 )
 
 RULES_BY_ID: dict[str, AlertRule] = {r.id: r for r in ALERT_RULES}

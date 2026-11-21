@@ -1214,6 +1214,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "ci_watch",
     "gripe_validate",
     "diagnose_gripe",
+    "halt_heal",
     "graph_garden",
     "skill_garden",
     "secret_status",
@@ -1423,6 +1424,14 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "diagnose_gripe":
         _REGISTRY["diagnose_gripe"] = _load_diagnose_gripe()
         return _REGISTRY["diagnose_gripe"]
+    if name == "halt_heal":
+        # One frontier supervisor session for a halted cadence: clears that
+        # one halt when its cause is gone, else escalates (see
+        # precis.workers.halt_heal). Plugin dispatch under claude_inproc.
+        from precis.workers.job_types.halt_heal import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
     if name == "graph_garden":
         from precis.workers.job_types.graph_garden import SPEC
 

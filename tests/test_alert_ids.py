@@ -289,6 +289,7 @@ def test_quota_check_auth_triage_names_the_vault_token() -> None:
             "stale-halt:123",
             "nursery:stale-halt/stale-halt:{ref_id}",
         ),
+        ("halt_heal", "gripe_triage:blocked", "halt_heal/{key}"),
     ],
 )
 def test_resolve_picks_the_most_specific_rule(

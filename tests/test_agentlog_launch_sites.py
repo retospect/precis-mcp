@@ -67,6 +67,7 @@ REQUIRED: tuple[str, ...] = (
     "src/precis/workers/job_types/plan_tick.py",
     "src/precis/workers/dream_agent.py",
     "src/precis/workers/job_types/doctor_tick.py",
+    "src/precis/workers/job_types/halt_heal.py",
     "src/precis/workers/review.py",
     "src/asa_bot/claude_invoke.py",
 )

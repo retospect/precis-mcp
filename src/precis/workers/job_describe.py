@@ -565,6 +565,7 @@ DESCRIBERS: dict[str, Callable[..., str]] = {
     "paper_pull": _d_paper_pull,
     "plan_tick": _d_plan_tick,
     "doctor_tick": _const("checking fleet health"),
+    "halt_heal": _const("trying to restart a halted cadence"),
     "conflict_sweep": _const("sweeping a claim hub for contradictions"),
     "taproot_backfill": _const("backfilling claim taproots"),
     "news_poll": _const("polling RSS feeds"),

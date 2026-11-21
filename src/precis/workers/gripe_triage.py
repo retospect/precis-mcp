@@ -118,7 +118,13 @@ rung):
   the counters, any failure re-arms it for another window (N1
   ruling). An operator reset — delete or empty the ``app_state`` row
   :data:`_BLOCKED_KEY` (``scripts/prod-psql "DELETE FROM app_state
-  WHERE key = 'gripe_triage:blocked'"``) — resumes immediately.
+  WHERE key = 'gripe_triage:blocked'"``) — resumes immediately. Every time
+  the halt is armed or re-armed (:func:`_halt`) it also asks the halt
+  supervisor (:mod:`precis.workers.halt_heal`) for one frontier repair
+  attempt per 24 h, and escalates to a critical alert plus an ops push when
+  that fails, never reports (:func:`_check_overdue`, on every halted tick)
+  or the halt returns; the first good batch afterwards resolves the alert
+  (:func:`_note_resumed`).
 
 A memory complaint is a plain gripe (gr657257): the filer writes
 ``me123: <what is wrong>`` and needs no tag or relation. The tick
@@ -2617,7 +2623,8 @@ def _blocked_state(store: Store, when: datetime) -> tuple[str | None, bool]:
 def _halt(store: Store, when: datetime, why: str, *, notify: bool) -> str:
     """Arm the halt flag (the fresh timestamp starts the
     :data:`_BLOCKED_PROBE_S` probe clock), reset the strike counter so
-    an unblock gets a full budget, and post one ``blocked`` board line.
+    an unblock gets a full budget, post one ``blocked`` board line, and ask
+    the halt supervisor for a repair attempt (:func:`_request_heal`).
     Returns the stored note for ``extra``."""
     note = f"{when:%Y-%m-%dT%H:%M:%SZ} {why}"
     store.set_setting(_BLOCKED_KEY, note)
@@ -2632,7 +2639,45 @@ def _halt(store: Store, when: datetime, why: str, *, notify: bool) -> str:
             "blocked",
             f"gripe triage: halted — {why} (app_state {_BLOCKED_KEY})",
         )
+    _request_heal(store, note, when)
     return note
+
+
+def _request_heal(store: Store, note: str, when: datetime) -> None:
+    """Ask the halt supervisor (:mod:`precis.workers.halt_heal`) to try a
+    repair before a human is alerted. Never raises: a fault here must not
+    break the halt itself."""
+    try:
+        from precis.workers.halt_heal import request_heal
+
+        outcome = request_heal(store, _BLOCKED_KEY, note, when=when)
+        log.warning("gripe_triage: halt heal request -> %s", outcome)
+    except Exception:
+        log.warning("gripe_triage: halt heal request failed", exc_info=True)
+
+
+def _check_overdue(store: Store) -> None:
+    """The halt stands and this tick runs no batch: let the supervisor
+    escalate a repair job that never reported (one settings read). Never
+    raises."""
+    try:
+        from precis.workers.halt_heal import check_overdue
+
+        check_overdue(store, _BLOCKED_KEY)
+    except Exception:
+        log.warning("gripe_triage: halt overdue check failed", exc_info=True)
+
+
+def _note_resumed(store: Store) -> None:
+    """A good batch ran with the halt flag empty (a probe cleared it, or an
+    operator did): resolve the halt's open alert, if one was raised. Never
+    raises."""
+    try:
+        from precis.workers.halt_heal import note_resumed
+
+        note_resumed(store, _BLOCKED_KEY)
+    except Exception:
+        log.warning("gripe_triage: halt resume note failed", exc_info=True)
 
 
 # ── flood control ─────────────────────────────────────────────────────────
@@ -2775,6 +2820,7 @@ def run_gripe_triage_pass(
         # Halted by _BATCH_FAIL_LIMIT strikes — no claim, no call,
         # until the 6 h probe fires or an operator clears the flag.
         log.warning("gripe_triage: halted (%s)", blocked)
+        _check_overdue(store)
         return BatchResult(
             handler=SERVICE_NAME,
             claimed=0,
@@ -2886,6 +2932,7 @@ def run_gripe_triage_pass(
             # The probe could not test anything — re-arm quietly so the
             # next probe is a full window out.
             store.set_setting(_BLOCKED_KEY, f"{when:%Y-%m-%dT%H:%M:%SZ} probe paused")
+            _check_overdue(store)
         log.warning("gripe_triage: model call paused — leases kept")
         return BatchResult(
             handler=SERVICE_NAME,
@@ -2946,6 +2993,9 @@ def run_gripe_triage_pass(
     if probe:
         store.set_setting(_BLOCKED_KEY, "")
         log.warning("gripe_triage: probe succeeded — halt cleared")
+    # The halt flag is empty here (a probe just cleared it, or an operator
+    # reset it): the cadence demonstrably runs, so the halt alert resolves.
+    _note_resumed(store)
     verdicts, misses = parse_verdicts(data, gripes, evidence)
     ok = failed = stale = 0
     closed: dict[str, int] = {}

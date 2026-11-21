@@ -703,3 +703,41 @@ def test_gripe_summary_rebuild_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
         "default",
         "recipe",
     )
+
+
+def test_halt_heal_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The halt supervisor's ``halt_heal`` source resolves through the exact
+    row migration 0344 seeds, so the recipe-gap scan does not refile it as
+    an unknown task kind. ``consequence`` is ``high``: decide.py admits a
+    marginal offering only for ``low``, so it can never relax the session's
+    explicit FRONTIER request."""
+    sql = (
+        Path(__file__).parents[1]
+        / "src/precis/migrations/0345_task_recipes_halt_heal.sql"
+    ).read_text(encoding="utf-8")
+    seeded = re.findall(
+        r"^    \('([^']+)', '([^']+)', '([^']+)', '([^']+)', (true|false)\)",
+        sql,
+        flags=re.MULTILINE,
+    )
+    rows = {
+        src: Recipe(
+            src,
+            kind,
+            lane_class=lane,
+            consequence=cons,
+            classify=flag == "true",
+        )
+        for src, kind, lane, cons, flag in seeded
+    }
+    assert set(rows) == {"halt_heal"}
+    monkeypatch.setattr(recipes, "_rows", lambda: rows)
+    recipe = recipes.lookup("halt_heal")
+    assert recipe is not None
+    assert (recipe.task_kind, recipe.consequence, recipe.classify) == (
+        "plan.tick",
+        "high",
+        False,
+    )
+    assert recipes.lookup("halt_heal:local") == recipe
+    assert recipes.resolve("halt_heal") == ("plan.tick", "high", "default", "recipe")

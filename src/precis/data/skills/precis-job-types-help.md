@@ -69,6 +69,7 @@ including repeated coordinator resumes only once per tick.
 | `job_type`          | Executor        | What it does                                  |
 |---------------------|-----------------|-----------------------------------------------|
 | `doctor_tick`       | `claude_inproc` | One LLM "doctor" pass over the fleet's own published health surfaces — the self-healing spine's Layer-3 judgment: gathers, classifies by ratio, diagnoses, authors the daily report, files/annotates gripes (internal; see `precis-health-digest-help`) |
+| `halt_heal`         | `claude_inproc` | Read-only supervisor session for a halted cadence: code clears the halt on `CLEAR`, else raises the `halt_heal` alert |
 | `quest_tick`        | `coordinator`   | One slice of a quest's perpetual catalyst loop (harvest → propose → dispatch → wait) — internal, minted by `quest_loop_reconcile` (see `precis-quest-help`) |
 | `reground_claim`    | `claude_inproc` | Reground a taproot claim hub — audit/prune proxy evidence, re-discover deeper primaries, add-first apply (checkpointed); `mode='verify'` diffs intent vs committed (see `precis-taproot-help`) |
 | `draft_refresh`     | `claude_inproc` | Bounded, section-scoped refresh of a living draft — critique + rewrite against corpus + research-arm evidence, growth-gated apply |

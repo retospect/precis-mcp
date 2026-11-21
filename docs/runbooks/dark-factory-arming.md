@@ -36,6 +36,49 @@ Disarm: close or pause that todo. Dry run by hand: a `gripe_validate` job
 with `params={'dry_run': true}` lists what would flip. Not covered by the
 factory kill switch (it only closes gripes whose fix is already deployed).
 
+## Halted cadences (halt_heal)
+
+A cadence that halts itself gets one frontier repair attempt before the ops
+channel is told. Today the one registered halt is the gripe triage tick
+(`app_state` key `gripe_triage:blocked`, set after three whole-batch
+failures in a row). Each time the halt is armed or re-armed:
+
+- First halt in a 24 h window: one `halt_heal` job (`claude_inproc`, read
+  verbs only, no `put`) investigates what stopped the cadence and whether the
+  cause is gone. A `CLEAR` verdict empties that one key, so the tick runs on
+  its next pass; the job result and `app_state` `halt_heal:last:<key>` record
+  it. No alert.
+- `ESCALATE`, a reply without the verdict block, a session error, a quota
+  pause past the park cap, or any exception raises one critical `halt_heal`
+  alert and one push to the ops channel. The detail holds the halt note, the
+  model's diagnosis (marked as untrusted), what was tried, the human action
+  and the job handle.
+- The halt coming back inside the same 24 h window escalates at once with the
+  earlier diagnosis; a repair that recurs is a human's problem. That capped
+  call also files one `[bounded-heal]` gripe (the shared heal primitive
+  always does; it cannot be switched off per heal).
+- A job that never reports does not wait for the next failed probe: every
+  halted tick checks it, and a session minted over 2 h ago with no report
+  escalates once (`halt_heal:last:<key>` goes to `outcome: overdue`).
+- One page per episode: once a human was alerted (marker
+  `halt_heal:alerted:<key>`), further re-arms start no session and write no
+  second alert, in every mode, and a session that still answers `CLEAR`
+  clears nothing; it escalates with its diagnosis on the open alert.
+- The alert resolves when the cadence runs a good batch again (a probe
+  succeeded, or you reset the key), never on age.
+
+Operator switch, `app_state` key `halt_heal:mode` (set it with
+`scripts/prod-psql`; an operator setting, not an agent write):
+
+| value | effect |
+|---|---|
+| absent, empty or `heal` | session runs, a `CLEAR` clears the halt |
+| `report` | session runs and its diagnosis rides the alert, but a `CLEAR` never clears: it escalates |
+| `off` | no session, escalate at once (a job queued earlier also escalates without a session) |
+
+An unknown value reads as `report`. Manual reset when the cause is fixed:
+`scripts/prod-psql "DELETE FROM app_state WHERE key = 'gripe_triage:blocked'"`.
+
 ## Release pass (cut, verdict, approval, deploy, confirm)
 
 Mint one plan; the armed `plan_dispatch` tick drives it:
