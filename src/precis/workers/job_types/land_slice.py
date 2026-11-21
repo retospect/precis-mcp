@@ -1986,6 +1986,21 @@ def _note_source_landed(
     return f"source td{source_id}: landed comment written, left open"
 
 
+def _source_landed_first(store: Any, todo_id: int, sha: str, subject: str) -> list[str]:
+    """The source's ``landed:`` comment, written BEFORE the gate fill that
+    makes it unreachable: a retry skips a filled gate, so a comment that
+    failed after the fill was never written (and the source sweep needs
+    it). A failure here raises into the gate write, leaving the gate
+    pending so the retry redoes both. Empty for any non-todo-build plan."""
+    plan_tag = _plan_tag(store, todo_id)
+    if plan_tag is None:
+        return []
+    source_id = _plan_source_todo(store, plan_tag)
+    if source_id is None:
+        return []
+    return [_note_source_landed(store, source_id, sha, subject, todo_id)]
+
+
 #: land_notify's ``_ITEM_RE`` — one ``(refs )?(gr|td)N`` item; group 1
 #: marks the ``refs grN`` partial form.
 _ITEM_PARSE_RE = re.compile(r"(refs\s+)?(gr|td)(\d+)")
@@ -4817,7 +4832,10 @@ def _launch_ship(
         # system/global config) because the mirror and the checkout are
         # adversary-writable (review finding 2).
         ship_env = {**land_env(), **_host_state_env(tree)}
-        if _carries_pin(ctx.store, todo_id) or _holds_notify(ctx.store, todo_id):
+        notify_held = _carries_pin(ctx.store, todo_id) or _holds_notify(
+            ctx.store, todo_id
+        )
+        if notify_held:
             # td659522 F7: ship's land_notify would close a pin-bump node
             # on the land; it stays open for the gate image wait, so the
             # notify marks are held as for a mirrored land and the lander
@@ -5040,6 +5058,11 @@ def _launch_ship(
                 "started_at": launched.strftime(_TS_FMT),
                 "deadline": launched.timestamp() + wall_seconds(),
             }
+            if notify_held:
+                # The launch's own decision, so poll defers the notify
+                # marks whenever ship ran with them held — a store error
+                # at launch must not be re-read as "not held" at poll.
+                handle["notify_held"] = True
             if mirror_tips is not None:
                 # The sync's CAS basis (GitHub's tips at launch). Adopted
                 # handles rebuild without it; poll falls back to the launch
@@ -6773,6 +6796,7 @@ def poll(ctx: Any, handle: Any) -> bool:
         status=status,
         # A pin-bump land ran ship with land_notify held (td659522 F7).
         notify_deferred=mirror_in_play
+        or handle.get("notify_held") is True
         or _carries_pin(ctx.store, todo_id)
         or _holds_notify(ctx.store, todo_id),
     )
@@ -7013,6 +7037,7 @@ def _landed_finish(
             # comment still names the sha the gate waits on.
             prior = _landed_comment_sha(store, todo_id)
             if prior is not None:
+                summary += _source_landed_first(store, todo_id, prior, subject)
                 _write_gate(store, gate_id, prior, todo_id)
                 gate_sha = prior
                 summary.append(
@@ -7027,6 +7052,7 @@ def _landed_finish(
                     "for)"
                 )
         else:
+            summary += _source_landed_first(store, todo_id, sha, subject)
             _write_gate(store, gate_id, sha, todo_id)
             summary.append(f"gate td{gate_id}: sha-in-prod sha set to {sha[:9]}")
     except Exception as exc:  # pragma: no cover — reported, the land stands
@@ -7047,18 +7073,6 @@ def _landed_finish(
     except Exception as exc:  # pragma: no cover — reported, the land stands
         log.warning("land_slice: gripe notify for td%d failed", todo_id, exc_info=True)
         summary.append(f"gripe: notify FAILED ({exc})")
-    try:
-        # A todo-build plan's source todo gets the same fact as a comment
-        # and stays open: it goes done when the sha is in prod.
-        if gate_id is not None and gate_sha is not None and plan_tag is not None:
-            source_id = _plan_source_todo(store, plan_tag)
-            if source_id is not None:
-                summary.append(
-                    _note_source_landed(store, source_id, gate_sha, subject, todo_id)
-                )
-    except Exception as exc:  # pragma: no cover — reported, the land stands
-        log.warning("land_slice: source notify for td%d failed", todo_id, exc_info=True)
-        summary.append(f"source: notify FAILED ({exc})")
     try:
         if plan_tag is not None:
             # gr548800: a landed slice is a quest-logbook milestone.

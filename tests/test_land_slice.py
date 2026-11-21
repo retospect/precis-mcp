@@ -9540,7 +9540,7 @@ def test_source_checks_never_fail_the_land(
     _pctx, summary = _poll_green(store, seams)
     [(_argv, kw)] = seams["launch"]
     assert kw["env"]["PRECIS_LAND_NOTIFY"] == "0"
-    assert "source: notify FAILED (db down)" in summary
+    assert "gate: write FAILED (db down)" in summary
     assert "todo td50: left open (plan source unreadable)" in summary
     assert "todo td43: left open (plan source unreadable)" in summary
     assert store.comments(50) == [] and store.comments(43) == []
@@ -9569,3 +9569,46 @@ def test_unreadable_source_leaves_todo_handles_but_not_gripes(
     assert "todo td55: left open (plan source unreadable)" in notes
     assert store.comments(55) == [] and "STATUS:done" not in store.tag_strings(55)
     assert any("gripe gr7:" in n and "auto_verify" in n for n in notes)
+
+
+def test_source_comment_failure_leaves_the_gate_pending(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source's ``landed:`` comment is written before the gate fill: if
+    it fails the gate stays pending, so the retry redoes both instead of
+    skipping a filled gate and never marking the source."""
+    store = _Store()
+    _source_plan(store)
+
+    def boom(*_a: Any, **_k: Any) -> str:
+        raise RuntimeError("comment down")
+
+    monkeypatch.setattr(land_slice, "_note_source_landed", boom)
+    _pctx, summary = _poll_green(store, seams)
+    assert "gate: write FAILED (comment down)" in summary
+    assert store.refs[44].meta["gate"]["args"]["sha"] == PENDING_SHA
+    assert store.comments(50) == []
+
+
+def test_launch_notify_hold_is_what_poll_uses(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store error at launch holds ship's notifier; poll must defer the
+    notify marks on that launch decision even when its own lookup then
+    succeeds, or nobody writes them."""
+    store = _Store()
+    _source_plan(store, source=None)
+    store.add_todo(55)
+    seams["subjects"] = ["fix (td42, td55)"]
+    real = land_slice._holds_notify
+    monkeypatch.setattr(land_slice, "_holds_notify", lambda *_a: True)
+    ctx, handle = _submit(store, seams)
+    assert ctx.failure is None, ctx.failure
+    [(_argv, kw)] = seams["launch"]
+    assert kw["env"]["PRECIS_LAND_NOTIFY"] == "0"
+    monkeypatch.setattr(land_slice, "_holds_notify", real)
+    _finish(handle, 0, GREEN_LOG)
+    seams["gates"] = [(44, True)]
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert "STATUS:done" in store.tag_strings(55)

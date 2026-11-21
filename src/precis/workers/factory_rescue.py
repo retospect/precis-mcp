@@ -1352,6 +1352,38 @@ def _landed_sha(store: Store, plan: Any, gate: Any) -> tuple[int, str] | None:
     return None
 
 
+def _note_source_landed(
+    store: Store, conn: Connection, gate_id: int, sha: str, build_id: int
+) -> None:
+    """The ``landed: <sha9>`` comment a todo-chain land owes its source
+    todo, written in the gate fill's transaction: a filled gate is never
+    revisited, and ``todo_chain.close_source`` needs the comment. No-op
+    for a plan whose root carries no ``meta.source_todo``."""
+    from precis.plans.todo_chain import has_landed_comment, source_of_root
+
+    tags = [t for t in store.tags_for(gate_id, conn=conn) if t.namespace == "open"]
+    plan = next(
+        (
+            str(t.value)[5:]
+            for t in tags
+            if str(t.value).startswith("plan:") and str(t.value)[5:].isdigit()
+        ),
+        None,
+    )
+    if plan is None:
+        return
+    source = source_of_root(store, int(plan), conn=conn)
+    if source is None or has_landed_comment(store, source, sha, conn=conn):
+        return
+    _comment(
+        store,
+        conn,
+        source,
+        _COMMENT_KIND["todo"],
+        f"landed: {sha[:9]} — built by td{build_id} (stall-pass fill)",
+    )
+
+
 def _fill_gate(store: Store, gate_id: int, sha: str, build_id: int) -> bool:
     """The post-land write ``land_slice._write_gate`` owed the gate, run by
     the stall pass: ``meta.gate.args.sha = sha`` plus the lander's audit
@@ -1371,6 +1403,7 @@ def _fill_gate(store: Store, gate_id: int, sha: str, build_id: int) -> bool:
         args = dict(gate.get("args") or {})
         if str(args.get("sha") or "") != PENDING_SHA:
             return False
+        _note_source_landed(store, conn, gate_id, sha, build_id)
         args["sha"] = sha
         store.stamp_ref_meta(gate_id, {"gate": {**gate, "args": args}}, conn=conn)
         _comment(
